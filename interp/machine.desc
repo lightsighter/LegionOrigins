@@ -1,0 +1,7 @@
+processor P0 type1 1
+memory M1 32
+memory M2 32k
+memory M3 32m
+memory M4 32g
+affinity P0 M1 100 1
+
