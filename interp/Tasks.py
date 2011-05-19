@@ -1,4 +1,5 @@
 import threading
+import sys
 
 class FutureValue(object):
     def __init__(self):
@@ -24,12 +25,22 @@ class FutureValue(object):
             self.condvar.notify_all()
 
 class TaskThread(threading.Thread):
-    def __init__(self, func, args):
+    def __init__(self, func, args, kwargs, context):
         threading.Thread.__init__(self)
         self.func = func
         self.args = args
+        self.kwargs = kwargs
+        self.context = context
+        context.task = self
         self.result = FutureValue()
 
     def run(self):
-        rv = self.func(self.args)
-        self.result.set_result(rv)
+        from Runtime import TaskContext
+        TaskContext.set_current_context(self.context)
+        try:
+            rv = self.func(*self.args, **self.kwargs)
+            self.result.set_result(rv)
+        except:
+           e = sys.exc_info()
+           print "Unhandled_exception in thread: ", str(e)
+           self.result.set_result(e)

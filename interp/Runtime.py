@@ -1,62 +1,97 @@
 import threading
+from Regions import Region
+from Tasks import TaskThread, FutureValue
 
 class Runtime(object):
     def __init__(self, machine_desc):
         self.machine_desc = machine_desc
 
-    def run_application(self, main_func, main_args):
+    def run_application(self, main_func, *main_args, **main_kwargs):
         '''start the main thread for an application on an arbitrary processor'''
-        pass
+        main = TaskThread(main_func, main_args, main_kwargs,
+                          TaskContext(self, None, "foo"))
+        rv = main.start()
+        return main.result.get_result()
 
-    def run_task(self, task_func, task_args, regions_needed, mapping_hints = None):
+    def run_task(self, task_func, *task_args, **task_kwargs):
         '''spawn a new task, specifying which regions are needed, with optional mapping hints'''
-        pass
+        # see which regions the task needs
+        from Regions import get_task_regions
+        regions_needed = get_task_regions(task_func, task_args, task_kwargs)
+        print repr(regions_needed)
+        rv = task_func(*task_args, **task_kwargs)
+        fv = FutureValue()
+        fv.set_result(rv)
+        return fv
 
-    def create_region(self, name, elem_type):
-        pass
+    #def create_region(self, name, elem_type):
+    #    return Region(name, elem_type)
 
 ############################################################
 
-class Context(object):
-    def __init__(self):
-        current_context = threading.local()
+class RegionBinding(object):
+    def __init__(self, logical_region, phys_inst, mode):
+        self.logical_region = logical_region
+        self.phys_inst = phys_inst
+        self.mode = mode
 
+############################################################
+
+
+class TaskContext(object):
+    thread_local_storage = threading.local()
+
+    def __init__(self, runtime, task, processor, bindings = None):
+        self.runtime = runtime
+        self.task = task
+        self.processor = processor
+        self.bindings = bindings if bindings is not None else []
+        pass
+
+    @classmethod
+    def get_current_context(self): return TaskContext.thread_local_storage.context
+
+    @classmethod
+    def set_current_context(self, new_ctx): TaskContext.thread_local_storage.context = new_ctx
+    
+    # all of the methods below are defined as class methods - ideally they'd be
+    #   both class and instance methods so that we can detect erroneous cases
+    #   in which the wrong (i.e. not yours) context is used
+    @classmethod
     def get_runtime(self):
         '''returns a pointer to the global runtime object'''
+        self = self.get_current_context()
         return self.runtime
 
+    @classmethod
     def get_task(self):
         '''returns the current task'''
+        self = self.get_current_context()
         return self.task
 
+    @classmethod
     def get_processor(self):
         '''returns the processor the task is running on'''
+        self = self.get_current_context()
         return self.processor
 
-    def get_region_instance(self, logical_region):
-        '''returns the region instance being used for a logical region'''
-        if logical_region not in self.instances:
+    @classmethod
+    def add_region_bindings(self, *args):
+        '''adds region bindings to the current context'''
+        self = self.get_current_context()
+        self.bindings.append(*args)
+
+    @classmethod
+    def get_region_binding(self, logical_region, exact = True, must_match = True):
+        '''returns the region binding being used for a logical region'''
+        self = self.get_current_context()
+        for b in self.bindings:
+            if b.logical_region == logical_region: return b
+        # TODO: for inexact matches, allow superset regions
+        if must_match:
             raise UnmappedRegionException(self, logical_region)
-        return self.instances[logical_region]
+        return None
 
-    def get_region_reduction_op(self, logical_region):
-        '''returns the reduction op being used for a logical region'''
-        if logical_region not in self.reductions:
-            raise UnknownRegionReductionException(self, logical_region)
-        return self.reductions[logical_region]
-
-    def readptr(self, logical_region, ptr):
-        '''helper function to read a pointer using a logical region'''
-        return self.get_region_instance(logical_region).readptr(ptr)
-
-    def writeptr(self, logical_region, ptr, newval):
-        '''helper function to write a pointer using a logical region'''
-        self.get_region_instance(logical_region).writeptr(ptr, newval)
-
-    def reduceptr(self, logical_region, ptr, redval):
-        '''helper function to reduce to a pointer using a logical region (and the implied reduction op)'''
-        op = self.get_region_reduction_op(logical_region)
-        self.get_region_instance(logical_region).reduceptr(ptr, redval, op)
 
 ############################################################
 
