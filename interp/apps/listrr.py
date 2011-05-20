@@ -1,5 +1,4 @@
 from Runtime import Runtime, TaskContext
-import Tasks
 from Regions import *
 
 class ListElem(object):
@@ -13,9 +12,9 @@ class ListRR(object):
         self.head = head
         self.length = length
 
-    def populate_list(self, value_list):
+    def populate_list(self, *args):
         ptr = self.head
-        for v in reversed(value_list):
+        for v in reversed(args):
             newval = ListElem(v, ptr)
             ptr = self.region.alloc()
             self.region[ptr] = newval
@@ -34,12 +33,12 @@ class ListRR(object):
                 coloring[node] = idx
                 node = self.region[node].next
 
-        #partition = Partition(self.region, num_pieces, coloring)
+        partition = Partition(self.region, num_pieces, coloring)
 
         sublists = []
         for idx in range(num_pieces):
-            sublists.append(ListRR(self.region, #partition.get_subregion(idx),
-                                   subheads[idx], #partition.safe_cast(idx, subheads[idx]),
+            sublists.append(ListRR(partition.get_subregion(idx),
+                                   partition.safe_cast(idx, subheads[idx]),
                                    piece_length if (idx < (num_pieces - 1)) else (self.length - piece_length * (num_pieces - 1))))
         return sublists
 
@@ -52,26 +51,35 @@ class ListRR(object):
              nodeptr = nodeval.next
         return sum
 
-
-def list_example(size, num_pieces):
-    values = [ i for i in range(size) ]
+# the 'main' function is what will be called by the simulator
+# try to provide (interesting) default values for all parameters you need
+def main(size = 400, num_pieces = 10):
+    # create a new region
     myregion = Region("listrr", "ListElem")
+
+    # now create a ListRR using that region (with an initially empty list)
     mylist = ListRR(myregion)
-    mylist.populate_list(values)
-    import pprint
-    pprint.pprint(mylist)
+
+    # fill the list with the numbers from [0,size)
+    mylist.populate_list(*range(size))
+
+    # get ListRR's for the sublists
     sublists = mylist.partition_list(num_pieces)
-    runtime = TaskContext.get_runtime()
-    subsums = [ runtime.run_task(subtask, (s)) for s in sublists ]  # parallel!
-    total = 0
-    for s in subsums:
-        total = total + s.get_result()
+
+    # run 'subtask' for each of the sublists in parallel
+    subsums = map(lambda s: TaskContext.get_runtime().run_task(subtask, s),
+                  sublists)
+
+    # now total up the sums from each subtask (waiting as necessary on futures)
+    total = sum(map(lambda fv: fv.get_result(), subsums))
+
     print "sum is %d" % total
 
+
+# this subtask requires the region that is passed in via 'sublist.region' to be
+#   readable
 @region_usage(sublist__region = ROE)
 def subtask(sublist):
+    # just walk the list and return the sum of the elements
     return sublist.sum_list()
-
-if __name__ == "__main__":
-    Runtime("machine.desc").run_application(list_example, 400, 10)
 

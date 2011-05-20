@@ -10,7 +10,7 @@ class Runtime(object):
         '''start the main thread for an application on an arbitrary processor'''
         main = TaskThread(main_func, main_args, main_kwargs,
                           TaskContext(self, None, "foo"))
-        rv = main.start()
+        main.start()
         return main.result.get_result()
 
     def run_task(self, task_func, *task_args, **task_kwargs):
@@ -18,14 +18,24 @@ class Runtime(object):
         # see which regions the task needs
         from Regions import get_task_regions
         regions_needed = get_task_regions(task_func, task_args, task_kwargs)
-        print repr(regions_needed)
-        rv = task_func(*task_args, **task_kwargs)
-        fv = FutureValue()
-        fv.set_result(rv)
-        return fv
+        # TODO: actual mapping
+        location = "foo"
+        newctx = TaskContext(self, None, location)
 
-    #def create_region(self, name, elem_type):
-    #    return Region(name, elem_type)
+        for r in regions_needed:
+            # TODO: check that the requested capabilities are a subset of what we have
+            newctx.add_region_bindings(RegionBinding(r["region"],
+                                                     r["region"].get_instance(location),
+                                                     r["mode"]))
+        newthr = TaskThread(task_func, task_args, task_kwargs, newctx)
+
+        newthr.start()
+        # in debug mode, wait for child thread to finish
+        do_debug = True
+        if do_debug:
+            newthr.join()
+            newthr.result.get_result()  # if the subtask had an exception, so will this
+        return newthr.result  # this is a future, not the actual result
 
 ############################################################
 
@@ -34,6 +44,15 @@ class RegionBinding(object):
         self.logical_region = logical_region
         self.phys_inst = phys_inst
         self.mode = mode
+
+
+class UnmappedRegionException(Exception):
+    def __init__(self, context, logical_region):
+        self.context = context
+        self.logical_region = logical_region
+
+    def __str__(self):
+        return "Region (" + str(self.logical_region) + ") unmapped in (" + str(self.context.bindings) + ")"
 
 ############################################################
 
@@ -75,19 +94,26 @@ class TaskContext(object):
         self = self.get_current_context()
         return self.processor
 
-    @classmethod
+    # not classmethod
     def add_region_bindings(self, *args):
         '''adds region bindings to the current context'''
-        self = self.get_current_context()
+        #self = self.get_current_context()
         self.bindings.append(*args)
 
     @classmethod
     def get_region_binding(self, logical_region, exact = True, must_match = True):
         '''returns the region binding being used for a logical region'''
         self = self.get_current_context()
+
+        # try for exact matches first (not sure this matters)
         for b in self.bindings:
             if b.logical_region == logical_region: return b
-        # TODO: for inexact matches, allow superset regions
+
+        # now allow bindings of supersets of the region we want
+        for b in self.bindings:
+            if logical_region.is_subset_of(b.logical_region):
+                return RegionBinding(logical_region, b.phys_inst, b.mode)
+
         if must_match:
             raise UnmappedRegionException(self, logical_region)
         return None

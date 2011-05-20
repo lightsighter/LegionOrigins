@@ -1,4 +1,5 @@
 import inspect
+import re
 
 ############################################################
 
@@ -143,62 +144,108 @@ class Pointer(object):
     def __repr__(self):
         return repr(self.address) + "@" + repr(self.region)
 
+    @classmethod
+    def from_str(self, s):
+        print s, type(s)
+        m = re.match(r'^(?P<addr>\d+)\@(?P<region>.+)$', s)
+        if m is None:
+            raise BadPointerString(s)
+        return Pointer(Region.name_to_region(m.group('region')), int(m.group('address')))
+
 ############################################################
 
-def __unique_pointer__():
-    i = 0
-    while 1:
+def __unique_pointer__(start):
+    i = start
+    while True:
        i = i + 1
        yield i
 
 class RegionInstance(object):
+    # HACK: for now, all values in all regions are stored in one big ptr->value
+    #   map.  This lets us solve the aliased-data-stores-between-parents-and-children
+    #   problem later.
+    global_store = dict()
+    unique_pointers = __unique_pointer__(0)
+
     def __init__(self, region, location):
         self.region = region
         self.location = location
-        self.store = dict()
+        #self.store = dict()
 
     def __repr__(self):
         return repr(self.region) + "(" + self.location + ")"
 
     def alloc(self):
-        addr = __unique_pointer__()
+        addr = RegionInstance.unique_pointers.next()
         ptr = Pointer(self.region, addr)
-        self.store[addr] = None
+        self.region.ptrs[addr] = self.region
+        #self.store[addr] = None
+        RegionInstance.global_store[addr] = None
         return ptr
 
     def readptr(self, ptr):
-        if (ptr.region != self.region):
-            raise RegionMismatchException(ptr, self)
-        if ptr.address not in self.store:
+        # TODO: figure out how to do this dynamic check - exact match is too strict
+        #if (ptr.region != self.region):
+        #    raise RegionMismatchException(ptr, self)
+        if ptr.address not in self.region.ptrs: #self.store:
+            print str(self.region.ptrs)
             raise UnknownPointerException(ptr, self)
-        return self.store[ptr.address]
+        #return self.store[ptr.address]
+        return RegionInstance.global_store[ptr.address]
 
     def writeptr(self, ptr, newval):
-        if (ptr.region != self.region):
-            raise RegionMismatchException(ptr, self)
-        if ptr.address not in self.store:
+        # TODO: figure out how to do this dynamic check - exact match is too strict
+        #if (ptr.region != self.region):
+        #    raise RegionMismatchException(ptr, self)
+        if ptr.address not in self.region.ptrs: #self.store:
             raise UnknownPointerException(ptr, self)
-        self.store[ptr.address] = newval
+        #self.store[ptr.address] = newval
+        RegionInstance.global_store[ptr.address] = newval
 
     def reduceptr(self, ptr, redval, reduce_op):
-        if (ptr.region != self.region):
-            raise RegionMismatchException(ptr, self)
-        if ptr.address not in self.store:
+        # TODO: figure out how to do this dynamic check - exact match is too strict
+        #if (ptr.region != self.region):
+        #    raise RegionMismatchException(ptr, self)
+        if ptr.address not in self.region.ptrs: #self.store:
             raise UnknownPointerException(ptr, self)
-        origval = self.store[ptr.address]
-        self.store[ptr.address] = reduce_op(origval, redval)
+        #origval = self.store[ptr.address]
+        origval = RegionInstance.global_store[ptr.address]
+        #self.store[ptr.address] = reduce_op(origval, redval)
+        RegionInstance.global_store[ptr.address] = reduce_op(origval, redval)
 
 ############################################################
 
 class Region(object):
+    unique_names = dict()
+
+    def _get_unique_name(self, base_name):
+        if base_name not in Region.unique_names:
+            Region.unique_names[base_name] = self
+            return base_name
+
+        name = base_name
+        if re.search(r'\(\d+\)$', base_name) is None: name += "(1)"
+        while True:
+            name = re.sub(r'\(\d+\)$', lambda m: "("+str(eval(m.group(0)+"+1"))+")", name)
+            if name not in Region.unique_names: break
+        Region.unique_names[name] = self
+        return name
+
+    @classmethod
+    def name_to_region(self, name):
+        return self.unique_names[name]
+
     def __init__(self, my_name, elem_type, auto_bind = True):
-        self.name = my_name
+        self.name = self._get_unique_name(my_name)
         self.elem_type = elem_type
         self.instances = set()
+        self.partitions = set()
+        self.supersets = set()
+        self.ptrs = dict()
         if auto_bind:
             from Runtime import TaskContext, RegionBinding
             self.master = self.get_instance(TaskContext.get_processor())
-            TaskContext.add_region_bindings(RegionBinding(self, self.master, RWE))
+            TaskContext.get_current_context().add_region_bindings(RegionBinding(self, self.master, RWE))
         else:
             self.master = None
 
@@ -219,6 +266,14 @@ class Region(object):
             if self.master <> None:
                inst.store = self.master.store.copy()
             self.master = inst
+
+    def is_subset_of(self, region, transitive = True):
+        if region in self.supersets: return True
+        if not transitive:           return False
+        if region == self:           return True
+        for s in region.supersets:
+            if self.is_subset_of(s): return True
+        return False
 
     def alloc(self):
         '''helper function that simply looks up the right physical instance
@@ -266,14 +321,22 @@ class Partition(object):
     def __init__(self, region, num_subregions, color_map = None):
         self.parent_region = region
         self.child_regions = []
+        region.partitions.add(self)       
+
+        for i in range(num_subregions):
+            cr = Region(region.name + "[" + str(i) + "]", region.elem_type, auto_bind = False)
+            self.child_regions.append(cr)
+            cr.supersets.add(region)
+
         if color_map == None:
             self.color_map = dict()
         else:
             self.color_map = dict(color_map)
-        for i in range(num_subregions):
-            cr = Region(region.name + "[" + str(i) + "]", region.elem_type, auto_bind = False)
-            cr.ptrs = dict((k, v) for k, v in region.ptrs.iteritems() if (color_map.get(k) == i))
-            self.child_regions.add(cr)
+            for p, v in color_map.iteritems():
+                #print k
+                #p = Pointer.from_str(k)
+                #print k, repr(p), v
+                self.child_regions[v].ptrs[p.address] = region.ptrs[p.address]
 
     def get_subregion(self, index):
         return self.child_regions[index]
