@@ -23,7 +23,9 @@ class Runtime(object):
         newctx = TaskContext(self, None, location)
 
         for r in regions_needed:
-            # TODO: check that the requested capabilities are a subset of what we have
+            # make sure the current context has sufficient access to the region as well
+            b = TaskContext.get_region_binding(r["region"], r["mode"])
+
             newctx.add_region_bindings(RegionBinding(r["region"],
                                                      r["region"].get_instance(location),
                                                      r["mode"]))
@@ -47,7 +49,7 @@ class RegionBinding(object):
 
 
 class UnmappedRegionException(Exception):
-    def __init__(self, context, logical_region):
+    def __init__(self, context, logical_region, exact, min_access):
         self.context = context
         self.logical_region = logical_region
 
@@ -101,21 +103,23 @@ class TaskContext(object):
         self.bindings.append(*args)
 
     @classmethod
-    def get_region_binding(self, logical_region, exact = True, must_match = True):
+    def get_region_binding(self, logical_region, exact = True, must_match = True, min_access = None):
         '''returns the region binding being used for a logical region'''
         self = self.get_current_context()
 
         # try for exact matches first (not sure this matters)
         for b in self.bindings:
+            if (min_access is not None) and not(min_access.is_subset_of(b.mode)): continue
             if b.logical_region == logical_region: return b
 
         # now allow bindings of supersets of the region we want
         for b in self.bindings:
+            if (min_access is not None) and not(min_access.is_subset_of(b.mode)): continue
             if logical_region.is_subset_of(b.logical_region):
                 return RegionBinding(logical_region, b.phys_inst, b.mode)
 
         if must_match:
-            raise UnmappedRegionException(self, logical_region)
+            raise UnmappedRegionException(self, logical_region, exact, min_access)
         return None
 
 

@@ -20,6 +20,29 @@ class RegionAccessMode(object):
             s = s + "(" + self.reduction_op.func_name + ")"
         s = s + ('EASR'[self.exclusivity])
         return s
+
+    def is_subset_of(self, other):
+        # can't read or write if our parent can't
+        if self.is_reader and not other.is_reader: return False
+        if self.is_writer and not other.is_writer: return False
+
+        # a reduction (if specified) must match exactly
+        if (self.reduction_op is not None) and (self.reduction_op <> other.reduction_op): return False
+        
+        # transitive subset relations are A < E, S < E, R < S
+        if self.exclusivity == EXCL:
+            return (other.exclusivity == EXCL)
+
+        if self.exclusivity == ATOMIC:
+            return (other.exclusivity in (EXCL, ATOMIC))
+
+        if self.exclusivity == SIMULT:
+            return (other.exclusivity in (EXCL, SIMULT))
+
+        if self.exclusivity == RELAXED:
+            return (other.exclusivity in (EXCL, SIMULT, RELAXED))
+
+        raise UnreachableCode
              
 
 ROE = RegionAccessMode(True, False, None, RegionAccessMode.EXCL)
@@ -87,9 +110,19 @@ def _match_args(argspec, args, kwargs):
     return match
 
 
+class NoRegionUsageException(Exception):
+    def __init__(self, func):
+        self.func = func
+
+    def __str__(self):
+        return "Function '%s' must be decorated with @region_usage if you want to call it as a task" % (self.func.func_name);
+
+
 def get_task_regions(f, args, kwargs):
     '''combines a function's region_usage info with the actual arguments to a
        task call to determine which regions are needed by a given task instance'''
+    if not hasattr(f, "region_usage"):
+        raise NoRegionUsageException(f)
 
     match = _match_args(f.argspec, args, kwargs)
     usage = []
@@ -274,6 +307,18 @@ class Region(object):
         for s in region.supersets:
             if self.is_subset_of(s): return True
         return False
+
+    def all_supersets(self):
+        '''returns an iterator that walks through all supersets of this region, visiting each
+           region only once'''
+        seen = set()
+        todo = list(self.supersets)
+        while len(todo) > 0:
+            n = todo.pop()
+            if n not in seen:
+                seen.add(n)
+                todo.extend(n.supersets)
+                yield n
 
     def alloc(self):
         '''helper function that simply looks up the right physical instance
