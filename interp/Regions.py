@@ -334,9 +334,11 @@ class Region(object):
     def alloc(self):
         '''helper function that simply looks up the right physical instance
            in the caller's context and performs the alloc on that'''
-        from Runtime import TaskContext
-        binding = TaskContext.get_region_binding(self)
-        return binding.phys_inst.alloc()
+        # TODO: FIX THIS RIGHT - allocation can't use a parent's binding
+        #from Runtime import TaskContext
+        #binding = TaskContext.get_region_binding(self)
+        #return binding.phys_inst.alloc()
+        return self.get_instance("foo").alloc()
 
     def free(self):
         '''helper function that simply looks up the right physical instance
@@ -370,6 +372,65 @@ class Region(object):
     __getitem__ = readptr
     __setitem__ = writeptr
 
+    def __add__(self, other):
+        return RegionUnion(self, other)
+
+
+############################################################
+
+class RegionUnion(object):
+    regions = dict()
+
+    def __init__(self, *args):
+        '''creates a new region that is the union of two or more other regions'''
+        if len(args) == 0:
+            raise EmptyRegionUnionException()
+
+        self.region_list = []
+        for r in args:
+            if isinstance(r, RegionUnion):
+                self.region_list.extend(r.region_list)
+            else:
+                self.region_list.append(r)
+
+        # sort region list by region names
+        self.region_list.sort(key = lambda r: r.name)
+
+        common_ancestors = [ a for a in self.region_list[0].all_supersets() ]
+        for r in self.region_list[1:]:
+            common_ancestors = [ a for a in common_ancestors if r.is_subset_of(a) ]
+
+        self.name = "+".join(map(lambda r: r.name, self.region_list))
+	print "Union of: %s" % (self.name)
+        print "Common ancestors: " + ' '.join(map(lambda r: r.name, common_ancestors))
+        least_ancestors = [ a for a in common_ancestors if len([ a2 for a2 in common_ancestors if (a <> a2) and a2.is_subset_of(a) ]) == 0 ]
+        print "Least ancestors: " + ' '.join(map(lambda r: r.name, least_ancestors))
+
+        if len(least_ancestors) == 0:
+            raise NoCommonRegionAncestorsException(self.region_list)
+
+    def get_region(self):
+        if self.name in RegionUnion.regions:
+            r = RegionUnion.regions[self.name]
+        else:
+            r = Region(self.name, self.region_list[0].elem_type, auto_bind = False)
+            for sr in self.region_list:
+                r.ptrs.update(sr.ptrs)
+                sr.supersets.add(r)
+            RegionUnion.regions[self.name] = r
+
+        # make sure all our subregions have bindings if we want one of our own
+        from Runtime import TaskContext, RegionBinding
+        if TaskContext.get_region_binding(r, must_match = False) is None:
+            for sr in self.region_list:
+                b = TaskContext.get_region_binding(sr)
+            # TODO: use lowest-common-denominator of existing bindings
+            TaskContext.get_current_context().add_region_bindings(RegionBinding(r, r.master, RWE))
+
+        return r
+
+    def __add__(self, other):
+        return RegionUnion(self, other)
 
 ############################################################
 

@@ -47,6 +47,7 @@ class CircuitPiece(object):
     def __init__(self, r_nodes_pvt, r_nodes_shr, r_edges_pvt, r_edges_shr, r_all_nodes, r_all_edges):
         self.r_nodes_pvt = r_nodes_pvt
         self.r_nodes_shr = r_nodes_shr
+        self.r_my_nodes = (r_nodes_pvt + r_nodes_shr).get_region()
         self.r_edges_pvt = r_edges_pvt
         self.r_edges_shr = r_edges_shr
         self.r_all_nodes = r_all_nodes
@@ -54,7 +55,7 @@ class CircuitPiece(object):
         self.my_pvt_nodes = set()
         self.my_pvt_edges = set()
 
-    @region_usage(self__r_nodes_pvt = RWE, self__r_edges_pvt = RWE)
+    @region_usage(self__r_my_nodes = RWE, self__r_edges_pvt = RWE)
     def alloc_piece(self, idx, nodes, wires, part, nptrs, eptrs):
         for i, n in enumerate(nodes):
             if part[i] == idx:
@@ -162,6 +163,9 @@ def create_circuit(nodes, wires, num_pieces):
     eptrs = [ None for _ in wires ]
 
     for r in node_pvt_part.get_subregion(0).all_supersets(): print r
+
+    np0 = node_pvt_part.get_subregion(0)
+    np1 = node_pvt_part.get_subregion(1)
 
     pieces = [ CircuitPiece(node_pvt_part.get_subregion(i),
                             node_shr_part.get_subregion(i),
