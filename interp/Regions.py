@@ -30,8 +30,8 @@ class RegionAccessMode(object):
         if (self.reduction_op is not None) and (self.reduction_op <> other.reduction_op): return False
         
         # transitive subset relations are A < E, S < E, R < S
-        if self.exclusivity == EXCL:
-            return (other.exclusivity == EXCL)
+        if self.exclusivity == self.EXCL:
+            return (other.exclusivity == self.EXCL)
 
         if self.exclusivity == ATOMIC:
             return (other.exclusivity in (EXCL, ATOMIC))
@@ -212,6 +212,11 @@ class RegionInstance(object):
         addr = RegionInstance.unique_pointers.next()
         ptr = Pointer(self.region, addr)
         self.region.ptrs[addr] = self.region
+
+        # add pointer to all parents of our region as well
+        for r in self.region.all_supersets():
+            r.ptrs[addr] = self.region
+
         #self.store[addr] = None
         RegionInstance.global_store[addr] = None
         return ptr
@@ -304,8 +309,8 @@ class Region(object):
         if region in self.supersets: return True
         if not transitive:           return False
         if region == self:           return True
-        for s in region.supersets:
-            if self.is_subset_of(s): return True
+        for s in self.supersets:
+            if s.is_subset_of(region): return True
         return False
 
     def all_supersets(self):

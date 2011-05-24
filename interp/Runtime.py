@@ -24,7 +24,7 @@ class Runtime(object):
 
         for r in regions_needed:
             # make sure the current context has sufficient access to the region as well
-            b = TaskContext.get_region_binding(r["region"], r["mode"])
+            b = TaskContext.get_region_binding(r["region"], min_access = r["mode"])
 
             newctx.add_region_bindings(RegionBinding(r["region"],
                                                      r["region"].get_instance(location),
@@ -47,6 +47,9 @@ class RegionBinding(object):
         self.phys_inst = phys_inst
         self.mode = mode
 
+    def __repr__(self):
+        return "BIND(" + repr(self.logical_region) + " -> " + repr(self.phys_inst) + " : " + str(self.mode) + ")"
+
 
 class UnmappedRegionException(Exception):
     def __init__(self, context, logical_region, exact, min_access):
@@ -54,7 +57,7 @@ class UnmappedRegionException(Exception):
         self.logical_region = logical_region
 
     def __str__(self):
-        return "Region (" + str(self.logical_region) + ") unmapped in (" + str(self.context.bindings) + ")"
+        return "Region (" + str(self.logical_region) + ") unmapped in:" + (''.join(map(lambda b: "\n  " + str(b), self.context.bindings)) if len(self.context.bindings) > 0 else "NO BINDINGS")
 
 ############################################################
 
@@ -103,7 +106,7 @@ class TaskContext(object):
         self.bindings.append(*args)
 
     @classmethod
-    def get_region_binding(self, logical_region, exact = True, must_match = True, min_access = None):
+    def get_region_binding(self, logical_region, exact = False, must_match = True, min_access = None):
         '''returns the region binding being used for a logical region'''
         self = self.get_current_context()
 
@@ -113,10 +116,11 @@ class TaskContext(object):
             if b.logical_region == logical_region: return b
 
         # now allow bindings of supersets of the region we want
-        for b in self.bindings:
-            if (min_access is not None) and not(min_access.is_subset_of(b.mode)): continue
-            if logical_region.is_subset_of(b.logical_region):
-                return RegionBinding(logical_region, b.phys_inst, b.mode)
+        if not exact:
+            for b in self.bindings:
+                if (min_access is not None) and not(min_access.is_subset_of(b.mode)): continue
+                if logical_region.is_subset_of(b.logical_region):
+                    return RegionBinding(logical_region, b.phys_inst, b.mode)
 
         if must_match:
             raise UnmappedRegionException(self, logical_region, exact, min_access)
