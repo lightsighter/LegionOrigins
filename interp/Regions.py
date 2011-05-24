@@ -124,6 +124,12 @@ def get_task_regions(f, args, kwargs):
     if not hasattr(f, "region_usage"):
         raise NoRegionUsageException(f)
 
+    # if the "function" is actually a bound method, pull out the 'self' value and 
+    #   prepend it to the arg list
+    if hasattr(f, "im_self") and (f.im_self is not None):
+        print type(args)
+        args = [ f.im_self ] + list(args)
+
     match = _match_args(f.argspec, args, kwargs)
     usage = []
     for (rn, rv) in f.region_usage.iteritems():

@@ -54,6 +54,63 @@ class CircuitPiece(object):
         self.my_pvt_nodes = set()
         self.my_pvt_edges = set()
 
+    @region_usage(self__r_nodes_pvt = RWE, self__r_edges_pvt = RWE)
+    def alloc_piece(self, idx, nodes, wires, part, nptrs, eptrs):
+        for i, n in enumerate(nodes):
+            if part[i] == idx:
+                np = self.r_nodes_pvt.alloc()
+                self.my_pvt_nodes.add(np)
+                nptrs[i] = np
+
+        for i, (n_from, n_to, res) in enumerate(wires):
+            if part[n_from] == idx:
+                ep = self.r_edges_pvt.alloc()
+                self.my_pvt_edges.add(ep)
+                eptrs[i] = ep
+
+    @region_usage(self__r_nodes_pvt = RWE, self__r_edges_pvt = RWE)
+    def link_piece(self, idx, nodes, wires, part, nptrs, eptrs):
+        for ni, (i_src, cap) in enumerate(nodes):
+            if part[ni] == idx:
+                n = CircuitNode(ni, i_src, cap)
+                for wi, (n_from, n_to, res) in enumerate(wires):
+                    if ni in (n_from, n_to):
+                        n.wires.add(eptrs[wi])
+            
+                self.r_nodes_pvt[nptrs[ni]] = n
+
+        for wi, (n_from, n_to, res) in enumerate(wires):
+            if part[n_from] == idx:
+                w = CircuitWire(wi, nptrs[n_from], nptrs[n_to], res)
+                self.r_edges_pvt[eptrs[wi]] = w
+
+    @region_usage(self__r_all_nodes = ROE, self__r_edges_pvt = RWE)
+    def update_current(self):
+        for wp in self.my_pvt_edges:
+            w = self.r_edges_pvt[wp]
+            w.current = (self.r_all_nodes[w.n_from].voltage - self.r_all_nodes[w.n_to].voltage) / w.res
+            self.r_edges_pvt[wp] = w
+            print "I(%d) = %f" % (w.idx, w.current)
+
+    @region_usage(self__r_nodes_pvt = RWE, self__r_all_edges = ROE)
+    def update_voltage(self, dt):
+        max_dv = 0
+        for np in self.my_pvt_nodes:
+            n = self.r_nodes_pvt[np]
+            i_total = n.i_src
+            for wp in n.wires:
+                w = self.r_all_edges[wp]
+                i_total = i_total + (w.current * (1 if w.n_to == np else -1))
+            # TODO: make this a reduction
+            dv = (dt * i_total / n.cap)
+            n.voltage = n.voltage + dv
+            self.r_nodes_pvt[np] = n
+            print "V(%d) + %f = %f" % (n.idx, dv, n.voltage)
+            if dv > max_dv: max_dv = dv
+        print "MAX = %f" % max_dv
+        return max_dv
+
+
 class CircuitNode(object):
     def __init__(self, idx, i_src, cap):
         self.idx = idx
@@ -113,86 +170,41 @@ def create_circuit(nodes, wires, num_pieces):
                             all_nodes, all_edges)
                for i in range(num_pieces) ]
 
-    waitall([ TaskContext.get_runtime().run_task(alloc_piece, i, p, nodes, wires, part, nptrs, eptrs)
+    waitall([ TaskContext.get_runtime().run_task(p.alloc_piece, i, nodes, wires, part, nptrs, eptrs)
               for i, p in enumerate(pieces) ])
 
     # now link up all the pointers
-    waitall([ TaskContext.get_runtime().run_task(link_piece, i, p, nodes, wires, part, nptrs, eptrs)
+    waitall([ TaskContext.get_runtime().run_task(p.link_piece, i, nodes, wires, part, nptrs, eptrs)
               for i, p in enumerate(pieces) ])
 
     return pieces
 
 
-@region_usage(piece__r_nodes_pvt = RWE, piece__r_edges_pvt = RWE)
-def alloc_piece(idx, piece, nodes, wires, part, nptrs, eptrs):
-    for i, n in enumerate(nodes):
-        if part[i] == idx:
-            np = piece.r_nodes_pvt.alloc()
-            piece.my_pvt_nodes.add(np)
-            nptrs[i] = np
-
-    for i, (n_from, n_to, res) in enumerate(wires):
-        if part[n_from] == idx:
-            ep = piece.r_edges_pvt.alloc()
-            piece.my_pvt_edges.add(ep)
-            eptrs[i] = ep
-
-
-@region_usage(piece__r_nodes_pvt = RWE, piece__r_edges_pvt = RWE)
-def link_piece(idx, piece, nodes, wires, part, nptrs, eptrs):
-    for ni, (i_src, cap) in enumerate(nodes):
-        if part[ni] == idx:
-            n = CircuitNode(ni, i_src, cap)
-            for wi, (n_from, n_to, res) in enumerate(wires):
-                if ni in (n_from, n_to):
-                    n.wires.add(eptrs[wi])
-            
-            piece.r_nodes_pvt[nptrs[ni]] = n
-
-    for wi, (n_from, n_to, res) in enumerate(wires):
-        if part[n_from] == idx:
-            w = CircuitWire(wi, nptrs[n_from], nptrs[n_to], res)
-            piece.r_edges_pvt[eptrs[wi]] = w
-
-                            
-@region_usage(piece__r_all_nodes = ROE, piece__r_edges_pvt = RWE)
-def update_current(piece):
-    for wp in piece.my_pvt_edges:
-        w = piece.r_edges_pvt[wp]
-        w.current = (piece.r_all_nodes[w.n_from].voltage - piece.r_all_nodes[w.n_to].voltage) / w.res
-        piece.r_edges_pvt[wp] = w
-        print "I(%d) = %f" % (w.idx, w.current)
-
-
-@region_usage(piece__r_nodes_pvt = RWE, piece__r_all_edges = ROE)
-def update_voltage(piece, dt):
-    max_dv = 0
-    for np in piece.my_pvt_nodes:
-        n = piece.r_nodes_pvt[np]
-        i_total = n.i_src
-        for wp in n.wires:
-            w = piece.r_all_edges[wp]
-            i_total = i_total + (w.current * (1 if w.n_to == np else -1))
-        # TODO: make this a reduction
-        dv = (dt * i_total / n.cap)
-        n.voltage = n.voltage + dv
-        piece.r_nodes_pvt[np] = n
-        print "V(%d) + %f = %f" % (n.idx, dv, n.voltage)
-        if dv > max_dv: max_dv = dv
-    print "MAX = %f" % max_dv
-    return max_dv
-
-def main(num_pieces = 2):
-    # nodes is an array of (i_src, cap) tuples
-    nodes = [ (1, 1), (0, 1), (0, 1), (-1, 1) ]
-    # wires is an array of (n_from, n_to, res) tuples
-    wires = [ (0, 1, 1), (1, 3, 1), (0, 2, 1), (2, 1, 1) ]
+def main(num_pieces = 2, circuit_name = "xkcd", max_steps = 1000, min_change = 1e-4):
+    if circuit_name == "xkcd":
+        nodes = []
+        wires = []
+        n = 15
+        for x in range(n):
+            for y in range(n):
+                nodes.append( (1 if (x,y) == (n/2, n/2-1) else
+                               -1 if (x,y) == (n/2+1, n/2+1) else 0,
+                               1) )
+                i = x*n + y
+                if x > 0: wires.append( (i - n, i, 1) )
+                if y > 0: wires.append( (i - 1, i, 1) )
+    else:
+       # nodes is an array of (i_src, cap) tuples
+       nodes = [ (1, 1), (0, 1), (0, 1), (-1, 1) ]
+       # wires is an array of (n_from, n_to, res) tuples
+       wires = [ (0, 1, 1), (1, 3, 1), (0, 2, 1), (2, 1, 1) ]
 
     pieces = create_circuit(nodes, wires, num_pieces)
 
-    for _ in range(500):
-        waitall([ TaskContext.get_runtime().run_task(update_current, p) for p in pieces])
+    for i in range(max_steps):
+        waitall([ TaskContext.get_runtime().run_task(p.update_current) for p in pieces])
 
-        max_dv = max(*waitall([ TaskContext.get_runtime().run_task(update_voltage, p, 0.1) for p in pieces]))
+        max_dv = max(*waitall([ TaskContext.get_runtime().run_task(p.update_voltage, 0.1) for p in pieces]))
         print str(max_dv)
-        print "OVERALL MAX = %f" % max_dv
+        print "%d: OVERALL MAX = %f" % (i, max_dv)
+        if max_dv < min_change: break

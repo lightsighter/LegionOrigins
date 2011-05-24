@@ -38,7 +38,8 @@ for cmd in cmds:
     srcmod = __import__(srcfile)
 
     # any argument that looks like a number is converted to a number
-    args = map(lambda x: int(x) if re.match(r'-?\d+', x) else x, args)
+    args = map(lambda x: (int(x) if re.match(r'^-?\d+$', x) else
+                          float(x) if re.match(r'^-?\d+\.\d*(e-?\d+)?$', x) else x), args)
 
     if verbose: print srcfile + ": running main function from " + srcmod.__file__ + " with args: " + str(args)
 
