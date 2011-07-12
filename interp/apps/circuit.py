@@ -1,6 +1,8 @@
 # Mesh Region Example
 
 import random
+import itertools
+
 from Regions import *
 from Runtime import TaskContext
 
@@ -48,66 +50,96 @@ class CircuitPiece(object):
         self.r_nodes_pvt = r_nodes_pvt
         self.r_nodes_shr = r_nodes_shr
         self.r_my_nodes = (r_nodes_pvt + r_nodes_shr).get_region()
+        self.r_all_nodes = r_all_nodes
+
         self.r_edges_pvt = r_edges_pvt
         self.r_edges_shr = r_edges_shr
-        self.r_all_nodes = r_all_nodes
+        self.r_my_edges = (r_edges_pvt + r_edges_shr).get_region()
         self.r_all_edges = r_all_edges
+
         self.my_pvt_nodes = set()
         self.my_pvt_edges = set()
+        self.my_shr_nodes = set()
+        self.my_shr_edges = set()
 
     @region_usage(self__r_my_nodes = RWE, self__r_edges_pvt = RWE)
     def alloc_piece(self, idx, nodes, wires, part, nptrs, eptrs):
         for i, n in enumerate(nodes):
             if part[i] == idx:
-                np = self.r_nodes_pvt.alloc()
-                self.my_pvt_nodes.add(np)
+                # a node is private if all edges belong to us (i.e. come from a node we also own)
+                if all(itertools.imap(lambda w: part[w[0]] == idx, wires)):
+                    np = self.r_nodes_pvt.alloc()
+                    self.my_pvt_nodes.add(np)
+                else:
+                    np = self.r_nodes_shr.alloc()
+                    self.my_shr_nodes.add(np)
                 nptrs[i] = np
 
         for i, (n_from, n_to, res) in enumerate(wires):
             if part[n_from] == idx:
-                ep = self.r_edges_pvt.alloc()
-                self.my_pvt_edges.add(ep)
+                # if the destination of the edge is also owned by us, then the wire is private
+                if part[n_to] == idx:
+                    ep = self.r_edges_pvt.alloc()
+                    self.my_pvt_edges.add(ep)
+                else:
+                    ep = self.r_edges_shr.alloc()
+                    self.my_shr_edges.add(ep)
                 eptrs[i] = ep
 
-    @region_usage(self__r_nodes_pvt = RWE, self__r_edges_pvt = RWE)
+    @region_usage(self__r_my_nodes = RWE, self__r_my_edges = RWE)
     def link_piece(self, idx, nodes, wires, part, nptrs, eptrs):
+        # as we're linking the pieces, make colorings for all the nodes (and edges) we'll read
+        # (i.e. our private, our shared, other people's shared that are our ghost cells)
+        cmap_read_nodes = dict()
+        cmap_read_edges = dict()
+
         for ni, (i_src, cap) in enumerate(nodes):
             if part[ni] == idx:
                 n = CircuitNode(ni, i_src, cap)
                 for wi, (n_from, n_to, res) in enumerate(wires):
                     if ni in (n_from, n_to):
                         n.wires.add(eptrs[wi])
+                        cmap_read_edges[eptrs[wi]] = 0
             
-                self.r_nodes_pvt[nptrs[ni]] = n
+                self.r_my_nodes[nptrs[ni]] = n
 
         for wi, (n_from, n_to, res) in enumerate(wires):
             if part[n_from] == idx:
                 w = CircuitWire(wi, nptrs[n_from], nptrs[n_to], res)
-                self.r_edges_pvt[eptrs[wi]] = w
+                self.r_my_edges[eptrs[wi]] = w
+                cmap_read_nodes[nptrs[n_from]] = 0
+                cmap_read_nodes[nptrs[n_to]] = 0
 
-    @region_usage(self__r_all_nodes = ROE, self__r_edges_pvt = RWE)
+        self.r_read_nodes = Partition(self.r_all_nodes, 1, cmap_read_nodes).get_subregion(0)
+        self.r_read_edges = Partition(self.r_all_edges, 1, cmap_read_edges).get_subregion(0)
+
+    @region_usage(self__r_read_nodes = ROE, self__r_my_edges = RWE)
     def update_current(self):
-        for wp in self.my_pvt_edges:
-            w = self.r_edges_pvt[wp]
-            w.current = (self.r_all_nodes[w.n_from].voltage - self.r_all_nodes[w.n_to].voltage) / w.res
-            self.r_edges_pvt[wp] = w
-            print "I(%d) = %f" % (w.idx, w.current)
+        # do shared first, then private
+        for ws in (self.my_shr_edges, self.my_pvt_edges):
+            for wp in ws:
+                w = self.r_my_edges[wp]
+                w.current = (self.r_read_nodes[w.n_from].voltage - self.r_read_nodes[w.n_to].voltage) / w.res
+                self.r_my_edges[wp] = w
+                print "I(%d) = %f" % (w.idx, w.current)
 
-    @region_usage(self__r_nodes_pvt = RWE, self__r_all_edges = ROE)
+    @region_usage(self__r_my_nodes = RWE, self__r_read_edges = ROE)
     def update_voltage(self, dt):
         max_dv = 0
-        for np in self.my_pvt_nodes:
-            n = self.r_nodes_pvt[np]
-            i_total = n.i_src
-            for wp in n.wires:
-                w = self.r_all_edges[wp]
-                i_total = i_total + (w.current * (1 if w.n_to == np else -1))
-            # TODO: make this a reduction
-            dv = (dt * i_total / n.cap)
-            n.voltage = n.voltage + dv
-            self.r_nodes_pvt[np] = n
-            print "V(%d) + %f = %f" % (n.idx, dv, n.voltage)
-            if dv > max_dv: max_dv = dv
+        # do shared first, then private
+        for ns in (self.my_shr_nodes, self.my_pvt_nodes):
+            for np in ns:
+                n = self.r_my_nodes[np]
+                i_total = n.i_src
+                for wp in n.wires:
+                    w = self.r_read_edges[wp]
+                    i_total = i_total + (w.current * (1 if w.n_to == np else -1))
+                # TODO: make this a reduction
+                dv = (dt * i_total / n.cap)
+                n.voltage = n.voltage + dv
+                self.r_my_nodes[np] = n
+                print "V(%d) + %f = %f" % (n.idx, dv, n.voltage)
+                if dv > max_dv: max_dv = dv
         print "MAX = %f" % max_dv
         return max_dv
 
