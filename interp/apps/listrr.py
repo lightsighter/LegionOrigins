@@ -1,14 +1,45 @@
 from Runtime import Runtime, TaskContext
 from Regions import *
 
+'''These aren't required for the python version, but here are the explicit 
+   types of ListElem and ListRR in a C++-like syntax:
+
+   template <region R>
+   struct ListElem {
+     int           value;
+     ListElem<R>@R next;  // we use @(region) instead of * for pointers, so
+                          // the type of the 'next' field is a pointer that
+                          // points into region R (i.e. our template parameter)
+                          // and points at an element whose type is ListElem<R>
+                          // (i.e. same type as us)
+   }
+
+   struct ListRR {        // ListRR is _not_ parameterized on a region...
+     Region of ListElem<rlist> rlist;  // ... instead, any place in a field's
+                                       // type that needs a region can use the
+                                       // name of one of the fields of the same
+                                       // structure (or possibly other regions
+                                       // that are in scope)...
+     ListElem<rlist>@rlist     head;
+     int                       length;
+   }
+
+   // ... and then when you have an instance of the type, the types of its
+   // fields refer to its own field contents:
+   //
+   //              |- foo : ListRR
+   // ------------------------------------------------
+   //   |- foo.rlist : Region of ListElem<foo.rlist>
+   //   |- foo.head  : ListElem<foo.rlist>@foo.rlist
+   ''' 
 class ListElem(object):
     def __init__(self, value, next = None):
         self.value = value
         self.next = next
 
 class ListRR(object):
-    def __init__(self, region, head = None, length = 0):
-        self.region = region
+    def __init__(self, rlist, head = None, length = 0):
+        self.rlist = rlist
         self.head = head
         self.length = length
 
@@ -16,8 +47,8 @@ class ListRR(object):
         ptr = self.head
         for v in reversed(args):
             newval = ListElem(v, ptr)
-            ptr = self.region.alloc()
-            self.region[ptr] = newval
+            ptr = self.rlist.alloc()
+            self.rlist[ptr] = newval
             self.length = self.length + 1
         self.head = ptr
 
@@ -31,9 +62,9 @@ class ListRR(object):
             for i in range(piece_length):
                 if node is None: break
                 coloring[node] = idx
-                node = self.region[node].next
+                node = self.rlist[node].next
 
-        partition = Partition(self.region, num_pieces, coloring)
+        partition = Partition(self.rlist, num_pieces, coloring)
 
         sublists = []
         for idx in range(num_pieces):
@@ -46,7 +77,7 @@ class ListRR(object):
         sum = 0
         nodeptr = self.head
         for i in range(self.length):
-             nodeval = self.region[nodeptr]
+             nodeval = self.rlist[nodeptr]
              sum = sum + nodeval.value
              nodeptr = nodeval.next
         return sum
@@ -76,9 +107,9 @@ def main(size = 400, num_pieces = 10):
     print "sum is %d" % total
 
 
-# this subtask requires the region that is passed in via 'sublist.region' to be
+# this subtask requires the region that is passed in via 'sublist.rlist' to be
 #   readable
-@region_usage(sublist__region = ROE)
+@region_usage(sublist__rlist = ROE)
 def subtask(sublist):
     # just walk the list and return the sum of the elements
     return sublist.sum_list()
