@@ -402,7 +402,7 @@ def clear_particles(private_region, shared_region):
     clear_region(shared_region)
 
 # Scatter with reduction
-@region_usage(source_private_region = ROR, source_shared_region = ROR, target_private_region = RWE, target_shared_region =RdA(reduce_particles)) 
+@region_usage(source_private_region = ROE, source_shared_region = ROS, target_private_region = RWE, target_shared_region =RdA(reduce_particles)) 
 def rebuild_grid(source_private_region, source_shared_region, target_private_region, target_shared_region):
     def rebuild_region(region):
         # Move all the particles from the source regions to the target regions
