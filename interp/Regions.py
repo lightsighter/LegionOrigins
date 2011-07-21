@@ -27,20 +27,20 @@ class RegionAccessMode(object):
         if self.is_writer and not other.is_writer: return False
 
         # a reduction (if specified) must match exactly
-        if (self.reduction_op is not None) and (self.reduction_op <> other.reduction_op): return False
+        if (other.reduction_op is not None) and (self.reduction_op <> other.reduction_op): return False
         
         # transitive subset relations are A < E, S < E, R < S
         if self.exclusivity == self.EXCL:
             return (other.exclusivity == self.EXCL)
 
-        if self.exclusivity == ATOMIC:
-            return (other.exclusivity in (EXCL, ATOMIC))
+        if self.exclusivity == self.ATOMIC:
+            return (other.exclusivity in (self.EXCL, self.ATOMIC))
 
-        if self.exclusivity == SIMULT:
-            return (other.exclusivity in (EXCL, SIMULT))
+        if self.exclusivity == self.SIMULT:
+            return (other.exclusivity in (self.EXCL, self.SIMULT))
 
-        if self.exclusivity == RELAXED:
-            return (other.exclusivity in (EXCL, SIMULT, RELAXED))
+        if self.exclusivity == self.RELAXED:
+            return (other.exclusivity in (self.EXCL, self.SIMULT, self.RELAXED))
 
         raise UnreachableCode
              
@@ -366,7 +366,7 @@ class Region(object):
            in the caller's context and performs the reduction on that'''
         from Runtime import TaskContext
         binding = TaskContext.get_region_binding(self)
-        binding.phys_inst.reduceptr(ptr, redval, binding.reduce_op)
+        binding.phys_inst.reduceptr(ptr, redval, binding.mode.reduction_op)
 
     '''for even more helperness, make region[ptr] syntax work for reads and writes'''
     __getitem__ = readptr

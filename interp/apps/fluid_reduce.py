@@ -186,12 +186,12 @@ def update_particles(cell, private_region, shared_region):
                 break
         else: 
             # That didn't work, so now try to put it into one of the shared cells
-            for addr,reg, in shared_region.ptrs.iteritem():
+            for addr,reg, in shared_region.ptrs.iteritems():
                 ptr = Pointer(shared_region,addr)
                 target = shared_region[ptr]
                 if target.match(ci,cj,ck):
                     # Perform a reduction into the cell
-                    target.reduceptr(ptr,UpdateReduction(cell,index)) 
+                    shared_region.reduceptr(ptr,UpdateReduction(cell,index)) 
                     break
             else:
                 # If we make it here, that is an error
@@ -203,7 +203,7 @@ def update_particles(cell, private_region, shared_region):
 
 def reduce_particles(target, reduce_object):
     # Unpack the reduction argument and perform the reduction
-    copy_particles(reduce_obj.cell,reduce_obj.index,target)
+    copy_particle(reduce_object.cell,reduce_object.index,target)
 
 def reduce_densities(target, reduce_object): 
     target.density[reduce_object.np] += reduce_object.tc
@@ -410,7 +410,7 @@ def rebuild_grid(source_private_region, source_shared_region, target_private_reg
             # Get the cell being referenced
             ptr = Pointer(region,addr)
             cell = region[ptr]
-            update_particles(cell,target_private_region,target_shared_region,grid)
+            update_particles(cell,target_private_region,target_shared_region)
     rebuild_region(source_private_region)
     rebuild_region(source_shared_region)
        

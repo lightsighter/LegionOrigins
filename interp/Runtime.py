@@ -72,6 +72,11 @@ class TaskContext(object):
         self.bindings = bindings if bindings is not None else []
         pass
 
+    def __str__(self):
+        return "[Ctx: %s @ %s (%s)]" % (self.task,
+                                        self.processor,
+                                        ",".join(map(str, self.bindings)))
+
     @classmethod
     def get_current_context(self): return TaskContext.thread_local_storage.context
 
