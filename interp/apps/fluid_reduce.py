@@ -46,14 +46,12 @@ grids = dict()
 # Major class definitions
 ##################################################################
 class Cell(object):
-    def __init__(self, idx_x, idx_y, idx_z, max_parts = 16, ghost = False):
+    def __init__(self, idx_x, idx_y, idx_z, max_parts = 16):
         self.x = idx_x
         self.y = idx_y
         self.z = idx_z
         self.num_particles = 0
 	self.max_particles = max_parts
-        self.ghost = ghost
-        self.ghosts = list()
         # Fake arrays with dictionaries mapping integers to elements
         self.p = dict()
         self.hv = dict()
@@ -66,11 +64,6 @@ class Cell(object):
             self.v[i] = Vec3(0.0,0.0,0.0)
             self.a[i] = Vec3(0.0,0.0,0.0)
             self.a[i] = 0.0 
-
-    def create_ghost(self):
-        ghost_cell = Cell(self.x,self.y,self.z,self.max_particles,True)
-        self.ghosts.append(ghost_cell)
-        return ghost_cell 
 
     def match(self,ix,iy,iz):
         if ((self.x == ix) and (self.y == iy) and (self.z == iz)):
@@ -186,7 +179,7 @@ def update_particles(cell, private_region, shared_region):
                 break
         else: 
             # That didn't work, so now try to put it into one of the shared cells
-            for addr,reg, in shared_region.ptrs.iteritems():
+            for addr,reg in shared_region.ptrs.iteritems():
                 ptr = Pointer(shared_region,addr)
                 target = shared_region[ptr]
                 if target.match(ci,cj,ck):
@@ -204,12 +197,15 @@ def update_particles(cell, private_region, shared_region):
 def reduce_particles(target, reduce_object):
     # Unpack the reduction argument and perform the reduction
     copy_particle(reduce_object.cell,reduce_object.index,target)
+    return target
 
 def reduce_densities(target, reduce_object): 
     target.density[reduce_object.np] += reduce_object.tc
+    return target
 
 def reduce_forces(target, reduce_object):
     target.acc[reduce_object.np] += reduce_object.acc 
+    return target
 
 ##################################################################################
 # File I/O
@@ -429,7 +425,7 @@ def init_densities_and_forces(private_region, shared_region):
 
 # Scatter
 @region_usage(private_region = RWE, shared_region = RdA(reduce_densities))
-def compute_densities(private_region, shared_region, ghost_region):
+def compute_densities(private_region, shared_region, grid):
     def find_neighbor(ix,iy,iz):
         for addr,reg in private_region.ptrs.iteritems():
             ptr = Pointer(private_region,addr)
@@ -441,12 +437,15 @@ def compute_densities(private_region, shared_region, ghost_region):
             cell = shared_region[ptr]
             if (cell.match(ix,iy,iz)):
                return (cell,ptr,True)
-        raise Exception("Compute Densities find exception!")
+        raise Exception("Compute Densities find exception! Cannot find ("+str(ix)+","+str(iy)+","+str(iz)+")")
             
     def compute(region,cell_shared):
         for addr,reg in region.ptrs.iteritems():
             ptr = Pointer(region,addr)
             cell = region[ptr]
+            # Only do this cell if we own it
+            if cell_shared and not grid.contains(cell.x,cell.y,cell.z):
+                continue
             # Find the neighbor cells
             for dx in range(-1,1,1):
                 for dy in range(-1,1,1):
@@ -499,7 +498,7 @@ def compute_densities2(private_region, shared_region):
 
 # Scatter
 @region_usage(private_region = RWE, shared_region = RdA(reduce_forces))
-def compute_forces(private_region, shared_region):
+def compute_forces(private_region, shared_region, grid):
     def find_neighbor(ix,iy,iz):
         for addr,reg in private_region.ptrs.iteritems():
             ptr = Pointer(private_region,addr)
@@ -517,6 +516,9 @@ def compute_forces(private_region, shared_region):
         for addr,reg in region.ptrs.iteritems():
             ptr = Pointer(region,addr)
             cell = region[ptr]
+            # Only compute on this cell if we own it
+            if shared_cell and not grid.contains(cell.x,cell.y,cell.z):
+                continue 
             # Find the neighbor cells
             for dx in range(-1,1,1):
                 for dy in range(-1,1,1):
@@ -636,28 +638,28 @@ def main(threadnum = 8, file_name="apps/in_5K.fluid"):
               for i in range(XDIVS*ZDIVS)])
 
     # Initialize Densities and Forces
-    #waitall([ TaskContext.get_runtime().run_task(init_densities_and_forces,target_private_prts.get_subregion(i),
-    #          target_shared_prts.get_subregion(i))
-    #          for i in range(XDIVS*ZDIVS)])
+    waitall([ TaskContext.get_runtime().run_task(init_densities_and_forces,target_private_prts.get_subregion(i),
+              target_shared_prts.get_subregion(i))
+              for i in range(XDIVS*ZDIVS)])
 
     # Compute Densities
-    #waitall([ TaskContext.get_runtime().run_task(compute_densities,target_private_prts.get_subregion(i),
-    #          target_prts.get_subregion(1))
-    #          for i in range(XDIVS*ZDIVS)])
+    waitall([ TaskContext.get_runtime().run_task(compute_densities,target_private_prts.get_subregion(i),
+              target_prts.get_subregion(1), grids[i])
+              for i in range(XDIVS*ZDIVS)])
 
     # Compute Densities 2
-    #waitall([ TaskContext.get_runtime().run_task(compute_densities2,target_private_prts.get_subregion(i),
-    #          target_shared_prts.get_subregion(i))
-    #          for i in range(XDIVS*ZDIVS) ])
+    waitall([ TaskContext.get_runtime().run_task(compute_densities2,target_private_prts.get_subregion(i),
+              target_shared_prts.get_subregion(i))
+              for i in range(XDIVS*ZDIVS) ])
 
     # Compute Forces
-    #waitall([ TaskContext.get_runtime().run_task(compute_forces,target_private_prts.get_subregion(i),
-    #          target_prts.get_subregion(1)) 
-    #          for i in range(XDIVS*ZDIVS)])
+    waitall([ TaskContext.get_runtime().run_task(compute_forces,target_private_prts.get_subregion(i),
+              target_prts.get_subregion(1), grids[i]) 
+              for i in range(XDIVS*ZDIVS)])
 
     # Process Collisions and Advance Particles
-    #waitall([ TaskContext.get_runtime().run_task(process_collisions_and_advance_particles,
-    #          target_private_prts.get_subregion(i), target_shared_prts.get_subregion(i))
-    #          for i in range(XDIVS*ZDIVS)])
+    waitall([ TaskContext.get_runtime().run_task(process_collisions_and_advance_particles,
+              target_private_prts.get_subregion(i), target_shared_prts.get_subregion(i))
+              for i in range(XDIVS*ZDIVS)])
 
     print "SUCCESS!"
