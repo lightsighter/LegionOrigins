@@ -1,0 +1,407 @@
+
+\documentclass{article}
+
+\usepackage[cmex10]{amsmath}
+\usepackage{listings}
+
+\newcommand{\infrule}[2]{\displaystyle\frac{\displaystyle\strut{#1}}{\displaystyle\strut {#2}}}
+\newcommand{\cinfrule}[3]{\parbox{14cm}{\hfil$\infrule{#1}{#2}$\hfil}\parbox{4cm}{$\,#3$\hfil}}
+
+\begin{document}
+
+\begin{table*}
+\centering
+{\small
+\begin{tabular}{ccc}
+$program$ & ::= & $fn^*$ \\
+$fn$ & ::= & $f(x_1, \ldots, x_n)$ $s$ \\
+\end{tabular}
+}
+\caption{Program and Functions}
+\end{table*}
+
+
+\begin{table*}
+\centering
+{\small
+\begin{tabular}{cc}
+%
+% Statement composition
+%
+\begin{math}
+\infrule{
+\begin{array}{lc}
+	\vdash s_1 : T_1 / C_1 \\
+	\vdash s_2 : T_2 / C_2 
+\end{array}
+}
+{
+	\vdash s_1; s_2 : T_2 / (C_1 \wedge C_2)
+}
+\end{math} 
+&\raisebox{-0.2in}{[{\tt Composition}]} \\
+
+%
+% Conditional statement
+%
+\begin{math}
+\infrule{
+\begin{array}{lc}
+	\vdash x : Int / C_1 \\
+	\vdash s_1 : T / C_2 \\
+	\vdash s_2 : T / C_3
+\end{array}
+}
+{
+	\vdash if\mbox{ }x\mbox{ }s_1\mbox{ }s_2:T / (C_1 \wedge C_2 \wedge C_3)
+}
+\end{math}
+&\raisebox{-0.2in}{[{\tt Conditional}]} \\
+%
+% While Statement
+%
+\begin{math}
+\infrule{
+\begin{array}{lc}
+	\vdash x : Int / C_1 \\
+	\vdash s : T / C_2
+\end{array}
+}
+{
+	\vdash while\mbox{ }x\mbox{ }s : T / (C_1 \wedge C_2) 
+}
+\end{math}
+&\raisebox{-0.2in}{[{\tt While}]} \\
+%
+% Assignment statement
+%
+\begin{math}
+\infrule
+{
+\begin{array}{lc}
+	\vdash e_1 : T / C_1 \\
+	\vdash e_2 : T / C_2
+\end{array}
+}
+{
+	\vdash e_1=e_2: T / C_1 \wedge C_2
+}
+\end{math}
+&\raisebox{-0.2in}{[{\tt Assignment}]} \\
+\end{tabular}
+}
+\caption{Statements}
+\end{table*}
+
+\begin{table*}
+\centering
+{\small
+\begin{tabular}{cc}
+
+%
+% Variables
+%
+\begin{math}
+\infrule
+{
+}
+{
+	\vdash x:T / C
+}
+\end{math} 
+&\raisebox{-0.2in}{[{\tt Variable}]} \\
+
+%
+% Integers
+%
+\begin{math}
+\infrule
+{
+}
+{
+	\vdash i : Int / \top
+}
+\end{math} 
+&\raisebox{-0.2in}{[{\tt Integer Literal}]} \\
+
+%
+% Tuples
+%
+\begin{math}
+\infrule
+{
+\begin{array}{lc}
+	\vdash e_1 : T_1 / C_1 \\
+	\ldots \\
+	\vdash e_n : T_n / C_n
+\end{array}
+}
+{
+	\vdash \langle e_1, \ldots, e_n \rangle : \langle t_1, \ldots, t_n \rangle / (C_1 \wedge \ldots \wedge C_n)
+}
+\end{math}
+&\raisebox{-0.2in}{[{\tt Tuple}]}  \\
+
+%
+% Field Access
+%
+\begin{math}
+\infrule
+{
+\begin{array}{lc}
+	\vdash e : T_1 / C_1 \\
+	\vdash x \in T_1 \\
+	\vdash x : T_2 / C_2
+\end{array}
+}
+{
+	\vdash e.x : T_2 / (C_1 \wedge C_2)
+}
+\end{math} 
+&\raisebox{-0.2in}{[{\tt Field Access}]} \\
+
+%
+% Lambda
+%
+\begin{math}
+\infrule
+{
+\begin{array}{lc}
+	\vdash x:T_1 / C_1 \\
+	\vdash e[X\rightarrow x] : T_2 / C_2
+\end{array}
+}
+{
+	\vdash \lambda x.e : T_1 \rightarrow T_2 / (C_1 \wedge C_2)
+}
+\end{math}
+&\raisebox{-0.2in}{[{\tt Lambda}]} \\
+
+%
+% Function application
+%
+\begin{math}
+\infrule
+{
+\begin{array}{lc}
+	\vdash e_1 : T_1 \rightarrow T_2 / C_1 \\
+	\vdash e_2 : T_1 / C_2
+\end{array}
+}
+{
+	\vdash e_1 e_2 : T_2 / (C_1 \wedge C_2)
+}
+\end{math}
+&\raisebox{-0.2in}{[{\tt Function Application}]} \\ 
+
+%
+% Pack
+%
+\begin{math}
+\infrule
+{
+\begin{array}{lc}
+	\vdash r : Region(r,T_1) / C_1 \\
+	\vdash e : [R/r]T_2 / C_2
+\end{array}
+}
+{
+	\vdash \{r,e\}\mbox{ }as\mbox{ }\{\exists r,T_2/ C_2\} : \exists r.T_2 / (C_1 \wedge C_2) = RR
+}
+\end{math}
+&\raisebox{-0.2in}{[{\tt Pack}]} \\
+
+%
+% Unpack
+%
+\begin{math}
+\infrule
+{
+\begin{array}{lc}
+	\vdash e_1 : \exists r.T_1 / C_1 = RR \\
+	r, x:T_1 \vdash e_2 : T_2 / C_2
+\end{array}
+}
+{
+	\vdash let\mbox{ }\{r,x\} = e_1\mbox{ }in\mbox{ }e_2 : T_2 / (C_1 \wedge C_2)
+}
+\end{math}
+&\raisebox{-0.2in}{[{\tt Unpack}]}
+
+\end{tabular}
+}
+\caption{Expressions}
+\end{table*}
+
+%%%%%%%%%%%%%%%%%
+% Operations on Region Elements
+%%%%%%%%%%%%%%%%%
+\begin{table*}
+\centering
+{\small
+\begin{tabular}{cc}
+%
+% Read Region
+% 
+\begin{math}
+read : \forall T,r. \langle Region(r,T), T@r \rangle \rightarrow T / readable(r)
+\end{math} & [{\tt Read Pointer}] \\
+
+%
+% Write Region
+%
+\begin{math}
+write : \forall T,r. \langle Region(r,T), T@r, T \rangle \rightarrow () / writeable(r)
+\end{math} & [{\tt Write Pointer}] \\
+
+%
+% Reduce Region
+%
+\begin{math}
+reduce : \forall T,r. \big( \forall f:(T \rightarrow T \rightarrow T).  \langle Region(r,T), T@r, f, T \rangle \rightarrow () / reduceable(r,f) \big)
+\end{math} & [{\tt Reduce Pointer}] \\
+
+%
+% Alloc 
+%
+\begin{math}
+alloc : \forall T,r. \langle Region(r,T) \rangle \rightarrow T@r / allocable(r)
+\end{math} & [{\tt Alloc Pointer}] \\
+
+%
+% Free
+%
+\begin{math}
+free : \forall T,r. \langle Region(r,T), T@r \rangle \rightarrow () / freeable(r)
+\end{math} & [{\tt Free Pointer}] 
+
+\end{tabular}
+}
+\caption{Predefined Functions on Region Elements}
+\end{table*}
+
+%%%%%%%%%%%%%%%%%%%
+% Operations on Regions
+%%%%%%%%%%%%%%%%%%%
+\begin{table*}
+\centering
+{\small
+\begin{tabular}{cc}
+
+%
+% Partition
+%
+\begin{math}
+partition : \forall T,r. \langle Region(r,T), (T@r \rightarrow Int) \rangle \rightarrow Partition(r) / readable(r)
+\end{math} & [{\tt Partition}] \\
+
+%
+% Subregion
+%
+\begin{math}
+\begin{array}{lc}
+subregion : \forall T,r. \bigg( \exists r_1, \ldots, r_n . \langle Partition(r), \langle i_1, \ldots, i_n \rangle \rangle \rightarrow \\
+	\Big( \langle Region(r_1,T), \ldots, Region(r_n,T) \rangle / \big((\forall j,k. r_j * r_k) \wedge (\forall j. [r_j \le r])\big)\Big) / (\forall j,k. i_j \ne i_k) \bigg)
+\end{array}
+\end{math} & [{\tt Subregion}] \\
+
+%
+% Smash
+%
+\begin{math}
+smash : \forall T,r_1,\ldots,r_n. \exists r_p. \langle Region(r_1,T), \ldots, Region(r_n,T) \rangle \rightarrow \big(r\prime / (r\prime \le r_p)\big) / (r_i \le r_p)
+\end{math} & [{\tt Smash}] \\
+
+\end{tabular}
+}
+\caption{Predefined Functions on Regions}
+\end{table*}
+
+%%%%%%%%%%%%%%%%%%%%
+% Operations on Region Relationships
+%%%%%%%%%%%%%%%%%%%%
+\begin{table*}
+\centering
+{\small
+\begin{tabular}{cc}
+
+%
+% New
+%
+\begin{math}
+newRR : () \rightarrow RR
+\end{math} & [{\tt New RR}] \\
+
+%
+% Delete
+%
+\begin{math}
+deleteRR : \forall RR.RR \rightarrow ()
+\end{math} & [{\tt Delete RR}] \\
+\end{tabular}
+}
+\caption{Predefined Functions on Region Relationships}
+\end{table*}
+
+%%%%%%%%%%%%%%%%%%
+% Types
+%%%%%%%%%%%%%%%%%%
+\begin{table*}
+\centering
+{\small
+\begin{tabular}{ccc}
+
+T & ::= & Int \\
+  &$\mid$&$\langle T_1, \ldots, T_n \rangle$ \\
+  &$\mid$&$T_1 \rightarrow T_2$ \\
+  &$\mid$&$T@r$\\
+  &$\mid$&$\forall t.T$ \\
+  &$\mid$&$\forall r.T/C$ \\
+  &$\mid$&$RR$ \\
+  &$\mid$&$Region(r,T)$ \\
+  &$\mid$&$Partition(r)$ \\
+
+\end{tabular}
+}
+\caption{Types}
+\end{table*}
+
+%%%%%%%%%%%%%%%%%%
+% Region Relationship Types
+%%%%%%%%%%%%%%%%%%
+\begin{table*}
+\centering
+{\small
+\begin{tabular}{ccc}
+RR & ::= & $\exists r.T/C$ \\
+\end{tabular}
+}
+\caption{Region Relationship Types}
+\end{table*}
+
+
+
+%%%%%%%%%%%%%%%%%%%%
+% Constraints
+%%%%%%%%%%%%%%%%%%%%
+\begin{table*}
+\centering
+{\small
+\begin{tabular}{ccc}
+
+C & ::= & $readable(r)$ \\
+  &$\mid$&$writeable(r)$ \\
+  &$\mid$&$reduceable(r,f)$ \\
+  &$\mid$&$allocable(r)$ \\
+  &$\mid$&$freeable(r)$ \\
+  &$\mid$&$(r_1 \le r_2)$ \\
+  &$\mid$&$(r_1 * r_2)$ \\
+  &$\mid$&$(i_1 = i_2)$ \\
+  &$\mid$&$(i_1 \ne i_2)$ \\
+  &$\mid$&$(C_1 \wedge C_2)$ \\
+\end{tabular}
+}
+\caption{Constraints}
+\end{table*}
+
+\end{document}
