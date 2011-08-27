@@ -227,6 +227,17 @@ class RegionInstance(object):
         RegionInstance.global_store[addr] = None
         return ptr
 
+    def free(self, ptr):
+        # TODO: remove this pointer from all regions, not just the region of
+        #       the region instance
+        if ptr.address not in self.region.ptrs:
+            raise UnknownPointerException(ptr,self)
+        del self.region.ptrs[ptr.address]
+
+        # Also remove pointer from all parent regions too
+        for r in self.region.all_supersets():
+            del r.ptrs[ptr.address]
+        
     def readptr(self, ptr):
         # TODO: figure out how to do this dynamic check - exact match is too strict
         #if (ptr.region != self.region):
@@ -340,12 +351,12 @@ class Region(object):
         #return binding.phys_inst.alloc()
         return self.get_instance("foo").alloc()
 
-    def free(self):
+    def free(self, ptr):
         '''helper function that simply looks up the right physical instance
            in the caller's context and performs the free on that'''
         from Runtime import TaskContext
         binding = TaskContext.get_region_binding(self)
-        return binding.phys_inst.free()
+        return binding.phys_inst.free(ptr)
 
     def readptr(self, ptr):
         '''helper function that simply looks up the right physical instance
@@ -459,10 +470,16 @@ class Partition(object):
         return self.child_regions[index]
 
     def safe_cast(self, index, ptr):
-        if (self.color_map.get(ptr) == index):
+        # A new implementation of safe_cast not dependent on a color_map
+        if ptr.address in (self.child_regions[index].ptrs):
             return ptr
         else:
-            return None
+            return None  
+        # Here is the old implementation
+        #if (self.color_map.get(ptr) == index):
+        #    return ptr
+        #else:
+        #    return None
 
 ############################################################
 
