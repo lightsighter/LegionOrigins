@@ -14,7 +14,7 @@
 {\small
 \begin{tabular}{ccc}
 $program$ & ::= & $fn^*$ \\
-$fn$ & ::= & $f(x_1, \ldots, x_n)$ $s$ \\
+$fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 \end{tabular}
 }
 \caption{Program and Functions}
@@ -31,12 +31,12 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $s$ \\
 \begin{math}
 \infrule{
 \begin{array}{lc}
-	\vdash s_1 : T_1 / C_1 \\
-	\vdash s_2 : T_2 / C_2 
+	\Gamma \vdash e_1 : T_1, C_1 \\
+	\Gamma \vdash e_2 : T_2, C_2 
 \end{array}
 }
 {
-	\vdash s_1; s_2 : T_2 / (C_1 \wedge C_2)
+	\Gamma \vdash e_1; e_2 : T_2, (C_1 \wedge C_2)
 }
 \end{math} 
 &\raisebox{-0.2in}{[{\tt Composition}]} \\
@@ -47,13 +47,13 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $s$ \\
 \begin{math}
 \infrule{
 \begin{array}{lc}
-	\vdash x : Int / C_1 \\
-	\vdash s_1 : T / C_2 \\
-	\vdash s_2 : T / C_3
+	\Gamma \vdash e_1 : Int, C_1 \\
+	\Gamma \vdash e_2 : T, C_2 \\
+	\Gamma \vdash e_3 : T, C_3
 \end{array}
 }
 {
-	\vdash if\mbox{ }x\mbox{ }s_1\mbox{ }s_2:T / (C_1 \wedge C_2 \wedge C_3)
+	\Gamma \vdash\textrm{ if }e_1\textrm{ then }e_2\textrm{ else }e_3 : T, (C_1 \wedge C_2 \wedge C_3)
 }
 \end{math}
 &\raisebox{-0.2in}{[{\tt Conditional}]} \\
@@ -63,12 +63,13 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $s$ \\
 \begin{math}
 \infrule{
 \begin{array}{lc}
-	\vdash x : Int / C_1 \\
-	\vdash s : T / C_2
+	\Gamma \vdash e_1 : Int, C_1 \\
+	\Gamma \vdash e_2 : T, C_2
 \end{array}
 }
 {
-	\vdash while\mbox{ }x\mbox{ }s : T / (C_1 \wedge C_2) 
+	\Gamma \vdash\textrm{ while }e_1\textrm{ do }e_2 : T, (C_1 \wedge C_2) 
+% TODO: fix this - while can't return something of type T if the initial condition test fails!
 }
 \end{math}
 &\raisebox{-0.2in}{[{\tt While}]} \\
@@ -79,12 +80,11 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $s$ \\
 \infrule
 {
 \begin{array}{lc}
-	\vdash e_1 : T / C_1 \\
-	\vdash e_2 : T / C_2
+	\Gamma, x : T \vdash e_1 : T / C
 \end{array}
 }
 {
-	\vdash e_1=e_2: T / C_1 \wedge C_2
+	\Gamma \vdash x = e_1 : T / C
 }
 \end{math}
 &\raisebox{-0.2in}{[{\tt Assignment}]} \\
@@ -137,7 +137,7 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $s$ \\
 \end{array}
 }
 {
-	\vdash \langle e_1, \ldots, e_n \rangle : \langle t_1, \ldots, t_n \rangle / (C_1 \wedge \ldots \wedge C_n)
+	\vdash \langle e_1, \ldots, e_n \rangle : \langle T_1, \ldots, T_n \rangle / (C_1 \wedge \ldots \wedge C_n)
 }
 \end{math}
 &\raisebox{-0.2in}{[{\tt Tuple}]}  \\
@@ -167,12 +167,11 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $s$ \\
 \infrule
 {
 \begin{array}{lc}
-	\vdash x:T_1 / C_1 \\
-	\vdash e[X\rightarrow x] : T_2 / C_2
+        \Gamma, x : T_1 \vdash e : T_2 / C
 \end{array}
 }
 {
-	\vdash \lambda x.e : T_1 \rightarrow T_2 / (C_1 \wedge C_2)
+        \Gamma \vdash \lambda x.e : T_1 \rightarrow T_2 / C, \emptyset
 }
 \end{math}
 &\raisebox{-0.2in}{[{\tt Lambda}]} \\
@@ -184,12 +183,12 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $s$ \\
 \infrule
 {
 \begin{array}{lc}
-	\vdash e_1 : T_1 \rightarrow T_2 / C_1 \\
-	\vdash e_2 : T_1 / C_2
+        \Gamma \vdash e_1 : T_1 \rightarrow T_2 / C_1, C_2 \\
+	\Gamma \vdash e_2 : T_1 / C_3
 \end{array}
 }
 {
-	\vdash e_1 e_2 : T_2 / (C_1 \wedge C_2)
+	\Gamma \vdash e_1 e_2 : T_2 / (C_1 \wedge C_2 \wedge C_3)
 }
 \end{math}
 &\raisebox{-0.2in}{[{\tt Function Application}]} \\ 
@@ -201,12 +200,13 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $s$ \\
 \infrule
 {
 \begin{array}{lc}
-	\vdash r : Region(r,T_1) / C_1 \\
-	\vdash e : [R/r]T_2 / C_2
+        RR = \exists r_1, \ldots, r_n, T_1 / C_1 \\
+        \Gamma \vdash e : [r'_1/r1,...r'_n/r_n]T_1, C_2 \\
+        C_2 \models [r'_1/r1, \ldots, r'_n/r_n]C_1
 \end{array}
 }
 {
-	\vdash \{r,e\}\mbox{ }as\mbox{ }\{\exists r,T_2/ C_2\} : \exists r.T_2 / (C_1 \wedge C_2) = RR
+        \Gamma \vdash\textrm{ packrr }RR\mbox{ }e : RR, C_2
 }
 \end{math}
 &\raisebox{-0.2in}{[{\tt Pack}]} \\
@@ -218,12 +218,13 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $s$ \\
 \infrule
 {
 \begin{array}{lc}
-	\vdash e_1 : \exists r.T_1 / C_1 = RR \\
-	r, x:T_1 \vdash e_2 : T_2 / C_2
+        RR = \exists r_1, \ldots, r_n, T_1 / C_1 \\
+        \Gamma \vdash e : RR, C_2 \\
+        r'_1, \ldots, r'_n \not\in \Gamma
 \end{array}
 }
 {
-	\vdash let\mbox{ }\{r,x\} = e_1\mbox{ }in\mbox{ }e_2 : T_2 / (C_1 \wedge C_2)
+        \Gamma \vdash\textrm{ unpackrr }e : [r'_1/r_1, \ldots, r'_n/r_n]T_1, (C_1 \wedge [r'_1/r_1, \ldots, r'_n/r_n]C_2)
 }
 \end{math}
 &\raisebox{-0.2in}{[{\tt Unpack}]}
@@ -244,21 +245,21 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $s$ \\
 % Read Region
 % 
 \begin{math}
-read : \forall T,r. \langle Region(r,T), T@r \rangle \rightarrow T / readable(r)
+read : \forall T,r_1,r_2. \langle Region(r_1,T), T@r_2 \rangle \rightarrow T / (readable(r_1) \wedge r_2 \le r_1)
 \end{math} & [{\tt Read Pointer}] \\
 
 %
 % Write Region
 %
 \begin{math}
-write : \forall T,r. \langle Region(r,T), T@r, T \rangle \rightarrow () / writeable(r)
+write : \forall T,r_1,r_2. \langle Region(r_1,T), T@r_2, T \rangle \rightarrow () / (writeable(r_1) \wedge r_2 \le r_1)
 \end{math} & [{\tt Write Pointer}] \\
 
 %
 % Reduce Region
 %
 \begin{math}
-reduce : \forall T,r. \big( \forall f:(T \rightarrow T \rightarrow T).  \langle Region(r,T), T@r, f, T \rangle \rightarrow () / reduceable(r,f) \big)
+reduce : \forall T,r_1,r_2. \big( \forall f:(T \rightarrow T \rightarrow T).  \langle Region(r_1,T), T@r_2, f, T \rangle \rightarrow () / (reduceable(r_1,f) \wedge r_2 \le r_1) \big)
 \end{math} & [{\tt Reduce Pointer}] \\
 
 %
@@ -301,7 +302,7 @@ partition : \forall T,r. \langle Region(r,T), (T@r \rightarrow Int) \rangle \rig
 \begin{math}
 \begin{array}{lc}
 subregion : \forall T,r. \bigg( \exists r_1, \ldots, r_n . \langle Partition(r), \langle i_1, \ldots, i_n \rangle \rangle \rightarrow \\
-	\Big( \langle Region(r_1,T), \ldots, Region(r_n,T) \rangle / \big((\forall j,k. r_j * r_k) \wedge (\forall j. [r_j \le r])\big)\Big) / (\forall j,k. i_j \ne i_k) \bigg)
+	\Big( \langle Region(r_1,T), \ldots, Region(r_n,T) \rangle / \big((\forall j,k. r_j * r_k) \wedge (\forall j. [r_j \le r])\big)\Big) / (\bigwedge_{j,k = 1, \ldots, n, j \ne k} i_j \ne i_k) \bigg)
 \end{array}
 \end{math} & [{\tt Subregion}] \\
 
@@ -309,7 +310,7 @@ subregion : \forall T,r. \bigg( \exists r_1, \ldots, r_n . \langle Partition(r),
 % Smash
 %
 \begin{math}
-smash : \forall T,r_1,\ldots,r_n. \exists r_p. \langle Region(r_1,T), \ldots, Region(r_n,T) \rangle \rightarrow \big(r\prime / (r\prime \le r_p)\big) / (r_i \le r_p)
+smash : \forall T,r_1,\ldots,r_n,r_p. \exists r'. \langle Region(r_1,T), \ldots, Region(r_n,T) \rangle \rightarrow \big(Region(r\prime,T) / (r\prime \le r_p)\big) / (\bigwedge_{i = 1, \ldots, n} r_i \le r_p)
 \end{math} & [{\tt Smash}] \\
 
 \end{tabular}
@@ -402,6 +403,55 @@ C & ::= & $readable(r)$ \\
 \end{tabular}
 }
 \caption{Constraints}
+\end{table*}
+
+%%%%%%%%%%%%%%%%%%%%
+% Saturation of Constraints
+%%%%%%%%%%%%%%%%%%%%
+\begin{table*}
+\centering
+{\small
+\begin{tabular}{cc}
+%
+% read/write-ability of subregions
+%
+\begin{math}
+\begin{array}{c}
+\forall r_1, r_2. (readable(r_1) \wedge r_2 \le r_1) \rightarrow readable(r_2) \\
+\forall r_1, r_2. (writeable(r_1) \wedge r_2 \le r_1) \rightarrow writeable(r_2) \\
+\forall f, r_1, r_2. (reduceable(r_1,f) \wedge r_2 \le r_1) \rightarrow reduceable(r_2,f) \\
+\forall r_1, r_2. (allocable(r_1) \wedge r_2 \le r_1) \rightarrow allocable(r_2) \\
+\forall r_1, r_2. (freeable(r_1) \wedge r_2 \le r_1) \rightarrow freeable(r_2)
+\end{array}
+\end{math} & [{\tt Subregion Accessibility }] \\
+\\
+\begin{math}
+\begin{array}{c}
+\forall r, f_1, f_2. (reduceable(r,f_1) \wedge reduceable(r,f_2) \wedge f_1 \ne f_2) \rightarrow (readable(r) \wedge writeable(r)) \\
+\forall r, f. (readable(r) \wedge writeable(r)) \rightarrow reduceable(r,f) 
+\end{array}
+\end{math} & [{\tt Reduction Incompatibility}] \\
+\\
+%
+% reflexivity/transitivity of subregion relationship
+%
+\begin{math}
+\begin{array}{c}
+\forall r, r \le r \\
+\forall r_1, r_2, r_3. (r_1 \le r_2 \wedge r_2 \le r_3) \rightarrow r_1 \le r_3
+\end{array}
+\end{math} & [{\tt Subregion Relationships}] \\
+\\
+\begin{math}
+\forall r_1, r_2, r_3. (r_1 \le r_2 \wedge r_2 * r_3) \rightarrow r_1 * r_3
+\end{math} & [{\tt Subregion Disjointness}] \\
+\\
+\begin{math}
+\forall r_1, r_2. r_1 * r_2 \rightarrow r_2 * r_1
+\end{math} & [{\tt Disjointness Symmetry}]
+\end{tabular}
+}
+\caption{Constraint Inference Rules}
 \end{table*}
 
 \end{document}
