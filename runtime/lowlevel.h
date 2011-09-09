@@ -2,6 +2,7 @@
 #define RUNTIME_LOWLEVEL_H
 
 #include <string>
+#include <set>
 
 namespace RegionRuntime {
   namespace LowLevel {
@@ -12,6 +13,8 @@ namespace RegionRuntime {
       Event(const Event& event1, const Event& event2);
 
       void wait(void);
+
+      static const Event NO_EVENT;
 
     protected:
       Event(unsigned _event_id);
@@ -27,7 +30,7 @@ namespace RegionRuntime {
       Lock(const Lock& copy_from);
 
       Event lock(unsigned mode = 0, bool exclusive = true);
-      void unlock(void);
+      void unlock(Event wait_on = Event::NO_EVENT);
 
     protected:
       unsigned lock_id;
@@ -78,6 +81,10 @@ namespace RegionRuntime {
     };
 
     class RegionInstanceBase {
+    public:
+      virtual void read(unsigned location, unsigned char *dest, size_t bytes) = 0;
+      virtual void write(unsigned location, const unsigned char *src, size_t bytes) = 0;
+      // TODO: how to define reduction this way?  blech
     };
 
     template <class T>
@@ -87,13 +94,16 @@ namespace RegionRuntime {
       virtual ~RegionInstance(void);
 
     public:
-      T read(ptr_t<T> ptr) { T temp; base->read(ptr.value, (unsigned char *)&temp); return temp; }
+      T read(ptr_t<T> ptr) { T temp; base->read(ptr.value, (unsigned char *)&temp, sizeof(T)); return temp; }
       virtual void write(ptr_t<T> ptr, T newval) = 0;
 
       typedef T (*reduction_operator)(T origval, T newval);
       virtual void reduce(ptr_t<T> ptr, reduction_operator op, T newval) = 0;
 
       virtual Event copy_to(RegionInstance<T> *dest, Event wait_on) = 0;
+
+    protected:
+      RegionInstanceBase *base;
     };
 
     class Processor {
@@ -103,7 +113,7 @@ namespace RegionRuntime {
 
     public:
       template <class T>
-      Event spawn(funcptr task, T args, Event wait_on)
+      Event spawn(void(*task)(T args), T args, Event wait_on);
     };
 
     class Memory {
@@ -112,7 +122,7 @@ namespace RegionRuntime {
       virtual ~Memory(void);
 
     protected:
-      template <class T> friend class RegionMetadata<T>;
+      template <class T> friend class RegionMetadata;
 
       virtual RegionAllocatorBase *create_region_allocator_base(void /*FIX*/) = 0;
 
