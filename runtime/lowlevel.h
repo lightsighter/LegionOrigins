@@ -3,13 +3,14 @@
 
 #include <string>
 #include <set>
+#include <map>
 
 namespace RegionRuntime {
   namespace LowLevel {
 
     class Event {
     public:
-      Event(const Event& copy_from);
+      Event(const Event& copy_from) : event_id(copy_from.event_id) {}
       Event(const Event& event1, const Event& event2);
 
       void wait(void);
@@ -100,7 +101,7 @@ namespace RegionRuntime {
       typedef T (*reduction_operator)(T origval, T newval);
       virtual void reduce(ptr_t<T> ptr, reduction_operator op, T newval) = 0;
 
-      virtual Event copy_to(RegionInstance<T> *dest, Event wait_on) = 0;
+      virtual Event copy_to(RegionInstance<T> *dest, Event wait_on = Event::NO_EVENT) = 0;
 
     protected:
       RegionInstanceBase *base;
@@ -108,12 +109,16 @@ namespace RegionRuntime {
 
     class Processor {
     protected:
-      Processor(const std::string& _name);
-      virtual ~Processor(void);
+      Processor(const std::string& _name) {}
+      virtual ~Processor(void) {}
 
     public:
-      template <class T>
-      Event spawn(void(*task)(T args), T args, Event wait_on);
+      typedef unsigned TaskFuncID;
+      typedef void (*TaskFuncPtr)(const void *args, size_t arglen);
+      typedef std::map<TaskFuncID, TaskFuncPtr> TaskIDTable;
+
+      virtual Event spawn(TaskFuncID func_id, const void *args, size_t arglen,
+			  Event wait_on = Event::NO_EVENT) = 0;
     };
 
     class Memory {
@@ -130,15 +135,20 @@ namespace RegionRuntime {
     };
 
     class Machine {
-    protected:
-      Machine(void);
+    public:
+      Machine(int *argc, char ***argv,
+	      const Processor::TaskIDTable &task_table);
       ~Machine(void);
 
     public:
-      static Machine *get_machine(void);
+      const std::set<Memory *>& all_memories(void) { return memories; }
+      const std::set<Processor *>& all_processors(void) { return procs; }
 
-      const std::set<Memory *>& all_memories(void);
-      const std::set<Processor *>& all_processors(void);
+      void add_processor(Processor *p) { procs.insert(p); }
+
+    protected:
+      std::set<Processor *> procs;
+      std::set<Memory *> memories;
     };
 
   }; // namespace LowLevel

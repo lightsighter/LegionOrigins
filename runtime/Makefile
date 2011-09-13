@@ -1,0 +1,20 @@
+GASNET = /usr/local/gasnet-1.16.2
+
+CCFLAGS = -I$(GASNET)/include -ggdb
+
+LDFLAGS = -L$(GASNET)/lib -lrt
+
+CCFLAGS += -DGASNET_CONDUIT_IBV -I$(GASNET)/include/ibv-conduit
+LDFLAGS += -lgasnet-ibv-par -libverbs
+
+%.o : %.cc
+	g++ $(CCFLAGS) -c $^ -o $@
+
+foo : lowlevel.o
+	g++ $(CCFLAGS) $^ $(LDFLAGS) -o $@
+
+hello : hello.o lowlevel.o
+	g++ $(CCFLAGS) $^ $(LDFLAGS) -o $@
+
+gas_simple : gas_simple.c
+	gcc $(CCFLAGS) gas_simple.c -o gas_simple $(LDFLAGS)
