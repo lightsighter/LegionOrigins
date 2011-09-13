@@ -8,6 +8,8 @@
 #define GASNETT_THREAD_SAFE
 #include <gasnet_tools.h>
 
+#include "activemsg.h"
+
 #include <pthread.h>
 
 #include <vector>
@@ -41,7 +43,7 @@ namespace RegionRuntime {
     // internal structures for locks, event, etc.
     class Task {
     public:
-      typedef void(*FuncPtr)(const void *args, size_t arglen);
+      typedef void(*FuncPtr)(const void *args, size_t arglen, Processor *proc);
 
       Task(FuncPtr _func, const void *_args, size_t _arglen,
 	   ProcessorThread *_thread)
@@ -60,9 +62,9 @@ namespace RegionRuntime {
 	if(args) free(args);
       }
 
-      void execute(void)
+      void execute(Processor *proc)
       {
-	(this->func)(args, arglen);
+	(this->func)(args, arglen, proc);
       }
 
       FuncPtr func;
@@ -118,6 +120,8 @@ namespace RegionRuntime {
       }
 
     protected:
+      friend class LocalProcessor;
+      Processor *proc;
       std::list<Task *> pending_tasks;
       int id, core_id;
 
@@ -142,7 +146,7 @@ namespace RegionRuntime {
 	    gasnet_hsl_unlock(&mutex);
 
 	    printf("executing task\n");
-	    to_run->execute();
+	    to_run->execute(proc);
 	    delete to_run;
 	  } else {
 	    printf("sleeping...\n"); fflush(stdout);
@@ -265,7 +269,9 @@ namespace RegionRuntime {
     public:
       LocalProcessor(ProcessorThread *_thread)
 	: Processor("foo"), thread(_thread)
-      {}
+      {
+	thread->proc = this;
+      }
 
       virtual ~LocalProcessor(void)
       {
@@ -283,6 +289,14 @@ namespace RegionRuntime {
 
     class GASNetNode {
     public:
+      struct TestArgs {
+	int x;
+      };
+
+      static void test_msg_handler(TestArgs z) { printf("got %d\n", z.x); }
+
+      typedef ActiveMessageShortNoReply<129, TestArgs, test_msg_handler> TestMessage;
+
       GASNetNode(int *argc, char ***argv, Machine *_machine,
 		 int num_local_procs = 1, int shared_mem_size = 1024)
 	: machine(_machine)
@@ -295,6 +309,7 @@ namespace RegionRuntime {
 	int hcount = 0;
 #define ADD_HANDLER(id, func) do { handlers[hcount].index = id; handlers[hcount].fnptr = (void(*)())func; hcount++; } while(0)
 	ADD_HANDLER(128, am_add_task);
+	hcount += TestMessage::add_handler_entries(&handlers[hcount]);
 
 	CHECK_GASNET( gasnet_attach(handlers, hcount, (shared_mem_size << 20), 0) );
 	
@@ -316,6 +331,9 @@ namespace RegionRuntime {
 	// printf("3\n"); fflush(stdout);
 	// sleep(5);
 	// printf("4\n"); fflush(stdout);
+
+	TestArgs zz; zz.x = 55;
+	TestMessage::request(0, zz);
       }
 
       ~GASNetNode(void)

@@ -114,7 +114,7 @@ namespace RegionRuntime {
 
     public:
       typedef unsigned TaskFuncID;
-      typedef void (*TaskFuncPtr)(const void *args, size_t arglen);
+      typedef void (*TaskFuncPtr)(const void *args, size_t arglen, Processor *proc);
       typedef std::map<TaskFuncID, TaskFuncPtr> TaskIDTable;
 
       virtual Event spawn(TaskFuncID func_id, const void *args, size_t arglen,
