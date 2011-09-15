@@ -7,8 +7,10 @@
 // of the program including the application code
 // as well as both of the runtimes.
 
+typedef unsigned int ReductionID;
+
 template<typename T>
-struct ptr_t { unsigned value; }
+struct ptr_t { unsigned value; };
 
 
 
