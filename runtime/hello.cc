@@ -28,6 +28,7 @@ int main(int argc, const char *argv[])
   (*it)->spawn(1, "Hello, world!", 14);
   printf("blah\n");
   for(int i = 0; i < 10; i++) {
+    printf("(%d)", i);
     sleep(1);
     gasnet_AMPoll();
   }

@@ -293,9 +293,21 @@ namespace RegionRuntime {
 	int x;
       };
 
+      static void *gasnet_poll_thread_loop(void *data)
+      {
+	while(1) {
+	  gasnet_AMPoll();
+	  usleep(100000);
+	}
+	return 0;
+      }
+
       static void test_msg_handler(TestArgs z) { printf("got %d\n", z.x); }
+      static bool test_msg_handler2(TestArgs z) { printf("got(2) %d\n", z.x); return z.x == 55; }
 
       typedef ActiveMessageShortNoReply<129, TestArgs, test_msg_handler> TestMessage;
+
+      typedef ActiveMessageShortReply<133, 134, TestArgs, bool, test_msg_handler2> TestMessage2;
 
       GASNetNode(int *argc, char ***argv, Machine *_machine,
 		 int num_local_procs = 1, int shared_mem_size = 1024)
@@ -310,8 +322,12 @@ namespace RegionRuntime {
 #define ADD_HANDLER(id, func) do { handlers[hcount].index = id; handlers[hcount].fnptr = (void(*)())func; hcount++; } while(0)
 	ADD_HANDLER(128, am_add_task);
 	hcount += TestMessage::add_handler_entries(&handlers[hcount]);
+	hcount += TestMessage2::add_handler_entries(&handlers[hcount]);
 
 	CHECK_GASNET( gasnet_attach(handlers, hcount, (shared_mem_size << 20), 0) );
+
+	pthread_t poll_thread;
+	CHECK_PTHREAD( pthread_create(&poll_thread, 0, gasnet_poll_thread_loop, 0) );
 	
 	seginfo = new gasnet_seginfo_t[num_nodes];
 	CHECK_GASNET( gasnet_getSegmentInfo(seginfo, num_nodes) );
@@ -332,8 +348,11 @@ namespace RegionRuntime {
 	// sleep(5);
 	// printf("4\n"); fflush(stdout);
 
-	TestArgs zz; zz.x = 55;
+	TestArgs zz; zz.x = 54 + my_node_id;
 	TestMessage::request(0, zz);
+
+	bool b = TestMessage2::request(0, zz);
+	printf("return = %d\n", b);
       }
 
       ~GASNetNode(void)
