@@ -281,6 +281,7 @@ namespace RegionRuntime {
 			  Event wait_on = Event::NO_EVENT)
       {
 	thread->add_task(task_id_table[func_id], args, arglen);
+	return Event::NO_EVENT;
       }
 
     protected:
