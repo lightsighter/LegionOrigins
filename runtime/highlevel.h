@@ -6,6 +6,8 @@
 #include <map>
 #include <vector>
 
+#include "common.h"
+
 namespace RegionRuntime {
   namespace HighLevel {
 
@@ -51,9 +53,9 @@ namespace RegionRuntime {
 	static void set_future(FutureHandle handle, const void * result, size_t result_size);
     private:
 	FutureHandle handle;
-	bool is_set;
-	const void * result;
-	bool is_active;
+	bool set;
+	void * result;
+	bool active;
     protected:
 	// Only the high-level runtime should be able to create futures
 	friend class HighLevelRuntime;
@@ -65,7 +67,7 @@ namespace RegionRuntime {
 	void reset(void);
     public:
 	bool is_set(void) const;
-	template<T> T get_result(void) const;	
+	template<typename T> T get_result(void) const;	
 	void set_result(const void * res, size_t result_size);
     };
 
@@ -80,7 +82,7 @@ namespace RegionRuntime {
 	const CoherenceProperty prop;
 	const ReductionID reduction;
     public:
-	RegionRequirement(LogicalHandle h, AccessMode m, CoherenceProperty p, ReductionId r = 0);
+	RegionRequirement(LogicalHandle h, AccessMode m, CoherenceProperty p, ReductionID r = 0);
     };
 
     /**
@@ -94,7 +96,7 @@ namespace RegionRuntime {
 	void *const allocator;
 	void *const instance;
     public:
-	PhysicalRegion (void * alloc, void * inst) : allocator(alloc), instance(inst) { }	
+	PhysicalRegion (void * alloc, void * inst);	
     public:
 	// TODO: Declare ptr_t and reduction_operator so they are visible here
 	template<typename T> ptr_t<T> alloc(void);
@@ -112,7 +114,9 @@ namespace RegionRuntime {
     protected:
 	// Only the runtime should be able to create Partitions
 	friend class HighLevelRuntime;
-	Partition(LogicalHandle par, std::vector<LogicalHandle> children);
+	Partition(LogicalHandle par, std::vector<LogicalHandle> children, bool dis = true);
+	// Make the compiler warnings go away
+	virtual ~Partition();
     public:
 	LogicalHandle get_subregion(Color c) const;
 	template<typename T> ptr_t<T> safe_cast(ptr_t<T> ptr) const;
@@ -173,7 +177,7 @@ namespace RegionRuntime {
 	template<typename T>
 	Partition* create_aliased_partition(LogicalHandle parent,
 						unsigned int num_subregions,
-						std::multi_map<ptr_t<T>,Color> * color_map);
+						std::multimap<ptr_t<T>,Color> * color_map);
 
 	void destroy_partition(Partition *partition);
     public:

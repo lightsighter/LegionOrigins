@@ -12,6 +12,9 @@ typedef unsigned int ReductionID;
 template<typename T>
 struct ptr_t { unsigned value; };
 
+class Context
+{
 
+};
 
 #endif // COMMON_H

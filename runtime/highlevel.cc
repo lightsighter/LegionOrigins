@@ -18,17 +18,17 @@ namespace RegionRuntime {
     // Declare the process-wide visible future map
     std::map<FutureHandle,Future*> * Future::future_map = new std::map<FutureHandle,Future*>();
 
-    static void Future::set_future(FutureHandle handle, const void *result, size_t result_size)
+    void Future::set_future(FutureHandle handle, const void *result, size_t result_size)
     {
 	// Find the future in the globally visible future map and set it's value
 #ifdef HIGH_LEVEL_DEBUG
 	assert(future_map.find(handle) != future_map.end());
 #endif
-	Future *future = future_map[handle];
+	Future *future = (*future_map)[handle];
 	future->set_result(result,result_size);
     }
 
-    Future::Future(FutureHandle h) : handle(h), is_set(false), result(NULL), is_active(true) { } 
+    Future::Future(FutureHandle h) : handle(h), set(false), result(NULL), active(true) { } 
 
     Future::~Future() 
     { 
@@ -42,21 +42,21 @@ namespace RegionRuntime {
     {
 	if (result != NULL)
 		free(result);
-	is_set = false;
-	is_active = true;
+	set = false;
+	active = true;
     }
 
-    inline bool Future::is_active(void) const { return is_active; }
+    inline bool Future::is_active(void) const { return active; }
 
-    inline bool Future::is_set(void) const { return is_set; }
+    inline bool Future::is_set(void) const { return set; }
 
     template<typename T>
     inline T Future::get_result(void) const
     {
 #ifdef HIGH_LEVEL_DEBUG
-	assert(is_set);
+	assert(set);
 #endif
-	is_active = false;
+	active = false;
 	return (*((const T*)result));
     }
 
@@ -64,13 +64,13 @@ namespace RegionRuntime {
     {
 	result = malloc(result_size);
 #ifdef HIGH_LEVEL_DEBUG
-	assert(!is_set);
-	assert(is_active);
+	assert(!set);
+	assert(active);
 	assert(res != NULL);
 	assert(result != NULL);
 #endif
 	memcpy(result, res, result_size);	
-	is_set = true;
+	set = true;
     }
 
     /////////////////////////////////////////////////////////////
@@ -88,7 +88,7 @@ namespace RegionRuntime {
     // Physical Region 
     ///////////////////////////////////////////////////////////// 
 
-    PhysicalRegion(void *alloc, void *inst)
+    PhysicalRegion::PhysicalRegion(void *alloc, void *inst)
 		: allocator(alloc), instance(inst) { }
 
     template<typename T>
@@ -127,8 +127,9 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////////////// 
 
     Partition::Partition(LogicalHandle par,
-			std::vector<LogicalHandle> children) 	
-	: parent(par), child_regions (children), disjoint(true) { }
+			std::vector<LogicalHandle> children,
+			bool dis) 	
+	: parent(par), child_regions (children), disjoint(dis) { }
 
     inline LogicalHandle Partition::get_subregion(Color c) const
     {
@@ -150,7 +151,10 @@ namespace RegionRuntime {
 			return ((AliasedPartition*)this)->safe_cast<T>(ptr);
 	}
 	else
-		return {0};
+	{
+		ptr_t<T> null_ptr = {0};
+		return null_ptr;
+	}
     }   
 
     inline bool Partition::is_disjoint(void) const { return disjoint; } 
@@ -165,7 +169,7 @@ namespace RegionRuntime {
     DisjointPartition::DisjointPartition(LogicalHandle par,
 					std::vector<LogicalHandle> children,
 					void *coloring)
-	: Partition(par, children), color_map(coloring) { }
+	: Partition(par, children, true), color_map(coloring) { }
 
     template<typename T>
     ptr_t<T> DisjointPartition::safe_cast(ptr_t<T> ptr) const
@@ -175,7 +179,10 @@ namespace RegionRuntime {
 	if (coloring->find(ptr) != coloring->end())
 		return ptr;
 	else
-		return {0};
+	{
+		ptr_t<T> null_ptr = {0};
+		return null_ptr;
+	}
     }
 
     bool DisjointPartition::contains_coloring(void) const { return true; }
@@ -188,18 +195,20 @@ namespace RegionRuntime {
     AliasedPartition::AliasedPartition(LogicalHandle par,
 					std::vector<LogicalHandle> children,
 					void *coloring)
-	: parent(par), child_regions(children), disjoint(false),
-	  color_map(coloring) { }
+	: Partition(par, children, false), color_map(coloring) { }
 
     template<typename T>
     ptr_t<T> AliasedPartition::safe_cast(ptr_t<T> ptr) const
     {
 	// Cast our pointer to the right type of map
-	std::multi_map<ptr_t<T>,Color> *coloring = (std::multi_map<ptr_t<T>,Color>*)color_map;
+	std::multimap<ptr_t<T>,Color> *coloring = (std::multimap<ptr_t<T>,Color>*)color_map;
 	if (coloring->find(ptr) != coloring->end())
 		return ptr;	
 	else
-		return {0};
+	{
+		ptr_t<T> null_ptr = {0};
+		return null_ptr;
+	}
     }
 
     bool AliasedPartition::contains_coloring(void) const { return true; }

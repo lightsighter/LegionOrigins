@@ -180,15 +180,15 @@ def ScheMapper(object):
         '''Register a single task for execution with the given region requirements.  If
             spawn is true the runtime has the option of executing the task in parallel or not.  If spawn
             is true the runtime will return a future for the parent task to wait on if desired. '''
-       pass
+        pass
 
-   def execute_task_set(self, task_ids, region_requirement_sets, argument_sets, futures, spawn = False, must = False):
+    def execute_task_set(self, task_ids, region_requirement_sets, argument_sets, futures, spawn = False, must = False):
        '''Execute a set of tasks with a given set of regions requirements, arguments, and possible futures.
            If spawn is true then the runtime has the option of running the tasks in parallel.  If spawn is
            true and must is true then the tasks must all be run in parallel.'''
-       pass 
+        pass 
 
-   def execute_task_space(self, task_space):
+    def execute_task_space(self, task_space):
        '''Execute a task space which is just an instantiation of a given iteration space for a given task'''
-       pass
+        pass
 
