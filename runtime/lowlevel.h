@@ -5,6 +5,8 @@
 #include <set>
 #include <map>
 
+#include "common.h"
+
 namespace RegionRuntime {
   namespace LowLevel {
 
@@ -44,9 +46,6 @@ namespace RegionRuntime {
 
     template <class T>
     class RegionInstance;
-
-    template <class T>
-    struct ptr_t { unsigned value; };
 
     template <class T>
     class RegionMetaData {
