@@ -52,6 +52,9 @@ namespace RegionRuntime {
     protected:
 	RegionMetaDataBase();
     protected:
+        // Mike: I think it's ok to leave this protected right now
+	// With the untyped version of RegionMetaData base I don't need access.
+	// The same applies to lock and event.
 	unsigned region_id;	
     public:
 	bool operator==(const RegionMetaDataBase&) const;
