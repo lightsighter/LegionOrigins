@@ -1,13 +1,27 @@
 
 \documentclass{article}
 
+\usepackage{fancyhdr}
+\usepackage{datetime}
+
+\lhead{DRAFT - \today - \currenttime}
+
+\usepackage{fullpage}
 \usepackage[cmex10]{amsmath}
 \usepackage{listings}
 
 \newcommand{\infrule}[2]{\displaystyle\frac{\displaystyle\strut{#1}}{\displaystyle\strut {#2}}}
 \newcommand{\cinfrule}[3]{\parbox{14cm}{\hfil$\infrule{#1}{#2}$\hfil}\parbox{4cm}{$\,#3$\hfil}}
 
+\newcommand{\regionexpand}[0]{[r'_1/r_1, \ldots, r'_n/r_n]}
+\newcommand{\rtriple}[3]{\left({#1},{#2},{#3}\right)}
+\newcommand{\rsingle}[1]{\rtriple{#1}{\emptyset}{\top}}
+\newcommand{\rtripsub}[3]{\rtriple{#1}{\Phi_{#2}}{C_{#3}}}
+\newcommand{\envsub}[2]{\Gamma, \Phi_{#1}, C_{#2} \vdash}
+
 \begin{document}
+
+\pagestyle{fancy}
 
 \begin{table*}
 \centering
@@ -31,12 +45,12 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 \begin{math}
 \infrule{
 \begin{array}{lc}
-	\Gamma \vdash e_1 : T_1, C_1 \\
-	\Gamma \vdash e_2 : T_2, C_2 
+  \envsub{1}{1} e_1 : \rtripsub{T_1}{2}{2} \\
+  \envsub{2}{2} e_2 : \rtripsub{T_2}{3}{3} 
 \end{array}
 }
 {
-	\Gamma \vdash e_1; e_2 : T_2, (C_1 \wedge C_2)
+  \envsub{1}{1} e_1; e_2 : \rtripsub{T_2}{3}{3}
 }
 \end{math} 
 &\raisebox{-0.2in}{[{\tt Composition}]} \\
@@ -47,13 +61,14 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 \begin{math}
 \infrule{
 \begin{array}{lc}
-	\Gamma \vdash e_1 : Int, C_1 \\
-	\Gamma \vdash e_2 : T, C_2 \\
-	\Gamma \vdash e_3 : T, C_3
+  \envsub{1}{1} e_1 : \rtripsub{\mathit{Int}}{2}{2} \\
+  \envsub{2}{2} e_2 : \rtripsub{T}{3}{3} \\
+  \envsub{2}{2} e_3 : \rtripsub{T}{4}{4} \\
+  C_3 \models C_5 \hspace{1cm} C_4 \models C_5
 \end{array}
 }
 {
-	\Gamma \vdash\textrm{ if }e_1\textrm{ then }e_2\textrm{ else }e_3 : T, (C_1 \wedge C_2 \wedge C_3)
+  \envsub{1}{1}\textrm{ if }e_1\textrm{ then }e_2\textrm{ else }e_3 : \rtriple{T}{\left(\Phi_3 \cap \Phi_4\right)}{C_5}
 }
 \end{math}
 &\raisebox{-0.2in}{[{\tt Conditional}]} \\
@@ -63,12 +78,14 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 \begin{math}
 \infrule{
 \begin{array}{lc}
-	\Gamma \vdash e_1 : Int, C_1 \\
-	\Gamma \vdash e_2 : T, C_2
+  \Phi_2 \subset \Phi_1 \\
+  C_1 \models C_2 \\
+  \envsub{2}{2} e_1 : \rtripsub{\mathit{Int}}{3}{3} \\
+  \envsub{3}{3} e_2 : \rtripsub{T}{2}{2}
 \end{array}
 }
 {
-	\Gamma \vdash\textrm{ while }e_1\textrm{ do }e_2 : T, (C_1 \wedge C_2) 
+  \envsub{1}{1}\textrm{ while }e_1\textrm{ do }e_2 : \rtripsub{T}{3}{3}
 % TODO: fix this - while can't return something of type T if the initial condition test fails!
 }
 \end{math}
@@ -80,11 +97,12 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 \infrule
 {
 \begin{array}{lc}
-	\Gamma, x : T \vdash e_1 : T / C
+  \{ x : T \} \in \Gamma \\
+  \envsub{1}{1} e_1 : \rtripsub{T}{2}{2}
 \end{array}
 }
 {
-	\Gamma \vdash x = e_1 : T / C
+  \envsub{1}{1} x = e_1 : \rtripsub{T}{2}{2}
 }
 \end{math}
 &\raisebox{-0.2in}{[{\tt Assignment}]} \\
@@ -104,9 +122,10 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 \begin{math}
 \infrule
 {
+  \{ x : T \} \in \Gamma
 }
 {
-	\vdash x:T / C
+  \envsub{1}{1} x : \rtripsub{T}{1}{1}
 }
 \end{math} 
 &\raisebox{-0.2in}{[{\tt Variable}]} \\
@@ -119,7 +138,7 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 {
 }
 {
-	\vdash i : Int / \top
+  \envsub{1}{1} i : \rtripsub{\mathit{Int}}{1}{1}
 }
 \end{math} 
 &\raisebox{-0.2in}{[{\tt Integer Literal}]} \\
@@ -131,13 +150,14 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 \infrule
 {
 \begin{array}{lc}
-	\vdash e_1 : T_1 / C_1 \\
-	\ldots \\
-	\vdash e_n : T_n / C_n
+  \envsub{1}{1} e_1 : \rtripsub{T_1}{2}{2} \\
+  \envsub{2}{2} e_2 : \rtripsub{T_2}{3}{3} \\
+  \ldots \\
+  \envsub{n}{n} e_n : \rtripsub{T_n}{n+1}{n+1}
 \end{array}
 }
 {
-	\vdash \langle e_1, \ldots, e_n \rangle : \langle T_1, \ldots, T_n \rangle / (C_1 \wedge \ldots \wedge C_n)
+  \envsub{1}{1} \langle e_1, \ldots, e_n \rangle : \rtripsub{\langle T_1, \ldots, T_n \rangle}{n+1}{n+1}
 }
 \end{math}
 &\raisebox{-0.2in}{[{\tt Tuple}]}  \\
@@ -148,14 +168,10 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 \begin{math}
 \infrule
 {
-\begin{array}{lc}
-	\vdash e : T_1 / C_1 \\
-	\vdash x \in T_1 \\
-	\vdash x : T_2 / C_2
-\end{array}
+  \envsub{1}{1} e : \rtripsub{\langle T_1, \ldots, T_n \rangle}{2}{2}
 }
 {
-	\vdash e.x : T_2 / (C_1 \wedge C_2)
+  \envsub{1}{1} e.i : \rtripsub{T_i}{2}{2}
 }
 \end{math} 
 &\raisebox{-0.2in}{[{\tt Field Access}]} \\
@@ -167,6 +183,7 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 \infrule
 {
 \begin{array}{lc}
+  FIXME \\
         \Gamma, x : T_1 \vdash e : T_2 / C
 \end{array}
 }
@@ -183,12 +200,15 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 \infrule
 {
 \begin{array}{lc}
-        \Gamma \vdash e_1 : T_1 \rightarrow T_2 / C_1, C_2 \\
-	\Gamma \vdash e_2 : T_1 / C_3
+  \envsub{1}{1} e_1 : \rtripsub{\rtripsub{T_i}{i}{i} \rightarrow \exists r_1, \ldots, r_n . \rtripsub{T_o}{o}{o}}{2}{2} \\
+  \envsub{2}{2} e_2 : \rtripsub{T_i}{3}{3} \\
+  r'_1, \ldots, r'_n \not\in \Gamma \hspace{1cm} 
+  \Phi_i \subset \Phi_3 \hspace{1cm}
+  C_3 \models C_i
 \end{array}
 }
 {
-	\Gamma \vdash e_1 e_2 : T_2 / (C_1 \wedge C_2 \wedge C_3)
+  \envsub{1}{1} e_1 e_2 : \rtriple{\regionexpand T_o}{\left(\Phi_3 \cup \regionexpand \Phi_o\right)}{\left(C_3 \wedge \regionexpand C_o\right)}
 }
 \end{math}
 &\raisebox{-0.2in}{[{\tt Function Application}]} \\ 
@@ -200,13 +220,13 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 \infrule
 {
 \begin{array}{lc}
-        RR = \exists r_1, \ldots, r_n, T_1 / C_1 \\
-        \Gamma \vdash e : [r'_1/r1,...r'_n/r_n]T_1, C_2 \\
-        C_2 \models [r'_1/r1, \ldots, r'_n/r_n]C_1
+  RR = \exists r_1, \ldots, r_n.\rtriple{T_1}{\emptyset}{C_1} \\
+  \envsub{2}{2} e : \rtripsub{\regionexpand T_1}{3}{3} \\
+  C_3 \models \regionexpand C_1
 \end{array}
 }
 {
-        \Gamma \vdash\textrm{ packrr }RR\mbox{ }e : RR, C_2
+  \envsub{2}{2}\textrm{ packrr }RR\mbox{ }e : \rtripsub{RR}{3}{3}
 }
 \end{math}
 &\raisebox{-0.2in}{[{\tt Pack}]} \\
@@ -218,13 +238,13 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 \infrule
 {
 \begin{array}{lc}
-        RR = \exists r_1, \ldots, r_n, T_1 / C_1 \\
-        \Gamma \vdash e : RR, C_2 \\
-        r'_1, \ldots, r'_n \not\in \Gamma
+  RR = \exists r_1, \ldots, r_n.\rtriple{T_1}{\emptyset}{C_1} \\
+  \envsub{2}{2} e : \rtripsub{RR}{3}{3} \\
+  r'_1, \ldots, r'_n \not\in \Gamma
 \end{array}
 }
 {
-        \Gamma \vdash\textrm{ unpackrr }e : [r'_1/r_1, \ldots, r'_n/r_n]T_1, (C_1 \wedge [r'_1/r_1, \ldots, r'_n/r_n]C_2)
+  \envsub{2}{2}\textrm{ unpackrr }e : \rtriple{\regionexpand T_1}{\Phi_3}{\left(C_3 \wedge \regionexpand C_1\right)}
 }
 \end{math}
 &\raisebox{-0.2in}{[{\tt Unpack}]}
@@ -245,35 +265,44 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 % Read Region
 % 
 \begin{math}
-read : \forall T,r_1,r_2. \langle Region(r_1,T), T@r_2 \rangle \rightarrow T / (readable(r_1) \wedge r_2 \le r_1)
+\begin{array}{l}
+read : \forall T,r_1,r_2. \rtriple{\langle Region(r_1,T), T@r_2 \rangle}{\{ readable(r_1) \}}{(r_2 \le r_1)} \rightarrow \rsingle{T}
+\end{array}
+%read : \forall T,r_1,r_2. \langle Region(r_1,T), T@r_2 \rangle \rightarrow T / (readable(r_1) \wedge r_2 \le r_1)
 \end{math} & [{\tt Read Pointer}] \\
 
 %
 % Write Region
 %
 \begin{math}
-write : \forall T,r_1,r_2. \langle Region(r_1,T), T@r_2, T \rangle \rightarrow () / (writeable(r_1) \wedge r_2 \le r_1)
+write : \forall T,r_1,r_2. \rtriple{\langle Region(r_1,T), T@r_2, T \rangle}{\{ writeable(r_1) \}}{(r_2 \le r_1)} \rightarrow \rsingle{T}
+%write : \forall T,r_1,r_2. \langle Region(r_1,T), T@r_2, T \rangle \rightarrow () / (writeable(r_1) \wedge r_2 \le r_1)
 \end{math} & [{\tt Write Pointer}] \\
 
 %
 % Reduce Region
 %
 \begin{math}
-reduce : \forall T,r_1,r_2. \big( \forall f:(T \rightarrow T \rightarrow T).  \langle Region(r_1,T), T@r_2, f, T \rangle \rightarrow () / (reduceable(r_1,f) \wedge r_2 \le r_1) \big)
+\begin{array}{l@{}l}
+reduce : \forall T,r_1,r_2. \big( & \forall f:(T \rightarrow T \rightarrow T). \\
+& \rtriple{\langle Region(r_1,T), T@r_2, f, T \rangle}{\{ reduceable(r_1,f) \}}{(r_2 \le r_1)} \rightarrow \rsingle{()} \big) \end{array}
+%reduce : \forall T,r_1,r_2. \big( \forall f:(T \rightarrow T \rightarrow T).  \langle Region(r_1,T), T@r_2, f, T \rangle \rightarrow () / (reduceable(r_1,f) \wedge r_2 \le r_1) \big)
 \end{math} & [{\tt Reduce Pointer}] \\
 
 %
 % Alloc 
 %
 \begin{math}
-alloc : \forall T,r. \langle Region(r,T) \rangle \rightarrow T@r / allocable(r)
+alloc : \forall T,r. \rtriple{\langle Region(r,T) \rangle}{\{ allocable(r) \}}{\top} \rightarrow \rsingle{T@r}
+%alloc : \forall T,r. \langle Region(r,T) \rangle \rightarrow T@r / allocable(r)
 \end{math} & [{\tt Alloc Pointer}] \\
 
 %
 % Free
 %
 \begin{math}
-free : \forall T,r. \langle Region(r,T), T@r \rangle \rightarrow () / freeable(r)
+free : \forall T,r_1,r_2. \rtriple{\langle Region(r_1,T), T@r_2 \rangle}{\{ freeable(r_1) \}}{(r_2 \le r_1)} \rightarrow \rsingle{()}
+%free : \forall T,r. \langle Region(r,T), T@r \rangle \rightarrow () / freeable(r)
 \end{math} & [{\tt Free Pointer}] 
 
 \end{tabular}
@@ -293,7 +322,7 @@ free : \forall T,r. \langle Region(r,T), T@r \rangle \rightarrow () / freeable(r
 % Partition
 %
 \begin{math}
-partition : \forall T,r. \langle Region(r,T), (T@r \rightarrow Int) \rangle \rightarrow Partition(r) / readable(r)
+partition : \forall T,r. \rtriple{\langle Region(r,T), (T@r \rightarrow \mathit{Int}) \rangle}{\{readable(r)\}}{\top} \rightarrow \rsingle{Partition(r)}
 \end{math} & [{\tt Partition}] \\
 
 %
@@ -301,8 +330,11 @@ partition : \forall T,r. \langle Region(r,T), (T@r \rightarrow Int) \rangle \rig
 %
 \begin{math}
 \begin{array}{lc}
-subregion : \forall T,r. \bigg( \exists r_1, \ldots, r_n . \langle Partition(r), \langle i_1, \ldots, i_n \rangle \rangle \rightarrow \\
-	\Big( \langle Region(r_1,T), \ldots, Region(r_n,T) \rangle / \big((\forall j,k. r_j * r_k) \wedge (\forall j. [r_j \le r])\big)\Big) / (\bigwedge_{j,k = 1, \ldots, n, j \ne k} i_j \ne i_k) \bigg)
+\begin{array}{l@{}l}
+subregion : \forall T,r. & \rtriple{\langle Partition(r), \langle i_1, \ldots, i_n \rangle \rangle}{\emptyset}{\bigwedge_{j,k = 1, \ldots, n, j \ne k} i_j \ne i_k}
+\rightarrow \\
+& \exists r_1, \ldots, r_n. \rtriple{\langle Region(r_1,T), \ldots, Region(r_n,T) \rangle}{\emptyset}{\bigwedge_{j,k = 1, \ldots, n, j \ne k}. r_j * r_k}
+\end{array}
 \end{array}
 \end{math} & [{\tt Subregion}] \\
 
@@ -310,7 +342,10 @@ subregion : \forall T,r. \bigg( \exists r_1, \ldots, r_n . \langle Partition(r),
 % Smash
 %
 \begin{math}
-smash : \forall T,r_1,\ldots,r_n,r_p. \exists r'. \langle Region(r_1,T), \ldots, Region(r_n,T) \rangle \rightarrow \big(Region(r\prime,T) / (r\prime \le r_p)\big) / (\bigwedge_{i = 1, \ldots, n} r_i \le r_p)
+\begin{array}{l@{}l}
+smash : \forall T,r_1,\ldots,r_n,r_p. & \rtriple{\langle Region(r_1,T), \ldots, Region(r_n,T) \rangle}{\emptyset}{(\bigwedge_{i = 1, \ldots, n} r_i \le r_p)} \rightarrow \\
+& \exists r'.  \rtriple{Region(r\prime,T)}{\emptyset}{(r\prime \le r_p) \wedge (\bigwedge_{i = 1, \ldots, n} r_i \le r')}
+\end{array}
 \end{math} & [{\tt Smash}] \\
 
 \end{tabular}
@@ -330,14 +365,19 @@ smash : \forall T,r_1,\ldots,r_n,r_p. \exists r'. \langle Region(r_1,T), \ldots,
 % New
 %
 \begin{math}
-newRR : () \rightarrow RR
+\infrule{
+  RR = \exists r_1, \ldots, r_n. \rtriple{T_1}{\emptyset}{C_1}
+}{
+  newrr RR : \rsingle{()} \rightarrow \exists r_1, \ldots, r_n. \rtriple{T_1}{\bigcup_{i = 1..n} \Big( readable(r_i) \cup writeable(r_i) \cup allocable(r_i) \cup freeable(r_i) \Big)}{C_1}
+}
+%newRR : () \rightarrow RR
 \end{math} & [{\tt New RR}] \\
 
 %
 % Delete
 %
 \begin{math}
-deleteRR : \forall RR.RR \rightarrow ()
+deleteRR : \forall RR. \rsingle{RR} \rightarrow \rsingle{()}
 \end{math} & [{\tt Delete RR}] \\
 \end{tabular}
 }
@@ -354,7 +394,7 @@ deleteRR : \forall RR.RR \rightarrow ()
 
 T & ::= & Int \\
   &$\mid$&$\langle T_1, \ldots, T_n \rangle$ \\
-  &$\mid$&$T_1 \rightarrow T_2$ \\
+  &$\mid$&$\rtripsub{T_i}{i}{i} \rightarrow \exists r_1, \ldots, r_n.\rtripsub{T_o}{o}{o}$ \\
   &$\mid$&$T@r$\\
   &$\mid$&$\forall t.T$ \\
   &$\mid$&$\forall r.T/C$ \\
@@ -374,7 +414,7 @@ T & ::= & Int \\
 \centering
 {\small
 \begin{tabular}{ccc}
-RR & ::= & $\exists r.T/C$ \\
+RR & ::= & $\exists r_1, \ldots, r_n.\rtriple{T}{\emptyset}{C}$ \\
 \end{tabular}
 }
 \caption{Region Relationship Types}
@@ -390,12 +430,7 @@ RR & ::= & $\exists r.T/C$ \\
 {\small
 \begin{tabular}{ccc}
 
-C & ::= & $readable(r)$ \\
-  &$\mid$&$writeable(r)$ \\
-  &$\mid$&$reduceable(r,f)$ \\
-  &$\mid$&$allocable(r)$ \\
-  &$\mid$&$freeable(r)$ \\
-  &$\mid$&$(r_1 \le r_2)$ \\
+C & ::= & $(r_1 \le r_2)$ \\
   &$\mid$&$(r_1 * r_2)$ \\
   &$\mid$&$(i_1 = i_2)$ \\
   &$\mid$&$(i_1 \ne i_2)$ \\
@@ -405,6 +440,7 @@ C & ::= & $readable(r)$ \\
 \caption{Constraints}
 \end{table*}
 
+
 %%%%%%%%%%%%%%%%%%%%
 % Saturation of Constraints
 %%%%%%%%%%%%%%%%%%%%
@@ -412,26 +448,6 @@ C & ::= & $readable(r)$ \\
 \centering
 {\small
 \begin{tabular}{cc}
-%
-% read/write-ability of subregions
-%
-\begin{math}
-\begin{array}{c}
-\forall r_1, r_2. (readable(r_1) \wedge r_2 \le r_1) \rightarrow readable(r_2) \\
-\forall r_1, r_2. (writeable(r_1) \wedge r_2 \le r_1) \rightarrow writeable(r_2) \\
-\forall f, r_1, r_2. (reduceable(r_1,f) \wedge r_2 \le r_1) \rightarrow reduceable(r_2,f) \\
-\forall r_1, r_2. (allocable(r_1) \wedge r_2 \le r_1) \rightarrow allocable(r_2) \\
-\forall r_1, r_2. (freeable(r_1) \wedge r_2 \le r_1) \rightarrow freeable(r_2)
-\end{array}
-\end{math} & [{\tt Subregion Accessibility }] \\
-\\
-\begin{math}
-\begin{array}{c}
-\forall r, f_1, f_2. (reduceable(r,f_1) \wedge reduceable(r,f_2) \wedge f_1 \ne f_2) \rightarrow (readable(r) \wedge writeable(r)) \\
-\forall r, f. (readable(r) \wedge writeable(r)) \rightarrow reduceable(r,f) 
-\end{array}
-\end{math} & [{\tt Reduction Incompatibility}] \\
-\\
 %
 % reflexivity/transitivity of subregion relationship
 %
@@ -453,5 +469,137 @@ C & ::= & $readable(r)$ \\
 }
 \caption{Constraint Inference Rules}
 \end{table*}
+
+
+%%%%%%%%%%%%%%%%%%%%
+% Priviledges
+%%%%%%%%%%%%%%%%%%%%
+\begin{table*}
+\centering
+{\small
+\begin{tabular}{ccc}
+
+$\phi$ & ::= & $readable(r)$ \\
+  &$\mid$&$writeable(r)$ \\
+  &$\mid$&$reduceable(r,f)$ \\
+  &$\mid$&$allocable(r)$ \\
+  &$\mid$&$freeable(r)$ \\
+\\
+$\Phi$ & ::= & $\{ \phi_1, \ldots, \phi_n \}$
+\end{tabular}
+}
+\caption{Region Privileges}
+\end{table*}
+
+\begin{table*}
+\centering
+{\small
+\begin{tabular}{cc}
+%
+% Subregion Readability
+%
+\begin{math}
+\infrule{
+\begin{array}{lc}
+  \envsub{1}{1} e_1 : \rtripsub{T_1}{2}{2} \\
+  readable(r_1) \in \Phi_2 \hspace{1cm} C_2 \models r_2 \le r_1
+\end{array}
+}
+{
+  \envsub{1}{1} e_1 : \rtriple{T_2}{\Phi_2 \cup \{ readable(r_2) \}}{C_2}
+}
+\end{math} 
+&\raisebox{-0.2in}{[{\tt Subregion Readability}]} \\
+%
+% Subregion Writeability
+%
+\begin{math}
+\infrule{
+\begin{array}{lc}
+  \envsub{1}{1} e_1 : \rtripsub{T_1}{2}{2} \\
+  writeable(r_1) \in \Phi_2 \hspace{1cm} C_2 \models r_2 \le r_1
+\end{array}
+}
+{
+  \envsub{1}{1} e_1 : \rtriple{T_2}{\Phi_2 \cup \{ writeable(r_2) \}}{C_2}
+}
+\end{math} 
+&\raisebox{-0.2in}{[{\tt Subregion Writeability}]} \\
+%
+% Subregion Reduceability
+%
+\begin{math}
+\infrule{
+\begin{array}{lc}
+  \envsub{1}{1} e_1 : \rtripsub{T_1}{2}{2} \\
+  reduceable(r_1) \in \Phi_2 \hspace{1cm} C_2 \models r_2 \le r_1
+\end{array}
+}
+{
+  \envsub{1}{1} e_1 : \rtriple{T_2}{\Phi_2 \cup \{ reduceable(r_2) \}}{C_2}
+}
+\end{math} 
+&\raisebox{-0.2in}{[{\tt Subregion Reduceability}]} \\
+%
+% Subregion Allocability
+%
+\begin{math}
+\infrule{
+\begin{array}{lc}
+  \envsub{1}{1} e_1 : \rtripsub{T_1}{2}{2} \\
+  allocable(r_1) \in \Phi_2 \hspace{1cm} C_2 \models r_2 \le r_1
+\end{array}
+}
+{
+  \envsub{1}{1} e_1 : \rtriple{T_2}{\Phi_2 \cup \{ allocable(r_2) \}}{C_2}
+}
+\end{math} 
+&\raisebox{-0.2in}{[{\tt Subregion Allocability}]} \\
+%
+% Subregion Freeability
+%
+\begin{math}
+\infrule{
+\begin{array}{lc}
+  \envsub{1}{1} e_1 : \rtripsub{T_1}{2}{2} \\
+  freeable(r_1) \in \Phi_2 \hspace{1cm} C_2 \models r_2 \le r_1
+\end{array}
+}
+{
+  \envsub{1}{1} e_1 : \rtriple{T_2}{\Phi_2 \cup \{ freeable(r_2) \}}{C_2}
+}
+\end{math} 
+&\raisebox{-0.2in}{[{\tt Subregion Freeability}]} \\
+%
+% Reduction Incompatibility
+%
+\begin{math}
+\infrule{
+\begin{array}{lc}
+  \envsub{1}{1} e_1 : \rtripsub{T_1}{2}{2} \\
+  reduceable(r, f_1) \in \Phi_2 \hspace{1cm} reduceable(r, f_2) \in \Phi_2
+\end{array}
+}
+{
+  \envsub{1}{1} e_1 : \rtriple{T_2}{\Phi_2 \cup \{ readable(r), writeable(r) \}}{C_2}
+}
+\end{math} 
+&\raisebox{-0.2in}{[{\tt Reduction Incompatibility}]} \\
+\begin{math}
+\infrule{
+\begin{array}{lc}
+  \envsub{1}{1} e_1 : \rtripsub{T_1}{2}{2} \\
+  readable(r) \in \Phi_2 \hspace{1cm} writeable(r) \in \Phi_2
+\end{array}
+}
+{
+  \envsub{1}{1} e_1 : \rtriple{T_2}{\Phi_2 \cup \{ reduceable(r, f) \}}{C_2}
+}
+\end{math} 
+\end{tabular}
+}
+\caption{Privilege Inference}
+\end{table*}
+
 
 \end{document}
