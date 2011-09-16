@@ -217,11 +217,127 @@ namespace RegionRuntime {
     // High Level Runtime
     ///////////////////////////////////////////////////////////// 
 
+    HighLevelRuntime::HighLevelRuntime(LowLevel::Machine *machine)
+	: mapper_objects(std::vector<Mapper*>(8))
+    {
+	for (int i=0; i<mapper_objects.size(); i++)
+		mapper_objects[i] = NULL;
+	mapper_objects[0] = new Mapper(machine,this);
+    }
+
+    HighLevelRuntime::~HighLevelRuntime()
+    {
+	// Go through and delete all the mapper objects
+	for (int i=0; i<mapper_objects.size(); i++)
+		if (mapper_objects[i] != NULL) delete mapper_objects[i];
+    }
+
+    template<typename T>
+    LogicalHandle HighLevelRuntime::create_logical_region(size_t num_elmts,
+							MapperID id,
+							MappingTagID tag)
+    {
+#ifdef DEBUG_HIGH_LEVEL
+	assert(mapper_objects[id] != NULL);
+#endif
+	// Select an initial location for the right mapper for a place to put the region
+	LowLevel::Memory *location = mapper_objects[id]->select_initial_region_location(sizeof(T),num_elmts,tag);
+	// Create a RegionMetaData object for the region
+	LogicalHandle region = (LogicalHandle)LowLevel::RegionMetaData<T>("No idea what to put in this string",
+										num_elmts, location);
+#ifdef DEBUG_HIGH_LEVEL
+	assert(parent_map.find(region) == parent_map.end());
+	assert(child_map.find(region) == child_map.end());
+#endif
+	// Update the runtime data structures on region relationships
+	// A top-level region will always have itself as a parent
+	parent_map.insert(std::pair<LogicalHandle,LogicalHandle>(region,region));
+	child_map.insert(std::pair<LogicalHandle,std::vector<Partition*>*>(region, new std::vector<Partition*>()));
+	// Return the handle
+	return region;
+    }
+
+    template<typename T>
+    void HighLevelRuntime::destroy_logical_region(LogicalHandle handle)
+    {
+	// Clean up the runtime tables
+#ifdef DEBUG_HIGH_LEVEL
+	assert(parent_map.find(handle) != parent_map.end());
+	assert(child_map.find(handle) != child_map.end());
+#endif
+	// Clean up the necessary data structures
+	parent_map.erase(parent_map.find(handle));
+	delete child_map[handle];		
+	child_map.erase(child_map.find(handle));
+
+	LowLevel::RegionMetaData<T> region = (LowLevel::RegionMetaData<T>)handle;
+	// Call the destructor for this RegionMetaData object which will allow the
+	// low-level runtime to clean stuff up
+	region.LowLevel::RegionMetaData<T>::~RegionMetaData();
+    }
+
+    template<typename T>
+    Partition* HighLevelRuntime::create_disjoint_partition(LogicalHandle parent,
+							unsigned int num_subregions,
+							std::map<ptr_t<T>,Color> * color_map,
+							MapperID id,
+							MappingTagID tag)
+    {
+#ifdef DEBUG_HIGH_LEVEL
+	assert(mapper_objects[id] != NULL);
+#endif
+
+    }
+
+    template<typename T>
+    Partition* HighLevelRuntime::create_aliased_partition(LogicalHandle parent,
+							unsigned int num_subregions,
+							std::multimap<ptr_t<T>,Color> * color_map,
+							MapperID id,
+							MappingTagID tag)
+    {
+#ifdef DEBUG_HIGH_LEVEL
+	assert(mapper_objects[id] != NULL);
+#endif
+
+    }
+
+    void HighLevelRuntime::destroy_partition(Partition *partition)
+    {
+
+    }
+
+    Future* HighLevelRuntime::execute_task(LowLevel::Processor::TaskFuncID task_id,
+					const std::vector<RegionRequirement> regions,
+					const void *args, size_t arglen,
+					MapperID id, MappingTagID tag)	
+    {
+
+    }
+
+    void HighLevelRuntime::add_mapper(MapperID id, Mapper *m)
+    {
+#ifdef DEBUG_HIGH_LEVEL
+	// Only the default mapper should have id 0
+	assert(id > 0);
+#endif
+	if (id >= mapper_objects.size())
+	{
+		int old_size = mapper_objects.size();
+		mapper_objects.resize(id+1);
+		for (int i=old_size; i<(id+1); i++)
+			mapper_objects[i] = NULL;
+	} 
+#ifdef DEBUG_HIGH_LEVEL
+	assert(id < mapper_objects.size());
+	assert(mapper_objects[id] == NULL);
+#endif
+	mapper_objects[id] = m;
+    }
 
     /////////////////////////////////////////////////////////////
     // Mapper 
     ///////////////////////////////////////////////////////////// 
-
 
 
   };

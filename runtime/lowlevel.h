@@ -47,8 +47,19 @@ namespace RegionRuntime {
     template <class T>
     class RegionInstance;
 
+    // untyped version of region meta data for use in STL structures
+    class RegionMetaDataBase {
+    protected:
+	RegionMetaDataBase();
+    protected:
+	unsigned region_id;	
+    public:
+	bool operator==(const RegionMetaDataBase&) const;
+	bool operator<(const RegionMetaDataBase&) const;
+    };
+
     template <class T>
-    class RegionMetaData {
+    class RegionMetaData : public RegionMetaDataBase {
     public:
       RegionMetaData(const std::string& _name, size_t _num_elements, Memory *_master_location);
       ~RegionMetaData(void);
