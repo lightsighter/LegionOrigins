@@ -6,6 +6,7 @@
 #include <map>
 #include <set>
 #include <vector>
+#include <memory>
 
 #include "common.h"
 
@@ -181,13 +182,13 @@ namespace RegionRuntime {
 	template<typename T>
 	Partition<T> create_disjoint_partition(LogicalHandle parent,
 						unsigned int num_subregions,
-						std::map<ptr_t<T>,Color> * color_map = NULL,
+						std::auto_ptr<std::map<ptr_t<T>,Color> > color_map = NULL,
 						MapperID id = 0,
 						MappingTagID tag = 0);
 	template<typename T>
 	Partition<T> create_aliased_partition(LogicalHandle parent,
 						unsigned int num_subregions,
-						std::multimap<ptr_t<T>,Color> * color_map,
+						std::auto_ptr<std::multimap<ptr_t<T>,Color> > color_map,
 						MapperID id = 0,
 						MappingTagID tag = 0);
 

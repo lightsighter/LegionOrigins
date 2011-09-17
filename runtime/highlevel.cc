@@ -135,7 +135,7 @@ namespace RegionRuntime {
     template<typename T>
     Partition<T>::~Partition()
     {
-	delete children;
+	delete child_regions;
     }
 
     template<typename T>
@@ -144,7 +144,7 @@ namespace RegionRuntime {
 #ifdef HIGH_LEVEL_DEBUG
 	assert (c < child_regions.size());
 #endif
-	return child_regions[c];
+	return (*child_regions)[c];
     }
 
     template<typename T>
@@ -185,7 +185,6 @@ namespace RegionRuntime {
     template<typename T>
     DisjointPartition<T>::~DisjointPartition()
     {
-	delete children;
 	delete color_map;
     }
 
@@ -219,7 +218,6 @@ namespace RegionRuntime {
     template<typename T>
     AliasedPartition<T>::~AliasedPartition()
     {
-	delete children;
 	delete color_map;
     }
 
@@ -313,7 +311,7 @@ namespace RegionRuntime {
     template<typename T>
     Partition<T> HighLevelRuntime::create_disjoint_partition(LogicalHandle parent,
 							unsigned int num_subregions,
-							std::map<ptr_t<T>,Color> * color_map,
+							std::auto_ptr<std::map<ptr_t<T>,Color> > color_map,
 							MapperID id,
 							MappingTagID tag)
     {
@@ -326,7 +324,7 @@ namespace RegionRuntime {
     template<typename T>
     Partition<T> HighLevelRuntime::create_aliased_partition(LogicalHandle parent,
 							unsigned int num_subregions,
-							std::multimap<ptr_t<T>,Color> * color_map,
+							std::auto_ptr<std::multimap<ptr_t<T>,Color> > color_map,
 							MapperID id,
 							MappingTagID tag)
     {
