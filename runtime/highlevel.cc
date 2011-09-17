@@ -126,12 +126,14 @@ namespace RegionRuntime {
     // Partition 
     ///////////////////////////////////////////////////////////// 
 
-    Partition::Partition(LogicalHandle par,
+    template<typename T>
+    Partition<T>::Partition(LogicalHandle par,
 			std::vector<LogicalHandle> children,
 			bool dis) 	
 	: parent(par), child_regions (children), disjoint(dis) { }
 
-    inline LogicalHandle Partition::get_subregion(Color c) const
+    template<typename T>
+    inline LogicalHandle Partition<T>::get_subregion(Color c) const
     {
 #ifdef HIGH_LEVEL_DEBUG
 	assert (c < child_regions.size());
@@ -140,15 +142,15 @@ namespace RegionRuntime {
     }
 
     template<typename T>
-    ptr_t<T> Partition::safe_cast(ptr_t<T> ptr) const
+    ptr_t<T> Partition<T>::safe_cast(ptr_t<T> ptr) const
     {
 	// We can't have templated virtual functions so we'll just roll our own
 	if (contains_coloring())
 	{
 		if (disjoint)
-			return ((DisjointPartition*)this)->safe_cast<T>(ptr);
+			return ((DisjointPartition<T>*)this)->safe_cast(ptr);
 		else
-			return ((AliasedPartition*)this)->safe_cast<T>(ptr);
+			return ((AliasedPartition<T>*)this)->safe_cast(ptr);
 	}
 	else
 	{
@@ -157,26 +159,28 @@ namespace RegionRuntime {
 	}
     }   
 
-    inline bool Partition::is_disjoint(void) const { return disjoint; } 
+    template<typename T>
+    inline bool Partition<T>::is_disjoint(void) const { return disjoint; } 
 
-    bool Partition::contains_coloring(void) const { return false; }
+    template<typename T>
+    bool Partition<T>::contains_coloring(void) const { return false; }
 
 
     /////////////////////////////////////////////////////////////
     // Disjoint Partition 
     ///////////////////////////////////////////////////////////// 
 
-    DisjointPartition::DisjointPartition(LogicalHandle par,
+    template<typename T>
+    DisjointPartition<T>::DisjointPartition(LogicalHandle par,
 					std::vector<LogicalHandle> children,
-					void *coloring)
-	: Partition(par, children, true), color_map(coloring) { }
+					std::map<ptr_t<T>,Color> *coloring)
+	: Partition<T>(par, children, true), color_map(coloring) { }
 
     template<typename T>
-    ptr_t<T> DisjointPartition::safe_cast(ptr_t<T> ptr) const
+    ptr_t<T> DisjointPartition<T>::safe_cast(ptr_t<T> ptr) const
     {
 	// Cast our pointer to the right type of map
-	std::map<ptr_t<T>,Color> *coloring = (std::map<ptr_t<T>,Color>*)color_map;
-	if (coloring->find(ptr) != coloring->end())
+	if (color_map->find(ptr) != color_map->end())
 		return ptr;
 	else
 	{
@@ -185,24 +189,25 @@ namespace RegionRuntime {
 	}
     }
 
-    bool DisjointPartition::contains_coloring(void) const { return true; }
+    template<typename T>
+    bool DisjointPartition<T>::contains_coloring(void) const { return true; }
 
 
     /////////////////////////////////////////////////////////////
     // Aliased Partition 
     ///////////////////////////////////////////////////////////// 
 
-    AliasedPartition::AliasedPartition(LogicalHandle par,
+    template<typename T>
+    AliasedPartition<T>::AliasedPartition(LogicalHandle par,
 					std::vector<LogicalHandle> children,
-					void *coloring)
-	: Partition(par, children, false), color_map(coloring) { }
+					std::multimap<ptr_t<T>,Color> *coloring)
+	: Partition<T>(par, children, false), color_map(coloring) { }
 
     template<typename T>
-    ptr_t<T> AliasedPartition::safe_cast(ptr_t<T> ptr) const
+    ptr_t<T> AliasedPartition<T>::safe_cast(ptr_t<T> ptr) const
     {
-	// Cast our pointer to the right type of map
-	std::multimap<ptr_t<T>,Color> *coloring = (std::multimap<ptr_t<T>,Color>*)color_map;
-	if (coloring->find(ptr) != coloring->end())
+	// TODO: find the right kind of safe_cast for the this pointer
+	if (color_map->find(ptr) != color_map->end())
 		return ptr;	
 	else
 	{
@@ -211,7 +216,8 @@ namespace RegionRuntime {
 	}
     }
 
-    bool AliasedPartition::contains_coloring(void) const { return true; }
+    template<typename T>
+    bool AliasedPartition<T>::contains_coloring(void) const { return true; }
 
     /////////////////////////////////////////////////////////////
     // High Level Runtime
@@ -241,7 +247,15 @@ namespace RegionRuntime {
 	assert(mapper_objects[id] != NULL);
 #endif
 	// Select an initial location for the right mapper for a place to put the region
-	LowLevel::Memory *location = mapper_objects[id]->select_initial_region_location(sizeof(T),num_elmts,tag);
+	Memory *location = NULL;
+	mapper_objects[id]->select_initial_region_location(location,sizeof(T),num_elmts,tag);
+#ifdef DEBUG_HIGH_LEVEL
+	if (location == NULL)
+	{
+		fprintf(stderr,"Mapper %d failed to return an initial location for tag %d\n",id,tag);
+		assert(false);
+	}
+#endif
 	// Create a RegionMetaData object for the region
 	LogicalHandle region = (LogicalHandle)LowLevel::RegionMetaData<T>("No idea what to put in this string",
 										num_elmts, location);
@@ -252,7 +266,7 @@ namespace RegionRuntime {
 	// Update the runtime data structures on region relationships
 	// A top-level region will always have itself as a parent
 	parent_map.insert(std::pair<LogicalHandle,LogicalHandle>(region,region));
-	child_map.insert(std::pair<LogicalHandle,std::vector<Partition*>*>(region, new std::vector<Partition*>()));
+	child_map.insert(std::pair<LogicalHandle,std::vector<PartitionBase>*>(region, new std::vector<PartitionBase>()));
 	// Return the handle
 	return region;
     }
@@ -277,7 +291,7 @@ namespace RegionRuntime {
     }
 
     template<typename T>
-    Partition* HighLevelRuntime::create_disjoint_partition(LogicalHandle parent,
+    Partition<T> HighLevelRuntime::create_disjoint_partition(LogicalHandle parent,
 							unsigned int num_subregions,
 							std::map<ptr_t<T>,Color> * color_map,
 							MapperID id,
@@ -290,7 +304,7 @@ namespace RegionRuntime {
     }
 
     template<typename T>
-    Partition* HighLevelRuntime::create_aliased_partition(LogicalHandle parent,
+    Partition<T> HighLevelRuntime::create_aliased_partition(LogicalHandle parent,
 							unsigned int num_subregions,
 							std::multimap<ptr_t<T>,Color> * color_map,
 							MapperID id,
@@ -302,7 +316,8 @@ namespace RegionRuntime {
 
     }
 
-    void HighLevelRuntime::destroy_partition(Partition *partition)
+    template<typename T>
+    void HighLevelRuntime::destroy_partition(Partition<T> partition)
     {
 
     }
