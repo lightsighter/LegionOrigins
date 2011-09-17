@@ -107,12 +107,12 @@ namespace RegionRuntime {
     class Partition : public PartitionBase {
     protected:
 	const LogicalHandle parent;
-	std::vector<LogicalHandle> child_regions;
+	const std::vector<LogicalHandle> *const child_regions;
 	const bool disjoint;
     protected:
 	// Only the runtime should be able to create Partitions
 	friend class HighLevelRuntime;
-	Partition(LogicalHandle par, std::vector<LogicalHandle> children, bool dis = true);
+	Partition(LogicalHandle par, std::vector<LogicalHandle> *children, bool dis = true);
 	virtual ~Partition();	
     public:
 	LogicalHandle get_subregion(Color c) const;
@@ -125,12 +125,13 @@ namespace RegionRuntime {
     template<typename T>
     class DisjointPartition : public Partition<T> {
     private:
-	std::map<ptr_t<T>,Color> *const color_map;
+	const std::map<ptr_t<T>,Color> *const color_map;
     protected:
 	friend class HighLevelRuntime;
 	DisjointPartition(LogicalHandle p,
-			std::vector<LogicalHandle> children, 
+			std::vector<LogicalHandle> *children, 
 			std::map<ptr_t<T>,Color> *coloring);
+	virtual ~DisjointPartition();
     public:
 	ptr_t<T> safe_cast(ptr_t<T> ptr) const;
     protected:
@@ -140,12 +141,13 @@ namespace RegionRuntime {
     template<typename T>
     class AliasedPartition : public Partition<T> {
     private:
-	std::multimap<ptr_t<T>,Color> *const color_map;
+	const std::multimap<ptr_t<T>,Color> *const color_map;
     protected:
 	friend class HighLevelRuntime;
 	AliasedPartition(LogicalHandle p,
-			std::vector<LogicalHandle> children, 
+			std::vector<LogicalHandle> *children, 
 			std::multimap<ptr_t<T>,Color> *coloring);
+	virtual ~AliasedPartition();
     public:
 	ptr_t<T> safe_cast(ptr_t<T> ptr) const;
     protected:
@@ -197,16 +199,13 @@ namespace RegionRuntime {
 			const std::vector<RegionRequirement> regions,
 			const void *args, size_t arglen, MapperID id = 0, MappingTagID tag = 0);	
     public:
-	// Add additional mappers that the runtime can use to perform operations
 	void add_mapper(MapperID id, Mapper *m);
     public:
 	// Get instances - return the memory locations of all known instances of a region
 	// Get instances of parent regions
 	// Get partitions of a region
     private:
-	// Internal runtime data structures for tracking regions, partitions, mappers
 	std::vector<Mapper*> mapper_objects;
-	// Keep track of the parent regions of a region
 	std::map<LogicalHandle,LogicalHandle> parent_map;
 	std::map<LogicalHandle,std::vector<PartitionBase>*> child_map;
     };
@@ -220,33 +219,35 @@ namespace RegionRuntime {
     public:
 	Mapper(MachineDescription *machine, HighLevelRuntime *runtime);
     public:
-	virtual void select_initial_region_location(Memory *&result, 
-						size_t elmt_size, 
-						size_t num_elmts, 
-						MappingTagID tag);	
-	virtual void select_initial_partition_location(std::vector<Memory*> &result, 
-						size_t elmt_size, 
-						const std::vector<const size_t> &num_elmts, 
-						unsigned int num_subregions, 
-						MappingTagID tag);
-	virtual void compact_partition(bool &result,
-						const PartitionBase &partition, 
-						MappingTagID tag);
+	virtual void select_initial_region_location(	Memory *&result, 
+							size_t elmt_size, 
+							size_t num_elmts, 
+							MappingTagID tag);	
 
-	virtual void select_target_processor(Processor *&result,
+	virtual void select_initial_partition_location(	std::vector<Memory*> &result, 
+							size_t elmt_size, 
+							const std::vector<const size_t> &num_elmts, 
+							unsigned int num_subregions, 
+							MappingTagID tag);
+
+	virtual void compact_partition(	bool &result,
+					const PartitionBase &partition, 
+					MappingTagID tag);
+
+	virtual void select_target_processor(	Processor *&result,
 						Processor::TaskFuncID task_id,
 						const std::vector<const RegionRequirement> &regions,
 						MappingTagID tag);	
 
-	virtual void permit_task_steal(bool &result,
-						Processor::TaskFuncID task_id,
-						const std::vector<const RegionRequirement> &region,
-						MappingTagID tag);
+	virtual void permit_task_steal(	bool &result,
+					Processor::TaskFuncID task_id,
+					const std::vector<const RegionRequirement> &region,
+					MappingTagID tag);
 
-	virtual void map_task(std::vector<Memory*> &result,
-						Processor::TaskFuncID task_id,
-						const std::vector<const RegionRequirement> &region,
-						MappingTagID tag);
+	virtual void map_task(	std::vector<Memory*> &result,
+				Processor::TaskFuncID task_id,
+				const std::vector<const RegionRequirement> &region,
+				MappingTagID tag);
     };
 
   };

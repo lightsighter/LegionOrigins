@@ -128,9 +128,15 @@ namespace RegionRuntime {
 
     template<typename T>
     Partition<T>::Partition(LogicalHandle par,
-			std::vector<LogicalHandle> children,
+			std::vector<LogicalHandle> *children,
 			bool dis) 	
 	: parent(par), child_regions (children), disjoint(dis) { }
+
+    template<typename T>
+    Partition<T>::~Partition()
+    {
+	delete children;
+    }
 
     template<typename T>
     inline LogicalHandle Partition<T>::get_subregion(Color c) const
@@ -172,9 +178,16 @@ namespace RegionRuntime {
 
     template<typename T>
     DisjointPartition<T>::DisjointPartition(LogicalHandle par,
-					std::vector<LogicalHandle> children,
+					std::vector<LogicalHandle> *children,
 					std::map<ptr_t<T>,Color> *coloring)
 	: Partition<T>(par, children, true), color_map(coloring) { }
+
+    template<typename T>
+    DisjointPartition<T>::~DisjointPartition()
+    {
+	delete children;
+	delete color_map;
+    }
 
     template<typename T>
     ptr_t<T> DisjointPartition<T>::safe_cast(ptr_t<T> ptr) const
@@ -199,9 +212,16 @@ namespace RegionRuntime {
 
     template<typename T>
     AliasedPartition<T>::AliasedPartition(LogicalHandle par,
-					std::vector<LogicalHandle> children,
+					std::vector<LogicalHandle> *children,
 					std::multimap<ptr_t<T>,Color> *coloring)
 	: Partition<T>(par, children, false), color_map(coloring) { }
+
+    template<typename T>
+    AliasedPartition<T>::~AliasedPartition()
+    {
+	delete children;
+	delete color_map;
+    }
 
     template<typename T>
     ptr_t<T> AliasedPartition<T>::safe_cast(ptr_t<T> ptr) const
