@@ -18,12 +18,14 @@ namespace RegionRuntime {
       static const Event NO_EVENT;
 
     protected:
+      friend class EventImpl;
+
       Event(unsigned _event_id);
       
       void trigger(void);
 
     protected:
-      unsigned event_id;
+      unsigned long long event_id;
     };
 
     class Lock {

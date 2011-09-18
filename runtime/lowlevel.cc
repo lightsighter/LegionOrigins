@@ -157,7 +157,60 @@ namespace RegionRuntime {
       }
     };
 
-    class LockImpl {
+    class AutoHSLLock {
+    public:
+      AutoHSLLock(gasnet_hsl_t &mutex) : mutexp(&mutex) { gasnet_hsl_lock(mutexp); }
+      ~AutoHSLLock(void) { gasnet_hsl_unlock(mutexp); }
+    protected:
+      gasnet_hsl_t *mutexp;
+    };
+
+    struct LockImpl {
+    public:
+      static void create_lock_table(int size)
+      {
+	lock_table = new LockImpl[size];
+	lock_table_size = size;
+      }
+
+    protected:
+      static LockImpl *lock_table;
+      static int lock_table_size;
+
+      LockImpl(void)
+      {
+	owner = 0;
+	count = 0;
+	mode = 0;
+	gasnet_hsl_init(&mutex);
+	remote_waiter_mask = 0;
+	remote_sharer_mask = 0;
+	requested = false;
+      }
+
+      class LockWaiter {
+      public:
+	LockWaiter(void)
+	{
+	  gasnett_cond_init(&condvar);
+	}
+
+	void sleep(LockImpl *impl)
+	{
+	  impl->local_waiters.push_back(this);
+	  gasnett_cond_wait(&condvar, &impl->mutex.lock);
+	}
+
+	void wake(void)
+	{
+	  gasnett_cond_signal(&condvar);
+	}
+
+      protected:
+	unsigned mode;
+	gasnett_cond_t condvar;
+      };
+
     protected:
       unsigned owner; // which node owns the lock
       unsigned count; // number of locks held by local threads
@@ -166,21 +219,167 @@ namespace RegionRuntime {
 
       gasnet_hsl_t mutex; // controls which local thread has access to internal data (not runtime-visible lock)
 
-      std::vector<bool> remote_waiters; // bitmask of which remote nodes are waiting on the lock
-      std::set<ThreadImpl *> local_waiters; // set of local threads that are waiting on lock
+      // bitmasks of which remote nodes are waiting on a lock (or sharing it)
+      uint64_t remote_waiter_mask, remote_sharer_mask;
+      std::list<LockWaiter *> local_waiters; // set of local threads that are waiting on lock
+      bool requested; // do we have a request for the lock in flight?
+
+      struct LockRequestArgs {
+	gasnet_node_t node;
+	unsigned lock_id;
+	unsigned mode;
+      };
+
+      static void handle_lock_request(LockRequestArgs args)
+      {
+	assert(0);
+      }
+
+      typedef ActiveMessageShortNoReply<155, LockRequestArgs, handle_lock_request> LockRequestMessage;
+
+      void lock(unsigned new_mode)
+      {
+	AutoHSLLock a(mutex); // hold mutex on lock for entire function
+
+	while(1) { // we're going to have to loop until we succeed
+	  // case 1: we own the lock
+	  if(owner == gasnet_mynode()) {
+	    // can we grant it?
+	    if((count == 0) || ((mode == new_mode) && (mode != MODE_EXCL))) {
+	      mode = new_mode;
+	      count++;
+	      return;
+	    }
+	  }
+
+	  // case 2: we're not the owner, but we're sharing it
+	  if((owner != gasnet_mynode()) && (count > 0)) {
+	    // we're allowed to grant additional sharers with the same mode
+	    assert(mode != MODE_EXCL);
+	    if(mode == new_mode) {
+	      count++;
+	      return;
+	    }
+	  }
+
+	  // if we fall through to here, we need to sleep until we can have
+	  //  the lock - make sure to send a request to the owner node (if it's
+	  //  not us, and if we haven't sent one already)
+	  if((owner != gasnet_mynode()) && !requested) {
+	    LockRequestArgs args;
+	    args.node = gasnet_mynode();
+	    args.lock_id = 44/*FIX!!!*/;
+	    args.mode = new_mode;
+	    LockRequestMessage::request(owner, args);
+	  }
+
+	  // now we go to sleep - somebody will wake us up when it's (probably)
+	  //  our turn
+	  LockWaiter waiter;
+	  //waiter.mode = new_mode;
+	  waiter.sleep(this);
+	}
+      }
     };
 
     class EventImpl {
+    public:
+      static void create_event_table(int size)
+      {
+	event_table = new EventImpl[size];
+	event_table_size = size;
+	// start by spreading event ownership evenly across nodes
+	for(int i = 0; i < size; i++) 
+	  event_table[i].owner = i % gasnet_nodes();
+      }
+
+#define MAKE_EVENT_ID(index, gen) ((((unsigned long long)(index))<<32)|((unsigned)(gen)))
+#define EVENT_ID_INDEX(id) ((unsigned)((id) >> 32))
+#define EVENT_ID_GEN(id)   ((unsigned)((id) & 0xFFFFFFFFUL))
+
+      // find an available event slot and reserve it
+      static Event alloc_event(void)
+      {
+	// simple case: see if we have an event that we own and is not in use
+	for(int i = 0; i < event_table_size; i++) {
+	  if((event_table[i].owner != gasnet_mynode()) ||
+	     event_table[i].in_use) continue;  // no mutex - early out
+	  // if we think we've got a candidate, take the lock and check for real
+	  AutoHSLLock(event_table[i].mutex);
+	  if((event_table[i].owner == gasnet_mynode()) && !event_table[i].in_use) {
+	    event_table[i].in_use = true;
+	    return Event(MAKE_EVENT_ID(i, event_table[i].generation));
+	  }
+	}
+
+	// simple case failed - have to ask somebody else for one?
+	assert(0); // TODO
+	return Event::NO_EVENT;
+      }
+
+      static void trigger_event(uint64_t event_id);
+      static void trigger_event(Event e) { trigger_event(e.event_id); }
+
+      typedef ActiveMessageShortNoReply<144, uint64_t, EventImpl::trigger_event> EventTriggerMessage;
+
+      class EventWaiter {
+      public:
+	virtual void trigger(void) = 0;
+      };
+
+    protected:
+      static EventImpl *event_table;
+      static int event_table_size;
+
+      EventImpl(void)
+      {
+	owner = 0;
+	generation = 0;
+	in_use = false;
+	gasnet_hsl_init(&mutex);
+      }
+
     protected:
       unsigned owner;
       unsigned generation;
-      bool triggered;
+      bool in_use;
 
       gasnet_hsl_t mutex; // controls which local thread has access to internal data (not runtime-visible event)
 
-      std::vector<bool> remote_waiters; // bitmask of which remote nodes are waiting on the event
-      std::set<ThreadImpl *> local_waiters; // set of local threads that are waiting on event
+      uint64_t remote_waiters; // bitmask of which remote nodes are waiting on the event
+      std::list<EventWaiter *> local_waiters; // set of local threads that are waiting on event
     };
+
+    EventImpl *EventImpl::event_table = 0;
+    int EventImpl::event_table_size = 0;
+
+    void EventImpl::trigger_event(uint64_t event_id)
+      {
+	EventImpl *impl = &event_table[EVENT_ID_INDEX(event_id)];
+	unsigned gen = EVENT_ID_GEN(event_id);
+
+	AutoHSLLock(impl->mutex);
+
+	// have we already seen this trigger?  if so, drop the duplicate
+	if(gen == (impl->generation - 1)) return;
+
+	if(impl->owner == gasnet_mynode()) {
+	  // if we're the owner, announce the triggering to any remote listeners
+	  for(int n = 0; impl->remote_waiters; n++, impl->remote_waiters >>= 1)
+	    if(impl->remote_waiters & 1)
+	      EventTriggerMessage::request(n, event_id);
+	} else {
+	  // if we're not the owner, forward the triggering to the owner
+	  EventTriggerMessage::request(impl->owner, event_id);
+	}
+
+	// in both cases, we can immediately notify any local waiters
+	while(impl->local_waiters.size() > 0) {
+	  EventWaiter *ew = impl->local_waiters.front();
+	  impl->local_waiters.pop_front();
+	  ew->trigger();
+	}
+      }
 
     // class Event
 
@@ -286,6 +485,49 @@ namespace RegionRuntime {
 
     protected:
       ProcessorThread *thread;
+    };
+
+    struct SpawnTaskArgs {
+      unsigned proc_id;
+      TaskFuncID func_id;
+      Event::ID start_event;
+      Event::ID finish_event;
+    };
+
+    static void spawn_task_handler(SpawnTaskArgs args, const void *data,
+				   size_t datalen)
+    {
+    }
+
+    typedef ActiveMessageMediumNoReply<150, SpawnTaskArgs, spawn_task_handler> SpawnTaskMessage;
+
+    class RemoteProcessor : public Processor {
+    public:
+      RemoteProcessor(gasnet_node_t _node, unsigned _proc_id)
+	: Processor("foo"), node(_node), proc_id(_proc_id)
+      {
+      }
+
+      virtual ~RemoteProcessor(void)
+      {
+      }
+
+      virtual Event spawn(TaskFuncID func_id, const void *args, size_t arglen,
+			  Event wait_on = Event::NO_EVENT)
+      {
+	Event finish_event = Event::NO_EVENT;
+	SpawnTaskArgs msgargs;
+	msgargs.proc_id = proc_id;
+	msgargs.func_id = func_id;
+	msgargs.start_event = wait_on;
+	msgargs.finish_event = finish_event;
+	SpawnTaskMessage::request(node, msgargs, args, arglen);
+	return finish_event;
+      }
+
+    protected:
+      gasnet_node_t node;
+      unsigned proc_id;
     };
 
     class GASNetNode {
