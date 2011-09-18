@@ -5,6 +5,8 @@
 #include <set>
 #include <map>
 
+#include "common.h"
+
 namespace RegionRuntime {
   namespace LowLevel {
 
@@ -47,11 +49,22 @@ namespace RegionRuntime {
     template <class T>
     class RegionInstance;
 
-    template <class T>
-    struct ptr_t { unsigned value; };
+    // untyped version of region meta data for use in STL structures
+    class RegionMetaDataBase {
+    protected:
+	RegionMetaDataBase();
+    protected:
+        // Mike: I think it's ok to leave this protected right now
+	// With the untyped version of RegionMetaData base I don't need access.
+	// The same applies to lock and event.
+	unsigned region_id;	
+    public:
+	bool operator==(const RegionMetaDataBase&) const;
+	bool operator<(const RegionMetaDataBase&) const;
+    };
 
     template <class T>
-    class RegionMetaData {
+    class RegionMetaData : public RegionMetaDataBase {
     public:
       RegionMetaData(const std::string& _name, size_t _num_elements, Memory *_master_location);
       ~RegionMetaData(void);
