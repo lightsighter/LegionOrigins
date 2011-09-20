@@ -14,7 +14,14 @@ typedef unsigned int ReductionID;
 typedef unsigned int MappingTagID;
 
 template<typename T>
-struct ptr_t { unsigned value; };
+struct ptr_t 
+{ 
+public:
+	unsigned value; 
+public:
+	//bool operator==(const ptr_t<T> &ptr) const { return (ptr.value == this.value); }
+	//bool operator< (const ptr_t<T> &ptr) const { return (ptr.value <  this.value); }
+};
 
 class Context
 {

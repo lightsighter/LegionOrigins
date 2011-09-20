@@ -100,6 +100,9 @@ namespace RegionRuntime {
 
     // Untyped base class of a partition for internal use in the runtime
     class PartitionBase {
+    public:
+	// make the warnings go away
+	virtual ~PartitionBase();
     protected:
 	virtual bool contains_coloring(void) const = 0;
     }; 
@@ -121,6 +124,7 @@ namespace RegionRuntime {
 	bool is_disjoint(void) const;
     protected:
 	virtual bool contains_coloring(void) const;
+	bool operator==(const Partition<T> &part) const;
     };
 
     template<typename T>
@@ -177,12 +181,14 @@ namespace RegionRuntime {
 	LogicalHandle create_logical_region(size_t num_elmts = 0,MapperID id = 0,MappingTagID tag = 0);
 	template<typename T>
 	void destroy_logical_region(LogicalHandle handle);	
+        template<typename T>
+        LogicalHandle smash_logical_region(LogicalHandle region1, LogicalHandle region2);
     public:
 	// Functions for creating and destroying partitions
 	template<typename T>
 	Partition<T> create_disjoint_partition(LogicalHandle parent,
 						unsigned int num_subregions,
-						std::auto_ptr<std::map<ptr_t<T>,Color> > color_map = NULL,
+						std::auto_ptr<std::map<ptr_t<T>,Color> > color_map,
 						MapperID id = 0,
 						MappingTagID tag = 0);
 	template<typename T>
@@ -207,29 +213,58 @@ namespace RegionRuntime {
 	// Get partitions of a region
     private:
 	std::vector<Mapper*> mapper_objects;
-	std::map<LogicalHandle,LogicalHandle> parent_map;
+	std::map</*child_region*/LogicalHandle,/*parent region*/LogicalHandle> parent_map;
 	std::map<LogicalHandle,std::vector<PartitionBase>*> child_map;
+    private:
+	// Internal operations
+	// The two remove operations are mutually recursive
+	// - if you remove a region, you also remove all its partitions
+	// - if you remove a partition, you remove all its subregions
+	template<typename T>
+	void remove_region(LogicalHandle region);
+	template<typename T>
+	void remove_partition(Partition<T> partition);
     };
 
     /**
-     * A mapper object will be created for every processor and will be responsbile
+     * A mapper object will be created for every processor and will be responsbile for
      * scheduling tasks onto that processor as well as placing the necessary regions
      * in the memory hierarchy for those tasks to run.
      */
     class Mapper {
+    protected:
+	HighLevelRuntime *runtime;
     public:
 	Mapper(MachineDescription *machine, HighLevelRuntime *runtime);
+	virtual ~Mapper();
     public:
 	virtual void select_initial_region_location(	Memory *&result, 
 							size_t elmt_size, 
 							size_t num_elmts, 
 							MappingTagID tag);	
 
+	/*
+	virtual bool remap_initial_region_location(	Memory *&result,
+							const Memory &old_mapping,
+							size_t elmt_size,
+							size_t num_elmts,
+							MappingTagID tag);
+	*/
+
 	virtual void select_initial_partition_location(	std::vector<Memory*> &result, 
 							size_t elmt_size, 
-							const std::vector<const size_t> &num_elmts, 
+							const std::vector<size_t> &num_elmts, 
 							unsigned int num_subregions, 
 							MappingTagID tag);
+
+	/*
+	virtual bool remap_initial_partition_location(	std::vector<Memory*> &result,
+							const std::vector<Memory*> old_mapping,
+							size_t elmt_size,
+							const std::vector<size_t &num_elmts,
+							unsigned int num_subregions,
+							MappingTagID tag);
+	*/
 
 	virtual void compact_partition(	bool &result,
 					const PartitionBase &partition, 
@@ -237,17 +272,17 @@ namespace RegionRuntime {
 
 	virtual void select_target_processor(	Processor *&result,
 						Processor::TaskFuncID task_id,
-						const std::vector<const RegionRequirement> &regions,
+						const std::vector<RegionRequirement> &regions,
 						MappingTagID tag);	
 
 	virtual void permit_task_steal(	bool &result,
 					Processor::TaskFuncID task_id,
-					const std::vector<const RegionRequirement> &region,
+					const std::vector<RegionRequirement> &regions,
 					MappingTagID tag);
 
 	virtual void map_task(	std::vector<Memory*> &result,
 				Processor::TaskFuncID task_id,
-				const std::vector<const RegionRequirement> &region,
+				const std::vector<RegionRequirement> &regions,
 				MappingTagID tag);
     };
 
