@@ -98,7 +98,7 @@ namespace RegionRuntime {
     RegionRequirement::RegionRequirement(LogicalHandle h,
 					AccessMode m,
 					CoherenceProperty p,
-					ReductionID r) 
+					void *r) 
 		: handle(h), mode(m), prop(p), reduction(r) { }
     //--------------------------------------------------------------------------------------------
 
@@ -108,7 +108,8 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////////////// 
 
     //--------------------------------------------------------------------------------------------
-    PhysicalRegion::PhysicalRegion(void *alloc, void *inst)
+    PhysicalRegion::PhysicalRegion(LowLevel::RegionAllocatorUntyped alloc, 
+					LowLevel::RegionInstanceUntyped inst)
 		: allocator(alloc), instance(inst) { }
     //-------------------------------------------------------------------------------------------- 
 
@@ -117,7 +118,7 @@ namespace RegionRuntime {
     inline ptr_t<T> PhysicalRegion::alloc(void)
     //--------------------------------------------------------------------------------------------
     {
-	return ((LowLevel::RegionAllocator<T>*)allocator)->alloc();
+	return LowLevel::RegionAllocator<T>(allocator).alloc_fn()();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -125,7 +126,7 @@ namespace RegionRuntime {
     inline void PhysicalRegion::free(ptr_t<T> ptr)
     //--------------------------------------------------------------------------------------------
     {
-	((LowLevel::RegionAllocator<T>*)allocator)->free(ptr);
+	LowLevel::RegionAllocator<T>(allocator).free_fn()(ptr);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -133,7 +134,7 @@ namespace RegionRuntime {
     inline T PhysicalRegion::read(ptr_t<T> ptr)
     //--------------------------------------------------------------------------------------------
     {
-	return ((LowLevel::RegionInstance<T>*)instance)->read(ptr);
+	return LowLevel::RegionInstance<T>(instance).read_fn()(ptr);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -141,15 +142,15 @@ namespace RegionRuntime {
     inline void PhysicalRegion::write(ptr_t<T> ptr, T newval)
     //--------------------------------------------------------------------------------------------
     {
-	((LowLevel::RegionInstance<T>*)instance)->write(ptr,newval);
+	LowLevel::RegionInstance<T>(instance).write_fn()(ptr,newval);
     }
 
     //--------------------------------------------------------------------------------------------
     template<typename T>
-    inline void PhysicalRegion::reduce(ptr_t<T> ptr, ReductionID op, T newval)
+    inline void PhysicalRegion::reduce(ptr_t<T> ptr, T (*reduceop)(T,T), T newval)
     //-------------------------------------------------------------------------------------------- 
     {
-	((LowLevel::RegionInstance<T>*)instance)->reduce(ptr,op,newval);
+	LowLevel::RegionInstance<T>(instance).reduce_fn()(ptr,reduceop,newval);	
     }
 
 
@@ -319,8 +320,8 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////////////// 
 
     //--------------------------------------------------------------------------------------------
-    HighLevelRuntime::HighLevelRuntime(LowLevel::Machine *machine)
-	: mapper_objects(std::vector<Mapper*>(8))
+    HighLevelRuntime::HighLevelRuntime(LowLevel::Machine *m)
+	: mapper_objects(std::vector<Mapper*>(8), machine(m))
     //--------------------------------------------------------------------------------------------
     {
 	for (unsigned int i=0; i<mapper_objects.size(); i++)
@@ -348,18 +349,42 @@ namespace RegionRuntime {
 	assert(mapper_objects[id] != NULL);
 #endif
 	// Select an initial location for the right mapper for a place to put the region
-	Memory *location = NULL;
+	Memory location;
+	Mapper::MapperErrorCode error = Mapper::MAPPING_SUCCESS;
+	LogicalHandle region;
 	mapper_objects[id]->select_initial_region_location(location,sizeof(T),num_elmts,tag);
-#ifdef DEBUG_HIGH_LEVEL
-	if (location == NULL)
+	if (!location.exists())
+		error = Mapper::INVALID_MEMORY;	
+	else
 	{
-		fprintf(stderr,"Mapper %d failed to return an initial location for tag %d\n",id,tag);
-		assert(false);
+		// Create a RegionMetaData object for the region
+		region = (LogicalHandle)LowLevel::RegionMetaData<T>::create_region(location,num_elmts);	
+		if (!region.exists())
+			error = Mapper::INSUFFICIENT_SPACE;
 	}
-#endif
-	// Create a RegionMetaData object for the region
-	LogicalHandle region = (LogicalHandle)LowLevel::RegionMetaData<T>("No idea what to put in this string",
-										num_elmts, location);
+	// Check to see if it exists, if it doesn't try invoking the mapper error handler
+	while (error != Mapper::MAPPING_SUCCESS)
+	{
+		Memory alt_location;
+		// Try remapping, exiting if the mapper fails
+		if (mapper_objects[id]->remap_initial_region_location(alt_location,
+			error, location, sizeof(T), num_elmts, tag))
+		{
+			fprintf(stderr,"Mapper %d indicated exit for mapping initial region location with tag %d\n",id,tag);
+			exit(100*(machine->get_local_processor().id)+id);
+		}
+		location = alt_location;
+		if (!location.exists())
+			error = Mapper::INVALID_MEMORY;
+		else
+		{
+			region = (LogicalHandle)LowLevel::RegionMetaData<T>::create_region(location,num_elmts);
+			if (!region.exists())
+				error = Mapper::INSUFFICIENT_SPACE;
+			else
+				error = Mapper::MAPPING_SUCCESS;
+		}
+	}
 #ifdef DEBUG_HIGH_LEVEL
 	assert(parent_map.find(region) == parent_map.end());
 	assert(child_map.find(region) == child_map.end());
@@ -638,11 +663,39 @@ namespace RegionRuntime {
     Mapper::Mapper(MachineDescription *machine, HighLevelRuntime *rt) : runtime(rt)
     //--------------------------------------------------------------------------------------------
     {
+	// The default mapper will maintain a linear view of memory
+	// We'll assume that smaller memories are closer to the processor
+	// and rank memories based on their size.
+	
+	// First figure out what processor this runtime is running on top of
+	local_proc = machine->get_local_processor();	
 
+	// get the set of memories visible from this processor and sort them on size
+	const std::set<Memory> &memories = machine->get_visible_memories(local_proc);
+	for (std::set<Memory>::iterator it = memories.begin();
+		it != memories.end(); it++)
+	{
+		Memory new_mem = (*it);
+		bool added = false;
+		for (std::vector<Memory>::iterator sort_it = visible_memories.begin();
+			sort_it != visible_memories.end(); sort_it++)
+		{
+			if (machine->memory_size(new_mem) < machine->memory_size(*sort_it))
+			{
+				visible_memories.insert(sort_it,new_mem);
+				added = true;
+				break;
+			}
+		}
+		if (!added)
+			visible_memories.push_back(new_mem);
+	}
+	
+	// Now for each of the memories that we have that are visible
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::select_initial_region_location(Memory *&result, size_t elmt_size,
+    void Mapper::select_initial_region_location(Memory &result, size_t elmt_size,
 						size_t num_elmts, MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
@@ -650,7 +703,29 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::select_initial_partition_location(std::vector<Memory*> &result,
+    bool Mapper::remap_initial_region_location(Memory &result, MapperErrorCode error,
+						const Memory &failed_mapping, size_t elmt_size,
+						size_t num_elmts, MappingTagID tag)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void Mapper::select_initial_partition_location(std::vector<Memory> &result,
+						size_t elmt_size,
+						const std::vector<size_t> &num_elmts,
+						unsigned int num_subregions,
+						MappingTagID tag)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool Mapper::remap_initial_partition_location(std::vector<Memory> &result,
+						const std::vector<MapperErrorCode> &errors,
+						const std::vector<Memory> &failed_mapping,
 						size_t elmt_size,
 						const std::vector<size_t> &num_elmts,
 						unsigned int num_subregions,
@@ -669,9 +744,16 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::select_target_processor(Processor *&result, Processor::TaskFuncID task_id,
+    void Mapper::select_target_processor(Processor &result, Processor::TaskFuncID task_id,
 					const std::vector<RegionRequirement> &regions,
 					MappingTagID tag)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void Mapper::target_task_steal(Processor &result, MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
 
@@ -687,7 +769,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::map_task(std::vector<Memory*> &result, Processor::TaskFuncID task_id,
+    void Mapper::map_task(std::vector<Memory> &result, Processor::TaskFuncID task_id,
 				const std::vector<RegionRequirement> &regions, MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
@@ -695,7 +777,14 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    bool Mapper::remap_task(std::vector<Memory> &result, const std::vector<MapperErrorCode> &errors,
+				const std::vector<Memory> &failed_mapping,
+				Processor::TaskFuncID task_id,
+				const std::vector<RegionRequirement> &regions, MappingTagID tag)
     //--------------------------------------------------------------------------------------------
+    {
+
+    }
 
     //--------------------------------------------------------------------------------------------
     //--------------------------------------------------------------------------------------------

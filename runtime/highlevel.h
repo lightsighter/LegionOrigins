@@ -38,7 +38,7 @@ namespace RegionRuntime {
     };
 
     typedef LowLevel::Machine MachineDescription;
-    typedef LowLevel::RegionMetaDataBase LogicalHandle;
+    typedef LowLevel::RegionMetaDataUntyped LogicalHandle;
     typedef LowLevel::Memory Memory;
     typedef LowLevel::Processor Processor;
     typedef unsigned int Color;
@@ -73,9 +73,9 @@ namespace RegionRuntime {
 	const LogicalHandle handle;
 	const AccessMode mode;
 	const CoherenceProperty prop;
-	const ReductionID reduction;
+	void *reduction; // Function pointer to the reduction
     public:
-	RegionRequirement(LogicalHandle h, AccessMode m, CoherenceProperty p, ReductionID r = 0);
+	RegionRequirement(LogicalHandle h, AccessMode m, CoherenceProperty p, void *r = NULL);
     };
 
     /**
@@ -86,16 +86,17 @@ namespace RegionRuntime {
      */
     class PhysicalRegion {
     private:
-	void *const allocator;
-	void *const instance;
+	LowLevel::RegionAllocatorUntyped allocator;
+	LowLevel::RegionInstanceUntyped instance;
     public:
-	PhysicalRegion (void * alloc, void * inst);	
+	PhysicalRegion (LowLevel::RegionAllocatorUntyped alloc, 
+			LowLevel::RegionInstanceUntyped inst);	
     public:
 	template<typename T> ptr_t<T> alloc(void);
 	template<typename T> void free(ptr_t<T> ptr);
 	template<typename T> T read(ptr_t<T> ptr);
 	template<typename T> void write(ptr_t<T> ptr, T newval);
-	template<typename T> void reduce(ptr_t<T> ptr, ReductionID op, T newval);
+	template<typename T> void reduce(ptr_t<T> ptr, T (*reduceop)(T,T), T newval);
     };
 
     // Untyped base class of a partition for internal use in the runtime
@@ -173,7 +174,7 @@ namespace RegionRuntime {
      */
     class HighLevelRuntime {
     public:
-	HighLevelRuntime(MachineDescription *machine);
+	HighLevelRuntime(MachineDescription *m);
 	~HighLevelRuntime();
     public:
 	// Functions for creating and destroying logical regions
@@ -215,6 +216,7 @@ namespace RegionRuntime {
 	std::vector<Mapper*> mapper_objects;
 	std::map</*child_region*/LogicalHandle,/*parent region*/LogicalHandle> parent_map;
 	std::map<LogicalHandle,std::vector<PartitionBase>*> child_map;
+	MachineDescription *machine;
     private:
 	// Internal operations
 	// The two remove operations are mutually recursive
@@ -232,58 +234,81 @@ namespace RegionRuntime {
      * in the memory hierarchy for those tasks to run.
      */
     class Mapper {
+    public:
+	enum MapperErrorCode {
+		MAPPING_SUCCESS, // The mapping succeeded
+		INSUFFICIENT_SPACE, // Not enough space to create an instance
+		INVALID_MEMORY, // Memory that is not visible to processor
+	};
     protected:
 	HighLevelRuntime *runtime;
     public:
 	Mapper(MachineDescription *machine, HighLevelRuntime *runtime);
 	virtual ~Mapper();
     public:
-	virtual void select_initial_region_location(	Memory *&result, 
+	virtual void select_initial_region_location(	Memory &result, 
 							size_t elmt_size, 
 							size_t num_elmts, 
 							MappingTagID tag);	
 
-	/*
-	virtual bool remap_initial_region_location(	Memory *&result,
-							const Memory &old_mapping,
+	virtual bool remap_initial_region_location(	Memory &result,
+							MapperErrorCode error,
+							const Memory &failed_mapping,
 							size_t elmt_size,
 							size_t num_elmts,
 							MappingTagID tag);
-	*/
 
-	virtual void select_initial_partition_location(	std::vector<Memory*> &result, 
+	virtual void select_initial_partition_location(	std::vector<Memory> &result, 
 							size_t elmt_size, 
 							const std::vector<size_t> &num_elmts, 
 							unsigned int num_subregions, 
 							MappingTagID tag);
 
-	/*
-	virtual bool remap_initial_partition_location(	std::vector<Memory*> &result,
-							const std::vector<Memory*> old_mapping,
-							size_t elmt_size,
-							const std::vector<size_t &num_elmts,
-							unsigned int num_subregions,
-							MappingTagID tag);
-	*/
+	virtual bool remap_initial_partition_location(	std::vector<Memory> &result,
+						const std::vector<MapperErrorCode> &errors,
+						const std::vector<Memory> &failed_mapping,
+						size_t elmt_size,
+						const std::vector<size_t> &num_elmts,
+						unsigned int num_subregions,
+						MappingTagID tag);
 
 	virtual void compact_partition(	bool &result,
 					const PartitionBase &partition, 
 					MappingTagID tag);
 
-	virtual void select_target_processor(	Processor *&result,
+	virtual void select_target_processor(	Processor &result,
 						Processor::TaskFuncID task_id,
 						const std::vector<RegionRequirement> &regions,
 						MappingTagID tag);	
+
+	virtual void target_task_steal( Processor &result,
+					MappingTagID tag);
 
 	virtual void permit_task_steal(	bool &result,
 					Processor::TaskFuncID task_id,
 					const std::vector<RegionRequirement> &regions,
 					MappingTagID tag);
 
-	virtual void map_task(	std::vector<Memory*> &result,
+	virtual void map_task(	std::vector<Memory> &result,
 				Processor::TaskFuncID task_id,
 				const std::vector<RegionRequirement> &regions,
 				MappingTagID tag);
+
+	virtual bool remap_task(std::vector<Memory> &result,
+				const std::vector<MapperErrorCode> &errors,
+				const std::vector<Memory> &failed_mapping,
+				Processor::TaskFuncID task_id,
+				const std::vector<RegionRequirement> &regions,
+				MappingTagID tag);
+    protected:
+	// Data structures for the base mapper
+	// The processor for this machine
+	Processor local_proc;
+	// Memories visible from this processor ranked in order of size smallest to largest
+	std::vector<Memory> visible_memories;
+	// For each visible memory from this processor, give the set of other
+	// processors visible from that memory
+	std::map<Memory,std::set<Processor>*> shared_memories;
     };
 
   };
