@@ -10,143 +10,198 @@
 namespace RegionRuntime {
   namespace LowLevel {
 
+    // forward class declarations because these things all refer to each other
+    class Event;
+    class Lock;
+    class Memory;
+    class Processor;
+    class RegionMetaDataUntyped;
+    class RegionAllocatorUntyped;
+    class RegionInstanceUntyped;
+    template <class T> class RegionMetaData;
+    template <class T> class RegionAllocator;
+    template <class T> class RegionInstance;
+
     class Event {
     public:
-      Event(const Event& copy_from) : event_id(copy_from.event_id) {}
-      Event(const Event& event1, const Event& event2);
-
-      void wait(void);
+      typedef unsigned long long ID;
+      ID id;
 
       static const Event NO_EVENT;
 
-    protected:
-      friend class EventImpl;
+      bool exists(void) const { return id != 0; }
 
-      Event(unsigned _event_id);
-      
-      void trigger(void);
+      // test whether an event has triggered without waiting
+      bool has_triggered(void) const;
 
-    protected:
-      unsigned long long event_id;
+      // causes calling thread to block until event has occurred
+      void wait(void) const;
+
+      // creates an event that won't trigger until all input events have
+      static Event merge_events(const std::set<Event>& wait_for);
     };
 
     class Lock {
     public:
-      Lock(const Lock& copy_from);
+      typedef unsigned ID;
+      ID id;
 
+      // requests ownership (either exclusive or shared) of the lock with a 
+      //   specified mode - returns an event that will trigger when the lock
+      //   is granted
       Event lock(unsigned mode = 0, bool exclusive = true);
+
+      // releases a held lock - release can be deferred until an event triggers
       void unlock(Event wait_on = Event::NO_EVENT);
-
-    protected:
-      unsigned lock_id;
-    };
-
-    class Memory;
-
-    template <class T>
-    class RegionAllocator;
-
-    template <class T>
-    class RegionInstance;
-
-    // untyped version of region meta data for use in STL structures
-    class RegionMetaDataBase {
-    protected:
-	RegionMetaDataBase();
-    protected:
-        // Mike: I think it's ok to leave this protected right now
-	// With the untyped version of RegionMetaData base I don't need access.
-	// The same applies to lock and event.
-	unsigned region_id;	
-    public:
-	bool operator==(const RegionMetaDataBase&) const;
-	bool operator<(const RegionMetaDataBase&) const;
-    };
-
-    template <class T>
-    class RegionMetaData : public RegionMetaDataBase {
-    public:
-      RegionMetaData(const std::string& _name, size_t _num_elements, Memory *_master_location);
-      ~RegionMetaData(void);
-
-      RegionAllocator<T> *create_region_allocator(Memory *location);
-      RegionInstance<T> *create_region_instance(Memory *location);
-    };
-
-    // untyped version of allocator that has all the smarts
-    class RegionAllocatorBase {
-    public:
-      virtual unsigned alloc(void) = 0;
-      virtual void free(unsigned ptr) = 0;
-    };
-
-    template <class T>
-    class RegionAllocator {
-    protected:
-      RegionAllocator(const std::string& _name, RegionMetaData<T> *_metadata, RegionAllocatorBase *_base);
-      virtual ~RegionAllocator(void);
-
-    public:
-      ptr_t<T> alloc(void) { return ptr_t<T>(base->alloc()); }
-      void free(ptr_t<T> ptr) { base->free(ptr.value); }
-
-    protected:
-      std::string name;
-      RegionMetaData<T> *metadata;
-      RegionAllocatorBase *base;
-    };
-
-    class RegionInstanceBase {
-    public:
-      virtual void read(unsigned location, unsigned char *dest, size_t bytes) = 0;
-      virtual void write(unsigned location, const unsigned char *src, size_t bytes) = 0;
-      // TODO: how to define reduction this way?  blech
-    };
-
-    template <class T>
-    class RegionInstance {
-    protected:
-      RegionInstance(const std::string& _name, RegionMetaData<T> *_metadata, RegionInstanceBase *_base);
-      virtual ~RegionInstance(void);
-
-    public:
-      T read(ptr_t<T> ptr) { T temp; base->read(ptr.value, (unsigned char *)&temp, sizeof(T)); return temp; }
-      virtual void write(ptr_t<T> ptr, T newval) = 0;
-
-      typedef T (*reduction_operator)(T origval, T newval);
-      virtual void reduce(ptr_t<T> ptr, reduction_operator op, T newval) = 0;
-
-      virtual Event copy_to(RegionInstance<T> *dest, Event wait_on = Event::NO_EVENT) = 0;
-
-    protected:
-      RegionInstanceBase *base;
     };
 
     class Processor {
-    protected:
-      Processor(const std::string& _name) {}
-      virtual ~Processor(void) {}
-
     public:
+      typedef unsigned ID;
+      ID id;
+      bool operator<(const Processor& rhs) const { return id < rhs.id; }
+      bool operator==(const Processor& rhs) const { return id == rhs.id; }
+
       typedef unsigned TaskFuncID;
       typedef void (*TaskFuncPtr)(const void *args, size_t arglen, Processor *proc);
       typedef std::map<TaskFuncID, TaskFuncPtr> TaskIDTable;
 
-      virtual Event spawn(TaskFuncID func_id, const void *args, size_t arglen,
-			  Event wait_on = Event::NO_EVENT) = 0;
+      Event spawn(TaskFuncID func_id, const void *args, size_t arglen,
+		  Event wait_on = Event::NO_EVENT) const;
     };
 
     class Memory {
-    protected:
-      Memory(const std::string& _name, size_t _size);
-      virtual ~Memory(void);
+    public:
+      typedef unsigned ID;
+      ID id;
+    };
+
+    class RegionMetaDataUntyped {
+    public:
+      typedef unsigned ID;
+      ID id;
+
+      static RegionMetaDataUntyped create_region_untyped(Memory memory);
+      RegionAllocatorUntyped create_allocator_untyped(Memory memory);
+      RegionInstanceUntyped create_instance_untyped(Memory memory);
+
+      // get the lock that covers this metadata
+      Lock get_lock(void);
+
+      // it's ok to call these without holding the lock if you don't mind
+      //  stale data - data will be up to date if you hold the lock
+      RegionAllocatorUntyped get_master_allocator_untyped(void);
+      RegionInstanceUntyped get_master_instance_untyped(void);
+
+      // don't call these unless you hold an exclusive lock on the metadata
+      void set_master_allocator_untyped(RegionAllocatorUntyped allocator);
+      void set_master_instance_untyped(RegionInstanceUntyped instance);
+    };
+
+    class RegionAllocatorUntyped {
+    public:
+      typedef unsigned ID;
+      ID id;
+
+      // get the lock that covers this allocator
+      Lock get_lock(void);
 
     protected:
-      template <class T> friend class RegionMetadata;
+      // can't have virtual methods here, so we're returning function pointers
+      typedef void (*UntypedFuncPtr)(void);
 
-      virtual RegionAllocatorBase *create_region_allocator_base(void /*FIX*/) = 0;
+      UntypedFuncPtr alloc_fn_untyped(void);
+      UntypedFuncPtr free_fn_untyped(void);
+    };
 
-      virtual RegionInstanceBase *create_region_instance_base(void /*FIX*/) = 0;
+    class RegionInstanceUntyped {
+    public:
+      typedef unsigned ID;
+      ID id;
+
+      // get the lock that covers this instance
+      Lock get_lock(void);
+
+    protected:
+      // can't have virtual methods here, so we're returning function pointers
+      typedef void (*UntypedFuncPtr)(void);
+
+      UntypedFuncPtr read_fn_untyped(void);
+      UntypedFuncPtr write_fn_untyped(void);
+      UntypedFuncPtr reduce_fn_untyped(void);
+    };
+
+    template <class T>
+    class RegionMetaData : public RegionMetaDataUntyped {
+    public:
+      // operator to re-introduce element type - make sure you're right!
+      explicit RegionMetaData(RegionMetaDataUntyped& copy_from)
+	: RegionMetaDataUntyped(copy_from) {}
+
+      static RegionMetaData<T> create_region(Memory memory, size_t _num_elems) {
+	return RegionMetaData<T>(create_region_untyped(memory));
+      }
+
+      RegionAllocator<T> create_allocator(Memory memory) {
+	return RegionAllocator<T>(create_allocator_untyped(memory));
+      }
+	  
+      RegionInstance<T> create_instance(Memory memory) {
+	return RegionInstance<T>(create_instance_untyped(memory));
+      }
+
+      // it's ok to call these without holding the lock if you don't mind
+      //  stale data - data will be up to date if you hold the lock
+      RegionAllocator<T> get_master_allocator(void) {
+	return RegionAllocator<T>(get_master_allocator_untyped());
+      }
+
+      RegionInstance<T> get_master_instance(void) {
+	return RegionInstance<T>(get_master_instance_untyped());
+      }
+
+      // don't call these unless you hold an exclusive lock on the metadata
+      void set_master_allocator(RegionAllocator<T> allocator) {
+	set_master_allocator_untyped(allocator);
+      }
+
+      void set_master_instance(RegionInstance<T> instance) {
+	set_master_instance_untyped(instance);
+      }
+    };
+
+    template <class T>
+    class RegionAllocator : public RegionAllocatorUntyped {
+    public:
+      // operator to re-introduce element type - make sure you're right!
+      explicit RegionAllocator(RegionAllocatorUntyped& copy_from)
+	: RegionAllocatorUntyped(copy_from) {}
+      
+      // note the level of indirection here - needed because the base class
+      //  can't be virtual
+      typedef ptr_t<T> (*AllocFuncPtr)(void);
+      typedef void (*FreeFuncPtr)(ptr_t<T> ptr);
+
+      AllocFuncPtr alloc_fn(void) { return (AllocFuncPtr)(alloc_fn_untyped()); }
+      FreeFuncPtr free_fn(void) { return (FreeFuncPtr)(free_fn_untyped()); }
+    };
+
+    template <class T>
+    class RegionInstance : public RegionInstanceUntyped {
+    public:
+      // operator to re-introduce element type - make sure you're right!
+      explicit RegionInstance(RegionInstanceUntyped& copy_from)
+	: RegionInstanceUntyped(copy_from) {}
+
+      // note the level of indirection here - needed because the base class
+      //  can't be virtual
+      typedef T (*ReadFuncPtr)(ptr_t<T> ptr);
+      typedef void (*WriteFuncPtr)(ptr_t<T> ptr, T newval);
+      typedef void (*ReduceFuncPtr)(ptr_t<T> ptr, T (*reduce_op)(T, T), T newval);
+
+      ReadFuncPtr read_fn(void) { return (ReadFuncPtr)(read_fn_untyped()); }
+      WriteFuncPtr write_fn(void) { return (WriteFuncPtr)(write_fn_untyped()); }
+      ReduceFuncPtr reduce_fn(void) { return (ReduceFuncPtr)(reduce_fn_untyped()); }
     };
 
     class Machine {
@@ -156,14 +211,14 @@ namespace RegionRuntime {
       ~Machine(void);
 
     public:
-      const std::set<Memory *>& all_memories(void) { return memories; }
-      const std::set<Processor *>& all_processors(void) { return procs; }
+      const std::set<Memory>& all_memories(void) { return memories; }
+      const std::set<Processor>& all_processors(void) { return procs; }
 
-      void add_processor(Processor *p) { procs.insert(p); }
+      void add_processor(Processor p) { procs.insert(p); }
 
     protected:
-      std::set<Processor *> procs;
-      std::set<Memory *> memories;
+      std::set<Processor> procs;
+      std::set<Memory> memories;
     };
 
   }; // namespace LowLevel

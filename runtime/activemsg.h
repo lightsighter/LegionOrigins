@@ -43,7 +43,10 @@ struct ArgsWithReplyInfo {
   ARGTYPE                      args;
 };
 
-template <class MSGTYPE, int MSGID, void (*FNPTR)(MSGTYPE), int MSG_N>
+template <class MSGTYPE, int MSGID,
+          void (*SHORT_HNDL_PTR)(MSGTYPE),
+          void (*MED_HNDL_PTR)(MSGTYPE, const void *, size_t),
+          int MSG_N>
 struct MessageRawArgs;
 
 template <class REQTYPE, int REQID, class RPLTYPE, int RPLID,
@@ -122,8 +125,10 @@ template <class RPLTYPE, int RPLID, int RPL_N> struct ReplyRawArgs;
 #define MACROPROXY(a,...) a(__VA_ARGS__)
 
 #define SPECIALIZED_RAW_ARGS(n) \
-template <class MSGTYPE, int MSGID, void (*FNPTR)(MSGTYPE)> \
-struct MessageRawArgs<MSGTYPE, MSGID, FNPTR, n> { \
+template <class MSGTYPE, int MSGID, \
+          void (*SHORT_HNDL_PTR)(MSGTYPE), \
+          void (*MED_HNDL_PTR)(MSGTYPE, const void *, size_t)> \
+struct MessageRawArgs<MSGTYPE, MSGID, SHORT_HNDL_PTR, MED_HNDL_PTR, n> { \
   HANDLERARG_DECL_ ## n ; \
 \
   void request_short(gasnet_node_t dest) \
@@ -143,11 +148,25 @@ struct MessageRawArgs<MSGTYPE, MSGID, FNPTR, n> { \
     gasnet_AMGetMsgSource(token, &src); \
     printf("handling message from node %d\n", src); \
     union { \
-      MessageRawArgs<MSGTYPE,MSGID,FNPTR,n> raw; \
+      MessageRawArgs<MSGTYPE,MSGID,SHORT_HNDL_PTR,MED_HNDL_PTR,n> raw; \
       MSGTYPE typed; \
     } u; \
     HANDLERARG_COPY_ ## n ; \
-    (*FNPTR)(u.typed); \
+    (*SHORT_HNDL_PTR)(u.typed); \
+  } \
+\
+  static void handler_medium(gasnet_token_t token, void *buf, size_t nbytes, \
+                             HANDLERARG_PARAMS_ ## n ) \
+  { \
+    gasnet_node_t src; \
+    gasnet_AMGetMsgSource(token, &src); \
+    printf("handling medium message from node %d\n", src); \
+    union { \
+      MessageRawArgs<MSGTYPE,MSGID,SHORT_HNDL_PTR,MED_HNDL_PTR,n> raw; \
+      MSGTYPE typed; \
+    } u; \
+    HANDLERARG_COPY_ ## n ; \
+    (*MED_HNDL_PTR)(u.typed, buf, nbytes); \
   } \
 }; \
 \
@@ -222,10 +241,16 @@ SPECIALIZED_RAW_ARGS(14);
 SPECIALIZED_RAW_ARGS(15);
 SPECIALIZED_RAW_ARGS(16);
 
+template <class MSGTYPE>
+void dummy_short_handler(MSGTYPE dummy) {}
+
+template <class MSGTYPE>
+void dummy_medium_handler(MSGTYPE dummy, const void *data, size_t datalen) {}
+
 template <int MSGID, class MSGTYPE, void (*FNPTR)(MSGTYPE)>
 class ActiveMessageShortNoReply {
  public:
-  typedef MessageRawArgs<MSGTYPE,MSGID,FNPTR,(sizeof(MSGTYPE)+3)/4> MessageRawArgsType;
+  typedef MessageRawArgs<MSGTYPE,MSGID,FNPTR,dummy_medium_handler,(sizeof(MSGTYPE)+3)/4> MessageRawArgsType;
 
   static void request(gasnet_node_t dest, MSGTYPE args)
   {
@@ -241,6 +266,30 @@ class ActiveMessageShortNoReply {
   {
     entries[0].index = MSGID;
     entries[0].fnptr = (void (*)()) (MessageRawArgsType::handler_short);
+    return 1;
+  }
+};
+
+template <int MSGID, class MSGTYPE, void (*FNPTR)(MSGTYPE, const void *, size_t)>
+class ActiveMessageMediumNoReply {
+ public:
+  typedef MessageRawArgs<MSGTYPE,MSGID,dummy_short_handler,FNPTR,(sizeof(MSGTYPE)+3)/4> MessageRawArgsType;
+
+  static void request(gasnet_node_t dest, MSGTYPE args, 
+                      const void *data, size_t datalen)
+  {
+    union {
+      MessageRawArgsType raw;
+      MSGTYPE typed;
+    } u;
+    u.typed = args;
+    u.raw.request_medium(dest, data, datalen);
+  }
+
+  static int add_handler_entries(gasnet_handlerentry_t *entries)
+  {
+    entries[0].index = MSGID;
+    entries[0].fnptr = (void (*)()) (MessageRawArgsType::handler_medium);
     return 1;
   }
 };
