@@ -48,6 +48,14 @@ namespace RegionRuntime {
     class RegionAllocatorImpl;
     class RegionInstanceImpl;
 
+    struct Node {
+      std::vector<EventImpl> events;
+      std::vector<LockImpl> locks;
+      std::vector<MemoryImpl *> memories;
+      std::vector<ProcessorImpl *> processors;
+      std::vector<RegionMetaDataImpl *> metadatas;
+    };
+
     class Runtime {
     public:
       static Runtime *get_runtime(void) { return runtime; }
@@ -62,11 +70,8 @@ namespace RegionRuntime {
 
     protected:
       static Runtime *runtime;
-      EventImpl *events;
-      LockImpl *locks;
-      MemoryImpl **memories;
-      ProcessorImpl **processors;
-      RegionMetaDataImpl **metadatas;
+
+      Node *nodes;
     };
     
     enum ActiveMessageIDs {
@@ -108,6 +113,11 @@ namespace RegionRuntime {
 	in_use = false;
 	gasnet_hsl_init(&mutex);
 	remote_waiters = 0;
+      }
+
+      void init(unsigned init_owner)
+      {
+	owner = init_owner;
       }
 
       // test whether an event has triggered without waiting
@@ -196,6 +206,11 @@ namespace RegionRuntime {
 	remote_waiter_mask = 0;
 	remote_sharer_mask = 0;
 	requested = false;
+      }
+
+      void init(unsigned init_owner)
+      {
+	owner = init_owner;
       }
 
       class LockWaiter {
@@ -385,17 +400,47 @@ namespace RegionRuntime {
 
     EventImpl *Runtime::get_event_impl(Event e)
     {
-      return &events[EventImpl::get_index(e.id)];
+      EventImpl::EventIndex i = EventImpl::get_index(e.id);
+      unsigned node_id = i >> 24;
+      unsigned node_ofs = i & 0xFFFFFFUL;
+      Node *n = &runtime->nodes[node_id];
+      if(node_ofs >= n->events.size()) {
+	// grow our array to mirror additions by other nodes
+	//  this should never happen for our own node
+	assert(node_id != gasnet_mynode());
+
+	unsigned oldsize = n->events.size();
+	n->events.resize(node_ofs+1);
+	for(unsigned i = oldsize; i <= node_ofs; i++)
+	  n->events[i].init(node_id);
+      }
+      return &(n->events[node_ofs]);
     }
 
     LockImpl *Runtime::get_lock_impl(Lock l)
     {
-      return &locks[l.id];
+      unsigned node_id = l.id >> 24;
+      unsigned node_ofs = l.id & 0xFFFFFFUL;
+      Node *n = &runtime->nodes[node_id];
+      if(node_ofs >= n->locks.size()) {
+	// grow our array to mirror additions by other nodes
+	//  this should never happen for our own node
+	assert(node_id != gasnet_mynode());
+
+	unsigned oldsize = n->locks.size();
+	n->locks.resize(node_ofs+1);
+	for(unsigned i = oldsize; i <= node_ofs; i++)
+	  n->locks[i].init(node_id);
+      }
+      return &(n->locks[node_ofs]);
     }
 
     ProcessorImpl *Runtime::get_processor_impl(Processor p)
     {
-      return processors[p.id];
+      unsigned node_id = p.id >> 24;
+      unsigned node_ofs = p.id & 0xFFFFFFUL;
+      Node *n = &runtime->nodes[node_id];
+      return n->processors[node_ofs];
     }
 
     ///////////////////////////////////////////////////

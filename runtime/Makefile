@@ -8,7 +8,7 @@ CCFLAGS += -DGASNET_CONDUIT_IBV -I$(GASNET)/include/ibv-conduit
 LDFLAGS += -lgasnet-ibv-par -libverbs
 
 %.o : %.cc
-	g++ $(CCFLAGS) -c $^ -o $@
+	g++ $(CCFLAGS) -c $< -o $@
 
 foo : lowlevel.o
 	g++ $(CCFLAGS) $^ $(LDFLAGS) -o $@
@@ -18,3 +18,7 @@ hello : hello.o lowlevel.o
 
 gas_simple : gas_simple.c
 	gcc $(CCFLAGS) gas_simple.c -o gas_simple $(LDFLAGS)
+
+lowlevel.o : lowlevel.h activemsg.h
+
+hello.o : lowlevel.h
