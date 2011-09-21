@@ -51,6 +51,8 @@ namespace RegionRuntime {
       //   is granted
       Event lock(unsigned mode = 0, bool exclusive = true);
 
+      bool exists(void) const;
+
       // releases a held lock - release can be deferred until an event triggers
       void unlock(Event wait_on = Event::NO_EVENT);
     };
@@ -61,6 +63,7 @@ namespace RegionRuntime {
       ID id;
       bool operator<(const Processor& rhs) const { return id < rhs.id; }
       bool operator==(const Processor& rhs) const { return id == rhs.id; }
+      bool exists(void) const;
 
       typedef unsigned TaskFuncID;
       typedef void (*TaskFuncPtr)(const void *args, size_t arglen, Processor *proc);
@@ -74,6 +77,7 @@ namespace RegionRuntime {
     public:
       typedef unsigned ID;
       ID id;
+      bool exists(void) const;
     };
 
     class RegionMetaDataUntyped {
@@ -84,9 +88,14 @@ namespace RegionRuntime {
       static RegionMetaDataUntyped create_region_untyped(Memory memory);
       RegionAllocatorUntyped create_allocator_untyped(Memory memory);
       RegionInstanceUntyped create_instance_untyped(Memory memory);
+      void destroy_region_untyped();
+      void destroy_allocator_untyped(RegionAllocatorUntyped allocator);
+      void destroy_instance_untyped(RegionInstanceUntyped instance);
 
       // get the lock that covers this metadata
       Lock get_lock(void);
+
+      bool exists(void) const;
 
       // it's ok to call these without holding the lock if you don't mind
       //  stale data - data will be up to date if you hold the lock
@@ -106,6 +115,8 @@ namespace RegionRuntime {
       // get the lock that covers this allocator
       Lock get_lock(void);
 
+      bool exists(void) const;
+
     protected:
       // can't have virtual methods here, so we're returning function pointers
       typedef void (*UntypedFuncPtr)(void);
@@ -121,6 +132,8 @@ namespace RegionRuntime {
 
       // get the lock that covers this instance
       Lock get_lock(void);
+
+      bool exists(void) const;
 
     protected:
       // can't have virtual methods here, so we're returning function pointers
@@ -148,6 +161,18 @@ namespace RegionRuntime {
 	  
       RegionInstance<T> create_instance(Memory memory) {
 	return RegionInstance<T>(create_instance_untyped(memory));
+      }
+
+      void destroy_region() {
+        destroy_region_untyped();
+      }
+
+      void destroy_allocator(RegionAllocator<T> allocator) {
+        destroy_allocator_untyped(allocator);
+      }
+
+      void destroy_instance(RegionInstance<T> instance) {
+        destroy_instance_untyped(instance);
       }
 
       // it's ok to call these without holding the lock if you don't mind
@@ -209,10 +234,26 @@ namespace RegionRuntime {
       Machine(int *argc, char ***argv,
 	      const Processor::TaskIDTable &task_table);
       ~Machine(void);
+    public:
+      // Different Processor types
+      enum ProcessorKind {
+	TOC_PROC, // Throughput core
+	LOC_PROC, // Latency core
+      };
 
     public:
-      const std::set<Memory>& all_memories(void) { return memories; }
-      const std::set<Processor>& all_processors(void) { return procs; }
+      const std::set<Memory>&    get_all_memories(void) const { return memories; }
+      const std::set<Processor>& get_all_processors(void) const { return procs; }
+      // Return the set of memories visible from a processor
+      const std::set<Memory>&    get_visible_memories(const Processor p) const;
+      // Return the set of memories visible from a memory
+      const std::set<Memory>&    get_visible_memories(const Memory m) const;
+      // Return the set of processors which can all see a given memory
+      const std::set<Processor>& get_shared_processors(const Processor p) const;
+
+      Processor     get_local_processor() const;
+      ProcessorKind get_processor_kind(Processor p) const;
+      size_t        get_memory_size(const Memory m) const;
 
       void add_processor(Processor p) { procs.insert(p); }
 
