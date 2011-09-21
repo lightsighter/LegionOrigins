@@ -321,7 +321,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     HighLevelRuntime::HighLevelRuntime(LowLevel::Machine *m)
-	: mapper_objects(std::vector<Mapper*>(8), machine(m))
+	: mapper_objects(std::vector<Mapper*>(8)), machine(m)
     //--------------------------------------------------------------------------------------------
     {
 	for (unsigned int i=0; i<mapper_objects.size(); i++)
@@ -419,6 +419,7 @@ namespace RegionRuntime {
     Partition<T> HighLevelRuntime::create_disjoint_partition(LogicalHandle parent,
 						unsigned int num_subregions,
 						std::auto_ptr<std::map<ptr_t<T>,Color> > color_map,
+						const std::vector<size_t> &element_count,
 						MapperID id,
 						MappingTagID tag)
     //--------------------------------------------------------------------------------------------
@@ -428,6 +429,7 @@ namespace RegionRuntime {
 #endif
 	// Retrieve the pointer out of the new auto_ptr
 	std::map<ptr_t<T>,Color> *map_ptr = color_map.release();	
+#if 0
 	// Count up the number of elements in each child_region
 	std::vector<size_t> element_count(num_subregions);
 	for (int i=0; i<num_subregions; i++)
@@ -444,25 +446,70 @@ namespace RegionRuntime {
 			element_count[iter->second]++;
 		}
 	}
-	// Invoke the mapper to see where to place the regions
-	std::vector<Memory*> locations(num_subregions);
-#ifdef DEBUG_HIGH_LEVEL
-	for (int i=0; i<num_subregions; i++)
-		locations[i] = NULL;
 #endif
+	// Invoke the mapper to see where to place the regions
+	std::vector<Memory> locations(num_subregions);
+	std::vector<Mapper::MapperErrorCode> errors(num_subregions);
+	for (int i=0; i<num_subregions; i++)
+		errors[i] = Mapper::MAPPING_SUCCESS;
 	mapper_objects[id]->select_initial_partition_location(locations,sizeof(T),
 				element_count,num_subregions,tag);
-#ifdef DEBUG_HIGH_LEVEL
-	// Check to make sure that user gave us back valid locations
-	for (int i=0; i<num_subregions; i++)
-		assert(locations[i] != NULL);
-#endif
+	bool any_failures = false;
 	// Create the logical regions in the locations specified by the mapper
 	std::vector<LogicalHandle> *child_regions = new std::vector<LogicalHandle>(num_subregions);
 	for (int i=0; i<num_subregions; i++)
 	{
-		(*child_regions)[i] = (LogicalHandle)LowLevel::RegionMetaData<T>("still no idea what to put in this string",element_count[i],locations[i]);
+		if (!((locations[i]).exists()))
+		{
+			errors[i] = Mapper::INVALID_MEMORY;
+			any_failures = true;
+		}
+		else
+		{
+			(*child_regions)[i] = (LogicalHandle)LowLevel::RegionMetaData<T>::create_region(element_count[i],locations[i]);
+			// Check to see if the region was created successfully
+			if (!((*child_regions)[i]).exists())
+			{
+				errors[i] = Mapper::INSUFFICIENT_SPACE;
+				any_failures = true;
+			}
+		}
 	}
+	while (any_failures)
+	{
+		any_failures = false;
+		std::vector<Memory> alt_locations(num_subregions);
+		if (mapper_objects[id]->remap_initial_partition_location(alt_locations,errors,
+			locations, sizeof(T), element_count, num_subregions, tag))
+		{
+			fprintf(stderr,"Mapper %d indicated exit for initial partition with tag %d\n",id,tag);
+			exit(100*(machine->get_local_processor().id)+id);
+		}
+		locations = alt_locations;
+		// Now try to create the necessary logical regions
+		for (int i=0; i<num_subregions; i++)
+		{
+			if (errors[i] != Mapper::MAPPING_SUCCESS)
+			{
+				if (!((locations[i]).exists()))
+				{
+					errors[i] = Mapper::INVALID_MEMORY;
+					any_failures = true;
+				}
+				else
+				{
+					(*child_regions)[i] = (LogicalHandle)LowLevel::RegionMetaData<T>::create_region(element_count[i],locations[i]);
+					if (!((*child_regions)[i]).exists())
+					{
+						errors[i] = Mapper::INSUFFICIENT_SPACE;
+						any_failures = true;
+					}
+					else
+						errors[i] = Mapper::MAPPING_SUCCESS;
+				}
+			}
+		}	
+	}	
 	// Create the actual partition
 	Partition<T> *partition = NULL;
 	if (map_ptr != NULL)
@@ -489,6 +536,7 @@ namespace RegionRuntime {
     Partition<T> HighLevelRuntime::create_aliased_partition(LogicalHandle parent,
 						unsigned int num_subregions,
 						std::auto_ptr<std::multimap<ptr_t<T>,Color> > color_map,
+						const std::vector<size_t> &element_count,
 						MapperID id,
 						MappingTagID tag)
     //--------------------------------------------------------------------------------------------
@@ -499,6 +547,7 @@ namespace RegionRuntime {
 
 	// Retrieve the pointer out of the auto_ptr
 	std::multimap<ptr_t<T>,Color> *map_ptr = color_map.release();
+#if 0
 	// Count the number of elements in each subregion
 	std::vector<size_t> element_count(num_subregions);
 	for (int i=0; i<num_subregions; i++)
@@ -511,25 +560,72 @@ namespace RegionRuntime {
 #endif
 		element_count[it->second]++;
 	}
-	// Invoke the mapper
-	std::vector<Memory*> locations(num_subregions);
-#ifdef DEBUG_HIGH_LEVEL
-	for (int i=0; i<num_subregions; i++)
-		locations[i] = NULL;
 #endif
+	// Invoke the mapper
+	std::vector<Memory> locations(num_subregions);
+	std::vector<Mapper::MapperErrorCode> errors(num_subregions);
+	for (int i=0; i<num_subregions; i++)
+		errors[i] = Mapper::MAPPING_SUCCESS;
+	// Invoke the mapper
 	mapper_objects[id]->select_initial_partition_location(locations,sizeof(T),
 					element_count,num_subregions,tag);
-#ifdef DEBUG_HIGH_LEVEL
-	// Check to make sure that the user gave us back valid locations
-	for (int i=0; i<num_subregions; i++)
-		assert(locations[i] != NULL);
-#endif
+
+	// Check for any failures
+	bool any_failures = false;
 	// Create the logical regions
 	std::vector<LogicalHandle> *child_regions = new std::vector<LogicalHandle>(num_subregions);
 	for (int i=0; i<num_subregions; i++)
 	{
-		(*child_regions)[i] = (LogicalHandle)LowLevel::RegionMetaData<T>("still no idea what to put in this string",element_count[i],locations[i]);
+		if (!((locations[i]).exists()))
+		{
+			errors[i] = Mapper::INVALID_MEMORY;
+			any_failures = true;
+		}
+		else
+		{
+			(*child_regions)[i] = (LogicalHandle)LowLevel::RegionMetaData<T>::create_region(element_count[i],locations[i]);
+			if (!((*child_regions)[i]).exists())
+			{
+				errors[i] = Mapper::INSUFFICIENT_SPACE;
+				any_failures = true;
+			}
+		}
 	}
+	
+	while (any_failures)
+	{
+		any_failures = false;
+		std::vector<Memory> alt_locations(num_subregions);		
+		if (mapper_objects[id]->remap_initial_partition_location(alt_locations,
+			errors, locations, sizeof(T), element_count, num_subregions, tag))
+		{
+			fprintf(stderr,"Mapper %d indicated exit for initial partition with tag %d\n",id,tag);
+			exit(100*(machine->get_local_processor().id)+id);
+		}
+		// Check to see if the new mapping is better
+		locations = alt_locations;
+		for (int i=0; i<num_subregions; i++)
+		{
+			if (errors[i] != Mapper::MAPPING_SUCCESS)
+			{
+				if (!(locations[i]).exists())
+				{
+					errors[i] = Mapper::INVALID_MEMORY;
+					any_failures = true;
+				}
+				else
+				{
+					(*child_regions)[i] = (LogicalHandle)LowLevel::RegionMetaData<T>::create_region(element_count[i],locations[i]);
+					if (!((*child_regions)[i]).exists())
+					{
+						errors[i] = Mapper::INSUFFICIENT_SPACE;
+						any_failures= true;
+					}
+				}
+			}
+		}
+	}
+
 	// Create the actual partition
 	Partition<T> *partition = new AliasedPartition<T>(parent,child_regions,map_ptr);
 
@@ -616,7 +712,7 @@ namespace RegionRuntime {
 	LowLevel::RegionMetaData<T> low_region = (LowLevel::RegionMetaData<T>)region;
 	// Call the destructor for this RegionMetaData object which will allow the
 	// low-level runtime to clean stuff up
-	low_region.LowLevel::RegionMetaData<T>::~RegionMetaData();
+	low_region.destroy_region();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -680,7 +776,7 @@ namespace RegionRuntime {
 		for (std::vector<Memory>::iterator sort_it = visible_memories.begin();
 			sort_it != visible_memories.end(); sort_it++)
 		{
-			if (machine->memory_size(new_mem) < machine->memory_size(*sort_it))
+			if (machine->get_memory_size(new_mem) < machine->get_memory_size(*sort_it))
 			{
 				visible_memories.insert(sort_it,new_mem);
 				added = true;

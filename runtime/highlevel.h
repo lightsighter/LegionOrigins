@@ -190,12 +190,14 @@ namespace RegionRuntime {
 	Partition<T> create_disjoint_partition(LogicalHandle parent,
 						unsigned int num_subregions,
 						std::auto_ptr<std::map<ptr_t<T>,Color> > color_map,
+						const std::vector<size_t> &element_count,
 						MapperID id = 0,
 						MappingTagID tag = 0);
 	template<typename T>
 	Partition<T> create_aliased_partition(LogicalHandle parent,
 						unsigned int num_subregions,
 						std::auto_ptr<std::multimap<ptr_t<T>,Color> > color_map,
+						const std::vector<size_t> &element_count,
 						MapperID id = 0,
 						MappingTagID tag = 0);
 
