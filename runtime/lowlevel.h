@@ -77,6 +77,8 @@ namespace RegionRuntime {
     public:
       typedef unsigned ID;
       ID id;
+      bool operator<(const Memory &rhs) const { return id < rhs.id; }
+      bool operator==(const Memory &rhs) const { return id == rhs.id; }
       bool exists(void) const;
     };
 
