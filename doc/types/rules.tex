@@ -122,7 +122,7 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 \begin{math}
 \infrule
 {
-  \{ x : T \} \in \Gamma
+  x : T \in \Gamma
 }
 {
   \envsub{1}{1} x : \rtripsub{T}{1}{1}
@@ -183,8 +183,8 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 \infrule
 {
 \begin{array}{lc}
-  \Gamma \cup \{ x : T_1, r_1, \ldots, r_n \}, \Phi_1, C_1 \vdash e : \rtripsub{T_2}{2}{2} \\
-  r_1, \ldots, r_n \not\in \Phi_1, C_1 \textbf{??}
+  \Gamma \cup \{ x : T_1 \}, \Phi_1, C_1 \vdash e : \rtripsub{T_2}{2}{2} \\
+  r_1, \ldots, r_n \not\in \mathit{RegionsOf}(\Gamma, \Phi_1, C_1)
 \end{array}
 }
 {
@@ -202,13 +202,17 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 \begin{array}{lc}
   \envsub{1}{1} e_1 : \rtripsub{\rtripsub{T_i}{i}{i} \rightarrow \exists r_1, \ldots, r_n . \rtripsub{T_o}{o}{o}}{2}{2} \\
   \envsub{2}{2} e_2 : \rtripsub{T_i}{3}{3} \\
-  r'_1, \ldots, r'_n \not\in \Gamma \hspace{1cm} 
+  r'_1, \ldots, r'_n \not\in \mathit{RegionsOf}(\Gamma, \Phi_3, C_3) \hspace{1cm} 
   \Phi_i \subset \Phi_3 \hspace{1cm}
   C_3 \models C_i
 \end{array}
 }
 {
-  \envsub{1}{1} e_1 e_2 : \rtriple{\regionexpand T_o}{\left(\Phi_3 \cup \regionexpand \Phi_o\right)}{\left(C_3 \wedge \regionexpand C_o\right)}
+\begin{array}{l@{}l}
+%  \envsub{1}{1} e_1 e_2 : \rtriple{& \regionexpand T_o}{\left(\Phi_3 \cup \regionexpand \Phi_o\right)}{\\ & \left(C_3 \wedge \regionexpand C_o \wedge \bigwedge_{\substack{{\footnotesize r_f \in \{ r | \regionexpand C_o \models fresh(r) \} } \\ {\tiny r_o \in \mathit{RegionsOf}(\Gamma, \Phi_3, C_3)}}} r_f * r_o\right)}
+  \envsub{1}{1} e_1 e_2 : \Big( & \regionexpand T_o, \left(\Phi_3 \cup \regionexpand \Phi_o\right) , \\
+ & \left(C_3 \wedge \regionexpand C_o \wedge \displaystyle\bigwedge_{\substack{{\footnotesize r_f \in \{ r | \regionexpand C_o \models fresh(r) \} } \\ {\tiny r_o \in \mathit{RegionsOf}(\Gamma, \Phi_3, C_3)}}} r_f * r_o\right) \Big)
+\end{array}
 }
 \end{math}
 &\raisebox{-0.2in}{[{\tt Function Application}]} \\ 
@@ -220,9 +224,9 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 \infrule
 {
 \begin{array}{lc}
-  RR = \exists r_1, \ldots, r_n.\rtriple{T_1}{\emptyset}{C_1} \\
+  RR = \exists r_1, \ldots, r_n.\rtriple{T_1}{\emptyset}{\widetilde{C}_1} \\
   \envsub{2}{2} e : \rtripsub{\regionexpand T_1}{3}{3} \\
-  C_3 \models \regionexpand C_1
+  C_3 \models \regionexpand \widetilde{C}_1
 \end{array}
 }
 {
@@ -238,13 +242,13 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 \infrule
 {
 \begin{array}{lc}
-  RR = \exists r_1, \ldots, r_n.\rtriple{T_1}{\emptyset}{C_1} \\
+  RR = \exists r_1, \ldots, r_n.\rtriple{T_1}{\emptyset}{\widetilde{C}_1} \\
   \envsub{2}{2} e : \rtripsub{RR}{3}{3} \\
-  r'_1, \ldots, r'_n \not\in \Gamma
+  r'_1, \ldots, r'_n \not\in \mathit{RegionsOf}(\Gamma, \Phi_3, C_3)
 \end{array}
 }
 {
-  \envsub{2}{2}\textrm{ unpackrr }e : \rtriple{\regionexpand T_1}{\Phi_3}{\left(C_3 \wedge \regionexpand C_1\right)}
+  \envsub{2}{2}\textrm{ unpackrr }e : \rtriple{\regionexpand T_1}{\Phi_3}{\left(C_3 \wedge \regionexpand \widetilde{C}_1\right)}
 }
 \end{math}
 &\raisebox{-0.2in}{[{\tt Unpack}]} \\
@@ -258,10 +262,28 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
   \Gamma, \Phi_1, C_1 \vdash e : \rtriple{T}{\Phi_2 \cup \Phi'_2}{C_2 \wedge C'_2}
 }
 {
-  \Gamma, \Phi_1 \cup \Phi'_1, C_1 \wedge C'_1 \vdash e : \rtriple{T}{\Phi_2 \cup \Phi'_1}{C_2}
+  \Gamma, \Phi_1 \cup \Phi'_1 \cup \Phi''_1, C_1 \wedge C'_1 \vdash e : \rtriple{T}{\Phi_2 \cup \Phi'_1}{C_2}
 }
 \end{math}
 &\raisebox{-0.2in}{{\begin{tabular}{l} [\tt Privilege/Constraint \\ \tt Weakening]\end{tabular}}} \\
+
+%
+% Pointer-from-subregion
+%
+
+\begin{math}
+\infrule
+{
+\begin{array}{l}
+  \envsub{1}{1} e : \rtripsub{T@r_1}{2}{2} \\
+  C_2 \models r_1 \le r_2
+\end{array}
+}
+{
+  \envsub{1}{1} e : \rtripsub{T@r_2}{2}{2}
+}
+\end{math}
+&\raisebox{-0.2in}{[{\tt Pointer from Subregion}]} \\
 
 %
 % Pointer-to-subregion
@@ -272,7 +294,7 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 {
 \begin{array}{l}
   \envsub{1}{1} e : \rtripsub{T@r_1}{2}{2} \\
-  C_1 \models r_1 \le r_2
+  C_2 \models r_2 \prec r_1
 \end{array}
 }
 {
@@ -353,7 +375,7 @@ free : \forall T,r_1,r_2. \rtriple{\langle Region(r_1,T), T@r_2 \rangle}{\{ free
 % Partition
 %
 \begin{math}
-partition : \forall T,r. \rtriple{\langle Region(r,T), (T@r \rightarrow \mathit{Int}) \rangle}{\{readable(r)\}}{\top} \rightarrow \rsingle{Partition(r)}
+partition : \forall T,r. \rtriple{\langle Region(r,T), \rtriple{T@r}{readable(r)}{\top} \rightarrow \rsingle{\mathit{Int}}) \rangle}{\{readable(r)\}}{\top} \rightarrow \rsingle{Partition(r)}
 \end{math} & [{\tt Partition}] \\
 
 %
@@ -364,7 +386,7 @@ partition : \forall T,r. \rtriple{\langle Region(r,T), (T@r \rightarrow \mathit{
 \begin{array}{l@{}l}
 subregion : \forall T,r. & \rtriple{\langle Partition(r), \langle i_1, \ldots, i_n \rangle \rangle}{\emptyset}{\bigwedge_{j,k = 1, \ldots, n, j \ne k} i_j \ne i_k}
 \rightarrow \\
-& \exists r_1, \ldots, r_n. \rtriple{\langle Region(r_1,T), \ldots, Region(r_n,T) \rangle}{\emptyset}{\bigwedge_{j,k = 1, \ldots, n, j \ne k}. r_j * r_k}
+& \exists r_1, \ldots, r_n. \rtriple{\langle Region(r_1,T), \ldots, Region(r_n,T) \rangle}{\emptyset}{\bigwedge_{j = 1..n} r_j \prec r \wedge \bigwedge_{j,k = 1, \ldots, n, j \ne k}. r_j * r_k}
 \end{array}
 \end{array}
 \end{math} & [{\tt Subregion}] \\
@@ -385,7 +407,7 @@ smash : \forall T,r_1,\ldots,r_n,r_p. & \rtriple{\langle Region(r_1,T), \ldots, 
 \begin{math}
 \begin{array}{l}
 upptr : \forall r_1, r_2. \rtriple{T@r_1}{\emptyset}{r_1 \le r_2} \rightarrow \rsingle{T@r_2} \\
-downptr : \forall r_1, r_2. \rtriple{\langle Partition(r_1), T@r_1, r_2 \rangle}{\emptyset}{r_2 \le r_1} \rightarrow \rsingle{T@r_2}
+downptr : \forall r_1, r_2. \rtriple{\langle Partition(r_1), T@r_1, r_2 \rangle}{\emptyset}{r_2 \prec r_1} \rightarrow \rsingle{T@r_2}
 \end{array}
 \end{math} & [{\tt Pointer Casting}]
 
@@ -407,9 +429,13 @@ downptr : \forall r_1, r_2. \rtriple{\langle Partition(r_1), T@r_1, r_2 \rangle}
 %
 \begin{math}
 \infrule{
-  RR = \exists r_1, \ldots, r_n. \rtriple{T_1}{\emptyset}{C_1}
+  RR = \exists r_1, \ldots, r_n. \rtriple{T_1}{\emptyset}{\widetilde{C}_1}
 }{
-  newrr RR : \rsingle{()} \rightarrow \exists r_1, \ldots, r_n. \rtriple{T_1}{\bigcup_{i = 1..n} \Big( readable(r_i) \cup writeable(r_i) \cup allocable(r_i) \cup freeable(r_i) \Big)}{C_1}
+\begin{array}{l@{}l}
+  newrr RR : \rsingle{()} \rightarrow \exists r_1, \ldots, r_n. \Big( & T_1, \bigcup_{i = 1..n} \Big( readable(r_i) \cup writeable(r_i) \cup allocable(r_i) \cup freeable(r_i) \Big), \\
+ & \widetilde{C}_1 \wedge \bigwedge_{i = 1..n} fresh(r_i) \Big)
+\end{array}
+%  newrr RR : \rsingle{()} \rightarrow \exists r_1, \ldots, r_n. \rtriple{T_1}{\bigcup_{i = 1..n} \Big( readable(r_i) \cup writeable(r_i) \cup allocable(r_i) \cup freeable(r_i) \Big)}{\widetilde{C}_1 \wedge \bigwedge_{i = 1..n} fresh(r_i)}
 }
 %newRR : () \rightarrow RR
 \end{math} & [{\tt New RR}] \\
@@ -438,7 +464,6 @@ T & ::= & Int \\
   &$\mid$&$\rtripsub{T_i}{i}{i} \rightarrow \exists r_1, \ldots, r_n.\rtripsub{T_o}{o}{o}$ \\
   &$\mid$&$T@r$\\
   &$\mid$&$\forall t.T$ \\
-  &$\mid$&$\forall r.T/C$ \\
   &$\mid$&$RR$ \\
   &$\mid$&$Region(r,T)$ \\
   &$\mid$&$Partition(r)$ \\
@@ -469,14 +494,23 @@ RR & ::= & $\exists r_1, \ldots, r_n.\rtriple{T}{\emptyset}{C}$ \\
 \begin{table*}
 \centering
 {\small
-\begin{tabular}{ccc}
-
-C & ::= & $(r_1 \le r_2)$ \\
-  &$\mid$&$(r_1 * r_2)$ \\
-  &$\mid$&$(i_1 = i_2)$ \\
-  &$\mid$&$(i_1 \ne i_2)$ \\
-  &$\mid$&$(C_1 \wedge C_2)$ \\
-\end{tabular}
+\begin{math}
+\begin{array}{cc}
+\begin{array}{ccc}
+\widetilde{C} & ::= & (r_1 \prec r_2) \\
+  &\mid&(r_1 \le r_2) \\
+  &\mid&(r_1 * r_2) \\
+  &\mid&(i_1 = i_2) \\
+  &\mid&(i_1 \ne i_2) \\
+  &\mid&(\widetilde{C}_1 \wedge \widetilde{C}_2) \\
+\end{array} &
+\begin{array}{ccc}
+C & ::= & \widetilde{C} \\
+  &\mid&fresh(r) \\
+  &\mid&(C_1 \wedge C_2) \\ { } \\ { } \\
+\end{array}
+\end{array}
+\end{math}
 }
 \caption{Constraints}
 \end{table*}
@@ -495,6 +529,7 @@ C & ::= & $(r_1 \le r_2)$ \\
 \begin{math}
 \begin{array}{c}
 \forall r, r \le r \\
+\forall r_1, r_2. r_1 \prec r_2 \rightarrow r_1 \le r_2 \\
 \forall r_1, r_2, r_3. (r_1 \le r_2 \wedge r_2 \le r_3) \rightarrow r_1 \le r_3
 \end{array}
 \end{math} & [{\tt Subregion Relationships}] \\
