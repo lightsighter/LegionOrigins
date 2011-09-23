@@ -6,6 +6,7 @@
 #include <map>
 #include <set>
 #include <vector>
+#include <memory>
 
 #include "common.h"
 
@@ -16,9 +17,10 @@ namespace RegionRuntime {
     class Future;
     class RegionRequirement;
     class PhysicalRegion;
-    class Partition;
-    class DisjointPartition;
-    class AliasedPartition;
+    class PartitionBase;
+    template<typename T> class Partition;
+    template<typename T> class DisjointPartition;
+    template<typename T> class AliasedPartition;
     class HighLevelRuntime;
     class Mapper;
 
@@ -35,59 +37,56 @@ namespace RegionRuntime {
 	RELAXED,
     };
 
-    // Declaration for a logical region handle
-    typedef LowLevel::RegionMetaDataBase LogicalHandle;
-    // Declaration for the type of a color
+    typedef LowLevel::Machine MachineDescription;
+    typedef LowLevel::RegionMetaDataUntyped LogicalHandle;
+    typedef LowLevel::Memory Memory;
+    typedef LowLevel::Processor Processor;
     typedef unsigned int Color;
-    // Declaration for the type of a future handle
     typedef unsigned int FutureHandle;
-    // Declaration for the type of a mapper ID
     typedef unsigned int MapperID;
 
-    /**
-     * A future for returning the value of a task call
-     */
-    class Future {
-   	// This is a mapping from future IDs to future pointers
-	// that are local to a specific process
-    private:
-	static std::map<FutureHandle,Future*> *future_map;	
+    struct RegionRequirement {
     public:
-	static void set_future(FutureHandle handle, const void * result, size_t result_size);
+	LogicalHandle handle;
+	AccessMode mode;
+	CoherenceProperty prop;
+	void *reduction; // Function pointer to the reduction
+    };
+
+    class TaskDescription {
+    public:
+	Processor::TaskFuncID task_id;
+	std::vector<RegionRequirement> regions;	
+	void * args;
+	size_t arglen;
+	MapperID map_id;	
+	MappingTagID tag;
+	FutureHandle future_handle;
+	Processor future_proc;
+    };
+
+    class Future {
+    public:
+	// Args have to be FutureHandle, result
+	static void set_future(const void * result, size_t result_size, Processor proc);
     private:
 	FutureHandle handle;
 	bool set;
 	void * result;
 	bool active;
     protected:
-	// Only the high-level runtime should be able to create futures
 	friend class HighLevelRuntime;
-
 	Future(FutureHandle h);
 	~Future();
 	// also allow the runtime to reset futures so it can re-use them
 	bool is_active(void) const;
 	void reset(void);
+        void set_result(const void * res, size_t result_size);
     public:
 	bool is_set(void) const;
 	template<typename T> T get_result(void) const;	
-	void set_result(const void * res, size_t result_size);
     };
-
-    /**
-     * A class for tracking a specific region requirement for a
-     * a task to run.
-     */
-    class RegionRequirement {
-    public:
-	const LogicalHandle handle;
-	const AccessMode mode;
-	const CoherenceProperty prop;
-	const ReductionID reduction;
-    public:
-	RegionRequirement(LogicalHandle h, AccessMode m, CoherenceProperty p, ReductionID r = 0);
-    };
-
+    
     /**
      * A wrapper class for region allocators and region instances from
      * the low level interface. We'll do some type erasure on this 
@@ -96,62 +95,76 @@ namespace RegionRuntime {
      */
     class PhysicalRegion {
     private:
-	void *const allocator;
-	void *const instance;
+	LowLevel::RegionAllocatorUntyped allocator;
+	LowLevel::RegionInstanceUntyped instance;
     public:
-	PhysicalRegion (void * alloc, void * inst);	
+	PhysicalRegion (LowLevel::RegionAllocatorUntyped alloc, 
+			LowLevel::RegionInstanceUntyped inst);	
     public:
-	// TODO: Declare ptr_t and reduction_operator so they are visible here
 	template<typename T> ptr_t<T> alloc(void);
 	template<typename T> void free(ptr_t<T> ptr);
 	template<typename T> T read(ptr_t<T> ptr);
 	template<typename T> void write(ptr_t<T> ptr, T newval);
-	template<typename T> void reduce(ptr_t<T> ptr, ReductionID op, T newval);
+	template<typename T> void reduce(ptr_t<T> ptr, T (*reduceop)(T,T), T newval);
     };
 
-    class Partition {
+    // Untyped base class of a partition for internal use in the runtime
+    class PartitionBase {
+    public:
+	// make the warnings go away
+	virtual ~PartitionBase();
+    protected:
+	virtual bool contains_coloring(void) const = 0;
+    }; 
+
+    template<typename T>
+    class Partition : public PartitionBase {
     protected:
 	const LogicalHandle parent;
-	std::vector<LogicalHandle> child_regions;
+	const std::vector<LogicalHandle> *const child_regions;
 	const bool disjoint;
     protected:
 	// Only the runtime should be able to create Partitions
 	friend class HighLevelRuntime;
-	Partition(LogicalHandle par, std::vector<LogicalHandle> children, bool dis = true);
-	// Make the compiler warnings go away
-	virtual ~Partition();
+	Partition(LogicalHandle par, std::vector<LogicalHandle> *children, bool dis = true);
+	virtual ~Partition();	
     public:
 	LogicalHandle get_subregion(Color c) const;
-	template<typename T> ptr_t<T> safe_cast(ptr_t<T> ptr) const;
+	ptr_t<T> safe_cast(ptr_t<T> ptr) const;
 	bool is_disjoint(void) const;
     protected:
 	virtual bool contains_coloring(void) const;
-    }; 
+	bool operator==(const Partition<T> &part) const;
+    };
 
-    class DisjointPartition : public Partition {
+    template<typename T>
+    class DisjointPartition : public Partition<T> {
     private:
-	void *const color_map;
+	const std::map<ptr_t<T>,Color> *const color_map;
     protected:
 	friend class HighLevelRuntime;
 	DisjointPartition(LogicalHandle p,
-			std::vector<LogicalHandle> children, 
-			void *coloring);
+			std::vector<LogicalHandle> *children, 
+			std::map<ptr_t<T>,Color> *coloring);
+	virtual ~DisjointPartition();
     public:
-	template<typename T> ptr_t<T> safe_cast(ptr_t<T> ptr) const;
+	ptr_t<T> safe_cast(ptr_t<T> ptr) const;
     protected:
 	virtual bool contains_coloring(void) const;
     };
 
-    class AliasedPartition : public Partition {
+    template<typename T>
+    class AliasedPartition : public Partition<T> {
     private:
-	void *const color_map;
+	const std::multimap<ptr_t<T>,Color> *const color_map;
     protected:
 	friend class HighLevelRuntime;
 	AliasedPartition(LogicalHandle p,
-			std::vector<LogicalHandle> children, 
-			void *coloring);
+			std::vector<LogicalHandle> *children, 
+			std::multimap<ptr_t<T>,Color> *coloring);
+	virtual ~AliasedPartition();
     public:
-	template<typename T> ptr_t<T> safe_cast(ptr_t<T> ptr) const;
+	ptr_t<T> safe_cast(ptr_t<T> ptr) const;
     protected:
 	virtual bool contains_coloring(void) const;
     };
@@ -169,8 +182,19 @@ namespace RegionRuntime {
      * mapping file a mapper and a tag for an operation.
      */
     class HighLevelRuntime {
+    private:
+	// A static map for tracking the runtimes associated with each processor in a process
+	static std::map<Processor,HighLevelRuntime*> *runtime_map;
     public:
-	HighLevelRuntime(LowLevel::Machine *machine);
+	// Static methods for calls from the processor to the high level runtime
+	static void shutdown_runtime(const void * args, size_t arglen, Processor proc);
+	static void enqueue_tasks(const void * args, size_t arglen, Processor proc);
+	static void steal_request(const void * args, size_t arglen, Processor proc);
+	static void set_future(const void * args, size_t arglen, Processor proc);
+	// Method to register with the low level runtime for scheduling
+	static void schedule(Processor proc);
+    public:
+	HighLevelRuntime(MachineDescription *m);
 	~HighLevelRuntime();
     public:
 	// Functions for creating and destroying logical regions
@@ -178,66 +202,155 @@ namespace RegionRuntime {
 	LogicalHandle create_logical_region(size_t num_elmts = 0,MapperID id = 0,MappingTagID tag = 0);
 	template<typename T>
 	void destroy_logical_region(LogicalHandle handle);	
+        template<typename T>
+        LogicalHandle smash_logical_region(LogicalHandle region1, LogicalHandle region2);
     public:
 	// Functions for creating and destroying partitions
 	template<typename T>
-	Partition* create_disjoint_partition(LogicalHandle parent,
+	Partition<T> create_disjoint_partition(LogicalHandle parent,
 						unsigned int num_subregions,
-						std::map<ptr_t<T>,Color> * color_map = NULL,
+						std::auto_ptr<std::map<ptr_t<T>,Color> > color_map,
+						const std::vector<size_t> &element_count,
 						MapperID id = 0,
 						MappingTagID tag = 0);
 	template<typename T>
-	Partition* create_aliased_partition(LogicalHandle parent,
+	Partition<T> create_aliased_partition(LogicalHandle parent,
 						unsigned int num_subregions,
-						std::multimap<ptr_t<T>,Color> * color_map,
+						std::auto_ptr<std::multimap<ptr_t<T>,Color> > color_map,
+						const std::vector<size_t> &element_count,
 						MapperID id = 0,
 						MappingTagID tag = 0);
 
-	void destroy_partition(Partition *partition);
+	template<typename T>
+	void destroy_partition(Partition<T> partition);
     public:
 	// Functions for calling tasks
 	Future* execute_task(LowLevel::Processor::TaskFuncID task_id,
-			const std::vector<RegionRequirement> regions,
+			const std::vector<RegionRequirement> &regions,
 			const void *args, size_t arglen, MapperID id = 0, MappingTagID tag = 0);	
     public:
-	// Add additional mappers that the runtime can use to perform operations
 	void add_mapper(MapperID id, Mapper *m);
-    protected:
-	// Functions that a mapper class can use to query the high-level runtime
-	friend class Mapper;	
+    public:
 	// Get instances - return the memory locations of all known instances of a region
 	// Get instances of parent regions
 	// Get partitions of a region
+	// Return a best guess of the remaining space in a memory
+	size_t remaining_memory(Memory m) const;
     private:
-	// Internal runtime data structures for tracking regions, partitions, mappers
 	std::vector<Mapper*> mapper_objects;
-	// Keep track of the parent regions of a region
-	std::map<LogicalHandle,LogicalHandle> parent_map;
-	std::map<LogicalHandle,std::vector<Partition*>*> child_map;
+	std::map</*child_region*/LogicalHandle,/*parent region*/LogicalHandle> parent_map;
+	std::map<LogicalHandle,std::vector<PartitionBase>*> child_map;
+	MachineDescription *machine;
+	Processor local_proc;
+	std::vector<TaskDescription*> task_queue;
+	std::vector<Future*> local_futures;
+    private:
+	// Internal operations
+	// The two remove operations are mutually recursive
+	// - if you remove a region, you also remove all its partitions
+	// - if you remove a partition, you remove all its subregions
+	template<typename T>
+	void remove_region(LogicalHandle region);
+	template<typename T>
+	void remove_partition(Partition<T> partition);
+	Future* get_available_future();
+	size_t compute_task_desc_size(TaskDescription *desc) const;
+	size_t compute_task_desc_size(int num_regions,size_t arglen) const;
+	void pack_task_desc(TaskDescription *desc, char *&buffer) const;
+	TaskDescription* unpack_task_desc(const char *&buffer) const;
+	// Operations invoked by static methods
+	void process_tasks(const void * args, size_t arglen);
+	void process_steal(const void * args, size_t arglen);
+	void process_future(const void * args, size_t arglen);
+	// Where the magic happens!
+	void process_schedule_request();
     };
 
     /**
-     * A mapper object will be created for every processor and will be responsbile
+     * A mapper object will be created for every processor and will be responsbile for
      * scheduling tasks onto that processor as well as placing the necessary regions
      * in the memory hierarchy for those tasks to run.
      */
     class Mapper {
     public:
-	// We need to have a way of passing data between mappers on two different processors.
-	// To achieve this we will use static methods that will figure out which mapper to
-	// run the task on based on the processor.
-	static std::map<LowLevel::Processor*,Mapper*> all_mappers;
-	static void enqueue_mapper_task(const void *args, size_t arglen, Context *ctx);
+	enum MapperErrorCode {
+		MAPPING_SUCCESS, // The mapping succeeded
+		INSUFFICIENT_SPACE, // Not enough space to create an instance
+		INVALID_MEMORY, // Memory that is not visible to processor
+	};
+	class MemoryTree {
+		
+	};
+    protected:
+	HighLevelRuntime *runtime;
     public:
-	Mapper(LowLevel::Machine *machine, HighLevelRuntime *runtime);
+	Mapper(MachineDescription *machine, HighLevelRuntime *runtime);
+	virtual ~Mapper();
     public:
-	LowLevel::Memory* select_initial_region_location(size_t elmt_size, size_t num_elmts, MappingTagID tag);	
-	// Place initial region - return the memory for the initial location of a region
-	// Place initial partitions - return a mapping of colors to memories for partitions
-	// Compact partition?
-	// Select target processor - given a task to execute pick the best processor for a task
-	// Steal task - determine whether or not to steal this task
-	// Map - return the list of memories in which to have an instance for each region for each processor
+	virtual void select_initial_region_location(	Memory &result, 
+							size_t elmt_size, 
+							size_t num_elmts, 
+							MappingTagID tag);	
+
+	virtual bool remap_initial_region_location(	Memory &result,
+							MapperErrorCode error,
+							const Memory &failed_mapping,
+							size_t elmt_size,
+							size_t num_elmts,
+							MappingTagID tag);
+
+	virtual void select_initial_partition_location(	std::vector<Memory> &result, 
+							size_t elmt_size, 
+							const std::vector<size_t> &num_elmts, 
+							unsigned int num_subregions, 
+							MappingTagID tag);
+
+	virtual bool remap_initial_partition_location(	std::vector<Memory> &result,
+						const std::vector<MapperErrorCode> &errors,
+						const std::vector<Memory> &failed_mapping,
+						size_t elmt_size,
+						const std::vector<size_t> &num_elmts,
+						unsigned int num_subregions,
+						MappingTagID tag);
+
+	virtual void compact_partition(	bool &result,
+					const PartitionBase &partition, 
+					MappingTagID tag);
+
+	virtual void select_target_processor(	Processor &result,
+						Processor::TaskFuncID task_id,
+						const std::vector<RegionRequirement> &regions,
+						MappingTagID tag);	
+
+	virtual void target_task_steal( Processor &result,
+					MappingTagID tag);
+
+	virtual void permit_task_steal(	bool &result,
+					Processor::TaskFuncID task_id,
+					const std::vector<RegionRequirement> &regions,
+					MappingTagID tag);
+
+	virtual void map_task(	std::vector<Memory> &result,
+				Processor::TaskFuncID task_id,
+				const std::vector<RegionRequirement> &regions,
+				MappingTagID tag);
+
+	virtual bool remap_task(std::vector<Memory> &result,
+				const std::vector<MapperErrorCode> &errors,
+				const std::vector<Memory> &failed_mapping,
+				Processor::TaskFuncID task_id,
+				const std::vector<RegionRequirement> &regions,
+				MappingTagID tag);
+    protected:
+	// Data structures for the base mapper
+	const Processor local_proc;
+	MachineDescription *const machine;
+	std::vector<Memory> visible_memories;
+	MemoryTree *root;
+    protected:
+	// Helper methods for building machine abstractions
+	void rank_memories(std::vector<Memory> &memories);
+	void treeify_memories(MachineDescription *machine);
     };
 
   };

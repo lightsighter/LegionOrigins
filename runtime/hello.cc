@@ -23,9 +23,9 @@ int main(int argc, const char *argv[])
 
   Machine m(&argc, (char ***)&argv, task_ids);
 
-  std::set<Processor *>::const_iterator it = m.all_processors().begin();
+  std::set<Processor>::const_iterator it = m.all_processors().begin();
   printf("foo\n");
-  (*it)->spawn(1, "Hello, world!", 14);
+  (*it).spawn(1, "Hello, world!", 14);
   printf("blah\n");
   for(int i = 0; i < 10; i++) {
     printf("(%d)", i);
