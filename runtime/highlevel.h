@@ -243,7 +243,7 @@ namespace RegionRuntime {
 	MachineDescription *machine;
 	Processor local_proc;
 	std::vector<TaskDescription*> task_queue;
-	std::vector<Future*> local_futures;
+	std::map<FutureHandle,Future*> local_futures;
     private:
 	// Internal operations
 	// The two remove operations are mutually recursive
@@ -326,6 +326,7 @@ namespace RegionRuntime {
 					MappingTagID tag);
 
 	virtual void permit_task_steal(	bool &result,
+					Processor thief,
 					Processor::TaskFuncID task_id,
 					const std::vector<RegionRequirement> &regions,
 					MappingTagID tag);
@@ -341,6 +342,10 @@ namespace RegionRuntime {
 				Processor::TaskFuncID task_id,
 				const std::vector<RegionRequirement> &regions,
 				MappingTagID tag);
+	// Register task with mapper
+	// Unregister task with mapper
+	// Select tasks to steal
+	// Select target processor(s)
     protected:
 	// Data structures for the base mapper
 	const Processor local_proc;

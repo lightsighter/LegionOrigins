@@ -335,9 +335,9 @@ namespace RegionRuntime {
 		if (mapper_objects[i] != NULL) delete mapper_objects[i];
 
 	// Delete all the local futures
-	for (std::vector<Future*>::iterator it = local_futures.begin();
+	for (std::map<FutureHandle,Future*>::iterator it = local_futures.begin();
 		it != local_futures.end(); it++)
-		delete *it;
+		delete it->second;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -378,12 +378,7 @@ namespace RegionRuntime {
 #ifdef HIGH_LEVEL_DEBUG
 	assert(runtime_map->find(proc) != runtime_map->end());
 #endif
-	// First unpack the handle out of the arguments
-	const FutureHandle handle = *((const FutureHandle*)result);
-	const char *result_ptr = (const char*)result;
-	// Updat the pointer to the location of the remaining data
-	result_ptr += sizeof(FutureHandle);
-	((*runtime_map)[proc])->process_future(result_ptr, result_size-sizeof(FutureHandle));
+	((*runtime_map)[proc])->process_future(result, result_size);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -879,17 +874,18 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
 	// Run through the available futures and see if we find one that is unset	
-	for (std::vector<Future*>::iterator it = local_futures.begin();
+	for (std::map<FutureHandle,Future*>::iterator it = local_futures.begin();
 		it != local_futures.end(); it++)
 	{
-		if (!((*it)->is_active()))
+		if (!((it->second)->is_active()))
 		{
-			(*it)->reset();
-			return (*it);
+			(it->second)->reset();
+			return (it->second);
 		}
 	}
-	Future *next = new Future(local_futures.size());
-	local_futures.push_back(next);
+	FutureHandle next_handle = local_futures.size();
+	Future *next = new Future(next_handle);
+	local_futures.insert(std::pair<FutureHandle,Future*>(next_handle,next));
 	return next;
     }
 
@@ -998,14 +994,89 @@ namespace RegionRuntime {
     void HighLevelRuntime::process_steal(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
+	const char * buffer = ((const char*)args);
+	// Unpack the stealing processor
+	Processor thief = *((Processor*)buffer);	
+	buffer += sizeof(Processor);
+	// Get the maximum number of tasks to steal
+	int max_tasks = *((int*)buffer);
 
+	// Iterate over the task descriptions, asking the appropriate mapper
+	// whether we can steal them
+	std::vector<TaskDescription*> stolen;
+	int index = 0;
+	while ((index < task_queue.size()) && (stolen.size()<max_tasks))
+	{
+		std::vector<TaskDescription*>::iterator it = task_queue.begin();
+		// Jump to the proper index
+		for (int i=0; i<index; i++)
+			it++;
+		// Now start looking for tasks to steal
+		for ( ; it != task_queue.end(); it++, index++)
+		{
+			TaskDescription *desc = *it;
+#ifdef HIGH_LEVEL_DEBUG
+			assert(desc->map_id < mapper_objects.size());
+#endif	
+			bool steal = true;
+			mapper_objects[desc->map_id]->permit_task_steal(steal,thief,desc->task_id,
+						desc->regions, desc->tag);
+			if (steal)
+			{
+				stolen.push_back(*it);
+				task_queue.erase(it);
+				break;
+			}
+		}	
+	}
+	// We've now got our tasks to steal
+	if (!stolen.empty())
+	{
+		size_t total_buffer_size = sizeof(int);
+		// Count up the size of elements to steal
+		for (std::vector<TaskDescription*>::iterator it = stolen.begin();
+			it != stolen.end(); it++)
+		{
+			total_buffer_size += compute_task_desc_size(*it);
+		}
+		// Allocate the buffer
+		char * target_buffer = (char*)malloc(total_buffer_size);
+		char * target_ptr = target_buffer;
+		*((int*)target_ptr) = int(stolen.size());
+		target_ptr += sizeof(int);
+		// Write the task descriptions into memory
+		for (std::vector<TaskDescription*>::iterator it = stolen.begin();
+			it != stolen.end(); it++)
+		{
+			pack_task_desc(*it,target_ptr);
+		}
+		// Invoke the task on the right processor to send tasks back
+		thief.spawn(1, target_buffer, total_buffer_size);
+
+		// Clean up our mess
+		free(target_buffer);
+		for (std::vector<TaskDescription*>::iterator it = stolen.begin();
+			it != stolen.end(); it++)
+		{
+			delete *it;
+		}
+	}
     }
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::process_future(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
-
+	// First unpack the handle out of the arguments
+	const FutureHandle handle = *((const FutureHandle*)args);
+	const char *result_ptr = (const char*)args;
+	// Updat the pointer to the location of the remaining data
+	result_ptr += sizeof(FutureHandle);
+	// Get the future out of the table and set its value
+#ifdef HIGH_LEVEL_DEBUG
+	assert(local_futures.find(handle) != local_futures.end());
+#endif		
+	local_futures[handle]->set_result(result_ptr,arglen-sizeof(FutureHandle));
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1144,7 +1215,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::permit_task_steal(bool &result, Processor::TaskFuncID task_id,
+    void Mapper::permit_task_steal(bool &result, Processor thief, Processor::TaskFuncID task_id,
 					const std::vector<RegionRequirement> &regions,
 					MappingTagID tag)
     //--------------------------------------------------------------------------------------------
