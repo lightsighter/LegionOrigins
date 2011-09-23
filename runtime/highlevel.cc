@@ -5,6 +5,7 @@
 #include <set>
 #include <vector>
 #include <memory>
+#include <algorithm>
 
 #include <cstdio>
 #include <cassert>
@@ -16,24 +17,14 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
     // Future
     ///////////////////////////////////////////////////////////// 
-    // Declare the process-wide visible future map
-    std::map<FutureHandle,Future*> * Future::future_map = new std::map<FutureHandle,Future*>();
+
+    
 
     //--------------------------------------------------------------------------------------------
-    void Future::set_future(FutureHandle handle, const void *result, size_t result_size)
+    Future::Future(FutureHandle h) : handle(h), set(false), result(NULL), active(true) 
     //--------------------------------------------------------------------------------------------
     {
-	// Find the future in the globally visible future map and set it's value
-#ifdef HIGH_LEVEL_DEBUG
-	assert(future_map.find(handle) != future_map.end());
-#endif
-	Future *future = (*future_map)[handle];
-	future->set_result(result,result_size);
     }
-
-    //--------------------------------------------------------------------------------------------
-    Future::Future(FutureHandle h) : handle(h), set(false), result(NULL), active(true) { } 
-    //--------------------------------------------------------------------------------------------
 
     //--------------------------------------------------------------------------------------------
     Future::~Future() 
@@ -89,19 +80,6 @@ namespace RegionRuntime {
 	memcpy(result, res, result_size);	
 	set = true;
     }
-
-    /////////////////////////////////////////////////////////////
-    // Region Requirement 
-    ///////////////////////////////////////////////////////////// 
-
-    //--------------------------------------------------------------------------------------------
-    RegionRequirement::RegionRequirement(LogicalHandle h,
-					AccessMode m,
-					CoherenceProperty p,
-					void *r) 
-		: handle(h), mode(m), prop(p), reduction(r) { }
-    //--------------------------------------------------------------------------------------------
-
 
     /////////////////////////////////////////////////////////////
     // Physical Region 
@@ -319,23 +297,103 @@ namespace RegionRuntime {
     // High Level Runtime
     ///////////////////////////////////////////////////////////// 
 
+    // The high level runtime map
+    std::map<Processor,HighLevelRuntime*> *HighLevelRuntime::runtime_map = 
+					new std::map<Processor,HighLevelRuntime*>();
+
     //--------------------------------------------------------------------------------------------
     HighLevelRuntime::HighLevelRuntime(LowLevel::Machine *m)
-	: mapper_objects(std::vector<Mapper*>(8)), machine(m)
+	: mapper_objects(std::vector<Mapper*>(8)), machine(m), local_proc(m->get_local_processor())
     //--------------------------------------------------------------------------------------------
     {
+	// Register this object with the runtime map
+	runtime_map->insert(std::pair<Processor,HighLevelRuntime*>(local_proc,this));
+
 	for (unsigned int i=0; i<mapper_objects.size(); i++)
 		mapper_objects[i] = NULL;
 	mapper_objects[0] = new Mapper(machine,this);
+	
+	// TODO: register the appropriate functions with the low level processor
+	// Task 0 : Runtime Shutdown
+	// Task 1 : Enqueue Task Request
+	// Task 2 : Steal Request
+	// Task 3 : Set Future Value
     }
 
     //--------------------------------------------------------------------------------------------
     HighLevelRuntime::~HighLevelRuntime()
     //--------------------------------------------------------------------------------------------
     {
+	std::map<Processor,HighLevelRuntime*>::iterator it = runtime_map->find(local_proc);
+#ifdef HIGH_LEVEL_DEBUG
+	assert(it != runtime_map->end());
+#endif
+	runtime_map->erase(it);
+
 	// Go through and delete all the mapper objects
 	for (unsigned int i=0; i<mapper_objects.size(); i++)
 		if (mapper_objects[i] != NULL) delete mapper_objects[i];
+
+	// Delete all the local futures
+	for (std::vector<Future*>::iterator it = local_futures.begin();
+		it != local_futures.end(); it++)
+		delete *it;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::shutdown_runtime(const void * args, size_t arglen, Processor proc)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef HIGH_LEVEL_DEBUG
+	assert(runtime_map->find(proc) != runtime_map->end());
+#endif	
+	// Invoke the destructor
+	delete ((*runtime_map)[proc]);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::enqueue_tasks(const void * args, size_t arglen, Processor proc)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef HIGH_LEVEL_DEBUG
+	assert(runtime_map->find(proc) != runtime_map->end());
+#endif
+	((*runtime_map)[proc])->process_tasks(args,arglen);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::steal_request(const void * args, size_t arglen, Processor proc)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef HIGH_LEVEL_DEBUG
+	assert(runtime_map->find(proc) != runtime_map->end());
+#endif
+	((*runtime_map)[proc])->process_steal(args,arglen);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::set_future(const void *result, size_t result_size, Processor proc)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef HIGH_LEVEL_DEBUG
+	assert(runtime_map->find(proc) != runtime_map->end());
+#endif
+	// First unpack the handle out of the arguments
+	const FutureHandle handle = *((const FutureHandle*)result);
+	const char *result_ptr = (const char*)result;
+	// Updat the pointer to the location of the remaining data
+	result_ptr += sizeof(FutureHandle);
+	((*runtime_map)[proc])->process_future(result_ptr, result_size-sizeof(FutureHandle));
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::schedule(Processor proc)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef HIGH_LEVEL_DEBUG
+	assert(runtime_map->find(proc) != runtime_map->end());
+#endif
+	((*runtime_map)[proc])->process_schedule_request();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -652,12 +710,77 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     Future* HighLevelRuntime::execute_task(LowLevel::Processor::TaskFuncID task_id,
-					const std::vector<RegionRequirement> regions,
+					const std::vector<RegionRequirement> &regions,
 					const void *args, size_t arglen,
 					MapperID id, MappingTagID tag)	
     //--------------------------------------------------------------------------------------------
     {
+	// Invoke the mapper to see where we're going to put this task
+	Processor target;
+#ifdef DEBUG_HIGH_LEVEL
+	assert(id < mapper_objects.size());
+	assert(mapper_objects[id] == NULL);
+#endif
+	mapper_objects[id]->select_target_processor(target,task_id,regions,tag);
+#ifdef DEBUG_HIGH_LEVEL
+	if (!target.exists())
+	{
+		fprintf(stderr,"Mapper %d failed to give valid processor target for task %d with tag %d\n",id,task_id,tag);
+		exit(100*(machine->get_local_processor().id)+id);
+	}
+#endif
+	Future* ret_future = get_available_future();
+	// Check to see if we're enqueuing local or far away
+	if (target == local_proc)
+	{
+		// This is a local processor, just add it to the queue	
+		TaskDescription *desc = new TaskDescription();
+		desc->task_id = task_id;
+		desc->regions = regions;
+		desc->args = malloc(sizeof(arglen));
+		memcpy(desc->args,args,arglen);
+		desc->arglen = arglen;
+		desc->map_id = id;
+		desc->tag = tag;
+		desc->future_handle = ret_future->handle;
+		desc->future_proc = local_proc;
+		task_queue.push_back(desc);
+	}
+	else
+	{
+		size_t buffer_size = compute_task_desc_size(regions.size(),arglen);
+		void *arg_buffer = (char*)malloc(buffer_size+sizeof(int));			
+		// Set the number of tasks to pass
+		*((int*)arg_buffer) = 1;
+		char * buffer = ((char*)arg_buffer)+sizeof(int);	
 
+		*((Processor::TaskFuncID*)buffer) = task_id;
+		buffer += sizeof(Processor::TaskFuncID);
+		*((int*)buffer) = regions.size();
+		buffer += sizeof(int);
+		*((size_t*)buffer) = arglen;
+		buffer += sizeof(size_t);
+		*((MapperID*)buffer) = id;
+		buffer += sizeof(MapperID);
+		*((MappingTagID*)buffer) = tag;
+		buffer += sizeof(MappingTagID);
+		*((FutureHandle*)buffer) = ret_future->handle;
+		buffer += sizeof(FutureHandle);
+		*((Processor*)buffer) = local_proc;
+		buffer += sizeof(Processor);
+		for (int i=0; i<regions.size(); i++)
+		{
+			*((RegionRequirement*)buffer) = regions[i];
+			buffer += sizeof(RegionRequirement);
+		}
+		memcpy(buffer,args,arglen);
+		buffer += arglen;
+
+		// Task-id 1 should always be to enqueue tasks
+		// No need to wait for this event to happen
+		target.spawn(1,arg_buffer,buffer_size);
+	}
+	return ret_future;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -751,43 +874,176 @@ namespace RegionRuntime {
 	partition.Partition<T>::~Partition();
     }
 
+    //--------------------------------------------------------------------------------------------
+    Future* HighLevelRuntime::get_available_future()
+    //--------------------------------------------------------------------------------------------
+    {
+	// Run through the available futures and see if we find one that is unset	
+	for (std::vector<Future*>::iterator it = local_futures.begin();
+		it != local_futures.end(); it++)
+	{
+		if (!((*it)->is_active()))
+		{
+			(*it)->reset();
+			return (*it);
+		}
+	}
+	Future *next = new Future(local_futures.size());
+	local_futures.push_back(next);
+	return next;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    size_t HighLevelRuntime::compute_task_desc_size(TaskDescription *desc) const
+    //--------------------------------------------------------------------------------------------
+    {
+	return compute_task_desc_size(desc->regions.size(),desc->arglen);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    size_t HighLevelRuntime::compute_task_desc_size(int num_regions, size_t arglen) const
+    //--------------------------------------------------------------------------------------------
+    {
+	size_t ret_size = 0;
+	ret_size += sizeof(Processor::TaskFuncID);
+	ret_size += sizeof(int);
+	ret_size += sizeof(size_t);
+	ret_size += sizeof(MapperID);
+	ret_size += sizeof(MappingTagID);
+	ret_size += sizeof(FutureHandle);
+	ret_size += sizeof(Processor);
+	ret_size += (num_regions * sizeof(RegionRequirement));
+	ret_size += arglen;
+	return ret_size;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::pack_task_desc(TaskDescription *desc, char *&buffer) const
+    //--------------------------------------------------------------------------------------------
+    {
+	*((Processor::TaskFuncID*)buffer) = desc->task_id;
+	buffer += sizeof(Processor::TaskFuncID);
+	*((int*)buffer) = desc->regions.size();
+	buffer += sizeof(int);
+	*((size_t*)buffer) = desc->arglen;
+	buffer += sizeof(size_t);
+	*((MapperID*)buffer) = desc->map_id;
+	buffer += sizeof(MapperID);
+	*((MappingTagID*)buffer) = desc->tag;
+	buffer += sizeof(MappingTagID);
+	*((FutureHandle*)buffer) = desc->future_handle;
+	buffer += sizeof(FutureHandle);
+	*((Processor*)buffer) = desc->future_proc;
+	buffer += sizeof(Processor);
+	for (int i=0; i<desc->regions.size(); i++)
+	{
+		*((RegionRequirement*)buffer) = desc->regions[i];
+		buffer += sizeof(RegionRequirement);
+	}
+	memcpy(buffer,desc->args,desc->arglen);
+	buffer += desc->arglen;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    TaskDescription* HighLevelRuntime::unpack_task_desc(const char *&buffer) const
+    //--------------------------------------------------------------------------------------------
+    {
+	// Create a new task description
+	TaskDescription *desc = new TaskDescription();
+	// Unpack the task arguments
+	desc->task_id = *((Processor::TaskFuncID*)buffer);
+	buffer += sizeof(Processor::TaskFuncID);
+	int num_regions = *((int*)buffer);
+	buffer += sizeof(int);
+	desc->arglen = *((size_t*)buffer);
+	buffer += sizeof(size_t);
+	desc->map_id = *((MapperID*)buffer);
+	buffer += sizeof(MapperID);
+	desc->tag = *((MappingTagID*)buffer);
+	buffer += sizeof(MappingTagID);
+	desc->future_handle = *((FutureHandle*)buffer);
+	buffer += sizeof(FutureHandle);
+	desc->future_proc = *((Processor*)buffer);
+	// Get the regions requirements out
+	for (int j=0; j<num_regions; j++)
+	{
+		desc->regions.push_back(*((RegionRequirement*)buffer));
+		buffer += sizeof(RegionRequirement);
+	}
+	// Finally get the arguments
+	desc->args = malloc(desc->arglen);
+	memcpy(desc->args,buffer,desc->arglen);	
+	buffer += desc->arglen;
+	return desc;
+    }
+
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_tasks(const void * args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+	const char *buffer = (const char*)args;
+	// First get the number of tasks to process
+	int num_tasks = *((int*)buffer);
+	buffer += sizeof(int);
+	// Unpack each of the tasks
+	for (int i=0; i<num_tasks; i++)
+	{
+		// Add the task description to the task queue
+		task_queue.push_back(unpack_task_desc(buffer));
+	}
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_steal(const void * args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_future(const void * args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_schedule_request()
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    
     /////////////////////////////////////////////////////////////
     // Mapper 
     ///////////////////////////////////////////////////////////// 
+
+    // A helper functor for sorting memory sizes
+    struct MemorySorter {
+    public:
+	MachineDescription *machine;
+	bool operator()(Memory one, Memory two)
+	{
+		return (machine->get_memory_size(one) < machine->get_memory_size(two));	
+	}
+    };
     
     //--------------------------------------------------------------------------------------------
-    Mapper::Mapper(MachineDescription *machine, HighLevelRuntime *rt) : runtime(rt)
+    Mapper::Mapper(MachineDescription *m, HighLevelRuntime *rt) : runtime(rt),
+				local_proc(machine->get_local_processor()), machine(m)
     //--------------------------------------------------------------------------------------------
     {
-	// The default mapper will maintain a linear view of memory
+	// The default mapper will maintain a linear view of memory from
+	// the perspective of the processor.
 	// We'll assume that smaller memories are closer to the processor
 	// and rank memories based on their size.
 	
-	// First figure out what processor this runtime is running on top of
-	local_proc = machine->get_local_processor();	
-
-	// get the set of memories visible from this processor and sort them on size
-	const std::set<Memory> &memories = machine->get_visible_memories(local_proc);
-	for (std::set<Memory>::iterator it = memories.begin();
-		it != memories.end(); it++)
-	{
-		Memory new_mem = (*it);
-		bool added = false;
-		for (std::vector<Memory>::iterator sort_it = visible_memories.begin();
-			sort_it != visible_memories.end(); sort_it++)
-		{
-			if (machine->get_memory_size(new_mem) < machine->get_memory_size(*sort_it))
-			{
-				visible_memories.insert(sort_it,new_mem);
-				added = true;
-				break;
-			}
-		}
-		if (!added)
-			visible_memories.push_back(new_mem);
-	}
-	
-	// Now for each of the memories that we have that are visible
+	// Get the set of memories visible to the processor and rank them on size
+	std::set<Memory> memories = machine->get_visible_memories(local_proc);
+	visible_memories = std::vector<Memory>(memories.begin(),memories.end());	
+	rank_memories(visible_memories);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -795,7 +1051,22 @@ namespace RegionRuntime {
 						size_t num_elmts, MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
-
+	// Try putting the region in the closest memory in which it will fit
+	bool chosen = false;
+	size_t total_bytes = elmt_size*num_elmts;
+	for (std::vector<Memory>::iterator it = visible_memories.begin();
+		it != visible_memories.end(); it++)
+	{
+		if (total_bytes < runtime->remaining_memory(*it))
+		{
+			result = *it;
+			chosen = true;
+			break;
+		}	
+	}		
+	// If we couldn't chose one, just try the last one
+	if (!chosen)
+		result = visible_memories.back();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -804,7 +1075,24 @@ namespace RegionRuntime {
 						size_t num_elmts, MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
-
+	// Try putting it in the next biggest memory
+	bool chosen = false;
+	std::vector<Memory>::iterator it = visible_memories.begin();
+	// Find the bad memory
+	for ( ; it != visible_memories.end(); it++)
+	{
+		if (failed_mapping == *it)
+			break;
+	}
+	// Increment the iterator to get the next element
+	++it;
+	if (it != visible_memories.end())
+	{
+		result = *it;
+		chosen = true;
+	}
+	// If we didn't pick a new memory, just exit the program
+	return !chosen;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -815,7 +1103,7 @@ namespace RegionRuntime {
 						MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
-
+	// Figure out how much data will have to be mapped
     }
 
     //--------------------------------------------------------------------------------------------
@@ -883,6 +1171,18 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    void Mapper::rank_memories(std::vector<Memory> &memories)
     //--------------------------------------------------------------------------------------------
+    {
+	MemorySorter functor = { this->machine };
+	std::sort(memories.begin(),memories.end(),functor);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void Mapper::treeify_memories(MachineDescription *machine)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
   };
 };

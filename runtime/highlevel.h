@@ -45,11 +45,30 @@ namespace RegionRuntime {
     typedef unsigned int FutureHandle;
     typedef unsigned int MapperID;
 
-    class Future {
-    private:
-	static std::map<FutureHandle,Future*> *future_map;	
+    struct RegionRequirement {
     public:
-	static void set_future(FutureHandle handle, const void * result, size_t result_size);
+	LogicalHandle handle;
+	AccessMode mode;
+	CoherenceProperty prop;
+	void *reduction; // Function pointer to the reduction
+    };
+
+    class TaskDescription {
+    public:
+	Processor::TaskFuncID task_id;
+	std::vector<RegionRequirement> regions;	
+	void * args;
+	size_t arglen;
+	MapperID map_id;	
+	MappingTagID tag;
+	FutureHandle future_handle;
+	Processor future_proc;
+    };
+
+    class Future {
+    public:
+	// Args have to be FutureHandle, result
+	static void set_future(const void * result, size_t result_size, Processor proc);
     private:
 	FutureHandle handle;
 	bool set;
@@ -62,22 +81,12 @@ namespace RegionRuntime {
 	// also allow the runtime to reset futures so it can re-use them
 	bool is_active(void) const;
 	void reset(void);
+        void set_result(const void * res, size_t result_size);
     public:
 	bool is_set(void) const;
 	template<typename T> T get_result(void) const;	
-	void set_result(const void * res, size_t result_size);
     };
-
-    class RegionRequirement {
-    public:
-	const LogicalHandle handle;
-	const AccessMode mode;
-	const CoherenceProperty prop;
-	void *reduction; // Function pointer to the reduction
-    public:
-	RegionRequirement(LogicalHandle h, AccessMode m, CoherenceProperty p, void *r = NULL);
-    };
-
+    
     /**
      * A wrapper class for region allocators and region instances from
      * the low level interface. We'll do some type erasure on this 
@@ -173,6 +182,17 @@ namespace RegionRuntime {
      * mapping file a mapper and a tag for an operation.
      */
     class HighLevelRuntime {
+    private:
+	// A static map for tracking the runtimes associated with each processor in a process
+	static std::map<Processor,HighLevelRuntime*> *runtime_map;
+    public:
+	// Static methods for calls from the processor to the high level runtime
+	static void shutdown_runtime(const void * args, size_t arglen, Processor proc);
+	static void enqueue_tasks(const void * args, size_t arglen, Processor proc);
+	static void steal_request(const void * args, size_t arglen, Processor proc);
+	static void set_future(const void * args, size_t arglen, Processor proc);
+	// Method to register with the low level runtime for scheduling
+	static void schedule(Processor proc);
     public:
 	HighLevelRuntime(MachineDescription *m);
 	~HighLevelRuntime();
@@ -206,7 +226,7 @@ namespace RegionRuntime {
     public:
 	// Functions for calling tasks
 	Future* execute_task(LowLevel::Processor::TaskFuncID task_id,
-			const std::vector<RegionRequirement> regions,
+			const std::vector<RegionRequirement> &regions,
 			const void *args, size_t arglen, MapperID id = 0, MappingTagID tag = 0);	
     public:
 	void add_mapper(MapperID id, Mapper *m);
@@ -214,11 +234,16 @@ namespace RegionRuntime {
 	// Get instances - return the memory locations of all known instances of a region
 	// Get instances of parent regions
 	// Get partitions of a region
+	// Return a best guess of the remaining space in a memory
+	size_t remaining_memory(Memory m) const;
     private:
 	std::vector<Mapper*> mapper_objects;
 	std::map</*child_region*/LogicalHandle,/*parent region*/LogicalHandle> parent_map;
 	std::map<LogicalHandle,std::vector<PartitionBase>*> child_map;
 	MachineDescription *machine;
+	Processor local_proc;
+	std::vector<TaskDescription*> task_queue;
+	std::vector<Future*> local_futures;
     private:
 	// Internal operations
 	// The two remove operations are mutually recursive
@@ -228,6 +253,17 @@ namespace RegionRuntime {
 	void remove_region(LogicalHandle region);
 	template<typename T>
 	void remove_partition(Partition<T> partition);
+	Future* get_available_future();
+	size_t compute_task_desc_size(TaskDescription *desc) const;
+	size_t compute_task_desc_size(int num_regions,size_t arglen) const;
+	void pack_task_desc(TaskDescription *desc, char *&buffer) const;
+	TaskDescription* unpack_task_desc(const char *&buffer) const;
+	// Operations invoked by static methods
+	void process_tasks(const void * args, size_t arglen);
+	void process_steal(const void * args, size_t arglen);
+	void process_future(const void * args, size_t arglen);
+	// Where the magic happens!
+	void process_schedule_request();
     };
 
     /**
@@ -241,6 +277,9 @@ namespace RegionRuntime {
 		MAPPING_SUCCESS, // The mapping succeeded
 		INSUFFICIENT_SPACE, // Not enough space to create an instance
 		INVALID_MEMORY, // Memory that is not visible to processor
+	};
+	class MemoryTree {
+		
 	};
     protected:
 	HighLevelRuntime *runtime;
@@ -304,13 +343,14 @@ namespace RegionRuntime {
 				MappingTagID tag);
     protected:
 	// Data structures for the base mapper
-	// The processor for this machine
-	Processor local_proc;
-	// Memories visible from this processor ranked in order of size smallest to largest
+	const Processor local_proc;
+	MachineDescription *const machine;
 	std::vector<Memory> visible_memories;
-	// For each visible memory from this processor, give the set of other
-	// processors visible from that memory
-	std::map<Memory,std::set<Processor>*> shared_memories;
+	MemoryTree *root;
+    protected:
+	// Helper methods for building machine abstractions
+	void rank_memories(std::vector<Memory> &memories);
+	void treeify_memories(MachineDescription *machine);
     };
 
   };
