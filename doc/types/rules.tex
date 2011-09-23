@@ -4,7 +4,7 @@
 \usepackage{fancyhdr}
 \usepackage{datetime}
 
-\lhead{DRAFT - \today - \currenttime}
+\lhead{DRAFT - \today{ }- \currenttime}
 
 \usepackage{fullpage}
 \usepackage[cmex10]{amsmath}
@@ -183,12 +183,12 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 \infrule
 {
 \begin{array}{lc}
-  FIXME \\
-        \Gamma, x : T_1 \vdash e : T_2 / C
+  \Gamma \cup \{ x : T_1, r_1, \ldots, r_n \}, \Phi_1, C_1 \vdash e : \rtripsub{T_2}{2}{2} \\
+  r_1, \ldots, r_n \not\in \Phi_1, C_1 \textbf{??}
 \end{array}
 }
 {
-        \Gamma \vdash \lambda x.e : T_1 \rightarrow T_2 / C, \emptyset
+  \envsub{3}{3} \lambda x.e : \rtripsub{\rtripsub{T_1}{1}{1} \rightarrow \exists r_1, \ldots, r_n. \rtripsub{T_2}{2}{2}}{3}{3}
 }
 \end{math}
 &\raisebox{-0.2in}{[{\tt Lambda}]} \\
@@ -247,7 +247,39 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
   \envsub{2}{2}\textrm{ unpackrr }e : \rtriple{\regionexpand T_1}{\Phi_3}{\left(C_3 \wedge \regionexpand C_1\right)}
 }
 \end{math}
-&\raisebox{-0.2in}{[{\tt Unpack}]}
+&\raisebox{-0.2in}{[{\tt Unpack}]} \\
+
+%
+% Weakening
+%
+\begin{math}
+\infrule
+{
+  \Gamma, \Phi_1, C_1 \vdash e : \rtriple{T}{\Phi_2 \cup \Phi'_2}{C_2 \wedge C'_2}
+}
+{
+  \Gamma, \Phi_1 \cup \Phi'_1, C_1 \wedge C'_1 \vdash e : \rtriple{T}{\Phi_2 \cup \Phi'_1}{C_2}
+}
+\end{math}
+&\raisebox{-0.2in}{{\begin{tabular}{l} [\tt Privilege/Constraint \\ \tt Weakening]\end{tabular}}} \\
+
+%
+% Pointer-to-subregion
+%
+
+\begin{math}
+\infrule
+{
+\begin{array}{l}
+  \envsub{1}{1} e : \rtripsub{T@r_1}{2}{2} \\
+  C_1 \models r_1 \le r_2
+\end{array}
+}
+{
+  \envsub{1}{1} e : \rtripsub{T@r_2}{2}{2}
+}
+\end{math}
+&\raisebox{-0.2in}{[{\tt Pointer to Subregion}]}
 
 \end{tabular}
 }
@@ -303,8 +335,7 @@ alloc : \forall T,r. \rtriple{\langle Region(r,T) \rangle}{\{ allocable(r) \}}{\
 \begin{math}
 free : \forall T,r_1,r_2. \rtriple{\langle Region(r_1,T), T@r_2 \rangle}{\{ freeable(r_1) \}}{(r_2 \le r_1)} \rightarrow \rsingle{()}
 %free : \forall T,r. \langle Region(r,T), T@r \rangle \rightarrow () / freeable(r)
-\end{math} & [{\tt Free Pointer}] 
-
+\end{math} & [{\tt Free Pointer}]
 \end{tabular}
 }
 \caption{Predefined Functions on Region Elements}
@@ -348,6 +379,16 @@ smash : \forall T,r_1,\ldots,r_n,r_p. & \rtriple{\langle Region(r_1,T), \ldots, 
 \end{array}
 \end{math} & [{\tt Smash}] \\
 
+%
+% Pointer Casting
+%
+\begin{math}
+\begin{array}{l}
+upptr : \forall r_1, r_2. \rtriple{T@r_1}{\emptyset}{r_1 \le r_2} \rightarrow \rsingle{T@r_2} \\
+downptr : \forall r_1, r_2. \rtriple{\langle Partition(r_1), T@r_1, r_2 \rangle}{\emptyset}{r_2 \le r_1} \rightarrow \rsingle{T@r_2}
+\end{array}
+\end{math} & [{\tt Pointer Casting}]
+
 \end{tabular}
 }
 \caption{Predefined Functions on Regions}
@@ -377,7 +418,7 @@ smash : \forall T,r_1,\ldots,r_n,r_p. & \rtriple{\langle Region(r_1,T), \ldots, 
 % Delete
 %
 \begin{math}
-deleteRR : \forall RR. \rsingle{RR} \rightarrow \rsingle{()}
+deleterr : \forall RR. \rsingle{RR} \rightarrow \rsingle{()}
 \end{math} & [{\tt Delete RR}] \\
 \end{tabular}
 }
