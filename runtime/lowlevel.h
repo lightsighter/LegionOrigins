@@ -66,7 +66,7 @@ namespace RegionRuntime {
       bool exists(void) const;
 
       typedef unsigned TaskFuncID;
-      typedef void (*TaskFuncPtr)(const void *args, size_t arglen, Processor *proc);
+      typedef void (*TaskFuncPtr)(const void *args, size_t arglen, Processor proc);
       typedef std::map<TaskFuncID, TaskFuncPtr> TaskIDTable;
 
       Event spawn(TaskFuncID func_id, const void *args, size_t arglen,
