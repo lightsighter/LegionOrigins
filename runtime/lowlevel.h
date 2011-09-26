@@ -99,9 +99,6 @@ namespace RegionRuntime {
       void destroy_allocator_untyped(RegionAllocatorUntyped allocator);
       void destroy_instance_untyped(RegionInstanceUntyped instance);
 
-      // The copy function
-      void copy(RegionInstanceUntyped dst, RegionInstanceUntyped src);
-
       // get the lock that covers this metadata
       //Lock get_lock(void);
       Lock create_lock(void);
@@ -171,6 +168,9 @@ namespace RegionRuntime {
 	T read_untyped(ptr_t<T>);
      	template<typename T>
 	void write_untyped(ptr_t<T> ptr, T val); 
+
+	// The copy operation
+	Event copy_to(RegionInstanceUntyped target, Event wait_on = Event::NO_EVENT);
 #endif
     };
 
