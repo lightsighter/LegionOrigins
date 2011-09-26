@@ -102,12 +102,16 @@ namespace RegionRuntime {
     class Triggerable {
     public:
 	virtual void trigger(void) = 0;
+	// make the warnings go away
+	virtual ~Triggerable() { }
     };
 
     
     ////////////////////////////////////////////////////////
     // Events 
     ////////////////////////////////////////////////////////
+
+    /* static */ const Event Event::NO_EVENT = Event();
 
     class EventImpl : public Triggerable {
     public:
@@ -123,12 +127,19 @@ namespace RegionRuntime {
 	  return (id & 0xFFFFFFFFULL);
 	}
     public:
-	EventImpl(EventIndex idx, bool activate=false) {
-	  index = idx;
+	EventImpl(EventIndex idx, bool activate=false) 
+		: index(idx)
+	{
 	  in_use = activate;
 	  generation = 0;
+	  sources = 0;
 	  PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
 	  PTHREAD_SAFE_CALL(pthread_cond_init(&wait_cond,NULL));
+	  if (in_use)
+	  {
+	    current.id = make_id(index,generation);
+	    sources = 1;
+          }
 	}
 	
 	// test whether an event has triggered without waiting
@@ -148,8 +159,9 @@ namespace RegionRuntime {
     private: 
 	bool in_use;
 	int sources;
-	EventIndex index;
+	const EventIndex index;
 	EventGeneration generation;
+	Event current;
 	pthread_mutex_t mutex;
 	pthread_cond_t wait_cond;
 	std::vector<Triggerable*> triggerables;
@@ -201,16 +213,25 @@ namespace RegionRuntime {
 	// We need the lock here so that events we've already registered
 	// can't trigger this event before sources is set
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+#ifdef DEBUG_PRINT
+	fprintf(stderr,"Mering events into event %u generation %u\n",index,generation);
+#endif
 	sources = 0;
 	for (std::set<Event>::const_iterator it = wait_for.begin();
 		it != wait_for.end(); it++)
 	{
+		if (!(*it).exists())
+			continue;
 		EventImpl *src_impl = Runtime::get_runtime()->get_event_impl(*it);			
+		// Handle the special case where this event is an older generation
+		// of the same event implementation.  In this case we know it
+		// already triggered.
+		if (src_impl == this)
+			continue;
 		if (src_impl->register_dependent(this,EventImpl::get_gen((*it).id)))
 			sources++;
 	}	
-	Event ret;
-	ret.id = make_id(index,generation);
+	Event ret = current;
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 	return ret;
     } 
@@ -219,8 +240,15 @@ namespace RegionRuntime {
     {
 	// Update the generation
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+#ifdef DEBUG_LOW_LEVEL
+	assert(sources > 0);
+#endif
+	sources--;
 	if (sources == 0)
 	{
+#ifdef DEBUG_PRINT
+		fprintf(stderr,"Event %u triggered for generation %u\n",index,generation);
+#endif
 		generation++;
 		in_use = false;
 		// Trigger any dependent events
@@ -230,10 +258,6 @@ namespace RegionRuntime {
 			triggerables.pop_back();
 		}
 		PTHREAD_SAFE_CALL(pthread_cond_broadcast(&wait_cond));
-	}
-	else
-	{
-		sources--;
 	}
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));	
     }
@@ -246,7 +270,8 @@ namespace RegionRuntime {
 	{
 		in_use = true;
 		result = true;
-		sources = 0;
+		sources = 1;
+		current.id = make_id(index,generation);
 	}	
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 	return result;
@@ -270,8 +295,7 @@ namespace RegionRuntime {
     Event EventImpl::get_event() 
     {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
-	Event result;
-	result.id = make_id(index,generation);
+	Event result = current;
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 	return result;
     }
@@ -546,6 +570,7 @@ namespace RegionRuntime {
 	task.arglen = arglen;
 	task.wait = wait_on;
 	task.complete = Runtime::get_runtime()->get_free_event();
+	Event result = task.complete->get_event();
 
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
 	if (wait_on.exists() && !wait_on.has_triggered())
@@ -569,11 +594,14 @@ namespace RegionRuntime {
 		PTHREAD_SAFE_CALL(pthread_cond_signal(&wait_cond));
 	}
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
-	return task.complete->get_event();
+	return result;
     }
 
     void ProcessorImpl::run(void)
     {
+	// Detect the shutdown function
+	bool shutdown = false;
+	EventImpl* shutdown_trigger = NULL;
 	// Processors run forever
 	while (true)
 	{
@@ -589,6 +617,11 @@ namespace RegionRuntime {
 		}
 		if (ready_queue.empty())
 		{	
+			if (shutdown && waiting_queue.empty())
+			{
+				shutdown_trigger->trigger();
+				pthread_exit(NULL);	
+			}
 			// Look through the waiting queue, to see if any events
 			// have been woken up	
 			for (std::list<TaskDesc>::iterator it = waiting_queue.begin();
@@ -614,6 +647,14 @@ namespace RegionRuntime {
 			TaskDesc task = ready_queue.front();
 			ready_queue.pop_front();
 			PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));	
+			// Check for the shutdown function
+			if (task.func_id == 0)
+			{
+				shutdown = true;
+				shutdown_trigger = task.complete;
+				// Continue going around until all tasks are run
+				continue;
+			}
 #ifdef DEBUG_LOW_LEVEL
 			assert(task_table.find(task.func_id) != task_table.end());
 #endif
@@ -622,7 +663,8 @@ namespace RegionRuntime {
 			// Trigger the event indicating that the task has been run
 			task.complete->trigger();
 			// Clean up the mess
-			free(task.args);
+			if (task.arglen > 0)
+				free(task.args);
 		}
 	}
     }
@@ -956,6 +998,8 @@ namespace RegionRuntime {
 	// Check to see if the event exists
 	if (wait_on.exists())
 	{
+		// TODO: Need to handle multiple outstanding copies 
+
 		// Try registering this as a triggerable with the event	
 		EventImpl *event_impl = Runtime::get_runtime()->get_event_impl(wait_on);
 		PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
@@ -1258,6 +1302,14 @@ namespace RegionRuntime {
     Machine::Machine(int *argc, char ***argv,
 			const Processor::TaskIDTable &task_table)
     {
+	// Default nobody can use task id 0 since that is the shutdown id
+	if (task_table.find(0) != task_table.end())
+	{
+		fprintf(stderr,"Using task_id 0 in the task table is illegal!  Task_id 0 is the shutdown task\n");
+		fflush(stderr);
+		exit(1);
+	}
+	
 	// Create the runtime and initialize with this machine
 	Runtime::runtime = new Runtime(this);
 	
@@ -1308,6 +1360,10 @@ namespace RegionRuntime {
 		pthread_t thread;
 		PTHREAD_SAFE_CALL(pthread_create(&thread, NULL, ProcessorImpl::start, (void*)impl));
 	}
+    }
+
+    Machine::~Machine()
+    {
     }
 
     const std::set<Memory>& Machine::get_visible_memories(const Processor p) 
@@ -1471,6 +1527,9 @@ namespace RegionRuntime {
 		{
 			EventImpl *result = events[i];
 			PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&event_lock));
+#ifdef DEBUG_PRINT
+			fprintf(stderr,"Found event %d\n",i);
+#endif
 			return result;
 		}
 	}
@@ -1481,6 +1540,9 @@ namespace RegionRuntime {
 	events.push_back(new EventImpl(index, true));
 	EventImpl *result = events[index];
 	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&event_lock));
+#ifdef DEBUG_PRINT
+	fprintf(stderr,"Created new event %d\n",index);
+#endif
 	return result; 
     }
 
