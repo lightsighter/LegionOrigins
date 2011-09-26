@@ -57,6 +57,9 @@ namespace RegionRuntime {
 
       bool exists(void) const;
 
+      static Lock create_lock(void);
+      void destroy_lock();
+
       // releases a held lock - release can be deferred until an event triggers
       void unlock(Event wait_on = Event::NO_EVENT);
     };
@@ -100,10 +103,7 @@ namespace RegionRuntime {
       void destroy_instance_untyped(RegionInstanceUntyped instance);
 
       // get the lock that covers this metadata
-      //Lock get_lock(void);
-      Lock create_lock(void);
-      void destroy_lock(Lock l);
-
+      Lock get_lock(void);
       bool exists(void) const;
 
       // it's ok to call these without holding the lock if you don't mind
@@ -124,7 +124,7 @@ namespace RegionRuntime {
       bool operator==(const RegionAllocatorUntyped &rhs) const { return id == rhs.id; }
 
       // get the lock that covers this allocator
-      //Lock get_lock(void);
+      Lock get_lock(void);
 
       bool exists(void) const;
 
@@ -151,7 +151,7 @@ namespace RegionRuntime {
       bool operator==(const RegionInstanceUntyped &rhs) const { return id == rhs.id; }
 
       // get the lock that covers this instance
-      //Lock get_lock(void);
+      Lock get_lock(void);
 
       bool exists(void) const;
 
