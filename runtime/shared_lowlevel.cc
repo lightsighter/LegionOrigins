@@ -835,7 +835,7 @@ namespace RegionRuntime {
     // Region Instance 
     ////////////////////////////////////////////////////////
 
-    class RegionInstanceImpl { 
+    class RegionInstanceImpl : public Triggerable { 
     public:
 	RegionInstanceImpl(int idx, Memory m, size_t num, size_t elem_size, bool activate = false)
 		: elmt_size(elem_size), num_elmts(num), index(idx)
@@ -860,7 +860,9 @@ namespace RegionRuntime {
 	void write(ptr_t<T> ptr, T newval);	
 	bool activate(Memory m, size_t num_elmts, size_t elem_size);
 	void deactivate(void);
+	Event copy_to(RegionInstanceUntyped target, Event wait_on);
 	RegionInstanceUntyped get_instance(void) const;
+	void trigger(void);
     private:
 	char *base_ptr;	
 	size_t elmt_size;
@@ -869,6 +871,9 @@ namespace RegionRuntime {
 	pthread_mutex_t mutex;
 	bool active;
 	const int index;
+	// Fields for the copy operation
+	EventImpl *complete;
+	char *target_ptr;
     };
 
     bool RegionInstanceUntyped::exists(void) const
@@ -888,6 +893,11 @@ namespace RegionRuntime {
     void RegionInstanceUntyped::write_untyped(ptr_t<T> ptr, T newval)
     {
 	Runtime::get_runtime()->get_instance_impl(*this)->write<T>(ptr,newval);
+    }
+
+    Event RegionInstanceUntyped::copy_to(RegionInstanceUntyped target, Event wait_on)
+    {
+	return Runtime::get_runtime()->get_instance_impl(*this)->copy_to(target, wait_on);
     }
 
     template<typename T>
@@ -932,6 +942,51 @@ namespace RegionRuntime {
 	num_elmts = 0;
 	elmt_size = 0;
 	base_ptr = NULL;	
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+    }
+
+    Event RegionInstanceImpl::copy_to(RegionInstanceUntyped target, Event wait_on)
+    {
+	RegionInstanceImpl *target_impl = Runtime::get_runtime()->get_instance_impl(target);
+#ifdef DEBUG_LOW_LEVEL
+	assert(target_impl->num_elmts == num_elmts);
+	assert(target_impl->elmt_size == elmt_size);
+#endif
+	target_ptr = target_impl->base_ptr;
+	// Check to see if the event exists
+	if (wait_on.exists())
+	{
+		// Try registering this as a triggerable with the event	
+		EventImpl *event_impl = Runtime::get_runtime()->get_event_impl(wait_on);
+		PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+		if (event_impl->register_dependent(this,EventImpl::get_gen(wait_on.id)))
+		{
+			// Get a free event
+			EventImpl *complete = Runtime::get_runtime()->get_free_event();
+			PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+			return complete->get_event();
+		}
+		else
+		{
+			PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+			// The event occurred do the copy and return
+			memcpy(target_ptr,base_ptr,num_elmts*elmt_size);
+			return Event::NO_EVENT;
+		}
+	}
+	else
+	{
+		// It doesn't exist, do the memcpy and return
+		memcpy(target_ptr,base_ptr,num_elmts*elmt_size);
+		return Event::NO_EVENT;
+	}
+    }
+
+    void RegionInstanceImpl::trigger(void)
+    {
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	memcpy(target_ptr,base_ptr,num_elmts*elmt_size);		
+	complete->trigger();	
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
     }
 
