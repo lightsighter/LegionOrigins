@@ -23,7 +23,6 @@ void print_id(const void * args, size_t arglen, Processor p)
 int main(int argc, char **argv)
 {
 	Processor::TaskIDTable task_table;
-	task_table[0] = shutdown;
 	
 	// Initialize the machine
 	Machine m(&argc,&argv,task_table);
@@ -32,6 +31,8 @@ int main(int argc, char **argv)
 	printf("There are %d processors\n", all_procs.size());	
 
 	Processor self = m.get_local_processor();
+	
+	printf("This is processor %d\n",self.id);
 
 	std::set<Event> wait_on;
 	// Launch the shutdown functions on everyone but ourself
