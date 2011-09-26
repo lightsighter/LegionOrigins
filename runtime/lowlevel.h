@@ -54,15 +54,15 @@ namespace RegionRuntime {
       //   specified mode - returns an event that will trigger when the lock
       //   is granted
       Event lock(unsigned mode = 0, bool exclusive = true);
+      // releases a held lock - release can be deferred until an event triggers
+      void unlock(Event wait_on = Event::NO_EVENT);
 
       bool exists(void) const;
 
+      // Create a new lock, destroy an existing lock
       static Lock create_lock(void);
       void destroy_lock();
-
-      // releases a held lock - release can be deferred until an event triggers
-      void unlock(Event wait_on = Event::NO_EVENT);
-    };
+  };
 
     class Processor {
     public:
