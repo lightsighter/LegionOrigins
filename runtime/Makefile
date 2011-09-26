@@ -22,3 +22,6 @@ gas_simple : gas_simple.c
 lowlevel.o : lowlevel.h activemsg.h
 
 hello.o : lowlevel.h
+
+ring:	ring_test.o shared_lowlevel.o
+	g++ -o ring $(CCFLAGS) $^ -lpthread
