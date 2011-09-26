@@ -15,6 +15,9 @@
 
 #define BASE_EVENTS	64	
 #define BASE_LOCKS	64	
+#define BASE_METAS	64
+#define BASE_ALLOCATORS	64
+#define BASE_INSTANCES	64
 
 // Minimum number of tasks are processor can
 // have in its queues before the scheduler is invoked
@@ -68,6 +71,8 @@ namespace RegionRuntime {
       EventImpl*           get_free_event(void);
       LockImpl*            get_free_lock(void);
       RegionMetaDataImpl*  get_free_metadata(Memory m, size_t num_elmts, size_t elmt_size);
+      RegionAllocatorImpl* get_free_allocator(unsigned start, unsigned end);
+      RegionInstanceImpl*  get_free_instance(Memory m, size_t num_elmts, size_t elmt_size);
     protected:
       static Runtime *runtime;
     protected:
@@ -80,7 +85,11 @@ namespace RegionRuntime {
       std::vector<RegionAllocatorImpl*> allocators;
       std::vector<RegionInstanceImpl*> instances;
       Machine *machine;
-      pthread_mutex_t mutex;
+      pthread_rwlock_t event_lock;
+      pthread_rwlock_t lock_lock;
+      pthread_rwlock_t metadata_lock;
+      pthread_rwlock_t allocator_lock;
+      pthread_rwlock_t instance_lock;
     };
 
     /* static */
@@ -273,7 +282,7 @@ namespace RegionRuntime {
 
     class LockImpl : public Triggerable {
     public:
-	LockImpl(bool activate = false) {
+	LockImpl(int idx, bool activate = false) : index(idx) {
 		active = activate;
 		taken = false;
 		mode = 0;
@@ -287,6 +296,7 @@ namespace RegionRuntime {
 
 	bool activate(void);
 	void deactivate(void);
+	Lock get_lock(void) const;
     private:
 	Event register_request(unsigned m, bool exc);
 	void perform_unlock();
@@ -299,6 +309,7 @@ namespace RegionRuntime {
 		bool handled;
 	};
     private:
+	const int index;
 	bool active;
 	bool taken;
 	bool exclusive;
@@ -460,6 +471,13 @@ namespace RegionRuntime {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
 	active = false;	
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+    }
+
+    Lock LockImpl::get_lock(void) const
+    {
+	Lock l;
+	l.id = index;
+	return l;
     }
 
     ////////////////////////////////////////////////////////
@@ -697,15 +715,254 @@ namespace RegionRuntime {
 
     
     ////////////////////////////////////////////////////////
+    // Region Allocator 
+    ////////////////////////////////////////////////////////
+
+    class RegionAllocatorImpl {
+    public:
+	RegionAllocatorImpl(int idx, unsigned s, unsigned e, bool activate = false) 
+		: start(s), end(e), index(idx)
+	{
+		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
+		active = activate;
+	}
+    public:
+	template<typename T>
+	ptr_t<T> alloc(size_t num_elmts);
+	template<typename T>
+	void free(ptr_t<T> ptr);	
+	bool activate(unsigned s, unsigned e);
+	void deactivate();
+	RegionAllocatorUntyped get_allocator(void) const;
+    private:
+	unsigned start;
+	unsigned end;	/*exclusive*/
+	std::set<unsigned> free_list;
+	pthread_mutex_t mutex;
+	bool active;
+	const int index;
+    }; 
+
+    bool RegionAllocatorUntyped::exists(void) const
+    {
+	//RegionAllocatorImpl *allocator = Runtime::get_runtime()->get_allocator_impl(*this);
+	//return (allocator != NULL);
+	return (id != 0);
+    } 
+
+    template<typename T>
+    ptr_t<T> RegionAllocatorUntyped::alloc_untyped(size_t num_elmts)
+    {
+	return Runtime::get_runtime()->get_allocator_impl(*this)->alloc<T>(num_elmts);
+    }
+
+    template<typename T>
+    void RegionAllocatorUntyped::free_untyped(ptr_t<T> ptr)
+    {
+	Runtime::get_runtime()->get_allocator_impl(*this)->free<T>(ptr);
+    }
+
+    template<typename T>
+    ptr_t<T> RegionAllocatorImpl::alloc(size_t num_elmts)
+    {
+	ptr_t<T> result;
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	if ((start+num_elmts) < end)
+	{
+		result.value = start;
+		start += num_elmts;
+	}
+	else if (num_elmts == 1)
+	{
+		if (!free_list.empty())
+		{
+			std::set<unsigned>::iterator it = free_list.begin();
+			result.value = *it;
+			free_list.erase(it);
+		}	
+		else
+			assert(false);
+	}
+	else
+	{
+		assert(false);
+	}
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	return result;
+    }
+
+    template<typename T>
+    void RegionAllocatorImpl::free(ptr_t<T> ptr)
+    {
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	free_list.insert(ptr.value);	
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+    }
+
+    bool RegionAllocatorImpl::activate(unsigned s, unsigned e)
+    {
+	bool result = false;
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	if (!active)
+	{
+		active = true;
+		start = s;
+		end = e;
+	}
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	return result;
+    }
+
+    void RegionAllocatorImpl::deactivate(void)
+    {
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	active = false;
+	free_list.clear();
+	start = 0;
+	end = 0;
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+    }
+
+    RegionAllocatorUntyped RegionAllocatorImpl::get_allocator(void) const
+    {
+	RegionAllocatorUntyped allocator;
+	allocator.id = index;
+	return allocator;
+    }
+
+    
+    ////////////////////////////////////////////////////////
+    // Region Instance 
+    ////////////////////////////////////////////////////////
+
+    class RegionInstanceImpl { 
+    public:
+	RegionInstanceImpl(int idx, Memory m, size_t num, size_t elem_size, bool activate = false)
+		: elmt_size(elem_size), num_elmts(num), index(idx)
+	{
+		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
+		active = activate;
+		if (active)
+		{
+			memory = m;
+			// Use the memory to allocate the space, fail if there is none
+			MemoryImpl *mem = Runtime::get_runtime()->get_memory_impl(m);
+			base_ptr = (char*)mem->allocate_space(num_elmts*elem_size);	
+#ifdef DEBUG_LOW_LEVEL
+			assert(base_ptr != NULL);
+#endif
+		}
+	}
+    public:
+	template<typename T>
+	T read(ptr_t<T> ptr);
+	template<typename T>
+	void write(ptr_t<T> ptr, T newval);	
+	bool activate(Memory m, size_t num_elmts, size_t elem_size);
+	void deactivate(void);
+	RegionInstanceUntyped get_instance(void) const;
+    private:
+	char *base_ptr;	
+	size_t elmt_size;
+	size_t num_elmts;
+	Memory memory;
+	pthread_mutex_t mutex;
+	bool active;
+	const int index;
+    };
+
+    bool RegionInstanceUntyped::exists(void) const
+    {
+	//RegionInstanceImpl *inst = Runtime::get_runtime()->get_instance_impl(*this);
+	//return (inst != NULL);
+	return (id != 0);
+    }
+
+    template<typename T>
+    T RegionInstanceUntyped::read_untyped(ptr_t<T> ptr)
+    {
+	return Runtime::get_runtime()->get_instance_impl(*this)->read<T>(ptr);
+    }
+
+    template<typename T>
+    void RegionInstanceUntyped::write_untyped(ptr_t<T> ptr, T newval)
+    {
+	Runtime::get_runtime()->get_instance_impl(*this)->write<T>(ptr,newval);
+    }
+
+    template<typename T>
+    T RegionInstanceImpl::read(ptr_t<T> ptr)
+    {
+	return *((T*)(base_ptr+(ptr.value*elmt_size)));
+    }
+
+    template<typename T>
+    void RegionInstanceImpl::write(ptr_t<T> ptr, T newval)
+    {
+	*((T*)(base_ptr+(ptr.value*elmt_size))) = newval;
+    }
+
+    bool RegionInstanceImpl::activate(Memory m, size_t num, size_t elem_size)
+    {
+	bool result = false;
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	if (!active)
+	{
+		active = true;
+		result = true;
+		memory = m;
+		num_elmts = num;
+		elmt_size = elem_size;
+		MemoryImpl *mem = Runtime::get_runtime()->get_memory_impl(m);
+		base_ptr = (char*)mem->allocate_space(num_elmts*elmt_size);
+#ifdef DEBUG_LOW_LEVEL
+		assert(base_ptr != NULL);
+#endif
+	}
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	return result;
+    }
+
+    void RegionInstanceImpl::deactivate(void)
+    {
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	active = false;
+	MemoryImpl *mem = Runtime::get_runtime()->get_memory_impl(memory);
+	mem->free_space(base_ptr,num_elmts*elmt_size);
+	num_elmts = 0;
+	elmt_size = 0;
+	base_ptr = NULL;	
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+    }
+
+    RegionInstanceUntyped RegionInstanceImpl::get_instance(void) const
+    {
+	RegionInstanceUntyped inst;
+	inst.id = index;
+	return inst;
+    }
+
+    
+    ////////////////////////////////////////////////////////
     // RegionMetaDataUntyped 
     ////////////////////////////////////////////////////////
 
     class RegionMetaDataImpl {
     public:
-	RegionMetaDataImpl(int idx) {
+	RegionMetaDataImpl(int idx, Memory m, size_t num, size_t elem_size, bool activate = false) {
 		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
-		active = false;
+		active = activate;
 		index = idx;
+		if (activate)
+		{
+			num_elmts = num;
+			elmt_size = elem_size;
+			RegionAllocatorImpl *allocator = Runtime::get_runtime()->get_free_allocator(0,num_elmts);
+			master_allocator = allocator->get_allocator();	
+		
+			RegionInstanceImpl* instance = Runtime::get_runtime()->get_free_instance(m,num_elmts,elmt_size);
+			master_instance = instance->get_instance();
+		}
 	}
     public:
 	bool activate(Memory m, size_t num_elmts, size_t elmt_size);
@@ -729,7 +986,7 @@ namespace RegionRuntime {
     private:
 	RegionAllocatorUntyped master_allocator;
 	RegionInstanceUntyped  master_instance;
-	std::set<RegionAllocatorUntyped> allocators;
+	//std::set<RegionAllocatorUntyped> allocators;
 	std::set<RegionInstanceUntyped> instances;
 	std::set<Lock> locks;
 	pthread_mutex_t mutex;
@@ -821,6 +1078,11 @@ namespace RegionRuntime {
 		result = true;
 		num_elmts = num;
 		elmt_size = size;
+		RegionAllocatorImpl *allocator = Runtime::get_runtime()->get_free_allocator(0,num_elmts);
+		master_allocator = allocator->get_allocator();	
+		
+		RegionInstanceImpl* instance = Runtime::get_runtime()->get_free_instance(m,num_elmts,elmt_size);
+		master_instance = instance->get_instance();
 	}
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 	return result;
@@ -829,69 +1091,111 @@ namespace RegionRuntime {
     void RegionMetaDataImpl::deactivate(void)
     {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
-	for (std::set<RegionAllocatorUntyped>::iterator it = allocators.begin();
-		it != allocators.end(); it++)
+	active = false;
+	num_elmts = 0;
+	elmt_size = 0;
+	RegionAllocatorImpl *allocator = Runtime::get_runtime()->get_allocator_impl(master_allocator);
+	allocator->deactivate();
+	for (std::set<RegionInstanceUntyped>::iterator it = instances.begin();
+		it != instances.end(); it++)
 	{
-
+		RegionInstanceImpl *instance = Runtime::get_runtime()->get_instance_impl(*it);
+		instance->deactivate();
 	}	
+	instances.clear();
+	for (std::set<Lock>::iterator it = locks.begin();
+		it != locks.end(); it++)
+	{
+		LockImpl *lock = Runtime::get_runtime()->get_lock_impl(*it);
+		lock->deactivate();
+	}
+	locks.clear();
+	master_allocator.id = 0;
+	master_instance.id = 0;
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
     }
 
     RegionMetaDataUntyped RegionMetaDataImpl::get_metadata(void)
     {
-
+	RegionMetaDataUntyped meta;
+	meta.id = index;
+	return meta;
     }
 
     RegionAllocatorUntyped RegionMetaDataImpl::create_allocator(Memory m)
     {
-
+	// We'll only over have one allocator for shared memory	
+	return master_allocator;
     }
 
     RegionInstanceUntyped RegionMetaDataImpl::create_instance(Memory m)
     {
-
+	RegionInstanceImpl* impl = Runtime::get_runtime()->get_free_instance(m,num_elmts, elmt_size);
+	RegionInstanceUntyped inst = impl->get_instance();
+	instances.insert(inst);
+	return inst;
     }
 
     void RegionMetaDataImpl::destroy_allocator(RegionAllocatorUntyped a)
     {
-
+	// Do nothing since we never made on in the first place
     }
 
-    void RegionMetaDataImpl::destroy_instance(RegionInstanceUntyped i)
+    void RegionMetaDataImpl::destroy_instance(RegionInstanceUntyped inst)
     {
-
+	std::set<RegionInstanceUntyped>::iterator it = instances.find(inst);
+#ifdef DEBUG_LOW_LEVEL
+	assert(it != instances.end());
+#endif	
+	instances.erase(it);
+	RegionInstanceImpl *impl = Runtime::get_runtime()->get_instance_impl(inst);
+	impl->deactivate();
     }
 
     Lock RegionMetaDataImpl::create_lock(void)
     {
-
+	LockImpl *impl = Runtime::get_runtime()->get_free_lock();
+	Lock l = impl->get_lock();		
+	locks.insert(l);
+	return l;
     }
 
     void RegionMetaDataImpl::destroy_lock(Lock l)
     {
-
+	std::set<Lock>::iterator it = locks.find(l);
+#ifdef DEBUG_LOW_LEVEL
+	assert(it != locks.end());
+#endif
+	locks.erase(it);
+	LockImpl *impl = Runtime::get_runtime()->get_lock_impl(l);
+	impl->deactivate();
     }
 
     RegionAllocatorUntyped RegionMetaDataImpl::get_master_allocator(void)
     {
-
+	return master_allocator;
     }
 
     RegionInstanceUntyped RegionMetaDataImpl::get_master_instance(void)
     {
-
+	return master_instance;
     }
 
     void RegionMetaDataImpl::set_master_allocator(RegionAllocatorUntyped a)
     {
-
+	// Do nothing since there is only ever one allocator for a meta-data in shared memory
     }
 
-    void RegionMetaDataImpl::set_master_instance(RegionInstanceUntyped i)	
+    void RegionMetaDataImpl::set_master_instance(RegionInstanceUntyped inst)	
     {
-
+#ifdef DEBUG_LOW_LEVEL
+	// Make sure it is one of our instances
+	assert(instances.find(inst) != instances.end());
+#endif
+	master_instance = inst;
     }
 
+    
     ////////////////////////////////////////////////////////
     // Machine 
     ////////////////////////////////////////////////////////
@@ -1013,15 +1317,37 @@ namespace RegionRuntime {
 		events.push_back(new EventImpl(i));
 
 	for (unsigned i=0; i<BASE_LOCKS; i++)
-		locks.push_back(new LockImpl());
+		locks.push_back(new LockImpl(i));
 
-	PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
+	for (unsigned i=0; i<BASE_METAS; i++)
+	{
+		Memory m;
+		m.id = 0;
+		metadatas.push_back(new RegionMetaDataImpl(i,m,0,0));
+	}
+
+	for (unsigned i=0; i<BASE_ALLOCATORS; i++)
+		allocators.push_back(new RegionAllocatorImpl(i,0,0));	
+
+	for (unsigned i=0; i<BASE_INSTANCES; i++)
+	{
+		Memory m;
+		m.id = 0;
+		instances.push_back(new RegionInstanceImpl(i,m,0,0));
+	}
+
+	PTHREAD_SAFE_CALL(pthread_rwlock_init(&event_lock,NULL));
+	PTHREAD_SAFE_CALL(pthread_rwlock_init(&lock_lock,NULL));
+	PTHREAD_SAFE_CALL(pthread_rwlock_init(&metadata_lock,NULL));
+	PTHREAD_SAFE_CALL(pthread_rwlock_init(&allocator_lock,NULL));
+	PTHREAD_SAFE_CALL(pthread_rwlock_init(&instance_lock,NULL));
     }
 
     EventImpl* Runtime::get_event_impl(Event e)
     {
 	EventImpl::EventIndex i = EventImpl::get_index(e.id);
 #ifdef DEBUG_LOW_LEVEL
+	assert(i != 0);
 	assert(i < events.size());
 #endif
 	return events[i];
@@ -1030,6 +1356,7 @@ namespace RegionRuntime {
     LockImpl* Runtime::get_lock_impl(Lock l)
     {
 #ifdef DEBUG_LOW_LEVEL
+	assert(l.id != 0);
 	assert(l.id < locks.size());
 #endif
 	return locks[l.id];
@@ -1046,6 +1373,7 @@ namespace RegionRuntime {
     ProcessorImpl* Runtime::get_processor_impl(Processor p)
     {
 #ifdef DEBUG_LOW_LEVEL
+	assert(p.id != 0);
 	assert(p.id < processors.size());
 #endif
 	return processors[p.id];
@@ -1054,6 +1382,7 @@ namespace RegionRuntime {
     RegionMetaDataImpl* Runtime::get_metadata_impl(RegionMetaDataUntyped m)
     {
 #ifdef DEBUG_LOW_LEVEL
+	assert(m.id != 0);
 	assert(m.id < metadatas.size());
 #endif
 	return metadatas[m.id];
@@ -1062,6 +1391,7 @@ namespace RegionRuntime {
     RegionAllocatorImpl* Runtime::get_allocator_impl(RegionAllocatorUntyped a)
     {
 #ifdef DEBUG_LOW_LEVEL
+	assert(a.id != 0);
 	assert(a.id < allocators.size());
 #endif
 	return allocators[a.id];
@@ -1070,6 +1400,7 @@ namespace RegionRuntime {
     RegionInstanceImpl* Runtime::get_instance_impl(RegionInstanceUntyped i)
     {
 #ifdef DEBUG_LOW_LEVEL
+	assert(i.id != 0);
 	assert(i.id < instances.size());
 #endif
 	return instances[i.id];
@@ -1077,56 +1408,115 @@ namespace RegionRuntime {
 
     EventImpl* Runtime::get_free_event()
     {
+	PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&event_lock));
 	// Iterate over the events looking for a free one
 	for (unsigned i=1; i<events.size(); i++)
 	{
 		if (events[i]->activate())
 		{
-			return events[i];
+			EventImpl *result = events[i];
+			PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&event_lock));
+			return result;
 		}
 	}
+	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&event_lock));
 	// Otherwise there are no free events so make a new one
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_rwlock_wrlock(&event_lock));
 	unsigned index = events.size();
 	events.push_back(new EventImpl(index, true));
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
-	return events[index];
+	EventImpl *result = events[index];
+	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&event_lock));
+	return result; 
     }
 
     LockImpl* Runtime::get_free_lock()
     {
+	PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&lock_lock));
 	// Iterate over the locks looking for a free one
 	for (unsigned int i=1; i<locks.size(); i++)
 	{
 		if (locks[i]->activate())
 		{
-			return locks[i];
+			LockImpl *result = locks[i];
+			PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&lock_lock));
+			return result;
 		}
 	}
+	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&lock_lock));
 	// Otherwise there are no free locks so make a new one
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_rwlock_wrlock(&lock_lock));
 	unsigned index = locks.size();
 	locks.push_back(new LockImpl(true));
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
-	return locks[index];
+	LockImpl *result = locks[index];
+	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&lock_lock));	
+	return result;
     }
 
     RegionMetaDataImpl* Runtime::get_free_metadata(Memory m, size_t num_elmts, size_t elmt_size)
     {
-	for (unsigned int i=0; i<metadatas.size(); i++)
+	PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&metadata_lock));
+	for (unsigned int i=1; i<metadatas.size(); i++)
 	{
 		if (metadatas[i]->activate(m,num_elmts,elmt_size))
 		{
-			return metadatas[i];
+			RegionMetaDataImpl *result = metadatas[i];
+			PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&metadata_lock));
+			return result;
 		}
 	}
+	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&metadata_lock));
 	// Otherwise there are no free metadata so make a new one
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_rwlock_wrlock(&metadata_lock));
 	unsigned int index = metadatas.size();
-	metadatas.push_back(new RegionMetaDataImpl(index));
-	metadatas[index]->activate(m,num_elmts,elmt_size);
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
-	return metadatas[index];
+	metadatas.push_back(new RegionMetaDataImpl(index,m,num_elmts,elmt_size,true));
+	RegionMetaDataImpl *result = metadatas[index];
+	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&metadata_lock));
+	return result;
     }
+
+    RegionAllocatorImpl* Runtime::get_free_allocator(unsigned start, unsigned end)
+    {
+	PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&allocator_lock));
+	for (unsigned int i=1; i<allocators.size(); i++)
+	{
+		if (allocators[i]->activate(start,end))
+		{
+			RegionAllocatorImpl*result = allocators[i];
+			PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&allocator_lock));
+			return result;
+		}
+	}
+	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&allocator_lock));
+	// Nothing free, so make a new one
+	PTHREAD_SAFE_CALL(pthread_rwlock_wrlock(&allocator_lock));
+	unsigned int index = allocators.size();
+	allocators.push_back(new RegionAllocatorImpl(index,start,end,true));
+	RegionAllocatorImpl*result = allocators[index];
+	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&allocator_lock));
+	return result;
+    }
+
+    RegionInstanceImpl* Runtime::get_free_instance(Memory m, size_t num_elmts, size_t elmt_size)
+    {
+	PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&instance_lock));
+	for (unsigned int i=1; i<instances.size(); i++)
+	{
+		if (instances[i]->activate(m, num_elmts,elmt_size))
+		{
+			RegionInstanceImpl *result = instances[i];
+			PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&instance_lock));
+			return result;
+		}
+	}
+	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&instance_lock));
+	// Nothing free so make a new one
+	PTHREAD_SAFE_CALL(pthread_rwlock_wrlock(&instance_lock));
+	unsigned int index = instances.size();
+	instances.push_back(new RegionInstanceImpl(index,m,num_elmts,elmt_size,true));
+	RegionInstanceImpl *result = instances[index];
+	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&instance_lock));
+	return result;
+    }
+
   };
 };
