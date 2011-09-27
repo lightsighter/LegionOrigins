@@ -848,10 +848,8 @@ namespace RegionRuntime {
 		}
 	}
     public:
-	template<typename T>
-	ptr_t<T> alloc(size_t num_elmts = 1);
-	template<typename T>
-	void free(ptr_t<T> ptr);	
+	unsigned alloc_elmt(size_t num_elmts = 1);
+	void free_elmt(unsigned ptr);	
 	bool activate(unsigned s, unsigned e);
 	void deactivate();
 	RegionAllocatorUntyped get_allocator(void) const;
@@ -873,26 +871,23 @@ namespace RegionRuntime {
 	return (id != 0);
     } 
 
-    template<typename T>
-    ptr_t<T> RegionAllocatorUntyped::alloc_untyped(size_t num_elmts)
+    unsigned RegionAllocatorUntyped::alloc_untyped(size_t num_elmts)
     {
-	return Runtime::get_runtime()->get_allocator_impl(*this)->alloc<T>(num_elmts);
+	return Runtime::get_runtime()->get_allocator_impl(*this)->alloc_elmt(num_elmts);
     }
 
-    template<typename T>
-    void RegionAllocatorUntyped::free_untyped(ptr_t<T> ptr)
+    void RegionAllocatorUntyped::free_untyped(unsigned ptr)
     {
-	Runtime::get_runtime()->get_allocator_impl(*this)->free<T>(ptr);
+	Runtime::get_runtime()->get_allocator_impl(*this)->free_elmt(ptr);
     }
 
-    template<typename T>
-    ptr_t<T> RegionAllocatorImpl::alloc(size_t num_elmts)
+    unsigned RegionAllocatorImpl::alloc_elmt(size_t num_elmts)
     {
-	ptr_t<T> result;
+	unsigned result;
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
-	if ((start+num_elmts) < end)
+	if ((start+num_elmts) <= end)
 	{
-		result.value = start;
+		result = start;
 		start += num_elmts;
 	}
 	else if (num_elmts == 1)
@@ -900,7 +895,7 @@ namespace RegionRuntime {
 		if (!free_list.empty())
 		{
 			std::set<unsigned>::iterator it = free_list.begin();
-			result.value = *it;
+			result = *it;
 			free_list.erase(it);
 		}	
 		else
@@ -914,11 +909,10 @@ namespace RegionRuntime {
 	return result;
     }
 
-    template<typename T>
-    void RegionAllocatorImpl::free(ptr_t<T> ptr)
+    void RegionAllocatorImpl::free_elmt(unsigned ptr)
     {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
-	free_list.insert(ptr.value);	
+	free_list.insert(ptr);	
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
     }
 
@@ -986,10 +980,8 @@ namespace RegionRuntime {
 		}
 	}
     public:
-	template<typename T>
-	T read(ptr_t<T> ptr);
-	template<typename T>
-	void write(ptr_t<T> ptr, T newval);	
+	void* read(unsigned ptr);
+	void write(unsigned ptr, void* newval);	
 	bool activate(Memory m, size_t num_elmts, size_t elem_size);
 	void deactivate(void);
 	Event copy_to(RegionInstanceUntyped target, Event wait_on);
@@ -1017,19 +1009,17 @@ namespace RegionRuntime {
 	return (id != 0);
     }
 
-    template<typename T>
-    T RegionInstanceUntyped::read_untyped(ptr_t<T> ptr)
+    void* RegionInstanceUntyped::read_untyped(unsigned ptr)
     {
-	return Runtime::get_runtime()->get_instance_impl(*this)->read<T>(ptr);
+	return Runtime::get_runtime()->get_instance_impl(*this)->read(ptr);
     }
 
-    template<typename T>
-    void RegionInstanceUntyped::write_untyped(ptr_t<T> ptr, T newval)
+    void RegionInstanceUntyped::write_untyped(unsigned ptr, void* newval)
     {
-	Runtime::get_runtime()->get_instance_impl(*this)->write<T>(ptr,newval);
+	Runtime::get_runtime()->get_instance_impl(*this)->write(ptr,newval);
     }
 
-    Event RegionInstanceUntyped::copy_to(RegionInstanceUntyped target, Event wait_on)
+    Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, Event wait_on)
     {
 	return Runtime::get_runtime()->get_instance_impl(*this)->copy_to(target, wait_on);
     }
@@ -1039,16 +1029,14 @@ namespace RegionRuntime {
 	return Runtime::get_runtime()->get_instance_impl(*this)->get_lock();
     }
 
-    template<typename T>
-    T RegionInstanceImpl::read(ptr_t<T> ptr)
+    void* RegionInstanceImpl::read(unsigned ptr)
     {
-	return *((T*)(base_ptr+(ptr.value*elmt_size)));
+	return ((void*)(base_ptr+(ptr*elmt_size)));
     }
 
-    template<typename T>
-    void RegionInstanceImpl::write(ptr_t<T> ptr, T newval)
+    void RegionInstanceImpl::write(unsigned ptr, void* newval)
     {
-	*((T*)(base_ptr+(ptr.value*elmt_size))) = newval;
+	memcpy((base_ptr+(ptr*elmt_size)),newval,elmt_size);
     }
 
     bool RegionInstanceImpl::activate(Memory m, size_t num, size_t elem_size)
