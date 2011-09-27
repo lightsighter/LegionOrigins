@@ -136,10 +136,8 @@ namespace RegionRuntime {
       UntypedFuncPtr alloc_fn_untyped(void);
       UntypedFuncPtr free_fn_untyped(void);
 #else
-	template<typename T>
-	ptr_t<T> alloc_untyped(size_t num_elmts);
-	template<typename T>
-	void free_untyped(ptr_t<T>);	
+	unsigned alloc_untyped(size_t num_elmts = 1);
+	void free_untyped(unsigned ptr);	
 #endif
     };
 
@@ -164,13 +162,11 @@ namespace RegionRuntime {
       UntypedFuncPtr write_fn_untyped(void);
       UntypedFuncPtr reduce_fn_untyped(void);
 #else
-	template<typename T>
-	T read_untyped(ptr_t<T>);
-     	template<typename T>
-	void write_untyped(ptr_t<T> ptr, T val); 
+	void* read_untyped(unsigned);
+	void write_untyped(unsigned ptr, void *src); 
 
 	// The copy operation
-	Event copy_to(RegionInstanceUntyped target, Event wait_on = Event::NO_EVENT);
+	Event copy_to_untyped(RegionInstanceUntyped target, Event wait_on);
 #endif
     };
 
@@ -178,7 +174,7 @@ namespace RegionRuntime {
     class RegionMetaData : public RegionMetaDataUntyped {
     public:
       // operator to re-introduce element type - make sure you're right!
-      explicit RegionMetaData(RegionMetaDataUntyped& copy_from)
+      explicit RegionMetaData(const RegionMetaDataUntyped& copy_from)
 	: RegionMetaDataUntyped(copy_from) {}
 
       static RegionMetaData<T> create_region(Memory memory, size_t _num_elems) {
@@ -229,7 +225,7 @@ namespace RegionRuntime {
     class RegionAllocator : public RegionAllocatorUntyped {
     public:
       // operator to re-introduce element type - make sure you're right!
-      explicit RegionAllocator(RegionAllocatorUntyped& copy_from)
+      explicit RegionAllocator(const RegionAllocatorUntyped& copy_from)
 	: RegionAllocatorUntyped(copy_from) {}
       
 #if 0
@@ -241,8 +237,12 @@ namespace RegionRuntime {
       AllocFuncPtr alloc_fn(void) { return (AllocFuncPtr)(alloc_fn_untyped()); }
       FreeFuncPtr free_fn(void) { return (FreeFuncPtr)(free_fn_untyped()); }
 #else
-	ptr_t<T> alloc(void) { return alloc_untyped<T>(); }
-	void free(ptr_t<T> ptr) { free_untyped<T>(ptr); }
+	ptr_t<T> alloc(void) 
+	{ 
+		ptr_t<T> ptr = { alloc_untyped() };
+		return ptr; 
+	}
+	void free(ptr_t<T> ptr) { free_untyped(ptr.value); }
 #endif
     };
 
@@ -250,7 +250,7 @@ namespace RegionRuntime {
     class RegionInstance : public RegionInstanceUntyped {
     public:
       // operator to re-introduce element type - make sure you're right!
-      explicit RegionInstance(RegionInstanceUntyped& copy_from)
+      explicit RegionInstance(const RegionInstanceUntyped& copy_from)
 	: RegionInstanceUntyped(copy_from) {}
 
 #if 0
@@ -264,8 +264,11 @@ namespace RegionRuntime {
       WriteFuncPtr write_fn(void) { return (WriteFuncPtr)(write_fn_untyped()); }
       ReduceFuncPtr reduce_fn(void) { return (ReduceFuncPtr)(reduce_fn_untyped()); }
 #else
-	T read(ptr_t<T> ptr) { return read_untyped<T>(ptr); }	
-	void write(ptr_t<T> ptr, T newval) { write_untyped<T>(ptr,newval); }
+	T read(ptr_t<T> ptr) { return *((T*)(read_untyped(ptr.value))); }	
+	void write(ptr_t<T> ptr, T newval) { write_untyped(ptr.value,((void*)&newval)); }
+
+	Event copy_to(RegionInstance<T> target, Event wait_on = Event::NO_EVENT)
+	  { return copy_to_untyped(RegionInstanceUntyped(target), wait_on); }
 #endif
     };
 
