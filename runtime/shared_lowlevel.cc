@@ -106,12 +106,9 @@ namespace RegionRuntime {
 	virtual ~Triggerable() { }
     };
 
-    
     ////////////////////////////////////////////////////////
-    // Events 
+    // Event Impl (up here since we need it in Processor Impl) 
     ////////////////////////////////////////////////////////
-
-    /* static */ const Event Event::NO_EVENT = Event();
 
     class EventImpl : public Triggerable {
     public:
@@ -167,6 +164,59 @@ namespace RegionRuntime {
 	std::vector<Triggerable*> triggerables;
     }; 
 
+    ////////////////////////////////////////////////////////
+    // Processor Impl (up here since we need it in Event) 
+    ////////////////////////////////////////////////////////
+
+    class ProcessorImpl : public Triggerable {
+    public:
+	ProcessorImpl(Processor::TaskIDTable table, Processor p) 
+		: scheduler(NULL), task_table(table), proc(p)
+	{
+		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
+		PTHREAD_SAFE_CALL(pthread_cond_init(&wait_cond,NULL));
+		shutdown = false;
+		shutdown_trigger = NULL;
+	};
+    public:
+	Event spawn(Processor::TaskFuncID func_id, const void * args,
+				size_t arglen, Event wait_on);
+	void run(void);
+	void register_scheduler(void (*scheduler)(Processor));
+	void trigger(void);
+	static void* start(void *proc);
+	void preempt(EventImpl *event, EventImpl::EventGeneration needed);
+    private:
+	void execute_task(bool permit_shutdown);
+    private:
+	class TaskDesc {
+	public:
+		Processor::TaskFuncID func_id;
+		void * args;
+		size_t arglen;
+		Event wait;
+		EventImpl *complete;
+	};
+    private:
+	void (*scheduler)(Processor);
+	Processor::TaskIDTable task_table;
+	Processor proc;
+	std::list<TaskDesc> ready_queue;
+	std::list<TaskDesc> waiting_queue;
+	pthread_mutex_t mutex;
+	pthread_cond_t wait_cond;
+	// Used for detecting the shutdown condition
+	bool shutdown;
+	EventImpl *shutdown_trigger;
+    };
+
+    
+    ////////////////////////////////////////////////////////
+    // Events 
+    ////////////////////////////////////////////////////////
+
+    /* static */ const Event Event::NO_EVENT = Event();
+
     bool Event::has_triggered(void) const
     {
 	if (!id) return true;
@@ -198,6 +248,7 @@ namespace RegionRuntime {
 
     void EventImpl::wait(EventGeneration needed_gen)
     {
+#if 0 // This version blocks the processor
 	// First check to see if the event has triggered
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));	
 	// Wait until the generation indicates that the event has occurred
@@ -206,6 +257,13 @@ namespace RegionRuntime {
 		PTHREAD_SAFE_CALL(pthread_cond_wait(&wait_cond,&mutex));
 	}
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+#else // This version doesn't block the processor
+	// Try preempting the process
+	Processor local = { local_proc_id };
+	ProcessorImpl *impl = Runtime::get_runtime()->get_processor_impl(local);
+	// This call will only return once the event has triggered
+	impl->preempt(this,needed_gen);
+#endif
     }
 
     Event EventImpl::merge_events(const std::set<Event> &wait_for)
@@ -249,14 +307,21 @@ namespace RegionRuntime {
 #ifdef DEBUG_PRINT
 		fprintf(stderr,"Event %u triggered for generation %u\n",index,generation);
 #endif
+		// Increment the generation so that nobody can register a triggerable
+		// with this event, but keep event in_use so no one can use the event
 		generation++;
-		in_use = false;
+		// Can't be holding the lock when triggering other triggerables
+		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 		// Trigger any dependent events
 		while (!triggerables.empty())
 		{
 			triggerables.back()->trigger();
 			triggerables.pop_back();
 		}
+		// Reacquire the lock and mark that in_use is false
+		PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+		in_use = false;
+		// Wake up any waiters
 		PTHREAD_SAFE_CALL(pthread_cond_broadcast(&wait_cond));
 	}
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));	
@@ -519,40 +584,8 @@ namespace RegionRuntime {
     // Processor 
     ////////////////////////////////////////////////////////
 
-    class ProcessorImpl : public Triggerable {
-    public:
-	ProcessorImpl(Processor::TaskIDTable table, Processor p) 
-		: scheduler(NULL), task_table(table), proc(p)
-	{
-		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
-		PTHREAD_SAFE_CALL(pthread_cond_init(&wait_cond,NULL));
-	};
-    public:
-	Event spawn(Processor::TaskFuncID func_id, const void * args,
-				size_t arglen, Event wait_on);
-	void run(void);
-	void register_scheduler(void (*scheduler)(Processor));
-	void trigger(void);
-	static void* start(void *proc);
-    private:
-	class TaskDesc {
-	public:
-		Processor::TaskFuncID func_id;
-		void * args;
-		size_t arglen;
-		Event wait;
-		EventImpl *complete;
-	};
-    private:
-	void (*scheduler)(Processor);
-	Processor::TaskIDTable task_table;
-	Processor proc;
-	std::list<TaskDesc> ready_queue;
-	std::list<TaskDesc> waiting_queue;
-	pthread_mutex_t mutex;
-	pthread_cond_t wait_cond;
-    };
-
+    // Processor Impl at top due to use in event
+    
     Event Processor::spawn(Processor::TaskFuncID func_id, const void * args,
 				size_t arglen, Event wait_on) const
     {
@@ -610,73 +643,103 @@ namespace RegionRuntime {
 
     void ProcessorImpl::run(void)
     {
-	// Detect the shutdown function
-	bool shutdown = false;
-	EventImpl* shutdown_trigger = NULL;
-	// Processors run forever
+	// Processors run forever and permit shutdowns
 	while (true)
 	{
-		// check to see if there are tasks to run
+		// Make sure we're holding the lock
 		PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
-		// Check to see how many tasks there are
-		// If there are too few, invoke the scheduler
-		if ((scheduler!=NULL) &&(ready_queue.size()+waiting_queue.size()) < MIN_SCHED_TASKS)
+		// This task will perform the unlock
+		execute_task(true);
+	}
+    }
+
+    void ProcessorImpl::preempt(EventImpl *event, EventImpl::EventGeneration needed)
+    {
+	// Try registering this processor with the event in case it goes to sleep
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	if (!(event->register_dependent(this, needed)))
+	{
+		// The even triggered, release the lock and return
+		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+		return;
+	}
+	
+	// Run until the event has been triggered
+	while (!(event->has_triggered(needed)))
+	{
+		// Don't permit shutdowns since there is still a task waiting
+		execute_task(false);
+		// Relock the task for our next attempt
+		PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	}
+
+	// Unlock and return
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+    }
+
+    // Must always be holding the lock when calling this task
+    // This task will always unlock it
+    void ProcessorImpl::execute_task(bool permit_shutdown)
+    {
+	// Check to see how many tasks there are
+	// If there are too few, invoke the scheduler
+	if ((scheduler!=NULL) &&(ready_queue.size()+waiting_queue.size()) < MIN_SCHED_TASKS)
+	{
+		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+		scheduler(proc);
+		// Return from the scheduler, so we can reevaluate status
+		return;
+	}
+	if (ready_queue.empty())
+	{	
+		if (shutdown && permit_shutdown && waiting_queue.empty())
 		{
-			PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
-			scheduler(proc);
-			PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+			shutdown_trigger->trigger();
+			pthread_exit(NULL);	
 		}
-		if (ready_queue.empty())
-		{	
-			if (shutdown && waiting_queue.empty())
+		// Look through the waiting queue, to see if any events
+		// have been woken up	
+		for (std::list<TaskDesc>::iterator it = waiting_queue.begin();
+			it != waiting_queue.end(); it++)
+		{
+			if (it->wait.has_triggered())
 			{
-				shutdown_trigger->trigger();
-				pthread_exit(NULL);	
-			}
-			// Look through the waiting queue, to see if any events
-			// have been woken up	
-			for (std::list<TaskDesc>::iterator it = waiting_queue.begin();
-				it != waiting_queue.end(); it++)
-			{
-				if (it->wait.has_triggered())
-				{
-					ready_queue.push_back(*it);
-					waiting_queue.erase(it);
-					break;
-				}	
+				ready_queue.push_back(*it);
+				waiting_queue.erase(it);
+				break;
 			}	
-			// Wait until someone tells us there is work to do
-			if (ready_queue.empty())
-			{
-				PTHREAD_SAFE_CALL(pthread_cond_wait(&wait_cond,&mutex));
-			}
-			PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
-		}
-		else
+		}	
+		// Wait until someone tells us there is work to do
+		if (ready_queue.empty())
 		{
-			// Pop a task off the queue and run it
-			TaskDesc task = ready_queue.front();
-			ready_queue.pop_front();
-			PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));	
-			// Check for the shutdown function
-			if (task.func_id == 0)
-			{
-				shutdown = true;
-				shutdown_trigger = task.complete;
-				// Continue going around until all tasks are run
-				continue;
-			}
-#ifdef DEBUG_LOW_LEVEL
-			assert(task_table.find(task.func_id) != task_table.end());
-#endif
-			Processor::TaskFuncPtr func = task_table[task.func_id];	
-			func(task.args, task.arglen, proc);
-			// Trigger the event indicating that the task has been run
-			task.complete->trigger();
-			// Clean up the mess
-			if (task.arglen > 0)
-				free(task.args);
+			PTHREAD_SAFE_CALL(pthread_cond_wait(&wait_cond,&mutex));
 		}
+		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	}
+	else
+	{
+		// Pop a task off the queue and run it
+		TaskDesc task = ready_queue.front();
+		ready_queue.pop_front();
+		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));	
+		// Check for the shutdown function
+		if (task.func_id == 0)
+		{
+			shutdown = true;
+			shutdown_trigger = task.complete;
+			// Continue going around until all tasks are run
+			return;
+		}
+#ifdef DEBUG_LOW_LEVEL
+		assert(task_table.find(task.func_id) != task_table.end());
+#endif
+		Processor::TaskFuncPtr func = task_table[task.func_id];	
+		func(task.args, task.arglen, proc);
+		// Trigger the event indicating that the task has been run
+		task.complete->trigger();
+		// Clean up the mess
+		if (task.arglen > 0)
+			free(task.args);
 	}
     }
 
@@ -700,6 +763,7 @@ namespace RegionRuntime {
 	ProcessorImpl *proc = (ProcessorImpl*)p;
 	// Set the thread local variable processor id
 	local_proc_id = proc->proc.id;
+	// Will never return from this call
 	proc->run();
 	pthread_exit(NULL);	
     }
@@ -785,7 +849,7 @@ namespace RegionRuntime {
 	}
     public:
 	template<typename T>
-	ptr_t<T> alloc(size_t num_elmts);
+	ptr_t<T> alloc(size_t num_elmts = 1);
 	template<typename T>
 	void free(ptr_t<T> ptr);	
 	bool activate(unsigned s, unsigned e);
@@ -1317,7 +1381,8 @@ namespace RegionRuntime {
     ////////////////////////////////////////////////////////
 
     Machine::Machine(int *argc, char ***argv,
-			const Processor::TaskIDTable &task_table)
+			const Processor::TaskIDTable &task_table,
+			bool cps_style, Processor::TaskFuncID init_id)
     {
 	// Default nobody can use task id 0 since that is the shutdown id
 	if (task_table.find(0) != task_table.end())
@@ -1371,12 +1436,26 @@ namespace RegionRuntime {
 	}
 
 	// Now start the threads for each of the processors
-	for (int id=0; id<NUM_PROCS; id++)
+	// except for processor 0 which is this thread
+	for (int id=1; id<NUM_PROCS; id++)
 	{
 		ProcessorImpl *impl = Runtime::runtime->processors[id];
 		pthread_t thread;
 		PTHREAD_SAFE_CALL(pthread_create(&thread, NULL, ProcessorImpl::start, (void*)impl));
 	}
+	
+	// If we're doing CPS style set up the inital task and run the scheduler
+	if (cps_style)
+	{
+		Processor p;
+		p.id = 0;
+		p.spawn(init_id,**argv,*argc);
+		// Now run the scheduler, we'll never return from this
+		ProcessorImpl *impl = Runtime::runtime->processors[0];
+		impl->start((void*)impl);
+	}
+	// Finally do the initialization for thread 0
+	local_proc_id = 0;
     }
 
     Machine::~Machine()
@@ -1501,7 +1580,6 @@ namespace RegionRuntime {
     ProcessorImpl* Runtime::get_processor_impl(Processor p)
     {
 #ifdef DEBUG_LOW_LEVEL
-	assert(p.id != 0);
 	assert(p.id < processors.size());
 #endif
 	return processors[p.id];
