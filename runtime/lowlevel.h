@@ -241,7 +241,7 @@ namespace RegionRuntime {
       AllocFuncPtr alloc_fn(void) { return (AllocFuncPtr)(alloc_fn_untyped()); }
       FreeFuncPtr free_fn(void) { return (FreeFuncPtr)(free_fn_untyped()); }
 #else
-	T alloc(void) { return alloc_untyped<T>(); }
+	ptr_t<T> alloc(void) { return alloc_untyped<T>(); }
 	void free(ptr_t<T> ptr) { free_untyped<T>(ptr); }
 #endif
     };
@@ -272,7 +272,8 @@ namespace RegionRuntime {
     class Machine {
     public:
       Machine(int *argc, char ***argv,
-	      const Processor::TaskIDTable &task_table);
+	      const Processor::TaskIDTable &task_table,
+	      bool cps_style = false, Processor::TaskFuncID init_id = 0);
       ~Machine(void);
     public:
       // Different Processor types
