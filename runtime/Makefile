@@ -4,7 +4,7 @@ CCFLAGS = -I$(GASNET)/include -ggdb -Wall
 
 LDFLAGS = -L$(GASNET)/lib -lrt
 
-CCFLAGS += -DGASNET_CONDUIT_IBV -I$(GASNET)/include/ibv-conduit
+CCFLAGS += -DGASNET_CONDUIT_IBV -I$(GASNET)/include/ibv-conduit -DDEBUG_LOW_LEVEL #-DDEBUG_PRINT
 LDFLAGS += -lgasnet-ibv-par -libverbs
 
 %.o : %.cc
@@ -25,3 +25,6 @@ hello.o : lowlevel.h
 
 ring:	ring_test.o shared_lowlevel.o
 	g++ -o ring $(CCFLAGS) $^ -lpthread
+
+clean:
+	rm -f ring *.o
