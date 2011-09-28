@@ -43,6 +43,43 @@
 	(cmd);
 #endif
 
+#ifdef DEBUG_PRINT
+#define DPRINT1(str,arg)						\
+	{								\
+		PTHREAD_SAFE_CALL(pthread_mutex_lock(&debug_mutex));	\
+		fprintf(stderr,str,arg);				\
+		fflush(stderr);						\
+		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&debug_mutex));	\
+	}
+
+#define DPRINT2(str,arg1,arg2)						\
+	{								\
+		PTHREAD_SAFE_CALL(pthread_mutex_lock(&debug_mutex));	\
+		fprintf(stderr,str,arg1,arg2);				\
+		fflush(stderr);						\
+		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&debug_mutex));	\
+	}
+
+#define DPRINT3(str,arg1,arg2,arg3)					\
+	{								\
+		PTHREAD_SAFE_CALL(pthread_mutex_lock(&debug_mutex));	\
+		fprintf(stderr,str,arg1,arg2,arg3);			\
+		fflush(stderr);						\
+		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&debug_mutex));	\
+	}
+
+#define DPRINT4(str,arg1,arg2,arg3,arg4)				\
+	{								\
+		PTHREAD_SAFE_CALL(pthread_mutex_lock(&debug_mutex));	\
+		fprintf(stderr,str,arg1,arg2,arg3,arg4);		\
+		fflush(stderr);						\
+		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&debug_mutex));	\
+	}
+
+// Declration for the debug mutex
+pthread_mutex_t debug_mutex;
+#endif // DEBUG_PRINT
+
 namespace RegionRuntime {
   namespace LowLevel {
     // Implementation for each of the runtime objects
@@ -134,8 +171,14 @@ namespace RegionRuntime {
 	  PTHREAD_SAFE_CALL(pthread_cond_init(&wait_cond,NULL));
 	  if (in_use)
 	  {
-	    current.id = make_id(index,generation);
+	    // Always initialize the current event to hand out to
+	    // generation + 1, so the event will have triggered
+	    // when the event matches the generation
+	    current.id = make_id(index,generation+1);
 	    sources = 1;
+#ifdef DEBUG_LOW_LEVEL
+	    assert(current.exists());
+#endif
           }
 	}
 	
@@ -158,7 +201,10 @@ namespace RegionRuntime {
 	int sources;
 	const EventIndex index;
 	EventGeneration generation;
-	Event current;
+	// The version of the event to hand out (i.e. with generation+1)
+	// so we can detect when the event has triggered with testing
+	// generational equality
+	Event current; 
 	pthread_mutex_t mutex;
 	pthread_cond_t wait_cond;
 	std::vector<Triggerable*> triggerables;
@@ -241,7 +287,7 @@ namespace RegionRuntime {
     {
 	bool result = false;
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
-	result = (needed_gen < generation);
+	result = (needed_gen <= generation);
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 	return result;
     }
@@ -272,7 +318,7 @@ namespace RegionRuntime {
 	// can't trigger this event before sources is set
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
 #ifdef DEBUG_PRINT
-	fprintf(stderr,"Mering events into event %u generation %u\n",index,generation);
+	//DPRINT2("Mering events into event %u generation %u\n",index,generation);
 #endif
 	sources = 0;
 	for (std::set<Event>::const_iterator it = wait_for.begin();
@@ -305,11 +351,14 @@ namespace RegionRuntime {
 	if (sources == 0)
 	{
 #ifdef DEBUG_PRINT
-		fprintf(stderr,"Event %u triggered for generation %u\n",index,generation);
+		//DPRINT2("Event %u triggered for generation %u\n",index,generation);
 #endif
 		// Increment the generation so that nobody can register a triggerable
 		// with this event, but keep event in_use so no one can use the event
 		generation++;
+#ifdef DEBUG_LOW_LEVEL
+		assert(generation == EventImpl::get_gen(current.id));
+#endif
 		// Can't be holding the lock when triggering other triggerables
 		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 		// Trigger any dependent events
@@ -336,7 +385,12 @@ namespace RegionRuntime {
 		in_use = true;
 		result = true;
 		sources = 1;
-		current.id = make_id(index,generation);
+		// Set generation to generation+1, see 
+		// comment in constructor
+		current.id = make_id(index,generation+1);
+#ifdef DEBUG_LOW_LEVEL
+		assert(current.exists());
+#endif
 	}	
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 	return result;
@@ -347,7 +401,7 @@ namespace RegionRuntime {
 	bool result = false;
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
 	// Make sure they're asking for the right generation, otherwise it's already triggered
-	if (gen >= generation)
+	if (gen > generation)
 	{
 		result = true;
 		// Enqueue it
@@ -376,6 +430,7 @@ namespace RegionRuntime {
 		taken = false;
 		mode = 0;
 		holders = 0;
+		waiters = false;
 		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
 	};	
 
@@ -402,6 +457,7 @@ namespace RegionRuntime {
 	bool active;
 	bool taken;
 	bool exclusive;
+	bool waiters;
 	unsigned mode;
 	unsigned holders;
 	std::list<LockRecord> requests;
@@ -442,15 +498,17 @@ namespace RegionRuntime {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
 	if (taken)
 	{
-		if (exclusive)
+		// If either is exclusive we have to register the request
+		if (exclusive || exc)
 		{
 			result = register_request(m,exc);
 		}
 		else
 		{
-			if (mode == m)
+			if ((mode == m) && !waiters)
 			{
 				// Not exclusive and modes are equal
+				// and there are no waiters
 				// Can still acquire the lock
 				holders++;
 			}
@@ -467,6 +525,9 @@ namespace RegionRuntime {
 		exclusive = exc;
 		mode = m;
 		holders = 1;
+#ifdef DEBUG_PRINT
+		DPRINT3("Granting lock %d in mode %d with exclusive %d\n",index,mode,exclusive);
+#endif
 	}
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 	return result;
@@ -483,6 +544,11 @@ namespace RegionRuntime {
 	req.handled = false;
 	// Add this to the list of requests
 	requests.push_back(req);
+
+	// Finally set waiters to true
+	// as there are now threads waiting
+	waiters = true;
+	
 	return req.event;
     }
 
@@ -493,7 +559,12 @@ namespace RegionRuntime {
 	{
 		// Register this lock to be unlocked when the even triggers	
 		EventImpl *e = Runtime::get_runtime()->get_event_impl(wait_on);
-		e->register_dependent(this,EventImpl::get_gen(wait_on.id));		
+		if (!(e->register_dependent(this,EventImpl::get_gen(wait_on.id))))
+		{
+			// The event didn't register which means it already triggered
+			// so go ahead and perform the unlock operation
+			perform_unlock();
+		}	
 	}
 	else
 	{
@@ -516,8 +587,18 @@ namespace RegionRuntime {
     {
 	holders--;	
 	// If the holders are zero, get the next request out of the queue and trigger it
-	if ((holders==0) && (!requests.empty()))
+	if ((holders==0))
 	{
+#ifdef DEBUG_PRINT
+		DPRINT1("Unlocking lock %d\n",index);
+#endif
+		// Check to see if there are any waiters
+		if (requests.empty())
+		{
+			waiters= false;
+			taken = false;
+			return;
+		}
 		LockRecord req = requests.front();
 		requests.pop_front();		
 		// Get a request that hasn't already been handled
@@ -528,17 +609,25 @@ namespace RegionRuntime {
 		}
 		// If we emptied the queue with no unhandled requests, return
 		if (req.handled)
+		{
+			waiters = false;
+			taken = false;
 			return;
+		}
 		// Set the mode and exclusivity
 		exclusive = req.exclusive;
 		mode = req.mode;
 		holders = 1;
+#ifdef DEBUG_PRINT
+		DPRINT3("Issuing lock %d in mode %d with exclusivity %d\n",index,mode,exclusive);
+#endif
 		// Trigger the event
 		Runtime::get_runtime()->get_event_impl(req.event)->trigger();
 		// If this isn't an exclusive mode, see if there are any other
 		// requests with the same mode that aren't exclusive that we can handle
 		if (!exclusive)
 		{
+			waiters = false;
 			for (std::list<LockRecord>::iterator it = requests.begin();
 				it != requests.end(); it++)
 			{
@@ -548,7 +637,16 @@ namespace RegionRuntime {
 					Runtime::get_runtime()->get_event_impl(it->event)->trigger();
 					holders++;
 				}
+				else
+				{
+					// There is at least one thread still waiting
+					waiters = true;
+				}
 			}	
+		}
+		else
+		{
+			waiters = (requests.size()>0);
 		}
 	}
     }
@@ -561,6 +659,7 @@ namespace RegionRuntime {
 	{
 		active = true;
 		result = true;
+		waiters = false;
 	}
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 	return result;
@@ -617,21 +716,35 @@ namespace RegionRuntime {
 	Event result = task.complete->get_event();
 
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
-	if (wait_on.exists() && !wait_on.has_triggered())
+	if (wait_on.exists())
 	{
-		// Put it on the waiting queue	
-		waiting_queue.push_back(task);
 		// Try registering this processor with the event
 		EventImpl *wait_impl = Runtime::get_runtime()->get_event_impl(wait_on);
 		if (!wait_impl->register_dependent(this, EventImpl::get_gen(wait_on.id)))
 		{
+#ifdef DEBUG_PRINT
+			DPRINT2("Registering task %d on processor %d ready queue\n",func_id,proc.id);
+#endif
+			// Failed to register which means it is ready to execute
+			ready_queue.push_back(task);
 			// If it wasn't registered, then the event triggered
 			// Notify the processor thread in case it is waiting
 			PTHREAD_SAFE_CALL(pthread_cond_signal(&wait_cond));
 		}	
+		else
+		{
+#ifdef DEBUG_PRINT
+			DPRINT2("Registering task %d on processor %d waiting queue\n",func_id,proc.id);
+#endif
+			// Successfully registered, put the task on the waiting queue
+			waiting_queue.push_back(task);
+		}
 	}
 	else
 	{
+#ifdef DEBUG_PRINT
+		DPRINT2("Putting task %d on processor %d ready queue\n",func_id,proc.id);
+#endif
 		// Put it on the ready queue
 		ready_queue.push_back(task);
 		// Signal the thread there is a task to run in case it is waiting
@@ -1307,14 +1420,19 @@ namespace RegionRuntime {
     RegionAllocatorUntyped RegionMetaDataImpl::create_allocator(Memory m)
     {
 	// We'll only over have one allocator for shared memory	
-	return master_allocator;
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	RegionAllocatorUntyped result = master_allocator;
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	return result;
     }
 
     RegionInstanceUntyped RegionMetaDataImpl::create_instance(Memory m)
     {
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
 	RegionInstanceImpl* impl = Runtime::get_runtime()->get_free_instance(m,num_elmts, elmt_size);
 	RegionInstanceUntyped inst = impl->get_instance();
 	instances.insert(inst);
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 	return inst;
     }
 
@@ -1325,6 +1443,7 @@ namespace RegionRuntime {
 
     void RegionMetaDataImpl::destroy_instance(RegionInstanceUntyped inst)
     {
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
 	std::set<RegionInstanceUntyped>::iterator it = instances.find(inst);
 #ifdef DEBUG_LOW_LEVEL
 	assert(it != instances.end());
@@ -1332,6 +1451,7 @@ namespace RegionRuntime {
 	instances.erase(it);
 	RegionInstanceImpl *impl = Runtime::get_runtime()->get_instance_impl(inst);
 	impl->deactivate();
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
     }
 
     Lock RegionMetaDataImpl::get_lock(void)
@@ -1341,12 +1461,18 @@ namespace RegionRuntime {
 
     RegionAllocatorUntyped RegionMetaDataImpl::get_master_allocator(void)
     {
-	return master_allocator;
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	RegionAllocatorUntyped result = master_allocator;
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	return result;
     }
 
     RegionInstanceUntyped RegionMetaDataImpl::get_master_instance(void)
     {
-	return master_instance;
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	RegionInstanceUntyped result = master_instance;
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	return result;
     }
 
     void RegionMetaDataImpl::set_master_allocator(RegionAllocatorUntyped a)
@@ -1356,11 +1482,13 @@ namespace RegionRuntime {
 
     void RegionMetaDataImpl::set_master_instance(RegionInstanceUntyped inst)	
     {
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
 #ifdef DEBUG_LOW_LEVEL
 	// Make sure it is one of our instances
 	assert(instances.find(inst) != instances.end());
 #endif
 	master_instance = inst;
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
     }
 
     
@@ -1379,6 +1507,10 @@ namespace RegionRuntime {
 		fflush(stderr);
 		exit(1);
 	}
+
+#ifdef DEBUG_PRINT
+	PTHREAD_SAFE_CALL(pthread_mutex_init(&debug_mutex,NULL));
+#endif
 	
 	// Create the runtime and initialize with this machine
 	Runtime::runtime = new Runtime(this);
@@ -1610,9 +1742,6 @@ namespace RegionRuntime {
 		{
 			EventImpl *result = events[i];
 			PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&event_lock));
-#ifdef DEBUG_PRINT
-			fprintf(stderr,"Found event %d\n",i);
-#endif
 			return result;
 		}
 	}
@@ -1623,9 +1752,6 @@ namespace RegionRuntime {
 	events.push_back(new EventImpl(index, true));
 	EventImpl *result = events[index];
 	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&event_lock));
-#ifdef DEBUG_PRINT
-	fprintf(stderr,"Created new event %d\n",index);
-#endif
 	return result; 
     }
 
