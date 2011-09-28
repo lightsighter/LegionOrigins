@@ -184,11 +184,12 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 {
 \begin{array}{lc}
   \Gamma \cup \{ x : T_1 \}, \Phi_1, C_1 \vdash e : \rtripsub{T_2}{2}{2} \\
-  r_1, \ldots, r_n \not\in \mathit{RegionsOf}(\Gamma, \Phi_1, C_1)
+  \{ r_1, \ldots, r_n \} = \mathit{RegionsOf}(\Gamma, \Phi_1, C_1) \setminus \mathit{RegionsOf}(\Gamma) \\
+  \{ r'_1, \ldots, r'_n \} = \mathit{RegionsOf}(T_2, \Phi_2, C_2) \setminus \mathit{RegionsOf}(\Gamma, \Phi_1, C_1)
 \end{array}
 }
 {
-  \envsub{3}{3} \lambda x.e : \rtripsub{\rtripsub{T_1}{1}{1} \rightarrow \exists r_1, \ldots, r_n. \rtripsub{T_2}{2}{2}}{3}{3}
+  \envsub{3}{3} \lambda x.e : \forall r_1, \ldots, r_n. \rtripsub{\rtripsub{T_1}{1}{1} \rightarrow \exists r'_1, \ldots, r'_n. \rtripsub{T_2}{2}{2}}{3}{3}
 }
 \end{math}
 &\raisebox{-0.2in}{[{\tt Lambda}]} \\
