@@ -66,9 +66,6 @@ namespace RegionRuntime {
     };
 
     class Future {
-    public:
-	// Args have to be FutureHandle, result
-	static void set_future(const void * result, size_t result_size, Processor proc);
     private:
 	FutureHandle handle;
 	bool set;
@@ -79,12 +76,21 @@ namespace RegionRuntime {
 	Future(FutureHandle h);
 	~Future();
 	// also allow the runtime to reset futures so it can re-use them
-	bool is_active(void) const;
+	inline bool is_active(void) const { return active; }
 	void reset(void);
         void set_result(const void * res, size_t result_size);
     public:
-	bool is_set(void) const;
-	template<typename T> T get_result(void) const;	
+	inline bool is_set(void) const { return set; }
+	// Give the implementation here so we avoid the template
+	// instantiation problem
+	template<typename T> inline T get_result(void) const	
+	{ 
+#ifdef HIGH_LEVEL_DEBUG
+		assert(set);
+#endif
+		active = false;
+		return (*((const T*)result));
+	}
     };
     
     /**
@@ -99,13 +105,20 @@ namespace RegionRuntime {
 	LowLevel::RegionInstanceUntyped instance;
     public:
 	PhysicalRegion (LowLevel::RegionAllocatorUntyped alloc, 
-			LowLevel::RegionInstanceUntyped inst);	
+			LowLevel::RegionInstanceUntyped inst)	
+		: allocator(alloc), instance(inst) { }
     public:
-	template<typename T> ptr_t<T> alloc(void);
-	template<typename T> void free(ptr_t<T> ptr);
-	template<typename T> T read(ptr_t<T> ptr);
-	template<typename T> void write(ptr_t<T> ptr, T newval);
-	template<typename T> void reduce(ptr_t<T> ptr, T (*reduceop)(T,T), T newval);
+	// Provide implementations here to avoid template instantiation problem
+	template<typename T> inline ptr_t<T> alloc(void)
+	{ return LowLevel::RegionAllocator<T>(allocator).alloc_fn()(); }
+	template<typename T> inline void free(ptr_t<T> ptr)
+	{ LowLevel::RegionAllocator<T>(allocator).free_fn()(ptr); }
+	template<typename T> inline T read(ptr_t<T> ptr)
+	{ return LowLevel::RegionInstance<T>(instance).read_fn()(ptr); }
+	template<typename T> inline void write(ptr_t<T> ptr, T newval)
+	{ LowLevel::RegionInstance<T>(instance).write_fn()(ptr,newval); }
+	template<typename T> inline void reduce(ptr_t<T> ptr, T (*reduceop)(T,T), T newval)
+	{ LowLevel::RegionInstance<T>(instance).reduce_fn()(ptr,reduceop,newval); }
     };
 
     // Untyped base class of a partition for internal use in the runtime
@@ -126,47 +139,166 @@ namespace RegionRuntime {
     protected:
 	// Only the runtime should be able to create Partitions
 	friend class HighLevelRuntime;
-	Partition(LogicalHandle par, std::vector<LogicalHandle> *children, bool dis = true);
-	virtual ~Partition();	
+	Partition(LogicalHandle par, std::vector<LogicalHandle> *children, bool dis = true)
+		: parent(par), child_regions(children), disjoint(dis) { }
+	virtual ~Partition() { delete child_regions; }	
     public:
-	LogicalHandle get_subregion(Color c) const;
+	inline LogicalHandle get_subregion(Color c) const
+	{
+#ifdef HIGH_LEVEL_DEBUG
+		assert (c < child_regions.size());
+#endif
+		return (*child_regions)[c];
+	}
+	// This defintion below since it needs the subclasses to be declared
 	ptr_t<T> safe_cast(ptr_t<T> ptr) const;
-	bool is_disjoint(void) const;
+	inline bool is_disjoint(void) const { return disjoint; }
     protected:
-	virtual bool contains_coloring(void) const;
-	bool operator==(const Partition<T> &part) const;
+	virtual bool contains_coloring(void) const { return false; }
+	bool operator==(const Partition<T> &part) const
+	{
+		// First check to see if the number of sub-regions are the same
+		if (part.child_regions->size() != this->child_regions->size())
+			return false;
+
+		for (int i=0; i<this->child_regions->size(); i++)
+		{
+			// Check that they share the same logical regions
+			if ((*(part.child_regions))[i] != (*(this->child_regions))[i])
+				return false;
+		}
+		return true;
+	}
     };
 
     template<typename T>
     class DisjointPartition : public Partition<T> {
     private:
-	const std::map<ptr_t<T>,Color> *const color_map;
+	const std::map<ptr_t<T>,Color> color_map;
     protected:
 	friend class HighLevelRuntime;
-	DisjointPartition(LogicalHandle p,
+	DisjointPartition(LogicalHandle par,
 			std::vector<LogicalHandle> *children, 
-			std::map<ptr_t<T>,Color> *coloring);
-	virtual ~DisjointPartition();
+			std::map<ptr_t<T>,Color> coloring)
+		: Partition<T>(par, children, true), color_map(coloring) { }
     public:
-	ptr_t<T> safe_cast(ptr_t<T> ptr) const;
+	ptr_t<T> safe_cast(ptr_t<T> ptr) const
+	{
+		// Cast our pointer to the right type of map
+		if (color_map.find(ptr) != color_map.end())
+			return ptr;
+		else
+		{
+			ptr_t<T> null_ptr = {0};
+			return null_ptr;
+		}
+	}
     protected:
-	virtual bool contains_coloring(void) const;
+	virtual bool contains_coloring(void) const { return true; }
     };
 
     template<typename T>
     class AliasedPartition : public Partition<T> {
     private:
-	const std::multimap<ptr_t<T>,Color> *const color_map;
+	const std::multimap<ptr_t<T>,Color> color_map;
     protected:
 	friend class HighLevelRuntime;
-	AliasedPartition(LogicalHandle p,
+	AliasedPartition(LogicalHandle par,
 			std::vector<LogicalHandle> *children, 
-			std::multimap<ptr_t<T>,Color> *coloring);
-	virtual ~AliasedPartition();
+			std::multimap<ptr_t<T>,Color> coloring)
+		: Partition<T>(par,children,false), color_map(coloring) { }
     public:
-	ptr_t<T> safe_cast(ptr_t<T> ptr) const;
+	ptr_t<T> safe_cast(ptr_t<T> ptr) const
+	{
+		// TODO: find the right kind of safe_cast for the this pointer
+		if (color_map.find(ptr) != color_map.end())
+			return ptr;	
+		else
+		{
+			ptr_t<T> null_ptr = {0};
+			return null_ptr;
+		}
+	}
     protected:
-	virtual bool contains_coloring(void) const;
+	virtual bool contains_coloring(void) const { return true; }
+    };
+
+    // Need this definition here since it relies on declaration of Disjoint and Aliased Partition
+    //--------------------------------------------------------------------------------------------
+    template<typename T>
+    ptr_t<T> Partition<T>::safe_cast(ptr_t<T> ptr) const
+    //--------------------------------------------------------------------------------------------
+    {
+	// We can't have templated virtual functions so we'll just roll our own
+	if (contains_coloring())
+	{
+		if (disjoint)
+			return ((DisjointPartition<T>*)this)->safe_cast(ptr);
+		else
+			return ((AliasedPartition<T>*)this)->safe_cast(ptr);
+	}
+	else
+	{
+		ptr_t<T> null_ptr = {0};
+		return null_ptr;
+	}
+    } 
+
+    /**
+     * A mapper object will be created for every processor and will be responsbile for
+     * scheduling tasks onto that processor as well as placing the necessary regions
+     * in the memory hierarchy for those tasks to run.
+     */
+    class Mapper {
+    protected:
+	HighLevelRuntime *runtime;
+    public:
+	Mapper(MachineDescription *machine, HighLevelRuntime *runtime);
+	virtual ~Mapper();
+    public:
+	// Rank the order for possible memory locations for a region
+	virtual std::vector<Memory> rank_initial_region_locations(	
+							size_t elmt_size, 
+							size_t num_elmts, 
+							MappingTagID tag);	
+
+	virtual std::vector<std::vector<Memory> > rank_initial_partition_locations( 
+							size_t elmt_size, 
+							const std::vector<size_t> &num_elmts, 
+							unsigned int num_subregions, 
+							MappingTagID tag);
+
+	virtual bool compact_partition(	const PartitionBase &partition, 
+					MappingTagID tag);
+
+	virtual Processor select_initial_processor( Processor::TaskFuncID task_id,
+						const std::vector<RegionRequirement> &regions,
+						MappingTagID tag);	
+
+	virtual Processor target_task_steal();
+
+	virtual bool permit_task_steal(	Processor thief,
+					Processor::TaskFuncID task_id,
+					const std::vector<RegionRequirement> &regions,
+					MappingTagID tag);
+
+	virtual std::vector<std::vector<Memory> > map_task(	
+					Processor::TaskFuncID task_id,
+					const std::vector<RegionRequirement> &regions,
+					MappingTagID tag);
+
+	// Register task with mapper
+	// Unregister task with mapper
+	// Select tasks to steal
+	// Select target processor(s)
+    protected:
+	// Data structures for the base mapper
+	const Processor local_proc;
+	MachineDescription *const machine;
+	std::vector<Memory> visible_memories;
+    protected:
+	// Helper methods for building machine abstractions
+	void rank_memories(std::vector<Memory> &memories);
     };
 
     /**
@@ -197,33 +329,6 @@ namespace RegionRuntime {
 	HighLevelRuntime(MachineDescription *m);
 	~HighLevelRuntime();
     public:
-	// Functions for creating and destroying logical regions
-	template<typename T>
-	LogicalHandle create_logical_region(size_t num_elmts = 0,MapperID id = 0,MappingTagID tag = 0);
-	template<typename T>
-	void destroy_logical_region(LogicalHandle handle);	
-        template<typename T>
-        LogicalHandle smash_logical_region(LogicalHandle region1, LogicalHandle region2);
-    public:
-	// Functions for creating and destroying partitions
-	template<typename T>
-	Partition<T> create_disjoint_partition(LogicalHandle parent,
-						unsigned int num_subregions,
-						std::auto_ptr<std::map<ptr_t<T>,Color> > color_map,
-						const std::vector<size_t> &element_count,
-						MapperID id = 0,
-						MappingTagID tag = 0);
-	template<typename T>
-	Partition<T> create_aliased_partition(LogicalHandle parent,
-						unsigned int num_subregions,
-						std::auto_ptr<std::multimap<ptr_t<T>,Color> > color_map,
-						const std::vector<size_t> &element_count,
-						MapperID id = 0,
-						MappingTagID tag = 0);
-
-	template<typename T>
-	void destroy_partition(Partition<T> partition);
-    public:
 	// Functions for calling tasks
 	Future* execute_task(LowLevel::Processor::TaskFuncID task_id,
 			const std::vector<RegionRequirement> &regions,
@@ -236,23 +341,8 @@ namespace RegionRuntime {
 	// Get partitions of a region
 	// Return a best guess of the remaining space in a memory
 	size_t remaining_memory(Memory m) const;
-    private:
-	std::vector<Mapper*> mapper_objects;
-	std::map</*child_region*/LogicalHandle,/*parent region*/LogicalHandle> parent_map;
-	std::map<LogicalHandle,std::vector<PartitionBase>*> child_map;
-	MachineDescription *machine;
-	Processor local_proc;
-	std::vector<TaskDescription*> task_queue;
-	std::map<FutureHandle,Future*> local_futures;
-    private:
-	// Internal operations
-	// The two remove operations are mutually recursive
-	// - if you remove a region, you also remove all its partitions
-	// - if you remove a partition, you remove all its subregions
-	template<typename T>
-	void remove_region(LogicalHandle region);
-	template<typename T>
-	void remove_partition(Partition<T> partition);
+    private:	
+	// Utility functions
 	Future* get_available_future();
 	size_t compute_task_desc_size(TaskDescription *desc) const;
 	size_t compute_task_desc_size(int num_regions,size_t arglen) const;
@@ -264,101 +354,345 @@ namespace RegionRuntime {
 	void process_future(const void * args, size_t arglen);
 	// Where the magic happens!
 	void process_schedule_request();
-    };
-
-    /**
-     * A mapper object will be created for every processor and will be responsbile for
-     * scheduling tasks onto that processor as well as placing the necessary regions
-     * in the memory hierarchy for those tasks to run.
-     */
-    class Mapper {
+    private:
+	// Member variables
+	std::vector<Mapper*> mapper_objects;
+	std::map</*child_region*/LogicalHandle,/*parent region*/LogicalHandle> parent_map;
+	std::map<LogicalHandle,std::vector<PartitionBase>*> child_map;
+	MachineDescription *machine;
+	Processor local_proc;
+	std::vector<TaskDescription*> task_queue;
+	std::map<FutureHandle,Future*> local_futures;
     public:
-	enum MapperErrorCode {
-		MAPPING_SUCCESS, // The mapping succeeded
-		INSUFFICIENT_SPACE, // Not enough space to create an instance
-		INVALID_MEMORY, // Memory that is not visible to processor
-	};
-	class MemoryTree {
-		
-	};
-    protected:
-	HighLevelRuntime *runtime;
+	// Unfortunately to avoid template instantiation issues we have to provide
+	// the implementation of the templated functions here in the header file
+	// so they will be instantiated.
+
+	// Functions for creating and destroying logical regions
+	//--------------------------------------------------------------------------------------------
+	template<typename T>
+	LogicalHandle create_logical_region(size_t num_elmts = 0,MapperID id = 0,MappingTagID tag = 0)
+	//--------------------------------------------------------------------------------------------
+	{
+#ifdef DEBUG_HIGH_LEVEL
+		assert(mapper_objects[id] != NULL);
+#endif
+		// Get the ranking of memory locations from the mapper
+		std::vector<Memory> locations = mapper_objects[id]->
+						rank_initial_region_locations(sizeof(T),num_elmts,tag);
+		bool found = false;
+		LogicalHandle region;
+		// Go through the memories in order and try and create them
+		for (std::vector<Memory>::iterator mem_it = locations.begin();
+			mem_it != locations.end(); mem_it++)
+		{
+			if (!(*mem_it).exists())
+			{
+#ifdef DEBUG_HIGH_LEVEL
+				fprintf(stderr,"Warning: Memory %d returned from mapper %d with tag %d for initial region location does not exist.\n",(*mem_it).id, id, tag);
+#endif
+				continue;
+			}
+			region = (LogicalHandle)LowLevel::RegionMetaData<T>::create_region(*mem_it,num_elmts);	
+			if (region.exists())
+			{
+				found = true;
+				break;
+			}
+#ifdef DEBUG_PRINT
+			else
+			{
+				fprintf(stderr,"Info: Unable to map region with tag %d and mapper %d into memory %d for initial region location\n",tag, id, (*mem_it).id);
+			}	
+#endif
+		}
+		if (!found)
+		{
+			fprintf(stderr,"Unable to place initial region with tag %d by mapper %d\n",tag, id);
+			exit(100*(machine->get_local_processor().id)+id);
+		}
+#ifdef DEBUG_HIGH_LEVEL
+		assert(parent_map.find(region) == parent_map.end());
+		assert(child_map.find(region) == child_map.end());
+#endif
+		// Update the runtime data structures on region relationships
+		// A top-level region will always have itself as a parent
+		parent_map.insert(std::pair<LogicalHandle,LogicalHandle>(region,region));
+		child_map.insert(std::pair<LogicalHandle,std::vector<PartitionBase>*>(region, new std::vector<PartitionBase>()));
+		// Return the handle
+		return region;
+	}
+	//--------------------------------------------------------------------------------------------
+	template<typename T>
+	void destroy_logical_region(LogicalHandle handle)	
+	//--------------------------------------------------------------------------------------------
+	{
+		// Call internal helper method to recursively remove region and its partitions
+		remove_region<T>(handle);
+	}
+	//--------------------------------------------------------------------------------------------
+        template<typename T>
+        LogicalHandle smash_logical_region(LogicalHandle region1, LogicalHandle region2)
+	//--------------------------------------------------------------------------------------------
+	{
+
+	}
     public:
-	Mapper(MachineDescription *machine, HighLevelRuntime *runtime);
-	virtual ~Mapper();
-    public:
-	virtual void select_initial_region_location(	Memory &result, 
-							size_t elmt_size, 
-							size_t num_elmts, 
-							MappingTagID tag);	
-
-	virtual bool remap_initial_region_location(	Memory &result,
-							MapperErrorCode error,
-							const Memory &failed_mapping,
-							size_t elmt_size,
-							size_t num_elmts,
-							MappingTagID tag);
-
-	virtual void select_initial_partition_location(	std::vector<Memory> &result, 
-							size_t elmt_size, 
-							const std::vector<size_t> &num_elmts, 
-							unsigned int num_subregions, 
-							MappingTagID tag);
-
-	virtual bool remap_initial_partition_location(	std::vector<Memory> &result,
-						const std::vector<MapperErrorCode> &errors,
-						const std::vector<Memory> &failed_mapping,
-						size_t elmt_size,
-						const std::vector<size_t> &num_elmts,
+	// Functions for creating and destroying partitions
+	//--------------------------------------------------------------------------------------------
+	template<typename T>
+	Partition<T> create_disjoint_partition(LogicalHandle parent,
 						unsigned int num_subregions,
-						MappingTagID tag);
+						std::map<ptr_t<T>,Color> color_map,
+						const std::vector<size_t> &element_count,
+						MapperID id = 0,
+						MappingTagID tag = 0)
+	//--------------------------------------------------------------------------------------------
+	{
+#ifdef DEBUG_HIGH_LEVEL
+		assert(mapper_objects[id] != NULL);
+#endif
+#if 0
+		// Count the number of elements in each subregion
+		std::vector<size_t> element_count(num_subregions);
+		for (int i=0; i<num_subregions; i++)
+			element_count[i] = 0;
+		for (typename std::multimap<ptr_t<T>,Color>::iterator it = map_ptr->begin();
+			it != map_ptr->end(); it++)
+		{
+#ifdef DEBUG_HIGH_LEVEL
+			assert(it->second < num_subregions);
+#endif
+			element_count[it->second]++;
+		}
+#endif
 
-	virtual void compact_partition(	bool &result,
-					const PartitionBase &partition, 
-					MappingTagID tag);
+		std::vector<std::vector<Memory> > rankings = 
+			mapper_objects[id]->rank_initial_partition_locations(sizeof(T),element_count,
+									num_subregions, tag);
+#ifdef DEBUG_HIGH_LEVEL
+		// Check that there are as many vectors as sub regions
+		assert(rankings.size() == num_subregions);
+#endif
+		std::vector<LogicalHandle> *child_regions = new std::vector<LogicalHandle>(num_subregions);		
+		for (int i=0; i<num_subregions; i++)
+		{
+			std::vector<Memory> locations = rankings[i];
+			bool found = false;
+			for (std::vector<Memory>::iterator mem_it = locations.begin();
+				mem_it != locations.end(); mem_it++)
+			{
+				if (!(*mem_it).exists())
+				{
+#ifdef DEBUG_HIGH_LEVEL
+					fprintf(stderr,"Warning: Memory %d returned from mapper %d with tag %d for initial partition %d does not exist.\n",(*mem_it).id, id, tag, i);
+#endif
+					continue;
+				}
+				(*child_regions)[i] = (LogicalHandle)LowLevel::RegionMetaData<T>::create_region(element_count[i],locations[i]);
+				if ((*child_regions)[i].exists())
+				{
+					found = true;
+					break;
+				}
+#ifdef DEBUG_PRINT
+				else
+				{
+					fprintf(stderr,"Info: Unable to map region with tag %d and mapper %d into memory %d for initial sub region %d\n",tag, id, (*mem_it).id,i);
+				}	
+#endif
+			}
+			if (!found)
+			{
+				fprintf(stderr,"Unable to place initial subregion %d with tag %d by mapper %d\n",i,tag, id);
+				exit(100*(machine->get_local_processor().id)+id);
+			}
+		}	
+		// Create the actual partition
+		Partition<T> *partition = NULL;
+		if (!color_map.empty())
+			partition = new DisjointPartition<T>(parent,child_regions,color_map);
+		else
+			partition = new Partition<T>(parent,child_regions);
 
-	virtual void select_target_processor(	Processor &result,
-						Processor::TaskFuncID task_id,
-						const std::vector<RegionRequirement> &regions,
-						MappingTagID tag);	
+		// Update the runtime data structures
+		// Mark each child region with its parent
+		for (int i=0; i<num_subregions; i++)
+		{
+			parent_map.insert(std::pair<LogicalHandle,LogicalHandle>(child_regions[i],parent));
+			child_map.insert(std::pair<LogicalHandle,std::vector<PartitionBase>*>(child_regions[i],
+								new std::vector<PartitionBase>()));
+		}
+		// Update the parent's partitions
+		child_map[parent]->push_back(partition);
 
-	virtual void target_task_steal( Processor &result,
-					MappingTagID tag);
+		return *partition;
+	}
+	//--------------------------------------------------------------------------------------------
+	template<typename T>
+	Partition<T> create_aliased_partition(LogicalHandle parent,
+						unsigned int num_subregions,
+						std::multimap<ptr_t<T>,Color> color_map,
+						const std::vector<size_t> &element_count,
+						MapperID id = 0,
+						MappingTagID tag = 0)
+	//--------------------------------------------------------------------------------------------
+	{
+#ifdef DEBUG_HIGH_LEVEL
+		assert(mapper_objects[id] != NULL);
+#endif
+#if 0
+		// Count the number of elements in each subregion
+		std::vector<size_t> element_count(num_subregions);
+		for (int i=0; i<num_subregions; i++)
+			element_count[i] = 0;
+		for (typename std::multimap<ptr_t<T>,Color>::iterator it = map_ptr->begin();
+			it != map_ptr->end(); it++)
+		{
+#ifdef DEBUG_HIGH_LEVEL
+			assert(it->second < num_subregions);
+#endif
+			element_count[it->second]++;
+		}
+#endif
 
-	virtual void permit_task_steal(	bool &result,
-					Processor thief,
-					Processor::TaskFuncID task_id,
-					const std::vector<RegionRequirement> &regions,
-					MappingTagID tag);
+		std::vector<std::vector<Memory> > rankings = 
+			mapper_objects[id]->rank_initial_partition_locations(sizeof(T),element_count,
+									num_subregions, tag);
+#ifdef DEBUG_HIGH_LEVEL
+		// Check that there are as many vectors as sub regions
+		assert(rankings.size() == num_subregions);
+#endif
+		std::vector<LogicalHandle> *child_regions = new std::vector<LogicalHandle>(num_subregions);		
+		for (int i=0; i<num_subregions; i++)
+		{
+			std::vector<Memory> locations = rankings[i];
+			bool found = false;
+			for (std::vector<Memory>::iterator mem_it = locations.begin();
+				mem_it != locations.end(); mem_it++)
+			{
+				if (!(*mem_it).exists())
+				{
+#ifdef DEBUG_HIGH_LEVEL
+					fprintf(stderr,"Warning: Memory %d returned from mapper %d with tag %d for initial partition %d does not exist.\n",(*mem_it).id, id, tag, i);
+#endif
+					continue;
+				}
+				(*child_regions)[i] = (LogicalHandle)LowLevel::RegionMetaData<T>::create_region(element_count[i],locations[i]);
+				if ((*child_regions)[i].exists())
+				{
+					found = true;
+					break;
+				}
+#ifdef DEBUG_PRINT
+				else
+				{
+					fprintf(stderr,"Info: Unable to map region with tag %d and mapper %d into memory %d for initial sub region %d\n",tag, id, (*mem_it).id,i);
+				}	
+#endif
+			}
+			if (!found)
+			{
+				fprintf(stderr,"Unable to place initial subregion %d with tag %d by mapper %d\n",i,tag, id);
+				exit(100*(machine->get_local_processor().id)+id);
+			}
+		}	
+		// Create the actual partition
+		Partition<T> *partition = new AliasedPartition<T>(parent,child_regions,color_map);
 
-	virtual void map_task(	std::vector<Memory> &result,
-				Processor::TaskFuncID task_id,
-				const std::vector<RegionRequirement> &regions,
-				MappingTagID tag);
+		// Update the runtime data structures
+		for (int i=0; i<num_subregions; i++)
+		{
+			parent_map.insert(std::pair<LogicalHandle,LogicalHandle>(child_regions[i],parent));
+			child_map.insert(std::pair<LogicalHandle,std::vector<PartitionBase>*>(child_regions[i],
+								new std::vector<PartitionBase>()));
+		}
+		// Update the parent's partitions
+		child_map[parent]->push_back(partition);
 
-	virtual bool remap_task(std::vector<Memory> &result,
-				const std::vector<MapperErrorCode> &errors,
-				const std::vector<Memory> &failed_mapping,
-				Processor::TaskFuncID task_id,
-				const std::vector<RegionRequirement> &regions,
-				MappingTagID tag);
-	// Register task with mapper
-	// Unregister task with mapper
-	// Select tasks to steal
-	// Select target processor(s)
-    protected:
-	// Data structures for the base mapper
-	const Processor local_proc;
-	MachineDescription *const machine;
-	std::vector<Memory> visible_memories;
-	MemoryTree *root;
-    protected:
-	// Helper methods for building machine abstractions
-	void rank_memories(std::vector<Memory> &memories);
-	void treeify_memories(MachineDescription *machine);
+		return *partition;
+	}
+	//--------------------------------------------------------------------------------------------
+	template<typename T>
+	void destroy_partition(Partition<T> partition)
+	//--------------------------------------------------------------------------------------------
+	{
+		remove_partition<T>(partition);
+	}
+    private:
+	// Internal operations
+	// The two remove operations are mutually recursive
+	// - if you remove a region, you also remove all its partitions
+	// - if you remove a partition, you remove all its subregions
+	//--------------------------------------------------------------------------------------------
+	template<typename T>
+	void remove_region(LogicalHandle region)
+	//--------------------------------------------------------------------------------------------
+	{
+		std::map<LogicalHandle,LogicalHandle>::iterator parent_map_entry = 
+									parent_map.find(region);
+		std::map<LogicalHandle,std::vector<PartitionBase>*>::iterator child_map_entry = 
+									child_map.find(region);
+#ifdef DEBUG_HIGH_LEVEL
+		assert(parent_map_entry != parent_map.end());
+		assert(child_map_entry != child_map.end());
+#endif
+		// Remove the parent map entry
+		parent_map.erase(parent_map_entry);
+		// Remove any partitions of the region (and consequently all child regions)
+		std::vector<PartitionBase> *partitions = child_map_entry->second;
+		for (std::vector<PartitionBase>::iterator part_it = partitions->begin();
+			part_it != partitions->end(); part_it++)
+		{
+			remove_partition<T>((Partition<T>)(*part_it));
+		}
+		// Delete the partition vector
+		delete partitions;
+		// Remove the entry
+		child_map.erase(child_map_entry);
+
+		LowLevel::RegionMetaData<T> low_region = (LowLevel::RegionMetaData<T>)region;
+		// Call the destructor for this RegionMetaData object which will allow the
+		// low-level runtime to clean stuff up
+		low_region.destroy_region();
+	}
+	//--------------------------------------------------------------------------------------------
+	template<typename T>
+	void remove_partition(Partition<T> partition)
+	//--------------------------------------------------------------------------------------------
+	{
+		// Remove each of the child regions of the partition
+		for (std::vector<LogicalHandle>::iterator reg_it = partition.child_regions->begin();
+			reg_it != partition.child_regions->end(); reg_it++)
+		{
+			remove_region<T>(*reg_it);
+		}
+		// Now remove the partition from the parent's partition vector
+		std::vector<PartitionBase> *parent_partitions = child_map[partition.parent];
+#ifdef DEBUG_HIGH_LEVEL
+		bool found_part = false;
+#endif
+		for (std::vector<PartitionBase>::iterator it = parent_partitions->begin();
+			it != parent_partitions->end(); it++)
+		{
+			Partition<T> other = (Partition<T>)(*it);
+			if (other == partition)
+			{
+#ifdef DEBUG_HIGH_LEVEL
+				found_part = true;
+#endif
+				parent_partitions->erase(it);
+				break;
+			}
+		}
+#ifdef DEBUG_HIGH_LEVEL
+		assert(found_part);
+#endif
+		// Finally call the destructor on the partition
+		partition.Partition<T>::~Partition();
+	}
     };
-
-  };
-};
+  }; // namespace HighLevel
+}; // namespace RegionRuntime
 
 #endif // RUNTIME_HIGHLEVEL_H
