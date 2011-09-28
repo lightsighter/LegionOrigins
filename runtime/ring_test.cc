@@ -22,6 +22,7 @@ struct Potato {
 public:
 	Potato() { }
 public:
+	int id;
 	ptr_t<unsigned> location;
 	RegionMetaDataUntyped region;
 	ptr_t<unsigned> finished_location; // The location of the counter for tracking
@@ -55,12 +56,16 @@ void potato_launcher(const void * args, size_t arglen, Processor p)
 	for (int i=0; i<NUM_POTATOES; i++)
 	{
 		Potato potato;
+		potato.id = i;
 		potato.location = counter_alloc.alloc();
 		potato.region = counter_region;
 		potato.finished_location = finish_loc;
 		counter_instance.write(potato.location,NUM_TRIPS);
 		printf("Launching potato %d on processor %u\n",i,neighbor.id);
-		previous = rlock.lock(0,false);
+		if (neighbor.id == (i%total_procs))
+			previous = rlock.lock(0,true);
+		else
+			previous = rlock.lock(0,false);
 		previous = neighbor.spawn(HOT_POTATOER,&potato,sizeof(Potato),previous);
 		rlock.unlock(previous);
 	}
@@ -73,14 +78,14 @@ void hot_potatoer(const void * args, size_t arglen, Processor p)
 	Machine *machine = Machine::get_machine();
 	Processor me = machine->get_local_processor();
 	unsigned total_procs = machine->get_all_processors().size();
-	unsigned neigh_id = me.id+1;
+	unsigned neigh_id = (me.id+1) % total_procs;
 
 	RegionMetaData<unsigned> counter_region(potato.region);
 
 	Lock rlock = counter_region.get_lock();
 
 	//printf("Processor %u passing hot potato to processor %u\n",me.id,(neigh_id%total_procs));
-	if (neigh_id == total_procs)
+	if (int(me.id) == int(potato.id%total_procs))
 	{
 		// Get an instance for the region locally
 		Memory my_mem = { (me.id+1) };
@@ -94,7 +99,7 @@ void hot_potatoer(const void * args, size_t arglen, Processor p)
 		if (trips == 0)
 		{
 			// Launch the dropper on the first processor
-			Processor target = { 0 };
+			Processor target = { neigh_id };
 			// Need the lock in exclusive since it does a write
 			Event previous = rlock.lock(0,true);
 			previous = target.spawn(POTATO_DROPPER,args,arglen,previous);
@@ -104,7 +109,7 @@ void hot_potatoer(const void * args, size_t arglen, Processor p)
 		{
 			// Decrement the count
 			local_inst.write(potato.location,trips-1);
-			Processor target = { 0 };
+			Processor target = { neigh_id };
 			Event previous = rlock.lock(0,false);
 			previous = target.spawn(HOT_POTATOER,args,arglen,previous);
 			rlock.unlock(previous);	
@@ -124,7 +129,7 @@ void hot_potatoer(const void * args, size_t arglen, Processor p)
 		Event previous;
 		// Check to see if the next neighbor is num_procs-1
 		// If it is, it needs the lock in exclusive so it can do a write
-		if (neigh_id == (total_procs-1))
+		if (neigh_id == (potato.id%total_procs))
 			previous = rlock.lock(0,true);
 		else
 			previous = rlock.lock(0,false);
@@ -162,6 +167,7 @@ void potato_dropper(const void * args, size_t arglen, Processor p)
 		master_inst.write(potato.finished_location,finished);
 	}
 	printf("SUCCESS!\n");
+	//printf("Total finished potatoes: %d\n",finished);
 }
 
 void print_id(const void * args, size_t arglen, Processor p)
