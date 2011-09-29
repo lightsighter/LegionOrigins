@@ -12,6 +12,15 @@
 #include <cstdlib>
 #include <cstring>
 
+#define DEFAULT_MAPPER_SLOTS 	8
+#define DEFAULT_CONTEXTS	8
+
+#define SHUTDOWN_FUNC_ID	0
+#define SCHEDULER_ID		1
+#define ENQUEUE_TASK_ID		2
+#define STEAL_TASK_ID		3
+#define SET_FUTURE_ID		4
+
 namespace RegionRuntime {
   namespace HighLevel {
     /////////////////////////////////////////////////////////////
@@ -47,31 +56,11 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    inline bool Future::is_active(void) const { return active; }
-    //-------------------------------------------------------------------------------------------- 
-
-    //--------------------------------------------------------------------------------------------
-    inline bool Future::is_set(void) const { return set; }
-    //--------------------------------------------------------------------------------------------
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    inline T Future::get_result(void) const
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef HIGH_LEVEL_DEBUG
-	assert(set);
-#endif
-	active = false;
-	return (*((const T*)result));
-    }
-
-    //--------------------------------------------------------------------------------------------
     inline void Future::set_result(const void * res, size_t result_size)
     //--------------------------------------------------------------------------------------------
     {
 	result = malloc(result_size);
-#ifdef HIGH_LEVEL_DEBUG
+#ifdef DEBUG_HIGH_LEVEL
 	assert(!set);
 	assert(active);
 	assert(res != NULL);
@@ -81,217 +70,6 @@ namespace RegionRuntime {
 	set = true;
     }
 
-    /////////////////////////////////////////////////////////////
-    // Physical Region 
-    ///////////////////////////////////////////////////////////// 
-
-    //--------------------------------------------------------------------------------------------
-    PhysicalRegion::PhysicalRegion(LowLevel::RegionAllocatorUntyped alloc, 
-					LowLevel::RegionInstanceUntyped inst)
-		: allocator(alloc), instance(inst) { }
-    //-------------------------------------------------------------------------------------------- 
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    inline ptr_t<T> PhysicalRegion::alloc(void)
-    //--------------------------------------------------------------------------------------------
-    {
-	return LowLevel::RegionAllocator<T>(allocator).alloc_fn()();
-    }
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    inline void PhysicalRegion::free(ptr_t<T> ptr)
-    //--------------------------------------------------------------------------------------------
-    {
-	LowLevel::RegionAllocator<T>(allocator).free_fn()(ptr);
-    }
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    inline T PhysicalRegion::read(ptr_t<T> ptr)
-    //--------------------------------------------------------------------------------------------
-    {
-	return LowLevel::RegionInstance<T>(instance).read_fn()(ptr);
-    }
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    inline void PhysicalRegion::write(ptr_t<T> ptr, T newval)
-    //--------------------------------------------------------------------------------------------
-    {
-	LowLevel::RegionInstance<T>(instance).write_fn()(ptr,newval);
-    }
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    inline void PhysicalRegion::reduce(ptr_t<T> ptr, T (*reduceop)(T,T), T newval)
-    //-------------------------------------------------------------------------------------------- 
-    {
-	LowLevel::RegionInstance<T>(instance).reduce_fn()(ptr,reduceop,newval);	
-    }
-
-
-    /////////////////////////////////////////////////////////////
-    // Partition 
-    ///////////////////////////////////////////////////////////// 
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    Partition<T>::Partition(LogicalHandle par,
-			std::vector<LogicalHandle> *children,
-			bool dis) 	
-	: parent(par), child_regions (children), disjoint(dis) { }
-    //--------------------------------------------------------------------------------------------
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    Partition<T>::~Partition()
-    //--------------------------------------------------------------------------------------------
-    {
-	delete child_regions;
-    }
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    inline LogicalHandle Partition<T>::get_subregion(Color c) const
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef HIGH_LEVEL_DEBUG
-	assert (c < child_regions.size());
-#endif
-	return (*child_regions)[c];
-    }
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    ptr_t<T> Partition<T>::safe_cast(ptr_t<T> ptr) const
-    //--------------------------------------------------------------------------------------------
-    {
-	// We can't have templated virtual functions so we'll just roll our own
-	if (contains_coloring())
-	{
-		if (disjoint)
-			return ((DisjointPartition<T>*)this)->safe_cast(ptr);
-		else
-			return ((AliasedPartition<T>*)this)->safe_cast(ptr);
-	}
-	else
-	{
-		ptr_t<T> null_ptr = {0};
-		return null_ptr;
-	}
-    }   
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    inline bool Partition<T>::is_disjoint(void) const { return disjoint; } 
-    //--------------------------------------------------------------------------------------------
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    bool Partition<T>::contains_coloring(void) const { return false; }
-    //--------------------------------------------------------------------------------------------
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    bool Partition<T>::operator==(const Partition<T> &part) const
-    //-------------------------------------------------------------------------------------------- 
-    {
-	// First check to see if the number of sub-regions are the same
-	if (part.child_regions->size() != this->child_regions->size())
-		return false;
-
-	for (int i=0; i<this->child_regions->size(); i++)
-	{
-		// Check that they share the same logical regions
-		if ((*(part.child_regions))[i] != (*(this->child_regions))[i])
-			return false;
-	}
-	return true;
-    }
-
-
-    /////////////////////////////////////////////////////////////
-    // Disjoint Partition 
-    ///////////////////////////////////////////////////////////// 
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    DisjointPartition<T>::DisjointPartition(LogicalHandle par,
-					std::vector<LogicalHandle> *children,
-					std::map<ptr_t<T>,Color> *coloring)
-	: Partition<T>(par, children, true), color_map(coloring) { }
-    //--------------------------------------------------------------------------------------------
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    DisjointPartition<T>::~DisjointPartition()
-    //--------------------------------------------------------------------------------------------
-    {
-	delete color_map;
-    }
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    ptr_t<T> DisjointPartition<T>::safe_cast(ptr_t<T> ptr) const
-    //--------------------------------------------------------------------------------------------
-    {
-	// Cast our pointer to the right type of map
-	if (color_map->find(ptr) != color_map->end())
-		return ptr;
-	else
-	{
-		ptr_t<T> null_ptr = {0};
-		return null_ptr;
-	}
-    }
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    bool DisjointPartition<T>::contains_coloring(void) const { return true; }
-    //--------------------------------------------------------------------------------------------
-
-
-    /////////////////////////////////////////////////////////////
-    // Aliased Partition 
-    ///////////////////////////////////////////////////////////// 
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    AliasedPartition<T>::AliasedPartition(LogicalHandle par,
-					std::vector<LogicalHandle> *children,
-					std::multimap<ptr_t<T>,Color> *coloring)
-	: Partition<T>(par, children, false), color_map(coloring) { }
-    //--------------------------------------------------------------------------------------------
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    AliasedPartition<T>::~AliasedPartition()
-    //--------------------------------------------------------------------------------------------
-    {
-	delete color_map;
-    }
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    ptr_t<T> AliasedPartition<T>::safe_cast(ptr_t<T> ptr) const
-    //-------------------------------------------------------------------------------------------- 
-    {
-	// TODO: find the right kind of safe_cast for the this pointer
-	if (color_map->find(ptr) != color_map->end())
-		return ptr;	
-	else
-	{
-		ptr_t<T> null_ptr = {0};
-		return null_ptr;
-	}
-    }
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    bool AliasedPartition<T>::contains_coloring(void) const { return true; }
-    //--------------------------------------------------------------------------------------------
 
     /////////////////////////////////////////////////////////////
     // High Level Runtime
@@ -303,7 +81,8 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     HighLevelRuntime::HighLevelRuntime(LowLevel::Machine *m)
-	: mapper_objects(std::vector<Mapper*>(8)), machine(m), local_proc(m->get_local_processor())
+	: mapper_objects(std::vector<Mapper*>(DEFAULT_MAPPER_SLOTS)), 
+		machine(m), local_proc(m->get_local_processor())
     //--------------------------------------------------------------------------------------------
     {
 	// Register this object with the runtime map
@@ -312,6 +91,13 @@ namespace RegionRuntime {
 	for (unsigned int i=0; i<mapper_objects.size(); i++)
 		mapper_objects[i] = NULL;
 	mapper_objects[0] = new Mapper(machine,this);
+
+	// Create some local contexts
+	for (unsigned int id=0; id<DEFAULT_CONTEXTS; id++)
+	{
+		ContextState *state = new ContextState();
+		local_contexts.insert(std::pair<Context,ContextState*>(id,state));
+	}
 	
 	// TODO: register the appropriate functions with the low level processor
 	// Task 0 : Runtime Shutdown
@@ -325,7 +111,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
 	std::map<Processor,HighLevelRuntime*>::iterator it = runtime_map->find(local_proc);
-#ifdef HIGH_LEVEL_DEBUG
+#ifdef DEBUG_HIGH_LEVEL
 	assert(it != runtime_map->end());
 #endif
 	runtime_map->erase(it);
@@ -335,393 +121,70 @@ namespace RegionRuntime {
 		if (mapper_objects[i] != NULL) delete mapper_objects[i];
 
 	// Delete all the local futures
-	for (std::vector<Future*>::iterator it = local_futures.begin();
+	for (std::map<FutureHandle,Future*>::iterator it = local_futures.begin();
 		it != local_futures.end(); it++)
-		delete *it;
+		delete it->second;
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::shutdown_runtime(const void * args, size_t arglen, Processor proc)
+    HighLevelRuntime* HighLevelRuntime::get_runtime(Processor p)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef HIGH_LEVEL_DEBUG
-	assert(runtime_map->find(proc) != runtime_map->end());
-#endif	
+#ifdef DEBUG_HIGH_LEVEL
+	assert(runtime_map->find(p) != runtime_map->end());
+#endif
+	return ((*runtime_map)[p]);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::shutdown_runtime(const void * args, size_t arglen, Processor p)
+    //--------------------------------------------------------------------------------------------
+    {
 	// Invoke the destructor
-	delete ((*runtime_map)[proc]);
+	delete HighLevelRuntime::get_runtime(p);
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::enqueue_tasks(const void * args, size_t arglen, Processor proc)
+    void HighLevelRuntime::enqueue_tasks(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef HIGH_LEVEL_DEBUG
-	assert(runtime_map->find(proc) != runtime_map->end());
-#endif
-	((*runtime_map)[proc])->process_tasks(args,arglen);
+	HighLevelRuntime::get_runtime(p)->process_tasks(args,arglen);
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::steal_request(const void * args, size_t arglen, Processor proc)
+    void HighLevelRuntime::steal_request(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef HIGH_LEVEL_DEBUG
-	assert(runtime_map->find(proc) != runtime_map->end());
-#endif
-	((*runtime_map)[proc])->process_steal(args,arglen);
+	HighLevelRuntime::get_runtime(p)->process_steal(args,arglen);
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::set_future(const void *result, size_t result_size, Processor proc)
+    void HighLevelRuntime::set_future(const void *result, size_t result_size, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef HIGH_LEVEL_DEBUG
-	assert(runtime_map->find(proc) != runtime_map->end());
-#endif
-	// First unpack the handle out of the arguments
-	const FutureHandle handle = *((const FutureHandle*)result);
-	const char *result_ptr = (const char*)result;
-	// Updat the pointer to the location of the remaining data
-	result_ptr += sizeof(FutureHandle);
-	((*runtime_map)[proc])->process_future(result_ptr, result_size-sizeof(FutureHandle));
+	HighLevelRuntime::get_runtime(p)->process_future(result, result_size);
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::schedule(Processor proc)
+    void HighLevelRuntime::schedule(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef HIGH_LEVEL_DEBUG
-	assert(runtime_map->find(proc) != runtime_map->end());
-#endif
-	((*runtime_map)[proc])->process_schedule_request();
+	HighLevelRuntime::get_runtime(p)->process_schedule_request();
     }
 
     //--------------------------------------------------------------------------------------------
-    template<typename T>
-    LogicalHandle HighLevelRuntime::create_logical_region(size_t num_elmts,
-							MapperID id,
-							MappingTagID tag)
-    //-------------------------------------------------------------------------------------------- 
-    {
-#ifdef DEBUG_HIGH_LEVEL
-	assert(mapper_objects[id] != NULL);
-#endif
-	// Select an initial location for the right mapper for a place to put the region
-	Memory location;
-	Mapper::MapperErrorCode error = Mapper::MAPPING_SUCCESS;
-	LogicalHandle region;
-	mapper_objects[id]->select_initial_region_location(location,sizeof(T),num_elmts,tag);
-	if (!location.exists())
-		error = Mapper::INVALID_MEMORY;	
-	else
-	{
-		// Create a RegionMetaData object for the region
-		region = (LogicalHandle)LowLevel::RegionMetaData<T>::create_region(location,num_elmts);	
-		if (!region.exists())
-			error = Mapper::INSUFFICIENT_SPACE;
-	}
-	// Check to see if it exists, if it doesn't try invoking the mapper error handler
-	while (error != Mapper::MAPPING_SUCCESS)
-	{
-		Memory alt_location;
-		// Try remapping, exiting if the mapper fails
-		if (mapper_objects[id]->remap_initial_region_location(alt_location,
-			error, location, sizeof(T), num_elmts, tag))
-		{
-			fprintf(stderr,"Mapper %d indicated exit for mapping initial region location with tag %d\n",id,tag);
-			exit(100*(machine->get_local_processor().id)+id);
-		}
-		location = alt_location;
-		if (!location.exists())
-			error = Mapper::INVALID_MEMORY;
-		else
-		{
-			region = (LogicalHandle)LowLevel::RegionMetaData<T>::create_region(location,num_elmts);
-			if (!region.exists())
-				error = Mapper::INSUFFICIENT_SPACE;
-			else
-				error = Mapper::MAPPING_SUCCESS;
-		}
-	}
-#ifdef DEBUG_HIGH_LEVEL
-	assert(parent_map.find(region) == parent_map.end());
-	assert(child_map.find(region) == child_map.end());
-#endif
-	// Update the runtime data structures on region relationships
-	// A top-level region will always have itself as a parent
-	parent_map.insert(std::pair<LogicalHandle,LogicalHandle>(region,region));
-	child_map.insert(std::pair<LogicalHandle,std::vector<PartitionBase>*>(region, new std::vector<PartitionBase>()));
-	// Return the handle
-	return region;
-    }
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    void HighLevelRuntime::destroy_logical_region(LogicalHandle handle)
-    //--------------------------------------------------------------------------------------------
-    {
-	// Call internal helper method to recursively remove region and partitions
-	remove_region<T>(handle);
-    }
-
-    //-------------------------------------------------------------------------------------------- 
-    template<typename T>
-    LogicalHandle HighLevelRuntime::smash_logical_region(LogicalHandle region1, LogicalHandle region2)
-    //--------------------------------------------------------------------------------------------
-    {
-
-    }
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    Partition<T> HighLevelRuntime::create_disjoint_partition(LogicalHandle parent,
-						unsigned int num_subregions,
-						std::auto_ptr<std::map<ptr_t<T>,Color> > color_map,
-						const std::vector<size_t> &element_count,
-						MapperID id,
-						MappingTagID tag)
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-	assert(mapper_objects[id] != NULL);
-#endif
-	// Retrieve the pointer out of the new auto_ptr
-	std::map<ptr_t<T>,Color> *map_ptr = color_map.release();	
-#if 0
-	// Count up the number of elements in each child_region
-	std::vector<size_t> element_count(num_subregions);
-	for (int i=0; i<num_subregions; i++)
-		element_count[i] = 0;
-	if (map_ptr != NULL)
-	{
-		for (typename std::map<ptr_t<T>,Color>::iterator iter = map_ptr->begin(); 
-			iter != map_ptr->end(); iter++)
-		{
-#ifdef DEBUG_HIGH_LEVEL
-			// Check to make sure that the colors are valid
-			assert(iter->second < num_subregions);
-#endif
-			element_count[iter->second]++;
-		}
-	}
-#endif
-	// Invoke the mapper to see where to place the regions
-	std::vector<Memory> locations(num_subregions);
-	std::vector<Mapper::MapperErrorCode> errors(num_subregions);
-	for (int i=0; i<num_subregions; i++)
-		errors[i] = Mapper::MAPPING_SUCCESS;
-	mapper_objects[id]->select_initial_partition_location(locations,sizeof(T),
-				element_count,num_subregions,tag);
-	bool any_failures = false;
-	// Create the logical regions in the locations specified by the mapper
-	std::vector<LogicalHandle> *child_regions = new std::vector<LogicalHandle>(num_subregions);
-	for (int i=0; i<num_subregions; i++)
-	{
-		if (!((locations[i]).exists()))
-		{
-			errors[i] = Mapper::INVALID_MEMORY;
-			any_failures = true;
-		}
-		else
-		{
-			(*child_regions)[i] = (LogicalHandle)LowLevel::RegionMetaData<T>::create_region(element_count[i],locations[i]);
-			// Check to see if the region was created successfully
-			if (!((*child_regions)[i]).exists())
-			{
-				errors[i] = Mapper::INSUFFICIENT_SPACE;
-				any_failures = true;
-			}
-		}
-	}
-	while (any_failures)
-	{
-		any_failures = false;
-		std::vector<Memory> alt_locations(num_subregions);
-		if (mapper_objects[id]->remap_initial_partition_location(alt_locations,errors,
-			locations, sizeof(T), element_count, num_subregions, tag))
-		{
-			fprintf(stderr,"Mapper %d indicated exit for initial partition with tag %d\n",id,tag);
-			exit(100*(machine->get_local_processor().id)+id);
-		}
-		locations = alt_locations;
-		// Now try to create the necessary logical regions
-		for (int i=0; i<num_subregions; i++)
-		{
-			if (errors[i] != Mapper::MAPPING_SUCCESS)
-			{
-				if (!((locations[i]).exists()))
-				{
-					errors[i] = Mapper::INVALID_MEMORY;
-					any_failures = true;
-				}
-				else
-				{
-					(*child_regions)[i] = (LogicalHandle)LowLevel::RegionMetaData<T>::create_region(element_count[i],locations[i]);
-					if (!((*child_regions)[i]).exists())
-					{
-						errors[i] = Mapper::INSUFFICIENT_SPACE;
-						any_failures = true;
-					}
-					else
-						errors[i] = Mapper::MAPPING_SUCCESS;
-				}
-			}
-		}	
-	}	
-	// Create the actual partition
-	Partition<T> *partition = NULL;
-	if (map_ptr != NULL)
-		partition = new DisjointPartition<T>(parent,child_regions,map_ptr);
-	else
-		partition = new Partition<T>(parent,child_regions);
-
-	// Update the runtime data structures
-	// Mark each child region with its parent
-	for (int i=0; i<num_subregions; i++)
-	{
-		parent_map.insert(std::pair<LogicalHandle,LogicalHandle>(child_regions[i],parent));
-		child_map.insert(std::pair<LogicalHandle,std::vector<PartitionBase>*>(child_regions[i],
-							new std::vector<PartitionBase>()));
-	}
-	// Update the parent's partitions
-	child_map[parent]->push_back(partition);
-
-	return *partition;
-    }
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    Partition<T> HighLevelRuntime::create_aliased_partition(LogicalHandle parent,
-						unsigned int num_subregions,
-						std::auto_ptr<std::multimap<ptr_t<T>,Color> > color_map,
-						const std::vector<size_t> &element_count,
-						MapperID id,
-						MappingTagID tag)
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-	assert(mapper_objects[id] != NULL);
-#endif
-
-	// Retrieve the pointer out of the auto_ptr
-	std::multimap<ptr_t<T>,Color> *map_ptr = color_map.release();
-#if 0
-	// Count the number of elements in each subregion
-	std::vector<size_t> element_count(num_subregions);
-	for (int i=0; i<num_subregions; i++)
-		element_count[i] = 0;
-	for (typename std::multimap<ptr_t<T>,Color>::iterator it = map_ptr->begin();
-		it != map_ptr->end(); it++)
-	{
-#ifdef DEBUG_HIGH_LEVEL
-		assert(it->second < num_subregions);
-#endif
-		element_count[it->second]++;
-	}
-#endif
-	// Invoke the mapper
-	std::vector<Memory> locations(num_subregions);
-	std::vector<Mapper::MapperErrorCode> errors(num_subregions);
-	for (int i=0; i<num_subregions; i++)
-		errors[i] = Mapper::MAPPING_SUCCESS;
-	// Invoke the mapper
-	mapper_objects[id]->select_initial_partition_location(locations,sizeof(T),
-					element_count,num_subregions,tag);
-
-	// Check for any failures
-	bool any_failures = false;
-	// Create the logical regions
-	std::vector<LogicalHandle> *child_regions = new std::vector<LogicalHandle>(num_subregions);
-	for (int i=0; i<num_subregions; i++)
-	{
-		if (!((locations[i]).exists()))
-		{
-			errors[i] = Mapper::INVALID_MEMORY;
-			any_failures = true;
-		}
-		else
-		{
-			(*child_regions)[i] = (LogicalHandle)LowLevel::RegionMetaData<T>::create_region(element_count[i],locations[i]);
-			if (!((*child_regions)[i]).exists())
-			{
-				errors[i] = Mapper::INSUFFICIENT_SPACE;
-				any_failures = true;
-			}
-		}
-	}
-	
-	while (any_failures)
-	{
-		any_failures = false;
-		std::vector<Memory> alt_locations(num_subregions);		
-		if (mapper_objects[id]->remap_initial_partition_location(alt_locations,
-			errors, locations, sizeof(T), element_count, num_subregions, tag))
-		{
-			fprintf(stderr,"Mapper %d indicated exit for initial partition with tag %d\n",id,tag);
-			exit(100*(machine->get_local_processor().id)+id);
-		}
-		// Check to see if the new mapping is better
-		locations = alt_locations;
-		for (int i=0; i<num_subregions; i++)
-		{
-			if (errors[i] != Mapper::MAPPING_SUCCESS)
-			{
-				if (!(locations[i]).exists())
-				{
-					errors[i] = Mapper::INVALID_MEMORY;
-					any_failures = true;
-				}
-				else
-				{
-					(*child_regions)[i] = (LogicalHandle)LowLevel::RegionMetaData<T>::create_region(element_count[i],locations[i]);
-					if (!((*child_regions)[i]).exists())
-					{
-						errors[i] = Mapper::INSUFFICIENT_SPACE;
-						any_failures= true;
-					}
-				}
-			}
-		}
-	}
-
-	// Create the actual partition
-	Partition<T> *partition = new AliasedPartition<T>(parent,child_regions,map_ptr);
-
-	// Update the runtime data structures
-	for (int i=0; i<num_subregions; i++)
-	{
-		parent_map.insert(std::pair<LogicalHandle,LogicalHandle>(child_regions[i],parent));
-		child_map.insert(std::pair<LogicalHandle,std::vector<PartitionBase>*>(child_regions[i],
-							new std::vector<PartitionBase>()));
-	}
-	// Update the parent's partitions
-	child_map[parent]->push_back(partition);
-
-	return *partition;
-    }
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    void HighLevelRuntime::destroy_partition(Partition<T> partition)
-    //--------------------------------------------------------------------------------------------
-    {
-	remove_partition<T>(partition);
-    }
-
-    //--------------------------------------------------------------------------------------------
-    Future* HighLevelRuntime::execute_task(LowLevel::Processor::TaskFuncID task_id,
+    Future* HighLevelRuntime::execute_task(Context ctx, LowLevel::Processor::TaskFuncID task_id,
 					const std::vector<RegionRequirement> &regions,
 					const void *args, size_t arglen,
 					MapperID id, MappingTagID tag)	
     //--------------------------------------------------------------------------------------------
     {
 	// Invoke the mapper to see where we're going to put this task
-	Processor target;
 #ifdef DEBUG_HIGH_LEVEL
 	assert(id < mapper_objects.size());
 	assert(mapper_objects[id] == NULL);
 #endif
-	mapper_objects[id]->select_target_processor(target,task_id,regions,tag);
+	Processor target = mapper_objects[id]->select_initial_processor(task_id,regions,tag);
 #ifdef DEBUG_HIGH_LEVEL
 	if (!target.exists())
 	{
@@ -807,89 +270,85 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    template<typename T>
-    void HighLevelRuntime::remove_region(LogicalHandle region)
+    Context HighLevelRuntime::get_available_context(void)
     //--------------------------------------------------------------------------------------------
     {
-	std::map<LogicalHandle,LogicalHandle>::iterator parent_map_entry = parent_map.find(region);
-	std::map<LogicalHandle,std::vector<PartitionBase>*>::iterator child_map_entry = 
-									child_map.find(region);
-#ifdef DEBUG_HIGH_LEVEL
-	assert(parent_map_entry != parent_map.end());
-	assert(child_map_entry != child_map.end());
-#endif
-	// Remove the parent map entry
-	parent_map.erase(parent_map_entry);
-	// Remove any partitions of the region (and consequently all child regions)
-	std::vector<PartitionBase> *partitions = child_map_entry->second;
-	for (std::vector<PartitionBase>::iterator part_it = partitions->begin();
-		part_it != partitions->end(); part_it++)
+	// See if we can find an unused context
+	for (std::map<Context,ContextState*>::iterator it = local_contexts.begin();
+		it != local_contexts.end(); it++)
 	{
-		remove_partition<T>((Partition<T>)(*part_it));
-	}
-	// Delete the partition vector
-	delete partitions;
-	// Remove the entry
-	child_map.erase(child_map_entry);
-
-	LowLevel::RegionMetaData<T> low_region = (LowLevel::RegionMetaData<T>)region;
-	// Call the destructor for this RegionMetaData object which will allow the
-	// low-level runtime to clean stuff up
-	low_region.destroy_region();
-    }
-
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
-    void HighLevelRuntime::remove_partition(Partition<T> partition)
-    //--------------------------------------------------------------------------------------------
-    {
-	// Remove each of the child regions of the partition
-	for (std::vector<LogicalHandle>::iterator reg_it = partition.child_regions->begin();
-		reg_it != partition.child_regions->end(); reg_it++)
-	{
-		remove_region<T>(*reg_it);
-	}
-	// Now remove the partition from the parent's partition vector
-	std::vector<PartitionBase> *parent_partitions = child_map[partition.parent];
-#ifdef DEBUG_HIGH_LEVEL
-	bool found_part = false;
-#endif
-	for (std::vector<PartitionBase>::iterator it = parent_partitions->begin();
-		it != parent_partitions->end(); it++)
-	{
-		Partition<T> other = (Partition<T>)(*it);
-		if (other == partition)
+		if ((it->second)->activate())
 		{
-#ifdef DEBUG_HIGH_LEVEL
-			found_part = true;
-#endif
-			parent_partitions->erase(it);
-			break;
+			// Activation successful
+			return it->first;
 		}
 	}
-#ifdef DEBUG_HIGH_LEVEL
-	assert(found_part);
-#endif
-	// Finally call the destructor on the partition
-	partition.Partition<T>::~Partition();
+	// Failed to find an available one, make a new one
+	Context ctx_id = local_contexts.size();
+	ContextState *state = new ContextState(true/*activate*/);
+	local_contexts.insert(std::pair<Context,ContextState*>(ctx_id,state));
+	return ctx_id;		
     }
+
+    //-------------------------------------------------------------------------------------------- 
+    void HighLevelRuntime::return_result(Context ctx, const void * arg, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+	// Get the future to write to and its processor from the context
+#ifdef DEBUG_HIGH_LEVEL
+	assert(local_contexts.find(ctx) != local_contexts.end());
+#endif
+	ContextState *state = local_contexts[ctx];
+	// Check to see if we're writing to the local processor or not
+	if (state->future_proc == local_proc)
+	{
+		// Set the future locally
+#ifdef DEBUG_HIGH_LEVEL
+		assert(local_futures.find(state->future_handle) != local_futures.end());
+#endif
+		local_futures[state->future_handle]->set_result(arg,arglen);
+	}
+	else
+	{
+		// Otherwise package this up and send it off to the remote processor
+		char *buffer = (char*)malloc(arglen+sizeof(FutureHandle));
+		*((FutureHandle*)buffer) = state->future_handle;
+		memcpy(((void*)(buffer+sizeof(FutureHandle))),arg,arglen);
+		// Launch the task, no need to wait for anything
+		state->future_proc.spawn(SET_FUTURE_ID,buffer,arglen+sizeof(FutureHandle));	
+		// Free the buffer
+		free(buffer);
+	}
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::destroy_context(Context ctx)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+	assert(local_contexts.find(ctx) != local_contexts.end());
+#endif
+	local_contexts[ctx]->deactivate();
+    }
+
 
     //--------------------------------------------------------------------------------------------
     Future* HighLevelRuntime::get_available_future()
     //--------------------------------------------------------------------------------------------
     {
 	// Run through the available futures and see if we find one that is unset	
-	for (std::vector<Future*>::iterator it = local_futures.begin();
+	for (std::map<FutureHandle,Future*>::iterator it = local_futures.begin();
 		it != local_futures.end(); it++)
 	{
-		if (!((*it)->is_active()))
+		if (!((it->second)->is_active()))
 		{
-			(*it)->reset();
-			return (*it);
+			(it->second)->reset();
+			return (it->second);
 		}
 	}
-	Future *next = new Future(local_futures.size());
-	local_futures.push_back(next);
+	FutureHandle next_handle = local_futures.size();
+	Future *next = new Future(next_handle);
+	local_futures.insert(std::pair<FutureHandle,Future*>(next_handle,next));
 	return next;
     }
 
@@ -998,16 +457,90 @@ namespace RegionRuntime {
     void HighLevelRuntime::process_steal(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
+	const char * buffer = ((const char*)args);
+	// Unpack the stealing processor
+	Processor thief = *((Processor*)buffer);	
+	buffer += sizeof(Processor);
+	// Get the maximum number of tasks to steal
+	int max_tasks = *((int*)buffer);
 
+	// Iterate over the task descriptions, asking the appropriate mapper
+	// whether we can steal them
+	std::vector<TaskDescription*> stolen;
+	int index = 0;
+	while ((index < task_queue.size()) && (stolen.size()<max_tasks))
+	{
+		std::vector<TaskDescription*>::iterator it = task_queue.begin();
+		// Jump to the proper index
+		for (int i=0; i<index; i++)
+			it++;
+		// Now start looking for tasks to steal
+		for ( ; it != task_queue.end(); it++, index++)
+		{
+			TaskDescription *desc = *it;
+#ifdef DEBUG_HIGH_LEVEL
+			assert(desc->map_id < mapper_objects.size());
+#endif	
+			if (mapper_objects[desc->map_id]->permit_task_steal(thief,desc->task_id,
+						desc->regions, desc->tag))
+			{
+				stolen.push_back(*it);
+				task_queue.erase(it);
+				break;
+			}
+		}	
+	}
+	// We've now got our tasks to steal
+	if (!stolen.empty())
+	{
+		size_t total_buffer_size = sizeof(int);
+		// Count up the size of elements to steal
+		for (std::vector<TaskDescription*>::iterator it = stolen.begin();
+			it != stolen.end(); it++)
+		{
+			total_buffer_size += compute_task_desc_size(*it);
+		}
+		// Allocate the buffer
+		char * target_buffer = (char*)malloc(total_buffer_size);
+		char * target_ptr = target_buffer;
+		*((int*)target_ptr) = int(stolen.size());
+		target_ptr += sizeof(int);
+		// Write the task descriptions into memory
+		for (std::vector<TaskDescription*>::iterator it = stolen.begin();
+			it != stolen.end(); it++)
+		{
+			pack_task_desc(*it,target_ptr);
+		}
+		// Invoke the task on the right processor to send tasks back
+		thief.spawn(1, target_buffer, total_buffer_size);
+
+		// Clean up our mess
+		free(target_buffer);
+		for (std::vector<TaskDescription*>::iterator it = stolen.begin();
+			it != stolen.end(); it++)
+		{
+			delete *it;
+		}
+	}
     }
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::process_future(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
-
+	// First unpack the handle out of the arguments
+	const FutureHandle handle = *((const FutureHandle*)args);
+	const char *result_ptr = (const char*)args;
+	// Updat the pointer to the location of the remaining data
+	result_ptr += sizeof(FutureHandle);
+	// Get the future out of the table and set its value
+#ifdef DEBUG_HIGH_LEVEL
+	assert(local_futures.find(handle) != local_futures.end());
+#endif		
+	local_futures[handle]->set_result(result_ptr,arglen-sizeof(FutureHandle));
     }
 
+    
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::process_schedule_request()
     //--------------------------------------------------------------------------------------------
@@ -1047,56 +580,15 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::select_initial_region_location(Memory &result, size_t elmt_size,
+    std::vector<Memory> Mapper::rank_initial_region_locations(size_t elmt_size,
 						size_t num_elmts, MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
-	// Try putting the region in the closest memory in which it will fit
-	bool chosen = false;
-	size_t total_bytes = elmt_size*num_elmts;
-	for (std::vector<Memory>::iterator it = visible_memories.begin();
-		it != visible_memories.end(); it++)
-	{
-		if (total_bytes < runtime->remaining_memory(*it))
-		{
-			result = *it;
-			chosen = true;
-			break;
-		}	
-	}		
-	// If we couldn't chose one, just try the last one
-	if (!chosen)
-		result = visible_memories.back();
+	return visible_memories;
     }
 
     //--------------------------------------------------------------------------------------------
-    bool Mapper::remap_initial_region_location(Memory &result, MapperErrorCode error,
-						const Memory &failed_mapping, size_t elmt_size,
-						size_t num_elmts, MappingTagID tag)
-    //--------------------------------------------------------------------------------------------
-    {
-	// Try putting it in the next biggest memory
-	bool chosen = false;
-	std::vector<Memory>::iterator it = visible_memories.begin();
-	// Find the bad memory
-	for ( ; it != visible_memories.end(); it++)
-	{
-		if (failed_mapping == *it)
-			break;
-	}
-	// Increment the iterator to get the next element
-	++it;
-	if (it != visible_memories.end())
-	{
-		result = *it;
-		chosen = true;
-	}
-	// If we didn't pick a new memory, just exit the program
-	return !chosen;
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void Mapper::select_initial_partition_location(std::vector<Memory> &result,
+    std::vector<std::vector<Memory> > Mapper::rank_initial_partition_locations(
 						size_t elmt_size,
 						const std::vector<size_t> &num_elmts,
 						unsigned int num_subregions,
@@ -1107,28 +599,15 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    bool Mapper::remap_initial_partition_location(std::vector<Memory> &result,
-						const std::vector<MapperErrorCode> &errors,
-						const std::vector<Memory> &failed_mapping,
-						size_t elmt_size,
-						const std::vector<size_t> &num_elmts,
-						unsigned int num_subregions,
-						MappingTagID tag)
-    //--------------------------------------------------------------------------------------------
-    {
-
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void Mapper::compact_partition(bool &result, const PartitionBase &partition, MappingTagID tag)
+    bool Mapper::compact_partition(const PartitionBase &partition, MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
 	// By default we'll never compact a partition since it is expensive
-	result = false;
+	return false;
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::select_target_processor(Processor &result, Processor::TaskFuncID task_id,
+    Processor Mapper::select_initial_processor(Processor::TaskFuncID task_id,
 					const std::vector<RegionRequirement> &regions,
 					MappingTagID tag)
     //--------------------------------------------------------------------------------------------
@@ -1137,14 +616,14 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::target_task_steal(Processor &result, MappingTagID tag)
+    Processor Mapper::target_task_steal()
     //--------------------------------------------------------------------------------------------
     {
 
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::permit_task_steal(bool &result, Processor::TaskFuncID task_id,
+    bool Mapper::permit_task_steal(Processor thief, Processor::TaskFuncID task_id,
 					const std::vector<RegionRequirement> &regions,
 					MappingTagID tag)
     //--------------------------------------------------------------------------------------------
@@ -1153,17 +632,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::map_task(std::vector<Memory> &result, Processor::TaskFuncID task_id,
-				const std::vector<RegionRequirement> &regions, MappingTagID tag)
-    //--------------------------------------------------------------------------------------------
-    {
-
-    }
-
-    //--------------------------------------------------------------------------------------------
-    bool Mapper::remap_task(std::vector<Memory> &result, const std::vector<MapperErrorCode> &errors,
-				const std::vector<Memory> &failed_mapping,
-				Processor::TaskFuncID task_id,
+    std::vector<std::vector<Memory> > Mapper::map_task(Processor::TaskFuncID task_id,
 				const std::vector<RegionRequirement> &regions, MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
@@ -1178,11 +647,5 @@ namespace RegionRuntime {
 	std::sort(memories.begin(),memories.end(),functor);
     }
 
-    //--------------------------------------------------------------------------------------------
-    void Mapper::treeify_memories(MachineDescription *machine)
-    //--------------------------------------------------------------------------------------------
-    {
-
-    }
   };
 };
