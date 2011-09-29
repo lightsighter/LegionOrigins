@@ -22,9 +22,4 @@ public:
 	//bool operator< (const ptr_t<T> &ptr) const { return (ptr.value <  this.value); }
 };
 
-class Context
-{
-
-};
-
 #endif // COMMON_H

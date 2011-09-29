@@ -12,6 +12,15 @@
 #include <cstdlib>
 #include <cstring>
 
+#define DEFAULT_MAPPER_SLOTS 	8
+#define DEFAULT_CONTEXTS	8
+
+#define SHUTDOWN_FUNC_ID	0
+#define SCHEDULER_ID		1
+#define ENQUEUE_TASK_ID		2
+#define STEAL_TASK_ID		3
+#define SET_FUTURE_ID		4
+
 namespace RegionRuntime {
   namespace HighLevel {
     /////////////////////////////////////////////////////////////
@@ -72,7 +81,8 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     HighLevelRuntime::HighLevelRuntime(LowLevel::Machine *m)
-	: mapper_objects(std::vector<Mapper*>(8)), machine(m), local_proc(m->get_local_processor())
+	: mapper_objects(std::vector<Mapper*>(DEFAULT_MAPPER_SLOTS)), 
+		machine(m), local_proc(m->get_local_processor())
     //--------------------------------------------------------------------------------------------
     {
 	// Register this object with the runtime map
@@ -81,6 +91,13 @@ namespace RegionRuntime {
 	for (unsigned int i=0; i<mapper_objects.size(); i++)
 		mapper_objects[i] = NULL;
 	mapper_objects[0] = new Mapper(machine,this);
+
+	// Create some local contexts
+	for (unsigned int id=0; id<DEFAULT_CONTEXTS; id++)
+	{
+		ContextState *state = new ContextState();
+		local_contexts.insert(std::pair<Context,ContextState*>(id,state));
+	}
 	
 	// TODO: register the appropriate functions with the low level processor
 	// Task 0 : Runtime Shutdown
@@ -110,58 +127,53 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::shutdown_runtime(const void * args, size_t arglen, Processor proc)
+    HighLevelRuntime* HighLevelRuntime::get_runtime(Processor p)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-	assert(runtime_map->find(proc) != runtime_map->end());
-#endif	
+	assert(runtime_map->find(p) != runtime_map->end());
+#endif
+	return ((*runtime_map)[p]);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::shutdown_runtime(const void * args, size_t arglen, Processor p)
+    //--------------------------------------------------------------------------------------------
+    {
 	// Invoke the destructor
-	delete ((*runtime_map)[proc]);
+	delete HighLevelRuntime::get_runtime(p);
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::enqueue_tasks(const void * args, size_t arglen, Processor proc)
+    void HighLevelRuntime::enqueue_tasks(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-	assert(runtime_map->find(proc) != runtime_map->end());
-#endif
-	((*runtime_map)[proc])->process_tasks(args,arglen);
+	HighLevelRuntime::get_runtime(p)->process_tasks(args,arglen);
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::steal_request(const void * args, size_t arglen, Processor proc)
+    void HighLevelRuntime::steal_request(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-	assert(runtime_map->find(proc) != runtime_map->end());
-#endif
-	((*runtime_map)[proc])->process_steal(args,arglen);
+	HighLevelRuntime::get_runtime(p)->process_steal(args,arglen);
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::set_future(const void *result, size_t result_size, Processor proc)
+    void HighLevelRuntime::set_future(const void *result, size_t result_size, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-	assert(runtime_map->find(proc) != runtime_map->end());
-#endif
-	((*runtime_map)[proc])->process_future(result, result_size);
+	HighLevelRuntime::get_runtime(p)->process_future(result, result_size);
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::schedule(Processor proc)
+    void HighLevelRuntime::schedule(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-	assert(runtime_map->find(proc) != runtime_map->end());
-#endif
-	((*runtime_map)[proc])->process_schedule_request();
+	HighLevelRuntime::get_runtime(p)->process_schedule_request();
     }
 
     //--------------------------------------------------------------------------------------------
-    Future* HighLevelRuntime::execute_task(LowLevel::Processor::TaskFuncID task_id,
+    Future* HighLevelRuntime::execute_task(Context ctx, LowLevel::Processor::TaskFuncID task_id,
 					const std::vector<RegionRequirement> &regions,
 					const void *args, size_t arglen,
 					MapperID id, MappingTagID tag)	
@@ -256,6 +268,69 @@ namespace RegionRuntime {
 #endif
 	mapper_objects[id] = m;
     }
+
+    //--------------------------------------------------------------------------------------------
+    Context HighLevelRuntime::get_available_context(void)
+    //--------------------------------------------------------------------------------------------
+    {
+	// See if we can find an unused context
+	for (std::map<Context,ContextState*>::iterator it = local_contexts.begin();
+		it != local_contexts.end(); it++)
+	{
+		if ((it->second)->activate())
+		{
+			// Activation successful
+			return it->first;
+		}
+	}
+	// Failed to find an available one, make a new one
+	Context ctx_id = local_contexts.size();
+	ContextState *state = new ContextState(true/*activate*/);
+	local_contexts.insert(std::pair<Context,ContextState*>(ctx_id,state));
+	return ctx_id;		
+    }
+
+    //-------------------------------------------------------------------------------------------- 
+    void HighLevelRuntime::return_result(Context ctx, const void * arg, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+	// Get the future to write to and its processor from the context
+#ifdef DEBUG_HIGH_LEVEL
+	assert(local_contexts.find(ctx) != local_contexts.end());
+#endif
+	ContextState *state = local_contexts[ctx];
+	// Check to see if we're writing to the local processor or not
+	if (state->future_proc == local_proc)
+	{
+		// Set the future locally
+#ifdef DEBUG_HIGH_LEVEL
+		assert(local_futures.find(state->future_handle) != local_futures.end());
+#endif
+		local_futures[state->future_handle]->set_result(arg,arglen);
+	}
+	else
+	{
+		// Otherwise package this up and send it off to the remote processor
+		char *buffer = (char*)malloc(arglen+sizeof(FutureHandle));
+		*((FutureHandle*)buffer) = state->future_handle;
+		memcpy(((void*)(buffer+sizeof(FutureHandle))),arg,arglen);
+		// Launch the task, no need to wait for anything
+		state->future_proc.spawn(SET_FUTURE_ID,buffer,arglen+sizeof(FutureHandle));	
+		// Free the buffer
+		free(buffer);
+	}
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::destroy_context(Context ctx)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+	assert(local_contexts.find(ctx) != local_contexts.end());
+#endif
+	local_contexts[ctx]->deactivate();
+    }
+
 
     //--------------------------------------------------------------------------------------------
     Future* HighLevelRuntime::get_available_future()
@@ -465,6 +540,7 @@ namespace RegionRuntime {
 	local_futures[handle]->set_result(result_ptr,arglen-sizeof(FutureHandle));
     }
 
+    
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::process_schedule_request()
     //--------------------------------------------------------------------------------------------
