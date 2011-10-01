@@ -96,6 +96,8 @@ namespace RegionRuntime {
     public:
       typedef unsigned ID;
       ID id;
+      bool operator<(const RegionMetaDataUntyped &rhs) const { return id < rhs.id; }
+      bool operator==(const RegionMetaDataUntyped &rhs) const { return id == rhs.id; }
 
       static RegionMetaDataUntyped create_region_untyped(Memory memory, size_t num_elmts, size_t elmt_size);
       RegionAllocatorUntyped create_allocator_untyped(Memory memory);
