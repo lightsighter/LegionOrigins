@@ -184,11 +184,12 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 {
 \begin{array}{lc}
   \Gamma \cup \{ x : T_1 \}, \Phi_1, C_1 \vdash e : \rtripsub{T_2}{2}{2} \\
-  r_1, \ldots, r_n \not\in \mathit{RegionsOf}(\Gamma, \Phi_1, C_1)
+  \{ r_1, \ldots, r_n \} = \mathit{RegionsOf}(\Gamma, \Phi_1, C_1) \setminus \mathit{RegionsOf}(\Gamma) \\
+  \{ r'_1, \ldots, r'_n \} = \mathit{RegionsOf}(T_2, \Phi_2, C_2) \setminus \mathit{RegionsOf}(\Gamma, \Phi_1, C_1)
 \end{array}
 }
 {
-  \envsub{3}{3} \lambda x.e : \rtripsub{\rtripsub{T_1}{1}{1} \rightarrow \exists r_1, \ldots, r_n. \rtripsub{T_2}{2}{2}}{3}{3}
+  \envsub{3}{3} \lambda x.e : \forall r_1, \ldots, r_n. \rtripsub{\rtripsub{T_1}{1}{1} \rightarrow \exists r'_1, \ldots, r'_n. \rtripsub{T_2}{2}{2}}{3}{3}
 }
 \end{math}
 &\raisebox{-0.2in}{[{\tt Lambda}]} \\
@@ -275,12 +276,12 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 \infrule
 {
 \begin{array}{l}
-  \envsub{1}{1} e : \rtripsub{T@r_1}{2}{2} \\
-  C_2 \models r_1 \le r_2
+  \envsub{1}{1} e : \rtripsub{T@\langle r_1, \ldots, r_n \rangle}{2}{2} \\
+  C_2 \models \displaystyle\bigwedge_{i = 1..n} \left( \displaystyle\bigvee_{j = 1..k} r_i \le r'_j \right) \wedge \displaystyle\bigwedge_{j = 1..k} \left( r'_j \le r'_p \right)
 \end{array}
 }
 {
-  \envsub{1}{1} e : \rtripsub{T@r_2}{2}{2}
+  \envsub{1}{1} e : \rtripsub{T@\langle r'_1, \ldots, r'_k \rangle}{2}{2}
 }
 \end{math}
 &\raisebox{-0.2in}{[{\tt Pointer from Subregion}]} \\
@@ -320,7 +321,7 @@ $fn$ & ::= & $f(x_1, \ldots, x_n)$ $e$ \\
 % 
 \begin{math}
 \begin{array}{l}
-read : \forall T,r_1,r_2. \rtriple{\langle Region(r_1,T), T@r_2 \rangle}{\{ readable(r_1) \}}{(r_2 \le r_1)} \rightarrow \rsingle{T}
+read : \forall T,r_p,r_1,\ldots,r_n. \rtriple{\langle Region(r_p,T), T@\langle r_1, \ldots, r_n \rangle { } \rangle}{\{ readable(r_p) \}}{\displaystyle\bigwedge_{i = 1..n} (r_i \le r_p)} \rightarrow \rsingle{T}
 \end{array}
 %read : \forall T,r_1,r_2. \langle Region(r_1,T), T@r_2 \rangle \rightarrow T / (readable(r_1) \wedge r_2 \le r_1)
 \end{math} & [{\tt Read Pointer}] \\
@@ -329,7 +330,8 @@ read : \forall T,r_1,r_2. \rtriple{\langle Region(r_1,T), T@r_2 \rangle}{\{ read
 % Write Region
 %
 \begin{math}
-write : \forall T,r_1,r_2. \rtriple{\langle Region(r_1,T), T@r_2, T \rangle}{\{ writeable(r_1) \}}{(r_2 \le r_1)} \rightarrow \rsingle{T}
+write : \forall T,r_p,r_1,\ldots,r_n. \rtriple{\langle Region(r_p,T), T@\langle r_1, \ldots, r_n \rangle, T \rangle}{\{ writeable(r_p) \}}{\displaystyle\bigwedge_{i = 1..n} (r_i \le r_p)} \rightarrow \rsingle{()}
+%write : \forall T,r_1,r_2. \rtriple{\langle Region(r_1,T), T@r_2, T \rangle}{\{ writeable(r_1) \}}{(r_2 \le r_1)} \rightarrow \rsingle{()}
 %write : \forall T,r_1,r_2. \langle Region(r_1,T), T@r_2, T \rangle \rightarrow () / (writeable(r_1) \wedge r_2 \le r_1)
 \end{math} & [{\tt Write Pointer}] \\
 
@@ -338,8 +340,8 @@ write : \forall T,r_1,r_2. \rtriple{\langle Region(r_1,T), T@r_2, T \rangle}{\{ 
 %
 \begin{math}
 \begin{array}{l@{}l}
-reduce : \forall T,r_1,r_2. \big( & \forall f:(T \rightarrow T \rightarrow T). \\
-& \rtriple{\langle Region(r_1,T), T@r_2, f, T \rangle}{\{ reduceable(r_1,f) \}}{(r_2 \le r_1)} \rightarrow \rsingle{()} \big) \end{array}
+reduce : \forall T,r_p,r_1,\ldots,r_n. \big( & \forall f:(T \rightarrow T \rightarrow T). \\
+& \rtriple{\langle Region(r_p,T), T@\langle r_1, \ldots, r_n \rangle, f, T \rangle}{\{ reduceable(r_p,f) \}}{\displaystyle\bigwedge_{i = 1..n} (r_i \le r_p)} \rightarrow \rsingle{()} \big) \end{array}
 %reduce : \forall T,r_1,r_2. \big( \forall f:(T \rightarrow T \rightarrow T).  \langle Region(r_1,T), T@r_2, f, T \rangle \rightarrow () / (reduceable(r_1,f) \wedge r_2 \le r_1) \big)
 \end{math} & [{\tt Reduce Pointer}] \\
 
@@ -347,7 +349,7 @@ reduce : \forall T,r_1,r_2. \big( & \forall f:(T \rightarrow T \rightarrow T). \
 % Alloc 
 %
 \begin{math}
-alloc : \forall T,r. \rtriple{\langle Region(r,T) \rangle}{\{ allocable(r) \}}{\top} \rightarrow \rsingle{T@r}
+alloc : \forall T,r. \rtriple{\langle Region(r,T) \rangle}{\{ allocable(r) \}}{\top} \rightarrow \rsingle{T@\langle r \rangle}
 %alloc : \forall T,r. \langle Region(r,T) \rangle \rightarrow T@r / allocable(r)
 \end{math} & [{\tt Alloc Pointer}] \\
 
@@ -355,7 +357,7 @@ alloc : \forall T,r. \rtriple{\langle Region(r,T) \rangle}{\{ allocable(r) \}}{\
 % Free
 %
 \begin{math}
-free : \forall T,r_1,r_2. \rtriple{\langle Region(r_1,T), T@r_2 \rangle}{\{ freeable(r_1) \}}{(r_2 \le r_1)} \rightarrow \rsingle{()}
+free : \forall T,r_p,r_1,\ldots,r_n. \rtriple{\langle Region(r_p,T), T@\langle r_1, \ldots, r_n \rangle { } \rangle}{\{ freeable(r_p) \}}{\displaystyle\bigwedge_{i = 1..n} (r_i \le r_p)} \rightarrow \rsingle{()}
 %free : \forall T,r. \langle Region(r,T), T@r \rangle \rightarrow () / freeable(r)
 \end{math} & [{\tt Free Pointer}]
 \end{tabular}
@@ -375,7 +377,7 @@ free : \forall T,r_1,r_2. \rtriple{\langle Region(r_1,T), T@r_2 \rangle}{\{ free
 % Partition
 %
 \begin{math}
-partition : \forall T,r. \rtriple{\langle Region(r,T), \rtriple{T@r}{readable(r)}{\top} \rightarrow \rsingle{\mathit{Int}}) \rangle}{\{readable(r)\}}{\top} \rightarrow \rsingle{Partition(r)}
+partition : \forall T,r. \rtriple{\langle Region(r,T), \rtriple{T@\langle r \rangle}{\{ readable(r) \}}{\top} \rightarrow \rsingle{\mathit{Int}}) \rangle}{\{readable(r)\}}{\top} \rightarrow \rsingle{Partition(r)}
 \end{math} & [{\tt Partition}] \\
 
 %
@@ -384,9 +386,9 @@ partition : \forall T,r. \rtriple{\langle Region(r,T), \rtriple{T@r}{readable(r)
 \begin{math}
 \begin{array}{lc}
 \begin{array}{l@{}l}
-subregion : \forall T,r. & \rtriple{\langle Partition(r), \langle i_1, \ldots, i_n \rangle \rangle}{\emptyset}{\bigwedge_{j,k = 1, \ldots, n, j \ne k} i_j \ne i_k}
+subregion : \forall T,r. & \rtriple{\langle Partition(r), \langle i_1, \ldots, i_n \rangle \rangle}{\emptyset}{\displaystyle\bigwedge_{j,k = 1, \ldots, n, j \ne k} i_j \ne i_k}
 \rightarrow \\
-& \exists r_1, \ldots, r_n. \rtriple{\langle Region(r_1,T), \ldots, Region(r_n,T) \rangle}{\emptyset}{\bigwedge_{j = 1..n} r_j \prec r \wedge \bigwedge_{j,k = 1, \ldots, n, j \ne k}. r_j * r_k}
+& \exists r_1, \ldots, r_n. \rtriple{\langle Region(r_1,T), \ldots, Region(r_n,T) \rangle}{\emptyset}{\displaystyle\bigwedge_{j = 1..n} r_j \prec r \wedge \displaystyle\bigwedge_{j,k = 1, \ldots, n, j \ne k} r_j * r_k}
 \end{array}
 \end{array}
 \end{math} & [{\tt Subregion}] \\
@@ -396,8 +398,8 @@ subregion : \forall T,r. & \rtriple{\langle Partition(r), \langle i_1, \ldots, i
 %
 \begin{math}
 \begin{array}{l@{}l}
-smash : \forall T,r_1,\ldots,r_n,r_p. & \rtriple{\langle Region(r_1,T), \ldots, Region(r_n,T) \rangle}{\emptyset}{(\bigwedge_{i = 1, \ldots, n} r_i \le r_p)} \rightarrow \\
-& \exists r'.  \rtriple{Region(r\prime,T)}{\emptyset}{(r\prime \le r_p) \wedge (\bigwedge_{i = 1, \ldots, n} r_i \le r')}
+smash : \forall T,r_1,\ldots,r_n,r_p. & \rtriple{\langle Region(r_1,T), \ldots, Region(r_n,T) \rangle}{\emptyset}{(\displaystyle\bigwedge_{i = 1.. n} r_i \le r_p)} \rightarrow \\
+& \exists r'.  \rtriple{Region(r\prime,T)}{\emptyset}{(r\prime \le r_p) \wedge (\displaystyle\bigwedge_{i = 1..n} r_i \le r')}
 \end{array}
 \end{math} & [{\tt Smash}] \\
 
@@ -406,8 +408,11 @@ smash : \forall T,r_1,\ldots,r_n,r_p. & \rtriple{\langle Region(r_1,T), \ldots, 
 %
 \begin{math}
 \begin{array}{l}
-upptr : \forall r_1, r_2. \rtriple{T@r_1}{\emptyset}{r_1 \le r_2} \rightarrow \rsingle{T@r_2} \\
-downptr : \forall r_1, r_2. \rtriple{\langle Partition(r_1), T@r_1, r_2 \rangle}{\emptyset}{r_2 \prec r_1} \rightarrow \rsingle{T@r_2}
+\begin{array}{l@{}l}
+upptr : \forall T,r_1,\ldots,r_n,r'_1,\ldots,r'_k,r'_p. \big( & \langle T@\langle r_1, \ldots, r_n \rangle, Region(T, r'_p) \rangle, \emptyset, \\
+& \displaystyle\bigwedge_{i = 1..n} \left( \bigvee_{j = 1..k} r_i \le r'_j \right) \wedge \displaystyle\bigwedge_{j = 1..k} r'_j \le r'_p \big) \rightarrow \rsingle{T@\langle r'_1, \ldots, r'_k \rangle}
+\end{array} \\
+downptr : \forall r_1, r_2. \rtriple{\langle Partition(r_1), T@\langle r_1 \rangle, r_2 \rangle}{\emptyset}{r_2 \prec r_1} \rightarrow \rsingle{T@\langle r_2 \rangle}
 \end{array}
 \end{math} & [{\tt Pointer Casting}]
 
@@ -461,9 +466,8 @@ deleterr : \forall RR. \rsingle{RR} \rightarrow \rsingle{()}
 
 T & ::= & Int \\
   &$\mid$&$\langle T_1, \ldots, T_n \rangle$ \\
-  &$\mid$&$\rtripsub{T_i}{i}{i} \rightarrow \exists r_1, \ldots, r_n.\rtripsub{T_o}{o}{o}$ \\
-  &$\mid$&$T@r$\\
-  &$\mid$&$\forall t.T$ \\
+  &$\mid$&$\forall r_1, \ldots, r_n. \rtripsub{T_i}{i}{i} \rightarrow \exists r'_1, \ldots, r'_n.\rtripsub{T_o}{o}{o}$ \\
+  &$\mid$&$T@\langle r_1, \ldots, r_n \rangle$\\
   &$\mid$&$RR$ \\
   &$\mid$&$Region(r,T)$ \\
   &$\mid$&$Partition(r)$ \\
