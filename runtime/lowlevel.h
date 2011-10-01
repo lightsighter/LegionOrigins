@@ -53,7 +53,7 @@ namespace RegionRuntime {
       // requests ownership (either exclusive or shared) of the lock with a 
       //   specified mode - returns an event that will trigger when the lock
       //   is granted
-      Event lock(unsigned mode = 0, bool exclusive = true);
+      Event lock(unsigned mode = 0, bool exclusive = true, Event wait_on = Event::NO_EVENT);
       // releases a held lock - release can be deferred until an event triggers
       void unlock(Event wait_on = Event::NO_EVENT);
 
@@ -79,6 +79,8 @@ namespace RegionRuntime {
 
       Event spawn(TaskFuncID func_id, const void *args, size_t arglen,
 		  Event wait_on = Event::NO_EVENT) const;
+
+      void preempt(void);
     };
 
     class Memory {
@@ -129,7 +131,7 @@ namespace RegionRuntime {
       bool exists(void) const;
 
     protected:
-#if 0
+#if 1
       // can't have virtual methods here, so we're returning function pointers
       typedef void (*UntypedFuncPtr)(void);
 
@@ -154,7 +156,7 @@ namespace RegionRuntime {
       bool exists(void) const;
 
     protected:
-#if 0
+#if 1
       // can't have virtual methods here, so we're returning function pointers
       typedef void (*UntypedFuncPtr)(void);
 
@@ -228,7 +230,7 @@ namespace RegionRuntime {
       explicit RegionAllocator(const RegionAllocatorUntyped& copy_from)
 	: RegionAllocatorUntyped(copy_from) {}
       
-#if 0
+#if 1
       // note the level of indirection here - needed because the base class
       //  can't be virtual
       typedef ptr_t<T> (*AllocFuncPtr)(void);
@@ -253,7 +255,7 @@ namespace RegionRuntime {
       explicit RegionInstance(const RegionInstanceUntyped& copy_from)
 	: RegionInstanceUntyped(copy_from) {}
 
-#if 0
+#if 1
       // note the level of indirection here - needed because the base class
       //  can't be virtual
       typedef T (*ReadFuncPtr)(ptr_t<T> ptr);
