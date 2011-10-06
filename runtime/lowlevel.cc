@@ -10,6 +10,8 @@
 
 #include "activemsg.h"
 
+GASNETT_THREADKEY_DEFINE(in_handler);
+
 #include <pthread.h>
 
 #include <vector>
@@ -49,6 +51,7 @@ namespace RegionRuntime {
     class RegionInstanceImpl;
 
     struct Node {
+      gasnet_seginfo_t seginfo;
       std::vector<EventImpl> events;
       std::vector<LockImpl> locks;
       std::vector<MemoryImpl *> memories;
@@ -69,6 +72,7 @@ namespace RegionRuntime {
       RegionInstanceImpl *get_instance_impl(RegionInstanceUntyped i);
 
     protected:
+    public:
       static Runtime *runtime;
 
       Node *nodes;
@@ -76,6 +80,7 @@ namespace RegionRuntime {
     
     enum ActiveMessageIDs {
       FIRST_AVAILABLE = 128,
+      NODE_ANNOUNCE_MSGID,
       SPAWN_TASK_MSGID,
       EVENT_TRIGGER_MSGID,
     };
@@ -307,20 +312,55 @@ namespace RegionRuntime {
       }
     };
 
+    Event Lock::lock(unsigned mode /* = 0 */, bool exclusive /* = true */,
+		     Event wait_on /* = Event::NO_EVENT */) const
+    {
+      return Event::NO_EVENT;
+    }
+
+    // releases a held lock - release can be deferred until an event triggers
+    void Lock::unlock(Event wait_on /* = Event::NO_EVENT */) const
+    {
+    }
+
+    bool Lock::exists(void) const
+    {
+      return (id != 0);
+    }
+
+    // Create a new lock, destroy an existing lock
+    /*static*/ Lock Lock::create_lock(void)
+    {
+      Lock l = { 0 };
+      return l;
+    }
+
+    void Lock::destroy_lock()
+    {
+    }
+
     ///////////////////////////////////////////////////
     // Processor
 
+    // global because I'm being lazy...
+    static Processor::TaskIDTable task_id_table;
+
     class ProcessorImpl {
     public:
+      ProcessorImpl(Processor _me) : me(_me) {}
+
       virtual void spawn_task(Processor::TaskFuncID func_id,
 			      const void *args, size_t arglen,
 			      Event start_event, Event finish_event) = 0;
+
+    protected:
+      Processor me;
     };
 
     class LocalProcessor : public ProcessorImpl {
     public:
-      LocalProcessor(int _core_id)
-	: core_id(_core_id)
+      LocalProcessor(Processor _me, int _core_id)
+	: ProcessorImpl(_me), core_id(_core_id)
       {
       }
 
@@ -332,6 +372,10 @@ namespace RegionRuntime {
 			      const void *args, size_t arglen,
 			      Event start_event, Event finish_event)
       {
+	// for now, just run the damn thing
+	Processor::TaskFuncPtr fptr = task_id_table[func_id];
+	Processor p;
+	(*fptr)(args, arglen, p);
       }
 
     protected:
@@ -360,8 +404,8 @@ namespace RegionRuntime {
 
     class RemoteProcessor : public ProcessorImpl {
     public:
-      RemoteProcessor(gasnet_node_t _node, Processor _proc)
-	: node(_node), proc(_proc)
+      RemoteProcessor(Processor _me, gasnet_node_t _node)
+	: ProcessorImpl(_me), node(_node)
       {
       }
 
@@ -374,7 +418,7 @@ namespace RegionRuntime {
 			      Event start_event, Event finish_event)
       {
 	SpawnTaskArgs msgargs;
-	msgargs.proc = proc;
+	msgargs.proc = me;
 	msgargs.func_id = func_id;
 	msgargs.start_event = start_event;
 	msgargs.finish_event = finish_event;
@@ -383,7 +427,6 @@ namespace RegionRuntime {
 
     protected:
       gasnet_node_t node;
-      Processor proc;
     };
 
     Event Processor::spawn(TaskFuncID func_id, const void *args, size_t arglen,
@@ -444,7 +487,14 @@ namespace RegionRuntime {
     }
 
     ///////////////////////////////////////////////////
-    // 
+    // RegionMetaData
+
+    Lock RegionMetaDataUntyped::get_lock(void) const
+    {
+      // we use our own ID as an ID for our lock
+      Lock l = { id };
+      return l;
+    }
 
     ///////////////////////////////////////////////////
     // 
@@ -864,9 +914,6 @@ namespace RegionRuntime {
       AMQueueEntry *buffer;
     };	
 
-    // global because I'm being lazy...
-    static Processor::TaskIDTable task_id_table;
-
 #if 0
     class LocalProcessor : public Processor {
     public:
@@ -935,20 +982,48 @@ namespace RegionRuntime {
     };
 #endif
 
+    struct NodeAnnounceData {
+      gasnet_node_t node_id;
+      unsigned num_procs;
+    };
+
+    static gasnet_hsl_t announcement_mutex = GASNET_HSL_INITIALIZER;
+    static int announcements_received = 0;
+
+    void node_announce_handler(NodeAnnounceData data)
+    {
+      printf("%d: received announce from %d (%d procs)\n", gasnet_mynode(), data.node_id, data.num_procs);
+      Node *n = &(Runtime::get_runtime()->nodes[data.node_id]);
+      n->processors.resize(data.num_procs);
+      for(unsigned i = 0; i < data.num_procs; i++) {
+	Processor p;
+	p.id = (data.node_id << 24) | i;
+	n->processors[i] = new RemoteProcessor(p, data.node_id);
+      }
+      gasnet_hsl_lock(&announcement_mutex);
+      announcements_received++;
+      gasnet_hsl_unlock(&announcement_mutex);
+    }
+
+    typedef ActiveMessageShortNoReply<NODE_ANNOUNCE_MSGID,
+				      NodeAnnounceData,
+				      node_announce_handler> NodeAnnounceMessage;
+
+    static void *gasnet_poll_thread_loop(void *data)
+    {
+      while(1) {
+	gasnet_AMPoll();
+	usleep(100000);
+      }
+      return 0;
+    }
+
+#if 0
     class GASNetNode {
     public:
       struct TestArgs {
 	int x;
       };
-
-      static void *gasnet_poll_thread_loop(void *data)
-      {
-	while(1) {
-	  gasnet_AMPoll();
-	  usleep(100000);
-	}
-	return 0;
-      }
 
       static void test_msg_handler(TestArgs z) { printf("got %d\n", z.x); }
       static bool test_msg_handler2(TestArgs z) { printf("got(2) %d\n", z.x); return z.x == 55; }
@@ -977,10 +1052,20 @@ namespace RegionRuntime {
 	pthread_t poll_thread;
 	CHECK_PTHREAD( pthread_create(&poll_thread, 0, gasnet_poll_thread_loop, 0) );
 	
-	seginfo = new gasnet_seginfo_t[num_nodes];
-	CHECK_GASNET( gasnet_getSegmentInfo(seginfo, num_nodes) );
+	gasnet_seginfo_t seginfos = new gasnet_seginfo_t[num_nodes];
+	CHECK_GASNET( gasnet_getSegmentInfo(seginfos, num_nodes) );
+
+	Runtime *r = Runtime::runtime = new Runtime;
+	r->nodes = new Node[num_nodes];
+	for(unsigned i = 0; i < num_nodes; i++) {
+	  r->nodes[i].seginfo = seginfos[i];
+	}
+
+	delete[] seginfos;
 
 	// create local processors
+	Node *n = &r->nodes[gasnet_mynode()];
+
 	local_procs = new ProcessorThread *[num_local_procs];
 	for(int i = 0; i < num_local_procs; i++) {
 	  local_procs[i] = new ProcessorThread(i, -1);
@@ -1034,19 +1119,93 @@ namespace RegionRuntime {
 
     GASNetNode *GASNetNode::my_node = 0;
 
+#endif
+    static Machine *the_machine = 0;
+
+    /*static*/ Machine *Machine::get_machine(void) { return the_machine; }
+
     Machine::Machine(int *argc, char ***argv,
-		     const Processor::TaskIDTable &task_table)
+		     const Processor::TaskIDTable &task_table,
+		     bool cps_style /* = false */,
+		     Processor::TaskFuncID init_id /* = 0 */)
     {
       for(Processor::TaskIDTable::const_iterator it = task_table.begin();
 	  it != task_table.end();
 	  it++)
 	task_id_table[it->first] = it->second;
 
-      GASNetNode::my_node = new GASNetNode(argc, argv, this);
+      //GASNetNode::my_node = new GASNetNode(argc, argv, this);
+      CHECK_GASNET( gasnet_init(argc, argv) );
+
+      gasnet_handlerentry_t handlers[128];
+      int hcount = 0;
+      hcount += NodeAnnounceMessage::add_handler_entries(&handlers[hcount]);
+      hcount += SpawnTaskMessage::add_handler_entries(&handlers[hcount]);
+      hcount += EventTriggerMessage::add_handler_entries(&handlers[hcount]);
+      //hcount += TestMessage::add_handler_entries(&handlers[hcount]);
+      //hcount += TestMessage2::add_handler_entries(&handlers[hcount]);
+
+      unsigned shared_mem_size = 32;
+      CHECK_GASNET( gasnet_attach(handlers, hcount, (shared_mem_size << 20), 0) );
+
+      pthread_t poll_thread;
+      CHECK_PTHREAD( pthread_create(&poll_thread, 0, gasnet_poll_thread_loop, 0) );
+	
+      gasnet_seginfo_t *seginfos = new gasnet_seginfo_t[gasnet_nodes()];
+      CHECK_GASNET( gasnet_getSegmentInfo(seginfos, gasnet_nodes()) );
+
+      Runtime *r = Runtime::runtime = new Runtime;
+      r->nodes = new Node[gasnet_nodes()];
+      for(unsigned i = 0; i < gasnet_nodes(); i++) {
+	r->nodes[i].seginfo = seginfos[i];
+      }
+      
+      delete[] seginfos;
+
+      Node *n = &r->nodes[gasnet_mynode()];
+
+      NodeAnnounceData announce_data;
+
+      unsigned num_local_procs = 1;
+
+      announce_data.node_id = gasnet_mynode();
+      announce_data.num_procs = num_local_procs;
+
+      // create local processors
+      n->processors.resize(num_local_procs);
+
+      for(unsigned i = 0; i < num_local_procs; i++) {
+	Processor p;
+	p.id = (gasnet_mynode() << 24) | i;
+	n->processors[i] = new LocalProcessor(p, i);
+	//local_procs[i]->start();
+	//machine->add_processor(new LocalProcessor(local_procs[i]));
+      }
+
+      // now announce ourselves to everyone else
+      for(int i = 0; i < gasnet_nodes(); i++)
+	if(i != gasnet_mynode())
+	  NodeAnnounceMessage::request(i, announce_data);
+
+      // wait until we hear from everyone else?
+      while(announcements_received < (gasnet_nodes() - 1))
+	gasnet_AMPoll();
+
+      printf("node %d has received all of its announcements\n", gasnet_mynode());
+
+      for(int i = 0; i < gasnet_nodes(); i++)
+	for(unsigned j = 0; j < Runtime::runtime->nodes[i].processors.size(); j++) {
+	  Processor p;
+	  p.id = (i << 24) | j;
+	  procs.insert(p);
+	}
+
+      the_machine = this;
     }
 
     Machine::~Machine(void)
     {
+      gasnet_exit(0);
     }
   }; // namespace LowLevel
 }; // namespace RegionRuntime

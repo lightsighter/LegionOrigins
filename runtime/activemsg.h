@@ -4,6 +4,8 @@
 #ifndef ACTIVEMSG_H
 #define ACTIVEMSG_H
 
+GASNETT_THREADKEY_DECLARE(in_handler);
+
 template <class T> struct HandlerReplyFuture {
   gasnet_hsl_t mutex;
   gasnett_cond_t condvar;
@@ -160,7 +162,7 @@ struct MessageRawArgs<MSGTYPE, MSGID, SHORT_HNDL_PTR, MED_HNDL_PTR, n> { \
   { \
     gasnet_node_t src; \
     gasnet_AMGetMsgSource(token, &src); \
-    printf("handling medium message from node %d\n", src); \
+    printf("handling medium message from node %d (id=%d)\n", src, MSGID);	\
     union { \
       MessageRawArgs<MSGTYPE,MSGID,SHORT_HNDL_PTR,MED_HNDL_PTR,n> raw; \
       MSGTYPE typed; \
@@ -254,12 +256,16 @@ class ActiveMessageShortNoReply {
 
   static void request(gasnet_node_t dest, MSGTYPE args)
   {
-    union {
-      MessageRawArgsType raw;
-      MSGTYPE typed;
-    } u;
-    u.typed = args;
-    u.raw.request_short(dest);
+    if(gasnett_threadkey_get(in_handler)) {
+      printf("Help!  Message send inside handler!\n");
+    } else {
+      union {
+        MessageRawArgsType raw;
+        MSGTYPE typed;
+      } u;
+      u.typed = args;
+      u.raw.request_short(dest);
+    }
   }
 
   static int add_handler_entries(gasnet_handlerentry_t *entries)
@@ -278,12 +284,16 @@ class ActiveMessageMediumNoReply {
   static void request(gasnet_node_t dest, MSGTYPE args, 
                       const void *data, size_t datalen)
   {
-    union {
-      MessageRawArgsType raw;
-      MSGTYPE typed;
-    } u;
-    u.typed = args;
-    u.raw.request_medium(dest, data, datalen);
+    if(gasnett_threadkey_get(in_handler)) {
+      printf("Help!  Message send inside handler!\n");
+    } else {
+      union {
+        MessageRawArgsType raw;
+        MSGTYPE typed;
+      } u;
+      u.typed = args;
+      u.raw.request_medium(dest, data, datalen);
+    }
   }
 
   static int add_handler_entries(gasnet_handlerentry_t *entries)
@@ -313,7 +323,12 @@ class ActiveMessageShortReply {
       
     u.typed.fptr = &future;
     u.typed.args = args;
-    u.raw.request_short(dest);
+
+    if(gasnett_threadkey_get(in_handler)) {
+      printf("Help!  Message send inside handler!\n");
+    } else {
+      u.raw.request_short(dest);
+    }
 
     printf("request sent - waiting for response\n");
     future.wait();

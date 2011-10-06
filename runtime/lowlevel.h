@@ -31,6 +31,11 @@ namespace RegionRuntime {
 
       static const Event NO_EVENT;
 
+      // SJT: for now, we'll let the high-level runtime explicitly create
+      //  and trigger events - not sure this is the best long-term answer
+      static Event create_event(void);
+      void trigger(void) const;
+
       bool exists(void) const { return id != 0; }
 
       // test whether an event has triggered without waiting
@@ -53,9 +58,9 @@ namespace RegionRuntime {
       // requests ownership (either exclusive or shared) of the lock with a 
       //   specified mode - returns an event that will trigger when the lock
       //   is granted
-      Event lock(unsigned mode = 0, bool exclusive = true, Event wait_on = Event::NO_EVENT);
+      Event lock(unsigned mode = 0, bool exclusive = true, Event wait_on = Event::NO_EVENT) const;
       // releases a held lock - release can be deferred until an event triggers
-      void unlock(Event wait_on = Event::NO_EVENT);
+      void unlock(Event wait_on = Event::NO_EVENT) const;
 
       bool exists(void) const;
 
@@ -98,14 +103,14 @@ namespace RegionRuntime {
       ID id;
 
       static RegionMetaDataUntyped create_region_untyped(Memory memory, size_t num_elmts, size_t elmt_size);
-      RegionAllocatorUntyped create_allocator_untyped(Memory memory);
-      RegionInstanceUntyped create_instance_untyped(Memory memory);
-      void destroy_region_untyped();
-      void destroy_allocator_untyped(RegionAllocatorUntyped allocator);
-      void destroy_instance_untyped(RegionInstanceUntyped instance);
+      RegionAllocatorUntyped create_allocator_untyped(Memory memory) const;
+      RegionInstanceUntyped create_instance_untyped(Memory memory) const;
+      void destroy_region_untyped() const;
+      void destroy_allocator_untyped(RegionAllocatorUntyped allocator) const;
+      void destroy_instance_untyped(RegionInstanceUntyped instance) const;
 
       // get the lock that covers this metadata
-      Lock get_lock(void);
+      Lock get_lock(void) const;
       bool exists(void) const;
 
       // it's ok to call these without holding the lock if you don't mind
@@ -131,16 +136,12 @@ namespace RegionRuntime {
       bool exists(void) const;
 
     protected:
-#if 1
       // can't have virtual methods here, so we're returning function pointers
-      typedef void (*UntypedFuncPtr)(void);
+      typedef unsigned (*AllocFuncPtr)(RegionAllocatorUntyped region, size_t num_elmts);
+      typedef void (*FreeFuncPtr)(RegionAllocatorUntyped region, unsigned ptr);
 
-      UntypedFuncPtr alloc_fn_untyped(void);
-      UntypedFuncPtr free_fn_untyped(void);
-#else
-	unsigned alloc_untyped(size_t num_elmts = 1);
-	void free_untyped(unsigned ptr);	
-#endif
+      AllocFuncPtr alloc_fn_untyped(void) const;
+      FreeFuncPtr free_fn_untyped(void) const;
     };
 
     class RegionInstanceUntyped {
@@ -155,26 +156,31 @@ namespace RegionRuntime {
 
       bool exists(void) const;
 
+      // if non-null, the base of an "array" that can be dereferenced
+      void *direct_access_base;
+
     protected:
-#if 1
       // can't have virtual methods here, so we're returning function pointers
-      typedef void (*UntypedFuncPtr)(void);
+      typedef const void *(*ReadFuncPtr)(RegionInstanceUntyped region, unsigned ptr);
+      typedef void (*WriteFuncPtr)(RegionInstanceUntyped region, unsigned ptr, const void *src);
 
-      UntypedFuncPtr read_fn_untyped(void);
-      UntypedFuncPtr write_fn_untyped(void);
-      UntypedFuncPtr reduce_fn_untyped(void);
-#else
-	void* read_untyped(unsigned);
-	void write_untyped(unsigned ptr, void *src); 
+      ReadFuncPtr read_fn_untyped(void);
+      WriteFuncPtr write_fn_untyped(void);
+      //UntypedFuncPtr reduce_fn_untyped(void);
 
-	// The copy operation
-	Event copy_to_untyped(RegionInstanceUntyped target, Event wait_on);
-#endif
+      // The copy operation
+      typedef Event (*CopyFuncPtr)(RegionInstanceUntyped source, RegionInstanceUntyped target, Event wait_on);
+
+      CopyFuncPtr copy_fn_untyped(void);
     };
 
     template <class T>
     class RegionMetaData : public RegionMetaDataUntyped {
     public:
+      RegionMetaData(void) {}
+      RegionMetaData(const RegionMetaData<T>& copy_from)
+	: RegionMetaDataUntyped(copy_from) {}
+
       // operator to re-introduce element type - make sure you're right!
       explicit RegionMetaData(const RegionMetaDataUntyped& copy_from)
 	: RegionMetaDataUntyped(copy_from) {}
@@ -230,22 +236,12 @@ namespace RegionRuntime {
       explicit RegionAllocator(const RegionAllocatorUntyped& copy_from)
 	: RegionAllocatorUntyped(copy_from) {}
       
-#if 1
-      // note the level of indirection here - needed because the base class
-      //  can't be virtual
-      typedef ptr_t<T> (*AllocFuncPtr)(void);
-      typedef void (*FreeFuncPtr)(ptr_t<T> ptr);
-
-      AllocFuncPtr alloc_fn(void) { return (AllocFuncPtr)(alloc_fn_untyped()); }
-      FreeFuncPtr free_fn(void) { return (FreeFuncPtr)(free_fn_untyped()); }
-#else
-	ptr_t<T> alloc(void) 
-	{ 
-		ptr_t<T> ptr = { alloc_untyped() };
-		return ptr; 
-	}
-	void free(ptr_t<T> ptr) { free_untyped(ptr.value); }
-#endif
+      ptr_t<T> alloc(void) 
+      { 
+	ptr_t<T> ptr = { alloc_fn_untyped()(*this, 1) };
+	return ptr; 
+      }
+      void free(ptr_t<T> ptr) { free_fn_untyped()(*this, ptr.value); }
     };
 
     template <class T>
@@ -255,9 +251,9 @@ namespace RegionRuntime {
       explicit RegionInstance(const RegionInstanceUntyped& copy_from)
 	: RegionInstanceUntyped(copy_from) {}
 
-#if 1
       // note the level of indirection here - needed because the base class
       //  can't be virtual
+#if 0
       typedef T (*ReadFuncPtr)(ptr_t<T> ptr);
       typedef void (*WriteFuncPtr)(ptr_t<T> ptr, T newval);
       typedef void (*ReduceFuncPtr)(ptr_t<T> ptr, T (*reduce_op)(T, T), T newval);
@@ -265,13 +261,41 @@ namespace RegionRuntime {
       ReadFuncPtr read_fn(void) { return (ReadFuncPtr)(read_fn_untyped()); }
       WriteFuncPtr write_fn(void) { return (WriteFuncPtr)(write_fn_untyped()); }
       ReduceFuncPtr reduce_fn(void) { return (ReduceFuncPtr)(reduce_fn_untyped()); }
+#endif
+
+      T *make_direct_ptr(void *direct_access_base, ptr_t<T> ptr)
+      {
+	return ((T*)direct_access_base)+ptr.value;
+      }
+
+      T read(ptr_t<T> ptr)
+      {
+#ifndef FORCE_DIRECT_ACCESS
+	if(!direct_access_base)
+	  return *(const T*)(read_fn_untyped()(*this, ptr.value));
+	else
+#endif
+	  return *make_direct_ptr(direct_access_base, ptr);
+      }
+
+      void write(ptr_t<T> ptr, T newval)
+      {
+#ifndef FORCE_DIRECT_ACCESS
+	if(!direct_access_base)
+	  (write_fn_untyped())(*this, ptr.value, (const void *)&newval);
+	else
+#endif
+	  *make_direct_ptr(direct_access_base, ptr) = newval;
+      }
+
+#if 1
 #else
 	T read(ptr_t<T> ptr) { return *((T*)(read_untyped(ptr.value))); }	
 	void write(ptr_t<T> ptr, T newval) { write_untyped(ptr.value,((void*)&newval)); }
 
-	Event copy_to(RegionInstance<T> target, Event wait_on = Event::NO_EVENT)
-	  { return copy_to_untyped(RegionInstanceUntyped(target), wait_on); }
 #endif
+      Event copy_to(RegionInstance<T> target, Event wait_on = Event::NO_EVENT)
+      { return copy_fn_untyped()(*this, target, wait_on); }
     };
 
     class Machine {
@@ -280,6 +304,9 @@ namespace RegionRuntime {
 	      const Processor::TaskIDTable &task_table,
 	      bool cps_style = false, Processor::TaskFuncID init_id = 0);
       ~Machine(void);
+
+      void run(Processor::TaskFuncID task_id = 0);
+
     public:
       // Different Processor types
       enum ProcessorKind {
