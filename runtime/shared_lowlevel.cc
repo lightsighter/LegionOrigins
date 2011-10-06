@@ -464,7 +464,7 @@ namespace RegionRuntime {
 	pthread_mutex_t mutex;
     };
 
-    Event Lock::lock(unsigned mode, bool exclusive)
+    Event Lock::lock(unsigned mode, bool exclusive, Event wait_on) const
     {
 	LockImpl *l = Runtime::get_runtime()->get_lock_impl(*this);
 	return l->lock(mode,exclusive);
@@ -475,7 +475,7 @@ namespace RegionRuntime {
 	return (id != 0);
     }
 
-    void Lock::unlock(Event wait_on)
+    void Lock::unlock(Event wait_on) const
     {
 	LockImpl *l = Runtime::get_runtime()->get_lock_impl(*this);
 	l->unlock(wait_on);
@@ -984,14 +984,24 @@ namespace RegionRuntime {
 	return (id != 0);
     } 
 
-    unsigned RegionAllocatorUntyped::alloc_untyped(size_t num_elmts)
+    static unsigned alloc_func(RegionAllocatorUntyped region, size_t num_elmts)
     {
-	return Runtime::get_runtime()->get_allocator_impl(*this)->alloc_elmt(num_elmts);
+	return Runtime::get_runtime()->get_allocator_impl(region)->alloc_elmt(num_elmts);
     }
 
-    void RegionAllocatorUntyped::free_untyped(unsigned ptr)
+    RegionAllocatorUntyped::AllocFuncPtr RegionAllocatorUntyped::alloc_fn_untyped(void) const
     {
-	Runtime::get_runtime()->get_allocator_impl(*this)->free_elmt(ptr);
+      return alloc_func;
+    }
+
+    static void free_func(RegionAllocatorUntyped region, unsigned ptr)
+    {
+	Runtime::get_runtime()->get_allocator_impl(region)->free_elmt(ptr);
+    }
+
+    RegionAllocatorUntyped::FreeFuncPtr RegionAllocatorUntyped::free_fn_untyped(void) const
+    {
+      return free_func;
     }
 
     unsigned RegionAllocatorImpl::alloc_elmt(size_t num_elmts)
@@ -1093,8 +1103,8 @@ namespace RegionRuntime {
 		}
 	}
     public:
-	void* read(unsigned ptr);
-	void write(unsigned ptr, void* newval);	
+	const void* read(unsigned ptr);
+	void write(unsigned ptr, const void* newval);	
 	bool activate(Memory m, size_t num_elmts, size_t elem_size);
 	void deactivate(void);
 	Event copy_to(RegionInstanceUntyped target, Event wait_on);
@@ -1122,19 +1132,34 @@ namespace RegionRuntime {
 	return (id != 0);
     }
 
-    void* RegionInstanceUntyped::read_untyped(unsigned ptr)
+    const void* read_func(RegionInstanceUntyped region, unsigned ptr)
     {
-	return Runtime::get_runtime()->get_instance_impl(*this)->read(ptr);
+	return Runtime::get_runtime()->get_instance_impl(region)->read(ptr);
     }
 
-    void RegionInstanceUntyped::write_untyped(unsigned ptr, void* newval)
+    RegionInstanceUntyped::ReadFuncPtr RegionInstanceUntyped::read_fn_untyped(void)
     {
-	Runtime::get_runtime()->get_instance_impl(*this)->write(ptr,newval);
+      return read_func;
     }
 
-    Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, Event wait_on)
+    void write_func(RegionInstanceUntyped region, unsigned ptr, const void* newval)
     {
-	return Runtime::get_runtime()->get_instance_impl(*this)->copy_to(target, wait_on);
+	Runtime::get_runtime()->get_instance_impl(region)->write(ptr,newval);
+    }
+
+    RegionInstanceUntyped::WriteFuncPtr RegionInstanceUntyped::write_fn_untyped(void)
+    {
+      return write_func;
+    }
+
+    Event copy_to_func(RegionInstanceUntyped source, RegionInstanceUntyped target, Event wait_on)
+    {
+	return Runtime::get_runtime()->get_instance_impl(source)->copy_to(target, wait_on);
+    }
+
+    RegionInstanceUntyped::CopyFuncPtr RegionInstanceUntyped::copy_fn_untyped(void)
+    {
+      return copy_to_func;
     }
 
     Lock RegionInstanceUntyped::get_lock(void)
@@ -1142,12 +1167,12 @@ namespace RegionRuntime {
 	return Runtime::get_runtime()->get_instance_impl(*this)->get_lock();
     }
 
-    void* RegionInstanceImpl::read(unsigned ptr)
+    const void* RegionInstanceImpl::read(unsigned ptr)
     {
 	return ((void*)(base_ptr+(ptr*elmt_size)));
     }
 
-    void RegionInstanceImpl::write(unsigned ptr, void* newval)
+    void RegionInstanceImpl::write(unsigned ptr, const void* newval)
     {
 	memcpy((base_ptr+(ptr*elmt_size)),newval,elmt_size);
     }
@@ -1239,6 +1264,7 @@ namespace RegionRuntime {
     {
 	RegionInstanceUntyped inst;
 	inst.id = index;
+	inst.direct_access_base = 0;
 	return inst;
     }
 
@@ -1307,37 +1333,37 @@ namespace RegionRuntime {
 	return r->get_metadata();
     }
 
-    RegionAllocatorUntyped RegionMetaDataUntyped::create_allocator_untyped(Memory m)
+    RegionAllocatorUntyped RegionMetaDataUntyped::create_allocator_untyped(Memory m) const
     {
 	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
 	return r->create_allocator(m);
     }
 
-    RegionInstanceUntyped RegionMetaDataUntyped::create_instance_untyped(Memory m)
+    RegionInstanceUntyped RegionMetaDataUntyped::create_instance_untyped(Memory m) const
     {
 	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
 	return r->create_instance(m);
     }
 
-    void RegionMetaDataUntyped::destroy_region_untyped(void)
+    void RegionMetaDataUntyped::destroy_region_untyped(void) const
     {
 	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
 	r->deactivate();
     }
 
-    void RegionMetaDataUntyped::destroy_allocator_untyped(RegionAllocatorUntyped a)
+    void RegionMetaDataUntyped::destroy_allocator_untyped(RegionAllocatorUntyped a) const
     {
 	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
 	r->destroy_allocator(a);
     }
 
-    void RegionMetaDataUntyped::destroy_instance_untyped(RegionInstanceUntyped i)
+    void RegionMetaDataUntyped::destroy_instance_untyped(RegionInstanceUntyped i) const
     {
 	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
 	r->destroy_instance(i);
     }
 
-    Lock RegionMetaDataUntyped::get_lock(void)
+    Lock RegionMetaDataUntyped::get_lock(void) const
     {
 	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
 	return r->get_lock();
@@ -1580,6 +1606,18 @@ namespace RegionRuntime {
 
     Machine::~Machine()
     {
+    }
+
+    void Machine::run(Processor::TaskFuncID task_id /* = 0 */)
+    {
+      if(task_id != 0) {
+	Processor p;
+	p.id = 0;
+	p.spawn(task_id,0,0);
+      }
+      // Now run the scheduler, we'll never return from this
+      ProcessorImpl *impl = Runtime::runtime->processors[0];
+      impl->start((void*)impl);
     }
 
     const std::set<Memory>& Machine::get_visible_memories(const Processor p) 

@@ -23,6 +23,11 @@ lowlevel.o : lowlevel.h activemsg.h
 
 hello.o : lowlevel.h
 
+ring_test.o : lowlevel.h
+
+ring2:	ring_test.o lowlevel.o
+	g++ -o $@ $(CCFLAGS) $^ $(LDFLAGS)
+
 ring:	ring_test.o shared_lowlevel.o
 	g++ -o ring $(CCFLAGS) $^ -lpthread
 
