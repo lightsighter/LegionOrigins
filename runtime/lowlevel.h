@@ -97,6 +97,28 @@ namespace RegionRuntime {
       bool exists(void) const;
     };
 
+    class ElementMask {
+    public:
+      ElementMask(int num_elements, int first_element = 0);
+      ElementMask(const ElementMask &copy_from, int num_elements = -1, int first_element = 0);
+
+      void enable(int first_element, int count = 1);
+      void disable(int first_element, int count = 1);
+      
+      // is_set?
+      // union/intersect/subtract?
+
+      int first_enabled(void) const;
+      int last_enabled(void) const;
+
+      size_t raw_size(void) const;
+      const void *get_raw(void) const;
+      void set_raw(const void *data);
+
+    protected:
+      void *raw_data;
+    };
+
     class RegionMetaDataUntyped {
     public:
       typedef unsigned ID;
@@ -297,6 +319,9 @@ namespace RegionRuntime {
 
 #endif
       Event copy_to(RegionInstance<T> target, Event wait_on = Event::NO_EVENT)
+      { return copy_fn_untyped()(*this, target, wait_on); }
+
+      Event copy_to(RegionInstance<T> target, const ElementMask& mask, Event wait_on = Event::NO_EVENT)
       { return copy_fn_untyped()(*this, target, wait_on); }
     };
 
