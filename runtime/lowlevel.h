@@ -12,6 +12,7 @@ namespace RegionRuntime {
 
     // forward class declarations because these things all refer to each other
     class Event;
+    class UserEvent;
     class Lock;
     class Memory;
     class Processor;
@@ -31,11 +32,6 @@ namespace RegionRuntime {
 
       static const Event NO_EVENT;
 
-      // SJT: for now, we'll let the high-level runtime explicitly create
-      //  and trigger events - not sure this is the best long-term answer
-      static Event create_event(void);
-      void trigger(void) const;
-
       bool exists(void) const { return id != 0; }
 
       // test whether an event has triggered without waiting
@@ -46,6 +42,16 @@ namespace RegionRuntime {
 
       // creates an event that won't trigger until all input events have
       static Event merge_events(const std::set<Event>& wait_for);
+    };
+
+    // A user level event has all the properties of event, except
+    // it can be triggered by the user.  This prevents users from
+    // triggering arbitrary events without doing something like
+    // an unsafe cast.
+    class UserEvent : public Event {
+    public:
+      static UserEvent create_user_event(void);
+      void trigger(void) const;
     };
 
     class Lock {
@@ -84,8 +90,6 @@ namespace RegionRuntime {
 
       Event spawn(TaskFuncID func_id, const void *args, size_t arglen,
 		  Event wait_on = Event::NO_EVENT) const;
-
-      void preempt(void);
     };
 
     class Memory {
