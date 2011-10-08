@@ -107,6 +107,9 @@ namespace RegionRuntime {
 
     class TaskDescription {
     public:
+      TaskDescription();
+      ~TaskDescription();
+    public:
       Processor::TaskFuncID task_id;
       std::vector<RegionRequirement> regions;	
       void * args;
@@ -117,6 +120,7 @@ namespace RegionRuntime {
       // Status information
       bool stealable; // Can be stolen (corresponds to 'spawn' call)
       bool mapped; // Mapped to a specific processor and no longer stealable
+      UserEvent map_event; // Even that is triggered when this event is mapped
       // Mappable is true when remaining_events==0
     public:
       // Information about where this task originated
@@ -127,15 +131,16 @@ namespace RegionRuntime {
       // Information to send back to the original processor
       bool remote; // Send back an event if true
       FutureHandle future_handle; // the Future handle to set
+      void *result; // For storing the result of the task
+      size_t result_size;
     public:
       int remaining_events; // Number of events we still need to see before being mappable
       std::set<Event> wait_events; // Events to wait on before executing (immovable)
       Event merged_wait_event; // The merge of the wait_events (movable)
       std::vector<CopyOperation> pre_copy_ops; // Copy operations to perform before executing (mov)
-      std::vector<CopyOperation> post_copy_ops; // Copy operations to perform after executing (mov)
       std::vector<InstanceInfo*> instances; // Region instances for the regions (mov)
-      std::vector<InstanceInfo*> dead_regions; // Regions to be deleted after the task (mov)
-      Event termination_event;
+      std::vector<InstanceInfo*> dead_instances; // Regions to be deleted after the task (mov)
+      UserEvent termination_event; // Create a user level termination event to be returned quickly
       std::vector<TaskDescription*> dependent_tasks; // Tasks waiting for us to be mapped (immov)
     };
 
@@ -154,6 +159,7 @@ namespace RegionRuntime {
       // also allow the runtime to reset futures so it can re-use them
       inline bool is_active(void) const { return active; }
       void reset(void);
+      // Also give an event for when the result becomes valid
       void set_result(const void * res, size_t result_size);
     public:
       inline bool is_set(void) const { return set; }
@@ -322,13 +328,12 @@ namespace RegionRuntime {
       bool activate(TaskDescription *parent_task);
       void deactivate(void);
       void register_task(TaskDescription *child_task);
-      void map_task(TaskDescription *child_task);
       TaskDescription* get_task_description(TaskHandle handle);
     private:
       HighLevelRuntime *runtime;
       const Context this_context;
       bool active;
-    private:
+    protected:
       TaskDescription *parent;
       // The tasks that have been created in this region
       std::vector<TaskDescription*> created_tasks;
@@ -435,8 +440,10 @@ namespace RegionRuntime {
       static void schedule(const void * args, size_t arglen, Processor p);
       static void enqueue_tasks(const void * args, size_t arglen, Processor p);
       static void steal_request(const void * args, size_t arglen, Processor p);
-      static void set_future(const void * args, size_t arglen, Processor p);
+      static void children_mapped(const void * args, size_t arglen, Processor p);
+      static void finish_task(const void * args, size_t arglen, Processor p);
       static void notify_start(const void * args, size_t arglen, Processor p);
+      static void notify_finish(const void * args, size_t arglen, Processor p);
     public:
       HighLevelRuntime(MachineDescription *m);
       ~HighLevelRuntime();
@@ -450,8 +457,8 @@ namespace RegionRuntime {
       void add_mapper(MapperID id, Mapper *m);
     public:
       // Methods for the wrapper function to access the context
-      const std::vector<PhysicalRegion>& get_region_args(Context ctx);  
-      void return_result(Context ctx, const void *arg, size_t arglen);
+      const std::vector<PhysicalRegion>& start_task(Context ctx);  
+      void finish_task(Context ctx, const void *arg, size_t arglen);
     public:
       // Get instances - return the memory locations of all known instances of a region
       // Get instances of parent regions
@@ -469,8 +476,10 @@ namespace RegionRuntime {
       // Operations invoked by static methods
       void process_tasks(const void * args, size_t arglen);
       void process_steal(const void * args, size_t arglen);
-      void process_future(const void * args, size_t arglen);
-      void process_notify(const void * args, size_t arglen);
+      void process_mapped(const void* args, size_t arglen);
+      void process_finish(const void* args, size_t arglen);
+      void process_notify_start(const void * args, size_t arglen);
+      void process_notify_finish(const void* args, size_t arglen);
       // Where the magic happens!
       void process_schedule_request(void);
       void map_and_launch_task(TaskDescription *task);
@@ -545,7 +554,7 @@ namespace RegionRuntime {
       // Read the context out of the buffer
       Context ctx = *((Context*)args);
       // Get the arguments associated with the context
-      const std::vector<PhysicalRegion>& regions = runtime->get_region_args(ctx);
+      const std::vector<PhysicalRegion>& regions = runtime->start_task(ctx);
 
       // Update the pointer and arglen
       char* arg_ptr = ((char*)args)+sizeof(Context);
@@ -555,7 +564,7 @@ namespace RegionRuntime {
       T return_value = (*TASK_PTR)((void*)arg_ptr, arglen, ctx, regions);
 
       // Send the return value back
-      runtime->return_result(ctx, (void*)(&return_value), sizeof(T));
+      runtime->finish_task(ctx, (void*)(&return_value), sizeof(T));
     }
 
     // Unfortunately to avoid template instantiation issues we have to provide
@@ -570,10 +579,8 @@ namespace RegionRuntime {
 #ifdef HIGH_LEVEL_DEBUG
       assert(active);
 #endif
-      // check to see if the event has triggered
-      if (!set_event.has_triggered())
+      if (!set)
       {
-        // If it hasn't wait for it to trigger
         set_event.wait();
       }
       active = false;

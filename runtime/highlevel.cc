@@ -22,9 +22,10 @@
 #define SCHEDULER_ID		1
 #define ENQUEUE_TASK_ID		2
 #define STEAL_TASK_ID		3
-#define NOTIFY_ID               4
-#define SET_FUTURE_ID		5
-#define CLEAN_UP_ID             6
+#define CHILDREN_MAPPED_ID      4
+#define FINISH_ID               5
+#define NOTIFY_START_ID         6
+#define NOTIFY_FINISH_ID        7
 
 namespace RegionRuntime {
   namespace HighLevel {
@@ -74,8 +75,50 @@ namespace RegionRuntime {
 #endif
       memcpy(result, res, result_size);	
       set = true;
-      // Trigger the user level event
       set_event.trigger();
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Task Description 
+    ///////////////////////////////////////////////////////////// 
+
+    //--------------------------------------------------------------------------------------------
+    TaskDescription::TaskDescription()
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      task_id = 0;
+      regions.clear();
+      args = NULL;
+      arglen = 0;
+      map_id = 0;
+      tag = 0;
+      stealable = false;
+      mapped = false;
+      ctx = 0;
+      task_handle = 0;
+      remote = false;
+      remaining_events = 0;
+      merged_wait_event = Event::NO_EVENT;
+#endif
+    }
+
+    //--------------------------------------------------------------------------------------------
+    TaskDescription::~TaskDescription()
+    //--------------------------------------------------------------------------------------------
+    {
+      // Always delete the instances that we own only
+      for (std::vector<InstanceInfo*>::iterator it = instances.begin();
+            it != instances.end(); it++)
+        delete *it;
+
+      // If we're remote we also need to delete our dead instances too
+      if (remote)
+      {
+        for (std::vector<InstanceInfo*>::iterator it = dead_instances.begin();
+              it != dead_instances.end(); it++)
+          delete *it;
+      }
     }
 
     /////////////////////////////////////////////////////////////
@@ -556,6 +599,13 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::schedule(const void * args, size_t arglen, Processor p)
+    //--------------------------------------------------------------------------------------------
+    {
+      HighLevelRuntime::get_runtime(p)->process_schedule_request();
+    }
+
+    //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::enqueue_tasks(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
@@ -570,26 +620,33 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::set_future(const void *result, size_t result_size, Processor p)
+    void HighLevelRuntime::children_mapped(const void *result, size_t result_size, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-      HighLevelRuntime::get_runtime(p)->process_future(result, result_size);
+      HighLevelRuntime::get_runtime(p)->process_mapped(result, result_size);
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::schedule(const void * args, size_t arglen, Processor p)
+    void HighLevelRuntime::finish_task(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-      HighLevelRuntime::get_runtime(p)->process_schedule_request();
+      HighLevelRuntime::get_runtime(p)->process_finish(args, arglen);
     }
-
+    
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::notify_start(const void * args, size_t arglen, Processor p)
     //-------------------------------------------------------------------------------------------- 
     {
-      HighLevelRuntime::get_runtime(p)->process_notify(args, arglen);
+      HighLevelRuntime::get_runtime(p)->process_notify_start(args, arglen);
     }
 
+    //-------------------------------------------------------------------------------------------- 
+    void HighLevelRuntime::notify_finish(const void * args, size_t arglen, Processor p)
+    //--------------------------------------------------------------------------------------------
+    {
+      HighLevelRuntime::get_runtime(p)->process_notify_finish(args, arglen);
+    }
+    
     //--------------------------------------------------------------------------------------------
     Future* HighLevelRuntime::execute_task(Context ctx, LowLevel::Processor::TaskFuncID task_id,
 					const std::vector<RegionRequirement> &regions,
@@ -675,14 +732,14 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    const std::vector<PhysicalRegion>& HighLevelRuntime::get_region_args(Context ctx)
+    const std::vector<PhysicalRegion>& HighLevelRuntime::start_task(Context ctx)
     //--------------------------------------------------------------------------------------------
     {
 
     }
 
     //-------------------------------------------------------------------------------------------- 
-    void HighLevelRuntime::return_result(Context ctx, const void * arg, size_t arglen)
+    void HighLevelRuntime::finish_task(Context ctx, const void * arg, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
       // Get the future to write to and its processor from the context
@@ -690,25 +747,49 @@ namespace RegionRuntime {
       assert(ctx < local_contexts.size());
 #endif
       ContextState *state = local_contexts[ctx];
-      // Check to see if we're writing to the local processor or not
-      if (!(state->parent->remote))
+      // Save the future result to be set later
+      state->parent->result = malloc(arglen);
+      memcpy(state->parent->result,arg,arglen);
+      state->parent->result_size = arglen;
+
+      // Check to see if there are any child tasks
+      if (state->created_tasks.size() > 0)
       {
-        // Set the future locally
-#ifdef DEBUG_HIGH_LEVEL
-        assert(state->parent->future_handle < local_futures.size());
-#endif
-        local_futures[state->parent->future_handle]->set_result(arg,arglen);
+        // Check to see if the children have all been mapped
+        bool all_mapped = true;
+        for (std::vector<TaskDescription*>::iterator it = state->created_tasks.begin();
+              it != state->created_tasks.end(); it++)
+        {
+          if (!((*it)->mapped))
+          {
+            all_mapped = false;
+            break;
+          }
+        }
+        if (all_mapped)
+        {
+          // We can directly call the task for when all the children are mapped
+          process_mapped(&ctx, sizeof(Context));
+        }
+        else
+        {
+          // We need to wait for all the children to be mapped
+          std::set<Event> map_events;
+          for (std::vector<TaskDescription*>::iterator it = state->created_tasks.begin();
+                it != state->created_tasks.end(); it++)
+          {
+            if (!((*it)->mapped))
+              map_events.insert((*it)->map_event);
+          }
+          Event merged_map_event = Event::merge_events(map_events);
+          // Launch the task to handle all the children being mapped on this processor
+          local_proc.spawn(CHILDREN_MAPPED_ID,&ctx,sizeof(Context),merged_map_event);
+        }
       }
       else
       {
-        // Otherwise package this up and send it off to the remote processor
-        char *buffer = (char*)malloc(arglen+sizeof(FutureHandle));
-        *((FutureHandle*)buffer) = state->parent->future_handle;
-        memcpy(((void*)(buffer+sizeof(FutureHandle))),arg,arglen);
-        // Launch the task, no need to wait for anything
-        state->parent->orig_proc.spawn(SET_FUTURE_ID,buffer,arglen+sizeof(FutureHandle));	
-        // Free the buffer
-        free(buffer);
+        // There are no child tasks, so we can simply clean up the task and return
+        process_finish(&ctx, sizeof(Context));
       }
     }
 
@@ -802,7 +883,7 @@ namespace RegionRuntime {
         {
           // check to see if the task matches the stealing mapper
           // then see if the mapper permits it to be stolen
-          if ((*it)->map_id == stealer && 
+          if (((*it)->stealable) && ((*it)->map_id == stealer) &&
                   mapper_objects[stealer]->permit_task_steal(thief,(*it)->task_id,
                   (*it)->regions, (*it)->tag))
           {
@@ -837,32 +918,116 @@ namespace RegionRuntime {
 
         // Clean up our mess
         free(target_buffer);
+
+        // Delete any remote tasks that we will no longer have a reference to
         for (std::vector<TaskDescription*>::iterator it = stolen.begin();
-                it != stolen.end(); it++)
+              it != stolen.end(); it++)
         {
-          delete *it;
+          if ((*it)->remote)
+            delete *it;
         }
       }
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::process_future(const void * args, size_t arglen)
+    void HighLevelRuntime::process_mapped(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
-      // First unpack the handle out of the arguments
-      const FutureHandle handle = *((const FutureHandle*)args);
-      const char *result_ptr = (const char*)args;
-      // Updat the pointer to the location of the remaining data
-      result_ptr += sizeof(FutureHandle);
-      // Get the future out of the table and set its value
+      Context ctx = *((const Context*)args);
 #ifdef DEBUG_HIGH_LEVEL
-      assert(handle < local_futures.size());
-#endif		
-      local_futures[handle]->set_result(result_ptr,arglen-sizeof(FutureHandle));
+      assert(ctx < local_contexts.size());
+#endif
+      ContextState *state = local_contexts[ctx];
+      // Compute the event that will be triggered when all the children are finished
+      std::set<Event> child_events;
+      for (std::vector<TaskDescription*>::iterator it = state->created_tasks.begin();
+            it != state->created_tasks.end(); it++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert((*it)->mapped);
+        assert((*it)->termination_event.exists());
+#endif
+        child_events.insert((*it)->termination_event);
+      }
+      Event children_finished = Event::merge_events(child_events);
+      
+      std::set<Event> copy_events;
+      // After all the child tasks have been mapped, compute the copies that
+      // are needed to restore the state of the regions
+      // TODO: Figure out how to compute the copy events
+
+      // Get the event for when the copy operations are complete
+      Event copies_finished = Event::merge_events(copy_events);
+      
+      // Issue the finish task when the copies complete
+      local_proc.spawn(FINISH_ID,args,arglen,copies_finished);
+    }
+        
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_finish(const void * args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Unpack the context from the arguments
+      Context ctx = *((const Context*)args);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(ctx < local_contexts.size());
+#endif
+      // Get the task description out of the context
+      TaskDescription *desc = local_contexts[ctx]->parent;
+
+      // Delete the dead regions for this task
+      for (std::vector<InstanceInfo*>::iterator it = desc->dead_instances.begin();
+            it != desc->dead_instances.end(); it++)
+      {
+        InstanceInfo *info = *it;
+        info->meta.destroy_instance_untyped(info->inst);
+      }
+
+      // Set the return results
+      if (desc->remote)
+      {
+        // This is a remote task, we need to send the results back to the original processor
+        size_t buffer_size = sizeof(UserEvent)+sizeof(FutureHandle)+sizeof(size_t)+
+                              desc->result_size;
+        void * buffer = malloc(buffer_size);
+        char * ptr = (char*)buffer;
+        *((UserEvent*)ptr) = desc->termination_event;
+        ptr += sizeof(UserEvent);
+        *((FutureHandle*)ptr) = desc->future_handle;
+        ptr += sizeof(FutureHandle);
+        *((size_t*)ptr) = desc->result_size;
+        ptr += sizeof(size_t);
+        memcpy(ptr,desc->result,desc->result_size);
+        ptr += desc->result_size;
+        // TODO: Encode the updates to the region tree here as well
+
+        // Launch the notify finish on the original processor (no need to wait for anything)
+        desc->orig_proc.spawn(NOTIFY_FINISH_ID,buffer,buffer_size);
+      }
+      else
+      {
+        // This is the local case, just set the future result
+        // The region trees are already up to date
+#ifdef DEBUG_HIGH_LEVEL
+        assert(desc->future_handle < local_futures.size());
+#endif
+        local_futures[desc->future_handle]->set_result(desc->result,desc->result_size);
+
+        // Trigger the event indicating that this task is complete!
+        desc->termination_event.trigger();
+      }
+      
+      // Deactivate the task's context, all information pulled if necessary
+      // when the future was set
+      local_contexts[ctx]->deactivate();
+
+      // Finally, if this is a remote task, destroy the description, otherwise
+      // the description will get destroyed when the enclosing context is deactivated
+      if (desc->remote) delete desc;
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::process_notify(const void * args, size_t arglen)
+    void HighLevelRuntime::process_notify_start(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
       // Unpack context, task, and event info
@@ -871,8 +1036,8 @@ namespace RegionRuntime {
       ptr += sizeof(Context);
       TaskHandle handle = *((const TaskHandle*)ptr);
       ptr += sizeof(TaskHandle);
-      Event wait_event = *((const Event*)ptr); 
-      ptr += sizeof(Event);
+      UserEvent wait_event = *((const UserEvent*)ptr); 
+      ptr += sizeof(UserEvent);
      
 #ifdef DEBUG_HIGH_LEVEL
       assert(ctx < local_contexts.size());
@@ -904,7 +1069,33 @@ namespace RegionRuntime {
       // Register that the task has been mapped
       desc->mapped = true;
     }
-    
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_notify_finish(const void * args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Unpack the user event to be trigged when we finished
+      const char *ptr = (const char*)args;
+      UserEvent term_event = *((const UserEvent*)ptr);
+      ptr += sizeof(UserEvent);
+      FutureHandle handle = *((const FutureHandle*)ptr);
+      ptr += sizeof(FutureHandle);
+      size_t result_size = *((const size_t*)ptr);
+      ptr += sizeof(size_t);
+      const char *result_ptr = ptr;
+      ptr += result_size; 
+      // Get the future out of the table and set its value
+#ifdef DEBUG_HIGH_LEVEL
+      assert(handle < local_futures.size());
+#endif		
+      local_futures[handle]->set_result(result_ptr,result_size);
+
+      // Now unpack any information about changes to the region tree
+
+      // Finally trigger the user event indicating that this task is finished!
+      term_event.trigger();
+    }
+
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::process_schedule_request(void)
     //--------------------------------------------------------------------------------------------
@@ -917,13 +1108,31 @@ namespace RegionRuntime {
       {
         TaskDescription *task = ready_queue.front();
         ready_queue.pop_front();
-        mapped_tasks++;
-        // Now map the task and then launch it on the processor
-        map_and_launch_task(task);
-        // Check the waiting queue for new tasks to move onto our ready queue
-        update_queue();
-        // If we've launched enough tasks, return
-        if (mapped_tasks == MAX_TASK_MAPS_PER_STEP) return;
+        // ask the mapper for where to place the task
+        Processor target = mapper_objects[task->map_id]->select_initial_processor(task->task_id,
+                            task->regions, task->tag);
+        if (target == local_proc)
+        {
+          mapped_tasks++;
+          // Now map the task and then launch it on the processor
+          map_and_launch_task(task);
+          // Check the waiting queue for new tasks to move onto our ready queue
+          update_queue();
+          // If we've launched enough tasks, return
+          if (mapped_tasks == MAX_TASK_MAPS_PER_STEP) return;
+        }
+        else
+        {
+          // Send the task to the target processor
+          size_t buffer_size = sizeof(int)+compute_task_desc_size(task);
+          void * buffer = malloc(buffer_size);
+          char * ptr = (char*)buffer;
+          *((int*)ptr) = 1; // We're only sending one task
+          ptr += sizeof(int); 
+          pack_task_desc(task, ptr);
+          // Send the task to the target processor, no need to wait on anything
+          target.spawn(ENQUEUE_TASK_ID,buffer,buffer_size);
+        }
       }
       // If we've made it here, we've run out of work to do on our local processor
       // so we need to issue a steal request to another processor
@@ -995,30 +1204,17 @@ namespace RegionRuntime {
         prev = desc->merged_wait_event;
 
       // Now launch the task itself (finally!)
-      prev = local_proc.spawn(desc->task_id, desc->args, desc->arglen, prev);
+      local_proc.spawn(desc->task_id, desc->args, desc->arglen, prev);
 
-      // Then issue any post copy events
-      copy_events.clear();
-      for (std::vector<CopyOperation>::iterator copy_it = desc->post_copy_ops.begin();
-            copy_it != desc->post_copy_ops.end(); copy_it++)
-      {
-        CopyOperation &copy = *copy_it;
-        Event copy_e = copy.src->inst.copy_to(copy.dst->inst, copy.copy_mask, prev);
-        copy_events.insert(copy_e);
-      }
-
-      if (copy_events.size() > 0)
-        prev = Event::merge_events(copy_events);
-
-      // Finally issue the clean up task
-      prev = local_proc.spawn(CLEAN_UP_ID, &ctx, sizeof(Context), prev); 
+      // Create a user level event to be triggered when the task is finished
+      desc->termination_event = UserEvent::create_user_event();
 
       // Now update the dependent tasks, if we're local we can do this directly, if not
       // launch a task on the original processor to do it
       if (desc->remote)
       {
         // Package up the data
-        size_t buffer_size = sizeof(Context) + sizeof(TaskHandle) + sizeof(Event) +
+        size_t buffer_size = sizeof(Context) + sizeof(TaskHandle) + sizeof(UserEvent) +
                               desc->regions.size() * (sizeof(RegionInstance)+sizeof(Memory));
         void * buffer = malloc(buffer_size);
         char * ptr = (char*)buffer;
@@ -1028,8 +1224,8 @@ namespace RegionRuntime {
         ptr += sizeof(Context);
         *((TaskHandle*)ptr) = desc->task_handle;
         ptr += sizeof(TaskHandle);
-        *((Event*)ptr) = prev;
-        ptr += sizeof(Event);
+        *((UserEvent*)ptr) = desc->termination_event;
+        ptr += sizeof(UserEvent);
         for (std::vector<InstanceInfo*>::iterator it = desc->instances.begin();
               it != desc->instances.end(); it++)
         {
@@ -1042,20 +1238,19 @@ namespace RegionRuntime {
         // Launch the event notification task on the original processor
         // No need to wait on anything since we're just telling the original
         // processor about the mapping
-        desc->orig_proc.spawn(NOTIFY_ID, buffer, buffer_size);
+        desc->orig_proc.spawn(NOTIFY_START_ID, buffer, buffer_size);
         // Clean up our mess
         free(buffer);
       }
       else
       {
         // Local case
-        desc->termination_event = prev;
         // Notify each of the dependent tasks with the event that they need to
         // wait on before executing
         for (std::vector<TaskDescription*>::iterator it = desc->dependent_tasks.begin();
               it != desc->dependent_tasks.end(); it++)
         {
-          (*it)->wait_events.insert(prev);
+          (*it)->wait_events.insert(desc->termination_event);
 #ifdef DEBUG_HIGH_LEVEL
           assert((*it)->remaining_events > 0);
 #endif
