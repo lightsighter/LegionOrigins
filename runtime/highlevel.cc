@@ -14,12 +14,17 @@
 
 #define DEFAULT_MAPPER_SLOTS 	8
 #define DEFAULT_CONTEXTS	8
+#define DEFAULT_FUTURES		16
+
+#define MAX_TASK_MAPS_PER_STEP  4
 
 #define SHUTDOWN_FUNC_ID	0
 #define SCHEDULER_ID		1
 #define ENQUEUE_TASK_ID		2
 #define STEAL_TASK_ID		3
-#define SET_FUTURE_ID		4
+#define NOTIFY_ID               4
+#define SET_FUTURE_ID		5
+#define CLEAN_UP_ID             6
 
 namespace RegionRuntime {
   namespace HighLevel {
@@ -27,47 +32,444 @@ namespace RegionRuntime {
     // Future
     ///////////////////////////////////////////////////////////// 
 
-    
-
     //--------------------------------------------------------------------------------------------
-    Future::Future(FutureHandle h) : handle(h), set(false), result(NULL), active(true) 
+    Future::Future(FutureHandle h, Processor p) 
+      : proc(p), handle(h), set(false), result(NULL), active(true) 
     //--------------------------------------------------------------------------------------------
     {
+      set_event = UserEvent::create_user_event();
     }
 
     //--------------------------------------------------------------------------------------------
     Future::~Future() 
     //--------------------------------------------------------------------------------------------
     { 
-	if (result != NULL)
-	{
-		free(result); 
-	}
+      if (result != NULL)
+      {
+        free(result); 
+      }
     }
 
     //--------------------------------------------------------------------------------------------
     void Future::reset(void)
     //-------------------------------------------------------------------------------------------- 
     {
-	if (result != NULL)
-		free(result);
-	set = false;
-	active = true;
+      if (result != NULL)
+        free(result);
+      set = false;
+      active = true;
+      set_event = UserEvent::create_user_event();
     }
 
     //--------------------------------------------------------------------------------------------
-    inline void Future::set_result(const void * res, size_t result_size)
+    void Future::set_result(const void * res, size_t result_size)
     //--------------------------------------------------------------------------------------------
     {
-	result = malloc(result_size);
+      result = malloc(result_size);
 #ifdef DEBUG_HIGH_LEVEL
-	assert(!set);
-	assert(active);
-	assert(res != NULL);
-	assert(result != NULL);
+      assert(!set);
+      assert(active);
+      assert(res != NULL);
+      assert(result != NULL);
 #endif
-	memcpy(result, res, result_size);	
-	set = true;
+      memcpy(result, res, result_size);	
+      set = true;
+      // Trigger the user level event
+      set_event.trigger();
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Context State 
+    ///////////////////////////////////////////////////////////// 
+
+    //--------------------------------------------------------------------------------------------
+    bool ContextState::activate(TaskDescription *parent_task)
+    //--------------------------------------------------------------------------------------------
+    {
+      if (!active)
+      {
+        active = true;
+        parent = parent_task;
+        // For right now let's just assume that all the regions in a task are disjoint
+        // TODO: Handle the regions in a task not being disjoint
+        
+        // Get pointers to the top level regions for this task
+        for (std::vector<RegionRequirement>::iterator it = parent_task->regions.begin();
+                it != parent_task->regions.end(); it++)
+        {
+          // Get the trace for the region
+          const std::vector<unsigned> &region_trace = runtime->region_traces[it->handle];
+          // Find the node for the trace
+          {
+            LogicalHandle key = { region_trace[0] };
+            RegionNode *root = runtime->region_trees[key];
+            top_level_regions[it->handle] = root->get_node(region_trace);
+          }	
+        }	
+        return true;
+      }
+      return false;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void ContextState::deactivate(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      active = false;
+      parent = NULL;
+      // Clear out the region tree for this context
+      for (std::map<LogicalHandle,RegionNode*>::iterator it = top_level_regions.begin();
+              it != top_level_regions.end(); it++)
+      {
+        it->second->clear_context(this_context);	
+      }
+      top_level_regions.clear();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void ContextState::register_task(TaskDescription *child)
+    //--------------------------------------------------------------------------------------------
+    {
+      // For each of the region requirements in the task go through and find all the 
+      // dependencies for the task
+      for (int i=0; i<child->regions.size(); i++)
+      {
+        // TODO: handle the case where there are multiple non-disjoint parent regions
+        // Iterate over the enclosing region trees looking for matches
+        bool found = false;
+        for (std::map<LogicalHandle,RegionNode*>::iterator par_it = top_level_regions.begin();
+                par_it != top_level_regions.end(); par_it++)
+        {
+          if (!runtime->disjoint(child->regions[i].handle, par_it->first))
+          {
+            found = true;
+            // Compute the dependencies on this task
+            const std::vector<unsigned> &trace = 
+                    runtime->region_traces[child->regions[i].handle];
+            par_it->second->compute_dependence(this_context, child, i, trace);
+            break;
+          }
+        }
+        // It's a runtime error not to find a region
+        if (!found)
+        {
+          fprintf(stderr,"Unable to find region %u as a sub-region of parent regions for task %d running in parent task %d\n", child->regions[i].handle.id, child->task_id, parent->task_id);
+          exit(100*(runtime->machine->get_local_processor().id));
+        }
+      }
+    }
+
+
+    /////////////////////////////////////////////////////////////
+    // Region Node 
+    ///////////////////////////////////////////////////////////// 
+
+    //--------------------------------------------------------------------------------------------
+    RegionNode::RegionNode(Color c, unsigned dep) : color(c), depth(dep)
+    //--------------------------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------------------------
+    RegionNode::~RegionNode()
+    //--------------------------------------------------------------------------------------------
+    {
+      // Look over each of the partitions and see if they are not NULL,
+      // If not call their destructors
+      for (std::vector<PartitionNode*>::iterator it = partitions.begin();
+              it != partitions.end(); it++)
+      {
+        if ((*it) != NULL)
+          delete *it;
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    unsigned RegionNode::insert_partition(const std::vector<unsigned> &parent_trace,
+					unsigned num_subregions, bool dis)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Check to see if this is us
+      if (depth == (parent_trace.size()-1))
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        // Check that we're in the right place
+        if (depth > 0)
+          assert(color == parent_trace[depth]);
+#endif
+        // See if we can find a previously deleted partition
+        for (unsigned idx=0; idx<partitions.size(); idx++)
+        {
+          if (partitions[idx]->activate(num_subregions, dis))
+            return idx;
+        }
+        // We couldn't find one so make a new one	
+        unsigned index = partitions.size();	
+        partitions.push_back(new PartitionNode(index, depth+1, num_subregions, dis));
+        return index;
+      }
+      else
+      {
+        // Continue the traversal
+#ifdef DEBUG_HIGH_LEVEL
+        if (depth > 0)
+                assert(color == parent_trace[depth]);
+        assert(parent_trace[depth+1] < partitions.size());
+        assert(partitions[parent_trace[depth+1]] != NULL);
+#endif
+        return partitions[parent_trace[depth+1]]->insert_partition(parent_trace,num_subregions,dis);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::remove_partition(const std::vector<unsigned> &parent_trace, 
+                                      unsigned partition_id)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Check to see if this is us
+      if (depth == (parent_trace.size()-1))
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        // Check that we're in the right place
+        if (depth > 0)
+          assert(color == parent_trace[depth]);
+        assert(partition_id < partitions.size());
+        assert(partitions[partition_id] != NULL);
+#endif
+        partitions[partition_id]->deactivate();
+      }
+      else
+      {
+        // Continue the traversal
+#ifdef DEBUG_HIGH_LEVEL
+        if (depth > 0)
+          assert(color == parent_trace[depth]);
+        assert(parent_trace[depth+1] < partitions.size());
+        assert(partitions[parent_trace[depth+1]] != NULL);
+#endif
+        partitions[parent_trace[depth+1]]->remove_partition(parent_trace,partition_id);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::remove_node(const std::vector<unsigned> &node_trace)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      if (depth > 0)
+        assert(color == node_trace[depth]);
+      assert(node_trace[depth+1] < partitions.size());
+      assert(partitions[node_trace[depth+1]] != NULL);
+#endif	
+      partitions[node_trace[depth+1]]->remove_node(node_trace);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    RegionNode* RegionNode::get_node(const std::vector<unsigned> &trace) const
+    //--------------------------------------------------------------------------------------------
+    {
+      // Check to see if this is us
+      if (depth == (trace.size()-1))
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        // Check that we're in the right place
+        if (depth > 0)
+          assert(color == trace[depth]);
+#endif
+        return const_cast<RegionNode*>(this);
+      }
+      else
+      {
+        // Continue the traversal
+#ifdef DEBUG_HIGH_LEVEL
+        if (depth > 0)
+          assert(color == trace[depth]);
+        assert(trace[depth+1] < partitions.size());
+        assert(partitions[trace[depth+1]] != NULL);
+#endif
+        return partitions[trace[depth+1]]->get_node(trace);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::clear_context(Context ctx)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Handle the local context
+      if (ctx < region_states.size())
+      {
+        //region_states[ctx].owner = NULL;
+        //region_states[ctx].open_partitions = false;
+
+        // Check the lower levels of the tree
+        for (std::vector<PartitionNode*>::iterator it = partitions.begin();
+                it != partitions.end(); it++)
+        {
+          if ((*it) != NULL)
+          {
+            (*it)->clear_context(ctx);
+          }
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::compute_dependence(Context ctx, TaskDescription *child,
+					int index, const std::vector<unsigned> &trace)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool RegionNode::disjoint(const RegionNode *other) const
+    //--------------------------------------------------------------------------------------------
+    {
+      // For right now, they never are if we can't prove it statically
+      // TODO: implemenent a dynamic disjointness test
+      return false;
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Partition Node 
+    ///////////////////////////////////////////////////////////// 
+
+    //--------------------------------------------------------------------------------------------
+    PartitionNode::PartitionNode(unsigned idx, unsigned dep, unsigned num_subregions, bool dis)
+	: index(idx), depth(dep), disjoint(dis), active(true)
+    //--------------------------------------------------------------------------------------------
+    {
+      children.resize(num_subregions);
+      partition_states.resize(num_subregions);
+      for (unsigned idx = 0; idx < num_subregions; idx++)
+      {
+        children[idx] = new RegionNode(idx, dep+1);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    PartitionNode::~PartitionNode()
+    //--------------------------------------------------------------------------------------------
+    {
+      // Delete all the children
+      for (unsigned idx = 0; idx < children.size(); idx++)
+      {
+        if (children[idx] != NULL)
+          delete children[idx];
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool PartitionNode::activate(unsigned num_subregions, bool dis)
+    //--------------------------------------------------------------------------------------------
+    {
+      if (!active)
+      {
+        active = true;
+        disjoint = dis;
+        children.resize(num_subregions);
+        partition_states.resize(num_subregions);
+        for (unsigned idx = 0; idx < num_subregions; idx++)
+        {
+          children[idx] = new RegionNode(idx, depth+1);
+        }
+        return true;
+      }
+      return false;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void PartitionNode::deactivate(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      active = false;
+      for (unsigned idx = 0; idx < children.size(); idx++)
+      {
+        if (children[idx] != NULL)
+        {
+          delete children[idx];
+#ifdef DEBUG_HIGH_LEVEL
+          children[idx] = NULL;
+#endif
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    unsigned PartitionNode::insert_partition(const std::vector<unsigned> &parent_trace,
+						unsigned num_subregions, bool dis)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(parent_trace[depth] == index);
+#endif
+      return children[parent_trace[depth+1]]->insert_partition(parent_trace,num_subregions,dis);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void PartitionNode::remove_partition(const std::vector<unsigned> &parent_trace,
+					unsigned partition_id)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(parent_trace[depth] == index);
+#endif
+      children[parent_trace[depth+1]]->remove_partition(parent_trace,partition_id);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void PartitionNode::remove_node(const std::vector<unsigned> &node_trace)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Check to see if this is us
+      if (depth == (node_trace.size()-2))
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(node_trace[depth] == index);
+        assert(node_trace[depth+1] < children.size());
+#endif
+        delete children[node_trace[depth+1]];
+        children[node_trace[depth+1]] = NULL;
+      }
+      else
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(node_trace[depth] == index);
+#endif
+        children[node_trace[depth+1]]->remove_node(node_trace);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    RegionNode* PartitionNode::get_node(const std::vector<unsigned> &trace) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(trace[depth] == index);
+      assert(trace[depth+1] < children.size());
+#endif
+      return children[trace[depth+1]]->get_node(trace);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void PartitionNode::clear_context(Context ctx)
+    //--------------------------------------------------------------------------------------------
+    {
+      for (unsigned idx = 0; idx < children.size(); idx++)
+      {
+        if (children[idx] != NULL)
+        {
+          children[idx]->clear_context(ctx);
+        }
+      }	
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void PartitionNode::compute_dependence(Context ctx, TaskDescription *child,
+					int index, const std::vector<unsigned> &trace)
+    //--------------------------------------------------------------------------------------------
+    {
+
     }
 
 
@@ -81,49 +483,58 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     HighLevelRuntime::HighLevelRuntime(LowLevel::Machine *m)
-	: mapper_objects(std::vector<Mapper*>(DEFAULT_MAPPER_SLOTS)), 
-		machine(m), local_proc(m->get_local_processor())
+      : mapper_objects(std::vector<Mapper*>(DEFAULT_MAPPER_SLOTS)), 
+      local_proc(m->get_local_processor()), machine(m)
     //--------------------------------------------------------------------------------------------
     {
-	// Register this object with the runtime map
-	runtime_map->insert(std::pair<Processor,HighLevelRuntime*>(local_proc,this));
+      // Register this object with the runtime map
+      runtime_map->insert(std::pair<Processor,HighLevelRuntime*>(local_proc,this));
 
-	for (unsigned int i=0; i<mapper_objects.size(); i++)
-		mapper_objects[i] = NULL;
-	mapper_objects[0] = new Mapper(machine,this);
+      for (unsigned int i=0; i<mapper_objects.size(); i++)
+        mapper_objects[i] = NULL;
+      mapper_objects[0] = new Mapper(machine,this);
 
-	// Create some local contexts
-	for (unsigned int id=0; id<DEFAULT_CONTEXTS; id++)
-	{
-		ContextState *state = new ContextState();
-		local_contexts.insert(std::pair<Context,ContextState*>(id,state));
-	}
-	
-	// TODO: register the appropriate functions with the low level processor
-	// Task 0 : Runtime Shutdown
-	// Task 1 : Enqueue Task Request
-	// Task 2 : Steal Request
-	// Task 3 : Set Future Value
+      // Create some default futures
+      for (unsigned int id=0; id<DEFAULT_FUTURES; id++)
+      {
+        local_futures[id] = new Future(id,local_proc);
+      }
+
+      // Create some local contexts
+      for (unsigned int id=0; id<DEFAULT_CONTEXTS; id++)
+      {
+        ContextState *state = new ContextState(this,id);
+        local_contexts.push_back(state);
+      }
+      
+      // TODO: register the appropriate functions with the low level processor
+      // Task 0 : Runtime Shutdown
+      // Task 1 : Enqueue Task Request
+      // Task 2 : Steal Request
+      // Task 3 : Set Future Value
     }
 
     //--------------------------------------------------------------------------------------------
     HighLevelRuntime::~HighLevelRuntime()
     //--------------------------------------------------------------------------------------------
     {
-	std::map<Processor,HighLevelRuntime*>::iterator it = runtime_map->find(local_proc);
+      std::map<Processor,HighLevelRuntime*>::iterator it = runtime_map->find(local_proc);
 #ifdef DEBUG_HIGH_LEVEL
-	assert(it != runtime_map->end());
+      assert(it != runtime_map->end());
 #endif
-	runtime_map->erase(it);
+      runtime_map->erase(it);
 
-	// Go through and delete all the mapper objects
-	for (unsigned int i=0; i<mapper_objects.size(); i++)
-		if (mapper_objects[i] != NULL) delete mapper_objects[i];
+      // Go through and delete all the mapper objects
+      for (unsigned int i=0; i<mapper_objects.size(); i++)
+        if (mapper_objects[i] != NULL) delete mapper_objects[i];
 
-	// Delete all the local futures
-	for (std::map<FutureHandle,Future*>::iterator it = local_futures.begin();
-		it != local_futures.end(); it++)
-		delete it->second;
+      // Delete all the local futures
+      for (std::vector<Future*>::iterator it = local_futures.begin();
+              it != local_futures.end(); it++)
+        delete *it;
+      for (std::vector<ContextState*>::iterator it = local_contexts.begin();
+              it != local_contexts.end(); it++)
+        delete *it;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -131,119 +542,92 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-	assert(runtime_map->find(p) != runtime_map->end());
+      assert(runtime_map->find(p) != runtime_map->end());
 #endif
-	return ((*runtime_map)[p]);
+      return ((*runtime_map)[p]);
     }
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::shutdown_runtime(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-	// Invoke the destructor
-	delete HighLevelRuntime::get_runtime(p);
+      // Invoke the destructor
+      delete HighLevelRuntime::get_runtime(p);
     }
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::enqueue_tasks(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-	HighLevelRuntime::get_runtime(p)->process_tasks(args,arglen);
+      HighLevelRuntime::get_runtime(p)->process_tasks(args,arglen);
     }
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::steal_request(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-	HighLevelRuntime::get_runtime(p)->process_steal(args,arglen);
+      HighLevelRuntime::get_runtime(p)->process_steal(args,arglen);
     }
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::set_future(const void *result, size_t result_size, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-	HighLevelRuntime::get_runtime(p)->process_future(result, result_size);
+      HighLevelRuntime::get_runtime(p)->process_future(result, result_size);
     }
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::schedule(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-	HighLevelRuntime::get_runtime(p)->process_schedule_request();
+      HighLevelRuntime::get_runtime(p)->process_schedule_request();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::notify_start(const void * args, size_t arglen, Processor p)
+    //-------------------------------------------------------------------------------------------- 
+    {
+      HighLevelRuntime::get_runtime(p)->process_notify(args, arglen);
     }
 
     //--------------------------------------------------------------------------------------------
     Future* HighLevelRuntime::execute_task(Context ctx, LowLevel::Processor::TaskFuncID task_id,
 					const std::vector<RegionRequirement> &regions,
-					const void *args, size_t arglen,
+					const void *args, size_t arglen, bool spawn,
 					MapperID id, MappingTagID tag)	
     //--------------------------------------------------------------------------------------------
     {
-	// Invoke the mapper to see where we're going to put this task
-#ifdef DEBUG_HIGH_LEVEL
-	assert(id < mapper_objects.size());
-	assert(mapper_objects[id] == NULL);
-#endif
-	Processor target = mapper_objects[id]->select_initial_processor(task_id,regions,tag);
-#ifdef DEBUG_HIGH_LEVEL
-	if (!target.exists())
-	{
-		fprintf(stderr,"Mapper %d failed to give valid processor target for task %d with tag %d\n",id,task_id,tag);
-		exit(100*(machine->get_local_processor().id)+id);
-	}
-#endif
-	Future* ret_future = get_available_future();
-	// Check to see if we're enqueuing local or far away
-	if (target == local_proc)
-	{
-		// This is a local processor, just add it to the queue	
-		TaskDescription *desc = new TaskDescription();
-		desc->task_id = task_id;
-		desc->regions = regions;
-		desc->args = malloc(sizeof(arglen));
-		memcpy(desc->args,args,arglen);
-		desc->arglen = arglen;
-		desc->map_id = id;
-		desc->tag = tag;
-		desc->future_handle = ret_future->handle;
-		desc->future_proc = local_proc;
-		task_queue.push_back(desc);
-	}
-	else
-	{
-		size_t buffer_size = compute_task_desc_size(regions.size(),arglen);
-		void *arg_buffer = (char*)malloc(buffer_size+sizeof(int));			
-		// Set the number of tasks to pass
-		*((int*)arg_buffer) = 1;
-		char * buffer = ((char*)arg_buffer)+sizeof(int);	
+      Future* ret_future = get_available_future();
 
-		*((Processor::TaskFuncID*)buffer) = task_id;
-		buffer += sizeof(Processor::TaskFuncID);
-		*((int*)buffer) = regions.size();
-		buffer += sizeof(int);
-		*((size_t*)buffer) = arglen;
-		buffer += sizeof(size_t);
-		*((MapperID*)buffer) = id;
-		buffer += sizeof(MapperID);
-		*((MappingTagID*)buffer) = tag;
-		buffer += sizeof(MappingTagID);
-		*((FutureHandle*)buffer) = ret_future->handle;
-		buffer += sizeof(FutureHandle);
-		*((Processor*)buffer) = local_proc;
-		buffer += sizeof(Processor);
-		for (int i=0; i<regions.size(); i++)
-		{
-			*((RegionRequirement*)buffer) = regions[i];
-			buffer += sizeof(RegionRequirement);
-		}
-		memcpy(buffer,args,arglen);
-		buffer += arglen;
+      TaskDescription *desc = new TaskDescription();		
+      desc->task_id = task_id;
+      desc->regions = regions;
+      // Copy over the args while giving extra room to store the context information
+      // that will be pulled out by the wrapper high-level method
+      desc->args = malloc(arglen+sizeof(Context));
+      memcpy(((char*)desc->args)+sizeof(Context), args, arglen);
+      desc->arglen = arglen + sizeof(Context);
+      desc->map_id = id;
+      desc->tag = tag;
+      desc->stealable = spawn;
+      desc->mapped = false;
+      desc->orig_proc = local_proc;
+      desc->ctx = ctx;
+      desc->remote = false;
+      desc->future_handle = ret_future->handle;
+      // Register the task with the context
+#ifdef DEBUG_HIGH_LEVEL
+      assert(ctx < local_contexts.size());
+#endif
+      local_contexts[ctx]->register_task(desc);
+      
+      // Figure out where to put this task
+      if (desc->remaining_events == 0)
+        ready_queue.push_back(desc);
+      else
+        waiting_queue.push_back(desc);
 
-		// Task-id 1 should always be to enqueue tasks
-		// No need to wait for this event to happen
-		target.spawn(1,arg_buffer,buffer_size);
-	}
-	return ret_future;
+      return ret_future;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -251,189 +635,128 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-	// Only the default mapper should have id 0
-	assert(id > 0);
+      // Only the default mapper should have id 0
+      assert(id > 0);
 #endif
-	// Increase the size of the mapper vector if necessary
-	if (id >= mapper_objects.size())
-	{
-		int old_size = mapper_objects.size();
-		mapper_objects.resize(id+1);
-		for (unsigned int i=old_size; i<(id+1); i++)
-			mapper_objects[i] = NULL;
-	} 
+      // Increase the size of the mapper vector if necessary
+      if (id >= mapper_objects.size())
+      {
+        int old_size = mapper_objects.size();
+        mapper_objects.resize(id+1);
+        for (unsigned int i=old_size; i<(id+1); i++)
+          mapper_objects[i] = NULL;
+      } 
 #ifdef DEBUG_HIGH_LEVEL
-	assert(id < mapper_objects.size());
-	assert(mapper_objects[id] == NULL);
+      assert(id < mapper_objects.size());
+      assert(mapper_objects[id] == NULL);
 #endif
-	mapper_objects[id] = m;
+      mapper_objects[id] = m;
     }
 
     //--------------------------------------------------------------------------------------------
-    Context HighLevelRuntime::get_available_context(void)
+    Context HighLevelRuntime::get_available_context(TaskDescription *parent_task)
     //--------------------------------------------------------------------------------------------
     {
-	// See if we can find an unused context
-	for (std::map<Context,ContextState*>::iterator it = local_contexts.begin();
-		it != local_contexts.end(); it++)
-	{
-		if ((it->second)->activate())
-		{
-			// Activation successful
-			return it->first;
-		}
-	}
-	// Failed to find an available one, make a new one
-	Context ctx_id = local_contexts.size();
-	ContextState *state = new ContextState(true/*activate*/);
-	local_contexts.insert(std::pair<Context,ContextState*>(ctx_id,state));
-	return ctx_id;		
+      // See if we can find an unused context
+      for (int ctx = 0; ctx < local_contexts.size(); ctx++)
+      {
+        if (local_contexts[ctx]->activate(parent_task))
+        {
+          // Activation successful
+          return (Context)ctx;
+        }
+      }
+      // Failed to find an available one, make a new one
+      Context ctx_id = local_contexts.size();
+      ContextState *state = new ContextState(this,ctx_id);
+      state->activate(parent_task);
+      local_contexts.push_back(state);
+      return ctx_id;		
+    }
+
+    //--------------------------------------------------------------------------------------------
+    const std::vector<PhysicalRegion>& HighLevelRuntime::get_region_args(Context ctx)
+    //--------------------------------------------------------------------------------------------
+    {
+
     }
 
     //-------------------------------------------------------------------------------------------- 
     void HighLevelRuntime::return_result(Context ctx, const void * arg, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
-	// Get the future to write to and its processor from the context
+      // Get the future to write to and its processor from the context
 #ifdef DEBUG_HIGH_LEVEL
-	assert(local_contexts.find(ctx) != local_contexts.end());
+      assert(ctx < local_contexts.size());
 #endif
-	ContextState *state = local_contexts[ctx];
-	// Check to see if we're writing to the local processor or not
-	if (state->future_proc == local_proc)
-	{
-		// Set the future locally
+      ContextState *state = local_contexts[ctx];
+      // Check to see if we're writing to the local processor or not
+      if (!(state->parent->remote))
+      {
+        // Set the future locally
 #ifdef DEBUG_HIGH_LEVEL
-		assert(local_futures.find(state->future_handle) != local_futures.end());
+        assert(state->parent->future_handle < local_futures.size());
 #endif
-		local_futures[state->future_handle]->set_result(arg,arglen);
-	}
-	else
-	{
-		// Otherwise package this up and send it off to the remote processor
-		char *buffer = (char*)malloc(arglen+sizeof(FutureHandle));
-		*((FutureHandle*)buffer) = state->future_handle;
-		memcpy(((void*)(buffer+sizeof(FutureHandle))),arg,arglen);
-		// Launch the task, no need to wait for anything
-		state->future_proc.spawn(SET_FUTURE_ID,buffer,arglen+sizeof(FutureHandle));	
-		// Free the buffer
-		free(buffer);
-	}
+        local_futures[state->parent->future_handle]->set_result(arg,arglen);
+      }
+      else
+      {
+        // Otherwise package this up and send it off to the remote processor
+        char *buffer = (char*)malloc(arglen+sizeof(FutureHandle));
+        *((FutureHandle*)buffer) = state->parent->future_handle;
+        memcpy(((void*)(buffer+sizeof(FutureHandle))),arg,arglen);
+        // Launch the task, no need to wait for anything
+        state->parent->orig_proc.spawn(SET_FUTURE_ID,buffer,arglen+sizeof(FutureHandle));	
+        // Free the buffer
+        free(buffer);
+      }
     }
-
-    //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::destroy_context(Context ctx)
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-	assert(local_contexts.find(ctx) != local_contexts.end());
-#endif
-	local_contexts[ctx]->deactivate();
-    }
-
 
     //--------------------------------------------------------------------------------------------
     Future* HighLevelRuntime::get_available_future()
     //--------------------------------------------------------------------------------------------
     {
-	// Run through the available futures and see if we find one that is unset	
-	for (std::map<FutureHandle,Future*>::iterator it = local_futures.begin();
-		it != local_futures.end(); it++)
-	{
-		if (!((it->second)->is_active()))
-		{
-			(it->second)->reset();
-			return (it->second);
-		}
-	}
-	FutureHandle next_handle = local_futures.size();
-	Future *next = new Future(next_handle);
-	local_futures.insert(std::pair<FutureHandle,Future*>(next_handle,next));
-	return next;
+      // Run through the available futures and see if we find one that is unset	
+      for (std::vector<Future*>::iterator it = local_futures.begin();
+              it != local_futures.end(); it++)
+      {
+        if (!((*it)->is_active()))
+        {
+          (*it)->reset();
+          return (*it);
+        }
+      }
+      FutureHandle next_handle = local_futures.size();
+      Future *next = new Future(next_handle, local_proc);
+      local_futures.push_back(next);
+      return next;
     }
 
     //--------------------------------------------------------------------------------------------
     size_t HighLevelRuntime::compute_task_desc_size(TaskDescription *desc) const
     //--------------------------------------------------------------------------------------------
     {
-	return compute_task_desc_size(desc->regions.size(),desc->arglen);
+      return compute_task_desc_size(desc->regions.size(),desc->arglen);
     }
 
     //--------------------------------------------------------------------------------------------
     size_t HighLevelRuntime::compute_task_desc_size(int num_regions, size_t arglen) const
     //--------------------------------------------------------------------------------------------
     {
-	size_t ret_size = 0;
-	ret_size += sizeof(Processor::TaskFuncID);
-	ret_size += sizeof(int);
-	ret_size += sizeof(size_t);
-	ret_size += sizeof(MapperID);
-	ret_size += sizeof(MappingTagID);
-	ret_size += sizeof(FutureHandle);
-	ret_size += sizeof(Processor);
-	ret_size += (num_regions * sizeof(RegionRequirement));
-	ret_size += arglen;
-	return ret_size;
+      size_t ret_size = 0;
+      return ret_size;
     }
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::pack_task_desc(TaskDescription *desc, char *&buffer) const
     //--------------------------------------------------------------------------------------------
     {
-	*((Processor::TaskFuncID*)buffer) = desc->task_id;
-	buffer += sizeof(Processor::TaskFuncID);
-	*((int*)buffer) = desc->regions.size();
-	buffer += sizeof(int);
-	*((size_t*)buffer) = desc->arglen;
-	buffer += sizeof(size_t);
-	*((MapperID*)buffer) = desc->map_id;
-	buffer += sizeof(MapperID);
-	*((MappingTagID*)buffer) = desc->tag;
-	buffer += sizeof(MappingTagID);
-	*((FutureHandle*)buffer) = desc->future_handle;
-	buffer += sizeof(FutureHandle);
-	*((Processor*)buffer) = desc->future_proc;
-	buffer += sizeof(Processor);
-	for (int i=0; i<desc->regions.size(); i++)
-	{
-		*((RegionRequirement*)buffer) = desc->regions[i];
-		buffer += sizeof(RegionRequirement);
-	}
-	memcpy(buffer,desc->args,desc->arglen);
-	buffer += desc->arglen;
     }
 
     //--------------------------------------------------------------------------------------------
     TaskDescription* HighLevelRuntime::unpack_task_desc(const char *&buffer) const
     //--------------------------------------------------------------------------------------------
     {
-	// Create a new task description
-	TaskDescription *desc = new TaskDescription();
-	// Unpack the task arguments
-	desc->task_id = *((Processor::TaskFuncID*)buffer);
-	buffer += sizeof(Processor::TaskFuncID);
-	int num_regions = *((int*)buffer);
-	buffer += sizeof(int);
-	desc->arglen = *((size_t*)buffer);
-	buffer += sizeof(size_t);
-	desc->map_id = *((MapperID*)buffer);
-	buffer += sizeof(MapperID);
-	desc->tag = *((MappingTagID*)buffer);
-	buffer += sizeof(MappingTagID);
-	desc->future_handle = *((FutureHandle*)buffer);
-	buffer += sizeof(FutureHandle);
-	desc->future_proc = *((Processor*)buffer);
-	// Get the regions requirements out
-	for (int j=0; j<num_regions; j++)
-	{
-		desc->regions.push_back(*((RegionRequirement*)buffer));
-		buffer += sizeof(RegionRequirement);
-	}
-	// Finally get the arguments
-	desc->args = malloc(desc->arglen);
-	memcpy(desc->args,buffer,desc->arglen);	
-	buffer += desc->arglen;
-	return desc;
     }
 
 
@@ -441,111 +764,464 @@ namespace RegionRuntime {
     void HighLevelRuntime::process_tasks(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
-	const char *buffer = (const char*)args;
-	// First get the number of tasks to process
-	int num_tasks = *((int*)buffer);
-	buffer += sizeof(int);
-	// Unpack each of the tasks
-	for (int i=0; i<num_tasks; i++)
-	{
-		// Add the task description to the task queue
-		task_queue.push_back(unpack_task_desc(buffer));
-	}
+      const char *buffer = (const char*)args;
+      // First get the number of tasks to process
+      int num_tasks = *((int*)buffer);
+      buffer += sizeof(int);
+      // Unpack each of the tasks
+      for (int i=0; i<num_tasks; i++)
+      {
+        // Add the task description to the task queue
+        ready_queue.push_back(unpack_task_desc(buffer));
+      }
     }
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::process_steal(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
-	const char * buffer = ((const char*)args);
-	// Unpack the stealing processor
-	Processor thief = *((Processor*)buffer);	
-	buffer += sizeof(Processor);
-	// Get the maximum number of tasks to steal
-	int max_tasks = *((int*)buffer);
+      const char * buffer = ((const char*)args);
+      // Unpack the stealing processor
+      Processor thief = *((Processor*)buffer);	
+      buffer += sizeof(Processor);
+      // Get the number of mappers that requested this processor for stealing 
+      int num_stealers = *((int*)buffer);
+      buffer += sizeof(int);
+              
 
-	// Iterate over the task descriptions, asking the appropriate mapper
-	// whether we can steal them
-	std::vector<TaskDescription*> stolen;
-	int index = 0;
-	while ((index < task_queue.size()) && (stolen.size()<max_tasks))
-	{
-		std::vector<TaskDescription*>::iterator it = task_queue.begin();
-		// Jump to the proper index
-		for (int i=0; i<index; i++)
-			it++;
-		// Now start looking for tasks to steal
-		for ( ; it != task_queue.end(); it++, index++)
-		{
-			TaskDescription *desc = *it;
-#ifdef DEBUG_HIGH_LEVEL
-			assert(desc->map_id < mapper_objects.size());
-#endif	
-			if (mapper_objects[desc->map_id]->permit_task_steal(thief,desc->task_id,
-						desc->regions, desc->tag))
-			{
-				stolen.push_back(*it);
-				task_queue.erase(it);
-				break;
-			}
-		}	
-	}
-	// We've now got our tasks to steal
-	if (!stolen.empty())
-	{
-		size_t total_buffer_size = sizeof(int);
-		// Count up the size of elements to steal
-		for (std::vector<TaskDescription*>::iterator it = stolen.begin();
-			it != stolen.end(); it++)
-		{
-			total_buffer_size += compute_task_desc_size(*it);
-		}
-		// Allocate the buffer
-		char * target_buffer = (char*)malloc(total_buffer_size);
-		char * target_ptr = target_buffer;
-		*((int*)target_ptr) = int(stolen.size());
-		target_ptr += sizeof(int);
-		// Write the task descriptions into memory
-		for (std::vector<TaskDescription*>::iterator it = stolen.begin();
-			it != stolen.end(); it++)
-		{
-			pack_task_desc(*it,target_ptr);
-		}
-		// Invoke the task on the right processor to send tasks back
-		thief.spawn(1, target_buffer, total_buffer_size);
+      // Iterate over the task descriptions, asking the appropriate mapper
+      // whether we can steal them
+      std::vector<TaskDescription*> stolen;
+      for (int i=0; i<num_stealers; i++)
+      {
+        // Get the mapper id out of the buffer
+        MapperID stealer = *((MapperID*)buffer);
+        // Iterate over the tasks looking for ones that match the given mapper
+        for (std::list<TaskDescription*>::iterator it = ready_queue.begin();
+                it != ready_queue.end(); it++)
+        {
+          // check to see if the task matches the stealing mapper
+          // then see if the mapper permits it to be stolen
+          if ((*it)->map_id == stealer && 
+                  mapper_objects[stealer]->permit_task_steal(thief,(*it)->task_id,
+                  (*it)->regions, (*it)->tag))
+          {
+            stolen.push_back(*it);
+            it = ready_queue.erase(it);
+          }
+        }
+      }
+      // We've now got our tasks to steal
+      if (!stolen.empty())
+      {
+        size_t total_buffer_size = sizeof(int);
+        // Count up the size of elements to steal
+        for (std::vector<TaskDescription*>::iterator it = stolen.begin();
+                it != stolen.end(); it++)
+        {
+          total_buffer_size += compute_task_desc_size(*it);
+        }
+        // Allocate the buffer
+        char * target_buffer = (char*)malloc(total_buffer_size);
+        char * target_ptr = target_buffer;
+        *((int*)target_ptr) = int(stolen.size());
+        target_ptr += sizeof(int);
+        // Write the task descriptions into memory
+        for (std::vector<TaskDescription*>::iterator it = stolen.begin();
+                it != stolen.end(); it++)
+        {
+          pack_task_desc(*it,target_ptr);
+        }
+        // Invoke the task on the right processor to send tasks back
+        thief.spawn(1, target_buffer, total_buffer_size);
 
-		// Clean up our mess
-		free(target_buffer);
-		for (std::vector<TaskDescription*>::iterator it = stolen.begin();
-			it != stolen.end(); it++)
-		{
-			delete *it;
-		}
-	}
+        // Clean up our mess
+        free(target_buffer);
+        for (std::vector<TaskDescription*>::iterator it = stolen.begin();
+                it != stolen.end(); it++)
+        {
+          delete *it;
+        }
+      }
     }
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::process_future(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
-	// First unpack the handle out of the arguments
-	const FutureHandle handle = *((const FutureHandle*)args);
-	const char *result_ptr = (const char*)args;
-	// Updat the pointer to the location of the remaining data
-	result_ptr += sizeof(FutureHandle);
-	// Get the future out of the table and set its value
+      // First unpack the handle out of the arguments
+      const FutureHandle handle = *((const FutureHandle*)args);
+      const char *result_ptr = (const char*)args;
+      // Updat the pointer to the location of the remaining data
+      result_ptr += sizeof(FutureHandle);
+      // Get the future out of the table and set its value
 #ifdef DEBUG_HIGH_LEVEL
-	assert(local_futures.find(handle) != local_futures.end());
+      assert(handle < local_futures.size());
 #endif		
-	local_futures[handle]->set_result(result_ptr,arglen-sizeof(FutureHandle));
+      local_futures[handle]->set_result(result_ptr,arglen-sizeof(FutureHandle));
     }
 
-    
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::process_schedule_request()
+    void HighLevelRuntime::process_notify(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
+      // Unpack context, task, and event info
+      const char * ptr = (const char*)args;
+      Context ctx = *((const Context*)ptr);
+      ptr += sizeof(Context);
+      TaskHandle handle = *((const TaskHandle*)ptr);
+      ptr += sizeof(TaskHandle);
+      Event wait_event = *((const Event*)ptr); 
+      ptr += sizeof(Event);
+     
+#ifdef DEBUG_HIGH_LEVEL
+      assert(ctx < local_contexts.size());
+#endif
+      TaskDescription *desc = local_contexts[ctx]->get_task_description(handle);
+      // Update each of the dependent tasks with the event
+      desc->termination_event = wait_event;
+      for (std::vector<TaskDescription*>::iterator it = desc->dependent_tasks.begin();
+            it != desc->dependent_tasks.end(); it++)
+      {
+        (*it)->wait_events.insert(wait_event);
+#ifdef DEBUG_HIGH_LEVEL
+        assert((*it)->remaining_events > 0);
+#endif
+        (*it)->remaining_events--;
+      }
 
+      // Now unpack the instance information
+      for (std::vector<InstanceInfo*>::iterator it = desc->instances.begin();
+            it != desc->instances.end(); it++)
+      {
+        InstanceInfo *info = (*it);
+        info->inst = *((const RegionInstance*)ptr);
+        ptr += sizeof(RegionInstance);
+        info->location = *((const Memory*)ptr);
+        ptr += sizeof(Memory);
+      }
+
+      // Register that the task has been mapped
+      desc->mapped = true;
+    }
+    
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_schedule_request(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Launch up to MAX_TASK_MAPS_PER_STEP tasks, either from the ready queue, or
+      // by detecting tasks that become ready to map on the waiting queue
+      int mapped_tasks = 0;
+      // First try launching from the ready queue
+      while (!ready_queue.empty())
+      {
+        TaskDescription *task = ready_queue.front();
+        ready_queue.pop_front();
+        mapped_tasks++;
+        // Now map the task and then launch it on the processor
+        map_and_launch_task(task);
+        // Check the waiting queue for new tasks to move onto our ready queue
+        update_queue();
+        // If we've launched enough tasks, return
+        if (mapped_tasks == MAX_TASK_MAPS_PER_STEP) return;
+      }
+      // If we've made it here, we've run out of work to do on our local processor
+      // so we need to issue a steal request to another processor
+      // Check that we don't have any outstanding steal requests
+      if (!check_steal_requests()) 
+        issue_steal_requests(); 
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::map_and_launch_task(TaskDescription *desc)
+    //--------------------------------------------------------------------------------------------
+    {
+      // First we need to map the task, get the right mapper and map the instances
+      std::vector<std::vector<Memory> > options = 
+                  mapper_objects[desc->map_id]->map_task(desc->task_id,desc->regions,desc->tag);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(options.size() == desc->regions.size());
+      assert(options.size() == desc->instances.size());
+#endif
+     
+      // Go through and create the instances
+      for (int idx = 0; idx < options.size(); idx++)
+      {
+        std::vector<Memory> &locations = options[idx];
+        InstanceInfo *info = desc->instances[idx];
+        bool found = false;
+        for (std::vector<Memory>::iterator mem_it = locations.begin();
+              mem_it != locations.end(); mem_it++)
+        {
+          // Try making the instance for the given region
+          RegionInstance inst = info->meta.create_instance_untyped(*mem_it);
+          if (inst.exists())
+          {
+            info->inst = inst;
+            info->location = *mem_it;
+            found = true;
+            break;
+          }
+        }
+        if (!found)
+        {
+          fprintf(stderr,"Unable to create instance for region %d in any of the specified memories for task %d\n", desc->regions[idx].handle.id, desc->task_id);
+          exit(100*(machine->get_local_processor().id));
+        }
+      }
+      // We've created all the region instances, now issue all the events for the task
+      // and get the event corresponding to when the task is completed
+
+      // First get an context for this task to run in
+      Context ctx = get_available_context(desc);
+      // Write this context in the arguments for the task
+      // (We make space for this when we created the task description)
+      *((Context*)desc->args) = ctx;
+      
+      // Next issue the copies for this task
+      std::set<Event> copy_events;
+      for (std::vector<CopyOperation>::iterator copy_it = desc->pre_copy_ops.begin();
+            copy_it != desc->pre_copy_ops.end(); copy_it++)
+      {
+        CopyOperation &copy = *copy_it;
+        Event copy_e = copy.src->inst.copy_to(copy.dst->inst, copy.copy_mask, desc->merged_wait_event);
+        copy_events.insert(copy_e);
+      }
+      
+      Event prev;
+      if (copy_events.size() > 0)
+        prev = Event::merge_events(copy_events);
+      else
+        prev = desc->merged_wait_event;
+
+      // Now launch the task itself (finally!)
+      prev = local_proc.spawn(desc->task_id, desc->args, desc->arglen, prev);
+
+      // Then issue any post copy events
+      copy_events.clear();
+      for (std::vector<CopyOperation>::iterator copy_it = desc->post_copy_ops.begin();
+            copy_it != desc->post_copy_ops.end(); copy_it++)
+      {
+        CopyOperation &copy = *copy_it;
+        Event copy_e = copy.src->inst.copy_to(copy.dst->inst, copy.copy_mask, prev);
+        copy_events.insert(copy_e);
+      }
+
+      if (copy_events.size() > 0)
+        prev = Event::merge_events(copy_events);
+
+      // Finally issue the clean up task
+      prev = local_proc.spawn(CLEAN_UP_ID, &ctx, sizeof(Context), prev); 
+
+      // Now update the dependent tasks, if we're local we can do this directly, if not
+      // launch a task on the original processor to do it
+      if (desc->remote)
+      {
+        // Package up the data
+        size_t buffer_size = sizeof(Context) + sizeof(TaskHandle) + sizeof(Event) +
+                              desc->regions.size() * (sizeof(RegionInstance)+sizeof(Memory));
+        void * buffer = malloc(buffer_size);
+        char * ptr = (char*)buffer;
+        // Give the context that the task is being created in so we can
+        // find the task description on the original processor
+        *((Context*)ptr) = desc->ctx;
+        ptr += sizeof(Context);
+        *((TaskHandle*)ptr) = desc->task_handle;
+        ptr += sizeof(TaskHandle);
+        *((Event*)ptr) = prev;
+        ptr += sizeof(Event);
+        for (std::vector<InstanceInfo*>::iterator it = desc->instances.begin();
+              it != desc->instances.end(); it++)
+        {
+          InstanceInfo *info = *it;
+          *((RegionInstance*)ptr) = info->inst;
+          ptr += sizeof(RegionInstance);
+          *((Memory*)ptr) = info->location;
+          ptr += sizeof(Memory);
+        }
+        // Launch the event notification task on the original processor
+        // No need to wait on anything since we're just telling the original
+        // processor about the mapping
+        desc->orig_proc.spawn(NOTIFY_ID, buffer, buffer_size);
+        // Clean up our mess
+        free(buffer);
+      }
+      else
+      {
+        // Local case
+        desc->termination_event = prev;
+        // Notify each of the dependent tasks with the event that they need to
+        // wait on before executing
+        for (std::vector<TaskDescription*>::iterator it = desc->dependent_tasks.begin();
+              it != desc->dependent_tasks.end(); it++)
+        {
+          (*it)->wait_events.insert(prev);
+#ifdef DEBUG_HIGH_LEVEL
+          assert((*it)->remaining_events > 0);
+#endif
+          // Decrement the count of the remaining events that the
+          // dependent task has to see
+          (*it)->remaining_events--;
+        }
+      }
+      // Mark this task as having been mapped
+      desc->mapped = true;
+    }
+    
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::update_queue(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Iterate over the waiting queue looking for tasks that are now mappable
+      for (std::list<TaskDescription*>::iterator it = waiting_queue.begin();
+            it != waiting_queue.end(); it++)
+      {
+        if ((*it)->remaining_events == 0)
+        {
+          // Compute the merged event indicating the event to wait on before starting the task
+          if ((*it)->wait_events.size() > 0)
+            (*it)->merged_wait_event = Event::merge_events((*it)->wait_events);
+          else
+            (*it)->merged_wait_event = Event::NO_EVENT;
+          // Push it onto the ready queue
+          ready_queue.push_back(*it);
+          // Remove it from the waiting queue
+          it = waiting_queue.erase(it);
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool HighLevelRuntime::check_steal_requests(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Iterate over the steal requests seeing if any of triggered
+      // and removing them if they have
+      for (std::list<Event>::iterator it = outstanding_steal_events.begin();
+            it != outstanding_steal_events.end(); it++)
+      {
+        if (it->has_triggered())
+        {
+          it = outstanding_steal_events.erase(it);
+        }
+      }
+      // Return true if there are still outstanding steal requests to be run
+      return (!outstanding_steal_events.empty());
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::issue_steal_requests(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Iterate through the mappers asking them which processor to steal from
+      std::multimap<Processor,MapperID> targets;
+      for (unsigned i=0; i<mapper_objects.size(); i++)
+      {
+        Processor p = mapper_objects[i]->target_task_steal();
+        if (p.exists())
+          targets.insert(std::pair<Processor,MapperID>(p,(MapperID)i));
+      }
+      // For each processor go through and find the list of mappers to send
+      for (std::multimap<Processor,MapperID>::const_iterator it = targets.begin();
+            it != targets.end(); it++)
+      {
+        Processor target = it->first;
+        int num_mappers = targets.count(target);
+        size_t buffer_size = sizeof(Processor)+sizeof(int)+num_mappers*sizeof(MapperID);
+        // Allocate a buffer for launching the steal task
+        void * buffer = malloc(buffer_size); 
+        char * buf_ptr = (char*)buffer;
+        // Give the stealing (this) processor
+        *((Processor*)buf_ptr) = local_proc;
+        buf_ptr += sizeof(Processor); 
+        *((int*)buf_ptr) = num_mappers;
+        buf_ptr += sizeof(int);
+        // Give the ID's of the stealing mappers
+        for ( ; it != targets.upper_bound(it->first); it++)
+        {
+          *((MapperID*)buf_ptr) = it->second;
+          buf_ptr += sizeof(MapperID);
+        }
+        // Now launch the task to perform the steal operation
+        Event steal = target.spawn(STEAL_TASK_ID,buffer,buffer_size);
+        // Enqueue the steal request on the list of oustanding steals
+        outstanding_steal_events.push_back(steal);
+        // Clean up our mess
+        free(buffer);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    const std::vector<unsigned>& HighLevelRuntime::get_region_trace(LogicalHandle region)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(region_traces.find(region) != region_traces.end());
+#endif
+      return region_traces[region];
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool HighLevelRuntime::disjoint(LogicalHandle region1, LogicalHandle region2)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(region_traces.find(region1) != region_traces.end());
+      assert(region_traces.find(region2) != region_traces.end());
+#endif
+      const std::vector<unsigned> &trace1 = region_traces[region1];
+      const std::vector<unsigned> &trace2 = region_traces[region2];
+
+      // Check that they have the same top level region, if not by default they are disjoint
+      if (trace1[0] != trace2[0])
+        return true;
+
+      // Check that they line up
+      int depth = 1;
+      for ( ; (depth < trace1.size()) && (depth < trace2.size()); depth++)
+      {
+        if (trace1[depth] != trace2[depth])
+          break;
+      }
+      
+      // If depth is the same as the length of one of the traces, then they lined up
+      // so we need to handle the different cases of either perfect or partial matches
+      if ((depth == trace1.size()) || (depth == trace2.size()))
+      {
+        // If they're identical then they're the same region and not disjoint
+        // If one trace is bigger than the other then one region is a subregion
+        //   and therefore not disjoint
+        return false;	
+      }	
+      // Figure out if they diverged on a partition or a region
+      if ((depth%2) == 0)
+      {
+        // Diverged on a region, get the parent region, so we can get the partition
+        const std::vector<unsigned> parent_trace(&(trace1[0]),&(trace1[depth-1]));
+        LogicalHandle root_key = { trace1[0] };
+        RegionNode *parent = region_trees[root_key]->get_node(parent_trace);	
+        PartitionNode *part = parent->partitions[trace1[depth-1]];
+        // The partition is disjoint, so the regions are disjoint
+        if (part->disjoint)
+          return true;
+        else
+        {
+          // Partition is not disjoint, issue a dynamic check
+          RegionNode *child1 = parent->get_node(trace1);
+          RegionNode *child2 = parent->get_node(trace2);
+          return child1->disjoint(child2);
+        }
+      }
+      else
+      {
+        // Diverged on a partition, get the two different regions
+        // Perform a dynamic test of region disjointness
+        LogicalHandle root_key = { trace1[0] };
+        RegionNode *root = region_trees[root_key];
+        RegionNode *child1 = root->get_node(trace1);
+        RegionNode *child2 = root->get_node(trace2);
+        return child1->disjoint(child2);
+      }
     }
 
     
@@ -556,11 +1232,11 @@ namespace RegionRuntime {
     // A helper functor for sorting memory sizes
     struct MemorySorter {
     public:
-	MachineDescription *machine;
-	bool operator()(Memory one, Memory two)
-	{
-		return (machine->get_memory_size(one) < machine->get_memory_size(two));	
-	}
+      MachineDescription *machine;
+      bool operator()(Memory one, Memory two)
+      {
+        return (machine->get_memory_size(one) < machine->get_memory_size(two));	
+      }
     };
     
     //--------------------------------------------------------------------------------------------
@@ -568,15 +1244,15 @@ namespace RegionRuntime {
 				local_proc(machine->get_local_processor()), machine(m)
     //--------------------------------------------------------------------------------------------
     {
-	// The default mapper will maintain a linear view of memory from
-	// the perspective of the processor.
-	// We'll assume that smaller memories are closer to the processor
-	// and rank memories based on their size.
-	
-	// Get the set of memories visible to the processor and rank them on size
-	std::set<Memory> memories = machine->get_visible_memories(local_proc);
-	visible_memories = std::vector<Memory>(memories.begin(),memories.end());	
-	rank_memories(visible_memories);
+      // The default mapper will maintain a linear view of memory from
+      // the perspective of the processor.
+      // We'll assume that smaller memories are closer to the processor
+      // and rank memories based on their size.
+      
+      // Get the set of memories visible to the processor and rank them on size
+      std::set<Memory> memories = machine->get_visible_memories(local_proc);
+      visible_memories = std::vector<Memory>(memories.begin(),memories.end());	
+      rank_memories(visible_memories);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -584,7 +1260,7 @@ namespace RegionRuntime {
 						size_t num_elmts, MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
-	return visible_memories;
+      return visible_memories;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -595,15 +1271,15 @@ namespace RegionRuntime {
 						MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
-	// Figure out how much data will have to be mapped
+      // Figure out how much data will have to be mapped
     }
 
     //--------------------------------------------------------------------------------------------
     bool Mapper::compact_partition(const PartitionBase &partition, MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
-	// By default we'll never compact a partition since it is expensive
-	return false;
+      // By default we'll never compact a partition since it is expensive
+      return false;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -643,8 +1319,8 @@ namespace RegionRuntime {
     void Mapper::rank_memories(std::vector<Memory> &memories)
     //--------------------------------------------------------------------------------------------
     {
-	MemorySorter functor = { this->machine };
-	std::sort(memories.begin(),memories.end(),functor);
+      MemorySorter functor = { this->machine };
+      std::sort(memories.begin(),memories.end(),functor);
     }
 
   };
