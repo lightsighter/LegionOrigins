@@ -187,6 +187,11 @@ namespace RegionRuntime {
       // if non-null, the base of an "array" that can be dereferenced
       void *direct_access_base;
 
+      Event copy_to(RegionInstanceUntyped target, Event wait_on = Event::NO_EVENT)
+      { return copy_fn_untyped()(*this, target, wait_on); }
+      Event copy_to(RegionInstanceUntyped target, const ElementMask &mask, Event wait_on = Event::NO_EVENT)
+      { return copy_fn_untyped()(*this, target, wait_on); }
+
     protected:
       // can't have virtual methods here, so we're returning function pointers
       typedef const void *(*ReadFuncPtr)(RegionInstanceUntyped region, unsigned ptr);
