@@ -154,7 +154,7 @@ namespace RegionRuntime {
     const std::vector<PhysicalRegion>& TaskDescription::start_task(void)
     //--------------------------------------------------------------------------------------------
     {
-
+      
     }
 
     //--------------------------------------------------------------------------------------------
@@ -439,6 +439,79 @@ namespace RegionRuntime {
       partition_nodes.erase(find_it); 
     }
 
+    //--------------------------------------------------------------------------------------------
+    bool TaskDescription::disjoint(LogicalHandle region1, LogicalHandle region2)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(region_nodes.find(region1) != region_nodes.end());
+      assert(region_nodes.find(region2) != region_nodes.end());
+#endif
+      RegionNode *node1 = region_nodes[region1];
+      RegionNode *node2 = region_nodes[region2];
+      // Get the regions on the same level
+      if (node1->depth != node2->depth)
+      {
+        if (node1->depth < node2->depth)
+        {
+          while (node1->depth < node2->depth)
+          {
+            PartitionNode *part = node2->parent;
+            node2 = part->parent;
+          }
+        }
+        else
+        {
+          while (node1->depth > node2->depth)
+          {
+            PartitionNode *part = node1->parent;
+            node1 = part->parent;
+          }
+        }
+      }
+      // Handle the base case where they are the same node, or one
+      // is a direct ancestor of the other, definitely not disjoint
+      if (node1 == node2)
+        return false;
+#ifdef DEBUG_HIGH_LEVEL
+      assert(node1->depth == node2->depth);
+#endif
+      while (node1->depth > 0)
+      {
+        // First check the nodes
+        if (node1 == node2)
+        {
+          // TODO: check for dynamic disjointness
+          // Otherwise they are regions from different partitions
+          return false;
+        }
+        PartitionNode *part1 = node1->parent;
+        PartitionNode *part2 = node2->parent;
+        // Then check the partitions
+        if (part1 == part2)
+        {
+          // check for partition disjointness
+          // TODO: dynamic disjointness test for when partitions are aliased
+          return part1->disjoint;
+        }
+        node1 = part1->parent;
+        node2 = part2->parent;
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(node1->depth == node2->depth);
+      assert(node1->depth == 0);
+#endif
+      // If we made it here, both nodes are at depth 0, if they are equal
+      // they are not disjoint, but if they are, then they are disjoint
+      // since they belong to different region trees
+      if (node1 == node2)
+      {
+        // TODO: dynamic disjointness testing
+        return false;
+      }
+      else
+        return true; // From different region trees
+    }
 
     /////////////////////////////////////////////////////////////
     // Region Node 

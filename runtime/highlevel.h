@@ -169,6 +169,8 @@ namespace RegionRuntime {
       void remove_subregion(LogicalHandle handle, PartitionID parent, bool recursive=false);
       void create_partition(PartitionID pid, LogicalHandle parent, bool disjoint);
       void remove_partition(PartitionID pid, LogicalHandle parent, bool recursive=false);
+      // Disjointness testing
+      bool disjoint(LogicalHandle region1, LogicalHandle region2);
     private:
       bool active;
     };
