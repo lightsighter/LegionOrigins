@@ -29,7 +29,6 @@ namespace RegionRuntime {
     template<typename T> class AliasedPartition;
     class HighLevelRuntime;
     class Mapper;
-    class ContextState;
     class RegionNode;
     class PartitionNode;
     class TaskDescription;
@@ -62,11 +61,10 @@ namespace RegionRuntime {
     typedef LowLevel::Lock Lock;
     typedef LowLevel::ElementMask Mask;
     typedef unsigned int Color;
-    typedef unsigned int FutureHandle;
     typedef unsigned int MapperID;
     typedef unsigned int Context;
-    typedef unsigned int TaskHandle; // A task identifier within a context
     typedef unsigned int PartitionID;
+    typedef unsigned int FutureHandle;
 
     struct RegionRequirement {
     public:
@@ -89,13 +87,13 @@ namespace RegionRuntime {
 
     struct RegionState {
     public:
-      std::set<unsigned> open_partitions;
+      std::set<PartitionID> open_partitions;
       std::set<InstanceInfo*> valid_instances;
     };
 
     struct PartitionState {
     public:
-      std::set<unsigned> open_regions;
+      std::set<LogicalHandle> open_regions;
     };
 
     struct CopyOperation {
@@ -106,56 +104,85 @@ namespace RegionRuntime {
     };
 
     class TaskDescription {
-    public:
-      TaskDescription();
+    protected:
+      friend class HighLevelRuntime;
+      TaskDescription(Context ctx, Processor p);
       ~TaskDescription();
-    public:
+    protected:
       Processor::TaskFuncID task_id;
       std::vector<RegionRequirement> regions;	
       void * args;
       size_t arglen;
       MapperID map_id;	
       MappingTagID tag;
-    public:
+    protected:
       // Status information
       bool stealable; // Can be stolen (corresponds to 'spawn' call)
       bool mapped; // Mapped to a specific processor and no longer stealable
       UserEvent map_event; // Even that is triggered when this event is mapped
       // Mappable is true when remaining_events==0
-    public:
+    protected:
       // Information about where this task originated
       Processor orig_proc; // The processor holding this task's context
-      Context ctx; // The context the task is part of on its originating processor processor
-      TaskHandle task_handle; // A context sensitive identifier for this task instance
-    public:
+      Context parent_ctx; // The context the task is part of on its originating processor processor
+      Context orig_ctx; // The local context on the original processor if remote
+      const Context local_ctx; // The context for this task
+      const Processor local_proc; // The local processor this task is on
+    protected:
       // Information to send back to the original processor
       bool remote; // Send back an event if true
-      FutureHandle future_handle; // the Future handle to set
+      Future *const future;
       void *result; // For storing the result of the task
       size_t result_size;
-    public:
+    private:
       int remaining_events; // Number of events we still need to see before being mappable
       std::set<Event> wait_events; // Events to wait on before executing (immovable)
       Event merged_wait_event; // The merge of the wait_events (movable)
-      std::vector<CopyOperation> pre_copy_ops; // Copy operations to perform before executing (mov)
+      std::vector<CopyOperation> pre_copy_ops; // Computed after move
       std::vector<InstanceInfo*> instances; // Region instances for the regions (mov)
-      std::vector<InstanceInfo*> dead_instances; // Regions to be deleted after the task (mov)
+      std::vector<InstanceInfo*> dead_instances; // Computed after move 
       UserEvent termination_event; // Create a user level termination event to be returned quickly
       std::vector<TaskDescription*> dependent_tasks; // Tasks waiting for us to be mapped (immov)
+    private:
+      std::vector<TaskDescription*> child_tasks; // (immov)
+      std::map<LogicalHandle,RegionNode*> region_nodes; // (immov)
+      std::map<PartitionID,PartitionNode*> partition_nodes; // (immov)
+      std::vector<LogicalHandle> deleted_regions;
+    protected:
+      bool activate(void);
+      void deactivate(void);
+      // Operations to pack and unpack tasks
+      size_t compute_task_size(void) const;
+      void pack_task(char *&buffer) const;
+      void unpack_task(const char *&buffer);
+      // Operations for managing the task 
+      const std::vector<PhysicalRegion>& start_task(void); // start task 
+      void complete_task(const void *ret_arg, size_t ret_size); // task completed (maybe finished?)
+      void children_mapped(void);  // all the child tasks have been mapped
+      void finish_task(void); // finish the task
+      void remote_start(const void *args, size_t arglen);
+      void remote_finish(const void * args, size_t arglen);
+      // Operations for updating region and partition information
+      void create_region(LogicalHandle handle);
+      void remove_region(LogicalHandle handle, bool recursive=false);
+      void create_subregion(LogicalHandle handle, PartitionID parent);
+      void remove_subregion(LogicalHandle handle, PartitionID parent, bool recursive=false);
+      void create_partition(PartitionID pid, LogicalHandle parent, bool disjoint);
+      void remove_partition(PartitionID pid, LogicalHandle parent, bool recursive=false);
+    private:
+      bool active;
     };
 
     class Future {
     private:
-      Processor proc;
-      FutureHandle handle;
       UserEvent set_event;
       bool set;
       void * result;
       bool active;
     protected:
-      friend class HighLevelRuntime;
-      Future(FutureHandle h, Processor p);
-      ~Future();
+      friend class TaskDescription;
+      Future(void);
+      ~Future(void);
       // also allow the runtime to reset futures so it can re-use them
       inline bool is_active(void) const { return active; }
       void reset(void);
@@ -319,100 +346,53 @@ namespace RegionRuntime {
       void rank_memories(std::vector<Memory> &memories);
     };
 
-    class ContextState
-    {
-    protected:
-      friend class HighLevelRuntime;
-      ContextState(HighLevelRuntime *r, Context ctx);
-
-      bool activate(TaskDescription *parent_task);
-      void deactivate(void);
-      void register_task(TaskDescription *child_task);
-      TaskDescription* get_task_description(TaskHandle handle);
-    private:
-      HighLevelRuntime *runtime;
-      const Context this_context;
-      bool active;
-    protected:
-      TaskDescription *parent;
-      // The tasks that have been created in this region
-      std::vector<TaskDescription*> created_tasks;
-      // Information about regions
-      std::map<LogicalHandle,RegionNode*> top_level_regions;
-      // Keep track of the top level regions and partitions that are created
-      std::vector<RegionNode*> created_regions;
-      std::vector<PartitionNode*> created_partitions;
-      // Keep track of the regions and partitions that are destroyed
-      std::vector<LogicalHandle> deleted_regions;
-      std::vector<std::pair<LogicalHandle/*parent*/,unsigned/*id*/> > deleted_partitions;
-    };
-
     class RegionNode {
     protected:
       friend class HighLevelRuntime;
       friend class PartitionNode;
-      friend class ContextState;
-      RegionNode(Color c, unsigned dep);
+      friend class TaskDescription;
+      RegionNode(LogicalHandle handle, unsigned dep, PartitionNode *par, bool add);
       ~RegionNode();
 
-      // Insert the partition to the parent specified by the trace
-      // and return the index of the partition (which becomes the partition's ID)
-      unsigned insert_partition(const std::vector<unsigned> &parent_trace, 
-                              unsigned num_subregions, bool disjoint);
-      // Delete the partition at the given parent node
-      void remove_partition(const std::vector<unsigned> &parent_trace,
-                              unsigned partition_id);
-      void remove_node(const std::vector<unsigned> &node_trace);
-      // Return the node at the specified trace (can be called
-      // from any node in the trace
-      RegionNode* get_node(const std::vector<unsigned> &trace) const;
+      void add_partition(PartitionNode *node);
+      void remove_partition(PartitionID pid);
 
       // Context specific operations
       void clear_context(Context ctx);
-      void compute_dependence(Context ctx, TaskDescription *child, 
-                              int index, const std::vector<unsigned> &trace);	
 
-      // Disjointness testing, this function can assume that the two regions
-      // have already been proven not to be disjoint statically, and therefore
-      // we need this more dynamic test
-      bool disjoint(const RegionNode *other) const;
-    private:
-      Color color;
-      unsigned depth; 
-      std::vector<PartitionNode*> partitions; // indexed by partition id
+    protected:
+      const LogicalHandle handle;
+      const unsigned depth; 
+      PartitionNode *const parent;
+      std::map<PartitionID,PartitionNode*> partitions; // indexed by partition id
       // Context specific information about the state of this region
       std::vector<RegionState> region_states; // indexed by context
+      const bool added; // track whether this is a new node
     };
 
     class PartitionNode {
     protected:
       friend class HighLevelRuntime;
       friend class RegionNode;
-      friend class ContextState;
-      PartitionNode (unsigned idx, unsigned dep, unsigned num_subregions, bool dis);
+      friend class TaskDescription;
+      PartitionNode (PartitionID pid, unsigned dep, RegionNode *par,  
+                      bool dis, bool add);
       ~PartitionNode(); 
 
-      bool activate(unsigned num_subregions, bool dis);
-      void deactivate(void);
-
-      unsigned insert_partition(const std::vector<unsigned> &parent_trace,
-                              unsigned num_subregions, bool disjoint);
-      void remove_partition(const std::vector<unsigned> &parent_trace,
-                              unsigned partition_id);	
-      void remove_node(const std::vector<unsigned> &node_trace);
-      RegionNode* get_node(const std::vector<unsigned> &trace) const;
+      void add_region(RegionNode *node);
+      void remove_region(LogicalHandle handle);
 
       // Context specific operations
       void clear_context(Context ctx);
-      void compute_dependence(Context ctx, TaskDescription *child,
-                              int index, const std::vector<unsigned> &trace);
-    private:
-      unsigned index;
-      unsigned depth;
-      bool disjoint;
-      std::vector<RegionNode*> children; // indexed by color
+
+    protected:
+      const PartitionID pid;
+      const unsigned depth;
+      RegionNode *const parent;
+      const bool disjoint;
+      std::map<LogicalHandle,RegionNode*> children; // indexed by color
       std::vector<PartitionState> partition_states; // indexed by context
-      bool active;
+      const bool added; // track whether this is a new node
     };
 
 
@@ -449,7 +429,7 @@ namespace RegionRuntime {
       ~HighLevelRuntime();
     public:
       // Functions for calling tasks
-      Future* execute_task(Context ctx, LowLevel::Processor::TaskFuncID task_id,
+      const Future*const execute_task(Context ctx, LowLevel::Processor::TaskFuncID task_id,
                       const std::vector<RegionRequirement> &regions,
                       const void *args, size_t arglen, bool spawn, 
                       MapperID id = 0, MappingTagID tag = 0);	
@@ -457,8 +437,8 @@ namespace RegionRuntime {
       void add_mapper(MapperID id, Mapper *m);
     public:
       // Methods for the wrapper function to access the context
-      const std::vector<PhysicalRegion>& start_task(Context ctx);  
-      void finish_task(Context ctx, const void *arg, size_t arglen);
+      const std::vector<PhysicalRegion>& begin_task(Context ctx);  
+      void end_task(Context ctx, const void *arg, size_t arglen);
     public:
       // Get instances - return the memory locations of all known instances of a region
       // Get instances of parent regions
@@ -467,12 +447,7 @@ namespace RegionRuntime {
       size_t remaining_memory(Memory m) const;
     private:	
       // Utility functions
-      Future* get_available_future(void);
-      Context get_available_context(TaskDescription *desc);
-      size_t compute_task_desc_size(TaskDescription *desc) const;
-      size_t compute_task_desc_size(int num_regions,size_t arglen) const;
-      void pack_task_desc(TaskDescription *desc, char *&buffer) const;
-      TaskDescription* unpack_task_desc(const char *&buffer) const;
+      TaskDescription* get_available_description(void);
       // Operations invoked by static methods
       void process_tasks(const void * args, size_t arglen);
       void process_steal(const void * args, size_t arglen);
@@ -487,10 +462,7 @@ namespace RegionRuntime {
       bool check_steal_requests(void);
       void issue_steal_requests(void);
     protected:
-      // Methods for the ContextState to query the runtime
-      friend class ContextState;
-      const std::vector<unsigned>& get_region_trace(LogicalHandle region);
-      bool disjoint(LogicalHandle region1, LogicalHandle region2);
+      //bool disjoint(LogicalHandle region1, LogicalHandle region2);
     private:
       // Member variables
       Processor local_proc;
@@ -498,18 +470,10 @@ namespace RegionRuntime {
       std::vector<Mapper*> mapper_objects;
       std::list<TaskDescription*> ready_queue; // Tasks ready to be mapped/stolen
       std::list<TaskDescription*> waiting_queue; // Tasks still unmappable
-      std::vector<Future*> local_futures;
-      std::vector<ContextState*> local_contexts;
       std::list<Event> outstanding_steal_events; // Steal tasks to run
-    protected:
-      /* A data structure that keeps track of a trace from a top-level region to a
-         a specific region alternating between region identities and partition identities
-         all the way down to the region itself.  Useful for disjointness testing. */	
-      std::map</*region id*/LogicalHandle,std::vector<unsigned> > region_traces;
-      // Keep track of all the root nodes to all the different region trees
-      std::map</*region id*/LogicalHandle,RegionNode*> region_trees;
-
-      /* TODO:Information on the valid instances of a given logical region and their memories */
+      std::vector<TaskDescription*> all_tasks; // All available tasks
+      PartitionID next_partition_id; // The next partition id for this runtime (unique)
+      const unsigned partition_stride;  // Stride for partition ids to guarantee uniqueness
     public:
       // Functions for creating and destroying logical regions
       template<typename T>
@@ -554,7 +518,7 @@ namespace RegionRuntime {
       // Read the context out of the buffer
       Context ctx = *((Context*)args);
       // Get the arguments associated with the context
-      const std::vector<PhysicalRegion>& regions = runtime->start_task(ctx);
+      const std::vector<PhysicalRegion>& regions = runtime->begin_task(ctx);
 
       // Update the pointer and arglen
       char* arg_ptr = ((char*)args)+sizeof(Context);
@@ -564,7 +528,7 @@ namespace RegionRuntime {
       T return_value = (*TASK_PTR)((void*)arg_ptr, arglen, ctx, regions);
 
       // Send the return value back
-      runtime->finish_task(ctx, (void*)(&return_value), sizeof(T));
+      runtime->end_task(ctx, (void*)(&return_value), sizeof(T));
     }
 
     // Unfortunately to avoid template instantiation issues we have to provide
@@ -709,14 +673,13 @@ namespace RegionRuntime {
         fprintf(stderr,"Unable to place initial region with tag %d by mapper %d\n",tag, id);
         exit(100*(machine->get_local_processor().id)+id);
       }
-      // Update the region_traces and region_trees map	
-      {
-        std::vector<unsigned> trace(1);
-        trace[0] = region.id;
-        region_traces[region] = trace;
 
-        region_trees[region] = new RegionNode(region,0);
-      }
+      // Notify the task's context to update the created regions
+#ifdef DEBUG_HIGH_LEVEL
+      assert(ctx < all_tasks.size());
+#endif
+      all_tasks[ctx]->create_region(region);
+
       // Return the handle
       return region;
     }
@@ -726,33 +689,10 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(region_traces.find(handle) != region_traces.end());
+      assert(ctx < all_tasks.size());
 #endif
-      // Get the trace for the node
-      const std::vector<unsigned> &trace = region_traces[handle];
+      all_tasks[ctx]->remove_region(handle);
 
-      // Check to see if this is a root node
-      if (trace.size() == 1)
-      {
-        // This is the root node, remove it from the set of region trees
-        std::map<LogicalHandle,RegionNode*>::iterator it = region_trees.find(handle);
-#ifdef DEBUG_HIGH_LEVEL
-        assert(it != region_trees.end());
-#endif
-        RegionNode *root = it->second;
-        // Remove it from the map
-        region_trees.erase(it);
-        // Delete the whole tree
-        delete root;
-      }
-      else
-      {
-        // The first element in the tree is always the root logical handle
-        RegionNode *root = region_trees[((LogicalHandle)trace[0])];
-        // Remove the node (and all it's subparts) from the tree
-        root->remove_node(trace);
-      }
-      
       LowLevel::RegionMetaData<T> low_region = (LowLevel::RegionMetaData<T>)handle;
       // Call the destructor for this RegionMetaData object which will allow the
       // low-level runtime to clean stuff up
@@ -837,23 +777,23 @@ namespace RegionRuntime {
           exit(100*(machine->get_local_processor().id)+id);
         }
       }	
-      // Insert the partition into the appropriate region tree
-      const std::vector<unsigned> &parent_trace = region_traces[parent];
-      unsigned index = region_trees[(LogicalHandle)parent_trace[0]]->insert_partition(parent_trace,child_regions->size(),true);
-      // Then inserert the traces of all the child regions
-      for (unsigned color_idx = 0; color_idx < child_regions->size(); color_idx++)
-      {
-        std::vector<unsigned> trace = parent_trace;
-        trace.push_back(index);
-        trace.push_back(color_idx);
-        region_traces[((*child_regions)[color_idx])] = trace;
-      }
+      
+      PartitionID partition_id = next_partition_id;
+      partition_id += partition_stride;
+
+#ifdef DEBUG_HIGH_LEVEL
+      assert(ctx < all_tasks.size());
+#endif
+      all_tasks[ctx]->create_partition(partition_id, parent, true);
+      for (std::vector<LogicalHandle>::iterator it = child_regions->begin();
+            it != child_regions->end(); it++)
+        all_tasks[ctx]->create_subregion(*it,partition_id);
       
       // Create the actual partition
       if (!color_map.empty())
-        return DisjointPartition<T>(index,parent,child_regions,color_map);
+        return DisjointPartition<T>(partition_id,parent,child_regions,color_map);
       else
-        return Partition<T>(index,parent,child_regions);
+        return Partition<T>(partition_id,parent,child_regions);
 
     }
     //--------------------------------------------------------------------------------------------
@@ -926,21 +866,19 @@ namespace RegionRuntime {
                 exit(100*(machine->get_local_processor().id)+id);
         }
       }	
+      PartitionID partition_id = next_partition_id;
+      next_partition_id += partition_stride;
 
-      // Insert the partition first
-      const std::vector<unsigned> &parent_trace = region_traces[parent];
-      unsigned index = region_trees[(LogicalHandle)parent_trace[0]]->insert_partition(parent_trace,child_regions->size(),false);
-      // Then inserert the traces of all the child regions
-      for (unsigned color_idx = 0; color_idx < child_regions->size(); color_idx++)
-      {
-              std::vector<unsigned> trace = parent_trace;
-              trace.push_back(index);
-              trace.push_back(color_idx);
-              region_traces[((*child_regions)[color_idx])] = trace;
-      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(ctx < all_tasks.size());
+#endif
+      all_tasks[ctx]->create_partition(partition_id, parent, false);
+      for (std::vector<LogicalHandle>::iterator it = child_regions->begin();
+            it != child_regions->end(); it++)
+        all_tasks[ctx]->create_subregion(*it, partition_id);
 
       // Create the actual partition
-      return AliasedPartition<T>(index,parent,child_regions,color_map);
+      return AliasedPartition<T>(partition_id,parent,child_regions,color_map);
     }
     //--------------------------------------------------------------------------------------------
     template<typename T>
@@ -948,13 +886,9 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(region_traces.find(partition.parent) != region_traces.end());
+      assert(ctx < all_tasks.size());
 #endif
-      // Get the trace of the parent of the partition
-      const std::vector<unsigned> &trace = region_traces(partition.parent);
-      RegionNode *root = region_trees[(LogicalHandle)trace[0]];
-      root->remove_partition(trace, partition.id);
-
+      all_tasks[ctx]->remove_partition(partition.id, partition.parent);
       // Finally call the destructor on the partition
       partition.Partition<T>::~Partition();
     }
