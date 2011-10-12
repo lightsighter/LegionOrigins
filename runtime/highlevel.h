@@ -103,6 +103,16 @@ namespace RegionRuntime {
       Mask copy_mask;
     };
 
+    struct DependenceDetector {
+    public:
+      Context ctx;
+      RegionRequirement *req;
+      TaskDescription *desc;
+      RegionNode *previous; 
+      std::vector<PartitionID> part_trace;
+      std::vector<LogicalHandle> reg_trace;
+    };
+
     class TaskDescription {
     protected:
       friend class HighLevelRuntime;
@@ -135,22 +145,30 @@ namespace RegionRuntime {
       void *result; // For storing the result of the task
       size_t result_size;
     private:
+      // Dependence information (both forward and backward)
       int remaining_events; // Number of events we still need to see before being mappable
       std::set<Event> wait_events; // Events to wait on before executing (immovable)
       Event merged_wait_event; // The merge of the wait_events (movable)
-      std::vector<CopyOperation> pre_copy_ops; // Computed after move
-      std::vector<InstanceInfo*> instances; // Region instances for the regions (mov)
-      std::vector<InstanceInfo*> dead_instances; // Computed after move 
       UserEvent termination_event; // Create a user level termination event to be returned quickly
       std::vector<TaskDescription*> dependent_tasks; // Tasks waiting for us to be mapped (immov)
     private:
       std::vector<TaskDescription*> child_tasks; // (immov)
-      std::map<LogicalHandle,RegionNode*> region_nodes; // (immov)
-      std::map<PartitionID,PartitionNode*> partition_nodes; // (immov)
-      std::vector<LogicalHandle> deleted_regions;
+    private:
+      // Information about instances and copies
+      std::vector<CopyOperation> pre_copy_ops; // Computed after move
+      std::vector<InstanceInfo*> instances; // Region instances for the regions (mov)
+      std::vector<InstanceInfo*> dead_instances; // Computed after move 
+      std::vector<PhysicalRegion> physical_regions;
+    private:
+      std::vector<RegionNode*> top_level_regions; // The top level regions
+      std::vector<LogicalHandle> deleted_regions; // The regions deleted in this task and children
+    private:
+      std::map<LogicalHandle,RegionNode*> *region_nodes; // (immov) (pointers can be aliased)
+      std::map<PartitionID,PartitionNode*> *partition_nodes; // (immov) (pointers can be aliased)
     protected:
       bool activate(void);
       void deactivate(void);
+      void register_child_task(TaskDescription *child);
       // Operations to pack and unpack tasks
       size_t compute_task_size(void) const;
       void pack_task(char *&buffer) const;
@@ -171,6 +189,7 @@ namespace RegionRuntime {
       void remove_partition(PartitionID pid, LogicalHandle parent, bool recursive=false);
       // Disjointness testing
       bool disjoint(LogicalHandle region1, LogicalHandle region2);
+      bool subregion(LogicalHandle parent, LogicalHandle child);
     private:
       bool active;
     };
@@ -194,7 +213,7 @@ namespace RegionRuntime {
       inline bool is_set(void) const { return set; }
       // Give the implementation here so we avoid the template
       // instantiation problem
-      template<typename T> inline T get_result(void) const;	
+      template<typename T> inline T get_result(void);	
     };
     
     /**
@@ -353,14 +372,19 @@ namespace RegionRuntime {
       friend class HighLevelRuntime;
       friend class PartitionNode;
       friend class TaskDescription;
-      RegionNode(LogicalHandle handle, unsigned dep, PartitionNode *par, bool add);
+      RegionNode(LogicalHandle handle, unsigned dep, PartitionNode *par, bool add, Context ctx);
       ~RegionNode();
 
       void add_partition(PartitionNode *node);
       void remove_partition(PartitionID pid);
 
-      // Context specific operations
-      void clear_context(Context ctx);
+      // insert the region for the given task into the tree, updating the task
+      // with the necessary dependences and copies as needed
+      void register_region_dependence(DependenceDetector &dep);
+
+      void close_subtree(Context ctx, std::vector<CopyOperation> &copies);
+
+      void initialize_context(Context ctx);
 
     protected:
       const LogicalHandle handle;
@@ -378,14 +402,17 @@ namespace RegionRuntime {
       friend class RegionNode;
       friend class TaskDescription;
       PartitionNode (PartitionID pid, unsigned dep, RegionNode *par,  
-                      bool dis, bool add);
+                      bool dis, bool add, Context ctx);
       ~PartitionNode(); 
 
       void add_region(RegionNode *node);
       void remove_region(LogicalHandle handle);
 
-      // Context specific operations
-      void clear_context(Context ctx);
+      void register_region_dependence(DependenceDetector &dep);
+
+      void close_subtree(Context ctx, std::vector<CopyOperation> &copies);
+
+      void initialize_context(Context ctx);
 
     protected:
       const PartitionID pid;
@@ -431,7 +458,7 @@ namespace RegionRuntime {
       ~HighLevelRuntime();
     public:
       // Functions for calling tasks
-      const Future*const execute_task(Context ctx, LowLevel::Processor::TaskFuncID task_id,
+      Future* execute_task(Context ctx, LowLevel::Processor::TaskFuncID task_id,
                       const std::vector<RegionRequirement> &regions,
                       const void *args, size_t arglen, bool spawn, 
                       MapperID id = 0, MappingTagID tag = 0);	
@@ -511,7 +538,8 @@ namespace RegionRuntime {
 
     // Template wrapper for high level tasks to encapsulate return values
     template<typename T, 
-      T (*TASK_PTR)(const void*,size_t,Context,const std::vector<PhysicalRegion>&)>
+    T (*TASK_PTR)(const void*,size_t,const std::vector<PhysicalRegion>&,
+                    Context,HighLevelRuntime*)>
     void high_level_task_wrapper(const void * args, size_t arglen, Processor p)
     {
       // Get the high level runtime
@@ -527,7 +555,7 @@ namespace RegionRuntime {
       arglen -= sizeof(Context);
       
       // Invoke the task with the given context
-      T return_value = (*TASK_PTR)((void*)arg_ptr, arglen, ctx, regions);
+      T return_value = (*TASK_PTR)((void*)arg_ptr, arglen, regions, ctx, runtime);
 
       // Send the return value back
       runtime->end_task(ctx, (void*)(&return_value), sizeof(T));
@@ -539,7 +567,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     template<typename T>
-    inline T Future::get_result(void) const
+    inline T Future::get_result(void)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef HIGH_LEVEL_DEBUG
@@ -706,7 +734,10 @@ namespace RegionRuntime {
 							LogicalHandle region1, LogicalHandle region2)
     //--------------------------------------------------------------------------------------------
     {
-
+      // TODO: actually implement this method
+      LogicalHandle smash_region;
+      assert(false);
+      return smash_region;
     }
 
     //--------------------------------------------------------------------------------------------

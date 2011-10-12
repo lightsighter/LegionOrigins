@@ -92,6 +92,8 @@ namespace RegionRuntime {
       result_size = 0;
       remaining_events = 0;
       merged_wait_event = Event::NO_EVENT;
+      region_nodes = NULL;
+      partition_nodes = NULL;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -126,35 +128,251 @@ namespace RegionRuntime {
       assert(termination_event.has_triggered());
 #endif
       remaining_events = 0;
+      args = NULL;
+      result = NULL;
+      regions.clear();
+      wait_events.clear();
+      pre_copy_ops.clear();
+      instances.clear();
+      dead_instances.clear();
+      dependent_tasks.clear();
+      child_tasks.clear();
+      if (remote)
+      {
+        // If remote then we can delete the copies of these nodes
+        // that we had to create
+        delete region_nodes;
+        delete partition_nodes;
+      }
+      region_nodes = NULL;
+      partition_nodes = NULL;
+      deleted_regions.clear();
       active = false;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskDescription::register_child_task(TaskDescription *child)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Add it to the list of child tasks
+      child_tasks.push_back(child);
+
+      child->region_nodes = region_nodes;
+      child->partition_nodes = partition_nodes;
+      // Update the child task with information about where it's top level regions are
+      for (std::vector<RegionRequirement>::iterator it = child->regions.begin();
+            it != child->regions.end(); it++)
+      {
+        LogicalHandle handle = it->handle;
+        // Make sure we don't get any regions which are sub regions of other region arguments 
+        bool added = false;
+        for (unsigned idx = 0; idx < child->top_level_regions.size(); idx++)
+        {
+          LogicalHandle top = child->top_level_regions[idx]->handle;
+          // Check for disjointness
+          if (!disjoint(handle, top))
+          {
+            // top is already the parent, ignore the new one
+            if (subregion(top, handle))
+            {
+              added = true; 
+              break;
+            }
+            else if (subregion(handle,top)) // the new region is the parent, put it in place
+            {
+#ifdef DEBUG_HIGH_LEVEL
+              assert(region_nodes->find(handle) != region_nodes->end());
+#endif
+              child->top_level_regions[idx] = (*region_nodes)[handle];
+              added = true;
+              break;
+            } 
+            else // Aliased, but neither is sub-region, egad!
+            {
+              // TODO: handle this case
+              assert(false);
+            }
+          }
+        }    
+        if (!added)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(region_nodes->find(handle) != region_nodes->end());
+#endif
+          child->top_level_regions.push_back((*region_nodes)[handle]);
+        }
+      }  
+
+      // Now compute the dependencies for this new child task on prior child tasks in this context
+      for (unsigned idx = 0; idx < child->regions.size(); idx++)
+      {
+        bool found = false;
+        // Find the top level region which this region is contained within
+        for (unsigned top = 0; top < top_level_regions.size(); top++)
+        {
+          if (subregion(top_level_regions[top]->handle, child->regions[idx].handle))
+          {
+            found = true;
+            DependenceDetector dep;
+            dep.ctx = local_ctx;
+            dep.req = &(child->regions[idx]);
+            dep.desc = child;
+            dep.previous = top_level_regions[top];
+
+            // Compute the trace from the subregion to the top level region
+            RegionNode *node = (*region_nodes)[child->regions[idx].handle];
+            while (node != top_level_regions[top])
+            {
+              dep.reg_trace.push_back(node->handle);
+              dep.part_trace.push_back(node->parent->pid);
+              node = node->parent->parent;
+            }
+
+            top_level_regions[top]->register_region_dependence(dep);
+            break;
+          }
+        }
+        // If we didn't find it then it wasn't a sub-region of any of the parent's regions
+        if (!found)
+        {
+          fprintf(stderr,"Region argument %d to task %d was not found as sub-region of parent task's subregions!\n", idx, task_id);
+          exit(1);
+        }
+      }
     }
 
     //--------------------------------------------------------------------------------------------
     size_t TaskDescription::compute_task_size(void) const
     //--------------------------------------------------------------------------------------------
     {
-
+      size_t bytes = 0;
+      bytes += sizeof(Processor::TaskFuncID);
+      bytes += sizeof(size_t); // number of regions
+      bytes += (regions.size() * sizeof(RegionRequirement));
+      bytes += sizeof(size_t); // arglen
+      bytes += arglen;
+      bytes += sizeof(MapperID);
+      bytes += sizeof(MappingTagID);
+      bytes += sizeof(bool);
+      // No need to send mappable, can be inferred as being true, otherwise couldn't be remote
+      bytes += sizeof(UserEvent); // mapped event
+      bytes += sizeof(Processor);
+      bytes += (2*sizeof(Context)); // parent context and original context
+      bytes += sizeof(Event); // merged wait event
+      // TODO: figure out how to pack region information
+      return bytes;
     }
 
     //--------------------------------------------------------------------------------------------
     void TaskDescription::pack_task(char *&buffer) const
     //--------------------------------------------------------------------------------------------
     {
-
+      *((Processor::TaskFuncID*)buffer) = task_id;
+      buffer += sizeof(Processor::TaskFuncID);
+      *((size_t*)buffer) = regions.size();
+      buffer += sizeof(size_t);
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        *((RegionRequirement*)buffer) = regions[idx];
+        buffer += sizeof(RegionRequirement);
+      } 
+      *((size_t*)buffer) = arglen;
+      buffer += sizeof(size_t);
+      memcpy(buffer, args, arglen);
+      buffer += arglen;
+      *((MapperID*)buffer) = map_id;
+      buffer += sizeof(MapperID);
+      *((MappingTagID*)buffer) = tag;
+      buffer += sizeof(MappingTagID);
+      *((bool*)buffer) = stealable;
+      buffer += sizeof(bool);
+      *((UserEvent*)buffer) = map_event;
+      buffer += sizeof(UserEvent);
+      *((Processor*)buffer) = orig_proc;
+      buffer += sizeof(Processor);
+      *((Context*)buffer) = parent_ctx;
+      buffer += sizeof(Context);
+      *((Context*)buffer) = orig_ctx;
+      buffer += sizeof(Context);
+      *((Event*)buffer) = merged_wait_event;
+      buffer += sizeof(Event);
     }
 
     //--------------------------------------------------------------------------------------------
     void TaskDescription::unpack_task(const char *&buffer)
     //--------------------------------------------------------------------------------------------
     {
-
+      task_id = *((const Processor::TaskFuncID*)buffer);
+      buffer += sizeof(Processor::TaskFuncID);
+      size_t num_regions = *((const size_t*)buffer); 
+      buffer += sizeof(size_t);
+      regions.reserve(num_regions);
+      for (unsigned idx = 0; idx < num_regions; idx++)
+      {
+        regions[idx] = *((const RegionRequirement*)buffer);
+        buffer += sizeof(RegionRequirement); 
+      }
+      arglen = *((const size_t*)buffer);
+      buffer += sizeof(size_t);
+      args = malloc(arglen);
+      memcpy(args,buffer,arglen);
+      buffer += arglen;
+      map_id = *((const MapperID*)buffer);
+      buffer += sizeof(MapperID);
+      tag = *((const MappingTagID*)buffer);
+      buffer += sizeof(MappingTagID);
+      stealable = *((const bool*)buffer);
+      buffer += sizeof(bool);
+      mapped = false; // Couldn't have been sent anywhere without being unmapped
+      map_event = *((const UserEvent*)buffer);
+      buffer += sizeof(UserEvent);
+      orig_proc = *((const Processor*)buffer);
+      buffer += sizeof(Processor);
+      parent_ctx = *((const Context*)buffer);
+      buffer += sizeof(Context);
+      orig_ctx = *((const Context*)buffer);
+      buffer += sizeof(Context);
+      remote = true; // If we're unpacking this it is definitely remote
+      merged_wait_event = *((const Event*)buffer);
+      buffer += sizeof(Event);
     }
 
     //--------------------------------------------------------------------------------------------
     const std::vector<PhysicalRegion>& TaskDescription::start_task(void)
     //--------------------------------------------------------------------------------------------
     {
-      
+#ifdef DEBUG_HIGH_LEVEL
+      // There should be an instance for every one of the required mappings
+      assert(instances.size() == regions.size());
+#endif
+      // Create instance info for the parent task's regions and fill them in
+      for (std::vector<InstanceInfo*>::iterator it = instances.begin();
+            it != instances.end(); it++)
+      {
+        // Create a new instance info for this context that is not quite a copy
+        InstanceInfo *info = new InstanceInfo();
+        info->meta = (*it)->meta;
+        info->owner = NULL; // Null owner indicates parent task
+        info->inst = (*it)->inst;
+        info->location = (*it)->location;
+        // Get the region node and add it to the list of valid instances for this context
+#ifdef DEBUG_HIGH_LEVEL
+        assert(region_nodes->find(info->meta) != region_nodes->end());
+#endif
+        (*region_nodes)[info->meta]->region_states[local_ctx].valid_instances.insert(info);
+      }
+      // For each of the top level regions, initialize the context of this task
+      // This ensures that all the region and partition nodes have state entries for this task
+      // and that they are all clear if they already existed
+      for (std::vector<RegionNode*>::iterator it = top_level_regions.begin();
+            it != top_level_regions.end(); it++)
+      {
+        (*it)->initialize_context(local_ctx);
+      }
+
+      // Fake this for right now
+      // TODO: fix this
+      return physical_regions;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -308,6 +526,7 @@ namespace RegionRuntime {
 
       // Register that the task has been mapped
       mapped = true;
+      map_event.trigger();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -332,17 +551,17 @@ namespace RegionRuntime {
     void TaskDescription::create_region(LogicalHandle handle)
     //--------------------------------------------------------------------------------------------
     {
-      RegionNode *node = new RegionNode(handle, 0, NULL, true);
-      region_nodes[handle] = node;
+      RegionNode *node = new RegionNode(handle, 0, NULL, true, local_ctx);
+      (*region_nodes)[handle] = node;
     }
 
     //--------------------------------------------------------------------------------------------
     void TaskDescription::remove_region(LogicalHandle handle, bool recursive)
     //--------------------------------------------------------------------------------------------
     {
-      std::map<LogicalHandle,RegionNode*>::iterator find_it = region_nodes.find(handle);
+      std::map<LogicalHandle,RegionNode*>::iterator find_it = region_nodes->find(handle);
 #ifdef DEBUG_HIGH_LEVEL
-      assert(find_it != region_nodes.end());
+      assert(find_it != region_nodes->end());
 #endif
       // Recursively remove the partitions
       for (std::map<PartitionID,PartitionNode*>::iterator par_it = 
@@ -352,6 +571,11 @@ namespace RegionRuntime {
       // If not recursive delete all the sub nodes
       if (!recursive)
       {
+        // If this is not a newly made node, add it to the list of deleted regions
+        if (!find_it->second->added)
+        {
+          deleted_regions.push_back(find_it->second->handle);
+        }
         // Check to see if it has a parent node
         if (find_it->second->parent != NULL)
         {
@@ -360,7 +584,7 @@ namespace RegionRuntime {
         }
         delete find_it->second; 
       }
-      region_nodes.erase(find_it);
+      region_nodes->erase(find_it);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -368,21 +592,21 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(partition_nodes.find(parent) != partition_nodes.end());
+      assert(partition_nodes->find(parent) != partition_nodes->end());
 #endif
-      PartitionNode *par_node = partition_nodes[parent];
-      RegionNode *node = new RegionNode(handle, par_node->depth+1, par_node, true);
-      partition_nodes[parent]->add_region(node);
-      region_nodes[handle] = node;
+      PartitionNode *par_node = (*partition_nodes)[parent];
+      RegionNode *node = new RegionNode(handle, par_node->depth+1, par_node, true, local_ctx);
+      (*partition_nodes)[parent]->add_region(node);
+      (*region_nodes)[handle] = node;
     }
 
     //--------------------------------------------------------------------------------------------
     void TaskDescription::remove_subregion(LogicalHandle handle, PartitionID parent, bool recursive)
     //--------------------------------------------------------------------------------------------
     {
-      std::map<LogicalHandle,RegionNode*>::iterator find_it = region_nodes.find(handle);
+      std::map<LogicalHandle,RegionNode*>::iterator find_it = region_nodes->find(handle);
 #ifdef DEBUG_HIGH_LEVEL
-      assert(find_it != region_nodes.end());
+      assert(find_it != region_nodes->end());
 #endif
       // Recursively remove the partitions
       for (std::map<PartitionID,PartitionNode*>::iterator par_it =
@@ -392,14 +616,19 @@ namespace RegionRuntime {
       // If not recursive delete all the sub nodes
       if (!recursive)
       {
+        // If this is not a newly made node, add it to the list of deleted regions
+        if (!find_it->second->added)
+        {
+          deleted_regions.push_back(find_it->second->handle);
+        }
         // Remove this from the partition
 #ifdef DEBUG_HIGH_LEVEL
-        assert(partition_nodes.find(parent) != partition_nodes.end());
+        assert(partition_nodes->find(parent) != partition_nodes->end());
 #endif
-        partition_nodes[parent]->remove_region(find_it->first);
+        (*partition_nodes)[parent]->remove_region(find_it->first);
         delete find_it->second;
       }
-      region_nodes.erase(find_it);
+      region_nodes->erase(find_it);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -407,21 +636,21 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(region_nodes.find(parent) != region_nodes.end());
+      assert(region_nodes->find(parent) != region_nodes->end());
 #endif
-      RegionNode *par_node = region_nodes[parent];
-      PartitionNode *node = new PartitionNode(pid, par_node->depth+1,par_node,disjoint,true);
+      RegionNode *par_node = (*region_nodes)[parent];
+      PartitionNode *node = new PartitionNode(pid, par_node->depth+1,par_node,disjoint,true,local_ctx);
       par_node->add_partition(node);
-      partition_nodes[pid] = node;
+      (*partition_nodes)[pid] = node;
     }
 
     //--------------------------------------------------------------------------------------------
     void TaskDescription::remove_partition(PartitionID pid, LogicalHandle parent, bool recursive)
     //--------------------------------------------------------------------------------------------
     {
-      std::map<PartitionID,PartitionNode*>::iterator find_it = partition_nodes.find(pid);
+      std::map<PartitionID,PartitionNode*>::iterator find_it = partition_nodes->find(pid);
 #ifdef DEBUG_HIGH_LEVEL
-      assert(find_it != partition_nodes.end());
+      assert(find_it != partition_nodes->end());
 #endif
       // Recursively remove the partitions
       for (std::map<LogicalHandle,RegionNode*>::iterator part_it = 
@@ -431,12 +660,12 @@ namespace RegionRuntime {
       if (!recursive)
       {
 #ifdef DEBUG_HIGH_LEVEL
-        assert(region_nodes.find(parent) != region_nodes.end());
+        assert(region_nodes->find(parent) != region_nodes->end());
 #endif
-        region_nodes[parent]->remove_partition(find_it->first);
+        (*region_nodes)[parent]->remove_partition(find_it->first);
         delete find_it->second;
       }
-      partition_nodes.erase(find_it); 
+      partition_nodes->erase(find_it); 
     }
 
     //--------------------------------------------------------------------------------------------
@@ -444,11 +673,11 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(region_nodes.find(region1) != region_nodes.end());
-      assert(region_nodes.find(region2) != region_nodes.end());
+      assert(region_nodes->find(region1) != region_nodes->end());
+      assert(region_nodes->find(region2) != region_nodes->end());
 #endif
-      RegionNode *node1 = region_nodes[region1];
-      RegionNode *node2 = region_nodes[region2];
+      RegionNode *node1 = (*region_nodes)[region1];
+      RegionNode *node2 = (*region_nodes)[region2];
       // Get the regions on the same level
       if (node1->depth != node2->depth)
       {
@@ -513,15 +742,38 @@ namespace RegionRuntime {
         return true; // From different region trees
     }
 
+    //--------------------------------------------------------------------------------------------
+    bool TaskDescription::subregion(LogicalHandle parent, LogicalHandle child)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(region_nodes->find(parent) != region_nodes->end());
+      assert(region_nodes->find(child) != region_nodes->end());
+#endif
+      RegionNode *p = (*region_nodes)[parent];
+      RegionNode *c = (*region_nodes)[child];
+      // Handle the easy case
+      if (p->depth > c->depth)
+        return false;
+      
+      while (c->depth > p->depth)
+        c = c->parent->parent;
+#ifdef DEBUG_HIGH_LEVEL
+      assert(c->depth == p->depth);
+#endif
+      return (p == c);
+    }
+
     /////////////////////////////////////////////////////////////
     // Region Node 
     ///////////////////////////////////////////////////////////// 
 
     //--------------------------------------------------------------------------------------------
-    RegionNode::RegionNode(LogicalHandle h, unsigned dep, PartitionNode *par, bool add)
+    RegionNode::RegionNode(LogicalHandle h, unsigned dep, PartitionNode *par, bool add, Context ctx)
       : handle(h), depth(dep), parent(par), added(add)
     //--------------------------------------------------------------------------------------------
     {
+      initialize_context(ctx);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -556,21 +808,33 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void RegionNode::clear_context(Context ctx)
+    void RegionNode::register_region_dependence(DependenceDetector &dep)
+    //--------------------------------------------------------------------------------------------
+    {
+      
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::initialize_context(Context ctx)
     //--------------------------------------------------------------------------------------------
     {
       // Handle the local context
       if (ctx < region_states.size())
       {
-        //region_states[ctx].owner = NULL;
-        //region_states[ctx].open_partitions = false;
-
-        // Check the lower levels of the tree
-        for (std::map<PartitionID,PartitionNode*>::iterator it = partitions.begin();
-              it != partitions.end(); it++)
-        {
-          it->second->clear_context(ctx);
-        }
+        region_states[ctx].open_partitions.clear();
+        region_states[ctx].valid_instances.clear();
+      }
+      else
+      {
+        // Resize for the new context
+        region_states.reserve(ctx+1);
+      }
+      
+      // Initialize any subregions
+      for (std::map<PartitionID,PartitionNode*>::iterator it = partitions.begin();
+            it != partitions.end(); it++)
+      {
+        it->second->initialize_context(ctx);
       }
     }
 
@@ -579,10 +843,12 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////////////// 
 
     //--------------------------------------------------------------------------------------------
-    PartitionNode::PartitionNode(PartitionID p, unsigned dep, RegionNode *par, bool dis, bool add)
+    PartitionNode::PartitionNode(PartitionID p, unsigned dep, RegionNode *par, 
+                                  bool dis, bool add, Context ctx)
       : pid(p), depth(dep), parent(par), disjoint(dis), added(add)
     //--------------------------------------------------------------------------------------------
     {
+      initialize_context(ctx);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -619,13 +885,28 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void PartitionNode::clear_context(Context ctx)
+    void PartitionNode::register_region_dependence(DependenceDetector &dep)
     //--------------------------------------------------------------------------------------------
     {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void PartitionNode::initialize_context(Context ctx)
+    //--------------------------------------------------------------------------------------------
+    {
+      if (ctx < partition_states.size())
+      {
+        partition_states[ctx].open_regions.clear();
+      }
+      else
+      {
+        partition_states.reserve(ctx+1);
+      }
       for (std::map<LogicalHandle,RegionNode*>::iterator it = children.begin();
             it != children.end(); it++)
       {
-        it->second->clear_context(ctx);
+        it->second->initialize_context(ctx);
       }
     }
 
@@ -640,8 +921,8 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     HighLevelRuntime::HighLevelRuntime(LowLevel::Machine *m)
-      : mapper_objects(std::vector<Mapper*>(DEFAULT_MAPPER_SLOTS)), 
-      local_proc(m->get_local_processor()), machine(m),
+      : local_proc(m->get_local_processor()), machine(m),
+      mapper_objects(std::vector<Mapper*>(DEFAULT_MAPPER_SLOTS)), 
       next_partition_id(local_proc.id), partition_stride(m->get_all_processors().size())
     //--------------------------------------------------------------------------------------------
     {
@@ -653,7 +934,7 @@ namespace RegionRuntime {
       mapper_objects[0] = new Mapper(machine,this);
 
       // Create some tasks
-      all_tasks.resize(DEFAULT_DESCRIPTIONS);
+      all_tasks.reserve(DEFAULT_DESCRIPTIONS);
       for (unsigned ctx = 0; ctx < DEFAULT_DESCRIPTIONS; ctx++)
       {
         all_tasks[ctx] = new TaskDescription((Context)ctx, local_proc); 
@@ -753,7 +1034,7 @@ namespace RegionRuntime {
     }
     
     //--------------------------------------------------------------------------------------------
-    const Future*const  HighLevelRuntime::execute_task(Context ctx, 
+    Future* HighLevelRuntime::execute_task(Context ctx, 
                                         LowLevel::Processor::TaskFuncID task_id,
 					const std::vector<RegionRequirement> &regions,
 					const void *args, size_t arglen, bool spawn,
@@ -776,6 +1057,12 @@ namespace RegionRuntime {
       desc->orig_proc = local_proc;
       desc->parent_ctx = ctx;
       desc->remote = false;
+
+      // Register this child task with the parent task
+#ifdef DEBUG_HIGH_LEVEL
+      assert(ctx < all_tasks.size());
+#endif
+      all_tasks[ctx]->register_child_task(desc);
       
       // Figure out where to put this task
       if (desc->remaining_events == 0)
@@ -798,7 +1085,7 @@ namespace RegionRuntime {
       if (id >= mapper_objects.size())
       {
         int old_size = mapper_objects.size();
-        mapper_objects.resize(id+1);
+        mapper_objects.reserve(id+1);
         for (unsigned int i=old_size; i<(id+1); i++)
           mapper_objects[i] = NULL;
       } 
@@ -814,7 +1101,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       // See if we can find an unused task
-      for (int ctx = 0; ctx < all_tasks.size(); ctx++)
+      for (unsigned ctx = 0; ctx < all_tasks.size(); ctx++)
       {
         if (all_tasks[ctx]->activate())
         {
@@ -950,7 +1237,9 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(ctx < all_tasks.size());
 #endif
-      TaskDescription *parent = all_tasks[ctx];
+      TaskDescription *desc = all_tasks[ctx];
+
+      desc->children_mapped();
     }
         
     //--------------------------------------------------------------------------------------------
@@ -1060,7 +1349,7 @@ namespace RegionRuntime {
 #endif
      
       // Go through and create the instances
-      for (int idx = 0; idx < options.size(); idx++)
+      for (unsigned idx = 0; idx < options.size(); idx++)
       {
         std::vector<Memory> &locations = options[idx];
         InstanceInfo *info = desc->instances[idx];
@@ -1143,6 +1432,7 @@ namespace RegionRuntime {
         desc->orig_proc.spawn(NOTIFY_START_ID, buffer, buffer_size);
         // Clean up our mess
         free(buffer);
+        // The remote notify start will trigger the mapping event
       }
       else
       {
@@ -1160,6 +1450,8 @@ namespace RegionRuntime {
           // dependent task has to see
           (*it)->remaining_events--;
         }
+        // Trigger the mapped event
+        desc->map_event.trigger();
       }
       // Mark this task as having been mapped
       desc->mapped = true;
@@ -1361,6 +1653,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       // Figure out how much data will have to be mapped
+      std::vector<std::vector<Memory> > rankings;
+      return rankings;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1377,14 +1671,24 @@ namespace RegionRuntime {
 					MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
-
+      return local_proc;
     }
 
     //--------------------------------------------------------------------------------------------
     Processor Mapper::target_task_steal()
     //--------------------------------------------------------------------------------------------
     {
-
+      // Choose a random processor
+      const std::set<Processor> &all_procs = machine->get_all_processors();
+      unsigned index = rand() % all_procs.size();
+      std::set<Processor>::const_iterator it = all_procs.begin();
+      while (index > 0)
+      {
+        it++;
+        index--;
+      }
+      assert(it != all_procs.end());
+      return *it;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1393,7 +1697,7 @@ namespace RegionRuntime {
 					MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
-
+      return true;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1401,7 +1705,8 @@ namespace RegionRuntime {
 				const std::vector<RegionRequirement> &regions, MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
-
+      std::vector<std::vector<Memory> > mapping;
+      return mapping;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1411,6 +1716,5 @@ namespace RegionRuntime {
       MemorySorter functor = { this->machine };
       std::sort(memories.begin(),memories.end(),functor);
     }
-
   };
 };
