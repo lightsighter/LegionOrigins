@@ -14,10 +14,10 @@ using namespace RegionRuntime::LowLevel;
 #define NUM_TRIPS	100
 #define NUM_HOPS        25
 
-#define PRINT_ID	1
-#define LAUNCHER_ID 	2
-#define HOT_POTATOER 	3
-#define POTATO_DROPPER 	4
+#define PRINT_ID	(Processor::TASK_ID_FIRST_AVAILABLE+0)
+#define LAUNCHER_ID     (Processor::TASK_ID_FIRST_AVAILABLE+1)	
+#define HOT_POTATOER 	(Processor::TASK_ID_FIRST_AVAILABLE+2)
+#define POTATO_DROPPER 	(Processor::TASK_ID_FIRST_AVAILABLE+3)
 
 struct Potato {
 public:
