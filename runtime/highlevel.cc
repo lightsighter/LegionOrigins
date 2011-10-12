@@ -245,21 +245,96 @@ namespace RegionRuntime {
     size_t TaskDescription::compute_task_size(void) const
     //--------------------------------------------------------------------------------------------
     {
-
+      size_t bytes = 0;
+      bytes += sizeof(Processor::TaskFuncID);
+      bytes += sizeof(size_t); // number of regions
+      bytes += (regions.size() * sizeof(RegionRequirement));
+      bytes += sizeof(size_t); // arglen
+      bytes += arglen;
+      bytes += sizeof(MapperID);
+      bytes += sizeof(MappingTagID);
+      bytes += sizeof(bool);
+      // No need to send mappable, can be inferred as being true, otherwise couldn't be remote
+      bytes += sizeof(UserEvent); // mapped event
+      bytes += sizeof(Processor);
+      bytes += (2*sizeof(Context)); // parent context and original context
+      bytes += sizeof(Event); // merged wait event
+      // TODO: figure out how to pack region information
+      return bytes;
     }
 
     //--------------------------------------------------------------------------------------------
     void TaskDescription::pack_task(char *&buffer) const
     //--------------------------------------------------------------------------------------------
     {
-
+      *((Processor::TaskFuncID*)buffer) = task_id;
+      buffer += sizeof(Processor::TaskFuncID);
+      *((size_t*)buffer) = regions.size();
+      buffer += sizeof(size_t);
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        *((RegionRequirement*)buffer) = regions[idx];
+        buffer += sizeof(RegionRequirement);
+      } 
+      *((size_t*)buffer) = arglen;
+      buffer += sizeof(size_t);
+      memcpy(buffer, args, arglen);
+      buffer += arglen;
+      *((MapperID*)buffer) = map_id;
+      buffer += sizeof(MapperID);
+      *((MappingTagID*)buffer) = tag;
+      buffer += sizeof(MappingTagID);
+      *((bool*)buffer) = stealable;
+      buffer += sizeof(bool);
+      *((UserEvent*)buffer) = map_event;
+      buffer += sizeof(UserEvent);
+      *((Processor*)buffer) = orig_proc;
+      buffer += sizeof(Processor);
+      *((Context*)buffer) = parent_ctx;
+      buffer += sizeof(Context);
+      *((Context*)buffer) = orig_ctx;
+      buffer += sizeof(Context);
+      *((Event*)buffer) = merged_wait_event;
+      buffer += sizeof(Event);
     }
 
     //--------------------------------------------------------------------------------------------
     void TaskDescription::unpack_task(const char *&buffer)
     //--------------------------------------------------------------------------------------------
     {
-
+      task_id = *((const Processor::TaskFuncID*)buffer);
+      buffer += sizeof(Processor::TaskFuncID);
+      size_t num_regions = *((const size_t*)buffer); 
+      buffer += sizeof(size_t);
+      regions.reserve(num_regions);
+      for (unsigned idx = 0; idx < num_regions; idx++)
+      {
+        regions[idx] = *((const RegionRequirement*)buffer);
+        buffer += sizeof(RegionRequirement); 
+      }
+      arglen = *((const size_t*)buffer);
+      buffer += sizeof(size_t);
+      args = malloc(arglen);
+      memcpy(args,buffer,arglen);
+      buffer += arglen;
+      map_id = *((const MapperID*)buffer);
+      buffer += sizeof(MapperID);
+      tag = *((const MappingTagID*)buffer);
+      buffer += sizeof(MappingTagID);
+      stealable = *((const bool*)buffer);
+      buffer += sizeof(bool);
+      mapped = false; // Couldn't have been sent anywhere without being unmapped
+      map_event = *((const UserEvent*)buffer);
+      buffer += sizeof(UserEvent);
+      orig_proc = *((const Processor*)buffer);
+      buffer += sizeof(Processor);
+      parent_ctx = *((const Context*)buffer);
+      buffer += sizeof(Context);
+      orig_ctx = *((const Context*)buffer);
+      buffer += sizeof(Context);
+      remote = true; // If we're unpacking this it is definitely remote
+      merged_wait_event = *((const Event*)buffer);
+      buffer += sizeof(Event);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -294,6 +369,10 @@ namespace RegionRuntime {
       {
         (*it)->initialize_context(local_ctx);
       }
+
+      // Fake this for right now
+      // TODO: fix this
+      return physical_regions;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -447,6 +526,7 @@ namespace RegionRuntime {
 
       // Register that the task has been mapped
       mapped = true;
+      map_event.trigger();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -954,7 +1034,7 @@ namespace RegionRuntime {
     }
     
     //--------------------------------------------------------------------------------------------
-    const Future*const  HighLevelRuntime::execute_task(Context ctx, 
+    Future* HighLevelRuntime::execute_task(Context ctx, 
                                         LowLevel::Processor::TaskFuncID task_id,
 					const std::vector<RegionRequirement> &regions,
 					const void *args, size_t arglen, bool spawn,
@@ -1352,6 +1432,7 @@ namespace RegionRuntime {
         desc->orig_proc.spawn(NOTIFY_START_ID, buffer, buffer_size);
         // Clean up our mess
         free(buffer);
+        // The remote notify start will trigger the mapping event
       }
       else
       {
@@ -1369,6 +1450,8 @@ namespace RegionRuntime {
           // dependent task has to see
           (*it)->remaining_events--;
         }
+        // Trigger the mapped event
+        desc->map_event.trigger();
       }
       // Mark this task as having been mapped
       desc->mapped = true;

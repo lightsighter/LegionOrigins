@@ -158,6 +158,7 @@ namespace RegionRuntime {
       std::vector<CopyOperation> pre_copy_ops; // Computed after move
       std::vector<InstanceInfo*> instances; // Region instances for the regions (mov)
       std::vector<InstanceInfo*> dead_instances; // Computed after move 
+      std::vector<PhysicalRegion> physical_regions;
     private:
       std::vector<RegionNode*> top_level_regions; // The top level regions
       std::vector<LogicalHandle> deleted_regions; // The regions deleted in this task and children
@@ -212,7 +213,7 @@ namespace RegionRuntime {
       inline bool is_set(void) const { return set; }
       // Give the implementation here so we avoid the template
       // instantiation problem
-      template<typename T> inline T get_result(void) const;	
+      template<typename T> inline T get_result(void);	
     };
     
     /**
@@ -457,7 +458,7 @@ namespace RegionRuntime {
       ~HighLevelRuntime();
     public:
       // Functions for calling tasks
-      const Future*const execute_task(Context ctx, LowLevel::Processor::TaskFuncID task_id,
+      Future* execute_task(Context ctx, LowLevel::Processor::TaskFuncID task_id,
                       const std::vector<RegionRequirement> &regions,
                       const void *args, size_t arglen, bool spawn, 
                       MapperID id = 0, MappingTagID tag = 0);	
@@ -537,7 +538,8 @@ namespace RegionRuntime {
 
     // Template wrapper for high level tasks to encapsulate return values
     template<typename T, 
-      T (*TASK_PTR)(const void*,size_t,Context,const std::vector<PhysicalRegion>&)>
+    T (*TASK_PTR)(const void*,size_t,const std::vector<PhysicalRegion>&,
+                    Context,HighLevelRuntime*)>
     void high_level_task_wrapper(const void * args, size_t arglen, Processor p)
     {
       // Get the high level runtime
@@ -553,7 +555,7 @@ namespace RegionRuntime {
       arglen -= sizeof(Context);
       
       // Invoke the task with the given context
-      T return_value = (*TASK_PTR)((void*)arg_ptr, arglen, ctx, regions);
+      T return_value = (*TASK_PTR)((void*)arg_ptr, arglen, regions, ctx, runtime);
 
       // Send the return value back
       runtime->end_task(ctx, (void*)(&return_value), sizeof(T));
@@ -565,7 +567,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     template<typename T>
-    inline T Future::get_result(void) const
+    inline T Future::get_result(void)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef HIGH_LEVEL_DEBUG
@@ -732,7 +734,10 @@ namespace RegionRuntime {
 							LogicalHandle region1, LogicalHandle region2)
     //--------------------------------------------------------------------------------------------
     {
-
+      // TODO: actually implement this method
+      LogicalHandle smash_region;
+      assert(false);
+      return smash_region;
     }
 
     //--------------------------------------------------------------------------------------------
