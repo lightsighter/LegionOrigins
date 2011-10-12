@@ -103,6 +103,16 @@ namespace RegionRuntime {
       Mask copy_mask;
     };
 
+    struct DependenceDetector {
+    public:
+      Context ctx;
+      RegionRequirement *req;
+      TaskDescription *desc;
+      RegionNode *previous; 
+      std::vector<PartitionID> part_trace;
+      std::vector<LogicalHandle> reg_trace;
+    };
+
     class TaskDescription {
     protected:
       friend class HighLevelRuntime;
@@ -135,22 +145,29 @@ namespace RegionRuntime {
       void *result; // For storing the result of the task
       size_t result_size;
     private:
+      // Dependence information (both forward and backward)
       int remaining_events; // Number of events we still need to see before being mappable
       std::set<Event> wait_events; // Events to wait on before executing (immovable)
       Event merged_wait_event; // The merge of the wait_events (movable)
-      std::vector<CopyOperation> pre_copy_ops; // Computed after move
-      std::vector<InstanceInfo*> instances; // Region instances for the regions (mov)
-      std::vector<InstanceInfo*> dead_instances; // Computed after move 
       UserEvent termination_event; // Create a user level termination event to be returned quickly
       std::vector<TaskDescription*> dependent_tasks; // Tasks waiting for us to be mapped (immov)
     private:
       std::vector<TaskDescription*> child_tasks; // (immov)
-      std::map<LogicalHandle,RegionNode*> region_nodes; // (immov)
-      std::map<PartitionID,PartitionNode*> partition_nodes; // (immov)
-      std::vector<LogicalHandle> deleted_regions;
+    private:
+      // Information about instances and copies
+      std::vector<CopyOperation> pre_copy_ops; // Computed after move
+      std::vector<InstanceInfo*> instances; // Region instances for the regions (mov)
+      std::vector<InstanceInfo*> dead_instances; // Computed after move 
+    private:
+      std::vector<RegionNode*> top_level_regions; // The top level regions
+      std::vector<LogicalHandle> deleted_regions; // The regions deleted in this task and children
+    private:
+      std::map<LogicalHandle,RegionNode*> *region_nodes; // (immov) (pointers can be aliased)
+      std::map<PartitionID,PartitionNode*> *partition_nodes; // (immov) (pointers can be aliased)
     protected:
       bool activate(void);
       void deactivate(void);
+      void register_child_task(TaskDescription *child);
       // Operations to pack and unpack tasks
       size_t compute_task_size(void) const;
       void pack_task(char *&buffer) const;
@@ -171,6 +188,7 @@ namespace RegionRuntime {
       void remove_partition(PartitionID pid, LogicalHandle parent, bool recursive=false);
       // Disjointness testing
       bool disjoint(LogicalHandle region1, LogicalHandle region2);
+      bool subregion(LogicalHandle parent, LogicalHandle child);
     private:
       bool active;
     };
@@ -353,14 +371,19 @@ namespace RegionRuntime {
       friend class HighLevelRuntime;
       friend class PartitionNode;
       friend class TaskDescription;
-      RegionNode(LogicalHandle handle, unsigned dep, PartitionNode *par, bool add);
+      RegionNode(LogicalHandle handle, unsigned dep, PartitionNode *par, bool add, Context ctx);
       ~RegionNode();
 
       void add_partition(PartitionNode *node);
       void remove_partition(PartitionID pid);
 
-      // Context specific operations
-      void clear_context(Context ctx);
+      // insert the region for the given task into the tree, updating the task
+      // with the necessary dependences and copies as needed
+      void register_region_dependence(DependenceDetector &dep);
+
+      void close_subtree(Context ctx, std::vector<CopyOperation> &copies);
+
+      void initialize_context(Context ctx);
 
     protected:
       const LogicalHandle handle;
@@ -378,14 +401,17 @@ namespace RegionRuntime {
       friend class RegionNode;
       friend class TaskDescription;
       PartitionNode (PartitionID pid, unsigned dep, RegionNode *par,  
-                      bool dis, bool add);
+                      bool dis, bool add, Context ctx);
       ~PartitionNode(); 
 
       void add_region(RegionNode *node);
       void remove_region(LogicalHandle handle);
 
-      // Context specific operations
-      void clear_context(Context ctx);
+      void register_region_dependence(DependenceDetector &dep);
+
+      void close_subtree(Context ctx, std::vector<CopyOperation> &copies);
+
+      void initialize_context(Context ctx);
 
     protected:
       const PartitionID pid;
