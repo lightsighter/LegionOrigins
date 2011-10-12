@@ -197,6 +197,8 @@ namespace RegionRuntime {
 	bool register_dependent(Triggerable *target, EventGeneration needed_gen, TriggerHandle handle = 0);
 	// Return an event for this EventImplementation
 	Event get_event();
+        // Return a user event for this EventImplementation
+        UserEvent get_user_event();
     private: 
 	bool in_use;
 	int sources;
@@ -427,6 +429,31 @@ namespace RegionRuntime {
 	Event result = current;
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 	return result;
+    }
+
+    UserEvent EventImpl::get_user_event()
+    {
+      PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+      UserEvent result; 
+      result.id = current.id;
+      PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+      return result;
+    }
+
+    ////////////////////////////////////////////////////////
+    // User Events (just use base event impl) 
+    ////////////////////////////////////////////////////////
+
+    UserEvent UserEvent::create_user_event(void)
+    {
+      EventImpl *impl = Runtime::get_runtime()->get_free_event();
+      return impl->get_user_event();
+    }
+
+    void UserEvent::trigger(void) const
+    {
+      EventImpl *impl = Runtime::get_runtime()->get_event_impl(*this);
+      impl->trigger();
     }
 
     ////////////////////////////////////////////////////////
