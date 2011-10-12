@@ -138,7 +138,8 @@ namespace RegionRuntime {
     // This will include Events and Locks
     class Triggerable {
     public:
-	virtual void trigger(void) = 0;
+        typedef unsigned TriggerHandle;
+	virtual void trigger(TriggerHandle = 0) = 0;
 	// make the warnings go away
 	virtual ~Triggerable() { }
     };
@@ -189,11 +190,11 @@ namespace RegionRuntime {
 	// create an event that won't trigger until all input events have
 	Event merge_events(const std::set<Event> &wait_for);
 	// Trigger the event
-	void trigger(void);
+	void trigger(TriggerHandle handle = 0);
 	// Check to see if the lock is active, if not activate it (return true), otherwise false
 	bool activate(void);	
 	// Register a dependent event, return true if event had not been triggered and was registered
-	bool register_dependent(Triggerable *target, EventGeneration needed_gen);
+	bool register_dependent(Triggerable *target, EventGeneration needed_gen, TriggerHandle handle = 0);
 	// Return an event for this EventImplementation
 	Event get_event();
     private: 
@@ -208,6 +209,7 @@ namespace RegionRuntime {
 	pthread_mutex_t mutex;
 	pthread_cond_t wait_cond;
 	std::vector<Triggerable*> triggerables;
+        std::vector<TriggerHandle> trigger_handles;
     }; 
 
     ////////////////////////////////////////////////////////
@@ -229,7 +231,7 @@ namespace RegionRuntime {
 				size_t arglen, Event wait_on);
 	void run(void);
 	void register_scheduler(void (*scheduler)(Processor));
-	void trigger(void);
+	void trigger(TriggerHandle handle = 0);
 	static void* start(void *proc);
 	void preempt(EventImpl *event, EventImpl::EventGeneration needed);
     private:
@@ -340,7 +342,7 @@ namespace RegionRuntime {
 	return ret;
     } 
 
-    void EventImpl::trigger(void)
+    void EventImpl::trigger(TriggerHandle handle)
     {
 	// Update the generation
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
@@ -364,8 +366,12 @@ namespace RegionRuntime {
 		// Trigger any dependent events
 		while (!triggerables.empty())
 		{
-			triggerables.back()->trigger();
+#ifdef DEBUG_LOW_LEVEL
+                        assert(triggerables.size() == trigger_handles.size());
+#endif
+			triggerables.back()->trigger(trigger_handles.back());
 			triggerables.pop_back();
+                        trigger_handles.pop_back();
 		}
 		// Reacquire the lock and mark that in_use is false
 		PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
@@ -396,7 +402,7 @@ namespace RegionRuntime {
 	return result;
     }
 
-    bool EventImpl::register_dependent(Triggerable *target, EventGeneration gen)
+    bool EventImpl::register_dependent(Triggerable *target, EventGeneration gen, TriggerHandle handle)
     {
 	bool result = false;
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
@@ -406,6 +412,10 @@ namespace RegionRuntime {
 		result = true;
 		// Enqueue it
 		triggerables.push_back(target);	
+                trigger_handles.push_back(handle);
+#ifdef DEBUG_LOW_LEVEL
+                assert(triggerables.size() == trigger_handles.size());
+#endif
 	}
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));	
 	return result;
@@ -431,18 +441,19 @@ namespace RegionRuntime {
 		mode = 0;
 		holders = 0;
 		waiters = false;
+                next_handle = 1;
 		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
 	};	
 
-	Event lock(unsigned mode, bool exclusive);
+	Event lock(unsigned mode, bool exclusive, Event wait_on);
 	void unlock(Event wait_on);
-	void trigger(void);
+	void trigger(TriggerHandle handle);
 
 	bool activate(void);
 	void deactivate(void);
 	Lock get_lock(void) const;
     private:
-	Event register_request(unsigned m, bool exc);
+	Event register_request(unsigned m, bool exc, TriggerHandle handle = 0);
 	void perform_unlock();
     private:
 	class LockRecord {
@@ -451,6 +462,8 @@ namespace RegionRuntime {
 		bool exclusive;
 		Event event;
 		bool handled;
+                bool ready; // If this lock waits on a event, see if it's ready
+                TriggerHandle id; // If it's not ready this is the trigger handle
 	};
     private:
 	const int index;
@@ -460,6 +473,7 @@ namespace RegionRuntime {
 	bool waiters;
 	unsigned mode;
 	unsigned holders;
+        TriggerHandle next_handle; // all numbers >0 are lock requests, 0 is unlock trigger handle
 	std::list<LockRecord> requests;
 	pthread_mutex_t mutex;
     };
@@ -467,7 +481,7 @@ namespace RegionRuntime {
     Event Lock::lock(unsigned mode, bool exclusive, Event wait_on) const
     {
 	LockImpl *l = Runtime::get_runtime()->get_lock_impl(*this);
-	return l->lock(mode,exclusive);
+	return l->lock(mode,exclusive, wait_on);
     }
 
     bool Lock::exists(void) const
@@ -492,49 +506,70 @@ namespace RegionRuntime {
 	l->deactivate();
     }
 
-    Event LockImpl::lock(unsigned m, bool exc)
+    Event LockImpl::lock(unsigned m, bool exc, Event wait_on)
     {
 	Event result = Event::NO_EVENT;
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
-	if (taken)
-	{
-		// If either is exclusive we have to register the request
-		if (exclusive || exc)
-		{
-			result = register_request(m,exc);
-		}
-		else
-		{
-			if ((mode == m) && !waiters)
-			{
-				// Not exclusive and modes are equal
-				// and there are no waiters
-				// Can still acquire the lock
-				holders++;
-			}
-			else
-			{
-				result = register_request(m,exc);	
-			}
-		}
-	}
-	else
-	{
-		// Nobody has the lock, grab it
-		taken = true;
-		exclusive = exc;
-		mode = m;
-		holders = 1;
+        // check to see if we have to wait on event first
+        bool must_wait = false;
+        if (wait_on.exists())
+        {
+          // Try registering the lock
+          EventImpl *impl = Runtime::get_runtime()->get_event_impl(wait_on);
+          if (impl->register_dependent(this, EventImpl::get_gen(wait_on.id), next_handle))
+          {
+            // Successfully registered with the event, register the request as asleep
+            must_wait = true;
+          }
+        }
+        if (must_wait)
+        {
+          result = register_request(m, exc, next_handle);
+          // Increment the next handle since we used it
+          next_handle++;
+        }
+        else // Didn't have to wait for anything do the normal thing
+        {
+          if (taken)
+          {
+                  // If either is exclusive we have to register the request
+                  if (exclusive || exc)
+                  {
+                          result = register_request(m,exc);
+                  }
+                  else
+                  {
+                          if ((mode == m) && !waiters)
+                          {
+                                  // Not exclusive and modes are equal
+                                  // and there are no waiters
+                                  // Can still acquire the lock
+                                  holders++;
+                          }
+                          else
+                          {
+                                  result = register_request(m,exc);	
+                          }
+                  }
+          }
+          else
+          {
+                  // Nobody has the lock, grab it
+                  taken = true;
+                  exclusive = exc;
+                  mode = m;
+                  holders = 1;
 #ifdef DEBUG_PRINT
-		DPRINT3("Granting lock %d in mode %d with exclusive %d\n",index,mode,exclusive);
+                  DPRINT3("Granting lock %d in mode %d with exclusive %d\n",index,mode,exclusive);
 #endif
-	}
+          }
+        }
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 	return result;
     }
 
     // Always called while holding the lock
-    Event LockImpl::register_request(unsigned m, bool exc)
+    Event LockImpl::register_request(unsigned m, bool exc, TriggerHandle handle)
     {
 	EventImpl *e = Runtime::get_runtime()->get_free_event();
 	LockRecord req;
@@ -542,12 +577,15 @@ namespace RegionRuntime {
 	req.exclusive = exc;
 	req.event = e->get_event();
 	req.handled = false;
+        req.id = handle;
+        // If handle is 0 then the request is already awake, otherwise wait for the trigger to occur
+        req.ready = (handle == 0);
 	// Add this to the list of requests
 	requests.push_back(req);
 
-	// Finally set waiters to true
-	// as there are now threads waiting
-	waiters = true;
+	// Finally set waiters to true if it's already true
+	// or there are now threads waiting
+	waiters = waiters || req.ready;
 	
 	return req.event;
     }
@@ -559,6 +597,7 @@ namespace RegionRuntime {
 	{
 		// Register this lock to be unlocked when the even triggers	
 		EventImpl *e = Runtime::get_runtime()->get_event_impl(wait_on);
+                // Use default handle 0 to indicate unlock event
 		if (!(e->register_dependent(this,EventImpl::get_gen(wait_on.id))))
 		{
 			// The event didn't register which means it already triggered
@@ -574,11 +613,71 @@ namespace RegionRuntime {
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
     }
 
-    void LockImpl::trigger(void)
+    void LockImpl::trigger(TriggerHandle handle)
     {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
-	// trigger the unlock operation now that the event has fired
-	perform_unlock();
+        // If the trigger handle is 0 then unlock the lock, otherwise, find the lock request to wake up
+        if (handle == 0)
+        {
+          perform_unlock();
+        }
+        else
+        {
+#if 0
+          bool found = false;
+          // Go through the list and mark the matching request as being ready
+          for (std::list<LockRecord>::iterator it = requests.begin();
+                it != requests.end(); it++)
+          {
+            if (it->id == handle)
+            {
+              found = true;
+#ifdef DEBUG_LOW_LEVEL
+              assert(!it->ready);
+#endif
+              it->ready = true;
+              // Try acquiring this lock just in case it is available,
+              // otherwise we can just leave this request on the queue
+              if (taken)
+              {
+                if (!exclusive && !it->exclusive && (mode == it->mode) && !waiters)
+                {
+                  holders++;
+                  // Trigger the event saying we have the lock
+                  EventImpl *impl = Runtime::get_runtime()->get_event_impl(it->event);
+                  impl->trigger();
+                  // Remove the request
+                  requests.erase(it);
+                }
+                else
+                {
+                  // There are now definitely waiters
+                  waiters = true;
+                }
+              }
+              else // Nobody else has it, grab it!
+              {
+                taken = true;
+                exclusive = it->exclusive;
+                mode = it->mode; 
+                holders = 1;
+                // Trigger the event saying we have the lock
+                EventImpl *impl = Runtime::get_runtime()->get_event_impl(it->event);
+                impl->trigger();
+                // Remove this request
+                requests.erase(it);
+#ifdef DEBUG_PRINT
+                  DPRINT3("Granting lock %d in mode %d with exclusive %d\n",index,mode,exclusive);
+#endif
+              }
+              break;
+            }
+          }
+#ifdef DEBUG_LOW_LEVEL
+          assert(found);
+#endif
+#endif
+        }
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
     }
 
@@ -599,16 +698,32 @@ namespace RegionRuntime {
 			taken = false;
 			return;
 		}
-		LockRecord req = requests.front();
-		requests.pop_front();		
-		// Get a request that hasn't already been handled
-		while (req.handled && !requests.empty())
-		{
-			req = requests.front();
-			requests.pop_front();
-		}
-		// If we emptied the queue with no unhandled requests, return
-		if (req.handled)
+                // Clean out all the handled requests
+                {
+                  std::list<LockRecord>::iterator it = requests.begin();
+                  while (it != requests.end())
+                  {
+                    if (it->handled)
+                      it = requests.erase(it);
+                    else
+                      it++;
+                  }
+                }
+		LockRecord req;
+                bool found = false;
+                for (std::list<LockRecord>::iterator it = requests.begin();
+                      it != requests.end(); it++)
+                {
+                  if (it->ready)
+                  {
+                    req = *it;
+                    it->handled = true;
+                    found = true;
+                    break;
+                  }
+                }
+                // Check to see if we found a new candidate
+                if (!found)
 		{
 			waiters = false;
 			taken = false;
@@ -631,6 +746,8 @@ namespace RegionRuntime {
 			for (std::list<LockRecord>::iterator it = requests.begin();
 				it != requests.end(); it++)
 			{
+                          if (it->ready)
+                          {
 				if ((it->mode == mode) && (!it->exclusive) && (!it->handled))
 				{
 					it->handled = true;
@@ -642,6 +759,7 @@ namespace RegionRuntime {
 					// There is at least one thread still waiting
 					waiters = true;
 				}
+                          }
 			}	
 		}
 		else
@@ -861,7 +979,7 @@ namespace RegionRuntime {
 	scheduler = sched;	
     }
 
-    void ProcessorImpl::trigger(void)
+    void ProcessorImpl::trigger(TriggerHandle handle)
     {
 	// We're not sure which task is ready, but at least one of them is
 	// so wake up the processor thread if it is waiting
@@ -1086,7 +1204,7 @@ namespace RegionRuntime {
     class RegionInstanceImpl : public Triggerable { 
     public:
 	RegionInstanceImpl(int idx, Memory m, size_t num, size_t elem_size, bool activate = false)
-		: elmt_size(elem_size), num_elmts(num), index(idx)
+		: elmt_size(elem_size), num_elmts(num), index(idx), next_handle(1)
 	{
 		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
 		active = activate;
@@ -1109,8 +1227,15 @@ namespace RegionRuntime {
 	void deactivate(void);
 	Event copy_to(RegionInstanceUntyped target, Event wait_on);
 	RegionInstanceUntyped get_instance(void) const;
-	void trigger(void);
+	void trigger(TriggerHandle handle);
 	Lock get_lock(void);
+    private:
+        class CopyOperation {
+        public:
+          void *dst_ptr;
+          EventImpl *complete;
+          TriggerHandle id;
+        };
     private:
 	char *base_ptr;	
 	size_t elmt_size;
@@ -1120,9 +1245,9 @@ namespace RegionRuntime {
 	bool active;
 	const int index;
 	// Fields for the copy operation
-	EventImpl *complete;
 	LockImpl *lock;
-	char *target_ptr;
+        TriggerHandle next_handle;
+        std::list<CopyOperation> pending_copies;
     };
 
     bool RegionInstanceUntyped::exists(void) const
@@ -1220,7 +1345,6 @@ namespace RegionRuntime {
 	assert(target_impl->num_elmts == num_elmts);
 	assert(target_impl->elmt_size == elmt_size);
 #endif
-	target_ptr = target_impl->base_ptr;
 	// Check to see if the event exists
 	if (wait_on.exists())
 	{
@@ -1229,34 +1353,55 @@ namespace RegionRuntime {
 		// Try registering this as a triggerable with the event	
 		EventImpl *event_impl = Runtime::get_runtime()->get_event_impl(wait_on);
 		PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
-		if (event_impl->register_dependent(this,EventImpl::get_gen(wait_on.id)))
+		if (event_impl->register_dependent(this,EventImpl::get_gen(wait_on.id),next_handle))
 		{
-			// Get a free event
-			EventImpl *complete = Runtime::get_runtime()->get_free_event();
+                        CopyOperation op;
+                        op.dst_ptr = target_impl->base_ptr;
+                        op.complete = Runtime::get_runtime()->get_free_event();
+                        op.id = next_handle;
+                        // Put it in the list of copy operations
+                        pending_copies.push_back(op);
+                        next_handle++;
 			PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
-			return complete->get_event();
+			return op.complete->get_event();
 		}
 		else
 		{
 			PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 			// The event occurred do the copy and return
-			memcpy(target_ptr,base_ptr,num_elmts*elmt_size);
+			memcpy(target_impl->base_ptr,base_ptr,num_elmts*elmt_size);
 			return Event::NO_EVENT;
 		}
 	}
 	else
 	{
 		// It doesn't exist, do the memcpy and return
-		memcpy(target_ptr,base_ptr,num_elmts*elmt_size);
+		memcpy(target_impl->base_ptr,base_ptr,num_elmts*elmt_size);
 		return Event::NO_EVENT;
 	}
     }
 
-    void RegionInstanceImpl::trigger(void)
+    void RegionInstanceImpl::trigger(TriggerHandle handle)
     {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
-	memcpy(target_ptr,base_ptr,num_elmts*elmt_size);		
-	complete->trigger();	
+        // Find the copy operation in the set
+        bool found = false;
+        for (std::list<CopyOperation>::iterator it = pending_copies.begin();
+              it != pending_copies.end(); it++)
+        {
+          if (it->id == handle)
+          {
+            found = true;
+            memcpy(it->dst_ptr,base_ptr,num_elmts*elmt_size);
+            it->complete->trigger();
+            // Remove it from the list
+            pending_copies.erase(it);
+            break;
+          }
+        }
+#ifdef DEBUG_LOW_LEVEL
+        assert(found);
+#endif
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
     }
 
