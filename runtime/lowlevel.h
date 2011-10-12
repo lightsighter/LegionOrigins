@@ -82,11 +82,18 @@ namespace RegionRuntime {
       bool operator<(const Processor& rhs) const { return id < rhs.id; }
       bool operator==(const Processor& rhs) const { return id == rhs.id; }
       bool exists(void) const;
-      void register_scheduler(void (*scheduler)(Processor));
 
       typedef unsigned TaskFuncID;
       typedef void (*TaskFuncPtr)(const void *args, size_t arglen, Processor proc);
       typedef std::map<TaskFuncID, TaskFuncPtr> TaskIDTable;
+
+      // special task IDs
+      enum {
+	TASK_ID_PROCESSOR_INIT = 1,
+	TASK_ID_PROCESSOR_SHUTDOWN = 2,
+	TASK_ID_PROCESSOR_IDLE = 3, // typically used for high-level scheduler
+	TASK_ID_FIRST_AVAILABLE
+      };
 
       Event spawn(TaskFuncID func_id, const void *args, size_t arglen,
 		  Event wait_on = Event::NO_EVENT) const;
@@ -172,6 +179,73 @@ namespace RegionRuntime {
       FreeFuncPtr free_fn_untyped(void) const;
     };
 
+    enum AccessorType { AccessorGeneric, AccessorArray };
+
+    template <AccessorType AT> class RegionInstanceAccessorUntyped;
+
+    template <> class RegionInstanceAccessorUntyped<AccessorGeneric> {
+    public:
+      explicit RegionInstanceAccessorUntyped(void *_internal_data)
+	: internal_data(_internal_data) {}
+
+      void *internal_data;
+
+      void get_untyped(unsigned ptr_value, void *dst, size_t size) const;
+      void put_untyped(unsigned ptr_value, const void *src, size_t size) const;
+
+      template <class T>
+      T read(ptr_t<T> ptr) const
+      { T val; get_untyped(ptr.value, &val, sizeof(val)); return val; }
+
+      template <class T>
+      void write(ptr_t<T> ptr, T newval) const
+      { put_untyped(ptr.value, &newval, sizeof(newval)); }
+
+      template <AccessorType AT2>
+      bool can_convert(void) const;
+
+      template <AccessorType AT2>
+      RegionInstanceAccessorUntyped<AT2> convert(void) const;
+    };
+
+    template <> class RegionInstanceAccessorUntyped<AccessorArray> {
+    public:
+      explicit RegionInstanceAccessorUntyped(void *_array_base)
+	: array_base(_array_base) {}
+
+      void *array_base;
+
+      template <class T>
+      T read(ptr_t<T> ptr) const { return ((T*)array_base)[ptr.value]; }
+
+      template <class T>
+      void write(ptr_t<T> ptr, T newval) const { ((T*)array_base)[ptr.value] = newval; }
+
+      template <class T, class REDOP>
+      void reduce(ptr_t<T> ptr, T newval) const { REDOP::reduce(((T*)array_base)[ptr.value], newval); }
+    };
+
+    template <class ET, AccessorType AT = AccessorGeneric>
+    class RegionInstanceAccessor {
+    public:
+      RegionInstanceAccessor(const RegionInstanceAccessorUntyped<AT> &_ria) : ria(_ria) {}
+
+      RegionInstanceAccessorUntyped<AT> ria;
+
+      ET read(ptr_t<ET> ptr) const { return ria.read(ptr); }
+      void write(ptr_t<ET> ptr, ET newval) const { ria.write(ptr, newval); }
+
+      template <class REDOP>
+      void reduce(ptr_t<ET> ptr, ET newval) const { ria.reduce<REDOP>(ptr, newval); }
+
+      template <AccessorType AT2>
+      bool can_convert(void) const { return ria.can_convert<AT2>(); }
+
+      template <AccessorType AT2>
+      RegionInstanceAccessor<ET,AT2> convert(void) const
+      { return RegionInstanceAccessor<ET,AT2>(ria.convert<AT2>()); }
+    };
+
     class RegionInstanceUntyped {
     public:
       typedef unsigned ID;
@@ -184,8 +258,7 @@ namespace RegionRuntime {
 
       bool exists(void) const;
 
-      // if non-null, the base of an "array" that can be dereferenced
-      void *direct_access_base;
+      RegionInstanceAccessorUntyped<AccessorGeneric> get_accessor_untyped(void) const;
 
       Event copy_to(RegionInstanceUntyped target, Event wait_on = Event::NO_EVENT)
       { return copy_fn_untyped()(*this, target, wait_on); }
@@ -284,49 +357,12 @@ namespace RegionRuntime {
       explicit RegionInstance(const RegionInstanceUntyped& copy_from)
 	: RegionInstanceUntyped(copy_from) {}
 
-      // note the level of indirection here - needed because the base class
-      //  can't be virtual
-#if 0
-      typedef T (*ReadFuncPtr)(ptr_t<T> ptr);
-      typedef void (*WriteFuncPtr)(ptr_t<T> ptr, T newval);
-      typedef void (*ReduceFuncPtr)(ptr_t<T> ptr, T (*reduce_op)(T, T), T newval);
+      // the instance doesn't have read/write/reduce methods of its own -
+      //  instead, we can hand out an "accessor" object that has those methods
+      //  this lets us specialize for the just-an-array-dereference case
+      const RegionInstanceAccessor<T,AccessorGeneric> get_accessor(void)
+      { return RegionInstanceAccessor<T,AccessorGeneric>(get_accessor_untyped()); }
 
-      ReadFuncPtr read_fn(void) { return (ReadFuncPtr)(read_fn_untyped()); }
-      WriteFuncPtr write_fn(void) { return (WriteFuncPtr)(write_fn_untyped()); }
-      ReduceFuncPtr reduce_fn(void) { return (ReduceFuncPtr)(reduce_fn_untyped()); }
-#endif
-
-      T *make_direct_ptr(void *direct_access_base, ptr_t<T> ptr)
-      {
-	return ((T*)direct_access_base)+ptr.value;
-      }
-
-      T read(ptr_t<T> ptr)
-      {
-#ifndef FORCE_DIRECT_ACCESS
-	if(!direct_access_base)
-	  return *(const T*)(read_fn_untyped()(*this, ptr.value));
-	else
-#endif
-	  return *make_direct_ptr(direct_access_base, ptr);
-      }
-
-      void write(ptr_t<T> ptr, T newval)
-      {
-#ifndef FORCE_DIRECT_ACCESS
-	if(!direct_access_base)
-	  (write_fn_untyped())(*this, ptr.value, (const void *)&newval);
-	else
-#endif
-	  *make_direct_ptr(direct_access_base, ptr) = newval;
-      }
-
-#if 1
-#else
-	T read(ptr_t<T> ptr) { return *((T*)(read_untyped(ptr.value))); }	
-	void write(ptr_t<T> ptr, T newval) { write_untyped(ptr.value,((void*)&newval)); }
-
-#endif
       Event copy_to(RegionInstance<T> target, Event wait_on = Event::NO_EVENT)
       { return copy_fn_untyped()(*this, target, wait_on); }
 

@@ -697,11 +697,13 @@ namespace RegionRuntime {
 	return (id != 0);
     }
 
+#if 0
     void Processor::register_scheduler(void (*scheduler)(Processor))
     {
 	ProcessorImpl *p = Runtime::get_runtime()->get_processor_impl(*this);
 	return p->register_scheduler(scheduler);
     }
+#endif
 
     Event ProcessorImpl::spawn(Processor::TaskFuncID func_id, const void * args,
 				size_t arglen, Event wait_on)
@@ -1132,6 +1134,12 @@ namespace RegionRuntime {
 	return (id != 0);
     }
 
+    RegionInstanceAccessorUntyped<AccessorGeneric> RegionInstanceUntyped::get_accessor_untyped(void) const
+    {
+      RegionInstanceImpl *impl = Runtime::get_runtime()->get_instance_impl(*this);
+      return RegionInstanceAccessorUntyped<AccessorGeneric>((void *)impl);
+    }
+
     const void* read_func(RegionInstanceUntyped region, unsigned ptr)
     {
 	return Runtime::get_runtime()->get_instance_impl(region)->read(ptr);
@@ -1264,7 +1272,6 @@ namespace RegionRuntime {
     {
 	RegionInstanceUntyped inst;
 	inst.id = index;
-	inst.direct_access_base = 0;
 	return inst;
     }
 
@@ -1273,6 +1280,24 @@ namespace RegionRuntime {
 	return lock->get_lock();
     }
 
+    void RegionInstanceAccessorUntyped<AccessorGeneric>::get_untyped(unsigned ptr_value, void *dst, size_t size) const
+    {
+      const void *src = ((RegionInstanceImpl *)internal_data)->read(ptr_value);
+      memcpy(dst, src, size);
+    }
+
+    void RegionInstanceAccessorUntyped<AccessorGeneric>::put_untyped(unsigned ptr_value, const void *src, size_t size) const
+    {
+      ((RegionInstanceImpl *)internal_data)->write(ptr_value, src);
+    }
+
+    template <>
+    bool RegionInstanceAccessorUntyped<AccessorGeneric>::can_convert<AccessorGeneric>(void) const
+    { return true; }
+    
+    template <>
+    RegionInstanceAccessorUntyped<AccessorGeneric> RegionInstanceAccessorUntyped<AccessorGeneric>::convert<AccessorGeneric>(void) const
+    { return *this; }
     
     ////////////////////////////////////////////////////////
     // RegionMetaDataUntyped 
