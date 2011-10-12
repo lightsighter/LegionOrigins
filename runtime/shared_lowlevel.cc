@@ -220,8 +220,9 @@ namespace RegionRuntime {
 
     class ProcessorImpl : public Triggerable {
     public:
-	ProcessorImpl(Processor::TaskIDTable table, Processor p) 
-		: scheduler(NULL), task_table(table), proc(p)
+	ProcessorImpl(Processor::TaskIDTable table, Processor p) :
+		task_table(table), proc(p), 
+                has_scheduler(table.find(Processor::TASK_ID_PROCESSOR_IDLE) != table.end())
 	{
 		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
 		PTHREAD_SAFE_CALL(pthread_cond_init(&wait_cond,NULL));
@@ -232,7 +233,6 @@ namespace RegionRuntime {
 	Event spawn(Processor::TaskFuncID func_id, const void * args,
 				size_t arglen, Event wait_on);
 	void run(void);
-	void register_scheduler(void (*scheduler)(Processor));
 	void trigger(TriggerHandle handle = 0);
 	static void* start(void *proc);
 	void preempt(EventImpl *event, EventImpl::EventGeneration needed);
@@ -248,7 +248,6 @@ namespace RegionRuntime {
 		EventImpl *complete;
 	};
     private:
-	void (*scheduler)(Processor);
 	Processor::TaskIDTable task_table;
 	Processor proc;
 	std::list<TaskDesc> ready_queue;
@@ -258,6 +257,7 @@ namespace RegionRuntime {
 	// Used for detecting the shutdown condition
 	bool shutdown;
 	EventImpl *shutdown_trigger;
+        bool has_scheduler;
     };
 
     
@@ -842,14 +842,6 @@ namespace RegionRuntime {
 	return (id != 0);
     }
 
-#if 0
-    void Processor::register_scheduler(void (*scheduler)(Processor))
-    {
-	ProcessorImpl *p = Runtime::get_runtime()->get_processor_impl(*this);
-	return p->register_scheduler(scheduler);
-    }
-#endif
-
     Event ProcessorImpl::spawn(Processor::TaskFuncID func_id, const void * args,
 				size_t arglen, Event wait_on)
     {
@@ -903,6 +895,12 @@ namespace RegionRuntime {
 
     void ProcessorImpl::run(void)
     {
+        // Check to see if there is an initialization task
+        if (task_table.find(Processor::TASK_ID_PROCESSOR_INIT) != task_table.end())
+        {
+          Processor::TaskFuncPtr func = task_table[Processor::TASK_ID_PROCESSOR_INIT];
+          func(NULL, 0, proc);
+        }
 	// Processors run forever and permit shutdowns
 	while (true)
 	{
@@ -943,10 +941,11 @@ namespace RegionRuntime {
     {
 	// Check to see how many tasks there are
 	// If there are too few, invoke the scheduler
-	if ((scheduler!=NULL) &&(ready_queue.size()+waiting_queue.size()) < MIN_SCHED_TASKS)
+	if (has_scheduler &&(ready_queue.size()+waiting_queue.size()) < MIN_SCHED_TASKS)
 	{
 		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
-		scheduler(proc);
+                Processor::TaskFuncPtr scheduler = task_table[Processor::TASK_ID_PROCESSOR_IDLE];
+                scheduler(NULL, 0, proc);
 		// Return from the scheduler, so we can reevaluate status
 		return;
 	}
@@ -955,6 +954,13 @@ namespace RegionRuntime {
 		if (shutdown && permit_shutdown && waiting_queue.empty())
 		{
 			shutdown_trigger->trigger();
+                        // Check to see if there is a shutdown method
+                        if (task_table.find(Processor::TASK_ID_PROCESSOR_SHUTDOWN) != task_table.end())
+                        {
+                          // If there is, call the shutdown method before triggering
+                          Processor::TaskFuncPtr func = task_table[Processor::TASK_ID_PROCESSOR_SHUTDOWN];
+                          func(NULL, 0, proc);
+                        }
 			pthread_exit(NULL);	
 		}
 		// Look through the waiting queue, to see if any events
@@ -1001,11 +1007,6 @@ namespace RegionRuntime {
 		if (task.arglen > 0)
 			free(task.args);
 	}
-    }
-
-    void ProcessorImpl::register_scheduler(void (*sched)(Processor))
-    {
-	scheduler = sched;	
     }
 
     void ProcessorImpl::trigger(TriggerHandle handle)
