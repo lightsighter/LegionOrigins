@@ -1621,6 +1621,9 @@ namespace RegionRuntime {
         if (it->has_triggered())
         {
           it = outstanding_steal_events.erase(it);
+          // Check for the case where we are at the end of the list now
+          if (it == outstanding_steal_events.end())
+            break;
         }
       }
       // Return true if there are still outstanding steal requests to be run
