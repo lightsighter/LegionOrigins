@@ -10,12 +10,13 @@ using namespace RegionRuntime::HighLevel;
 #define TREE_DEPTH      2
 #define BRANCH_FACTOR   2
 
-#define TOP_LEVEL_TASK_ID   10
-#define LAUNCH_TASK_ID      11
+#define TOP_LEVEL_TASK_ID   TASK_ID_REGION_MAIN 
+#define LAUNCH_TASK_ID      (TASK_ID_AVAILABLE+0)
 
 void top_level_task(const void *args, size_t arglen, const std::vector<PhysicalRegion> &regions,
                     Context ctx, HighLevelRuntime *runtime)
 {
+  printf("Running top level task\n");
   unsigned *buffer = (unsigned*)malloc(2*sizeof(unsigned));
   buffer[0] = TREE_DEPTH;
   buffer[1] = BRANCH_FACTOR;
@@ -27,6 +28,8 @@ void top_level_task(const void *args, size_t arglen, const std::vector<PhysicalR
     futures.push_back(runtime->execute_task(ctx,LAUNCH_TASK_ID,needed_regions,buffer,2*sizeof(unsigned),true));
   }
   free(buffer);
+
+  printf("All tasks launched from top level, waiting...\n");
 
   unsigned total_tasks = 0;
   for (std::vector<Future*>::iterator it = futures.begin();
@@ -48,6 +51,7 @@ unsigned launch_tasks(const void *args, size_t arglen, const std::vector<Physica
   unsigned depth = *ptr;
   ptr++;
   unsigned branch = *ptr;
+  printf("Running task at depth %d\n",depth);
 
   if (depth == 0)
     return 0;
@@ -78,4 +82,21 @@ unsigned launch_tasks(const void *args, size_t arglen, const std::vector<Physica
   }
 }
 
+int main(int argc, char **argv)
+{
+  Processor::TaskIDTable task_table;  
+  task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task>;
+  task_table[LAUNCH_TASK_ID] = high_level_task_wrapper<unsigned,launch_tasks>;
+  HighLevelRuntime::register_runtime_tasks(task_table);
+
+  // Initialize the machine
+  Machine m(&argc, &argv, task_table, false);
+
+  m.run();
+
+  // We should never actually make it here
+  printf("WRONG SUCCESS!\n");
+
+  return 0;
+}
 

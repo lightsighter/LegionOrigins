@@ -4,7 +4,7 @@ CCFLAGS = -I$(GASNET)/include -ggdb -Wall
 
 LDFLAGS = -L$(GASNET)/lib -lrt
 
-CCFLAGS += -DGASNET_CONDUIT_IBV -I$(GASNET)/include/ibv-conduit -DDEBUG_LOW_LEVEL #-DDEBUG_PRINT
+CCFLAGS += -DGASNET_CONDUIT_IBV -I$(GASNET)/include/ibv-conduit -DDEBUG_LOW_LEVEL -DDEBUG_HIGH_LEVEL -DDEBUG_PRINT_HIGH_LEVEL #-DDEBUG_PRINT
 LDFLAGS += -lgasnet-ibv-par -libverbs
 
 %.o : %.cc
@@ -31,5 +31,8 @@ ring2:	ring_test.o lowlevel.o
 ring:	ring_test.o shared_lowlevel.o
 	g++ -o ring $(CCFLAGS) $^ -lpthread
 
+tree:	shared_lowlevel.o highlevel.o tree_test.o
+	g++ -o tree $(CCFLAGS) $^ -lpthread
+
 clean:
-	rm -f ring *.o
+	rm -f ring tree *.o
