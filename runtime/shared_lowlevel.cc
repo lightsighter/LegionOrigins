@@ -339,7 +339,23 @@ namespace RegionRuntime {
 		if (src_impl->register_dependent(this,EventImpl::get_gen((*it).id)))
 			sources++;
 	}	
-	Event ret = current;
+	Event ret;
+        // Handle the case where there are no events, or all the waiting events
+        // have already triggered
+        if (sources > 0)
+        {
+          ret = current;
+        }
+        else
+        {
+#ifdef DEBUG_LOW_LEVEL
+          assert(in_use); // event should be in use
+          assert(triggerables.size() == 0); // there should be no triggerables
+#endif
+          in_use = false;
+          // return no event since all the preceding events have already triggered
+          ret = Event::NO_EVENT;
+        }
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 	return ret;
     } 
