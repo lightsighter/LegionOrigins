@@ -7,8 +7,8 @@
 
 using namespace RegionRuntime::HighLevel;
 
-#define TREE_DEPTH      2
-#define BRANCH_FACTOR   2
+#define TREE_DEPTH      4
+#define BRANCH_FACTOR   5 
 
 #define TOP_LEVEL_TASK_ID   TASK_ID_REGION_MAIN 
 #define LAUNCH_TASK_ID      (TASK_ID_AVAILABLE+0)
@@ -21,7 +21,7 @@ void top_level_task(const void *args, size_t arglen, const std::vector<PhysicalR
   buffer[0] = TREE_DEPTH;
   buffer[1] = BRANCH_FACTOR;
 
-  std::vector<Future*> futures;
+  std::vector<Future> futures;
   std::vector<RegionRequirement> needed_regions; // Don't need any regions
   for (unsigned idx = 0; idx < BRANCH_FACTOR; idx++)
   {
@@ -31,11 +31,11 @@ void top_level_task(const void *args, size_t arglen, const std::vector<PhysicalR
 
   printf("All tasks launched from top level, waiting...\n");
 
-  unsigned total_tasks = 0;
-  for (std::vector<Future*>::iterator it = futures.begin();
+  unsigned total_tasks = 1;
+  for (std::vector<Future>::iterator it = futures.begin();
         it != futures.end(); it++)
   {
-    total_tasks += ((*it)->get_result<unsigned>());
+    total_tasks += ((*it).get_result<unsigned>());
   }
 
   printf("Total tasks run: %u\n", total_tasks);
@@ -54,7 +54,7 @@ unsigned launch_tasks(const void *args, size_t arglen, const std::vector<Physica
   printf("Running task at depth %d\n",depth);
 
   if (depth == 0)
-    return 0;
+    return 1;
   else
   {
     // Create a buffer
@@ -62,7 +62,7 @@ unsigned launch_tasks(const void *args, size_t arglen, const std::vector<Physica
     buffer[0] = depth-1;
     buffer[1] = branch;
     // Launch as many tasks as the branching factor dictates, keep track of the futures
-    std::vector<Future*> futures;
+    std::vector<Future> futures;
     std::vector<RegionRequirement> needed_regions;
     for (unsigned idx = 0; idx < branch; idx++)
     {
@@ -71,13 +71,16 @@ unsigned launch_tasks(const void *args, size_t arglen, const std::vector<Physica
     // Clean up the buffer
     free(buffer);
 
-    unsigned total_tasks = 0;
+    printf("Waiting for tasks at depth %d\n",depth);
+
+    unsigned total_tasks = 1;
     // Wait for each of the tasks to finish and sum up the total sub tasks run
-    for (std::vector<Future*>::iterator it = futures.begin();
+    for (std::vector<Future>::iterator it = futures.begin();
           it != futures.end(); it++)
     {
-      total_tasks += ((*it)->get_result<unsigned>());
+      total_tasks += ((*it).get_result<unsigned>());
     }
+    printf("Finished task at depth %d\n",depth);
     return total_tasks;
   }
 }
