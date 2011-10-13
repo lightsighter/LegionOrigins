@@ -57,7 +57,10 @@ namespace RegionRuntime {
     //-------------------------------------------------------------------------------------------- 
     {
       if (result != NULL)
+      {
         free(result);
+        result = NULL;
+      }
       set = false;
       active = true;
       set_event = UserEvent::create_user_event();
@@ -128,9 +131,11 @@ namespace RegionRuntime {
       if (result != NULL) free(result);
       future->reset();
 #ifdef DEBUG_HIGH_LEVEL
-      assert(map_event.has_triggered());
-      assert(merged_wait_event.has_triggered());
-      assert(termination_event.has_triggered());
+      // These assertions are not valid under stealing
+      // Consider a steal of a steal
+      //assert(map_event.has_triggered());
+      //assert(merged_wait_event.has_triggered());
+      //assert(termination_event.has_triggered());
 #endif
       remaining_events = 0;
       args = NULL;
@@ -146,8 +151,10 @@ namespace RegionRuntime {
       {
         // If remote then we can delete the copies of these nodes
         // that we had to create
-        delete region_nodes;
-        delete partition_nodes;
+        if (region_nodes != NULL)
+          delete region_nodes;
+        if (partition_nodes != NULL)
+          delete partition_nodes;
       }
       region_nodes = NULL;
       partition_nodes = NULL;
@@ -496,6 +503,9 @@ namespace RegionRuntime {
 
         // Launch the notify finish on the original processor (no need to wait for anything)
         orig_proc.spawn(NOTIFY_FINISH_ID,buffer,buffer_size);
+
+        // Clean up our mess
+        free(buffer);
       }
       else
       {
@@ -504,12 +514,24 @@ namespace RegionRuntime {
         // Trigger the event indicating that this task is complete!
         termination_event.trigger();
       }
+      // Deactivate any child tasks
+      for (std::vector<TaskDescription*>::iterator it = child_tasks.begin();
+            it != child_tasks.end(); it++)
+      {
+        (*it)->deactivate();
+      }
+      // Check to see if this task was remote, if it was, then we can deactivate ourselves
+      if (remote)
+        deactivate();
     }
 
     //--------------------------------------------------------------------------------------------
     void TaskDescription::remote_start(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
       const char * ptr = (const char *)args;
       UserEvent wait_event = *((const UserEvent*)ptr); 
       ptr += sizeof(UserEvent);
@@ -546,6 +568,9 @@ namespace RegionRuntime {
     void TaskDescription::remote_finish(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
       // Unpack the user event to be trigged when we finished
       const char *ptr = (const char*)args;
       size_t result_size = *((const size_t*)ptr);
@@ -971,6 +996,7 @@ namespace RegionRuntime {
         desc->mapped = false;
         desc->map_event = UserEvent::create_user_event();
         desc->orig_proc = local_proc;
+        desc->orig_ctx = desc->local_ctx;
         desc->remote = false;
 
         // Put this task in the ready queue
@@ -1134,6 +1160,7 @@ namespace RegionRuntime {
       desc->map_event = UserEvent::create_user_event();
       desc->orig_proc = local_proc;
       desc->parent_ctx = ctx;
+      desc->orig_ctx = desc->local_ctx;
       desc->remote = false;
 
       // Register this child task with the parent task
@@ -1312,8 +1339,10 @@ namespace RegionRuntime {
         for (std::vector<TaskDescription*>::iterator it = stolen.begin();
               it != stolen.end(); it++)
         {
+          // If they are remote, deactivate the instance
+          // If it's not remote, its parent will deactivate it
           if ((*it)->remote)
-            delete *it;
+            (*it)->deactivate();
         }
       }
     }
@@ -1353,13 +1382,6 @@ namespace RegionRuntime {
 #endif
 
       desc->finish_task();
-
-      // Deactivate any child tasks since we'll no longer need their results
-      for (std::vector<TaskDescription*>::iterator it = desc->child_tasks.begin();
-            it != desc->child_tasks.end(); it++)
-      {
-        (*it)->deactivate();
-      }
     }
 
     //--------------------------------------------------------------------------------------------
