@@ -15,19 +15,21 @@
 #define DEFAULT_MAPPER_SLOTS 	8
 #define DEFAULT_DESCRIPTIONS    16 
 
-#define MAX_TASK_MAPS_PER_STEP  4
+#define MAX_TASK_MAPS_PER_STEP  1
 
-#define SHUTDOWN_FUNC_ID	0
-#define SCHEDULER_ID		1
-#define ENQUEUE_TASK_ID		2
-#define STEAL_TASK_ID		3
-#define CHILDREN_MAPPED_ID      4
-#define FINISH_ID               5
-#define NOTIFY_START_ID         6
-#define NOTIFY_FINISH_ID        7
+#define INIT_FUNC_ID            Processor::TASK_ID_PROCESSOR_INIT
+#define SHUTDOWN_FUNC_ID        Processor::TASK_ID_PROCESSOR_SHUTDOWN	
+#define SCHEDULER_ID		Processor::TASK_ID_PROCESSOR_IDLE
+#define ENQUEUE_TASK_ID		(Processor::TASK_ID_FIRST_AVAILABLE+0)
+#define STEAL_TASK_ID		(Processor::TASK_ID_FIRST_AVAILABLE+1)
+#define CHILDREN_MAPPED_ID      (Processor::TASK_ID_FIRST_AVAILABLE+2)
+#define FINISH_ID               (Processor::TASK_ID_FIRST_AVAILABLE+3)
+#define NOTIFY_START_ID         (Processor::TASK_ID_FIRST_AVAILABLE+4)
+#define NOTIFY_FINISH_ID        (Processor::TASK_ID_FIRST_AVAILABLE+5)
 
 namespace RegionRuntime {
   namespace HighLevel {
+
     /////////////////////////////////////////////////////////////
     // Future
     ///////////////////////////////////////////////////////////// 
@@ -915,9 +917,10 @@ namespace RegionRuntime {
     // High Level Runtime
     ///////////////////////////////////////////////////////////// 
 
-    // The high level runtime map
+    // The high level runtime map and its lock
     std::map<Processor,HighLevelRuntime*> *HighLevelRuntime::runtime_map = 
 					new std::map<Processor,HighLevelRuntime*>();
+    pthread_mutex_t HighLevelRuntime::runtime_map_mutex = PTHREAD_MUTEX_INITIALIZER;
 
     //--------------------------------------------------------------------------------------------
     HighLevelRuntime::HighLevelRuntime(LowLevel::Machine *m)
@@ -926,9 +929,9 @@ namespace RegionRuntime {
       next_partition_id(local_proc.id), partition_stride(m->get_all_processors().size())
     //--------------------------------------------------------------------------------------------
     {
-      // Register this object with the runtime map
-      runtime_map->insert(std::pair<Processor,HighLevelRuntime*>(local_proc,this));
-
+#ifdef DEBUG_PRINT_HIGH_LEVEL
+      fprintf(stderr,"Initializing high level runtime on processor %d\n",local_proc.id);
+#endif 
       for (unsigned int i=0; i<mapper_objects.size(); i++)
         mapper_objects[i] = NULL;
       mapper_objects[0] = new Mapper(machine,this);
@@ -940,23 +943,37 @@ namespace RegionRuntime {
         all_tasks[ctx] = new TaskDescription((Context)ctx, local_proc); 
       }
 
-      // TODO: register the appropriate functions with the low level processor
-      // Task 0 : Runtime Shutdown
-      // Task 1 : Enqueue Task Request
-      // Task 2 : Steal Request
-      // Task 3 : Set Future Value
+      // If this is the first processor, launch the region main task on this processor
+      const std::set<Processor> &all_procs = machine->get_all_processors();
+      if (local_proc == (*(all_procs.begin())))
+      {
+#ifdef DEBUG_PRINT_HIGH_LEVEL
+        fprintf(stderr,"Issuing region main task on processor %d\n",local_proc.id);
+#endif
+        TaskDescription *desc = get_available_description();
+        desc->task_id = TASK_ID_REGION_MAIN; 
+        desc->args = malloc(sizeof(Context)); // The value will get written in later
+        desc->arglen = sizeof(Context); 
+        desc->map_id = 0;
+        desc->tag = 0;
+        desc->stealable = false;
+        desc->mapped = false;
+        desc->map_event = UserEvent::create_user_event();
+        desc->orig_proc = local_proc;
+        desc->remote = false;
+
+        // Put this task in the ready queue
+        ready_queue.push_back(desc);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
     HighLevelRuntime::~HighLevelRuntime()
     //--------------------------------------------------------------------------------------------
     {
-      std::map<Processor,HighLevelRuntime*>::iterator it = runtime_map->find(local_proc);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(it != runtime_map->end());
+#ifdef DEBUG_PRINT_HIGH_LEVEL
+      fprintf(stderr,"Shutting down high level runtime on processor %d\n", local_proc.id);
 #endif
-      runtime_map->erase(it);
-
       // Go through and delete all the mapper objects
       for (unsigned int i=0; i<mapper_objects.size(); i++)
         if (mapper_objects[i] != NULL) delete mapper_objects[i];
@@ -964,6 +981,26 @@ namespace RegionRuntime {
       for (std::vector<TaskDescription*>::iterator it = all_tasks.begin();
               it != all_tasks.end(); it++)
         delete *it;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::register_runtime_tasks(Processor::TaskIDTable &table)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      // Check to make sure that nobody has registered any tasks here
+      for (unsigned idx = 0; idx < TASK_ID_REGION_MAIN; idx++)
+        assert(table.find(idx) == table.end());
+#endif
+      table[INIT_FUNC_ID]       = HighLevelRuntime::initialize_runtime;
+      table[SHUTDOWN_FUNC_ID]   = HighLevelRuntime::shutdown_runtime;
+      table[SCHEDULER_ID]       = HighLevelRuntime::schedule;
+      table[ENQUEUE_TASK_ID]    = HighLevelRuntime::enqueue_tasks;
+      table[STEAL_TASK_ID]      = HighLevelRuntime::steal_request;
+      table[CHILDREN_MAPPED_ID] = HighLevelRuntime::children_mapped;
+      table[FINISH_ID]          = HighLevelRuntime::finish_task;
+      table[NOTIFY_START_ID]    = HighLevelRuntime::notify_start;
+      table[NOTIFY_FINISH_ID]   = HighLevelRuntime::notify_finish;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -976,12 +1013,42 @@ namespace RegionRuntime {
       return ((*runtime_map)[p]);
     }
 
+    //-------------------------------------------------------------------------------------------- 
+    void HighLevelRuntime::initialize_runtime(const void * args, size_t arglen, Processor p)
+    //--------------------------------------------------------------------------------------------
+    {
+      HighLevelRuntime *runtime = new HighLevelRuntime(Machine::get_machine());
+      #define PTHREAD_SAFE_CALL(cmd)                          \
+        {                                                     \
+          int ret = (cmd);                                    \
+          if (ret != 0)                                       \
+          {                                                   \
+            fprintf(stderr,"PTHREAD error: %s = %d (%s)\n", #cmd, ret, strerror(ret));  \
+            exit(1);                                          \
+          }                                                   \
+        }
+      PTHREAD_SAFE_CALL(pthread_mutex_lock(&runtime_map_mutex));
+      // Register this object with the runtime map
+#ifdef DEBUG_HIGH_LEVEL
+      assert(runtime_map->find(p) == runtime_map->end());
+#endif
+      runtime_map->insert(std::pair<Processor,HighLevelRuntime*>(p,runtime));
+      PTHREAD_SAFE_CALL(pthread_mutex_unlock(&runtime_map_mutex));
+      #undef PTHREAD_SAFE_CALL
+    }
+
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::shutdown_runtime(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
+      std::map<Processor,HighLevelRuntime*>::iterator it = runtime_map->find(p);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(it != runtime_map->end());
+#endif
       // Invoke the destructor
-      delete HighLevelRuntime::get_runtime(p);
+      delete it->second;
+      // Remove it from the runtime map
+      runtime_map->erase(it);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1125,6 +1192,9 @@ namespace RegionRuntime {
       assert(ctx < all_tasks.size());
 #endif
       TaskDescription *desc= all_tasks[ctx];
+#ifdef DEBUG_PRINT_HIGH_LEVEL
+      fprintf(stderr,"Beginning task %d on processor %d\n",desc->task_id,desc->local_proc.id);
+#endif
       return desc->start_task(); 
     }
 
@@ -1136,6 +1206,9 @@ namespace RegionRuntime {
       assert(ctx < all_tasks.size());
 #endif
       TaskDescription *desc= all_tasks[ctx];
+#ifdef DEBUG_PRINT_HIGH_LEVEL
+      fprintf(stderr,"Ending task %d on processor %d\n",desc->task_id,desc->local_proc.id);
+#endif
       desc->complete_task(arg,arglen); 
     }
 
@@ -1168,7 +1241,10 @@ namespace RegionRuntime {
       // Get the number of mappers that requested this processor for stealing 
       int num_stealers = *((int*)buffer);
       buffer += sizeof(int);
-              
+#ifdef DEBUG_PRINT_HIGH_LEVEL
+      fprintf(stderr,"Handling a steal request on processor %d from processor %d\n",
+              local_proc.id,thief.id);
+#endif      
 
       // Iterate over the task descriptions, asking the appropriate mapper
       // whether we can steal them
@@ -1239,6 +1315,10 @@ namespace RegionRuntime {
 #endif
       TaskDescription *desc = all_tasks[ctx];
 
+#ifdef DEBUG_PRINT_HIGH_LEVEL
+      fprintf(stderr,"All child tasks mapped for task %d on processor %d\n",desc->task_id,desc->local_proc.id);
+#endif
+
       desc->children_mapped();
     }
         
@@ -1253,6 +1333,9 @@ namespace RegionRuntime {
 #endif
       // Get the task description out of the context
       TaskDescription *desc = all_tasks[ctx];
+#ifdef DEBUG_PRINT_HIGH_LEVEL
+      fprintf(stderr,"Task %d finished on processor %d\n", desc->task_id, desc->local_proc.id);
+#endif
 
       desc->finish_task();
 
@@ -1295,6 +1378,10 @@ namespace RegionRuntime {
     void HighLevelRuntime::process_schedule_request(void)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_PRINT_HIGH_LEVEL
+      //fprintf(stderr,"Running scheduler on processor %d with %d tasks in ready queue\n",
+       //       local_proc.id, ready_queue.size());
+#endif
       // Launch up to MAX_TASK_MAPS_PER_STEP tasks, either from the ready queue, or
       // by detecting tasks that become ready to map on the waiting queue
       int mapped_tasks = 0;
@@ -1506,16 +1593,22 @@ namespace RegionRuntime {
       std::multimap<Processor,MapperID> targets;
       for (unsigned i=0; i<mapper_objects.size(); i++)
       {
+        if (mapper_objects[i] == NULL) 
+          continue;
         Processor p = mapper_objects[i]->target_task_steal();
-        if (p.exists())
+        // Check that the processor exists and isn't us
+        if (p.exists() && !(p==local_proc))
           targets.insert(std::pair<Processor,MapperID>(p,(MapperID)i));
       }
       // For each processor go through and find the list of mappers to send
       for (std::multimap<Processor,MapperID>::const_iterator it = targets.begin();
-            it != targets.end(); it++)
+            it != targets.end(); )
       {
         Processor target = it->first;
         int num_mappers = targets.count(target);
+#ifdef DEBUG_PRINT_HIGH_LEVEL
+        fprintf(stderr,"Processor %d attempting steal on processor %d\n",local_proc.id,target.id);
+#endif
         size_t buffer_size = sizeof(Processor)+sizeof(int)+num_mappers*sizeof(MapperID);
         // Allocate a buffer for launching the steal task
         void * buffer = malloc(buffer_size); 
@@ -1525,12 +1618,15 @@ namespace RegionRuntime {
         buf_ptr += sizeof(Processor); 
         *((int*)buf_ptr) = num_mappers;
         buf_ptr += sizeof(int);
-        // Give the ID's of the stealing mappers
-        for ( ; it != targets.upper_bound(it->first); it++)
+        for ( ; it != targets.upper_bound(target); it++)
         {
           *((MapperID*)buf_ptr) = it->second;
           buf_ptr += sizeof(MapperID);
         }
+#ifdef DEBUG_HIGH_LEVEL
+        if (it != targets.end())
+          assert(!((target.id) == (it->first.id)));
+#endif
         // Now launch the task to perform the steal operation
         Event steal = target.spawn(STEAL_TASK_ID,buffer,buffer_size);
         // Enqueue the steal request on the list of oustanding steals
@@ -1613,7 +1709,7 @@ namespace RegionRuntime {
     // A helper functor for sorting memory sizes
     struct MemorySorter {
     public:
-      MachineDescription *machine;
+      Machine *machine;
       bool operator()(Memory one, Memory two)
       {
         return (machine->get_memory_size(one) < machine->get_memory_size(two));	
@@ -1621,7 +1717,7 @@ namespace RegionRuntime {
     };
     
     //--------------------------------------------------------------------------------------------
-    Mapper::Mapper(MachineDescription *m, HighLevelRuntime *rt) : runtime(rt),
+    Mapper::Mapper(Machine *m, HighLevelRuntime *rt) : runtime(rt),
 				local_proc(machine->get_local_processor()), machine(m)
     //--------------------------------------------------------------------------------------------
     {
@@ -1680,7 +1776,7 @@ namespace RegionRuntime {
     {
       // Choose a random processor
       const std::set<Processor> &all_procs = machine->get_all_processors();
-      unsigned index = rand() % all_procs.size();
+      int index = (rand()) % (all_procs.size());
       std::set<Processor>::const_iterator it = all_procs.begin();
       while (index > 0)
       {

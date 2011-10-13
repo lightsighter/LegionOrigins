@@ -21,7 +21,7 @@
 
 // Minimum number of tasks are processor can
 // have in its queues before the scheduler is invoked
-#define MIN_SCHED_TASKS	4
+#define MIN_SCHED_TASKS	1
 
 // The number of threads for this version
 #define NUM_PROCS	4

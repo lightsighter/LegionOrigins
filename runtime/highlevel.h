@@ -16,6 +16,7 @@
 
 #include "common.h"
 
+
 namespace RegionRuntime {
   namespace HighLevel {
 
@@ -33,6 +34,12 @@ namespace RegionRuntime {
     class PartitionNode;
     class TaskDescription;
 
+    enum {
+      // To see where the +6,7 come from, see the top of highlevel.cc
+      TASK_ID_REGION_MAIN = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+6,
+      TASK_ID_AVAILABLE = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+7,
+    };
+    
     enum AccessMode {
       READ_ONLY,
       READ_WRITE,
@@ -51,7 +58,7 @@ namespace RegionRuntime {
       RELAXED,
     };
 
-    typedef LowLevel::Machine MachineDescription;
+    typedef LowLevel::Machine Machine;
     typedef LowLevel::RegionMetaDataUntyped LogicalHandle;
     typedef LowLevel::RegionInstanceUntyped RegionInstance;
     typedef LowLevel::Memory Memory;
@@ -319,8 +326,8 @@ namespace RegionRuntime {
     protected:
       HighLevelRuntime *runtime;
     public:
-      Mapper(MachineDescription *machine, HighLevelRuntime *runtime);
-      virtual ~Mapper();
+      Mapper(Machine *machine, HighLevelRuntime *runtime);
+      virtual ~Mapper() { }
     public:
       // Rank the order for possible memory locations for a region
       virtual std::vector<Memory> rank_initial_region_locations(	
@@ -360,7 +367,7 @@ namespace RegionRuntime {
     protected:
       // Data structures for the base mapper
       const Processor local_proc;
-      MachineDescription *const machine;
+      Machine *const machine;
       std::vector<Memory> visible_memories;
     protected:
       // Helper methods for building machine abstractions
@@ -441,10 +448,14 @@ namespace RegionRuntime {
     private:
       // A static map for tracking the runtimes associated with each processor in a process
       static std::map<Processor,HighLevelRuntime*> *runtime_map;
+      // For help in building the runtime map at start up
+      static pthread_mutex_t runtime_map_mutex;
     public:
       static HighLevelRuntime* get_runtime(Processor p);
     public:
+      static void register_runtime_tasks(Processor::TaskIDTable &table);
       // Static methods for calls from the processor to the high level runtime
+      static void initialize_runtime(const void * args, size_t arglen, Processor p);
       static void shutdown_runtime(const void * args, size_t arglen, Processor p);
       static void schedule(const void * args, size_t arglen, Processor p);
       static void enqueue_tasks(const void * args, size_t arglen, Processor p);
@@ -454,7 +465,7 @@ namespace RegionRuntime {
       static void notify_start(const void * args, size_t arglen, Processor p);
       static void notify_finish(const void * args, size_t arglen, Processor p);
     public:
-      HighLevelRuntime(MachineDescription *m);
+      HighLevelRuntime(Machine *m);
       ~HighLevelRuntime();
     public:
       // Functions for calling tasks
@@ -495,7 +506,7 @@ namespace RegionRuntime {
     private:
       // Member variables
       Processor local_proc;
-      MachineDescription *machine;
+      Machine *machine;
       std::vector<Mapper*> mapper_objects;
       std::list<TaskDescription*> ready_queue; // Tasks ready to be mapped/stolen
       std::list<TaskDescription*> waiting_queue; // Tasks still unmappable
@@ -559,6 +570,30 @@ namespace RegionRuntime {
 
       // Send the return value back
       runtime->end_task(ctx, (void*)(&return_value), sizeof(T));
+    }
+
+    // Overloaded version of the task wrapper for when return type is void
+    template<void (*TASK_PTR)(const void*,size_t,const std::vector<PhysicalRegion>&,
+                              Context,HighLevelRuntime*)>
+    void high_level_task_wrapper(const void * args, size_t arglen, Processor p)
+    {
+      // Get the high level runtime
+      HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
+
+      // Read the context out of the buffer
+      Context ctx = *((Context*)args);
+      // Get the arguments associated with the context
+      const std::vector<PhysicalRegion>& regions = runtime->begin_task(ctx);
+
+      // Update the pointer and arglen
+      char* arg_ptr = ((char*)args)+sizeof(Context);
+      arglen -= sizeof(Context);
+      
+      // Invoke the task with the given context
+      (*TASK_PTR)((void*)arg_ptr, arglen, regions, ctx, runtime);
+
+      // Send an empty return value back
+      runtime->end_task(ctx, NULL, 0); 
     }
 
     // Unfortunately to avoid template instantiation issues we have to provide
