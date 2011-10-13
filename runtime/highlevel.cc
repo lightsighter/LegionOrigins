@@ -26,6 +26,7 @@
 #define FINISH_ID               (Processor::TASK_ID_FIRST_AVAILABLE+3)
 #define NOTIFY_START_ID         (Processor::TASK_ID_FIRST_AVAILABLE+4)
 #define NOTIFY_FINISH_ID        (Processor::TASK_ID_FIRST_AVAILABLE+5)
+#define TERMINATION_ID          (Processor::TASK_ID_FIRST_AVAILABLE+6)
 
 namespace RegionRuntime {
   namespace HighLevel {
@@ -1001,6 +1002,12 @@ namespace RegionRuntime {
 
         // Put this task in the ready queue
         ready_queue.push_back(desc);
+
+        // launch the termination task that will detect when the future for the top
+        // level task has finished and will terminate
+        Future *fut = new Future(desc->future); 
+        local_proc.spawn(TERMINATION_ID,fut,sizeof(Future));    
+        delete fut;
       }
     }
 
@@ -1038,6 +1045,7 @@ namespace RegionRuntime {
       table[FINISH_ID]          = HighLevelRuntime::finish_task;
       table[NOTIFY_START_ID]    = HighLevelRuntime::notify_start;
       table[NOTIFY_FINISH_ID]   = HighLevelRuntime::notify_finish;
+      table[TERMINATION_ID]     = HighLevelRuntime::detect_termination;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1125,16 +1133,23 @@ namespace RegionRuntime {
     
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::notify_start(const void * args, size_t arglen, Processor p)
-    //-------------------------------------------------------------------------------------------- 
+    //--------------------------------------------------------------------------------------------
     {
       HighLevelRuntime::get_runtime(p)->process_notify_start(args, arglen);
     }
 
-    //-------------------------------------------------------------------------------------------- 
+    //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::notify_finish(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
       HighLevelRuntime::get_runtime(p)->process_notify_finish(args, arglen);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::detect_termination(const void * args, size_t arglen, Processor p)
+    //--------------------------------------------------------------------------------------------
+    {
+      HighLevelRuntime::get_runtime(p)->process_termination(args, arglen);
     }
     
     //--------------------------------------------------------------------------------------------
@@ -1414,6 +1429,24 @@ namespace RegionRuntime {
 #endif
       TaskDescription *desc = all_tasks[local_ctx];
       desc->remote_finish(ptr, arglen-sizeof(Context));
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_termination(const void * args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Unpack the future from the buffer
+      Future f = *((const Future*)args);
+      // This will wait until the top level task has finished
+      f.get_void_result();
+      // Once this is over, launch a kill task on all the low-level processors
+      const std::set<Processor> &all_procs = machine->get_all_processors();
+      for (std::set<Processor>::iterator it = all_procs.begin();
+            it != all_procs.end(); it++)
+      {
+        // Kill pill
+        it->spawn(0,NULL,0);
+      }
     }
 
     //--------------------------------------------------------------------------------------------

@@ -967,7 +967,8 @@ namespace RegionRuntime {
     {
 	// Check to see how many tasks there are
 	// If there are too few, invoke the scheduler
-	if (has_scheduler &&(ready_queue.size()+waiting_queue.size()) < MIN_SCHED_TASKS)
+        // If we've been told to shutdown, never invoke the scheduler
+	if (has_scheduler && !shutdown && (ready_queue.size()+waiting_queue.size()) < MIN_SCHED_TASKS)
 	{
 		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
                 Processor::TaskFuncPtr scheduler = task_table[Processor::TASK_ID_PROCESSOR_IDLE];
@@ -980,6 +981,10 @@ namespace RegionRuntime {
 		if (shutdown && permit_shutdown && waiting_queue.empty())
 		{
 			shutdown_trigger->trigger();
+                        // unlock the lock, just in case someone else decides they want to tell us something
+                        // to do even though we've already exited
+                        PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+
                         // Check to see if there is a shutdown method
                         if (task_table.find(Processor::TASK_ID_PROCESSOR_SHUTDOWN) != task_table.end())
                         {
@@ -987,7 +992,7 @@ namespace RegionRuntime {
                           Processor::TaskFuncPtr func = task_table[Processor::TASK_ID_PROCESSOR_SHUTDOWN];
                           func(NULL, 0, proc);
                         }
-			pthread_exit(NULL);	
+                        pthread_exit(NULL);	
 		}
 		// Look through the waiting queue, to see if any events
 		// have been woken up	

@@ -37,8 +37,8 @@ namespace RegionRuntime {
 
     enum {
       // To see where the +6,7 come from, see the top of highlevel.cc
-      TASK_ID_REGION_MAIN = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+6,
-      TASK_ID_AVAILABLE = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+7,
+      TASK_ID_REGION_MAIN = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+7,
+      TASK_ID_AVAILABLE = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+8,
     };
     
     enum AccessMode {
@@ -224,12 +224,15 @@ namespace RegionRuntime {
       // Give the implementation here so we avoid the template
       // instantiation problem
       template<typename T> inline T get_result(void);	
+      // Have a get_result method for void types
+      inline void get_void_result(void);
     };
 
     class Future {
     public:
       inline bool is_active(void) { return impl->is_active(); }
       template<typename T> inline T get_result(void) { return impl->get_result<T>(); }
+      inline void get_void_result(void) { return impl->get_void_result(); }
     protected:
       friend class HighLevelRuntime;
       Future(FutureImpl *f) : impl(f) { }
@@ -478,6 +481,9 @@ namespace RegionRuntime {
       static void finish_task(const void * args, size_t arglen, Processor p);
       static void notify_start(const void * args, size_t arglen, Processor p);
       static void notify_finish(const void * args, size_t arglen, Processor p);
+      // Shutdown methods (one task to detect the termination, another to process it)
+      static void detect_termination(const void * args, size_t arglen, Processor p);
+      static void notify_termination(const void * args, size_t arglen, Processor p);
     public:
       HighLevelRuntime(Machine *m);
       ~HighLevelRuntime();
@@ -509,6 +515,7 @@ namespace RegionRuntime {
       void process_finish(const void* args, size_t arglen);
       void process_notify_start(const void * args, size_t arglen);
       void process_notify_finish(const void* args, size_t arglen);
+      void process_termination(const void * args, size_t arglen);
       // Where the magic happens!
       void process_schedule_request(void);
       void map_and_launch_task(TaskDescription *task);
@@ -619,7 +626,7 @@ namespace RegionRuntime {
     inline T FutureImpl::get_result(void)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef HIGH_LEVEL_DEBUG
+#ifdef DEBUG_HIGH_LEVEL 
       assert(active);
 #endif
       if (!set)
@@ -631,12 +638,26 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    inline void FutureImpl::get_void_result(void) 
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      if (!set);
+      {
+        set_event.wait();
+      }
+      active = false;
+    }
+
+    //--------------------------------------------------------------------------------------------
     template<typename T>
     inline LogicalHandle Partition<T>::get_subregion(Color c) const
     //--------------------------------------------------------------------------------------------
     {
-#ifdef HIGH_LEVEL_DEBUG
-      assert (c < child_regions.size());
+#ifdef DEBUG_HIGH_LEVEL 
+      assert (c < child_regions->size());
 #endif
       return (*child_regions)[c];
     }
