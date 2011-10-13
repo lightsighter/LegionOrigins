@@ -22,6 +22,7 @@ namespace RegionRuntime {
 
     // Forward class declarations
     class Future;
+    class FutureImpl;
     class RegionRequirement;
     class PhysicalRegion;
     class PartitionBase;
@@ -148,7 +149,7 @@ namespace RegionRuntime {
     protected:
       // Information to send back to the original processor
       bool remote; // Send back an event if true
-      Future *const future;
+      FutureImpl *const future;
       void *result; // For storing the result of the task
       size_t result_size;
     private:
@@ -201,7 +202,8 @@ namespace RegionRuntime {
       bool active;
     };
 
-    class Future {
+    
+    class FutureImpl {
     private:
       UserEvent set_event;
       bool set;
@@ -209,18 +211,30 @@ namespace RegionRuntime {
       bool active;
     protected:
       friend class TaskDescription;
-      Future(void);
-      ~Future(void);
+      friend class Future;
+      FutureImpl(void);
+      ~FutureImpl(void);
       // also allow the runtime to reset futures so it can re-use them
       inline bool is_active(void) const { return active; }
       void reset(void);
       // Also give an event for when the result becomes valid
       void set_result(const void * res, size_t result_size);
-    public:
+    protected:
       inline bool is_set(void) const { return set; }
       // Give the implementation here so we avoid the template
       // instantiation problem
       template<typename T> inline T get_result(void);	
+    };
+
+    class Future {
+    public:
+      inline bool is_active(void) { return impl->is_active(); }
+      template<typename T> inline T get_result(void) { return impl->get_result<T>(); }
+    protected:
+      friend class HighLevelRuntime;
+      Future(FutureImpl *f) : impl(f) { }
+    private:
+      FutureImpl *impl;
     };
     
     /**
@@ -469,7 +483,7 @@ namespace RegionRuntime {
       ~HighLevelRuntime();
     public:
       // Functions for calling tasks
-      Future* execute_task(Context ctx, LowLevel::Processor::TaskFuncID task_id,
+      Future execute_task(Context ctx, LowLevel::Processor::TaskFuncID task_id,
                       const std::vector<RegionRequirement> &regions,
                       const void *args, size_t arglen, bool spawn, 
                       MapperID id = 0, MappingTagID tag = 0);	
@@ -602,7 +616,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     template<typename T>
-    inline T Future::get_result(void)
+    inline T FutureImpl::get_result(void)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef HIGH_LEVEL_DEBUG

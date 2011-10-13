@@ -35,7 +35,7 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////////////// 
 
     //--------------------------------------------------------------------------------------------
-    Future::Future(void) 
+    FutureImpl::FutureImpl(void) 
       : set(false), result(NULL), active(true) 
     //--------------------------------------------------------------------------------------------
     {
@@ -43,7 +43,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    Future::~Future(void) 
+    FutureImpl::~FutureImpl(void) 
     //--------------------------------------------------------------------------------------------
     { 
       if (result != NULL)
@@ -53,7 +53,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void Future::reset(void)
+    void FutureImpl::reset(void)
     //-------------------------------------------------------------------------------------------- 
     {
       if (result != NULL)
@@ -64,15 +64,18 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void Future::set_result(const void * res, size_t result_size)
+    void FutureImpl::set_result(const void * res, size_t result_size)
     //--------------------------------------------------------------------------------------------
     {
       result = malloc(result_size);
 #ifdef DEBUG_HIGH_LEVEL
       assert(!set);
       assert(active);
-      assert(res != NULL);
-      assert(result != NULL);
+      if (result_size > 0)
+      {
+        assert(res != NULL);
+        assert(result != NULL);
+      }
 #endif
       memcpy(result, res, result_size);	
       set = true;
@@ -85,7 +88,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     TaskDescription::TaskDescription(Context ctx, Processor p) 
-        : local_ctx(ctx), local_proc(p), future(new Future()), active(false)
+        : local_ctx(ctx), local_proc(p), future(new FutureImpl()), active(false)
     //--------------------------------------------------------------------------------------------
     {
       args = NULL;
@@ -431,6 +434,10 @@ namespace RegionRuntime {
     void TaskDescription::children_mapped(void)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_PRINT_HIGH_LEVEL
+      fprintf(stderr,"Handling all children mapped for task %d on processor %d in context %d\n",
+              task_id, local_proc.id, local_ctx);
+#endif
       // Compute the event that will be triggered when all the children are finished
       std::set<Event> child_events;
       for (std::vector<TaskDescription*>::iterator it = child_tasks.begin();
@@ -460,6 +467,10 @@ namespace RegionRuntime {
     void TaskDescription::finish_task(void)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_PRINT_HIGH_LEVEL
+      fprintf(stderr,"Handling finish for task %d on processor %d in context %d\n",
+              task_id, local_proc.id, local_ctx);
+#endif
       // Delete the dead regions for this task
       for (std::vector<InstanceInfo*>::iterator it = dead_instances.begin();
             it != dead_instances.end(); it++)
@@ -937,7 +948,7 @@ namespace RegionRuntime {
       mapper_objects[0] = new Mapper(machine,this);
 
       // Create some tasks
-      all_tasks.reserve(DEFAULT_DESCRIPTIONS);
+      all_tasks.resize(DEFAULT_DESCRIPTIONS);
       for (unsigned ctx = 0; ctx < DEFAULT_DESCRIPTIONS; ctx++)
       {
         all_tasks[ctx] = new TaskDescription((Context)ctx, local_proc); 
@@ -1101,7 +1112,7 @@ namespace RegionRuntime {
     }
     
     //--------------------------------------------------------------------------------------------
-    Future* HighLevelRuntime::execute_task(Context ctx, 
+    Future HighLevelRuntime::execute_task(Context ctx, 
                                         LowLevel::Processor::TaskFuncID task_id,
 					const std::vector<RegionRequirement> &regions,
 					const void *args, size_t arglen, bool spawn,
@@ -1137,7 +1148,7 @@ namespace RegionRuntime {
       else
         waiting_queue.push_back(desc);
 
-      return desc->future;
+      return Future(desc->future);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1193,7 +1204,8 @@ namespace RegionRuntime {
 #endif
       TaskDescription *desc= all_tasks[ctx];
 #ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Beginning task %d on processor %d\n",desc->task_id,desc->local_proc.id);
+      fprintf(stderr,"Beginning task %d on processor %d in context %d\n",
+              desc->task_id,desc->local_proc.id,desc->local_ctx);
 #endif
       return desc->start_task(); 
     }
@@ -1207,7 +1219,8 @@ namespace RegionRuntime {
 #endif
       TaskDescription *desc= all_tasks[ctx];
 #ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Ending task %d on processor %d\n",desc->task_id,desc->local_proc.id);
+      fprintf(stderr,"Ending task %d on processor %d in context %d\n",
+              desc->task_id,desc->local_proc.id,desc->local_ctx);
 #endif
       desc->complete_task(arg,arglen); 
     }
@@ -1290,7 +1303,7 @@ namespace RegionRuntime {
           (*it)->pack_task(target_ptr);
         }
         // Invoke the task on the right processor to send tasks back
-        thief.spawn(1, target_buffer, total_buffer_size);
+        thief.spawn(ENQUEUE_TASK_ID, target_buffer, total_buffer_size);
 
         // Clean up our mess
         free(target_buffer);
@@ -1316,7 +1329,8 @@ namespace RegionRuntime {
       TaskDescription *desc = all_tasks[ctx];
 
 #ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"All child tasks mapped for task %d on processor %d\n",desc->task_id,desc->local_proc.id);
+      fprintf(stderr,"All child tasks mapped for task %d on processor %d in context %d\n",
+              desc->task_id,desc->local_proc.id,desc->local_ctx);
 #endif
 
       desc->children_mapped();
@@ -1334,12 +1348,18 @@ namespace RegionRuntime {
       // Get the task description out of the context
       TaskDescription *desc = all_tasks[ctx];
 #ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Task %d finished on processor %d\n", desc->task_id, desc->local_proc.id);
+      fprintf(stderr,"Task %d finished on processor %d in context %d\n", 
+                desc->task_id, desc->local_proc.id, desc->local_ctx);
 #endif
 
       desc->finish_task();
 
-      desc->deactivate();
+      // Deactivate any child tasks since we'll no longer need their results
+      for (std::vector<TaskDescription*>::iterator it = desc->child_tasks.begin();
+            it != desc->child_tasks.end(); it++)
+      {
+        (*it)->deactivate();
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1776,15 +1796,18 @@ namespace RegionRuntime {
     {
       // Choose a random processor
       const std::set<Processor> &all_procs = machine->get_all_processors();
-      int index = (rand()) % (all_procs.size());
-      std::set<Processor>::const_iterator it = all_procs.begin();
-      while (index > 0)
+      unsigned index = (rand()) % (all_procs.size());
+      for (std::set<Processor>::iterator it = all_procs.begin();
+            it != all_procs.end(); it++)
       {
-        it++;
-        index--;
+        if (it->id == index)
+        {
+          return *it;
+        }
       }
-      assert(it != all_procs.end());
-      return *it;
+      // Should never make it here
+      assert(false);
+      return (*(all_procs.begin()));
     }
 
     //--------------------------------------------------------------------------------------------
