@@ -365,6 +365,7 @@ namespace RegionRuntime {
 	// Update the generation
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
 #ifdef DEBUG_LOW_LEVEL
+        assert(in_use);
 	assert(sources > 0);
 #endif
 	sources--;
@@ -441,6 +442,9 @@ namespace RegionRuntime {
 
     Event EventImpl::get_event() 
     {
+#ifdef DEBUG_LOW_LEVEL
+        assert(in_use);
+#endif
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
 	Event result = current;
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
@@ -449,6 +453,9 @@ namespace RegionRuntime {
 
     UserEvent EventImpl::get_user_event()
     {
+#ifdef DEBUG_LOW_LEVEL
+      assert(in_use);
+#endif
       PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
       UserEvent result; 
       result.id = current.id;
@@ -468,6 +475,7 @@ namespace RegionRuntime {
 
     void UserEvent::trigger(void) const
     {
+      if (!id) return;
       EventImpl *impl = Runtime::get_runtime()->get_event_impl(*this);
       impl->trigger();
     }
@@ -855,7 +863,9 @@ namespace RegionRuntime {
 
     bool Processor::exists(void) const
     {
-	return (id != 0);
+        // Let's assume for the moment that processors always exist
+        return true;
+	//return (id != 0);
     }
 
     Event ProcessorImpl::spawn(Processor::TaskFuncID func_id, const void * args,
