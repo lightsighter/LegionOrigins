@@ -169,6 +169,24 @@ namespace RegionRuntime {
       e->wait(EventImpl::get_gen(id));
     }
 
+    // creates an event that won't trigger until all input events have
+    /*static*/ Event Event::merge_events(const std::set<Event>& wait_for)
+    {
+      assert(0);
+      return Event::NO_EVENT;
+    }
+
+    /*static*/ UserEvent UserEvent::create_user_event(void)
+    {
+      assert(0);
+      return UserEvent();
+    }
+
+    void UserEvent::trigger(void) const
+    {
+      Runtime::get_runtime()->get_event_impl(*this)->trigger();
+    }
+
     void trigger_event_handler(Event e)
     {
       Runtime::get_runtime()->get_event_impl(e)->trigger();
@@ -340,6 +358,18 @@ namespace RegionRuntime {
     }
 
     ///////////////////////////////////////////////////
+    // Memory
+
+    class MemoryImpl {
+    public:
+      MemoryImpl(size_t _size)
+	: size(_size) {}
+
+    public:
+      size_t size;
+    };
+
+    ///////////////////////////////////////////////////
     // Processor
 
     // global because I'm being lazy...
@@ -347,20 +377,22 @@ namespace RegionRuntime {
 
     class ProcessorImpl {
     public:
-      ProcessorImpl(Processor _me) : me(_me) {}
+      ProcessorImpl(Processor _me, Processor::Kind _kind)
+	: me(_me), kind(_kind) {}
 
       virtual void spawn_task(Processor::TaskFuncID func_id,
 			      const void *args, size_t arglen,
 			      Event start_event, Event finish_event) = 0;
 
-    protected:
+    public:
       Processor me;
+      Processor::Kind kind;
     };
 
     class LocalProcessor : public ProcessorImpl {
     public:
       LocalProcessor(Processor _me, int _core_id)
-	: ProcessorImpl(_me), core_id(_core_id)
+	: ProcessorImpl(_me, Processor::LOC_PROC), core_id(_core_id)
       {
       }
 
@@ -404,8 +436,8 @@ namespace RegionRuntime {
 
     class RemoteProcessor : public ProcessorImpl {
     public:
-      RemoteProcessor(Processor _me, gasnet_node_t _node)
-	: ProcessorImpl(_me), node(_node)
+      RemoteProcessor(Processor _me, Processor::Kind _kind, gasnet_node_t _node)
+	: ProcessorImpl(_me, _kind), node(_node)
       {
       }
 
@@ -478,6 +510,14 @@ namespace RegionRuntime {
       return &(n->locks[node_ofs]);
     }
 
+    MemoryImpl *Runtime::get_memory_impl(Memory p)
+    {
+      unsigned node_id = p.id >> 24;
+      unsigned node_ofs = p.id & 0xFFFFFFUL;
+      Node *n = &runtime->nodes[node_id];
+      return n->memories[node_ofs];
+    }
+
     ProcessorImpl *Runtime::get_processor_impl(Processor p)
     {
       unsigned node_id = p.id >> 24;
@@ -489,6 +529,38 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////
     // RegionMetaData
 
+    /*static*/ const RegionMetaDataUntyped RegionMetaDataUntyped::NO_REGION = RegionMetaDataUntyped();
+
+    /*static*/ RegionMetaDataUntyped RegionMetaDataUntyped::create_region_untyped(Memory memory, size_t num_elmts, size_t elmt_size)
+    {
+      return RegionMetaDataUntyped::NO_REGION;
+    }
+
+    RegionAllocatorUntyped RegionMetaDataUntyped::create_allocator_untyped(Memory memory) const
+    {
+      return RegionAllocatorUntyped::NO_ALLOC;
+    }
+
+    RegionInstanceUntyped RegionMetaDataUntyped::create_instance_untyped(Memory memory) const
+    {
+      return RegionInstanceUntyped::NO_INST;
+    }
+
+    void RegionMetaDataUntyped::destroy_region_untyped(void) const
+    {
+      assert(0);
+    }
+
+    void RegionMetaDataUntyped::destroy_allocator_untyped(RegionAllocatorUntyped allocator) const
+    {
+      assert(0);
+    }
+
+    void RegionMetaDataUntyped::destroy_instance_untyped(RegionInstanceUntyped instance) const
+    {
+      assert(0);
+    }
+
     Lock RegionMetaDataUntyped::get_lock(void) const
     {
       // we use our own ID as an ID for our lock
@@ -497,13 +569,27 @@ namespace RegionRuntime {
     }
 
     ///////////////////////////////////////////////////
-    // 
+    // Region Allocators
+
+    /*static*/ const RegionAllocatorUntyped RegionAllocatorUntyped::NO_ALLOC = RegionAllocatorUntyped();
 
     ///////////////////////////////////////////////////
-    // 
+    // Region Instances
 
-    ///////////////////////////////////////////////////
-    // 
+    /*static*/ const RegionInstanceUntyped RegionInstanceUntyped::NO_INST = RegionInstanceUntyped();
+
+    Event RegionInstanceUntyped::copy_to(RegionInstanceUntyped target, 
+					 Event wait_on /*= Event::NO_EVENT*/)
+    {
+      assert(0);
+    }
+
+    Event RegionInstanceUntyped::copy_to(RegionInstanceUntyped target,
+					 const ElementMask &mask,
+					 Event wait_on /*= Event::NO_EVENT*/)
+    {
+      assert(0);
+    }
 
     ///////////////////////////////////////////////////
     // 
@@ -998,7 +1084,7 @@ namespace RegionRuntime {
       for(unsigned i = 0; i < data.num_procs; i++) {
 	Processor p;
 	p.id = (data.node_id << 24) | i;
-	n->processors[i] = new RemoteProcessor(p, data.node_id);
+	n->processors[i] = new RemoteProcessor(p, Processor::LOC_PROC, data.node_id);
       }
       gasnet_hsl_lock(&announcement_mutex);
       announcements_received++;
@@ -1207,6 +1293,25 @@ namespace RegionRuntime {
     {
       gasnet_exit(0);
     }
+
+    Processor::Kind Machine::get_processor_kind(Processor p) const
+    {
+      ProcessorImpl *impl = Runtime::runtime->get_processor_impl(p);
+      return impl->kind;
+    }
+
+    size_t Machine::get_memory_size(const Memory m) const
+    {
+      MemoryImpl *impl = Runtime::runtime->get_memory_impl(m);
+      return impl->size;
+    }
+
+    void Machine::run(Processor::TaskFuncID task_id /* = 0*/)
+    {
+      assert(0);
+    }
+
+
   }; // namespace LowLevel
 }; // namespace RegionRuntime
 

@@ -21,18 +21,27 @@ gas_simple : gas_simple.c
 
 lowlevel.o : lowlevel.h activemsg.h
 
+shared_lowlevel.o : lowlevel.h
+
+highlevel.o : highlevel.h lowlevel.h
+
 hello.o : lowlevel.h
 
 ring_test.o : lowlevel.h
+
+tree_test.o : highlevel.h
 
 ring2:	ring_test.o lowlevel.o
 	g++ -o $@ $(CCFLAGS) $^ $(LDFLAGS)
 
 ring:	ring_test.o shared_lowlevel.o
-	g++ -o ring $(CCFLAGS) $^ -lpthread
+	g++ -o $@ $(CCFLAGS) $^ -lpthread
 
 tree:	shared_lowlevel.o highlevel.o tree_test.o
-	g++ -o tree $(CCFLAGS) $^ -lpthread
+	g++ -o $@ $(CCFLAGS) $^ -lpthread
+
+tree2:	lowlevel.o highlevel.o tree_test.o
+	g++ -o $@ $(CCFLAGS) $^ $(LDFLAGS)
 
 clean:
 	rm -f ring tree *.o
