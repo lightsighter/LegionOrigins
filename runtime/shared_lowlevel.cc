@@ -14,7 +14,7 @@
 #include <pthread.h>
 #include <errno.h>
 
-#define BASE_EVENTS	64	
+#define BASE_EVENTS	1024	
 #define BASE_LOCKS	64	
 #define BASE_METAS	64
 #define BASE_ALLOCATORS	64
@@ -1901,13 +1901,6 @@ namespace RegionRuntime {
 	assert(visible_procs_from_memory.find(m) != visible_procs_from_memory.end());
 #endif
 	return visible_procs_from_memory[m];
-    }
-
-    Processor Machine::get_local_processor() const
-    {
-	Processor p;
-	p.id = local_proc_id;
-	return p;
     }
 
     Machine::ProcessorKind Machine::get_processor_kind(Processor p) const
