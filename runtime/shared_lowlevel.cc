@@ -188,7 +188,7 @@ namespace RegionRuntime {
 	// block until event has triggered
 	void wait(EventGeneration needed_gen);
 	// create an event that won't trigger until all input events have
-	Event merge_events(const std::set<Event> &wait_for);
+	Event merge_events(const std::map<EventImpl*,Event> &wait_for);
 	// Trigger the event
 	void trigger(TriggerHandle handle = 0);
 	// Check to see if the lock is active, if not activate it (return true), otherwise false
@@ -283,8 +283,23 @@ namespace RegionRuntime {
 
     Event Event::merge_events(const std::set<Event>& wait_for)
     {
-	EventImpl *e = Runtime::get_runtime()->get_free_event();	
-	return e->merge_events(wait_for);
+        // Check to see if there are any events to actually wait for
+        if (wait_for.size() == 0)
+          return Event::NO_EVENT;
+        // Get a new event
+	EventImpl *e = Runtime::get_runtime()->get_free_event();
+        // Get the implementations for all the wait_for events
+        // Do this to avoid calling get_event_impl while holding the event lock
+        std::map<EventImpl*,Event> wait_for_impl;
+        for (std::set<Event>::iterator it = wait_for.begin();
+              it != wait_for.end(); it++)
+        {
+          if (!(*it).exists())
+            continue;
+          wait_for_impl.insert(
+            std::pair<EventImpl*,Event>(Runtime::get_runtime()->get_event_impl(*it),*it));
+        }
+	return e->merge_events(wait_for_impl);
     }
 
     bool EventImpl::has_triggered(EventGeneration needed_gen)
@@ -316,7 +331,7 @@ namespace RegionRuntime {
 #endif
     }
 
-    Event EventImpl::merge_events(const std::set<Event> &wait_for)
+    Event EventImpl::merge_events(const std::map<EventImpl*,Event> &wait_for)
     {
 	// We need the lock here so that events we've already registered
 	// can't trigger this event before sources is set
@@ -325,20 +340,18 @@ namespace RegionRuntime {
 	//DPRINT2("Mering events into event %u generation %u\n",index,generation);
 #endif
 	sources = 0;
-	for (std::set<Event>::const_iterator it = wait_for.begin();
+	for (std::map<EventImpl*,Event>::const_iterator it = wait_for.begin();
 		it != wait_for.end(); it++)
 	{
-		if (!(*it).exists())
-			continue;
-		EventImpl *src_impl = Runtime::get_runtime()->get_event_impl(*it);			
+		EventImpl *src_impl = (it->first);
 		// Handle the special case where this event is an older generation
 		// of the same event implementation.  In this case we know it
 		// already triggered.
 		if (src_impl == this)
 			continue;
-		if (src_impl->register_dependent(this,EventImpl::get_gen((*it).id)))
+		if (src_impl->register_dependent(this,EventImpl::get_gen((it->second).id)))
 			sources++;
-	}	
+	}
 	Event ret;
         // Handle the case where there are no events, or all the waiting events
         // have already triggered
@@ -667,14 +680,14 @@ namespace RegionRuntime {
     void LockImpl::trigger(TriggerHandle handle)
     {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
-        // If the trigger handle is 0 then unlock the lock, otherwise, find the lock request to wake up
+        // If the trigger handle is 0 then unlock the lock, 
+        // otherwise find the lock request to wake up
         if (handle == 0)
         {
           perform_unlock();
         }
         else
         {
-#if 0
           bool found = false;
           // Go through the list and mark the matching request as being ready
           for (std::list<LockRecord>::iterator it = requests.begin();
@@ -726,7 +739,6 @@ namespace RegionRuntime {
           }
 #ifdef DEBUG_LOW_LEVEL
           assert(found);
-#endif
 #endif
         }
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
@@ -1940,20 +1952,26 @@ namespace RegionRuntime {
     EventImpl* Runtime::get_event_impl(Event e)
     {
 	EventImpl::EventIndex i = EventImpl::get_index(e.id);
+        PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&event_lock));
 #ifdef DEBUG_LOW_LEVEL
 	assert(i != 0);
 	assert(i < events.size());
 #endif
-	return events[i];
+        EventImpl *result = events[i];
+        PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&event_lock));
+	return result;
     }
 
     LockImpl* Runtime::get_lock_impl(Lock l)
     {
+        PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&lock_lock));
 #ifdef DEBUG_LOW_LEVEL
 	assert(l.id != 0);
 	assert(l.id < locks.size());
 #endif
-	return locks[l.id];
+        LockImpl *result = locks[l.id];
+        PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&lock_lock));
+	return result;
     }
 
     MemoryImpl* Runtime::get_memory_impl(Memory m)
@@ -1974,29 +1992,38 @@ namespace RegionRuntime {
 
     RegionMetaDataImpl* Runtime::get_metadata_impl(RegionMetaDataUntyped m)
     {
+        PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&metadata_lock));
 #ifdef DEBUG_LOW_LEVEL
 	assert(m.id != 0);
 	assert(m.id < metadatas.size());
 #endif
-	return metadatas[m.id];
+        RegionMetaDataImpl *result = metadatas[m.id];
+        PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&metadata_lock));
+	return result;
     }
 
     RegionAllocatorImpl* Runtime::get_allocator_impl(RegionAllocatorUntyped a)
     {
+        PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&allocator_lock));
 #ifdef DEBUG_LOW_LEVEL
 	assert(a.id != 0);
 	assert(a.id < allocators.size());
 #endif
-	return allocators[a.id];
+        RegionAllocatorImpl *result = allocators[a.id];
+        PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&allocator_lock));
+	return result;
     }
 
     RegionInstanceImpl* Runtime::get_instance_impl(RegionInstanceUntyped i)
     {
+        PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&instance_lock));
 #ifdef DEBUG_LOW_LEVEL
 	assert(i.id != 0);
 	assert(i.id < instances.size());
 #endif
-	return instances[i.id];
+        RegionInstanceImpl *result = instances[i.id];
+        PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&instance_lock));
+	return result;
     }
 
     EventImpl* Runtime::get_free_event()
@@ -2008,6 +2035,9 @@ namespace RegionRuntime {
 		if (events[i]->activate())
 		{
 			EventImpl *result = events[i];
+#ifdef DEBUG_LOW_LEVEL
+                        assert(result != NULL);
+#endif
 			PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&event_lock));
 			return result;
 		}
@@ -2018,6 +2048,15 @@ namespace RegionRuntime {
 	unsigned index = events.size();
 	events.push_back(new EventImpl(index, true));
 	EventImpl *result = events[index];
+#ifdef DEBUG_LOW_LEVEL
+        assert(result != NULL);
+#endif
+        // Create a whole bunch of other events too to avoid coming
+        // into the write lock section often
+        for (unsigned idx=1; idx < BASE_EVENTS; idx++)
+        {
+          events.push_back(new EventImpl(index+idx, false));
+        }
 	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&event_lock));
 	return result; 
     }
@@ -2039,8 +2078,13 @@ namespace RegionRuntime {
 	// Otherwise there are no free locks so make a new one
 	PTHREAD_SAFE_CALL(pthread_rwlock_wrlock(&lock_lock));
 	unsigned index = locks.size();
-	locks.push_back(new LockImpl(true));
+	locks.push_back(new LockImpl(index,true));
 	LockImpl *result = locks[index];
+        // Create a whole bunch of other locks too while we're here
+        for (unsigned idx=1; idx < BASE_LOCKS; idx++)
+        {
+          locks.push_back(new LockImpl(index+idx,false));
+        }
 	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&lock_lock));	
 	return result;
     }
@@ -2063,6 +2107,11 @@ namespace RegionRuntime {
 	unsigned int index = metadatas.size();
 	metadatas.push_back(new RegionMetaDataImpl(index,m,num_elmts,elmt_size,true));
 	RegionMetaDataImpl *result = metadatas[index];
+        // Create a whole bunch of other metas too while we're here
+        for (unsigned idx=1; idx < BASE_METAS; idx++)
+        {
+          metadatas.push_back(new RegionMetaDataImpl(index+idx,m,0,0,false));
+        }
 	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&metadata_lock));
 	return result;
     }
@@ -2085,6 +2134,11 @@ namespace RegionRuntime {
 	unsigned int index = allocators.size();
 	allocators.push_back(new RegionAllocatorImpl(index,start,end,true));
 	RegionAllocatorImpl*result = allocators[index];
+        // Create a whole bunch of other allocators while we're here
+        for (unsigned idx=1; idx < BASE_ALLOCATORS; idx++)
+        {
+          allocators.push_back(new RegionAllocatorImpl(index+idx,0,0,false));
+        }
 	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&allocator_lock));
 	return result;
     }
@@ -2107,6 +2161,11 @@ namespace RegionRuntime {
 	unsigned int index = instances.size();
 	instances.push_back(new RegionInstanceImpl(index,m,num_elmts,elmt_size,true));
 	RegionInstanceImpl *result = instances[index];
+        // Create a whole bunch of other instances while we're here
+        for (unsigned idx=1; idx < BASE_INSTANCES; idx++)
+        {
+          instances.push_back(new RegionInstanceImpl(index+idx,m,0,0,false));
+        }
 	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&instance_lock));
 	return result;
     }
