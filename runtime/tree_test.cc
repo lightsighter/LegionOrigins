@@ -25,7 +25,10 @@ void top_level_task(const void *args, size_t arglen, const std::vector<PhysicalR
   std::vector<RegionRequirement> needed_regions; // Don't need any regions
   for (unsigned idx = 0; idx < BRANCH_FACTOR; idx++)
   {
-    futures.push_back(runtime->execute_task(ctx,LAUNCH_TASK_ID,needed_regions,buffer,2*sizeof(unsigned),true));
+    unsigned mapper = 0;
+    if ((rand() % 100) == 0)
+      mapper = 1;
+    futures.push_back(runtime->execute_task(ctx,LAUNCH_TASK_ID,needed_regions,buffer,2*sizeof(unsigned),true,mapper));
   }
   free(buffer);
 
@@ -66,7 +69,10 @@ unsigned launch_tasks(const void *args, size_t arglen, const std::vector<Physica
     std::vector<RegionRequirement> needed_regions;
     for (unsigned idx = 0; idx < branch; idx++)
     {
-      futures.push_back(runtime->execute_task(ctx,LAUNCH_TASK_ID,needed_regions,buffer,2*sizeof(unsigned),true));
+      unsigned mapper = 0;
+      if ((rand() % 100) == 0)
+        mapper = 1;
+      futures.push_back(runtime->execute_task(ctx,LAUNCH_TASK_ID,needed_regions,buffer,2*sizeof(unsigned),true,mapper));
     }
     // Clean up the buffer
     free(buffer);
@@ -85,9 +91,33 @@ unsigned launch_tasks(const void *args, size_t arglen, const std::vector<Physica
   }
 }
 
+class RingMapper : public Mapper {
+private:
+  Processor next_proc;
+public:
+  RingMapper(Machine *m, HighLevelRuntime *r, Processor p) : Mapper(m,r,p) 
+  { 
+    const std::set<Processor> &all_procs = m->get_all_processors();
+    next_proc.id = p.id+1;
+    if (all_procs.find(next_proc) == all_procs.end())
+      next_proc = *(all_procs.begin());
+  }
+public:
+  virtual Processor select_initial_processor(const Task *task)
+  {
+    return next_proc; 
+  }
+};
+
+void create_mappers(Machine *machine, HighLevelRuntime *runtime, Processor local)
+{
+  runtime->add_mapper(1,new RingMapper(machine,runtime,local));
+}
+
 int main(int argc, char **argv)
 {
   Processor::TaskIDTable task_table;  
+  task_table[TASK_ID_INIT_MAPPERS] = init_mapper_wrapper<create_mappers>;
   task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task>;
   task_table[LAUNCH_TASK_ID] = high_level_task_wrapper<unsigned,launch_tasks>;
   HighLevelRuntime::register_runtime_tasks(task_table);
