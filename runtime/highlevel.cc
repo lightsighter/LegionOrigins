@@ -17,19 +17,24 @@
 
 #define MAX_TASK_MAPS_PER_STEP  1
 
-#define INIT_FUNC_ID            Processor::TASK_ID_PROCESSOR_INIT
-#define SHUTDOWN_FUNC_ID        Processor::TASK_ID_PROCESSOR_SHUTDOWN	
-#define SCHEDULER_ID		Processor::TASK_ID_PROCESSOR_IDLE
-#define ENQUEUE_TASK_ID		(Processor::TASK_ID_FIRST_AVAILABLE+0)
-#define STEAL_TASK_ID		(Processor::TASK_ID_FIRST_AVAILABLE+1)
-#define CHILDREN_MAPPED_ID      (Processor::TASK_ID_FIRST_AVAILABLE+2)
-#define FINISH_ID               (Processor::TASK_ID_FIRST_AVAILABLE+3)
-#define NOTIFY_START_ID         (Processor::TASK_ID_FIRST_AVAILABLE+4)
-#define NOTIFY_FINISH_ID        (Processor::TASK_ID_FIRST_AVAILABLE+5)
-#define TERMINATION_ID          (Processor::TASK_ID_FIRST_AVAILABLE+6)
+// check this relative to the machine file and the low level runtime
+#define MAX_NUM_PROCS           1024
 
 namespace RegionRuntime {
   namespace HighLevel {
+
+    enum {
+      INIT_FUNC_ID       = Processor::TASK_ID_PROCESSOR_INIT,
+      SHUTDOWN_FUNC_ID   = Processor::TASK_ID_PROCESSOR_SHUTDOWN,
+      SCHEDULER_ID       = Processor::TASK_ID_PROCESSOR_IDLE,
+      ENQUEUE_TASK_ID    = (Processor::TASK_ID_FIRST_AVAILABLE+0),
+      STEAL_TASK_ID      = (Processor::TASK_ID_FIRST_AVAILABLE+1),
+      CHILDREN_MAPPED_ID = (Processor::TASK_ID_FIRST_AVAILABLE+2),
+      FINISH_ID          = (Processor::TASK_ID_FIRST_AVAILABLE+3),
+      NOTIFY_START_ID    = (Processor::TASK_ID_FIRST_AVAILABLE+4),
+      NOTIFY_FINISH_ID   = (Processor::TASK_ID_FIRST_AVAILABLE+5),
+      TERMINATION_ID     = (Processor::TASK_ID_FIRST_AVAILABLE+6),
+    };
 
     /////////////////////////////////////////////////////////////
     // Future
@@ -954,10 +959,9 @@ namespace RegionRuntime {
     // High Level Runtime
     ///////////////////////////////////////////////////////////// 
 
-    // The high level runtime map and its lock
-    std::map<Processor,HighLevelRuntime*> *HighLevelRuntime::runtime_map = 
-					new std::map<Processor,HighLevelRuntime*>();
-    pthread_mutex_t HighLevelRuntime::runtime_map_mutex = PTHREAD_MUTEX_INITIALIZER;
+    // The high level runtime map 
+    HighLevelRuntime *HighLevelRuntime::runtime_map = 
+      (HighLevelRuntime*)malloc(MAX_NUM_PROCS*sizeof(HighLevelRuntime));
 
     //--------------------------------------------------------------------------------------------
     HighLevelRuntime::HighLevelRuntime(LowLevel::Machine *m)
@@ -1027,13 +1031,18 @@ namespace RegionRuntime {
         delete *it;
     }
 
+    void dummy_init(Machine *machine, HighLevelRuntime *runtime)
+    {
+      // Intentionally do nothing
+    }
+
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::register_runtime_tasks(Processor::TaskIDTable &table)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       // Check to make sure that nobody has registered any tasks here
-      for (unsigned idx = 0; idx < TASK_ID_REGION_MAIN; idx++)
+      for (unsigned idx = 0; idx < TASK_ID_INIT_MAPPERS; idx++)
         assert(table.find(idx) == table.end());
 #endif
       table[INIT_FUNC_ID]       = HighLevelRuntime::initialize_runtime;
@@ -1046,54 +1055,40 @@ namespace RegionRuntime {
       table[NOTIFY_START_ID]    = HighLevelRuntime::notify_start;
       table[NOTIFY_FINISH_ID]   = HighLevelRuntime::notify_finish;
       table[TERMINATION_ID]     = HighLevelRuntime::detect_termination;
+      // Check to see if an init mappers has been declared, if not, give a dummy version
+      // The application can write over it if it wants
+      if (table.find(TASK_ID_INIT_MAPPERS) == table.end())
+      {
+        table[TASK_ID_INIT_MAPPERS] = init_mapper_wrapper<dummy_init>;
+      }
     }
 
     //--------------------------------------------------------------------------------------------
     HighLevelRuntime* HighLevelRuntime::get_runtime(Processor p)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(runtime_map->find(p) != runtime_map->end());
-#endif
-      return ((*runtime_map)[p]);
+      return (runtime_map+(p.id));
     }
 
-    //-------------------------------------------------------------------------------------------- 
+    //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::initialize_runtime(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-      HighLevelRuntime *runtime = new HighLevelRuntime(Machine::get_machine());
-      #define PTHREAD_SAFE_CALL(cmd)                          \
-        {                                                     \
-          int ret = (cmd);                                    \
-          if (ret != 0)                                       \
-          {                                                   \
-            fprintf(stderr,"PTHREAD error: %s = %d (%s)\n", #cmd, ret, strerror(ret));  \
-            exit(1);                                          \
-          }                                                   \
-        }
-      PTHREAD_SAFE_CALL(pthread_mutex_lock(&runtime_map_mutex));
-      // Register this object with the runtime map
-#ifdef DEBUG_HIGH_LEVEL
-      assert(runtime_map->find(p) == runtime_map->end());
-#endif
-      runtime_map->insert(std::pair<Processor,HighLevelRuntime*>(p,runtime));
-      PTHREAD_SAFE_CALL(pthread_mutex_unlock(&runtime_map_mutex));
-      #undef PTHREAD_SAFE_CALL
+      // do the initialization in the pre-allocated memory, tee-hee! 
+      new(runtime_map+p.id) HighLevelRuntime(Machine::get_machine());
+
+      // Now initialize any mappers
+      // Issue a task to initialize the mappers
+      Event init_mappers = p.spawn(TASK_ID_INIT_MAPPERS,NULL,0);
+      // Make sure this has finished before returning
+      init_mappers.wait();
     }
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::shutdown_runtime(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-      std::map<Processor,HighLevelRuntime*>::iterator it = runtime_map->find(p);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(it != runtime_map->end());
-#endif
-      // Invoke the destructor
-      delete it->second;
-      // Remove it from the runtime map
-      runtime_map->erase(it);
+      runtime_map[p.id].HighLevelRuntime::~HighLevelRuntime();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1205,7 +1200,7 @@ namespace RegionRuntime {
       if (id >= mapper_objects.size())
       {
         int old_size = mapper_objects.size();
-        mapper_objects.reserve(id+1);
+        mapper_objects.resize(id+1);
         for (unsigned int i=old_size; i<(id+1); i++)
           mapper_objects[i] = NULL;
       } 
@@ -1308,6 +1303,14 @@ namespace RegionRuntime {
       {
         // Get the mapper id out of the buffer
         MapperID stealer = *((MapperID*)buffer);
+        
+        // Handle a race condition here where some processors can issue steal
+        // requests to another processor before the mappers have been initialized
+        // on that processor.  There's no correctness problem for ignoring a steal
+        // request so just do that.
+        if (mapper_objects[stealer] == NULL)
+          continue;
+
         // Go through the ready queue and construct the list of tasks
         // that this mapper has access to
         // Iterate in reverse order so the latest tasks put in the

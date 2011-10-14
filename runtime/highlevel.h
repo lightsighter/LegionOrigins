@@ -36,9 +36,10 @@ namespace RegionRuntime {
     class TaskDescription;
 
     enum {
-      // To see where the +6,7 come from, see the top of highlevel.cc
-      TASK_ID_REGION_MAIN = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+7,
-      TASK_ID_AVAILABLE = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+8,
+      // To see where the +7,8,9 come from, see the top of highlevel.cc
+      TASK_ID_INIT_MAPPERS = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+7,
+      TASK_ID_REGION_MAIN = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+8,
+      TASK_ID_AVAILABLE = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+9,
     };
     
     enum AccessMode {
@@ -463,9 +464,7 @@ namespace RegionRuntime {
     class HighLevelRuntime {
     private:
       // A static map for tracking the runtimes associated with each processor in a process
-      static std::map<Processor,HighLevelRuntime*> *runtime_map;
-      // For help in building the runtime map at start up
-      static pthread_mutex_t runtime_map_mutex;
+      static HighLevelRuntime *runtime_map;
     public:
       static HighLevelRuntime* get_runtime(Processor p);
     public:
@@ -614,6 +613,15 @@ namespace RegionRuntime {
 
       // Send an empty return value back
       runtime->end_task(ctx, NULL, 0); 
+    }
+
+    // A wrapper task for allowing the application to initialize the set of mappers
+    template<void (*TASK_PTR)(Machine*,HighLevelRuntime*)>
+    void init_mapper_wrapper(const void * args, size_t arglen, Processor p)
+    {
+      HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
+      Machine *machine = Machine::get_machine();
+      (*TASK_PTR)(machine,runtime);
     }
 
     // Unfortunately to avoid template instantiation issues we have to provide
