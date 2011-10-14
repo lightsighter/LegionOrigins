@@ -964,8 +964,8 @@ namespace RegionRuntime {
       (HighLevelRuntime*)malloc(MAX_NUM_PROCS*sizeof(HighLevelRuntime));
 
     //--------------------------------------------------------------------------------------------
-    HighLevelRuntime::HighLevelRuntime(LowLevel::Machine *m)
-      : local_proc(m->get_local_processor()), machine(m),
+    HighLevelRuntime::HighLevelRuntime(LowLevel::Machine *m, Processor local)
+      : local_proc(local), machine(m),
       mapper_objects(std::vector<Mapper*>(DEFAULT_MAPPER_SLOTS)), 
       next_partition_id(local_proc.id), partition_stride(m->get_all_processors().size())
     //--------------------------------------------------------------------------------------------
@@ -976,6 +976,7 @@ namespace RegionRuntime {
       for (unsigned int i=0; i<mapper_objects.size(); i++)
         mapper_objects[i] = NULL;
       mapper_objects[0] = new Mapper(machine,this);
+      mapper_objects[0]->initialize(local_proc);
 
       // Create some tasks
       all_tasks.resize(DEFAULT_DESCRIPTIONS);
@@ -1075,7 +1076,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       // do the initialization in the pre-allocated memory, tee-hee! 
-      new(runtime_map+p.id) HighLevelRuntime(Machine::get_machine());
+      new(runtime_map+p.id) HighLevelRuntime(Machine::get_machine(), p);
 
       // Now initialize any mappers
       // Issue a task to initialize the mappers
@@ -1209,6 +1210,8 @@ namespace RegionRuntime {
       assert(mapper_objects[id] == NULL);
 #endif
       mapper_objects[id] = m;
+      // Tell the mapper what the local processor is
+      m->initialize(local_proc);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1553,7 +1556,7 @@ namespace RegionRuntime {
         if (!found)
         {
           fprintf(stderr,"Unable to create instance for region %d in any of the specified memories for task %d\n", desc->regions[idx].handle.id, desc->task_id);
-          exit(100*(machine->get_local_processor().id));
+          exit(100*(local_proc.id));
         }
       }
       // We've created all the region instances, now issue all the events for the task
@@ -1822,15 +1825,20 @@ namespace RegionRuntime {
     };
     
     //--------------------------------------------------------------------------------------------
-    Mapper::Mapper(Machine *m, HighLevelRuntime *rt) : runtime(rt),
-				local_proc(machine->get_local_processor()), machine(m)
+    Mapper::Mapper(Machine *m, HighLevelRuntime *rt) : runtime(rt), machine(m)
     //--------------------------------------------------------------------------------------------
     {
       // The default mapper will maintain a linear view of memory from
       // the perspective of the processor.
       // We'll assume that smaller memories are closer to the processor
       // and rank memories based on their size.
-      
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void Mapper::initialize(Processor local)
+    //--------------------------------------------------------------------------------------------
+    {
+      local_proc = local;
       // Get the set of memories visible to the processor and rank them on size
       std::set<Memory> memories = machine->get_visible_memories(local_proc);
       visible_memories = std::vector<Memory>(memories.begin(),memories.end());	

@@ -377,13 +377,15 @@ namespace RegionRuntime {
 
       virtual std::vector<std::vector<Memory> > map_task( const Task *task);	
 
+      // To be called by the runtime when the mapper is added to the runtime
+      virtual void initialize(Processor local);
       // Register task with mapper
       // Unregister task with mapper
       // Select tasks to steal
       // Select target processor(s)
     protected:
       // Data structures for the base mapper
-      const Processor local_proc;
+      Processor local_proc;
       Machine *const machine;
       std::vector<Memory> visible_memories;
     protected:
@@ -483,7 +485,7 @@ namespace RegionRuntime {
       static void detect_termination(const void * args, size_t arglen, Processor p);
       static void notify_termination(const void * args, size_t arglen, Processor p);
     public:
-      HighLevelRuntime(Machine *m);
+      HighLevelRuntime(Machine *m, Processor local);
       ~HighLevelRuntime();
     public:
       // Functions for calling tasks
@@ -778,7 +780,7 @@ namespace RegionRuntime {
       if (!found)
       {
         fprintf(stderr,"Unable to place initial region with tag %d by mapper %d\n",tag, id);
-        exit(100*(machine->get_local_processor().id)+id);
+        exit(100*(local_proc.id)+id);
       }
 
       // Notify the task's context to update the created regions
@@ -884,7 +886,7 @@ namespace RegionRuntime {
         if (!found)
         {
           fprintf(stderr,"Unable to place initial subregion %d with tag %d by mapper %d\n",i,tag, id);
-          exit(100*(machine->get_local_processor().id)+id);
+          exit(100*(local_proc.id)+id);
         }
       }	
       
@@ -973,7 +975,7 @@ namespace RegionRuntime {
         if (!found)
         {
                 fprintf(stderr,"Unable to place initial subregion %d with tag %d by mapper %d\n",i,tag, id);
-                exit(100*(machine->get_local_processor().id)+id);
+                exit(100*(local_proc.id)+id);
         }
       }	
       PartitionID partition_id = next_partition_id;
