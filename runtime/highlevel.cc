@@ -1303,24 +1303,31 @@ namespace RegionRuntime {
 
       // Iterate over the task descriptions, asking the appropriate mapper
       // whether we can steal them
-      std::vector<TaskDescription*> stolen;
+      std::set<TaskDescription*> stolen;
       for (int i=0; i<num_stealers; i++)
       {
         // Get the mapper id out of the buffer
         MapperID stealer = *((MapperID*)buffer);
-        // Iterate over the tasks looking for ones that match the given mapper
-        for (std::list<TaskDescription*>::iterator it = ready_queue.begin();
-                it != ready_queue.end(); it++)
+        // Go through the ready queue and construct the list of tasks
+        // that this mapper has access to
+        // Iterate in reverse order so the latest tasks put in the
+        // ready queue appear first
+        std::vector<const Task*> mapper_tasks;
+        for (std::list<TaskDescription*>::reverse_iterator it = ready_queue.rbegin();
+              it != ready_queue.rend(); it++)
         {
-          // check to see if the task matches the stealing mapper
-          // then see if the mapper permits it to be stolen
-          if (((*it)->stealable) && ((*it)->map_id == stealer) &&
-                  mapper_objects[stealer]->permit_task_steal(thief,(*it)->task_id,
-                  (*it)->regions, (*it)->tag))
-          {
-            stolen.push_back(*it);
-            it = ready_queue.erase(it);
-          }
+          if ((*it)->map_id == stealer)
+            mapper_tasks.push_back(*it);
+        }
+        // Now call the mapper and get back the results
+        std::set<const Task*> to_steal = 
+                mapper_objects[stealer]->permit_task_steal(thief, mapper_tasks);
+        // Add the results to the set of stolen tasks
+        // Do this explicitly since we need to upcast the pointers
+        for (std::set<const Task*>::iterator it = to_steal.begin();
+              it != to_steal.end(); it++)
+        {
+          stolen.insert(static_cast<TaskDescription*>(const_cast<Task*>(*it)));
         }
       }
       // We've now got our tasks to steal
@@ -1328,7 +1335,7 @@ namespace RegionRuntime {
       {
         size_t total_buffer_size = sizeof(int);
         // Count up the size of elements to steal
-        for (std::vector<TaskDescription*>::iterator it = stolen.begin();
+        for (std::set<TaskDescription*>::iterator it = stolen.begin();
                 it != stolen.end(); it++)
         {
           total_buffer_size += (*it)->compute_task_size();
@@ -1339,7 +1346,7 @@ namespace RegionRuntime {
         *((int*)target_ptr) = int(stolen.size());
         target_ptr += sizeof(int);
         // Write the task descriptions into memory
-        for (std::vector<TaskDescription*>::iterator it = stolen.begin();
+        for (std::set<TaskDescription*>::iterator it = stolen.begin();
                 it != stolen.end(); it++)
         {
           (*it)->pack_task(target_ptr);
@@ -1350,8 +1357,20 @@ namespace RegionRuntime {
         // Clean up our mess
         free(target_buffer);
 
+        // Go through and remove any stolen tasks from ready queue
+        {
+          std::list<TaskDescription*>::iterator it = ready_queue.begin();
+          while (it != ready_queue.end())
+          {
+            if (stolen.find(*it) != stolen.end())
+              it = ready_queue.erase(it);
+            else
+              it++;
+          }
+        }
+
         // Delete any remote tasks that we will no longer have a reference to
-        for (std::vector<TaskDescription*>::iterator it = stolen.begin();
+        for (std::set<TaskDescription*>::iterator it = stolen.begin();
               it != stolen.end(); it++)
         {
           // If they are remote, deactivate the instance
@@ -1466,8 +1485,7 @@ namespace RegionRuntime {
         TaskDescription *task = ready_queue.front();
         ready_queue.pop_front();
         // ask the mapper for where to place the task
-        Processor target = mapper_objects[task->map_id]->select_initial_processor(task->task_id,
-                            task->regions, task->tag);
+        Processor target = mapper_objects[task->map_id]->select_initial_processor(task);
         if (target == local_proc)
         {
           mapped_tasks++;
@@ -1504,7 +1522,7 @@ namespace RegionRuntime {
     {
       // First we need to map the task, get the right mapper and map the instances
       std::vector<std::vector<Memory> > options = 
-                  mapper_objects[desc->map_id]->map_task(desc->task_id,desc->regions,desc->tag);
+                  mapper_objects[desc->map_id]->map_task(desc);
 #ifdef DEBUG_HIGH_LEVEL
       assert(options.size() == desc->regions.size());
       assert(options.size() == desc->instances.size());
@@ -1624,8 +1642,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       // Iterate over the waiting queue looking for tasks that are now mappable
-      for (std::list<TaskDescription*>::iterator it = waiting_queue.begin();
-            it != waiting_queue.end(); it++)
+      std::list<TaskDescription*>::iterator it = waiting_queue.begin();
+      while (it != waiting_queue.end())
       {
         if ((*it)->remaining_events == 0)
         {
@@ -1636,8 +1654,12 @@ namespace RegionRuntime {
             (*it)->merged_wait_event = Event::NO_EVENT;
           // Push it onto the ready queue
           ready_queue.push_back(*it);
-          // Remove it from the waiting queue
+          // Remove it from the waiting queue, which points us at the next element
           it = waiting_queue.erase(it);
+        }
+        else
+        {
+          it++;
         }
       }
     }
@@ -1648,15 +1670,17 @@ namespace RegionRuntime {
     {
       // Iterate over the steal requests seeing if any of triggered
       // and removing them if they have
-      for (std::list<Event>::iterator it = outstanding_steal_events.begin();
-            it != outstanding_steal_events.end(); it++)
+      std::list<Event>::iterator it = outstanding_steal_events.begin();
+      while (it != outstanding_steal_events.end())
       {
         if (it->has_triggered())
         {
+          // This moves us to the next element in the list
           it = outstanding_steal_events.erase(it);
-          // Check for the case where we are at the end of the list now
-          if (it == outstanding_steal_events.end())
-            break;
+        }
+        else
+        {
+          it++;
         }
       }
       // Return true if there are still outstanding steal requests to be run
@@ -1840,9 +1864,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    Processor Mapper::select_initial_processor(Processor::TaskFuncID task_id,
-					const std::vector<RegionRequirement> &regions,
-					MappingTagID tag)
+    Processor Mapper::select_initial_processor(const Task *task)
     //--------------------------------------------------------------------------------------------
     {
       return local_proc;
@@ -1869,17 +1891,30 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    bool Mapper::permit_task_steal(Processor thief, Processor::TaskFuncID task_id,
-					const std::vector<RegionRequirement> &regions,
-					MappingTagID tag)
+    std::set<const Task*> Mapper::permit_task_steal(Processor thief,
+                                                    const std::vector<const Task*> &tasks)
     //--------------------------------------------------------------------------------------------
     {
-      return true;
+      unsigned total_stolen = 0;
+      std::set<const Task*> steal_tasks;
+      // Pull up to the last 20 tasks that haven't been stolen before out of the set of tasks
+      for (std::vector<const Task*>::const_iterator it = tasks.begin();
+            it != tasks.end(); it++)
+      {
+        // Check to make sure that the task hasn't been stolen before
+        if ((*it)->orig_proc == local_proc)
+        {
+          steal_tasks.insert(*it);
+          total_stolen++;
+          if (total_stolen == 20)
+            break;
+        }
+      }
+      return steal_tasks;
     }
 
     //--------------------------------------------------------------------------------------------
-    std::vector<std::vector<Memory> > Mapper::map_task(Processor::TaskFuncID task_id,
-				const std::vector<RegionRequirement> &regions, MappingTagID tag)
+    std::vector<std::vector<Memory> > Mapper::map_task(const Task *task)
     //--------------------------------------------------------------------------------------------
     {
       std::vector<std::vector<Memory> > mapping;

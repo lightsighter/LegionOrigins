@@ -121,18 +121,25 @@ namespace RegionRuntime {
       std::vector<LogicalHandle> reg_trace;
     };
 
-    class TaskDescription {
+    // This is information about a task that will be available to the mapper
+    class Task {
+    protected:
+      friend class Mapper;
+      Processor::TaskFuncID task_id;
+      std::vector<RegionRequirement> regions;
+      MapperID map_id;
+      MappingTagID tag;
+      Processor orig_proc; // The original processor for this task
+    };
+
+    class TaskDescription : public Task {
     protected:
       friend class HighLevelRuntime;
       TaskDescription(Context ctx, Processor p);
       ~TaskDescription();
     protected:
-      Processor::TaskFuncID task_id;
-      std::vector<RegionRequirement> regions;	
       void * args;
       size_t arglen;
-      MapperID map_id;	
-      MappingTagID tag;
     protected:
       // Status information
       bool stealable; // Can be stolen (corresponds to 'spawn' call)
@@ -141,7 +148,6 @@ namespace RegionRuntime {
       // Mappable is true when remaining_events==0
     protected:
       // Information about where this task originated
-      Processor orig_proc; // The processor holding this task's context
       Context parent_ctx; // The context the task is part of on its originating processor processor
       Context orig_ctx; // The local context on the original processor if remote
       const Context local_ctx; // The context for this task
@@ -361,21 +367,14 @@ namespace RegionRuntime {
       virtual bool compact_partition(	const PartitionBase &partition, 
                                       MappingTagID tag);
 
-      virtual Processor select_initial_processor( Processor::TaskFuncID task_id,
-                                              const std::vector<RegionRequirement> &regions,
-                                              MappingTagID tag);	
+      virtual Processor select_initial_processor(const Task *task); 
 
       virtual Processor target_task_steal(void);
 
-      virtual bool permit_task_steal(	Processor thief,
-                                      Processor::TaskFuncID task_id,
-                                      const std::vector<RegionRequirement> &regions,
-                                      MappingTagID tag);
+      virtual std::set<const Task*> permit_task_steal( Processor thief,
+                                      const std::vector<const Task*> &tasks); 
 
-      virtual std::vector<std::vector<Memory> > map_task(	
-                                      Processor::TaskFuncID task_id,
-                                      const std::vector<RegionRequirement> &regions,
-                                      MappingTagID tag);
+      virtual std::vector<std::vector<Memory> > map_task( const Task *task);	
 
       // Register task with mapper
       // Unregister task with mapper
