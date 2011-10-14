@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <pthread.h>
+#include <errno.h>
 
 #define BASE_EVENTS	64	
 #define BASE_LOCKS	64	
@@ -35,7 +36,7 @@
 		int ret = (cmd);		\
 		if (ret != 0) {			\
 			fprintf(stderr,"PTHREAD error: %s = %d (%s)\n", #cmd, ret, strerror(ret));	\
-			exit(1);		\
+			assert(false);		\
 		}				\
 	}
 #else
@@ -417,7 +418,12 @@ namespace RegionRuntime {
     bool EventImpl::activate(void)
     {
 	bool result = false;
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+        // Try acquiring the lock, if we don't get it then just move on
+        int trythis = pthread_mutex_trylock(&mutex);
+        if (trythis == EBUSY)
+          return result;
+        // Also check for other error codes
+	PTHREAD_SAFE_CALL(trythis);
 	if (!in_use)
 	{
 		in_use = true;
@@ -835,7 +841,10 @@ namespace RegionRuntime {
     bool LockImpl::activate(void)
     {
 	bool result = false;
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+        int trythis = pthread_mutex_trylock(&mutex);
+        if (trythis == EBUSY)
+          return result;
+	PTHREAD_SAFE_CALL(trythis);
 	if (!active)
 	{
 		active = true;
@@ -1233,7 +1242,10 @@ namespace RegionRuntime {
     bool RegionAllocatorImpl::activate(unsigned s, unsigned e)
     {
 	bool result = false;
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+        int trythis = pthread_mutex_trylock(&mutex);
+        if (trythis == EBUSY)
+          return result;
+	PTHREAD_SAFE_CALL(trythis);
 	if (!active)
 	{
 		active = true;
@@ -1384,7 +1396,10 @@ namespace RegionRuntime {
     bool RegionInstanceImpl::activate(Memory m, size_t num, size_t elem_size)
     {
 	bool result = false;
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+        int trythis = pthread_mutex_trylock(&mutex);
+        if (trythis == EBUSY)
+          return result;
+	PTHREAD_SAFE_CALL(trythis);
 	if (!active)
 	{
 		active = true;
@@ -1637,7 +1652,10 @@ namespace RegionRuntime {
     bool RegionMetaDataImpl::activate(Memory m, size_t num, size_t size)
     {
 	bool result = false;
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+        int trythis = pthread_mutex_trylock(&mutex);
+        if (trythis == EBUSY)
+          return result;
+	PTHREAD_SAFE_CALL(trythis);
 	if (!active)
 	{ 
 		active = true;
