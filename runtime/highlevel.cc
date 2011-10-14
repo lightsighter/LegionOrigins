@@ -271,7 +271,7 @@ namespace RegionRuntime {
       bytes += arglen;
       bytes += sizeof(MapperID);
       bytes += sizeof(MappingTagID);
-      bytes += sizeof(bool);
+      bytes += (3*sizeof(bool)); //stealable, stolen, chosen
       // No need to send mappable, can be inferred as being true, otherwise couldn't be remote
       bytes += sizeof(UserEvent); // mapped event
       bytes += sizeof(Processor);
@@ -303,6 +303,10 @@ namespace RegionRuntime {
       *((MappingTagID*)buffer) = tag;
       buffer += sizeof(MappingTagID);
       *((bool*)buffer) = stealable;
+      buffer += sizeof(bool);
+      *((bool*)buffer) = stolen;
+      buffer += sizeof(bool);
+      *((bool*)buffer) = chosen;
       buffer += sizeof(bool);
       *((UserEvent*)buffer) = map_event;
       buffer += sizeof(UserEvent);
@@ -340,6 +344,10 @@ namespace RegionRuntime {
       tag = *((const MappingTagID*)buffer);
       buffer += sizeof(MappingTagID);
       stealable = *((const bool*)buffer);
+      buffer += sizeof(bool);
+      stolen = *((const bool*)buffer);
+      buffer += sizeof(bool);
+      chosen = *((const bool*)buffer);
       buffer += sizeof(bool);
       mapped = false; // Couldn't have been sent anywhere without being unmapped
       map_event = *((const UserEvent*)buffer);
@@ -975,8 +983,7 @@ namespace RegionRuntime {
 #endif 
       for (unsigned int i=0; i<mapper_objects.size(); i++)
         mapper_objects[i] = NULL;
-      mapper_objects[0] = new Mapper(machine,this);
-      mapper_objects[0]->initialize(local_proc);
+      mapper_objects[0] = new Mapper(machine,this,local_proc);
 
       // Create some tasks
       all_tasks.resize(DEFAULT_DESCRIPTIONS);
@@ -999,6 +1006,8 @@ namespace RegionRuntime {
         desc->map_id = 0;
         desc->tag = 0;
         desc->stealable = false;
+        desc->stolen = false;
+        desc->chosen = false;
         desc->mapped = false;
         desc->map_event = UserEvent::create_user_event();
         desc->orig_proc = local_proc;
@@ -1032,7 +1041,7 @@ namespace RegionRuntime {
         delete *it;
     }
 
-    void dummy_init(Machine *machine, HighLevelRuntime *runtime)
+    void dummy_init(Machine *machine, HighLevelRuntime *runtime, Processor p)
     {
       // Intentionally do nothing
     }
@@ -1167,6 +1176,8 @@ namespace RegionRuntime {
       desc->map_id = id;
       desc->tag = tag;
       desc->stealable = spawn;
+      desc->stolen = false;
+      desc->chosen = false;
       desc->mapped = false;
       desc->map_event = UserEvent::create_user_event();
       desc->orig_proc = local_proc;
@@ -1210,8 +1221,6 @@ namespace RegionRuntime {
       assert(mapper_objects[id] == NULL);
 #endif
       mapper_objects[id] = m;
-      // Tell the mapper what the local processor is
-      m->initialize(local_proc);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1333,7 +1342,10 @@ namespace RegionRuntime {
         for (std::set<const Task*>::iterator it = to_steal.begin();
               it != to_steal.end(); it++)
         {
-          stolen.insert(static_cast<TaskDescription*>(const_cast<Task*>(*it)));
+          // Mark the task as stolen
+          Task *t = const_cast<Task*>(*it);
+          t->stolen = true;
+          stolen.insert(static_cast<TaskDescription*>(t));
         }
       }
       // We've now got our tasks to steal
@@ -1490,9 +1502,8 @@ namespace RegionRuntime {
       {
         TaskDescription *task = ready_queue.front();
         ready_queue.pop_front();
-        // ask the mapper for where to place the task
-        Processor target = mapper_objects[task->map_id]->select_initial_processor(task);
-        if (target == local_proc)
+        // Check to see if this task has been chosen already
+        if (task->chosen)
         {
           mapped_tasks++;
           // Now map the task and then launch it on the processor
@@ -1504,15 +1515,31 @@ namespace RegionRuntime {
         }
         else
         {
-          // Send the task to the target processor
-          size_t buffer_size = sizeof(int)+task->compute_task_size();
-          void * buffer = malloc(buffer_size);
-          char * ptr = (char*)buffer;
-          *((int*)ptr) = 1; // We're only sending one task
-          ptr += sizeof(int); 
-          task->pack_task(ptr);
-          // Send the task to the target processor, no need to wait on anything
-          target.spawn(ENQUEUE_TASK_ID,buffer,buffer_size);
+          // ask the mapper for where to place the task
+          Processor target = mapper_objects[task->map_id]->select_initial_processor(task);
+          task->chosen = true;
+          if (target == local_proc)
+          {
+            mapped_tasks++;
+            // Now map the task and then launch it on the processor
+            map_and_launch_task(task);
+            // Check the waiting queue for new tasks to move onto our ready queue
+            update_queue();
+            // If we've launched enough tasks, return
+            if (mapped_tasks == MAX_TASK_MAPS_PER_STEP) return;
+          }
+          else
+          {
+            // Send the task to the target processor
+            size_t buffer_size = sizeof(int)+task->compute_task_size();
+            void * buffer = malloc(buffer_size);
+            char * ptr = (char*)buffer;
+            *((int*)ptr) = 1; // We're only sending one task
+            ptr += sizeof(int); 
+            task->pack_task(ptr);
+            // Send the task to the target processor, no need to wait on anything
+            target.spawn(ENQUEUE_TASK_ID,buffer,buffer_size);
+          }
         }
       }
       // If we've made it here, we've run out of work to do on our local processor
@@ -1825,20 +1852,15 @@ namespace RegionRuntime {
     };
     
     //--------------------------------------------------------------------------------------------
-    Mapper::Mapper(Machine *m, HighLevelRuntime *rt) : runtime(rt), machine(m)
+    Mapper::Mapper(Machine *m, HighLevelRuntime *rt, Processor local) 
+      : runtime(rt), local_proc(local), machine(m)
     //--------------------------------------------------------------------------------------------
     {
       // The default mapper will maintain a linear view of memory from
       // the perspective of the processor.
       // We'll assume that smaller memories are closer to the processor
       // and rank memories based on their size.
-    }
 
-    //--------------------------------------------------------------------------------------------
-    void Mapper::initialize(Processor local)
-    //--------------------------------------------------------------------------------------------
-    {
-      local_proc = local;
       // Get the set of memories visible to the processor and rank them on size
       std::set<Memory> memories = machine->get_visible_memories(local_proc);
       visible_memories = std::vector<Memory>(memories.begin(),memories.end());	

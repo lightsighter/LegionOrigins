@@ -125,12 +125,14 @@ namespace RegionRuntime {
     // This is information about a task that will be available to the mapper
     class Task {
     protected:
+      friend class HighLevelRuntime;
       friend class Mapper;
       Processor::TaskFuncID task_id;
       std::vector<RegionRequirement> regions;
       MapperID map_id;
       MappingTagID tag;
       Processor orig_proc; // The original processor for this task
+      bool stolen; // Whether this tasks was previously stolen
     };
 
     class TaskDescription : public Task {
@@ -143,6 +145,7 @@ namespace RegionRuntime {
       size_t arglen;
     protected:
       // Status information
+      bool chosen; // Check to see if the mapper has already been invoked to chose a processor
       bool stealable; // Can be stolen (corresponds to 'spawn' call)
       bool mapped; // Mapped to a specific processor and no longer stealable
       UserEvent map_event; // Even that is triggered when this event is mapped
@@ -350,7 +353,7 @@ namespace RegionRuntime {
     protected:
       HighLevelRuntime *runtime;
     public:
-      Mapper(Machine *machine, HighLevelRuntime *runtime);
+      Mapper(Machine *machine, HighLevelRuntime *runtime, Processor local);
       virtual ~Mapper() { }
     public:
       // Rank the order for possible memory locations for a region
@@ -377,15 +380,13 @@ namespace RegionRuntime {
 
       virtual std::vector<std::vector<Memory> > map_task( const Task *task);	
 
-      // To be called by the runtime when the mapper is added to the runtime
-      virtual void initialize(Processor local);
       // Register task with mapper
       // Unregister task with mapper
       // Select tasks to steal
       // Select target processor(s)
     protected:
       // Data structures for the base mapper
-      Processor local_proc;
+      const Processor local_proc;
       Machine *const machine;
       std::vector<Memory> visible_memories;
     protected:
@@ -618,12 +619,12 @@ namespace RegionRuntime {
     }
 
     // A wrapper task for allowing the application to initialize the set of mappers
-    template<void (*TASK_PTR)(Machine*,HighLevelRuntime*)>
+    template<void (*TASK_PTR)(Machine*,HighLevelRuntime*,Processor)>
     void init_mapper_wrapper(const void * args, size_t arglen, Processor p)
     {
       HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
       Machine *machine = Machine::get_machine();
-      (*TASK_PTR)(machine,runtime);
+      (*TASK_PTR)(machine,runtime,p);
     }
 
     // Unfortunately to avoid template instantiation issues we have to provide
