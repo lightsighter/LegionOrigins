@@ -111,11 +111,15 @@ namespace RegionRuntime {
       RegionMetaDataImpl*  get_free_metadata(Memory m, size_t num_elmts, size_t elmt_size);
       RegionAllocatorImpl* get_free_allocator(unsigned start, unsigned end);
       RegionInstanceImpl*  get_free_instance(Memory m, size_t num_elmts, size_t elmt_size);
+
+      // Return events that are free
+      void free_event(EventImpl *event);
     protected:
       static Runtime *runtime;
     protected:
       friend class Machine;
       std::vector<EventImpl*> events;
+      std::list<EventImpl*> free_events; // Keep a free list of events since this seems to dominate perf
       std::vector<LockImpl*> locks;
       std::vector<MemoryImpl*> memories;
       std::vector<ProcessorImpl*> processors;
@@ -124,6 +128,7 @@ namespace RegionRuntime {
       std::vector<RegionInstanceImpl*> instances;
       Machine *machine;
       pthread_rwlock_t event_lock;
+      pthread_mutex_t  free_event_lock;
       pthread_rwlock_t lock_lock;
       pthread_rwlock_t metadata_lock;
       pthread_rwlock_t allocator_lock;
@@ -371,6 +376,9 @@ namespace RegionRuntime {
           ret = Event::NO_EVENT;
         }
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+        // If ret does not exist, put this back on the list of free events
+        if (!ret.exists())
+          Runtime::get_runtime()->free_event(this);
 	return ret;
     } 
 
@@ -410,9 +418,12 @@ namespace RegionRuntime {
 		PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
 		in_use = false;
 		// Wake up any waiters
-		PTHREAD_SAFE_CALL(pthread_cond_broadcast(&wait_cond));
+                // don't need to do this if we use the preempt method in wait
+		//PTHREAD_SAFE_CALL(pthread_cond_broadcast(&wait_cond));
 	}
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));	
+        // tell the runtime that we're free
+        Runtime::get_runtime()->free_event(this);
     }
 
     bool EventImpl::activate(void)
@@ -1931,7 +1942,12 @@ namespace RegionRuntime {
 	: machine(m)
     {
 	for (unsigned i=0; i<BASE_EVENTS; i++)
-		events.push_back(new EventImpl(i));
+        {
+            EventImpl *event = new EventImpl(i);
+            events.push_back(event);
+            if (i != 0) // Don't hand out the NO_EVENT event
+              free_events.push_back(event);
+        }
 
 	for (unsigned i=0; i<BASE_LOCKS; i++)
 		locks.push_back(new LockImpl(i));
@@ -1954,6 +1970,7 @@ namespace RegionRuntime {
 	}
 
 	PTHREAD_SAFE_CALL(pthread_rwlock_init(&event_lock,NULL));
+        PTHREAD_SAFE_CALL(pthread_mutex_init(&free_event_lock,NULL));
 	PTHREAD_SAFE_CALL(pthread_rwlock_init(&lock_lock,NULL));
 	PTHREAD_SAFE_CALL(pthread_rwlock_init(&metadata_lock,NULL));
 	PTHREAD_SAFE_CALL(pthread_rwlock_init(&allocator_lock,NULL));
@@ -1971,6 +1988,14 @@ namespace RegionRuntime {
         EventImpl *result = events[i];
         PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&event_lock));
 	return result;
+    }
+
+    void Runtime::free_event(EventImpl *e)
+    {
+      // Put this event back on the list of free events
+      PTHREAD_SAFE_CALL(pthread_mutex_lock(&free_event_lock));
+      free_events.push_back(e);
+      PTHREAD_SAFE_CALL(pthread_mutex_unlock(&free_event_lock));
     }
 
     LockImpl* Runtime::get_lock_impl(Lock l)
@@ -2037,6 +2062,7 @@ namespace RegionRuntime {
 	return result;
     }
 
+#if 0
     EventImpl* Runtime::get_free_event()
     {
 	PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&event_lock));
@@ -2071,6 +2097,43 @@ namespace RegionRuntime {
 	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&event_lock));
 	return result; 
     }
+#else
+    EventImpl* Runtime::get_free_event()
+    {
+        PTHREAD_SAFE_CALL(pthread_mutex_lock(&free_event_lock));
+        if (!free_events.empty())
+        {
+          EventImpl *result = free_events.front();
+          free_events.pop_front();
+          // Release the lock
+          PTHREAD_SAFE_CALL(pthread_mutex_unlock(&free_event_lock));
+          // Activate this event
+          bool activated = result->activate();
+#ifdef DEBUG_LOW_LEVEL
+          assert(activated);
+#endif
+          return result;
+        }
+        // We weren't able to get a new event, get the writer lock
+        // for the vector of event implementations and add some more
+        PTHREAD_SAFE_CALL(pthread_rwlock_wrlock(&event_lock));
+        unsigned index = events.size();
+        EventImpl *result = new EventImpl(index,true);
+        events.push_back(result);
+        // Make a whole bunch of other events while we're here
+        for (unsigned idx=1; idx < BASE_EVENTS; idx++)
+        {
+          EventImpl *temp = new EventImpl(index+idx,false);
+          events.push_back(temp);
+          free_events.push_back(temp);
+        }
+        // Release the lock on events
+        PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&event_lock));
+        // Release the lock on free events
+        PTHREAD_SAFE_CALL(pthread_mutex_unlock(&free_event_lock));
+        return result;
+    }
+#endif
 
     LockImpl* Runtime::get_free_lock()
     {
