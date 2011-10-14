@@ -81,11 +81,21 @@ namespace RegionRuntime {
       ID id;
       bool operator<(const Processor& rhs) const { return id < rhs.id; }
       bool operator==(const Processor& rhs) const { return id == rhs.id; }
-      bool exists(void) const;
+
+      static const Processor NO_PROC;
+
+      bool exists(void) const { return id != 0; }
 
       typedef unsigned TaskFuncID;
       typedef void (*TaskFuncPtr)(const void *args, size_t arglen, Processor proc);
       typedef std::map<TaskFuncID, TaskFuncPtr> TaskIDTable;
+
+      // Different Processor types
+      enum Kind {
+	TOC_PROC, // Throughput core
+	LOC_PROC, // Latency core
+      };
+
 
       // special task IDs
       enum {
@@ -139,15 +149,19 @@ namespace RegionRuntime {
       bool operator==(const RegionMetaDataUntyped &rhs) const { return id == rhs.id; }
 
       static RegionMetaDataUntyped create_region_untyped(Memory memory, size_t num_elmts, size_t elmt_size);
+      static RegionMetaDataUntyped create_region_untyped(Memory memory, RegionMetaDataUntyped parent, const ElementMask &mask);
       RegionAllocatorUntyped create_allocator_untyped(Memory memory) const;
       RegionInstanceUntyped create_instance_untyped(Memory memory) const;
-      void destroy_region_untyped() const;
+      void destroy_region_untyped(void) const;
       void destroy_allocator_untyped(RegionAllocatorUntyped allocator) const;
       void destroy_instance_untyped(RegionInstanceUntyped instance) const;
 
       // get the lock that covers this metadata
       Lock get_lock(void) const;
-      bool exists(void) const;
+
+      static const RegionMetaDataUntyped NO_REGION;
+
+      bool exists(void) const { return id != 0; }
 
       // it's ok to call these without holding the lock if you don't mind
       //  stale data - data will be up to date if you hold the lock
@@ -157,6 +171,8 @@ namespace RegionRuntime {
       // don't call these unless you hold an exclusive lock on the metadata
       void set_master_allocator_untyped(RegionAllocatorUntyped allocator);
       void set_master_instance_untyped(RegionInstanceUntyped instance);
+
+      const ElementMask &get_valid_mask(void);
     };
 
     class RegionAllocatorUntyped {
@@ -169,7 +185,9 @@ namespace RegionRuntime {
       // get the lock that covers this allocator
       Lock get_lock(void);
 
-      bool exists(void) const;
+      static const RegionAllocatorUntyped NO_ALLOC;
+
+      bool exists(void) const { return id != 0; }
 
     protected:
       // can't have virtual methods here, so we're returning function pointers
@@ -257,28 +275,14 @@ namespace RegionRuntime {
       // get the lock that covers this instance
       Lock get_lock(void);
 
-      bool exists(void) const;
+      static const RegionInstanceUntyped NO_INST;
+
+      bool exists(void) const { return id != 0; }
 
       RegionInstanceAccessorUntyped<AccessorGeneric> get_accessor_untyped(void) const;
 
-      Event copy_to(RegionInstanceUntyped target, Event wait_on = Event::NO_EVENT)
-      { return copy_fn_untyped()(*this, target, wait_on); }
-      Event copy_to(RegionInstanceUntyped target, const ElementMask &mask, Event wait_on = Event::NO_EVENT)
-      { return copy_fn_untyped()(*this, target, wait_on); }
-
-    protected:
-      // can't have virtual methods here, so we're returning function pointers
-      typedef const void *(*ReadFuncPtr)(RegionInstanceUntyped region, unsigned ptr);
-      typedef void (*WriteFuncPtr)(RegionInstanceUntyped region, unsigned ptr, const void *src);
-
-      ReadFuncPtr read_fn_untyped(void);
-      WriteFuncPtr write_fn_untyped(void);
-      //UntypedFuncPtr reduce_fn_untyped(void);
-
-      // The copy operation
-      typedef Event (*CopyFuncPtr)(RegionInstanceUntyped source, RegionInstanceUntyped target, Event wait_on);
-
-      CopyFuncPtr copy_fn_untyped(void);
+      Event copy_to(RegionInstanceUntyped target, Event wait_on = Event::NO_EVENT);
+      Event copy_to(RegionInstanceUntyped target, const ElementMask &mask, Event wait_on = Event::NO_EVENT);
     };
 
     template <class T>
@@ -365,10 +369,10 @@ namespace RegionRuntime {
       { return RegionInstanceAccessor<T,AccessorGeneric>(get_accessor_untyped()); }
 
       Event copy_to(RegionInstance<T> target, Event wait_on = Event::NO_EVENT)
-      { return copy_fn_untyped()(*this, target, wait_on); }
+      { return copy_to(RegionInstanceUntyped(target), wait_on); }
 
       Event copy_to(RegionInstance<T> target, const ElementMask& mask, Event wait_on = Event::NO_EVENT)
-      { return copy_fn_untyped()(*this, target, wait_on); }
+      { return copy_to(RegionInstanceUntyped(target), mask, wait_on); }
     };
 
     class Machine {
@@ -381,25 +385,22 @@ namespace RegionRuntime {
       void run(Processor::TaskFuncID task_id = 0);
 
     public:
-      // Different Processor types
-      enum ProcessorKind {
-	TOC_PROC, // Throughput core
-	LOC_PROC, // Latency core
-      };
-
-    public:
       const std::set<Memory>&    get_all_memories(void) const { return memories; }
       const std::set<Processor>& get_all_processors(void) const { return procs; }
       // Return the set of memories visible from a processor
-      const std::set<Memory>&    get_visible_memories(const Processor p);
-      // Return the set of memories visible from a memory
-      const std::set<Memory>&    get_visible_memories(const Memory m);
-      // Return the set of processors which can all see a given memory
-      const std::set<Processor>& get_shared_processors(const Memory m);
+      const std::set<Memory>&    get_visible_memories(Processor p) const
+      { return visible_memories_from_procs.find(p)->second; }
 
-      Processor     get_local_processor() const;
-      ProcessorKind get_processor_kind(Processor p) const;
-      size_t        get_memory_size(const Memory m) const;
+      // Return the set of memories visible from a memory
+      const std::set<Memory>&    get_visible_memories(Memory m) const
+      { return visible_memories_from_memory.find(m)->second; }
+
+      // Return the set of processors which can all see a given memory
+      const std::set<Processor>& get_shared_processors(Memory m) const
+      { return visible_procs_from_memory.find(m)->second; }
+
+      Processor::Kind get_processor_kind(Processor p) const;
+      size_t get_memory_size(const Memory m) const;
 
       //void add_processor(Processor p) { procs.insert(p); }
       static Machine* get_machine(void);
