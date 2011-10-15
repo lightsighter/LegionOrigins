@@ -1595,13 +1595,13 @@ namespace RegionRuntime {
       
       // Next issue the copies for this task
       std::set<Event> copy_events;
-      for (std::vector<CopyOperation>::iterator copy_it = desc->pre_copy_ops.begin();
-            copy_it != desc->pre_copy_ops.end(); copy_it++)
-      {
-        CopyOperation &copy = *copy_it;
-        Event copy_e = copy.src->inst.copy_to(copy.dst->inst, copy.copy_mask, desc->merged_wait_event);
-        copy_events.insert(copy_e);
-      }
+      //for (std::vector<CopyOperation>::iterator copy_it = desc->pre_copy_ops.begin();
+      //      copy_it != desc->pre_copy_ops.end(); copy_it++)
+      //{
+      //  CopyOperation &copy = *copy_it;
+      //  Event copy_e = copy.src->inst.copy_to(copy.dst->inst, copy.copy_mask, desc->merged_wait_event);
+      //  copy_events.insert(copy_e);
+      //}
       
       Event prev;
       if (copy_events.size() > 0)
@@ -1909,7 +1909,7 @@ namespace RegionRuntime {
     {
       // Choose a random processor
       const std::set<Processor> &all_procs = machine->get_all_processors();
-      unsigned index = (rand()) % (all_procs.size());
+      unsigned index = (rand()) % (all_procs.size())+1;
       for (std::set<Processor>::iterator it = all_procs.begin();
             it != all_procs.end(); it++)
       {
