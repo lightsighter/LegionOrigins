@@ -565,11 +565,6 @@ namespace RegionRuntime {
 	return l->lock(mode,exclusive, wait_on);
     }
 
-    bool Lock::exists(void) const
-    {
-	return (id != 0);
-    }
-
     void Lock::unlock(Event wait_on) const
     {
 	LockImpl *l = Runtime::get_runtime()->get_lock_impl(*this);
@@ -893,13 +888,6 @@ namespace RegionRuntime {
 	return p->spawn(func_id, args, arglen, wait_on);
     }
 
-    bool Processor::exists(void) const
-    {
-        // Let's assume for the moment that processors always exist
-        return true;
-	//return (id != 0);
-    }
-
     Event ProcessorImpl::spawn(Processor::TaskFuncID func_id, const void * args,
 				size_t arglen, Event wait_on)
     {
@@ -1188,13 +1176,6 @@ namespace RegionRuntime {
 	const int index;
     }; 
 
-    bool RegionAllocatorUntyped::exists(void) const
-    {
-	//RegionAllocatorImpl *allocator = Runtime::get_runtime()->get_allocator_impl(*this);
-	//return (allocator != NULL);
-	return (id != 0);
-    } 
-
     static unsigned alloc_func(RegionAllocatorUntyped region, size_t num_elmts)
     {
 	return Runtime::get_runtime()->get_allocator_impl(region)->alloc_elmt(num_elmts);
@@ -1346,52 +1327,27 @@ namespace RegionRuntime {
         std::list<CopyOperation> pending_copies;
     };
 
-    bool RegionInstanceUntyped::exists(void) const
-    {
-	//RegionInstanceImpl *inst = Runtime::get_runtime()->get_instance_impl(*this);
-	//return (inst != NULL);
-	return (id != 0);
-    }
-
     RegionInstanceAccessorUntyped<AccessorGeneric> RegionInstanceUntyped::get_accessor_untyped(void) const
     {
       RegionInstanceImpl *impl = Runtime::get_runtime()->get_instance_impl(*this);
       return RegionInstanceAccessorUntyped<AccessorGeneric>((void *)impl);
     }
 
-    const void* read_func(RegionInstanceUntyped region, unsigned ptr)
-    {
-	return Runtime::get_runtime()->get_instance_impl(region)->read(ptr);
-    }
-
-    RegionInstanceUntyped::ReadFuncPtr RegionInstanceUntyped::read_fn_untyped(void)
-    {
-      return read_func;
-    }
-
-    void write_func(RegionInstanceUntyped region, unsigned ptr, const void* newval)
-    {
-	Runtime::get_runtime()->get_instance_impl(region)->write(ptr,newval);
-    }
-
-    RegionInstanceUntyped::WriteFuncPtr RegionInstanceUntyped::write_fn_untyped(void)
-    {
-      return write_func;
-    }
-
-    Event copy_to_func(RegionInstanceUntyped source, RegionInstanceUntyped target, Event wait_on)
-    {
-	return Runtime::get_runtime()->get_instance_impl(source)->copy_to(target, wait_on);
-    }
-
-    RegionInstanceUntyped::CopyFuncPtr RegionInstanceUntyped::copy_fn_untyped(void)
-    {
-      return copy_to_func;
-    }
-
     Lock RegionInstanceUntyped::get_lock(void)
     {
 	return Runtime::get_runtime()->get_instance_impl(*this)->get_lock();
+    }
+
+    Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, Event wait_on)
+    {
+      return Runtime::get_runtime()->get_instance_impl(*this)->copy_to(target,wait_on);
+    }
+
+    Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, const ElementMask &mask,
+                                                Event wait_on)
+    {
+      // TODO: Update this to take the mask into account
+      return Runtime::get_runtime()->get_instance_impl(*this)->copy_to(target,wait_on);
     }
 
     const void* RegionInstanceImpl::read(unsigned ptr)
@@ -1812,7 +1768,9 @@ namespace RegionRuntime {
 	Runtime::runtime = new Runtime(this);
 	
 	// Fill in the tables
-	for (int id=0; id<NUM_PROCS; id++)
+        // find in proc 0 with NULL
+        Runtime::runtime->processors.push_back(NULL);
+	for (int id=1; id<=NUM_PROCS; id++)
 	{
 		Processor p;
 		p.id = id;
@@ -1821,13 +1779,16 @@ namespace RegionRuntime {
 		Runtime::runtime->processors.push_back(impl);
 	}	
 	{
+                // Make the first memory null
+                Runtime::runtime->memories.push_back(NULL);
+                // Do the global memory
 		Memory global;
-		global.id = 0;
+		global.id = 1;
 		memories.insert(global);
 		MemoryImpl *impl = new MemoryImpl(MAX_GLOBAL_MEM);
 		Runtime::runtime->memories.push_back(impl);
 	}
-	for (int id=1; id<=NUM_PROCS; id++)
+	for (int id=2; id<=(NUM_PROCS+1); id++)
 	{
 		Memory m;
 		m.id = id;
@@ -1836,14 +1797,14 @@ namespace RegionRuntime {
 		Runtime::runtime->memories.push_back(impl);
 	}
 	// All memories are visible from each processor
-	for (int id=0; id<NUM_PROCS; id++)
+	for (int id=1; id<=NUM_PROCS; id++)
 	{
 		Processor p;
 		p.id = id;
 		visible_memories_from_procs.insert(std::pair<Processor,std::set<Memory> >(p,memories));
 	}	
 	// All memories are visible from all memories, all processors are visible from all memories
-	for (int id=0; id<=NUM_PROCS; id++)
+	for (int id=1; id<=(NUM_PROCS+1); id++)
 	{
 		Memory m;
 		m.id = id;
@@ -1853,7 +1814,7 @@ namespace RegionRuntime {
 
 	// Now start the threads for each of the processors
 	// except for processor 0 which is this thread
-	for (int id=1; id<NUM_PROCS; id++)
+	for (int id=2; id<=NUM_PROCS; id++)
 	{
 		ProcessorImpl *impl = Runtime::runtime->processors[id];
 		pthread_t thread;
@@ -1864,14 +1825,14 @@ namespace RegionRuntime {
 	if (cps_style)
 	{
 		Processor p;
-		p.id = 0;
+		p.id = 1;
 		p.spawn(init_id,**argv,*argc);
 		// Now run the scheduler, we'll never return from this
-		ProcessorImpl *impl = Runtime::runtime->processors[0];
+		ProcessorImpl *impl = Runtime::runtime->processors[1];
 		impl->start((void*)impl);
 	}
 	// Finally do the initialization for thread 0
-	local_proc_id = 0;
+	local_proc_id = 1;
     }
 
     Machine::~Machine()
@@ -1882,41 +1843,17 @@ namespace RegionRuntime {
     {
       if(task_id != 0) {
 	Processor p;
-	p.id = 0;
+	p.id = 1;
 	p.spawn(task_id,0,0);
       }
       // Now run the scheduler, we'll never return from this
-      ProcessorImpl *impl = Runtime::runtime->processors[0];
+      ProcessorImpl *impl = Runtime::runtime->processors[1];
       impl->start((void*)impl);
     }
 
-    const std::set<Memory>& Machine::get_visible_memories(const Processor p) 
+    Processor::Kind Machine::get_processor_kind(Processor p) const
     {
-#ifdef DEBUG_LOW_LEVEL
-	assert(visible_memories_from_procs.find(p) != visible_memories_from_procs.end());
-#endif
-	return visible_memories_from_procs[p];	
-    }
-
-    const std::set<Memory>& Machine::get_visible_memories(const Memory m)
-    {
-#ifdef DEBUG_LOW_LEVEL
-	assert(visible_memories_from_memory.find(m) != visible_memories_from_memory.end());
-#endif
-	return visible_memories_from_memory[m];
-    }
-
-    const std::set<Processor>& Machine::get_shared_processors(const Memory m)
-    {
-#ifdef DEBUG_LOW_LEVEL
-	assert(visible_procs_from_memory.find(m) != visible_procs_from_memory.end());
-#endif
-	return visible_procs_from_memory[m];
-    }
-
-    Machine::ProcessorKind Machine::get_processor_kind(Processor p) const
-    {
-	return LOC_PROC;
+	return Processor::LOC_PROC;
     }
 
     size_t Machine::get_memory_size(const Memory m) const
@@ -2021,6 +1958,7 @@ namespace RegionRuntime {
     ProcessorImpl* Runtime::get_processor_impl(Processor p)
     {
 #ifdef DEBUG_LOW_LEVEL
+        assert(p.exists());
 	assert(p.id < processors.size());
 #endif
 	return processors[p.id];
