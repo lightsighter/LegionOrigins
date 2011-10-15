@@ -49,7 +49,7 @@ void potato_launcher(const void * args, size_t arglen, Processor p)
 
   // Create a region to track the number of times a potato has gone around
   // Put it in global Memory
-  Memory m = { 0 };
+  Memory m = { 1 };
   RegionMetaData<unsigned> counter_region = RegionMetaData<unsigned>::create_region(m,NUM_POTATOES+1);
 
   // Get an allocator
