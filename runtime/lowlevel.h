@@ -281,8 +281,8 @@ namespace RegionRuntime {
 
       RegionInstanceAccessorUntyped<AccessorGeneric> get_accessor_untyped(void) const;
 
-      Event copy_to(RegionInstanceUntyped target, Event wait_on = Event::NO_EVENT);
-      Event copy_to(RegionInstanceUntyped target, const ElementMask &mask, Event wait_on = Event::NO_EVENT);
+      Event copy_to_untyped(RegionInstanceUntyped target, Event wait_on = Event::NO_EVENT);
+      Event copy_to_untyped(RegionInstanceUntyped target, const ElementMask &mask, Event wait_on = Event::NO_EVENT);
     };
 
     template <class T>
@@ -369,10 +369,10 @@ namespace RegionRuntime {
       { return RegionInstanceAccessor<T,AccessorGeneric>(get_accessor_untyped()); }
 
       Event copy_to(RegionInstance<T> target, Event wait_on = Event::NO_EVENT)
-      { return copy_to(RegionInstanceUntyped(target), wait_on); }
+      { return copy_to_untyped(RegionInstanceUntyped(target), wait_on); }
 
       Event copy_to(RegionInstance<T> target, const ElementMask& mask, Event wait_on = Event::NO_EVENT)
-      { return copy_to(RegionInstanceUntyped(target), mask, wait_on); }
+      { return copy_to_untyped(RegionInstanceUntyped(target), mask, wait_on); }
     };
 
     class Machine {
