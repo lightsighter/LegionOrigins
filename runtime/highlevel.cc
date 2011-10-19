@@ -92,6 +92,19 @@ namespace RegionRuntime {
     }
 
     /////////////////////////////////////////////////////////////
+    // Region Requirement 
+    ///////////////////////////////////////////////////////////// 
+
+    //--------------------------------------------------------------------------------------------
+    bool RegionRequirement::region_conflict(RegionRequirement *req1, RegionRequirement *req2)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Always detect a conflict
+      // TODO: fix this to actually detect conflicts
+      return true;
+    }
+
+    /////////////////////////////////////////////////////////////
     // Task Description 
     ///////////////////////////////////////////////////////////// 
 
@@ -184,9 +197,9 @@ namespace RegionRuntime {
         LogicalHandle handle = it->handle;
         // Make sure we don't get any regions which are sub regions of other region arguments 
         bool added = false;
-        for (unsigned idx = 0; idx < child->top_level_regions.size(); idx++)
+        for (unsigned idx = 0; idx < child->root_regions.size(); idx++)
         {
-          LogicalHandle top = child->top_level_regions[idx]->handle;
+          LogicalHandle top = child->root_regions[idx];
           // Check for disjointness
           if (!disjoint(handle, top))
           {
@@ -198,10 +211,7 @@ namespace RegionRuntime {
             }
             else if (subregion(handle,top)) // the new region is the parent, put it in place
             {
-#ifdef DEBUG_HIGH_LEVEL
-              assert(region_nodes->find(handle) != region_nodes->end());
-#endif
-              child->top_level_regions[idx] = (*region_nodes)[handle];
+              child->root_regions[idx] = handle;
               added = true;
               break;
             } 
@@ -214,10 +224,7 @@ namespace RegionRuntime {
         }    
         if (!added)
         {
-#ifdef DEBUG_HIGH_LEVEL
-          assert(region_nodes->find(handle) != region_nodes->end());
-#endif
-          child->top_level_regions.push_back((*region_nodes)[handle]);
+          child->root_regions.push_back(handle);
         }
       }  
 
@@ -226,27 +233,32 @@ namespace RegionRuntime {
       {
         bool found = false;
         // Find the top level region which this region is contained within
-        for (unsigned top = 0; top < top_level_regions.size(); top++)
+        for (unsigned parent_idx = 0; parent_idx < regions.size(); parent_idx++)
         {
-          if (subregion(top_level_regions[top]->handle, child->regions[idx].handle))
+          if (regions[parent_idx].handle == child->regions[idx].parent)
           {
             found = true;
             DependenceDetector dep;
             dep.ctx = local_ctx;
             dep.req = &(child->regions[idx]);
             dep.desc = child;
-            dep.previous = top_level_regions[top];
+            dep.prev_instance = instances[parent_idx];
 
             // Compute the trace from the subregion to the top level region
             RegionNode *node = (*region_nodes)[child->regions[idx].handle];
-            while (node != top_level_regions[top])
+            RegionNode *top = (*region_nodes)[regions[parent_idx].handle];
+            while (node != top)
             {
-              dep.reg_trace.push_back(node->handle);
-              dep.part_trace.push_back(node->parent->pid);
+              dep.trace.push_front(node->handle.id);
+              dep.trace.push_front(node->parent->pid);
+#ifdef DEBUG_HIGH_LEVEL
+              assert(node->parent != NULL);
+#endif
               node = node->parent->parent;
             }
 
-            top_level_regions[top]->register_region_dependence(dep);
+            // Register the region dependence beginning at the top level region
+            top->register_region_dependence(dep);
             break;
           }
         }
@@ -278,6 +290,7 @@ namespace RegionRuntime {
       bytes += (2*sizeof(Context)); // parent context and original context
       bytes += sizeof(Event); // merged wait event
       // TODO: figure out how to pack region information
+      //
       return bytes;
     }
 
@@ -371,30 +384,20 @@ namespace RegionRuntime {
       // There should be an instance for every one of the required mappings
       assert(instances.size() == regions.size());
 #endif
-      // Create instance info for the parent task's regions and fill them in
-      for (std::vector<InstanceInfo*>::iterator it = instances.begin();
-            it != instances.end(); it++)
-      {
-        // Create a new instance info for this context that is not quite a copy
-        InstanceInfo *info = new InstanceInfo();
-        info->meta = (*it)->meta;
-        info->owner = NULL; // Null owner indicates parent task
-        info->inst = (*it)->inst;
-        info->location = (*it)->location;
-        // Get the region node and add it to the list of valid instances for this context
-#ifdef DEBUG_HIGH_LEVEL
-        assert(region_nodes->find(info->meta) != region_nodes->end());
-#endif
-        (*region_nodes)[info->meta]->region_states[local_ctx].valid_instances.insert(info);
-      }
       // For each of the top level regions, initialize the context of this task
       // This ensures that all the region and partition nodes have state entries for this task
       // and that they are all clear if they already existed
-      for (std::vector<RegionNode*>::iterator it = top_level_regions.begin();
-            it != top_level_regions.end(); it++)
+      for (std::vector<RegionRequirement>::iterator it = regions.begin();
+            it != regions.end(); it++)
       {
-        (*it)->initialize_context(local_ctx);
+        LogicalHandle &handle = it->handle;
+#ifdef DEBUG_HIGH_LEVEL
+        assert(region_nodes->find(handle) != region_nodes->end());
+#endif
+        (*region_nodes)[handle]->initialize_context(local_ctx);
       }
+
+      // Get the physical regions
 
       // Fake this for right now
       // TODO: fix this
@@ -497,7 +500,7 @@ namespace RegionRuntime {
             it != dead_instances.end(); it++)
       {
         InstanceInfo *info = *it;
-        info->meta.destroy_instance_untyped(info->inst);
+        info->handle.destroy_instance_untyped(info->inst);
       }
 
       // Set the return results
@@ -863,7 +866,130 @@ namespace RegionRuntime {
     void RegionNode::register_region_dependence(DependenceDetector &dep)
     //--------------------------------------------------------------------------------------------
     {
-      
+      // Get the region state for the node
+#ifdef DEBUG_HIGH_LEVEL
+      assert(dep.ctx < region_states.size());
+#endif
+      RegionState &state = region_states[dep.ctx];
+
+      // Update the valid instance if one exists
+      if (state.valid_instance != NULL)
+        dep.prev_instance = state.valid_instance;
+
+      // Check to see if there are any active tasks which conflict with this task
+      bool conflict = false;
+      for (std::vector<std::pair<RegionRequirement*,TaskDescription*> >::iterator it = 
+              state.active_tasks.begin(); it != state.active_tasks.end(); it++)
+      {
+        // Check to see if the two requirements conflict 
+        if (RegionRequirement::region_conflict(dep.req, it->first))
+        {
+          conflict = true;
+          break;
+        }
+      }
+      // If there was a conflict, append all the tasks to set of tasks
+      // this task must wait for
+      if (conflict)
+      {
+        for (std::vector<std::pair<RegionRequirement*,TaskDescription*> >::iterator it = 
+              state.active_tasks.begin(); it != state.active_tasks.end(); it++)
+        {
+          // Check to see if it is mapped, if it is, grab the event,
+          // otherwise register this task as a dependent task
+          if (it->second->mapped)
+            dep.desc->wait_events.insert(it->second->termination_event);
+          else
+            it->second->dependent_tasks.push_back(dep.desc);
+        }
+      }
+
+      // Now check to see if this is the region that we are looking for
+      if (dep.trace.size() == 0)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(handle == dep.req->handle);
+#endif
+        // We've found our match
+        // If the partition is open, close it   
+        if (state.open_valid)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(partitions.find(state.open_partition) != partitions.end());
+#endif
+          // Copy back to the previously valid instance
+          // which is where we will make our copy from
+          partitions[state.open_partition]->close_subtree(dep.ctx, dep.desc, dep.prev_instance);
+          // Mark the partition closed
+          state.open_valid = false;
+        }
+        // Create the InstanceInfo for this task
+        InstanceInfo *info = new InstanceInfo();
+        info->handle = dep.req->handle;
+        state.valid_instance = info;
+        // Add this to the tasks information
+        dep.desc->instances.push_back(info);
+        // Also updated the src instances with the src instance
+        dep.desc->src_instances.push_back(dep.prev_instance);
+
+        // If there was a conflict, this is the new valid instance info,
+        // otherwise add it to the group of valid tasks at this level
+        if (conflict)
+          state.active_tasks.clear();
+        state.active_tasks.push_back(
+            std::pair<RegionRequirement*,TaskDescription*>(dep.req, dep.desc));
+      }
+      else
+      {
+        // Continue the traversal
+        PartitionID next_part = dep.trace.front();
+        dep.trace.pop_front();
+#ifdef DEBUG_HIGH_LEVEL
+        assert(partitions.find(next_part) != partitions.end());
+#endif
+        // If there is an open partition and it's not the one we want, close it off
+        if (state.open_valid && (state.open_partition != next_part))
+          partitions[state.open_partition]->close_subtree(dep.ctx, dep.desc, dep.prev_instance);
+
+        // Mark the partition as being open
+        state.open_valid = true;
+        state.open_partition = next_part;
+
+        // continue registering the task
+        partitions[next_part]->register_region_dependence(dep);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::close_subtree(Context ctx, TaskDescription *desc, InstanceInfo *parent_inst)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(ctx < region_states.size());
+#endif
+      // First check to see if there is an open partition, we need to close this first
+      // so that copies are inserted into the task description in the proper order
+      if (region_states[ctx].open_valid)
+      {
+        // If this region has a valid instance, pass that, otherwise pass the parent instance
+        PartitionNode *part = partitions[region_states[ctx].open_partition];
+        if (region_states[ctx].valid_instance != NULL)
+          part->close_subtree(ctx, desc, region_states[ctx].valid_instance);
+        else
+          part->close_subtree(ctx, desc, parent_inst);
+
+        // Mark the partition closed
+        region_states[ctx].open_valid = false;
+      }
+
+      // If we had a valid instance here, issue a copy to the parent instance 
+      if (region_states[ctx].valid_instance != NULL)
+      {
+        CopyOperation copy_op;
+        copy_op.src = region_states[ctx].valid_instance;
+        copy_op.dst = parent_inst;
+        desc->pre_copy_ops.push_back(copy_op);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -873,13 +999,16 @@ namespace RegionRuntime {
       // Handle the local context
       if (ctx < region_states.size())
       {
-        region_states[ctx].open_partitions.clear();
-        region_states[ctx].valid_instances.clear();
+        region_states[ctx].open_valid = false;;
+        region_states[ctx].active_tasks.clear();
+        region_states[ctx].valid_instance = NULL;
       }
       else
       {
         // Resize for the new context
         region_states.reserve(ctx+1);
+        region_states[ctx].open_valid = false;
+        region_states[ctx].valid_instance = NULL;
       }
       
       // Initialize any subregions
@@ -888,6 +1017,66 @@ namespace RegionRuntime {
       {
         it->second->initialize_context(ctx);
       }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    size_t RegionNode::compute_region_tree_size(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      size_t result = 0;
+      result += sizeof(LogicalHandle);
+      result += sizeof(unsigned); // depth
+      result += sizeof(size_t); // Number of partitions
+      for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
+            it != partitions.end(); it++)
+      {
+        result += (it->second->compute_region_tree_size());
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::pack_region_tree(char *&buffer) const
+    //--------------------------------------------------------------------------------------------
+    {
+      *((LogicalHandle*)buffer) = handle;
+      buffer += sizeof(LogicalHandle);
+      *((unsigned*)buffer) = depth;
+      buffer += sizeof(unsigned);
+      *((size_t*)buffer) = partitions.size();
+      buffer += sizeof(size_t);
+      for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
+            it != partitions.end(); it++)
+      {
+        it->second->pack_region_tree(buffer);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    RegionNode* RegionNode::unpack_region_tree(const char *&buffer, PartitionNode *parent, 
+                 Context ctx, std::map<LogicalHandle,RegionNode*> *region_nodes,
+                              std::map<PartitionID,PartitionNode*> *partition_nodes)
+    //--------------------------------------------------------------------------------------------
+    {
+      LogicalHandle handle = *((const LogicalHandle*)buffer);
+      buffer += sizeof(LogicalHandle);
+      unsigned dep = *((const unsigned*)buffer);
+      buffer += sizeof(unsigned);
+      size_t num_parts = *((const size_t*)buffer);
+      buffer += sizeof(size_t);
+
+      // Create the node
+      RegionNode *result = new RegionNode(handle, dep, parent, false/*add*/, ctx);
+      // Add it to the list of region nodes
+      region_nodes->insert(std::pair<LogicalHandle,RegionNode*>(handle,result));
+
+      for (unsigned idx = 0; idx < num_parts; idx++)
+      {
+        PartitionNode *part = PartitionNode::unpack_region_tree(buffer,result,ctx,
+                                                      region_nodes,partition_nodes);
+        result->add_partition(part);
+      }
+      return result;
     }
 
     /////////////////////////////////////////////////////////////
@@ -940,7 +1129,81 @@ namespace RegionRuntime {
     void PartitionNode::register_region_dependence(DependenceDetector &dep)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(dep.ctx < partition_states.size());
+#endif
+      PartitionState &state = partition_states[dep.ctx];
 
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!dep.trace.empty()); // There should at least be another region
+#endif
+      LogicalHandle next_reg;
+      next_reg.id = dep.trace.front();
+      dep.trace.pop_front();
+#ifdef DEBUG_HIGH_LEVEL
+      assert(children.find(next_reg) != children.end());
+#endif
+
+      // If this is aliased partition we have to do something different than if it is not
+      if (disjoint)
+      {
+        // The partition is disjoint
+        // Open the region we need and continue the traversal
+        state.open_regions.insert(next_reg);
+        children[next_reg]->register_region_dependence(dep);
+      }
+      else
+      {
+        // The partition is aliased
+        // There should only be at most one open region in an aliased partition
+#ifdef DEBUG_HIGH_LEVEL
+        assert(state.open_regions.size() < 2);
+#endif
+        if (state.open_regions.size() == 1)
+        {
+          LogicalHandle open = (*(state.open_regions.begin()));
+          if (open == next_reg)
+          {
+            // Same region, continue the traversal
+            children[open]->register_region_dependence(dep);
+          }
+          else
+          {
+            // Close up the other region
+            children[open]->close_subtree(dep.ctx, dep.desc, dep.prev_instance);
+            state.open_regions.clear();
+            state.open_regions.insert(next_reg);
+            children[next_reg]->register_region_dependence(dep);
+          }
+        }
+        else
+        {
+          // There are no open child regions, open the one we need
+          state.open_regions.insert(next_reg);
+          children[next_reg]->register_region_dependence(dep);
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void PartitionNode::close_subtree(Context ctx,TaskDescription *desc,InstanceInfo *parent_inst)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(ctx < partition_states.size());
+      assert(!partition_states[ctx].open_regions.empty());
+#endif
+      // Close each of the open regions and then mark them closed 
+      for (std::set<LogicalHandle>::iterator it = partition_states[ctx].open_regions.begin();
+            it != partition_states[ctx].open_regions.end(); it++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(children.find(*it) != children.end());
+#endif
+        children[*it]->close_subtree(ctx, desc, parent_inst);
+      }
+      // Mark that all the children are closed
+      partition_states[ctx].open_regions.clear();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -962,6 +1225,29 @@ namespace RegionRuntime {
       }
     }
 
+    //--------------------------------------------------------------------------------------------
+    size_t PartitionNode::compute_region_tree_size(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      size_t result = 0;
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void PartitionNode::pack_region_tree(char *&buffer) const
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    PartitionNode* PartitionNode::unpack_region_tree(const char *&buffer, RegionNode *parent,
+                    Context ctx, std::map<LogicalHandle,RegionNode*> *region_nodes,
+                                std::map<PartitionID,PartitionNode*> *partition_nodes)
+    //--------------------------------------------------------------------------------------------
+    {
+      return NULL;
+    }
 
     /////////////////////////////////////////////////////////////
     // High Level Runtime
@@ -1571,7 +1857,7 @@ namespace RegionRuntime {
               mem_it != locations.end(); mem_it++)
         {
           // Try making the instance for the given region
-          RegionInstance inst = info->meta.create_instance_untyped(*mem_it);
+          RegionInstance inst = info->handle.create_instance_untyped(*mem_it);
           if (inst.exists())
           {
             info->inst = inst;
