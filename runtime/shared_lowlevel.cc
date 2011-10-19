@@ -158,15 +158,6 @@ namespace RegionRuntime {
     public:
 	typedef unsigned EventIndex;
 	typedef unsigned EventGeneration;
-	static Event::ID make_id(EventIndex index, EventGeneration gen) {
-	  return ((((unsigned long long)index) << 32) | gen);
-	}
-	static EventIndex get_index(Event::ID id) {
-	  return (id >> 32);
-	}
-	static EventGeneration get_gen(Event::ID id) {
-	  return (id & 0xFFFFFFFFULL);
-	}
     public:
 	EventImpl(EventIndex idx, bool activate=false) 
 		: index(idx)
@@ -181,7 +172,8 @@ namespace RegionRuntime {
 	    // Always initialize the current event to hand out to
 	    // generation + 1, so the event will have triggered
 	    // when the event matches the generation
-	    current.id = make_id(index,generation+1);
+	    current.id = index;
+	    current.gen = generation+1;
 	    sources = 1;
 #ifdef DEBUG_LOW_LEVEL
 	    assert(current.exists());
@@ -277,14 +269,14 @@ namespace RegionRuntime {
     {
 	if (!id) return true;
 	EventImpl *e = Runtime::get_runtime()->get_event_impl(*this);
-	return e->has_triggered(EventImpl::get_gen(id));
+	return e->has_triggered(gen);
     }
 
     void Event::wait(void) const
     {
 	if (!id) return;
 	EventImpl *e = Runtime::get_runtime()->get_event_impl(*this);
-	e->wait(EventImpl::get_gen(id));
+	e->wait(gen);
     }
 
     Event Event::merge_events(const std::set<Event>& wait_for)
@@ -355,7 +347,7 @@ namespace RegionRuntime {
 		// already triggered.
 		if (src_impl == this)
 			continue;
-		if (src_impl->register_dependent(this,EventImpl::get_gen((it->second).id)))
+		if (src_impl->register_dependent(this,(it->second).gen))
 			sources++;
 	}
 	Event ret;
@@ -400,7 +392,7 @@ namespace RegionRuntime {
 		// with this event, but keep event in_use so no one can use the event
 		generation++;
 #ifdef DEBUG_LOW_LEVEL
-		assert(generation == EventImpl::get_gen(current.id));
+		assert(generation == current.gen);
 #endif
 		// Can't be holding the lock when triggering other triggerables
 		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
@@ -442,7 +434,8 @@ namespace RegionRuntime {
 		sources = 1;
 		// Set generation to generation+1, see 
 		// comment in constructor
-		current.id = make_id(index,generation+1);
+		current.id = index;
+		current.gen = generation+1;
 #ifdef DEBUG_LOW_LEVEL
 		assert(current.exists());
 #endif
@@ -592,7 +585,7 @@ namespace RegionRuntime {
         {
           // Try registering the lock
           EventImpl *impl = Runtime::get_runtime()->get_event_impl(wait_on);
-          if (impl->register_dependent(this, EventImpl::get_gen(wait_on.id), next_handle))
+          if (impl->register_dependent(this, wait_on.gen, next_handle))
           {
             // Successfully registered with the event, register the request as asleep
             must_wait = true;
@@ -674,7 +667,7 @@ namespace RegionRuntime {
 		// Register this lock to be unlocked when the even triggers	
 		EventImpl *e = Runtime::get_runtime()->get_event_impl(wait_on);
                 // Use default handle 0 to indicate unlock event
-		if (!(e->register_dependent(this,EventImpl::get_gen(wait_on.id))))
+		if (!(e->register_dependent(this,wait_on.gen)))
 		{
 			// The event didn't register which means it already triggered
 			// so go ahead and perform the unlock operation
@@ -905,7 +898,7 @@ namespace RegionRuntime {
 	{
 		// Try registering this processor with the event
 		EventImpl *wait_impl = Runtime::get_runtime()->get_event_impl(wait_on);
-		if (!wait_impl->register_dependent(this, EventImpl::get_gen(wait_on.id)))
+		if (!wait_impl->register_dependent(this, wait_on.gen))
 		{
 #ifdef DEBUG_PRINT
 			DPRINT2("Registering task %d on processor %d ready queue\n",func_id,proc.id);
@@ -1161,7 +1154,7 @@ namespace RegionRuntime {
 	}
     public:
 	unsigned alloc_elmt(size_t num_elmts = 1);
-	void free_elmt(unsigned ptr);	
+        void free_elmt(unsigned ptr, unsigned count);
 	bool activate(unsigned s, unsigned e);
 	void deactivate();
 	RegionAllocatorUntyped get_allocator(void) const;
@@ -1176,24 +1169,14 @@ namespace RegionRuntime {
 	const int index;
     }; 
 
-    static unsigned alloc_func(RegionAllocatorUntyped region, size_t num_elmts)
+    unsigned RegionAllocatorUntyped::alloc_untyped(unsigned count /*= 1*/) const
     {
-	return Runtime::get_runtime()->get_allocator_impl(region)->alloc_elmt(num_elmts);
+      return Runtime::get_runtime()->get_allocator_impl(*this)->alloc_elmt(count);
     }
 
-    RegionAllocatorUntyped::AllocFuncPtr RegionAllocatorUntyped::alloc_fn_untyped(void) const
+    void RegionAllocatorUntyped::free_untyped(unsigned ptr, unsigned count /*= 1 */) const
     {
-      return alloc_func;
-    }
-
-    static void free_func(RegionAllocatorUntyped region, unsigned ptr)
-    {
-	Runtime::get_runtime()->get_allocator_impl(region)->free_elmt(ptr);
-    }
-
-    RegionAllocatorUntyped::FreeFuncPtr RegionAllocatorUntyped::free_fn_untyped(void) const
-    {
-      return free_func;
+      Runtime::get_runtime()->get_allocator_impl(*this)->free_elmt(ptr, count);
     }
 
     unsigned RegionAllocatorImpl::alloc_elmt(size_t num_elmts)
@@ -1224,10 +1207,11 @@ namespace RegionRuntime {
 	return result;
     }
 
-    void RegionAllocatorImpl::free_elmt(unsigned ptr)
+    void RegionAllocatorImpl::free_elmt(unsigned ptr, unsigned count)
     {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
-	free_list.insert(ptr);	
+	for(unsigned i = 0; i < count; i++)
+	  free_list.insert(ptr + i);	
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
     }
 
@@ -1414,7 +1398,7 @@ namespace RegionRuntime {
 		// Try registering this as a triggerable with the event	
 		EventImpl *event_impl = Runtime::get_runtime()->get_event_impl(wait_on);
 		PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
-		if (event_impl->register_dependent(this,EventImpl::get_gen(wait_on.id),next_handle))
+		if (event_impl->register_dependent(this,wait_on.gen,next_handle))
 		{
                         CopyOperation op;
                         op.dst_ptr = target_impl->base_ptr;
@@ -1839,12 +1823,16 @@ namespace RegionRuntime {
     {
     }
 
-    void Machine::run(Processor::TaskFuncID task_id /* = 0 */)
+    void Machine::run(Processor::TaskFuncID task_id /*= 0*/,
+		      RunStyle style /*= ONE_TASK_ONLY*/,
+		      const void *args /*= 0*/, size_t arglen /*= 0*/)
     {
-      if(task_id != 0) {
-	Processor p;
-	p.id = 1;
-	p.spawn(task_id,0,0);
+      if(task_id != 0) { // no need to check ONE_TASK_ONLY here, since 1 node
+	for(int id = 1; id <= NUM_PROCS; id++) {
+	  Processor p = { id };
+	  p.spawn(task_id,args,arglen);
+	  if(style != ONE_TASK_PER_PROC) break;
+	}
       }
       // Now run the scheduler, we'll never return from this
       ProcessorImpl *impl = Runtime::runtime->processors[1];
@@ -1916,7 +1904,7 @@ namespace RegionRuntime {
 
     EventImpl* Runtime::get_event_impl(Event e)
     {
-	EventImpl::EventIndex i = EventImpl::get_index(e.id);
+        EventImpl::EventIndex i = e.id;
         PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&event_lock));
 #ifdef DEBUG_LOW_LEVEL
 	assert(i != 0);

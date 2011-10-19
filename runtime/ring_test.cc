@@ -44,13 +44,17 @@ void potato_launcher(const void * args, size_t arglen, Processor p)
   // Get the next processor
   //Machine *machine = Machine::get_machine();	
   Processor me = p;
+  printf("processor ID = %x\n", p.id);
   //unsigned total_procs = machine->get_all_processors().size();
   Processor neighbor = proc_ring.neighbor[me];
 
   // Create a region to track the number of times a potato has gone around
   // Put it in global Memory
-  Memory m = { 1 };
+  Memory m = *(Machine::get_machine()->get_visible_memories(p).begin());
+  printf("memory ID = %x\n", m.id);
+
   RegionMetaData<unsigned> counter_region = RegionMetaData<unsigned>::create_region(m,NUM_POTATOES+1);
+  printf("counter region ID = %x\n", counter_region.id);
 
   // Get an allocator
   RegionAllocator<unsigned> counter_alloc = counter_region.get_master_allocator();
@@ -99,7 +103,7 @@ void hot_potatoer(const void * args, size_t arglen, Processor p)
   if (potato.hops_left == 0)
     {
       // Get an instance for the region locally
-      Memory my_mem = { (me.id+1) };
+      Memory my_mem = *(Machine::get_machine()->get_visible_memories(p).begin());
       RegionInstance<unsigned> local_inst = potato.region.create_instance(my_mem);
       RegionInstance<unsigned> master_inst = potato.region.get_master_instance();	
       Event copy_event = master_inst.copy_to(local_inst);
@@ -230,10 +234,9 @@ int main(int argc, char **argv)
     }
   }
 
-  // now launch the launcher task on the first processor
-  Event result = firstproc.spawn(LAUNCHER_ID, 0, 0, Event::NO_EVENT);
-
-  m.run();
+  // now launch the launcher task on the first processor and wait for 
+  //  completion
+  m.run(LAUNCHER_ID, Machine::ONE_TASK_PER_NODE);
 
   printf("SUCCESS!\n");
 
