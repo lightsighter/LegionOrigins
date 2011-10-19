@@ -158,17 +158,16 @@ namespace RegionRuntime {
       std::set<Event> wait_events; // Events to wait on before executing (immovable)
       Event merged_wait_event; // The merge of the wait_events (movable)
       UserEvent termination_event; // Create a user level termination event to be returned quickly
-      std::vector<TaskDescription*> dependent_tasks; // Tasks waiting for us to be mapped (immov)
+      std::set<TaskDescription*> dependent_tasks; // Tasks waiting for us to be mapped (immov)
     private:
       std::vector<TaskDescription*> child_tasks; // (immov)
     private:
       // Information about instances and copies
-      std::vector<CopyOperation> pre_copy_ops; // Computed after move
+      std::vector<CopyOperation> pre_copy_ops; // (mov) Computed before move
       std::vector<InstanceInfo*> instances; // Region instances for the regions (mov)
-      std::vector<InstanceInfo*> src_instances; // Source instances for our instances
+      std::vector<InstanceInfo*> src_instances; // Source instances for our instances (mov)
       std::vector<InstanceInfo*> dead_instances; // Computed after move 
-      std::vector<PhysicalRegion> physical_regions;
-    private:
+      std::vector<PhysicalRegion> physical_regions; // dummy
       std::vector<LogicalHandle> root_regions; // The root regions for this task
       std::vector<LogicalHandle> deleted_regions; // The regions deleted in this task and children
     private:

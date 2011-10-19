@@ -149,35 +149,63 @@ namespace RegionRuntime {
       if (args != NULL) free(args);
       if (result != NULL) free(result);
       future->reset();
-#ifdef DEBUG_HIGH_LEVEL
-      // These assertions are not valid under stealing
-      // Consider a steal of a steal
-      //assert(map_event.has_triggered());
-      //assert(merged_wait_event.has_triggered());
-      //assert(termination_event.has_triggered());
-#endif
       remaining_events = 0;
       args = NULL;
       result = NULL;
       regions.clear();
       wait_events.clear();
-      pre_copy_ops.clear();
+      // Regardless of whether we are remote or not, we can always delete the
+      // instances that we own
+      for (std::vector<InstanceInfo*>::iterator it = instances.begin();
+            it != instances.end(); it++)
+      {
+        delete *it;
+      }
       instances.clear();
-      dead_instances.clear();
-      dependent_tasks.clear();
-      child_tasks.clear();
+      // If this is a remote there were some things that were cloned that we
+      // now need to clean up
       if (remote)
       {
+        // First we can delete all of our copy op instance infos which are clones
+        for (std::vector<CopyOperation>::iterator it = pre_copy_ops.begin();
+              it != pre_copy_ops.end(); it++)
+        {
+          delete it->src;
+          delete it->dst;
+        }
+
+        for (std::vector<InstanceInfo*>::iterator it = src_instances.begin();
+              it != src_instances.end(); it++)
+        {
+          delete *it;
+        }
+
+        // We can also delete the region trees
+        for (std::vector<LogicalHandle>::iterator it = root_regions.begin();
+              it != root_regions.end(); it++)
+        {
+          delete (*region_nodes)[*it];
+        }
+
         // If remote then we can delete the copies of these nodes
         // that we had to create
         if (region_nodes != NULL)
+        {
           delete region_nodes;
+        }
         if (partition_nodes != NULL)
+        {
           delete partition_nodes;
+        }
       }
+      pre_copy_ops.clear();
+      src_instances.clear();
+      dead_instances.clear();
+      physical_regions.clear();
+      root_regions.clear();
+      deleted_regions.clear();
       region_nodes = NULL;
       partition_nodes = NULL;
-      deleted_regions.clear();
       active = false;
     }
 
@@ -289,8 +317,22 @@ namespace RegionRuntime {
       bytes += sizeof(Processor);
       bytes += (2*sizeof(Context)); // parent context and original context
       bytes += sizeof(Event); // merged wait event
-      // TODO: figure out how to pack region information
-      //
+      // Instance and copy information
+      bytes += sizeof(size_t); // Number of copy operations
+      bytes += (pre_copy_ops.size() * 2 * sizeof(InstanceInfo));
+      // The size of src_instances is the same as regions
+#ifdef DEBUG_HIGH_LEVEL
+      assert(src_instances.size() == regions.size());
+#endif
+      bytes += (src_instances.size() * sizeof(InstanceInfo));
+
+      // Region trees
+      bytes += sizeof(size_t); // Number of region trees
+      for (std::vector<LogicalHandle>::const_iterator it = root_regions.begin();
+            it != root_regions.end(); it++)
+      {
+        bytes += ((*region_nodes)[*it]->compute_region_tree_size());
+      }
       return bytes;
     }
 
@@ -331,6 +373,47 @@ namespace RegionRuntime {
       buffer += sizeof(Context);
       *((Event*)buffer) = merged_wait_event;
       buffer += sizeof(Event);
+      // Pack the instance and copy information
+      *((size_t*)buffer) = pre_copy_ops.size();
+      buffer += sizeof(size_t);
+      for (std::vector<CopyOperation>::const_iterator it = pre_copy_ops.begin();
+            it != pre_copy_ops.end(); it++)
+      {
+        *((LogicalHandle*)buffer) = it->src->handle;
+        buffer += sizeof(LogicalHandle);
+        *((RegionInstance*)buffer) = it->src->inst;
+        buffer += sizeof(RegionInstance);
+        *((Memory*)buffer) = it->src->location;
+        buffer += sizeof(Memory);
+        *((LogicalHandle*)buffer) = it->dst->handle;
+        buffer += sizeof(LogicalHandle);
+        *((RegionInstance*)buffer) = it->dst->inst;
+        buffer += sizeof(RegionInstance);
+        *((Memory*)buffer) = it->dst->location;
+        buffer += sizeof(Memory);
+      }
+
+      *((size_t*)buffer) = src_instances.size();
+      buffer += sizeof(size_t);
+      for (std::vector<InstanceInfo*>::const_iterator it = src_instances.begin();
+            it != src_instances.end(); it++)
+      {
+        *((LogicalHandle*)buffer) = (*it)->handle;
+        buffer += sizeof(LogicalHandle);
+        *((RegionInstance*)buffer) = (*it)->inst;
+        buffer += sizeof(RegionInstance);
+        *((Memory*)buffer) = (*it)->location;
+        buffer += sizeof(Memory);
+      }
+
+      // Pack the region trees
+      *((size_t*)buffer) = root_regions.size();
+      buffer += sizeof(size_t);
+      for (std::vector<LogicalHandle>::const_iterator it = root_regions.begin();
+            it != root_regions.end(); it++)
+      {
+        (*region_nodes)[*it]->pack_region_tree(buffer);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -374,6 +457,66 @@ namespace RegionRuntime {
       remote = true; // If we're unpacking this it is definitely remote
       merged_wait_event = *((const Event*)buffer);
       buffer += sizeof(Event);
+      // Unapck the instance and copy information
+      size_t num_pre_copies = *((const size_t*)buffer);
+      buffer += sizeof(size_t);
+      for (unsigned idx = 0; idx < num_pre_copies; idx++)
+      {
+        CopyOperation copy_op;
+        copy_op.src = new InstanceInfo();
+        copy_op.dst = new InstanceInfo();
+        copy_op.src->handle = *((const LogicalHandle*)buffer);
+        buffer += sizeof(LogicalHandle);
+        copy_op.src->inst = *((const RegionInstance*)buffer);
+        buffer += sizeof(RegionInstance);
+        copy_op.src->location = *((const Memory*)buffer);
+        buffer += sizeof(Memory);
+        copy_op.dst->handle = *((const LogicalHandle*)buffer);
+        buffer += sizeof(LogicalHandle);
+        copy_op.dst->inst = *((const RegionInstance*)buffer);
+        buffer += sizeof(RegionInstance);
+        copy_op.dst->location = *((const Memory*)buffer);
+        buffer += sizeof(Memory);
+        // Add this to the list of pre-copy-ops
+        pre_copy_ops.push_back(copy_op);
+      }
+
+      // For the instances we can just make this based on the regions
+      for (std::vector<RegionRequirement>::iterator it = regions.begin();
+            it != regions.end(); it++)
+      {
+        InstanceInfo *info = new InstanceInfo();
+        info->handle = it->handle;
+        instances.push_back(info);
+      }
+      // Unpack the source instance information
+      size_t num_src_instances = *((const size_t*)buffer);
+      buffer += sizeof(size_t);
+      for (unsigned idx = 0; idx < num_src_instances; idx++)
+      {
+        InstanceInfo *info = new InstanceInfo();
+        info->handle = *((const LogicalHandle*)buffer);
+        buffer += sizeof(LogicalHandle);
+        info->inst = *((const RegionInstance*)buffer);
+        buffer += sizeof(RegionInstance);
+        info->location = *((const Memory*)buffer);
+        buffer += sizeof(Memory);
+        // Add this to the list of src instances
+        src_instances.push_back(info);
+      }
+      
+      // Unpack the region trees
+      size_t num_trees = *((const size_t*)buffer);
+      buffer += sizeof(size_t);
+      // Create new maps for region and partition nodes
+      region_nodes = new std::map<LogicalHandle,RegionNode*>();
+      partition_nodes = new std::map<PartitionID,PartitionNode*>();
+      for (unsigned idx = 0; idx < num_trees; idx++)
+      {
+        RegionNode *top = RegionNode::unpack_region_tree(buffer,NULL,local_ctx,
+                                                  region_nodes, partition_nodes);
+        root_regions.push_back(top->handle);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -555,7 +698,7 @@ namespace RegionRuntime {
      
       // Update each of the dependent tasks with the event
       termination_event = wait_event;
-      for (std::vector<TaskDescription*>::iterator it = dependent_tasks.begin();
+      for (std::set<TaskDescription*>::iterator it = dependent_tasks.begin();
             it != dependent_tasks.end(); it++)
       {
         (*it)->wait_events.insert(wait_event);
@@ -900,7 +1043,7 @@ namespace RegionRuntime {
           if (it->second->mapped)
             dep.desc->wait_events.insert(it->second->termination_event);
           else
-            it->second->dependent_tasks.push_back(dep.desc);
+            it->second->dependent_tasks.insert(dep.desc);
         }
       }
 
@@ -1230,6 +1373,15 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       size_t result = 0;
+      result += sizeof(PartitionID);
+      result += sizeof(unsigned);
+      result += sizeof(bool);
+      result += sizeof(size_t); // Num subtrees
+      for (std::map<LogicalHandle,RegionNode*>::const_iterator it = children.begin();
+            it != children.end(); it++)
+      {
+        result += (it->second->compute_region_tree_size());
+      }
       return result;
     }
 
@@ -1237,7 +1389,18 @@ namespace RegionRuntime {
     void PartitionNode::pack_region_tree(char *&buffer) const
     //--------------------------------------------------------------------------------------------
     {
-
+      *((PartitionID*)buffer) = pid;
+      buffer += sizeof(PartitionID);
+      *((unsigned*)buffer) = depth;
+      buffer += sizeof(unsigned);
+      *((bool*)buffer) = disjoint;
+      buffer += sizeof(bool);
+      *((size_t*)buffer) = children.size();
+      for (std::map<LogicalHandle,RegionNode*>::const_iterator it = children.begin();
+            it != children.end(); it++)
+      {
+        it->second->pack_region_tree(buffer);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1246,7 +1409,29 @@ namespace RegionRuntime {
                                 std::map<PartitionID,PartitionNode*> *partition_nodes)
     //--------------------------------------------------------------------------------------------
     {
-      return NULL;
+      PartitionID pid = *((const PartitionID*)buffer);
+      buffer += sizeof(PartitionID);
+      unsigned dep = *((const unsigned*)buffer);
+      buffer += sizeof(unsigned);
+      bool dis = *((const bool*)buffer);
+      buffer += sizeof(bool);
+      size_t num_subregions = *((const size_t*)buffer);
+      buffer += sizeof(size_t);
+
+      // Make the partition node
+      PartitionNode *result = new PartitionNode(pid, dep, parent, dis, false/*add*/, ctx);
+
+      // Add it to the list of partitions
+      partition_nodes->insert(std::pair<PartitionID,PartitionNode*>(pid, result));
+
+      // Unpack the sub trees and add them to the partition
+      for (unsigned idx = 0; idx < num_subregions; idx++)
+      {
+        RegionNode *node = RegionNode::unpack_region_tree(buffer, result, ctx, 
+                                                  region_nodes, partition_nodes);
+        result->add_region(node);
+      }
+      return result;
     }
 
     /////////////////////////////////////////////////////////////
@@ -1938,7 +2123,7 @@ namespace RegionRuntime {
         // Local case
         // Notify each of the dependent tasks with the event that they need to
         // wait on before executing
-        for (std::vector<TaskDescription*>::iterator it = desc->dependent_tasks.begin();
+        for (std::set<TaskDescription*>::iterator it = desc->dependent_tasks.begin();
               it != desc->dependent_tasks.end(); it++)
         {
           (*it)->wait_events.insert(desc->termination_event);
