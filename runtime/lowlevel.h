@@ -25,10 +25,25 @@ namespace RegionRuntime {
 
     class Event {
     public:
-      typedef unsigned long long ID;
-      ID id;
+      typedef unsigned id_t;
+      typedef unsigned gen_t;
+#if 0
+      typedef unsigned long long fused_t;
+      union {
+	fused_t fused;
+	struct {
+	  id_t id;
+	  gen_t gen;
+	}
+      };
+#endif
+      id_t id;
+      gen_t gen;
       bool operator<(const Event& rhs) const { return id < rhs.id; }
       bool operator==(const Event& rhs) const { return id == rhs.id; }
+
+      class Impl;
+      Impl *impl(void) const;
 
       static const Event NO_EVENT;
 
@@ -56,10 +71,17 @@ namespace RegionRuntime {
 
     class Lock {
     public:
-      typedef unsigned ID;
-      ID id;
+      typedef unsigned id_t;
+      id_t id;
       bool operator<(const Lock& rhs) const { return id < rhs.id; }
       bool operator==(const Lock& rhs) const { return id == rhs.id; }
+
+      class Impl;
+      Impl *impl(void) const;
+
+      static const Lock NO_LOCK;
+
+      bool exists(void) const { return id != 0; }
 
       // requests ownership (either exclusive or shared) of the lock with a 
       //   specified mode - returns an event that will trigger when the lock
@@ -68,8 +90,6 @@ namespace RegionRuntime {
       // releases a held lock - release can be deferred until an event triggers
       void unlock(Event wait_on = Event::NO_EVENT) const;
 
-      bool exists(void) const;
-
       // Create a new lock, destroy an existing lock
       static Lock create_lock(void);
       void destroy_lock();
@@ -77,10 +97,13 @@ namespace RegionRuntime {
 
     class Processor {
     public:
-      typedef unsigned ID;
-      ID id;
+      typedef unsigned id_t;
+      id_t id;
       bool operator<(const Processor& rhs) const { return id < rhs.id; }
       bool operator==(const Processor& rhs) const { return id == rhs.id; }
+
+      class Impl;
+      Impl *impl(void) const;
 
       static const Processor NO_PROC;
 
@@ -112,20 +135,32 @@ namespace RegionRuntime {
 
     class Memory {
     public:
-      typedef unsigned ID;
-      ID id;
+      typedef unsigned id_t;
+      id_t id;
       bool operator<(const Memory &rhs) const { return id < rhs.id; }
       bool operator==(const Memory &rhs) const { return id == rhs.id; }
+
+      class Impl;
+      Impl *impl(void) const;
+
+      static const Memory NO_MEMORY;
+
       bool exists(void) const;
     };
 
     class ElementMask {
     public:
+      ElementMask(void);
       ElementMask(int num_elements, int first_element = 0);
       ElementMask(const ElementMask &copy_from, int num_elements = -1, int first_element = 0);
 
-      void enable(int first_element, int count = 1);
-      void disable(int first_element, int count = 1);
+      void init(int _first_element, int _num_elements, Memory _memory, int _offset);
+
+      void enable(int start, int count = 1);
+      void disable(int start, int count = 1);
+
+      int find_enabled(int count = 1);
+      int find_disabled(int count = 1);
       
       // is_set?
       // union/intersect/subtract?
@@ -138,15 +173,26 @@ namespace RegionRuntime {
       void set_raw(const void *data);
 
     protected:
+      int first_element;
+      int num_elements;
+      Memory memory;
+      int offset;
       void *raw_data;
     };
 
     class RegionMetaDataUntyped {
     public:
-      typedef unsigned ID;
-      ID id;
+      typedef unsigned id_t;
+      id_t id;
       bool operator<(const RegionMetaDataUntyped &rhs) const { return id < rhs.id; }
       bool operator==(const RegionMetaDataUntyped &rhs) const { return id == rhs.id; }
+
+      class Impl;
+      Impl *impl(void) const;
+
+      static const RegionMetaDataUntyped NO_REGION;
+
+      bool exists(void) const { return id != 0; }
 
       static RegionMetaDataUntyped create_region_untyped(Memory memory, size_t num_elmts, size_t elmt_size);
       static RegionMetaDataUntyped create_region_untyped(Memory memory, RegionMetaDataUntyped parent, const ElementMask &mask);
@@ -158,10 +204,6 @@ namespace RegionRuntime {
 
       // get the lock that covers this metadata
       Lock get_lock(void) const;
-
-      static const RegionMetaDataUntyped NO_REGION;
-
-      bool exists(void) const { return id != 0; }
 
       // it's ok to call these without holding the lock if you don't mind
       //  stale data - data will be up to date if you hold the lock
@@ -177,25 +219,24 @@ namespace RegionRuntime {
 
     class RegionAllocatorUntyped {
     public:
-      typedef unsigned ID;
-      ID id;
+      typedef unsigned id_t;
+      id_t id;
       bool operator<(const RegionAllocatorUntyped &rhs) const { return id < rhs.id; }
       bool operator==(const RegionAllocatorUntyped &rhs) const { return id == rhs.id; }
 
-      // get the lock that covers this allocator
-      Lock get_lock(void);
+      class Impl;
+      Impl *impl(void) const;
 
       static const RegionAllocatorUntyped NO_ALLOC;
 
       bool exists(void) const { return id != 0; }
 
-    protected:
-      // can't have virtual methods here, so we're returning function pointers
-      typedef unsigned (*AllocFuncPtr)(RegionAllocatorUntyped region, size_t num_elmts);
-      typedef void (*FreeFuncPtr)(RegionAllocatorUntyped region, unsigned ptr);
+      // get the lock that covers this allocator
+      Lock get_lock(void);
 
-      AllocFuncPtr alloc_fn_untyped(void) const;
-      FreeFuncPtr free_fn_untyped(void) const;
+    protected:
+      unsigned alloc_untyped(unsigned count = 1) const;
+      void free_untyped(unsigned ptr, unsigned count = 1) const;
     };
 
     enum AccessorType { AccessorGeneric, AccessorArray };
@@ -267,17 +308,20 @@ namespace RegionRuntime {
 
     class RegionInstanceUntyped {
     public:
-      typedef unsigned ID;
-      ID id;
+      typedef unsigned id_t;
+      id_t id;
       bool operator<(const RegionInstanceUntyped &rhs) const { return id < rhs.id; }
       bool operator==(const RegionInstanceUntyped &rhs) const { return id == rhs.id; }
 
-      // get the lock that covers this instance
-      Lock get_lock(void);
+      class Impl;
+      Impl *impl(void) const;
 
       static const RegionInstanceUntyped NO_INST;
 
       bool exists(void) const { return id != 0; }
+
+      // get the lock that covers this instance
+      Lock get_lock(void);
 
       RegionInstanceAccessorUntyped<AccessorGeneric> get_accessor_untyped(void) const;
 
@@ -349,10 +393,10 @@ namespace RegionRuntime {
       
       ptr_t<T> alloc(void) 
       { 
-	ptr_t<T> ptr = { alloc_fn_untyped()(*this, 1) };
+	ptr_t<T> ptr = { alloc_untyped(1) };
 	return ptr; 
       }
-      void free(ptr_t<T> ptr) { free_fn_untyped()(*this, ptr.value); }
+      void free(ptr_t<T> ptr) { free_untyped(ptr.value); }
     };
 
     template <class T>
@@ -382,7 +426,16 @@ namespace RegionRuntime {
 	      bool cps_style = false, Processor::TaskFuncID init_id = 0);
       ~Machine(void);
 
-      void run(Processor::TaskFuncID task_id = 0);
+      // there are three potentially interesting ways to start the initial
+      // tasks:
+      enum RunStyle {
+	ONE_TASK_ONLY,  // a single task on a single node of the machine
+	ONE_TASK_PER_NODE, // one task running on one proc of each node
+	ONE_TASK_PER_PROC, // a task for every processor in the machine
+      };
+
+      void run(Processor::TaskFuncID task_id = 0, RunStyle style = ONE_TASK_ONLY,
+	       const void *args = 0, size_t arglen = 0);
 
     public:
       const std::set<Memory>&    get_all_memories(void) const { return memories; }
