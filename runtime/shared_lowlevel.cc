@@ -391,6 +391,7 @@ namespace RegionRuntime {
 	assert(sources > 0);
 #endif
 	sources--;
+        bool finished = false;
 	if (sources == 0)
 	{
 #ifdef DEBUG_PRINT
@@ -417,24 +418,30 @@ namespace RegionRuntime {
 		// Reacquire the lock and mark that in_use is false
 		PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
 		in_use = false;
+                finished = true;
 		// Wake up any waiters
                 // don't need to do this if we use the preempt method in wait
 		//PTHREAD_SAFE_CALL(pthread_cond_broadcast(&wait_cond));
 	}
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));	
         // tell the runtime that we're free
-        Runtime::get_runtime()->free_event(this);
+        if (finished)
+          Runtime::get_runtime()->free_event(this);
     }
 
     bool EventImpl::activate(void)
     {
 	bool result = false;
         // Try acquiring the lock, if we don't get it then just move on
+#if 0
         int trythis = pthread_mutex_trylock(&mutex);
         if (trythis == EBUSY)
           return result;
         // Also check for other error codes
 	PTHREAD_SAFE_CALL(trythis);
+#else
+        PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+#endif
 	if (!in_use)
 	{
 		in_use = true;
