@@ -489,6 +489,7 @@ namespace RegionRuntime {
       PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
       UserEvent result; 
       result.id = current.id;
+      result.gen = current.gen;
       PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
       return result;
     }
