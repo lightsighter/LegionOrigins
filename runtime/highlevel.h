@@ -239,6 +239,8 @@ namespace RegionRuntime {
     protected:
       friend class HighLevelRuntime;
       Future(FutureImpl *f) : impl(f) { }
+    public:
+      ~Future() { }
     private:
       FutureImpl *impl;
     };

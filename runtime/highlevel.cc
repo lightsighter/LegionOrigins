@@ -2148,6 +2148,9 @@ namespace RegionRuntime {
       Future f = *((const Future*)args);
       // This will wait until the top level task has finished
       f.get_void_result();
+#ifdef DEBUG_PRINT_HIGH_LEVEL
+      fprintf(stderr,"Computation has terminated, shutting down high level runtime...\n");
+#endif
       // Once this is over, launch a kill task on all the low-level processors
       const std::set<Processor> &all_procs = machine->get_all_processors();
       for (std::set<Processor>::iterator it = all_procs.begin();
