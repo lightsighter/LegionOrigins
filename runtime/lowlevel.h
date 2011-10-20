@@ -156,6 +156,8 @@ namespace RegionRuntime {
 
       void init(int _first_element, int _num_elements, Memory _memory, int _offset);
 
+      int get_num_elmts(void) const { return num_elements; }
+
       void enable(int start, int count = 1);
       void disable(int start, int count = 1);
 
