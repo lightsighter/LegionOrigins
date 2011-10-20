@@ -98,7 +98,7 @@ void hot_potatoer(const void * args, size_t arglen, Processor p)
 
   Lock rlock = potato.region.get_lock();
 
-  printf("Processor %u passing hot potato to processor %u (%d hops left)\n",me.id,proc_ring.neighbor[me].id,potato.hops_left);
+  //printf("Processor %u passing hot potato to processor %u (%d hops left)\n",me.id,proc_ring.neighbor[me].id,potato.hops_left);
   // are we the last hop of the current lap?
   if (potato.hops_left == 0)
     {
@@ -113,6 +113,7 @@ void hot_potatoer(const void * args, size_t arglen, Processor p)
       RegionInstanceAccessor<unsigned,AT> local_acc = local_inst.get_accessor().convert<AT>();
 
       unsigned trips = local_acc.read(potato.lap_count_location);
+      printf("TRIPS: %d %d\n", potato.lap_count_location.value, trips);
       if (trips == 0)
 	{
 	  // Launch the dropper on the next processor
