@@ -168,11 +168,28 @@ namespace RegionRuntime {
       int first_enabled(void) const;
       int last_enabled(void) const;
 
+      class Enumerator {
+      public:
+	Enumerator(const ElementMask& _mask, int _start, int _polarity);
+	~Enumerator(void);
+
+	bool get_next(int &position, int &length);
+
+      protected:
+	const ElementMask& mask;
+	int pos;
+	int polarity;
+      };
+
+      Enumerator *enumerate_enabled(int start = 0) const;
+      Enumerator *enumerate_disabled(int start = 0) const;
+
       size_t raw_size(void) const;
       const void *get_raw(void) const;
       void set_raw(const void *data);
 
     protected:
+      friend class Enumerator;
       int first_element;
       int num_elements;
       Memory memory;

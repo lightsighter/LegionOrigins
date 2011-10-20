@@ -1242,6 +1242,90 @@ namespace RegionRuntime {
       assert(0);
     }
 
+    ElementMask::Enumerator *ElementMask::enumerate_enabled(int start /*= 0*/) const
+    {
+      return new ElementMask::Enumerator(*this, start, 1);
+    }
+
+    ElementMask::Enumerator *ElementMask::enumerate_disabled(int start /*= 0*/) const
+    {
+      return new ElementMask::Enumerator(*this, start, 0);
+    }
+
+    ElementMask::Enumerator::Enumerator(const ElementMask& _mask, int _start, int _polarity)
+      : mask(_mask), pos(_start), polarity(_polarity) {}
+
+    ElementMask::Enumerator::~Enumerator(void) {}
+
+    bool ElementMask::Enumerator::get_next(int &position, int &length)
+    {
+      if(raw_data != 0) {
+	ElementMaskImpl *impl = (ElementMaskImpl *)raw_data;
+
+	// scan until we find a bit set with the right polarity
+	while(pos < mask.num_elements) {
+	  unsigned bit = ((impl->bits[pos >> 5] >> (pos & 0x1f))) & 1;
+	  if(bit != polarity) {
+	    pos++;
+	    continue;
+	  }
+
+	  // ok, found one bit with the right polarity - now see how many
+	  //  we have in a row
+	  position = pos++;
+	  while(pos < mask.num_elements) {
+	    unsigned bit = ((impl->bits[pos >> 5] >> (pos & 0x1f))) & 1;
+	    if(bit == polarity) {
+	      pos++;
+	      continue;
+	    }
+	  }
+	  // we get here either because we found the end of the run or we 
+	  //  hit the end of the mask
+	  length = pos - position;
+	  return true;
+	}
+
+	// if we fall off the end, there's no more ranges to enumerate
+	return false;
+      } else {
+	MemoryImpl *m_impl = mask.memory.impl();
+
+	// scan until we find a bit set with the right polarity
+	while(pos < mask.num_elements) {
+	  unsigned ofs = mask.offset + ((pos >> 5) << 2);
+	  unsigned val;
+	  m_impl->get_bytes(ofs, &val, sizeof(val));
+	  unsigned bit = ((val >> (pos & 0x1f))) & 1;
+	  if(bit != polarity) {
+	    pos++;
+	    continue;
+	  }
+
+	  // ok, found one bit with the right polarity - now see how many
+	  //  we have in a row
+	  position = pos++;
+	  while(pos < mask.num_elements) {
+	    unsigned ofs = mask.offset + ((pos >> 5) << 2);
+	    unsigned val;
+	    m_impl->get_bytes(ofs, &val, sizeof(val));
+	    unsigned bit = ((val >> (pos & 0x1f))) & 1;
+	    if(bit == polarity) {
+	      pos++;
+	      continue;
+	    }
+	  }
+	  // we get here either because we found the end of the run or we 
+	  //  hit the end of the mask
+	  length = pos - position;
+	  return true;
+	}
+
+	// if we fall off the end, there's no more ranges to enumerate
+	return false;
+      }
+    }
+
     ///////////////////////////////////////////////////
     // Region Allocators
 
