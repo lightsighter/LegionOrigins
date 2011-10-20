@@ -121,6 +121,7 @@ namespace RegionRuntime {
       merged_wait_event = Event::NO_EVENT;
       region_nodes = NULL;
       partition_nodes = NULL;
+      parent_task = NULL;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -152,8 +153,9 @@ namespace RegionRuntime {
       remaining_events = 0;
       args = NULL;
       result = NULL;
-      regions.clear();
-      wait_events.clear();
+      arglen = 0;
+      result_size = 0;
+      parent_task = NULL;
       // Regardless of whether we are remote or not, we can always delete the
       // instances that we own
       for (std::vector<InstanceInfo*>::iterator it = instances.begin();
@@ -198,6 +200,10 @@ namespace RegionRuntime {
           delete partition_nodes;
         }
       }
+      regions.clear();
+      wait_events.clear();
+      dependent_tasks.clear();
+      child_tasks.clear();
       pre_copy_ops.clear();
       src_instances.clear();
       dead_instances.clear();
@@ -207,6 +213,10 @@ namespace RegionRuntime {
       region_nodes = NULL;
       partition_nodes = NULL;
       active = false;
+      chosen = false;
+      stealable = false;
+      mapped = false;
+      remote = false;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -393,8 +403,6 @@ namespace RegionRuntime {
         buffer += sizeof(Memory);
       }
 
-      *((size_t*)buffer) = src_instances.size();
-      buffer += sizeof(size_t);
       for (std::vector<InstanceInfo*>::const_iterator it = src_instances.begin();
             it != src_instances.end(); it++)
       {
@@ -424,7 +432,7 @@ namespace RegionRuntime {
       buffer += sizeof(Processor::TaskFuncID);
       size_t num_regions = *((const size_t*)buffer); 
       buffer += sizeof(size_t);
-      regions.reserve(num_regions);
+      regions.resize(num_regions);
       for (unsigned idx = 0; idx < num_regions; idx++)
       {
         regions[idx] = *((const RegionRequirement*)buffer);
@@ -490,9 +498,8 @@ namespace RegionRuntime {
         instances.push_back(info);
       }
       // Unpack the source instance information
-      size_t num_src_instances = *((const size_t*)buffer);
-      buffer += sizeof(size_t);
-      for (unsigned idx = 0; idx < num_src_instances; idx++)
+      // There will be the same number of sources as regions
+      for (unsigned idx = 0; idx < num_regions; idx++)
       {
         InstanceInfo *info = new InstanceInfo();
         info->handle = *((const LogicalHandle*)buffer);
@@ -514,7 +521,8 @@ namespace RegionRuntime {
       for (unsigned idx = 0; idx < num_trees; idx++)
       {
         RegionNode *top = RegionNode::unpack_region_tree(buffer,NULL,local_ctx,
-                                                  region_nodes, partition_nodes);
+                                                  region_nodes, partition_nodes, false/*add*/);
+        region_nodes->insert(std::pair<LogicalHandle,RegionNode*>(top->handle,top));
         root_regions.push_back(top->handle);
       }
     }
@@ -650,7 +658,23 @@ namespace RegionRuntime {
       if (remote)
       {
         // This is a remote task, we need to send the results back to the original processor
-        size_t buffer_size = sizeof(Context) + sizeof(size_t) + result_size;
+        size_t buffer_size = 0;
+        unsigned num_tree_updates = 0;
+        {
+          buffer_size += sizeof(Context);
+          buffer_size += sizeof(size_t); // result size
+          buffer_size += result_size; // size of the actual result
+          buffer_size += sizeof(size_t); // number of created regions
+          buffer_size += (created_regions.size() * sizeof(LogicalHandle));
+          buffer_size += sizeof(size_t); // number of deleted regions
+          buffer_size += (deleted_regions.size() * sizeof(LogicalHandle));
+          buffer_size += sizeof(unsigned); // number of udpates
+          for (std::vector<LogicalHandle>::iterator it = root_regions.begin();
+                it != root_regions.end(); it++)
+          {
+            buffer_size += ((*region_nodes)[*it]->compute_region_tree_update_size(num_tree_updates)); 
+          }
+        }
         void * buffer = malloc(buffer_size);
         char * ptr = (char*)buffer;
         *((Context*)ptr) = orig_ctx;
@@ -659,7 +683,32 @@ namespace RegionRuntime {
         ptr += sizeof(size_t);
         memcpy(ptr,result,result_size);
         ptr += result_size;
-        // TODO: Encode the updates to the region tree here as well
+        // Now encode the updates to the region tree
+        // First encode the created regions and the deleted regions
+        *((size_t*)ptr) = created_regions.size();
+        ptr += sizeof(size_t);
+        for (std::set<LogicalHandle>::iterator it = created_regions.begin();
+              it != created_regions.end(); it++)
+        {
+          *((LogicalHandle*)ptr) = *it;
+          ptr += sizeof(LogicalHandle);
+        }
+        *((size_t*)ptr) = deleted_regions.size();
+        ptr += sizeof(size_t);
+        for (std::set<LogicalHandle>::iterator it = deleted_regions.begin();
+              it != deleted_regions.end(); it++)
+        {
+          *((LogicalHandle*)ptr) = *it;
+          ptr += sizeof(LogicalHandle);
+        }
+        // Now encode the actual tree updates
+        *((unsigned*)ptr) = num_tree_updates;
+        ptr += sizeof(unsigned);
+        for (std::vector<LogicalHandle>::iterator it = root_regions.begin();
+              it != root_regions.end(); it++)
+        {
+          (*region_nodes)[*it]->pack_region_tree_update(ptr);
+        }
 
         // Launch the notify finish on the original processor (no need to wait for anything)
         orig_proc.spawn(NOTIFY_FINISH_ID,buffer,buffer_size);
@@ -669,8 +718,28 @@ namespace RegionRuntime {
       }
       else
       {
-        future->set_result(result,result_size);
+        // If the parent task is not null, update its region tree
+        if (parent_task != NULL)
+        {
+          // Propagate information about created regions and delete regions
+          // The parent task will find other changes
 
+          // All created regions become
+          // new root regions for the parent as well as staying in the set
+          // of created regions
+          for (std::set<LogicalHandle>::iterator it = created_regions.begin();
+                it != created_regions.end(); it++)
+          {
+            parent_task->root_regions.push_back(*it);
+            parent_task->created_regions.insert(*it);
+          }
+
+          // Add all the deleted regions to the parent task's set of deleted regions
+          parent_task->deleted_regions.insert(deleted_regions.begin(),deleted_regions.end());
+        }
+
+        future->set_result(result,result_size);
+        
         // Trigger the event indicating that this task is complete!
         termination_event.trigger();
       }
@@ -740,6 +809,38 @@ namespace RegionRuntime {
       future->set_result(result_ptr,result_size);
 
       // Now unpack any information about changes to the region tree
+      // First get out the information about the created regions
+      size_t num_created_regions = *((const size_t*)ptr);
+      ptr += sizeof(size_t);
+      for (unsigned idx = 0; idx < num_created_regions; idx++)
+      {
+        LogicalHandle handle = *((const LogicalHandle*)ptr);
+        ptr += sizeof(LogicalHandle);
+        create_region(handle);
+      }
+      // Now get information about the deleted regions
+      size_t num_deleted_regions = *((const size_t*)ptr);
+      ptr += sizeof(size_t);
+      for (unsigned idx = 0; idx < num_deleted_regions; idx++)
+      {
+        LogicalHandle handle = *((const LogicalHandle*)ptr);
+        ptr += sizeof(LogicalHandle);
+        remove_region(handle);
+      }
+      // Finally perform the updates to the region tree
+      unsigned num_updates = *((const unsigned*)ptr);
+      ptr += sizeof(unsigned);
+      for (unsigned idx = 0; idx < num_updates; idx++)
+      {
+        // Unpack the logical handle for the parent region of the updated tree
+        LogicalHandle parent_handle = *((const LogicalHandle*)ptr);
+        ptr += sizeof(LogicalHandle);
+        RegionNode *parent_region = (*region_nodes)[parent_handle];
+        // Now upack the region tree
+        PartitionNode *part_node = PartitionNode::unpack_region_tree(ptr,parent_region,
+                                    local_ctx, region_nodes, partition_nodes, true/*add*/);
+        partition_nodes->insert(std::pair<PartitionID,PartitionNode*>(part_node->pid,part_node));
+      }
 
       // Finally trigger the user event indicating that this task is finished!
       termination_event.trigger();
@@ -751,6 +852,9 @@ namespace RegionRuntime {
     {
       RegionNode *node = new RegionNode(handle, 0, NULL, true, local_ctx);
       (*region_nodes)[handle] = node;
+      // Add this to the list of created regions and the list of root regions
+      created_regions.insert(handle);
+      root_regions.push_back(handle);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -772,13 +876,29 @@ namespace RegionRuntime {
         // If this is not a newly made node, add it to the list of deleted regions
         if (!find_it->second->added)
         {
-          deleted_regions.push_back(find_it->second->handle);
+          deleted_regions.insert(find_it->second->handle);
         }
         // Check to see if it has a parent node
         if (find_it->second->parent != NULL)
         {
           // Remove this from the partition
           find_it->second->parent->remove_region(find_it->first);
+        }
+        // Check to see if this is in the top level regions, if so erase it,
+        // do the same for the created regions
+        {
+          std::set<LogicalHandle>::iterator finder = created_regions.find(handle);
+          if (finder != created_regions.end())
+            created_regions.erase(finder);
+          for (std::vector<LogicalHandle>::iterator it = root_regions.begin();
+                it != root_regions.end(); it++)
+          {
+            if (handle == *it)
+            {
+              root_regions.erase(it);
+              break;
+            }
+          }
         }
         delete find_it->second; 
       }
@@ -817,7 +937,7 @@ namespace RegionRuntime {
         // If this is not a newly made node, add it to the list of deleted regions
         if (!find_it->second->added)
         {
-          deleted_regions.push_back(find_it->second->handle);
+          deleted_regions.insert(find_it->second->handle);
         }
         // Remove this from the partition
 #ifdef DEBUG_HIGH_LEVEL
@@ -1198,7 +1318,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     RegionNode* RegionNode::unpack_region_tree(const char *&buffer, PartitionNode *parent, 
                  Context ctx, std::map<LogicalHandle,RegionNode*> *region_nodes,
-                              std::map<PartitionID,PartitionNode*> *partition_nodes)
+                              std::map<PartitionID,PartitionNode*> *partition_nodes, bool add)
     //--------------------------------------------------------------------------------------------
     {
       LogicalHandle handle = *((const LogicalHandle*)buffer);
@@ -1209,17 +1329,46 @@ namespace RegionRuntime {
       buffer += sizeof(size_t);
 
       // Create the node
-      RegionNode *result = new RegionNode(handle, dep, parent, false/*add*/, ctx);
+      RegionNode *result = new RegionNode(handle, dep, parent, add, ctx);
       // Add it to the list of region nodes
       region_nodes->insert(std::pair<LogicalHandle,RegionNode*>(handle,result));
 
       for (unsigned idx = 0; idx < num_parts; idx++)
       {
         PartitionNode *part = PartitionNode::unpack_region_tree(buffer,result,ctx,
-                                                      region_nodes,partition_nodes);
+                                                      region_nodes,partition_nodes, add);
         result->add_partition(part);
       }
       return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    size_t RegionNode::compute_region_tree_update_size(unsigned &num_updates) const
+    //--------------------------------------------------------------------------------------------
+    {
+      // No need to check for added here, all added regions will either be subregions
+      // of a partition or handled by created regions
+      // Check all the partitions
+      size_t result = 0;
+      for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
+            it != partitions.end(); it++)
+      {
+        result += (it->second->compute_region_tree_update_size(num_updates));
+      }
+      return result;
+    }
+    
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::pack_region_tree_update(char *&buffer) const
+    //--------------------------------------------------------------------------------------------
+    {
+      // No need to check for added here, all added regions will either be subregions of
+      // an added partition or handled by created regions
+      for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
+            it != partitions.end(); it++)
+      {
+        it->second->pack_region_tree_update(buffer);
+      }
     }
 
     /////////////////////////////////////////////////////////////
@@ -1406,7 +1555,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     PartitionNode* PartitionNode::unpack_region_tree(const char *&buffer, RegionNode *parent,
                     Context ctx, std::map<LogicalHandle,RegionNode*> *region_nodes,
-                                std::map<PartitionID,PartitionNode*> *partition_nodes)
+                                std::map<PartitionID,PartitionNode*> *partition_nodes, bool add)
     //--------------------------------------------------------------------------------------------
     {
       PartitionID pid = *((const PartitionID*)buffer);
@@ -1419,7 +1568,7 @@ namespace RegionRuntime {
       buffer += sizeof(size_t);
 
       // Make the partition node
-      PartitionNode *result = new PartitionNode(pid, dep, parent, dis, false/*add*/, ctx);
+      PartitionNode *result = new PartitionNode(pid, dep, parent, dis, add, ctx);
 
       // Add it to the list of partitions
       partition_nodes->insert(std::pair<PartitionID,PartitionNode*>(pid, result));
@@ -1428,10 +1577,60 @@ namespace RegionRuntime {
       for (unsigned idx = 0; idx < num_subregions; idx++)
       {
         RegionNode *node = RegionNode::unpack_region_tree(buffer, result, ctx, 
-                                                  region_nodes, partition_nodes);
+                                                  region_nodes, partition_nodes, add);
         result->add_region(node);
       }
       return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    size_t PartitionNode::compute_region_tree_update_size(unsigned &num_updates) const
+    //--------------------------------------------------------------------------------------------
+    {
+      size_t result = 0;
+      // Check to see if this partition is new
+      if (added)
+      {
+        // Found a new update
+        num_updates++;
+        // include adding the region handle for the parent region
+        result += sizeof(LogicalHandle);
+        // Now figure out how much space it takes to pack up the entire subtree
+        result += this->compute_region_tree_size();
+      }
+      else
+      {
+        // Continue the traversal 
+        for (std::map<LogicalHandle,RegionNode*>::const_iterator it = children.begin();
+              it != children.end(); it++)
+        {
+          result += (it->second->compute_region_tree_update_size(num_updates));
+        }
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void PartitionNode::pack_region_tree_update(char *&buffer) const
+    //--------------------------------------------------------------------------------------------
+    {
+      if (added)
+      {
+        // pack the handle of the parent region
+        *((LogicalHandle*)buffer) = parent->handle;
+        buffer += sizeof(LogicalHandle);
+        // now pack up this whole partition and its subtree
+        this->pack_region_tree(buffer);
+      }
+      else
+      {
+        // Continue the traversal
+        for (std::map<LogicalHandle,RegionNode*>::const_iterator it = children.begin();
+              it != children.end(); it++)
+        {
+          it->second->pack_region_tree_update(buffer);
+        }
+      }
     }
 
     /////////////////////////////////////////////////////////////
@@ -1484,6 +1683,7 @@ namespace RegionRuntime {
         desc->orig_proc = local_proc;
         desc->orig_ctx = desc->local_ctx;
         desc->remote = false;
+        desc->parent_task = NULL;
 
         // Put this task in the ready queue
         ready_queue.push_back(desc);
@@ -1661,6 +1861,7 @@ namespace RegionRuntime {
       assert(ctx < all_tasks.size());
 #endif
       all_tasks[ctx]->register_child_task(desc);
+      desc->parent_task = all_tasks[ctx];
       
       // Figure out where to put this task
       if (desc->remaining_events == 0)
@@ -1751,7 +1952,7 @@ namespace RegionRuntime {
     {
       const char *buffer = (const char*)args;
       // First get the number of tasks to process
-      int num_tasks = *((int*)buffer);
+      int num_tasks = *((const int*)buffer);
       buffer += sizeof(int);
       // Unpack each of the tasks
       for (int i=0; i<num_tasks; i++)
@@ -2010,6 +2211,8 @@ namespace RegionRuntime {
             task->pack_task(ptr);
             // Send the task to the target processor, no need to wait on anything
             target.spawn(ENQUEUE_TASK_ID,buffer,buffer_size);
+            // Clean up our mess
+            free(buffer);
           }
         }
       }

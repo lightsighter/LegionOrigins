@@ -146,6 +146,7 @@ namespace RegionRuntime {
       Context orig_ctx; // The local context on the original processor if remote
       const Context local_ctx; // The context for this task
       const Processor local_proc; // The local processor this task is on
+      TaskDescription *parent_task; // Only valid when local
     protected:
       // Information to send back to the original processor
       bool remote; // Send back an event if true
@@ -169,7 +170,9 @@ namespace RegionRuntime {
       std::vector<InstanceInfo*> dead_instances; // Computed after move 
       std::vector<PhysicalRegion> physical_regions; // dummy
       std::vector<LogicalHandle> root_regions; // The root regions for this task
-      std::vector<LogicalHandle> deleted_regions; // The regions deleted in this task and children
+    private:
+      std::set<LogicalHandle> created_regions; // New top level regions
+      std::set<LogicalHandle> deleted_regions; // The regions deleted in this task and children
     private:
       std::map<LogicalHandle,RegionNode*> *region_nodes; // (immov) (pointers can be aliased)
       std::map<PartitionID,PartitionNode*> *partition_nodes; // (immov) (pointers can be aliased)
@@ -416,7 +419,10 @@ namespace RegionRuntime {
       void pack_region_tree(char *&buffer) const;
       static RegionNode* unpack_region_tree(const char *&buffer, PartitionNode *parent,
               Context ctx, std::map<LogicalHandle,RegionNode*> *region_nodes,
-                          std::map<PartitionID,PartitionNode*> *partition_nodes);
+                          std::map<PartitionID,PartitionNode*> *partition_nodes, bool add);
+      // Functions for packing and unpacking updates to the region tree
+      size_t compute_region_tree_update_size(unsigned &num_updates) const;
+      void pack_region_tree_update(char *&buffer) const;
 
     protected:
       const LogicalHandle handle;
@@ -456,7 +462,10 @@ namespace RegionRuntime {
       void pack_region_tree(char *&buffer) const;
       static PartitionNode* unpack_region_tree(const char *&buffer, RegionNode *parent,
               Context ctx, std::map<LogicalHandle,RegionNode*> *region_nodes,
-                          std::map<PartitionID,PartitionNode*> *partition_nodes);
+                          std::map<PartitionID,PartitionNode*> *partition_nodes, bool add);
+      // Functions for packing and unpacking updates to the region tree
+      size_t compute_region_tree_update_size(unsigned &num_updates) const;
+      void pack_region_tree_update(char *&buffer) const;
 
     protected:
       const PartitionID pid;
