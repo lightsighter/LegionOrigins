@@ -906,7 +906,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void TaskDescription::create_subregion(LogicalHandle handle, PartitionID parent)
+    void TaskDescription::create_subregion(LogicalHandle handle, PartitionID parent, Color c)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -914,12 +914,13 @@ namespace RegionRuntime {
 #endif
       PartitionNode *par_node = (*partition_nodes)[parent];
       RegionNode *node = new RegionNode(handle, par_node->depth+1, par_node, true, local_ctx);
-      (*partition_nodes)[parent]->add_region(node);
+      (*partition_nodes)[parent]->add_region(node, c);
       (*region_nodes)[handle] = node;
     }
 
     //--------------------------------------------------------------------------------------------
-    void TaskDescription::remove_subregion(LogicalHandle handle, PartitionID parent, bool recursive)
+    void TaskDescription::remove_subregion(LogicalHandle handle, PartitionID parent, 
+                                            bool recursive)
     //--------------------------------------------------------------------------------------------
     {
       std::map<LogicalHandle,RegionNode*>::iterator find_it = region_nodes->find(handle);
@@ -984,6 +985,16 @@ namespace RegionRuntime {
         delete find_it->second;
       }
       partition_nodes->erase(find_it); 
+    }
+
+    //--------------------------------------------------------------------------------------------
+    LogicalHandle TaskDescription::get_subregion(PartitionID pid, Color c)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(partition_nodes->find(pid) != partition_nodes->end());
+#endif
+      return (*partition_nodes)[pid]->get_subregion(c);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1397,13 +1408,15 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void PartitionNode::add_region(RegionNode *node)
+    void PartitionNode::add_region(RegionNode *node, Color c)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(children.find(node->handle) == children.end());
+      assert(color_map.find(c) == color_map.end());
 #endif
       children[node->handle] = node;
+      color_map[c] = node->handle;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1415,6 +1428,16 @@ namespace RegionRuntime {
       assert(find_it != children.end());
 #endif
       children.erase(find_it); 
+    }
+
+    //--------------------------------------------------------------------------------------------
+    LogicalHandle PartitionNode::get_subregion(Color c)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(color_map.find(c) != color_map.end());
+#endif
+      return color_map[c];
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1529,6 +1552,7 @@ namespace RegionRuntime {
       for (std::map<LogicalHandle,RegionNode*>::const_iterator it = children.begin();
             it != children.end(); it++)
       {
+        result += sizeof(Color);
         result += (it->second->compute_region_tree_size());
       }
       return result;
@@ -1545,10 +1569,17 @@ namespace RegionRuntime {
       *((bool*)buffer) = disjoint;
       buffer += sizeof(bool);
       *((size_t*)buffer) = children.size();
-      for (std::map<LogicalHandle,RegionNode*>::const_iterator it = children.begin();
-            it != children.end(); it++)
+#ifdef DEBUG_HIGH_LEVEL
+      assert(color_map.size() == children.size());
+#endif
+      for (std::map<Color,LogicalHandle>::const_iterator it = color_map.begin();
+            it != color_map.end(); it++)
       {
-        it->second->pack_region_tree(buffer);
+        // Pack the color
+        *((Color*)buffer) = it->first;
+        buffer += sizeof(Color);
+        std::map<LogicalHandle,RegionNode*>::const_iterator finder = children.find(it->second);
+        finder->second->pack_region_tree(buffer);
       }
     }
 
@@ -1576,9 +1607,12 @@ namespace RegionRuntime {
       // Unpack the sub trees and add them to the partition
       for (unsigned idx = 0; idx < num_subregions; idx++)
       {
+        // Unapck the color
+        Color c = *((const Color*)buffer);
+        buffer += sizeof(Color);
         RegionNode *node = RegionNode::unpack_region_tree(buffer, result, ctx, 
                                                   region_nodes, partition_nodes, add);
-        result->add_region(node);
+        result->add_region(node, c);
       }
       return result;
     }
