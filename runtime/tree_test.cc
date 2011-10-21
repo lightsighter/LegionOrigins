@@ -13,7 +13,8 @@ using namespace RegionRuntime::HighLevel;
 #define TOP_LEVEL_TASK_ID   TASK_ID_REGION_MAIN 
 #define LAUNCH_TASK_ID      (TASK_ID_AVAILABLE+0)
 
-void top_level_task(const void *args, size_t arglen, const std::vector<PhysicalRegion> &regions,
+template<AccessorType AT>
+void top_level_task(const void *args, size_t arglen, const std::vector<PhysicalRegion<AT> > &regions,
                     Context ctx, HighLevelRuntime *runtime)
 {
   printf("Running top level task\n");
@@ -45,7 +46,8 @@ void top_level_task(const void *args, size_t arglen, const std::vector<PhysicalR
   printf("SUCCESS!\n");
 }
 
-unsigned launch_tasks(const void *args, size_t arglen, const std::vector<PhysicalRegion> &regions,
+template<AccessorType AT>
+unsigned launch_tasks(const void *args, size_t arglen, const std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
   assert(arglen == (2*sizeof(unsigned)));
@@ -118,8 +120,10 @@ int main(int argc, char **argv)
 {
   Processor::TaskIDTable task_table;  
   task_table[TASK_ID_INIT_MAPPERS] = init_mapper_wrapper<create_mappers>;
-  task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task>;
-  task_table[LAUNCH_TASK_ID] = high_level_task_wrapper<unsigned,launch_tasks>;
+  task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
+  task_table[LAUNCH_TASK_ID] = high_level_task_wrapper<unsigned,launch_tasks<AccessorGeneric> >;
+  //task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric>,top_level_task<AccessorArray> >;
+  //task_table[LAUNCH_TASK_ID] = high_level_task_wrapper<unsigned,launch_tasks<AccessorGeneric>,launch_tasks<AccessorArray> >;
   HighLevelRuntime::register_runtime_tasks(task_table);
 
   // Initialize the machine
