@@ -164,7 +164,7 @@ namespace RegionRuntime {
       int find_enabled(int count = 1);
       int find_disabled(int count = 1);
       
-      // is_set?
+      bool is_set(int ptr) const;
       // union/intersect/subtract?
 
       int first_enabled(void) const;
@@ -267,6 +267,10 @@ namespace RegionRuntime {
       explicit RegionInstanceAccessorUntyped(void *_internal_data)
 	: internal_data(_internal_data) {}
 
+      // Need copy constructors so we can move things around
+      RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorGeneric> &old)
+      { internal_data = old.internal_data; }
+
       void *internal_data;
 
       void get_untyped(unsigned ptr_value, void *dst, size_t size) const;
@@ -291,6 +295,10 @@ namespace RegionRuntime {
     public:
       explicit RegionInstanceAccessorUntyped(void *_array_base)
 	: array_base(_array_base) {}
+
+      // Need copy constructors so we can move things around
+      RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorArray> &old)
+      { array_base = old.array_base; }
 
       void *array_base;
 
