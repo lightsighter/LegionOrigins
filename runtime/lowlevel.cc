@@ -54,7 +54,12 @@ namespace RegionRuntime {
     // for each of the ID-based runtime objects, we're going to have an
     //  implementation class and a table to look them up in
     struct Node {
-      gasnet_seginfo_t seginfo;
+      Node(void)
+      {
+	gasnet_hsl_init(&mutex);
+      }
+
+      gasnet_hsl_t mutex;  // used to cover resizing activities on vectors below
       std::vector<Event::Impl> events;
       std::vector<Lock::Impl> locks;
       std::vector<Memory::Impl *> memories;
@@ -153,8 +158,11 @@ namespace RegionRuntime {
       SPAWN_TASK_MSGID,
       LOCK_REQUEST_MSGID,
       LOCK_RELEASE_MSGID,
+      LOCK_GRANT_MSGID,
       EVENT_SUBSCRIBE_MSGID,
       EVENT_TRIGGER_MSGID,
+      REMOTE_MALLOC_MSGID,
+      REMOTE_MALLOC_RPLID,
     };
 
     /*static*/ Runtime *Runtime::runtime = 0;
@@ -206,34 +214,46 @@ namespace RegionRuntime {
       void *local_data;
       size_t local_data_size;
 
-      struct LockRequestArgs {
-	gasnet_node_t node;
-	Lock lock;
-	unsigned mode;
-      };
-
-      static void handle_lock_request(LockRequestArgs args);
-
-      typedef ActiveMessageShortNoReply<LOCK_REQUEST_MSGID, 
-					LockRequestArgs, 
-					handle_lock_request> LockRequestMessage;
-
-      struct LockReleaseArgs {
-	gasnet_node_t node;
-	Lock lock;
-      };
-
-      static void handle_lock_release(LockReleaseArgs args);
-
-      typedef ActiveMessageShortNoReply<LOCK_RELEASE_MSGID,
-					LockReleaseArgs,
-					handle_lock_release> LockReleaseMessage;
-
       Event lock(unsigned new_mode, bool exclusive,
 		 Event after_lock = Event::NO_EVENT);
 
       void unlock(void);
     };
+
+    struct LockRequestArgs {
+      gasnet_node_t node;
+      Lock lock;
+      unsigned mode;
+    };
+
+    void handle_lock_request(LockRequestArgs args);
+
+    typedef ActiveMessageShortNoReply<LOCK_REQUEST_MSGID, 
+				      LockRequestArgs, 
+				      handle_lock_request> LockRequestMessage;
+
+    struct LockReleaseArgs {
+      gasnet_node_t node;
+      Lock lock;
+    };
+    
+    void handle_lock_release(LockReleaseArgs args);
+
+    typedef ActiveMessageShortNoReply<LOCK_RELEASE_MSGID,
+				      LockReleaseArgs,
+				      handle_lock_release> LockReleaseMessage;
+
+    struct LockGrantArgs {
+      Lock lock;
+      unsigned mode;
+      uint64_t remote_waiter_mask;
+    };
+
+    void handle_lock_grant(LockGrantArgs args, const void *data, size_t datalen);
+
+    typedef ActiveMessageMediumNoReply<LOCK_GRANT_MSGID,
+				       LockGrantArgs,
+				       handle_lock_grant> LockGrantMessage;
 
     class RegionMetaDataUntyped::Impl {
     public:
@@ -360,7 +380,7 @@ namespace RegionRuntime {
       Event merge_events(const std::set<Event>& wait_for);
 
       // record that the event has triggered and notify anybody who cares
-      void trigger(void);
+      void trigger(Event::gen_t gen_triggered);
 
       class EventWaiter {
       public:
@@ -397,7 +417,8 @@ namespace RegionRuntime {
 
     void handle_event_trigger(Event event)
     {
-      assert(0);
+      printf("Remote trigger of event %x/%d!\n", event.id, event.gen);
+      event.impl()->trigger(event.gen);
     }
 
     typedef ActiveMessageShortNoReply<EVENT_TRIGGER_MSGID,
@@ -440,7 +461,7 @@ namespace RegionRuntime {
 
     void UserEvent::trigger(void) const
     {
-      impl()->trigger();
+      impl()->trigger(gen);
       //Runtime::get_runtime()->get_event_impl(*this)->trigger();
     }
 
@@ -453,6 +474,10 @@ namespace RegionRuntime {
 
     /*static*/ Event Event::Impl::create_event(void)
     {
+      // TODO: figure out if it's safe to iterate over a vector that is
+      //  being resized?
+      AutoHSLLock a(Runtime::runtime->nodes[gasnet_mynode()].mutex);
+
       std::vector<Event::Impl>& events = Runtime::runtime->nodes[gasnet_mynode()].events;
 
       // try to find an event we can reuse
@@ -469,6 +494,7 @@ namespace RegionRuntime {
 	  (*it).in_use = true;
 	  Event ev = (*it).me;
 	  ev.gen = (*it).generation + 1;
+	  printf("REUSE EVENT %x/%d\n", ev.id, ev.gen);
 	  return ev;
 	}
       }
@@ -479,7 +505,9 @@ namespace RegionRuntime {
       events.resize(index + 1);
       Event ev = ID(ID::ID_EVENT, gasnet_mynode(), index).convert<Event>();
       events[index].init(ev, gasnet_mynode());
+      events[index].in_use = true;
       ev.gen = 1; // waiting for first generation of this new event
+      printf("NEW EVENT %x/%d\n", ev.id, ev.gen);
       return ev;
     }
 
@@ -522,9 +550,51 @@ namespace RegionRuntime {
       assert(0);
     }
     
-    void Event::Impl::trigger(void)
+    void Event::Impl::trigger(Event::gen_t gen_triggered)
     {
-      assert(0);
+      printf("TRIGGER %x/%d\n", me.id, gen_triggered);
+      std::deque<EventWaiter *> to_wake;
+      {
+	AutoHSLLock a(mutex);
+
+	assert((generation + 1) == gen_triggered);
+	assert(gen_triggered > generation);
+
+	std::map<Event::gen_t, std::vector<EventWaiter *> >::iterator it = local_waiters.begin();
+	while((it != local_waiters.end()) && (it->first <= gen_triggered)) {
+	  to_wake.insert(to_wake.end(), it->second.begin(), it->second.end());
+	  local_waiters.erase(it);
+	  it = local_waiters.begin();
+	}
+
+	// TODO: notify remote waiters and/or event's actual owner
+	if(owner == gasnet_mynode()) {
+	  // send notifications to every other node that has subscribed
+	  Event ev = me;
+	  ev.gen = gen_triggered;
+	  for(int node = 0; remote_waiters != 0; node++, remote_waiters >>= 1)
+	    if(remote_waiters & 1)
+	      EventTriggerMessage::request(node, ev);
+	} else {
+	  // if we're not the owner, we just send to the owner and let him
+	  //  do the broadcast
+	  assert(remote_waiters == 0);
+
+	  Event ev = me;
+	  ev.gen = gen_triggered;
+	  EventTriggerMessage::request(owner, ev);
+	}
+
+	generation = gen_triggered;
+	in_use = false;
+      }
+
+      // now that we've let go of the lock, notify all the waiters who wanted
+      //  this event generation (or an older one)
+      for(std::deque<EventWaiter *>::iterator it = to_wake.begin();
+	  it != to_wake.end();
+	  it++)
+	(*it)->event_triggered();
     }
 
     ///////////////////////////////////////////////////
@@ -558,12 +628,50 @@ namespace RegionRuntime {
       owner = _init_owner;
     }
 
-    /*static*/ void Lock::Impl::handle_lock_request(LockRequestArgs args)
+    /*static*/ void /*Lock::Impl::*/handle_lock_request(LockRequestArgs args)
+    {
+      Lock::Impl *impl = args.lock.impl();
+
+      {
+	AutoHSLLock a(impl->mutex);
+
+	// case 1: we don't even own the lock any more - pass the request on
+	//  to whoever we think the owner is
+	if(impl->owner != gasnet_mynode()) {
+	  // can reuse the args we were given
+	  LockRequestMessage::request(impl->owner, args);
+	  return;
+	}
+
+	// case 2: we're the owner, and nobody is holding the lock, so grant
+	//  it to the (original) requestor
+	if((impl->count == 0) && (impl->remote_sharer_mask == 0)) {
+	  assert(impl->remote_waiter_mask == 0);
+
+	  LockGrantArgs g_args;
+	  g_args.lock = args.lock;
+	  g_args.mode = 0; // always give it exclusively for now
+	  g_args.remote_waiter_mask = impl->remote_waiter_mask;
+	  LockGrantMessage::request(args.node, g_args,
+				    impl->local_data, impl->local_data_size);
+
+	  impl->owner = args.node;
+	  return;
+	}
+
+	// case 3: we're the owner, but we can't grant the lock right now -
+	//  just set a bit saying that the node is waiting and get back to
+	//  work
+	impl->remote_waiter_mask |= (1ULL << args.node);
+      }
+    }
+
+    /*static*/ void /*Lock::Impl::*/handle_lock_release(LockReleaseArgs args)
     {
       assert(0);
     }
 
-    /*static*/ void Lock::Impl::handle_lock_release(LockReleaseArgs args)
+    void handle_lock_grant(LockGrantArgs args, const void *data, size_t datalen)
     {
       assert(0);
     }
@@ -614,7 +722,7 @@ namespace RegionRuntime {
 
       // if we got the lock, trigger an event if we're given one
       if(got_lock) {
-	if(after_lock.exists()) after_lock.impl()->trigger();
+	if(after_lock.exists()) after_lock.impl()->trigger(after_lock.gen);
 	return after_lock;
       }
 
@@ -628,64 +736,70 @@ namespace RegionRuntime {
 
     void Lock::Impl::unlock(void)
     {
-      AutoHSLLock a(mutex); // hold mutex on lock for entire function
+      // make a list of events that we be woken - can't do it while holding the
+      //  lock's mutex (because the event we trigger might try to take the lock)
+      std::deque<Event> to_wake;
+      {
+	AutoHSLLock a(mutex); // hold mutex on lock for entire function
 
-      assert(count > 0);
+	assert(count > 0);
 
-      // if this isn't the last holder of the lock, just decrement count
-      //  and return
-      count--;
-      if(count > 0) return;
+	// if this isn't the last holder of the lock, just decrement count
+	//  and return
+	count--;
+	if(count > 0) return;
 
-      // case 1: if we were sharing somebody else's lock, tell them we're
-      //  done
-      if(owner != gasnet_mynode()) {
-	assert(mode != MODE_EXCL);
-	mode = 0;
-	LockReleaseArgs args;
-	args.node = gasnet_mynode();
-	args.lock = me;
-	LockReleaseMessage::request(owner, args);
-	return;
-      }
-
-      // case 2: we own the lock, so we can give it to another waiter
-      //  (local or remote)
-      if(local_waiters.size() > 0) {
-	// favor the local waiters
-	
-	// further favor exclusive waiters
-	if(local_waiters.find(MODE_EXCL) != local_waiters.end()) {
-	  std::deque<Event>& excl_waiters = local_waiters[MODE_EXCL];
-	  Event waiter = excl_waiters.front();
-	  excl_waiters.pop_front();
-	  
-	  // if the set of exclusive waiters is empty, delete it
-	  if(excl_waiters.size() == 0)
-	    local_waiters.erase(MODE_EXCL);
-	  
-	  mode = MODE_EXCL;
-	  count = 1;
-	  waiter.impl()->trigger();
-	} else {
-	  // pull a whole list of waiters that want to share with the same mode
-	  std::map<unsigned, std::deque<Event> >::iterator it = local_waiters.begin();
-	  std::pair<unsigned, std::deque<Event> > to_wake = *it;
-	  local_waiters.erase(it);
-	  
-	  mode = to_wake.first;
-	  count = to_wake.second.size();
-	  for(std::deque<Event>::iterator it2 = to_wake.second.begin();
-	      it2 != to_wake.second.end();
-	      it2++)
-	    (*it2).impl()->trigger();
-	  
-	  // TODO: can we share with any other nodes?
+	// case 1: if we were sharing somebody else's lock, tell them we're
+	//  done
+	if(owner != gasnet_mynode()) {
+	  assert(mode != MODE_EXCL);
+	  mode = 0;
+	  LockReleaseArgs args;
+	  args.node = gasnet_mynode();
+	  args.lock = me;
+	  LockReleaseMessage::request(owner, args);
+	  return;
 	}
-      } else if(remote_waiter_mask != 0) {
-	// nobody local wants it, but another node does
-	assert(0);
+
+	// case 2: we own the lock, so we can give it to another waiter
+	//  (local or remote)
+	if(local_waiters.size() > 0) {
+	  // favor the local waiters
+	
+	  // further favor exclusive waiters
+	  if(local_waiters.find(MODE_EXCL) != local_waiters.end()) {
+	    std::deque<Event>& excl_waiters = local_waiters[MODE_EXCL];
+	    to_wake.push_back(excl_waiters.front());
+	    excl_waiters.pop_front();
+	  
+	    // if the set of exclusive waiters is empty, delete it
+	    if(excl_waiters.size() == 0)
+	      local_waiters.erase(MODE_EXCL);
+	  
+	    mode = MODE_EXCL;
+	    count = 1;
+	  } else {
+	    // pull a whole list of waiters that want to share with the same mode
+	    std::map<unsigned, std::deque<Event> >::iterator it = local_waiters.begin();
+	  
+	    mode = it->first;
+	    count = it->second.size();
+
+	    // grab the list of events wanting to share the lock
+	    to_wake.swap(it->second);
+	  
+	    // TODO: can we share with any other nodes?
+	  }
+	} else if(remote_waiter_mask != 0) {
+	  // nobody local wants it, but another node does
+	  assert(0);
+	}
       }
+
+      for(std::deque<Event>::iterator it = to_wake.begin();
+	  it != to_wake.end();
+	  it++)
+	(*it).impl()->trigger((*it).gen);
     }
 
     class DeferredLockRequest : public Event::Impl::EventWaiter {
@@ -753,6 +867,10 @@ namespace RegionRuntime {
     // Create a new lock, destroy an existing lock
     /*static*/ Lock Lock::create_lock(void)
     {
+      // TODO: figure out if it's safe to iterate over a vector that is
+      //  being resized?
+      AutoHSLLock a(Runtime::runtime->nodes[gasnet_mynode()].mutex);
+
       std::vector<Lock::Impl>& locks = Runtime::runtime->nodes[gasnet_mynode()].locks;
 
       // try to find an lock we can reuse
@@ -798,7 +916,10 @@ namespace RegionRuntime {
     class Memory::Impl {
     public:
       Impl(Memory _me, size_t _size)
-	: me(_me), size(_size) {}
+	: me(_me), size(_size)
+      {
+	gasnet_hsl_init(&mutex);
+      }
 
       unsigned add_allocator(RegionAllocatorUntyped::Impl *a);
       unsigned add_instance(RegionInstanceUntyped::Impl *i);
@@ -823,9 +944,24 @@ namespace RegionRuntime {
     public:
       Memory me;
       size_t size;
+      gasnet_hsl_t mutex; // protection for resizing vectors
       std::vector<RegionAllocatorUntyped::Impl *> allocators;
       std::vector<RegionInstanceUntyped::Impl *> instances;
     };
+
+    struct RemoteMemAllocArgs {
+      Memory memory;
+      size_t size;
+    };
+
+    int handle_remote_mem_alloc(RemoteMemAllocArgs args)
+    {
+      return args.memory.impl()->alloc_bytes(args.size);
+    }
+
+    typedef ActiveMessageShortReply<REMOTE_MALLOC_MSGID, REMOTE_MALLOC_RPLID,
+				    RemoteMemAllocArgs, int,
+				    handle_remote_mem_alloc> RemoteMemAllocMessage;
 
     class LocalCPUMemory : public Memory::Impl {
     public:
@@ -944,9 +1080,12 @@ namespace RegionRuntime {
 	  // no blocks large enough - boo hoo
 	  return -1;
 	} else {
-	  // need to ask node 0 to perform allocation for us
-	  assert(0);
-	  return -1;
+	  RemoteMemAllocArgs args;
+	  args.memory = me;
+	  args.size = size;
+	  int retval = RemoteMemAllocMessage::request(0, args);
+	  printf("got: %d\n", retval);
+	  return retval;
 	}
       }
 
@@ -1078,8 +1217,11 @@ namespace RegionRuntime {
 
       // have we heard of this one before?  if not, add it
       unsigned index = id.index_l();
-      if(index >= allocators.size())
-	allocators.resize(index + 1);
+      if(index >= allocators.size()) { // lock not held - just for early out
+	AutoHSLLock a(mutex);
+	if(index >= allocators.size()) // real check
+	  allocators.resize(index + 1);
+      }
 
       if(!allocators[index]) {
 	allocators[index] = new RegionAllocatorUntyped::Impl(a, 
@@ -1097,8 +1239,11 @@ namespace RegionRuntime {
 
       // have we heard of this one before?  if not, add it
       unsigned index = id.index_l();
-      if(index >= instances.size())
-	instances.resize(index + 1);
+      if(index >= instances.size()) { // lock not held - just for early out
+	AutoHSLLock a(mutex);
+	if(index >= instances.size()) // real check
+	  instances.resize(index + 1);
+      }
 
       if(!instances[index]) {
 	//instances[index] = new RegionInstanceImpl(id.node());
@@ -1168,13 +1313,59 @@ namespace RegionRuntime {
       {
       }
 
+      class DeferredTaskSpawn : public Event::Impl::EventWaiter {
+      public:
+	DeferredTaskSpawn(LocalProcessor *_proc,
+			  Processor::TaskFuncID _func_id,
+			  const void *_args, size_t _arglen,
+			  Event _finish_event)
+	  : proc(_proc), func_id(_func_id), arglen(_arglen), finish_event(_finish_event)
+	{
+	  if(arglen) {
+	    args = malloc(arglen);
+	    memcpy(args, _args, arglen);
+	  } else {
+	    args = 0;
+	  }
+	}
+
+	virtual ~DeferredTaskSpawn(void)
+	{
+	  if(args) free(args);
+	}
+
+	virtual void event_triggered(void)
+	{
+	  // for now, just run the damn thing
+	  Processor::TaskFuncPtr fptr = task_id_table[func_id];
+	  (*fptr)(args, arglen, proc->me);
+	  if(finish_event.exists())
+	    finish_event.impl()->trigger(finish_event.gen);
+	}
+
+      protected:
+	LocalProcessor *proc;
+	Processor::TaskFuncID func_id;
+	void *args;
+	size_t arglen;
+	Event finish_event;
+      };
+
       virtual void spawn_task(Processor::TaskFuncID func_id,
 			      const void *args, size_t arglen,
 			      Event start_event, Event finish_event)
       {
-	// for now, just run the damn thing
-	Processor::TaskFuncPtr fptr = task_id_table[func_id];
-	(*fptr)(args, arglen, me);
+	// early out - if the event has obviously triggered (or is NO_EVENT)
+	//  don't build up continuation
+	if(start_event.has_triggered()) {
+	  // for now, just run the damn thing
+	  Processor::TaskFuncPtr fptr = task_id_table[func_id];
+	  (*fptr)(args, arglen, me);
+	  if(finish_event.exists())
+	    finish_event.impl()->trigger(finish_event.gen);
+	} else {
+	  start_event.impl()->add_waiter(start_event, new DeferredTaskSpawn(this, func_id, args, arglen, finish_event));
+	}
       }
 
     protected:
@@ -1229,7 +1420,7 @@ namespace RegionRuntime {
 			   Event wait_on) const
     {
       Processor::Impl *p = impl();
-      Event finish_event;
+      Event finish_event = Event::Impl::create_event();
       p->spawn_task(func_id, args, arglen, wait_on, finish_event);
       return finish_event;
     }
@@ -1246,15 +1437,19 @@ namespace RegionRuntime {
 
 	  unsigned index = id.index();
 	  if(index >= n->events.size()) {
+	    AutoHSLLock a(n->mutex); // take lock before we actually resize
+
 	    // grow our array to mirror additions by other nodes
 	    //  this should never happen for our own node
 	    assert(id.node() != gasnet_mynode());
 
 	    unsigned oldsize = n->events.size();
-	    n->events.resize(id.index() + 1);
-	    for(unsigned i = oldsize; i <= index; i++)
-	      n->events[i].init(ID(ID::ID_EVENT, id.node(), i).convert<Event>(),
-				id.node());
+	    if(index >= oldsize) { // only it's still too small
+	      n->events.resize(index + 1);
+	      for(unsigned i = oldsize; i <= index; i++)
+		n->events[i].init(ID(ID::ID_EVENT, id.node(), i).convert<Event>(),
+				  id.node());
+	    }
 	  }
 	  return &(n->events[index]);
 	}
@@ -1269,19 +1464,24 @@ namespace RegionRuntime {
       switch(id.type()) {
       case ID::ID_LOCK:
 	{
-	  std::vector<Lock::Impl>& locks = runtime->nodes[id.node()].locks;
+	  Node *n = &runtime->nodes[id.node()];
+	  std::vector<Lock::Impl>& locks = nodes[id.node()].locks;
 
 	  unsigned index = id.index();
 	  if(index >= locks.size()) {
+	    AutoHSLLock a(n->mutex); // take lock before we actually resize
+
 	    // grow our array to mirror additions by other nodes
 	    //  this should never happen for our own node
 	    assert(id.node() != gasnet_mynode());
 
-	    unsigned oldsize = locks.size();
-	    locks.resize(id.index() + 1);
-	    for(unsigned i = oldsize; i <= index; i++)
-	      locks[i].init(ID(ID::ID_LOCK, id.node(), i).convert<Lock>(),
-			    id.node());
+	    unsigned oldsize = n->locks.size();
+	    if(index >= oldsize) { // only it's still too small
+	      n->locks.resize(index + 1);
+	      for(unsigned i = oldsize; i <= index; i++)
+		n->locks[i].init(ID(ID::ID_LOCK, id.node(), i).convert<Lock>(),
+				 id.node());
+	    }
 	  }
 	  return &(locks[index]);
 	}
@@ -1325,7 +1525,28 @@ namespace RegionRuntime {
     RegionMetaDataUntyped::Impl *Runtime::get_metadata_impl(ID id)
     {
       assert(id.type() == ID::ID_METADATA);
-      return null_check(runtime->nodes[id.node()].metadatas[id.index()]);
+
+      Node *n = &runtime->nodes[id.node()];
+
+      unsigned index = id.index();
+      if(index >= n->metadatas.size()) {
+	AutoHSLLock a(n->mutex); // take lock before we actually resize
+
+	if(index >= n->metadatas.size())
+	  n->metadatas.resize(index + 1);
+      }
+
+      if(!n->metadatas[index]) { // haven't seen this metadata before?
+	printf("UNKNOWN METADATA %x\n", id.id());
+	AutoHSLLock a(n->mutex); // take lock before we actually allocate
+	if(!n->metadatas[index]) {
+	  n->metadatas[index] = new RegionMetaDataUntyped::Impl(id.convert<RegionMetaDataUntyped>(),
+								0, 0);
+	} else
+	  printf("false alarm...\n");
+      }
+
+      return n->metadatas[index];
     }
 
     RegionAllocatorUntyped::Impl *Runtime::get_allocator_impl(ID id)
@@ -1358,8 +1579,15 @@ namespace RegionRuntime {
       std::vector<RegionMetaDataUntyped::Impl *>& metadatas = Runtime::runtime->nodes[gasnet_mynode()].metadatas;
 
       unsigned index = 0;
-      while((index < metadatas.size()) && (metadatas[index] != 0)) index++;
-      if(index >= metadatas.size()) metadatas.resize(index + 1);
+      {
+	AutoHSLLock a(Runtime::runtime->nodes[gasnet_mynode()].mutex);
+
+	while((index < metadatas.size()) && (metadatas[index] != 0)) index++;
+	if(index >= metadatas.size()) metadatas.resize(index + 1);
+	// assign a dummy, but non-zero value to reserve this entry
+	// this lets us do the object creation outside the critical section
+	metadatas[index] = (RegionMetaDataUntyped::Impl *)1;
+      }
 
       RegionMetaDataUntyped r = ID(ID::ID_METADATA, 
 				   gasnet_mynode(), 
@@ -1526,7 +1754,20 @@ namespace RegionRuntime {
 	  }
 	}
       } else {
-	assert(0);
+	Memory::Impl *m_impl = memory.impl();
+	printf("FIND_ENABLED(2) %x %d %d %d\n", memory.id, offset, first_element, count);
+	for(int pos = 0; pos <= num_elements - count; pos++) {
+	  int run = 0;
+	  while(1) {
+	    unsigned ofs = offset + ((pos >> 5) << 2);
+	    unsigned val;
+	    m_impl->get_bytes(ofs, &val, sizeof(val));
+	    unsigned bit = (val >> (pos & 0x1f)) & 1;
+	    if(bit != 1) break;
+	    pos++; run++;
+	    if(run >= count) return pos - run;
+	  }
+	}
       }
       return -1;
     }
@@ -2468,7 +2709,12 @@ namespace RegionRuntime {
       int hcount = 0;
       hcount += NodeAnnounceMessage::add_handler_entries(&handlers[hcount]);
       hcount += SpawnTaskMessage::add_handler_entries(&handlers[hcount]);
+      hcount += LockRequestMessage::add_handler_entries(&handlers[hcount]);
+      hcount += LockReleaseMessage::add_handler_entries(&handlers[hcount]);
+      hcount += LockGrantMessage::add_handler_entries(&handlers[hcount]);
+      hcount += EventSubscribeMessage::add_handler_entries(&handlers[hcount]);
       hcount += EventTriggerMessage::add_handler_entries(&handlers[hcount]);
+      hcount += RemoteMemAllocMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage2::add_handler_entries(&handlers[hcount]);
 
@@ -2499,8 +2745,6 @@ namespace RegionRuntime {
       n->processors.resize(num_local_procs);
 
       for(unsigned i = 0; i < num_local_procs; i++) {
-	Processor p;
-	p.id = (gasnet_mynode() << 24) | i;
 	n->processors[i] = new LocalProcessor(ID(ID::ID_PROCESSOR, gasnet_mynode(), i).convert<Processor>(), 
 					      i);
 	//local_procs[i]->start();

@@ -98,7 +98,7 @@ void hot_potatoer(const void * args, size_t arglen, Processor p)
 
   Lock rlock = potato.region.get_lock();
 
-  //printf("Processor %u passing hot potato to processor %u (%d hops left)\n",me.id,proc_ring.neighbor[me].id,potato.hops_left);
+  printf("Processor %x passing hot potato to processor %x (%d hops left)\n",me.id,proc_ring.neighbor[me].id,potato.hops_left);
   // are we the last hop of the current lap?
   if (potato.hops_left == 0)
     {
