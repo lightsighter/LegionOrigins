@@ -20,15 +20,17 @@
 namespace RegionRuntime {
   namespace HighLevel {
 
+    enum AccessorType {
+      AccessorGeneric = LowLevel::AccessorGeneric,
+      AccessorArray   = LowLevel::AccessorArray,
+    };
+
     // Forward class declarations
     class Future;
     class FutureImpl;
     class RegionRequirement;
-    class PhysicalRegion;
-    class PartitionBase;
+    template<AccessorType AT> class PhysicalRegion;
     template<typename T> class Partition;
-    template<typename T> class DisjointPartition;
-    template<typename T> class AliasedPartition;
     class HighLevelRuntime;
     class Mapper;
     class RegionNode;
@@ -43,12 +45,14 @@ namespace RegionRuntime {
     };
     
     enum AccessMode {
+      NO_ACCESS,
       READ_ONLY,
       READ_WRITE,
       REDUCE,
     };
 
     enum AllocateMode {
+      NO_MEMORY,
       ALLOCABLE,
       FREEABLE,
     };
@@ -60,6 +64,7 @@ namespace RegionRuntime {
       RELAXED,
     };
 
+    
     typedef LowLevel::Machine Machine;
     typedef LowLevel::RegionMetaDataUntyped LogicalHandle;
     typedef LowLevel::RegionInstanceUntyped RegionInstance;
@@ -168,7 +173,6 @@ namespace RegionRuntime {
       std::vector<InstanceInfo*> instances; // Region instances for the regions (mov)
       std::vector<InstanceInfo*> src_instances; // Source instances for our instances (mov)
       std::vector<InstanceInfo*> dead_instances; // Computed after move 
-      std::vector<PhysicalRegion> physical_regions; // dummy
       std::vector<LogicalHandle> root_regions; // The root regions for this task
     private:
       std::set<LogicalHandle> created_regions; // New top level regions
@@ -185,7 +189,7 @@ namespace RegionRuntime {
       void pack_task(char *&buffer) const;
       void unpack_task(const char *&buffer);
       // Operations for managing the task 
-      const std::vector<PhysicalRegion>& start_task(void); // start task 
+      std::vector<PhysicalRegion<AccessorGeneric> > start_task(void); // start task 
       void complete_task(const void *ret_arg, size_t ret_size); // task completed (maybe finished?)
       void children_mapped(void);  // all the child tasks have been mapped
       void finish_task(void); // finish the task
@@ -249,46 +253,103 @@ namespace RegionRuntime {
      * A wrapper class for region allocators and region instances from
      * the low level interface. We'll do some type erasure on this 
      * interface to a physical region so we don't need to keep the 
-     * type around for this level of the runtime
+     * type around for this level of the runtime.
+     *
+     * Have two versions of a physical region to prevent the low level
+     * runtime from showing through.
      */
-    class PhysicalRegion {
+    template<>
+    class PhysicalRegion<AccessorArray> {
     private:
       LowLevel::RegionAllocatorUntyped allocator;
-      LowLevel::RegionInstanceUntyped instance;
-    public:
-      PhysicalRegion (LowLevel::RegionAllocatorUntyped alloc, 
-                      LowLevel::RegionInstanceUntyped inst)	
-              : allocator(alloc), instance(inst) { }
+      LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorArray> instance;
+    protected:
+      friend class TaskDescription;
+      friend class PhysicalRegion<AccessorGeneric>;
+      PhysicalRegion(void) 
+        : instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorArray>(NULL)) { }
+      void set_allocator(LowLevel::RegionAllocatorUntyped alloc) { allocator = alloc; }
+      void set_instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorArray> inst) 
+      { instance = inst; }
     public:
       // Provide implementations here to avoid template instantiation problem
       template<typename T> inline ptr_t<T> alloc(void)
-      { return LowLevel::RegionAllocator<T>(allocator).alloc_fn()(); }
+      { return static_cast<LowLevel::RegionAllocator<T> >(allocator).alloc(); }
       template<typename T> inline void free(ptr_t<T> ptr)
-      { LowLevel::RegionAllocator<T>(allocator).free_fn()(ptr); }
+      { static_cast<LowLevel::RegionAllocator<T> >(allocator).free(ptr); }
       template<typename T> inline T read(ptr_t<T> ptr)
-      { return LowLevel::RegionInstance<T>(instance).read_fn()(ptr); }
+      { return static_cast<LowLevel::RegionInstanceAccessor<T,LowLevel::AccessorArray> >(instance).read(ptr); }
       template<typename T> inline void write(ptr_t<T> ptr, T newval)
-      { LowLevel::RegionInstance<T>(instance).write_fn()(ptr,newval); }
-      template<typename T> inline void reduce(ptr_t<T> ptr, T (*reduceop)(T,T), T newval)
-      { LowLevel::RegionInstance<T>(instance).reduce_fn()(ptr,reduceop,newval); }
+      { static_cast<LowLevel::RegionInstanceAccessor<T,LowLevel::AccessorArray> >(instance).write(ptr,newval); }
+      template<typename T, typename REDOP> inline void reduce(ptr_t<T> ptr, T newval)
+      { static_cast<LowLevel::RegionInstanceAccessor<T,LowLevel::AccessorArray> >(instance).reduce<REDOP>(ptr,newval); }
     };
 
-    template<typename T>
-    class Partition {
+    template<>
+    class PhysicalRegion<AccessorGeneric> {
+    private:
+      bool valid_allocator;
+      bool valid_instance;
+      LowLevel::RegionAllocatorUntyped allocator;
+      LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric> instance;
     protected:
+      friend class TaskDescription;
+      PhysicalRegion(void) :
+        valid_allocator(false), valid_instance(false), 
+        instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric>(NULL)) { }
+      void set_allocator(LowLevel::RegionAllocatorUntyped alloc) 
+      { valid_allocator = true; allocator = alloc; }
+      void set_instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric> inst) 
+      { valid_instance = true; instance = inst; }
+    public:
+      // Provide implementations here to avoid template instantiation problem
+      template<typename T> inline ptr_t<T> alloc(void)
+      { return static_cast<LowLevel::RegionAllocator<T> >(allocator).alloc(); }
+      template<typename T> inline void free(ptr_t<T> ptr)
+      { static_cast<LowLevel::RegionAllocator<T> >(allocator).free(ptr); }
+      template<typename T> inline T read(ptr_t<T> ptr)
+      { return static_cast<LowLevel::RegionInstanceAccessor<T,LowLevel::AccessorGeneric> >(instance).read(ptr); }
+      template<typename T> inline void write(ptr_t<T> ptr, T newval)
+      { static_cast<LowLevel::RegionInstanceAccessor<T,LowLevel::AccessorGeneric> >(instance).write(ptr,newval); }
+      template<typename T, typename REDOP> inline void reduce(ptr_t<T> ptr, T newval)
+      { static_cast<LowLevel::RegionInstanceAccessor<T,LowLevel::AccessorGeneric> >(instance).reduce<REDOP>(ptr,newval); }
+    public:
+      bool can_convert(void) const
+      {
+        if (valid_instance)
+          return instance.can_convert<LowLevel::AccessorArray>();
+        return true;
+      }
+      PhysicalRegion<AccessorArray> convert(void) const
+      {
+        PhysicalRegion<AccessorArray> result;
+        if (valid_allocator)
+          result.set_allocator(allocator);
+        if (valid_instance)
+          result.set_instance(instance.convert<LowLevel::AccessorArray>());
+        return result;
+      }
+    };
+    
+    class UntypedPartition {
+    public:
       const PartitionID id;
       const LogicalHandle parent;
       const bool disjoint;
     protected:
+      UntypedPartition(PartitionID pid, LogicalHandle par, bool dis)
+              : id(pid), parent(par), disjoint(dis) { }
+    protected:
+      bool operator==(const UntypedPartition &part) const { return (id == part.id); }
+    };
+
+    template<typename T>
+    class Partition : public UntypedPartition {
+    protected:
       // Only the runtime should be able to create Partitions
       friend class HighLevelRuntime;
       Partition(PartitionID pid, LogicalHandle par, bool dis)
-              : id(pid), parent(par), disjoint(dis) { }
-      virtual ~Partition() { }	
-    public:
-      inline bool is_disjoint(void) const { return disjoint; }
-    protected:
-      bool operator==(const Partition<T> &part) const;
+              : UntypedPartition(pid, par, dis) { }
     };
 
     /**
@@ -315,7 +376,7 @@ namespace RegionRuntime {
                                                       unsigned int num_subregions, 
                                                       MappingTagID tag);
 
-      virtual bool compact_partition(	const PartitionBase &partition, 
+      virtual bool compact_partition(	const UntypedPartition &partition, 
                                       MappingTagID tag);
 
       virtual Processor select_initial_processor(const Task *task); 
@@ -364,6 +425,8 @@ namespace RegionRuntime {
       // with the necessary dependences and copies as needed
       void register_region_dependence(DependenceDetector &dep);
 
+      // close up the subtree registering all task dependences and copies that have to
+      // be performed
       void close_subtree(Context ctx, TaskDescription *desc, InstanceInfo *parent_inst);
 
       void initialize_context(Context ctx);
@@ -480,7 +543,7 @@ namespace RegionRuntime {
       void add_mapper(MapperID id, Mapper *m);
     public:
       // Methods for the wrapper function to access the context
-      const std::vector<PhysicalRegion>& begin_task(Context ctx);  
+      std::vector<PhysicalRegion<AccessorGeneric> > begin_task(Context ctx);  
       void end_task(Context ctx, const void *arg, size_t arglen);
     public:
       // Get instances - return the memory locations of all known instances of a region
@@ -556,12 +619,12 @@ namespace RegionRuntime {
       template<typename T>
       LogicalHandle get_subregion(Context ctx, Partition<T> part, Color c) const;
       template<typename T>
-      ptr_t<T> safe_cast(Context ctx, Partition<T> part, ptr_t<T> ptr) const;
+      ptr_t<T> safe_cast(Context ctx, Partition<T> part, Color c, ptr_t<T> ptr) const;
     };
 
     // Template wrapper for high level tasks to encapsulate return values
     template<typename T, 
-    T (*TASK_PTR)(const void*,size_t,const std::vector<PhysicalRegion>&,
+    T (*TASK_PTR)(const void*,size_t,const std::vector<PhysicalRegion<AccessorGeneric> >&,
                     Context,HighLevelRuntime*)>
     void high_level_task_wrapper(const void * args, size_t arglen, Processor p)
     {
@@ -569,44 +632,149 @@ namespace RegionRuntime {
       HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
 
       // Read the context out of the buffer
-      Context ctx = *((Context*)args);
+      Context ctx = *((const Context*)args);
       // Get the arguments associated with the context
-      const std::vector<PhysicalRegion>& regions = runtime->begin_task(ctx);
+      std::vector<PhysicalRegion<AccessorGeneric> > regions = runtime->begin_task(ctx);
 
       // Update the pointer and arglen
-      char* arg_ptr = ((char*)args)+sizeof(Context);
+      const char* arg_ptr = ((const char*)args)+sizeof(Context);
       arglen -= sizeof(Context);
       
       // Invoke the task with the given context
-      T return_value = (*TASK_PTR)((void*)arg_ptr, arglen, regions, ctx, runtime);
+      T return_value = (*TASK_PTR)((const void*)arg_ptr, arglen, regions, ctx, runtime);
 
       // Send the return value back
       runtime->end_task(ctx, (void*)(&return_value), sizeof(T));
     }
 
     // Overloaded version of the task wrapper for when return type is void
-    template<void (*TASK_PTR)(const void*,size_t,const std::vector<PhysicalRegion>&,
-                              Context,HighLevelRuntime*)>
+    template<void (*TASK_PTR)(const void*,size_t,
+          const std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
     void high_level_task_wrapper(const void * args, size_t arglen, Processor p)
     {
       // Get the high level runtime
       HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
 
       // Read the context out of the buffer
-      Context ctx = *((Context*)args);
+      Context ctx = *((const Context*)args);
       // Get the arguments associated with the context
-      const std::vector<PhysicalRegion>& regions = runtime->begin_task(ctx);
+      std::vector<PhysicalRegion<AccessorGeneric> > regions = runtime->begin_task(ctx);
 
       // Update the pointer and arglen
-      char* arg_ptr = ((char*)args)+sizeof(Context);
+      const char* arg_ptr = ((const char*)args)+sizeof(Context);
       arglen -= sizeof(Context);
       
       // Invoke the task with the given context
-      (*TASK_PTR)((void*)arg_ptr, arglen, regions, ctx, runtime);
+      (*TASK_PTR)((const void*)arg_ptr, arglen, regions, ctx, runtime);
 
       // Send an empty return value back
       runtime->end_task(ctx, NULL, 0); 
     }
+
+    // Overloaded versions of the task wrapper for when you might want to have the
+    // runtime figure out if it can specialize a task into one that uses
+    // the AccessorArray instances as an optimization
+    template<typename T,
+    T (*SLOW_TASK_PTR)(const void*,size_t,const std::vector<PhysicalRegion<AccessorGeneric> >&,
+                        Context ctx,HighLevelRuntime*),
+    T (*FAST_TASK_PTR)(const void*,size_t,const std::vector<PhysicalRegion<AccessorArray> >&,
+                        Context ctx,HighLevelRuntime*)>
+    void high_level_task_wrapper(const void * args, size_t arglen, Processor p)
+    {
+      // Get the high level runtime
+      HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
+
+      // Read the context out of the buffer
+      Context ctx = *((const Context*)args);
+      // Get the arguments associated with the context
+      std::vector<PhysicalRegion<AccessorGeneric> > regions = runtime->begin_task(ctx);
+
+      // Update the pointer and the arglen
+      const char* arg_ptr = ((const char*)args)+sizeof(Context);
+      arglen -= sizeof(Context);
+
+      // Check to see if we can specialize all the region instances
+      bool specialize = true;
+      for (std::vector<PhysicalRegion<AccessorGeneric> >::const_iterator it = regions.begin();
+            it != regions.end(); it++)
+      {
+        if (!it->can_convert())
+        {
+          specialize = false;
+          break;
+        }
+      }
+      T return_value;
+      if (specialize)
+      {
+        std::vector<PhysicalRegion<AccessorArray> > fast_regions;
+        for (std::vector<PhysicalRegion<AccessorGeneric> >::const_iterator it = regions.begin();
+              it != regions.end(); it++)
+        {
+          fast_regions.push_back(it->convert());
+        }
+        return_value = (*FAST_TASK_PTR)((const void*)arg_ptr, arglen, fast_regions, ctx, runtime);
+      }
+      else
+      {
+        return_value = (*SLOW_TASK_PTR)((const void *)arg_ptr, arglen, regions, ctx, runtime);
+      }
+
+      // Send the return value back
+      runtime->end_task(ctx, (void*)&return_value, sizeof(T));
+    }
+
+    // Overloaded version of the task wrapper for when you want fast instances with a
+    // a void return type
+    template<
+    void (*SLOW_TASK_PTR)(const void*,size_t,const std::vector<PhysicalRegion<AccessorGeneric> >&,
+                          Context ctx,HighLevelRuntime*),
+    void (*FAST_TASK_PTR)(const void*,size_t,const std::vector<PhysicalRegion<AccessorArray> >&,
+                          Context ctx,HighLevelRuntime*)>
+    void high_level_task_wrapper(const void * args, size_t arglen, Processor p)
+    {
+      // Get the high level runtime
+      HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
+
+      // Read the context out of the buffer
+      Context ctx = *((const Context*)args);
+      // Get the arguments associated with the context
+      std::vector<PhysicalRegion<AccessorGeneric> > regions = runtime->begin_task(ctx);
+
+      // Update the pointer and the arglen
+      const char* arg_ptr = ((const char*)args)+sizeof(Context);
+      arglen -= sizeof(Context);
+
+      // Check to see if we can specialize all the region instances
+      bool specialize = true;
+      for (std::vector<PhysicalRegion<AccessorGeneric> >::const_iterator it = regions.begin();
+            it != regions.end(); it++)
+      {
+        if (!it->can_convert())
+        {
+          specialize = false;
+          break;
+        }
+      }
+      if (specialize)
+      {
+        std::vector<PhysicalRegion<AccessorArray> > fast_regions;
+        for (std::vector<PhysicalRegion<AccessorGeneric> >::const_iterator it = regions.begin();
+              it != regions.end(); it++)
+        {
+          fast_regions.push_back(it->convert());
+        }
+        (*FAST_TASK_PTR)((const void*)arg_ptr, arglen, fast_regions, ctx, runtime);
+      }
+      else
+      {
+        (*SLOW_TASK_PTR)((const void *)arg_ptr, arglen, regions, ctx, runtime);
+      }
+
+      // Send the return value back
+      runtime->end_task(ctx, NULL, 0);
+    }
+
 
     // A wrapper task for allowing the application to initialize the set of mappers
     template<void (*TASK_PTR)(Machine*,HighLevelRuntime*,Processor)>
@@ -653,15 +821,6 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     template<typename T>
-    bool Partition<T>::operator==(const Partition<T> &part) const
-    //-------------------------------------------------------------------------------------------- 
-    {
-      // If they have the same pid, then they are the same
-      return (id == part.id);
-    }
-    
-    //--------------------------------------------------------------------------------------------
-    template<typename T>
     LogicalHandle HighLevelRuntime::get_subregion(Context ctx, Partition<T> part, Color c) const
     //--------------------------------------------------------------------------------------------
     {
@@ -673,13 +832,26 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     template<typename T>
-    ptr_t<T> HighLevelRuntime::safe_cast(Context ctx, Partition<T> part, ptr_t<T> ptr) const
+    ptr_t<T> HighLevelRuntime::safe_cast(Context ctx, Partition<T> part, 
+                                          Color c, ptr_t<T> ptr) const
     //--------------------------------------------------------------------------------------------
     {
-      // Debugging check that the pointer is valid in the parent space,
-      // then see if the pointer is valid in the specified child
-      ptr_t<T> null_ptr = {0};
-      return null_ptr;
+#ifdef DEBUG_HIGH_LEVEL
+      assert(ctx < all_tasks.size());
+#endif
+      LogicalHandle subregion = all_tasks[ctx]->get_subregion(part.id,c);
+      // Get the mask for the subregion
+      const LowLevel::ElementMask &mask = subregion.get_valid_mask();
+      // See if the pointer is valid in the specified child
+      if (mask.is_set(ptr.value))
+      {
+        return ptr;
+      }
+      else
+      {
+        ptr_t<T> null_ptr = {0};
+        return null_ptr;
+      }
     }
 
     //--------------------------------------------------------------------------------------------

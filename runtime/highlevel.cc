@@ -207,7 +207,6 @@ namespace RegionRuntime {
       pre_copy_ops.clear();
       src_instances.clear();
       dead_instances.clear();
-      physical_regions.clear();
       root_regions.clear();
       deleted_regions.clear();
       region_nodes = NULL;
@@ -528,7 +527,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    const std::vector<PhysicalRegion>& TaskDescription::start_task(void)
+    std::vector<PhysicalRegion<AccessorGeneric> > TaskDescription::start_task(void)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -538,20 +537,35 @@ namespace RegionRuntime {
       // For each of the top level regions, initialize the context of this task
       // This ensures that all the region and partition nodes have state entries for this task
       // and that they are all clear if they already existed
-      for (std::vector<RegionRequirement>::iterator it = regions.begin();
-            it != regions.end(); it++)
+      for (std::vector<LogicalHandle>::const_iterator it = root_regions.begin();
+            it != root_regions.end(); it++)
       {
-        LogicalHandle &handle = it->handle;
 #ifdef DEBUG_HIGH_LEVEL
-        assert(region_nodes->find(handle) != region_nodes->end());
+        assert(region_nodes->find(*it) != region_nodes->end());
 #endif
-        (*region_nodes)[handle]->initialize_context(local_ctx);
+        (*region_nodes)[*it]->initialize_context(local_ctx);
       }
 
-      // Get the physical regions
+      // Get the set of physical regions for the task
+      std::vector<PhysicalRegion<AccessorGeneric> > physical_regions;
+#ifdef DEBUG_HIGH_LEVEL
+      assert(regions.size() == instances.size());
+#endif
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        PhysicalRegion<AccessorGeneric> reg;
+        if (regions[idx].mode != NO_ACCESS)
+        {
+          reg.set_instance(instances[idx]->inst.get_accessor_untyped());
+        }
+        if (regions[idx].alloc != NO_MEMORY)
+        {
+          reg.set_allocator(instances[idx]->handle.create_allocator_untyped(
+                            instances[idx]->location));
+        }
+        physical_regions.push_back(reg);
+      }
 
-      // Fake this for right now
-      // TODO: fix this
       return physical_regions;
     }
 
@@ -1951,7 +1965,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    const std::vector<PhysicalRegion>& HighLevelRuntime::begin_task(Context ctx)
+    std::vector<PhysicalRegion<AccessorGeneric> > HighLevelRuntime::begin_task(Context ctx)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -2600,7 +2614,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    bool Mapper::compact_partition(const PartitionBase &partition, MappingTagID tag)
+    bool Mapper::compact_partition(const UntypedPartition &partition, MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
       // By default we'll never compact a partition since it is expensive
