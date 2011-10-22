@@ -105,6 +105,125 @@ namespace RegionRuntime {
     }
 
     /////////////////////////////////////////////////////////////
+    // Copy Operation 
+    ///////////////////////////////////////////////////////////// 
+
+    //--------------------------------------------------------------------------------------------
+    CopyOperation::CopyOperation(InstanceInfo *s, InstanceInfo *d, Event wait_on, bool rem)
+      : src(s), dst(d), ready(wait_on), remote(rem)
+    //--------------------------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------------------------
+    CopyOperation::~CopyOperation()
+    //--------------------------------------------------------------------------------------------
+    {
+      // Delete all the sub copy operations too
+      for (std::set<CopyOperation*>::iterator it = sub_copies.begin();
+            it != sub_copies.end(); it++)
+      {
+        delete *it;
+      }
+      // If remote also delete the instances
+      if (remote)
+      {
+        delete src;
+        delete dst;
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void CopyOperation::add_sub_copies(const std::set<CopyOperation*> &copies)
+    //--------------------------------------------------------------------------------------------
+    {
+      sub_copies.insert(copies.begin(),copies.end());
+    }
+
+    //--------------------------------------------------------------------------------------------
+    Event CopyOperation::execute(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      if (sub_copies.empty())
+      {
+        return src->inst.copy_to_untyped(dst->inst, ready); 
+      }
+      else
+      {
+        std::set<Event> wait_on;
+        wait_on.insert(ready);
+        for (std::set<CopyOperation*>::iterator it = sub_copies.begin();
+              it != sub_copies.end(); it++)
+        {
+          wait_on.insert((*it)->execute());
+        }
+        return src->inst.copy_to_untyped(dst->inst, Event::merge_events(wait_on));
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    size_t CopyOperation::compute_copy_tree_size(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      size_t result = 0;
+      result += (2*sizeof(RegionInstance)); // Only need to pack region instances
+      result += sizeof(Event);
+      result += sizeof(size_t); // Number of sub copies
+      for (std::set<CopyOperation*>::iterator it = sub_copies.begin();
+            it != sub_copies.end(); it++)
+      {
+        result += ((*it)->compute_copy_tree_size());
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void CopyOperation::pack_copy_tree(char *&buffer) const
+    //--------------------------------------------------------------------------------------------
+    {
+      *((RegionInstance*)buffer) = src->inst;
+      buffer += sizeof(RegionInstance);
+      *((RegionInstance*)buffer) = dst->inst;
+      buffer += sizeof(RegionInstance);
+      *((Event*)buffer) = ready;
+      buffer += sizeof(Event);
+
+      *((size_t*)buffer) = sub_copies.size();
+      buffer += sizeof(size_t);
+      for (std::set<CopyOperation*>::iterator it = sub_copies.begin();
+            it != sub_copies.end(); it++)
+      {
+        (*it)->pack_copy_tree(buffer);
+      }
+    }
+    
+    //--------------------------------------------------------------------------------------------
+    CopyOperation* CopyOperation::unpack_copy_tree(const char *&buffer)
+    //--------------------------------------------------------------------------------------------
+    {
+      InstanceInfo *src = new InstanceInfo();
+      src->inst = *((const RegionInstance*)buffer);
+      buffer += sizeof(RegionInstance);
+      InstanceInfo *dst = new InstanceInfo();
+      dst->inst = *((const RegionInstance*)buffer);
+      buffer += sizeof(RegionInstance);
+      Event wait = *((const Event*)buffer);
+      buffer += sizeof(Event);
+
+      // Make the new copy op
+      CopyOperation *result = new CopyOperation(src,dst,wait,true);
+
+      size_t num_sub_copies = *((const size_t*)buffer);
+      buffer += sizeof(size_t);
+      for (unsigned idx = 0; idx < num_sub_copies; idx++)
+      {
+        result->sub_copies.insert(CopyOperation::unpack_copy_tree(buffer));
+      }
+      
+      return result;
+    }
+
+    /////////////////////////////////////////////////////////////
     // Task Description 
     ///////////////////////////////////////////////////////////// 
 
@@ -169,11 +288,15 @@ namespace RegionRuntime {
       if (remote)
       {
         // First we can delete all of our copy op instance infos which are clones
-        for (std::vector<CopyOperation>::iterator it = pre_copy_ops.begin();
-              it != pre_copy_ops.end(); it++)
+        for (std::set<CopyOperation*>::iterator it = pre_copy_trees.begin();
+              it != pre_copy_trees.end(); it++)
         {
-          delete it->src;
-          delete it->dst;
+          delete *it;
+        }
+        for (std::set<CopyOperation*>::iterator it = post_copy_trees.begin();
+              it != post_copy_trees.end(); it++)
+        {
+          delete *it;
         }
 
         for (std::vector<InstanceInfo*>::iterator it = src_instances.begin();
@@ -204,7 +327,8 @@ namespace RegionRuntime {
       wait_events.clear();
       dependent_tasks.clear();
       child_tasks.clear();
-      pre_copy_ops.clear();
+      pre_copy_trees.clear();
+      post_copy_trees.clear();
       src_instances.clear();
       dead_instances.clear();
       root_regions.clear();
@@ -323,12 +447,23 @@ namespace RegionRuntime {
       bytes += (3*sizeof(bool)); //stealable, stolen, chosen
       // No need to send mappable, can be inferred as being true, otherwise couldn't be remote
       bytes += sizeof(UserEvent); // mapped event
+      bytes += sizeof(UserEvent); // termination event
       bytes += sizeof(Processor);
       bytes += (2*sizeof(Context)); // parent context and original context
       bytes += sizeof(Event); // merged wait event
       // Instance and copy information
-      bytes += sizeof(size_t); // Number of copy operations
-      bytes += (pre_copy_ops.size() * 2 * sizeof(InstanceInfo));
+      bytes += sizeof(size_t); // Number of pre copy trees
+      for (std::set<CopyOperation*>::const_iterator it = pre_copy_trees.begin();
+            it != pre_copy_trees.end(); it++)
+      {
+        bytes += ((*it)->compute_copy_tree_size());
+      }
+      bytes += sizeof(size_t); // Number of post copy trees
+      for (std::set<CopyOperation*>::const_iterator it = post_copy_trees.end();
+            it != post_copy_trees.end(); it++)
+      {
+        bytes += ((*it)->compute_copy_tree_size());
+      }
       // The size of src_instances is the same as regions
 #ifdef DEBUG_HIGH_LEVEL
       assert(src_instances.size() == regions.size());
@@ -374,6 +509,8 @@ namespace RegionRuntime {
       buffer += sizeof(bool);
       *((UserEvent*)buffer) = map_event;
       buffer += sizeof(UserEvent);
+      *((UserEvent*)buffer) = termination_event;
+      buffer += sizeof(UserEvent);
       *((Processor*)buffer) = orig_proc;
       buffer += sizeof(Processor);
       *((Context*)buffer) = parent_ctx;
@@ -383,23 +520,19 @@ namespace RegionRuntime {
       *((Event*)buffer) = merged_wait_event;
       buffer += sizeof(Event);
       // Pack the instance and copy information
-      *((size_t*)buffer) = pre_copy_ops.size();
+      *((size_t*)buffer) = pre_copy_trees.size();
       buffer += sizeof(size_t);
-      for (std::vector<CopyOperation>::const_iterator it = pre_copy_ops.begin();
-            it != pre_copy_ops.end(); it++)
+      for (std::set<CopyOperation*>::const_iterator it = pre_copy_trees.begin();
+            it != pre_copy_trees.end(); it++)
       {
-        *((LogicalHandle*)buffer) = it->src->handle;
-        buffer += sizeof(LogicalHandle);
-        *((RegionInstance*)buffer) = it->src->inst;
-        buffer += sizeof(RegionInstance);
-        *((Memory*)buffer) = it->src->location;
-        buffer += sizeof(Memory);
-        *((LogicalHandle*)buffer) = it->dst->handle;
-        buffer += sizeof(LogicalHandle);
-        *((RegionInstance*)buffer) = it->dst->inst;
-        buffer += sizeof(RegionInstance);
-        *((Memory*)buffer) = it->dst->location;
-        buffer += sizeof(Memory);
+        (*it)->pack_copy_tree(buffer);
+      }
+      *((size_t*)buffer) = post_copy_trees.size();
+      buffer += sizeof(size_t);
+      for (std::set<CopyOperation*>::const_iterator it = post_copy_trees.end();
+            it != post_copy_trees.end(); it++)
+      {
+        (*it)->pack_copy_tree(buffer);
       }
 
       for (std::vector<InstanceInfo*>::const_iterator it = src_instances.begin();
@@ -455,6 +588,8 @@ namespace RegionRuntime {
       mapped = false; // Couldn't have been sent anywhere without being unmapped
       map_event = *((const UserEvent*)buffer);
       buffer += sizeof(UserEvent);
+      termination_event = *((const UserEvent*)buffer);
+      buffer += sizeof(UserEvent);
       orig_proc = *((const Processor*)buffer);
       buffer += sizeof(Processor);
       parent_ctx = *((const Context*)buffer);
@@ -469,23 +604,13 @@ namespace RegionRuntime {
       buffer += sizeof(size_t);
       for (unsigned idx = 0; idx < num_pre_copies; idx++)
       {
-        CopyOperation copy_op;
-        copy_op.src = new InstanceInfo();
-        copy_op.dst = new InstanceInfo();
-        copy_op.src->handle = *((const LogicalHandle*)buffer);
-        buffer += sizeof(LogicalHandle);
-        copy_op.src->inst = *((const RegionInstance*)buffer);
-        buffer += sizeof(RegionInstance);
-        copy_op.src->location = *((const Memory*)buffer);
-        buffer += sizeof(Memory);
-        copy_op.dst->handle = *((const LogicalHandle*)buffer);
-        buffer += sizeof(LogicalHandle);
-        copy_op.dst->inst = *((const RegionInstance*)buffer);
-        buffer += sizeof(RegionInstance);
-        copy_op.dst->location = *((const Memory*)buffer);
-        buffer += sizeof(Memory);
-        // Add this to the list of pre-copy-ops
-        pre_copy_ops.push_back(copy_op);
+        pre_copy_trees.insert(CopyOperation::unpack_copy_tree(buffer));
+      }
+      size_t num_post_copies = *((const size_t*)buffer);
+      buffer += sizeof(size_t);
+      for (unsigned idx = 0; idx < num_post_copies; idx++)
+      {
+        post_copy_trees.insert(CopyOperation::unpack_copy_tree(buffer));
       }
 
       // For the instances we can just make this based on the regions
@@ -776,15 +901,12 @@ namespace RegionRuntime {
       assert(active);
 #endif
       const char * ptr = (const char *)args;
-      UserEvent wait_event = *((const UserEvent*)ptr); 
-      ptr += sizeof(UserEvent);
      
       // Update each of the dependent tasks with the event
-      termination_event = wait_event;
       for (std::set<TaskDescription*>::iterator it = dependent_tasks.begin();
             it != dependent_tasks.end(); it++)
       {
-        (*it)->wait_events.insert(wait_event);
+        (*it)->wait_events.insert(termination_event);
 #ifdef DEBUG_HIGH_LEVEL
         assert((*it)->remaining_events > 0);
 #endif
@@ -1160,123 +1282,203 @@ namespace RegionRuntime {
 #endif
       RegionState &state = region_states[dep.ctx];
 
-      // Update the valid instance if one exists
+      // Update the previous instance
       if (state.valid_instance != NULL)
         dep.prev_instance = state.valid_instance;
 
-      // Check to see if there are any active tasks which conflict with this task
+      // First check to see if this is there are any conflicts with the existing tasks
       bool conflict = false;
-      for (std::vector<std::pair<RegionRequirement*,TaskDescription*> >::iterator it = 
-              state.active_tasks.begin(); it != state.active_tasks.end(); it++)
+      for (std::vector<std::pair<RegionRequirement*,TaskDescription*> >::iterator it =
+            state.active_tasks.begin(); it != state.active_tasks.end(); it++)
       {
-        // Check to see if the two requirements conflict 
-        if (RegionRequirement::region_conflict(dep.req, it->first))
+        if (RegionRequirement::region_conflict(it->first, dep.req))
         {
           conflict = true;
-          break;
-        }
-      }
-      // If there was a conflict, append all the tasks to set of tasks
-      // this task must wait for
-      if (conflict)
-      {
-        for (std::vector<std::pair<RegionRequirement*,TaskDescription*> >::iterator it = 
-              state.active_tasks.begin(); it != state.active_tasks.end(); it++)
-        {
-          // Check to see if it is mapped, if it is, grab the event,
-          // otherwise register this task as a dependent task
+          // Add this to the list of tasks we need to wait for
           if (it->second->mapped)
             dep.desc->wait_events.insert(it->second->termination_event);
           else
+          {
+            // The active task hasn't been mapped yet, tell it to wait
+            // until we're mapped before giving us its termination event
+            dep.desc->remaining_events++;
             it->second->dependent_tasks.insert(dep.desc);
+          }
         }
       }
 
-      // Now check to see if this is the region that we are looking for
-      if (dep.trace.size() == 0)
+      // Now check to see if this region that we're searching for
+      if (dep.trace.empty())
       {
+        // This is the region we're looking for
 #ifdef DEBUG_HIGH_LEVEL
-        assert(handle == dep.req->handle);
+        assert(dep.req->handle == handle);
 #endif
-        // We've found our match
-        // If the partition is open, close it   
+        // Check to see if there is an open partition that we need to close 
         if (state.open_valid)
         {
-#ifdef DEBUG_HIGH_LEVEL
-          assert(partitions.find(state.open_partition) != partitions.end());
-#endif
-          // Copy back to the previously valid instance
-          // which is where we will make our copy from
-          partitions[state.open_partition]->close_subtree(dep.ctx, dep.desc, dep.prev_instance);
-          // Mark the partition closed
+          // Close the open partition, tracking the copies we need to do 
+          partitions[state.open_partition]->close_subtree(dep.ctx, dep.desc, dep.prev_instance,
+                                                      dep.desc->pre_copy_trees);
+          // Mark the subtree as closed
           state.open_valid = false;
         }
-        // Create the InstanceInfo for this task
-        InstanceInfo *info = new InstanceInfo();
-        info->handle = dep.req->handle;
-        state.valid_instance = info;
-        // Add this to the tasks information
-        dep.desc->instances.push_back(info);
-        // Also updated the src instances with the src instance
-        dep.desc->src_instances.push_back(dep.prev_instance);
-
-        // If there was a conflict, this is the new valid instance info,
-        // otherwise add it to the group of valid tasks at this level
+        // If there was a conflict clear the active tasks
         if (conflict)
+        {
           state.active_tasks.clear();
+        }
+        // Add this to the list of active tasks
         state.active_tasks.push_back(
-            std::pair<RegionRequirement*,TaskDescription*>(dep.req, dep.desc));
+                  std::pair<RegionRequirement*,TaskDescription*>(dep.req,dep.desc));
+        
+        // Create an instance info for this task
+        InstanceInfo *info = new InstanceInfo();
+        info->handle = handle;
+        state.valid_instance = info;
+        // Update the tasks instances and the src instances
+        dep.desc->instances.push_back(info);
+        dep.desc->src_instances.push_back(dep.prev_instance);
       }
       else
       {
         // Continue the traversal
-        PartitionID next_part = dep.trace.front();
+        // Get the partition id out of the trace
+        PartitionID pid = dep.trace.front();
         dep.trace.pop_front();
 #ifdef DEBUG_HIGH_LEVEL
-        assert(partitions.find(next_part) != partitions.end());
+        assert(partitions.find(pid) != partitions.end());
 #endif
-        // If there is an open partition and it's not the one we want, close it off
-        if (state.open_valid && (state.open_partition != next_part))
-          partitions[state.open_partition]->close_subtree(dep.ctx, dep.desc, dep.prev_instance);
-
-        // Mark the partition as being open
-        state.open_valid = true;
-        state.open_partition = next_part;
-
-        // continue registering the task
-        partitions[next_part]->register_region_dependence(dep);
+        // Check to see if there is an open partition
+        if (state.open_valid)
+        {
+          // There is a partition open, see if it is the one we want
+          if (state.open_partition == pid)
+          {
+            // The open partition is the same one we want, keep going
+            partitions[pid]->register_region_dependence(dep);
+          }
+          else
+          {
+            // The open partition is not the one we want,
+            // close the old one and then open the new one
+            partitions[state.open_partition]->close_subtree(dep.ctx, dep.desc,
+                                            dep.prev_instance, dep.desc->pre_copy_trees);
+            partitions[pid]->open_subtree(dep);
+            // Mark the new subtree as being the correct open partition
+            state.open_partition = pid;
+          }
+        }
+        else
+        {
+          // There is no open partition, jump straight to where we're going
+          partitions[pid]->open_subtree(dep);
+          // Mark the partition as being open
+          state.open_valid = true;
+          state.open_partition = pid;
+        }
       }
     }
 
     //--------------------------------------------------------------------------------------------
-    void RegionNode::close_subtree(Context ctx, TaskDescription *desc, InstanceInfo *parent_inst)
+    void RegionNode::close_subtree(Context ctx, TaskDescription *desc, 
+                                   InstanceInfo *prev_inst, std::set<CopyOperation*> &result)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(ctx < region_states.size());
 #endif
-      // First check to see if there is an open partition, we need to close this first
-      // so that copies are inserted into the task description in the proper order
-      if (region_states[ctx].open_valid)
-      {
-        // If this region has a valid instance, pass that, otherwise pass the parent instance
-        PartitionNode *part = partitions[region_states[ctx].open_partition];
-        if (region_states[ctx].valid_instance != NULL)
-          part->close_subtree(ctx, desc, region_states[ctx].valid_instance);
-        else
-          part->close_subtree(ctx, desc, parent_inst);
-
-        // Mark the partition closed
-        region_states[ctx].open_valid = false;
-      }
-
-      // If we had a valid instance here, issue a copy to the parent instance 
+      // First check to see if there is a valid instance, if there is, create
+      // a new copy operation and add it to the results
       if (region_states[ctx].valid_instance != NULL)
       {
-        CopyOperation copy_op;
-        copy_op.src = region_states[ctx].valid_instance;
-        copy_op.dst = parent_inst;
-        desc->pre_copy_ops.push_back(copy_op);
+        CopyOperation *op;
+        // check to see if there is an open partition
+        if (region_states[ctx].open_valid)
+        {
+          // No need to wait on the task since the tasks below either conflicted
+          // and waited, or didn't conflict so the copy is ok
+          op = new CopyOperation(region_states[ctx].valid_instance,prev_inst);
+          // Now close up the open partition
+          std::set<CopyOperation*> sub_copies; 
+          partitions[region_states[ctx].open_partition]->close_subtree(ctx,desc,
+                                          region_states[ctx].valid_instance, sub_copies);
+          op->add_sub_copies(sub_copies);
+        }
+        else
+        {
+          if (region_states[ctx].active_tasks.size() == 1)
+          {
+            op = new CopyOperation(region_states[ctx].valid_instance,prev_inst,
+                         (region_states[ctx].active_tasks.begin())->second->termination_event);
+          }
+          else
+          {
+            // Get the event for when all the active tasks have finished
+            std::set<Event> active_events;
+            for (std::vector<std::pair<RegionRequirement*,TaskDescription*> >::iterator it =
+                  region_states[ctx].active_tasks.begin(); it != 
+                  region_states[ctx].active_tasks.end(); it++)
+            {
+              active_events.insert(it->second->termination_event);
+            }
+            op = new CopyOperation(region_states[ctx].valid_instance,prev_inst,
+                                    Event::merge_events(active_events));
+          }
+        }
+        // Put this in the result
+        result.insert(op);
+      }
+      else
+      {
+        // This better have an open partition otherwise we shouldn't be here
+#ifdef DEBUG_HIGH_LEVEL
+        assert(region_states[ctx].open_valid);
+#endif
+        partitions[region_states[ctx].open_partition]->close_subtree(ctx,desc,prev_inst,result);
+      }
+      // Mark everything closed
+      region_states[ctx].open_valid = false;
+      region_states[ctx].active_tasks.clear();
+      region_states[ctx].valid_instance = NULL;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::open_subtree(DependenceDetector &dep)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(dep.ctx < region_states.size());
+#endif
+      // See if this is the region that we're looking for
+      if (dep.trace.empty())
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(handle == dep.req->handle);
+#endif
+        // Add this to the set of active tasks
+        region_states[dep.ctx].active_tasks.push_back(
+            std::pair<RegionRequirement*,TaskDescription*>(dep.req,dep.desc));
+        // Create a new InstanceInfo
+        InstanceInfo *info = new InstanceInfo();
+        info->handle = dep.req->handle;
+        region_states[dep.ctx].valid_instance = info;
+        // Update the task description with the appropriate information
+        dep.desc->instances.push_back(info);
+        dep.desc->src_instances.push_back(dep.prev_instance);
+      }
+      else
+      {
+        // Figure out the partition that we want to go down
+        PartitionID pid = dep.trace.front();
+#ifdef DEBUG_HIGH_LEVEL
+        assert(partitions.find(pid) != partitions.end());
+#endif
+        dep.trace.pop_front();
+        region_states[dep.ctx].open_valid = true;
+        region_states[dep.ctx].open_partition = pid;
+        // Go down the partition
+        partitions[pid]->open_subtree(dep); 
       }
     }
 
@@ -1494,28 +1696,31 @@ namespace RegionRuntime {
           if (open == next_reg)
           {
             // Same region, continue the traversal
-            children[open]->register_region_dependence(dep);
+            children[next_reg]->register_region_dependence(dep);
           }
           else
           {
-            // Close up the other region
-            children[open]->close_subtree(dep.ctx, dep.desc, dep.prev_instance);
+            // Close up the other region and open up the new one
+            children[open]->close_subtree(dep.ctx, dep.desc, dep.prev_instance,
+                                              dep.desc->pre_copy_trees);
             state.open_regions.clear();
+            // Open up the new one
+            children[next_reg]->open_subtree(dep);
             state.open_regions.insert(next_reg);
-            children[next_reg]->register_region_dependence(dep);
           }
         }
         else
         {
           // There are no open child regions, open the one we need
+          children[next_reg]->open_subtree(dep);
           state.open_regions.insert(next_reg);
-          children[next_reg]->register_region_dependence(dep);
         }
       }
     }
 
     //--------------------------------------------------------------------------------------------
-    void PartitionNode::close_subtree(Context ctx,TaskDescription *desc,InstanceInfo *parent_inst)
+    void PartitionNode::close_subtree(Context ctx, TaskDescription *desc, 
+                                      InstanceInfo *prev_inst, std::set<CopyOperation*> &result)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1529,10 +1734,28 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(children.find(*it) != children.end());
 #endif
-        children[*it]->close_subtree(ctx, desc, parent_inst);
+        children[*it]->close_subtree(ctx, desc, prev_inst, result);
       }
       // Mark that all the children are closed
       partition_states[ctx].open_regions.clear();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void PartitionNode::open_subtree(DependenceDetector &dep)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(dep.ctx < partition_states.size());
+      assert(!dep.trace.empty());
+#endif
+      LogicalHandle next;
+      next.id = dep.trace.front();
+      dep.trace.pop_front();
+#ifdef DEBUG_HIGH_LEVEL
+      assert(children.find(next) != children.end());
+#endif
+      partition_states[dep.ctx].open_regions.insert(next);
+      children[next]->open_subtree(dep);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1899,6 +2122,7 @@ namespace RegionRuntime {
       desc->chosen = false;
       desc->mapped = false;
       desc->map_event = UserEvent::create_user_event();
+      desc->termination_event = UserEvent::create_user_event();
       desc->orig_proc = local_proc;
       desc->parent_ctx = ctx;
       desc->orig_ctx = desc->local_ctx;
@@ -2337,15 +2561,12 @@ namespace RegionRuntime {
       // Now launch the task itself (finally!)
       local_proc.spawn(desc->task_id, desc->args, desc->arglen, prev);
 
-      // Create a user level event to be triggered when the task is finished
-      desc->termination_event = UserEvent::create_user_event();
-
       // Now update the dependent tasks, if we're local we can do this directly, if not
       // launch a task on the original processor to do it
       if (desc->remote)
       {
         // Package up the data
-        size_t buffer_size = sizeof(Context) + sizeof(UserEvent) +
+        size_t buffer_size = sizeof(Context) +
                               desc->regions.size() * (sizeof(RegionInstance)+sizeof(Memory));
         void * buffer = malloc(buffer_size);
         char * ptr = (char*)buffer;
@@ -2353,8 +2574,6 @@ namespace RegionRuntime {
         // find the task description on the original processor
         *((Context*)ptr) = desc->orig_ctx;
         ptr += sizeof(Context);
-        *((UserEvent*)ptr) = desc->termination_event;
-        ptr += sizeof(UserEvent);
         for (std::vector<InstanceInfo*>::iterator it = desc->instances.begin();
               it != desc->instances.end(); it++)
         {

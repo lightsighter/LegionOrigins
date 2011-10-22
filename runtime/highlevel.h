@@ -100,10 +100,29 @@ namespace RegionRuntime {
         Memory location;        // Stage 2 (Movable)
     };
 
-    struct CopyOperation {
-    public:
+    class CopyOperation {
+    protected:
+      friend class TaskDescription;
+      friend class RegionNode;
+      friend class PartitionNode;
+    protected:
+      CopyOperation(InstanceInfo *s, InstanceInfo *d, 
+                    Event wait_on = Event::NO_EVENT, bool rem = false);
+      ~CopyOperation();
+      void add_sub_copies(const std::set<CopyOperation*> &copies);
+      // Trigger all the child copies and then this copy
+      Event execute(void);
+    protected:
+      // Operations for packing and unpacking copy trees
+      size_t compute_copy_tree_size(void) const;
+      void pack_copy_tree(char *&buffer) const;
+      static CopyOperation* unpack_copy_tree(const char *&buffer);
+    private:
+      std::set<CopyOperation*> sub_copies;
       InstanceInfo *src;
       InstanceInfo *dst;
+      Event ready; // Event indicating when the copy can be performed
+      const bool remote;
     };
 
     struct DependenceDetector {
@@ -169,11 +188,13 @@ namespace RegionRuntime {
       std::vector<TaskDescription*> child_tasks; // (immov)
     private:
       // Information about instances and copies
-      std::vector<CopyOperation> pre_copy_ops; // (mov) Computed before move
       std::vector<InstanceInfo*> instances; // Region instances for the regions (mov)
       std::vector<InstanceInfo*> src_instances; // Source instances for our instances (mov)
       std::vector<InstanceInfo*> dead_instances; // Computed after move 
       std::vector<LogicalHandle> root_regions; // The root regions for this task
+      // Copy operations
+      std::set<CopyOperation*> pre_copy_trees;
+      std::set<CopyOperation*> post_copy_trees;
     private:
       std::set<LogicalHandle> created_regions; // New top level regions
       std::set<LogicalHandle> deleted_regions; // The regions deleted in this task and children
@@ -426,8 +447,17 @@ namespace RegionRuntime {
       void register_region_dependence(DependenceDetector &dep);
 
       // close up the subtree registering all task dependences and copies that have to
-      // be performed
-      void close_subtree(Context ctx, TaskDescription *desc, InstanceInfo *parent_inst);
+      // be performed.  The copy operation only has to wait for the src (bottom) task 
+      // to finish.  If the src task conflicted with the dst (top) task then the top
+      // task must have already run, otherwise, they can run concurrently and we
+      // can copy up automatically
+      void close_subtree(Context ctx, TaskDescription *desc, 
+                         InstanceInfo *prev_inst, std::set<CopyOperation*> &result);
+
+      // Once we've closed a subtree, we don't have to check for dependences on our
+      // way to the logical region, we just need to open things up. Open them up
+      // and update the state with of all regions along the way.
+      void open_subtree(DependenceDetector &dep);
 
       void initialize_context(Context ctx);
 
@@ -471,7 +501,10 @@ namespace RegionRuntime {
 
       void register_region_dependence(DependenceDetector &dep);
 
-      void close_subtree(Context ctx, TaskDescription *desc, InstanceInfo *parent_inst);
+      void close_subtree(Context ctx, TaskDescription *desc, 
+                          InstanceInfo *prev_inst, std::set<CopyOperation*> &result);
+
+      void open_subtree(DependenceDetector &dep);
 
       void initialize_context(Context ctx);
 
