@@ -11,6 +11,7 @@
 #include "activemsg.h"
 
 GASNETT_THREADKEY_DEFINE(in_handler);
+GASNETT_THREADKEY_DEFINE(cur_thread);
 
 #include <pthread.h>
 
@@ -505,6 +506,9 @@ namespace RegionRuntime {
     {
       if(!id) return;  // special case: never wait for NO_EVENT
       Event::Impl *e = Runtime::get_runtime()->get_event_impl(*this);
+
+      void *thread = gasnett_threadkey_get(cur_thread);
+      printf("event thread = %p\n", thread);
       e->wait(gen);
     }
 
@@ -1194,6 +1198,40 @@ namespace RegionRuntime {
 	: Memory::Impl(_me, _size)
       {
       }
+
+      virtual int alloc_bytes(size_t size)
+      {
+	// RPC over to owner's node for allocation
+
+	RemoteMemAllocArgs args;
+	args.memory = me;
+	args.size = size;
+	int retval = RemoteMemAllocMessage::request(ID(me).node(), args);
+	printf("got: %d\n", retval);
+	return retval;
+      }
+
+      virtual void free_bytes(int offset, size_t size)
+      {
+	assert(0);
+      }
+
+      virtual void get_bytes(unsigned offset, void *dst, size_t size)
+      {
+	// can't read/write a remote memory
+	assert(0);
+      }
+
+      virtual void put_bytes(unsigned offset, const void *src, size_t size)
+      {
+	// can't read/write a remote memory
+	assert(0);
+      }
+
+      virtual void *get_direct_ptr(unsigned offset, size_t size)
+      {
+	return 0;
+      }
     };
 
     class GASNetMemory : public Memory::Impl {
@@ -1465,21 +1503,13 @@ namespace RegionRuntime {
 
     class LocalProcessor : public Processor::Impl {
     public:
-      LocalProcessor(Processor _me, int _core_id)
-	: Processor::Impl(_me, Processor::LOC_PROC), core_id(_core_id)
-      {
-      }
-
-      ~LocalProcessor(void)
-      {
-      }
-
-      class DeferredTaskSpawn : public Event::Impl::EventWaiter {
+      // simple task object keeps a copy of args
+      class Task {
       public:
-	DeferredTaskSpawn(LocalProcessor *_proc,
-			  Processor::TaskFuncID _func_id,
-			  const void *_args, size_t _arglen,
-			  Event _finish_event)
+	Task(LocalProcessor *_proc,
+	     Processor::TaskFuncID _func_id,
+	     const void *_args, size_t _arglen,
+	     Event _finish_event)
 	  : proc(_proc), func_id(_func_id), arglen(_arglen), finish_event(_finish_event)
 	{
 	  if(arglen) {
@@ -1488,20 +1518,15 @@ namespace RegionRuntime {
 	  } else {
 	    args = 0;
 	  }
-	  printf("PROC = %p\n", proc);
-	  printf("ME = %x\n", proc->me.id);
 	}
 
-	virtual ~DeferredTaskSpawn(void)
+	virtual ~Task(void)
 	{
 	  if(args) free(args);
 	}
 
-	virtual void event_triggered(void)
+	void run(void)
 	{
-	  printf("[%d] running deferred task: func=%d finish=%x/%d\n",
-		 gasnet_mynode(), func_id, finish_event.id, finish_event.gen);
-	  // for now, just run the damn thing
 	  Processor::TaskFuncPtr fptr = task_id_table[func_id];
 	  char argstr[100];
 	  argstr[0] = 0;
@@ -1518,7 +1543,6 @@ namespace RegionRuntime {
 	    finish_event.impl()->trigger(finish_event.gen, true);
 	}
 
-      protected:
 	LocalProcessor *proc;
 	Processor::TaskFuncID func_id;
 	void *args;
@@ -1526,36 +1550,177 @@ namespace RegionRuntime {
 	Event finish_event;
       };
 
+      // simple thread object just has a task field that you can set and 
+      //  wake up to run
+      class Thread {
+      public:
+	enum State { STATE_INIT, STATE_START, STATE_IDLE, STATE_RUN, STATE_SUSPEND };
+
+	Thread(LocalProcessor *_proc) : proc(_proc), task(0), state(STATE_INIT)
+	{
+	  gasnett_cond_init(&condvar);
+	}
+
+	~Thread(void) {}
+
+	void start(void) {
+	  state = STATE_START;
+
+	  pthread_attr_t attr;
+	  CHECK_PTHREAD( pthread_attr_init(&attr) );
+	  CHECK_PTHREAD( pthread_create(&thread, &attr, &thread_main, (void *)this) );
+	  CHECK_PTHREAD( pthread_attr_destroy(&attr) );
+	}
+
+	void set_task_and_wake(Task *new_task)
+	{
+	  // assumes proc's mutex already held
+	  task = new_task;
+	  gasnett_cond_signal(&condvar);
+	}
+
+	static void *thread_main(void *args)
+	{
+	  Thread *me = (Thread *)args;
+
+	  // first thing - take the lock and set our status
+	  me->state = STATE_IDLE;
+
+	  // stuff our pointer into TLS so Event::wait can find it
+	  gasnett_threadkey_set(cur_thread, me);
+
+	  printf("[%d] worker thread ready: proc=%x\n", gasnet_mynode(), me->proc->me.id);
+
+	  while(1) {
+	    // see if there's work sitting around (and we're allowed to 
+	    //  start running) - if not, sleep until somebody assigns us work
+	    if((me->proc->ready_tasks.size() > 0) &&
+	       (me->proc->active_thread_count < me->proc->max_active_threads)) {
+	      me->task = me->proc->ready_tasks.front();
+	      me->proc->ready_tasks.pop_front();
+	      me->proc->active_thread_count++;
+	      printf("[%d] thread claiming ready task: proc=%x task=%p thread=%p\n", gasnet_mynode(), me->proc->me.id, me->task, me);
+	    } else {
+	      me->state = STATE_IDLE;
+	      me->proc->avail_threads.push_back(me);
+	      printf("[%d] no task for thread, sleeping: proc=%x thread=%p\n",
+		     gasnet_mynode(), me->proc->me.id, me);
+	      fflush(stdout);
+	      gasnett_cond_wait(&me->condvar, &me->proc->mutex.lock);
+
+	      // when we wake up, expect to have a task
+	      assert(me->task != 0);
+	    }
+
+	    me->state = STATE_RUN;
+
+	    // release lock while task is running
+	    gasnet_hsl_unlock(&me->proc->mutex);
+	    
+	    me->task->run();
+
+	    // TODO: delete task?
+	    me->task = 0;
+
+	    // retake lock, decrement active thread count
+	    gasnet_hsl_lock(&me->proc->mutex);
+	    me->proc->active_thread_count--;
+	  }
+	}
+
+      public:
+	LocalProcessor *proc;
+	Task *task;
+	State state;
+	pthread_t thread;
+	gasnett_cond_t condvar;
+      };
+
+      class DeferredTaskSpawn : public Event::Impl::EventWaiter {
+      public:
+	DeferredTaskSpawn(Task *_task) : task(_task) {}
+
+	virtual ~DeferredTaskSpawn(void)
+	{
+	  // we do _NOT_ own the task - do not free it
+	}
+
+	virtual void event_triggered(void)
+	{
+	  printf("[%d] deferred task now ready: func=%d finish=%x/%d\n",
+		 gasnet_mynode(), task->func_id, 
+		 task->finish_event.id, task->finish_event.gen);
+
+	  // add task to processor's ready queue
+	  task->proc->add_ready_task(task);
+	}
+
+      protected:
+	Task *task;
+      };
+
+      LocalProcessor(Processor _me, int _core_id, 
+		     int _total_threads = 1, int _max_active_threads = 1)
+	: Processor::Impl(_me, Processor::LOC_PROC), core_id(_core_id),
+	  active_thread_count(0), max_active_threads(_max_active_threads)
+      {
+	// create worker threads - they will enqueue themselves when
+	//   they're ready
+	for(int i = 0; i < _total_threads; i++) {
+	  Thread *t = new Thread(this);
+	  printf("[%d] creating worker thread : proc=%x thread=%p\n", gasnet_mynode(), me.id, t);
+	  t->start();
+	}
+      }
+
+      ~LocalProcessor(void)
+      {
+      }
+
+      void add_ready_task(Task *task)
+      {
+	// modifications to task/thread lists require mutex
+	AutoHSLLock a(mutex);
+
+	// do we have an available thread that can run this task right now?
+	if((avail_threads.size() > 0) &&
+	   (active_thread_count < max_active_threads)) {
+	  Thread *thread = avail_threads.front();
+	  avail_threads.pop_front();
+	  active_thread_count++;
+	  printf("[%d] assigning new task to thread: proc=%x task=%p thread=%p\n", gasnet_mynode(), me.id, task, thread);
+	  thread->set_task_and_wake(task);
+	} else {
+	  // no?  just stuff it on ready list
+	  printf("[%d] no thread available for new task: proc=%x task=%p\n", gasnet_mynode(), me.id, task);
+	  ready_tasks.push_back(task);
+	}
+      }
+
       virtual void spawn_task(Processor::TaskFuncID func_id,
 			      const void *args, size_t arglen,
 			      Event start_event, Event finish_event)
       {
+	// create task object to hold args, etc.
+	Task *task = new Task(this, func_id, args, arglen, finish_event);
+
 	// early out - if the event has obviously triggered (or is NO_EVENT)
 	//  don't build up continuation
 	if(start_event.has_triggered()) {
-	  // for now, just run the damn thing
-	  Processor::TaskFuncPtr fptr = task_id_table[func_id];
-	  //(*fptr)(args, arglen, me);
-	  char argstr[100];
-	  argstr[0] = 0;
-	  for(size_t i = 0; (i < arglen) && (i < 40); i++)
-	    sprintf(argstr+2*i, "%02x", ((unsigned *)args)[i]);
-	  if(arglen > 40) strcpy(argstr+80, "...");
-	  printf("[%d] task start: %d (%s)\n", gasnet_mynode(), func_id, argstr);
-	  (*fptr)(args, arglen, me);
-	  printf("[%d] task end: %d (%s)\n", gasnet_mynode(), func_id, argstr);
-	  if(finish_event.exists())
-	    finish_event.impl()->trigger(finish_event.gen, true);
+	  add_ready_task(task);
 	} else {
 	  printf("[%d] deferring spawn: func=%d event=%x/%d\n",
 		 gasnet_mynode(), func_id, start_event.id, start_event.gen);
-	  printf("ME = %p\n", this);
-	  start_event.impl()->add_waiter(start_event, new DeferredTaskSpawn(this, func_id, args, arglen, finish_event));
+	  start_event.impl()->add_waiter(start_event, new DeferredTaskSpawn(task));
 	}
       }
 
     protected:
       int core_id;
+      int active_thread_count, max_active_threads;
+      std::list<Task *> ready_tasks;
+      std::list<Thread *> avail_threads;
+      gasnet_hsl_t mutex;
     };
 
     struct SpawnTaskArgs {
@@ -2712,6 +2877,7 @@ namespace RegionRuntime {
     struct NodeAnnounceData {
       gasnet_node_t node_id;
       unsigned num_procs;
+      unsigned num_memories;
     };
 
     static gasnet_hsl_t announcement_mutex = GASNET_HSL_INITIALIZER;
@@ -2719,13 +2885,20 @@ namespace RegionRuntime {
 
     void node_announce_handler(NodeAnnounceData data)
     {
-      printf("%d: received announce from %d (%d procs)\n", gasnet_mynode(), data.node_id, data.num_procs);
+      printf("%d: received announce from %d (%d procs, %d memories)\n", gasnet_mynode(), data.node_id, data.num_procs, data.num_memories);
       Node *n = &(Runtime::get_runtime()->nodes[data.node_id]);
       n->processors.resize(data.num_procs);
       for(unsigned i = 0; i < data.num_procs; i++) {
 	Processor p = ID(ID::ID_PROCESSOR, data.node_id, i).convert<Processor>();
 	n->processors[i] = new RemoteProcessor(p, Processor::LOC_PROC);
       }
+
+      n->memories.resize(data.num_memories);
+      for(unsigned i = 0; i < data.num_memories; i++) {
+	Memory m = ID(ID::ID_MEMORY, data.node_id, i).convert<Memory>();
+	n->memories[i] = new RemoteMemory(m, 16 << 20);
+      }
+
       gasnet_hsl_lock(&announcement_mutex);
       announcements_received++;
       gasnet_hsl_unlock(&announcement_mutex);
@@ -2946,6 +3119,7 @@ namespace RegionRuntime {
 
       announce_data.node_id = gasnet_mynode();
       announce_data.num_procs = num_local_procs;
+      announce_data.num_memories = 1;
 
       // create local processors
       n->processors.resize(num_local_procs);
@@ -3021,7 +3195,7 @@ namespace RegionRuntime {
     {
       if(task_id != 0 && 
 	 ((style != ONE_TASK_ONLY) || 
-	  (gasnet_mynode() == (gasnet_nodes()-1)))) {
+	  (gasnet_mynode() == 0))) {//(gasnet_nodes()-1)))) {
 	const std::vector<Processor::Impl *>& local_procs = Runtime::runtime->nodes[gasnet_mynode()].processors;
 	for(std::vector<Processor::Impl *>::const_iterator it = local_procs.begin();
 	    it != local_procs.end();
