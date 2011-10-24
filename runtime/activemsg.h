@@ -148,7 +148,7 @@ struct MessageRawArgs<MSGTYPE, MSGID, SHORT_HNDL_PTR, MED_HNDL_PTR, n> { \
   { \
     gasnet_node_t src; \
     gasnet_AMGetMsgSource(token, &src); \
-    printf("handling message from node %d\n", src); \
+    printf("handling message from node %d (id=%d)\n", src, MSGID);	\
     union { \
       MessageRawArgs<MSGTYPE,MSGID,SHORT_HNDL_PTR,MED_HNDL_PTR,n> raw; \
       MSGTYPE typed; \

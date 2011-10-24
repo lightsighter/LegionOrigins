@@ -11,7 +11,7 @@
 using namespace RegionRuntime::LowLevel;
 
 #define NUM_POTATOES 	10	
-#define NUM_TRIPS	100
+#define NUM_TRIPS	10
 #define NUM_HOPS        25
 
 #define PRINT_ID	(Processor::TASK_ID_FIRST_AVAILABLE+0)
@@ -72,7 +72,7 @@ void potato_launcher(const void * args, size_t arglen, Processor p)
     {
       Potato potato;
       potato.id = i;
-      potato.hops_left = i+1;
+      potato.hops_left = i+5;
       potato.lap_count_location = counter_alloc.alloc();
       potato.region = counter_region;
       potato.finished_location = finish_loc;
@@ -82,6 +82,7 @@ void potato_launcher(const void * args, size_t arglen, Processor p)
       previous = rlock.lock(0,false);
       previous = neighbor.spawn(HOT_POTATOER,&potato,sizeof(Potato),previous);
       rlock.unlock(previous);
+      break; // just one potato today...
     }
 }
 
@@ -99,6 +100,7 @@ void hot_potatoer(const void * args, size_t arglen, Processor p)
   Lock rlock = potato.region.get_lock();
 
   printf("Processor %x passing hot potato to processor %x (%d hops left)\n",me.id,proc_ring.neighbor[me].id,potato.hops_left);
+  fflush(stdout);
   // are we the last hop of the current lap?
   if (potato.hops_left == 0)
     {
@@ -160,6 +162,7 @@ void hot_potatoer(const void * args, size_t arglen, Processor p)
       previous = target.spawn(HOT_POTATOER,&potato,arglen,previous);
       rlock.unlock(previous);
     }
+  fflush(stdout);
 }
 
 template <AccessorType AT>
@@ -173,7 +176,8 @@ void potato_dropper(const void * args, size_t arglen, Processor p)
   RegionInstanceAccessor<unsigned,AT> master_acc = master_inst.get_accessor().convert<AT>();
 
   unsigned finished = master_acc.read(potato.finished_location) + 1;
-	
+
+  printf("%d potatoes dropped...\n", finished);
   if (finished == NUM_POTATOES)
     {
       printf("all potatoes finished!\n");
@@ -237,9 +241,9 @@ int main(int argc, char **argv)
 
   // now launch the launcher task on the first processor and wait for 
   //  completion
-  m.run(LAUNCHER_ID, Machine::ONE_TASK_PER_NODE);
+  m.run(LAUNCHER_ID, Machine::ONE_TASK_ONLY); //Machine::ONE_TASK_PER_NODE);
 
-  printf("SUCCESS!\n");
+  printf("Machine::run() returned!\n");
 
   return 0;
 }
