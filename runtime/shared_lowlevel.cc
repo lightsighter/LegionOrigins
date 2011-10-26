@@ -1325,10 +1325,12 @@ namespace RegionRuntime {
       return RegionInstanceAccessorUntyped<AccessorGeneric>((void *)impl);
     }
 
+#if 0
     Lock RegionInstanceUntyped::get_lock(void)
     {
 	return Runtime::get_runtime()->get_instance_impl(*this)->get_lock();
     }
+#endif
 
     Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, Event wait_on)
     {

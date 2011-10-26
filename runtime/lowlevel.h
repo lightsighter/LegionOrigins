@@ -2,6 +2,7 @@
 #define RUNTIME_LOWLEVEL_H
 
 #include <string>
+#include <vector>
 #include <set>
 #include <map>
 
@@ -57,6 +58,9 @@ namespace RegionRuntime {
 
       // creates an event that won't trigger until all input events have
       static Event merge_events(const std::set<Event>& wait_for);
+      static Event merge_events(Event ev1, Event ev2,
+				Event ev3 = NO_EVENT, Event ev4 = NO_EVENT,
+				Event ev5 = NO_EVENT, Event ev6 = NO_EVENT);
     };
 
     // A user level event has all the properties of event, except
@@ -130,6 +134,7 @@ namespace RegionRuntime {
       };
 
       Event spawn(TaskFuncID func_id, const void *args, size_t arglen,
+		  //std::set<RegionInstanceUntyped> instances_needed,
 		  Event wait_on = Event::NO_EVENT) const;
     };
 
@@ -348,7 +353,7 @@ namespace RegionRuntime {
       bool exists(void) const { return id != 0; }
 
       // get the lock that covers this instance
-      Lock get_lock(void);
+      Lock get_lock(void) { Lock l = { id }; return l; }
 
       RegionInstanceAccessorUntyped<AccessorGeneric> get_accessor_untyped(void) const;
 
@@ -485,9 +490,30 @@ namespace RegionRuntime {
       //void add_processor(Processor p) { procs.insert(p); }
       static Machine* get_machine(void);
 
+      struct ProcessorMemoryAffinity {
+	Processor p;
+	Memory m;
+	unsigned bandwidth; // TODO: consider splitting read vs. write?
+	unsigned latency;
+      };
+
+      struct MemoryMemoryAffinity {
+	Memory m1, m2;
+	unsigned bandwidth;
+	unsigned latency;
+      };
+
+      std::vector<ProcessorMemoryAffinity> get_proc_mem_affinity(Processor restrict_proc = Processor::NO_PROC,
+								 Memory restrict_memory = Memory::NO_MEMORY);
+
+      std::vector<MemoryMemoryAffinity> get_mem_mem_affinity(Memory restrict_mem1 = Memory::NO_MEMORY,
+							     Memory restrict_mem2 = Memory::NO_MEMORY);
+
     protected:
       std::set<Processor> procs;
       std::set<Memory> memories;
+      std::set<ProcessorMemoryAffinity> proc_mem_affinities;
+      std::set<MemoryMemoryAffinity> mem_mem_affinities;
       std::map<Processor,std::set<Memory> > visible_memories_from_procs;
       std::map<Memory,std::set<Memory> > visible_memories_from_memory;
       std::map<Memory,std::set<Processor> > visible_procs_from_memory;
