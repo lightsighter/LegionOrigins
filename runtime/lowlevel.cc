@@ -181,6 +181,10 @@ namespace RegionRuntime {
       EVENT_TRIGGER_MSGID,
       REMOTE_MALLOC_MSGID,
       REMOTE_MALLOC_RPLID,
+      CREATE_ALLOC_MSGID,
+      CREATE_ALLOC_RPLID,
+      CREATE_INST_MSGID,
+      CREATE_INST_RPLID,
     };
 
     /*static*/ Runtime *Runtime::runtime = 0;
@@ -288,6 +292,18 @@ namespace RegionRuntime {
 	lock.set_local_data(&data);
       }
 
+      // this version is called when we create a proxy for a remote region
+      Impl(RegionMetaDataUntyped _me)
+	: me(_me)
+      {
+	data.num_elmts = 0;
+	data.elmt_size = 0;  // automatically ask for shared lock to fill these in?
+	data.master_allocator = RegionAllocatorUntyped::NO_ALLOC;
+	data.master_instance = RegionInstanceUntyped::NO_INST;
+	lock.init(ID(me).convert<Lock>(), ID(me).node());
+	lock.set_local_data(&data);
+      }
+
       ~Impl(void) {}
 
       RegionAllocatorUntyped get_master_allocator_untyped(void) const
@@ -298,6 +314,14 @@ namespace RegionRuntime {
       RegionInstanceUntyped get_master_instance_untyped(void) const
       {
 	return data.master_instance;
+      }
+
+      size_t instance_size(void)
+      {
+	assert(data.num_elmts > 0);
+	assert(data.elmt_size > 0);
+	size_t bytes = data.num_elmts * data.elmt_size;
+	return bytes;
       }
 
       RegionMetaDataUntyped me;
@@ -1252,11 +1276,23 @@ namespace RegionRuntime {
       RegionAllocatorUntyped::Impl *get_allocator(RegionAllocatorUntyped a);
       RegionInstanceUntyped::Impl *get_instance(RegionInstanceUntyped i);
 
-      RegionAllocatorUntyped create_allocator(RegionMetaDataUntyped r);
-      RegionInstanceUntyped create_instance(RegionMetaDataUntyped r);
+      RegionAllocatorUntyped create_allocator_local(RegionMetaDataUntyped r,
+						    size_t bytes_needed);
+      RegionInstanceUntyped create_instance_local(RegionMetaDataUntyped r,
+						  size_t bytes_needed);
 
-      void destroy_allocator(RegionAllocatorUntyped a);
-      void destroy_instance(RegionInstanceUntyped i);
+      RegionAllocatorUntyped create_allocator_remote(RegionMetaDataUntyped r,
+						     size_t bytes_needed);
+      RegionInstanceUntyped create_instance_remote(RegionMetaDataUntyped r,
+						   size_t bytes_needed);
+
+      virtual RegionAllocatorUntyped create_allocator(RegionMetaDataUntyped r,
+						      size_t bytes_needed) = 0;
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed) = 0;
+
+      void destroy_allocator(RegionAllocatorUntyped a, bool local_destroy);
+      void destroy_instance(RegionInstanceUntyped i, bool local_destroy);
 
       virtual int alloc_bytes(size_t size) = 0;
       virtual void free_bytes(int offset, size_t size) = 0;
@@ -1304,6 +1340,18 @@ namespace RegionRuntime {
       virtual ~LocalCPUMemory(void)
       {
 	delete[] base;
+      }
+
+      virtual RegionAllocatorUntyped create_allocator(RegionMetaDataUntyped r,
+						      size_t bytes_needed)
+      {
+	return create_allocator_local(r, bytes_needed);
+      }
+
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed)
+      {
+	return create_instance_local(r, bytes_needed);
       }
 
       virtual int alloc_bytes(size_t size)
@@ -1363,6 +1411,18 @@ namespace RegionRuntime {
       {
       }
 
+      virtual RegionAllocatorUntyped create_allocator(RegionMetaDataUntyped r,
+						      size_t bytes_needed)
+      {
+	return create_allocator_remote(r, bytes_needed);
+      }
+
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed)
+      {
+	return create_instance_remote(r, bytes_needed);
+      }
+
       virtual int alloc_bytes(size_t size)
       {
 	// RPC over to owner's node for allocation
@@ -1415,6 +1475,26 @@ namespace RegionRuntime {
 
       virtual ~GASNetMemory(void)
       {
+      }
+
+      virtual RegionAllocatorUntyped create_allocator(RegionMetaDataUntyped r,
+						      size_t bytes_needed)
+      {
+	if(gasnet_mynode() == 0) {
+	  return create_allocator_local(r, bytes_needed);
+	} else {
+	  return create_allocator_remote(r, bytes_needed);
+	}
+      }
+
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed)
+      {
+	if(gasnet_mynode() == 0) {
+	  return create_instance_local(r, bytes_needed);
+	} else {
+	  return create_instance_remote(r, bytes_needed);
+	}
       }
 
       virtual int alloc_bytes(size_t size)
@@ -1501,6 +1581,163 @@ namespace RegionRuntime {
       std::map<int, int> free_blocks;
     };
 
+    RegionAllocatorUntyped Memory::Impl::create_allocator_local(RegionMetaDataUntyped r,
+								size_t bytes_needed)
+    {
+      int mask_start = alloc_bytes(bytes_needed);
+
+      // now find/make an available index to store this in
+      unsigned index;
+      {
+	AutoHSLLock a(mutex);
+
+	unsigned size = allocators.size();
+	for(index = 0; index < size; index++)
+	  if(!allocators[index]) {
+	    allocators[index] = (RegionAllocatorUntyped::Impl *)1;
+	    break;
+	  }
+
+	if(index >= size) allocators.push_back(0);
+      }
+
+      RegionAllocatorUntyped a = ID(ID::ID_ALLOCATOR, 
+				    ID(me).node(),
+				    ID(me).index_h(),
+				    index).convert<RegionAllocatorUntyped>();
+      RegionAllocatorUntyped::Impl *a_impl = new RegionAllocatorUntyped::Impl(a, r, me, mask_start);
+      allocators[index] = a_impl;
+      return a;
+    }
+
+    RegionInstanceUntyped Memory::Impl::create_instance_local(RegionMetaDataUntyped r,
+							      size_t bytes_needed)
+    {
+      int inst_offset = alloc_bytes(bytes_needed);
+
+      // find/make an available index to store this in
+      unsigned index;
+      {
+	AutoHSLLock a(mutex);
+
+	unsigned size = instances.size();
+	for(index = 0; index < size; index++)
+	  if(!instances[index]) {
+	    instances[index] = (RegionInstanceUntyped::Impl *)1;
+	    break;
+	  }
+
+	if(index >= size) instances.push_back(0);
+      }
+
+      RegionInstanceUntyped i = ID(ID::ID_INSTANCE, 
+				   ID(me).node(),
+				   ID(me).index_h(),
+				   index).convert<RegionInstanceUntyped>();
+
+      //RegionMetaDataImpl *r_impl = Runtime::runtime->get_metadata_impl(r);
+
+      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(i, r, me, inst_offset);
+
+      instances[index] = i_impl;
+
+      return i;
+    }
+
+    struct CreateAllocatorArgs {
+      Memory m;
+      RegionMetaDataUntyped r;
+      size_t bytes_needed;
+    };
+
+    struct CreateAllocatorResp {
+      RegionAllocatorUntyped a;
+      int mask_start;
+    };
+
+    CreateAllocatorResp handle_create_allocator(CreateAllocatorArgs args)
+    {
+      CreateAllocatorResp resp;
+      resp.a = args.m.impl()->create_allocator(args.r, args.bytes_needed);
+      resp.mask_start = resp.a.impl()->data.mask_start;
+      return resp;
+    }
+
+    typedef ActiveMessageShortReply<CREATE_ALLOC_MSGID, CREATE_ALLOC_RPLID,
+				    CreateAllocatorArgs, CreateAllocatorResp,
+				    handle_create_allocator> CreateAllocatorMessage;
+
+    RegionAllocatorUntyped Memory::Impl::create_allocator_remote(RegionMetaDataUntyped r,
+								 size_t bytes_needed)
+    {
+      CreateAllocatorArgs args;
+      args.m = me;
+      args.r = r;
+      args.bytes_needed = bytes_needed;
+      CreateAllocatorResp resp = CreateAllocatorMessage::request(ID(me).node(), args);
+      RegionAllocatorUntyped::Impl *a_impl = new RegionAllocatorUntyped::Impl(resp.a, r, me, resp.mask_start);
+      unsigned index = ID(resp.a).index_l();
+      // resize array if needed
+      if(index >= allocators.size()) {
+	AutoHSLLock a(mutex);
+	if(index >= allocators.size())
+	  for(unsigned i = allocators.size(); i <= index; i++)
+	    allocators.push_back(0);
+      }
+      allocators[index] = a_impl;
+      return resp.a;
+    }
+
+    struct CreateInstanceArgs {
+      Memory m;
+      RegionMetaDataUntyped r;
+      size_t bytes_needed;
+    };
+
+    struct CreateInstanceResp {
+      RegionInstanceUntyped i;
+      int inst_offset;
+    };
+
+    CreateInstanceResp handle_create_instance(CreateInstanceArgs args)
+    {
+      CreateInstanceResp resp;
+      resp.i = args.m.impl()->create_instance(args.r, args.bytes_needed);
+      resp.inst_offset = resp.i.impl()->data.offset;
+      return resp;
+    }
+
+    typedef ActiveMessageShortReply<CREATE_INST_MSGID, CREATE_INST_RPLID,
+				    CreateInstanceArgs, CreateInstanceResp,
+				    handle_create_instance> CreateInstanceMessage;
+
+    RegionInstanceUntyped Memory::Impl::create_instance_remote(RegionMetaDataUntyped r,
+							       size_t bytes_needed)
+    {
+      CreateInstanceArgs args;
+      args.m = me;
+      args.r = r;
+      args.bytes_needed = bytes_needed;
+      printf("[%d] creating remote instance: node=%d\n", gasnet_mynode(), ID(me).node());
+      CreateInstanceResp resp = CreateInstanceMessage::request(ID(me).node(), args);
+      printf("[%d] created remote instance: inst=%x offset=%d\n", gasnet_mynode(), resp.i.id, resp.inst_offset);
+      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(resp.i, r, me, resp.inst_offset);
+      unsigned index = ID(resp.i).index_l();
+      // resize array if needed
+      if(index >= instances.size()) {
+	AutoHSLLock a(mutex);
+	if(index >= instances.size()) {
+	  printf("[%d] resizing instance array: mem=%x old=%zd new=%d\n",
+		 gasnet_mynode(), me.id, instances.size(), index+1);
+	  for(unsigned i = instances.size(); i < index; i++)
+	    instances.push_back(0);
+	}
+      }
+      instances[index] = i_impl;
+      return resp.i;
+    }
+
+#if 0
     RegionAllocatorUntyped Memory::Impl::create_allocator(RegionMetaDataUntyped r)
     {
 
@@ -1560,6 +1797,7 @@ namespace RegionRuntime {
 
       return i;
     }
+#endif
 
     unsigned Memory::Impl::add_allocator(RegionAllocatorUntyped::Impl *a)
     {
@@ -1616,7 +1854,7 @@ namespace RegionRuntime {
       return instances[index];
     }
 
-    void Memory::Impl::destroy_allocator(RegionAllocatorUntyped i)
+    void Memory::Impl::destroy_allocator(RegionAllocatorUntyped i, bool local_destroy)
     {
       ID id(i);
 
@@ -1628,8 +1866,9 @@ namespace RegionRuntime {
       allocators[index] = 0;
     }
 
-    void Memory::Impl::destroy_instance(RegionInstanceUntyped i)
+    void Memory::Impl::destroy_instance(RegionInstanceUntyped i, bool local_destroy)
     {
+      return; // TODO: FIX!
       ID id(i);
 
       // TODO: actually free corresponding storage
@@ -2179,8 +2418,7 @@ namespace RegionRuntime {
 	printf("UNKNOWN METADATA %x\n", id.id());
 	AutoHSLLock a(n->mutex); // take lock before we actually allocate
 	if(!n->metadatas[index]) {
-	  n->metadatas[index] = new RegionMetaDataUntyped::Impl(id.convert<RegionMetaDataUntyped>(),
-								0, 0);
+	  n->metadatas[index] = new RegionMetaDataUntyped::Impl(id.convert<RegionMetaDataUntyped>());
 	} else
 	  printf("false alarm...\n");
       }
@@ -2214,11 +2452,21 @@ namespace RegionRuntime {
 	  // don't have region/offset info - will have to pull that when
 	  //  needed
 	  for(unsigned i = old_size; i <= id.index_l(); i++) 
-	    mem->instances[i] = new RegionInstanceUntyped::Impl(id.convert<RegionInstanceUntyped>(), mem->me);
+	    mem->instances[i] = 0;
 	}
       }
 
-      return null_check(mem->instances[id.index_l()]);
+      if(!mem->instances[id.index_l()]) {
+	// haven't seen this instance before?  create a proxy (inside a mutex)
+	AutoHSLLock a(mem->mutex);
+
+	if(!mem->instances[id.index_l()]) {
+	  printf("[%d] creating proxy instance: inst=%x\n", gasnet_mynode(), id.id());
+	  mem->instances[id.index_l()] = new RegionInstanceUntyped::Impl(id.convert<RegionInstanceUntyped>(), mem->me);
+	}
+      }
+	  
+      return mem->instances[id.index_l()];
     }
 
     ///////////////////////////////////////////////////
@@ -2264,9 +2512,13 @@ namespace RegionRuntime {
     {
       ID id(memory);
 
+      // we have to calculate the number of bytes needed in case the request
+      //  goes to a remote memory
+      size_t mask_size = ElementMaskImpl::bytes_needed(0, impl()->data.num_elmts);
+
       Memory::Impl *m_impl = Runtime::runtime->get_memory_impl(memory);
 
-      return m_impl->create_allocator(*this);
+      return m_impl->create_allocator(*this, 2 * mask_size);
 #if 0
       RegionAllocatorImpl *a_impl = new RegionAllocatorImpl(id.node());
       unsigned index = m_impl->add_allocator(a_impl);
@@ -2284,7 +2536,10 @@ namespace RegionRuntime {
 
       Memory::Impl *m_impl = Runtime::runtime->get_memory_impl(memory);
 
-      return m_impl->create_instance(*this);
+      RegionMetaDataUntyped::Impl *r_impl = impl();
+      size_t inst_bytes = r_impl->data.num_elmts * r_impl->data.elmt_size;
+
+      return m_impl->create_instance(*this, inst_bytes);
 #if 0
       RegionInstanceImpl *i_impl = new RegionInstanceImpl(id.node());
       unsigned index = m_impl->add_instance(i_impl);
@@ -2302,12 +2557,12 @@ namespace RegionRuntime {
 
     void RegionMetaDataUntyped::destroy_allocator_untyped(RegionAllocatorUntyped allocator) const
     {
-      allocator.impl()->data.memory.impl()->destroy_allocator(allocator);
+      allocator.impl()->data.memory.impl()->destroy_allocator(allocator, true);
     }
 
     void RegionMetaDataUntyped::destroy_instance_untyped(RegionInstanceUntyped instance) const
     {
-      instance.impl()->memory.impl()->destroy_instance(instance);
+      instance.impl()->memory.impl()->destroy_instance(instance, true);
     }
 
     Lock RegionMetaDataUntyped::get_lock(void) const
@@ -3486,6 +3741,8 @@ namespace RegionRuntime {
       hcount += EventSubscribeMessage::add_handler_entries(&handlers[hcount]);
       hcount += EventTriggerMessage::add_handler_entries(&handlers[hcount]);
       hcount += RemoteMemAllocMessage::add_handler_entries(&handlers[hcount]);
+      hcount += CreateAllocatorMessage::add_handler_entries(&handlers[hcount]);
+      hcount += CreateInstanceMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage2::add_handler_entries(&handlers[hcount]);
 
@@ -3507,7 +3764,7 @@ namespace RegionRuntime {
 
       NodeAnnounceData announce_data;
 
-      unsigned num_local_procs = 1;
+      unsigned num_local_procs = 4;
 
       announce_data.node_id = gasnet_mynode();
       announce_data.num_procs = num_local_procs;
@@ -3599,7 +3856,10 @@ namespace RegionRuntime {
       }
 
       // wait for idle-ness somehow?
-      sleep(1000);
+      for(int i = 0; i < 1000; i++) {
+	fflush(stdout);
+	sleep(1);
+      }
     }
 
 
