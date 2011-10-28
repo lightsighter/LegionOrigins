@@ -181,6 +181,10 @@ namespace RegionRuntime {
       EVENT_TRIGGER_MSGID,
       REMOTE_MALLOC_MSGID,
       REMOTE_MALLOC_RPLID,
+      CREATE_ALLOC_MSGID,
+      CREATE_ALLOC_RPLID,
+      CREATE_INST_MSGID,
+      CREATE_INST_RPLID,
     };
 
     /*static*/ Runtime *Runtime::runtime = 0;
@@ -238,6 +242,66 @@ namespace RegionRuntime {
       bool select_local_waiters(std::deque<Event>& to_wake);
 
       void unlock(void);
+
+      bool is_locked(unsigned check_mode, bool excl_ok);
+    };
+
+    template <class T>
+    class StaticAccess {
+    public:
+      typedef typename T::StaticData StaticData;
+
+      // if already_valid, just check that data is already valid
+      StaticAccess(T* thing_with_data, bool already_valid = false)
+	: data(&thing_with_data->locked_data)
+      {
+	if(already_valid) {
+	  assert(data->valid);
+	} else {
+	  if(!data->valid) {
+	    // get a valid copy of the static data by taking and then releasing
+	    //  a shared lock
+	    thing_with_data->lock.lock(1, false).wait();
+	    thing_with_data->lock.unlock();
+	    assert(data->valid);
+	  }
+	}
+      }
+
+      ~StaticAccess(void) {}
+
+      const StaticData *operator->(void) { return data; }
+
+    protected:
+      StaticData *data;
+    };
+
+    template <class T>
+    class SharedAccess {
+    public:
+      typedef typename T::CoherentData CoherentData;
+
+      // if already_held, just check that it's held (if in debug mode)
+      SharedAccess(T* thing_with_data, bool already_held = false)
+	: data(&thing_with_data->locked_data), lock(&thing_with_data->lock)
+      {
+	if(already_held) {
+	  assert(lock->is_locked(1, true));
+	} else {
+	  lock->lock(1, false).wait();
+	}
+      }
+
+      ~SharedAccess(void)
+      {
+	lock->unlock();
+      }
+
+      const CoherentData *operator->(void) { return data; }
+
+    protected:
+      CoherentData *data;
+      Lock::Impl *lock;
     };
 
     struct LockRequestArgs {
@@ -280,36 +344,44 @@ namespace RegionRuntime {
       Impl(RegionMetaDataUntyped _me, size_t _num_elmts, size_t _elmt_size)
 	: me(_me)
       {
-	data.num_elmts = _num_elmts;
-	data.elmt_size = _elmt_size;
-	data.master_allocator = RegionAllocatorUntyped::NO_ALLOC;
-	data.master_instance = RegionInstanceUntyped::NO_INST;
+	locked_data.valid = true;
+	locked_data.num_elmts = _num_elmts;
+	locked_data.elmt_size = _elmt_size;
 	lock.init(ID(me).convert<Lock>(), ID(me).node());
-	lock.set_local_data(&data);
+	lock.set_local_data(&locked_data);
+      }
+
+      // this version is called when we create a proxy for a remote region
+      Impl(RegionMetaDataUntyped _me)
+	: me(_me)
+      {
+	locked_data.valid = false;
+	locked_data.num_elmts = 0;
+	locked_data.elmt_size = 0;  // automatically ask for shared lock to fill these in?
+	lock.init(ID(me).convert<Lock>(), ID(me).node());
+	lock.set_local_data(&locked_data);
       }
 
       ~Impl(void) {}
 
-      RegionAllocatorUntyped get_master_allocator_untyped(void) const
+      size_t instance_size(void)
       {
-	return data.master_allocator;
-      }
-
-      RegionInstanceUntyped get_master_instance_untyped(void) const
-      {
-	return data.master_instance;
+	StaticAccess<RegionMetaDataUntyped::Impl> data(this);
+	assert(data->num_elmts > 0);
+	assert(data->elmt_size > 0);
+	size_t bytes = data->num_elmts * data->elmt_size;
+	return bytes;
       }
 
       RegionMetaDataUntyped me;
       Lock::Impl lock;
 
-      struct CoherentData {
+      struct StaticData {
+	bool valid;
 	size_t num_elmts, elmt_size;
-	RegionAllocatorUntyped master_allocator;
-	RegionInstanceUntyped master_instance;
       };
 
-      CoherentData data;
+      StaticData locked_data;
     };
 
     class RegionAllocatorUntyped::Impl {
@@ -322,14 +394,14 @@ namespace RegionRuntime {
 
       void free_elements(unsigned ptr, unsigned count = 1);
 
-      struct CoherentData {
+      struct StaticData {
 	RegionMetaDataUntyped region;
 	Memory memory;
 	int mask_start;
       };
 
       RegionAllocatorUntyped me;
-      CoherentData data;
+      StaticData data;
 
     protected:
       ElementMask avail_elmts, changed_elmts;
@@ -338,20 +410,49 @@ namespace RegionRuntime {
     class RegionInstanceUntyped::Impl {
     public:
       Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, int _offset)
-	: me(_me), region(_region), memory(_memory), offset(_offset) {}
+	: me(_me), memory(_memory)
+      {
+	locked_data.valid = true;
+	locked_data.region = _region;
+	locked_data.offset = _offset;
+	lock.init(ID(me).convert<Lock>(), ID(me).node());
+	lock.set_local_data(&locked_data);
+      }
+
+      // when we auto-create a remote instance, we don't know region/offset
+      Impl(RegionInstanceUntyped _me, Memory _memory)
+	: me(_me), memory(_memory)
+      {
+	locked_data.valid = false;
+	locked_data.region = RegionMetaDataUntyped::NO_REGION;
+	locked_data.offset = -1;
+	lock.init(ID(me).convert<Lock>(), ID(me).node());
+	lock.set_local_data(&locked_data);
+      }
 
       ~Impl(void) {}
 
       void get_bytes(unsigned ptr_value, void *dst, size_t size);
       void put_bytes(unsigned ptr_value, const void *src, size_t size);
 
+      static void copy(RegionInstanceUntyped src, 
+		       RegionInstanceUntyped target,
+		       size_t bytes_to_copy,
+		       Event after_copy = Event::NO_EVENT);
+
     public: //protected:
       friend class RegionInstanceUntyped;
 
       RegionInstanceUntyped me;
-      RegionMetaDataUntyped region;
       Memory memory;
-      int offset;
+
+      struct StaticData {
+	bool valid;
+	RegionMetaDataUntyped region;
+	int offset;
+      } locked_data;
+
+      Lock::Impl lock;
     };
 
     ///////////////////////////////////////////////////
@@ -399,10 +500,13 @@ namespace RegionRuntime {
       bool has_triggered(Event::gen_t needed_gen);
 
       // causes calling thread to block until event has occurred
-      void wait(Event::gen_t needed_gen);
+      //void wait(Event::gen_t needed_gen);
 
       // creates an event that won't trigger until all input events have
-      Event merge_events(const std::set<Event>& wait_for);
+      static Event merge_events(const std::set<Event>& wait_for);
+      static Event merge_events(Event ev1, Event ev2,
+				Event ev3 = NO_EVENT, Event ev4 = NO_EVENT,
+				Event ev5 = NO_EVENT, Event ev6 = NO_EVENT);
 
       // record that the event has triggered and notify anybody who cares
       void trigger(Event::gen_t gen_triggered, bool local_trigger);
@@ -502,21 +606,140 @@ namespace RegionRuntime {
       return e->has_triggered(gen);
     }
 
-    void Event::wait(void) const
-    {
-      if(!id) return;  // special case: never wait for NO_EVENT
-      Event::Impl *e = Runtime::get_runtime()->get_event_impl(*this);
+    class EventMerger : public Event::Impl::EventWaiter {
+    public:
+      EventMerger(Event _finish_event)
+	: count_needed(1), finish_event(_finish_event)
+      {
+	gasnet_hsl_init(&mutex);
+      }
 
-      void *thread = gasnett_threadkey_get(cur_thread);
-      printf("event thread = %p\n", thread);
-      e->wait(gen);
+      void add_event(Event wait_for)
+      {
+	if(wait_for.has_triggered()) return; // early out
+	{
+	  // step 1: increment our count first - we can't hold the lock while
+	  //   we add a listener to the 'wait_for' event (since it might trigger
+	  //   instantly and call our count-decrementing function), and we
+	  //   need to make sure all increments happen before corresponding
+	  //   decrements
+	  AutoHSLLock a(mutex);
+	  count_needed++;
+	}
+	// step 2: enqueue ourselves on the input event
+	wait_for.impl()->add_waiter(wait_for, this);
+      }
+
+      // arms the merged event once you're done adding input events - just
+      //  decrements the count for the implicit 'init done' event
+      void arm(void)
+      {
+	event_triggered();
+      }
+
+      virtual void event_triggered(void)
+      {
+	bool last_trigger = false;
+	{
+	  AutoHSLLock a(mutex);
+	  count_needed--;
+	  if(count_needed == 0) last_trigger = true;
+	}
+	// actually do triggering outside of lock (maybe not necessary, but
+	//  feels safer :)
+	if(last_trigger)
+	  finish_event.impl()->trigger(finish_event.gen, true);
+      }
+
+    protected:
+      unsigned count_needed;
+      Event finish_event;
+      gasnet_hsl_t mutex;
+    };
+
+    // creates an event that won't trigger until all input events have
+    /*static*/ Event Event::Impl::merge_events(const std::set<Event>& wait_for)
+    {
+      // scan through events to see how many exist/haven't fired - we're
+      //  interested in counts of 0, 1, or 2+ - also remember the first
+      //  event we saw for the count==1 case
+      int wait_count = 0;
+      Event first_wait;
+      for(std::set<Event>::const_iterator it = wait_for.begin();
+	  (it != wait_for.end()) && (wait_count < 2);
+	  it++)
+	if(!(*it).has_triggered()) {
+	  if(!wait_count) first_wait = *it;
+	  wait_count++;
+	}
+
+      // counts of 0 or 1 don't require any merging
+      if(wait_count == 0) return Event::NO_EVENT;
+      if(wait_count == 1) return first_wait;
+
+      // counts of 2+ require building a new event and a merger to trigger it
+      Event finish_event = Event::Impl::create_event();
+      EventMerger *m = new EventMerger(finish_event);
+
+      for(std::set<Event>::const_iterator it = wait_for.begin();
+	  (it != wait_for.end()) && (wait_count < 2);
+	  it++)
+	m->add_event(*it);
+
+      // once they're all added - arm the thing (it might go off immediately)
+      m->arm();
+
+      return finish_event;
+    }
+
+    /*static*/ Event Event::Impl::merge_events(Event ev1, Event ev2,
+					       Event ev3 /*= NO_EVENT*/, Event ev4 /*= NO_EVENT*/,
+					       Event ev5 /*= NO_EVENT*/, Event ev6 /*= NO_EVENT*/)
+    {
+      // scan through events to see how many exist/haven't fired - we're
+      //  interested in counts of 0, 1, or 2+ - also remember the first
+      //  event we saw for the count==1 case
+      int wait_count = 0;
+      Event first_wait;
+      if(!ev6.has_triggered()) { first_wait = ev6; wait_count++; }
+      if(!ev5.has_triggered()) { first_wait = ev5; wait_count++; }
+      if(!ev4.has_triggered()) { first_wait = ev4; wait_count++; }
+      if(!ev3.has_triggered()) { first_wait = ev3; wait_count++; }
+      if(!ev2.has_triggered()) { first_wait = ev2; wait_count++; }
+      if(!ev1.has_triggered()) { first_wait = ev1; wait_count++; }
+
+      // counts of 0 or 1 don't require any merging
+      if(wait_count == 0) return Event::NO_EVENT;
+      if(wait_count == 1) return first_wait;
+
+      // counts of 2+ require building a new event and a merger to trigger it
+      Event finish_event = Event::Impl::create_event();
+      EventMerger *m = new EventMerger(finish_event);
+
+      m->add_event(ev1);
+      m->add_event(ev2);
+      m->add_event(ev3);
+      m->add_event(ev4);
+      m->add_event(ev5);
+      m->add_event(ev6);
+
+      // once they're all added - arm the thing (it might go off immediately)
+      m->arm();
+
+      return finish_event;
     }
 
     // creates an event that won't trigger until all input events have
     /*static*/ Event Event::merge_events(const std::set<Event>& wait_for)
     {
-      assert(0);
-      return Event::NO_EVENT;
+      return Event::Impl::merge_events(wait_for);
+    }
+
+    /*static*/ Event Event::merge_events(Event ev1, Event ev2,
+					 Event ev3 /*= NO_EVENT*/, Event ev4 /*= NO_EVENT*/,
+					 Event ev5 /*= NO_EVENT*/, Event ev6 /*= NO_EVENT*/)
+    {
+      return Event::Impl::merge_events(ev1, ev2, ev3, ev4, ev5, ev6);
     }
 
     /*static*/ UserEvent UserEvent::create_user_event(void)
@@ -616,13 +839,21 @@ namespace RegionRuntime {
 
     bool Event::Impl::has_triggered(Event::gen_t needed_gen)
     {
-      return (needed_gen < generation);
+      return (needed_gen <= generation);
     }
 
+#if 0
     void Event::Impl::wait(Event::gen_t needed_gen)
     {
-      assert(0);
+      if(has_triggered(needed_gen)) return; // early out
+
+      // figure out which thread we are - better be a local CPU thread!
+      void *ptr = gasnet_threadkey_get(cur_thread);
+      assert(ptr != 0);
+      LocalProcessor::Thread *thr = (LocalProcessor::Thread *)ptr;
+      thr->sleep_on_event(this, needed_gen);
     }
+#endif
     
     void Event::Impl::trigger(Event::gen_t gen_triggered, bool local_trigger)
     {
@@ -634,7 +865,6 @@ namespace RegionRuntime {
 	//printf("[%d] TRIGGER MUTEX HOLD %x/%d\n", gasnet_mynode(), me.id, gen_triggered);
 
 	//printf("[%d] TRIGGER GEN: %x/%d->%d\n", gasnet_mynode(), me.id, generation, gen_triggered);
-	assert((generation + 1) == gen_triggered);
 	assert(gen_triggered > generation);
 
 	//printf("[%d] LOCAL WAITERS: %zd\n", gasnet_mynode(), local_waiters.size());
@@ -715,15 +945,22 @@ namespace RegionRuntime {
 
       printf("[%d] lock request: lock=%x, node=%d, mode=%d\n",
 	     gasnet_mynode(), args.lock.id, args.node, args.mode);
-      {
+
+      // can't send messages while holding mutex, so remember args and who
+      //  (if anyone) to send to
+      int req_forward_target = -1;
+      int grant_target = -1;
+      LockGrantArgs g_args;
+
+      do {
 	AutoHSLLock a(impl->mutex);
 
 	// case 1: we don't even own the lock any more - pass the request on
 	//  to whoever we think the owner is
 	if(impl->owner != gasnet_mynode()) {
 	  // can reuse the args we were given
-	  LockRequestMessage::request(impl->owner, args);
-	  return;
+	  req_forward_target = impl->owner;
+	  break;
 	}
 
 	// case 2: we're the owner, and nobody is holding the lock, so grant
@@ -733,15 +970,13 @@ namespace RegionRuntime {
 
 	  printf("[%d] granting lock request: lock=%x, node=%d, mode=%d\n",
 		 gasnet_mynode(), args.lock.id, args.node, args.mode);
-	  LockGrantArgs g_args;
 	  g_args.lock = args.lock;
 	  g_args.mode = 0; // always give it exclusively for now
 	  g_args.remote_waiter_mask = impl->remote_waiter_mask;
-	  LockGrantMessage::request(args.node, g_args,
-				    impl->local_data, impl->local_data_size);
+	  grant_target = args.node;
 
 	  impl->owner = args.node;
-	  return;
+	  break;
 	}
 
 	// case 3: we're the owner, but we can't grant the lock right now -
@@ -750,7 +985,14 @@ namespace RegionRuntime {
 	printf("[%d] deferring lock request: lock=%x, node=%d, mode=%d (count=%d cmode=%d)\n",
 	       gasnet_mynode(), args.lock.id, args.node, args.mode, impl->count, impl->mode);
 	impl->remote_waiter_mask |= (1ULL << args.node);
-      }
+      } while(0);
+
+      if(req_forward_target != -1)
+	LockRequestMessage::request(req_forward_target, args);
+
+      if(grant_target != -1)
+	LockGrantMessage::request(grant_target, g_args,
+				  impl->local_data, impl->local_data_size);
     }
 
     /*static*/ void /*Lock::Impl::*/handle_lock_release(LockReleaseArgs args)
@@ -760,7 +1002,7 @@ namespace RegionRuntime {
 
     void handle_lock_grant(LockGrantArgs args, const void *data, size_t datalen)
     {
-      printf("[%d] lock request granted: lock=%x mode=%d mask=%llx\n",
+      printf("[%d] lock request granted: lock=%x mode=%d mask=%lx\n",
 	     gasnet_mynode(), args.lock.id, args.mode, args.remote_waiter_mask);
 
       std::deque<Event> to_wake;
@@ -792,7 +1034,7 @@ namespace RegionRuntime {
 	  it != to_wake.end();
 	  it++) {
 	printf("[%d] unlock trigger: lock=%x event=%x/%d\n",
-	       gasnet_mynode(), args.lock, (*it).id, (*it).gen);
+	       gasnet_mynode(), args.lock.id, (*it).id, (*it).gen);
 	(*it).impl()->trigger((*it).gen, true);
       }
     }
@@ -803,48 +1045,62 @@ namespace RegionRuntime {
       printf("[%d] local lock request: lock=%x mode=%d excl=%d event=%x/%d\n",
 	     gasnet_mynode(), me.id, new_mode, exclusive, after_lock.id, after_lock.gen);
 
+      // deferred lock case
+      if(after_lock.exists()) {
+	assert(0);
+      }
+
       // collapse exclusivity into mode
       if(exclusive) new_mode = MODE_EXCL;
 
-      AutoHSLLock a(mutex); // hold mutex on lock for entire function
-
       bool got_lock = false;
+      int lock_request_target = -1;
+      LockRequestArgs args;
 
-      if(owner == gasnet_mynode()) {
-	// case 1: we own the lock
-	// can we grant it?
-	if((count == 0) || ((mode == new_mode) && (mode != MODE_EXCL))) {
-	  mode = new_mode;
-	  count++;
-	  got_lock = true;
-	}
-      } else {
-	// somebody else owns it
-	
-	// are we sharing?
-	if((count > 0) && (mode == new_mode)) {
-	  // we're allowed to grant additional sharers with the same mode
-	  assert(mode != MODE_EXCL);
-	  if(mode == new_mode) {
+      {
+	AutoHSLLock a(mutex); // hold mutex on lock while we check things
+
+	if(owner == gasnet_mynode()) {
+	  // case 1: we own the lock
+	  // can we grant it?
+	  if((count == 0) || ((mode == new_mode) && (mode != MODE_EXCL))) {
+	    mode = new_mode;
 	    count++;
 	    got_lock = true;
 	  }
-	}
+	} else {
+	  // somebody else owns it
 	
-	// if we didn't get the lock, we'll have to ask for it from the
-	//  other node (even if we're currently sharing with the wrong mode)
-	if(!got_lock && !requested) {
-	  printf("[%d] requesting lock: lock=%x node=%d mode=%d\n",
-		 gasnet_mynode(), me.id, owner, new_mode);
-	  LockRequestArgs args;
-	  args.node = gasnet_mynode();
-	  args.lock = me;
-	  args.mode = new_mode;
-	  LockRequestMessage::request(owner, args);
+	  // are we sharing?
+	  if((count > 0) && (mode == new_mode)) {
+	    // we're allowed to grant additional sharers with the same mode
+	    assert(mode != MODE_EXCL);
+	    if(mode == new_mode) {
+	      count++;
+	      got_lock = true;
+	    }
+	  }
+	
+	  // if we didn't get the lock, we'll have to ask for it from the
+	  //  other node (even if we're currently sharing with the wrong mode)
+	  if(!got_lock && !requested) {
+	    printf("[%d] requesting lock: lock=%x node=%d mode=%d\n",
+		   gasnet_mynode(), me.id, owner, new_mode);
+	    args.node = gasnet_mynode();
+	    args.lock = me;
+	    args.mode = new_mode;
+	    lock_request_target = owner;
+	    // don't actually send message here because we're holding the
+	    //  lock's mutex, which'll be bad if we get a message related to
+	    //  this lock inside gasnet calls
 	  
-	  requested = true;
+	    requested = true;
+	  }
 	}
       }
+
+      if(lock_request_target != -1)
+	LockRequestMessage::request(lock_request_target, args);
 
       // if we got the lock, trigger an event if we're given one
       if(got_lock) {
@@ -856,7 +1112,7 @@ namespace RegionRuntime {
       //  waiters - create an event if we weren't given one to use
       if(!after_lock.exists())
 	after_lock = Event::Impl::create_event();
-      local_waiters[mode].push_back(after_lock);
+      local_waiters[new_mode].push_back(after_lock);
       return after_lock;
     }
 
@@ -907,8 +1163,15 @@ namespace RegionRuntime {
       // make a list of events that we be woken - can't do it while holding the
       //  lock's mutex (because the event we trigger might try to take the lock)
       std::deque<Event> to_wake;
-      {
-	printf("[%d] unlock: lock=%x count=%d mode=%d share=%llx wait=%llx\n",
+
+      int release_target = -1;
+      LockReleaseArgs r_args;
+
+      int grant_target = -1;
+      LockGrantArgs g_args;
+
+      do {
+	printf("[%d] unlock: lock=%x count=%d mode=%d share=%lx wait=%lx\n",
 	       gasnet_mynode(), me.id, count, mode, remote_sharer_mask, remote_waiter_mask);
 	AutoHSLLock a(mutex); // hold mutex on lock for entire function
 
@@ -917,18 +1180,18 @@ namespace RegionRuntime {
 	// if this isn't the last holder of the lock, just decrement count
 	//  and return
 	count--;
-	if(count > 0) return;
+	if(count > 0) break;
 
 	// case 1: if we were sharing somebody else's lock, tell them we're
 	//  done
 	if(owner != gasnet_mynode()) {
 	  assert(mode != MODE_EXCL);
 	  mode = 0;
-	  LockReleaseArgs args;
-	  args.node = gasnet_mynode();
-	  args.lock = me;
-	  LockReleaseMessage::request(owner, args);
-	  return;
+
+	  r_args.node = gasnet_mynode();
+	  r_args.lock = me;
+	  release_target = owner;
+	  break;
 	}
 
 	// case 2: we own the lock, so we can give it to another waiter
@@ -940,20 +1203,25 @@ namespace RegionRuntime {
 	  int new_owner = 0;
 	  while(((remote_waiter_mask >> new_owner) & 1) == 0) new_owner++;
 
-	  printf("[%d] lock going to remote waiter: new=%d mask=%llx\n",
+	  printf("[%d] lock going to remote waiter: new=%d mask=%lx\n",
 		 gasnet_mynode(), new_owner, remote_waiter_mask);
 
-	  LockGrantArgs args;
-	  args.lock = me;
-	  args.mode = 0; // TODO: figure out shared cases
-	  args.remote_waiter_mask = remote_waiter_mask & ~(1ULL << new_owner);
-	  LockGrantMessage::request(new_owner, args,
-				    local_data, local_data_size);
+	  g_args.lock = me;
+	  g_args.mode = 0; // TODO: figure out shared cases
+	  g_args.remote_waiter_mask = remote_waiter_mask & ~(1ULL << new_owner);
+	  grant_target = new_owner;
 
 	  owner = new_owner;
 	  remote_waiter_mask = 0;
 	}
-      }
+      } while(0);
+
+      if(release_target != -1)
+	LockReleaseMessage::request(release_target, r_args);
+
+      if(grant_target != -1)
+	LockGrantMessage::request(grant_target, g_args,
+				  local_data, local_data_size);
 
       for(std::deque<Event>::iterator it = to_wake.begin();
 	  it != to_wake.end();
@@ -962,6 +1230,26 @@ namespace RegionRuntime {
 	       gasnet_mynode(), me.id, (*it).id, (*it).gen);
 	(*it).impl()->trigger((*it).gen, true);
       }
+    }
+
+    bool Lock::Impl::is_locked(unsigned check_mode, bool excl_ok)
+    {
+      // checking the owner can be done atomically, so doesn't need mutex
+      if(owner != gasnet_mynode()) return false;
+
+      // conservative check on lock count also doesn't need mutex
+      if(count == 0) return false;
+
+      // a careful check of the lock mode and count does require the mutex
+      bool held;
+      {
+	AutoHSLLock a(mutex);
+
+	held = ((count > 0) &&
+		((mode == check_mode) || ((mode == 0) && excl_ok)));
+      }
+
+      return held;
     }
 
     class DeferredLockRequest : public Event::Impl::EventWaiter {
@@ -1077,8 +1365,16 @@ namespace RegionRuntime {
 
     class Memory::Impl {
     public:
-      Impl(Memory _me, size_t _size)
-	: me(_me), size(_size)
+      enum MemoryKind {
+	MKIND_SYSMEM,  // directly accessible from CPU
+	MKIND_GASNET,  // accessible via GASnet RDMA
+	MKIND_REMOTE,  // not accessible
+	MKIND_GPUFB,   // GPU framebuffer memory (accessible via cudaMemcpy)
+	MKIND_ZEROCOPY, // CPU memory, pinned for GPU access
+      };
+
+      Impl(Memory _me, size_t _size, MemoryKind _kind)
+	: me(_me), size(_size), kind(_kind)
       {
 	gasnet_hsl_init(&mutex);
       }
@@ -1089,11 +1385,23 @@ namespace RegionRuntime {
       RegionAllocatorUntyped::Impl *get_allocator(RegionAllocatorUntyped a);
       RegionInstanceUntyped::Impl *get_instance(RegionInstanceUntyped i);
 
-      RegionAllocatorUntyped create_allocator(RegionMetaDataUntyped r);
-      RegionInstanceUntyped create_instance(RegionMetaDataUntyped r);
+      RegionAllocatorUntyped create_allocator_local(RegionMetaDataUntyped r,
+						    size_t bytes_needed);
+      RegionInstanceUntyped create_instance_local(RegionMetaDataUntyped r,
+						  size_t bytes_needed);
 
-      void destroy_allocator(RegionAllocatorUntyped a);
-      void destroy_instance(RegionInstanceUntyped i);
+      RegionAllocatorUntyped create_allocator_remote(RegionMetaDataUntyped r,
+						     size_t bytes_needed);
+      RegionInstanceUntyped create_instance_remote(RegionMetaDataUntyped r,
+						   size_t bytes_needed);
+
+      virtual RegionAllocatorUntyped create_allocator(RegionMetaDataUntyped r,
+						      size_t bytes_needed) = 0;
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed) = 0;
+
+      void destroy_allocator(RegionAllocatorUntyped a, bool local_destroy);
+      void destroy_instance(RegionInstanceUntyped i, bool local_destroy);
 
       virtual int alloc_bytes(size_t size) = 0;
       virtual void free_bytes(int offset, size_t size) = 0;
@@ -1106,6 +1414,7 @@ namespace RegionRuntime {
     public:
       Memory me;
       size_t size;
+      MemoryKind kind;
       gasnet_hsl_t mutex; // protection for resizing vectors
       std::vector<RegionAllocatorUntyped::Impl *> allocators;
       std::vector<RegionInstanceUntyped::Impl *> instances;
@@ -1131,7 +1440,7 @@ namespace RegionRuntime {
     class LocalCPUMemory : public Memory::Impl {
     public:
       LocalCPUMemory(Memory _me, size_t _size) 
-	: Memory::Impl(_me, _size)
+	: Memory::Impl(_me, _size, MKIND_SYSMEM)
       {
 	base = new char[_size];
 	free_blocks[0] = _size;
@@ -1140,6 +1449,18 @@ namespace RegionRuntime {
       virtual ~LocalCPUMemory(void)
       {
 	delete[] base;
+      }
+
+      virtual RegionAllocatorUntyped create_allocator(RegionMetaDataUntyped r,
+						      size_t bytes_needed)
+      {
+	return create_allocator_local(r, bytes_needed);
+      }
+
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed)
+      {
+	return create_instance_local(r, bytes_needed);
       }
 
       virtual int alloc_bytes(size_t size)
@@ -1195,8 +1516,20 @@ namespace RegionRuntime {
     class RemoteMemory : public Memory::Impl {
     public:
       RemoteMemory(Memory _me, size_t _size)
-	: Memory::Impl(_me, _size)
+	: Memory::Impl(_me, _size, MKIND_REMOTE)
       {
+      }
+
+      virtual RegionAllocatorUntyped create_allocator(RegionMetaDataUntyped r,
+						      size_t bytes_needed)
+      {
+	return create_allocator_remote(r, bytes_needed);
+      }
+
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed)
+      {
+	return create_instance_remote(r, bytes_needed);
       }
 
       virtual int alloc_bytes(size_t size)
@@ -1237,7 +1570,7 @@ namespace RegionRuntime {
     class GASNetMemory : public Memory::Impl {
     public:
       GASNetMemory(Memory _me) 
-	: Memory::Impl(_me, 0 /* we'll calculate it below */)
+	: Memory::Impl(_me, 0 /* we'll calculate it below */, MKIND_GASNET)
       {
 	num_nodes = gasnet_nodes();
 	seginfos = new gasnet_seginfo_t[num_nodes];
@@ -1251,6 +1584,26 @@ namespace RegionRuntime {
 
       virtual ~GASNetMemory(void)
       {
+      }
+
+      virtual RegionAllocatorUntyped create_allocator(RegionMetaDataUntyped r,
+						      size_t bytes_needed)
+      {
+	if(gasnet_mynode() == 0) {
+	  return create_allocator_local(r, bytes_needed);
+	} else {
+	  return create_allocator_remote(r, bytes_needed);
+	}
+      }
+
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed)
+      {
+	if(gasnet_mynode() == 0) {
+	  return create_instance_local(r, bytes_needed);
+	} else {
+	  return create_instance_remote(r, bytes_needed);
+	}
       }
 
       virtual int alloc_bytes(size_t size)
@@ -1337,6 +1690,163 @@ namespace RegionRuntime {
       std::map<int, int> free_blocks;
     };
 
+    RegionAllocatorUntyped Memory::Impl::create_allocator_local(RegionMetaDataUntyped r,
+								size_t bytes_needed)
+    {
+      int mask_start = alloc_bytes(bytes_needed);
+
+      // now find/make an available index to store this in
+      unsigned index;
+      {
+	AutoHSLLock a(mutex);
+
+	unsigned size = allocators.size();
+	for(index = 0; index < size; index++)
+	  if(!allocators[index]) {
+	    allocators[index] = (RegionAllocatorUntyped::Impl *)1;
+	    break;
+	  }
+
+	if(index >= size) allocators.push_back(0);
+      }
+
+      RegionAllocatorUntyped a = ID(ID::ID_ALLOCATOR, 
+				    ID(me).node(),
+				    ID(me).index_h(),
+				    index).convert<RegionAllocatorUntyped>();
+      RegionAllocatorUntyped::Impl *a_impl = new RegionAllocatorUntyped::Impl(a, r, me, mask_start);
+      allocators[index] = a_impl;
+      return a;
+    }
+
+    RegionInstanceUntyped Memory::Impl::create_instance_local(RegionMetaDataUntyped r,
+							      size_t bytes_needed)
+    {
+      int inst_offset = alloc_bytes(bytes_needed);
+
+      // find/make an available index to store this in
+      unsigned index;
+      {
+	AutoHSLLock a(mutex);
+
+	unsigned size = instances.size();
+	for(index = 0; index < size; index++)
+	  if(!instances[index]) {
+	    instances[index] = (RegionInstanceUntyped::Impl *)1;
+	    break;
+	  }
+
+	if(index >= size) instances.push_back(0);
+      }
+
+      RegionInstanceUntyped i = ID(ID::ID_INSTANCE, 
+				   ID(me).node(),
+				   ID(me).index_h(),
+				   index).convert<RegionInstanceUntyped>();
+
+      //RegionMetaDataImpl *r_impl = Runtime::runtime->get_metadata_impl(r);
+
+      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(i, r, me, inst_offset);
+
+      instances[index] = i_impl;
+
+      return i;
+    }
+
+    struct CreateAllocatorArgs {
+      Memory m;
+      RegionMetaDataUntyped r;
+      size_t bytes_needed;
+    };
+
+    struct CreateAllocatorResp {
+      RegionAllocatorUntyped a;
+      int mask_start;
+    };
+
+    CreateAllocatorResp handle_create_allocator(CreateAllocatorArgs args)
+    {
+      CreateAllocatorResp resp;
+      resp.a = args.m.impl()->create_allocator(args.r, args.bytes_needed);
+      resp.mask_start = resp.a.impl()->data.mask_start;
+      return resp;
+    }
+
+    typedef ActiveMessageShortReply<CREATE_ALLOC_MSGID, CREATE_ALLOC_RPLID,
+				    CreateAllocatorArgs, CreateAllocatorResp,
+				    handle_create_allocator> CreateAllocatorMessage;
+
+    RegionAllocatorUntyped Memory::Impl::create_allocator_remote(RegionMetaDataUntyped r,
+								 size_t bytes_needed)
+    {
+      CreateAllocatorArgs args;
+      args.m = me;
+      args.r = r;
+      args.bytes_needed = bytes_needed;
+      CreateAllocatorResp resp = CreateAllocatorMessage::request(ID(me).node(), args);
+      RegionAllocatorUntyped::Impl *a_impl = new RegionAllocatorUntyped::Impl(resp.a, r, me, resp.mask_start);
+      unsigned index = ID(resp.a).index_l();
+      // resize array if needed
+      if(index >= allocators.size()) {
+	AutoHSLLock a(mutex);
+	if(index >= allocators.size())
+	  for(unsigned i = allocators.size(); i <= index; i++)
+	    allocators.push_back(0);
+      }
+      allocators[index] = a_impl;
+      return resp.a;
+    }
+
+    struct CreateInstanceArgs {
+      Memory m;
+      RegionMetaDataUntyped r;
+      size_t bytes_needed;
+    };
+
+    struct CreateInstanceResp {
+      RegionInstanceUntyped i;
+      int inst_offset;
+    };
+
+    CreateInstanceResp handle_create_instance(CreateInstanceArgs args)
+    {
+      CreateInstanceResp resp;
+      resp.i = args.m.impl()->create_instance(args.r, args.bytes_needed);
+      resp.inst_offset = resp.i.impl()->locked_data.offset; // TODO: Static
+      return resp;
+    }
+
+    typedef ActiveMessageShortReply<CREATE_INST_MSGID, CREATE_INST_RPLID,
+				    CreateInstanceArgs, CreateInstanceResp,
+				    handle_create_instance> CreateInstanceMessage;
+
+    RegionInstanceUntyped Memory::Impl::create_instance_remote(RegionMetaDataUntyped r,
+							       size_t bytes_needed)
+    {
+      CreateInstanceArgs args;
+      args.m = me;
+      args.r = r;
+      args.bytes_needed = bytes_needed;
+      printf("[%d] creating remote instance: node=%d\n", gasnet_mynode(), ID(me).node());
+      CreateInstanceResp resp = CreateInstanceMessage::request(ID(me).node(), args);
+      printf("[%d] created remote instance: inst=%x offset=%d\n", gasnet_mynode(), resp.i.id, resp.inst_offset);
+      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(resp.i, r, me, resp.inst_offset);
+      unsigned index = ID(resp.i).index_l();
+      // resize array if needed
+      if(index >= instances.size()) {
+	AutoHSLLock a(mutex);
+	if(index >= instances.size()) {
+	  printf("[%d] resizing instance array: mem=%x old=%zd new=%d\n",
+		 gasnet_mynode(), me.id, instances.size(), index+1);
+	  for(unsigned i = instances.size(); i <= index; i++)
+	    instances.push_back(0);
+	}
+      }
+      instances[index] = i_impl;
+      return resp.i;
+    }
+
+#if 0
     RegionAllocatorUntyped Memory::Impl::create_allocator(RegionMetaDataUntyped r)
     {
 
@@ -1396,6 +1906,7 @@ namespace RegionRuntime {
 
       return i;
     }
+#endif
 
     unsigned Memory::Impl::add_allocator(RegionAllocatorUntyped::Impl *a)
     {
@@ -1452,7 +1963,7 @@ namespace RegionRuntime {
       return instances[index];
     }
 
-    void Memory::Impl::destroy_allocator(RegionAllocatorUntyped i)
+    void Memory::Impl::destroy_allocator(RegionAllocatorUntyped i, bool local_destroy)
     {
       ID id(i);
 
@@ -1464,8 +1975,9 @@ namespace RegionRuntime {
       allocators[index] = 0;
     }
 
-    void Memory::Impl::destroy_instance(RegionInstanceUntyped i)
+    void Memory::Impl::destroy_instance(RegionInstanceUntyped i, bool local_destroy)
     {
+      return; // TODO: FIX!
       ID id(i);
 
       // TODO: actually free corresponding storage
@@ -1494,6 +2006,7 @@ namespace RegionRuntime {
 
       virtual void spawn_task(Processor::TaskFuncID func_id,
 			      const void *args, size_t arglen,
+			      //std::set<RegionInstanceUntyped> instances_needed,
 			      Event start_event, Event finish_event) = 0;
 
     public:
@@ -1552,7 +2065,7 @@ namespace RegionRuntime {
 
       // simple thread object just has a task field that you can set and 
       //  wake up to run
-      class Thread {
+      class Thread : public Event::Impl::EventWaiter {
       public:
 	enum State { STATE_INIT, STATE_START, STATE_IDLE, STATE_RUN, STATE_SUSPEND };
 
@@ -1577,6 +2090,75 @@ namespace RegionRuntime {
 	  // assumes proc's mutex already held
 	  task = new_task;
 	  gasnett_cond_signal(&condvar);
+	}
+
+	void resume_task(void)
+	{
+	  // assumes proc's mutex already held
+	  state = STATE_RUN;
+	  gasnett_cond_signal(&condvar);
+	}
+
+	virtual void event_triggered(void)
+	{
+	  AutoHSLLock a(proc->mutex);
+
+	  // check for the instant trigger guard - if it's still set, the
+	  //  thread didn't go to sleep yet, so just clear the guard rather
+	  //  than moving the thread to the resumable list
+	  if(instant_trigger_guard) {
+	    instant_trigger_guard = false;
+	  } else {
+	    proc->resumable_threads.push_back(this);
+	    proc->start_some_threads();
+	  }
+	}
+
+	void sleep_on_event(Event wait_for)
+	{
+	  // icky race conditions here - once we add ourselves as a waiter, 
+	  //  the trigger could come right away (and need the lock), so we
+	  //  have to set a flag (also save the event ID we're waiting on
+	  //  for debug goodness), then add a waiter to the event and THEN
+	  //  take our own lock and see if we still need to sleep
+	  instant_trigger_guard = true;
+	  suspend_event = wait_for;
+
+	  wait_for.impl()->add_waiter(wait_for, this);
+
+	  {
+	    AutoHSLLock a(proc->mutex);
+
+	    if(instant_trigger_guard) {
+	      // guard is still active, so we can safely sleep
+	      instant_trigger_guard = false;
+
+	      // NOTE: while tempting, it's not OK to check the event's
+	      //  triggeredness again here - it can result in an event_triggered()
+	      //  sent to us without us going to sleep, which would be bad
+	      printf("[%d] thread sleeping on event: thread=%p event=%x/%d\n",
+		     gasnet_mynode(), this, wait_for.id, wait_for.gen);
+	      printf("suspend=%x/%d\n", suspend_event.id, suspend_event.gen);
+	      // decrement the active thread count (check to see if somebody
+	      //  else can run)
+	      proc->active_thread_count--;
+	      proc->start_some_threads();
+
+	      // now sleep on our condition variable - we'll wake up after
+	      //  we've been moved to the resumable list and chosen from there
+	      state = STATE_SUSPEND;
+	      fflush(stdout);
+	      do {
+		// guard against spurious wakeups
+		gasnett_cond_wait(&condvar, &proc->mutex.lock);
+	      } while(state == STATE_SUSPEND);
+	      printf("[%d] thread done sleeping on event: thread=%p event=%x/%d\n",
+		     gasnet_mynode(), this, wait_for.id, wait_for.gen);
+	    } else {
+	      printf("[%d] thread got instant trigger on event: thread=%p event=%x/%d\n",
+		     gasnet_mynode(), this, wait_for.id, wait_for.gen);
+	    }
+	  }
 	}
 
 	static void *thread_main(void *args)
@@ -1634,6 +2216,8 @@ namespace RegionRuntime {
 	State state;
 	pthread_t thread;
 	gasnett_cond_t condvar;
+	bool instant_trigger_guard;
+	Event suspend_event;
       };
 
       class DeferredTaskSpawn : public Event::Impl::EventWaiter {
@@ -1697,8 +2281,36 @@ namespace RegionRuntime {
 	}
       }
 
+      // see if there are resumable threads and/or new tasks to run, respecting
+      //  the available thread and runnable thread limits
+      // ASSUMES LOCK IS HELD BY CALLER
+      void start_some_threads(void)
+      {
+	// favor once-running threads that now want to resume
+	while((active_thread_count < max_active_threads) &&
+	      (resumable_threads.size() > 0)) {
+	  Thread *t = resumable_threads.front();
+	  resumable_threads.pop_front();
+	  active_thread_count++;
+	  t->resume_task();
+	}
+
+	// if slots are still available, start new tasks
+	while((active_thread_count < max_active_threads) &&
+	      (ready_tasks.size() > 0) &&
+	      (avail_threads.size() > 0)) {
+	  Task *task = ready_tasks.front();
+	  ready_tasks.pop_front();
+	  Thread *thr = avail_threads.front();
+	  avail_threads.pop_front();
+	  active_thread_count++;
+	  thr->set_task_and_wake(task);
+	}
+      }
+
       virtual void spawn_task(Processor::TaskFuncID func_id,
 			      const void *args, size_t arglen,
+			      //std::set<RegionInstanceUntyped> instances_needed,
 			      Event start_event, Event finish_event)
       {
 	// create task object to hold args, etc.
@@ -1720,6 +2332,7 @@ namespace RegionRuntime {
       int active_thread_count, max_active_threads;
       std::list<Task *> ready_tasks;
       std::list<Thread *> avail_threads;
+      std::list<Thread *> resumable_threads;
       gasnet_hsl_t mutex;
     };
 
@@ -1729,6 +2342,22 @@ namespace RegionRuntime {
       Event start_event;
       Event finish_event;
     };
+
+    void Event::wait(void) const
+    {
+      if(!id) return;  // special case: never wait for NO_EVENT
+      Event::Impl *e = Runtime::get_runtime()->get_event_impl(*this);
+
+      // early out case too
+      if(e->has_triggered(gen)) return;
+
+      // figure out which thread we are - better be a local CPU thread!
+      void *ptr = gasnett_threadkey_get(cur_thread);
+      assert(ptr != 0);
+      LocalProcessor::Thread *thr = (LocalProcessor::Thread *)ptr;
+      printf("event thread = %p\n", thr);
+      thr->sleep_on_event(*this);
+    }
 
     // can't be static if it's used in a template...
     void handle_spawn_task_message(SpawnTaskArgs args,
@@ -1758,6 +2387,7 @@ namespace RegionRuntime {
 
       virtual void spawn_task(Processor::TaskFuncID func_id,
 			      const void *args, size_t arglen,
+			      //std::set<RegionInstanceUntyped> instances_needed,
 			      Event start_event, Event finish_event)
       {
 	printf("[%d] spawning remote task: proc=%x task=%d start=%x/%d finish=%x/%d\n",
@@ -1774,11 +2404,13 @@ namespace RegionRuntime {
     };
 
     Event Processor::spawn(TaskFuncID func_id, const void *args, size_t arglen,
+			   //std::set<RegionInstanceUntyped> instances_needed,
 			   Event wait_on) const
     {
       Processor::Impl *p = impl();
       Event finish_event = Event::Impl::create_event();
-      p->spawn_task(func_id, args, arglen, wait_on, finish_event);
+      p->spawn_task(func_id, args, arglen, //instances_needed, 
+		    wait_on, finish_event);
       return finish_event;
     }
 
@@ -1846,6 +2478,9 @@ namespace RegionRuntime {
       case ID::ID_METADATA:
 	return &(get_metadata_impl(id)->lock);
 
+      case ID::ID_INSTANCE:
+	return &(get_instance_impl(id)->lock);
+
       default:
 	assert(0);
       }
@@ -1897,8 +2532,7 @@ namespace RegionRuntime {
 	printf("UNKNOWN METADATA %x\n", id.id());
 	AutoHSLLock a(n->mutex); // take lock before we actually allocate
 	if(!n->metadatas[index]) {
-	  n->metadatas[index] = new RegionMetaDataUntyped::Impl(id.convert<RegionMetaDataUntyped>(),
-								0, 0);
+	  n->metadatas[index] = new RegionMetaDataUntyped::Impl(id.convert<RegionMetaDataUntyped>());
 	} else
 	  printf("false alarm...\n");
       }
@@ -1917,7 +2551,36 @@ namespace RegionRuntime {
     {
       assert(id.type() == ID::ID_INSTANCE);
       Memory::Impl *mem = get_memory_impl(id);
-      return null_check(mem->instances[id.index_l()]);
+      if(id.index_l() >= mem->instances.size()) {
+	// haven't seen this instance before
+	Node *n = &Runtime::runtime->nodes[id.node()];
+	AutoHSLLock a(n->mutex); // take lock before we actually resize
+
+	assert(id.node() != gasnet_mynode());
+
+	size_t old_size = mem->instances.size();
+	if(id.index_l() >= old_size) {
+	  // still need to grow (i.e. didn't lose the race)
+	  mem->instances.resize(id.index_l() + 1);
+
+	  // don't have region/offset info - will have to pull that when
+	  //  needed
+	  for(unsigned i = old_size; i <= id.index_l(); i++) 
+	    mem->instances[i] = 0;
+	}
+      }
+
+      if(!mem->instances[id.index_l()]) {
+	// haven't seen this instance before?  create a proxy (inside a mutex)
+	AutoHSLLock a(mem->mutex);
+
+	if(!mem->instances[id.index_l()]) {
+	  printf("[%d] creating proxy instance: inst=%x\n", gasnet_mynode(), id.id());
+	  mem->instances[id.index_l()] = new RegionInstanceUntyped::Impl(id.convert<RegionInstanceUntyped>(), mem->me);
+	}
+      }
+	  
+      return mem->instances[id.index_l()];
     }
 
     ///////////////////////////////////////////////////
@@ -1930,7 +2593,7 @@ namespace RegionRuntime {
       return Runtime::runtime->get_metadata_impl(*this);
     }
 
-    /*static*/ RegionMetaDataUntyped RegionMetaDataUntyped::create_region_untyped(Memory memory, size_t num_elmts, size_t elmt_size)
+    /*static*/ RegionMetaDataUntyped RegionMetaDataUntyped::create_region_untyped(size_t num_elmts, size_t elmt_size)
     {
       // find an available ID
       std::vector<RegionMetaDataUntyped::Impl *>& metadatas = Runtime::runtime->nodes[gasnet_mynode()].metadatas;
@@ -1953,9 +2616,6 @@ namespace RegionRuntime {
       RegionMetaDataUntyped::Impl *impl = new RegionMetaDataUntyped::Impl(r, num_elmts, elmt_size);
       metadatas[index] = impl;
       
-      impl->data.master_allocator = r.create_allocator_untyped(memory);
-      impl->data.master_instance = r.create_instance_untyped(memory);
-
       return r;
     }
 
@@ -1963,9 +2623,14 @@ namespace RegionRuntime {
     {
       ID id(memory);
 
+      // we have to calculate the number of bytes needed in case the request
+      //  goes to a remote memory
+      StaticAccess<RegionMetaDataUntyped::Impl> r_data(impl());
+      size_t mask_size = ElementMaskImpl::bytes_needed(0, r_data->num_elmts);
+
       Memory::Impl *m_impl = Runtime::runtime->get_memory_impl(memory);
 
-      return m_impl->create_allocator(*this);
+      return m_impl->create_allocator(*this, 2 * mask_size);
 #if 0
       RegionAllocatorImpl *a_impl = new RegionAllocatorImpl(id.node());
       unsigned index = m_impl->add_allocator(a_impl);
@@ -1983,7 +2648,9 @@ namespace RegionRuntime {
 
       Memory::Impl *m_impl = Runtime::runtime->get_memory_impl(memory);
 
-      return m_impl->create_instance(*this);
+      size_t inst_bytes = impl()->instance_size();
+
+      return m_impl->create_instance(*this, inst_bytes);
 #if 0
       RegionInstanceImpl *i_impl = new RegionInstanceImpl(id.node());
       unsigned index = m_impl->add_instance(i_impl);
@@ -2001,29 +2668,12 @@ namespace RegionRuntime {
 
     void RegionMetaDataUntyped::destroy_allocator_untyped(RegionAllocatorUntyped allocator) const
     {
-      allocator.impl()->data.memory.impl()->destroy_allocator(allocator);
+      allocator.impl()->data.memory.impl()->destroy_allocator(allocator, true);
     }
 
     void RegionMetaDataUntyped::destroy_instance_untyped(RegionInstanceUntyped instance) const
     {
-      instance.impl()->memory.impl()->destroy_instance(instance);
-    }
-
-    Lock RegionMetaDataUntyped::get_lock(void) const
-    {
-      // we use our own ID as an ID for our lock
-      Lock l = { id };
-      return l;
-    }
-
-    RegionAllocatorUntyped RegionMetaDataUntyped::get_master_allocator_untyped(void)
-    {
-      return impl()->get_master_allocator_untyped();
-    }
-
-    RegionInstanceUntyped RegionMetaDataUntyped::get_master_instance_untyped(void)
-    {
-      return impl()->get_master_instance_untyped();
+      instance.impl()->memory.impl()->destroy_instance(instance, true);
     }
 
     ///////////////////////////////////////////////////
@@ -2289,8 +2939,8 @@ namespace RegionRuntime {
       data.mask_start = _mask_start;
 
       if(_region.exists()) {
-	RegionMetaDataUntyped::Impl *r_impl = _region.impl();
-	int num_elmts = r_impl->data.num_elmts;
+	StaticAccess<RegionMetaDataUntyped::Impl> r_data(_region.impl());
+	int num_elmts = r_data->num_elmts;
 	int mask_bytes = ElementMaskImpl::bytes_needed(0, num_elmts);
 	avail_elmts.init(0, num_elmts, _memory, _mask_start);
 	avail_elmts.enable(0, num_elmts);
@@ -2335,13 +2985,15 @@ namespace RegionRuntime {
     void RegionInstanceUntyped::Impl::get_bytes(unsigned ptr_value, void *dst, size_t size)
     {
       Memory::Impl *m = Runtime::runtime->get_memory_impl(memory);
-      m->get_bytes(offset + ptr_value, dst, size);
+      StaticAccess<RegionInstanceUntyped::Impl> data(this, true);
+      m->get_bytes(data->offset + ptr_value, dst, size);
     }
 
     void RegionInstanceUntyped::Impl::put_bytes(unsigned ptr_value, const void *src, size_t size)
     {
       Memory::Impl *m = Runtime::runtime->get_memory_impl(memory);
-      m->put_bytes(offset + ptr_value, src, size);
+      StaticAccess<RegionInstanceUntyped::Impl> data(this, true);
+      m->put_bytes(data->offset + ptr_value, src, size);
     }
 
     /*static*/ const RegionInstanceUntyped RegionInstanceUntyped::NO_INST = RegionInstanceUntyped();
@@ -2353,22 +3005,155 @@ namespace RegionRuntime {
       return RegionInstanceAccessorUntyped<AccessorGeneric>((void *)impl());
     }
 
+    /*static*/ void RegionInstanceUntyped::Impl::copy(RegionInstanceUntyped src, 
+						      RegionInstanceUntyped target,
+						      size_t bytes_to_copy,
+						      Event after_copy /*= Event::NO_EVENT*/)
+    {
+      RegionInstanceUntyped::Impl *src_impl = src.impl();
+      RegionInstanceUntyped::Impl *tgt_impl = target.impl();
+
+      StaticAccess<RegionInstanceUntyped::Impl> src_data(src_impl, true);
+      StaticAccess<RegionInstanceUntyped::Impl> tgt_data(tgt_impl, true);
+
+      Memory::Impl *src_mem = src_impl->memory.impl();
+      Memory::Impl *tgt_mem = tgt_impl->memory.impl();
+
+      switch(src_mem->kind) {
+      case Memory::Impl::MKIND_SYSMEM:
+      case Memory::Impl::MKIND_ZEROCOPY:
+	{
+	  const void *src_ptr = src_mem->get_direct_ptr(src_data->offset, bytes_to_copy);
+	  assert(src_ptr != 0);
+
+	  switch(tgt_mem->kind) {
+	  case Memory::Impl::MKIND_SYSMEM:
+	  case Memory::Impl::MKIND_ZEROCOPY:
+	    {
+	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->offset, bytes_to_copy);
+	      assert(tgt_ptr != 0);
+
+	      memcpy(tgt_ptr, src_ptr, bytes_to_copy);
+	    }
+	    break;
+
+	  case Memory::Impl::MKIND_GASNET:
+	    {
+	      tgt_mem->put_bytes(tgt_data->offset, src_ptr, bytes_to_copy);
+	    }
+	    break;
+
+	  default:
+	    assert(0);
+	  }
+	}
+	break;
+
+      case Memory::Impl::MKIND_GASNET:
+	{
+	  switch(tgt_mem->kind) {
+	  case Memory::Impl::MKIND_SYSMEM:
+	  case Memory::Impl::MKIND_ZEROCOPY:
+	    {
+	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->offset, bytes_to_copy);
+	      assert(tgt_ptr != 0);
+
+	      src_mem->get_bytes(src_data->offset, tgt_ptr, bytes_to_copy);
+	    }
+	    break;
+
+	  case Memory::Impl::MKIND_GASNET:
+	    {
+	      const unsigned BLOCK_SIZE = 4096;
+	      unsigned char temp_block[BLOCK_SIZE];
+
+	      size_t bytes_copied = 0;
+	      while(bytes_copied < bytes_to_copy) {
+		size_t chunk_size = bytes_to_copy - bytes_copied;
+		if(chunk_size > BLOCK_SIZE) chunk_size = BLOCK_SIZE;
+
+		src_mem->get_bytes(src_data->offset + bytes_copied, temp_block, chunk_size);
+		tgt_mem->put_bytes(tgt_data->offset + bytes_copied, temp_block, chunk_size);
+		bytes_copied += chunk_size;
+	      }
+	    }
+	    break;
+
+	  default:
+	    assert(0);
+	  }
+	}
+	break;
+
+      default:
+	assert(0);
+      }
+
+      // don't forget to release the locks on the instances!
+      src_impl->lock.unlock();
+      if(tgt_impl != src_impl)
+	tgt_impl->lock.unlock();
+
+      if(after_copy.exists())
+	after_copy.impl()->trigger(after_copy.gen, true);
+    }
+
+    class DeferredCopy : public Event::Impl::EventWaiter {
+    public:
+      DeferredCopy(RegionInstanceUntyped _src, RegionInstanceUntyped _target,
+		   size_t _bytes_to_copy, Event _after_copy)
+	: src(_src), target(_target), 
+	  bytes_to_copy(_bytes_to_copy), after_copy(_after_copy) {}
+
+      virtual void event_triggered(void)
+      {
+	RegionInstanceUntyped::Impl::copy(src, target, bytes_to_copy, after_copy);
+      }
+
+    protected:
+      RegionInstanceUntyped src, target;
+      size_t bytes_to_copy;
+      Event after_copy;
+    };
+
     Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, 
 						 Event wait_on /*= Event::NO_EVENT*/)
     {
-      printf("COPY %x -> %x\n", id, target.id);
       RegionInstanceUntyped::Impl *src_impl = impl();
       RegionInstanceUntyped::Impl *dst_impl = target.impl();
-      RegionMetaDataUntyped::Impl *r_impl = src_impl->region.impl();
-      const void *src_ptr = src_impl->memory.impl()->get_direct_ptr(src_impl->offset, r_impl->data.num_elmts * r_impl->data.elmt_size);
-      void *dst_ptr = dst_impl->memory.impl()->get_direct_ptr(dst_impl->offset, r_impl->data.num_elmts * r_impl->data.elmt_size);
+      Memory::Impl *src_mem = src_impl->memory.impl();
+      Memory::Impl *dst_mem = dst_impl->memory.impl();
 
-      if(src_ptr && dst_ptr) {
-	// local copy
-	memcpy(dst_ptr, src_ptr, r_impl->data.num_elmts * r_impl->data.elmt_size);
-      } else {
+      printf("COPY %x (%d) -> %x (%d)\n", id, src_mem->kind, target.id, dst_mem->kind);
+
+      // first check - if either or both memories are remote, we're going to
+      //  need to find somebody else to do this copy
+      if((src_mem->kind == Memory::Impl::MKIND_REMOTE) ||
+	 (dst_mem->kind == Memory::Impl::MKIND_REMOTE)) {
 	assert(0);
       }
+
+      size_t bytes_to_copy = StaticAccess<RegionInstanceUntyped::Impl>(src_impl)->region.impl()->instance_size();
+
+      // ok - we're going to do the copy locally, but we need locks on the 
+      //  two instances, and those locks may need to be deferred
+      Event lock_event = src_impl->lock.lock(1, false, wait_on);
+      if(dst_impl != src_impl) {
+	Event dst_lock_event = dst_impl->lock.lock(1, false, wait_on);
+	lock_event = Event::merge_events(lock_event, dst_lock_event);
+      }
+      // now do we have to wait?
+      if(!lock_event.has_triggered()) {
+	Event after_copy = Event::Impl::create_event();
+	lock_event.impl()->add_waiter(lock_event,
+				      new DeferredCopy(*this, target,
+						       bytes_to_copy, 
+						       after_copy));
+	return after_copy;
+      }
+
+      // we can do the copy immediately here
+      RegionInstanceUntyped::Impl::copy(*this, target, bytes_to_copy);
       return Event::NO_EVENT;
     }
 
@@ -3094,6 +3879,8 @@ namespace RegionRuntime {
       hcount += EventSubscribeMessage::add_handler_entries(&handlers[hcount]);
       hcount += EventTriggerMessage::add_handler_entries(&handlers[hcount]);
       hcount += RemoteMemAllocMessage::add_handler_entries(&handlers[hcount]);
+      hcount += CreateAllocatorMessage::add_handler_entries(&handlers[hcount]);
+      hcount += CreateInstanceMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage2::add_handler_entries(&handlers[hcount]);
 
@@ -3115,7 +3902,7 @@ namespace RegionRuntime {
 
       NodeAnnounceData announce_data;
 
-      unsigned num_local_procs = 1;
+      unsigned num_local_procs = 4;
 
       announce_data.node_id = gasnet_mynode();
       announce_data.num_procs = num_local_procs;
@@ -3207,7 +3994,10 @@ namespace RegionRuntime {
       }
 
       // wait for idle-ness somehow?
-      sleep(1000);
+      for(int i = 0; i < 1000; i++) {
+	fflush(stdout);
+	sleep(1);
+      }
     }
 
 

@@ -108,7 +108,7 @@ namespace RegionRuntime {
 
       EventImpl*           get_free_event(void);
       LockImpl*            get_free_lock(void);
-      RegionMetaDataImpl*  get_free_metadata(Memory m, size_t num_elmts, size_t elmt_size);
+      RegionMetaDataImpl*  get_free_metadata(size_t num_elmts, size_t elmt_size);
       RegionAllocatorImpl* get_free_allocator(unsigned start, unsigned end);
       RegionInstanceImpl*  get_free_instance(Memory m, size_t num_elmts, size_t elmt_size);
 
@@ -1319,16 +1319,20 @@ namespace RegionRuntime {
         std::list<CopyOperation> pending_copies;
     };
 
-    RegionInstanceAccessorUntyped<AccessorGeneric> RegionInstanceUntyped::get_accessor_untyped(void) const
+    /*static*/ const RegionInstanceUntyped RegionInstanceUntyped::NO_INST = { 0 };
+
+   RegionInstanceAccessorUntyped<AccessorGeneric> RegionInstanceUntyped::get_accessor_untyped(void) const
     {
       RegionInstanceImpl *impl = Runtime::get_runtime()->get_instance_impl(*this);
       return RegionInstanceAccessorUntyped<AccessorGeneric>((void *)impl);
     }
 
+#if 0
     Lock RegionInstanceUntyped::get_lock(void)
     {
 	return Runtime::get_runtime()->get_instance_impl(*this)->get_lock();
     }
+#endif
 
     Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, Event wait_on)
     {
@@ -1495,7 +1499,7 @@ namespace RegionRuntime {
 
     class RegionMetaDataImpl {
     public:
-	RegionMetaDataImpl(int idx, Memory m, size_t num, size_t elem_size, bool activate = false) {
+	RegionMetaDataImpl(int idx, size_t num, size_t elem_size, bool activate = false) {
 		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
 		active = activate;
 		index = idx;
@@ -1506,13 +1510,11 @@ namespace RegionRuntime {
 			RegionAllocatorImpl *allocator = Runtime::get_runtime()->get_free_allocator(0,num_elmts);
 			master_allocator = allocator->get_allocator();	
 		
-			RegionInstanceImpl* instance = Runtime::get_runtime()->get_free_instance(m,num_elmts,elmt_size);
-			master_instance = instance->get_instance();
 			lock = Runtime::get_runtime()->get_free_lock();
 		}
 	}
     public:
-	bool activate(Memory m, size_t num_elmts, size_t elmt_size);
+	bool activate(size_t num_elmts, size_t elmt_size);
 	void deactivate(void);	
 	RegionMetaDataUntyped get_metadata(void);
 
@@ -1524,14 +1526,8 @@ namespace RegionRuntime {
 
 	Lock get_lock(void);
 
-	RegionAllocatorUntyped get_master_allocator(void);
-	RegionInstanceUntyped get_master_instance(void);
-	
-	void set_master_allocator(RegionAllocatorUntyped a);
-	void set_master_instance(RegionInstanceUntyped i);	
     private:
 	RegionAllocatorUntyped master_allocator;
-	RegionInstanceUntyped  master_instance;
 	//std::set<RegionAllocatorUntyped> allocators;
 	std::set<RegionInstanceUntyped> instances;
 	LockImpl *lock;
@@ -1542,9 +1538,9 @@ namespace RegionRuntime {
 	size_t elmt_size;
     };
 
-    RegionMetaDataUntyped RegionMetaDataUntyped::create_region_untyped(Memory m, size_t num_elmts, size_t elmt_size)
+    RegionMetaDataUntyped RegionMetaDataUntyped::create_region_untyped(size_t num_elmts, size_t elmt_size)
     {
-	RegionMetaDataImpl *r = Runtime::get_runtime()->get_free_metadata(m, num_elmts, elmt_size);	
+	RegionMetaDataImpl *r = Runtime::get_runtime()->get_free_metadata(num_elmts, elmt_size);	
 	return r->get_metadata();
     }
 
@@ -1578,37 +1574,7 @@ namespace RegionRuntime {
 	r->destroy_instance(i);
     }
 
-    Lock RegionMetaDataUntyped::get_lock(void) const
-    {
-	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
-	return r->get_lock();
-    }
-
-    RegionAllocatorUntyped RegionMetaDataUntyped::get_master_allocator_untyped(void)
-    {
-	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
-	return r->get_master_allocator();
-    }
-
-    RegionInstanceUntyped RegionMetaDataUntyped::get_master_instance_untyped(void)
-    {
-	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
-	return r->get_master_instance();
-    }
-
-    void RegionMetaDataUntyped::set_master_allocator_untyped(RegionAllocatorUntyped a)
-    {
-	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
-	r->set_master_allocator(a);
-    }
-
-    void RegionMetaDataUntyped::set_master_instance_untyped(RegionInstanceUntyped i)
-    {
-	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
-	r->set_master_instance(i);
-    }
-
-    bool RegionMetaDataImpl::activate(Memory m, size_t num, size_t size)
+    bool RegionMetaDataImpl::activate(size_t num, size_t size)
     {
 	bool result = false;
         int trythis = pthread_mutex_trylock(&mutex);
@@ -1624,8 +1590,6 @@ namespace RegionRuntime {
 		RegionAllocatorImpl *allocator = Runtime::get_runtime()->get_free_allocator(0,num_elmts);
 		master_allocator = allocator->get_allocator();	
 		
-		RegionInstanceImpl* instance = Runtime::get_runtime()->get_free_instance(m,num_elmts,elmt_size);
-		master_instance = instance->get_instance();
 		lock = Runtime::get_runtime()->get_free_lock();
 	}
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
@@ -1650,7 +1614,6 @@ namespace RegionRuntime {
 	lock->deactivate();
 	lock = NULL;
 	master_allocator.id = 0;
-	master_instance.id = 0;
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
     }
 
@@ -1701,38 +1664,6 @@ namespace RegionRuntime {
     Lock RegionMetaDataImpl::get_lock(void)
     {
 	return lock->get_lock();
-    }
-
-    RegionAllocatorUntyped RegionMetaDataImpl::get_master_allocator(void)
-    {
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
-	RegionAllocatorUntyped result = master_allocator;
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
-	return result;
-    }
-
-    RegionInstanceUntyped RegionMetaDataImpl::get_master_instance(void)
-    {
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
-	RegionInstanceUntyped result = master_instance;
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
-	return result;
-    }
-
-    void RegionMetaDataImpl::set_master_allocator(RegionAllocatorUntyped a)
-    {
-	// Do nothing since there is only ever one allocator for a meta-data in shared memory
-    }
-
-    void RegionMetaDataImpl::set_master_instance(RegionInstanceUntyped inst)	
-    {
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
-#ifdef DEBUG_LOW_LEVEL
-	// Make sure it is one of our instances
-	assert(instances.find(inst) != instances.end());
-#endif
-	master_instance = inst;
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
     }
 
     
@@ -1887,9 +1818,7 @@ namespace RegionRuntime {
 
 	for (unsigned i=0; i<BASE_METAS; i++)
 	{
-		Memory m;
-		m.id = 0;
-		metadatas.push_back(new RegionMetaDataImpl(i,m,0,0));
+		metadatas.push_back(new RegionMetaDataImpl(i,0,0));
 	}
 
 	for (unsigned i=0; i<BASE_ALLOCATORS; i++)
@@ -2097,12 +2026,12 @@ namespace RegionRuntime {
 	return result;
     }
 
-    RegionMetaDataImpl* Runtime::get_free_metadata(Memory m, size_t num_elmts, size_t elmt_size)
+    RegionMetaDataImpl* Runtime::get_free_metadata(size_t num_elmts, size_t elmt_size)
     {
 	PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&metadata_lock));
 	for (unsigned int i=1; i<metadatas.size(); i++)
 	{
-		if (metadatas[i]->activate(m,num_elmts,elmt_size))
+		if (metadatas[i]->activate(num_elmts,elmt_size))
 		{
 			RegionMetaDataImpl *result = metadatas[i];
 			PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&metadata_lock));
@@ -2113,12 +2042,12 @@ namespace RegionRuntime {
 	// Otherwise there are no free metadata so make a new one
 	PTHREAD_SAFE_CALL(pthread_rwlock_wrlock(&metadata_lock));
 	unsigned int index = metadatas.size();
-	metadatas.push_back(new RegionMetaDataImpl(index,m,num_elmts,elmt_size,true));
+	metadatas.push_back(new RegionMetaDataImpl(index,num_elmts,elmt_size,true));
 	RegionMetaDataImpl *result = metadatas[index];
         // Create a whole bunch of other metas too while we're here
         for (unsigned idx=1; idx < BASE_METAS; idx++)
         {
-          metadatas.push_back(new RegionMetaDataImpl(index+idx,m,0,0,false));
+          metadatas.push_back(new RegionMetaDataImpl(index+idx,0,0,false));
         }
 	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&metadata_lock));
 	return result;

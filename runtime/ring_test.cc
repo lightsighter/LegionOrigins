@@ -10,14 +10,18 @@
 
 using namespace RegionRuntime::LowLevel;
 
-#define NUM_POTATOES 	10	
-#define NUM_TRIPS	10
-#define NUM_HOPS        25
 
 #define PRINT_ID	(Processor::TASK_ID_FIRST_AVAILABLE+0)
 #define LAUNCHER_ID     (Processor::TASK_ID_FIRST_AVAILABLE+1)	
 #define HOT_POTATOER 	(Processor::TASK_ID_FIRST_AVAILABLE+2)
 #define POTATO_DROPPER 	(Processor::TASK_ID_FIRST_AVAILABLE+3)
+
+struct Config {
+  unsigned num_potatoes;
+  unsigned num_trips;
+  unsigned num_hops;
+  bool     random_neighbors;
+} config = { 10, 10, 25, true };
 
 struct Potato {
 public:
@@ -27,6 +31,8 @@ public:
   int hops_left;  // how many more passes before a "lap" is done
   ptr_t<unsigned> lap_count_location;
   RegionMetaData<unsigned> region;
+  RegionInstance<unsigned> master_inst;
+  Lock lock;
   ptr_t<unsigned> finished_location; // The location of the counter for tracking
   //    the number of finished potatoes
 };
@@ -38,6 +44,52 @@ struct ProcessorRing {
   std::map<Processor, bool> last;
 } proc_ring;
 
+// little helper object to hold a lock as long as object exists
+//   (i.e. is in scope)
+class AutoLock {
+public:
+  AutoLock(Lock _lock, int mode, bool exclusive, bool auto_wait = true)
+    : lock(_lock)
+  {
+    lock_event = lock.lock(mode, exclusive);
+    if(auto_wait)
+      lock_event.wait();
+  }
+
+  template <class T>
+  AutoLock(T thing_with_lock, int mode, bool exclusive, bool auto_wait = true)
+    : lock(thing_with_lock.get_lock())
+  {
+    lock_event = lock.lock(mode, exclusive);
+    if(auto_wait)
+      lock_event.wait();
+  }
+
+  ~AutoLock(void)
+  {
+    lock.unlock();
+  }
+
+  void wait(void)
+  {
+    lock_event.wait(); // safe to do this multiple times
+  }
+
+protected:
+  Lock lock;
+  Event lock_event;
+};
+
+static Processor get_random_proc(void)
+{
+  Machine *m = Machine::get_machine();
+  const std::set<Processor> &all_procs = m->get_all_processors();
+  int index = random() % all_procs.size();
+  std::set<Processor>::const_iterator it = all_procs.begin();
+  while(index-- > 0) it++;
+  return *it;
+}
+
 template <AccessorType AT>
 void potato_launcher(const void * args, size_t arglen, Processor p)
 {
@@ -46,43 +98,47 @@ void potato_launcher(const void * args, size_t arglen, Processor p)
   Processor me = p;
   printf("processor ID = %x\n", p.id);
   //unsigned total_procs = machine->get_all_processors().size();
-  Processor neighbor = proc_ring.neighbor[me];
+  Processor neighbor = (config.random_neighbors ? 
+			  get_random_proc() :
+			  proc_ring.neighbor[me]);
 
   // Create a region to track the number of times a potato has gone around
   // Put it in global Memory
-  Memory m = *(Machine::get_machine()->get_visible_memories(p).begin());
+  Memory m = *(Machine::get_machine()->get_visible_memories(p).rbegin());
   printf("memory ID = %x\n", m.id);
 
-  RegionMetaData<unsigned> counter_region = RegionMetaData<unsigned>::create_region(m,NUM_POTATOES+1);
+  RegionMetaData<unsigned> counter_region = RegionMetaData<unsigned>::create_region(config.num_potatoes + 1);
   printf("counter region ID = %x\n", counter_region.id);
 
   // Get an allocator
-  RegionAllocator<unsigned> counter_alloc = counter_region.get_master_allocator();
-  RegionInstance<unsigned> counter_instance = counter_region.get_master_instance();
+  RegionAllocator<unsigned> counter_alloc = counter_region.create_allocator(m);
+  RegionInstance<unsigned> counter_instance = counter_region.create_instance(m);
   RegionInstanceAccessor<unsigned,AT> counter_acc = counter_instance.get_accessor().convert<AT>();
 
   ptr_t<unsigned> finish_loc = counter_alloc.alloc();
   counter_acc.write(finish_loc,0);
 
-  // Get the lock for this region
-  Lock rlock = counter_region.get_lock();
+  // create the lock for this region
+  Lock rlock = Lock::create_lock();
 
   Event previous = Event::NO_EVENT;
-  for (int i=0; i<NUM_POTATOES; i++)
+  for (unsigned i=0; i < config.num_potatoes; i++)
     {
       Potato potato;
       potato.id = i;
       potato.hops_left = i+5;
       potato.lap_count_location = counter_alloc.alloc();
       potato.region = counter_region;
+      potato.master_inst = counter_instance;
+      potato.lock = rlock;
       potato.finished_location = finish_loc;
-      counter_acc.write(potato.lap_count_location,NUM_TRIPS);
+      counter_acc.write(potato.lap_count_location,config.num_trips);
       printf("Launching potato %d on processor %u\n",i,neighbor.id);
 
       previous = rlock.lock(0,false);
       previous = neighbor.spawn(HOT_POTATOER,&potato,sizeof(Potato),previous);
       rlock.unlock(previous);
-      break; // just one potato today...
+      //break; // just one potato today...
     }
 }
 
@@ -93,13 +149,15 @@ void hot_potatoer(const void * args, size_t arglen, Processor p)
   // Get the next processor
   //Machine *machine = Machine::get_machine();
   Processor me = p;
-  Processor neighbor = proc_ring.neighbor[me];
+  Processor neighbor = (config.random_neighbors ? 
+			  get_random_proc() :
+			  proc_ring.neighbor[me]);
   //unsigned total_procs = machine->get_all_processors().size();
   //unsigned neigh_id = (me.id+1) % total_procs;
 
-  Lock rlock = potato.region.get_lock();
+  Lock rlock = potato.lock;
 
-  printf("Processor %x passing hot potato to processor %x (%d hops left)\n",me.id,proc_ring.neighbor[me].id,potato.hops_left);
+  printf("Processor %x passing hot potato to processor %x (%d hops left)\n",me.id,neighbor.id,potato.hops_left);
   fflush(stdout);
   // are we the last hop of the current lap?
   if (potato.hops_left == 0)
@@ -107,41 +165,43 @@ void hot_potatoer(const void * args, size_t arglen, Processor p)
       // Get an instance for the region locally
       Memory my_mem = *(Machine::get_machine()->get_visible_memories(p).begin());
       RegionInstance<unsigned> local_inst = potato.region.create_instance(my_mem);
-      RegionInstance<unsigned> master_inst = potato.region.get_master_instance();	
-      Event copy_event = master_inst.copy_to(local_inst);
-      // wait for the copy to finish
-      copy_event.wait();
+      RegionInstance<unsigned> master_inst = potato.master_inst;
+      {
+	Event copy_event = master_inst.copy_to(local_inst);
+	// wait for the copy to finish
+	copy_event.wait();
 
-      RegionInstanceAccessor<unsigned,AT> local_acc = local_inst.get_accessor().convert<AT>();
+	RegionInstanceAccessor<unsigned,AT> local_acc = local_inst.get_accessor().convert<AT>();
 
-      unsigned trips = local_acc.read(potato.lap_count_location);
-      printf("TRIPS: %d %d\n", potato.lap_count_location.value, trips);
-      if (trips == 0)
-	{
-	  // Launch the dropper on the next processor
-	  Processor target = neighbor;
-	  // Need the lock in exclusive since it does a write
-	  Event previous = rlock.lock(0,true);
-	  previous = target.spawn(POTATO_DROPPER,&potato,arglen,previous);
-	  rlock.unlock(previous);		
-	}
-      else
-	{
-	  // reset the hop count for another trip
-	  potato.hops_left = NUM_HOPS;
+	unsigned trips = local_acc.read(potato.lap_count_location);
+	printf("TRIPS: %d %d\n", potato.lap_count_location.value, trips);
+	if (trips == 0)
+	  {
+	    // Launch the dropper on the next processor
+	    Processor target = neighbor;
+	    // Need the lock in exclusive since it does a write
+	    Event previous = rlock.lock(0,true);
+	    previous = target.spawn(POTATO_DROPPER,&potato,arglen,previous);
+	    rlock.unlock(previous);		
+	  }
+	else
+	  {
+	    // reset the hop count for another trip
+	    potato.hops_left = config.num_hops;
 
-	  // Decrement the count
-	  local_acc.write(potato.lap_count_location,trips-1);
-	  Processor target = neighbor;
-	  Event previous = rlock.lock(0,false);
-	  previous = target.spawn(HOT_POTATOER,&potato,arglen,previous);
-	  rlock.unlock(previous);	
+	    // Decrement the count
+	    local_acc.write(potato.lap_count_location,trips-1);
+	    Processor target = neighbor;
+	    Event previous = rlock.lock(0,false);
+	    previous = target.spawn(HOT_POTATOER,&potato,arglen,previous);
+	    rlock.unlock(previous);	
 
-	  // Write the region back since we did a write
-	  copy_event = local_inst.copy_to(master_inst);
-	  // wait for the write to finish
-	  copy_event.wait();	
-	}
+	    // Write the region back since we did a write
+	    copy_event = local_inst.copy_to(master_inst);
+	    // wait for the write to finish
+	    copy_event.wait();	
+	  }
+      }
       // Destroy the local instance
       potato.region.destroy_instance(local_inst);
     }
@@ -151,7 +211,7 @@ void hot_potatoer(const void * args, size_t arglen, Processor p)
       potato.hops_left--;
 
       // Launch the hot potatoer on the next processor
-      Processor target = proc_ring.neighbor[me];
+      Processor target = neighbor;
       Event previous;
       // Check to see if the next neighbor will be the end of the lap
       // If it is, it needs the lock in exclusive so it can do a write
@@ -172,13 +232,14 @@ void potato_dropper(const void * args, size_t arglen, Processor p)
   Potato potato = *((Potato*)args);
 	
   // Increment the finished potato counter
-  RegionInstance<unsigned> master_inst = potato.region.get_master_instance();
+  RegionInstance<unsigned> master_inst = potato.master_inst;
+  printf("potato counter master instance ID = %x\n", master_inst.id);
   RegionInstanceAccessor<unsigned,AT> master_acc = master_inst.get_accessor().convert<AT>();
 
   unsigned finished = master_acc.read(potato.finished_location) + 1;
 
   printf("%d potatoes dropped...\n", finished);
-  if (finished == NUM_POTATOES)
+  if (finished == config.num_potatoes)
     {
       printf("all potatoes finished!\n");
 #if 0
