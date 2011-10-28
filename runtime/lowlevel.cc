@@ -242,6 +242,66 @@ namespace RegionRuntime {
       bool select_local_waiters(std::deque<Event>& to_wake);
 
       void unlock(void);
+
+      bool is_locked(unsigned check_mode, bool excl_ok);
+    };
+
+    template <class T>
+    class StaticAccess {
+    public:
+      typedef typename T::StaticData StaticData;
+
+      // if already_valid, just check that data is already valid
+      StaticAccess(T* thing_with_data, bool already_valid = false)
+	: data(&thing_with_data->locked_data)
+      {
+	if(already_valid) {
+	  assert(data->valid);
+	} else {
+	  if(!data->valid) {
+	    // get a valid copy of the static data by taking and then releasing
+	    //  a shared lock
+	    thing_with_data->lock.lock(1, false).wait();
+	    thing_with_data->lock.unlock();
+	    assert(data->valid);
+	  }
+	}
+      }
+
+      ~StaticAccess(void) {}
+
+      const StaticData *operator->(void) { return data; }
+
+    protected:
+      StaticData *data;
+    };
+
+    template <class T>
+    class SharedAccess {
+    public:
+      typedef typename T::CoherentData CoherentData;
+
+      // if already_held, just check that it's held (if in debug mode)
+      SharedAccess(T* thing_with_data, bool already_held = false)
+	: data(&thing_with_data->locked_data), lock(&thing_with_data->lock)
+      {
+	if(already_held) {
+	  assert(lock->is_locked(1, true));
+	} else {
+	  lock->lock(1, false).wait();
+	}
+      }
+
+      ~SharedAccess(void)
+      {
+	lock->unlock();
+      }
+
+      const CoherentData *operator->(void) { return data; }
+
+    protected:
+      CoherentData *data;
+      Lock::Impl *lock;
     };
 
     struct LockRequestArgs {
@@ -284,56 +344,44 @@ namespace RegionRuntime {
       Impl(RegionMetaDataUntyped _me, size_t _num_elmts, size_t _elmt_size)
 	: me(_me)
       {
-	data.num_elmts = _num_elmts;
-	data.elmt_size = _elmt_size;
-	data.master_allocator = RegionAllocatorUntyped::NO_ALLOC;
-	data.master_instance = RegionInstanceUntyped::NO_INST;
+	locked_data.valid = true;
+	locked_data.num_elmts = _num_elmts;
+	locked_data.elmt_size = _elmt_size;
 	lock.init(ID(me).convert<Lock>(), ID(me).node());
-	lock.set_local_data(&data);
+	lock.set_local_data(&locked_data);
       }
 
       // this version is called when we create a proxy for a remote region
       Impl(RegionMetaDataUntyped _me)
 	: me(_me)
       {
-	data.num_elmts = 0;
-	data.elmt_size = 0;  // automatically ask for shared lock to fill these in?
-	data.master_allocator = RegionAllocatorUntyped::NO_ALLOC;
-	data.master_instance = RegionInstanceUntyped::NO_INST;
+	locked_data.valid = false;
+	locked_data.num_elmts = 0;
+	locked_data.elmt_size = 0;  // automatically ask for shared lock to fill these in?
 	lock.init(ID(me).convert<Lock>(), ID(me).node());
-	lock.set_local_data(&data);
+	lock.set_local_data(&locked_data);
       }
 
       ~Impl(void) {}
 
-      RegionAllocatorUntyped get_master_allocator_untyped(void) const
-      {
-	return data.master_allocator;
-      }
-
-      RegionInstanceUntyped get_master_instance_untyped(void) const
-      {
-	return data.master_instance;
-      }
-
       size_t instance_size(void)
       {
-	assert(data.num_elmts > 0);
-	assert(data.elmt_size > 0);
-	size_t bytes = data.num_elmts * data.elmt_size;
+	StaticAccess<RegionMetaDataUntyped::Impl> data(this);
+	assert(data->num_elmts > 0);
+	assert(data->elmt_size > 0);
+	size_t bytes = data->num_elmts * data->elmt_size;
 	return bytes;
       }
 
       RegionMetaDataUntyped me;
       Lock::Impl lock;
 
-      struct CoherentData {
+      struct StaticData {
+	bool valid;
 	size_t num_elmts, elmt_size;
-	RegionAllocatorUntyped master_allocator;
-	RegionInstanceUntyped master_instance;
       };
 
-      CoherentData data;
+      StaticData locked_data;
     };
 
     class RegionAllocatorUntyped::Impl {
@@ -346,14 +394,14 @@ namespace RegionRuntime {
 
       void free_elements(unsigned ptr, unsigned count = 1);
 
-      struct CoherentData {
+      struct StaticData {
 	RegionMetaDataUntyped region;
 	Memory memory;
 	int mask_start;
       };
 
       RegionAllocatorUntyped me;
-      CoherentData data;
+      StaticData data;
 
     protected:
       ElementMask avail_elmts, changed_elmts;
@@ -364,20 +412,22 @@ namespace RegionRuntime {
       Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, int _offset)
 	: me(_me), memory(_memory)
       {
-	data.region = _region;
-	data.offset = _offset;
+	locked_data.valid = true;
+	locked_data.region = _region;
+	locked_data.offset = _offset;
 	lock.init(ID(me).convert<Lock>(), ID(me).node());
-	lock.set_local_data(&data);
+	lock.set_local_data(&locked_data);
       }
 
       // when we auto-create a remote instance, we don't know region/offset
       Impl(RegionInstanceUntyped _me, Memory _memory)
 	: me(_me), memory(_memory)
       {
-	data.region = RegionMetaDataUntyped::NO_REGION;
-	data.offset = -1;
+	locked_data.valid = false;
+	locked_data.region = RegionMetaDataUntyped::NO_REGION;
+	locked_data.offset = -1;
 	lock.init(ID(me).convert<Lock>(), ID(me).node());
-	lock.set_local_data(&data);
+	lock.set_local_data(&locked_data);
       }
 
       ~Impl(void) {}
@@ -385,16 +435,22 @@ namespace RegionRuntime {
       void get_bytes(unsigned ptr_value, void *dst, size_t size);
       void put_bytes(unsigned ptr_value, const void *src, size_t size);
 
+      static void copy(RegionInstanceUntyped src, 
+		       RegionInstanceUntyped target,
+		       size_t bytes_to_copy,
+		       Event after_copy = Event::NO_EVENT);
+
     public: //protected:
       friend class RegionInstanceUntyped;
 
       RegionInstanceUntyped me;
       Memory memory;
 
-      struct CoherentData {
+      struct StaticData {
+	bool valid;
 	RegionMetaDataUntyped region;
 	int offset;
-      } data;
+      } locked_data;
 
       Lock::Impl lock;
     };
@@ -889,15 +945,22 @@ namespace RegionRuntime {
 
       printf("[%d] lock request: lock=%x, node=%d, mode=%d\n",
 	     gasnet_mynode(), args.lock.id, args.node, args.mode);
-      {
+
+      // can't send messages while holding mutex, so remember args and who
+      //  (if anyone) to send to
+      int req_forward_target = -1;
+      int grant_target = -1;
+      LockGrantArgs g_args;
+
+      do {
 	AutoHSLLock a(impl->mutex);
 
 	// case 1: we don't even own the lock any more - pass the request on
 	//  to whoever we think the owner is
 	if(impl->owner != gasnet_mynode()) {
 	  // can reuse the args we were given
-	  LockRequestMessage::request(impl->owner, args);
-	  return;
+	  req_forward_target = impl->owner;
+	  break;
 	}
 
 	// case 2: we're the owner, and nobody is holding the lock, so grant
@@ -907,15 +970,13 @@ namespace RegionRuntime {
 
 	  printf("[%d] granting lock request: lock=%x, node=%d, mode=%d\n",
 		 gasnet_mynode(), args.lock.id, args.node, args.mode);
-	  LockGrantArgs g_args;
 	  g_args.lock = args.lock;
 	  g_args.mode = 0; // always give it exclusively for now
 	  g_args.remote_waiter_mask = impl->remote_waiter_mask;
-	  LockGrantMessage::request(args.node, g_args,
-				    impl->local_data, impl->local_data_size);
+	  grant_target = args.node;
 
 	  impl->owner = args.node;
-	  return;
+	  break;
 	}
 
 	// case 3: we're the owner, but we can't grant the lock right now -
@@ -924,7 +985,14 @@ namespace RegionRuntime {
 	printf("[%d] deferring lock request: lock=%x, node=%d, mode=%d (count=%d cmode=%d)\n",
 	       gasnet_mynode(), args.lock.id, args.node, args.mode, impl->count, impl->mode);
 	impl->remote_waiter_mask |= (1ULL << args.node);
-      }
+      } while(0);
+
+      if(req_forward_target != -1)
+	LockRequestMessage::request(req_forward_target, args);
+
+      if(grant_target != -1)
+	LockGrantMessage::request(grant_target, g_args,
+				  impl->local_data, impl->local_data_size);
     }
 
     /*static*/ void /*Lock::Impl::*/handle_lock_release(LockReleaseArgs args)
@@ -985,45 +1053,54 @@ namespace RegionRuntime {
       // collapse exclusivity into mode
       if(exclusive) new_mode = MODE_EXCL;
 
-      AutoHSLLock a(mutex); // hold mutex on lock for entire function
-
       bool got_lock = false;
+      int lock_request_target = -1;
+      LockRequestArgs args;
 
-      if(owner == gasnet_mynode()) {
-	// case 1: we own the lock
-	// can we grant it?
-	if((count == 0) || ((mode == new_mode) && (mode != MODE_EXCL))) {
-	  mode = new_mode;
-	  count++;
-	  got_lock = true;
-	}
-      } else {
-	// somebody else owns it
-	
-	// are we sharing?
-	if((count > 0) && (mode == new_mode)) {
-	  // we're allowed to grant additional sharers with the same mode
-	  assert(mode != MODE_EXCL);
-	  if(mode == new_mode) {
+      {
+	AutoHSLLock a(mutex); // hold mutex on lock while we check things
+
+	if(owner == gasnet_mynode()) {
+	  // case 1: we own the lock
+	  // can we grant it?
+	  if((count == 0) || ((mode == new_mode) && (mode != MODE_EXCL))) {
+	    mode = new_mode;
 	    count++;
 	    got_lock = true;
 	  }
-	}
+	} else {
+	  // somebody else owns it
 	
-	// if we didn't get the lock, we'll have to ask for it from the
-	//  other node (even if we're currently sharing with the wrong mode)
-	if(!got_lock && !requested) {
-	  printf("[%d] requesting lock: lock=%x node=%d mode=%d\n",
-		 gasnet_mynode(), me.id, owner, new_mode);
-	  LockRequestArgs args;
-	  args.node = gasnet_mynode();
-	  args.lock = me;
-	  args.mode = new_mode;
-	  LockRequestMessage::request(owner, args);
+	  // are we sharing?
+	  if((count > 0) && (mode == new_mode)) {
+	    // we're allowed to grant additional sharers with the same mode
+	    assert(mode != MODE_EXCL);
+	    if(mode == new_mode) {
+	      count++;
+	      got_lock = true;
+	    }
+	  }
+	
+	  // if we didn't get the lock, we'll have to ask for it from the
+	  //  other node (even if we're currently sharing with the wrong mode)
+	  if(!got_lock && !requested) {
+	    printf("[%d] requesting lock: lock=%x node=%d mode=%d\n",
+		   gasnet_mynode(), me.id, owner, new_mode);
+	    args.node = gasnet_mynode();
+	    args.lock = me;
+	    args.mode = new_mode;
+	    lock_request_target = owner;
+	    // don't actually send message here because we're holding the
+	    //  lock's mutex, which'll be bad if we get a message related to
+	    //  this lock inside gasnet calls
 	  
-	  requested = true;
+	    requested = true;
+	  }
 	}
       }
+
+      if(lock_request_target != -1)
+	LockRequestMessage::request(lock_request_target, args);
 
       // if we got the lock, trigger an event if we're given one
       if(got_lock) {
@@ -1086,7 +1163,14 @@ namespace RegionRuntime {
       // make a list of events that we be woken - can't do it while holding the
       //  lock's mutex (because the event we trigger might try to take the lock)
       std::deque<Event> to_wake;
-      {
+
+      int release_target = -1;
+      LockReleaseArgs r_args;
+
+      int grant_target = -1;
+      LockGrantArgs g_args;
+
+      do {
 	printf("[%d] unlock: lock=%x count=%d mode=%d share=%lx wait=%lx\n",
 	       gasnet_mynode(), me.id, count, mode, remote_sharer_mask, remote_waiter_mask);
 	AutoHSLLock a(mutex); // hold mutex on lock for entire function
@@ -1096,18 +1180,18 @@ namespace RegionRuntime {
 	// if this isn't the last holder of the lock, just decrement count
 	//  and return
 	count--;
-	if(count > 0) return;
+	if(count > 0) break;
 
 	// case 1: if we were sharing somebody else's lock, tell them we're
 	//  done
 	if(owner != gasnet_mynode()) {
 	  assert(mode != MODE_EXCL);
 	  mode = 0;
-	  LockReleaseArgs args;
-	  args.node = gasnet_mynode();
-	  args.lock = me;
-	  LockReleaseMessage::request(owner, args);
-	  return;
+
+	  r_args.node = gasnet_mynode();
+	  r_args.lock = me;
+	  release_target = owner;
+	  break;
 	}
 
 	// case 2: we own the lock, so we can give it to another waiter
@@ -1122,17 +1206,22 @@ namespace RegionRuntime {
 	  printf("[%d] lock going to remote waiter: new=%d mask=%lx\n",
 		 gasnet_mynode(), new_owner, remote_waiter_mask);
 
-	  LockGrantArgs args;
-	  args.lock = me;
-	  args.mode = 0; // TODO: figure out shared cases
-	  args.remote_waiter_mask = remote_waiter_mask & ~(1ULL << new_owner);
-	  LockGrantMessage::request(new_owner, args,
-				    local_data, local_data_size);
+	  g_args.lock = me;
+	  g_args.mode = 0; // TODO: figure out shared cases
+	  g_args.remote_waiter_mask = remote_waiter_mask & ~(1ULL << new_owner);
+	  grant_target = new_owner;
 
 	  owner = new_owner;
 	  remote_waiter_mask = 0;
 	}
-      }
+      } while(0);
+
+      if(release_target != -1)
+	LockReleaseMessage::request(release_target, r_args);
+
+      if(grant_target != -1)
+	LockGrantMessage::request(grant_target, g_args,
+				  local_data, local_data_size);
 
       for(std::deque<Event>::iterator it = to_wake.begin();
 	  it != to_wake.end();
@@ -1141,6 +1230,26 @@ namespace RegionRuntime {
 	       gasnet_mynode(), me.id, (*it).id, (*it).gen);
 	(*it).impl()->trigger((*it).gen, true);
       }
+    }
+
+    bool Lock::Impl::is_locked(unsigned check_mode, bool excl_ok)
+    {
+      // checking the owner can be done atomically, so doesn't need mutex
+      if(owner != gasnet_mynode()) return false;
+
+      // conservative check on lock count also doesn't need mutex
+      if(count == 0) return false;
+
+      // a careful check of the lock mode and count does require the mutex
+      bool held;
+      {
+	AutoHSLLock a(mutex);
+
+	held = ((count > 0) &&
+		((mode == check_mode) || ((mode == 0) && excl_ok)));
+      }
+
+      return held;
     }
 
     class DeferredLockRequest : public Event::Impl::EventWaiter {
@@ -1703,7 +1812,7 @@ namespace RegionRuntime {
     {
       CreateInstanceResp resp;
       resp.i = args.m.impl()->create_instance(args.r, args.bytes_needed);
-      resp.inst_offset = resp.i.impl()->data.offset;
+      resp.inst_offset = resp.i.impl()->locked_data.offset; // TODO: Static
       return resp;
     }
 
@@ -1729,7 +1838,7 @@ namespace RegionRuntime {
 	if(index >= instances.size()) {
 	  printf("[%d] resizing instance array: mem=%x old=%zd new=%d\n",
 		 gasnet_mynode(), me.id, instances.size(), index+1);
-	  for(unsigned i = instances.size(); i < index; i++)
+	  for(unsigned i = instances.size(); i <= index; i++)
 	    instances.push_back(0);
 	}
       }
@@ -1897,6 +2006,7 @@ namespace RegionRuntime {
 
       virtual void spawn_task(Processor::TaskFuncID func_id,
 			      const void *args, size_t arglen,
+			      //std::set<RegionInstanceUntyped> instances_needed,
 			      Event start_event, Event finish_event) = 0;
 
     public:
@@ -2200,6 +2310,7 @@ namespace RegionRuntime {
 
       virtual void spawn_task(Processor::TaskFuncID func_id,
 			      const void *args, size_t arglen,
+			      //std::set<RegionInstanceUntyped> instances_needed,
 			      Event start_event, Event finish_event)
       {
 	// create task object to hold args, etc.
@@ -2276,6 +2387,7 @@ namespace RegionRuntime {
 
       virtual void spawn_task(Processor::TaskFuncID func_id,
 			      const void *args, size_t arglen,
+			      //std::set<RegionInstanceUntyped> instances_needed,
 			      Event start_event, Event finish_event)
       {
 	printf("[%d] spawning remote task: proc=%x task=%d start=%x/%d finish=%x/%d\n",
@@ -2292,11 +2404,13 @@ namespace RegionRuntime {
     };
 
     Event Processor::spawn(TaskFuncID func_id, const void *args, size_t arglen,
+			   //std::set<RegionInstanceUntyped> instances_needed,
 			   Event wait_on) const
     {
       Processor::Impl *p = impl();
       Event finish_event = Event::Impl::create_event();
-      p->spawn_task(func_id, args, arglen, wait_on, finish_event);
+      p->spawn_task(func_id, args, arglen, //instances_needed, 
+		    wait_on, finish_event);
       return finish_event;
     }
 
@@ -2479,7 +2593,7 @@ namespace RegionRuntime {
       return Runtime::runtime->get_metadata_impl(*this);
     }
 
-    /*static*/ RegionMetaDataUntyped RegionMetaDataUntyped::create_region_untyped(Memory memory, size_t num_elmts, size_t elmt_size)
+    /*static*/ RegionMetaDataUntyped RegionMetaDataUntyped::create_region_untyped(size_t num_elmts, size_t elmt_size)
     {
       // find an available ID
       std::vector<RegionMetaDataUntyped::Impl *>& metadatas = Runtime::runtime->nodes[gasnet_mynode()].metadatas;
@@ -2502,9 +2616,6 @@ namespace RegionRuntime {
       RegionMetaDataUntyped::Impl *impl = new RegionMetaDataUntyped::Impl(r, num_elmts, elmt_size);
       metadatas[index] = impl;
       
-      impl->data.master_allocator = r.create_allocator_untyped(memory);
-      impl->data.master_instance = r.create_instance_untyped(memory);
-
       return r;
     }
 
@@ -2514,7 +2625,8 @@ namespace RegionRuntime {
 
       // we have to calculate the number of bytes needed in case the request
       //  goes to a remote memory
-      size_t mask_size = ElementMaskImpl::bytes_needed(0, impl()->data.num_elmts);
+      StaticAccess<RegionMetaDataUntyped::Impl> r_data(impl());
+      size_t mask_size = ElementMaskImpl::bytes_needed(0, r_data->num_elmts);
 
       Memory::Impl *m_impl = Runtime::runtime->get_memory_impl(memory);
 
@@ -2536,8 +2648,7 @@ namespace RegionRuntime {
 
       Memory::Impl *m_impl = Runtime::runtime->get_memory_impl(memory);
 
-      RegionMetaDataUntyped::Impl *r_impl = impl();
-      size_t inst_bytes = r_impl->data.num_elmts * r_impl->data.elmt_size;
+      size_t inst_bytes = impl()->instance_size();
 
       return m_impl->create_instance(*this, inst_bytes);
 #if 0
@@ -2563,23 +2674,6 @@ namespace RegionRuntime {
     void RegionMetaDataUntyped::destroy_instance_untyped(RegionInstanceUntyped instance) const
     {
       instance.impl()->memory.impl()->destroy_instance(instance, true);
-    }
-
-    Lock RegionMetaDataUntyped::get_lock(void) const
-    {
-      // we use our own ID as an ID for our lock
-      Lock l = { id };
-      return l;
-    }
-
-    RegionAllocatorUntyped RegionMetaDataUntyped::get_master_allocator_untyped(void)
-    {
-      return impl()->get_master_allocator_untyped();
-    }
-
-    RegionInstanceUntyped RegionMetaDataUntyped::get_master_instance_untyped(void)
-    {
-      return impl()->get_master_instance_untyped();
     }
 
     ///////////////////////////////////////////////////
@@ -2845,8 +2939,8 @@ namespace RegionRuntime {
       data.mask_start = _mask_start;
 
       if(_region.exists()) {
-	RegionMetaDataUntyped::Impl *r_impl = _region.impl();
-	int num_elmts = r_impl->data.num_elmts;
+	StaticAccess<RegionMetaDataUntyped::Impl> r_data(_region.impl());
+	int num_elmts = r_data->num_elmts;
 	int mask_bytes = ElementMaskImpl::bytes_needed(0, num_elmts);
 	avail_elmts.init(0, num_elmts, _memory, _mask_start);
 	avail_elmts.enable(0, num_elmts);
@@ -2891,13 +2985,15 @@ namespace RegionRuntime {
     void RegionInstanceUntyped::Impl::get_bytes(unsigned ptr_value, void *dst, size_t size)
     {
       Memory::Impl *m = Runtime::runtime->get_memory_impl(memory);
-      m->get_bytes(data.offset + ptr_value, dst, size);
+      StaticAccess<RegionInstanceUntyped::Impl> data(this, true);
+      m->get_bytes(data->offset + ptr_value, dst, size);
     }
 
     void RegionInstanceUntyped::Impl::put_bytes(unsigned ptr_value, const void *src, size_t size)
     {
       Memory::Impl *m = Runtime::runtime->get_memory_impl(memory);
-      m->put_bytes(data.offset + ptr_value, src, size);
+      StaticAccess<RegionInstanceUntyped::Impl> data(this, true);
+      m->put_bytes(data->offset + ptr_value, src, size);
     }
 
     /*static*/ const RegionInstanceUntyped RegionInstanceUntyped::NO_INST = RegionInstanceUntyped();
@@ -2909,59 +3005,41 @@ namespace RegionRuntime {
       return RegionInstanceAccessorUntyped<AccessorGeneric>((void *)impl());
     }
 
-    Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, 
-						 Event wait_on /*= Event::NO_EVENT*/)
+    /*static*/ void RegionInstanceUntyped::Impl::copy(RegionInstanceUntyped src, 
+						      RegionInstanceUntyped target,
+						      size_t bytes_to_copy,
+						      Event after_copy /*= Event::NO_EVENT*/)
     {
-      RegionInstanceUntyped::Impl *src_impl = impl();
-      RegionInstanceUntyped::Impl *dst_impl = target.impl();
+      RegionInstanceUntyped::Impl *src_impl = src.impl();
+      RegionInstanceUntyped::Impl *tgt_impl = target.impl();
+
+      StaticAccess<RegionInstanceUntyped::Impl> src_data(src_impl, true);
+      StaticAccess<RegionInstanceUntyped::Impl> tgt_data(tgt_impl, true);
+
       Memory::Impl *src_mem = src_impl->memory.impl();
-      Memory::Impl *dst_mem = dst_impl->memory.impl();
-      RegionMetaDataUntyped::Impl *r_impl = src_impl->data.region.impl();
-
-      printf("COPY %x (%d) -> %x (%d)\n", id, src_mem->kind, target.id, dst_mem->kind);
-
-      // first check - if either or both memories are remote, we're going to
-      //  need to find somebody else to do this copy
-      if((src_mem->kind == Memory::Impl::MKIND_REMOTE) ||
-	 (dst_mem->kind == Memory::Impl::MKIND_REMOTE)) {
-	assert(0);
-      }
-
-      // ok - we're going to do the copy locally, but we need locks on the 
-      //  two instances, and those locks may need to be deferred
-      Event lock_event = src_impl->lock.lock(1, false, wait_on);
-      if(dst_impl != src_impl) {
-	Event dst_lock_event = dst_impl->lock.lock(1, false, wait_on);
-	lock_event = Event::merge_events(lock_event, dst_lock_event);
-      }
-      // now do we have to wait?
-      if(!lock_event.has_triggered()) {
-	assert(0);
-      }
-
-      size_t bytes_to_copy = r_impl->data.num_elmts * r_impl->data.elmt_size;
+      Memory::Impl *tgt_mem = tgt_impl->memory.impl();
 
       switch(src_mem->kind) {
       case Memory::Impl::MKIND_SYSMEM:
       case Memory::Impl::MKIND_ZEROCOPY:
 	{
-	  const void *src_ptr = src_impl->memory.impl()->get_direct_ptr(src_impl->data.offset, bytes_to_copy);
+	  const void *src_ptr = src_mem->get_direct_ptr(src_data->offset, bytes_to_copy);
 	  assert(src_ptr != 0);
 
-	  switch(dst_mem->kind) {
+	  switch(tgt_mem->kind) {
 	  case Memory::Impl::MKIND_SYSMEM:
 	  case Memory::Impl::MKIND_ZEROCOPY:
 	    {
-	      void *dst_ptr = dst_impl->memory.impl()->get_direct_ptr(dst_impl->data.offset, bytes_to_copy);
-	      assert(dst_ptr != 0);
+	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->offset, bytes_to_copy);
+	      assert(tgt_ptr != 0);
 
-	      memcpy(dst_ptr, src_ptr, bytes_to_copy);
+	      memcpy(tgt_ptr, src_ptr, bytes_to_copy);
 	    }
 	    break;
 
 	  case Memory::Impl::MKIND_GASNET:
 	    {
-	      dst_mem->put_bytes(dst_impl->data.offset, src_ptr, bytes_to_copy);
+	      tgt_mem->put_bytes(tgt_data->offset, src_ptr, bytes_to_copy);
 	    }
 	    break;
 
@@ -2973,14 +3051,14 @@ namespace RegionRuntime {
 
       case Memory::Impl::MKIND_GASNET:
 	{
-	  switch(dst_mem->kind) {
+	  switch(tgt_mem->kind) {
 	  case Memory::Impl::MKIND_SYSMEM:
 	  case Memory::Impl::MKIND_ZEROCOPY:
 	    {
-	      void *dst_ptr = dst_impl->memory.impl()->get_direct_ptr(dst_impl->data.offset, bytes_to_copy);
-	      assert(dst_ptr != 0);
+	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->offset, bytes_to_copy);
+	      assert(tgt_ptr != 0);
 
-	      src_mem->get_bytes(src_impl->data.offset, dst_ptr, bytes_to_copy);
+	      src_mem->get_bytes(src_data->offset, tgt_ptr, bytes_to_copy);
 	    }
 	    break;
 
@@ -2994,8 +3072,8 @@ namespace RegionRuntime {
 		size_t chunk_size = bytes_to_copy - bytes_copied;
 		if(chunk_size > BLOCK_SIZE) chunk_size = BLOCK_SIZE;
 
-		src_mem->get_bytes(src_impl->data.offset + bytes_copied, temp_block, chunk_size);
-		dst_mem->put_bytes(dst_impl->data.offset + bytes_copied, temp_block, chunk_size);
+		src_mem->get_bytes(src_data->offset + bytes_copied, temp_block, chunk_size);
+		tgt_mem->put_bytes(tgt_data->offset + bytes_copied, temp_block, chunk_size);
 		bytes_copied += chunk_size;
 	      }
 	    }
@@ -3013,9 +3091,69 @@ namespace RegionRuntime {
 
       // don't forget to release the locks on the instances!
       src_impl->lock.unlock();
-      if(dst_impl != src_impl)
-	dst_impl->lock.unlock();
+      if(tgt_impl != src_impl)
+	tgt_impl->lock.unlock();
 
+      if(after_copy.exists())
+	after_copy.impl()->trigger(after_copy.gen, true);
+    }
+
+    class DeferredCopy : public Event::Impl::EventWaiter {
+    public:
+      DeferredCopy(RegionInstanceUntyped _src, RegionInstanceUntyped _target,
+		   size_t _bytes_to_copy, Event _after_copy)
+	: src(_src), target(_target), 
+	  bytes_to_copy(_bytes_to_copy), after_copy(_after_copy) {}
+
+      virtual void event_triggered(void)
+      {
+	RegionInstanceUntyped::Impl::copy(src, target, bytes_to_copy, after_copy);
+      }
+
+    protected:
+      RegionInstanceUntyped src, target;
+      size_t bytes_to_copy;
+      Event after_copy;
+    };
+
+    Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, 
+						 Event wait_on /*= Event::NO_EVENT*/)
+    {
+      RegionInstanceUntyped::Impl *src_impl = impl();
+      RegionInstanceUntyped::Impl *dst_impl = target.impl();
+      Memory::Impl *src_mem = src_impl->memory.impl();
+      Memory::Impl *dst_mem = dst_impl->memory.impl();
+
+      printf("COPY %x (%d) -> %x (%d)\n", id, src_mem->kind, target.id, dst_mem->kind);
+
+      // first check - if either or both memories are remote, we're going to
+      //  need to find somebody else to do this copy
+      if((src_mem->kind == Memory::Impl::MKIND_REMOTE) ||
+	 (dst_mem->kind == Memory::Impl::MKIND_REMOTE)) {
+	assert(0);
+      }
+
+      size_t bytes_to_copy = StaticAccess<RegionInstanceUntyped::Impl>(src_impl)->region.impl()->instance_size();
+
+      // ok - we're going to do the copy locally, but we need locks on the 
+      //  two instances, and those locks may need to be deferred
+      Event lock_event = src_impl->lock.lock(1, false, wait_on);
+      if(dst_impl != src_impl) {
+	Event dst_lock_event = dst_impl->lock.lock(1, false, wait_on);
+	lock_event = Event::merge_events(lock_event, dst_lock_event);
+      }
+      // now do we have to wait?
+      if(!lock_event.has_triggered()) {
+	Event after_copy = Event::Impl::create_event();
+	lock_event.impl()->add_waiter(lock_event,
+				      new DeferredCopy(*this, target,
+						       bytes_to_copy, 
+						       after_copy));
+	return after_copy;
+      }
+
+      // we can do the copy immediately here
+      RegionInstanceUntyped::Impl::copy(*this, target, bytes_to_copy);
       return Event::NO_EVENT;
     }
 

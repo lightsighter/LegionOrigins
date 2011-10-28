@@ -218,25 +218,15 @@ namespace RegionRuntime {
 
       bool exists(void) const { return id != 0; }
 
-      static RegionMetaDataUntyped create_region_untyped(Memory memory, size_t num_elmts, size_t elmt_size);
-      static RegionMetaDataUntyped create_region_untyped(Memory memory, RegionMetaDataUntyped parent, const ElementMask &mask);
+      static RegionMetaDataUntyped create_region_untyped(size_t num_elmts, size_t elmt_size);
+      static RegionMetaDataUntyped create_region_untyped(RegionMetaDataUntyped parent, const ElementMask &mask);
+
       RegionAllocatorUntyped create_allocator_untyped(Memory memory) const;
       RegionInstanceUntyped create_instance_untyped(Memory memory) const;
+
       void destroy_region_untyped(void) const;
       void destroy_allocator_untyped(RegionAllocatorUntyped allocator) const;
       void destroy_instance_untyped(RegionInstanceUntyped instance) const;
-
-      // get the lock that covers this metadata
-      Lock get_lock(void) const;
-
-      // it's ok to call these without holding the lock if you don't mind
-      //  stale data - data will be up to date if you hold the lock
-      RegionAllocatorUntyped get_master_allocator_untyped(void);
-      RegionInstanceUntyped get_master_instance_untyped(void);
-
-      // don't call these unless you hold an exclusive lock on the metadata
-      void set_master_allocator_untyped(RegionAllocatorUntyped allocator);
-      void set_master_instance_untyped(RegionInstanceUntyped instance);
 
       const ElementMask &get_valid_mask(void);
     };
@@ -254,9 +244,6 @@ namespace RegionRuntime {
       static const RegionAllocatorUntyped NO_ALLOC;
 
       bool exists(void) const { return id != 0; }
-
-      // get the lock that covers this allocator
-      Lock get_lock(void);
 
     protected:
       unsigned alloc_untyped(unsigned count = 1) const;
@@ -352,9 +339,6 @@ namespace RegionRuntime {
 
       bool exists(void) const { return id != 0; }
 
-      // get the lock that covers this instance
-      Lock get_lock(void) { Lock l = { id }; return l; }
-
       RegionInstanceAccessorUntyped<AccessorGeneric> get_accessor_untyped(void) const;
 
       Event copy_to_untyped(RegionInstanceUntyped target, Event wait_on = Event::NO_EVENT);
@@ -372,8 +356,8 @@ namespace RegionRuntime {
       explicit RegionMetaData(const RegionMetaDataUntyped& copy_from)
 	: RegionMetaDataUntyped(copy_from) {}
 
-      static RegionMetaData<T> create_region(Memory memory, size_t _num_elems) {
-	return RegionMetaData<T>(create_region_untyped(memory,_num_elems,sizeof(T)));
+      static RegionMetaData<T> create_region(size_t _num_elems) {
+	return RegionMetaData<T>(create_region_untyped(_num_elems,sizeof(T)));
       }
 
       RegionAllocator<T> create_allocator(Memory memory) {
@@ -395,25 +379,6 @@ namespace RegionRuntime {
       void destroy_instance(RegionInstance<T> instance) {
         destroy_instance_untyped(instance);
       }
-
-      // it's ok to call these without holding the lock if you don't mind
-      //  stale data - data will be up to date if you hold the lock
-      RegionAllocator<T> get_master_allocator(void) {
-	return RegionAllocator<T>(get_master_allocator_untyped());
-      }
-
-      RegionInstance<T> get_master_instance(void) {
-	return RegionInstance<T>(get_master_instance_untyped());
-      }
-
-      // don't call these unless you hold an exclusive lock on the metadata
-      void set_master_allocator(RegionAllocator<T> allocator) {
-	set_master_allocator_untyped(allocator);
-      }
-
-      void set_master_instance(RegionInstance<T> instance) {
-	set_master_instance_untyped(instance);
-      }
     };
 
     template <class T>
@@ -434,6 +399,8 @@ namespace RegionRuntime {
     template <class T>
     class RegionInstance : public RegionInstanceUntyped {
     public:
+      RegionInstance(void) : RegionInstanceUntyped(NO_INST) {}
+
       // operator to re-introduce element type - make sure you're right!
       explicit RegionInstance(const RegionInstanceUntyped& copy_from)
 	: RegionInstanceUntyped(copy_from) {}
