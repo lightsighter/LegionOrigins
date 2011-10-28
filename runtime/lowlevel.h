@@ -270,11 +270,11 @@ namespace RegionRuntime {
 
       template <class T>
       T read(ptr_t<T> ptr) const
-      { T val; get_untyped(ptr.value, &val, sizeof(val)); return val; }
+	{ T val; get_untyped(ptr.value*sizeof(T), &val, sizeof(T)); return val; }
 
       template <class T>
       void write(ptr_t<T> ptr, T newval) const
-      { put_untyped(ptr.value, &newval, sizeof(newval)); }
+	{ put_untyped(ptr.value*sizeof(T), &newval, sizeof(T)); }
 
       template <AccessorType AT2>
       bool can_convert(void) const;

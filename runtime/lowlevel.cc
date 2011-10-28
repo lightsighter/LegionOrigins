@@ -2985,14 +2985,14 @@ namespace RegionRuntime {
     void RegionInstanceUntyped::Impl::get_bytes(unsigned ptr_value, void *dst, size_t size)
     {
       Memory::Impl *m = Runtime::runtime->get_memory_impl(memory);
-      StaticAccess<RegionInstanceUntyped::Impl> data(this, true);
+      StaticAccess<RegionInstanceUntyped::Impl> data(this);
       m->get_bytes(data->offset + ptr_value, dst, size);
     }
 
     void RegionInstanceUntyped::Impl::put_bytes(unsigned ptr_value, const void *src, size_t size)
     {
       Memory::Impl *m = Runtime::runtime->get_memory_impl(memory);
-      StaticAccess<RegionInstanceUntyped::Impl> data(this, true);
+      StaticAccess<RegionInstanceUntyped::Impl> data(this);
       m->put_bytes(data->offset + ptr_value, src, size);
     }
 
@@ -3013,8 +3013,8 @@ namespace RegionRuntime {
       RegionInstanceUntyped::Impl *src_impl = src.impl();
       RegionInstanceUntyped::Impl *tgt_impl = target.impl();
 
-      StaticAccess<RegionInstanceUntyped::Impl> src_data(src_impl, true);
-      StaticAccess<RegionInstanceUntyped::Impl> tgt_data(tgt_impl, true);
+      StaticAccess<RegionInstanceUntyped::Impl> src_data(src_impl);
+      StaticAccess<RegionInstanceUntyped::Impl> tgt_data(tgt_impl);
 
       Memory::Impl *src_mem = src_impl->memory.impl();
       Memory::Impl *tgt_mem = tgt_impl->memory.impl();
