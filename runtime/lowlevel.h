@@ -5,11 +5,90 @@
 #include <vector>
 #include <set>
 #include <map>
+#include <cstdarg>
 
 #include "common.h"
 
 namespace RegionRuntime {
   namespace LowLevel {
+    // widget for generating debug/info messages
+    enum LogLevel {
+      LEVEL_SPEW,
+      LEVEL_DEBUG,
+      LEVEL_INFO,
+      LEVEL_WARNING,
+      LEVEL_ERROR,
+      LEVEL_NONE,
+    };
+#define COMPILE_TIME_MIN_LEVEL LEVEL_SPEW
+    class Logger {
+    public:
+      static void init(int argc, const char *argv[]);
+
+
+      static inline void log(LogLevel level, int category, const char *fmt, ...)
+      {
+	if(level >= COMPILE_TIME_MIN_LEVEL) {  // static opt-out
+	  if(level >= log_level) {             // dynamic opt-out
+	    if(log_cats_enabled[category]) {   // category filter
+	      va_list args;
+	      va_start(args, fmt);
+	      logvprintf(level, category, fmt, args);
+	      va_end(args);
+	    }
+	  }
+	}
+      }
+
+      class Category {
+      public:
+	Category(const std::string& name)
+	{
+	  index = Logger::add_category(name);
+	}
+
+	operator int(void) const { return index; }
+
+	int index;
+
+	inline void operator()(LogLevel level, const char *fmt, ...) __attribute__((format (printf, 3, 4)))
+	{
+	  if(level >= COMPILE_TIME_MIN_LEVEL) {  // static opt-out
+	    if(level >= log_level) {             // dynamic opt-out
+	      if(log_cats_enabled[index]) {      // category filter
+		va_list args;
+		va_start(args, fmt);
+		Logger::logvprintf(level, index, fmt, args);
+		va_end(args);
+	      }
+	    }
+	  }
+	}
+      };
+
+    protected:
+      static LogLevel log_level;
+      static std::vector<bool> log_cats_enabled;
+      static std::map<std::string, int> categories_by_name;
+      static std::vector<std::string> categories_by_id;
+
+      static void logvprintf(LogLevel level, int category, const char *fmt, va_list args);
+
+      static int add_category(const std::string& name)
+      {
+	int index;
+	std::map<std::string, int>::iterator it = Logger::categories_by_name.find(name);
+	if(it == Logger::categories_by_name.end()) {
+	  index = Logger::categories_by_id.size();
+	  Logger::categories_by_id.push_back(name);
+	  Logger::categories_by_name[name] = index;
+	  log_cats_enabled.resize(index + 1);
+	} else {
+	  index = it->second;
+	}
+	return index;
+      }
+    };
 
     // forward class declarations because these things all refer to each other
     class Event;
@@ -270,11 +349,11 @@ namespace RegionRuntime {
 
       template <class T>
       T read(ptr_t<T> ptr) const
-      { T val; get_untyped(ptr.value, &val, sizeof(val)); return val; }
+	{ T val; get_untyped(ptr.value*sizeof(T), &val, sizeof(T)); return val; }
 
       template <class T>
       void write(ptr_t<T> ptr, T newval) const
-      { put_untyped(ptr.value, &newval, sizeof(newval)); }
+	{ put_untyped(ptr.value*sizeof(T), &newval, sizeof(T)); }
 
       template <AccessorType AT2>
       bool can_convert(void) const;

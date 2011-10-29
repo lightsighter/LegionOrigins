@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cassert>
 #include <cstdlib>
+#include <cstring>
 
 // Only need this for pthread_exit
 #include <pthread.h>
@@ -157,7 +158,7 @@ void hot_potatoer(const void * args, size_t arglen, Processor p)
 
   Lock rlock = potato.lock;
 
-  printf("Processor %x passing hot potato to processor %x (%d hops left)\n",me.id,neighbor.id,potato.hops_left);
+  //printf("Processor %x passing hot potato %d to processor %x (%d hops left)\n",me.id,potato.id,neighbor.id,potato.hops_left);
   fflush(stdout);
   // are we the last hop of the current lap?
   if (potato.hops_left == 0)
@@ -175,6 +176,7 @@ void hot_potatoer(const void * args, size_t arglen, Processor p)
 
 	unsigned trips = local_acc.read(potato.lap_count_location);
 	printf("TRIPS: %d %d\n", potato.lap_count_location.value, trips);
+	assert(trips <= config.num_trips);
 	if (trips == 0)
 	  {
 	    // Launch the dropper on the next processor
@@ -236,12 +238,15 @@ void potato_dropper(const void * args, size_t arglen, Processor p)
   printf("potato counter master instance ID = %x\n", master_inst.id);
   RegionInstanceAccessor<unsigned,AT> master_acc = master_inst.get_accessor().convert<AT>();
 
-  unsigned finished = master_acc.read(potato.finished_location) + 1;
+  unsigned finished = master_acc.read(potato.finished_location);
+  assert(finished <= config.num_potatoes);
+  finished++;
 
   printf("%d potatoes dropped...\n", finished);
   if (finished == config.num_potatoes)
     {
       printf("all potatoes finished!\n");
+  exit(0);
 #if 0
       // Shutdown all the processors
       Machine *machine = Machine::get_machine();
@@ -274,10 +279,37 @@ int main(int argc, char **argv)
   task_table[LAUNCHER_ID] = potato_launcher<AccessorGeneric>;
   task_table[HOT_POTATOER] = hot_potatoer<AccessorGeneric>;
   task_table[POTATO_DROPPER] = potato_dropper<AccessorGeneric>;
-	
+
   // Initialize the machine
   Machine m(&argc,&argv,task_table,false);
 
+  // have to look at args AFTER init of GASnet to get original cmd line
+  for(int i = 1; i < argc; i++) {
+    if(!strcmp(argv[i], "-p")) {
+      config.num_potatoes = atoi(argv[++i]);
+      continue;
+    }
+	
+    if(!strcmp(argv[i], "-t")) {
+      config.num_trips = atoi(argv[++i]);
+      continue;
+    }
+	
+    if(!strcmp(argv[i], "-h")) {
+      config.num_hops = atoi(argv[++i]);
+      continue;
+    }
+	
+    if(!strcmp(argv[i], "-r")) {
+      config.random_neighbors = atoi(argv[++i]);
+      continue;
+    }
+  }
+
+  printf("Config settings: potatoes=%d trips=%d hops=%d random=%d\n",
+	 config.num_potatoes, config.num_trips, config.num_hops,
+	 config.random_neighbors);
+	
   const std::set<Processor> &all_procs = m.get_all_processors();
   printf("There are %zd processors\n", all_procs.size());	
 
