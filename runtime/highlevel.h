@@ -103,21 +103,24 @@ namespace RegionRuntime {
       static bool region_war_conflict(RegionRequirement *req1, RegionRequirement *req2);
     };
 
-    struct AbstractInstance {
+    class AbstractInstance {
     protected:
+      friend class HighLevelRuntime;
       friend class TaskDescription;
       friend class CopyOperation;
       friend class RegionNode;
       friend class PartitionNode;
     protected:
       AbstractInstance(LogicalHandle h, AbstractInstance *par);
+      ~AbstractInstance();
       size_t compute_instance_size(void) const;
       void pack_instance(char *&buffer, AccessMode mode, CoherenceProperty prop) const;
       static AbstractInstance* unpack_instance(const char *&buffer);
     protected:
       // Try to get an instance in the memory, if not, return NULL
       // Make will try to create the instance if it doesn't already exist
-      InstanceInfo* get_instance(Memory m, AccessMode mode, CoherenceProperty prop);
+      InstanceInfo* get_instance(Memory m, AccessMode mode, CoherenceProperty prop,
+                                  Mapper *mapper, TaskDescription *desc);
       // Return the instance back to the abstract instance, return true
       // if the region can be deleted 
       bool free_instance(InstanceInfo *info);
@@ -127,15 +130,20 @@ namespace RegionRuntime {
       void register_mapped(void);
       // Decrease the reference count and note whether are reader or writer returned
       void register_mapped_remote(bool writer);
-      // Mark the abstract instance closed
+      // Mark the abstract instance closed for conflict detection
       void mark_closed(void);
-    protected:
       // Make the locations visible
-      std::vector<Memory> locations;
+      std::vector<Memory>& get_memory_locations(void);
+      // Get the valid instances of the given logical region
+      std::map<Memory,InstanceInfo*>& get_valid_instances(void);
     private:
-      LogicalHandle handle; // Movable (Stage 1)
+      InstanceInfo* get_priv_instance(Memory m); // For read only internal
+    protected:
+      const LogicalHandle handle; // Movable (Stage 1)
+    private:
       std::map<Memory,InstanceInfo*> valid_instances;
       std::vector<InstanceInfo*> all_instances;
+      std::vector<Memory> locations;
       unsigned references;
       bool closed; // Immovable (Stage 1)
       // In the first map we have to pull down the valid instances
@@ -152,6 +160,7 @@ namespace RegionRuntime {
       LogicalHandle handle;
       Memory location;
       RegionInstance inst;
+      Event valid; // Indicates when this instance is valid (in case we had to make a new one)
     protected:
       friend class AbstractInstance;
       unsigned references;
@@ -164,13 +173,15 @@ namespace RegionRuntime {
       friend class RegionNode;
       friend class PartitionNode;
     protected:
-      CopyOperation(AbstractInstance *s, AbstractInstance *d, 
+      CopyOperation(AbstractInstance *s,  
                     Event wait_on = Event::NO_EVENT, bool rem = false);
       ~CopyOperation();
       void add_sub_copies(const std::set<CopyOperation*> &copies);
       // Trigger all the child copies and then this copy
       // Record all instances that become invalid in the tasks set of dead instances
-      Event execute(Mapper *m, TaskDescription *desc);
+      Event execute(Mapper *m, TaskDescription *desc, Event wait_on,
+                    const std::vector<Memory> &destinations,
+                    const std::vector<InstanceInfo*> &dst_inst);
     protected:
       // Operations for packing and unpacking copy trees
       size_t compute_copy_tree_size(void) const;
@@ -179,7 +190,6 @@ namespace RegionRuntime {
     private:
       std::set<CopyOperation*> sub_copies;
       AbstractInstance *src;
-      AbstractInstance *dst;
       Event ready; // Event indicating when the copy can be performed
       const bool remote;
     };
@@ -236,6 +246,7 @@ namespace RegionRuntime {
       const Context local_ctx; // The context for this task
       const Processor local_proc; // The local processor this task is on
       TaskDescription *parent_task; // Only valid when local
+      Mapper *mapper;
     protected:
       // Information to send back to the original processor
       bool remote; // Send back an event if true
@@ -487,9 +498,13 @@ namespace RegionRuntime {
                                     Memory &chosen_src,
                                     std::vector<Memory> &dst_ranking);
 
-      virtual void select_copy_target(const Task &task,
+      virtual void rank_copy_targets(const Task *task,
                                     const std::vector<Memory> &current_instances,
                                     std::vector<std::vector<Memory> > &future_ranking);
+
+      virtual void select_copy_source(const Task *task,
+                                    const std::vector<Memory> &current_instances,
+                                    const Memory &dst, Memory &chosen_src);
 
       // Register task with mapper
       // Unregister task with mapper
@@ -534,7 +549,7 @@ namespace RegionRuntime {
       // task must have already run, otherwise, they can run concurrently and we
       // can copy up automatically
       void close_subtree(Context ctx, TaskDescription *desc, 
-                         AbstractInstance *prev_inst, std::set<CopyOperation*> &result);
+                         std::set<CopyOperation*> &result);
 
       // Once we've closed a subtree, we don't have to check for dependences on our
       // way to the logical region, we just need to open things up. Open them up
@@ -584,7 +599,7 @@ namespace RegionRuntime {
       void register_region_dependence(DependenceDetector &dep);
 
       void close_subtree(Context ctx, TaskDescription *desc, 
-                          AbstractInstance *prev_inst, std::set<CopyOperation*> &result);
+                          std::set<CopyOperation*> &result);
 
       void open_subtree(DependenceDetector &dep);
 
@@ -1024,7 +1039,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(ctx < all_tasks.size());
 #endif
-      all_tasks[ctx]->create_region(region,region.get_master_instance_untyped(),location);
+      all_tasks[ctx]->create_region(region,region.create_instance_untyped(location),location);
 
       // Return the handle
       return region;
