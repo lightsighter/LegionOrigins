@@ -413,7 +413,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     Event CopyOperation::execute(Mapper *mapper, TaskDescription *desc, Event wait_on,
                                   const std::vector<Memory> &destinations,
-                                  const std::vector<InstanceInfo*> &dst_inst)
+                                  const std::vector<InstanceInfo*> &dst_inst,
+                              std::vector<std::pair<AbstractInstance*,InstanceInfo*> > &sources)
     //--------------------------------------------------------------------------------------------
     {
       // Issue all the copies for to copy these valid instances back to the destinations
@@ -422,6 +423,7 @@ namespace RegionRuntime {
       if (!valid_instances.empty())
       {
         std::vector<Memory> valid_locations;
+        // Get only the valid instances for this logical region
         for (std::map<Memory,InstanceInfo*>::const_iterator it = valid_instances.begin();
               it != valid_instances.end(); it++)
         {
@@ -439,10 +441,17 @@ namespace RegionRuntime {
           assert(valid_instances.find(target) != valid_instances.end());
 #endif
           // Issue the copy
-          InstanceInfo *src = valid_instances[target]; 
-          wait_set.insert(src->inst.copy_to_untyped((*dst_it)->inst,wait_on));
+          InstanceInfo *src_inst = valid_instances[target]; 
+          // Register this as a reader
+          src->register_reader(src_inst);
+          // Append this to the list of sources
+          sources.push_back(std::pair<AbstractInstance*,InstanceInfo*>(src,src_inst));
+          // Mark the source as being read
+          wait_set.insert(src_inst->inst.copy_to_untyped((*dst_it)->inst,wait_on));
         }
       }
+      // Once we're done here, mark that we used the abstract instance
+      src->register_task_mapped();
       // Now see if we have any sub copies to perform
       if (sub_copies.empty())
       {
@@ -459,33 +468,10 @@ namespace RegionRuntime {
               copy_it != sub_copies.end(); copy_it++)
         {
           sub_events.insert((*copy_it)->execute(mapper,desc,
-                                                    sub_copy_wait,destinations,dst_inst));
+                                            sub_copy_wait,destinations,dst_inst,sources));
         }
         return Event::merge_events(sub_events);
       }
-    }
-
-    //--------------------------------------------------------------------------------------------
-    size_t CopyOperation::compute_copy_tree_size(void) const
-    //--------------------------------------------------------------------------------------------
-    {
-      assert(0);
-      return 0;
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void CopyOperation::pack_copy_tree(char *&buffer) const
-    //--------------------------------------------------------------------------------------------
-    {
-      assert(0);
-    }
-    
-    //--------------------------------------------------------------------------------------------
-    CopyOperation* CopyOperation::unpack_copy_tree(const char *&buffer)
-    //--------------------------------------------------------------------------------------------
-    {
-      assert(0);
-      return NULL;
     }
 
     /////////////////////////////////////////////////////////////
@@ -1872,7 +1858,8 @@ namespace RegionRuntime {
         }
         // Put this in the result
         result.insert(op);
-        // Mark this valid instance as closed
+        // Mark this valid instance as being used by the op and then closed
+        region_states[ctx].valid_instance->register_task_user();
         region_states[ctx].valid_instance->mark_closed();
       }
       else

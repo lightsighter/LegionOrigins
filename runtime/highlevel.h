@@ -188,12 +188,8 @@ namespace RegionRuntime {
       // Record all instances that become invalid in the tasks set of dead instances
       Event execute(Mapper *m, TaskDescription *desc, Event wait_on,
                     const std::vector<Memory> &destinations,
-                    const std::vector<InstanceInfo*> &dst_inst);
-    protected:
-      // Operations for packing and unpacking copy trees
-      size_t compute_copy_tree_size(void) const;
-      void pack_copy_tree(char *&buffer) const;
-      static CopyOperation* unpack_copy_tree(const char *&buffer);
+                    const std::vector<InstanceInfo*> &dst_inst,
+                    std::vector<std::pair<AbstractInstance*,InstanceInfo*> > &sources);
     private:
       std::set<CopyOperation*> sub_copies;
       AbstractInstance *src;
