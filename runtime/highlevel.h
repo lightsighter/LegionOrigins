@@ -111,25 +111,32 @@ namespace RegionRuntime {
       friend class RegionNode;
       friend class PartitionNode;
     protected:
-      AbstractInstance(LogicalHandle h, AbstractInstance *par);
+      AbstractInstance(LogicalHandle h, AbstractInstance *par, InstanceInfo *init = NULL);
       ~AbstractInstance();
       size_t compute_instance_size(void) const;
-      void pack_instance(char *&buffer, AccessMode mode, CoherenceProperty prop) const;
+      void pack_instance(char *&buffer, bool writer) const;
       static AbstractInstance* unpack_instance(const char *&buffer);
+      size_t compute_update_size(void) const;
+      void pack_update(char *&buffer) const;
+      void unpack_update(const char *&buffer, bool writer);
     protected:
       // Try to get an instance in the memory, if not, return NULL
       // Make will try to create the instance if it doesn't already exist
-      InstanceInfo* get_instance(Memory m, AccessMode mode, CoherenceProperty prop,
-                                  Mapper *mapper, TaskDescription *desc);
+      // If it has to make a new instance, the call to get instance will mark
+      // new_inst as true
+      InstanceInfo* get_instance(Memory m);
       // Return the instance back to the abstract instance, return true
       // if the region can be deleted 
-      bool free_instance(InstanceInfo *info);
+      void free_instance(InstanceInfo *info);
+      // register a reader of an instance
+      void register_reader(InstanceInfo *info);
+      // register a writer of an instance
+      void register_writer(InstanceInfo *info);
+    protected:
       // Increases the reference count of the abstract instance
-      void register_user(void);
+      void register_task_user(void);
       // Decreases the reference count of the abstract instance
-      void register_mapped(void);
-      // Decrease the reference count and note whether are reader or writer returned
-      void register_mapped_remote(bool writer);
+      void register_task_mapped(void);
       // Mark the abstract instance closed for conflict detection
       void mark_closed(void);
       // Make the locations visible
@@ -137,7 +144,7 @@ namespace RegionRuntime {
       // Get the valid instances of the given logical region
       std::map<Memory,InstanceInfo*>& get_valid_instances(void);
     private:
-      InstanceInfo* get_priv_instance(Memory m); // For read only internal
+      InstanceInfo* get_instance_internal(Memory m); // For read only internal
     protected:
       const LogicalHandle handle; // Movable (Stage 1)
     private:
@@ -268,13 +275,11 @@ namespace RegionRuntime {
       std::vector<AbstractInstance*> abstract_inst; // (mov)
       std::vector<InstanceInfo*> src_instances; // Sources for our regions (immov)
       std::vector<InstanceInfo*> instances; // Region instances for the regions (immov)
-      // Instances that will be dead after all the copy operation
-      std::vector<InstanceInfo*> dead_instances; // (mov)
       // Copy operations (must be performed before steal/send)
       std::set<CopyOperation*> pre_copy_trees; // (immov)
     private:
       // New top level regions
-      std::map<LogicalHandle,std::pair<Memory,RegionInstance> > created_regions;       
+      std::map<LogicalHandle,InstanceInfo*> created_regions;       
       std::set<LogicalHandle> deleted_regions; // The regions deleted in this task and children
       // Keep track of all the abstract instances so we can free them after the task is finished
       std::vector<AbstractInstance*> all_instances;
@@ -286,6 +291,8 @@ namespace RegionRuntime {
       void deactivate(void);
       void compute_trace(DependenceDetector &dep, LogicalHandle parent, LogicalHandle child);
       void register_child_task(TaskDescription *child);
+      void initialize_contexts(void);
+      Event issue_pre_copy_ops(void);
       AbstractInstance* get_abstract_instance(LogicalHandle h, AbstractInstance *par);
       // Operations to pack and unpack tasks
       size_t compute_task_size(void) const;
