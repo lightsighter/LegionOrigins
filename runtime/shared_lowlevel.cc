@@ -1104,12 +1104,6 @@ namespace RegionRuntime {
 	pthread_mutex_t mutex;
     };
 
-    bool Memory::exists(void) const
-    {
-	MemoryImpl* m = Runtime::get_runtime()->get_memory_impl(*this);
-	return (m!=NULL);
-    }
-
     size_t MemoryImpl::remaining_bytes(void) 
     {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
@@ -1350,12 +1344,14 @@ namespace RegionRuntime {
 
     const void* RegionInstanceImpl::read(unsigned ptr)
     {
-	return ((void*)(base_ptr+(ptr*elmt_size)));
+      // 'ptr' has already been multiplied by elmt_size
+      return ((void*)(base_ptr + ptr));
     }
 
     void RegionInstanceImpl::write(unsigned ptr, const void* newval)
     {
-	memcpy((base_ptr+(ptr*elmt_size)),newval,elmt_size);
+      // 'ptr' has already been multiplied by elmt_size
+      memcpy((base_ptr + ptr),newval,elmt_size);
     }
 
     bool RegionInstanceImpl::activate(Memory m, size_t num, size_t elem_size)
