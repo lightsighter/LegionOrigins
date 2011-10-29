@@ -1,6 +1,7 @@
 GASNET = /usr/local/gasnet-1.16.2
 
 CCFLAGS = -I$(GASNET)/include -ggdb -Wall
+#CCFLAGS = -I$(GASNET)/include -O3 -Wall
 
 LDFLAGS = -L$(GASNET)/lib -lrt
 

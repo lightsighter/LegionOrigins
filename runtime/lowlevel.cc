@@ -10,10 +10,13 @@
 
 #include "activemsg.h"
 
+#ifdef CHECK_REENTRANT_MESSAGES
 GASNETT_THREADKEY_DEFINE(in_handler);
+#endif
 GASNETT_THREADKEY_DEFINE(cur_thread);
 
 #include <pthread.h>
+#include <string.h>
 
 #include <vector>
 #include <deque>
@@ -41,31 +44,119 @@ GASNETT_THREADKEY_DEFINE(cur_thread);
 
 // GASnet helper stuff
 
-class AutoHSLLock {
-public:
-  AutoHSLLock(gasnet_hsl_t &mutex) : mutexp(&mutex) 
-  { 
-    //printf("[%d] MUTEX LOCK IN %p\n", gasnet_mynode(), mutexp);
-    gasnet_hsl_lock(mutexp); 
-    //printf("[%d] MUTEX LOCK HELD %p\n", gasnet_mynode(), mutexp);
-  }
-  AutoHSLLock(gasnet_hsl_t *_mutexp) : mutexp(_mutexp) 
-  { 
-    //printf("[%d] MUTEX LOCK IN %p\n", gasnet_mynode(), mutexp);
-    gasnet_hsl_lock(mutexp); 
-    //printf("[%d] MUTEX LOCK HELD %p\n", gasnet_mynode(), mutexp);
-  }
-  ~AutoHSLLock(void) 
-  { 
-    gasnet_hsl_unlock(mutexp);
-    //printf("[%d] MUTEX LOCK OUT %p\n", gasnet_mynode(), mutexp);
-  }
-protected:
-  gasnet_hsl_t *mutexp;
-};
-
 namespace RegionRuntime {
   namespace LowLevel {
+    /*static*/ LogLevel Logger::log_level;
+    /*static*/ std::vector<bool> Logger::log_cats_enabled;
+    /*static*/ std::map<std::string, int> Logger::categories_by_name;
+    /*static*/ std::vector<std::string> Logger::categories_by_id;
+
+    /*static*/ void Logger::init(int argc, const char *argv[])
+    {
+      // default (for now) is to spew everything
+      log_level = LEVEL_SPEW;
+      for(std::vector<bool>::iterator it = log_cats_enabled.begin();
+	  it != log_cats_enabled.end();
+	  it++)
+	(*it) = true;
+
+      for(int i = 1; i < argc; i++) {
+	if(!strcmp(argv[i], "-level")) {
+	  log_level = (LogLevel)atoi(argv[++i]);
+	  continue;
+	}
+
+	if(!strcmp(argv[i], "-cat")) {
+	  const char *p = argv[++i];
+
+	  if(*p == '*') {
+	    p++;
+	  } else {
+	    // turn off all the bits and then we'll turn on only what's requested
+	    for(std::vector<bool>::iterator it = log_cats_enabled.begin();
+		it != log_cats_enabled.end();
+		it++)
+	      (*it) = false;
+	  }
+
+	  while(*p == ',') p++;
+	  while(*p) {
+	    bool enable = true;
+	    if(*p == '-') {
+	      enable = false;
+	      p++;
+	    }
+	    const char *p2 = p; while(*p2 && (*p2 != ',')) p2++;
+	    std::string name(p, p2);
+	    std::map<std::string, int>::iterator it = categories_by_name.find(name);
+	    if(it == categories_by_name.end()) {
+	      fprintf(stderr, "unknown log category '%s'!\n", name.c_str());
+	      exit(1);
+	    }
+
+	    log_cats_enabled[it->second] = enable;
+
+	    p = p2;
+	    while(*p == ',') p++;
+	  }
+	}
+	continue;
+      }
+#if 0
+      printf("logger settings: level=%d cats=", log_level);
+      bool first = true;
+      for(unsigned i = 0; i < log_cats_enabled.size(); i++)
+	if(log_cats_enabled[i]) {
+	  if(!first) printf(",");
+	  first = false;
+	  printf("%s", categories_by_id[i].c_str());
+	}
+      printf("\n");
+#endif
+    }
+
+    /*static*/ void Logger::logvprintf(LogLevel level, int category, const char *fmt, va_list args)
+    {
+      char buffer[200];
+      sprintf(buffer, "[%d - %lx] {%d}{%s}: ",
+	      gasnet_mynode(), pthread_self(), level, categories_by_id[category].c_str());
+      int len = strlen(buffer);
+      vsnprintf(buffer+len, 199-len, fmt, args);
+      strcat(buffer, "\n");
+      fputs(buffer, stderr);
+    }
+
+    static Logger::Category log_mutex("mutex");
+
+    class AutoHSLLock {
+    public:
+      AutoHSLLock(gasnet_hsl_t &mutex) : mutexp(&mutex) 
+      { 
+	log_mutex(LEVEL_SPEW, "MUTEX LOCK IN %p", mutexp);
+	//printf("[%d] MUTEX LOCK IN %p\n", gasnet_mynode(), mutexp);
+	gasnet_hsl_lock(mutexp); 
+	log_mutex(LEVEL_SPEW, "MUTEX LOCK HELD %p", mutexp);
+	//printf("[%d] MUTEX LOCK HELD %p\n", gasnet_mynode(), mutexp);
+      }
+      AutoHSLLock(gasnet_hsl_t *_mutexp) : mutexp(_mutexp) 
+      { 
+	log_mutex(LEVEL_SPEW, "MUTEX LOCK IN %p", mutexp);
+	//printf("[%d] MUTEX LOCK IN %p\n", gasnet_mynode(), mutexp);
+	gasnet_hsl_lock(mutexp); 
+	log_mutex(LEVEL_SPEW, "MUTEX LOCK HELD %p", mutexp);
+	//printf("[%d] MUTEX LOCK HELD %p\n", gasnet_mynode(), mutexp);
+      }
+      ~AutoHSLLock(void) 
+      { 
+	gasnet_hsl_unlock(mutexp);
+	log_mutex(LEVEL_SPEW, "MUTEX LOCK OUT %p", mutexp);
+	//printf("[%d] MUTEX LOCK OUT %p\n", gasnet_mynode(), mutexp);
+      }
+    protected:
+      gasnet_hsl_t *mutexp;
+    };
+
+
 
     // for each of the ID-based runtime objects, we're going to have an
     //  implementation class and a table to look them up in
@@ -547,10 +638,12 @@ namespace RegionRuntime {
 				      Event,
 				      handle_event_trigger> EventTriggerMessage;
 
+    static Logger::Category log_event("event");
+
     void handle_event_subscribe(EventSubscribeArgs args)
     {
-      printf("[%d] event subscription: node=%d event=%x/%d\n",
-	     gasnet_mynode(), args.node, args.event.id, args.event.gen);
+      log_event(LEVEL_DEBUG, "event subscription: node=%d event=%x/%d",
+		args.node, args.event.id, args.event.gen);
 
       Event::Impl *impl = args.event.impl();
 
@@ -558,8 +651,8 @@ namespace RegionRuntime {
       //  triggered, signal without taking the mutex
       unsigned stale_gen = impl->generation;
       if(stale_gen >= args.event.gen) {
-	printf("[%d] event subscription early-out: node=%d event=%x/%d (<= %d)\n",
-	       gasnet_mynode(), args.node, args.event.id, args.event.gen, stale_gen);
+	log_event(LEVEL_DEBUG, "event subscription early-out: node=%d event=%x/%d (<= %d)",
+		  args.node, args.event.id, args.event.gen, stale_gen);
 	Event e = args.event;
 	e.gen = stale_gen;
 	EventTriggerMessage::request(args.node, e);
@@ -571,16 +664,16 @@ namespace RegionRuntime {
 
 	// now that we have the lock, check the needed generation again
 	if(impl->generation >= args.event.gen) {
-	  printf("[%d] event subscription already done: node=%d event=%x/%d (<= %d)\n",
-		 gasnet_mynode(), args.node, args.event.id, args.event.gen, impl->generation);
+	  log_event(LEVEL_DEBUG, "event subscription already done: node=%d event=%x/%d (<= %d)",
+		    args.node, args.event.id, args.event.gen, impl->generation);
 	  Event e = args.event;
 	  e.gen = impl->generation;
 	  EventTriggerMessage::request(args.node, e);
 	} else {
 	  // nope - needed generation hasn't happened yet, so add this node to
 	  //  the mask
-	  printf("[%d] event subscription recorded: node=%d event=%x/%d (> %d)\n",
-		 gasnet_mynode(), args.node, args.event.id, args.event.gen, impl->generation);
+	  log_event(LEVEL_DEBUG, "event subscription recorded: node=%d event=%x/%d (> %d)",
+		    args.node, args.event.id, args.event.gen, impl->generation);
 	  impl->remote_waiters |= (1ULL << args.node);
 	}
       }
@@ -588,7 +681,7 @@ namespace RegionRuntime {
 
     void handle_event_trigger(Event event)
     {
-      printf("Remote trigger of event %x/%d!\n", event.id, event.gen);
+      log_event(LEVEL_DEBUG, "Remote trigger of event %x/%d!", event.id, event.gen);
       event.impl()->trigger(event.gen, false);
     }
 
@@ -811,8 +904,8 @@ namespace RegionRuntime {
 	AutoHSLLock a(mutex);
 
 	if(event.gen > generation) {
-	  printf("[%d] event not ready: event=%x/%d owner=%d gen=%d subscr=%d\n",
-		 gasnet_mynode(), event.id, event.gen, owner, generation, gen_subscribed);
+	  log_event(LEVEL_DEBUG, "event not ready: event=%x/%d owner=%d gen=%d subscr=%d",
+		    event.id, event.gen, owner, generation, gen_subscribed);
 	  // we haven't triggered the needed generation yet - add to list of
 	  //  waiters, and subscribe if we're not the owner
 	  local_waiters[event.gen].push_back(waiter);
@@ -939,12 +1032,14 @@ namespace RegionRuntime {
       local_data_size = 0;
     }
 
+    Logger::Category log_lock("lock");
+
     /*static*/ void /*Lock::Impl::*/handle_lock_request(LockRequestArgs args)
     {
       Lock::Impl *impl = args.lock.impl();
 
-      printf("[%d] lock request: lock=%x, node=%d, mode=%d\n",
-	     gasnet_mynode(), args.lock.id, args.node, args.mode);
+      log_lock(LEVEL_DEBUG, "lock request: lock=%x, node=%d, mode=%d",
+	       args.lock.id, args.node, args.mode);
 
       // can't send messages while holding mutex, so remember args and who
       //  (if anyone) to send to
@@ -968,8 +1063,8 @@ namespace RegionRuntime {
 	if((impl->count == 0) && (impl->remote_sharer_mask == 0)) {
 	  assert(impl->remote_waiter_mask == 0);
 
-	  printf("[%d] granting lock request: lock=%x, node=%d, mode=%d\n",
-		 gasnet_mynode(), args.lock.id, args.node, args.mode);
+	  log_lock(LEVEL_DEBUG, "granting lock request: lock=%x, node=%d, mode=%d",
+		   args.lock.id, args.node, args.mode);
 	  g_args.lock = args.lock;
 	  g_args.mode = 0; // always give it exclusively for now
 	  g_args.remote_waiter_mask = impl->remote_waiter_mask;
@@ -982,8 +1077,8 @@ namespace RegionRuntime {
 	// case 3: we're the owner, but we can't grant the lock right now -
 	//  just set a bit saying that the node is waiting and get back to
 	//  work
-	printf("[%d] deferring lock request: lock=%x, node=%d, mode=%d (count=%d cmode=%d)\n",
-	       gasnet_mynode(), args.lock.id, args.node, args.mode, impl->count, impl->mode);
+	log_lock(LEVEL_DEBUG, "deferring lock request: lock=%x, node=%d, mode=%d (count=%d cmode=%d)",
+		 args.lock.id, args.node, args.mode, impl->count, impl->mode);
 	impl->remote_waiter_mask |= (1ULL << args.node);
       } while(0);
 
@@ -1002,8 +1097,8 @@ namespace RegionRuntime {
 
     void handle_lock_grant(LockGrantArgs args, const void *data, size_t datalen)
     {
-      printf("[%d] lock request granted: lock=%x mode=%d mask=%lx\n",
-	     gasnet_mynode(), args.lock.id, args.mode, args.remote_waiter_mask);
+      log_lock(LEVEL_DEBUG, "lock request granted: lock=%x mode=%d mask=%lx",
+	       args.lock.id, args.mode, args.remote_waiter_mask);
 
       std::deque<Event> to_wake;
 
@@ -1033,8 +1128,8 @@ namespace RegionRuntime {
       for(std::deque<Event>::iterator it = to_wake.begin();
 	  it != to_wake.end();
 	  it++) {
-	printf("[%d] unlock trigger: lock=%x event=%x/%d\n",
-	       gasnet_mynode(), args.lock.id, (*it).id, (*it).gen);
+	log_lock(LEVEL_DEBUG, "unlock trigger: lock=%x event=%x/%d",
+		 args.lock.id, (*it).id, (*it).gen);
 	(*it).impl()->trigger((*it).gen, true);
       }
     }
@@ -1042,8 +1137,8 @@ namespace RegionRuntime {
     Event Lock::Impl::lock(unsigned new_mode, bool exclusive,
 			   Event after_lock /*= Event::NO_EVENT*/)
     {
-      printf("[%d] local lock request: lock=%x mode=%d excl=%d event=%x/%d\n",
-	     gasnet_mynode(), me.id, new_mode, exclusive, after_lock.id, after_lock.gen);
+      log_lock(LEVEL_DEBUG, "local lock request: lock=%x mode=%d excl=%d event=%x/%d",
+	       me.id, new_mode, exclusive, after_lock.id, after_lock.gen);
 
       // deferred lock case
       if(after_lock.exists()) {
@@ -1084,8 +1179,8 @@ namespace RegionRuntime {
 	  // if we didn't get the lock, we'll have to ask for it from the
 	  //  other node (even if we're currently sharing with the wrong mode)
 	  if(!got_lock && !requested) {
-	    printf("[%d] requesting lock: lock=%x node=%d mode=%d\n",
-		   gasnet_mynode(), me.id, owner, new_mode);
+	    log_lock(LEVEL_DEBUG, "requesting lock: lock=%x node=%d mode=%d",
+		     me.id, owner, new_mode);
 	    args.node = gasnet_mynode();
 	    args.lock = me;
 	    args.mode = new_mode;
@@ -1097,22 +1192,23 @@ namespace RegionRuntime {
 	    requested = true;
 	  }
 	}
+
+	// if we didn't get the lock, put our event on the queue of local
+	//  waiters - create an event if we weren't given one to use
+	if(!got_lock) {
+	  if(!after_lock.exists())
+	    after_lock = Event::Impl::create_event();
+	  local_waiters[new_mode].push_back(after_lock);
+	}
       }
 
       if(lock_request_target != -1)
 	LockRequestMessage::request(lock_request_target, args);
 
-      // if we got the lock, trigger an event if we're given one
-      if(got_lock) {
-	if(after_lock.exists()) after_lock.impl()->trigger(after_lock.gen, true);
-	return after_lock;
-      }
+      // if we got the lock, trigger an event if we were given one
+      if(got_lock && after_lock.exists()) 
+	after_lock.impl()->trigger(after_lock.gen, true);
 
-      // if we didn't get the lock, put our event on the queue of local
-      //  waiters - create an event if we weren't given one to use
-      if(!after_lock.exists())
-	after_lock = Event::Impl::create_event();
-      local_waiters[new_mode].push_back(after_lock);
       return after_lock;
     }
 
@@ -1125,10 +1221,10 @@ namespace RegionRuntime {
 	return false;
 
       // favor the local waiters
-      printf("[%d] lock going to local waiter: size=%zd first=%d(%zd)\n",
-	     gasnet_mynode(), local_waiters.size(), 
-	     local_waiters.begin()->first,
-	     local_waiters.begin()->second.size());
+      log_lock(LEVEL_DEBUG, "lock going to local waiter: size=%zd first=%d(%zd)",
+	       local_waiters.size(), 
+	       local_waiters.begin()->first,
+	       local_waiters.begin()->second.size());
 	
       // further favor exclusive waiters
       if(local_waiters.find(MODE_EXCL) != local_waiters.end()) {
@@ -1171,8 +1267,8 @@ namespace RegionRuntime {
       LockGrantArgs g_args;
 
       do {
-	printf("[%d] unlock: lock=%x count=%d mode=%d share=%lx wait=%lx\n",
-	       gasnet_mynode(), me.id, count, mode, remote_sharer_mask, remote_waiter_mask);
+	log_lock(LEVEL_DEBUG, "unlock: lock=%x count=%d mode=%d share=%lx wait=%lx",
+		 me.id, count, mode, remote_sharer_mask, remote_waiter_mask);
 	AutoHSLLock a(mutex); // hold mutex on lock for entire function
 
 	assert(count > 0);
@@ -1203,8 +1299,8 @@ namespace RegionRuntime {
 	  int new_owner = 0;
 	  while(((remote_waiter_mask >> new_owner) & 1) == 0) new_owner++;
 
-	  printf("[%d] lock going to remote waiter: new=%d mask=%lx\n",
-		 gasnet_mynode(), new_owner, remote_waiter_mask);
+	  log_lock(LEVEL_DEBUG, "lock going to remote waiter: new=%d mask=%lx",
+		   new_owner, remote_waiter_mask);
 
 	  g_args.lock = me;
 	  g_args.mode = 0; // TODO: figure out shared cases
@@ -1226,8 +1322,8 @@ namespace RegionRuntime {
       for(std::deque<Event>::iterator it = to_wake.begin();
 	  it != to_wake.end();
 	  it++) {
-	printf("[%d] unlock trigger: lock=%x event=%x/%d\n",
-	       gasnet_mynode(), me.id, (*it).id, (*it).gen);
+	log_lock(LEVEL_DEBUG, "unlock trigger: lock=%x event=%x/%d",
+		 me.id, (*it).id, (*it).gen);
 	(*it).impl()->trigger((*it).gen, true);
       }
     }
@@ -1273,17 +1369,17 @@ namespace RegionRuntime {
     Event Lock::lock(unsigned mode /* = 0 */, bool exclusive /* = true */,
 		     Event wait_on /* = Event::NO_EVENT */) const
     {
-      printf("LOCK(%x, %d, %d, %x) -> ", id, mode, exclusive, wait_on.id);
+      //printf("LOCK(%x, %d, %d, %x) -> ", id, mode, exclusive, wait_on.id);
       // early out - if the event has obviously triggered (or is NO_EVENT)
       //  don't build up continuation
       if(wait_on.has_triggered()) {
 	Event e = impl()->lock(mode, exclusive);
-	printf("(%x/%d)\n", e.id, e.gen);
+	//printf("(%x/%d)\n", e.id, e.gen);
 	return e;
       } else {
 	Event after_lock = Event::Impl::create_event();
 	wait_on.impl()->add_waiter(wait_on, new DeferredLockRequest(*this, mode, exclusive, after_lock));
-	printf("*(%x/%d)\n", after_lock.id, after_lock.gen);
+	//printf("*(%x/%d)\n", after_lock.id, after_lock.gen);
 	return after_lock;
       }
     }
@@ -1427,9 +1523,9 @@ namespace RegionRuntime {
 
     int handle_remote_mem_alloc(RemoteMemAllocArgs args)
     {
-      printf("[%d] handling remote alloc of size %zd\n", gasnet_mynode(), args.size);
+      //printf("[%d] handling remote alloc of size %zd\n", gasnet_mynode(), args.size);
       int result = args.memory.impl()->alloc_bytes(args.size);
-      printf("[%d] remote alloc will return %d\n", gasnet_mynode(), result);
+      //printf("[%d] remote alloc will return %d\n", gasnet_mynode(), result);
       return result;
     }
 
@@ -1540,7 +1636,7 @@ namespace RegionRuntime {
 	args.memory = me;
 	args.size = size;
 	int retval = RemoteMemAllocMessage::request(ID(me).node(), args);
-	printf("got: %d\n", retval);
+	//printf("got: %d\n", retval);
 	return retval;
       }
 
@@ -1636,7 +1732,7 @@ namespace RegionRuntime {
 	  args.memory = me;
 	  args.size = size;
 	  int retval = RemoteMemAllocMessage::request(0, args);
-	  printf("got: %d\n", retval);
+	  //printf("got: %d\n", retval);
 	  return retval;
 	}
       }
@@ -1820,6 +1916,8 @@ namespace RegionRuntime {
 				    CreateInstanceArgs, CreateInstanceResp,
 				    handle_create_instance> CreateInstanceMessage;
 
+    Logger::Category log_inst("inst");
+
     RegionInstanceUntyped Memory::Impl::create_instance_remote(RegionMetaDataUntyped r,
 							       size_t bytes_needed)
     {
@@ -1827,17 +1925,17 @@ namespace RegionRuntime {
       args.m = me;
       args.r = r;
       args.bytes_needed = bytes_needed;
-      printf("[%d] creating remote instance: node=%d\n", gasnet_mynode(), ID(me).node());
+      log_inst(LEVEL_DEBUG, "creating remote instance: node=%d", ID(me).node());
       CreateInstanceResp resp = CreateInstanceMessage::request(ID(me).node(), args);
-      printf("[%d] created remote instance: inst=%x offset=%d\n", gasnet_mynode(), resp.i.id, resp.inst_offset);
+      log_inst(LEVEL_DEBUG, "created remote instance: inst=%x offset=%d", resp.i.id, resp.inst_offset);
       RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(resp.i, r, me, resp.inst_offset);
       unsigned index = ID(resp.i).index_l();
       // resize array if needed
       if(index >= instances.size()) {
 	AutoHSLLock a(mutex);
 	if(index >= instances.size()) {
-	  printf("[%d] resizing instance array: mem=%x old=%zd new=%d\n",
-		 gasnet_mynode(), me.id, instances.size(), index+1);
+	  log_inst(LEVEL_DEBUG, "resizing instance array: mem=%x old=%zd new=%d",
+		   me.id, instances.size(), index+1);
 	  for(unsigned i = instances.size(); i <= index; i++)
 	    instances.push_back(0);
 	}
@@ -2014,6 +2112,8 @@ namespace RegionRuntime {
       Processor::Kind kind;
     };
 
+    Logger::Category log_task("task");
+
     class LocalProcessor : public Processor::Impl {
     public:
       // simple task object keeps a copy of args
@@ -2046,12 +2146,9 @@ namespace RegionRuntime {
 	  for(size_t i = 0; (i < arglen) && (i < 40); i++)
 	    sprintf(argstr+2*i, "%02x", ((unsigned *)args)[i]);
 	  if(arglen > 40) strcpy(argstr+80, "...");
-	  printf("[%d] task start: %d (%p) (%s)\n", gasnet_mynode(), func_id, fptr, argstr);
-	  printf("PROC = %p\n", proc);
-	  printf("ME = %x\n", proc->me.id);
-	  printf("PROC = %p\n", proc);
+	  log_task(LEVEL_DEBUG, "task start: %d (%p) (%s)", func_id, fptr, argstr);
 	  (*fptr)(args, arglen, proc->me);
-	  printf("[%d] task end: %d (%p) (%s)\n", gasnet_mynode(), func_id, fptr, argstr);
+	  log_task(LEVEL_DEBUG, "task end: %d (%p) (%s)", func_id, fptr, argstr);
 	  if(finish_event.exists())
 	    finish_event.impl()->trigger(finish_event.gen, true);
 	}
@@ -2136,9 +2233,8 @@ namespace RegionRuntime {
 	      // NOTE: while tempting, it's not OK to check the event's
 	      //  triggeredness again here - it can result in an event_triggered()
 	      //  sent to us without us going to sleep, which would be bad
-	      printf("[%d] thread sleeping on event: thread=%p event=%x/%d\n",
-		     gasnet_mynode(), this, wait_for.id, wait_for.gen);
-	      printf("suspend=%x/%d\n", suspend_event.id, suspend_event.gen);
+	      log_task(LEVEL_DEBUG, "thread sleeping on event: thread=%p event=%x/%d",
+		       this, wait_for.id, wait_for.gen);
 	      // decrement the active thread count (check to see if somebody
 	      //  else can run)
 	      proc->active_thread_count--;
@@ -2152,11 +2248,11 @@ namespace RegionRuntime {
 		// guard against spurious wakeups
 		gasnett_cond_wait(&condvar, &proc->mutex.lock);
 	      } while(state == STATE_SUSPEND);
-	      printf("[%d] thread done sleeping on event: thread=%p event=%x/%d\n",
-		     gasnet_mynode(), this, wait_for.id, wait_for.gen);
+	      log_task(LEVEL_DEBUG, "thread done sleeping on event: thread=%p event=%x/%d",
+		       this, wait_for.id, wait_for.gen);
 	    } else {
-	      printf("[%d] thread got instant trigger on event: thread=%p event=%x/%d\n",
-		     gasnet_mynode(), this, wait_for.id, wait_for.gen);
+	      log_task(LEVEL_DEBUG, "thread got instant trigger on event: thread=%p event=%x/%d",
+		       this, wait_for.id, wait_for.gen);
 	    }
 	  }
 	}
@@ -2171,7 +2267,7 @@ namespace RegionRuntime {
 	  // stuff our pointer into TLS so Event::wait can find it
 	  gasnett_threadkey_set(cur_thread, me);
 
-	  printf("[%d] worker thread ready: proc=%x\n", gasnet_mynode(), me->proc->me.id);
+	  log_task(LEVEL_DEBUG, "worker thread ready: proc=%x", me->proc->me.id);
 
 	  while(1) {
 	    // see if there's work sitting around (and we're allowed to 
@@ -2181,13 +2277,12 @@ namespace RegionRuntime {
 	      me->task = me->proc->ready_tasks.front();
 	      me->proc->ready_tasks.pop_front();
 	      me->proc->active_thread_count++;
-	      printf("[%d] thread claiming ready task: proc=%x task=%p thread=%p\n", gasnet_mynode(), me->proc->me.id, me->task, me);
+	      log_task(LEVEL_DEBUG, "thread claiming ready task: proc=%x task=%p thread=%p", me->proc->me.id, me->task, me);
 	    } else {
 	      me->state = STATE_IDLE;
 	      me->proc->avail_threads.push_back(me);
-	      printf("[%d] no task for thread, sleeping: proc=%x thread=%p\n",
-		     gasnet_mynode(), me->proc->me.id, me);
-	      fflush(stdout);
+	      log_task(LEVEL_DEBUG, "no task for thread, sleeping: proc=%x thread=%p",
+		       me->proc->me.id, me);
 	      gasnett_cond_wait(&me->condvar, &me->proc->mutex.lock);
 
 	      // when we wake up, expect to have a task
@@ -2231,9 +2326,9 @@ namespace RegionRuntime {
 
 	virtual void event_triggered(void)
 	{
-	  printf("[%d] deferred task now ready: func=%d finish=%x/%d\n",
-		 gasnet_mynode(), task->func_id, 
-		 task->finish_event.id, task->finish_event.gen);
+	  log_task(LEVEL_DEBUG, "deferred task now ready: func=%d finish=%x/%d",
+		   task->func_id, 
+		   task->finish_event.id, task->finish_event.gen);
 
 	  // add task to processor's ready queue
 	  task->proc->add_ready_task(task);
@@ -2252,7 +2347,7 @@ namespace RegionRuntime {
 	//   they're ready
 	for(int i = 0; i < _total_threads; i++) {
 	  Thread *t = new Thread(this);
-	  printf("[%d] creating worker thread : proc=%x thread=%p\n", gasnet_mynode(), me.id, t);
+	  log_task(LEVEL_DEBUG, "creating worker thread : proc=%x thread=%p", me.id, t);
 	  t->start();
 	}
       }
@@ -2272,11 +2367,11 @@ namespace RegionRuntime {
 	  Thread *thread = avail_threads.front();
 	  avail_threads.pop_front();
 	  active_thread_count++;
-	  printf("[%d] assigning new task to thread: proc=%x task=%p thread=%p\n", gasnet_mynode(), me.id, task, thread);
+	  log_task(LEVEL_DEBUG, "assigning new task to thread: proc=%x task=%p thread=%p", me.id, task, thread);
 	  thread->set_task_and_wake(task);
 	} else {
 	  // no?  just stuff it on ready list
-	  printf("[%d] no thread available for new task: proc=%x task=%p\n", gasnet_mynode(), me.id, task);
+	  log_task(LEVEL_DEBUG, "no thread available for new task: proc=%x task=%p", me.id, task);
 	  ready_tasks.push_back(task);
 	}
       }
@@ -2321,8 +2416,8 @@ namespace RegionRuntime {
 	if(start_event.has_triggered()) {
 	  add_ready_task(task);
 	} else {
-	  printf("[%d] deferring spawn: func=%d event=%x/%d\n",
-		 gasnet_mynode(), func_id, start_event.id, start_event.gen);
+	  log_task(LEVEL_DEBUG, "deferring spawn: func=%d event=%x/%d",
+		   func_id, start_event.id, start_event.gen);
 	  start_event.impl()->add_waiter(start_event, new DeferredTaskSpawn(task));
 	}
       }
@@ -2355,7 +2450,6 @@ namespace RegionRuntime {
       void *ptr = gasnett_threadkey_get(cur_thread);
       assert(ptr != 0);
       LocalProcessor::Thread *thr = (LocalProcessor::Thread *)ptr;
-      printf("event thread = %p\n", thr);
       thr->sleep_on_event(*this);
     }
 
@@ -2364,8 +2458,8 @@ namespace RegionRuntime {
 				   const void *data, size_t datalen)
     {
       Processor::Impl *p = args.proc.impl();
-      printf("[%d] remote spawn request: proc_id=%x task_id=%d event=%x/%d\n",
-	     gasnet_mynode(), args.proc.id, args.func_id, args.start_event.id, args.start_event.gen);
+      log_task(LEVEL_DEBUG, "remote spawn request: proc_id=%x task_id=%d event=%x/%d",
+	       args.proc.id, args.func_id, args.start_event.id, args.start_event.gen);
       p->spawn_task(args.func_id, data, datalen,
 		    args.start_event, args.finish_event);
     }
@@ -2390,10 +2484,10 @@ namespace RegionRuntime {
 			      //std::set<RegionInstanceUntyped> instances_needed,
 			      Event start_event, Event finish_event)
       {
-	printf("[%d] spawning remote task: proc=%x task=%d start=%x/%d finish=%x/%d\n",
-	       gasnet_mynode(), me.id, func_id, 
-	       start_event.id, start_event.gen,
-	       finish_event.id, finish_event.gen);
+	log_task(LEVEL_DEBUG, "spawning remote task: proc=%x task=%d start=%x/%d finish=%x/%d",
+		 me.id, func_id, 
+		 start_event.id, start_event.gen,
+		 finish_event.id, finish_event.gen);
 	SpawnTaskArgs msgargs;
 	msgargs.proc = me;
 	msgargs.func_id = func_id;
@@ -2529,12 +2623,11 @@ namespace RegionRuntime {
       }
 
       if(!n->metadatas[index]) { // haven't seen this metadata before?
-	printf("UNKNOWN METADATA %x\n", id.id());
+	//printf("UNKNOWN METADATA %x\n", id.id());
 	AutoHSLLock a(n->mutex); // take lock before we actually allocate
 	if(!n->metadatas[index]) {
 	  n->metadatas[index] = new RegionMetaDataUntyped::Impl(id.convert<RegionMetaDataUntyped>());
-	} else
-	  printf("false alarm...\n");
+	} 
       }
 
       return n->metadatas[index];
@@ -2575,7 +2668,7 @@ namespace RegionRuntime {
 	AutoHSLLock a(mem->mutex);
 
 	if(!mem->instances[id.index_l()]) {
-	  printf("[%d] creating proxy instance: inst=%x\n", gasnet_mynode(), id.id());
+	  printf("[%d] creating proxy instance: inst=%x", gasnet_mynode(), id.id());
 	  mem->instances[id.index_l()] = new RegionInstanceUntyped::Impl(id.convert<RegionInstanceUntyped>(), mem->me);
 	}
       }
@@ -2708,16 +2801,16 @@ namespace RegionRuntime {
     {
       if(raw_data != 0) {
 	ElementMaskImpl *impl = (ElementMaskImpl *)raw_data;
-	printf("ENABLE %p %d %d %d %x\n", raw_data, offset, start, count, impl->bits[0]);
+	//printf("ENABLE %p %d %d %d %x\n", raw_data, offset, start, count, impl->bits[0]);
 	int pos = start - first_element;
 	for(int i = 0; i < count; i++) {
 	  unsigned *ptr = &(impl->bits[pos >> 5]);
 	  *ptr |= (1U << (pos & 0x1f));
 	  pos++;
 	}
-	printf("ENABLED %p %d %d %d %x\n", raw_data, offset, start, count, impl->bits[0]);
+	//printf("ENABLED %p %d %d %d %x\n", raw_data, offset, start, count, impl->bits[0]);
       } else {
-	printf("ENABLE(2) %x %d %d %d\n", memory.id, offset, start, count);
+	//printf("ENABLE(2) %x %d %d %d\n", memory.id, offset, start, count);
 	Memory::Impl *m_impl = memory.impl();
 
 	int pos = start - first_element;
@@ -2725,7 +2818,7 @@ namespace RegionRuntime {
 	  unsigned ofs = offset + ((pos >> 5) << 2);
 	  unsigned val;
 	  m_impl->get_bytes(ofs, &val, sizeof(val));
-	  printf("ENABLED(2) %d,  %x\n", ofs, val);
+	  //printf("ENABLED(2) %d,  %x\n", ofs, val);
 	  val |= (1U << (pos & 0x1f));
 	  m_impl->put_bytes(ofs, &val, sizeof(val));
 	  pos++;
@@ -2744,7 +2837,7 @@ namespace RegionRuntime {
 	  pos++;
 	}
       } else {
-	printf("DISABLE(2) %x %d %d %d\n", memory.id, offset, start, count);
+	//printf("DISABLE(2) %x %d %d %d\n", memory.id, offset, start, count);
 	Memory::Impl *m_impl = memory.impl();
 
 	int pos = start - first_element;
@@ -2752,7 +2845,7 @@ namespace RegionRuntime {
 	  unsigned ofs = offset + ((pos >> 5) << 2);
 	  unsigned val;
 	  m_impl->get_bytes(ofs, &val, sizeof(val));
-	  printf("DISABLED(2) %d,  %x\n", ofs, val);
+	  //printf("DISABLED(2) %d,  %x\n", ofs, val);
 	  val &= ~(1U << (pos & 0x1f));
 	  m_impl->put_bytes(ofs, &val, sizeof(val));
 	  pos++;
@@ -2764,7 +2857,7 @@ namespace RegionRuntime {
     {
       if(raw_data != 0) {
 	ElementMaskImpl *impl = (ElementMaskImpl *)raw_data;
-	printf("FIND_ENABLED %p %d %d %x\n", raw_data, first_element, count, impl->bits[0]);
+	//printf("FIND_ENABLED %p %d %d %x\n", raw_data, first_element, count, impl->bits[0]);
 	for(int pos = 0; pos <= num_elements - count; pos++) {
 	  int run = 0;
 	  while(1) {
@@ -2776,7 +2869,7 @@ namespace RegionRuntime {
 	}
       } else {
 	Memory::Impl *m_impl = memory.impl();
-	printf("FIND_ENABLED(2) %x %d %d %d\n", memory.id, offset, first_element, count);
+	//printf("FIND_ENABLED(2) %x %d %d %d\n", memory.id, offset, first_element, count);
 	for(int pos = 0; pos <= num_elements - count; pos++) {
 	  int run = 0;
 	  while(1) {
@@ -3697,7 +3790,7 @@ namespace RegionRuntime {
     {
       while(1) {
 	gasnet_AMPoll();
-	usleep(100000);
+	//usleep(10000);
       }
       return 0;
     }
@@ -3868,6 +3961,8 @@ namespace RegionRuntime {
 
       //GASNetNode::my_node = new GASNetNode(argc, argv, this);
       CHECK_GASNET( gasnet_init(argc, argv) );
+
+      Logger::init(*argc, (const char **)*argv);
 
       gasnet_handlerentry_t handlers[128];
       int hcount = 0;

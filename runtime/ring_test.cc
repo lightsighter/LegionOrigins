@@ -158,7 +158,7 @@ void hot_potatoer(const void * args, size_t arglen, Processor p)
 
   Lock rlock = potato.lock;
 
-  printf("Processor %x passing hot potato to processor %x (%d hops left)\n",me.id,neighbor.id,potato.hops_left);
+  //printf("Processor %x passing hot potato %d to processor %x (%d hops left)\n",me.id,potato.id,neighbor.id,potato.hops_left);
   fflush(stdout);
   // are we the last hop of the current lap?
   if (potato.hops_left == 0)
@@ -246,6 +246,7 @@ void potato_dropper(const void * args, size_t arglen, Processor p)
   if (finished == config.num_potatoes)
     {
       printf("all potatoes finished!\n");
+  exit(0);
 #if 0
       // Shutdown all the processors
       Machine *machine = Machine::get_machine();

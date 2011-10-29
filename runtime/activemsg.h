@@ -4,7 +4,9 @@
 #ifndef ACTIVEMSG_H
 #define ACTIVEMSG_H
 
+#ifdef CHECK_REENTRANT_MESSAGES
 GASNETT_THREADKEY_DECLARE(in_handler);
+#endif
 
 template <class T> struct HandlerReplyFuture {
   gasnet_hsl_t mutex;
@@ -148,7 +150,7 @@ struct MessageRawArgs<MSGTYPE, MSGID, SHORT_HNDL_PTR, MED_HNDL_PTR, n> { \
   { \
     gasnet_node_t src; \
     gasnet_AMGetMsgSource(token, &src); \
-    printf("handling message from node %d (id=%d)\n", src, MSGID);	\
+    /*printf("handling message from node %d (id=%d)\n", src, MSGID);*/	\
     union { \
       MessageRawArgs<MSGTYPE,MSGID,SHORT_HNDL_PTR,MED_HNDL_PTR,n> raw; \
       MSGTYPE typed; \
@@ -162,7 +164,7 @@ struct MessageRawArgs<MSGTYPE, MSGID, SHORT_HNDL_PTR, MED_HNDL_PTR, n> { \
   { \
     gasnet_node_t src; \
     gasnet_AMGetMsgSource(token, &src); \
-    printf("handling medium message from node %d (id=%d)\n", src, MSGID);	\
+    /*printf("handling medium message from node %d (id=%d)\n", src, MSGID);*/ \
     union { \
       MessageRawArgs<MSGTYPE,MSGID,SHORT_HNDL_PTR,MED_HNDL_PTR,n> raw; \
       MSGTYPE typed; \
@@ -186,7 +188,7 @@ struct RequestRawArgs<REQTYPE, REQID, RPLTYPE, RPLID, FNPTR, RPL_N, n> { \
   { \
     gasnet_node_t src; \
     gasnet_AMGetMsgSource(token, &src); \
-    printf("handling request from node %d\n", src); \
+    /*printf("handling request from node %d\n", src);*/	\
     union { \
       RequestRawArgs<REQTYPE,REQID,RPLTYPE,RPLID,FNPTR,RPL_N,n> raw; \
       ArgsWithReplyInfo<REQTYPE,RPLTYPE> typed; \
@@ -216,7 +218,7 @@ template <class RPLTYPE, int RPLID> struct ReplyRawArgs<RPLTYPE, RPLID, n> { \
   { \
     gasnet_node_t src; \
     gasnet_AMGetMsgSource(token, &src); \
-    printf("%d: handling reply from node %d\n", (int)gasnet_mynode(), src); \
+    /*printf("%d: handling reply from node %d\n", (int)gasnet_mynode(), src);*/ \
     union { \
       ReplyRawArgs<RPLTYPE,RPLID,n> raw; \
       ArgsWithReplyInfo<RPLTYPE,RPLTYPE> typed; \
@@ -256,9 +258,13 @@ class ActiveMessageShortNoReply {
 
   static void request(gasnet_node_t dest, MSGTYPE args)
   {
+#ifdef CHECK_REENTRANT_MESSAGES
     if(gasnett_threadkey_get(in_handler)) {
       printf("Help!  Message send inside handler!\n");
     } else {
+#else
+    {
+#endif
       union {
         MessageRawArgsType raw;
         MSGTYPE typed;
@@ -284,9 +290,13 @@ class ActiveMessageMediumNoReply {
   static void request(gasnet_node_t dest, MSGTYPE args, 
                       const void *data, size_t datalen)
   {
+#ifdef CHECK_REENTRANT_MESSAGES
     if(gasnett_threadkey_get(in_handler)) {
       printf("Help!  Message send inside handler!\n");
     } else {
+#else
+    {
+#endif
       union {
         MessageRawArgsType raw;
         MSGTYPE typed;
@@ -324,13 +334,17 @@ class ActiveMessageShortReply {
     u.typed.fptr = &future;
     u.typed.args = args;
 
+#ifdef CHECK_REENTRANT_MESSAGES
     if(gasnett_threadkey_get(in_handler)) {
       printf("Help!  Message send inside handler!\n");
     } else {
+#else
+    {
+#endif
       u.raw.request_short(dest);
     }
 
-    printf("request sent - waiting for response\n");
+    //printf("request sent - waiting for response\n");
     future.wait();
     return future.value;
   }
