@@ -1018,7 +1018,8 @@ namespace RegionRuntime {
 #endif
           continue;
         }
-        region = (LogicalHandle)LowLevel::RegionMetaData<T>::create_region(*mem_it,num_elmts);	
+        region = (LogicalHandle)LowLevel::RegionMetaDataUntyped::create_region_untyped(
+                                                                    num_elmts,sizeof(T));	
         if (region.exists())
         {
           found = true;
