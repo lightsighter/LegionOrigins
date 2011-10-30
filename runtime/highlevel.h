@@ -139,7 +139,8 @@ namespace RegionRuntime {
       void register_writer(InstanceInfo *info, bool exclusive = true);
       // Add instance, for cases where the instance is created remotely 
       // and has to be added when the information is sent back
-      void add_instance(InstanceInfo *info);
+      // Return whether this instance was added
+      bool add_instance(InstanceInfo *info);
     protected:
       // Increases the reference count of the abstract instance
       void register_task_user(void);
@@ -174,7 +175,6 @@ namespace RegionRuntime {
       LogicalHandle handle;
       Memory location;
       RegionInstance inst;
-      Event valid; // Indicates when this instance is valid (in case we had to make a new one)
     protected:
       friend class AbstractInstance;
       unsigned references;
