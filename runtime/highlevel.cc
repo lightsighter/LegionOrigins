@@ -1262,6 +1262,12 @@ namespace RegionRuntime {
           it->first->free_instance(it->second); 
         }
         copy_instances.clear();
+        // We can also free the src instances since we know that the copies
+        // had to have completed in order for the task to start
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          abstract_src[idx]->free_instance(src_instances[idx]);
+        }
       }
 
       // Get the set of physical regions for the task
@@ -1499,6 +1505,11 @@ namespace RegionRuntime {
         
         // Trigger the event indicating that this task is complete!
         termination_event.trigger();
+        
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          abstract_inst[idx]->free_instance(instances[idx]);
+        }
       }
       // Before we deactivate anyone, we first have to release any references to the
       // clean up copies
@@ -1650,6 +1661,15 @@ namespace RegionRuntime {
 
       // Finally trigger the user event indicating that this task is finished!
       termination_event.trigger();
+
+      // We can also free all the references to the physical instances that we held for
+      // the task.  Since this was remote we had to wait until the task actually finished
+      // to know that the source instances were free
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        abstract_src[idx]->free_instance(src_instances[idx]);
+        abstract_inst[idx]->free_instance(instances[idx]);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
