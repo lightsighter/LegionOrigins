@@ -117,9 +117,9 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////////////// 
 
     //--------------------------------------------------------------------------------------------
-    AbstractInstance::AbstractInstance(LogicalHandle h, AbstractInstance *par, InstanceInfo *init)
-      : handle (h), references(0), closed(false), first_map(false), parent(par),
-        writer(false), readers(0)
+    AbstractInstance::AbstractInstance(LogicalHandle h, AbstractInstance *par, 
+                                        InstanceInfo *init, bool rem)
+      : handle (h), references(0), closed(false), first_map(false), parent(par), remote(rem) 
     //--------------------------------------------------------------------------------------------
     {
       if (init != NULL)
@@ -139,29 +139,76 @@ namespace RegionRuntime {
       {
         delete *it;
       }
+      // If we're remote, we also own our parent
+      if (remote)
+        delete parent;
     }
 
     //--------------------------------------------------------------------------------------------
     size_t AbstractInstance::compute_instance_size(void) const
     //--------------------------------------------------------------------------------------------
     {
-      assert(0);
-      return 0;  
+      size_t result = 0;
+      result += sizeof(LogicalHandle);
+      result += sizeof(bool); // do we have a parent
+      if (parent != NULL)
+        result += parent->compute_instance_size();
+      result += sizeof(size_t); // num valid instances
+      result += (valid_instances.size() * (sizeof(Memory) + sizeof(InstanceInfo)));
+      return result;
     }
 
     //--------------------------------------------------------------------------------------------
-    void AbstractInstance::pack_instance(char *&buffer, bool writer) const
+    void AbstractInstance::pack_instance(char *&buffer) const
     //--------------------------------------------------------------------------------------------
     {
-      assert(0);
+      *((LogicalHandle*)buffer) = handle;
+      buffer += sizeof(LogicalHandle);
+      *((bool*)buffer) = (parent != NULL);
+      buffer += sizeof(bool);
+      if (parent != NULL)
+        parent->pack_instance(buffer);
+      *((size_t*)buffer) = valid_instances.size();
+      buffer += sizeof(size_t);
+      for (std::map<Memory,InstanceInfo*>::const_iterator it = valid_instances.begin();
+            it != valid_instances.end(); it++)
+      {
+        *((Memory*)buffer) = it->first;
+        buffer += sizeof(Memory);
+        *((InstanceInfo*)buffer) = *(it->second);
+        buffer += sizeof(InstanceInfo);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
-    static AbstractInstance* unapck_instance(const char *&buffer)
+    AbstractInstance* AbstractInstance::unpack_instance(const char *&buffer)
     //--------------------------------------------------------------------------------------------
     {
-      assert(0);
-      return NULL;
+      LogicalHandle handle = *((const LogicalHandle*)buffer);
+      buffer += sizeof(LogicalHandle);
+      bool par = *((const bool*)buffer);
+      buffer += sizeof(bool);
+      AbstractInstance *parent = NULL;
+      if (par)
+        parent = AbstractInstance::unpack_instance(buffer);
+      // Create the new instance
+      AbstractInstance *result = new AbstractInstance(handle, parent, NULL, true/*remote*/);
+      result->first_map = true;
+      size_t num_valid_instances = *((const size_t*)buffer);
+      buffer += sizeof(size_t);
+      for (unsigned idx = 0; idx < num_valid_instances; idx++)
+      {
+        Memory m = *((const Memory*)buffer);
+        buffer += sizeof(Memory);
+        InstanceInfo *info = new InstanceInfo();
+        *info = *((const InstanceInfo*)buffer);
+        buffer += sizeof(InstanceInfo);
+
+        result->valid_instances.insert(std::pair<Memory,InstanceInfo*>(m,info));
+        result->locations.push_back(m);
+        result->all_instances.push_back(info);
+      }
+      return result;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -255,6 +302,10 @@ namespace RegionRuntime {
     void AbstractInstance::register_reader(InstanceInfo *info)
     //--------------------------------------------------------------------------------------------
     {
+      // If this is remote, just ignore it as all we really care about is
+      // what happens when things get send back
+      if (remote)
+        return;
       // If this instance is local to us, add it to the list of valid instances
       if (info->handle == handle)
         valid_instances.insert(std::pair<Memory,InstanceInfo*>(info->location,info));
@@ -266,6 +317,9 @@ namespace RegionRuntime {
     void AbstractInstance::register_writer(InstanceInfo *info, bool exclusive)
     //--------------------------------------------------------------------------------------------
     {
+      // Ignore anything that happens if this is remote
+      if (remote)
+        return;
       // Clear out any prior valid instances, check to see if any of them can be freed
       if (exclusive)
       {
@@ -286,6 +340,7 @@ namespace RegionRuntime {
       // Make the new instance the valid instance
       valid_instances.insert(std::pair<Memory,InstanceInfo*>(info->location,info));
       locations.push_back(info->location);
+      info->references++;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -323,6 +378,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!closed);
+      assert(!remote);
 #endif
       references++;
     }
@@ -331,6 +387,8 @@ namespace RegionRuntime {
     void AbstractInstance::register_task_mapped(void)
     //--------------------------------------------------------------------------------------------
     {
+      if (remote)
+        return;
 #ifdef DEBUG_HIGH_LEVEL
       assert(references > 0);
 #endif
@@ -358,6 +416,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!closed);
+      assert(!remote);
 #endif
       closed = true;
       if (closed && (references == 0))
@@ -991,9 +1050,15 @@ namespace RegionRuntime {
       // Instance and copy information
       // The size of src_instances is the same as regions
 #ifdef DEBUG_HIGH_LEVEL
-      assert(src_instances.size() == regions.size());
+      assert(abstract_src.size() == regions.size());
+      assert(abstract_inst.size() == regions.size());
 #endif
-      bytes += (src_instances.size() * sizeof(InstanceInfo));
+      // Get the sizes of all the abstract instances we need to send
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        bytes += abstract_src[idx]->compute_instance_size();
+        bytes += abstract_inst[idx]->compute_instance_size();
+      }
 
       // Region trees
       // Don't need to get the number of region trees, we'll get this
@@ -1048,16 +1113,11 @@ namespace RegionRuntime {
       buffer += sizeof(Context);
       *((Event*)buffer) = merged_wait_event;
       buffer += sizeof(Event);
-      // Pack the instance 
-      for (std::vector<InstanceInfo*>::const_iterator it = src_instances.begin();
-            it != src_instances.end(); it++)
+      // Pack the abstract instances
+      for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        *((LogicalHandle*)buffer) = (*it)->handle;
-        buffer += sizeof(LogicalHandle);
-        *((RegionInstance*)buffer) = (*it)->inst;
-        buffer += sizeof(RegionInstance);
-        *((Memory*)buffer) = (*it)->location;
-        buffer += sizeof(Memory);
+        abstract_src[idx]->pack_instance(buffer);
+        abstract_inst[idx]->pack_instance(buffer);
       }
 
       // Pack the region trees
@@ -1120,28 +1180,16 @@ namespace RegionRuntime {
       remote = true; // If we're unpacking this it is definitely remote
       merged_wait_event = *((const Event*)buffer);
       buffer += sizeof(Event);
-      // Unapck the instance information
-      // For the instances we can just make this based on the regions
-      for (std::vector<RegionRequirement>::iterator it = regions.begin();
-            it != regions.end(); it++)
+      // Unapck the abstract instance information
+      for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        InstanceInfo *info = new InstanceInfo();
-        info->handle = it->handle;
-        instances.push_back(info);
-      }
-      // Unpack the source instance information
-      // There will be the same number of sources as regions
-      for (unsigned idx = 0; idx < num_regions; idx++)
-      {
-        InstanceInfo *info = new InstanceInfo();
-        info->handle = *((const LogicalHandle*)buffer);
-        buffer += sizeof(LogicalHandle);
-        info->inst = *((const RegionInstance*)buffer);
-        buffer += sizeof(RegionInstance);
-        info->location = *((const Memory*)buffer);
-        buffer += sizeof(Memory);
-        // Add this to the list of src instances
-        src_instances.push_back(info);
+        AbstractInstance *abs_src = AbstractInstance::unpack_instance(buffer);
+        abstract_src.push_back(abs_src);
+        all_instances.push_back(abs_src); // Allow us to clean up later
+
+        AbstractInstance *abs_dst = AbstractInstance::unpack_instance(buffer);
+        abstract_inst.push_back(abs_dst);
+        all_instances.push_back(abs_dst); // Allow us to clean up later
       }
       
       // Unpack the region trees
