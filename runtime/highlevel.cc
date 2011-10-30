@@ -344,6 +344,41 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    bool AbstractInstance::add_instance(InstanceInfo *info)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Check to see if this is one of our valid instances
+      if (info->handle == handle)
+      {
+        // Go through our instances and see if we can find 
+        // another instance info with the same physical instance
+        if (valid_instances.find(info->location) != valid_instances.end())
+        {
+          // They should be the same physical instance
+#ifdef DEBUG_HIGH_LEVEL
+          assert(valid_instances[info->location]->inst == info->inst);
+#endif
+          valid_instances[info->location]->references++;
+          return false;
+        }
+        else
+        {
+          valid_instances[info->location] = info;
+          info->references = 1;
+          return true;
+        }
+      }
+      else
+      {
+        // Try adding it to our parent instance
+#ifdef DEBUG_HIGH_LEVEL
+        assert(parent != NULL);
+#endif
+        return parent->add_instance(info);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
     std::vector<Memory>& AbstractInstance::get_memory_locations(void)
     //--------------------------------------------------------------------------------------------
     {
@@ -1227,6 +1262,12 @@ namespace RegionRuntime {
           it->first->free_instance(it->second); 
         }
         copy_instances.clear();
+        // We can also free the src instances since we know that the copies
+        // had to have completed in order for the task to start
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          abstract_src[idx]->free_instance(src_instances[idx]);
+        }
       }
 
       // Get the set of physical regions for the task
@@ -1464,6 +1505,11 @@ namespace RegionRuntime {
         
         // Trigger the event indicating that this task is complete!
         termination_event.trigger();
+        
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          abstract_inst[idx]->free_instance(instances[idx]);
+        }
       }
       // Before we deactivate anyone, we first have to release any references to the
       // clean up copies
@@ -1504,15 +1550,46 @@ namespace RegionRuntime {
         (*it)->remaining_events--;
       }
 
-      // Now unpack the instance information
-      for (std::vector<InstanceInfo*>::iterator it = instances.begin();
-            it != instances.end(); it++)
+      // Unpack the source instances
+      for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        InstanceInfo *info = (*it);
-        info->inst = *((const RegionInstance*)ptr);
-        ptr += sizeof(RegionInstance);
+        Memory mem = *((const Memory*)ptr);
+        ptr += sizeof(Memory);
+        InstanceInfo *info = abstract_src[idx]->get_instance(mem);
+        src_instances.push_back(info);
+        abstract_src[idx]->register_reader(info);
+      }
+      // Unapck the destination instances
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        InstanceInfo *info = new InstanceInfo();
+        info->handle = regions[idx].handle;
         info->location = *((const Memory*)ptr);
         ptr += sizeof(Memory);
+        info->inst = *((const RegionInstance*)ptr);
+        ptr += sizeof(RegionInstance);
+        // Try adding the region if it doesn't already exist
+        // If it does, we'll just delete it
+        if (!abstract_inst[idx]->add_instance(info))
+        {
+          // There was already a instance 
+          InstanceInfo *actual = abstract_inst[idx]->get_instance(info->location);
+          // We can now delete the info we created
+          delete info;
+          instances.push_back(actual);
+        }
+        else
+        {
+          instances.push_back(info);
+        }
+        if ((regions[idx].mode == READ_ONLY) || (regions[idx].mode == NO_ACCESS))
+        {
+          abstract_inst[idx]->register_reader(instances[idx]);
+        }
+        else
+        {
+          abstract_inst[idx]->register_writer(instances[idx], (regions[idx].prop != RELAXED));
+        }
       }
 
       // Register that the task has been mapped
@@ -1584,6 +1661,15 @@ namespace RegionRuntime {
 
       // Finally trigger the user event indicating that this task is finished!
       termination_event.trigger();
+
+      // We can also free all the references to the physical instances that we held for
+      // the task.  Since this was remote we had to wait until the task actually finished
+      // to know that the source instances were free
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        abstract_src[idx]->free_instance(src_instances[idx]);
+        abstract_inst[idx]->free_instance(instances[idx]);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3260,13 +3346,20 @@ namespace RegionRuntime {
       {
         // Package up the data
         size_t buffer_size = sizeof(Context) +
-                              desc->regions.size() * (sizeof(RegionInstance)+sizeof(Memory));
+                              desc->regions.size() * (sizeof(RegionInstance)+2*sizeof(Memory));
         void * buffer = malloc(buffer_size);
         char * ptr = (char*)buffer;
         // Give the context that the task is being created in so we can
         // find the task description on the original processor
         *((Context*)ptr) = desc->orig_ctx;
         ptr += sizeof(Context);
+        for (std::vector<InstanceInfo*>::iterator it = desc->src_instances.begin();
+              it != desc->src_instances.end(); it++)
+        {
+          InstanceInfo *info = *it;
+          *((Memory*)ptr) = info->location;
+          ptr += sizeof(Memory);
+        }
         for (std::vector<InstanceInfo*>::iterator it = desc->instances.begin();
               it != desc->instances.end(); it++)
         {
