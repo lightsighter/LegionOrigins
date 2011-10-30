@@ -1169,6 +1169,17 @@ namespace RegionRuntime {
       // There should be an instance for every one of the required mappings
       assert(instances.size() == regions.size());
 #endif
+      // If this is not a remote task, we can release all the copy references
+      // Otherwise we'll get this in the remote start callback
+      if (!remote)
+      {
+        for (std::vector<std::pair<AbstractInstance*,InstanceInfo*> >::iterator it =
+              copy_instances.begin(); it != copy_instances.end(); it++)
+        {
+          it->first->free_instance(it->second); 
+        }
+        copy_instances.clear();
+      }
 
       // Get the set of physical regions for the task
       std::vector<PhysicalRegion<AccessorGeneric> > physical_regions;
@@ -1406,6 +1417,14 @@ namespace RegionRuntime {
         // Trigger the event indicating that this task is complete!
         termination_event.trigger();
       }
+      // Before we deactivate anyone, we first have to release any references to the
+      // clean up copies
+      for (std::vector<std::pair<AbstractInstance*,InstanceInfo*> >::iterator it =
+            copy_instances.begin(); it != copy_instances.end(); it++)
+      {
+        it->first->free_instance(it->second);
+      }
+      copy_instances.clear();
       // Deactivate any child tasks
       for (std::vector<TaskDescription*>::iterator it = child_tasks.begin();
             it != child_tasks.end(); it++)
@@ -1451,6 +1470,15 @@ namespace RegionRuntime {
       // Register that the task has been mapped
       mapped = true;
       map_event.trigger();
+
+      // We can also release all our copy instances since the copies had to finish
+      // in order for the task to be run
+      for (std::vector<std::pair<AbstractInstance*,InstanceInfo*> >::iterator it =
+            copy_instances.begin(); it != copy_instances.end(); it++)
+      {
+        it->first->free_instance(it->second);
+      }
+      copy_instances.clear();
     }
 
     //--------------------------------------------------------------------------------------------
