@@ -15,19 +15,92 @@ using namespace RegionRuntime::HighLevel;
 enum {
   TASKID_LOAD_CIRCUIT = TASK_ID_AVAILABLE,
   TASKID_CALC_NEW_CURRENTS,
+  TASKID_DISTRIBUTE_CHARGE,
   TASKID_UPDATE_VOLTAGES,
 };
 
 struct CircuitNode {
-  float charge;  // V = Q/C
+  ptr_t<CircuitNode> next;
+  float charge;
+  float voltage;
   float capacitance;
+  float leakage;
 };
 
 struct CircuitWire {
+  ptr_t<CircuitWire> next;
   ptr_t<CircuitNode> in_node, out_node;
   float resistance;
   float current;
 };
+
+struct Circuit {
+  LogicalHandle r_all_nodes;
+  LogicalHandle r_all_wires;
+  ptr_t<CircuitNode> first_node;
+  ptr_t<CircuitWire> first_wire;
+};
+
+struct CircuitPiece {
+  LogicalHandle rn_pvt, rn_shr, rn_ghost;
+  LogicalHandle rw_pvt;
+  ptr_t<CircuitNode> first_node;
+  ptr_t<CircuitWire> first_wire;
+};
+
+/* pseudocode:
+
+   struct Node<rn>    { Node<rn>@rn next;    float charge, capacitance; }
+   struct Wire<rn,rn2,rw> { Wire<rn,rn2,rw>@rw next; Node<rn2>@rn in_node, out_node; float current, ... ; }
+   region_relation Circuit {
+     Region< Node<r_all_nodes> >                r_all_nodes;
+     Region< Wire<r_all_nodes,r_all_wires> >    r_all_wires;
+     Node<r_all_nodes>@r_all_nodes              first_node;
+     Wire<r_all_nodes,r_all_wires>@r_all_wires  first_wire;
+   }
+   region_relation CircuitPiece<rn, rw> {
+     Region< Node<rn_pvt+rn_shr> >                    rn_pvt (< rn), rn_shr (< rn);
+     Region< Node<rn> >                               rn_ghost (< rn);
+     Region< Wire<rn_pvt+rn_shr+rn_ghost,rn,rw_pvt> > rw_pvt (< rw);
+     Node<rn_pvt+rn_shr>@(rn_pvt+rn_shr)              first_node;
+     Wire<rn_pvt+rn_shr+rn_ghost,rn,rw_pvt>@rw_pvt    first_wire;
+   };
+   void simulate_circuit(Circuit c) : RWE(c.r_all_nodes,c.r_all_wires)
+   {
+      CircuitPiece<c.r_all_nodes,c.r_all_wires> pieces[MAX_PIECES];
+      Coloring<c.r_all_wires> wire_owner_map = ... ; // wires colored by which piece they're in
+      Partition<c.r_all_wires> p_wires = partition(c.r_all_wires, wire_owner_map);
+      Coloring<c.r_all_nodes> node_owner_map = ... ; // nodes colored by which piece they're in
+      Coloring<c.r_all_wires> node_nghbr_map = ... ; // nodes colored by which pieces they neigbor
+      Coloring<c.r_all_wires> node_privacy_map = ... ; // nodes colored: 0 = no neighbors, 1 = some neighbors
+      Partition<c.r_all_nodes> p_nodes_pvs = partition(c.r_all_nodes, node_privacy_map);
+      Partition<p_nodes_pvs[0]> p_pvt_nodes = partition(p_nodes_pvs[0], node_owner_map);
+      Partition<p_nodes_pvs[1]> p_shr_nodes = partition(p_nodes_pvs[1], node_owner_map);
+      Partition<p_nodes_pvs[1]> p_ghost_nodes = partition(p_nodes_pvs[1], node_nghbr_map);
+      for(i = 0; i < MAX_PIECES; i++) 
+        pieces[i] <- { rn_pvt = p_pvt_nodes[i], rn_shr = p_shr_nodes[i],
+                       rn_ghost = p_ghost_nodes[i], rw_pvt = p_wires[i] };
+
+      while(!done) {
+        for(i = 0; i < MAX_PIECES; i++) spawn(calc_new_currents(pieces[i]));
+        for(i = 0; i < MAX_PIECES; i++) spawn(distribute_charge(pieces[i]));
+        for(i = 0; i < MAX_PIECES; i++) spawn(update_voltages(pieces[i]));
+      }
+    }
+
+    void calc_new_currents(CircuitPiece<rn,rw> piece): RWE(piece.rw_pvt), ROE(piece.rn_pvt,piece.rn_shr,piece.rn_ghost) {
+      // read info from nodes connected to each wire, update state of wire
+    }
+
+    void distribute_charge(CircuitPiece<rn,rw> piece): ROE(piece.rw_pvt), RdA(piece.rn_pvt,piece.rn_shr,piece.rn_ghost) {
+      // current moving through wires redistributes charge between nodes
+    }
+
+    void update_voltages(CircuitPiece<rn,rw> piece): RWE(piece.rn_pvt,piece.rn_shr)
+    {
+      // total charge added to a node causes changes in voltage
+    }
+ */
 
 template<AccessorType AT>
 void top_level_task(const void *args, size_t arglen, 
@@ -40,20 +113,23 @@ void top_level_task(const void *args, size_t arglen,
   int num_pieces = 10;
 
   // create top-level regions - one for nodes and one for wires
-  LogicalHandle r_all_nodes = runtime->create_logical_region<CircuitNode>(ctx,
-									  num_circuit_nodes);
-  LogicalHandle r_all_wires = runtime->create_logical_region<CircuitWire>(ctx,
-									  num_circuit_wires);
+  Circuit circuit;
+
+  circuit.r_all_nodes = runtime->create_logical_region<CircuitNode>(ctx,
+								    num_circuit_nodes);
+  circuit.r_all_wires = runtime->create_logical_region<CircuitWire>(ctx,
+								    num_circuit_wires);
 
   std::vector<RegionRequirement> load_circuit_regions;
-  load_circuit_regions.push_back(RegionRequirement(r_all_nodes, READ_WRITE,
+  load_circuit_regions.push_back(RegionRequirement(circuit.r_all_nodes, READ_WRITE,
 						   ALLOCABLE, EXCLUSIVE,
 						   LogicalHandle::NO_REGION));
-  load_circuit_regions.push_back(RegionRequirement(r_all_wires, READ_WRITE,
+  load_circuit_regions.push_back(RegionRequirement(circuit.r_all_wires, READ_WRITE,
 						   ALLOCABLE, EXCLUSIVE,
 						   LogicalHandle::NO_REGION));
   Future f = runtime->execute_task(ctx, TASKID_LOAD_CIRCUIT,
-				   load_circuit_regions, 0, 0, true);
+				   load_circuit_regions, 
+				   &circuit, sizeof(Circuit), true);
   f.get_void_result();
 
   std::vector<std::set<ptr_t<CircuitWire> > > wire_owner_map;
@@ -62,11 +138,11 @@ void top_level_task(const void *args, size_t arglen,
                                               node_neighbors_multimap;
 
   // wires just have one level of partitioning - by piece
-  Partition<CircuitWire> p_wires = runtime->create_partition<CircuitWire>(ctx, r_all_wires,
+  Partition<CircuitWire> p_wires = runtime->create_partition<CircuitWire>(ctx, circuit.r_all_wires,
 							     wire_owner_map);
 
   // nodes split first by private vs shared and then by piece
-  Partition<CircuitNode> p_node_pvs = runtime->create_partition<CircuitNode>(ctx, r_all_nodes,
+  Partition<CircuitNode> p_node_pvs = runtime->create_partition<CircuitNode>(ctx, circuit.r_all_nodes,
 								node_privacy_map);
   Partition<CircuitNode> p_pvt_nodes = runtime->create_partition<CircuitNode>(ctx, runtime->get_subregion(ctx, p_node_pvs, 0),
 								 node_owner_map);
@@ -78,49 +154,75 @@ void top_level_task(const void *args, size_t arglen,
 					   node_neighbors_multimap,
 										false);
 
+  std::vector<CircuitPiece> pieces;
+  pieces.resize(num_pieces);
+  for(int i = 0; i < num_pieces; i++) {
+    pieces[i].rn_pvt = runtime->get_subregion(ctx, p_pvt_nodes, i);
+    pieces[i].rn_shr = runtime->get_subregion(ctx, p_shr_nodes, i);
+    pieces[i].rn_ghost = runtime->get_subregion(ctx, p_ghost_nodes, i);
+    pieces[i].rw_pvt = runtime->get_subregion(ctx, p_wires, i);
+  }
+
   // main loop
   for(int i = 0; i < 1; i++) {
     // calculating new currents requires looking at all the nodes (and the
     //  wires) and updating the state of the wires
     for(int p = 0; p < num_pieces; p++) {
       std::vector<RegionRequirement> cnc_regions;
-      cnc_regions.push_back(RegionRequirement(runtime->get_subregion(ctx, p_wires, p),
+      cnc_regions.push_back(RegionRequirement(pieces[p].rw_pvt,
 					      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 					      LogicalHandle::NO_REGION));
-      cnc_regions.push_back(RegionRequirement(runtime->get_subregion(ctx, p_pvt_nodes, p),
+      cnc_regions.push_back(RegionRequirement(pieces[p].rn_pvt,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
 					      LogicalHandle::NO_REGION));
-      cnc_regions.push_back(RegionRequirement(runtime->get_subregion(ctx, p_shr_nodes, p),
+      cnc_regions.push_back(RegionRequirement(pieces[p].rn_shr,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
 					      LogicalHandle::NO_REGION));
-      cnc_regions.push_back(RegionRequirement(runtime->get_subregion(ctx, p_ghost_nodes, p),
+      cnc_regions.push_back(RegionRequirement(pieces[p].rn_ghost,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
 					      LogicalHandle::NO_REGION));
       Future f = runtime->execute_task(ctx, TASKID_CALC_NEW_CURRENTS,
-				       cnc_regions, 0, 0, true);
+				       cnc_regions, 
+				       &pieces[p], sizeof(CircuitPiece), true);
     }
 
-    // updating voltages is a scatter from the wires back to the nodes
+    // distributing charge is a scatter from the wires back to the nodes
     // this scatter can be done with reduction ops, and we're ok with the
     // weaker ordering requirement of atomic (as opposed to exclusive)
     // NOTE: for now, we tell the runtime simultaneous to get the behavior we
     // want - later it'll be able to see that RdA -> RdS in this case
     for(int p = 0; p < num_pieces; p++) {
-      std::vector<RegionRequirement> upv_regions;
-      upv_regions.push_back(RegionRequirement(runtime->get_subregion(ctx, p_wires, p),
+      std::vector<RegionRequirement> dsc_regions;
+      dsc_regions.push_back(RegionRequirement(pieces[p].rw_pvt,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
 					      LogicalHandle::NO_REGION));
-      upv_regions.push_back(RegionRequirement(runtime->get_subregion(ctx, p_pvt_nodes, p),
+      dsc_regions.push_back(RegionRequirement(pieces[p].rn_pvt,
 					      REDUCE, NO_MEMORY, SIMULTANEOUS,
 					      LogicalHandle::NO_REGION));
-      upv_regions.push_back(RegionRequirement(runtime->get_subregion(ctx, p_shr_nodes, p),
+      dsc_regions.push_back(RegionRequirement(pieces[p].rn_shr,
 					      REDUCE, NO_MEMORY, SIMULTANEOUS,
 					      LogicalHandle::NO_REGION));
-      upv_regions.push_back(RegionRequirement(runtime->get_subregion(ctx, p_ghost_nodes, p),
+      dsc_regions.push_back(RegionRequirement(pieces[p].rn_ghost,
 					      REDUCE, NO_MEMORY, SIMULTANEOUS,
+					      LogicalHandle::NO_REGION));
+      Future f = runtime->execute_task(ctx, TASKID_DISTRIBUTE_CHARGE,
+				       dsc_regions,
+				       &pieces[p], sizeof(CircuitPiece), true);
+    }
+
+    // once all the charge is distributed, we can update voltages in a pass
+    //  that just touches the nodes
+    for(int p = 0; p < num_pieces; p++) {
+      std::vector<RegionRequirement> upv_regions;
+      upv_regions.push_back(RegionRequirement(pieces[p].rn_pvt,
+					      READ_WRITE, NO_MEMORY, EXCLUSIVE,
+					      LogicalHandle::NO_REGION));
+      upv_regions.push_back(RegionRequirement(pieces[p].rn_shr,
+					      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 					      LogicalHandle::NO_REGION));
       Future f = runtime->execute_task(ctx, TASKID_UPDATE_VOLTAGES,
-				       upv_regions, 0, 0, true);
+				       upv_regions,
+				       &pieces[p], sizeof(CircuitPiece), true);
     }
   }
 
@@ -132,7 +234,16 @@ void load_circuit_task(const void *args, size_t arglen,
 		       const std::vector<PhysicalRegion<AT> > &regions,
 		       Context ctx, HighLevelRuntime *runtime)
 {
+  Circuit *c = (Circuit *)args;
+  PhysicalRegion<AT> inst_rn = regions[0];
+  PhysicalRegion<AT> inst_rw = regions[1];
+
   printf("In load_circuit()\n");
+
+  c->first_node = inst_rn.template alloc<CircuitNode>();
+  c->first_wire = inst_rw.template alloc<CircuitWire>();
+
+  printf("Done with load_circuit()\n");
 }
 
 template<AccessorType AT>
@@ -140,7 +251,68 @@ void calc_new_currents_task(const void *args, size_t arglen,
 			    const std::vector<PhysicalRegion<AT> > &regions,
 			    Context ctx, HighLevelRuntime *runtime)
 {
+  CircuitPiece *p = (CircuitPiece *)args;
+  PhysicalRegion<AT> inst_rw_pvt = regions[0];
+  PhysicalRegion<AT> inst_rn_pvt = regions[1];
+  PhysicalRegion<AT> inst_rn_shr = regions[2];
+  PhysicalRegion<AT> inst_rn_ghost = regions[3];
+
   printf("In calc_new_currents()\n");
+
+  ptr_t<CircuitWire> cur_wire = p->first_wire;
+  do {
+    CircuitWire w = inst_rw_pvt.read(cur_wire);
+    CircuitNode n_in = inst_rn_pvt.read(w.in_node);
+    CircuitNode n_out = inst_rn_pvt.read(w.out_node);
+    w.current = (n_out.voltage - n_in.voltage) / w.resistance;
+    inst_rw_pvt.write(cur_wire, w);
+
+    cur_wire = w.next;
+  } while(cur_wire != p->first_wire);
+
+  printf("Done with calc_new_currents()\n");
+}
+
+// reduction op
+class AccumulateCharge {
+public:
+  static void apply(CircuitNode *lhs, float rhs)
+  {
+    lhs->charge += rhs;
+  }
+
+  static float fold_rhs(float rhs1, float rhs2)
+  {
+    return rhs1 + rhs2;
+  }
+};
+
+template<AccessorType AT>
+void distribute_charge_task(const void *args, size_t arglen, 
+			    const std::vector<PhysicalRegion<AT> > &regions,
+			    Context ctx, HighLevelRuntime *runtime)
+{
+  CircuitPiece *p = (CircuitPiece *)args;
+  PhysicalRegion<AT> inst_rw_pvt = regions[0];
+  PhysicalRegion<AT> inst_rn_pvt = regions[1];
+  PhysicalRegion<AT> inst_rn_shr = regions[2];
+  PhysicalRegion<AT> inst_rn_ghost = regions[3];
+
+  printf("In distribute_charge()\n");
+
+  ptr_t<CircuitWire> cur_wire = p->first_wire;
+  do {
+    CircuitWire w = inst_rw_pvt.read(cur_wire);
+
+    float delta_q = w.current * 1e-6;  // arbitrarily do a 1us time step
+
+    inst_rn_pvt.template reduce<AccumulateCharge>(w.in_node, -delta_q);
+    //    inst_rn_pvt.template reduce<CircuitNode,AccumulateCharge,float>(w.out_node, delta_q);
+
+    cur_wire = w.next;
+  } while(cur_wire != p->first_wire);
+
+  printf("Done with calc_new_currents()\n");
 }
 
 template<AccessorType AT>
@@ -148,7 +320,27 @@ void update_voltages_task(const void *args, size_t arglen,
 		       const std::vector<PhysicalRegion<AT> > &regions,
 		       Context ctx, HighLevelRuntime *runtime)
 {
+  CircuitPiece *p = (CircuitPiece *)args;
+  PhysicalRegion<AT> inst_rn_pvt = regions[0];
+  PhysicalRegion<AT> inst_rn_shr = regions[1];
+
   printf("In update_voltages()\n");
+
+  ptr_t<CircuitNode> cur_node = p->first_node;
+  do {
+    CircuitNode n = inst_rn_pvt.read(cur_node);
+
+    // charge adds in, and then some leaks away
+    n.voltage += n.charge / n.capacitance;
+    n.voltage *= (1 - n.leakage);
+    n.charge = 0;
+
+    inst_rn_pvt.write(cur_node, n);
+
+    cur_node = n.next;
+  } while(cur_node != p->first_node);
+
+  printf("Done with update_voltages()\n");
 }
 
 #if 0
@@ -259,10 +451,9 @@ int main(int argc, char **argv)
   task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
   task_table[TASKID_LOAD_CIRCUIT] = high_level_task_wrapper<load_circuit_task<AccessorGeneric> >;
   task_table[TASKID_CALC_NEW_CURRENTS] = high_level_task_wrapper<calc_new_currents_task<AccessorGeneric> >;
+  task_table[TASKID_DISTRIBUTE_CHARGE] = high_level_task_wrapper<distribute_charge_task<AccessorGeneric> >;
   task_table[TASKID_UPDATE_VOLTAGES] = high_level_task_wrapper<update_voltages_task<AccessorGeneric> >;
-  //task_table[LAUNCH_TASK_ID] = high_level_task_wrapper<unsigned,launch_tasks<AccessorGeneric> >;
-  //task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric>,top_level_task<AccessorArray> >;
-  //task_table[LAUNCH_TASK_ID] = high_level_task_wrapper<unsigned,launch_tasks<AccessorGeneric>,launch_tasks<AccessorArray> >;
+
   HighLevelRuntime::register_runtime_tasks(task_table);
 
   // Initialize the machine

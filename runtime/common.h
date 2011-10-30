@@ -18,8 +18,9 @@ struct ptr_t
 public:
 	unsigned value; 
 public:
-	//bool operator==(const ptr_t<T> &ptr) const { return (ptr.value == this.value); }
-	//bool operator< (const ptr_t<T> &ptr) const { return (ptr.value <  this.value); }
+        bool operator==(const ptr_t<T> &ptr) const { return (ptr.value == this->value); }
+        bool operator!=(const ptr_t<T> &ptr) const { return (ptr.value != this->value); }
+  //bool operator< (const ptr_t<T> &ptr) const { return (ptr.value <  this.value); }
 };
 
 #endif // COMMON_H

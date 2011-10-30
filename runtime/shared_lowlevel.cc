@@ -1098,6 +1098,7 @@ namespace RegionRuntime {
 	size_t remaining_bytes(void);
 	void* allocate_space(size_t size);
 	void free_space(void *ptr, size_t size);
+      
     private:
 	const size_t max_size;
 	size_t remaining;
@@ -1137,6 +1138,269 @@ namespace RegionRuntime {
 	remaining += size;
 	free(ptr);
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+    }
+
+    ////////////////////////////////////////////////////////
+    // Element Masks
+    ////////////////////////////////////////////////////////
+
+    struct ElementMaskImpl {
+      //int count, offset;
+      int dummy;
+      unsigned bits[0];
+
+      static size_t bytes_needed(int offset, int count)
+      {
+	size_t need = sizeof(ElementMaskImpl) + (((count + 31) >> 5) << 2);
+	return need;
+      }
+	
+    };
+
+    ElementMask::ElementMask(void)
+      : first_element(-1), num_elements(-1), memory(Memory::NO_MEMORY), offset(-1),
+	raw_data(0)
+    {
+    }
+
+    ElementMask::ElementMask(int _num_elements, int _first_element /*= 0*/)
+      : first_element(_first_element), num_elements(_num_elements), memory(Memory::NO_MEMORY), offset(-1)
+    {
+      size_t bytes_needed = ElementMaskImpl::bytes_needed(first_element, num_elements);
+      raw_data = calloc(1, bytes_needed);
+      //((ElementMaskImpl *)raw_data)->count = num_elements;
+      //((ElementMaskImpl *)raw_data)->offset = first_element;
+    }
+
+#if 0
+    void ElementMask::init(int _first_element, int _num_elements, Memory _memory, int _offset)
+    {
+      first_element = _first_element;
+      num_elements = _num_elements;
+      memory = _memory;
+      offset = _offset;
+      size_t bytes_needed = ElementMaskImpl::bytes_needed(first_element, num_elements);
+      raw_data = Runtime::get_runtime()->get_memory_impl(memory)->get_direct_ptr(offset, bytes_needed);
+    }
+#endif
+
+    void ElementMask::enable(int start, int count /*= 1*/)
+    {
+      if(raw_data != 0) {
+	ElementMaskImpl *impl = (ElementMaskImpl *)raw_data;
+	//printf("ENABLE %p %d %d %d %x\n", raw_data, offset, start, count, impl->bits[0]);
+	int pos = start - first_element;
+	for(int i = 0; i < count; i++) {
+	  unsigned *ptr = &(impl->bits[pos >> 5]);
+	  *ptr |= (1U << (pos & 0x1f));
+	  pos++;
+	}
+	//printf("ENABLED %p %d %d %d %x\n", raw_data, offset, start, count, impl->bits[0]);
+      } else {
+	assert(0);
+#if 0
+	//printf("ENABLE(2) %x %d %d %d\n", memory.id, offset, start, count);
+	MemoryImpl *m_impl = Runtime::get_runtime()->get_memory_impl(memory);
+
+	int pos = start - first_element;
+	for(int i = 0; i < count; i++) {
+	  unsigned ofs = offset + ((pos >> 5) << 2);
+	  unsigned val;
+	  m_impl->get_bytes(ofs, &val, sizeof(val));
+	  //printf("ENABLED(2) %d,  %x\n", ofs, val);
+	  val |= (1U << (pos & 0x1f));
+	  m_impl->put_bytes(ofs, &val, sizeof(val));
+	  pos++;
+	}
+#endif
+      }
+    }
+
+    void ElementMask::disable(int start, int count /*= 1*/)
+    {
+      if(raw_data != 0) {
+	ElementMaskImpl *impl = (ElementMaskImpl *)raw_data;
+	int pos = start - first_element;
+	for(int i = 0; i < count; i++) {
+	  unsigned *ptr = &(impl->bits[pos >> 5]);
+	  *ptr &= ~(1U << (pos & 0x1f));
+	  pos++;
+	}
+      } else {
+	assert(0);
+#if 0
+	//printf("DISABLE(2) %x %d %d %d\n", memory.id, offset, start, count);
+	Memory::Impl *m_impl = memory.impl();
+
+	int pos = start - first_element;
+	for(int i = 0; i < count; i++) {
+	  unsigned ofs = offset + ((pos >> 5) << 2);
+	  unsigned val;
+	  m_impl->get_bytes(ofs, &val, sizeof(val));
+	  //printf("DISABLED(2) %d,  %x\n", ofs, val);
+	  val &= ~(1U << (pos & 0x1f));
+	  m_impl->put_bytes(ofs, &val, sizeof(val));
+	  pos++;
+	}
+#endif
+      }
+    }
+
+    int ElementMask::find_enabled(int count /*= 1 */)
+    {
+      if(raw_data != 0) {
+	ElementMaskImpl *impl = (ElementMaskImpl *)raw_data;
+	//printf("FIND_ENABLED %p %d %d %x\n", raw_data, first_element, count, impl->bits[0]);
+	for(int pos = 0; pos <= num_elements - count; pos++) {
+	  int run = 0;
+	  while(1) {
+	    unsigned bit = ((impl->bits[pos >> 5] >> (pos & 0x1f))) & 1;
+	    if(bit != 1) break;
+	    pos++; run++;
+	    if(run >= count) return pos - run;
+	  }
+	}
+      } else {
+	assert(0);
+#if 0
+	Memory::Impl *m_impl = memory.impl();
+	//printf("FIND_ENABLED(2) %x %d %d %d\n", memory.id, offset, first_element, count);
+	for(int pos = 0; pos <= num_elements - count; pos++) {
+	  int run = 0;
+	  while(1) {
+	    unsigned ofs = offset + ((pos >> 5) << 2);
+	    unsigned val;
+	    m_impl->get_bytes(ofs, &val, sizeof(val));
+	    unsigned bit = (val >> (pos & 0x1f)) & 1;
+	    if(bit != 1) break;
+	    pos++; run++;
+	    if(run >= count) return pos - run;
+	  }
+	}
+#endif
+      }
+      return -1;
+    }
+
+    int ElementMask::find_disabled(int count /*= 1 */)
+    {
+      if(raw_data != 0) {
+	ElementMaskImpl *impl = (ElementMaskImpl *)raw_data;
+	for(int pos = 0; pos <= num_elements - count; pos++) {
+	  int run = 0;
+	  while(1) {
+	    unsigned bit = ((impl->bits[pos >> 5] >> (pos & 0x1f))) & 1;
+	    if(bit != 0) break;
+	    pos++; run++;
+	    if(run >= count) return pos - run;
+	  }
+	}
+      } else {
+	assert(0);
+      }
+      return -1;
+    }
+
+    size_t ElementMask::raw_size(void) const
+    {
+      return 0;
+    }
+
+    const void *ElementMask::get_raw(void) const
+    {
+      return raw_data;
+    }
+
+    void ElementMask::set_raw(const void *data)
+    {
+      assert(0);
+    }
+
+    ElementMask::Enumerator *ElementMask::enumerate_enabled(int start /*= 0*/) const
+    {
+      return new ElementMask::Enumerator(*this, start, 1);
+    }
+
+    ElementMask::Enumerator *ElementMask::enumerate_disabled(int start /*= 0*/) const
+    {
+      return new ElementMask::Enumerator(*this, start, 0);
+    }
+
+    ElementMask::Enumerator::Enumerator(const ElementMask& _mask, int _start, int _polarity)
+      : mask(_mask), pos(_start), polarity(_polarity) {}
+
+    ElementMask::Enumerator::~Enumerator(void) {}
+
+    bool ElementMask::Enumerator::get_next(int &position, int &length)
+    {
+      if(mask.raw_data != 0) {
+	ElementMaskImpl *impl = (ElementMaskImpl *)(mask.raw_data);
+
+	// scan until we find a bit set with the right polarity
+	while(pos < mask.num_elements) {
+	  int bit = ((impl->bits[pos >> 5] >> (pos & 0x1f))) & 1;
+	  if(bit != polarity) {
+	    pos++;
+	    continue;
+	  }
+
+	  // ok, found one bit with the right polarity - now see how many
+	  //  we have in a row
+	  position = pos++;
+	  while(pos < mask.num_elements) {
+	    int bit = ((impl->bits[pos >> 5] >> (pos & 0x1f))) & 1;
+	    if(bit == polarity) {
+	      pos++;
+	      continue;
+	    }
+	  }
+	  // we get here either because we found the end of the run or we 
+	  //  hit the end of the mask
+	  length = pos - position;
+	  return true;
+	}
+
+	// if we fall off the end, there's no more ranges to enumerate
+	return false;
+      } else {
+	assert(0);
+#if 0
+	Memory::Impl *m_impl = mask.memory.impl();
+
+	// scan until we find a bit set with the right polarity
+	while(pos < mask.num_elements) {
+	  unsigned ofs = mask.offset + ((pos >> 5) << 2);
+	  unsigned val;
+	  m_impl->get_bytes(ofs, &val, sizeof(val));
+	  int bit = ((val >> (pos & 0x1f))) & 1;
+	  if(bit != polarity) {
+	    pos++;
+	    continue;
+	  }
+
+	  // ok, found one bit with the right polarity - now see how many
+	  //  we have in a row
+	  position = pos++;
+	  while(pos < mask.num_elements) {
+	    unsigned ofs = mask.offset + ((pos >> 5) << 2);
+	    unsigned val;
+	    m_impl->get_bytes(ofs, &val, sizeof(val));
+	    int bit = ((val >> (pos & 0x1f))) & 1;
+	    if(bit == polarity) {
+	      pos++;
+	      continue;
+	    }
+	  }
+	  // we get here either because we found the end of the run or we 
+	  //  hit the end of the mask
+	  length = pos - position;
+	  return true;
+	}
+#endif
+
+	// if we fall off the end, there's no more ranges to enumerate
+	return false;
+      }
     }
 
     
@@ -1542,6 +1806,11 @@ namespace RegionRuntime {
     {
 	RegionMetaDataImpl *r = Runtime::get_runtime()->get_free_metadata(num_elmts, elmt_size);	
 	return r->get_metadata();
+    }
+
+    RegionMetaDataUntyped RegionMetaDataUntyped::create_region_untyped(RegionMetaDataUntyped parent, const ElementMask &mask)
+    {
+      assert(0);
     }
 
     RegionAllocatorUntyped RegionMetaDataUntyped::create_allocator_untyped(Memory m) const
