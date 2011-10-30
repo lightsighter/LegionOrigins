@@ -449,10 +449,11 @@ namespace RegionRuntime {
     
     class UntypedPartition {
     public:
-      const PartitionID id;
-      const LogicalHandle parent;
-      const bool disjoint;
+      /*const*/ PartitionID id;
+      /*const*/ LogicalHandle parent;
+      /*const*/ bool disjoint;
     protected:
+    UntypedPartition(void) : id(0), parent(LogicalHandle::NO_REGION), disjoint(false) {}
       UntypedPartition(PartitionID pid, LogicalHandle par, bool dis)
               : id(pid), parent(par), disjoint(dis) { }
     protected:
@@ -461,6 +462,8 @@ namespace RegionRuntime {
 
     template<typename T>
     class Partition : public UntypedPartition {
+    public:
+      Partition(void) : UntypedPartition() {}
     protected:
       // Only the runtime should be able to create Partitions
       friend class HighLevelRuntime;
