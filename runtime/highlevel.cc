@@ -457,7 +457,7 @@ namespace RegionRuntime {
 #endif
               // Get the info, register the reader, and record the copy
               InstanceInfo *src_info = dst_instance->get_instance(src_location);
-              // If they are different instances, just ignore it
+              // If they are the same instance, just ignore it
               if (!(src_info->inst == info->inst))
               {
                 dst_instance->register_reader(src_info);
@@ -838,6 +838,23 @@ namespace RegionRuntime {
               destinations.push_back(*mem_it);
               dst_infos.push_back(info);
               // Ask the mapper to choose how to copy to the new instance
+              Memory src_location = Memory::NO_MEMORY;
+              mapper->select_copy_source(this,copy_op->dst_instance->get_memory_locations(),
+                                          *mem_it,src_location);
+#ifdef DEBUG_HIGH_LEVEL
+              assert(src_location.exists());
+#endif
+              // Get the infor and register the reader if we need to make a copy
+              InstanceInfo *src_info = copy_op->dst_instance->get_instance(src_location);
+              // If they are the same instance, just ignore it
+              if (!(src_info->inst == info->inst))
+              {
+                copy_op->dst_instance->register_reader(src_info);
+                init_copy_events.insert(src_info->inst.copy_to_untyped(info->inst));
+                // Add the source to the list of reads that we've performed
+                copy_instances.push_back(
+                    std::pair<AbstractInstance*,InstanceInfo*>(copy_op->dst_instance,src_info));
+              }
               break;
             }
           }
@@ -847,8 +864,21 @@ namespace RegionRuntime {
             exit(1);
           }
         }
-        wait_events.insert(copy_op->execute(mapper,this,Event::NO_EVENT,destinations,
-                            dst_infos,copy_instances));
+        // Add all the destination events to the list of writers, only make the first
+        // one exclusive so they all are valid at after this loop
+        bool exclusive = true;
+        for (std::vector<InstanceInfo*>::iterator it = dst_infos.begin();
+              it != dst_infos.end(); it++)
+        {
+          copy_op->dst_instance->register_writer(*it,exclusive);
+          exclusive = false;
+          copy_instances.push_back(
+              std::pair<AbstractInstance*,InstanceInfo*>(copy_op->dst_instance,*it));
+        }
+        // Get the event corresponding to all the destinations being created
+        // and use that as the event to wait for before issuing the copies
+        wait_events.insert(copy_op->execute(mapper,this,Event::merge_events(init_copy_events),
+                            destinations,dst_infos,copy_instances));
       }
       // Compute the merged event indicating the event to wait on before starting the task
       if (wait_events.size() > 0)

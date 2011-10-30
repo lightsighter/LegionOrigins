@@ -86,12 +86,6 @@ namespace RegionRuntime {
 
     struct RegionRequirement {
     public:
-      RegionRequirement(void) {}
-      RegionRequirement(LogicalHandle _handle, AccessMode _mode,
-			AllocateMode _alloc, CoherenceProperty _prop,
-			LogicalHandle _parent)
-        : handle(_handle), mode(_mode), alloc(_alloc), 
-	  prop(_prop), parent(_parent) {}
       LogicalHandle handle;
       AccessMode mode;
       AllocateMode alloc;
@@ -131,7 +125,7 @@ namespace RegionRuntime {
       // If it has to make a new instance, the call to get instance will mark
       // new_inst as true.  Use the boolean to detect whether the region
       // had to be created
-      InstanceInfo* get_instance(Memory m, bool &created);
+      InstanceInfo* get_instance(Memory m);
       // Return the instance back to the abstract instance, return true
       // if the region can be deleted 
       void free_instance(InstanceInfo *info);
