@@ -397,7 +397,7 @@ namespace RegionRuntime {
       { return static_cast<LowLevel::RegionInstanceAccessor<T,LowLevel::AccessorArray> >(instance).read(ptr); }
       template<typename T> inline void write(ptr_t<T> ptr, T newval)
       { static_cast<LowLevel::RegionInstanceAccessor<T,LowLevel::AccessorArray> >(instance).write(ptr,newval); }
-      template<typename T, typename REDOP> inline void reduce(ptr_t<T> ptr, T newval)
+      template<typename T, typename REDOP, typename RHS> inline void reduce(ptr_t<T> ptr, RHS newval)
       { static_cast<LowLevel::RegionInstanceAccessor<T,LowLevel::AccessorArray> >(instance).reduce<REDOP>(ptr,newval); }
     };
 
@@ -427,7 +427,7 @@ namespace RegionRuntime {
       { return static_cast<LowLevel::RegionInstanceAccessor<T,LowLevel::AccessorGeneric> >(instance).read(ptr); }
       template<typename T> inline void write(ptr_t<T> ptr, T newval)
       { static_cast<LowLevel::RegionInstanceAccessor<T,LowLevel::AccessorGeneric> >(instance).write(ptr,newval); }
-      template<typename T, typename REDOP> inline void reduce(ptr_t<T> ptr, T newval)
+      template<typename REDOP, typename T, typename RHS> inline void reduce(ptr_t<T> ptr, RHS newval)
       { static_cast<LowLevel::RegionInstanceAccessor<T,LowLevel::AccessorGeneric> >(instance).reduce<REDOP>(ptr,newval); }
     public:
       bool can_convert(void) const

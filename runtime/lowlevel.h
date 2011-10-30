@@ -355,6 +355,13 @@ namespace RegionRuntime {
       void write(ptr_t<T> ptr, T newval) const
 	{ put_untyped(ptr.value*sizeof(T), &newval, sizeof(T)); }
 
+      template <class REDOP, class T, class RHS>
+      void reduce(ptr_t<T> ptr, RHS newval) const 
+	{ T val; 
+	  get_untyped(ptr.value*sizeof(T), &val, sizeof(T));
+	  REDOP::apply(&val, newval); 
+	  put_untyped(ptr.value*sizeof(T), &newval, sizeof(T)); }
+
       template <AccessorType AT2>
       bool can_convert(void) const;
 
@@ -379,8 +386,8 @@ namespace RegionRuntime {
       template <class T>
       void write(ptr_t<T> ptr, T newval) const { ((T*)array_base)[ptr.value] = newval; }
 
-      template <class T, class REDOP>
-      void reduce(ptr_t<T> ptr, T newval) const { REDOP::reduce(((T*)array_base)[ptr.value], newval); }
+      template <class REDOP, class T, class RHS>
+      void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::apply(((T*)array_base)[ptr.value], newval); }
     };
 
     template <class ET, AccessorType AT = AccessorGeneric>
@@ -393,8 +400,8 @@ namespace RegionRuntime {
       ET read(ptr_t<ET> ptr) const { return ria.read(ptr); }
       void write(ptr_t<ET> ptr, ET newval) const { ria.write(ptr, newval); }
 
-      template <class REDOP>
-      void reduce(ptr_t<ET> ptr, ET newval) const { ria.reduce<REDOP>(ptr, newval); }
+      template <class REDOP, class RHS>
+      void reduce(ptr_t<ET> ptr, RHS newval) const { ria.template reduce<REDOP>(ptr, newval); }
 
       template <AccessorType AT2>
       bool can_convert(void) const { return ria.can_convert<AT2>(); }
