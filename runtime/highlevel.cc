@@ -1858,15 +1858,19 @@ namespace RegionRuntime {
         {
           conflict = true;
           //war_conflict = false;
-          // Add this to the list of tasks we need to wait for
+          // Add this to the list of tasks we need to wait for 
           if (it->second->mapped)
             dep.child->wait_events.insert(it->second->termination_event);
           else
           {
             // The active task hasn't been mapped yet, tell it to wait
             // until we're mapped before giving us its termination event
-            dep.child->remaining_events++;
-            it->second->dependent_tasks.insert(dep.child);
+            // check to make sure that we haven't registered ourselves previously
+            if (it->second->dependent_tasks.find(dep.child) == it->second->dependent_tasks.end())
+            {
+              dep.child->remaining_events++;
+              it->second->dependent_tasks.insert(dep.child);
+            }
           }
         }
         //else if(war_conflict && !RegionRequirement::region_war_conflict(it->first, dep.req))
