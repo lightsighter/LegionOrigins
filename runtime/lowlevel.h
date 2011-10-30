@@ -229,7 +229,7 @@ namespace RegionRuntime {
 
       static const Memory NO_MEMORY;
 
-      bool exists(void) const;
+      bool exists(void) const { return id != 0; }
     };
 
     class ElementMask {

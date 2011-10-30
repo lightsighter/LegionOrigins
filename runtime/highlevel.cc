@@ -2563,7 +2563,7 @@ namespace RegionRuntime {
     HighLevelRuntime* HighLevelRuntime::get_runtime(Processor p)
     //--------------------------------------------------------------------------------------------
     {
-      return (runtime_map+(p.id));
+      return (runtime_map+(p.id & 0xffff)); // SJT: this ok?  just local procs?
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2571,7 +2571,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       // do the initialization in the pre-allocated memory, tee-hee! 
-      new(runtime_map+p.id) HighLevelRuntime(Machine::get_machine(), p);
+      new(get_runtime(p)) HighLevelRuntime(Machine::get_machine(), p);
 
       // Now initialize any mappers
       // Issue a task to initialize the mappers
@@ -2584,7 +2584,7 @@ namespace RegionRuntime {
     void HighLevelRuntime::shutdown_runtime(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-      runtime_map[p.id].HighLevelRuntime::~HighLevelRuntime();
+      get_runtime(p)->HighLevelRuntime::~HighLevelRuntime();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3433,15 +3433,11 @@ namespace RegionRuntime {
     {
       // Choose a random processor
       const std::set<Processor> &all_procs = machine->get_all_processors();
-      unsigned index = (rand()) % (all_procs.size())+1;
+      unsigned index = (rand()) % (all_procs.size());
       for (std::set<Processor>::iterator it = all_procs.begin();
             it != all_procs.end(); it++)
-      {
-        if (it->id == index)
-        {
-          return *it;
-        }
-      }
+	if(!index--)
+	  return *it;
       // Should never make it here
       assert(false);
       return (*(all_procs.begin()));
