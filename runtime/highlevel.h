@@ -131,7 +131,7 @@ namespace RegionRuntime {
       // register a reader of an instance
       void register_reader(InstanceInfo *info);
       // register a writer of an instance
-      void register_writer(InstanceInfo *info);
+      void register_writer(InstanceInfo *info, bool exclusive = true);
     protected:
       // Increases the reference count of the abstract instance
       void register_task_user(void);
@@ -180,21 +180,20 @@ namespace RegionRuntime {
       friend class RegionNode;
       friend class PartitionNode;
     protected:
-      CopyOperation(AbstractInstance *s,  
-                    Event wait_on = Event::NO_EVENT, bool rem = false);
+      CopyOperation(AbstractInstance *dst);
       ~CopyOperation();
-      void add_sub_copies(const std::set<CopyOperation*> &copies);
-      // Trigger all the child copies and then this copy
-      // Record all instances that become invalid in the tasks set of dead instances
+      void add_sub_copy(CopyOperation *sub);
+      void add_src_inst(AbstractInstance *inst, Event wait_on = Event::NO_EVENT);
       Event execute(Mapper *m, TaskDescription *desc, Event wait_on,
                     const std::vector<Memory> &destinations,
                     const std::vector<InstanceInfo*> &dst_inst,
                     std::vector<std::pair<AbstractInstance*,InstanceInfo*> > &sources);
+    protected:
+      AbstractInstance *const dst_instance;
     private:
-      std::set<CopyOperation*> sub_copies;
-      AbstractInstance *src;
-      Event ready; // Event indicating when the copy can be performed
-      const bool remote;
+      std::vector<AbstractInstance*> src_instances;
+      std::vector<Event> src_events; // Events indicating when the sources can be used
+      std::vector<CopyOperation*> sub_copies;
     };
 
     struct DependenceDetector {
@@ -272,7 +271,9 @@ namespace RegionRuntime {
       std::vector<InstanceInfo*> src_instances; // Sources for our regions (immov)
       std::vector<InstanceInfo*> instances; // Region instances for the regions (immov)
       // Copy operations (must be performed before steal/send)
-      std::set<CopyOperation*> pre_copy_trees; // (immov)
+      std::vector<CopyOperation*> pre_copy_trees; // (immov)
+      // Instances that we need to return to the abstract instance after copy operations
+      std::vector<std::pair<AbstractInstance*,InstanceInfo*> > copy_instances;
     private:
       // New top level regions
       std::map<LogicalHandle,InstanceInfo*> created_regions;       
@@ -288,8 +289,10 @@ namespace RegionRuntime {
       void compute_trace(DependenceDetector &dep, LogicalHandle parent, LogicalHandle child);
       void register_child_task(TaskDescription *child);
       void initialize_contexts(void);
-      Event issue_pre_copy_ops(void);
+      Event issue_region_copy_ops(void);
       AbstractInstance* get_abstract_instance(LogicalHandle h, AbstractInstance *par);
+      bool is_ready(void) const;
+      void mark_ready(void);
       // Operations to pack and unpack tasks
       size_t compute_task_size(void) const;
       void pack_task(char *&buffer) const;
@@ -479,7 +482,6 @@ namespace RegionRuntime {
 
       virtual void rank_initial_partition_locations( 
                                     size_t elmt_size, 
-                                    const std::vector<size_t> &num_elmts, 
                                     unsigned int num_subregions, 
                                     MappingTagID tag,
                                     std::vector<std::vector<Memory> > &rankings);
@@ -552,7 +554,7 @@ namespace RegionRuntime {
       // task must have already run, otherwise, they can run concurrently and we
       // can copy up automatically
       void close_subtree(Context ctx, TaskDescription *desc, 
-                         std::set<CopyOperation*> &result);
+                         CopyOperation *copy_op);
 
       // Once we've closed a subtree, we don't have to check for dependences on our
       // way to the logical region, we just need to open things up. Open them up
@@ -602,7 +604,7 @@ namespace RegionRuntime {
       void register_region_dependence(DependenceDetector &dep);
 
       void close_subtree(Context ctx, TaskDescription *desc, 
-                          std::set<CopyOperation*> &result);
+                         CopyOperation *copy_op);
 
       void open_subtree(DependenceDetector &dep);
 
@@ -737,7 +739,6 @@ namespace RegionRuntime {
       Partition<T> create_partition(Context ctx,
                                     LogicalHandle parent,
                                     const std::vector<std::set<ptr_t<T> > > &coloring,
-                                    const std::vector<size_t> &element_count,
                                     bool disjoint = true,
                                     MapperID id = 0,
                                     MappingTagID tag = 0);	
@@ -746,7 +747,6 @@ namespace RegionRuntime {
       Partition<T> create_partition(Context ctx,
                           LogicalHandle parent,
                           const std::vector<std::set<std::pair<ptr_t<T>,ptr_t<T> > > > &ranges,
-                          const std::vector<size_t> &element_count,
                           bool disjoint = true,
                           MapperID id = 0,
                           MappingTagID tag = 0);
@@ -1079,7 +1079,6 @@ namespace RegionRuntime {
     Partition<T> HighLevelRuntime::create_partition(Context ctx,
                                             LogicalHandle parent,
                                             const std::vector<std::set<ptr_t<T> > > &coloring,
-                                            const std::vector<size_t> &element_count,
                                             bool disjoint,
                                             MapperID id,
                                             MappingTagID tag)
@@ -1087,7 +1086,6 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(mapper_objects[id] != NULL);
-      assert(coloring.size() == element_count.size());
 #endif
 
       PartitionID partition_id = this->next_partition_id;
@@ -1099,8 +1097,7 @@ namespace RegionRuntime {
       all_tasks[ctx]->create_partition(partition_id, parent, true);
  
       std::vector<std::vector<Memory> > rankings;  
-      mapper_objects[id]->rank_initial_partition_locations(sizeof(T),element_count,
-                                                          coloring.size(), tag, rankings);
+      mapper_objects[id]->rank_initial_partition_locations(sizeof(T),coloring.size(),tag,rankings);
 #ifdef DEBUG_HIGH_LEVEL
       // Check that there are as many vectors as sub regions
       assert(rankings.size() == coloring.size());
@@ -1130,8 +1127,8 @@ namespace RegionRuntime {
 #endif
             continue;
           }
-          LogicalHandle child_region = (LogicalHandle)LowLevel::RegionMetaData<T>::create_region(
-                                        element_count[idx],*mem_it,sub_mask);
+          LogicalHandle child_region = LowLevel::RegionMetaDataUntyped::create_region_untyped(
+                                        parent,sub_mask);
           if (child_region.exists())
           {
             found = true;
@@ -1160,7 +1157,6 @@ namespace RegionRuntime {
     Partition<T> HighLevelRuntime::create_partition(Context ctx,
                         LogicalHandle parent,
                         const std::vector<std::set<std::pair<ptr_t<T>,ptr_t<T> > > > &ranges,
-                        const std::vector<size_t> &element_count,
                         bool disjoint,
                         MapperID id,
                         MappingTagID tag)
@@ -1169,7 +1165,6 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(mapper_objects[id] != NULL);
       assert(ctx < all_tasks.size());
-      assert(ranges.size() == element_count.size());
 #endif
       PartitionID partition_id = this->next_partition_id;
       this->next_partition_id += this->partition_stride;
@@ -1177,8 +1172,7 @@ namespace RegionRuntime {
       all_tasks[ctx]->create_partition(partition_id, parent, false);
 
       std::vector<std::vector<Memory> > rankings; 
-      mapper_objects[id]->rank_initial_partition_locations(sizeof(T),element_count,
-							  ranges.size(), tag, rankings);
+      mapper_objects[id]->rank_initial_partition_locations(sizeof(T),ranges.size(), tag, rankings);
 #ifdef DEBUG_HIGH_LEVEL
       // Check that there are as many vectors as sub regions
       assert(rankings.size() == ranges.size());
@@ -1207,8 +1201,8 @@ namespace RegionRuntime {
 #endif
             continue;
           }
-          LogicalHandle child_region = (LogicalHandle)LowLevel::RegionMetaData<T>::create_region(
-                                                            element_count[idx],*mem_it,sub_mask);
+          LogicalHandle child_region = LowLevel::RegionMetaDataUntyped::create_region_untyped(
+                                                            parent,sub_mask);
           if (child_region.exists())
           {
             found = true;
