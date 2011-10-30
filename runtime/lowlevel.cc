@@ -2873,6 +2873,11 @@ namespace RegionRuntime {
       return r;
     }
 
+    /*static*/ RegionMetaDataUntyped RegionMetaDataUntyped::create_region_untyped(RegionMetaDataUntyped parent, const ElementMask &mask)
+    {
+      assert(0);
+    }
+
     RegionAllocatorUntyped RegionMetaDataUntyped::create_allocator_untyped(Memory memory) const
     {
       ID id(memory);
@@ -2912,6 +2917,11 @@ namespace RegionRuntime {
     void RegionMetaDataUntyped::destroy_instance_untyped(RegionInstanceUntyped instance) const
     {
       instance.impl()->memory.impl()->destroy_instance(instance, true);
+    }
+
+    const ElementMask &RegionMetaDataUntyped::get_valid_mask(void)
+    {
+      assert(0);
     }
 
     ///////////////////////////////////////////////////
