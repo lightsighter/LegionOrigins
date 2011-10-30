@@ -123,8 +123,9 @@ namespace RegionRuntime {
       // Try to get an instance in the memory, if not, return NULL
       // Make will try to create the instance if it doesn't already exist
       // If it has to make a new instance, the call to get instance will mark
-      // new_inst as true
-      InstanceInfo* get_instance(Memory m);
+      // new_inst as true.  Use the boolean to detect whether the region
+      // had to be created
+      InstanceInfo* get_instance(Memory m, bool &created);
       // Return the instance back to the abstract instance, return true
       // if the region can be deleted 
       void free_instance(InstanceInfo *info);
