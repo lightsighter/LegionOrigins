@@ -1495,6 +1495,8 @@ namespace RegionRuntime {
     // RegionMetaDataUntyped 
     ////////////////////////////////////////////////////////
 
+    /*static*/ const RegionMetaDataUntyped RegionMetaDataUntyped::NO_REGION = RegionMetaDataUntyped();
+
     class RegionMetaDataImpl {
     public:
 	RegionMetaDataImpl(int idx, size_t num, size_t elem_size, bool activate = false) {
@@ -1570,6 +1572,11 @@ namespace RegionRuntime {
     {
 	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
 	r->destroy_instance(i);
+    }
+
+    const ElementMask &RegionMetaDataUntyped::get_valid_mask(void)
+    {
+      assert(0);
     }
 
     bool RegionMetaDataImpl::activate(size_t num, size_t size)

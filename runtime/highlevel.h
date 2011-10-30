@@ -86,6 +86,12 @@ namespace RegionRuntime {
 
     struct RegionRequirement {
     public:
+      RegionRequirement(void) {}
+      RegionRequirement(LogicalHandle _handle, AccessMode _mode,
+			AllocateMode _alloc, CoherenceProperty _prop,
+			LogicalHandle _parent)
+        : handle(_handle), mode(_mode), alloc(_alloc), 
+	  prop(_prop), parent(_parent) {}
       LogicalHandle handle;
       AccessMode mode;
       AllocateMode alloc;

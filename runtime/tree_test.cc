@@ -131,8 +131,7 @@ int main(int argc, char **argv)
 
   m.run();
 
-  // We should never actually make it here
-  printf("WRONG SUCCESS!\n");
+  printf("Machine::run() finished!\n");
 
   return 0;
 }

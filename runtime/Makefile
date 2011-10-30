@@ -32,6 +32,8 @@ ring_test.o : lowlevel.h
 
 tree_test.o : highlevel.h
 
+circuit.o : highlevel.h
+
 ring2:	ring_test.o lowlevel.o
 	g++ -o $@ $(CCFLAGS) $^ $(LDFLAGS)
 
@@ -42,6 +44,12 @@ tree:	shared_lowlevel.o highlevel.o tree_test.o
 	g++ -o $@ $(CCFLAGS) $^ -lpthread
 
 tree2:	lowlevel.o highlevel.o tree_test.o
+	g++ -o $@ $(CCFLAGS) $^ $(LDFLAGS)
+
+ckt:	shared_lowlevel.o highlevel.o circuit.o
+	g++ -o $@ $(CCFLAGS) $^ -lpthread
+
+ckt2:	lowlevel.o highlevel.o circuit.o
 	g++ -o $@ $(CCFLAGS) $^ $(LDFLAGS)
 
 clean:
