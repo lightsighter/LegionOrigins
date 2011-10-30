@@ -123,10 +123,10 @@ void top_level_task(const void *args, size_t arglen,
   std::vector<RegionRequirement> load_circuit_regions;
   load_circuit_regions.push_back(RegionRequirement(circuit.r_all_nodes, READ_WRITE,
 						   ALLOCABLE, EXCLUSIVE,
-						   LogicalHandle::NO_REGION));
+						   circuit.r_all_nodes));
   load_circuit_regions.push_back(RegionRequirement(circuit.r_all_wires, READ_WRITE,
 						   ALLOCABLE, EXCLUSIVE,
-						   LogicalHandle::NO_REGION));
+						   circuit.r_all_wires));
   Future f = runtime->execute_task(ctx, TASKID_LOAD_CIRCUIT,
 				   load_circuit_regions, 
 				   &circuit, sizeof(Circuit), true);
@@ -171,16 +171,16 @@ void top_level_task(const void *args, size_t arglen,
       std::vector<RegionRequirement> cnc_regions;
       cnc_regions.push_back(RegionRequirement(pieces[p].rw_pvt,
 					      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-					      LogicalHandle::NO_REGION));
+					      circuit.r_all_wires));
       cnc_regions.push_back(RegionRequirement(pieces[p].rn_pvt,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      LogicalHandle::NO_REGION));
+					      circuit.r_all_nodes));
       cnc_regions.push_back(RegionRequirement(pieces[p].rn_shr,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      LogicalHandle::NO_REGION));
+					      circuit.r_all_nodes));
       cnc_regions.push_back(RegionRequirement(pieces[p].rn_ghost,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      LogicalHandle::NO_REGION));
+					      circuit.r_all_nodes));
       Future f = runtime->execute_task(ctx, TASKID_CALC_NEW_CURRENTS,
 				       cnc_regions, 
 				       &pieces[p], sizeof(CircuitPiece), true);
@@ -195,16 +195,16 @@ void top_level_task(const void *args, size_t arglen,
       std::vector<RegionRequirement> dsc_regions;
       dsc_regions.push_back(RegionRequirement(pieces[p].rw_pvt,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      LogicalHandle::NO_REGION));
+					      circuit.r_all_wires));
       dsc_regions.push_back(RegionRequirement(pieces[p].rn_pvt,
 					      REDUCE, NO_MEMORY, SIMULTANEOUS,
-					      LogicalHandle::NO_REGION));
+					      circuit.r_all_nodes));
       dsc_regions.push_back(RegionRequirement(pieces[p].rn_shr,
 					      REDUCE, NO_MEMORY, SIMULTANEOUS,
-					      LogicalHandle::NO_REGION));
+                                              circuit.r_all_nodes));
       dsc_regions.push_back(RegionRequirement(pieces[p].rn_ghost,
 					      REDUCE, NO_MEMORY, SIMULTANEOUS,
-					      LogicalHandle::NO_REGION));
+                                              circuit.r_all_nodes));
       Future f = runtime->execute_task(ctx, TASKID_DISTRIBUTE_CHARGE,
 				       dsc_regions,
 				       &pieces[p], sizeof(CircuitPiece), true);
@@ -216,10 +216,10 @@ void top_level_task(const void *args, size_t arglen,
       std::vector<RegionRequirement> upv_regions;
       upv_regions.push_back(RegionRequirement(pieces[p].rn_pvt,
 					      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-					      LogicalHandle::NO_REGION));
+                                              circuit.r_all_nodes));
       upv_regions.push_back(RegionRequirement(pieces[p].rn_shr,
 					      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-					      LogicalHandle::NO_REGION));
+                                              circuit.r_all_nodes));
       Future f = runtime->execute_task(ctx, TASKID_UPDATE_VOLTAGES,
 				       upv_regions,
 				       &pieces[p], sizeof(CircuitPiece), true);
