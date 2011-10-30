@@ -117,14 +117,12 @@ namespace RegionRuntime {
       friend class RegionNode;
       friend class PartitionNode;
     protected:
-      AbstractInstance(LogicalHandle h, AbstractInstance *par, InstanceInfo *init = NULL);
+      AbstractInstance(LogicalHandle h, AbstractInstance *par, InstanceInfo *init = NULL, 
+                        bool rem = false);
       ~AbstractInstance();
       size_t compute_instance_size(void) const;
-      void pack_instance(char *&buffer, bool writer) const;
+      void pack_instance(char *&buffer) const;
       static AbstractInstance* unpack_instance(const char *&buffer);
-      size_t compute_update_size(void) const;
-      void pack_update(char *&buffer) const;
-      void unpack_update(const char *&buffer, bool writer);
     protected:
       // Try to get an instance in the memory, if not, return NULL
       // Make will try to create the instance if it doesn't already exist
@@ -139,6 +137,9 @@ namespace RegionRuntime {
       void register_reader(InstanceInfo *info);
       // register a writer of an instance
       void register_writer(InstanceInfo *info, bool exclusive = true);
+      // Add instance, for cases where the instance is created remotely 
+      // and has to be added when the information is sent back
+      void add_instance(InstanceInfo *info);
     protected:
       // Increases the reference count of the abstract instance
       void register_task_user(void);
@@ -165,8 +166,7 @@ namespace RegionRuntime {
       // this abstract instance is alive
       bool first_map;
       AbstractInstance *parent;
-      bool writer; // Track if this abstract instance is checked out
-      unsigned readers; // Track if this abstract instance is checked out for reads
+      bool remote;
     };
 
     class InstanceInfo {
