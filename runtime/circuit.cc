@@ -48,6 +48,15 @@ struct CircuitPiece {
   ptr_t<CircuitWire> first_wire;
 };
 
+#define MAX_PIECES 10
+
+struct Partitions {
+  Partition<CircuitWire> p_wires;
+  Partition<CircuitNode> p_pvt_nodes, p_shr_nodes, p_ghost_nodes;
+  ptr_t<CircuitNode> first_nodes[MAX_PIECES];
+  ptr_t<CircuitWire> first_wires[MAX_PIECES];
+};
+
 /* pseudocode:
 
    struct Node<rn>    { Node<rn>@rn next;    float charge, capacitance; }
@@ -130,8 +139,9 @@ void top_level_task(const void *args, size_t arglen,
   Future f = runtime->execute_task(ctx, TASKID_LOAD_CIRCUIT,
 				   load_circuit_regions, 
 				   &circuit, sizeof(Circuit), true);
-  f.get_void_result();
+  Partitions pp = f.template get_result<Partitions>();
 
+#if 0
   std::vector<std::set<ptr_t<CircuitWire> > > wire_owner_map;
   std::vector<std::set<ptr_t<CircuitNode> > > node_privacy_map,
                                               node_owner_map,
@@ -153,14 +163,17 @@ void top_level_task(const void *args, size_t arglen,
 					   runtime->get_subregion(ctx, p_node_pvs, 1),
 					   node_neighbors_multimap,
 										false);
+#endif
 
   std::vector<CircuitPiece> pieces;
   pieces.resize(num_pieces);
   for(int i = 0; i < num_pieces; i++) {
-    pieces[i].rn_pvt = runtime->get_subregion(ctx, p_pvt_nodes, i);
-    pieces[i].rn_shr = runtime->get_subregion(ctx, p_shr_nodes, i);
-    pieces[i].rn_ghost = runtime->get_subregion(ctx, p_ghost_nodes, i);
-    pieces[i].rw_pvt = runtime->get_subregion(ctx, p_wires, i);
+    pieces[i].rn_pvt = runtime->get_subregion(ctx, pp.p_pvt_nodes, i);
+    pieces[i].rn_shr = runtime->get_subregion(ctx, pp.p_shr_nodes, i);
+    pieces[i].rn_ghost = runtime->get_subregion(ctx, pp.p_ghost_nodes, i);
+    pieces[i].rw_pvt = runtime->get_subregion(ctx, pp.p_wires, i);
+    pieces[i].first_node = pp.first_nodes[i];
+    pieces[i].first_wire = pp.first_wires[i];
   }
 
   // main loop
@@ -229,21 +242,131 @@ void top_level_task(const void *args, size_t arglen,
   printf("all done!\n");
 }
 
+template <class T>
+static T random_element(const std::set<T>& set)
+{
+  int index = int(drand48() * set.size());
+  typename std::set<T>::const_iterator it = set.begin();
+  while(index-- > 0) it++;
+  return *it;
+}
+
 template<AccessorType AT>
-void load_circuit_task(const void *args, size_t arglen, 
-		       const std::vector<PhysicalRegion<AT> > &regions,
-		       Context ctx, HighLevelRuntime *runtime)
+Partitions load_circuit_task(const void *args, size_t arglen, 
+			    const std::vector<PhysicalRegion<AT> > &regions,
+			    Context ctx, HighLevelRuntime *runtime)
 {
   Circuit *c = (Circuit *)args;
   PhysicalRegion<AT> inst_rn = regions[0];
   PhysicalRegion<AT> inst_rw = regions[1];
+  Partitions pp;
 
   printf("In load_circuit()\n");
 
   c->first_node = inst_rn.template alloc<CircuitNode>();
   c->first_wire = inst_rw.template alloc<CircuitWire>();
 
+  std::vector<std::set<ptr_t<CircuitWire> > > wire_owner_map;
+  std::vector<std::set<ptr_t<CircuitNode> > > node_privacy_map,
+                                              node_owner_map,
+                                              node_neighbors_multimap;
+
+  int num_pieces = 2;
+  int nodes_per_piece = 100;
+  int wires_per_piece = 1000;
+  int pct_wire_in_piece = 95;
+
+  wire_owner_map.resize(num_pieces);
+  node_privacy_map.resize(num_pieces);
+  node_owner_map.resize(num_pieces);
+  node_neighbors_multimap.resize(num_pieces);
+
+  // first step - allocate lots of nodes
+  for(int n = 0; n < num_pieces; n++) {
+    ptr_t<CircuitNode> first_node = inst_rn.template alloc<CircuitNode>();
+    pp.first_nodes[n] = first_node;
+
+    ptr_t<CircuitNode> cur_node = first_node;
+    for(int i = 0; i < nodes_per_piece; i++) {
+      CircuitNode node;
+      node.charge = 0;
+      node.voltage = 2*drand48()-1;
+      node.capacitance = drand48() + 1;
+      node.leakage = 0.1 * drand48();
+
+      ptr_t<CircuitNode> next_node = ((i < (nodes_per_piece - 1)) ?
+				        inst_rn.template alloc<CircuitNode>() :
+				        first_node);
+      node.next = next_node;
+      inst_rn.write(cur_node, node);
+
+      node_owner_map[n].insert(cur_node);
+      node_privacy_map[n].insert(cur_node); // default is private
+
+      cur_node = next_node;
+    }
+  }
+
+  // now allocate a lot of wires
+  for(int n = 0; n < num_pieces; n++) {
+    ptr_t<CircuitWire> first_wire = inst_rw.template alloc<CircuitWire>();
+    pp.first_wires[n] = first_wire;
+
+    ptr_t<CircuitWire> cur_wire = first_wire;
+    for(int i = 0; i < wires_per_piece; i++) {
+      CircuitWire wire;
+      wire.current = 0;
+      wire.resistance = drand48() * 10 + 1;
+      
+      // input node is always from same piece
+      wire.in_node = random_element(node_owner_map[n]);
+
+      if((100 * drand48()) < pct_wire_in_piece) {
+	// output node also from same piece
+	wire.out_node = random_element(node_owner_map[n]);
+      } else {
+	// pick a random other piece and a node from there
+	int nn = int(drand48() * (num_pieces - 1));
+	if(nn >= n) nn++;
+
+	// that node becomes shared and we're a neighbor
+	wire.out_node = random_element(node_owner_map[nn]);
+	node_privacy_map[0].erase(wire.out_node);
+	node_privacy_map[1].insert(wire.out_node);
+	node_neighbors_multimap[n].insert(wire.out_node);
+      }
+
+      ptr_t<CircuitWire> next_wire = ((i < (wires_per_piece - 1)) ?
+				        inst_rn.template alloc<CircuitWire>() :
+				        first_wire);
+      wire.next = next_wire;
+      inst_rw.write(cur_wire, wire);
+
+      wire_owner_map[n].insert(cur_wire);
+
+      cur_wire = next_wire;
+    }
+  }
+
+  // wires just have one level of partitioning - by piece
+  pp.p_wires = runtime->create_partition(ctx, c->r_all_wires,
+					 wire_owner_map);
+
+  // nodes split first by private vs shared and then by piece
+  Partition<CircuitNode> p_node_pvs = runtime->create_partition<CircuitNode>(ctx, c->r_all_nodes,
+								node_privacy_map);
+  pp.p_pvt_nodes = runtime->create_partition<CircuitNode>(ctx, runtime->get_subregion(ctx, p_node_pvs, 0),
+								 node_owner_map);
+  pp.p_shr_nodes = runtime->create_partition<CircuitNode>(ctx, runtime->get_subregion(ctx, p_node_pvs, 1),
+								 node_owner_map);
+  pp.p_ghost_nodes = runtime->create_partition<CircuitNode>(ctx, 
+					   runtime->get_subregion(ctx, p_node_pvs, 1),
+					   node_neighbors_multimap,
+										false);
+
   printf("Done with load_circuit()\n");
+
+  return pp;
 }
 
 template<AccessorType AT>
@@ -449,7 +572,7 @@ int main(int argc, char **argv)
   Processor::TaskIDTable task_table;  
   //task_table[TASK_ID_INIT_MAPPERS] = init_mapper_wrapper<create_mappers>;
   task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
-  task_table[TASKID_LOAD_CIRCUIT] = high_level_task_wrapper<load_circuit_task<AccessorGeneric> >;
+  task_table[TASKID_LOAD_CIRCUIT] = high_level_task_wrapper<Partitions, load_circuit_task<AccessorGeneric> >;
   task_table[TASKID_CALC_NEW_CURRENTS] = high_level_task_wrapper<calc_new_currents_task<AccessorGeneric> >;
   task_table[TASKID_DISTRIBUTE_CHARGE] = high_level_task_wrapper<distribute_charge_task<AccessorGeneric> >;
   task_table[TASKID_UPDATE_VOLTAGES] = high_level_task_wrapper<update_voltages_task<AccessorGeneric> >;
