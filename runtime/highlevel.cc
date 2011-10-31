@@ -840,7 +840,7 @@ namespace RegionRuntime {
         // It wasn't in one of the argument regions, check the created regions
         if (!found)
         {
-          if (created_regions.find(child->regions[idx].handle) != created_regions.end())
+          if (created_regions.find(child->regions[idx].parent) != created_regions.end())
           {
             found = true;
             DependenceDetector dep;
@@ -1045,6 +1045,9 @@ namespace RegionRuntime {
         dep.trace.push_front(node->handle.id);
         dep.trace.push_front(node->parent->pid);
 #ifdef DEBUG_HIGH_LEVEL
+        assert(node->parent->children.find(node->handle) != node->parent->children.end());
+        assert(node->parent->parent->partitions.find(node->parent->pid) !=
+                node->parent->parent->partitions.end());
         assert(node->parent != NULL);
 #endif
         node = node->parent->parent;
@@ -1644,6 +1647,8 @@ namespace RegionRuntime {
         // Now upack the region tree
         PartitionNode *part_node = PartitionNode::unpack_region_tree(ptr,parent_region,
                                     local_ctx, region_nodes, partition_nodes, true/*add*/);
+        // Add this partition to its parent region
+        parent_region->add_partition(part_node);
         partition_nodes->insert(std::pair<PartitionID,PartitionNode*>(part_node->pid,part_node));
       }
 
