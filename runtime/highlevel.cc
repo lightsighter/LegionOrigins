@@ -1486,6 +1486,7 @@ namespace RegionRuntime {
             // Initialize with the parents context
 #ifdef DEBUG_HIGH_LEVEL
             assert(region_nodes->find(it->first) != region_nodes->end());
+            assert(parent_ctx == parent_task->local_ctx);
 #endif
             (*region_nodes)[it->first]->initialize_context(parent_ctx);
           }
@@ -1643,9 +1644,9 @@ namespace RegionRuntime {
         LogicalHandle parent_handle = *((const LogicalHandle*)ptr);
         ptr += sizeof(LogicalHandle);
         RegionNode *parent_region = (*region_nodes)[parent_handle];
-        // Now upack the region tree
+        // Now upack the region tree into the parent's context (since that's where it's going)
         PartitionNode *part_node = PartitionNode::unpack_region_tree(ptr,parent_region,
-                                    local_ctx, region_nodes, partition_nodes, true/*add*/);
+                                    parent_ctx, region_nodes, partition_nodes, true/*add*/);
         // Add this partition to its parent region
         parent_region->add_partition(part_node);
         partition_nodes->insert(std::pair<PartitionID,PartitionNode*>(part_node->pid,part_node));
@@ -2226,6 +2227,7 @@ namespace RegionRuntime {
       if (ctx < region_states.size())
       {
         region_states[ctx].open_valid = false;;
+        region_states[ctx].open_partition = 0;
         region_states[ctx].active_tasks.clear();
         region_states[ctx].valid_instance = NULL;
       }
@@ -2234,6 +2236,7 @@ namespace RegionRuntime {
         // Resize for the new context
         region_states.resize(ctx+1);
         region_states[ctx].open_valid = false;
+        region_states[ctx].open_partition = 0;
         region_states[ctx].valid_instance = NULL;
         region_states[ctx].active_tasks.clear();
       }
@@ -3289,7 +3292,7 @@ namespace RegionRuntime {
       for (unsigned idx = 0; idx < desc->regions.size(); idx++)
       {
         // Get the mapping for the region 
-        Memory src_mem;
+        Memory src_mem = Memory::NO_MEMORY;
         std::vector<Memory> locations;
         mapper_objects[desc->map_id]->map_task_region(desc, &(desc->regions[idx]),
                                   desc->abstract_src[idx]->get_memory_locations(),
