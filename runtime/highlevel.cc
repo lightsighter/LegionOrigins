@@ -2230,7 +2230,7 @@ namespace RegionRuntime {
       else
       {
         // Resize for the new context
-        region_states.reserve(ctx+1);
+        region_states.resize(ctx+1);
         region_states[ctx].open_valid = false;
         region_states[ctx].valid_instance = NULL;
         region_states[ctx].active_tasks.clear();
@@ -3611,8 +3611,11 @@ namespace RegionRuntime {
                                                 std::vector<std::vector<Memory> > &rankings)
     //--------------------------------------------------------------------------------------------
     {
-      // Figure out how much data will have to be mapped
-      assert(0);
+      // do something stupid
+      for (unsigned idx = 0; idx < num_subregions; idx++)
+      {
+        rankings.push_back(visible_memories);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
