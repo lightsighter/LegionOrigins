@@ -748,6 +748,14 @@ namespace RegionRuntime {
       template<typename T>
       Partition<T> create_partition(Context ctx,
                                     LogicalHandle parent,
+                                    unsigned int num_subregions,
+                                    bool disjoint = true,
+                                    MapperID id = 0,
+                                    MappingTagID tag = 0);
+
+      template<typename T>
+      Partition<T> create_partition(Context ctx,
+                                    LogicalHandle parent,
                                     const std::vector<std::set<ptr_t<T> > > &coloring,
                                     bool disjoint = true,
                                     MapperID id = 0,
@@ -1083,6 +1091,71 @@ namespace RegionRuntime {
       LogicalHandle smash_region;
       assert(false);
       return smash_region;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    template<typename T>
+    Partition<T> HighLevelRuntime::create_partition(Context ctx,
+                                            LogicalHandle parent,
+                                            unsigned int num_subregions,
+                                            bool disjoint,
+                                            MapperID id,
+                                            MappingTagID tag)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(mapper_objects[id] != NULL);
+#endif
+      PartitionID partition_id = this->next_partition_id;
+      this->next_partition_id += this->partition_stride;
+
+#ifdef DEBUG_HIGH_LEVEL
+      assert(ctx < all_tasks.size());
+#endif
+      all_tasks[ctx]->create_partition(partition_id, parent, true);
+ 
+      std::vector<std::vector<Memory> > rankings;  
+      mapper_objects[id]->rank_initial_partition_locations(sizeof(T),num_subregions,tag,rankings);
+
+      for (unsigned idx = 0; idx < num_subregions; idx++)
+      {
+        // Get the parent mask
+        LowLevel::ElementMask sub_mask(parent.get_valid_mask().get_num_elmts());
+        std::vector<Memory> &locations = rankings[idx];
+        bool found = false;
+        for (std::vector<Memory>::iterator mem_it = locations.begin();
+                mem_it != locations.end(); mem_it++)
+        {
+          if (!(*mem_it).exists())
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            fprintf(stderr,"Warning: Memory %d returned from mapper %d with tag %d for initial partition %d does not exist.\n",(*mem_it).id, id, tag, idx);
+#endif
+            continue;
+          }
+          LogicalHandle child_region = LowLevel::RegionMetaDataUntyped::create_region_untyped(
+                                        parent,sub_mask);
+          if (child_region.exists())
+          {
+            found = true;
+            // Add it to the partition
+            all_tasks[ctx]->create_subregion(child_region,partition_id,idx);
+            break;
+          }
+#ifdef DEBUG_PRINT
+          else
+          {
+            fprintf(stderr,"Info: Unable to map region with tag %d and mapper %d into memory %d for initial sub region %d\n",tag, id, (*mem_it).id,idx);
+          }	
+#endif
+        }
+        if (!found)
+        {
+          fprintf(stderr,"Unable to place initial subregion %d with tag %d by mapper %d\n",idx,tag, id);
+          exit(100*(local_proc.id)+id);
+        }
+      }
+      return Partition<T>(partition_id,parent,disjoint);
     }
 
     //--------------------------------------------------------------------------------------------
