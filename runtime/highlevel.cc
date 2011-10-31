@@ -1557,10 +1557,10 @@ namespace RegionRuntime {
       {
         InstanceInfo *info = new InstanceInfo();
         info->handle = regions[idx].handle;
-        info->location = *((const Memory*)ptr);
-        ptr += sizeof(Memory);
         info->inst = *((const RegionInstance*)ptr);
         ptr += sizeof(RegionInstance);
+        info->location = *((const Memory*)ptr);
+        ptr += sizeof(Memory);
         // Try adding the region if it doesn't already exist
         // If it does, we'll just delete it
         if (!abstract_inst[idx]->add_instance(info))
