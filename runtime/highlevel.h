@@ -101,7 +101,7 @@ namespace RegionRuntime {
     protected: // Things filled in by the runtime
       friend class TaskDescription;
       friend class HighLevelRuntime;
-      bool aliased; // sub regions are marked aliased, not aliased -> root region
+      bool subregion; // sub regions are marked, not subregion -> root region
       Context ctx;
     public:
       // Test whether two region requirements conflict

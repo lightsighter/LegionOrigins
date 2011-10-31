@@ -693,7 +693,7 @@ namespace RegionRuntime {
         for (std::vector<RegionRequirement>::iterator it = regions.begin();
               it != regions.end(); it++)
         {
-          if (!it->aliased)
+          if (!it->subregion)
           {
             delete (*region_nodes)[it->handle]; 
           }
@@ -718,11 +718,11 @@ namespace RegionRuntime {
         }
       }
       // Before we can clear the regions, check to see if there
-      // are any aliased regions which we had to have separate contexts for
+      // are any subregions which we had to have separate contexts for
       for (std::vector<RegionRequirement>::iterator it = regions.begin();
             it != regions.end(); it++)
       {
-        if (it->aliased)
+        if (it->ctx != local_ctx)
         {
           runtime->free_context(it->ctx);
         }
@@ -773,7 +773,7 @@ namespace RegionRuntime {
       for (unsigned idx = 0; idx < child->regions.size(); idx++)
       {
         LogicalHandle handle = child->regions[idx].handle;
-        child->regions[idx].aliased = false;
+        child->regions[idx].subregion = false;
         // by default use the local context, only get new contexts if aliasing
         child->regions[idx].ctx = child->local_ctx;
         // Make sure we don't get any regions which are sub regions of other region arguments 
@@ -783,8 +783,8 @@ namespace RegionRuntime {
           // Check if they are the same region, if not check for disjointness
           if (handle == top)
           {
-            // mark the more recent one as aliased and get a new context
-            child->regions[idx].aliased = true;
+            // mark the more recent one as a subregion and get a new context
+            child->regions[idx].subregion = true;
             child->regions[idx].ctx = runtime->get_available_context(); 
           }
           else if (!disjoint(handle, top))
@@ -792,18 +792,18 @@ namespace RegionRuntime {
             // top is already the parent, update the new region
             if (subregion(top, handle))
             {
-              child->regions[idx].aliased = true;
+              child->regions[idx].subregion = true;
               child->regions[idx].ctx = runtime->get_available_context();
             }
             else if (subregion(handle,top)) // the new region is the parent, put it in place
             {
-              child->regions[other].aliased = true;
+              child->regions[other].subregion = true;
               child->regions[other].ctx = runtime->get_available_context();
             } 
             else // Aliased, but neither is sub-region, egad!
             {
-              // TODO: handle this case
-              assert(false);
+              // Get a new context for the region
+              child->regions[idx].ctx = runtime->get_available_context();
             }
             // Continue traversing as there might be multiple levels of aliasing
           }
@@ -1007,7 +1007,7 @@ namespace RegionRuntime {
       for (unsigned idx = 0; idx < instances.size(); idx++)
       {
         // tell the abstract instances about the reading and the writing
-        // even if they are aliased this is still safe
+        // even if they are subregions this is still safe
         abstract_src[idx]->register_reader(src_instances[idx]);
         // Check the coherence properties to see if this is a read or a write
         if ((regions[idx].mode == READ_ONLY) || (regions[idx].mode == NO_ACCESS))
@@ -1085,11 +1085,11 @@ namespace RegionRuntime {
 
       // Region trees
       // Don't need to get the number of region trees, we'll get this
-      // from the aliased information in the region requirements
+      // from the subregion information in the region requirements
       for (std::vector<RegionRequirement>::const_iterator it = regions.begin();
             it != regions.end(); it++)
       {
-        if (!it->aliased)
+        if (!it->subregion)
         {
           bytes += ((*region_nodes)[it->handle]->compute_region_tree_size());
         }
@@ -1147,7 +1147,7 @@ namespace RegionRuntime {
       for (std::vector<RegionRequirement>::const_iterator it = regions.begin();
             it != regions.end(); it++)
       {
-        if (!it->aliased)
+        if (!it->subregion)
         {
           (*region_nodes)[it->handle]->pack_region_tree(buffer);
         }
@@ -1167,9 +1167,9 @@ namespace RegionRuntime {
       {
         regions[idx] = *((const RegionRequirement*)buffer);
         buffer += sizeof(RegionRequirement); 
-        // Check to see if the region is aliased, if it is
+        // Check to see if the region is a subregion, if it is
         // get a new context for it to use
-        if (regions[idx].aliased)
+        if (regions[idx].subregion)
         {
           regions[idx].ctx = runtime->get_available_context();
         }
@@ -1219,11 +1219,11 @@ namespace RegionRuntime {
       // Create new maps for region and partition nodes
       region_nodes = new std::map<LogicalHandle,RegionNode*>();
       partition_nodes = new std::map<PartitionID,PartitionNode*>();
-      // Unpack as many region trees as there are unaliased regions
+      // Unpack as many region trees as there are top level regions
       for (std::vector<RegionRequirement>::iterator it = regions.begin();
             it != regions.end(); it++)
       {
-        if (!it->aliased)
+        if (!it->subregion)
         {
           RegionNode *top = RegionNode::unpack_region_tree(buffer,NULL,local_ctx,
                                                     region_nodes, partition_nodes, false/*add*/);
@@ -1405,7 +1405,7 @@ namespace RegionRuntime {
           for (std::vector<RegionRequirement>::iterator it = regions.begin();
                 it != regions.end(); it++)
           {
-            if (!it->aliased)
+            if (!it->subregion)
             {
               buffer_size += ((*region_nodes)[it->handle]->
                         compute_region_tree_update_size(num_tree_updates)); 
@@ -1448,7 +1448,7 @@ namespace RegionRuntime {
         for (std::vector<RegionRequirement>::iterator it = regions.begin();
               it != regions.end(); it++)
         {
-          if (!it->aliased)
+          if (!it->subregion)
           {
             (*region_nodes)[it->handle]->pack_region_tree_update(ptr);
           }
