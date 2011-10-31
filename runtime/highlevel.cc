@@ -2308,6 +2308,9 @@ namespace RegionRuntime {
     size_t RegionNode::compute_region_tree_update_size(unsigned &num_updates) const
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!added);
+#endif
       // No need to check for added here, all added regions will either be subregions
       // of a partition or handled by created regions
       // Check all the partitions
@@ -2324,6 +2327,9 @@ namespace RegionRuntime {
     void RegionNode::pack_region_tree_update(char *&buffer) const
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!added);
+#endif
       // No need to check for added here, all added regions will either be subregions of
       // an added partition or handled by created regions
       for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
@@ -2543,6 +2549,7 @@ namespace RegionRuntime {
       *((bool*)buffer) = disjoint;
       buffer += sizeof(bool);
       *((size_t*)buffer) = children.size();
+      buffer += sizeof(size_t);
 #ifdef DEBUG_HIGH_LEVEL
       assert(color_map.size() == children.size());
 #endif
