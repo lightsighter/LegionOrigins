@@ -51,14 +51,14 @@ namespace RegionRuntime {
 
 	int index;
 
-	inline void operator()(LogLevel level, const char *fmt, ...) __attribute__((format (printf, 3, 4)))
+	inline void operator()(int level, const char *fmt, ...) __attribute__((format (printf, 3, 4)))
 	{
 	  if(level >= COMPILE_TIME_MIN_LEVEL) {  // static opt-out
 	    if(level >= log_level) {             // dynamic opt-out
 	      if(log_cats_enabled[index]) {      // category filter
 		va_list args;
 		va_start(args, fmt);
-		Logger::logvprintf(level, index, fmt, args);
+		Logger::logvprintf((LogLevel)level, index, fmt, args);
 		va_end(args);
 	      }
 	    }
