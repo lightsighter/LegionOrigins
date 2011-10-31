@@ -91,6 +91,60 @@ static Processor get_random_proc(void)
   return *it;
 }
 
+static void show_machine_structure(void)
+{
+  Machine *m = Machine::get_machine();
+  const std::set<Processor> &all_procs = m->get_all_processors();
+  for(std::set<Processor>::const_iterator it = all_procs.begin();
+      it != all_procs.end();
+      it++) {
+    printf("Proc %x:\n", (*it).id);
+    printf("Old mem:");
+    const std::set<Memory> &vm = m->get_visible_memories(*it);
+    for(std::set<Memory>::const_iterator it2 = vm.begin(); it2 != vm.end(); it2++)
+      printf(" %x", (*it2).id);
+    printf("\n");
+
+    std::vector<Machine::ProcessorMemoryAffinity> pma;
+    int count = m->get_proc_mem_affinity(pma, *it);
+    printf("New mem: (%d)", count);
+    for(int i = 0; i < count; i++)
+      printf(" %x/%x/%d/%d", pma[i].p.id, pma[i].m.id, pma[i].bandwidth, pma[i].latency);
+    printf("\n");
+  }
+
+  const std::set<Memory> &all_mems = m->get_all_memories();
+  for(std::set<Memory>::const_iterator it = all_mems.begin();
+      it != all_mems.end();
+      it++) {
+    printf("Mem %x:\n", (*it).id);
+    printf("Old mem:");
+    const std::set<Memory> &vm = m->get_visible_memories(*it);
+    for(std::set<Memory>::const_iterator it2 = vm.begin(); it2 != vm.end(); it2++)
+      printf(" %x", (*it2).id);
+    printf("\n");
+    printf("Old proc:");
+    const std::set<Processor> &vp = m->get_shared_processors(*it);
+    for(std::set<Processor>::const_iterator it2 = vp.begin(); it2 != vp.end(); it2++)
+      printf(" %x", (*it2).id);
+    printf("\n");
+
+    std::vector<Machine::MemoryMemoryAffinity> mma;
+    int count = m->get_mem_mem_affinity(mma, *it);
+    printf("New mem: (%d)", count);
+    for(int i = 0; i < count; i++)
+      printf(" %x/%x/%d/%d", mma[i].m1.id, mma[i].m2.id, mma[i].bandwidth, mma[i].latency);
+    printf("\n");
+
+    std::vector<Machine::ProcessorMemoryAffinity> pma;
+    int count2 = m->get_proc_mem_affinity(pma, Processor::NO_PROC, *it);
+    printf("New proc: (%d)", count2);
+    for(int i = 0; i < count2; i++)
+      printf(" %x/%x/%d/%d", pma[i].p.id, pma[i].m.id, pma[i].bandwidth, pma[i].latency);
+    printf("\n");
+  }
+}
+
 template <AccessorType AT>
 void potato_launcher(const void * args, size_t arglen, Processor p)
 {
@@ -98,6 +152,7 @@ void potato_launcher(const void * args, size_t arglen, Processor p)
   //Machine *machine = Machine::get_machine();	
   Processor me = p;
   printf("processor ID = %x\n", p.id);
+  show_machine_structure();
   //unsigned total_procs = machine->get_all_processors().size();
   Processor neighbor = (config.random_neighbors ? 
 			  get_random_proc() :

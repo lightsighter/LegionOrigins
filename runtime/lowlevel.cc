@@ -2023,6 +2023,8 @@ namespace RegionRuntime {
     // global because I'm being lazy...
     static Processor::TaskIDTable task_id_table;
 
+    /*static*/ const Processor Processor::NO_PROC = { 0 };
+
     Processor::Impl *Processor::impl(void) const
     {
       return Runtime::runtime->get_processor_impl(*this);
@@ -3621,30 +3623,107 @@ namespace RegionRuntime {
     static gasnet_hsl_t announcement_mutex = GASNET_HSL_INITIALIZER;
     static int announcements_received = 0;
 
-    void node_announce_handler(NodeAnnounceData data)
+    enum {
+      NODE_ANNOUNCE_DONE = 0,
+      NODE_ANNOUNCE_PROC, // PROC id kind
+      NODE_ANNOUNCE_MEM,  // MEM id size
+      NODE_ANNOUNCE_PMA,  // PMA proc_id mem_id bw latency
+      NODE_ANNOUNCE_MMA,  // MMA mem1_id mem2_id bw latency
+    };
+
+    void Machine::parse_node_announce_data(const void *args, size_t arglen,
+					   bool remote)
     {
-      printf("%d: received announce from %d (%d procs, %d memories)\n", gasnet_mynode(), data.node_id, data.num_procs, data.num_memories);
-      Node *n = &(Runtime::get_runtime()->nodes[data.node_id]);
-      n->processors.resize(data.num_procs);
+      const unsigned *cur = (const unsigned *)args;
+      const unsigned *limit = (const unsigned *)(((const char *)args)+arglen);
+
+      while(1) {
+	assert(cur < limit);
+	if(*cur == NODE_ANNOUNCE_DONE) break;
+	switch(*cur++) {
+	case NODE_ANNOUNCE_PROC:
+	  {
+	    Processor p = ID(*cur++).convert<Processor>();
+	    Processor::Kind kind = (Processor::Kind)(*cur++);
+	    if(remote) {
+	      RemoteProcessor *proc = new RemoteProcessor(p, kind);
+	      Runtime::runtime->nodes[ID(p).node()].processors[ID(p).index()] = proc;
+	    }
+	  }
+	  break;
+
+	case NODE_ANNOUNCE_MEM:
+	  {
+	    Memory m = ID(*cur++).convert<Memory>();
+	    unsigned size = *cur++;
+	    if(remote) {
+	      RemoteMemory *mem = new RemoteMemory(m, size);
+	      Runtime::runtime->nodes[ID(m).node()].memories[ID(m).index()] = mem;
+	    }
+	  }
+	  break;
+
+	case NODE_ANNOUNCE_PMA:
+	  {
+	    ProcessorMemoryAffinity pma;
+	    pma.p = ID(*cur++).convert<Processor>();
+	    pma.m = ID(*cur++).convert<Memory>();
+	    pma.bandwidth = *cur++;
+	    pma.latency = *cur++;
+
+	    proc_mem_affinities.push_back(pma);
+	  }
+	  break;
+
+	case NODE_ANNOUNCE_MMA:
+	  {
+	    MemoryMemoryAffinity mma;
+	    mma.m1 = ID(*cur++).convert<Memory>();
+	    mma.m2 = ID(*cur++).convert<Memory>();
+	    mma.bandwidth = *cur++;
+	    mma.latency = *cur++;
+
+	    mem_mem_affinities.push_back(mma);
+	  }
+	  break;
+
+	default:
+	  assert(0);
+	}
+      }
+    }
+
+    void node_announce_handler(NodeAnnounceData annc_data, const void *data, size_t datalen)
+    {
+      printf("%d: received announce from %d (%d procs, %d memories)\n", gasnet_mynode(), annc_data.node_id, annc_data.num_procs, annc_data.num_memories);
+      Node *n = &(Runtime::get_runtime()->nodes[annc_data.node_id]);
+      n->processors.resize(annc_data.num_procs);
+      n->memories.resize(annc_data.num_memories);
+
+      // do the parsing of this data inside a mutex because it touches common
+      //  data structures
+      gasnet_hsl_lock(&announcement_mutex);
+
+      Machine::get_machine()->parse_node_announce_data(data, datalen, true);
+#if 0
       for(unsigned i = 0; i < data.num_procs; i++) {
 	Processor p = ID(ID::ID_PROCESSOR, data.node_id, i).convert<Processor>();
 	n->processors[i] = new RemoteProcessor(p, Processor::LOC_PROC);
       }
 
-      n->memories.resize(data.num_memories);
       for(unsigned i = 0; i < data.num_memories; i++) {
 	Memory m = ID(ID::ID_MEMORY, data.node_id, i).convert<Memory>();
 	n->memories[i] = new RemoteMemory(m, 16 << 20);
       }
+#endif
 
-      gasnet_hsl_lock(&announcement_mutex);
       announcements_received++;
       gasnet_hsl_unlock(&announcement_mutex);
     }
 
-    typedef ActiveMessageShortNoReply<NODE_ANNOUNCE_MSGID,
-				      NodeAnnounceData,
-				      node_announce_handler> NodeAnnounceMessage;
+    typedef ActiveMessageMediumNoReply<NODE_ANNOUNCE_MSGID,
+				       NodeAnnounceData,
+				       node_announce_handler> NodeAnnounceMessage;
 
     static void *gasnet_poll_thread_loop(void *data)
     {
@@ -3664,6 +3743,8 @@ namespace RegionRuntime {
 		     bool cps_style /* = false */,
 		     Processor::TaskFuncID init_id /* = 0 */)
     {
+      the_machine = this;
+
       // see if we've been spawned by gasnet or been run directly
       bool in_gasnet_spawn = false;
       for(int i = 0; i < *argc; i++)
@@ -3698,6 +3779,27 @@ namespace RegionRuntime {
       //GASNetNode::my_node = new GASNetNode(argc, argv, this);
       CHECK_GASNET( gasnet_init(argc, argv) );
 
+      // low-level runtime parameters
+      unsigned gasnet_mem_size_in_mb = 32;
+      unsigned cpu_mem_size_in_mb = 128;
+      unsigned num_local_cpus = 1;
+      unsigned num_local_gpus = 0;
+      unsigned cpu_worker_threads = 1;
+
+      for(int i = 1; i < *argc; i++) {
+#define INT_ARG(argname, varname) do { \
+	  if(!strcmp((*argv)[i], argname)) {		\
+	    varname = atoi((*argv)[++i]);		\
+	    continue;					\
+	  } } while(0)
+
+	INT_ARG("-ll:gsize", gasnet_mem_size_in_mb);
+	INT_ARG("-ll:csize", cpu_mem_size_in_mb);
+	INT_ARG("-ll:cpu", num_local_cpus);
+	INT_ARG("-ll:gpu", num_local_gpus);
+	INT_ARG("-ll:workers", cpu_worker_threads);
+      }
+
       Logger::init(*argc, (const char **)*argv);
 
       gasnet_handlerentry_t handlers[128];
@@ -3715,8 +3817,7 @@ namespace RegionRuntime {
       //hcount += TestMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage2::add_handler_entries(&handlers[hcount]);
 
-      unsigned shared_mem_size = 32;
-      CHECK_GASNET( gasnet_attach(handlers, hcount, (shared_mem_size << 20), 0) );
+      CHECK_GASNET( gasnet_attach(handlers, hcount, (gasnet_mem_size_in_mb << 20), 0) );
 
       pthread_t poll_thread;
       CHECK_PTHREAD( pthread_create(&poll_thread, 0, gasnet_poll_thread_loop, 0) );
@@ -3732,34 +3833,76 @@ namespace RegionRuntime {
       Node *n = &r->nodes[gasnet_mynode()];
 
       NodeAnnounceData announce_data;
-
-      unsigned num_local_procs = 1;
+      const unsigned ADATA_SIZE = 100;
+      unsigned adata[ADATA_SIZE];
+      unsigned apos = 0;
 
       announce_data.node_id = gasnet_mynode();
-      announce_data.num_procs = num_local_procs;
-      announce_data.num_memories = 1;
+      announce_data.num_procs = num_local_cpus + num_local_gpus;
+      announce_data.num_memories = (num_local_gpus ? 3 : 1);
 
       // create local processors
-      n->processors.resize(num_local_procs);
       std::set<LocalProcessor *> local_cpu_procs;
 
-      for(unsigned i = 0; i < num_local_procs; i++) {
-	LocalProcessor *lp = new LocalProcessor(ID(ID::ID_PROCESSOR, gasnet_mynode(), i).convert<Processor>(), i, 1, 1);
-	n->processors[i] = lp;
+      for(unsigned i = 0; i < num_local_cpus; i++) {
+	LocalProcessor *lp = new LocalProcessor(ID(ID::ID_PROCESSOR, 
+						   gasnet_mynode(), 
+						   n->processors.size()).convert<Processor>(), 
+						i, 
+						cpu_worker_threads, 
+						1); // HLRT not thread-safe yet
+	n->processors.push_back(lp);
 	local_cpu_procs.insert(lp);
+	adata[apos++] = NODE_ANNOUNCE_PROC;
+	adata[apos++] = lp->me.id;
+	adata[apos++] = Processor::LOC_PROC;
 	//local_procs[i]->start();
 	//machine->add_processor(new LocalProcessor(local_procs[i]));
       }
 
       // create local memory
-      Memory m = ID(ID::ID_MEMORY, gasnet_mynode(), 0).convert<Memory>();
-      n->memories.resize(1);
-      n->memories[0] = new LocalCPUMemory(m, 16 << 20);
+      LocalCPUMemory *cpumem = new LocalCPUMemory(ID(ID::ID_MEMORY, 
+						     gasnet_mynode(),
+						     n->memories.size()).convert<Memory>(),
+						  cpu_mem_size_in_mb << 20);
+      n->memories.push_back(cpumem);
+      adata[apos++] = NODE_ANNOUNCE_MEM;
+      adata[apos++] = cpumem->me.id;
+      adata[apos++] = cpumem->size;
+
+      // list affinities between local CPUs / memories
+      for(std::set<LocalProcessor *>::iterator it = local_cpu_procs.begin();
+	  it != local_cpu_procs.end();
+	  it++) {
+	adata[apos++] = NODE_ANNOUNCE_PMA;
+	adata[apos++] = (*it)->me.id;
+	adata[apos++] = cpumem->me.id;
+	adata[apos++] = 100;  // "large" bandwidth
+	adata[apos++] = 1;    // "small" latency
+
+	adata[apos++] = NODE_ANNOUNCE_PMA;
+	adata[apos++] = (*it)->me.id;
+	adata[apos++] = r->global_memory->me.id;
+	adata[apos++] = 10;  // "lower" bandwidth
+	adata[apos++] = 50;    // "higher" latency
+      }
+
+      adata[apos++] = NODE_ANNOUNCE_MMA;
+      adata[apos++] = cpumem->me.id;
+      adata[apos++] = r->global_memory->me.id;
+      adata[apos++] = 30;  // "lower" bandwidth
+      adata[apos++] = 25;    // "higher" latency
+
+      adata[apos++] = NODE_ANNOUNCE_DONE;
+      assert(apos < ADATA_SIZE);
+
+      // parse our own data (but don't create remote proc/mem objects)
+      parse_node_announce_data(adata, apos*sizeof(unsigned), false);
 
       // now announce ourselves to everyone else
       for(int i = 0; i < gasnet_nodes(); i++)
 	if(i != gasnet_mynode())
-	  NodeAnnounceMessage::request(i, announce_data);
+	  NodeAnnounceMessage::request(i, announce_data, adata, apos*sizeof(unsigned));
 
       // wait until we hear from everyone else?
       while(announcements_received < (gasnet_nodes() - 1))
@@ -3767,6 +3910,24 @@ namespace RegionRuntime {
 
       printf("node %d has received all of its announcements\n", gasnet_mynode());
 
+      // build old proc/mem lists from affinity data
+      for(std::vector<ProcessorMemoryAffinity>::const_iterator it = proc_mem_affinities.begin();
+	  it != proc_mem_affinities.end();
+	  it++) {
+	procs.insert((*it).p);
+	memories.insert((*it).m);
+	visible_memories_from_procs[(*it).p].insert((*it).m);
+	visible_procs_from_memory[(*it).m].insert((*it).p);
+      }
+      for(std::vector<MemoryMemoryAffinity>::const_iterator it = mem_mem_affinities.begin();
+	  it != mem_mem_affinities.end();
+	  it++) {
+	memories.insert((*it).m1);
+	memories.insert((*it).m2);
+	visible_memories_from_memory[(*it).m1].insert((*it).m2);
+	visible_memories_from_memory[(*it).m2].insert((*it).m1);
+      }
+#if 0
       for(int i = 0; i < gasnet_nodes(); i++) {
 	unsigned np = Runtime::runtime->nodes[i].processors.size();
 	unsigned nm = Runtime::runtime->nodes[i].memories.size();
@@ -3790,8 +3951,7 @@ namespace RegionRuntime {
 	  }
 	}
       }	
-
-      the_machine = this;
+#endif
 
       // now that we've got the machine description all set up, we can start
       //  the worker threads for local processors, which'll probably ask the
@@ -3816,6 +3976,45 @@ namespace RegionRuntime {
     {
       return m.impl()->size;
     }
+
+    int Machine::get_proc_mem_affinity(std::vector<Machine::ProcessorMemoryAffinity>& result,
+				       Processor restrict_proc /*= Processor::NO_PROC*/,
+				       Memory restrict_memory /*= Memory::NO_MEMORY*/)
+    {
+      int count = 0;
+
+      for(std::vector<Machine::ProcessorMemoryAffinity>::const_iterator it = proc_mem_affinities.begin();
+	  it != proc_mem_affinities.end();
+	  it++) {
+	if(restrict_proc.exists() && ((*it).p != restrict_proc)) continue;
+	if(restrict_memory.exists() && ((*it).m != restrict_memory)) continue;
+	result.push_back(*it);
+	count++;
+      }
+
+      return count;
+    }
+
+    int Machine::get_mem_mem_affinity(std::vector<Machine::MemoryMemoryAffinity>& result,
+				      Memory restrict_mem1 /*= Memory::NO_MEMORY*/,
+				      Memory restrict_mem2 /*= Memory::NO_MEMORY*/)
+    {
+      int count = 0;
+
+      for(std::vector<Machine::MemoryMemoryAffinity>::const_iterator it = mem_mem_affinities.begin();
+	  it != mem_mem_affinities.end();
+	  it++) {
+	if(restrict_mem1.exists() && 
+	   ((*it).m1 != restrict_mem1) && ((*it).m2 != restrict_mem1)) continue;
+	if(restrict_mem2.exists() && 
+	   ((*it).m1 != restrict_mem2) && ((*it).m2 != restrict_mem2)) continue;
+	result.push_back(*it);
+	count++;
+      }
+
+      return count;
+    }
+
 
     void Machine::run(Processor::TaskFuncID task_id /*= 0*/,
 		      RunStyle style /*= ONE_TASK_ONLY*/,
