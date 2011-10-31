@@ -365,6 +365,7 @@ namespace RegionRuntime {
         {
           valid_instances[info->location] = info;
           info->references = 1;
+          all_instances.push_back(info);
           return true;
         }
       }
@@ -684,24 +685,10 @@ namespace RegionRuntime {
       arglen = 0;
       result_size = 0;
       parent_task = NULL;
-      // Regardless of whether we are remote or not, we can always delete the
-      // instances that we own
-      for (std::vector<InstanceInfo*>::iterator it = instances.begin();
-            it != instances.end(); it++)
-      {
-        delete *it;
-      }
-      instances.clear();
       // If this is a remote there were some things that were cloned that we
       // now need to clean up
       if (remote)
       {
-        for (std::vector<InstanceInfo*>::iterator it = src_instances.begin();
-              it != src_instances.end(); it++)
-        {
-          delete *it;
-        }
-
         // We can also delete the region trees
         for (std::vector<RegionRequirement>::iterator it = regions.begin();
               it != regions.end(); it++)
@@ -759,6 +746,7 @@ namespace RegionRuntime {
       child_tasks.clear();
       pre_copy_trees.clear();
       src_instances.clear();
+      instances.clear();
       created_regions.clear();
       deleted_regions.clear();
       region_nodes = NULL;
