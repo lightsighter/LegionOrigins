@@ -2204,7 +2204,10 @@ namespace RegionRuntime {
 	if (m.id < memories.size())
 		return memories[m.id];
 	else
+        {
+                assert(false);
 		return NULL;
+        }
     }
 
     ProcessorImpl* Runtime::get_processor_impl(Processor p)
