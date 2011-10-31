@@ -283,7 +283,7 @@ namespace RegionRuntime {
       std::vector<std::pair<AbstractInstance*,InstanceInfo*> > copy_instances;
     private:
       // New top level regions
-      std::map<LogicalHandle,InstanceInfo*> created_regions;       
+      std::map<LogicalHandle,AbstractInstance*> created_regions;       
       std::set<LogicalHandle> deleted_regions; // The regions deleted in this task and children
       // Keep track of all the abstract instances so we can free them after the task is finished
       std::vector<AbstractInstance*> all_instances;
@@ -313,6 +313,7 @@ namespace RegionRuntime {
       void remote_finish(const void * args, size_t arglen);
       // Operations for updating region and partition information
       void create_region(LogicalHandle handle, RegionInstance inst, Memory m);
+      void create_region(LogicalHandle handle, AbstractInstance *new_inst);
       void remove_region(LogicalHandle handle, bool recursive=false);
       void create_subregion(LogicalHandle handle,PartitionID parent,Color c);
       void remove_subregion(LogicalHandle handle,PartitionID parent,bool recursive=false);
@@ -1023,7 +1024,10 @@ namespace RegionRuntime {
       std::vector<Memory> locations;
       mapper_objects[id]->rank_initial_region_locations(sizeof(T),num_elmts,tag,locations);
       bool found = false;
-      LogicalHandle region;
+      LogicalHandle region = (LogicalHandle)LowLevel::RegionMetaDataUntyped::create_region_untyped(
+                                                                        num_elmts,sizeof(T));
+      RegionInstance inst;
+      inst.id = 0;
       Memory location;
       // Go through the memories in order and try and create them
       for (std::vector<Memory>::iterator mem_it = locations.begin();
@@ -1036,9 +1040,8 @@ namespace RegionRuntime {
 #endif
           continue;
         }
-        region = (LogicalHandle)LowLevel::RegionMetaDataUntyped::create_region_untyped(
-                                                                    num_elmts,sizeof(T));	
-        if (region.exists())
+        inst = region.create_instance_untyped(*mem_it);
+        if (inst.exists())
         {
           found = true;
           location =  *mem_it;
@@ -1061,7 +1064,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(ctx < all_tasks.size());
 #endif
-      all_tasks[ctx]->create_region(region,region.create_instance_untyped(location),location);
+      all_tasks[ctx]->create_region(region,inst,location);
 
       // Return the handle
       return region;

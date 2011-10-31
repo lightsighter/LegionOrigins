@@ -711,7 +711,7 @@ namespace RegionRuntime {
         }
         // Clear out the created regions since they were sent back, otherwise
         // the parent became the owner of them
-        for (std::map<LogicalHandle,InstanceInfo*>::iterator it = created_regions.begin();
+        for (std::map<LogicalHandle,AbstractInstance*>::iterator it = created_regions.begin();
               it != created_regions.end(); it++)
         {
           delete it->second;
@@ -1400,8 +1400,12 @@ namespace RegionRuntime {
           buffer_size += sizeof(size_t); // result size
           buffer_size += result_size; // size of the actual result
           buffer_size += sizeof(size_t); // number of created regions
-          buffer_size += (created_regions.size() * (sizeof(LogicalHandle) +
-                            sizeof(RegionInstance) + sizeof(Memory)));
+          for (std::map<LogicalHandle,AbstractInstance*>::iterator it = 
+                created_regions.begin(); it != created_regions.end(); it++)
+          {
+            buffer_size += sizeof(LogicalHandle);
+            buffer_size += (it->second->compute_instance_size());
+          }
           buffer_size += sizeof(size_t); // number of deleted regions
           buffer_size += (deleted_regions.size() * sizeof(LogicalHandle));
           buffer_size += sizeof(unsigned); // number of udpates
@@ -1427,15 +1431,12 @@ namespace RegionRuntime {
         // First encode the created regions and the deleted regions
         *((size_t*)ptr) = created_regions.size();
         ptr += sizeof(size_t);
-        for (std::map<LogicalHandle,InstanceInfo*>::iterator it = created_regions.begin();
+        for (std::map<LogicalHandle,AbstractInstance*>::iterator it = created_regions.begin();
               it != created_regions.end(); it++)
         {
           *((LogicalHandle*)ptr) = it->first;
           ptr += sizeof(LogicalHandle);
-          *((RegionInstance*)ptr) = it->second->inst;
-          ptr += sizeof(RegionInstance);
-          *((Memory*)ptr) = it->second->location;
-          ptr += sizeof(Memory);
+          it->second->pack_instance(ptr);
         }
         *((size_t*)ptr) = deleted_regions.size();
         ptr += sizeof(size_t);
@@ -1468,27 +1469,27 @@ namespace RegionRuntime {
         // If the parent task is not null, update its region tree
         if (parent_task != NULL)
         {
-          // Propagate information about created regions and delete regions
+          // Propagate information about created regions and deleted regions
           // The parent task will find other changes
 
           // All created regions become
           // new root regions for the parent as well as staying in the set
           // of created regions
-          for (std::map<LogicalHandle,InstanceInfo*>::iterator it = created_regions.begin();
+          for (std::map<LogicalHandle,AbstractInstance*>::iterator it = created_regions.begin();
                 it != created_regions.end(); it++)
           {
-            // Have to create a new instance info for the parent
-            InstanceInfo *info = new InstanceInfo();
-            info->handle = it->second->handle;
-            info->inst = it->second->inst;
-            info->location = it->second->location;
-            parent_task->created_regions.insert(
-                std::pair<LogicalHandle,InstanceInfo*>(it->first,info));
-            // Also give the parent ownership of the new info
-            parent_task->instances.push_back(info);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(parent_task->created_regions.find(it->first) == 
+                    parent_task->created_regions.end());
+#endif
+            parent_task->created_regions.insert(*it);
+            // Initialize with the parents context
+#ifdef DEBUG_HIGH_LEVEL
+            assert(region_nodes->find(it->first) != region_nodes->end());
+#endif
+            (*region_nodes)[it->first]->initialize_context(parent_ctx);
           }
-
-          // Add all the deleted regions to the parent task's set of deleted regions
+          // add the list of deleted tasks to the parent's list
           parent_task->deleted_regions.insert(deleted_regions.begin(),deleted_regions.end());
         }
 
@@ -1620,11 +1621,9 @@ namespace RegionRuntime {
       {
         LogicalHandle handle = *((const LogicalHandle*)ptr);
         ptr += sizeof(LogicalHandle);
-        RegionInstance inst = *((const RegionInstance*)ptr);
-        ptr += sizeof(RegionInstance);
-        Memory location= *((const Memory*)ptr);
-        ptr += sizeof(Memory);
-        create_region(handle, inst, location);
+        AbstractInstance *new_inst = AbstractInstance::unpack_instance(ptr);
+        // Tell the parent to create the instance, since this task is done
+        parent_task->create_region(handle, new_inst);
       }
       // Now get information about the deleted regions
       size_t num_deleted_regions = *((const size_t*)ptr);
@@ -1633,7 +1632,7 @@ namespace RegionRuntime {
       {
         LogicalHandle handle = *((const LogicalHandle*)ptr);
         ptr += sizeof(LogicalHandle);
-        remove_region(handle);
+        parent_task->remove_region(handle);
       }
       // Finally perform the updates to the region tree
       unsigned num_updates = *((const unsigned*)ptr);
@@ -1669,21 +1668,26 @@ namespace RegionRuntime {
     void TaskDescription::create_region(LogicalHandle handle, RegionInstance inst, Memory m)
     //--------------------------------------------------------------------------------------------
     {
+      // Create the new abstract instance for this region and its initial instance
+      InstanceInfo *info = new InstanceInfo();
+      info->handle = handle;
+      info->location = m;
+      info->inst = inst;
+      AbstractInstance *new_inst = new AbstractInstance(handle,NULL,info);
+      create_region(handle,new_inst);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskDescription::create_region(LogicalHandle handle, AbstractInstance *new_inst)
+    //--------------------------------------------------------------------------------------------
+    {
       RegionNode *node = new RegionNode(handle, 0, NULL, true, local_ctx);
       (*region_nodes)[handle] = node;
       // Initialize the node with the context for this task
       node->initialize_context(local_ctx);
-      // Add this to the list of created regions and the list of root regions
-      InstanceInfo *info = new InstanceInfo();
-      info->handle = handle;
-      info->inst = inst;
-      info->location = m;
-      created_regions[handle] = info;
+      created_regions[handle] = new_inst;
       // Also create an abstract instance for the region node here
-      node->region_states[local_ctx].valid_instance = new AbstractInstance(handle,
-                                                                NULL/*parent*/, info);
-      // Append the info onto 'instances' so that it gets deleted when the task finishes
-      instances.push_back(info);
+      node->region_states[local_ctx].valid_instance = new_inst; 
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1715,9 +1719,14 @@ namespace RegionRuntime {
         }
         // Check to see if this is in the created regions, if so erase it,
         {
-          std::map<LogicalHandle,InstanceInfo*>::iterator finder = created_regions.find(handle);
+          std::map<LogicalHandle,AbstractInstance*>::iterator finder = created_regions.find(handle);
           if (finder != created_regions.end())
+          {
+            // Add the abstract instance to the list of instances that we own so it
+            // will be deleted when this task completes
+            all_instances.push_back(finder->second);
             created_regions.erase(finder);
+          }
         }
         delete find_it->second; 
       }
@@ -2504,7 +2513,8 @@ namespace RegionRuntime {
       }
       else
       {
-        partition_states.reserve(ctx+1);
+        partition_states.resize(ctx+1);
+        partition_states[ctx].open_regions.clear();
       }
       for (std::map<LogicalHandle,RegionNode*>::iterator it = children.begin();
             it != children.end(); it++)
