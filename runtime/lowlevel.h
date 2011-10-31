@@ -184,6 +184,7 @@ namespace RegionRuntime {
       id_t id;
       bool operator<(const Processor& rhs) const { return id < rhs.id; }
       bool operator==(const Processor& rhs) const { return id == rhs.id; }
+      bool operator!=(const Processor& rhs) const { return id != rhs.id; }
 
       class Impl;
       Impl *impl(void) const;
@@ -223,6 +224,7 @@ namespace RegionRuntime {
       id_t id;
       bool operator<(const Memory &rhs) const { return id < rhs.id; }
       bool operator==(const Memory &rhs) const { return id == rhs.id; }
+      bool operator!=(const Memory &rhs) const { return id != rhs.id; }
 
       class Impl;
       Impl *impl(void) const;
@@ -556,20 +558,26 @@ namespace RegionRuntime {
 	unsigned latency;
       };
 
-      std::vector<ProcessorMemoryAffinity> get_proc_mem_affinity(Processor restrict_proc = Processor::NO_PROC,
-								 Memory restrict_memory = Memory::NO_MEMORY);
+      int get_proc_mem_affinity(std::vector<ProcessorMemoryAffinity>& result,
+				Processor restrict_proc = Processor::NO_PROC,
+				Memory restrict_memory = Memory::NO_MEMORY);
 
-      std::vector<MemoryMemoryAffinity> get_mem_mem_affinity(Memory restrict_mem1 = Memory::NO_MEMORY,
-							     Memory restrict_mem2 = Memory::NO_MEMORY);
+      int get_mem_mem_affinity(std::vector<MemoryMemoryAffinity>& result,
+			       Memory restrict_mem1 = Memory::NO_MEMORY,
+			       Memory restrict_mem2 = Memory::NO_MEMORY);
 
     protected:
       std::set<Processor> procs;
       std::set<Memory> memories;
-      std::set<ProcessorMemoryAffinity> proc_mem_affinities;
-      std::set<MemoryMemoryAffinity> mem_mem_affinities;
+      std::vector<ProcessorMemoryAffinity> proc_mem_affinities;
+      std::vector<MemoryMemoryAffinity> mem_mem_affinities;
       std::map<Processor,std::set<Memory> > visible_memories_from_procs;
       std::map<Memory,std::set<Memory> > visible_memories_from_memory;
       std::map<Memory,std::set<Processor> > visible_procs_from_memory;
+
+    public:
+      void parse_node_announce_data(const void *args, size_t arglen,
+				    bool remote);
     };
 
   }; // namespace LowLevel

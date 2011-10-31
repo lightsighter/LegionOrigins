@@ -57,6 +57,100 @@ struct Partitions {
   ptr_t<CircuitWire> first_wires[MAX_PIECES];
 };
 
+class CircuitMapper : public Mapper {
+public:
+  CircuitMapper(Machine *m, HighLevelRuntime *r, Processor p)
+    : Mapper(m, r, p) {}
+
+  virtual void rank_initial_region_locations(size_t elmt_size, 
+					     size_t num_elmts, 
+					     MappingTagID tag,
+					     std::vector<Memory> &ranking)
+  {
+    printf("mapper: ranking initial region locations (%zd,%zd,%d)\n",
+	   elmt_size, num_elmts, tag);
+    Mapper::rank_initial_region_locations(elmt_size, num_elmts, tag, ranking);
+  }
+
+  virtual void rank_initial_partition_locations(size_t elmt_size, 
+						unsigned int num_subregions, 
+						MappingTagID tag,
+						std::vector<std::vector<Memory> > &rankings)
+  {
+    printf("mapper: ranking initial partition locations (%zd,%d,%d)\n",
+	   elmt_size, num_subregions, tag);
+    Mapper::rank_initial_partition_locations(elmt_size, num_subregions,
+					     tag, rankings);
+  }
+
+  virtual bool compact_partition(const UntypedPartition &partition, 
+				 MappingTagID tag)
+  {
+    printf("mapper: compact partition? (%d)\n",
+	   tag);
+    return Mapper::compact_partition(partition, tag);
+  }
+
+  virtual Processor select_initial_processor(const Task *task)
+  {
+    printf("mapper: select initial processor (%p)\n", task);
+    return Mapper::select_initial_processor(task);
+  }
+
+  virtual Processor target_task_steal(void)
+  {
+    printf("mapper: select target of task steal\n");
+    return Mapper::target_task_steal();
+  }
+
+  virtual void permit_task_steal(Processor thief,
+				 const std::vector<const Task*> &tasks,
+				 std::set<const Task*> &to_steal)
+  {
+    printf("mapper: checking task stealing permissions");
+    Mapper::permit_task_steal(thief, tasks, to_steal);
+  }
+
+  virtual void map_task_region(const Task *task, const RegionRequirement *req,
+			       const std::vector<Memory> &valid_src_instances,
+			       const std::vector<Memory> &valid_dst_instances,
+			       Memory &chosen_src,
+			       std::vector<Memory> &dst_ranking)
+  {
+    printf("mapper: mapping region for task (%p,%p)\n", task, req);
+    Mapper::map_task_region(task, req, valid_src_instances, valid_dst_instances,
+			    chosen_src, dst_ranking);
+    printf("mapper: chose src=%x dst=[", chosen_src.id);
+    for(unsigned i = 0; i < dst_ranking.size(); i++) {
+      if(i) printf(", ");
+      printf("%x", dst_ranking[i].id);
+    }
+    printf("]\n");
+  }
+
+  virtual void rank_copy_targets(const Task *task,
+				 const std::vector<Memory> &current_instances,
+				 std::vector<std::vector<Memory> > &future_ranking)
+  {
+    printf("mapper: ranking copy targets (%p)\n", task);
+    Mapper::rank_copy_targets(task, current_instances, future_ranking);
+  }
+
+  virtual void select_copy_source(const Task *task,
+				  const std::vector<Memory> &current_instances,
+				  const Memory &dst, Memory &chosen_src)
+  {
+    printf("mapper: selecting copy source (%p)\n", task);
+    Mapper::select_copy_source(task, current_instances, dst, chosen_src);
+  }
+};
+
+void create_mappers(Machine *machine, HighLevelRuntime *runtime, Processor local)
+{
+  runtime->replace_default_mapper(new CircuitMapper(machine,runtime,local));
+}
+
+
 /* pseudocode:
 
    struct Node<rn>    { Node<rn>@rn next;    float charge, capacitance; }
@@ -116,10 +210,10 @@ void top_level_task(const void *args, size_t arglen,
 		    const std::vector<PhysicalRegion<AT> > &regions,
                     Context ctx, HighLevelRuntime *runtime)
 {
-  int num_circuit_nodes = 100;
-  int num_circuit_wires = 100;
+  int num_circuit_nodes = 1000;
+  int num_circuit_wires = 1000;
 
-  int num_pieces = 10;
+  int num_pieces = 2;
 
   // create top-level regions - one for nodes and one for wires
   Circuit circuit;
@@ -272,8 +366,8 @@ Partitions load_circuit_task(const void *args, size_t arglen,
                                               node_neighbors_multimap;
 
   int num_pieces = 2;
-  int nodes_per_piece = 100;
-  int wires_per_piece = 1000;
+  int nodes_per_piece = 2;
+  int wires_per_piece = 4;
   int pct_wire_in_piece = 95;
 
   wire_owner_map.resize(num_pieces);
@@ -570,7 +664,9 @@ void create_mappers(Machine *machine, HighLevelRuntime *runtime, Processor local
 int main(int argc, char **argv)
 {
   Processor::TaskIDTable task_table;  
-  //task_table[TASK_ID_INIT_MAPPERS] = init_mapper_wrapper<create_mappers>;
+
+  task_table[TASK_ID_INIT_MAPPERS] = init_mapper_wrapper<create_mappers>;
+
   task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
   task_table[TASKID_LOAD_CIRCUIT] = high_level_task_wrapper<Partitions, load_circuit_task<AccessorGeneric> >;
   task_table[TASKID_CALC_NEW_CURRENTS] = high_level_task_wrapper<calc_new_currents_task<AccessorGeneric> >;

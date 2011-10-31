@@ -686,6 +686,7 @@ namespace RegionRuntime {
                       const void *args, size_t arglen, bool spawn, 
                       MapperID id = 0, MappingTagID tag = 0);	
     public:
+      void replace_default_mapper(Mapper *m);
       void add_mapper(MapperID id, Mapper *m);
     public:
       // Methods for the wrapper function to access the context
