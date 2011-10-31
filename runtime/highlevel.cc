@@ -225,7 +225,7 @@ namespace RegionRuntime {
         {
           // Try to get a parent instance
           if (parent != NULL)
-            result = parent->get_instance_internal(m);
+            result = parent->find_instance(m);
         }
       }
 
@@ -251,7 +251,7 @@ namespace RegionRuntime {
     }
     
     //--------------------------------------------------------------------------------------------
-    InstanceInfo* AbstractInstance::get_instance_internal(Memory m)
+    InstanceInfo* AbstractInstance::find_instance(Memory m)
     //--------------------------------------------------------------------------------------------
     {
       if (valid_instances.find(m) != valid_instances.end())
@@ -261,7 +261,7 @@ namespace RegionRuntime {
       else
       {
         if (parent != NULL)
-          return parent->get_instance_internal(m);
+          return parent->find_instance(m);
         else
           return NULL;
       }
@@ -354,17 +354,19 @@ namespace RegionRuntime {
         // another instance info with the same physical instance
         if (valid_instances.find(info->location) != valid_instances.end())
         {
-          // They should be the same physical instance
-#ifdef DEBUG_HIGH_LEVEL
-          assert(valid_instances[info->location]->inst == info->inst);
-#endif
-          valid_instances[info->location]->references++;
-          return false;
+          // Check to see if they have the same instance ID
+          if (valid_instances[info->location]->inst == info->inst)
+            return false;
+          else
+          {
+            info->references = 0;
+            all_instances.push_back(info);
+            return true;
+          }
         }
         else
         {
-          valid_instances[info->location] = info;
-          info->references = 1;
+          info->references = 0;
           all_instances.push_back(info);
           return true;
         }
@@ -927,7 +929,7 @@ namespace RegionRuntime {
               assert(src_location.exists());
 #endif
               // Get the infor and register the reader if we need to make a copy
-              InstanceInfo *src_info = copy_op->dst_instance->get_instance(src_location);
+              InstanceInfo *src_info = copy_op->dst_instance->find_instance(src_location);
               // If they are the same instance, just ignore it
               if (!(src_info->inst == info->inst))
               {
@@ -1548,7 +1550,10 @@ namespace RegionRuntime {
       {
         Memory mem = *((const Memory*)ptr);
         ptr += sizeof(Memory);
-        InstanceInfo *info = abstract_src[idx]->get_instance(mem);
+        InstanceInfo *info = abstract_src[idx]->find_instance(mem);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(info != NULL);
+#endif
         src_instances.push_back(info);
         abstract_src[idx]->register_reader(info);
       }
@@ -3310,7 +3315,10 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(src_mem.exists());
 #endif
-        InstanceInfo *src_info = desc->abstract_src[idx]->get_instance(src_mem);
+        InstanceInfo *src_info = desc->abstract_src[idx]->find_instance(src_mem);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(src_info != NULL);
+#endif
         if (src_info == NULL)
         {
           fprintf(stderr,"Unable to get source instance for task region %d " 
