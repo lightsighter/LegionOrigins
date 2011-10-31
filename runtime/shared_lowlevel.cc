@@ -109,6 +109,7 @@ namespace RegionRuntime {
       EventImpl*           get_free_event(void);
       LockImpl*            get_free_lock(void);
       RegionMetaDataImpl*  get_free_metadata(size_t num_elmts, size_t elmt_size);
+      RegionMetaDataImpl*  get_free_metadata(RegionMetaDataImpl *par, const ElementMask &mask);
       RegionAllocatorImpl* get_free_allocator(unsigned start, unsigned end);
       RegionInstanceImpl*  get_free_instance(Memory m, size_t num_elmts, size_t elmt_size);
 
@@ -1775,10 +1776,29 @@ namespace RegionRuntime {
 			master_allocator = allocator->get_allocator();	
 		
 			lock = Runtime::get_runtime()->get_free_lock();
+                        mask = ElementMask(num_elmts);
+                        parent = NULL;
 		}
 	}
+        RegionMetaDataImpl(int idx, RegionMetaDataImpl *par, const ElementMask &m, bool activate = false) {
+                PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
+		active = activate;
+		index = idx;
+		if (activate)
+		{
+			num_elmts = m.get_num_elmts();
+			elmt_size = par->elmt_size;
+			RegionAllocatorImpl *allocator = Runtime::get_runtime()->get_free_allocator(0,num_elmts);
+			master_allocator = allocator->get_allocator();	
+		
+			lock = Runtime::get_runtime()->get_free_lock();
+                        mask = m;
+                        parent = par;
+		}
+        }
     public:
 	bool activate(size_t num_elmts, size_t elmt_size);
+        bool activate(RegionMetaDataImpl *par, const ElementMask &m);
 	void deactivate(void);	
 	RegionMetaDataUntyped get_metadata(void);
 
@@ -1790,6 +1810,7 @@ namespace RegionRuntime {
 
 	Lock get_lock(void);
 
+        const ElementMask& get_element_mask(void);
     private:
 	RegionAllocatorUntyped master_allocator;
 	//std::set<RegionAllocatorUntyped> allocators;
@@ -1800,6 +1821,8 @@ namespace RegionRuntime {
 	int index;
 	size_t num_elmts;
 	size_t elmt_size;
+        ElementMask mask;
+        RegionMetaDataImpl *parent;
     };
 
     RegionMetaDataUntyped RegionMetaDataUntyped::create_region_untyped(size_t num_elmts, size_t elmt_size)
@@ -1810,7 +1833,9 @@ namespace RegionRuntime {
 
     RegionMetaDataUntyped RegionMetaDataUntyped::create_region_untyped(RegionMetaDataUntyped parent, const ElementMask &mask)
     {
-      assert(0);
+      RegionMetaDataImpl *par = Runtime::get_runtime()->get_metadata_impl(parent);
+      RegionMetaDataImpl *r = Runtime::get_runtime()->get_free_metadata(par, mask);
+      return r->get_metadata();
     }
 
     RegionAllocatorUntyped RegionMetaDataUntyped::create_allocator_untyped(Memory m) const
@@ -1845,7 +1870,8 @@ namespace RegionRuntime {
 
     const ElementMask &RegionMetaDataUntyped::get_valid_mask(void)
     {
-      assert(0);
+      RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
+      return r->get_element_mask();
     }
 
     bool RegionMetaDataImpl::activate(size_t num, size_t size)
@@ -1868,6 +1894,28 @@ namespace RegionRuntime {
 	}
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 	return result;
+    }
+
+    bool RegionMetaDataImpl::activate(RegionMetaDataImpl *par, const ElementMask &mask)
+    {
+      bool result = false;
+      int trythis = pthread_mutex_trylock(&mutex);
+      if (trythis == EBUSY)
+        return result;
+      PTHREAD_SAFE_CALL(trythis);
+      if (!active)
+      {
+        active = true;
+        result = true;
+        num_elmts = mask.get_num_elmts();
+        elmt_size = par->elmt_size;
+        RegionAllocatorImpl *allocator = Runtime::get_runtime()->get_free_allocator(0,num_elmts);
+        master_allocator = allocator->get_allocator();	
+		
+        lock = Runtime::get_runtime()->get_free_lock();
+      }
+      PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+      return result;
     }
 
     void RegionMetaDataImpl::deactivate(void)
@@ -1896,6 +1944,11 @@ namespace RegionRuntime {
 	RegionMetaDataUntyped meta;
 	meta.id = index;
 	return meta;
+    }
+
+    const ElementMask& RegionMetaDataImpl::get_element_mask(void)
+    {
+      return mask;
     }
 
     RegionAllocatorUntyped RegionMetaDataImpl::create_allocator(Memory m)
@@ -2326,6 +2379,34 @@ namespace RegionRuntime {
 	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&metadata_lock));
 	return result;
     }
+
+    RegionMetaDataImpl* Runtime::get_free_metadata(RegionMetaDataImpl *parent, const ElementMask &mask)
+    {
+	PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&metadata_lock));
+	for (unsigned int i=1; i<metadatas.size(); i++)
+	{
+		if (metadatas[i]->activate(parent,mask))
+		{
+			RegionMetaDataImpl *result = metadatas[i];
+			PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&metadata_lock));
+			return result;
+		}
+	}
+	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&metadata_lock));
+	// Otherwise there are no free metadata so make a new one
+	PTHREAD_SAFE_CALL(pthread_rwlock_wrlock(&metadata_lock));
+	unsigned int index = metadatas.size();
+	metadatas.push_back(new RegionMetaDataImpl(index,parent,mask,true));
+	RegionMetaDataImpl *result = metadatas[index];
+        // Create a whole bunch of other metas too while we're here
+        for (unsigned idx=1; idx < BASE_METAS; idx++)
+        {
+          metadatas.push_back(new RegionMetaDataImpl(index+idx,0,0,false));
+        }
+	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&metadata_lock));
+	return result;
+    }
+
 
     RegionAllocatorImpl* Runtime::get_free_allocator(unsigned start, unsigned end)
     {
