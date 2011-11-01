@@ -53,4 +53,4 @@ ckt2:	lowlevel.o highlevel.o circuit.o
 	g++ -o $@ $(CCFLAGS) $^ $(LDFLAGS)
 
 clean:
-	rm -f ring tree *.o
+	rm -f ckt ring tree *.o
