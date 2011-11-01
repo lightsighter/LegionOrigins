@@ -49,6 +49,8 @@ tree_test.o : highlevel.h
 
 circuit.o : highlevel.h
 
+circuit_gpu.o : highlevel.h lowlevel.h
+
 gputest:	gputest.o lowlevel_gpu.o lowlevel.o
 	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
 
@@ -68,6 +70,9 @@ ckt:	shared_lowlevel.o highlevel.o circuit.o
 	g++ -o $@ $(GCCFLAGS) $^ -lpthread
 
 ckt2:	lowlevel.o highlevel.o circuit.o
+	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
+
+cktgpu2:	lowlevel.o lowlevel_gpu.o highlevel.o circuit_gpu.o
 	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
 
 clean:

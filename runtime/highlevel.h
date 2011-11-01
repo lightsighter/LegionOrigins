@@ -404,7 +404,7 @@ namespace RegionRuntime {
 
     template<>
     class PhysicalRegion<AccessorGeneric> {
-    private:
+    public: // SJT: hack... private:
       bool valid_allocator;
       bool valid_instance;
       LowLevel::RegionAllocatorUntyped allocator;

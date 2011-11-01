@@ -536,7 +536,7 @@ namespace RegionRuntime {
       // the instance doesn't have read/write/reduce methods of its own -
       //  instead, we can hand out an "accessor" object that has those methods
       //  this lets us specialize for the just-an-array-dereference case
-      const RegionInstanceAccessor<T,AccessorGeneric> get_accessor(void)
+      RegionInstanceAccessor<T,AccessorGeneric> get_accessor(void) const
       { return RegionInstanceAccessor<T,AccessorGeneric>(get_accessor_untyped()); }
 
       Event copy_to(RegionInstance<T> target, Event wait_on = Event::NO_EVENT)

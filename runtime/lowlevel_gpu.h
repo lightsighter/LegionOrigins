@@ -16,10 +16,13 @@ namespace RegionRuntime {
       virtual void spawn_task(Processor::TaskFuncID func_id,
 			      const void *args, size_t arglen,
 			      //std::set<RegionInstanceUntyped> instances_needed,
-			      Event start_event, Event finish_event)
-      {
-	assert(0);
-      }
+			      Event start_event, Event finish_event);
+
+      void copy_to_fb(off_t dst_offset, const void *src, size_t bytes,
+		      Event start_event, Event finish_event);
+
+      void copy_from_fb(void *dst, off_t src_offset, size_t bytes,
+			Event start_event, Event finish_event);
 
     public:
       class Internal;

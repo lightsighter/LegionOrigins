@@ -13,6 +13,7 @@ using namespace RegionRuntime::LowLevel;
 
 #define CPUTASK     (Processor::TASK_ID_FIRST_AVAILABLE+0)
 #define GPUTASK     (Processor::TASK_ID_FIRST_AVAILABLE+1)	
+#define KERNEL_TASK     (Processor::TASK_ID_FIRST_AVAILABLE+1)	
 
 static void show_machine_structure(void)
 {
@@ -77,24 +78,33 @@ __global__ void my_kernel(ptr_t<unsigned> ptr1,
 {
   unsigned x1, x2, x3;
 
-  debugptr[0] = ptr1.value;
-  debugptr[1] = ptr2.value;
-  debugptr[2] = ptr3.value;
+  if(debugptr) {
+    debugptr[0] = ptr1.value;
+    debugptr[1] = ptr2.value;
+    debugptr[2] = ptr3.value;
+  }
   
   x1 = a1.read(ptr1);
   x2 = a1.read(ptr2);
   x3 = a1.read(ptr3);
 
-  debugptr[3] = x1;
-  debugptr[4] = x2;
-  debugptr[5] = x3;
+  if(debugptr) {
+    debugptr[3] = x1;
+    debugptr[4] = x2;
+    debugptr[5] = x3;
 
-  *(void **)(debugptr+6) = a1.ria.array_base;
+    *(void **)(debugptr+6) = a1.ria.array_base;
+  }
 
   a2.write(ptr1, x2 + 20);
   a2.write(ptr2, x3 + 20);
   a2.write(ptr3, x1 + 20);
 }
+
+struct TaskArgs {
+  ptr_t<unsigned> p1, p2, p3;
+  RegionInstance<unsigned> i_src, i_dst;
+};
 
 template <AccessorType AT>
 void cpu_task(const void * args, size_t arglen, Processor p)
@@ -119,6 +129,7 @@ void cpu_task(const void * args, size_t arglen, Processor p)
   RegionMetaData<unsigned> region = RegionMetaData<unsigned>::create_region(100);
   RegionAllocator<unsigned> r_alloc = region.create_allocator(sysmem);
   RegionInstance<unsigned> i_sys = region.create_instance(sysmem);
+  RegionInstance<unsigned> i_sys2 = region.create_instance(sysmem);
   RegionInstance<unsigned> i_gpu = region.create_instance(gpumem);
   RegionInstance<unsigned> i_zc  = region.create_instance(zcmem);
 
@@ -127,6 +138,7 @@ void cpu_task(const void * args, size_t arglen, Processor p)
   RegionInstanceAccessor<unsigned,AccessorGeneric> a_sys = i_sys.get_accessor();
   RegionInstanceAccessor<unsigned,AccessorGeneric> a_gpu = i_gpu.get_accessor();
   RegionInstanceAccessor<unsigned,AccessorGeneric> a_zc = i_zc.get_accessor();
+  RegionInstanceAccessor<unsigned,AccessorGeneric> a_sys2 = i_sys2.get_accessor();
   
   ptr_t<unsigned> p1 = r_alloc.alloc();
   ptr_t<unsigned> p2 = r_alloc.alloc();
@@ -136,6 +148,7 @@ void cpu_task(const void * args, size_t arglen, Processor p)
   a_sys.write(p3, 6);
   printf("sys: (%d,%d,%d)\n", a_sys.read(p1), a_sys.read(p2), a_sys.read(p3));
   printf("zc:  (%d,%d,%d)\n", a_zc.read(p1), a_zc.read(p2), a_zc.read(p3));
+#if 0
   i_sys.copy_to(i_zc).wait();
   printf("zc:  (%d,%d,%d)\n", a_zc.read(p1), a_zc.read(p2), a_zc.read(p3));
 
@@ -159,8 +172,45 @@ void cpu_task(const void * args, size_t arglen, Processor p)
   cudaMemcpy(hptr, dptr, 16*sizeof(unsigned), cudaMemcpyDeviceToHost);
   for(int i = 0; i < 16; i++)
     printf("%d: %x\n", i, hptr[i]);
+#else
+  Event e = i_sys.copy_to(i_zc);
+
+  TaskArgs ta;
+  ta.p1 = p1;
+  ta.p2 = p2;
+  ta.p3 = p3;
+  ta.i_src = i_zc;
+  ta.i_dst = i_gpu;
+  e = gpu.spawn(KERNEL_TASK, &ta, sizeof(ta), e);
+
+  ta.i_src = i_gpu;
+  ta.i_dst = i_zc;
+  e = gpu.spawn(KERNEL_TASK, &ta, sizeof(ta), e);
 
   printf("zc:  (%d,%d,%d)\n", a_zc.read(p1), a_zc.read(p2), a_zc.read(p3));
+  e.wait();
+#endif
+
+  printf("zc:  (%d,%d,%d)\n", a_zc.read(p1), a_zc.read(p2), a_zc.read(p3));
+
+  i_gpu.copy_to(i_sys2).wait();
+  printf("s2:  (%d,%d,%d)\n", a_sys2.read(p1), a_sys2.read(p2), a_sys2.read(p3));
+
+  e = i_sys.copy_to(i_gpu);
+  e = gpu.spawn(KERNEL_TASK, &ta, sizeof(ta), e);
+  e.wait();
+  printf("zc:  (%d,%d,%d)\n", a_zc.read(p1), a_zc.read(p2), a_zc.read(p3));
+}
+
+template <RegionRuntime::LowLevel::AccessorType AT>
+void kernel_task(const void * args, size_t arglen, Processor p)
+{
+  const TaskArgs *ta = (const TaskArgs *)args;
+
+  printf("kernel running on processor = %x\n", p.id);
+  my_kernel<<<1, 1>>>(ta->p1, ta->p2, ta->p3, 
+		      ta->i_src.get_accessor().convert<AccessorGPU>(),
+		      ta->i_dst.get_accessor().convert<AccessorGPU>(), 0);
 }
 
 #if 0
@@ -298,6 +348,7 @@ int main(int argc, char **argv)
 {
   Processor::TaskIDTable task_table;
   task_table[CPUTASK] = cpu_task<AccessorGeneric>;
+  task_table[KERNEL_TASK] = kernel_task<AccessorGeneric>;
 #if 0
   task_table[LAUNCHER_ID] = potato_launcher<AccessorGeneric>;
   task_table[HOT_POTATOER] = hot_potatoer<AccessorGeneric>;

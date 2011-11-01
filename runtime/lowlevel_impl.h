@@ -332,6 +332,8 @@ namespace RegionRuntime {
       Lock::Impl *lock;
     };
 
+    extern Processor::TaskIDTable task_id_table;
+
     class Processor::Impl {
     public:
       Impl(Processor _me, Processor::Kind _kind)
@@ -435,10 +437,10 @@ namespace RegionRuntime {
       void get_bytes(unsigned ptr_value, void *dst, size_t size);
       void put_bytes(unsigned ptr_value, const void *src, size_t size);
 
-      static void copy(RegionInstanceUntyped src, 
-		       RegionInstanceUntyped target,
-		       size_t bytes_to_copy,
-		       Event after_copy = Event::NO_EVENT);
+      static Event copy(RegionInstanceUntyped src, 
+			RegionInstanceUntyped target,
+			size_t bytes_to_copy,
+			Event after_copy = Event::NO_EVENT);
 
     public: //protected:
       friend class RegionInstanceUntyped;
@@ -453,6 +455,48 @@ namespace RegionRuntime {
       } locked_data;
 
       Lock::Impl lock;
+    };
+
+    class Event::Impl {
+    public:
+      Impl(void);
+
+      void init(Event _me, unsigned _init_owner);
+
+      static Event create_event(void);
+
+      // test whether an event has triggered without waiting
+      bool has_triggered(Event::gen_t needed_gen);
+
+      // causes calling thread to block until event has occurred
+      //void wait(Event::gen_t needed_gen);
+
+      // creates an event that won't trigger until all input events have
+      static Event merge_events(const std::set<Event>& wait_for);
+      static Event merge_events(Event ev1, Event ev2,
+				Event ev3 = NO_EVENT, Event ev4 = NO_EVENT,
+				Event ev5 = NO_EVENT, Event ev6 = NO_EVENT);
+
+      // record that the event has triggered and notify anybody who cares
+      void trigger(Event::gen_t gen_triggered, bool local_trigger);
+
+      class EventWaiter {
+      public:
+	virtual void event_triggered(void) = 0;
+      };
+
+      void add_waiter(Event event, EventWaiter *waiter);
+
+    public: //protected:
+      Event me;
+      unsigned owner;
+      Event::gen_t generation, gen_subscribed;
+      bool in_use;
+
+      gasnet_hsl_t *mutex; // controls which local thread has access to internal data (not runtime-visible event)
+
+      uint64_t remote_waiters; // bitmask of which remote nodes are waiting on the event
+      std::map<Event::gen_t, std::vector<EventWaiter *> > local_waiters; // set of local threads that are waiting on event (keyed by generation)
     };
 
   }; // namespace LowLevel

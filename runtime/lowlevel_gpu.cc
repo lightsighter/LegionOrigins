@@ -24,6 +24,25 @@ namespace RegionRuntime {
 
     extern Logger::Category log_gpu;
 
+    class GPUJob : public Event::Impl::EventWaiter {
+    public:
+      GPUJob(GPUProcessor *_gpu, Event _finish_event)
+	: gpu(_gpu), finish_event(_finish_event) {}
+
+      virtual ~GPUJob(void) {}
+
+      virtual void event_triggered(void);
+
+      void run_or_wait(Event start_event);
+
+      virtual void execute(void) = 0;
+
+    public:
+      GPUProcessor *gpu;
+      Event finish_event;
+    };
+
+
     class GPUProcessor::Internal {
     public:
       int gpu_index;
@@ -38,6 +57,7 @@ namespace RegionRuntime {
       pthread_t gpu_thread;
       gasnet_hsl_t mutex;
       gasnett_cond_t parent_condvar, worker_condvar;
+      std::list<GPUJob *> jobs;
 
       Internal(void)
 	: initialized(false), shutdown_requested(false)
@@ -74,8 +94,33 @@ namespace RegionRuntime {
 	  gasnett_cond_signal(&parent_condvar);
 	}
 
-	while(1) 
-	  sleep(100);
+	while(!shutdown_requested) {
+	  // get a job off the job queue - sleep if nothing there
+	  GPUJob *job;
+	  {
+	    AutoHSLLock a(mutex);
+	    while(jobs.size() == 0) {
+	      printf("job queue empty - sleeping\n");
+	      gasnett_cond_wait(&worker_condvar, &mutex.lock);
+	      if(shutdown_requested) {
+		printf("awoke due to shutdown request...\n");
+		break;
+	      }
+	      printf("awake again...\n");
+	    }
+	    if(shutdown_requested) break;
+	    job = jobs.front();
+	    jobs.pop_front();
+	  }
+
+	  printf("executing job %p\n", job);
+	  job->execute();
+	  // TODO: use events here!
+	  CHECK_CUDART( cudaDeviceSynchronize() );
+	  if(job->finish_event.exists())
+	    job->finish_event.impl()->trigger(job->finish_event.gen, true);
+	  delete job;
+	}
       }
 
       static void *thread_main_wrapper(void *data)
@@ -101,6 +146,89 @@ namespace RegionRuntime {
 	    gasnett_cond_wait(&parent_condvar, &mutex.lock);
 	}
       }
+
+      void enqueue_job(GPUJob *job)
+      {
+	AutoHSLLock a(mutex);
+
+	bool was_empty = jobs.size() == 0;
+	jobs.push_back(job);
+
+	if(was_empty)
+	  gasnett_cond_signal(&worker_condvar);
+      }
+    };
+
+    void GPUJob::event_triggered(void)
+    {
+      gpu->internal->enqueue_job(this);
+    }
+
+    // little helper function for the check-event-and-enqueue-or-wait bit
+    void GPUJob::run_or_wait(Event start_event)
+    {
+      if(start_event.has_triggered()) {
+	gpu->internal->enqueue_job(this);
+      } else {
+	start_event.impl()->add_waiter(start_event, this);
+      }
+    }
+
+    class GPUTask : public GPUJob {
+    public:
+      GPUTask(GPUProcessor *_gpu, Event _finish_event,
+	      Processor::TaskFuncID _func_id,
+	      const void *_args, size_t _arglen)
+	: GPUJob(_gpu, _finish_event), func_id(_func_id), arglen(_arglen)
+      {
+	if(arglen) {
+	  args = malloc(arglen);
+	  memcpy(args, _args, arglen);
+	} else {
+	  args = 0;
+	}
+      }
+
+      virtual ~GPUTask(void)
+      {
+	if(args) free(args);
+      }
+
+      virtual void execute(void)
+      {
+	Processor::TaskFuncPtr fptr = task_id_table[func_id];
+	char argstr[100];
+	argstr[0] = 0;
+	for(size_t i = 0; (i < arglen) && (i < 40); i++)
+	  sprintf(argstr+2*i, "%02x", ((unsigned *)args)[i]);
+	if(arglen > 40) strcpy(argstr+80, "...");
+	log_gpu(LEVEL_DEBUG, "task start: %d (%p) (%s)", func_id, fptr, argstr);
+	(*fptr)(args, arglen, gpu->me);
+	log_gpu(LEVEL_DEBUG, "task end: %d (%p) (%s)", func_id, fptr, argstr);
+      }
+
+      Processor::TaskFuncID func_id;
+      void *args;
+      size_t arglen;
+    };
+
+    class GPUMemcpy : public GPUJob {
+    public:
+      GPUMemcpy(GPUProcessor *_gpu, Event _finish_event,
+		void *_dst, const void *_src, size_t _bytes, cudaMemcpyKind _kind)
+	: GPUJob(_gpu, _finish_event), dst(_dst), src(_src), bytes(_bytes), kind(_kind)
+      {}
+
+      virtual void execute(void)
+      {
+	CHECK_CUDART( cudaMemcpy(dst, src, bytes, kind) );
+      }
+
+    protected:
+      void *dst;
+      const void *src;
+      size_t bytes;
+      cudaMemcpyKind kind;
     };
 
     GPUProcessor::GPUProcessor(Processor _me, int _gpu_index, 
@@ -126,6 +254,41 @@ namespace RegionRuntime {
     void *GPUProcessor::get_zcmem_cpu_base(void)
     {
       return ((char *)internal->zcmem_cpu_base) + internal->zcmem_reserve;
+    }
+
+    void GPUProcessor::spawn_task(Processor::TaskFuncID func_id,
+				  const void *args, size_t arglen,
+				  //std::set<RegionInstanceUntyped> instances_needed,
+				  Event start_event, Event finish_event)
+    {
+      if(func_id != 0) {
+	(new GPUTask(this, finish_event,
+		     func_id, args, arglen))->run_or_wait(start_event);
+      } else {
+	AutoHSLLock a(internal->mutex);
+	internal->shutdown_requested = true;
+	gasnett_cond_signal(&internal->worker_condvar);
+      }
+    }
+
+    void GPUProcessor::copy_to_fb(off_t dst_offset, const void *src, size_t bytes,
+				  Event start_event, Event finish_event)
+    {
+      (new GPUMemcpy(this, finish_event,
+		     ((char *)internal->fbmem_gpu_base) + (internal->fbmem_reserve + dst_offset),
+		     src,
+		     bytes,
+		     cudaMemcpyHostToDevice))->run_or_wait(start_event);
+    }
+
+    void GPUProcessor::copy_from_fb(void *dst, off_t src_offset, size_t bytes,
+				    Event start_event, Event finish_event)
+    {
+      (new GPUMemcpy(this, finish_event,
+		     dst,
+		     ((char *)internal->fbmem_gpu_base) + (internal->fbmem_reserve + src_offset),
+		     bytes,
+		     cudaMemcpyDeviceToHost))->run_or_wait(start_event);
     }
 
     // framebuffer memory

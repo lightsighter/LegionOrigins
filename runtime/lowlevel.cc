@@ -568,62 +568,24 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////
     // Events
 
-    class Event::Impl {
-    public:
-      Impl(void)
-      {
-	Event bad = { -1, -1 };
-	init(bad, -1); 
-      }
+    Event::Impl::Impl(void)
+    {
+      Event bad = { -1, -1 };
+      init(bad, -1); 
+    }
 
-      void init(Event _me, unsigned _init_owner)
-      {
-	me = _me;
-	owner = _init_owner;
-	generation = 0;
-	gen_subscribed = 0;
-	in_use = false;
-	mutex = new gasnet_hsl_t;
-	//printf("[%d] MUTEX INIT %p\n", gasnet_mynode(), mutex);
-	gasnet_hsl_init(mutex);
-	remote_waiters = 0;
-      }
-
-      static Event create_event(void);
-
-      // test whether an event has triggered without waiting
-      bool has_triggered(Event::gen_t needed_gen);
-
-      // causes calling thread to block until event has occurred
-      //void wait(Event::gen_t needed_gen);
-
-      // creates an event that won't trigger until all input events have
-      static Event merge_events(const std::set<Event>& wait_for);
-      static Event merge_events(Event ev1, Event ev2,
-				Event ev3 = NO_EVENT, Event ev4 = NO_EVENT,
-				Event ev5 = NO_EVENT, Event ev6 = NO_EVENT);
-
-      // record that the event has triggered and notify anybody who cares
-      void trigger(Event::gen_t gen_triggered, bool local_trigger);
-
-      class EventWaiter {
-      public:
-	virtual void event_triggered(void) = 0;
-      };
-
-      void add_waiter(Event event, EventWaiter *waiter);
-
-    public: //protected:
-      Event me;
-      unsigned owner;
-      Event::gen_t generation, gen_subscribed;
-      bool in_use;
-
-      gasnet_hsl_t *mutex; // controls which local thread has access to internal data (not runtime-visible event)
-
-      uint64_t remote_waiters; // bitmask of which remote nodes are waiting on the event
-      std::map<Event::gen_t, std::vector<EventWaiter *> > local_waiters; // set of local threads that are waiting on event (keyed by generation)
-    };
+    void Event::Impl::init(Event _me, unsigned _init_owner)
+    {
+      me = _me;
+      owner = _init_owner;
+      generation = 0;
+      gen_subscribed = 0;
+      in_use = false;
+      mutex = new gasnet_hsl_t;
+      //printf("[%d] MUTEX INIT %p\n", gasnet_mynode(), mutex);
+      gasnet_hsl_init(mutex);
+      remote_waiters = 0;
+    }
 
     struct EventSubscribeArgs {
       gasnet_node_t node;
@@ -1981,7 +1943,7 @@ namespace RegionRuntime {
     // Processor
 
     // global because I'm being lazy...
-    static Processor::TaskIDTable task_id_table;
+    Processor::TaskIDTable task_id_table;
 
     /*static*/ const Processor Processor::NO_PROC = { 0 };
 
@@ -3181,10 +3143,10 @@ namespace RegionRuntime {
       return RegionInstanceAccessorUntyped<AccessorGeneric>((void *)impl());
     }
 
-    /*static*/ void RegionInstanceUntyped::Impl::copy(RegionInstanceUntyped src, 
-						      RegionInstanceUntyped target,
-						      size_t bytes_to_copy,
-						      Event after_copy /*= Event::NO_EVENT*/)
+    /*static*/ Event RegionInstanceUntyped::Impl::copy(RegionInstanceUntyped src, 
+						       RegionInstanceUntyped target,
+						       size_t bytes_to_copy,
+						       Event after_copy /*= Event::NO_EVENT*/)
     {
       RegionInstanceUntyped::Impl *src_impl = src.impl();
       RegionInstanceUntyped::Impl *tgt_impl = target.impl();
@@ -3216,6 +3178,21 @@ namespace RegionRuntime {
 	  case Memory::Impl::MKIND_GASNET:
 	    {
 	      tgt_mem->put_bytes(tgt_data->offset, src_ptr, bytes_to_copy);
+	    }
+	    break;
+
+	  case Memory::Impl::MKIND_GPUFB:
+	    {
+	      // all GPU operations are deferred, so we need an event if
+	      //  we don't already have one created
+	      if(!after_copy.exists())
+		after_copy = Event::Impl::create_event();
+	      ((GPUFBMemory *)tgt_mem)->gpu->copy_to_fb(tgt_data->offset,
+							src_ptr,
+							bytes_to_copy,
+							Event::NO_EVENT,
+							after_copy);
+	      return after_copy;
 	    }
 	    break;
 
@@ -3261,6 +3238,33 @@ namespace RegionRuntime {
 	}
 	break;
 
+      case Memory::Impl::MKIND_GPUFB:
+	{
+	  switch(tgt_mem->kind) {
+	  case Memory::Impl::MKIND_SYSMEM:
+	  case Memory::Impl::MKIND_ZEROCOPY:
+	    {
+	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->offset, bytes_to_copy);
+	      assert(tgt_ptr != 0);
+
+	      // all GPU operations are deferred, so we need an event if
+	      //  we don't already have one created
+	      if(!after_copy.exists())
+		after_copy = Event::Impl::create_event();
+	      ((GPUFBMemory *)src_mem)->gpu->copy_from_fb(tgt_ptr, src_data->offset,
+							  bytes_to_copy,
+							  Event::NO_EVENT,
+							  after_copy);
+	      return after_copy;
+	    }
+	    break;
+
+	  default:
+	    assert(0);
+	  }
+	}
+	break;
+
       default:
 	assert(0);
       }
@@ -3272,6 +3276,7 @@ namespace RegionRuntime {
 
       if(after_copy.exists())
 	after_copy.impl()->trigger(after_copy.gen, true);
+      return after_copy;
     }
 
     class DeferredCopy : public Event::Impl::EventWaiter {
@@ -3329,8 +3334,7 @@ namespace RegionRuntime {
       }
 
       // we can do the copy immediately here
-      RegionInstanceUntyped::Impl::copy(*this, target, bytes_to_copy);
-      return Event::NO_EVENT;
+      return RegionInstanceUntyped::Impl::copy(*this, target, bytes_to_copy);
     }
 
     Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target,
@@ -4058,15 +4062,10 @@ namespace RegionRuntime {
     }
 
   }; // namespace LowLevel
+  namespace HighLevel {
+    // Loggers for the high level
+    LowLevel::Logger::Category log_task("tasks");
+    LowLevel::Logger::Category log_region("regions");
+    LowLevel::Logger::Category log_inst("instances");
+  };
 }; // namespace RegionRuntime
-
-// int main(int argc, const char *argv[])
-// {
-//   RegionRuntime::LowLevel::GASNetNode my_node(argc, (char **)argv);
-//   printf("hello, world!\n");
-//   printf("limits:\n");
-//   printf("max args: %zd (%zd bytes each)\n", gasnet_AMMaxArgs(), sizeof(gasnet_handlerarg_t));
-//   printf("max medium: %zd\n", gasnet_AMMaxMedium());
-//   printf("long req: %zd\n", gasnet_AMMaxLongRequest());
-//   printf("long reply: %zd\n", gasnet_AMMaxLongReply());
-// }
