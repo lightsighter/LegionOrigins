@@ -366,7 +366,7 @@ namespace RegionRuntime {
 	{ T val; 
 	  get_untyped(ptr.value*sizeof(T), &val, sizeof(T));
 	  REDOP::apply(&val, newval); 
-	  put_untyped(ptr.value*sizeof(T), &newval, sizeof(T)); }
+	  put_untyped(ptr.value*sizeof(T), &val, sizeof(T)); }
 
       template <AccessorType AT2>
       bool can_convert(void) const;

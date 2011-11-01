@@ -283,7 +283,7 @@ void top_level_task(const void *args, size_t arglen,
   }
 
   // main loop
-  for(int i = 0; i < 1; i++) {
+  for(int i = 0; i < 2; i++) {
     // calculating new currents requires looking at all the nodes (and the
     //  wires) and updating the state of the wires
     for(int p = 0; p < num_pieces; p++) {
@@ -408,6 +408,7 @@ Partitions load_circuit_task(const void *args, size_t arglen,
 				        first_node);
       node.next = next_node;
       inst_rn.write(cur_node, node);
+      printf("N: %d -> %d\n", cur_node.value, node.next.value);
 
       node_owner_map[n].insert(cur_node);
       node_privacy_map[n].insert(cur_node); // default is private
@@ -546,7 +547,7 @@ void distribute_charge_task(const void *args, size_t arglen,
     cur_wire = w.next;
   } while(cur_wire != p->first_wire);
 
-  printf("Done with calc_new_currents()\n");
+  printf("Done with distribute_charge()\n");
 }
 
 template<AccessorType AT>
@@ -563,6 +564,7 @@ void update_voltages_task(const void *args, size_t arglen,
   ptr_t<CircuitNode> cur_node = p->first_node;
   do {
     CircuitNode n = inst_rn_pvt.read(cur_node);
+    printf("R: %d -> %d\n", cur_node.value, n.next.value);
 
     // charge adds in, and then some leaks away
     n.voltage += n.charge / n.capacitance;

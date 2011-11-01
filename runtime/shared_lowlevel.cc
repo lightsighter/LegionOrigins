@@ -219,6 +219,7 @@ namespace RegionRuntime {
       int len = strlen(buffer);
       vsnprintf(buffer+len, 199-len, fmt, args);
       strcat(buffer, "\n");
+      fflush(stdout);
       fputs(buffer, stderr);
     }
 
@@ -1738,12 +1739,15 @@ namespace RegionRuntime {
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
     }
 
+    Logger::Category log_copy("copy");
+
     Event RegionInstanceImpl::copy_to(RegionInstanceUntyped target, Event wait_on)
     {
 	RegionInstanceImpl *target_impl = Runtime::get_runtime()->get_instance_impl(target);
+	log_copy(LEVEL_INFO, "copy %x/%p -> %x/%p", index, this, target.id, target_impl);
 #ifdef DEBUG_LOW_LEVEL
-	//assert(target_impl->num_elmts == num_elmts);
-	//assert(target_impl->elmt_size == elmt_size);
+	assert(target_impl->num_elmts == num_elmts);
+	assert(target_impl->elmt_size == elmt_size);
 #endif
 	// Check to see if the event exists
 	if (wait_on.exists())
@@ -1767,14 +1771,14 @@ namespace RegionRuntime {
 		{
 			PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 			// The event occurred do the copy and return
-			//memcpy(target_impl->base_ptr,base_ptr,num_elmts*elmt_size);
+			memcpy(target_impl->base_ptr,base_ptr,num_elmts*elmt_size);
 			return Event::NO_EVENT;
 		}
 	}
 	else
 	{
 		// It doesn't exist, do the memcpy and return
-		//memcpy(target_impl->base_ptr,base_ptr,num_elmts*elmt_size);
+		memcpy(target_impl->base_ptr,base_ptr,num_elmts*elmt_size);
 		return Event::NO_EVENT;
 	}
     }
@@ -1790,7 +1794,7 @@ namespace RegionRuntime {
           if (it->id == handle)
           {
             found = true;
-            //memcpy(it->dst_ptr,base_ptr,num_elmts*elmt_size);
+            memcpy(it->dst_ptr,base_ptr,num_elmts*elmt_size);
             it->complete->trigger();
             // Remove it from the list
             pending_copies.erase(it);
