@@ -1072,7 +1072,7 @@ namespace RegionRuntime {
 	// Check to see how many tasks there are
 	// If there are too few, invoke the scheduler
         // If we've been told to shutdown, never invoke the scheduler
-	if (has_scheduler && !shutdown && (ready_queue.size()+waiting_queue.size()) < MIN_SCHED_TASKS)
+	if (has_scheduler && !shutdown && (ready_queue.size()/*+waiting_queue.size()*/) < MIN_SCHED_TASKS)
 	{
 		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
                 Processor::TaskFuncPtr scheduler = task_table[Processor::TASK_ID_PROCESSOR_IDLE];
