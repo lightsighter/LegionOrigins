@@ -34,7 +34,8 @@ namespace RegionRuntime {
       FINISH_ID          = (Processor::TASK_ID_FIRST_AVAILABLE+3),
       NOTIFY_START_ID    = (Processor::TASK_ID_FIRST_AVAILABLE+4),
       NOTIFY_FINISH_ID   = (Processor::TASK_ID_FIRST_AVAILABLE+5),
-      TERMINATION_ID     = (Processor::TASK_ID_FIRST_AVAILABLE+6),
+      ADVERTISEMENT_ID   = (Processor::TASK_ID_FIRST_AVAILABLE+6),
+      TERMINATION_ID     = (Processor::TASK_ID_FIRST_AVAILABLE+7),
     };
 
     // Loggers declared elsewhere
@@ -790,15 +791,15 @@ namespace RegionRuntime {
           delete it->second;
         }
       }
-      // Before we can clear the regions, check to see if there
-      // are any subregions which we had to have separate contexts for
-      for (std::vector<RegionRequirement>::iterator it = regions.begin();
-            it != regions.end(); it++)
+      // Give back any contexts that aren't ours to the runtime
+      // The first one should always be our context
+#ifdef DEBUG_HIGH_LEVEL
+      assert(valid_contexts.size() >= 1);
+      assert(valid_contexts[0] == local_ctx);
+#endif
+      for (unsigned idx = 1; idx < valid_contexts.size(); idx++)
       {
-        if (it->ctx != local_ctx)
-        {
-          runtime->free_context(it->ctx);
-        }
+        runtime->free_context(valid_contexts[idx]);
       }
       // Clear out the abstract instances
       for (std::vector<AbstractInstance*>::iterator it = all_instances.begin();
@@ -813,6 +814,7 @@ namespace RegionRuntime {
         delete *it;
       }
       regions.clear();
+      valid_contexts.clear();
       all_instances.clear();
       wait_events.clear();
       dependent_tasks.clear();
@@ -845,6 +847,7 @@ namespace RegionRuntime {
 
       child->region_nodes = region_nodes;
       child->partition_nodes = partition_nodes;
+      child->valid_contexts.push_back(child->local_ctx); // local context is always valid
       // Update the child task with information about where it's top level regions are
       for (unsigned idx = 0; idx < child->regions.size(); idx++)
       {
@@ -861,7 +864,9 @@ namespace RegionRuntime {
           {
             // mark the more recent one as a subregion and get a new context
             child->regions[idx].subregion = true;
-            child->regions[idx].ctx = runtime->get_available_context(); 
+            Context new_ctx = runtime->get_available_context();
+            child->regions[idx].ctx = new_ctx; 
+            child->valid_contexts.push_back(new_ctx);
           }
           else if (!disjoint(handle, top))
           {
@@ -869,17 +874,23 @@ namespace RegionRuntime {
             if (subregion(top, handle))
             {
               child->regions[idx].subregion = true;
-              child->regions[idx].ctx = runtime->get_available_context();
+              Context new_ctx = runtime->get_available_context();
+              child->regions[idx].ctx = new_ctx;
+              child->valid_contexts.push_back(new_ctx);
             }
             else if (subregion(handle,top)) // the new region is the parent, put it in place
             {
               child->regions[other].subregion = true;
-              child->regions[other].ctx = runtime->get_available_context();
+              Context new_ctx = runtime->get_available_context();
+              child->regions[other].ctx = new_ctx;
+              child->valid_contexts.push_back(new_ctx);
             } 
             else // Aliased, but neither is sub-region, egad!
             {
               // Get a new context for the region
-              child->regions[idx].ctx = runtime->get_available_context();
+              Context new_ctx = runtime->get_available_context();
+              child->regions[idx].ctx = new_ctx;
+              child->valid_contexts.push_back(new_ctx);
             }
             // Continue traversing as there might be multiple levels of aliasing
           }
@@ -910,8 +921,8 @@ namespace RegionRuntime {
             // Register the region dependence beginning at the top level region
             RegionNode *top = (*region_nodes)[regions[parent_idx].handle];
             log_region(LEVEL_DEBUG,"registering region dependence for region %d"
-                                    " with parent %d",child->regions[idx].handle.id,
-                                    child->regions[idx].parent.id);
+                                    " with parent %d in context %d",child->regions[idx].handle.id,
+                                    child->regions[idx].parent.id,dep.ctx);
             top->register_region_dependence(dep);
             break;
           }
@@ -938,8 +949,9 @@ namespace RegionRuntime {
             // Register the dependence
             RegionNode *top = (*region_nodes)[child->regions[idx].parent];
             log_region(LEVEL_DEBUG,"registering region dependence for region %d"
-                                    " with created parent %d",child->regions[idx].handle.id,
-                                    child->regions[idx].parent.id);
+                                    " with created parent %d in context %d",
+                                    child->regions[idx].handle.id,
+                                    child->regions[idx].parent.id,dep.ctx);
             top->register_region_dependence(dep);
           }
         }
@@ -951,6 +963,14 @@ namespace RegionRuntime {
           exit(1);
         }
       }
+#ifdef DEBUG_HIGH_LEVEL
+      for (std::set<TaskDescription*>::iterator it = dependent_tasks.begin();
+            it != dependent_tasks.end(); it++)
+      {
+        log_task(LEVEL_DEBUG,"task %d in context %d dependends on task %d in context %d",
+                            child->task_id,child->local_ctx,(*it)->task_id,(*it)->local_ctx);
+      }
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1470,12 +1490,23 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       log_task(LEVEL_DEBUG,"finishing task %d in context %d",task_id,local_ctx);
+      // Find the set of updates
+      std::vector<std::pair<LogicalHandle,PartitionNode*> > updates;
+      size_t update_size = 0;
+      for (std::vector<RegionRequirement>::iterator it = regions.begin();
+            it != regions.end(); it++)
+      {
+        if (!it->subregion)
+        {
+          update_size += ((*region_nodes)[it->handle]->find_region_tree_updates(updates));
+        }
+      }
       // Set the return results
       if (remote)
       {
         // This is a remote task, we need to send the results back to the original processor
-        size_t buffer_size = 0;
-        unsigned num_tree_updates = 0;
+        size_t buffer_size = update_size;
+        unsigned num_tree_updates = updates.size();
         {
           buffer_size += sizeof(Context);
           buffer_size += sizeof(size_t); // result size
@@ -1490,15 +1521,6 @@ namespace RegionRuntime {
           buffer_size += sizeof(size_t); // number of deleted regions
           buffer_size += (deleted_regions.size() * sizeof(LogicalHandle));
           buffer_size += sizeof(unsigned); // number of udpates
-          for (std::vector<RegionRequirement>::iterator it = regions.begin();
-                it != regions.end(); it++)
-          {
-            if (!it->subregion)
-            {
-              buffer_size += ((*region_nodes)[it->handle]->
-                        compute_region_tree_update_size(num_tree_updates)); 
-            }
-          }
         }
         void * buffer = malloc(buffer_size);
         char * ptr = (char*)buffer;
@@ -1530,13 +1552,12 @@ namespace RegionRuntime {
         // Now encode the actual tree updates
         *((unsigned*)ptr) = num_tree_updates;
         ptr += sizeof(unsigned);
-        for (std::vector<RegionRequirement>::iterator it = regions.begin();
-              it != regions.end(); it++)
+        for (std::vector<std::pair<LogicalHandle,PartitionNode*> >::iterator it = updates.begin();
+              it != updates.end(); it++)
         {
-          if (!it->subregion)
-          {
-            (*region_nodes)[it->handle]->pack_region_tree_update(ptr);
-          }
+          *((LogicalHandle*)ptr) = it->first;
+          ptr += sizeof(LogicalHandle);
+          it->second->pack_region_tree(ptr);
         }
 
         // Launch the notify finish on the original processor (no need to wait for anything)
@@ -1570,6 +1591,17 @@ namespace RegionRuntime {
             assert(parent_ctx == parent_task->local_ctx);
 #endif
             (*region_nodes)[it->first]->initialize_context(parent_ctx);
+            // Also have to initialize any newly added partitions 
+            // for all of the parent's contexts
+            for (std::vector<std::pair<LogicalHandle,PartitionNode*> >::iterator it = 
+                  updates.begin(); it != updates.end(); it++)
+            {
+              for (std::vector<Context>::iterator ctx_it = parent_task->valid_contexts.begin();
+                    ctx_it != parent_task->valid_contexts.end(); ctx_it++)
+              {
+                it->second->initialize_context(*ctx_it);
+              }
+            }
           }
           // add the list of deleted tasks to the parent's list
           parent_task->deleted_regions.insert(deleted_regions.begin(),deleted_regions.end());
@@ -2321,6 +2353,7 @@ namespace RegionRuntime {
     void RegionNode::initialize_context(Context ctx)
     //--------------------------------------------------------------------------------------------
     {
+      log_region(LEVEL_DEBUG,"initializing region %d in context %d",handle.id,ctx);
       // Handle the local context
       if (ctx < region_states.size())
       {
@@ -2408,38 +2441,20 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    size_t RegionNode::compute_region_tree_update_size(unsigned &num_updates) const
+    size_t RegionNode::find_region_tree_updates(
+                        std::vector<std::pair<LogicalHandle,PartitionNode*> > &updates) const
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!added);
 #endif
-      // No need to check for added here, all added regions will either be subregions
-      // of a partition or handled by created regions
-      // Check all the partitions
       size_t result = 0;
       for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
             it != partitions.end(); it++)
       {
-        result += (it->second->compute_region_tree_update_size(num_updates));
+        result += (it->second->find_region_tree_updates(updates));
       }
       return result;
-    }
-    
-    //--------------------------------------------------------------------------------------------
-    void RegionNode::pack_region_tree_update(char *&buffer) const
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(!added);
-#endif
-      // No need to check for added here, all added regions will either be subregions of
-      // an added partition or handled by created regions
-      for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
-            it != partitions.end(); it++)
-      {
-        it->second->pack_region_tree_update(buffer);
-      }
     }
 
     /////////////////////////////////////////////////////////////
@@ -2608,6 +2623,7 @@ namespace RegionRuntime {
     void PartitionNode::initialize_context(Context ctx)
     //--------------------------------------------------------------------------------------------
     {
+      log_region(LEVEL_DEBUG,"initializing parition %d in context %d",pid,ctx);
       if (ctx < partition_states.size())
       {
         partition_states[ctx].open_regions.clear();
@@ -2703,53 +2719,29 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    size_t PartitionNode::compute_region_tree_update_size(unsigned &num_updates) const
+    size_t PartitionNode::find_region_tree_updates(
+                            std::vector<std::pair<LogicalHandle,PartitionNode*> > &updates) const
     //--------------------------------------------------------------------------------------------
     {
       size_t result = 0;
-      // Check to see if this partition is new
       if (added)
       {
-        // Found a new update
-        num_updates++;
         // include adding the region handle for the parent region
         result += sizeof(LogicalHandle);
         // Now figure out how much space it takes to pack up the entire subtree
         result += this->compute_region_tree_size();
+        updates.push_back(std::pair<LogicalHandle,PartitionNode*>(parent->handle,
+                            const_cast<PartitionNode*>(this))); 
       }
       else
       {
-        // Continue the traversal 
         for (std::map<LogicalHandle,RegionNode*>::const_iterator it = children.begin();
               it != children.end(); it++)
         {
-          result += (it->second->compute_region_tree_update_size(num_updates));
+          result += (it->second->find_region_tree_updates(updates));
         }
       }
       return result;
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void PartitionNode::pack_region_tree_update(char *&buffer) const
-    //--------------------------------------------------------------------------------------------
-    {
-      if (added)
-      {
-        // pack the handle of the parent region
-        *((LogicalHandle*)buffer) = parent->handle;
-        buffer += sizeof(LogicalHandle);
-        // now pack up this whole partition and its subtree
-        this->pack_region_tree(buffer);
-      }
-      else
-      {
-        // Continue the traversal
-        for (std::map<LogicalHandle,RegionNode*>::const_iterator it = children.begin();
-              it != children.end(); it++)
-        {
-          it->second->pack_region_tree_update(buffer);
-        }
-      }
     }
 
     /////////////////////////////////////////////////////////////
@@ -2851,6 +2843,7 @@ namespace RegionRuntime {
       table[FINISH_ID]          = HighLevelRuntime::finish_task;
       table[NOTIFY_START_ID]    = HighLevelRuntime::notify_start;
       table[NOTIFY_FINISH_ID]   = HighLevelRuntime::notify_finish;
+      table[ADVERTISEMENT_ID]   = HighLevelRuntime::advertise_work;
       table[TERMINATION_ID]     = HighLevelRuntime::detect_termination;
       // Check to see if an init mappers has been declared, if not, give a dummy version
       // The application can write over it if it wants
@@ -2935,6 +2928,13 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       HighLevelRuntime::get_runtime(p)->process_notify_finish(args, arglen);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::advertise_work(const void * args, size_t arglen, Processor p)
+    //--------------------------------------------------------------------------------------------
+    {
+      HighLevelRuntime::get_runtime(p)->process_advertisement(args, arglen);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3101,7 +3101,21 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       const char *buffer = (const char*)args;
-      // First get the number of tasks to process
+      // First get the processor that this comes from
+      Processor source = *((const Processor*)buffer);
+      buffer += sizeof(Processor); 
+      // Check to see if the source processor is on our list of failed steals, if so
+      // a steal no longer failed.  Note that if a task was explicitly sent to us, it
+      // might not have been a steal request, but at least there is work there, so
+      // attempting a steal on the source processor is not a bad thing.
+      {
+        std::set<Processor>::iterator finder = failed_steals.find(source);
+        if (finder != failed_steals.end())
+        {
+          failed_steals.erase(finder);
+        }
+      }
+      // Then get the number of tasks to process
       int num_tasks = *((const int*)buffer);
       buffer += sizeof(int);
       // Unpack each of the tasks
@@ -3175,7 +3189,7 @@ namespace RegionRuntime {
       // We've now got our tasks to steal
       if (!stolen.empty())
       {
-        size_t total_buffer_size = sizeof(int);
+        size_t total_buffer_size = sizeof(Processor) + sizeof(int);
         // Count up the size of elements to steal
         for (std::set<TaskDescription*>::iterator it = stolen.begin();
                 it != stolen.end(); it++)
@@ -3185,6 +3199,8 @@ namespace RegionRuntime {
         // Allocate the buffer
         char * target_buffer = (char*)malloc(total_buffer_size);
         char * target_ptr = target_buffer;
+        *((Processor*)target_ptr) = local_proc;
+        target_ptr += sizeof(Processor);
         *((int*)target_ptr) = int(stolen.size());
         target_ptr += sizeof(int);
         // Write the task descriptions into memory
@@ -3222,6 +3238,12 @@ namespace RegionRuntime {
           if ((*it)->remote)
             (*it)->deactivate();
         }
+      }
+      else
+      {
+        // Record the failed steal attempt so we can tell the theif
+        // when we have more work to do
+        failed_thiefs.insert(thief);
       }
     }
 
@@ -3291,6 +3313,20 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_advertisement(const void * args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Get the processor that is advertising work
+      Processor advertiser = *((const Processor*)args);
+      // If it is on our list of failed steals, remove it
+      std::set<Processor>::iterator finder = failed_steals.find(advertiser);
+      if (finder != failed_steals.end())
+      {
+        failed_steals.erase(finder);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::process_termination(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
@@ -3315,6 +3351,8 @@ namespace RegionRuntime {
     {
       log_task(LEVEL_SPEW,"Running scheduler on processor %d with %ld tasks in ready queue",
               local_proc.id, ready_queue.size());
+      // Update the queue to make sure as many tasks are awake as possible
+      update_queue();
       // Launch up to MAX_TASK_MAPS_PER_STEP tasks, either from the ready queue, or
       // by detecting tasks that become ready to map on the waiting queue
       int mapped_tasks = 0;
@@ -3332,7 +3370,14 @@ namespace RegionRuntime {
           // Check the waiting queue for new tasks to move onto our ready queue
           update_queue();
           // If we've launched enough tasks, return
-          if (mapped_tasks == MAX_TASK_MAPS_PER_STEP) return;
+          if (mapped_tasks == MAX_TASK_MAPS_PER_STEP)
+          {
+            // If we've launched enough tasks and we still have leftovers
+            // notify our failed stealers that we have more work
+            if (!ready_queue.empty() && !failed_thiefs.empty())
+              advertise();
+            return;
+          }
         }
         else
         {
@@ -3347,14 +3392,23 @@ namespace RegionRuntime {
             // Check the waiting queue for new tasks to move onto our ready queue
             update_queue();
             // If we've launched enough tasks, return
-            if (mapped_tasks == MAX_TASK_MAPS_PER_STEP) return;
+            if (mapped_tasks == MAX_TASK_MAPS_PER_STEP) 
+            {
+              // If we've launched enough tasks and we still have leftovers
+              // notify our failed stealers that we have more work
+              if (!ready_queue.empty() && !failed_thiefs.empty())
+                advertise();
+              return;
+            }
           }
           else
           {
             // Send the task to the target processor
-            size_t buffer_size = sizeof(int)+task->compute_task_size();
+            size_t buffer_size = sizeof(Processor)+sizeof(int)+task->compute_task_size();
             void * buffer = malloc(buffer_size);
             char * ptr = (char*)buffer;
+            *((Processor*)ptr) = local_proc;
+            ptr += sizeof(Processor);
             *((int*)ptr) = 1; // We're only sending one task
             ptr += sizeof(int); 
             task->pack_task(ptr);
@@ -3394,6 +3448,7 @@ namespace RegionRuntime {
         assert(src_mem.exists());
 #endif
         InstanceInfo *src_info = desc->abstract_src[idx]->find_instance(src_mem);
+#ifdef DEBUG_HIGH_LEVEL
         if (src_info == NULL)
         {
           std::map<Memory,InstanceInfo*>& valid_instances = 
@@ -3409,6 +3464,7 @@ namespace RegionRuntime {
           }
           exit(1);
         }
+#endif
         desc->src_instances.push_back(src_info);
         log_inst(LEVEL_DEBUG,"Region argument %d with handle %d for task %d in context %d has"
                               " source instance %d in memory %d",idx,
@@ -3589,6 +3645,15 @@ namespace RegionRuntime {
       for (std::multimap<Processor,MapperID>::const_iterator it = targets.begin();
             it != targets.end(); )
       {
+        // Check to make sure that the processor isn't on the list of failed
+        // steal requests
+        if (failed_steals.find(it->first) != failed_steals.end())
+        {
+          Processor target = it->first;
+          // Count past everything using this processor
+          while (it != targets.upper_bound(target)) it++;
+          continue;
+        }
         Processor target = it->first;
         int num_mappers = targets.count(target);
         log_task(LEVEL_SPEW,"Processor %d attempting steal on processor %d",
@@ -3615,9 +3680,23 @@ namespace RegionRuntime {
         Event steal = target.spawn(STEAL_TASK_ID,buffer,buffer_size);
         // Enqueue the steal request on the list of oustanding steals
         outstanding_steal_events.push_back(steal);
+        // Also add this to the list of failed steals in case it never comes back
+        failed_steals.insert(it->first);
         // Clean up our mess
         free(buffer);
       }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::advertise(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      for (std::set<Processor>::iterator it = failed_thiefs.begin();
+            it != failed_thiefs.end(); it++)
+      {
+        (*it).spawn(ADVERTISEMENT_ID,&local_proc,sizeof(Processor));  
+      }
+      failed_thiefs.clear();
     }
 
 #if 0
