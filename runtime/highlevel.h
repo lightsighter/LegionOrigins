@@ -187,20 +187,25 @@ namespace RegionRuntime {
       friend class RegionNode;
       friend class PartitionNode;
     protected:
-      CopyOperation(AbstractInstance *dst);
+      CopyOperation(AbstractInstance *inst, Event wait_on);
       ~CopyOperation();
       void add_sub_copy(CopyOperation *sub);
-      void add_src_inst(AbstractInstance *inst, Event wait_on = Event::NO_EVENT);
-      Event execute(Mapper *m, TaskDescription *desc, Event wait_on,
-                    const std::vector<Memory> &destinations,
-                    const std::vector<InstanceInfo*> &dst_inst,
+      Event execute(Mapper *m, TaskDescription *desc, 
                     std::vector<std::pair<AbstractInstance*,InstanceInfo*> > &sources);
+      // A special execute operation that already knows where the close is going to go
+      Event execute_close(Mapper *m, TaskDescription *desc, InstanceInfo *target,
+                    std::vector<std::pair<AbstractInstance*,InstanceInfo*> > &sources);
+      bool is_triggered(void) const;
+      Event get_result_event(void) const;
     protected:
-      AbstractInstance *const dst_instance;
+      AbstractInstance *const instance;
     private:
-      std::vector<AbstractInstance*> src_instances;
+      std::vector<TaskDescription*> dependent_tasks;
       std::vector<Event> src_events; // Events indicating when the sources can be used
       std::vector<CopyOperation*> sub_copies;
+      Event wait_event; // The event to wait on before executing this copy operation
+      Event finished_event; // If we've already triggered, this is the resulting event
+      bool triggered; // Check whether this copy operation has been triggerd
     };
 
     struct DependenceDetector {
@@ -280,6 +285,9 @@ namespace RegionRuntime {
       std::vector<InstanceInfo*> src_instances; // Sources for our regions (immov)
       std::vector<InstanceInfo*> instances; // Region instances for the regions (immov)
       // Copy operations (must be performed before steal/send)
+      // After this task is launched, this vector is emptied, and we use it store
+      // all the copy trees created in this task's context as it executes so we 
+      // can clean them up later
       std::vector<CopyOperation*> pre_copy_trees; // (immov)
       // Instances that we need to return to the abstract instance after copy operations
       std::vector<std::pair<AbstractInstance*,InstanceInfo*> > copy_instances;
@@ -550,6 +558,7 @@ namespace RegionRuntime {
         PartitionID open_partition;
         std::vector<std::pair<RegionRequirement*,TaskDescription*> > active_tasks;
         AbstractInstance *valid_instance;
+        CopyOperation *prev_copy;  // Previous copy operation in case of no conflict
       };
     protected:
       friend class HighLevelRuntime;
@@ -579,6 +588,8 @@ namespace RegionRuntime {
       void open_subtree(DependenceDetector &dep);
 
       void initialize_context(Context ctx);
+
+      Event close_region(Context ctx, TaskDescription *desc, InstanceInfo *target);
 
       // Functions for packing and unpacking the region tree
       size_t compute_region_tree_size(void) const;
