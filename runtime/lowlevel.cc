@@ -1,5 +1,14 @@
 #include "lowlevel.h"
+#include "lowlevel_impl.h"
 
+#define USE_GPU
+#ifdef USE_GPU
+#include "lowlevel_gpu.h"
+#endif
+
+GASNETT_THREADKEY_DEFINE(cur_thread);
+
+#if 0
 #include <assert.h>
 
 #define GASNET_PAR
@@ -43,6 +52,7 @@ GASNETT_THREADKEY_DEFINE(cur_thread);
 // this is an implementation of the low level region runtime on top of GASnet+pthreads+CUDA
 
 // GASnet helper stuff
+#endif
 
 namespace RegionRuntime {
   namespace LowLevel {
@@ -126,7 +136,10 @@ namespace RegionRuntime {
       fputs(buffer, stderr);
     }
 
-    static Logger::Category log_mutex("mutex");
+    Logger::Category log_gpu("gpu");
+    Logger::Category log_mutex("mutex");
+
+#if 0
 
     class AutoHSLLock {
     public:
@@ -415,6 +428,16 @@ namespace RegionRuntime {
       CoherentData *data;
       Lock::Impl *lock;
     };
+#endif
+
+    /*static*/ Runtime *Runtime::runtime = 0;
+
+    Node::Node(void)
+    {
+      gasnet_hsl_init(&mutex);
+      events.reserve(1000);
+      locks.reserve(1000);
+    }
 
     struct LockRequestArgs {
       gasnet_node_t node;
@@ -519,53 +542,28 @@ namespace RegionRuntime {
       ElementMask avail_elmts, changed_elmts;
     };
 
-    class RegionInstanceUntyped::Impl {
-    public:
-      Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, int _offset)
-	: me(_me), memory(_memory)
-      {
-	locked_data.valid = true;
-	locked_data.region = _region;
-	locked_data.offset = _offset;
-	lock.init(ID(me).convert<Lock>(), ID(me).node());
-	lock.set_local_data(&locked_data);
-      }
+    RegionInstanceUntyped::Impl::Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, int _offset)
+      : me(_me), memory(_memory)
+    {
+      locked_data.valid = true;
+      locked_data.region = _region;
+      locked_data.offset = _offset;
+      lock.init(ID(me).convert<Lock>(), ID(me).node());
+      lock.set_local_data(&locked_data);
+    }
 
-      // when we auto-create a remote instance, we don't know region/offset
-      Impl(RegionInstanceUntyped _me, Memory _memory)
-	: me(_me), memory(_memory)
-      {
-	locked_data.valid = false;
-	locked_data.region = RegionMetaDataUntyped::NO_REGION;
-	locked_data.offset = -1;
-	lock.init(ID(me).convert<Lock>(), ID(me).node());
-	lock.set_local_data(&locked_data);
-      }
+    // when we auto-create a remote instance, we don't know region/offset
+    RegionInstanceUntyped::Impl::Impl(RegionInstanceUntyped _me, Memory _memory)
+      : me(_me), memory(_memory)
+    {
+      locked_data.valid = false;
+      locked_data.region = RegionMetaDataUntyped::NO_REGION;
+      locked_data.offset = -1;
+      lock.init(ID(me).convert<Lock>(), ID(me).node());
+      lock.set_local_data(&locked_data);
+    }
 
-      ~Impl(void) {}
-
-      void get_bytes(unsigned ptr_value, void *dst, size_t size);
-      void put_bytes(unsigned ptr_value, const void *src, size_t size);
-
-      static void copy(RegionInstanceUntyped src, 
-		       RegionInstanceUntyped target,
-		       size_t bytes_to_copy,
-		       Event after_copy = Event::NO_EVENT);
-
-    public: //protected:
-      friend class RegionInstanceUntyped;
-
-      RegionInstanceUntyped me;
-      Memory memory;
-
-      struct StaticData {
-	bool valid;
-	RegionMetaDataUntyped region;
-	int offset;
-      } locked_data;
-
-      Lock::Impl lock;
-    };
+    RegionInstanceUntyped::Impl::~Impl(void) {}
 
     ///////////////////////////////////////////////////
     // Events
@@ -1452,63 +1450,6 @@ namespace RegionRuntime {
 
     /*static*/ const Memory Memory::NO_MEMORY = { 0 };
 
-    class Memory::Impl {
-    public:
-      enum MemoryKind {
-	MKIND_SYSMEM,  // directly accessible from CPU
-	MKIND_GASNET,  // accessible via GASnet RDMA
-	MKIND_REMOTE,  // not accessible
-	MKIND_GPUFB,   // GPU framebuffer memory (accessible via cudaMemcpy)
-	MKIND_ZEROCOPY, // CPU memory, pinned for GPU access
-      };
-
-      Impl(Memory _me, size_t _size, MemoryKind _kind)
-	: me(_me), size(_size), kind(_kind)
-      {
-	gasnet_hsl_init(&mutex);
-      }
-
-      unsigned add_allocator(RegionAllocatorUntyped::Impl *a);
-      unsigned add_instance(RegionInstanceUntyped::Impl *i);
-
-      RegionAllocatorUntyped::Impl *get_allocator(RegionAllocatorUntyped a);
-      RegionInstanceUntyped::Impl *get_instance(RegionInstanceUntyped i);
-
-      RegionAllocatorUntyped create_allocator_local(RegionMetaDataUntyped r,
-						    size_t bytes_needed);
-      RegionInstanceUntyped create_instance_local(RegionMetaDataUntyped r,
-						  size_t bytes_needed);
-
-      RegionAllocatorUntyped create_allocator_remote(RegionMetaDataUntyped r,
-						     size_t bytes_needed);
-      RegionInstanceUntyped create_instance_remote(RegionMetaDataUntyped r,
-						   size_t bytes_needed);
-
-      virtual RegionAllocatorUntyped create_allocator(RegionMetaDataUntyped r,
-						      size_t bytes_needed) = 0;
-      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
-						    size_t bytes_needed) = 0;
-
-      void destroy_allocator(RegionAllocatorUntyped a, bool local_destroy);
-      void destroy_instance(RegionInstanceUntyped i, bool local_destroy);
-
-      virtual int alloc_bytes(size_t size) = 0;
-      virtual void free_bytes(int offset, size_t size) = 0;
-
-      virtual void get_bytes(unsigned offset, void *dst, size_t size) = 0;
-      virtual void put_bytes(unsigned offset, const void *src, size_t size) = 0;
-
-      virtual void *get_direct_ptr(unsigned offset, size_t size) = 0;
-
-    public:
-      Memory me;
-      size_t size;
-      MemoryKind kind;
-      gasnet_hsl_t mutex; // protection for resizing vectors
-      std::vector<RegionAllocatorUntyped::Impl *> allocators;
-      std::vector<RegionInstanceUntyped::Impl *> instances;
-    };
-
     struct RemoteMemAllocArgs {
       Memory memory;
       size_t size;
@@ -1525,6 +1466,53 @@ namespace RegionRuntime {
     typedef ActiveMessageShortReply<REMOTE_MALLOC_MSGID, REMOTE_MALLOC_RPLID,
 				    RemoteMemAllocArgs, int,
 				    handle_remote_mem_alloc> RemoteMemAllocMessage;
+
+    int Memory::Impl::alloc_bytes_local(size_t size)
+    {
+      for(std::map<int, int>::iterator it = free_blocks.begin();
+	  it != free_blocks.end();
+	  it++) {
+	if(it->second == (int)size) {
+	  // perfect match
+	  int retval = it->first;
+	  free_blocks.erase(it);
+	  return retval;
+	}
+	
+	if(it->second > (int)size) {
+	  // some left over
+	  int leftover = it->second - size;
+	  int retval = it->first + leftover;
+	  it->second = leftover;
+	  return retval;
+	}
+      }
+
+      // no blocks large enough - boo hoo
+      return -1;
+    }
+
+    void Memory::Impl::free_bytes_local(int offset, size_t size)
+    {
+      assert(0);
+    }
+
+    int Memory::Impl::alloc_bytes_remote(size_t size)
+    {
+      // RPC over to owner's node for allocation
+
+      RemoteMemAllocArgs args;
+      args.memory = me;
+      args.size = size;
+      int retval = RemoteMemAllocMessage::request(ID(me).node(), args);
+      //printf("got: %d\n", retval);
+      return retval;
+    }
+
+    void Memory::Impl::free_bytes_remote(int offset, size_t size)
+    {
+      assert(0);
+    }
 
     class LocalCPUMemory : public Memory::Impl {
     public:
@@ -1554,32 +1542,12 @@ namespace RegionRuntime {
 
       virtual int alloc_bytes(size_t size)
       {
-	for(std::map<int, int>::iterator it = free_blocks.begin();
-	    it != free_blocks.end();
-	    it++) {
-	  if(it->second == (int)size) {
-	    // perfect match
-	    int retval = it->first;
-	    free_blocks.erase(it);
-	    return retval;
-	  }
-
-	  if(it->second > (int)size) {
-	    // some left over
-	    int leftover = it->second - size;
-	    int retval = it->first + leftover;
-	    it->second = leftover;
-	    return retval;
-	  }
-	}
-
-	// no blocks large enough - boo hoo
-	return -1;
+	return alloc_bytes_local(size);
       }
 
       virtual void free_bytes(int offset, size_t size)
       {
-	assert(0);
+	free_bytes_local(offset, size);
       }
 
       virtual void get_bytes(unsigned offset, void *dst, size_t size)
@@ -1599,7 +1567,6 @@ namespace RegionRuntime {
 
     protected:
       char *base;
-      std::map<int, int> free_blocks;
     };
 
     class RemoteMemory : public Memory::Impl {
@@ -1623,19 +1590,12 @@ namespace RegionRuntime {
 
       virtual int alloc_bytes(size_t size)
       {
-	// RPC over to owner's node for allocation
-
-	RemoteMemAllocArgs args;
-	args.memory = me;
-	args.size = size;
-	int retval = RemoteMemAllocMessage::request(ID(me).node(), args);
-	//printf("got: %d\n", retval);
-	return retval;
+	return alloc_bytes_remote(size);
       }
 
       virtual void free_bytes(int offset, size_t size)
       {
-	assert(0);
+	free_bytes_remote(offset, size);
       }
 
       virtual void get_bytes(unsigned offset, void *dst, size_t size)
@@ -2029,33 +1989,6 @@ namespace RegionRuntime {
     {
       return Runtime::runtime->get_processor_impl(*this);
     }
-
-    class Processor::Impl {
-    public:
-      Impl(Processor _me, Processor::Kind _kind)
-	: me(_me), kind(_kind), run_counter(0) {}
-
-      void run(Atomic<int> *_run_counter)
-      {
-	run_counter = _run_counter;
-      }
-
-      virtual void spawn_task(Processor::TaskFuncID func_id,
-			      const void *args, size_t arglen,
-			      //std::set<RegionInstanceUntyped> instances_needed,
-			      Event start_event, Event finish_event) = 0;
-
-      void finished(void)
-      {
-	if(run_counter)
-	  run_counter->decrement();
-      }
-
-    public:
-      Processor me;
-      Processor::Kind kind;
-      Atomic<int> *run_counter;
-    };
 
     Logger::Category log_task("task");
 
@@ -3780,8 +3713,10 @@ namespace RegionRuntime {
       CHECK_GASNET( gasnet_init(argc, argv) );
 
       // low-level runtime parameters
-      unsigned gasnet_mem_size_in_mb = 32;
-      unsigned cpu_mem_size_in_mb = 128;
+      size_t gasnet_mem_size_in_mb = 32;
+      size_t cpu_mem_size_in_mb = 48;
+      size_t zc_mem_size_in_mb = 64;
+      size_t fb_mem_size_in_mb = 256;
       unsigned num_local_cpus = 1;
       unsigned num_local_gpus = 0;
       unsigned cpu_worker_threads = 1;
@@ -3863,7 +3798,7 @@ namespace RegionRuntime {
       // create local memory
       LocalCPUMemory *cpumem = new LocalCPUMemory(ID(ID::ID_MEMORY, 
 						     gasnet_mynode(),
-						     n->memories.size()).convert<Memory>(),
+						     n->memories.size(), 0).convert<Memory>(),
 						  cpu_mem_size_in_mb << 20);
       n->memories.push_back(cpumem);
       adata[apos++] = NODE_ANNOUNCE_MEM;
@@ -3892,6 +3827,73 @@ namespace RegionRuntime {
       adata[apos++] = r->global_memory->me.id;
       adata[apos++] = 30;  // "lower" bandwidth
       adata[apos++] = 25;    // "higher" latency
+
+#ifdef USE_GPU
+      if(num_local_gpus > 0) {
+	std::set<GPUProcessor *> local_gpu_procs;
+
+	for(unsigned i = 0; i < num_local_gpus; i++) {
+	  Processor p = ID(ID::ID_PROCESSOR, 
+			   gasnet_mynode(), 
+			   n->processors.size()).convert<Processor>();
+	  printf("GPU's ID is %x\n", p.id);
+ 	  GPUProcessor *gp = new GPUProcessor(p, i,
+					      zc_mem_size_in_mb << 20,
+					      fb_mem_size_in_mb << 20);
+	  n->processors.push_back(gp);
+
+	  adata[apos++] = NODE_ANNOUNCE_PROC;
+	  adata[apos++] = p.id;
+	  adata[apos++] = Processor::TOC_PROC;
+
+	  Memory m = ID(ID::ID_MEMORY,
+			gasnet_mynode(),
+			n->memories.size(), 0).convert<Memory>();
+	  GPUFBMemory *fbm = new GPUFBMemory(m, gp);
+	  n->memories.push_back(fbm);
+
+	  adata[apos++] = NODE_ANNOUNCE_MEM;
+	  adata[apos++] = m.id;
+	  adata[apos++] = fbm->size;
+
+	  // FB has very good bandwidth and ok latency to GPU
+	  adata[apos++] = NODE_ANNOUNCE_PMA;
+	  adata[apos++] = p.id;
+	  adata[apos++] = m.id;
+	  adata[apos++] = 200; // "big" bandwidth
+	  adata[apos++] = 5;   // "ok" latency
+
+	  Memory m2 = ID(ID::ID_MEMORY,
+			 gasnet_mynode(),
+			 n->memories.size(), 0).convert<Memory>();
+	  GPUZCMemory *zcm = new GPUZCMemory(m2, gp);
+	  n->memories.push_back(zcm);
+
+	  adata[apos++] = NODE_ANNOUNCE_MEM;
+	  adata[apos++] = m2.id;
+	  adata[apos++] = zcm->size;
+
+	  // ZC has medium bandwidth and bad latency to GPU
+	  adata[apos++] = NODE_ANNOUNCE_PMA;
+	  adata[apos++] = p.id;
+	  adata[apos++] = m2.id;
+	  adata[apos++] = 20;
+	  adata[apos++] = 200;
+
+	  // ZC also accessible to all the local CPUs
+	  for(std::set<LocalProcessor *>::iterator it = local_cpu_procs.begin();
+	      it != local_cpu_procs.end();
+	      it++) {
+	    adata[apos++] = NODE_ANNOUNCE_PMA;
+	    adata[apos++] = (*it)->me.id;
+	    adata[apos++] = m2.id;
+	    adata[apos++] = 40;
+	    adata[apos++] = 3;
+	  }
+	}
+      }
+					      
+#endif
 
       adata[apos++] = NODE_ANNOUNCE_DONE;
       assert(apos < ADATA_SIZE);
