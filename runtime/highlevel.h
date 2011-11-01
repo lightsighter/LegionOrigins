@@ -42,10 +42,10 @@ namespace RegionRuntime {
     class InstanceInfo;
 
     enum {
-      // To see where the +7,8,9 come from, see the top of highlevel.cc
-      TASK_ID_INIT_MAPPERS = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+7,
-      TASK_ID_REGION_MAIN = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+8,
-      TASK_ID_AVAILABLE = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+9,
+      // To see where the +8,9,10 come from, see the top of highlevel.cc
+      TASK_ID_INIT_MAPPERS = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+8,
+      TASK_ID_REGION_MAIN = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+9,
+      TASK_ID_AVAILABLE = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+10,
     };
     
     enum AccessMode {
@@ -256,6 +256,8 @@ namespace RegionRuntime {
       const Processor local_proc; // The local processor this task is on
       TaskDescription *parent_task; // Only valid when local
       Mapper *mapper;
+      // for the case where we have subregions with different contexts
+      std::vector<Context> valid_contexts; 
     protected:
       // Information to send back to the original processor
       bool remote; // Send back an event if true
@@ -285,6 +287,9 @@ namespace RegionRuntime {
       // New top level regions
       std::map<LogicalHandle,AbstractInstance*> created_regions;       
       std::set<LogicalHandle> deleted_regions; // The regions deleted in this task and children
+      // Partitions added in THIS task only so we can initialize them in
+      // the parent's context if the task is local
+      std::set<PartitionNode*> added_partitions;
       // Keep track of all the abstract instances so we can free them after the task is finished
       std::vector<AbstractInstance*> all_instances;
     private:
@@ -345,6 +350,7 @@ namespace RegionRuntime {
       void reset(void);
       // Also give an event for when the result becomes valid
       void set_result(const void * res, size_t result_size);
+      void trigger(void);
     protected:
       inline bool is_set(void) const { return set; }
       // Give the implementation here so we avoid the template
@@ -581,8 +587,8 @@ namespace RegionRuntime {
               Context ctx, std::map<LogicalHandle,RegionNode*> *region_nodes,
                           std::map<PartitionID,PartitionNode*> *partition_nodes, bool add);
       // Functions for packing and unpacking updates to the region tree
-      size_t compute_region_tree_update_size(unsigned &num_updates) const;
-      void pack_region_tree_update(char *&buffer) const;
+      size_t find_region_tree_updates(
+                std::vector<std::pair<LogicalHandle,PartitionNode*> > &updates) const;
 
     protected:
       const LogicalHandle handle;
@@ -628,8 +634,8 @@ namespace RegionRuntime {
               Context ctx, std::map<LogicalHandle,RegionNode*> *region_nodes,
                           std::map<PartitionID,PartitionNode*> *partition_nodes, bool add);
       // Functions for packing and unpacking updates to the region tree
-      size_t compute_region_tree_update_size(unsigned &num_updates) const;
-      void pack_region_tree_update(char *&buffer) const;
+      size_t find_region_tree_updates(
+              std::vector<std::pair<LogicalHandle,PartitionNode*> > &updates) const;
 
     protected:
       const PartitionID pid;
@@ -673,6 +679,7 @@ namespace RegionRuntime {
       static void finish_task(const void * args, size_t arglen, Processor p);
       static void notify_start(const void * args, size_t arglen, Processor p);
       static void notify_finish(const void * args, size_t arglen, Processor p);
+      static void advertise_work(const void * args, size_t arglen, Processor p);
       // Shutdown methods (one task to detect the termination, another to process it)
       static void detect_termination(const void * args, size_t arglen, Processor p);
       static void notify_termination(const void * args, size_t arglen, Processor p);
@@ -713,12 +720,14 @@ namespace RegionRuntime {
       void process_notify_start(const void * args, size_t arglen);
       void process_notify_finish(const void* args, size_t arglen);
       void process_termination(const void * args, size_t arglen);
+      void process_advertisement(const void * args, size_t arglen);
       // Where the magic happens!
       void process_schedule_request(void);
       void map_and_launch_task(TaskDescription *task);
       void update_queue(void);
       bool check_steal_requests(void);
       void issue_steal_requests(void);
+      void advertise(void); // Advertise work when we have it
     protected:
       //bool disjoint(LogicalHandle region1, LogicalHandle region2);
     private:
@@ -733,6 +742,10 @@ namespace RegionRuntime {
       std::vector<TaskDescription*> all_tasks; // All available tasks
       PartitionID next_partition_id; // The next partition id for this runtime (unique)
       const unsigned partition_stride;  // Stride for partition ids to guarantee uniqueness
+      // To avoid over subscribing the system with steal requests, keep track of
+      // which processors we failed to steal from, and which failed to steal from us
+      std::set<Processor> failed_steals;
+      std::set<Processor> failed_thiefs;
     public:
       // Functions for creating and destroying logical regions
       template<typename T>

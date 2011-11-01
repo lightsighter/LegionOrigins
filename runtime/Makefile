@@ -76,4 +76,4 @@ cktgpu2:	lowlevel.o lowlevel_gpu.o highlevel.o circuit_gpu.o
 	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
 
 clean:
-	rm -f ring tree *.o
+	rm -f ckt ring tree *.o

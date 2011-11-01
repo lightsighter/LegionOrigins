@@ -1069,10 +1069,22 @@ namespace RegionRuntime {
     // This task will always unlock it
     void ProcessorImpl::execute_task(bool permit_shutdown)
     {
+        // Look through the waiting queue, to see if any tasks
+        // have been woken up	
+        for (std::list<TaskDesc>::iterator it = waiting_queue.begin();
+              it != waiting_queue.end(); it++)
+        {
+          if (it->wait.has_triggered())
+          {
+            ready_queue.push_back(*it);
+            waiting_queue.erase(it);
+            break;
+          }	
+        }	
 	// Check to see how many tasks there are
 	// If there are too few, invoke the scheduler
         // If we've been told to shutdown, never invoke the scheduler
-	if (has_scheduler && !shutdown && (ready_queue.size()+waiting_queue.size()) < MIN_SCHED_TASKS)
+	if (has_scheduler && !shutdown && (ready_queue.size()/*+waiting_queue.size()*/) < MIN_SCHED_TASKS)
 	{
 		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
                 Processor::TaskFuncPtr scheduler = task_table[Processor::TASK_ID_PROCESSOR_IDLE];
@@ -1098,23 +1110,9 @@ namespace RegionRuntime {
                         }
                         pthread_exit(NULL);	
 		}
-		// Look through the waiting queue, to see if any events
-		// have been woken up	
-		for (std::list<TaskDesc>::iterator it = waiting_queue.begin();
-			it != waiting_queue.end(); it++)
-		{
-			if (it->wait.has_triggered())
-			{
-				ready_queue.push_back(*it);
-				waiting_queue.erase(it);
-				break;
-			}	
-		}	
+		
 		// Wait until someone tells us there is work to do
-		if (ready_queue.empty())
-		{
-			PTHREAD_SAFE_CALL(pthread_cond_wait(&wait_cond,&mutex));
-		}
+                PTHREAD_SAFE_CALL(pthread_cond_wait(&wait_cond,&mutex));
 		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 	}
 	else
@@ -1744,14 +1742,12 @@ namespace RegionRuntime {
     {
 	RegionInstanceImpl *target_impl = Runtime::get_runtime()->get_instance_impl(target);
 #ifdef DEBUG_LOW_LEVEL
-	assert(target_impl->num_elmts == num_elmts);
-	assert(target_impl->elmt_size == elmt_size);
+	//assert(target_impl->num_elmts == num_elmts);
+	//assert(target_impl->elmt_size == elmt_size);
 #endif
 	// Check to see if the event exists
 	if (wait_on.exists())
 	{
-		// TODO: Need to handle multiple outstanding copies 
-
 		// Try registering this as a triggerable with the event	
 		EventImpl *event_impl = Runtime::get_runtime()->get_event_impl(wait_on);
 		PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
@@ -1771,14 +1767,14 @@ namespace RegionRuntime {
 		{
 			PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 			// The event occurred do the copy and return
-			memcpy(target_impl->base_ptr,base_ptr,num_elmts*elmt_size);
+			//memcpy(target_impl->base_ptr,base_ptr,num_elmts*elmt_size);
 			return Event::NO_EVENT;
 		}
 	}
 	else
 	{
 		// It doesn't exist, do the memcpy and return
-		memcpy(target_impl->base_ptr,base_ptr,num_elmts*elmt_size);
+		//memcpy(target_impl->base_ptr,base_ptr,num_elmts*elmt_size);
 		return Event::NO_EVENT;
 	}
     }
@@ -1794,7 +1790,7 @@ namespace RegionRuntime {
           if (it->id == handle)
           {
             found = true;
-            memcpy(it->dst_ptr,base_ptr,num_elmts*elmt_size);
+            //memcpy(it->dst_ptr,base_ptr,num_elmts*elmt_size);
             it->complete->trigger();
             // Remove it from the list
             pending_copies.erase(it);
