@@ -121,6 +121,7 @@ namespace RegionRuntime {
       gen_t gen;
       bool operator<(const Event& rhs) const { return id < rhs.id; }
       bool operator==(const Event& rhs) const { return id == rhs.id; }
+      bool operator!=(const Event& rhs) const { return id != rhs.id; }
 
       class Impl;
       Impl *impl(void) const;
@@ -158,6 +159,7 @@ namespace RegionRuntime {
       id_t id;
       bool operator<(const Lock& rhs) const { return id < rhs.id; }
       bool operator==(const Lock& rhs) const { return id == rhs.id; }
+      bool operator!=(const Lock& rhs) const { return id != rhs.id; }
 
       class Impl;
       Impl *impl(void) const;
@@ -291,6 +293,7 @@ namespace RegionRuntime {
       id_t id;
       bool operator<(const RegionMetaDataUntyped &rhs) const { return id < rhs.id; }
       bool operator==(const RegionMetaDataUntyped &rhs) const { return id == rhs.id; }
+      bool operator!=(const RegionMetaDataUntyped &rhs) const { return id != rhs.id; }
 
       class Impl;
       Impl *impl(void) const;
@@ -318,6 +321,7 @@ namespace RegionRuntime {
       id_t id;
       bool operator<(const RegionAllocatorUntyped &rhs) const { return id < rhs.id; }
       bool operator==(const RegionAllocatorUntyped &rhs) const { return id == rhs.id; }
+      bool operator!=(const RegionAllocatorUntyped &rhs) const { return id != rhs.id; }
 
       class Impl;
       Impl *impl(void) const;
@@ -459,6 +463,7 @@ namespace RegionRuntime {
       id_t id;
       bool operator<(const RegionInstanceUntyped &rhs) const { return id < rhs.id; }
       bool operator==(const RegionInstanceUntyped &rhs) const { return id == rhs.id; }
+      bool operator!=(const RegionInstanceUntyped &rhs) const { return id != rhs.id; }
 
       class Impl;
       Impl *impl(void) const;

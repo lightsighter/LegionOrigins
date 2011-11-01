@@ -476,12 +476,28 @@ namespace RegionRuntime {
 
     class RegionMetaDataUntyped::Impl {
     public:
-      Impl(RegionMetaDataUntyped _me, size_t _num_elmts, size_t _elmt_size)
+      Impl(RegionMetaDataUntyped _me, RegionMetaDataUntyped _parent,
+	   size_t _num_elmts, size_t _elmt_size,
+	   const ElementMask *_initial_valid_mask = 0, bool _frozen = false)
 	: me(_me)
       {
 	locked_data.valid = true;
+	locked_data.parent = _parent;
+	locked_data.frozen = _frozen;
 	locked_data.num_elmts = _num_elmts;
 	locked_data.elmt_size = _elmt_size;
+	locked_data.valid_mask_owners = (1ULL << gasnet_mynode());
+	locked_data.avail_mask_owner = gasnet_mynode();
+	valid_mask = (_initial_valid_mask?
+		        new ElementMask(*_initial_valid_mask) :
+		        new ElementMask(_num_elmts));
+	if(_frozen) {
+	  avail_mask = 0;
+	} else {
+	  avail_mask = new ElementMask(_num_elmts);
+	  if(_parent == RegionMetaDataUntyped::NO_REGION)
+	    avail_mask->enable(0, _num_elmts);
+	}
 	lock.init(ID(me).convert<Lock>(), ID(me).node());
 	lock.set_local_data(&locked_data);
       }
@@ -491,13 +507,20 @@ namespace RegionRuntime {
 	: me(_me)
       {
 	locked_data.valid = false;
+	locked_data.parent = RegionMetaDataUntyped::NO_REGION;
+	locked_data.frozen = false;
 	locked_data.num_elmts = 0;
 	locked_data.elmt_size = 0;  // automatically ask for shared lock to fill these in?
+	locked_data.valid_mask_owners = 0;
+	locked_data.avail_mask_owner = -1;
 	lock.init(ID(me).convert<Lock>(), ID(me).node());
 	lock.set_local_data(&locked_data);
       }
 
-      ~Impl(void) {}
+      ~Impl(void)
+      {
+	delete valid_mask;
+      }
 
       size_t instance_size(void)
       {
@@ -513,10 +536,18 @@ namespace RegionRuntime {
 
       struct StaticData {
 	bool valid;
+	RegionMetaDataUntyped parent;
+	bool frozen;
 	size_t num_elmts, elmt_size;
       };
+      struct CoherentData : public StaticData {
+	unsigned valid_mask_owners;
+	int avail_mask_owner;
+      };
 
-      StaticData locked_data;
+      CoherentData locked_data;
+      ElementMask *valid_mask;
+      ElementMask *avail_mask;
     };
 
     class RegionAllocatorUntyped::Impl {
@@ -530,13 +561,15 @@ namespace RegionRuntime {
       void free_elements(unsigned ptr, unsigned count = 1);
 
       struct StaticData {
+	bool valid;
 	RegionMetaDataUntyped region;
 	Memory memory;
 	int mask_start;
       };
 
       RegionAllocatorUntyped me;
-      StaticData data;
+      StaticData locked_data;
+      Lock lock;
 
     protected:
       ElementMask avail_elmts, changed_elmts;
@@ -1779,7 +1812,7 @@ namespace RegionRuntime {
     {
       CreateAllocatorResp resp;
       resp.a = args.m.impl()->create_allocator(args.r, args.bytes_needed);
-      resp.mask_start = resp.a.impl()->data.mask_start;
+      resp.mask_start = StaticAccess<RegionAllocatorUntyped::Impl>(resp.a.impl())->mask_start;
       return resp;
     }
 
@@ -2737,6 +2770,8 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////
     // RegionMetaData
 
+    static Logger::Category log_meta("meta");
+
     /*static*/ const RegionMetaDataUntyped RegionMetaDataUntyped::NO_REGION = RegionMetaDataUntyped();
 
     RegionMetaDataUntyped::Impl *RegionMetaDataUntyped::impl(void) const
@@ -2764,15 +2799,47 @@ namespace RegionRuntime {
 				   gasnet_mynode(), 
 				   index).convert<RegionMetaDataUntyped>();
 
-      RegionMetaDataUntyped::Impl *impl = new RegionMetaDataUntyped::Impl(r, num_elmts, elmt_size);
+      RegionMetaDataUntyped::Impl *impl =
+	new RegionMetaDataUntyped::Impl(r, NO_REGION,
+					num_elmts, elmt_size);
       metadatas[index] = impl;
       
+      log_meta(LEVEL_INFO, "metadata created: id=%x num_elmts=%zd sizeof=%zd",
+	       r.id, num_elmts, elmt_size);
       return r;
     }
 
     /*static*/ RegionMetaDataUntyped RegionMetaDataUntyped::create_region_untyped(RegionMetaDataUntyped parent, const ElementMask &mask)
     {
-      assert(0);
+      // find an available ID
+      std::vector<RegionMetaDataUntyped::Impl *>& metadatas = Runtime::runtime->nodes[gasnet_mynode()].metadatas;
+
+      unsigned index = 0;
+      {
+	AutoHSLLock a(Runtime::runtime->nodes[gasnet_mynode()].mutex);
+
+	while((index < metadatas.size()) && (metadatas[index] != 0)) index++;
+	if(index >= metadatas.size()) metadatas.resize(index + 1);
+	// assign a dummy, but non-zero value to reserve this entry
+	// this lets us do the object creation outside the critical section
+	metadatas[index] = (RegionMetaDataUntyped::Impl *)1;
+      }
+
+      RegionMetaDataUntyped r = ID(ID::ID_METADATA, 
+				   gasnet_mynode(), 
+				   index).convert<RegionMetaDataUntyped>();
+
+      StaticAccess<RegionMetaDataUntyped::Impl> p_data(parent.impl());
+      RegionMetaDataUntyped::Impl *impl =
+	new RegionMetaDataUntyped::Impl(r, parent,
+					p_data->num_elmts, 
+					p_data->elmt_size,
+					&mask);
+      metadatas[index] = impl;
+      
+      log_meta(LEVEL_INFO, "metadata created: id=%x parent=%x (num_elmts=%zd sizeof=%zd)",
+	       r.id, parent.id, p_data->num_elmts, p_data->elmt_size);
+      return r;
     }
 
     RegionAllocatorUntyped RegionMetaDataUntyped::create_allocator_untyped(Memory memory) const
@@ -2782,11 +2849,15 @@ namespace RegionRuntime {
       // we have to calculate the number of bytes needed in case the request
       //  goes to a remote memory
       StaticAccess<RegionMetaDataUntyped::Impl> r_data(impl());
+      assert(!r_data->frozen);
       size_t mask_size = ElementMaskImpl::bytes_needed(0, r_data->num_elmts);
 
       Memory::Impl *m_impl = Runtime::runtime->get_memory_impl(memory);
 
-      return m_impl->create_allocator(*this, 2 * mask_size);
+      RegionAllocatorUntyped a = m_impl->create_allocator(*this, 2 * mask_size);
+      log_meta(LEVEL_INFO, "allocator created: region=%x memory=%x id=%x",
+	       this->id, memory.id, a.id);
+      return a;
     }
 
     RegionInstanceUntyped RegionMetaDataUntyped::create_instance_untyped(Memory memory) const
@@ -2798,7 +2869,10 @@ namespace RegionRuntime {
 
       size_t inst_bytes = impl()->instance_size();
 
-      return m_impl->create_instance(*this, inst_bytes);
+      RegionInstanceUntyped i = m_impl->create_instance(*this, inst_bytes);
+      log_meta(LEVEL_INFO, "instance created: region=%x memory=%x id=%x",
+	       this->id, memory.id, i.id);
+      return i;
     }
 
     void RegionMetaDataUntyped::destroy_region_untyped(void) const
@@ -2808,17 +2882,27 @@ namespace RegionRuntime {
 
     void RegionMetaDataUntyped::destroy_allocator_untyped(RegionAllocatorUntyped allocator) const
     {
-      allocator.impl()->data.memory.impl()->destroy_allocator(allocator, true);
+      log_meta(LEVEL_INFO, "allocator destroyed: region=%x id=%x",
+	       this->id, allocator.id);
+      Memory::Impl *m_impl = StaticAccess<RegionAllocatorUntyped::Impl>(allocator.impl())->memory.impl();
+      return m_impl->destroy_allocator(allocator, true);
     }
 
     void RegionMetaDataUntyped::destroy_instance_untyped(RegionInstanceUntyped instance) const
     {
+      log_meta(LEVEL_INFO, "instance destroyed: region=%x id=%x",
+	       this->id, instance.id);
       instance.impl()->memory.impl()->destroy_instance(instance, true);
     }
 
     const ElementMask &RegionMetaDataUntyped::get_valid_mask(void)
     {
-      assert(0);
+      // for now, just hand out the valid mask for the master allocator
+      //  and hope it's accessible to the caller
+      RegionMetaDataUntyped::Impl *r_impl = impl();
+      SharedAccess<RegionMetaDataUntyped::Impl> data(r_impl);
+      assert((data->valid_mask_owners >> gasnet_mynode()) & 1);
+      return *(r_impl->valid_mask);
     }
 
     ///////////////////////////////////////////////////
@@ -2837,6 +2921,21 @@ namespace RegionRuntime {
       raw_data = calloc(1, bytes_needed);
       //((ElementMaskImpl *)raw_data)->count = num_elements;
       //((ElementMaskImpl *)raw_data)->offset = first_element;
+    }
+
+    ElementMask::ElementMask(const ElementMask &copy_from, 
+			     int _num_elements /*= -1*/, int _first_element /*= 0*/)
+    {
+      first_element = copy_from.first_element;
+      num_elements = copy_from.num_elements;
+      size_t bytes_needed = ElementMaskImpl::bytes_needed(first_element, num_elements);
+      raw_data = calloc(1, bytes_needed);
+
+      if(copy_from.raw_data) {
+	memcpy(raw_data, copy_from.raw_data, bytes_needed);
+      } else {
+	copy_from.memory.impl()->get_bytes(copy_from.offset, raw_data, bytes_needed);
+      }
     }
 
     void ElementMask::init(int _first_element, int _num_elements, Memory _memory, int _offset)
@@ -3079,10 +3178,12 @@ namespace RegionRuntime {
     RegionAllocatorUntyped::Impl::Impl(RegionAllocatorUntyped _me, RegionMetaDataUntyped _region, Memory _memory, int _mask_start)
       : me(_me)
     {
-      data.region = _region;
-      data.memory = _memory;
-      data.mask_start = _mask_start;
+      locked_data.valid = true;
+      locked_data.region = _region;
+      locked_data.memory = _memory;
+      locked_data.mask_start = _mask_start;
 
+      assert(_region.exists());
       if(_region.exists()) {
 	StaticAccess<RegionMetaDataUntyped::Impl> r_data(_region.impl());
 	int num_elmts = r_data->num_elmts;
@@ -3103,6 +3204,17 @@ namespace RegionRuntime {
       assert(start >= 0);
       avail_elmts.disable(start, count);
       changed_elmts.enable(start, count);
+
+      // for now, do updates of valid masks immediately
+      RegionMetaDataUntyped region = StaticAccess<RegionAllocatorUntyped::Impl>(this)->region;
+      while(region != RegionMetaDataUntyped::NO_REGION) {
+	RegionMetaDataUntyped::Impl *r_impl = region.impl();
+	SharedAccess<RegionMetaDataUntyped::Impl> r_data(r_impl);
+	assert((r_data->valid_mask_owners >> gasnet_mynode()) & 1);
+	r_impl->valid_mask->enable(start, count);
+	region = r_data->parent;
+      }
+
       return start;
     }
 
@@ -3110,6 +3222,16 @@ namespace RegionRuntime {
     {
       avail_elmts.enable(ptr, count);
       changed_elmts.enable(ptr, count);
+
+      // for now, do updates of valid masks immediately
+      RegionMetaDataUntyped region = StaticAccess<RegionAllocatorUntyped::Impl>(this)->region;
+      while(region != RegionMetaDataUntyped::NO_REGION) {
+	RegionMetaDataUntyped::Impl *r_impl = region.impl();
+	SharedAccess<RegionMetaDataUntyped::Impl> r_data(r_impl);
+	assert((r_data->valid_mask_owners >> gasnet_mynode()) & 1);
+	r_impl->valid_mask->disable(ptr, count);
+	region = r_data->parent;
+      }
     }
 
     ///////////////////////////////////////////////////

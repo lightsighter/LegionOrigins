@@ -332,6 +332,34 @@ namespace RegionRuntime {
       Lock::Impl *lock;
     };
 
+    template <class T>
+    class ExclusiveAccess {
+    public:
+      typedef typename T::CoherentData CoherentData;
+
+      // if already_held, just check that it's held (if in debug mode)
+      ExclusiveAccess(T* thing_with_data, bool already_held = false)
+	: data(&thing_with_data->locked_data), lock(&thing_with_data->lock)
+      {
+	if(already_held) {
+	  assert(lock->is_locked(0, true));
+	} else {
+	  lock->lock(0, true).wait();
+	}
+      }
+
+      ~ExclusiveAccess(void)
+      {
+	lock->unlock();
+      }
+
+      CoherentData *operator->(void) { return data; }
+
+    protected:
+      CoherentData *data;
+      Lock::Impl *lock;
+    };
+
     extern Processor::TaskIDTable task_id_table;
 
     class Processor::Impl {
