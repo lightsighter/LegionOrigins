@@ -6,6 +6,7 @@
 #include <vector>
 #include <memory>
 #include <algorithm>
+#include <string>
 
 #include <cstdio>
 #include <cassert>
@@ -35,6 +36,19 @@ namespace RegionRuntime {
       NOTIFY_FINISH_ID   = (Processor::TASK_ID_FIRST_AVAILABLE+5),
       TERMINATION_ID     = (Processor::TASK_ID_FIRST_AVAILABLE+6),
     };
+
+    // Loggers declared elsewhere
+    enum LogLevel {
+      LEVEL_SPEW = LowLevel::LEVEL_SPEW,
+      LEVEL_DEBUG = LowLevel::LEVEL_DEBUG,
+      LEVEL_INFO = LowLevel::LEVEL_INFO,
+      LEVEL_WARNING = LowLevel::LEVEL_WARNING,
+      LEVEL_ERROR = LowLevel::LEVEL_ERROR,
+      LEVEL_NONE = LowLevel::LEVEL_NONE,
+    };
+    extern LowLevel::Logger::Category log_task;
+    extern LowLevel::Logger::Category log_region;
+    extern LowLevel::Logger::Category log_inst;
 
     /////////////////////////////////////////////////////////////
     // Future
@@ -139,6 +153,10 @@ namespace RegionRuntime {
       {
         delete *it;
       }
+#ifdef DEBUG_HIGH_LEVEL
+      all_instances.clear();
+      valid_instances.clear();
+#endif
       // If we're remote, we also own our parent
       if (remote)
         delete parent;
@@ -173,6 +191,9 @@ namespace RegionRuntime {
       for (std::map<Memory,InstanceInfo*>::const_iterator it = valid_instances.begin();
             it != valid_instances.end(); it++)
       {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(it->second != NULL);
+#endif
         *((Memory*)buffer) = it->first;
         buffer += sizeof(Memory);
         *((InstanceInfo*)buffer) = *(it->second);
@@ -203,7 +224,9 @@ namespace RegionRuntime {
         InstanceInfo *info = new InstanceInfo();
         *info = *((const InstanceInfo*)buffer);
         buffer += sizeof(InstanceInfo);
-
+#ifdef DEBUG_HIGH_LEVEL
+        assert(info != NULL);
+#endif
         result->valid_instances.insert(std::pair<Memory,InstanceInfo*>(m,info));
         result->locations.push_back(m);
         result->all_instances.push_back(info);
@@ -225,21 +248,25 @@ namespace RegionRuntime {
         {
           // Try to get a parent instance
           if (parent != NULL)
-            result = parent->get_instance_internal(m);
+            result = parent->find_instance(m);
         }
       }
 
       // If it's still NULL here we need to make an instance
-      if (result == NULL);
+      if (result == NULL)
       {
         // Make a new instance info for this memory
         result = new InstanceInfo();
         result->handle = handle;
         result->location = m;
         result->inst = handle.create_instance_untyped(m);
+        log_inst(LEVEL_DEBUG,"creating instance %d of region %d in memory %d",
+                              result->inst.id,handle.id,m.id);
         // Check that the instance exists, otherwise just return NULL
         if (!result->inst.exists())
         {
+          log_inst(LEVEL_DEBUG,"failed to create instance for region %d in memory %d",
+                              result->handle.id,result->location.id);
           delete result;
           return NULL;
         }
@@ -247,21 +274,25 @@ namespace RegionRuntime {
         all_instances.push_back(result);
       }
 
+
       return result;
     }
     
     //--------------------------------------------------------------------------------------------
-    InstanceInfo* AbstractInstance::get_instance_internal(Memory m)
+    InstanceInfo* AbstractInstance::find_instance(Memory m)
     //--------------------------------------------------------------------------------------------
     {
       if (valid_instances.find(m) != valid_instances.end())
       {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(valid_instances[m] != NULL);
+#endif
         return valid_instances[m];
       }
       else
       {
         if (parent != NULL)
-          return parent->get_instance_internal(m);
+          return parent->find_instance(m);
         else
           return NULL;
       }
@@ -271,6 +302,9 @@ namespace RegionRuntime {
     void AbstractInstance::free_instance(InstanceInfo* info)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(info != NULL);
+#endif
       // Check to see if we own this instance
       if (info->handle == handle)
       {
@@ -280,12 +314,28 @@ namespace RegionRuntime {
 #endif
         info->references--;
         // Now see if this instance is invalid and its reference count has gone to zero 
-        if ((valid_instances.find(info->location) == valid_instances.end()) &&
+        std::map<Memory,InstanceInfo*>::iterator finder = valid_instances.find(info->location);
+        if ((finder == valid_instances.end()) &&
             (info->references == 0))
         {
           // We can delete the instance and return
+          log_inst(LEVEL_DEBUG,"deleting instance %d of region %d in memory %d",
+                              info->inst.id,info->handle.id,info->location.id);
           info->handle.destroy_instance_untyped(info->inst);
+          // erase it from the list of valid instances
+          valid_instances.erase(finder);
           return;
+        }
+        // Otherwise if this isntance is closed and references is zero we can also delete it
+        else if (closed && (references == 0) && (info->references == 0))
+        {
+          log_inst(LEVEL_DEBUG,"deleting instance %d of region %d in memory %d",
+                              info->inst.id,info->handle.id,info->location.id);
+          info->handle.destroy_instance_untyped(info->inst);
+          if (finder != valid_instances.end())
+          {
+            valid_instances.erase(finder);
+          }
         }
       }
       else
@@ -302,24 +352,37 @@ namespace RegionRuntime {
     void AbstractInstance::register_reader(InstanceInfo *info)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(info != NULL);
+#endif
       // If this is remote, just ignore it as all we really care about is
       // what happens when things get send back
       if (remote)
         return;
+#ifdef DEBUG_HIGH_LEVEL
+      assert(references > 0);
+#endif
       // If this instance is local to us, add it to the list of valid instances
       if (info->handle == handle)
         valid_instances.insert(std::pair<Memory,InstanceInfo*>(info->location,info));
       // Mark that it is being used
       info->references++;
+      log_inst(LEVEL_DEBUG,"Reading instance %d of region %d",info->inst.id,info->handle.id);
     }
 
     //--------------------------------------------------------------------------------------------
     void AbstractInstance::register_writer(InstanceInfo *info, bool exclusive)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(info != NULL);
+#endif
       // Ignore anything that happens if this is remote
       if (remote)
         return;
+#ifdef DEBUG_HIGH_LEVEL
+      assert(references > 0);
+#endif
       // Clear out any prior valid instances, check to see if any of them can be freed
       if (exclusive)
       {
@@ -341,12 +404,16 @@ namespace RegionRuntime {
       valid_instances.insert(std::pair<Memory,InstanceInfo*>(info->location,info));
       locations.push_back(info->location);
       info->references++;
+      log_inst(LEVEL_DEBUG,"Writing instance %d of region %d",info->inst.id,info->handle.id);
     }
 
     //--------------------------------------------------------------------------------------------
     bool AbstractInstance::add_instance(InstanceInfo *info)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(info != NULL);
+#endif
       // Check to see if this is one of our valid instances
       if (info->handle == handle)
       {
@@ -354,17 +421,19 @@ namespace RegionRuntime {
         // another instance info with the same physical instance
         if (valid_instances.find(info->location) != valid_instances.end())
         {
-          // They should be the same physical instance
-#ifdef DEBUG_HIGH_LEVEL
-          assert(valid_instances[info->location]->inst == info->inst);
-#endif
-          valid_instances[info->location]->references++;
-          return false;
+          // Check to see if they have the same instance ID
+          if (valid_instances[info->location]->inst == info->inst)
+            return false;
+          else
+          {
+            info->references = 0;
+            all_instances.push_back(info);
+            return true;
+          }
         }
         else
         {
-          valid_instances[info->location] = info;
-          info->references = 1;
+          info->references = 0;
           all_instances.push_back(info);
           return true;
         }
@@ -391,12 +460,6 @@ namespace RegionRuntime {
         locations.insert(locations.end(),
                           parent->locations.begin(),
                           parent->locations.end());
-        // Put the locations in the map with null to indicate that they are parent instances
-        for (std::vector<Memory>::iterator it = locations.begin();
-              it != locations.end(); it++)
-        {
-          valid_instances.insert(std::pair<Memory,InstanceInfo*>(*it,NULL));
-        }
       }
       return locations;
     }
@@ -417,6 +480,8 @@ namespace RegionRuntime {
       assert(!remote);
 #endif
       references++;
+      log_inst(LEVEL_DEBUG,"incrementing users of abstract instance for region %d to %d",
+                            handle.id,references);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -429,6 +494,8 @@ namespace RegionRuntime {
       assert(references > 0);
 #endif
       references--;
+      log_inst(LEVEL_DEBUG,"decrementing users of abstract instance for region %d to %d",
+                            handle.id,references);
       if (closed && (references == 0))
       {
         // Go through all the valid instances and see if we can delete them
@@ -438,6 +505,8 @@ namespace RegionRuntime {
           if (it->second->references == 0)
           {
             InstanceInfo *info = it->second;
+            log_inst(LEVEL_DEBUG,"deleting instance %d of region %d in level %d",
+                                  info->inst.id,info->handle.id,info->location.id);
             info->handle.destroy_instance_untyped(info->inst);
           }
         }
@@ -455,6 +524,7 @@ namespace RegionRuntime {
       assert(!remote);
 #endif
       closed = true;
+      log_inst(LEVEL_DEBUG,"closing abstract instance for region %d",handle.id);
       if (closed && (references == 0))
       {
         // Go through all the valid instances and see if we can delete them
@@ -464,6 +534,8 @@ namespace RegionRuntime {
           if (it->second->references == 0)
           {
             InstanceInfo *info = it->second;
+            log_inst(LEVEL_DEBUG,"deleting instance %d of region %d in level %d",
+                                  info->inst.id,info->handle.id,info->location.id);
             info->handle.destroy_instance_untyped(info->inst);
           }
         }
@@ -566,7 +638,7 @@ namespace RegionRuntime {
           }
           if (!found)
           {
-            fprintf(stderr,"Unable to create target instance for copy operation!\n");
+            log_inst(LEVEL_ERROR,"Unable to create target instance for copy operation!");
             exit(1);
           }
         }
@@ -667,6 +739,7 @@ namespace RegionRuntime {
           region_nodes = new std::map<LogicalHandle,RegionNode*>();
           partition_nodes = new std::map<PartitionID,PartitionNode*>();
         }
+        log_task(LEVEL_SPEW,"Activating task %d",local_ctx);
         return true;
       }
       return false;
@@ -758,12 +831,15 @@ namespace RegionRuntime {
       remote = false;
       // Tell this runtime that this context is free again
       runtime->free_context(local_ctx);
+      log_task(LEVEL_SPEW,"Deactivating task %d",local_ctx);
     }
 
     //--------------------------------------------------------------------------------------------
     void TaskDescription::register_child_task(TaskDescription *child)
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"Registering child task %d with parent task %d",
+                            child->task_id, task_id);
       // Add it to the list of child tasks
       child_tasks.push_back(child);
 
@@ -833,6 +909,9 @@ namespace RegionRuntime {
             
             // Register the region dependence beginning at the top level region
             RegionNode *top = (*region_nodes)[regions[parent_idx].handle];
+            log_region(LEVEL_DEBUG,"registering region dependence for region %d"
+                                    " with parent %d",child->regions[idx].handle.id,
+                                    child->regions[idx].parent.id);
             top->register_region_dependence(dep);
             break;
           }
@@ -858,6 +937,9 @@ namespace RegionRuntime {
 
             // Register the dependence
             RegionNode *top = (*region_nodes)[child->regions[idx].parent];
+            log_region(LEVEL_DEBUG,"registering region dependence for region %d"
+                                    " with created parent %d",child->regions[idx].handle.id,
+                                    child->regions[idx].parent.id);
             top->register_region_dependence(dep);
           }
         }
@@ -892,6 +974,7 @@ namespace RegionRuntime {
     void TaskDescription::mark_ready(void)
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"Marking task %d in context %d ready to execute",task_id,local_ctx);
       // Issue the copy operations and compute the merged wait event
       for (std::vector<CopyOperation*>::iterator copy_it = pre_copy_trees.begin();
                 copy_it != pre_copy_trees.end(); copy_it++)
@@ -927,7 +1010,7 @@ namespace RegionRuntime {
               assert(src_location.exists());
 #endif
               // Get the infor and register the reader if we need to make a copy
-              InstanceInfo *src_info = copy_op->dst_instance->get_instance(src_location);
+              InstanceInfo *src_info = copy_op->dst_instance->find_instance(src_location);
               // If they are the same instance, just ignore it
               if (!(src_info->inst == info->inst))
               {
@@ -942,7 +1025,7 @@ namespace RegionRuntime {
           }
           if (!found)
           {
-            fprintf(stderr,"Unable to get instance for copy up operations\n");
+            log_inst(LEVEL_ERROR,"Unable to get instance for copy up operations");
             exit(1);
           }
         }
@@ -1104,6 +1187,7 @@ namespace RegionRuntime {
     void TaskDescription::pack_task(char *&buffer) const
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"Packing task %d in context %d",task_id,local_ctx);
       *((Processor::TaskFuncID*)buffer) = task_id;
       buffer += sizeof(Processor::TaskFuncID);
       *((size_t*)buffer) = regions.size();
@@ -1233,12 +1317,15 @@ namespace RegionRuntime {
           region_nodes->insert(std::pair<LogicalHandle,RegionNode*>(top->handle,top));
         }
       }
+      log_task(LEVEL_DEBUG,"Unpacking task %d into context %d from old context %d",
+                            task_id,local_ctx,orig_ctx);
     }
 
     //--------------------------------------------------------------------------------------------
     std::vector<PhysicalRegion<AccessorGeneric> > TaskDescription::start_task(void)
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"Task %d in context %d is starting",task_id,local_ctx);
 #ifdef DEBUG_HIGH_LEVEL
       // There should be an instance for every one of the required mappings
       assert(instances.size() == regions.size());
@@ -1288,6 +1375,7 @@ namespace RegionRuntime {
     void TaskDescription::complete_task(const void *ret_arg, size_t ret_size)
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"Task %d in context %d has completed",task_id,local_ctx);
       // Save the future result to be set later
       result = malloc(ret_size);
       memcpy(result,ret_arg,ret_size);
@@ -1338,10 +1426,7 @@ namespace RegionRuntime {
     void TaskDescription::children_mapped(void)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Handling all children mapped for task %d on processor %d in context %d\n",
-              task_id, local_proc.id, local_ctx);
-#endif
+      log_task(LEVEL_DEBUG,"all children mapped for task %d in context %d",task_id,local_ctx);
       // Compute the event that will be triggered when all the children are finished
       std::set<Event> cleanup_events;
       for (std::vector<TaskDescription*>::iterator it = child_tasks.begin();
@@ -1384,11 +1469,7 @@ namespace RegionRuntime {
     void TaskDescription::finish_task(void)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Handling finish for task %d on processor %d in context %d\n",
-              task_id, local_proc.id, local_ctx);
-#endif
-
+      log_task(LEVEL_DEBUG,"finishing task %d in context %d",task_id,local_ctx);
       // Set the return results
       if (remote)
       {
@@ -1527,6 +1608,7 @@ namespace RegionRuntime {
     void TaskDescription::remote_start(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"processing remote start for task %d in context %d",task_id,local_ctx);
 #ifdef DEBUG_HIGH_LEVEL
       assert(active);
 #endif
@@ -1548,7 +1630,10 @@ namespace RegionRuntime {
       {
         Memory mem = *((const Memory*)ptr);
         ptr += sizeof(Memory);
-        InstanceInfo *info = abstract_src[idx]->get_instance(mem);
+        InstanceInfo *info = abstract_src[idx]->find_instance(mem);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(info != NULL);
+#endif
         src_instances.push_back(info);
         abstract_src[idx]->register_reader(info);
       }
@@ -1557,10 +1642,10 @@ namespace RegionRuntime {
       {
         InstanceInfo *info = new InstanceInfo();
         info->handle = regions[idx].handle;
-        info->location = *((const Memory*)ptr);
-        ptr += sizeof(Memory);
         info->inst = *((const RegionInstance*)ptr);
         ptr += sizeof(RegionInstance);
+        info->location = *((const Memory*)ptr);
+        ptr += sizeof(Memory);
         // Try adding the region if it doesn't already exist
         // If it does, we'll just delete it
         if (!abstract_inst[idx]->add_instance(info))
@@ -1603,6 +1688,7 @@ namespace RegionRuntime {
     void TaskDescription::remote_finish(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"processing remote finish for task %d in context %d",task_id,local_ctx);
 #ifdef DEBUG_HIGH_LEVEL
       assert(active);
 #endif
@@ -1674,6 +1760,8 @@ namespace RegionRuntime {
       info->handle = handle;
       info->location = m;
       info->inst = inst;
+      log_inst(LEVEL_DEBUG,"creating instance %d as initial instance of region %d in memory %d",
+                            inst.id,handle.id,m.id);
       AbstractInstance *new_inst = new AbstractInstance(handle,NULL,info);
       create_region(handle,new_inst);
     }
@@ -1682,6 +1770,8 @@ namespace RegionRuntime {
     void TaskDescription::create_region(LogicalHandle handle, AbstractInstance *new_inst)
     //--------------------------------------------------------------------------------------------
     {
+      log_region(LEVEL_DEBUG,"creating top level region %d in task %d in context %d",
+                              handle.id, task_id, local_ctx);
       RegionNode *node = new RegionNode(handle, 0, NULL, true, local_ctx);
       (*region_nodes)[handle] = node;
       // Initialize the node with the context for this task
@@ -1695,6 +1785,8 @@ namespace RegionRuntime {
     void TaskDescription::remove_region(LogicalHandle handle, bool recursive)
     //--------------------------------------------------------------------------------------------
     {
+      log_region(LEVEL_DEBUG,"delete top level region %d in task %d in context %d",
+                              handle.id, task_id, local_ctx);
       std::map<LogicalHandle,RegionNode*>::iterator find_it = region_nodes->find(handle);
 #ifdef DEBUG_HIGH_LEVEL
       assert(find_it != region_nodes->end());
@@ -1738,6 +1830,7 @@ namespace RegionRuntime {
     void TaskDescription::create_subregion(LogicalHandle handle, PartitionID parent, Color c)
     //--------------------------------------------------------------------------------------------
     {
+      log_region(LEVEL_DEBUG,"creating subregion %d of partition %d", handle.id, parent);
 #ifdef DEBUG_HIGH_LEVEL
       assert(partition_nodes->find(parent) != partition_nodes->end());
 #endif
@@ -1752,6 +1845,7 @@ namespace RegionRuntime {
                                             bool recursive)
     //--------------------------------------------------------------------------------------------
     {
+      log_region(LEVEL_DEBUG,"deleting subregion %d of partition %d",handle.id, parent);
       std::map<LogicalHandle,RegionNode*>::iterator find_it = region_nodes->find(handle);
 #ifdef DEBUG_HIGH_LEVEL
       assert(find_it != region_nodes->end());
@@ -1783,6 +1877,8 @@ namespace RegionRuntime {
     void TaskDescription::create_partition(PartitionID pid, LogicalHandle parent, bool disjoint)
     //--------------------------------------------------------------------------------------------
     {
+      log_region(LEVEL_DEBUG,"creating partition %d of region %d in task %d in context %d",
+                              pid, parent.id, task_id, local_ctx);
 #ifdef DEBUG_HIGH_LEVEL
       assert(region_nodes->find(parent) != region_nodes->end());
 #endif
@@ -1796,6 +1892,8 @@ namespace RegionRuntime {
     void TaskDescription::remove_partition(PartitionID pid, LogicalHandle parent, bool recursive)
     //--------------------------------------------------------------------------------------------
     {
+      log_region(LEVEL_DEBUG,"deleting partition %d of region %d in task %d in context %d",
+                              pid, parent.id, task_id, local_ctx);
       std::map<PartitionID,PartitionNode*>::iterator find_it = partition_nodes->find(pid);
 #ifdef DEBUG_HIGH_LEVEL
       assert(find_it != partition_nodes->end());
@@ -2669,9 +2767,7 @@ namespace RegionRuntime {
       next_partition_id(local_proc.id), partition_stride(m->get_all_processors().size())
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Initializing high level runtime on processor %d\n",local_proc.id);
-#endif 
+      log_task(LEVEL_SPEW,"Initializing high level runtime on processor %d",local_proc.id);
       for (unsigned int i=0; i<mapper_objects.size(); i++)
         mapper_objects[i] = NULL;
       mapper_objects[0] = new Mapper(machine,this,local_proc);
@@ -2688,9 +2784,7 @@ namespace RegionRuntime {
       const std::set<Processor> &all_procs = machine->get_all_processors();
       if (local_proc == (*(all_procs.begin())))
       {
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-        fprintf(stderr,"Issuing region main task on processor %d\n",local_proc.id);
-#endif
+        log_task(LEVEL_SPEW,"Issuing region main task on processor %d",local_proc.id);
         TaskDescription *desc = get_available_description(true/*new tree*/);
         desc->task_id = TASK_ID_REGION_MAIN; 
         desc->args = malloc(sizeof(Context)); // The value will get written in later
@@ -2724,9 +2818,7 @@ namespace RegionRuntime {
     HighLevelRuntime::~HighLevelRuntime()
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Shutting down high level runtime on processor %d\n", local_proc.id);
-#endif
+      log_task(LEVEL_SPEW,"Shutting down high level runtime on processor %d", local_proc.id);
       // Go through and delete all the mapper objects
       for (unsigned int i=0; i<mapper_objects.size(); i++)
         if (mapper_objects[i] != NULL) delete mapper_objects[i];
@@ -2860,6 +2952,7 @@ namespace RegionRuntime {
 					MapperID id, MappingTagID tag)	
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"Registering task %d with high level runtime",task_id);
       TaskDescription *desc = get_available_description(false/*new tree*/);		
       desc->task_id = task_id;
       desc->regions = regions;
@@ -2985,10 +3078,8 @@ namespace RegionRuntime {
       assert(ctx < all_tasks.size());
 #endif
       TaskDescription *desc= all_tasks[ctx];
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Beginning task %d on processor %d in context %d\n",
-              desc->task_id,desc->local_proc.id,desc->local_ctx);
-#endif
+      log_task(LEVEL_DEBUG,"Beginning task %d on processor %d in context %d",
+                            desc->task_id,desc->local_proc.id,desc->local_ctx);
       return desc->start_task(); 
     }
 
@@ -3000,10 +3091,8 @@ namespace RegionRuntime {
       assert(ctx < all_tasks.size());
 #endif
       TaskDescription *desc= all_tasks[ctx];
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Ending task %d on processor %d in context %d\n",
-              desc->task_id,desc->local_proc.id,desc->local_ctx);
-#endif
+      log_task(LEVEL_DEBUG,"Ending task %d on processor %d in context %d",
+                            desc->task_id,desc->local_proc.id,desc->local_ctx);
       desc->complete_task(arg,arglen); 
     }
 
@@ -3024,6 +3113,8 @@ namespace RegionRuntime {
         // Get the mapper for the description
         desc->mapper = mapper_objects[desc->map_id];
         ready_queue.push_back(desc);
+        log_task(LEVEL_DEBUG,"HLR on processor %d adding task %d into context %d from orig %d",
+                              desc->local_proc.id,desc->task_id,desc->local_ctx,desc->orig_ctx);
       }
     }
 
@@ -3038,10 +3129,8 @@ namespace RegionRuntime {
       // Get the number of mappers that requested this processor for stealing 
       int num_stealers = *((int*)buffer);
       buffer += sizeof(int);
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Handling a steal request on processor %d from processor %d\n",
+      log_task(LEVEL_SPEW,"handling a steal request on processor %d from processor %d",
               local_proc.id,thief.id);
-#endif      
 
       // Iterate over the task descriptions, asking the appropriate mapper
       // whether we can steal them
@@ -3126,6 +3215,8 @@ namespace RegionRuntime {
         for (std::set<TaskDescription*>::iterator it = stolen.begin();
               it != stolen.end(); it++)
         {
+          log_task(LEVEL_DEBUG,"task %d in context %d stolen from processor %d",
+                                (*it)->task_id,(*it)->local_ctx,(*it)->local_proc.id);
           // If they are remote, deactivate the instance
           // If it's not remote, its parent will deactivate it
           if ((*it)->remote)
@@ -3144,10 +3235,8 @@ namespace RegionRuntime {
 #endif
       TaskDescription *desc = all_tasks[ctx];
 
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"All child tasks mapped for task %d on processor %d in context %d\n",
+      log_task(LEVEL_DEBUG,"All child tasks mapped for task %d on processor %d in context %d",
               desc->task_id,desc->local_proc.id,desc->local_ctx);
-#endif
 
       desc->children_mapped();
     }
@@ -3163,10 +3252,8 @@ namespace RegionRuntime {
 #endif
       // Get the task description out of the context
       TaskDescription *desc = all_tasks[ctx];
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Task %d finished on processor %d in context %d\n", 
+      log_task(LEVEL_DEBUG,"Task %d finished on processor %d in context %d", 
                 desc->task_id, desc->local_proc.id, desc->local_ctx);
-#endif
 
       desc->finish_task();
     }
@@ -3211,9 +3298,7 @@ namespace RegionRuntime {
       Future f = *((const Future*)args);
       // This will wait until the top level task has finished
       f.get_void_result();
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Computation has terminated, shutting down high level runtime...\n");
-#endif
+      log_task(LEVEL_SPEW,"Computation has terminated, shutting down high level runtime...");
       // Once this is over, launch a kill task on all the low-level processors
       const std::set<Processor> &all_procs = machine->get_all_processors();
       for (std::set<Processor>::iterator it = all_procs.begin();
@@ -3228,10 +3313,8 @@ namespace RegionRuntime {
     void HighLevelRuntime::process_schedule_request(void)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      //fprintf(stderr,"Running scheduler on processor %d with %d tasks in ready queue\n",
-       //       local_proc.id, ready_queue.size());
-#endif
+      log_task(LEVEL_SPEW,"Running scheduler on processor %d with %ld tasks in ready queue",
+              local_proc.id, ready_queue.size());
       // Launch up to MAX_TASK_MAPS_PER_STEP tasks, either from the ready queue, or
       // by detecting tasks that become ready to map on the waiting queue
       int mapped_tasks = 0;
@@ -3310,14 +3393,27 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(src_mem.exists());
 #endif
-        InstanceInfo *src_info = desc->abstract_src[idx]->get_instance(src_mem);
+        InstanceInfo *src_info = desc->abstract_src[idx]->find_instance(src_mem);
         if (src_info == NULL)
         {
-          fprintf(stderr,"Unable to get source instance for task region %d " 
-                          "of task %d\n",idx,desc->task_id);
+          std::map<Memory,InstanceInfo*>& valid_instances = 
+                              desc->abstract_src[idx]->get_valid_instances(); 
+          log_inst(LEVEL_ERROR,"Unable to get source instance for region %d " 
+                    "with handle %d of task %d",idx,desc->regions[idx].handle.id,desc->task_id);
+          log_inst(LEVEL_DEBUG,"there are %ld valid instances",valid_instances.size());
+          for (std::map<Memory,InstanceInfo*>::iterator it = valid_instances.begin();
+                it != valid_instances.end(); it++)
+          {
+            log_inst(LEVEL_DEBUG,"valid instance: (%d, %d, %d)",
+                                it->second->handle.id,it->second->inst.id,it->second->location.id);
+          }
           exit(1);
         }
         desc->src_instances.push_back(src_info);
+        log_inst(LEVEL_DEBUG,"Region argument %d with handle %d for task %d in context %d has"
+                              " source instance %d in memory %d",idx,
+                              desc->regions[idx].handle.id,desc->task_id,desc->local_ctx,
+                              src_info->inst.id,src_info->location.id);
         // Tell the abstract instance that it has been used 
         desc->abstract_src[idx]->register_task_mapped();
 
@@ -3335,6 +3431,10 @@ namespace RegionRuntime {
             {
               found = true;
               desc->instances.push_back(dst_info);
+              log_inst(LEVEL_DEBUG,"Region argument %d with handle %d for task %d in context %d "
+                                    "has destination instance %d in memory %d",idx,
+                                    desc->regions[idx].handle.id,desc->task_id,desc->local_ctx,
+                                    dst_info->inst.id,dst_info->location.id);
               break;
             }
           }
@@ -3342,8 +3442,8 @@ namespace RegionRuntime {
         
         if (!found)
         {
-          fprintf(stderr,"Unable to create instance for region %d in any of "
-            "the specified memories for task %d\n", desc->regions[idx].handle.id, desc->task_id);
+          log_inst(LEVEL_ERROR,"Unable to create instance for region %d in any of "
+            "the specified memories for task %d", desc->regions[idx].handle.id, desc->task_id);
           exit(100*(local_proc.id));
         }
       }
@@ -3491,9 +3591,8 @@ namespace RegionRuntime {
       {
         Processor target = it->first;
         int num_mappers = targets.count(target);
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-        fprintf(stderr,"Processor %d attempting steal on processor %d\n",local_proc.id,target.id);
-#endif
+        log_task(LEVEL_SPEW,"Processor %d attempting steal on processor %d",
+                              local_proc.id,target.id);
         size_t buffer_size = sizeof(Processor)+sizeof(int)+num_mappers*sizeof(MapperID);
         // Allocate a buffer for launching the steal task
         void * buffer = malloc(buffer_size); 

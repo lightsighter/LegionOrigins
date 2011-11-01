@@ -124,12 +124,14 @@ namespace RegionRuntime {
       void pack_instance(char *&buffer) const;
       static AbstractInstance* unpack_instance(const char *&buffer);
     protected:
-      // Try to get an instance in the memory, if not, return NULL
-      // Make will try to create the instance if it doesn't already exist
-      // If it has to make a new instance, the call to get instance will mark
-      // new_inst as true.  Use the boolean to detect whether the region
-      // had to be created
+      // Try to get an instance in a memory and if it doesn't
+      // exist then try to create it.  If you still can't create
+      // it return NULL
       InstanceInfo* get_instance(Memory m);
+      // Find instance will try to get an instance for a memory
+      // and will return NULL if the instance doesn't exist
+      // in that memory
+      InstanceInfo* find_instance(Memory m);
       // Return the instance back to the abstract instance, return true
       // if the region can be deleted 
       void free_instance(InstanceInfo *info);
@@ -152,8 +154,6 @@ namespace RegionRuntime {
       std::vector<Memory>& get_memory_locations(void);
       // Get the valid instances of the given logical region
       std::map<Memory,InstanceInfo*>& get_valid_instances(void);
-    private:
-      InstanceInfo* get_instance_internal(Memory m); // For read only internal
     protected:
       const LogicalHandle handle; // Movable (Stage 1)
     private:
