@@ -99,7 +99,7 @@ public:
 
   virtual Processor target_task_steal(void)
   {
-    //printf("mapper: select target of task steal\n");
+    printf("mapper: select target of task steal\n");
     return Mapper::target_task_steal();
   }
 
@@ -107,18 +107,8 @@ public:
 				 const std::vector<const Task*> &tasks,
 				 std::set<const Task*> &to_steal)
   {
+    printf("mapper: checking task stealing permissions");
     Mapper::permit_task_steal(thief, tasks, to_steal);
-    if(to_steal.size() > 0) {
-      printf("mapper: allowing theft of [");
-      bool first = true;
-      for(std::set<const Task *>::iterator it = to_steal.begin();
-	  it != to_steal.end();
-	  it++) {
-	if(!first) printf(", "); first = false;
-	printf("%p", *it);
-      }
-      printf("] by proc=%x\n", thief.id);
-    }
   }
 
   virtual void map_task_region(const Task *task, const RegionRequirement *req,
@@ -215,8 +205,6 @@ void create_mappers(Machine *machine, HighLevelRuntime *runtime, Processor local
     }
  */
 
-static const bool spawn_tasks = false;
-
 template<AccessorType AT>
 void top_level_task(const void *args, size_t arglen, 
 		    const std::vector<PhysicalRegion<AT> > &regions,
@@ -244,7 +232,7 @@ void top_level_task(const void *args, size_t arglen,
 						   circuit.r_all_wires));
   Future f = runtime->execute_task(ctx, TASKID_LOAD_CIRCUIT,
 				   load_circuit_regions, 
-				   &circuit, sizeof(Circuit), spawn_tasks);
+				   &circuit, sizeof(Circuit), true);
   Partitions pp = f.template get_result<Partitions>();
 
 #if 0
@@ -283,7 +271,7 @@ void top_level_task(const void *args, size_t arglen,
   }
 
   // main loop
-  for(int i = 0; i < 2; i++) {
+  for(int i = 0; i < 1; i++) {
     // calculating new currents requires looking at all the nodes (and the
     //  wires) and updating the state of the wires
     for(int p = 0; p < num_pieces; p++) {
@@ -294,16 +282,15 @@ void top_level_task(const void *args, size_t arglen,
       cnc_regions.push_back(RegionRequirement(pieces[p].rn_pvt,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
 					      circuit.r_all_nodes));
-      //cnc_regions.push_back(RegionRequirement(pieces[p].rn_shr,
-      //					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-      //					      circuit.r_all_nodes));
+      cnc_regions.push_back(RegionRequirement(pieces[p].rn_shr,
+					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
+					      circuit.r_all_nodes));
       cnc_regions.push_back(RegionRequirement(pieces[p].rn_ghost,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
 					      circuit.r_all_nodes));
       Future f = runtime->execute_task(ctx, TASKID_CALC_NEW_CURRENTS,
 				       cnc_regions, 
-				       &pieces[p], sizeof(CircuitPiece),
-				       spawn_tasks);
+				       &pieces[p], sizeof(CircuitPiece), true);
     }
 
     // distributing charge is a scatter from the wires back to the nodes
@@ -319,16 +306,15 @@ void top_level_task(const void *args, size_t arglen,
       dsc_regions.push_back(RegionRequirement(pieces[p].rn_pvt,
 					      REDUCE, NO_MEMORY, SIMULTANEOUS,
 					      circuit.r_all_nodes));
-      //dsc_regions.push_back(RegionRequirement(pieces[p].rn_shr,
-      //					      REDUCE, NO_MEMORY, SIMULTANEOUS,
-      //                                              circuit.r_all_nodes));
+      dsc_regions.push_back(RegionRequirement(pieces[p].rn_shr,
+					      REDUCE, NO_MEMORY, SIMULTANEOUS,
+                                              circuit.r_all_nodes));
       dsc_regions.push_back(RegionRequirement(pieces[p].rn_ghost,
 					      REDUCE, NO_MEMORY, SIMULTANEOUS,
                                               circuit.r_all_nodes));
       Future f = runtime->execute_task(ctx, TASKID_DISTRIBUTE_CHARGE,
 				       dsc_regions,
-				       &pieces[p], sizeof(CircuitPiece),
-				       spawn_tasks);
+				       &pieces[p], sizeof(CircuitPiece), true);
     }
 
     // once all the charge is distributed, we can update voltages in a pass
@@ -343,8 +329,7 @@ void top_level_task(const void *args, size_t arglen,
                                               circuit.r_all_nodes));
       Future f = runtime->execute_task(ctx, TASKID_UPDATE_VOLTAGES,
 				       upv_regions,
-				       &pieces[p], sizeof(CircuitPiece),
-				       spawn_tasks);
+				       &pieces[p], sizeof(CircuitPiece), true);
     }
   }
 
@@ -408,7 +393,6 @@ Partitions load_circuit_task(const void *args, size_t arglen,
 				        first_node);
       node.next = next_node;
       inst_rn.write(cur_node, node);
-      printf("N: %d -> %d\n", cur_node.value, node.next.value);
 
       node_owner_map[n].insert(cur_node);
       node_privacy_map[n].insert(cur_node); // default is private
@@ -447,11 +431,10 @@ Partitions load_circuit_task(const void *args, size_t arglen,
       }
 
       ptr_t<CircuitWire> next_wire = ((i < (wires_per_piece - 1)) ?
-				        inst_rw.template alloc<CircuitWire>() :
+				        inst_rn.template alloc<CircuitWire>() :
 				        first_wire);
       wire.next = next_wire;
       inst_rw.write(cur_wire, wire);
-      printf("W: %d -> %d\n", cur_wire.value, wire.next.value);
 
       wire_owner_map[n].insert(cur_wire);
 
@@ -480,6 +463,25 @@ Partitions load_circuit_task(const void *args, size_t arglen,
   return pp;
 }
 
+typedef RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorGPU> GPU_Accessor;
+
+__global__ void calc_new_currents_kernel(ptr_t<CircuitWire> first_wire,
+					 GPU_Accessor inst_rw_pvt,
+					 GPU_Accessor inst_rn_pvt,
+					 GPU_Accessor inst_rn_shr)
+{
+  ptr_t<CircuitWire> cur_wire = first_wire;
+  do {
+    CircuitWire w = inst_rw_pvt.read(cur_wire);
+    CircuitNode n_in = inst_rn_pvt.read(w.in_node);
+    CircuitNode n_out = inst_rn_pvt.read(w.out_node);
+    w.current = (n_out.voltage - n_in.voltage) / w.resistance;
+    inst_rw_pvt.write(cur_wire, w);
+
+    cur_wire = w.next;
+  } while(cur_wire.value != first_wire.value);
+}
+
 template<AccessorType AT>
 void calc_new_currents_task(const void *args, size_t arglen, 
 			    const std::vector<PhysicalRegion<AT> > &regions,
@@ -488,15 +490,15 @@ void calc_new_currents_task(const void *args, size_t arglen,
   CircuitPiece *p = (CircuitPiece *)args;
   PhysicalRegion<AT> inst_rw_pvt = regions[0];
   PhysicalRegion<AT> inst_rn_pvt = regions[1];
-  //PhysicalRegion<AT> inst_rn_shr = regions[2];
-  PhysicalRegion<AT> inst_rn_ghost = regions[2];
+  PhysicalRegion<AT> inst_rn_shr = regions[2];
+  PhysicalRegion<AT> inst_rn_ghost = regions[3];
 
   printf("In calc_new_currents()\n");
 
+#if 0
   ptr_t<CircuitWire> cur_wire = p->first_wire;
   do {
     CircuitWire w = inst_rw_pvt.read(cur_wire);
-    printf("R: %d -> %d\n", cur_wire.value, w.next.value);
     CircuitNode n_in = inst_rn_pvt.read(w.in_node);
     CircuitNode n_out = inst_rn_pvt.read(w.out_node);
     w.current = (n_out.voltage - n_in.voltage) / w.resistance;
@@ -504,7 +506,15 @@ void calc_new_currents_task(const void *args, size_t arglen,
 
     cur_wire = w.next;
   } while(cur_wire != p->first_wire);
-
+#endif
+  GPU_Accessor foo = inst_rw_pvt.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>();
+#if 1
+  calc_new_currents_kernel<<<1,1>>>(p->first_wire,
+				    inst_rw_pvt.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>(),
+				    inst_rn_pvt.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>(),
+				  
+				    inst_rn_shr.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>());
+#endif
   printf("Done with calc_new_currents()\n");
 }
 
@@ -530,8 +540,8 @@ void distribute_charge_task(const void *args, size_t arglen,
   CircuitPiece *p = (CircuitPiece *)args;
   PhysicalRegion<AT> inst_rw_pvt = regions[0];
   PhysicalRegion<AT> inst_rn_pvt = regions[1];
-  //PhysicalRegion<AT> inst_rn_shr = regions[2];
-  PhysicalRegion<AT> inst_rn_ghost = regions[2];
+  PhysicalRegion<AT> inst_rn_shr = regions[2];
+  PhysicalRegion<AT> inst_rn_ghost = regions[3];
 
   printf("In distribute_charge()\n");
 
@@ -547,7 +557,7 @@ void distribute_charge_task(const void *args, size_t arglen,
     cur_wire = w.next;
   } while(cur_wire != p->first_wire);
 
-  printf("Done with distribute_charge()\n");
+  printf("Done with calc_new_currents()\n");
 }
 
 template<AccessorType AT>
@@ -564,7 +574,6 @@ void update_voltages_task(const void *args, size_t arglen,
   ptr_t<CircuitNode> cur_node = p->first_node;
   do {
     CircuitNode n = inst_rn_pvt.read(cur_node);
-    printf("R: %d -> %d\n", cur_node.value, n.next.value);
 
     // charge adds in, and then some leaks away
     n.voltage += n.charge / n.capacitance;

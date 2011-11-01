@@ -121,6 +121,7 @@ namespace RegionRuntime {
       gen_t gen;
       bool operator<(const Event& rhs) const { return id < rhs.id; }
       bool operator==(const Event& rhs) const { return id == rhs.id; }
+      bool operator!=(const Event& rhs) const { return id != rhs.id; }
 
       class Impl;
       Impl *impl(void) const;
@@ -158,6 +159,7 @@ namespace RegionRuntime {
       id_t id;
       bool operator<(const Lock& rhs) const { return id < rhs.id; }
       bool operator==(const Lock& rhs) const { return id == rhs.id; }
+      bool operator!=(const Lock& rhs) const { return id != rhs.id; }
 
       class Impl;
       Impl *impl(void) const;
@@ -291,6 +293,7 @@ namespace RegionRuntime {
       id_t id;
       bool operator<(const RegionMetaDataUntyped &rhs) const { return id < rhs.id; }
       bool operator==(const RegionMetaDataUntyped &rhs) const { return id == rhs.id; }
+      bool operator!=(const RegionMetaDataUntyped &rhs) const { return id != rhs.id; }
 
       class Impl;
       Impl *impl(void) const;
@@ -318,6 +321,7 @@ namespace RegionRuntime {
       id_t id;
       bool operator<(const RegionAllocatorUntyped &rhs) const { return id < rhs.id; }
       bool operator==(const RegionAllocatorUntyped &rhs) const { return id == rhs.id; }
+      bool operator!=(const RegionAllocatorUntyped &rhs) const { return id != rhs.id; }
 
       class Impl;
       Impl *impl(void) const;
@@ -331,7 +335,7 @@ namespace RegionRuntime {
       void free_untyped(unsigned ptr, unsigned count = 1) const;
     };
 
-    enum AccessorType { AccessorGeneric, AccessorArray };
+    enum AccessorType { AccessorGeneric, AccessorArray, AccessorGPU };
 
     template <AccessorType AT> class RegionInstanceAccessorUntyped;
 
@@ -362,7 +366,7 @@ namespace RegionRuntime {
 	{ T val; 
 	  get_untyped(ptr.value*sizeof(T), &val, sizeof(T));
 	  REDOP::apply(&val, newval); 
-	  put_untyped(ptr.value*sizeof(T), &newval, sizeof(T)); }
+	  put_untyped(ptr.value*sizeof(T), &val, sizeof(T)); }
 
       template <AccessorType AT2>
       bool can_convert(void) const;
@@ -392,6 +396,30 @@ namespace RegionRuntime {
       void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::apply(((T*)array_base)[ptr.value], newval); }
     };
 
+    // only nvcc understands this
+    template <> class RegionInstanceAccessorUntyped<AccessorGPU> {
+    public:
+      explicit RegionInstanceAccessorUntyped(void *_array_base)
+	: array_base(_array_base) {}
+
+      // Need copy constructors so we can move things around
+      RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorArray> &old)
+      { array_base = old.array_base; }
+
+      void *array_base;
+
+#ifdef __CUDACC__
+      template <class T>
+      __device__ T read(ptr_t<T> ptr) const { return ((T*)array_base)[ptr.value]; }
+
+      template <class T>
+      __device__ void write(ptr_t<T> ptr, T newval) const { ((T*)array_base)[ptr.value] = newval; }
+#endif
+
+      //template <class REDOP, class T, class RHS>
+      //void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::apply(((T*)array_base)[ptr.value], newval); }
+    };
+
     template <class ET, AccessorType AT = AccessorGeneric>
     class RegionInstanceAccessor {
     public:
@@ -413,12 +441,29 @@ namespace RegionRuntime {
       { return RegionInstanceAccessor<ET,AT2>(ria.convert<AT2>()); }
     };
 
+#ifdef __CUDACC__
+    template <class ET>
+    class RegionInstanceAccessor<ET,AccessorGPU> {
+    public:
+      __device__ RegionInstanceAccessor(const RegionInstanceAccessorUntyped<AccessorGPU> &_ria) : ria(_ria) {}
+
+      RegionInstanceAccessorUntyped<AccessorGPU> ria;
+
+      __device__ ET read(ptr_t<ET> ptr) const { return ria.read(ptr); }
+      __device__ void write(ptr_t<ET> ptr, ET newval) const { ria.write(ptr, newval); }
+
+      //template <class REDOP, class RHS>
+      //void reduce(ptr_t<ET> ptr, RHS newval) const { ria.template reduce<REDOP>(ptr, newval); }
+    };
+#endif
+
     class RegionInstanceUntyped {
     public:
       typedef unsigned id_t;
       id_t id;
       bool operator<(const RegionInstanceUntyped &rhs) const { return id < rhs.id; }
       bool operator==(const RegionInstanceUntyped &rhs) const { return id == rhs.id; }
+      bool operator!=(const RegionInstanceUntyped &rhs) const { return id != rhs.id; }
 
       class Impl;
       Impl *impl(void) const;
@@ -496,7 +541,7 @@ namespace RegionRuntime {
       // the instance doesn't have read/write/reduce methods of its own -
       //  instead, we can hand out an "accessor" object that has those methods
       //  this lets us specialize for the just-an-array-dereference case
-      const RegionInstanceAccessor<T,AccessorGeneric> get_accessor(void)
+      RegionInstanceAccessor<T,AccessorGeneric> get_accessor(void) const
       { return RegionInstanceAccessor<T,AccessorGeneric>(get_accessor_untyped()); }
 
       Event copy_to(RegionInstance<T> target, Event wait_on = Event::NO_EVENT)
