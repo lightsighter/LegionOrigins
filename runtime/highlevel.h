@@ -190,6 +190,11 @@ namespace RegionRuntime {
       CopyOperation(AbstractInstance *inst, Event wait_on);
       ~CopyOperation();
       void add_sub_copy(CopyOperation *sub);
+      // Register tasks that need to be mapped before we can issue this copy op
+      void add_dependent_task(TaskDescription *desc);
+      // Traverse the copy tree looking for any tasks that need to be mapped
+      // before we can issue this copy op
+      void register_dependent_tasks(TaskDescription *desc);
       Event execute(Mapper *m, TaskDescription *desc, 
                     std::vector<std::pair<AbstractInstance*,InstanceInfo*> > &sources);
       // A special execute operation that already knows where the close is going to go
@@ -239,6 +244,7 @@ namespace RegionRuntime {
       friend class HighLevelRuntime;
       friend class RegionNode;
       friend class PartitionNode;
+      friend class CopyOperation;
       TaskDescription(Context ctx, Processor p, HighLevelRuntime *r);
       ~TaskDescription();
     protected:

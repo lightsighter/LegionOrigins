@@ -539,7 +539,7 @@ namespace RegionRuntime {
       assert(!remote);
 #endif
       references++;
-      log_inst(LEVEL_DEBUG,"incrementing users of abstract instance for region %d to %d",
+      log_inst(LEVEL_SPEW,"incrementing users of abstract instance for region %d to %d",
                             handle.id,references);
     }
 
@@ -645,6 +645,13 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    void CopyOperation::add_dependent_task(TaskDescription *desc)
+    //--------------------------------------------------------------------------------------------
+    {
+      dependent_tasks.push_back(desc);
+    }
+
+    //--------------------------------------------------------------------------------------------
     bool CopyOperation::is_triggered(void) const
     //--------------------------------------------------------------------------------------------
     {
@@ -659,6 +666,34 @@ namespace RegionRuntime {
       assert(triggered);
 #endif
       return finished_event;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void CopyOperation::register_dependent_tasks(TaskDescription *desc)
+    //--------------------------------------------------------------------------------------------
+    {
+      for (std::vector<TaskDescription*>::iterator it = dependent_tasks.begin();
+            it != dependent_tasks.end(); it++)
+      {
+        // This task definitely conflicts with the other tasks in this copy operation
+        desc->wait_events.insert((*it)->termination_event);
+        log_task(LEVEL_DEBUG,"task %d in context %d dependends on task %d in context %d",
+                            desc->task_id,desc->local_ctx,(*it)->task_id,(*it)->local_ctx);
+        if (!((*it)->mapped))
+        {
+          // Hasn't been mapped yet, register the dependence
+          if (((*it)->dependent_tasks.insert(desc)).second)
+          {
+            desc->remaining_events++;
+          }
+        }
+      }
+      // Traverse any sub copies as well
+      for (std::vector<CopyOperation*>::iterator it = sub_copies.begin();
+            it != sub_copies.end(); it++)
+      {
+        (*it)->register_dependent_tasks(desc);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1130,8 +1165,8 @@ namespace RegionRuntime {
         }
       }
 #ifdef DEBUG_HIGH_LEVEL
-      log_task(LEVEL_DEBUG,"task %d in context %d dependends on %d tasks",
-                          child->task_id,local_ctx,
+      log_task(LEVEL_DEBUG,"task %d in context %d dependends on %d tasks to map",
+                          child->task_id,child->local_ctx,
                           child->remaining_events);
 #endif
     }
@@ -2328,26 +2363,26 @@ namespace RegionRuntime {
           conflict = true;
           //war_conflict = false;
           // Add this to the list of tasks we need to wait for 
-          log_task(LEVEL_DEBUG,"task %d in context %d dependends on task %d",
-                    dep.child->task_id,dep.ctx,it->second->task_id);
-          if (it->second->mapped)
-            dep.child->wait_events.insert(it->second->termination_event);
-          else
-          {
-            // The active task hasn't been mapped yet, tell it to wait
-            // until we're mapped before giving us its termination event
-            // check to make sure that we haven't registered ourselves previously
-            if (it->second->dependent_tasks.find(dep.child) == it->second->dependent_tasks.end())
-            {
-              dep.child->remaining_events++;
-              it->second->dependent_tasks.insert(dep.child);
-            }
-          }
+          log_task(LEVEL_DEBUG,"task %d in context %d dependends on task %d in context %d",
+                    dep.child->task_id,dep.child->local_ctx,it->second->task_id,
+                    it->second->local_ctx);
+          dep.child->wait_events.insert(it->second->termination_event);
         }
         //else if(war_conflict && !RegionRequirement::region_war_conflict(it->first, dep.req))
         //{
         //  war_conflict = false;
         //}
+        
+        // Mark that we need to wait for this task to be mapped
+        if (!it->second->mapped)
+        {
+          // Try inserting, if it inserted, increment our count
+          // otherwise it was alreayd there
+          if ((it->second->dependent_tasks.insert(dep.child)).second)
+          {
+            dep.child->remaining_events++;
+          }
+        }
       }
 
       // Now check to see if this region that we're searching for
@@ -2370,6 +2405,8 @@ namespace RegionRuntime {
         if (state.prev_copy != NULL)
         {
           dep.child->pre_copy_trees.push_back(state.prev_copy);
+          // Register all the dependent tasks as well
+          state.prev_copy->register_dependent_tasks(dep.child);
         }
         
         // Check to see if there is a previous abstract instance if not make one
@@ -2451,6 +2488,8 @@ namespace RegionRuntime {
         if (!conflict && (state.prev_copy != NULL))
         {
           dep.child->pre_copy_trees.push_back(state.prev_copy);
+          // Register all dependent tasks
+          state.prev_copy->register_dependent_tasks(dep.child);
         }
 
         // Continue the traversal
@@ -2495,6 +2534,8 @@ namespace RegionRuntime {
             state.prev_copy = copy_op;
             // Register this copy op with the parent context also so it can be deleted
             dep.parent->pre_copy_trees.push_back(copy_op);
+            // Register all the dependent tasks
+            copy_op->register_dependent_tasks(dep.child);
             partitions[pid]->open_subtree(dep);
             // Mark the new subtree as being the correct open partition
             state.open_partition = pid;
@@ -2542,6 +2583,14 @@ namespace RegionRuntime {
           }
           op = new CopyOperation(region_states[ctx].valid_instance,
                                   Event::merge_events(active_events));
+        }
+        // Add all of the active tasks to this copy operation to indicate that
+        // we need them all to be mapped before we can run
+        for (std::vector<std::pair<RegionRequirement*,TaskDescription*> >::iterator it =
+              region_states[ctx].active_tasks.begin(); it !=
+              region_states[ctx].active_tasks.end(); it++)
+        {
+          op->add_dependent_task(it->second);
         }
         // add the op as a sub op of the previous copy op
         copy_op->add_sub_copy(op);
@@ -2764,6 +2813,7 @@ namespace RegionRuntime {
       {
         partitions[state.open_valid]->close_subtree(ctx,desc,close_op); 
       }
+      // No need to register dependent tasks since all the children have already been mapped
       // Issue the copy operation, and close the subtree
       return close_op->execute_close(desc->mapper,desc,target,desc->copy_instances);
     }
