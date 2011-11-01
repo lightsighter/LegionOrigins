@@ -102,6 +102,12 @@ namespace RegionRuntime {
       }
 #endif
       memcpy(result, res, result_size);	
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void FutureImpl::trigger(void)
+    //--------------------------------------------------------------------------------------------
+    {
       set = true;
       set_event.trigger();
     }
@@ -137,11 +143,15 @@ namespace RegionRuntime {
       : handle (h), references(0), closed(false), first_map(false), parent(par), remote(rem) 
     //--------------------------------------------------------------------------------------------
     {
+      log_inst(LEVEL_DEBUG,"creating new abstract instance for region %d",handle.id);
       if (init != NULL)
       {
         valid_instances.insert(std::pair<Memory,InstanceInfo*>(init->location,init));
         locations.push_back(init->location);
       }
+      // Notify the parent that we are referencing it
+      if (par != NULL)
+        par->register_task_user();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -306,6 +316,10 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(info != NULL);
 #endif
+      // If its remote just ignore it, we'll deal with it when we send the values back
+      if (remote)
+        return;
+
       // Check to see if we own this instance
       if (info->handle == handle)
       {
@@ -314,6 +328,8 @@ namespace RegionRuntime {
         assert(info->references > 0); // Check for double free
 #endif
         info->references--;
+        log_inst(LEVEL_DEBUG,"reducing reference count of instance %d of region %d to %d",
+                              info->inst.id,info->handle.id,info->references);
         // Now see if this instance is invalid and its reference count has gone to zero 
         std::map<Memory,InstanceInfo*>::iterator finder = valid_instances.find(info->location);
         if ((finder == valid_instances.end()) &&
@@ -513,6 +529,11 @@ namespace RegionRuntime {
         }
         valid_instances.clear();
         locations.clear();
+        // Also notify our parent that we no longer need it
+        if (parent != NULL)
+        {
+          parent->register_task_mapped();
+        }
       }
     }
 
@@ -542,6 +563,11 @@ namespace RegionRuntime {
         }
         valid_instances.clear();
         locations.clear();
+        // Also notify our parent that we no longer need it
+        if (parent != NULL)
+        {
+          parent->register_task_mapped();
+        }
       }
     }
     
@@ -794,8 +820,8 @@ namespace RegionRuntime {
       // Give back any contexts that aren't ours to the runtime
       // The first one should always be our context
 #ifdef DEBUG_HIGH_LEVEL
-      assert(valid_contexts.size() >= 1);
-      assert(valid_contexts[0] == local_ctx);
+      if (!valid_contexts.empty())
+        assert(valid_contexts[0] == local_ctx);
 #endif
       for (unsigned idx = 1; idx < valid_contexts.size(); idx++)
       {
@@ -824,6 +850,7 @@ namespace RegionRuntime {
       instances.clear();
       created_regions.clear();
       deleted_regions.clear();
+      added_partitions.clear();
       region_nodes = NULL;
       partition_nodes = NULL;
       active = false;
@@ -1490,23 +1517,12 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       log_task(LEVEL_DEBUG,"finishing task %d in context %d",task_id,local_ctx);
-      // Find the set of updates
-      std::vector<std::pair<LogicalHandle,PartitionNode*> > updates;
-      size_t update_size = 0;
-      for (std::vector<RegionRequirement>::iterator it = regions.begin();
-            it != regions.end(); it++)
-      {
-        if (!it->subregion)
-        {
-          update_size += ((*region_nodes)[it->handle]->find_region_tree_updates(updates));
-        }
-      }
       // Set the return results
       if (remote)
       {
+        std::vector<std::pair<LogicalHandle,PartitionNode*> > updates;
         // This is a remote task, we need to send the results back to the original processor
-        size_t buffer_size = update_size;
-        unsigned num_tree_updates = updates.size();
+        size_t buffer_size = 0;
         {
           buffer_size += sizeof(Context);
           buffer_size += sizeof(size_t); // result size
@@ -1521,6 +1537,14 @@ namespace RegionRuntime {
           buffer_size += sizeof(size_t); // number of deleted regions
           buffer_size += (deleted_regions.size() * sizeof(LogicalHandle));
           buffer_size += sizeof(unsigned); // number of udpates
+          for (std::vector<RegionRequirement>::iterator it = regions.begin();
+                it != regions.end(); it++)
+          {
+            if (!it->subregion)
+            {
+              buffer_size += ((*region_nodes)[it->handle]->find_region_tree_updates(updates));
+            }
+          }
         }
         void * buffer = malloc(buffer_size);
         char * ptr = (char*)buffer;
@@ -1550,7 +1574,7 @@ namespace RegionRuntime {
           ptr += sizeof(LogicalHandle);
         }
         // Now encode the actual tree updates
-        *((unsigned*)ptr) = num_tree_updates;
+        *((unsigned*)ptr) = updates.size();
         ptr += sizeof(unsigned);
         for (std::vector<std::pair<LogicalHandle,PartitionNode*> >::iterator it = updates.begin();
               it != updates.end(); it++)
@@ -1591,16 +1615,17 @@ namespace RegionRuntime {
             assert(parent_ctx == parent_task->local_ctx);
 #endif
             (*region_nodes)[it->first]->initialize_context(parent_ctx);
-            // Also have to initialize any newly added partitions 
-            // for all of the parent's contexts
-            for (std::vector<std::pair<LogicalHandle,PartitionNode*> >::iterator it = 
-                  updates.begin(); it != updates.end(); it++)
+          }
+
+          // Also have to initialize any newly added partitions 
+          // for all of the parent's contexts
+          for (std::set<PartitionNode*>::iterator it = added_partitions.begin();
+                it != added_partitions.end(); it++)
+          {
+            for (std::vector<Context>::iterator ctx_it = parent_task->valid_contexts.begin();
+                  ctx_it != parent_task->valid_contexts.end(); ctx_it++)
             {
-              for (std::vector<Context>::iterator ctx_it = parent_task->valid_contexts.begin();
-                    ctx_it != parent_task->valid_contexts.end(); ctx_it++)
-              {
-                it->second->initialize_context(*ctx_it);
-              }
+              (*it)->initialize_context(*ctx_it);
             }
           }
           // add the list of deleted tasks to the parent's list
@@ -1608,7 +1633,7 @@ namespace RegionRuntime {
         }
 
         future->set_result(result,result_size);
-        
+        future->trigger();        
         // Trigger the event indicating that this task is complete!
         termination_event.trigger();
         
@@ -1765,11 +1790,22 @@ namespace RegionRuntime {
         // Now upack the region tree into the parent's context (since that's where it's going)
         PartitionNode *part_node = PartitionNode::unpack_region_tree(ptr,parent_region,
                                     parent_ctx, region_nodes, partition_nodes, true/*add*/);
+        // Initialize these new nodes with any of the parents other parent contexts
+        // We get the first one (the parent's native context in the unpack operation)
+        for (unsigned idx = 1; idx < parent_task->valid_contexts.size(); idx++)
+        {
+          part_node->initialize_context(parent_task->valid_contexts[idx]);
+        }
         // Add this partition to its parent region
         parent_region->add_partition(part_node);
         partition_nodes->insert(std::pair<PartitionID,PartitionNode*>(part_node->pid,part_node));
+        // Finally add this to the list of partitions added by the parent task in
+        // case they get passed back to another local task
+        parent_task->added_partitions.insert(part_node);
       }
 
+      // Trigger the future saying that it is now valid
+      future->trigger();
       // Finally trigger the user event indicating that this task is finished!
       termination_event.trigger();
 
@@ -1918,6 +1954,8 @@ namespace RegionRuntime {
       PartitionNode *node = new PartitionNode(pid, par_node->depth+1,par_node,disjoint,true,local_ctx);
       par_node->add_partition(node);
       (*partition_nodes)[pid] = node;
+      // Add this to the list of partitions added in this node
+      added_partitions.insert(node);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1934,6 +1972,15 @@ namespace RegionRuntime {
       for (std::map<LogicalHandle,RegionNode*>::iterator part_it = 
             find_it->second->children.begin(); part_it != find_it->second->children.end(); part_it++)
         remove_subregion(part_it->first, pid, true);
+
+      // check to see if we made this partition
+      {
+        std::set<PartitionNode*>::iterator finder = added_partitions.find(find_it->second);
+        if (finder != added_partitions.end())
+        {
+          added_partitions.erase(finder);
+        }
+      }
 
       if (!recursive)
       {
@@ -2168,6 +2215,11 @@ namespace RegionRuntime {
           state.valid_instance = dep.parent->get_abstract_instance(
                                                               handle,dep.prev_instance);
         }
+        else
+        {
+          // Use the abstract instance that was already here
+          dep.prev_instance = state.valid_instance;
+        }
         //else if (war_conflict)
         {
           // Detect the case of Write-After-Read conflicts on the same logical region
@@ -2180,8 +2232,6 @@ namespace RegionRuntime {
           //state.valid_instance = dep.parent->get_abstract_instance(
           //                                                    handle,dep.prev_instance);
         }
-        // Update the previous instance
-        dep.prev_instance = state.valid_instance;
 
         // Check to see if there is an open partition that we need to close 
         if (state.open_valid)
@@ -2200,9 +2250,12 @@ namespace RegionRuntime {
         dep.child->abstract_inst.push_back(state.valid_instance);
         dep.child->abstract_src.push_back(dep.prev_instance);
         // Increment the reference count on the source and destination instance
+        log_region(LEVEL_DEBUG,"region %d in context %d has source abstract instance from region %d"
+                                " and uses abstract instance from region %d",dep.req->handle.id,
+                            dep.ctx,dep.prev_instance->handle.id,state.valid_instance->handle.id);
         dep.prev_instance->register_task_user();
         state.valid_instance->register_task_user();
-      }
+      } 
       else
       {
         // Update the previous instance
@@ -2331,6 +2384,10 @@ namespace RegionRuntime {
         dep.child->abstract_inst.push_back(abs_inst);
         dep.child->abstract_src.push_back(dep.prev_instance);
         // Increment the count on the prev instance
+        log_region(LEVEL_DEBUG,"region %d in context %d has source abstract instance from region %d"
+                                " and uses abstract instance from region %d",dep.req->handle.id,
+                            dep.ctx,dep.prev_instance->handle.id,
+                            region_states[dep.ctx].valid_instance->handle.id);
         dep.prev_instance->register_task_user();
         abs_inst->register_task_user();
       }
@@ -2794,6 +2851,7 @@ namespace RegionRuntime {
         desc->remote = false;
         desc->parent_task = NULL;
         desc->mapper = mapper_objects[0];
+        desc->valid_contexts.push_back(desc->local_ctx);
 
         // Put this task in the ready queue
         ready_queue.push_back(desc);

@@ -287,6 +287,9 @@ namespace RegionRuntime {
       // New top level regions
       std::map<LogicalHandle,AbstractInstance*> created_regions;       
       std::set<LogicalHandle> deleted_regions; // The regions deleted in this task and children
+      // Partitions added in THIS task only so we can initialize them in
+      // the parent's context if the task is local
+      std::set<PartitionNode*> added_partitions;
       // Keep track of all the abstract instances so we can free them after the task is finished
       std::vector<AbstractInstance*> all_instances;
     private:
@@ -347,6 +350,7 @@ namespace RegionRuntime {
       void reset(void);
       // Also give an event for when the result becomes valid
       void set_result(const void * res, size_t result_size);
+      void trigger(void);
     protected:
       inline bool is_set(void) const { return set; }
       // Give the implementation here so we avoid the template
