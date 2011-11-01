@@ -1016,6 +1016,8 @@ namespace RegionRuntime {
       regions.clear();
       valid_contexts.clear();
       all_instances.clear();
+      abstract_src.clear();
+      abstract_inst.clear();
       wait_events.clear();
       dependent_tasks.clear();
       child_tasks.clear();
