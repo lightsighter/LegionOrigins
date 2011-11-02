@@ -44,6 +44,20 @@ namespace RegionRuntime {
       Event finish_event;
     };
 
+    class GPUTask : public GPUJob {
+    public:
+      GPUTask(GPUProcessor *_gpu, Event _finish_event,
+	      Processor::TaskFuncID _func_id,
+	      const void *_args, size_t _arglen);
+
+      virtual ~GPUTask(void);
+
+      virtual void execute(void);
+
+      Processor::TaskFuncID func_id;
+      void *args;
+      size_t arglen;
+    };
 
     class GPUProcessor::Internal {
     public:
@@ -181,43 +195,36 @@ namespace RegionRuntime {
       }
     }
 
-    class GPUTask : public GPUJob {
-    public:
-      GPUTask(GPUProcessor *_gpu, Event _finish_event,
-	      Processor::TaskFuncID _func_id,
-	      const void *_args, size_t _arglen)
-	: GPUJob(_gpu, _finish_event), func_id(_func_id), arglen(_arglen)
-      {
-	if(arglen) {
-	  args = malloc(arglen);
-	  memcpy(args, _args, arglen);
-	} else {
-	  args = 0;
-	}
+    GPUTask::GPUTask(GPUProcessor *_gpu, Event _finish_event,
+		     Processor::TaskFuncID _func_id,
+		     const void *_args, size_t _arglen)
+      : GPUJob(_gpu, _finish_event), func_id(_func_id), arglen(_arglen)
+    {
+      if(arglen) {
+	args = malloc(arglen);
+	memcpy(args, _args, arglen);
+      } else {
+	args = 0;
       }
+    }
 
-      virtual ~GPUTask(void)
-      {
-	if(args) free(args);
-      }
+    GPUTask::~GPUTask(void)
+    {
+      if(args) free(args);
+    }
 
-      virtual void execute(void)
-      {
-	Processor::TaskFuncPtr fptr = task_id_table[func_id];
-	char argstr[100];
-	argstr[0] = 0;
-	for(size_t i = 0; (i < arglen) && (i < 40); i++)
-	  sprintf(argstr+2*i, "%02x", ((unsigned *)args)[i]);
-	if(arglen > 40) strcpy(argstr+80, "...");
-	log_gpu(LEVEL_DEBUG, "task start: %d (%p) (%s)", func_id, fptr, argstr);
-	(*fptr)(args, arglen, gpu->me);
-	log_gpu(LEVEL_DEBUG, "task end: %d (%p) (%s)", func_id, fptr, argstr);
-      }
-
-      Processor::TaskFuncID func_id;
-      void *args;
-      size_t arglen;
-    };
+    void GPUTask::execute(void)
+    {
+      Processor::TaskFuncPtr fptr = task_id_table[func_id];
+      char argstr[100];
+      argstr[0] = 0;
+      for(size_t i = 0; (i < arglen) && (i < 40); i++)
+	sprintf(argstr+2*i, "%02x", ((unsigned char *)args)[i]);
+      if(arglen > 40) strcpy(argstr+80, "...");
+      log_gpu(LEVEL_DEBUG, "task start: %d (%p) (%s)", func_id, fptr, argstr);
+      (*fptr)(args, arglen, gpu->me);
+      log_gpu(LEVEL_DEBUG, "task end: %d (%p) (%s)", func_id, fptr, argstr);
+    }
 
     class GPUMemcpy : public GPUJob {
     public:
@@ -249,6 +256,12 @@ namespace RegionRuntime {
 
       internal->zcmem_reserve = 16 << 20;
       internal->fbmem_reserve = 32 << 20;
+
+      // enqueue a GPU init job before we do anything else
+      Processor::TaskIDTable::iterator it = task_id_table.find(Processor::TASK_ID_PROCESSOR_INIT);
+      if(it != task_id_table.end())
+	internal->enqueue_job(new GPUTask(this, Event::NO_EVENT,
+					  Processor::TASK_ID_PROCESSOR_INIT, 0, 0));
 
       internal->create_gpu_thread();
     }

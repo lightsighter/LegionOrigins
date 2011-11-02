@@ -323,6 +323,7 @@ namespace RegionRuntime {
       CREATE_ALLOC_RPLID,
       CREATE_INST_MSGID,
       CREATE_INST_RPLID,
+      REMOTE_COPY_MSGID,
     };
 
 #if 0
@@ -2241,7 +2242,7 @@ namespace RegionRuntime {
 	  char argstr[100];
 	  argstr[0] = 0;
 	  for(size_t i = 0; (i < arglen) && (i < 40); i++)
-	    sprintf(argstr+2*i, "%02x", ((unsigned *)args)[i]);
+	    sprintf(argstr+2*i, "%02x", ((unsigned char *)args)[i]);
 	  if(arglen > 40) strcpy(argstr+80, "...");
 	  log_task(LEVEL_DEBUG, "task start: %d (%p) (%s)", func_id, fptr, argstr);
 	  (*fptr)(args, arglen, proc->me);
@@ -3667,6 +3668,38 @@ namespace RegionRuntime {
       Event after_copy;
     };
 
+    static Logger::Category log_copy("copy");
+
+    struct RemoteCopyArgs {
+      RegionInstanceUntyped source, target;
+      size_t bytes_to_copy;
+      Event before_copy, after_copy;
+    };
+
+    void handle_remote_copy(RemoteCopyArgs args)
+    {
+      log_copy.info("received remote copy request: src=%x tgt=%x before=%x/%d after=%x/%d",
+		    args.source.id, args.target.id,
+		    args.before_copy.id, args.before_copy.gen,
+		    args.after_copy.id, args.after_copy.gen);
+
+      if(args.before_copy.has_triggered()) {
+	RegionInstanceUntyped::Impl::copy(args.source, args.target,
+					  args.bytes_to_copy,
+					  args.after_copy);
+      } else {
+	args.before_copy.impl()->add_waiter(args.before_copy,
+					    new DeferredCopy(args.source,
+							     args.target,
+							     args.bytes_to_copy,
+							     args.after_copy));
+      }
+    }
+
+    typedef ActiveMessageShortNoReply<REMOTE_COPY_MSGID,
+				      RemoteCopyArgs,
+				      handle_remote_copy> RemoteCopyMessage;
+
     Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, 
 						 Event wait_on /*= Event::NO_EVENT*/)
     {
@@ -3677,14 +3710,39 @@ namespace RegionRuntime {
 
       //printf("COPY %x (%d) -> %x (%d)\n", id, src_mem->kind, target.id, dst_mem->kind);
 
+      size_t bytes_to_copy = StaticAccess<RegionInstanceUntyped::Impl>(src_impl)->region.impl()->instance_size();
+
+
       // first check - if either or both memories are remote, we're going to
       //  need to find somebody else to do this copy
       if((src_mem->kind == Memory::Impl::MKIND_REMOTE) ||
 	 (dst_mem->kind == Memory::Impl::MKIND_REMOTE)) {
+	// try to find a processor that can see both memories
+	const std::set<Processor>& src_procs = Machine::get_machine()->get_shared_processors(src_impl->memory);
+	const std::set<Processor>& dst_procs = Machine::get_machine()->get_shared_processors(dst_impl->memory);
+	std::set<Processor>::const_iterator src_it = src_procs.begin();
+	std::set<Processor>::const_iterator dst_it = dst_procs.begin();
+	while((src_it != src_procs.end()) && (dst_it != dst_procs.end())) {
+	  if(src_it->id < dst_it->id) src_it++; else
+	    if(src_it->id > dst_it->id) dst_it++; else {
+	      // equal means we found a processor that'll work
+	      log_copy.info("proc %x can see both %x and %x",
+			    src_it->id, src_mem->me.id, dst_mem->me.id);
+
+	      Event after_copy = Event::Impl::create_event();
+	      RemoteCopyArgs args;
+	      args.source = *this;
+	      args.target = target;
+	      args.bytes_to_copy = bytes_to_copy;
+	      args.before_copy = wait_on;
+	      args.after_copy = after_copy;
+	      RemoteCopyMessage::request(ID(*src_it).node(), args);
+
+	      return after_copy;
+	    }
+	}
 	assert(0);
       }
-
-      size_t bytes_to_copy = StaticAccess<RegionInstanceUntyped::Impl>(src_impl)->region.impl()->instance_size();
 
 #if 0
       // ok - we're going to do the copy locally, but we need locks on the 
@@ -4142,6 +4200,7 @@ namespace RegionRuntime {
       hcount += RemoteMemAllocMessage::add_handler_entries(&handlers[hcount]);
       hcount += CreateAllocatorMessage::add_handler_entries(&handlers[hcount]);
       hcount += CreateInstanceMessage::add_handler_entries(&handlers[hcount]);
+      hcount += RemoteCopyMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage2::add_handler_entries(&handlers[hcount]);
 
