@@ -306,6 +306,10 @@ namespace RegionRuntime {
     InstanceInfo* AbstractInstance::get_instance(Memory m)
     //--------------------------------------------------------------------------------------------
     {
+      if (first_map && (parent != NULL))
+      {
+        
+      }
       // Check to see if the memory exists locally
       InstanceInfo *result = NULL;
       if (valid_instances.find(m) != valid_instances.end())
@@ -573,9 +577,16 @@ namespace RegionRuntime {
         // If we haven't gotten them before, get the set of valid instances
         // from the parent abstract instance
         first_map = false;
-        locations.insert(locations.end(),
-                          parent->locations.begin(),
-                          parent->locations.end());
+        std::vector<Memory> &parent_mems = parent->get_memory_locations();
+        for (std::vector<Memory>::iterator it = parent_mems.begin();
+              it != parent_mems.end(); it++)
+
+        {
+          if (valid_instances.find(*it) == valid_instances.end())
+          {
+            locations.push_back(*it);
+          }
+        }
       }
       return locations;
     }
