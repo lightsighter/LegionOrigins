@@ -736,6 +736,7 @@ namespace RegionRuntime {
           {
             log_inst(LEVEL_ERROR,"unable to create new instance for copy up operation for region "
                                   "%d", instance->handle.id);
+            assert(false);
             exit(1);
           }
         }
@@ -2438,35 +2439,7 @@ namespace RegionRuntime {
         // Check to see if there is an open partition that we need to close 
         if (state.open_valid)
         {
-          // We have to wait for all the tasks using this instance to be finished
-          // before issuing the copy operation
-          Event wait_event;
-          if (state.active_tasks.size() == 1)
-          {
-            wait_event = state.active_tasks[0].second->termination_event;
-          }
-          else
-          {
-            std::set<Event> active_events;
-            for (std::vector<std::pair<RegionRequirement*,TaskDescription*> >::iterator it =
-                  state.active_tasks.begin(); it != state.active_tasks.end(); it++)
-            {
-              active_events.insert(it->second->termination_event);
-            }
-            wait_event = Event::merge_events(active_events);
-          }
-          // Create a new copy operation to copy close up the subtree
-          CopyOperation *copy_op = new CopyOperation(state.valid_instance,wait_event);
-          // Close the open partition, tracking the copies we need to do 
-          partitions[state.open_partition]->close_subtree(dep.ctx, dep.child, copy_op);
-          // Add the copy operation for this list of copy ops to do
-          dep.child->pre_copy_trees.push_back(copy_op);
-          // Mark the subtree as closed
-          state.open_valid = false;
-          state.prev_copy = copy_op;
-          // Register this in the set of copy trees for the parent task, so it can be deleted
-          // This is safe since all the parent's copies have already been issued and cleared out
-          dep.parent->pre_copy_trees.push_back(copy_op);
+          copy_close(dep);
         }
 
         // Use the existing abstract instance
@@ -2512,35 +2485,11 @@ namespace RegionRuntime {
           }
           else
           {
-            Event wait_event;
-            if (state.active_tasks.size() == 1)
-            {
-              wait_event = state.active_tasks[0].second->termination_event;
-            }
-            else
-            {
-              std::set<Event> active_events;
-              for (std::vector<std::pair<RegionRequirement*,TaskDescription*> >::iterator it =
-                    state.active_tasks.begin(); it != state.active_tasks.end(); it++)
-              {
-                active_events.insert(it->second->termination_event);
-              }
-              wait_event = Event::merge_events(active_events);
-            }
-            // The open partition is not the one we want,
-            // close the old one and then open the new one
-            // Create a new copy operation to be performed
-            CopyOperation *copy_op = new CopyOperation(dep.prev_instance,wait_event);
-            partitions[state.open_partition]->close_subtree(dep.ctx, dep.child, copy_op);
-            dep.child->pre_copy_trees.push_back(copy_op);
-            state.prev_copy = copy_op;
-            // Register this copy op with the parent context also so it can be deleted
-            dep.parent->pre_copy_trees.push_back(copy_op);
-            // Register all the dependent tasks
-            copy_op->register_dependent_tasks(dep.child);
+            copy_close(dep);
             partitions[pid]->open_subtree(dep);
             // Mark the new subtree as being the correct open partition
             state.open_partition = pid;
+            state.open_valid = true;
           }
         }
         else
@@ -2548,10 +2497,118 @@ namespace RegionRuntime {
           // There is no open partition, jump straight to where we're going
           partitions[pid]->open_subtree(dep);
           // Mark the partition as being open
-          state.open_valid = true;
           state.open_partition = pid;
+          state.open_valid = true;
         }
       }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::copy_close(DependenceDetector &dep)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(dep.ctx < region_states.size());
+#endif
+      RegionState &state = region_states[dep.ctx];
+      // If the valid instance here is NULL, we need to create an abstract
+      // instance to represent it
+      std::set<Event> active_events;
+      if (state.valid_instance == NULL)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(dep.prev_instance != NULL);
+#endif
+        // If we have to make a new instance, ask the mapper where to put it
+        std::vector<std::vector<Memory> > target_ranking;
+        dep.child->mapper->rank_copy_targets(dep.child,dep.prev_instance->get_memory_locations(),
+                                            target_ranking);
+        // Create the new abstract instance
+        state.valid_instance = dep.parent->get_abstract_instance(handle,dep.prev_instance);
+        // Register that we are using the abstract instances
+        dep.prev_instance->register_task_user();
+        state.valid_instance->register_task_user();
+        // Make new instances and add them to the abstract instance 
+        for (std::vector<std::vector<Memory> >::iterator rank_it = target_ranking.begin();
+              rank_it != target_ranking.end(); rank_it++)
+        {
+          std::vector<Memory> &ranking = *rank_it;
+          bool found = false;
+          InstanceInfo *result = new InstanceInfo();
+          for (std::vector<Memory>::iterator mem_it = ranking.begin();
+                mem_it != ranking.end(); mem_it++)
+          {
+            // Try creating the instance
+            result->inst = handle.create_instance_untyped(*mem_it);
+            if (result->inst.exists())
+            {
+              found = true;
+              result->handle = handle;
+              result->location = *mem_it;
+              break;
+            }
+          }
+          if (!found)
+          {
+            log_inst(LEVEL_ERROR,"Unable to create a new instance for handle %d"
+                                  " in copy close operation",handle.id);
+            exit(1);
+          }
+          else
+          {
+            // Add it to the new instance
+            state.valid_instance->add_instance(result);
+            // Ask the mapper where to get the copy from
+            Memory src_mem = Memory::NO_MEMORY;
+            dep.child->mapper->select_copy_source(dep.child,
+                dep.prev_instance->get_memory_locations(),result->location,src_mem);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(src_mem.exists());
+#endif
+            InstanceInfo *src_info = dep.prev_instance->find_instance(src_mem);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(src_info != NULL);
+#endif
+            // Register the readers and the writers
+            dep.prev_instance->register_reader(src_info);
+            state.valid_instance->register_writer(result,false/*exclusive*/);
+            dep.child->copy_instances.push_back(
+                std::pair<AbstractInstance*,InstanceInfo*>(dep.prev_instance,src_info));
+            dep.child->copy_instances.push_back(
+                std::pair<AbstractInstance*,InstanceInfo*>(state.valid_instance,result));
+            // Issue the copy and save the event
+            active_events.insert(src_info->inst.copy_to_untyped(result->inst));
+          }
+        }
+        // Mark that we are done using these instances
+        state.valid_instance->register_task_mapped();
+        dep.prev_instance->register_task_mapped();
+      }
+      // Also add the event to wait for all the active tasks to finish
+      for (std::vector<std::pair<RegionRequirement*,TaskDescription*> >::iterator it =
+            state.active_tasks.begin(); it != state.active_tasks.end(); it++)
+      {
+        active_events.insert(it->second->termination_event);
+      }
+      Event wait_event;
+      if (active_events.empty())
+        wait_event = Event::NO_EVENT;
+      else
+        wait_event = Event::merge_events(active_events);
+      // Create a new copy operation to copy close up the subtree
+      CopyOperation *copy_op = new CopyOperation(state.valid_instance,wait_event);
+      // Close the open partition, tracking the copies we need to do 
+      partitions[state.open_partition]->close_subtree(dep.ctx, dep.child, copy_op);
+      // Add the copy operation for this list of copy ops to do
+      dep.child->pre_copy_trees.push_back(copy_op);
+      //Register the dependent tasks
+      copy_op->register_dependent_tasks(dep.child);
+      // Mark the subtree as closed
+      state.open_valid = false;
+      state.prev_copy = copy_op;
+      // Register this in the set of copy trees for the parent task, so it can be deleted
+      // This is safe since all the parent's copies have already been issued and cleared out
+      dep.parent->pre_copy_trees.push_back(copy_op);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2922,19 +2979,19 @@ namespace RegionRuntime {
           }
           else
           {
-            // TODO: handle this case
-            assert(false); 
-#if 0
-            CopyOperation *copy_op = new CopyOperation(dep.prev_instance);
-            // Close up the other region and open up the new one
-            children[open]->close_subtree(dep.ctx, dep.child, copy_op);
-            // Add the copy operation to the childs copy trees
-            dep.child->pre_copy_trees.push_back(copy_op);
-            state.open_regions.clear();
-            // Open up the new one
-            children[next_reg]->open_subtree(dep);
-            state.open_regions.insert(next_reg);
+            // We need to close this partition from the perspective
+            // of the parent region
+#ifdef DEBUG_HIGH_LEVEL
+            assert(dep.prev_instance != NULL);
 #endif
+            parent->copy_close(dep);
+            // Now open this partition from the perspecitve of the
+            // parent region. To do this we need to muck with
+            // trace to make it look right.  Push the child ID
+            // and then the partition ID back onto the trace.
+            dep.trace.push_front(next_reg.id);
+            dep.trace.push_front(pid);
+            parent->open_subtree(dep);
           }
         }
         else
@@ -3529,7 +3586,7 @@ namespace RegionRuntime {
         // requests to another processor before the mappers have been initialized
         // on that processor.  There's no correctness problem for ignoring a steal
         // request so just do that.
-        if (mapper_objects[stealer] == NULL)
+        if (mapper_objects.size() <= stealer)
           continue;
 
         // Go through the ready queue and construct the list of tasks

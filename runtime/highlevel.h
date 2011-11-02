@@ -565,6 +565,7 @@ namespace RegionRuntime {
         std::vector<std::pair<RegionRequirement*,TaskDescription*> > active_tasks;
         AbstractInstance *valid_instance;
         CopyOperation *prev_copy;  // Previous copy operation in case of no conflict
+        bool exclusive;
       };
     protected:
       friend class HighLevelRuntime;
@@ -587,6 +588,9 @@ namespace RegionRuntime {
       // can copy up automatically
       void close_subtree(Context ctx, TaskDescription *desc, 
                          CopyOperation *copy_op);
+
+      // Start the copy close computation
+      void copy_close(DependenceDetector &dep);
 
       // Once we've closed a subtree, we don't have to check for dependences on our
       // way to the logical region, we just need to open things up. Open them up
@@ -622,6 +626,7 @@ namespace RegionRuntime {
       class PartitionState {
       public:
         std::set<LogicalHandle> open_regions;
+        bool exclusive; // only matters for aliased partitions
       };
     protected:
       friend class HighLevelRuntime;
@@ -1146,6 +1151,8 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(ctx < all_tasks.size());
 #endif
+      // Since there are no allocations in this kind of partition
+      // everything is by defintion disjoint
       all_tasks[ctx]->create_partition(partition_id, parent, true);
  
       std::vector<std::vector<Memory> > rankings;  
@@ -1212,7 +1219,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(ctx < all_tasks.size());
 #endif
-      all_tasks[ctx]->create_partition(partition_id, parent, true);
+      all_tasks[ctx]->create_partition(partition_id, parent, disjoint);
  
       std::vector<std::vector<Memory> > rankings;  
       mapper_objects[id]->rank_initial_partition_locations(sizeof(T),coloring.size(),tag,rankings);
@@ -1287,7 +1294,7 @@ namespace RegionRuntime {
       PartitionID partition_id = this->next_partition_id;
       this->next_partition_id += this->partition_stride;
 
-      all_tasks[ctx]->create_partition(partition_id, parent, false);
+      all_tasks[ctx]->create_partition(partition_id, parent, disjoint);
 
       std::vector<std::vector<Memory> > rankings; 
       mapper_objects[id]->rank_initial_partition_locations(sizeof(T),ranges.size(), tag, rankings);
