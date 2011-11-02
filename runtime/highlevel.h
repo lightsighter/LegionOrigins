@@ -563,7 +563,6 @@ namespace RegionRuntime {
         std::vector<std::pair<RegionRequirement*,TaskDescription*> > active_tasks;
         AbstractInstance *valid_instance;
         CopyOperation *prev_copy;  // Previous copy operation in case of no conflict
-        bool exclusive;
       };
     protected:
       friend class HighLevelRuntime;
@@ -624,7 +623,8 @@ namespace RegionRuntime {
       class PartitionState {
       public:
         std::set<LogicalHandle> open_regions;
-        bool exclusive; // only matters for aliased partitions
+        // This is only used for conflict detection in aliased partitions
+        std::vector<std::pair<RegionRequirement*,TaskDescription*> > active_tasks;
       };
     protected:
       friend class HighLevelRuntime;

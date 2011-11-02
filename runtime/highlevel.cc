@@ -120,9 +120,66 @@ namespace RegionRuntime {
     bool RegionRequirement::region_conflict(RegionRequirement *req1, RegionRequirement *req2)
     //--------------------------------------------------------------------------------------------
     {
+#if 0
       // Always detect a conflict
       // TODO: fix this to actually detect conflicts
       return true;
+#else
+      // Two readers are never a conflict
+      if (((req1->mode == NO_ACCESS) || (req1->mode == READ_ONLY)) &&
+          ((req2->mode == NO_ACCESS) || (req2->mode == READ_ONLY)))
+      {
+        return false;
+      }
+      else
+      {
+        // Everything in here always has at least one write
+#ifdef DEBUG_HIGH_LEVEL
+        assert((req1->mode == READ_WRITE) || (req1->mode == REDUCE) ||
+               (req2->mode == READ_WRITE) || (req2->mode == REDUCE));
+#endif
+        // Anything exclusive 
+        if ((req1->prop == EXCLUSIVE) || (req2->prop == EXCLUSIVE))
+        {
+          // always a conflict 
+          return true;
+        }
+        // Anything atomic (at least one is a write)
+        else if ((req1->prop == ATOMIC) || (req2->prop == ATOMIC))
+        {
+          // If they're both atomics, everything is cool
+          if ((req1->prop == ATOMIC) && (req2->prop == ATOMIC))
+          {
+            return false;
+          }
+          // If the one that is not an atomic is a read, we're also ok
+          else if (((req1->prop != ATOMIC) && 
+                      ((req1->mode == NO_ACCESS) || (req1->mode == READ_ONLY))) ||
+                   ((req2->prop != ATOMIC) && 
+                      ((req2->mode == NO_ACCESS) || (req2->mode == READ_ONLY))))
+          {
+            return false;
+          }
+          // Everything else is a conflict
+          return true;
+        }
+        // Anything simultaneous (at least one is a write)
+        else if ((req1->prop == SIMULTANEOUS) || (req2->prop == SIMULTANEOUS))
+        {
+          // Never a conflict
+          return false;
+        }
+        // Everything else both are simultaneous
+        else if ((req1->prop == RELAXED) && (req2->prop == RELAXED))
+        {
+          // Never a conflict
+          return false;
+        }
+      }
+      // We should never make it here
+      assert(false);
+      return true;
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -249,6 +306,10 @@ namespace RegionRuntime {
     InstanceInfo* AbstractInstance::get_instance(Memory m)
     //--------------------------------------------------------------------------------------------
     {
+      if (first_map && (parent != NULL))
+      {
+        
+      }
       // Check to see if the memory exists locally
       InstanceInfo *result = NULL;
       if (valid_instances.find(m) != valid_instances.end())
@@ -516,9 +577,16 @@ namespace RegionRuntime {
         // If we haven't gotten them before, get the set of valid instances
         // from the parent abstract instance
         first_map = false;
-        locations.insert(locations.end(),
-                          parent->locations.begin(),
-                          parent->locations.end());
+        std::vector<Memory> &parent_mems = parent->get_memory_locations();
+        for (std::vector<Memory>::iterator it = parent_mems.begin();
+              it != parent_mems.end(); it++)
+
+        {
+          if (valid_instances.find(*it) == valid_instances.end())
+          {
+            locations.push_back(*it);
+          }
+        }
       }
       return locations;
     }
@@ -2459,7 +2527,7 @@ namespace RegionRuntime {
           dep.prev_instance = state.valid_instance;
 
         // Check to see if there was not a conflict and there was a valid copy tree
-        // If there was, we need to make sure it's been issued by us
+        // If there was, we need to make sure it's been issued
         if (!conflict && (state.prev_copy != NULL))
         {
           dep.child->pre_copy_trees.push_back(state.prev_copy);
@@ -2966,11 +3034,9 @@ namespace RegionRuntime {
       {
         // The partition is aliased
         // There should only be at most one open region in an aliased partition
-#ifdef DEBUG_HIGH_LEVEL
-        assert(state.open_regions.size() < 2);
-#endif
-        if (state.open_regions.size() == 1)
+        if (!state.open_regions.empty())
         {
+#if 0
           LogicalHandle open = (*(state.open_regions.begin()));
           if (open == next_reg)
           {
@@ -2993,12 +3059,64 @@ namespace RegionRuntime {
             dep.trace.push_front(pid);
             parent->open_subtree(dep);
           }
+#else
+          // Go through and look for any conflicts with current
+          // tasks using this partition
+          bool conflict = false;
+          for (std::vector<std::pair<RegionRequirement*,TaskDescription*> >::iterator it = 
+                state.active_tasks.begin(); it != state.active_tasks.end(); it++)
+          {
+            if (RegionRequirement::region_conflict(it->first,dep.req))
+            {
+              conflict = true;
+              // No need to register the dependence we'll get it when we
+              // compute the copy operation
+            }
+            // Mark that we need to wait for this task to be mapped
+            if (!it->second->mapped)
+            {
+              if ((it->second->dependent_tasks.insert(dep.child)).second)
+              {
+                dep.child->remaining_events++;
+              }
+            }
+          }
+          // If there was a conflict, we have to close up this partition and start again
+          if (conflict)
+          {
+            // We need to close this partition from the perspective
+            // of the parent region
+#ifdef DEBUG_HIGH_LEVEL
+            assert(dep.prev_instance != NULL);
+#endif
+            parent->copy_close(dep);
+            // Now open this partition from the perspecitve of the
+            // parent region. To do this we need to muck with
+            // trace to make it look right.  Push the child ID
+            // and then the partition ID back onto the trace.
+            dep.trace.push_front(next_reg.id);
+            dep.trace.push_front(pid);
+            parent->open_subtree(dep);
+          }
+          else
+          {
+            // There was no conflict, add ourselves to the list of tasks
+            // open up the partition and continue the traversal
+            state.active_tasks.push_back(
+                std::pair<RegionRequirement*,TaskDescription*>(dep.req,dep.child));
+            state.open_regions.insert(next_reg);
+            children[next_reg]->register_region_dependence(dep);
+          }
+#endif
         }
         else
         {
           // There are no open child regions, open the one we need
           children[next_reg]->open_subtree(dep);
           state.open_regions.insert(next_reg);
+          // Insert ourselves into the list of active tasks
+          state.active_tasks.push_back(
+              std::pair<RegionRequirement*,TaskDescription*>(dep.req,dep.child));
         }
       }
     }
@@ -3023,6 +3141,10 @@ namespace RegionRuntime {
       }
       // Mark that all the children are closed
       partition_states[ctx].open_regions.clear();
+      if (!disjoint)
+      {
+        partition_states[ctx].active_tasks.clear();
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3041,6 +3163,11 @@ namespace RegionRuntime {
 #endif
       partition_states[dep.ctx].open_regions.insert(next);
       children[next]->open_subtree(dep);
+      if (!disjoint)
+      {
+        partition_states[dep.ctx].active_tasks.push_back(
+            std::pair<RegionRequirement*,TaskDescription*>(dep.req,dep.child));
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3056,6 +3183,7 @@ namespace RegionRuntime {
       {
         partition_states.resize(ctx+1);
         partition_states[ctx].open_regions.clear();
+        partition_states[ctx].active_tasks.clear();
       }
       for (std::map<LogicalHandle,RegionNode*>::iterator it = children.begin();
             it != children.end(); it++)
