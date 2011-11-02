@@ -3278,6 +3278,15 @@ namespace RegionRuntime {
       }
     }
 
+    /*static*/ MapperCallbackFnptr HighLevelRuntime::mapper_callback = 0;
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::set_mapper_init_callback(MapperCallbackFnptr callback)
+    //--------------------------------------------------------------------------------------------
+    {
+      mapper_callback = callback;
+    }
+
     //--------------------------------------------------------------------------------------------
     HighLevelRuntime* HighLevelRuntime::get_runtime(Processor p)
     //--------------------------------------------------------------------------------------------
@@ -3294,9 +3303,8 @@ namespace RegionRuntime {
 
       // Now initialize any mappers
       // Issue a task to initialize the mappers
-      Event init_mappers = p.spawn(TASK_ID_INIT_MAPPERS,NULL,0);
-      // Make sure this has finished before returning
-      init_mappers.wait();
+      if(mapper_callback != 0)
+	(*mapper_callback)(Machine::get_machine(), get_runtime(p), p);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3506,7 +3514,7 @@ namespace RegionRuntime {
       assert(ctx < all_tasks.size());
 #endif
       TaskDescription *desc= all_tasks[ctx];
-      log_task(LEVEL_DEBUG,"Beginning task %d on processor %d in context %d",
+      log_task(LEVEL_DEBUG,"Beginning task %d on processor %x in context %d",
                             desc->task_id,desc->local_proc.id,desc->local_ctx);
       return desc->start_task(); 
     }
@@ -3519,7 +3527,7 @@ namespace RegionRuntime {
       assert(ctx < all_tasks.size());
 #endif
       TaskDescription *desc= all_tasks[ctx];
-      log_task(LEVEL_DEBUG,"Ending task %d on processor %d in context %d",
+      log_task(LEVEL_DEBUG,"Ending task %d on processor %x in context %d",
                             desc->task_id,desc->local_proc.id,desc->local_ctx);
       desc->complete_task(arg,arglen); 
     }
