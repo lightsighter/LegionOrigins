@@ -7,6 +7,7 @@
 #endif
 
 GASNETT_THREADKEY_DEFINE(cur_thread);
+GASNETT_THREADKEY_DEFINE(gpu_thread);
 
 #if 0
 #include <assert.h>
@@ -933,11 +934,11 @@ namespace RegionRuntime {
 
       virtual void event_triggered(void)
       {
-	log_event(LEVEL_INFO, "recevied trigger merged event %x/%d",
-		  finish_event.id, finish_event.gen);
 	bool last_trigger = false;
 	{
 	  AutoHSLLock a(mutex);
+	  log_event(LEVEL_INFO, "recevied trigger merged event %x/%d (%d)",
+		    finish_event.id, finish_event.gen, count_needed);
 	  count_needed--;
 	  if(count_needed == 0) last_trigger = true;
 	}
@@ -2780,9 +2781,27 @@ namespace RegionRuntime {
 
       // figure out which thread we are - better be a local CPU thread!
       void *ptr = gasnett_threadkey_get(cur_thread);
-      assert(ptr != 0);
-      LocalProcessor::Thread *thr = (LocalProcessor::Thread *)ptr;
-      thr->sleep_on_event(*this);
+      if(ptr != 0) {
+	LocalProcessor::Thread *thr = (LocalProcessor::Thread *)ptr;
+	thr->sleep_on_event(*this);
+	return;
+      }
+      // maybe a GPU thread?
+      ptr = gasnett_threadkey_get(gpu_thread);
+      if(ptr != 0) {
+	printf("oh, good - we're a gpu thread - we'll spin for now\n");
+	printf("waiting for %x/%d\n", id, gen);
+	while(!e->has_triggered(gen)) usleep(1000);
+	printf("done\n");
+	return;
+      }
+      // we're probably screwed here - try waiting and polling gasnet while
+      //  we wait
+      printf("waiting on event, polling gasnet to hopefully not die\n");
+      while(!e->has_triggered(gen))
+	gasnet_AMPoll();
+      return;
+      //assert(ptr != 0);
     }
 
     // can't be static if it's used in a template...
@@ -3595,6 +3614,22 @@ namespace RegionRuntime {
 	    }
 	    break;
 
+	  case Memory::Impl::MKIND_GPUFB:
+	    {
+	      // all GPU operations are deferred, so we need an event if
+	      //  we don't already have one created
+	      if(!after_copy.exists())
+		after_copy = Event::Impl::create_event();
+	      ((GPUFBMemory *)tgt_mem)->gpu->copy_to_fb_generic(tgt_data->offset,
+								src_mem,
+								src_data->offset,
+								bytes_to_copy,
+								Event::NO_EVENT,
+								after_copy);
+	      return after_copy;
+	    }
+	    break;
+
 	  default:
 	    assert(0);
 	  }
@@ -3618,6 +3653,22 @@ namespace RegionRuntime {
 							  bytes_to_copy,
 							  Event::NO_EVENT,
 							  after_copy);
+	      return after_copy;
+	    }
+	    break;
+
+	  case Memory::Impl::MKIND_GASNET:
+	    {
+	      // all GPU operations are deferred, so we need an event if
+	      //  we don't already have one created
+	      if(!after_copy.exists())
+		after_copy = Event::Impl::create_event();
+	      ((GPUFBMemory *)src_mem)->gpu->copy_from_fb_generic(tgt_mem,
+								  tgt_data->offset,
+								  src_data->offset,
+								  bytes_to_copy,
+								  Event::NO_EVENT,
+								  after_copy);
 	      return after_copy;
 	    }
 	    break;
@@ -3741,6 +3792,28 @@ namespace RegionRuntime {
 	      return after_copy;
 	    }
 	}
+
+	// plan B: if one side is remote, try delegating to the node
+	//  that owns the other side of the copy
+	unsigned delegate = ((src_mem->kind == Memory::Impl::MKIND_REMOTE) ?
+			      ID(src_mem->me).node() :
+			      ID(dst_mem->me).node());
+	if(delegate != gasnet_mynode()) {
+	  log_copy.info("passsing the buck to node %d for %x->%x copy",
+			delegate, src_mem->me.id, dst_mem->me.id);
+	  Event after_copy = Event::Impl::create_event();
+	  RemoteCopyArgs args;
+	  args.source = *this;
+	  args.target = target;
+	  args.bytes_to_copy = bytes_to_copy;
+	  args.before_copy = wait_on;
+	  args.after_copy = after_copy;
+	  RemoteCopyMessage::request(delegate, args);
+
+	  return after_copy;
+	}
+
+	// plan C: suicide
 	assert(0);
       }
 
@@ -4292,9 +4365,9 @@ namespace RegionRuntime {
       }
 
 #ifdef USE_GPU
-      if(num_local_gpus > 0) {
-	std::set<GPUProcessor *> local_gpu_procs;
+      std::set<GPUProcessor *> local_gpu_procs;
 
+      if(num_local_gpus > 0) {
 	for(unsigned i = 0; i < num_local_gpus; i++) {
 	  Processor p = ID(ID::ID_PROCESSOR, 
 			   gasnet_mynode(), 
@@ -4304,6 +4377,7 @@ namespace RegionRuntime {
 					      zc_mem_size_in_mb << 20,
 					      fb_mem_size_in_mb << 20);
 	  n->processors.push_back(gp);
+	  local_gpu_procs.insert(gp);
 
 	  adata[apos++] = NODE_ANNOUNCE_PROC;
 	  adata[apos++] = p.id;
@@ -4425,6 +4499,13 @@ namespace RegionRuntime {
 	  it != local_cpu_procs.end();
 	  it++)
 	(*it)->start_worker_threads();
+
+#ifdef USE_GPU
+      for(std::set<GPUProcessor *>::iterator it = local_gpu_procs.begin();
+	  it != local_gpu_procs.end();
+	  it++)
+	(*it)->start_worker_thread();
+#endif
     }
 
     Machine::~Machine(void)
