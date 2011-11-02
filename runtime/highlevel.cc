@@ -206,9 +206,6 @@ namespace RegionRuntime {
         valid_instances.insert(std::pair<Memory,InstanceInfo*>(init->location,init));
         locations.push_back(init->location);
       }
-      // Notify the parent that we are referencing it
-      if (!remote && (par != NULL))
-        par->register_task_user();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -306,10 +303,6 @@ namespace RegionRuntime {
     InstanceInfo* AbstractInstance::get_instance(Memory m)
     //--------------------------------------------------------------------------------------------
     {
-      if (first_map && (parent != NULL))
-      {
-        
-      }
       // Check to see if the memory exists locally
       InstanceInfo *result = NULL;
       if (valid_instances.find(m) != valid_instances.end())
@@ -376,10 +369,8 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(info != NULL);
+      assert(!remote);
 #endif
-      // If its remote just ignore it, we'll deal with it when we send the values back
-      if (remote)
-        return;
 
       // Check to see if we own this instance
       if (info->handle == handle)
@@ -389,8 +380,10 @@ namespace RegionRuntime {
         assert(info->references > 0); // Check for double free
 #endif
         info->references--;
-        log_inst(LEVEL_DEBUG,"reducing reference count of instance %d of region %d to %d",
-                              info->inst.id,info->handle.id,info->references);
+        log_inst(LEVEL_DEBUG,"reducing reference count of instance %d of region %d to %d"
+                              " with abstract references %d and closed %d",
+                              info->inst.id,info->handle.id,info->references,
+                              references, closed);
         // Now see if this instance is invalid and its reference count has gone to zero 
         std::map<Memory,InstanceInfo*>::iterator finder = valid_instances.find(info->location);
         if ((finder == valid_instances.end()) &&
@@ -400,8 +393,6 @@ namespace RegionRuntime {
           log_inst(LEVEL_DEBUG,"deleting instance %d of region %d in memory %d",
                               info->inst.id,info->handle.id,info->location.id);
           info->handle.destroy_instance_untyped(info->inst);
-          // erase it from the list of valid instances
-          valid_instances.erase(finder);
           return;
         }
         // Otherwise if this instance is closed and references is zero we can also delete it
@@ -432,14 +423,14 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(info != NULL);
-#endif
-      // If this is remote, just ignore it as all we really care about is
-      // what happens when things get send back
-      if (remote)
-        return;
-#ifdef DEBUG_HIGH_LEVEL
+      assert(!remote);
       assert(references > 0);
 #endif
+      // Mark that it is being used
+      info->references++;
+      log_inst(LEVEL_DEBUG,"Reading instance %d of region %d with reference count %d and "
+                            "abstract reference count %d and closed %d",
+                            info->inst.id,info->handle.id,info->references,references,closed);
       // If this instance is local to us, add it to the list of valid instances
       if (info->handle == handle)
       {
@@ -462,11 +453,9 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert((parent != NULL) && (parent->find_instance(info->location) == info));
 #endif
-        locations.push_back(info->location);
+        if (valid_instances.find(info->location) == valid_instances.end())
+          locations.push_back(info->location);
       }
-      // Mark that it is being used
-      info->references++;
-      log_inst(LEVEL_DEBUG,"Reading instance %d of region %d",info->inst.id,info->handle.id);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -475,13 +464,13 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(info != NULL);
-#endif
-      // Ignore anything that happens if this is remote
-      if (remote)
-        return;
-#ifdef DEBUG_HIGH_LEVEL
+      assert(!remote);
       assert(references > 0);
 #endif
+      info->references++;
+      log_inst(LEVEL_DEBUG,"Writing instance %d of region %d with reference coutn %d and "
+                            "abstract reference count %d and closed %d",
+                            info->inst.id,info->handle.id,info->references,references,closed);
       // Clear out any prior valid instances, check to see if any of them can be freed
       if (exclusive)
       {
@@ -521,10 +510,9 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert((parent != NULL) && (parent->find_instance(info->location) == info));
 #endif
-        locations.push_back(info->location);
+        if (valid_instances.find(info->location) == valid_instances.end())
+          locations.push_back(info->location);
       }
-      info->references++;
-      log_inst(LEVEL_DEBUG,"Writing instance %d of region %d",info->inst.id,info->handle.id);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -599,7 +587,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void AbstractInstance::register_task_user(void)
+    void AbstractInstance::register_user(void)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -607,17 +595,16 @@ namespace RegionRuntime {
       assert(!remote);
 #endif
       references++;
-      log_inst(LEVEL_SPEW,"incrementing users of abstract instance for region %d to %d",
+      log_inst(LEVEL_DEBUG,"incrementing users of abstract instance for region %d to %d",
                             handle.id,references);
     }
 
     //--------------------------------------------------------------------------------------------
-    void AbstractInstance::register_task_mapped(void)
+    void AbstractInstance::release_user(void)
     //--------------------------------------------------------------------------------------------
     {
-      if (remote)
-        return;
 #ifdef DEBUG_HIGH_LEVEL
+      assert(!remote);
       assert(references > 0);
 #endif
       references--;
@@ -639,11 +626,6 @@ namespace RegionRuntime {
         }
         valid_instances.clear();
         locations.clear();
-        // Also notify our parent that we no longer need it
-        if (parent != NULL)
-        {
-          parent->register_task_mapped();
-        }
       }
     }
 
@@ -673,11 +655,6 @@ namespace RegionRuntime {
         }
         valid_instances.clear();
         locations.clear();
-        // Also notify our parent that we no longer need it
-        if (parent != NULL)
-        {
-          parent->register_task_mapped();
-        }
       }
     }
     
@@ -884,12 +861,19 @@ namespace RegionRuntime {
                                           Event::merge_events(conditions)));
           }
         }
+        // Tell any sub copies that we are done using them
+        for (std::vector<CopyOperation*>::iterator it = sub_copies.begin();
+              it != sub_copies.end(); it++)
+        {
+          (*it)->instance->release_user();
+        }
         // Compute the finished event and return
         finished_event = Event::merge_events(return_events);
         return finished_event;
       }
       else
       {
+        // Tell our abstract instance that we've used it
         finished_event = wait_event;
         // There are no subcopies, just return the event to wait on for this task to be finished
         return finished_event;
@@ -964,6 +948,12 @@ namespace RegionRuntime {
         up_events.insert(sub_events[idx]);
         return_events.insert(sub_info->inst.copy_to_untyped(target->inst,
                               Event::merge_events(up_events)));
+      }
+      // Tell any sub copies that we are done using them
+      for (std::vector<CopyOperation*>::iterator it = sub_copies.begin();
+            it != sub_copies.end(); it++)
+      {
+        (*it)->instance->release_user();
       }
       // Get the return event
       finished_event = Event::merge_events(return_events);
@@ -1352,6 +1342,8 @@ namespace RegionRuntime {
         if (!((*it)->is_triggered()))
         {
           wait_events.insert((*it)->execute(mapper,this,copy_instances)); 
+          // Tell the instance at the top of the copy operation that we are done using it
+          (*it)->instance->release_user();
         }
         else
         {
@@ -1406,18 +1398,6 @@ namespace RegionRuntime {
       std::set<Event> copy_events;
       for (unsigned idx = 0; idx < instances.size(); idx++)
       {
-        // tell the abstract instances about the reading and the writing
-        // even if they are subregions this is still safe
-        abstract_src[idx]->register_reader(src_instances[idx]);
-        // Check the coherence properties to see if this is a read or a write
-        if ((regions[idx].mode == READ_ONLY) || (regions[idx].mode == NO_ACCESS))
-        {
-          abstract_inst[idx]->register_reader(instances[idx]);
-        }
-        else
-        {
-          abstract_inst[idx]->register_writer(instances[idx], (regions[idx].prop != RELAXED));
-        }
         // Check to see if they have different instances, if so issue the copy
         if (!(src_instances[idx]->inst == instances[idx]->inst))
         {
@@ -1897,7 +1877,7 @@ namespace RegionRuntime {
         future->trigger();        
         // Trigger the event indicating that this task is complete!
         termination_event.trigger();
-        
+        // We can now free our destination instances since the task is finished  
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
           abstract_inst[idx]->free_instance(instances[idx]);
@@ -1954,6 +1934,7 @@ namespace RegionRuntime {
 #endif
         src_instances.push_back(info);
         abstract_src[idx]->register_reader(info);
+        abstract_src[idx]->release_user();
       }
       // Unapck the destination instances
       for (unsigned idx = 0; idx < regions.size(); idx++)
@@ -1986,6 +1967,8 @@ namespace RegionRuntime {
         {
           abstract_inst[idx]->register_writer(instances[idx], (regions[idx].prop != RELAXED));
         }
+        // Also mark that we used the abstract instances
+        abstract_inst[idx]->release_user();
       }
 
       // Register that the task has been mapped
@@ -2517,8 +2500,8 @@ namespace RegionRuntime {
         log_region(LEVEL_DEBUG,"region %d in context %d has source abstract instance from region %d"
                                 " and uses abstract instance from region %d",dep.req->handle.id,
                             dep.ctx,dep.prev_instance->handle.id,state.valid_instance->handle.id);
-        dep.prev_instance->register_task_user();
-        state.valid_instance->register_task_user();
+        dep.prev_instance->register_user();
+        state.valid_instance->register_user();
       } 
       else
       {
@@ -2594,8 +2577,8 @@ namespace RegionRuntime {
         // Create the new abstract instance
         state.valid_instance = dep.parent->get_abstract_instance(handle,dep.prev_instance);
         // Register that we are using the abstract instances
-        dep.prev_instance->register_task_user();
-        state.valid_instance->register_task_user();
+        dep.prev_instance->register_user();
+        state.valid_instance->register_user();
         // Make new instances and add them to the abstract instance 
         for (std::vector<std::vector<Memory> >::iterator rank_it = target_ranking.begin();
               rank_it != target_ranking.end(); rank_it++)
@@ -2648,9 +2631,13 @@ namespace RegionRuntime {
             active_events.insert(src_info->inst.copy_to_untyped(result->inst));
           }
         }
-        // Mark that we are done using these instances
-        state.valid_instance->register_task_mapped();
-        dep.prev_instance->register_task_mapped();
+        dep.prev_instance->release_user();
+        // Not done with the valid state until after the copy operation completes
+      }
+      else
+      {
+        // Mark that we're using the valid instance
+        state.valid_instance->register_user();
       }
       // Also add the event to wait for all the active tasks to finish
       for (std::vector<std::pair<RegionRequirement*,TaskDescription*> >::iterator it =
@@ -2731,9 +2718,8 @@ namespace RegionRuntime {
           // of its subcopies.
           partitions[region_states[ctx].open_partition]->close_subtree(ctx,desc,op);
         }
- 
         // Mark this valid instance as being used by the op and then closed
-        region_states[ctx].valid_instance->register_task_user();
+        region_states[ctx].valid_instance->register_user();
         region_states[ctx].valid_instance->mark_closed();
       }
       else
@@ -2776,8 +2762,8 @@ namespace RegionRuntime {
                                 " and uses abstract instance from region %d",dep.req->handle.id,
                             dep.ctx,dep.prev_instance->handle.id,
                             region_states[dep.ctx].valid_instance->handle.id);
-        dep.prev_instance->register_task_user();
-        abs_inst->register_task_user();
+        dep.prev_instance->register_user();
+        abs_inst->register_user();
       }
       else
       {
@@ -2931,6 +2917,9 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(state.valid_instance != NULL);
 #endif
+      // Mark that we're about to use the abstract instance and that this is the last use
+      state.valid_instance->register_user();
+      state.valid_instance->mark_closed();
       // Create the new copy operation
       CopyOperation *close_op = new CopyOperation(state.valid_instance,wait_event); 
       // Record this so we can delete it later
@@ -2942,7 +2931,10 @@ namespace RegionRuntime {
       }
       // No need to register dependent tasks since all the children have already been mapped
       // Issue the copy operation, and close the subtree
-      return close_op->execute_close(desc->mapper,desc,target,desc->copy_instances);
+      Event result = close_op->execute_close(desc->mapper,desc,target,desc->copy_instances);
+      // Tell the top of the copy operation that we are done using it
+      state.valid_instance->release_user();
+      return result;
     }
 
     /////////////////////////////////////////////////////////////
@@ -4035,8 +4027,6 @@ namespace RegionRuntime {
                               " source instance %d in memory %d",idx,
                               desc->regions[idx].handle.id,desc->task_id,desc->local_ctx,
                               src_info->inst.id,src_info->location.id);
-        // Tell the abstract instance that it has been used 
-        desc->abstract_src[idx]->register_task_mapped();
 
         bool found = false;
         // Now try and get the destination result
@@ -4137,6 +4127,25 @@ namespace RegionRuntime {
         }
         // Trigger the mapped event
         desc->map_event.trigger();
+        
+        // Mark that we've used both the source and destination abstract instances
+        for (unsigned idx = 0; idx < desc->regions.size(); idx++)
+        {
+          // Register the readers and the writers
+          desc->abstract_src[idx]->register_reader(desc->src_instances[idx]);
+          if ((desc->regions[idx].mode == READ_ONLY) || (desc->regions[idx].mode == NO_ACCESS))
+          {
+            desc->abstract_inst[idx]->register_reader(desc->instances[idx]);
+          }
+          else
+          {
+            desc->abstract_inst[idx]->register_writer(desc->instances[idx], 
+                                      (desc->regions[idx].prop != RELAXED));
+          }
+          // Tell the abstract instances that we've finished using them
+          desc->abstract_src[idx]->release_user();
+          desc->abstract_inst[idx]->release_user();
+        }
       }
       // Mark this task as having been mapped
       desc->mapped = true;

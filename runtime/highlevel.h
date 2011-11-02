@@ -145,9 +145,9 @@ namespace RegionRuntime {
       bool add_instance(InstanceInfo *info);
     protected:
       // Increases the reference count of the abstract instance
-      void register_task_user(void);
-      // Decreases the reference count of the abstract instance
-      void register_task_mapped(void);
+      void register_user(void);
+      // Release the user
+      void release_user(void);
       // Mark the abstract instance closed for conflict detection
       void mark_closed(void);
       // Make the locations visible
