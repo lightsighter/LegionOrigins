@@ -228,9 +228,7 @@ namespace RegionRuntime {
 
     // This is information about a task that will be available to the mapper
     class Task {
-    protected:
-      friend class HighLevelRuntime;
-      friend class Mapper;
+    public:
       Processor::TaskFuncID task_id;
       std::vector<RegionRequirement> regions;
       MapperID map_id;
@@ -683,6 +681,7 @@ namespace RegionRuntime {
      * which is our default mapper, but the user can also specify in the 
      * mapping file a mapper and a tag for an operation.
      */
+    typedef void (*MapperCallbackFnptr)(Machine *machine, HighLevelRuntime *runtime, Processor local);
     class HighLevelRuntime {
     private:
       // A static map for tracking the runtimes associated with each processor in a process
@@ -691,6 +690,7 @@ namespace RegionRuntime {
       static HighLevelRuntime* get_runtime(Processor p);
     public:
       static void register_runtime_tasks(Processor::TaskIDTable &table);
+      static void set_mapper_init_callback(MapperCallbackFnptr callback);
       // Static methods for calls from the processor to the high level runtime
       static void initialize_runtime(const void * args, size_t arglen, Processor p);
       static void shutdown_runtime(const void * args, size_t arglen, Processor p);
@@ -756,6 +756,7 @@ namespace RegionRuntime {
       // Member variables
       Processor local_proc;
       Machine *machine;
+      static MapperCallbackFnptr mapper_callback;
       std::vector<Mapper*> mapper_objects;
       std::list<TaskDescription*> ready_queue; // Tasks ready to be mapped/stolen
       std::list<TaskDescription*> waiting_queue; // Tasks still unmappable
