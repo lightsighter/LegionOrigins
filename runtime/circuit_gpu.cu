@@ -2,7 +2,6 @@
 #include <cstdio>
 #include <cassert>
 #include <cstdlib>
-#include <algorithm>
 
 #include "highlevel.h"
 
@@ -58,93 +57,19 @@ struct Partitions {
   ptr_t<CircuitWire> first_wires[MAX_PIECES];
 };
 
-extern RegionRuntime::LowLevel::Logger::Category log_mapper;
-
-static bool sort_by_proc_id(const std::pair<Processor, Memory>& a,
-			    const std::pair<Processor, Memory>& b)
-{
-  return (a.first.id < b.first.id);
-}
-
-template <class T>
-T prioritized_pick(const std::vector<T>& vec, T choice1, T choice2)
-{
-  for(unsigned i = 0; i < vec.size(); i++)
-    if(vec[i] == choice1)
-      return choice1;
-  for(unsigned i = 0; i < vec.size(); i++)
-    if(vec[i] == choice2)
-      return choice2;
-  assert(0);
-}
-
 class CircuitMapper : public Mapper {
 public:
-  std::map<Processor::Kind, std::vector< std::pair<Processor, Memory> > > cpu_mem_pairs;
-  Memory global_memory;
-
   CircuitMapper(Machine *m, HighLevelRuntime *r, Processor p)
-    : Mapper(m, r, p)
-  {
-    // go through all processors, taking the kind we want, and finding its
-    //  best memory
-    const std::set<Processor>& all_procs = m->get_all_processors();
-    for(std::set<Processor>::const_iterator it = all_procs.begin();
-	it != all_procs.end();
-	it++) {
-      Processor proc = *it;
-
-      Processor::Kind kind = m->get_processor_kind(proc);
-
-      Memory best_mem;
-      unsigned best_bw = 0;
-      std::vector<Machine::ProcessorMemoryAffinity> pmas;
-      m->get_proc_mem_affinity(pmas, proc);
-      for(unsigned i = 0; i < pmas.size(); i++)
-	if(pmas[i].bandwidth > best_bw) {
-	  best_bw = pmas[i].bandwidth;
-	  best_mem = pmas[i].m;
-	}
-
-      log_mapper.info("Proc:%x (%d) Mem:%x\n", proc.id, kind, best_mem.id);
-      cpu_mem_pairs[kind].push_back(std::make_pair(proc, best_mem));
-    }
-    // make sure each list is sorted so that all nodes agree on the order
-    for(std::map<Processor::Kind, std::vector< std::pair<Processor, Memory> > >::iterator it = cpu_mem_pairs.begin();
-	it != cpu_mem_pairs.end();
-	it++)
-      std::sort(it->second.begin(), it->second.end(), sort_by_proc_id);
-
-    // try to find the "global" memory by looking for the memory with the 
-    //  most processors that can access it
-    Memory best_global;
-    unsigned best_count = 0;
-    const std::set<Memory>& all_mems = m->get_all_memories();
-    for(std::set<Memory>::const_iterator it = all_mems.begin();
-	it != all_mems.end();
-	it++) {
-      unsigned count = m->get_shared_processors(*it).size();
-      if(count > best_count) {
-	best_count = count;
-	best_global = *it;
-      }
-    }
-    global_memory = best_global;
-
-    log_mapper.info("global memory = %x (%d)?\n", best_global.id, best_count);
-  }
+    : Mapper(m, r, p) {}
 
   virtual void rank_initial_region_locations(size_t elmt_size, 
 					     size_t num_elmts, 
 					     MappingTagID tag,
 					     std::vector<Memory> &ranking)
   {
-    //log_mapper("mapper: ranking initial region locations (%zd,%zd,%d)\n",
-    //	       elmt_size, num_elmts, tag);
-    //Mapper::rank_initial_region_locations(elmt_size, num_elmts, tag, ranking);
-
-    // for now, ALWAYS choose the global memory
-    ranking.push_back(global_memory);
+    printf("mapper: ranking initial region locations (%zd,%zd,%d)\n",
+	   elmt_size, num_elmts, tag);
+    Mapper::rank_initial_region_locations(elmt_size, num_elmts, tag, ranking);
   }
 
   virtual void rank_initial_partition_locations(size_t elmt_size, 
@@ -152,98 +77,38 @@ public:
 						MappingTagID tag,
 						std::vector<std::vector<Memory> > &rankings)
   {
-    //    log_mapper("mapper: ranking initial partition locations (%zd,%d,%d)\n",
-    //	       elmt_size, num_subregions, tag);
-    //Mapper::rank_initial_partition_locations(elmt_size, num_subregions,
-    //					     tag, rankings);
-
-    // for now, ALWAYS choose the global memory
-    rankings.resize(num_subregions);
-    for(unsigned i = 0; i < num_subregions; i++)
-      rankings[i].push_back(global_memory);
+    printf("mapper: ranking initial partition locations (%zd,%d,%d)\n",
+	   elmt_size, num_subregions, tag);
+    Mapper::rank_initial_partition_locations(elmt_size, num_subregions,
+					     tag, rankings);
   }
 
   virtual bool compact_partition(const UntypedPartition &partition, 
 				 MappingTagID tag)
   {
-    //    log_mapper("mapper: compact partition? (%d)\n",
-    //	   tag);
-    //return Mapper::compact_partition(partition, tag);
-
-    return false;
+    printf("mapper: compact partition? (%d)\n",
+	   tag);
+    return Mapper::compact_partition(partition, tag);
   }
 
   virtual Processor select_initial_processor(const Task *task)
   {
-    //    log_mapper("mapper: select initial processor (%p)\n", task);
-    std::vector< std::pair<Processor, Memory> >& loc_procs = cpu_mem_pairs[Processor::LOC_PROC];
-
-    switch(task->task_id) {
-    case TOP_LEVEL_TASK_ID:
-    case TASKID_LOAD_CIRCUIT:
-      {
-	// load circuit on first CPU
-	return cpu_mem_pairs[Processor::LOC_PROC][0].first;
-      }
-      break;
-
-    case TASKID_CALC_NEW_CURRENTS:
-      {
-	// distribute evenly over CPUs
-	return loc_procs[task->tag % loc_procs.size()].first;
-      }
-      break;
-
-    case TASKID_DISTRIBUTE_CHARGE:
-      {
-	// distribute evenly over CPUs
-	return loc_procs[task->tag % loc_procs.size()].first;
-      }
-      break;
-
-    case TASKID_UPDATE_VOLTAGES:
-      {
-	// distribute evenly over CPUs
-	return loc_procs[task->tag % loc_procs.size()].first;
-      }
-      break;
-
-    default:
-      log_mapper.info("being asked to map task=%d", task->task_id);
-      assert(0);
-    }
+    printf("mapper: select initial processor (%p)\n", task);
+    return Mapper::select_initial_processor(task);
   }
 
   virtual Processor target_task_steal(void)
   {
-    //log_mapper("mapper: select target of task steal\n");
-    //return Mapper::target_task_steal();
-
-    // no stealing allowed
-    return Processor::NO_PROC;
+    printf("mapper: select target of task steal\n");
+    return Mapper::target_task_steal();
   }
 
   virtual void permit_task_steal(Processor thief,
 				 const std::vector<const Task*> &tasks,
 				 std::set<const Task*> &to_steal)
   {
-    //Mapper::permit_task_steal(thief, tasks, to_steal);
-
-    // no stealing - leave 'to_steal' set empty
-    return;
-#if 0
-    if(to_steal.size() > 0) {
-      printf("mapper: allowing theft of [");
-      bool first = true;
-      for(std::set<const Task *>::iterator it = to_steal.begin();
-	  it != to_steal.end();
-	  it++) {
-	if(!first) printf(", "); first = false;
-	printf("%p", *it);
-      }
-      printf("] by proc=%x\n", thief.id);
-    }
-#endif
+    printf("mapper: checking task stealing permissions");
+    Mapper::permit_task_steal(thief, tasks, to_steal);
   }
 
   virtual void map_task_region(const Task *task, const RegionRequirement *req,
@@ -252,105 +117,22 @@ public:
 			       Memory &chosen_src,
 			       std::vector<Memory> &dst_ranking)
   {
-    log_mapper.info("mapper: mapping region for task (%p,%p) region=%x/%x", task, req, req->handle.id, req->parent.id);
-    int idx = -1;
-    for(unsigned i = 0; i < task->regions.size(); i++)
-      if(req == &(task->regions[i]))
-	idx = i;
-    log_mapper.info("func_id=%d map_tag=%d region_index=%d", task->task_id, task->tag, idx);
-    printf("taskid=%d tag=%d idx=%d srcs=[", task->task_id, task->tag, idx);
-    for(unsigned i = 0; i < valid_src_instances.size(); i++) {
+    printf("mapper: mapping region for task (%p,%p)\n", task, req);
+    Mapper::map_task_region(task, req, valid_src_instances, valid_dst_instances,
+			    chosen_src, dst_ranking);
+    printf("mapper: chose src=%x dst=[", chosen_src.id);
+    for(unsigned i = 0; i < dst_ranking.size(); i++) {
       if(i) printf(", ");
-      printf("%x", valid_src_instances[i].id);
-    }
-    printf("]  ");
-    printf("dsts=[");
-    for(unsigned i = 0; i < valid_dst_instances.size(); i++) {
-      if(i) printf(", ");
-      printf("%x", valid_dst_instances[i].id);
+      printf("%x", dst_ranking[i].id);
     }
     printf("]\n");
-    fflush(stdout);
-    std::vector< std::pair<Processor, Memory> >& loc_procs = cpu_mem_pairs[Processor::LOC_PROC];
-    std::pair<Processor, Memory> cmp = loc_procs[task->tag % loc_procs.size()];
-#if 1
-    switch(task->task_id) {
-    case TOP_LEVEL_TASK_ID:
-    case TASKID_LOAD_CIRCUIT:
-      {
-	// sources will be global, as will dest
-	chosen_src = global_memory;
-	dst_ranking.push_back(global_memory);
-      }
-      break;
-
-    case TASKID_CALC_NEW_CURRENTS:
-      {
-	switch(idx) {
-	case 0: // index 0 = wires - keep in CPU's local memory
-	  chosen_src = prioritized_pick(valid_src_instances,
-					cmp.second, global_memory);
-	  dst_ranking.push_back(cmp.second);
-	  break;
-
-	default:
-	  chosen_src = prioritized_pick(valid_src_instances,
-					cmp.second, global_memory);
-	  dst_ranking.push_back(global_memory);
-	}
-      }
-      break;
-
-    case TASKID_DISTRIBUTE_CHARGE:
-      {
-	switch(idx) {
-	case 0: // index 0 = wires - keep in CPU's local memory
-	  chosen_src = prioritized_pick(valid_src_instances,
-					cmp.second, global_memory);
-	  dst_ranking.push_back(cmp.second);
-	  break;
-
-	default:
-	  chosen_src = prioritized_pick(valid_src_instances,
-					cmp.second, global_memory);
-	  dst_ranking.push_back(global_memory);
-	}
-      }
-      break;
-
-    case TASKID_UPDATE_VOLTAGES:
-      {
-	// distribute evenly over CPUs
-	chosen_src = prioritized_pick(valid_src_instances,
-				      cmp.second, global_memory);
-	dst_ranking.push_back(cmp.second);
-      }
-      break;
-
-    default:
-      log_mapper.info("being asked to map task=%d", task->task_id);
-      assert(0);
-    }
-#else
-    Mapper::map_task_region(task, req, valid_src_instances, valid_dst_instances,
-    			    chosen_src, dst_ranking);
-#endif
-
-    char buffer[256];
-    sprintf(buffer, "mapper: chose src=%x dst=[", chosen_src.id);
-    for(unsigned i = 0; i < dst_ranking.size(); i++) {
-      if(i) strcat(buffer, ", ");
-      sprintf(buffer+strlen(buffer), "%x", dst_ranking[i].id);
-    }
-    strcat(buffer, "]");
-    log_mapper.info("%s", buffer);
   }
 
   virtual void rank_copy_targets(const Task *task,
 				 const std::vector<Memory> &current_instances,
 				 std::vector<std::vector<Memory> > &future_ranking)
   {
-    log_mapper.info("mapper: ranking copy targets (%p)\n", task);
+    printf("mapper: ranking copy targets (%p)\n", task);
     Mapper::rank_copy_targets(task, current_instances, future_ranking);
   }
 
@@ -358,16 +140,7 @@ public:
 				  const std::vector<Memory> &current_instances,
 				  const Memory &dst, Memory &chosen_src)
   {
-    // easy case: if there's only 1 valid choice, pick it
-    if(current_instances.size() == 1) {
-      chosen_src = *(current_instances.begin());
-      return;
-    }
-    log_mapper.info("mapper: selecting copy source (%p)\n", task);
-    for(std::vector<Memory>::const_iterator it = current_instances.begin();
-	it != current_instances.end();
-	it++)
-      log_mapper.info("  choice = %x", (*it).id);
+    printf("mapper: selecting copy source (%p)\n", task);
     Mapper::select_copy_source(task, current_instances, dst, chosen_src);
   }
 };
@@ -432,28 +205,18 @@ void create_mappers(Machine *machine, HighLevelRuntime *runtime, Processor local
     }
  */
 
-static const bool spawn_tasks = true;
-
-namespace Config {
-  int num_loops = 2;
-  int num_pieces = 8;
-  int nodes_per_piece = 2;
-  int wires_per_piece = 4;
-  int pct_wire_in_piece = 95;
-  int random_seed = 12345;
-};
-
-extern RegionRuntime::LowLevel::Logger::Category log_app;
-
 template<AccessorType AT>
 void top_level_task(const void *args, size_t arglen, 
 		    const std::vector<PhysicalRegion<AT> > &regions,
                     Context ctx, HighLevelRuntime *runtime)
 {
+  int num_circuit_nodes = 1000;
+  int num_circuit_wires = 1000;
+
+  int num_pieces = 2;
+
   // create top-level regions - one for nodes and one for wires
   Circuit circuit;
-  int num_circuit_nodes = Config::num_pieces * Config::nodes_per_piece;
-  int num_circuit_wires = Config::num_pieces * Config::wires_per_piece;
 
   circuit.r_all_nodes = runtime->create_logical_region<CircuitNode>(ctx,
 								    num_circuit_nodes);
@@ -469,8 +232,7 @@ void top_level_task(const void *args, size_t arglen,
 						   circuit.r_all_wires));
   Future f = runtime->execute_task(ctx, TASKID_LOAD_CIRCUIT,
 				   load_circuit_regions, 
-				   &circuit, sizeof(Circuit), false, //spawn_tasks);
-				   0, 0);
+				   &circuit, sizeof(Circuit), true);
   Partitions pp = f.template get_result<Partitions>();
 
 #if 0
@@ -498,8 +260,8 @@ void top_level_task(const void *args, size_t arglen,
 #endif
 
   std::vector<CircuitPiece> pieces;
-  pieces.resize(Config::num_pieces);
-  for(int i = 0; i < Config::num_pieces; i++) {
+  pieces.resize(num_pieces);
+  for(int i = 0; i < num_pieces; i++) {
     pieces[i].rn_pvt = runtime->get_subregion(ctx, pp.p_pvt_nodes, i);
     pieces[i].rn_shr = runtime->get_subregion(ctx, pp.p_shr_nodes, i);
     pieces[i].rn_ghost = runtime->get_subregion(ctx, pp.p_ghost_nodes, i);
@@ -509,10 +271,10 @@ void top_level_task(const void *args, size_t arglen,
   }
 
   // main loop
-  for(int i = 0; i < Config::num_loops; i++) {
+  for(int i = 0; i < 1; i++) {
     // calculating new currents requires looking at all the nodes (and the
     //  wires) and updating the state of the wires
-    for(int p = 0; p < Config::num_pieces; p++) {
+    for(int p = 0; p < num_pieces; p++) {
       std::vector<RegionRequirement> cnc_regions;
       cnc_regions.push_back(RegionRequirement(pieces[p].rw_pvt,
 					      READ_WRITE, NO_MEMORY, EXCLUSIVE,
@@ -520,17 +282,15 @@ void top_level_task(const void *args, size_t arglen,
       cnc_regions.push_back(RegionRequirement(pieces[p].rn_pvt,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
 					      circuit.r_all_nodes));
-      //cnc_regions.push_back(RegionRequirement(pieces[p].rn_shr,
-      //					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-      //					      circuit.r_all_nodes));
+      cnc_regions.push_back(RegionRequirement(pieces[p].rn_shr,
+					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
+					      circuit.r_all_nodes));
       cnc_regions.push_back(RegionRequirement(pieces[p].rn_ghost,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
 					      circuit.r_all_nodes));
       Future f = runtime->execute_task(ctx, TASKID_CALC_NEW_CURRENTS,
 				       cnc_regions, 
-				       &pieces[p], sizeof(CircuitPiece),
-				       spawn_tasks,
-				       0, p);
+				       &pieces[p], sizeof(CircuitPiece), true);
     }
 
     // distributing charge is a scatter from the wires back to the nodes
@@ -538,7 +298,7 @@ void top_level_task(const void *args, size_t arglen,
     // weaker ordering requirement of atomic (as opposed to exclusive)
     // NOTE: for now, we tell the runtime simultaneous to get the behavior we
     // want - later it'll be able to see that RdA -> RdS in this case
-    for(int p = 0; p < Config::num_pieces; p++) {
+    for(int p = 0; p < num_pieces; p++) {
       std::vector<RegionRequirement> dsc_regions;
       dsc_regions.push_back(RegionRequirement(pieces[p].rw_pvt,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
@@ -546,22 +306,20 @@ void top_level_task(const void *args, size_t arglen,
       dsc_regions.push_back(RegionRequirement(pieces[p].rn_pvt,
 					      REDUCE, NO_MEMORY, SIMULTANEOUS,
 					      circuit.r_all_nodes));
-      //dsc_regions.push_back(RegionRequirement(pieces[p].rn_shr,
-      //					      REDUCE, NO_MEMORY, SIMULTANEOUS,
-      //                                              circuit.r_all_nodes));
+      dsc_regions.push_back(RegionRequirement(pieces[p].rn_shr,
+					      REDUCE, NO_MEMORY, SIMULTANEOUS,
+                                              circuit.r_all_nodes));
       dsc_regions.push_back(RegionRequirement(pieces[p].rn_ghost,
 					      REDUCE, NO_MEMORY, SIMULTANEOUS,
                                               circuit.r_all_nodes));
       Future f = runtime->execute_task(ctx, TASKID_DISTRIBUTE_CHARGE,
 				       dsc_regions,
-				       &pieces[p], sizeof(CircuitPiece),
-				       spawn_tasks,
-				       0, p);
+				       &pieces[p], sizeof(CircuitPiece), true);
     }
 
     // once all the charge is distributed, we can update voltages in a pass
     //  that just touches the nodes
-    for(int p = 0; p < Config::num_pieces; p++) {
+    for(int p = 0; p < num_pieces; p++) {
       std::vector<RegionRequirement> upv_regions;
       upv_regions.push_back(RegionRequirement(pieces[p].rn_pvt,
 					      READ_WRITE, NO_MEMORY, EXCLUSIVE,
@@ -571,13 +329,11 @@ void top_level_task(const void *args, size_t arglen,
                                               circuit.r_all_nodes));
       Future f = runtime->execute_task(ctx, TASKID_UPDATE_VOLTAGES,
 				       upv_regions,
-				       &pieces[p], sizeof(CircuitPiece),
-				       spawn_tasks,
-				       0, p);
+				       &pieces[p], sizeof(CircuitPiece), true);
     }
   }
 
-  log_app.info("all done!\n");
+  printf("all done!\n");
 }
 
 template <class T>
@@ -599,39 +355,44 @@ Partitions load_circuit_task(const void *args, size_t arglen,
   PhysicalRegion<AT> inst_rw = regions[1];
   Partitions pp;
 
-  log_app.debug("In load_circuit()\n");
+  printf("In load_circuit()\n");
+
+  c->first_node = inst_rn.template alloc<CircuitNode>();
+  c->first_wire = inst_rw.template alloc<CircuitWire>();
 
   std::vector<std::set<ptr_t<CircuitWire> > > wire_owner_map;
   std::vector<std::set<ptr_t<CircuitNode> > > node_privacy_map,
                                               node_owner_map,
                                               node_neighbors_multimap;
 
-  wire_owner_map.resize(Config::num_pieces);
-  node_privacy_map.resize(Config::num_pieces);
-  node_owner_map.resize(Config::num_pieces);
-  node_neighbors_multimap.resize(Config::num_pieces);
+  int num_pieces = 2;
+  int nodes_per_piece = 2;
+  int wires_per_piece = 4;
+  int pct_wire_in_piece = 95;
 
-  srand48(Config::random_seed);
+  wire_owner_map.resize(num_pieces);
+  node_privacy_map.resize(num_pieces);
+  node_owner_map.resize(num_pieces);
+  node_neighbors_multimap.resize(num_pieces);
 
   // first step - allocate lots of nodes
-  for(int n = 0; n < Config::num_pieces; n++) {
+  for(int n = 0; n < num_pieces; n++) {
     ptr_t<CircuitNode> first_node = inst_rn.template alloc<CircuitNode>();
     pp.first_nodes[n] = first_node;
 
     ptr_t<CircuitNode> cur_node = first_node;
-    for(int i = 0; i < Config::nodes_per_piece; i++) {
+    for(int i = 0; i < nodes_per_piece; i++) {
       CircuitNode node;
       node.charge = 0;
       node.voltage = 2*drand48()-1;
       node.capacitance = drand48() + 1;
       node.leakage = 0.1 * drand48();
 
-      ptr_t<CircuitNode> next_node = ((i < (Config::nodes_per_piece - 1)) ?
+      ptr_t<CircuitNode> next_node = ((i < (nodes_per_piece - 1)) ?
 				        inst_rn.template alloc<CircuitNode>() :
 				        first_node);
       node.next = next_node;
       inst_rn.write(cur_node, node);
-      //printf("N: %d -> %d\n", cur_node.value, node.next.value);
 
       node_owner_map[n].insert(cur_node);
       node_privacy_map[n].insert(cur_node); // default is private
@@ -641,12 +402,12 @@ Partitions load_circuit_task(const void *args, size_t arglen,
   }
 
   // now allocate a lot of wires
-  for(int n = 0; n < Config::num_pieces; n++) {
+  for(int n = 0; n < num_pieces; n++) {
     ptr_t<CircuitWire> first_wire = inst_rw.template alloc<CircuitWire>();
     pp.first_wires[n] = first_wire;
 
     ptr_t<CircuitWire> cur_wire = first_wire;
-    for(int i = 0; i < Config::wires_per_piece; i++) {
+    for(int i = 0; i < wires_per_piece; i++) {
       CircuitWire wire;
       wire.current = 0;
       wire.resistance = drand48() * 10 + 1;
@@ -654,12 +415,12 @@ Partitions load_circuit_task(const void *args, size_t arglen,
       // input node is always from same piece
       wire.in_node = random_element(node_owner_map[n]);
 
-      if((100 * drand48()) < Config::pct_wire_in_piece) {
+      if((100 * drand48()) < pct_wire_in_piece) {
 	// output node also from same piece
 	wire.out_node = random_element(node_owner_map[n]);
       } else {
 	// pick a random other piece and a node from there
-	int nn = int(drand48() * (Config::num_pieces - 1));
+	int nn = int(drand48() * (num_pieces - 1));
 	if(nn >= n) nn++;
 
 	// that node becomes shared and we're a neighbor
@@ -669,12 +430,11 @@ Partitions load_circuit_task(const void *args, size_t arglen,
 	node_neighbors_multimap[n].insert(wire.out_node);
       }
 
-      ptr_t<CircuitWire> next_wire = ((i < (Config::wires_per_piece - 1)) ?
-				        inst_rw.template alloc<CircuitWire>() :
+      ptr_t<CircuitWire> next_wire = ((i < (wires_per_piece - 1)) ?
+				        inst_rn.template alloc<CircuitWire>() :
 				        first_wire);
       wire.next = next_wire;
       inst_rw.write(cur_wire, wire);
-      //printf("W: %d -> %d\n", cur_wire.value, wire.next.value);
 
       wire_owner_map[n].insert(cur_wire);
 
@@ -698,9 +458,28 @@ Partitions load_circuit_task(const void *args, size_t arglen,
 					   node_neighbors_multimap,
 										false);
 
-  log_app.debug("Done with load_circuit()\n");
+  printf("Done with load_circuit()\n");
 
   return pp;
+}
+
+typedef RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorGPU> GPU_Accessor;
+
+__global__ void calc_new_currents_kernel(ptr_t<CircuitWire> first_wire,
+					 GPU_Accessor inst_rw_pvt,
+					 GPU_Accessor inst_rn_pvt,
+					 GPU_Accessor inst_rn_shr)
+{
+  ptr_t<CircuitWire> cur_wire = first_wire;
+  do {
+    CircuitWire w = inst_rw_pvt.read(cur_wire);
+    CircuitNode n_in = inst_rn_pvt.read(w.in_node);
+    CircuitNode n_out = inst_rn_pvt.read(w.out_node);
+    w.current = (n_out.voltage - n_in.voltage) / w.resistance;
+    inst_rw_pvt.write(cur_wire, w);
+
+    cur_wire = w.next;
+  } while(cur_wire.value != first_wire.value);
 }
 
 template<AccessorType AT>
@@ -711,15 +490,15 @@ void calc_new_currents_task(const void *args, size_t arglen,
   CircuitPiece *p = (CircuitPiece *)args;
   PhysicalRegion<AT> inst_rw_pvt = regions[0];
   PhysicalRegion<AT> inst_rn_pvt = regions[1];
-  //PhysicalRegion<AT> inst_rn_shr = regions[2];
-  PhysicalRegion<AT> inst_rn_ghost = regions[2];
+  PhysicalRegion<AT> inst_rn_shr = regions[2];
+  PhysicalRegion<AT> inst_rn_ghost = regions[3];
 
-  log_app.debug("In calc_new_currents()\n");
+  printf("In calc_new_currents()\n");
 
+#if 0
   ptr_t<CircuitWire> cur_wire = p->first_wire;
   do {
     CircuitWire w = inst_rw_pvt.read(cur_wire);
-    //printf("R: %d -> %d\n", cur_wire.value, w.next.value);
     CircuitNode n_in = inst_rn_pvt.read(w.in_node);
     CircuitNode n_out = inst_rn_pvt.read(w.out_node);
     w.current = (n_out.voltage - n_in.voltage) / w.resistance;
@@ -727,8 +506,16 @@ void calc_new_currents_task(const void *args, size_t arglen,
 
     cur_wire = w.next;
   } while(cur_wire != p->first_wire);
-
-  log_app.debug("Done with calc_new_currents()\n");
+#endif
+  GPU_Accessor foo = inst_rw_pvt.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>();
+#if 1
+  calc_new_currents_kernel<<<1,1>>>(p->first_wire,
+				    inst_rw_pvt.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>(),
+				    inst_rn_pvt.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>(),
+				  
+				    inst_rn_shr.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>());
+#endif
+  printf("Done with calc_new_currents()\n");
 }
 
 // reduction op
@@ -753,10 +540,10 @@ void distribute_charge_task(const void *args, size_t arglen,
   CircuitPiece *p = (CircuitPiece *)args;
   PhysicalRegion<AT> inst_rw_pvt = regions[0];
   PhysicalRegion<AT> inst_rn_pvt = regions[1];
-  //PhysicalRegion<AT> inst_rn_shr = regions[2];
-  PhysicalRegion<AT> inst_rn_ghost = regions[2];
+  PhysicalRegion<AT> inst_rn_shr = regions[2];
+  PhysicalRegion<AT> inst_rn_ghost = regions[3];
 
-  log_app.debug("In distribute_charge()\n");
+  printf("In distribute_charge()\n");
 
   ptr_t<CircuitWire> cur_wire = p->first_wire;
   do {
@@ -770,7 +557,7 @@ void distribute_charge_task(const void *args, size_t arglen,
     cur_wire = w.next;
   } while(cur_wire != p->first_wire);
 
-  log_app.debug("Done with distribute_charge()\n");
+  printf("Done with calc_new_currents()\n");
 }
 
 template<AccessorType AT>
@@ -782,12 +569,11 @@ void update_voltages_task(const void *args, size_t arglen,
   PhysicalRegion<AT> inst_rn_pvt = regions[0];
   PhysicalRegion<AT> inst_rn_shr = regions[1];
 
-  log_app.debug("In update_voltages()\n");
+  printf("In update_voltages()\n");
 
   ptr_t<CircuitNode> cur_node = p->first_node;
   do {
     CircuitNode n = inst_rn_pvt.read(cur_node);
-    //printf("R: %d -> %d\n", cur_node.value, n.next.value);
 
     // charge adds in, and then some leaks away
     n.voltage += n.charge / n.capacitance;
@@ -799,8 +585,109 @@ void update_voltages_task(const void *args, size_t arglen,
     cur_node = n.next;
   } while(cur_node != p->first_node);
 
-  log_app.debug("Done with update_voltages()\n");
+  printf("Done with update_voltages()\n");
 }
+
+#if 0
+  printf("Running top level task\n");
+  unsigned *buffer = (unsigned*)malloc(2*sizeof(unsigned));
+  buffer[0] = TREE_DEPTH;
+  buffer[1] = BRANCH_FACTOR;
+
+  std::vector<Future> futures;
+  std::vector<RegionRequirement> needed_regions; // Don't need any regions
+  for (unsigned idx = 0; idx < BRANCH_FACTOR; idx++)
+  {
+    unsigned mapper = 0;
+    if ((rand() % 100) == 0)
+      mapper = 1;
+    futures.push_back(runtime->execute_task(ctx,LAUNCH_TASK_ID,needed_regions,buffer,2*sizeof(unsigned),true,mapper));
+  }
+  free(buffer);
+
+  printf("All tasks launched from top level, waiting...\n");
+
+  unsigned total_tasks = 1;
+  for (std::vector<Future>::iterator it = futures.begin();
+        it != futures.end(); it++)
+  {
+    total_tasks += ((*it).get_result<unsigned>());
+  }
+
+  printf("Total tasks run: %u\n", total_tasks);
+  printf("SUCCESS!\n");
+}
+
+template<AccessorType AT>
+unsigned launch_tasks(const void *args, size_t arglen, const std::vector<PhysicalRegion<AT> > &regions,
+                Context ctx, HighLevelRuntime *runtime)
+{
+  assert(arglen == (2*sizeof(unsigned)));
+  // Unpack the number of tasks to run and the branching factor
+  const unsigned *ptr = (const unsigned*)args;
+  unsigned depth = *ptr;
+  ptr++;
+  unsigned branch = *ptr;
+  printf("Running task at depth %d\n",depth);
+
+  if (depth == 0)
+    return 1;
+  else
+  {
+    // Create a buffer
+    unsigned *buffer = (unsigned*)malloc(2*sizeof(unsigned));
+    buffer[0] = depth-1;
+    buffer[1] = branch;
+    // Launch as many tasks as the branching factor dictates, keep track of the futures
+    std::vector<Future> futures;
+    std::vector<RegionRequirement> needed_regions;
+    for (unsigned idx = 0; idx < branch; idx++)
+    {
+      unsigned mapper = 0;
+      if ((rand() % 100) == 0)
+        mapper = 1;
+      futures.push_back(runtime->execute_task(ctx,LAUNCH_TASK_ID,needed_regions,buffer,2*sizeof(unsigned),true,mapper));
+    }
+    // Clean up the buffer
+    free(buffer);
+
+    printf("Waiting for tasks at depth %d\n",depth);
+
+    unsigned total_tasks = 1;
+    // Wait for each of the tasks to finish and sum up the total sub tasks run
+    for (std::vector<Future>::iterator it = futures.begin();
+          it != futures.end(); it++)
+    {
+      total_tasks += ((*it).get_result<unsigned>());
+    }
+    printf("Finished task at depth %d\n",depth);
+    return total_tasks;
+  }
+}
+
+class RingMapper : public Mapper {
+private:
+  Processor next_proc;
+public:
+  RingMapper(Machine *m, HighLevelRuntime *r, Processor p) : Mapper(m,r,p) 
+  { 
+    const std::set<Processor> &all_procs = m->get_all_processors();
+    next_proc.id = p.id+1;
+    if (all_procs.find(next_proc) == all_procs.end())
+      next_proc = *(all_procs.begin());
+  }
+public:
+  virtual Processor select_initial_processor(const Task *task)
+  {
+    return next_proc; 
+  }
+};
+
+void create_mappers(Machine *machine, HighLevelRuntime *runtime, Processor local)
+{
+  runtime->add_mapper(1,new RingMapper(machine,runtime,local));
+}
+#endif
 
 int main(int argc, char **argv)
 {
@@ -815,45 +702,9 @@ int main(int argc, char **argv)
   task_table[TASKID_UPDATE_VOLTAGES] = high_level_task_wrapper<update_voltages_task<AccessorGeneric> >;
 
   HighLevelRuntime::register_runtime_tasks(task_table);
-  HighLevelRuntime::set_mapper_init_callback(create_mappers);
 
   // Initialize the machine
   Machine m(&argc, &argv, task_table, false);
-
-  for(int i = 1; i < argc; i++) {
-    if(!strcmp(argv[i], "-l")) {
-      Config::num_loops = atoi(argv[++i]);
-      continue;
-    }
-
-    if(!strcmp(argv[i], "-p")) {
-      Config::num_pieces = atoi(argv[++i]);
-      continue;
-    }
-
-    if(!strcmp(argv[i], "-npp")) {
-      Config::nodes_per_piece = atoi(argv[++i]);
-      continue;
-    }
-
-    if(!strcmp(argv[i], "-wpp")) {
-      Config::wires_per_piece = atoi(argv[++i]);
-      continue;
-    }
-
-    if(!strcmp(argv[i], "-pct")) {
-      Config::pct_wire_in_piece = atoi(argv[++i]);
-      continue;
-    }
-
-    if(!strcmp(argv[i], "-s")) {
-      Config::random_seed = atoi(argv[++i]);
-      continue;
-    }
-  }
-  printf("circuit settings: loops=%d pieces=%d nodes/piece=%d wires/piece=%d pct_in_piece=%d seed=%d\n",
-	 Config::num_loops, Config::num_pieces, Config::nodes_per_piece, Config::wires_per_piece,
-	 Config::pct_wire_in_piece, Config::random_seed);
 
   m.run();
 

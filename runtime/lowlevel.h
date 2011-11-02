@@ -51,14 +51,42 @@ namespace RegionRuntime {
 
 	int index;
 
-	inline void operator()(LogLevel level, const char *fmt, ...) __attribute__((format (printf, 3, 4)))
+	inline void operator()(int level, const char *fmt, ...) __attribute__((format (printf, 3, 4)))
 	{
 	  if(level >= COMPILE_TIME_MIN_LEVEL) {  // static opt-out
 	    if(level >= log_level) {             // dynamic opt-out
 	      if(log_cats_enabled[index]) {      // category filter
 		va_list args;
 		va_start(args, fmt);
-		Logger::logvprintf(level, index, fmt, args);
+		Logger::logvprintf((LogLevel)level, index, fmt, args);
+		va_end(args);
+	      }
+	    }
+	  }
+	}
+
+	inline void debug(const char *fmt, ...) __attribute__((format (printf, 2, 3)))
+	{
+	  if(LEVEL_DEBUG >= COMPILE_TIME_MIN_LEVEL) {  // static opt-out
+	    if(LEVEL_DEBUG >= log_level) {             // dynamic opt-out
+	      if(log_cats_enabled[index]) {      // category filter
+		va_list args;
+		va_start(args, fmt);
+		Logger::logvprintf(LEVEL_DEBUG, index, fmt, args);
+		va_end(args);
+	      }
+	    }
+	  }
+	}
+
+	inline void info(const char *fmt, ...) __attribute__((format (printf, 2, 3)))
+	{
+	  if(LEVEL_INFO >= COMPILE_TIME_MIN_LEVEL) {  // static opt-out
+	    if(LEVEL_INFO >= log_level) {             // dynamic opt-out
+	      if(log_cats_enabled[index]) {      // category filter
+		va_list args;
+		va_start(args, fmt);
+		Logger::logvprintf(LEVEL_INFO, index, fmt, args);
 		va_end(args);
 	      }
 	    }
@@ -121,6 +149,7 @@ namespace RegionRuntime {
       gen_t gen;
       bool operator<(const Event& rhs) const { return id < rhs.id; }
       bool operator==(const Event& rhs) const { return id == rhs.id; }
+      bool operator!=(const Event& rhs) const { return id != rhs.id; }
 
       class Impl;
       Impl *impl(void) const;
@@ -158,6 +187,7 @@ namespace RegionRuntime {
       id_t id;
       bool operator<(const Lock& rhs) const { return id < rhs.id; }
       bool operator==(const Lock& rhs) const { return id == rhs.id; }
+      bool operator!=(const Lock& rhs) const { return id != rhs.id; }
 
       class Impl;
       Impl *impl(void) const;
@@ -184,6 +214,7 @@ namespace RegionRuntime {
       id_t id;
       bool operator<(const Processor& rhs) const { return id < rhs.id; }
       bool operator==(const Processor& rhs) const { return id == rhs.id; }
+      bool operator!=(const Processor& rhs) const { return id != rhs.id; }
 
       class Impl;
       Impl *impl(void) const;
@@ -223,6 +254,7 @@ namespace RegionRuntime {
       id_t id;
       bool operator<(const Memory &rhs) const { return id < rhs.id; }
       bool operator==(const Memory &rhs) const { return id == rhs.id; }
+      bool operator!=(const Memory &rhs) const { return id != rhs.id; }
 
       class Impl;
       Impl *impl(void) const;
@@ -289,6 +321,7 @@ namespace RegionRuntime {
       id_t id;
       bool operator<(const RegionMetaDataUntyped &rhs) const { return id < rhs.id; }
       bool operator==(const RegionMetaDataUntyped &rhs) const { return id == rhs.id; }
+      bool operator!=(const RegionMetaDataUntyped &rhs) const { return id != rhs.id; }
 
       class Impl;
       Impl *impl(void) const;
@@ -316,6 +349,7 @@ namespace RegionRuntime {
       id_t id;
       bool operator<(const RegionAllocatorUntyped &rhs) const { return id < rhs.id; }
       bool operator==(const RegionAllocatorUntyped &rhs) const { return id == rhs.id; }
+      bool operator!=(const RegionAllocatorUntyped &rhs) const { return id != rhs.id; }
 
       class Impl;
       Impl *impl(void) const;
@@ -329,7 +363,7 @@ namespace RegionRuntime {
       void free_untyped(unsigned ptr, unsigned count = 1) const;
     };
 
-    enum AccessorType { AccessorGeneric, AccessorArray };
+    enum AccessorType { AccessorGeneric, AccessorArray, AccessorGPU };
 
     template <AccessorType AT> class RegionInstanceAccessorUntyped;
 
@@ -355,6 +389,13 @@ namespace RegionRuntime {
       void write(ptr_t<T> ptr, T newval) const
 	{ put_untyped(ptr.value*sizeof(T), &newval, sizeof(T)); }
 
+      template <class REDOP, class T, class RHS>
+      void reduce(ptr_t<T> ptr, RHS newval) const 
+	{ T val; 
+	  get_untyped(ptr.value*sizeof(T), &val, sizeof(T));
+	  REDOP::apply(&val, newval); 
+	  put_untyped(ptr.value*sizeof(T), &val, sizeof(T)); }
+
       template <AccessorType AT2>
       bool can_convert(void) const;
 
@@ -379,8 +420,32 @@ namespace RegionRuntime {
       template <class T>
       void write(ptr_t<T> ptr, T newval) const { ((T*)array_base)[ptr.value] = newval; }
 
-      template <class T, class REDOP>
-      void reduce(ptr_t<T> ptr, T newval) const { REDOP::reduce(((T*)array_base)[ptr.value], newval); }
+      template <class REDOP, class T, class RHS>
+      void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::apply(((T*)array_base)[ptr.value], newval); }
+    };
+
+    // only nvcc understands this
+    template <> class RegionInstanceAccessorUntyped<AccessorGPU> {
+    public:
+      explicit RegionInstanceAccessorUntyped(void *_array_base)
+	: array_base(_array_base) {}
+
+      // Need copy constructors so we can move things around
+      RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorArray> &old)
+      { array_base = old.array_base; }
+
+      void *array_base;
+
+#ifdef __CUDACC__
+      template <class T>
+      __device__ T read(ptr_t<T> ptr) const { return ((T*)array_base)[ptr.value]; }
+
+      template <class T>
+      __device__ void write(ptr_t<T> ptr, T newval) const { ((T*)array_base)[ptr.value] = newval; }
+#endif
+
+      //template <class REDOP, class T, class RHS>
+      //void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::apply(((T*)array_base)[ptr.value], newval); }
     };
 
     template <class ET, AccessorType AT = AccessorGeneric>
@@ -393,8 +458,8 @@ namespace RegionRuntime {
       ET read(ptr_t<ET> ptr) const { return ria.read(ptr); }
       void write(ptr_t<ET> ptr, ET newval) const { ria.write(ptr, newval); }
 
-      template <class REDOP>
-      void reduce(ptr_t<ET> ptr, ET newval) const { ria.reduce<REDOP>(ptr, newval); }
+      template <class REDOP, class RHS>
+      void reduce(ptr_t<ET> ptr, RHS newval) const { ria.template reduce<REDOP>(ptr, newval); }
 
       template <AccessorType AT2>
       bool can_convert(void) const { return ria.can_convert<AT2>(); }
@@ -404,12 +469,29 @@ namespace RegionRuntime {
       { return RegionInstanceAccessor<ET,AT2>(ria.convert<AT2>()); }
     };
 
+#ifdef __CUDACC__
+    template <class ET>
+    class RegionInstanceAccessor<ET,AccessorGPU> {
+    public:
+      __device__ RegionInstanceAccessor(const RegionInstanceAccessorUntyped<AccessorGPU> &_ria) : ria(_ria) {}
+
+      RegionInstanceAccessorUntyped<AccessorGPU> ria;
+
+      __device__ ET read(ptr_t<ET> ptr) const { return ria.read(ptr); }
+      __device__ void write(ptr_t<ET> ptr, ET newval) const { ria.write(ptr, newval); }
+
+      //template <class REDOP, class RHS>
+      //void reduce(ptr_t<ET> ptr, RHS newval) const { ria.template reduce<REDOP>(ptr, newval); }
+    };
+#endif
+
     class RegionInstanceUntyped {
     public:
       typedef unsigned id_t;
       id_t id;
       bool operator<(const RegionInstanceUntyped &rhs) const { return id < rhs.id; }
       bool operator==(const RegionInstanceUntyped &rhs) const { return id == rhs.id; }
+      bool operator!=(const RegionInstanceUntyped &rhs) const { return id != rhs.id; }
 
       class Impl;
       Impl *impl(void) const;
@@ -487,7 +569,7 @@ namespace RegionRuntime {
       // the instance doesn't have read/write/reduce methods of its own -
       //  instead, we can hand out an "accessor" object that has those methods
       //  this lets us specialize for the just-an-array-dereference case
-      const RegionInstanceAccessor<T,AccessorGeneric> get_accessor(void)
+      RegionInstanceAccessor<T,AccessorGeneric> get_accessor(void) const
       { return RegionInstanceAccessor<T,AccessorGeneric>(get_accessor_untyped()); }
 
       Event copy_to(RegionInstance<T> target, Event wait_on = Event::NO_EVENT)
@@ -549,20 +631,26 @@ namespace RegionRuntime {
 	unsigned latency;
       };
 
-      std::vector<ProcessorMemoryAffinity> get_proc_mem_affinity(Processor restrict_proc = Processor::NO_PROC,
-								 Memory restrict_memory = Memory::NO_MEMORY);
+      int get_proc_mem_affinity(std::vector<ProcessorMemoryAffinity>& result,
+				Processor restrict_proc = Processor::NO_PROC,
+				Memory restrict_memory = Memory::NO_MEMORY);
 
-      std::vector<MemoryMemoryAffinity> get_mem_mem_affinity(Memory restrict_mem1 = Memory::NO_MEMORY,
-							     Memory restrict_mem2 = Memory::NO_MEMORY);
+      int get_mem_mem_affinity(std::vector<MemoryMemoryAffinity>& result,
+			       Memory restrict_mem1 = Memory::NO_MEMORY,
+			       Memory restrict_mem2 = Memory::NO_MEMORY);
 
     protected:
       std::set<Processor> procs;
       std::set<Memory> memories;
-      std::set<ProcessorMemoryAffinity> proc_mem_affinities;
-      std::set<MemoryMemoryAffinity> mem_mem_affinities;
+      std::vector<ProcessorMemoryAffinity> proc_mem_affinities;
+      std::vector<MemoryMemoryAffinity> mem_mem_affinities;
       std::map<Processor,std::set<Memory> > visible_memories_from_procs;
       std::map<Memory,std::set<Memory> > visible_memories_from_memory;
       std::map<Memory,std::set<Processor> > visible_procs_from_memory;
+
+    public:
+      void parse_node_announce_data(const void *args, size_t arglen,
+				    bool remote);
     };
 
   }; // namespace LowLevel

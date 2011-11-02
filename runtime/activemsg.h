@@ -8,6 +8,9 @@
 GASNETT_THREADKEY_DECLARE(in_handler);
 #endif
 
+extern void *get_remote_msgptr(int target, size_t bytes_needed);
+extern void handle_long_msgptr(int source, void *ptr);
+
 template <class T> struct HandlerReplyFuture {
   gasnet_hsl_t mutex;
   gasnett_cond_t condvar;
@@ -146,6 +149,12 @@ struct MessageRawArgs<MSGTYPE, MSGID, SHORT_HNDL_PTR, MED_HNDL_PTR, n> { \
     MACROPROXY(gasnet_AMRequestMedium ## n, dest, MSGID, (void *)data, datalen, HANDLERARG_VALS_ ## n); \
   } \
 \
+  void request_long(gasnet_node_t dest, \
+		    const void *data, size_t datalen, void *dstptr)	\
+  { \
+    MACROPROXY(gasnet_AMRequestLong ## n, dest, MSGID, (void *)data, datalen, dstptr, HANDLERARG_VALS_ ## n); \
+  } \
+\
   static void handler_short(gasnet_token_t token, HANDLERARG_PARAMS_ ## n ) \
   { \
     gasnet_node_t src; \
@@ -171,6 +180,7 @@ struct MessageRawArgs<MSGTYPE, MSGID, SHORT_HNDL_PTR, MED_HNDL_PTR, n> { \
     } u; \
     HANDLERARG_COPY_ ## n ; \
     (*MED_HNDL_PTR)(u.typed, buf, nbytes); \
+    if(nbytes > gasnet_AMMaxMedium()) handle_long_msgptr(src, buf); \
   } \
 }; \
 \
@@ -290,6 +300,12 @@ class ActiveMessageMediumNoReply {
   static void request(gasnet_node_t dest, MSGTYPE args, 
                       const void *data, size_t datalen)
   {
+    void *dstptr = 0;
+    if(datalen > gasnet_AMMaxMedium()) {
+      fprintf(stderr, "DATALEN = %zd (max=%zd)\n", datalen,
+	      gasnet_AMMaxMedium());
+      dstptr = get_remote_msgptr(dest, datalen);
+    }
 #ifdef CHECK_REENTRANT_MESSAGES
     if(gasnett_threadkey_get(in_handler)) {
       printf("Help!  Message send inside handler!\n");
@@ -302,7 +318,10 @@ class ActiveMessageMediumNoReply {
         MSGTYPE typed;
       } u;
       u.typed = args;
-      u.raw.request_medium(dest, data, datalen);
+      if(dstptr)
+	u.raw.request_long(dest, data, datalen, dstptr);
+      else
+	u.raw.request_medium(dest, data, datalen);
     }
   }
 

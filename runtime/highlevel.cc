@@ -6,6 +6,7 @@
 #include <vector>
 #include <memory>
 #include <algorithm>
+#include <string>
 
 #include <cstdio>
 #include <cassert>
@@ -33,8 +34,22 @@ namespace RegionRuntime {
       FINISH_ID          = (Processor::TASK_ID_FIRST_AVAILABLE+3),
       NOTIFY_START_ID    = (Processor::TASK_ID_FIRST_AVAILABLE+4),
       NOTIFY_FINISH_ID   = (Processor::TASK_ID_FIRST_AVAILABLE+5),
-      TERMINATION_ID     = (Processor::TASK_ID_FIRST_AVAILABLE+6),
+      ADVERTISEMENT_ID   = (Processor::TASK_ID_FIRST_AVAILABLE+6),
+      TERMINATION_ID     = (Processor::TASK_ID_FIRST_AVAILABLE+7),
     };
+
+    // Loggers declared elsewhere
+    enum LogLevel {
+      LEVEL_SPEW = LowLevel::LEVEL_SPEW,
+      LEVEL_DEBUG = LowLevel::LEVEL_DEBUG,
+      LEVEL_INFO = LowLevel::LEVEL_INFO,
+      LEVEL_WARNING = LowLevel::LEVEL_WARNING,
+      LEVEL_ERROR = LowLevel::LEVEL_ERROR,
+      LEVEL_NONE = LowLevel::LEVEL_NONE,
+    };
+    extern LowLevel::Logger::Category log_task;
+    extern LowLevel::Logger::Category log_region;
+    extern LowLevel::Logger::Category log_inst;
 
     /////////////////////////////////////////////////////////////
     // Future
@@ -87,6 +102,12 @@ namespace RegionRuntime {
       }
 #endif
       memcpy(result, res, result_size);	
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void FutureImpl::trigger(void)
+    //--------------------------------------------------------------------------------------------
+    {
       set = true;
       set_event.trigger();
     }
@@ -99,9 +120,66 @@ namespace RegionRuntime {
     bool RegionRequirement::region_conflict(RegionRequirement *req1, RegionRequirement *req2)
     //--------------------------------------------------------------------------------------------
     {
+#if 0
       // Always detect a conflict
       // TODO: fix this to actually detect conflicts
       return true;
+#else
+      // Two readers are never a conflict
+      if (((req1->mode == NO_ACCESS) || (req1->mode == READ_ONLY)) &&
+          ((req2->mode == NO_ACCESS) || (req2->mode == READ_ONLY)))
+      {
+        return false;
+      }
+      else
+      {
+        // Everything in here always has at least one write
+#ifdef DEBUG_HIGH_LEVEL
+        assert((req1->mode == READ_WRITE) || (req1->mode == REDUCE) ||
+               (req2->mode == READ_WRITE) || (req2->mode == REDUCE));
+#endif
+        // Anything exclusive 
+        if ((req1->prop == EXCLUSIVE) || (req2->prop == EXCLUSIVE))
+        {
+          // always a conflict 
+          return true;
+        }
+        // Anything atomic (at least one is a write)
+        else if ((req1->prop == ATOMIC) || (req2->prop == ATOMIC))
+        {
+          // If they're both atomics, everything is cool
+          if ((req1->prop == ATOMIC) && (req2->prop == ATOMIC))
+          {
+            return false;
+          }
+          // If the one that is not an atomic is a read, we're also ok
+          else if (((req1->prop != ATOMIC) && 
+                      ((req1->mode == NO_ACCESS) || (req1->mode == READ_ONLY))) ||
+                   ((req2->prop != ATOMIC) && 
+                      ((req2->mode == NO_ACCESS) || (req2->mode == READ_ONLY))))
+          {
+            return false;
+          }
+          // Everything else is a conflict
+          return true;
+        }
+        // Anything simultaneous (at least one is a write)
+        else if ((req1->prop == SIMULTANEOUS) || (req2->prop == SIMULTANEOUS))
+        {
+          // Never a conflict
+          return false;
+        }
+        // Everything else both are simultaneous
+        else if ((req1->prop == RELAXED) && (req2->prop == RELAXED))
+        {
+          // Never a conflict
+          return false;
+        }
+      }
+      // We should never make it here
+      assert(false);
+      return true;
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -117,11 +195,12 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////////////// 
 
     //--------------------------------------------------------------------------------------------
-    AbstractInstance::AbstractInstance(LogicalHandle h, AbstractInstance *par, InstanceInfo *init)
-      : handle (h), references(0), closed(false), first_map(false), parent(par),
-        writer(false), readers(0)
+    AbstractInstance::AbstractInstance(LogicalHandle h, AbstractInstance *par, 
+                                        InstanceInfo *init, bool rem)
+      : handle (h), references(0), closed(false), first_map(false), parent(par), remote(rem) 
     //--------------------------------------------------------------------------------------------
     {
+      log_inst(LEVEL_DEBUG,"creating new abstract instance for region %d",handle.id);
       if (init != NULL)
       {
         valid_instances.insert(std::pair<Memory,InstanceInfo*>(init->location,init));
@@ -139,29 +218,85 @@ namespace RegionRuntime {
       {
         delete *it;
       }
+#ifdef DEBUG_HIGH_LEVEL
+      all_instances.clear();
+      valid_instances.clear();
+#endif
+      // If we're remote, we also own our parent
+      if (remote)
+        delete parent;
     }
 
     //--------------------------------------------------------------------------------------------
     size_t AbstractInstance::compute_instance_size(void) const
     //--------------------------------------------------------------------------------------------
     {
-      assert(0);
-      return 0;  
+      size_t result = 0;
+      result += sizeof(LogicalHandle);
+      result += sizeof(bool); // do we have a parent
+      if (parent != NULL)
+        result += parent->compute_instance_size();
+      result += sizeof(size_t); // num valid instances
+      result += (valid_instances.size() * (sizeof(Memory) + sizeof(InstanceInfo)));
+      return result;
     }
 
     //--------------------------------------------------------------------------------------------
-    void AbstractInstance::pack_instance(char *&buffer, bool writer) const
+    void AbstractInstance::pack_instance(char *&buffer) const
     //--------------------------------------------------------------------------------------------
     {
-      assert(0);
+      *((LogicalHandle*)buffer) = handle;
+      buffer += sizeof(LogicalHandle);
+      *((bool*)buffer) = (parent != NULL);
+      buffer += sizeof(bool);
+      if (parent != NULL)
+        parent->pack_instance(buffer);
+      *((size_t*)buffer) = valid_instances.size();
+      buffer += sizeof(size_t);
+      for (std::map<Memory,InstanceInfo*>::const_iterator it = valid_instances.begin();
+            it != valid_instances.end(); it++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(it->second != NULL);
+#endif
+        *((Memory*)buffer) = it->first;
+        buffer += sizeof(Memory);
+        *((InstanceInfo*)buffer) = *(it->second);
+        buffer += sizeof(InstanceInfo);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
-    static AbstractInstance* unapck_instance(const char *&buffer)
+    AbstractInstance* AbstractInstance::unpack_instance(const char *&buffer)
     //--------------------------------------------------------------------------------------------
     {
-      assert(0);
-      return NULL;
+      LogicalHandle handle = *((const LogicalHandle*)buffer);
+      buffer += sizeof(LogicalHandle);
+      bool par = *((const bool*)buffer);
+      buffer += sizeof(bool);
+      AbstractInstance *parent = NULL;
+      if (par)
+        parent = AbstractInstance::unpack_instance(buffer);
+      // Create the new instance
+      AbstractInstance *result = new AbstractInstance(handle, parent, NULL, true/*remote*/);
+      result->first_map = true;
+      size_t num_valid_instances = *((const size_t*)buffer);
+      buffer += sizeof(size_t);
+      for (unsigned idx = 0; idx < num_valid_instances; idx++)
+      {
+        Memory m = *((const Memory*)buffer);
+        buffer += sizeof(Memory);
+        InstanceInfo *info = new InstanceInfo();
+        *info = *((const InstanceInfo*)buffer);
+        buffer += sizeof(InstanceInfo);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(info != NULL);
+#endif
+        result->valid_instances.insert(std::pair<Memory,InstanceInfo*>(m,info));
+        result->locations.push_back(m);
+        result->all_instances.push_back(info);
+      }
+      return result;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -178,21 +313,25 @@ namespace RegionRuntime {
         {
           // Try to get a parent instance
           if (parent != NULL)
-            result = parent->get_instance_internal(m);
+            result = parent->find_instance(m);
         }
       }
 
       // If it's still NULL here we need to make an instance
-      if (result == NULL);
+      if (result == NULL)
       {
         // Make a new instance info for this memory
         result = new InstanceInfo();
         result->handle = handle;
         result->location = m;
         result->inst = handle.create_instance_untyped(m);
+        log_inst(LEVEL_DEBUG,"creating instance %d of region %d in memory %d",
+                              result->inst.id,handle.id,m.id);
         // Check that the instance exists, otherwise just return NULL
         if (!result->inst.exists())
         {
+          log_inst(LEVEL_DEBUG,"failed to create instance for region %d in memory %d",
+                              result->handle.id,result->location.id);
           delete result;
           return NULL;
         }
@@ -200,21 +339,25 @@ namespace RegionRuntime {
         all_instances.push_back(result);
       }
 
+
       return result;
     }
     
     //--------------------------------------------------------------------------------------------
-    InstanceInfo* AbstractInstance::get_instance_internal(Memory m)
+    InstanceInfo* AbstractInstance::find_instance(Memory m)
     //--------------------------------------------------------------------------------------------
     {
       if (valid_instances.find(m) != valid_instances.end())
       {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(valid_instances[m] != NULL);
+#endif
         return valid_instances[m];
       }
       else
       {
         if (parent != NULL)
-          return parent->get_instance_internal(m);
+          return parent->find_instance(m);
         else
           return NULL;
       }
@@ -224,6 +367,11 @@ namespace RegionRuntime {
     void AbstractInstance::free_instance(InstanceInfo* info)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(info != NULL);
+      assert(!remote);
+#endif
+
       // Check to see if we own this instance
       if (info->handle == handle)
       {
@@ -232,13 +380,31 @@ namespace RegionRuntime {
         assert(info->references > 0); // Check for double free
 #endif
         info->references--;
+        log_inst(LEVEL_DEBUG,"reducing reference count of instance %d of region %d to %d"
+                              " with abstract references %d and closed %d",
+                              info->inst.id,info->handle.id,info->references,
+                              references, closed);
         // Now see if this instance is invalid and its reference count has gone to zero 
-        if ((valid_instances.find(info->location) == valid_instances.end()) &&
+        std::map<Memory,InstanceInfo*>::iterator finder = valid_instances.find(info->location);
+        if ((finder == valid_instances.end()) &&
             (info->references == 0))
         {
           // We can delete the instance and return
+          log_inst(LEVEL_DEBUG,"deleting instance %d of region %d in memory %d",
+                              info->inst.id,info->handle.id,info->location.id);
           info->handle.destroy_instance_untyped(info->inst);
           return;
+        }
+        // Otherwise if this instance is closed and references is zero we can also delete it
+        else if (closed && (references == 0) && (info->references == 0))
+        {
+          log_inst(LEVEL_DEBUG,"deleting instance %d of region %d in memory %d",
+                              info->inst.id,info->handle.id,info->location.id);
+          info->handle.destroy_instance_untyped(info->inst);
+          if (finder != valid_instances.end())
+          {
+            valid_instances.erase(finder);
+          }
         }
       }
       else
@@ -255,24 +421,63 @@ namespace RegionRuntime {
     void AbstractInstance::register_reader(InstanceInfo *info)
     //--------------------------------------------------------------------------------------------
     {
-      // If this instance is local to us, add it to the list of valid instances
-      if (info->handle == handle)
-        valid_instances.insert(std::pair<Memory,InstanceInfo*>(info->location,info));
+#ifdef DEBUG_HIGH_LEVEL
+      assert(info != NULL);
+      assert(!remote);
+      assert(references > 0);
+#endif
       // Mark that it is being used
       info->references++;
+      log_inst(LEVEL_DEBUG,"Reading instance %d of region %d with reference count %d and "
+                            "abstract reference count %d and closed %d",
+                            info->inst.id,info->handle.id,info->references,references,closed);
+      // If this instance is local to us, add it to the list of valid instances
+      if (info->handle == handle)
+      {
+        if (valid_instances.find(info->location) == valid_instances.end())
+        {
+          valid_instances.insert(std::pair<Memory,InstanceInfo*>(info->location,info));
+          locations.push_back(info->location);
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        else
+        {
+          // Better be passing back our own instance
+          assert(valid_instances[info->location] == info);
+        }
+#endif
+      }
+      else
+      {
+        // It should be in one of our parents
+#ifdef DEBUG_HIGH_LEVEL
+        assert((parent != NULL) && (parent->find_instance(info->location) == info));
+#endif
+        if (valid_instances.find(info->location) == valid_instances.end())
+          locations.push_back(info->location);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
     void AbstractInstance::register_writer(InstanceInfo *info, bool exclusive)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(info != NULL);
+      assert(!remote);
+      assert(references > 0);
+#endif
+      info->references++;
+      log_inst(LEVEL_DEBUG,"Writing instance %d of region %d with reference coutn %d and "
+                            "abstract reference count %d and closed %d",
+                            info->inst.id,info->handle.id,info->references,references,closed);
       // Clear out any prior valid instances, check to see if any of them can be freed
       if (exclusive)
       {
         for (std::map<Memory,InstanceInfo*>::iterator it = valid_instances.begin();
               it != valid_instances.end(); it++)
         {
-          if (it->second->references == 0)
+          if ((it->second != info) && (it->second->references == 0))
           {
             // Delete this instance since it is no longer valid and has no references
             InstanceInfo *to_delete = it->second;
@@ -284,8 +489,71 @@ namespace RegionRuntime {
         locations.clear();
       }
       // Make the new instance the valid instance
-      valid_instances.insert(std::pair<Memory,InstanceInfo*>(info->location,info));
-      locations.push_back(info->location);
+      if (info->handle == handle)
+      {
+        if (valid_instances.find(info->location) == valid_instances.end())
+        {
+          valid_instances.insert(std::pair<Memory,InstanceInfo*>(info->location,info));
+          locations.push_back(info->location);
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        else
+        {
+          // Better be passing back our own instance
+          assert(valid_instances[info->location] == info);
+        }
+#endif
+      }
+      else
+      {
+        // It should be in one of our parents
+#ifdef DEBUG_HIGH_LEVEL
+        assert((parent != NULL) && (parent->find_instance(info->location) == info));
+#endif
+        if (valid_instances.find(info->location) == valid_instances.end())
+          locations.push_back(info->location);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool AbstractInstance::add_instance(InstanceInfo *info)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(info != NULL);
+#endif
+      // Check to see if this is one of our valid instances
+      if (info->handle == handle)
+      {
+        // Go through our instances and see if we can find 
+        // another instance info with the same physical instance
+        if (valid_instances.find(info->location) != valid_instances.end())
+        {
+          // Check to see if they have the same instance ID
+          if (valid_instances[info->location]->inst == info->inst)
+            return false;
+          else
+          {
+            info->references = 0;
+            all_instances.push_back(info);
+            return true;
+          }
+        }
+        else
+        {
+          info->references = 0;
+          all_instances.push_back(info);
+          return true;
+        }
+      }
+      else
+      {
+        // Try adding it to our parent instance
+#ifdef DEBUG_HIGH_LEVEL
+        assert(parent != NULL);
+#endif
+        return parent->add_instance(info);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -297,14 +565,15 @@ namespace RegionRuntime {
         // If we haven't gotten them before, get the set of valid instances
         // from the parent abstract instance
         first_map = false;
-        locations.insert(locations.end(),
-                          parent->locations.begin(),
-                          parent->locations.end());
-        // Put the locations in the map with null to indicate that they are parent instances
-        for (std::vector<Memory>::iterator it = locations.begin();
-              it != locations.end(); it++)
+        std::vector<Memory> &parent_mems = parent->get_memory_locations();
+        for (std::vector<Memory>::iterator it = parent_mems.begin();
+              it != parent_mems.end(); it++)
+
         {
-          valid_instances.insert(std::pair<Memory,InstanceInfo*>(*it,NULL));
+          if (valid_instances.find(*it) == valid_instances.end())
+          {
+            locations.push_back(*it);
+          }
         }
       }
       return locations;
@@ -318,23 +587,29 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void AbstractInstance::register_task_user(void)
+    void AbstractInstance::register_user(void)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!closed);
+      assert(!remote);
 #endif
       references++;
+      log_inst(LEVEL_DEBUG,"incrementing users of abstract instance for region %d to %d",
+                            handle.id,references);
     }
 
     //--------------------------------------------------------------------------------------------
-    void AbstractInstance::register_task_mapped(void)
+    void AbstractInstance::release_user(void)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
+      assert(!remote);
       assert(references > 0);
 #endif
       references--;
+      log_inst(LEVEL_DEBUG,"decrementing users of abstract instance for region %d to %d",
+                            handle.id,references);
       if (closed && (references == 0))
       {
         // Go through all the valid instances and see if we can delete them
@@ -344,6 +619,8 @@ namespace RegionRuntime {
           if (it->second->references == 0)
           {
             InstanceInfo *info = it->second;
+            log_inst(LEVEL_DEBUG,"deleting instance %d of region %d in level %d",
+                                  info->inst.id,info->handle.id,info->location.id);
             info->handle.destroy_instance_untyped(info->inst);
           }
         }
@@ -358,8 +635,10 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!closed);
+      assert(!remote);
 #endif
       closed = true;
+      log_inst(LEVEL_DEBUG,"closing abstract instance for region %d",handle.id);
       if (closed && (references == 0))
       {
         // Go through all the valid instances and see if we can delete them
@@ -369,6 +648,8 @@ namespace RegionRuntime {
           if (it->second->references == 0)
           {
             InstanceInfo *info = it->second;
+            log_inst(LEVEL_DEBUG,"deleting instance %d of region %d in level %d",
+                                  info->inst.id,info->handle.id,info->location.id);
             info->handle.destroy_instance_untyped(info->inst);
           }
         }
@@ -383,8 +664,8 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////////////// 
 
     //--------------------------------------------------------------------------------------------
-    CopyOperation::CopyOperation(AbstractInstance *d)
-      : dst_instance(d) 
+    CopyOperation::CopyOperation(AbstractInstance *inst, Event wait_on)
+      : instance(inst), wait_event(wait_on), triggered(false)
     //--------------------------------------------------------------------------------------------
     {
     }
@@ -402,14 +683,6 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void CopyOperation::add_src_inst(AbstractInstance *inst, Event wait_on)
-    //--------------------------------------------------------------------------------------------
-    {
-      src_instances.push_back(inst);
-      src_events.push_back(wait_on);
-    }
-
-    //--------------------------------------------------------------------------------------------
     void CopyOperation::add_sub_copy(CopyOperation *copy)
     //--------------------------------------------------------------------------------------------
     {
@@ -417,120 +690,274 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    Event CopyOperation::execute(Mapper *mapper, TaskDescription *desc, Event wait_on,
-                                  const std::vector<Memory> &destinations,
-                                  const std::vector<InstanceInfo*> &dst_insts,
+    void CopyOperation::add_dependent_task(TaskDescription *desc)
+    //--------------------------------------------------------------------------------------------
+    {
+      dependent_tasks.push_back(desc);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool CopyOperation::is_triggered(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      return triggered;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    Event CopyOperation::get_result_event(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(triggered);
+#endif
+      return finished_event;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void CopyOperation::register_dependent_tasks(TaskDescription *desc)
+    //--------------------------------------------------------------------------------------------
+    {
+      for (std::vector<TaskDescription*>::iterator it = dependent_tasks.begin();
+            it != dependent_tasks.end(); it++)
+      {
+        // This task definitely conflicts with the other tasks in this copy operation
+        desc->wait_events.insert((*it)->termination_event);
+        log_task(LEVEL_DEBUG,"task %d in context %d dependends on task %d in context %d",
+                            desc->task_id,desc->local_ctx,(*it)->task_id,(*it)->local_ctx);
+        if (!((*it)->mapped))
+        {
+          // Hasn't been mapped yet, register the dependence
+          if (((*it)->dependent_tasks.insert(desc)).second)
+          {
+            desc->remaining_events++;
+          }
+        }
+      }
+      // Traverse any sub copies as well
+      for (std::vector<CopyOperation*>::iterator it = sub_copies.begin();
+            it != sub_copies.end(); it++)
+      {
+        (*it)->register_dependent_tasks(desc);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    Event CopyOperation::execute(Mapper *mapper, TaskDescription *desc, 
                               std::vector<std::pair<AbstractInstance*,InstanceInfo*> > &sources)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!triggered);
+#endif
+      triggered = true;
       // Check to see if this copy operation has sub copies
       if (!sub_copies.empty())
       {
-        // If we have sub copies, ask the mapper for a set of destination instances
+        // First copy across to new instances  
         std::vector<std::vector<Memory> > target_ranking;
-        mapper->rank_copy_targets(desc,dst_instance->get_memory_locations(),target_ranking);
-        std::vector<Memory> sub_dests;
-        std::vector<InstanceInfo*> sub_infos;
-        std::set<Event> wait_events;
-        wait_events.insert(wait_on);
-        // Get the new instances
-        for (std::vector<std::vector<Memory> >::iterator rank_it = target_ranking.begin();
-              rank_it != target_ranking.end(); rank_it++)
+        mapper->rank_copy_targets(desc, instance->get_memory_locations(),target_ranking);
+        std::vector<Memory> new_mems;
+        std::vector<InstanceInfo*> new_instances;
+        // Get new instances for each of the new targets
+        for (std::vector<std::vector<Memory> >::iterator target_it = target_ranking.begin();
+              target_it != target_ranking.end(); target_it++)
         {
-          std::vector<Memory> &ranking = *rank_it;
+          std::vector<Memory> &ranking = *target_it;
           bool found = false;
-          for (std::vector<Memory>::iterator mem_it = ranking.begin();
+          for (std::vector<Memory>::iterator mem_it = ranking.begin(); 
                 mem_it != ranking.end(); mem_it++)
           {
-            InstanceInfo *info = dst_instance->get_instance(*mem_it);
-            if (info != NULL)
+            // Try to create the instance
+            InstanceInfo *new_inst = instance->get_instance(*mem_it);
+            if (new_inst != NULL)
             {
               found = true;
-              sub_dests.push_back(*mem_it);
-              sub_infos.push_back(info);
-              // Ask the mapper to choose how to copy to the new instance
-              Memory src_location = Memory::NO_MEMORY;
-              mapper->select_copy_source(desc,dst_instance->get_memory_locations(),
-                                          *mem_it,src_location);
-#ifdef DEBUG_HIGH_LEVEL
-              assert(src_location.exists());
-#endif
-              // Get the info, register the reader, and record the copy
-              InstanceInfo *src_info = dst_instance->get_instance(src_location);
-              // If they are the same instance, just ignore it
-              if (!(src_info->inst == info->inst))
-              {
-                dst_instance->register_reader(src_info);
-                wait_events.insert(src_info->inst.copy_to_untyped(info->inst));
-                // Add the source info to the list of reads that we've performed
-                sources.push_back(
-                    std::pair<AbstractInstance*,InstanceInfo*>(dst_instance,src_info));
-              }
+              new_instances.push_back(new_inst);
+              new_mems.push_back(*mem_it);
               break;
             }
           }
           if (!found)
           {
-            fprintf(stderr,"Unable to create target instance for copy operation!\n");
+            log_inst(LEVEL_ERROR,"unable to create new instance for copy up operation for region "
+                                  "%d", instance->handle.id);
+            assert(false);
             exit(1);
           }
         }
-        // Add all the destination instances to the list of writers, only make the first
-        // one exclusive so that they are all valid instances, but evict any prior instances
-        bool exclusive = true;
-        for (std::vector<InstanceInfo*>::iterator it = sub_infos.begin();
-              it != sub_infos.end(); it++)
+        // Now we've got the new instances, issue copies to them
+        std::vector<InstanceInfo*> reader_inst;
+        for (unsigned idx = 0; idx < new_instances.size(); idx++)
         {
-          dst_instance->register_writer(*it,exclusive);
-          exclusive = false;
-          sources.push_back(std::pair<AbstractInstance*,InstanceInfo*>(dst_instance,*it));
-        }
-
-        Event creation_event = Event::merge_events(wait_events);
-        // Clear wait events and use it to capture the event of all the sub copies being done
-        wait_events.clear();
-        // Now issue the sub copies to our new instances
-        for (std::vector<CopyOperation*>::iterator copy_it = sub_copies.begin();
-              copy_it != sub_copies.end(); copy_it++)
-        {
-          wait_events.insert((*copy_it)->execute(mapper,desc,creation_event,
-                                                    sub_dests,sub_infos,sources));           
-        }
-        // Make the wait for event, the event that all the sub copies are done
-        wait_on = Event::merge_events(wait_events);
-      }
-      // Now issue copies up to the parent destination, waiting for 
-      // wait on event for each copy
-      std::set<Event> return_events;
-      for (std::vector<InstanceInfo*>::const_iterator dst_it = dst_insts.begin();
-            dst_it != dst_insts.end(); dst_it++)
-      {
-        // For each source
-        for (std::vector<AbstractInstance*>::iterator src_it = src_instances.begin();
-              src_it != src_instances.end(); src_it++)
-        {
-          // Ask the mapper which instance in from the source to use
           Memory src_mem = Memory::NO_MEMORY;
-          mapper->select_copy_source(desc,(*src_it)->get_memory_locations(),
-                                          (*dst_it)->location, src_mem);
+          mapper->select_copy_source(desc,instance->get_memory_locations(),
+                                          new_instances[idx]->location,src_mem);
 #ifdef DEBUG_HIGH_LEVEL
           assert(src_mem.exists());
 #endif
-          InstanceInfo *src_info = (*src_it)->get_instance(src_mem);
-          if (!(src_info->inst == (*dst_it)->inst))
+          InstanceInfo *reader = instance->find_instance(src_mem);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(reader != NULL);
+#endif
+          reader_inst.push_back(reader);
+          instance->register_reader(reader);
+          // register this so we can undo it later
+          sources.push_back(std::pair<AbstractInstance*,InstanceInfo*>(instance,reader));
+        }
+        // Now register the writers, overwriting all prior readers 
+        bool exclusive = true;
+        std::vector<Event> dst_events;
+        for (unsigned idx = 0; idx < new_instances.size(); idx++)
+        {
+          instance->register_writer(new_instances[idx],exclusive);
+          exclusive = false;
+          sources.push_back(
+              std::pair<AbstractInstance*,InstanceInfo*>(instance,new_instances[idx]));
+          // Issue the copy waiting for the wait event indicating when this instance
+          // is valid
+          Event dst_ready = wait_event;
+          // If they're not equal issue the copy
+          if (!(new_instances[idx]->inst == reader_inst[idx]->inst))
           {
-            // Mark that we're reading from the src_info
-            (*src_it)->register_reader(src_info);
-            sources.push_back(std::pair<AbstractInstance*,InstanceInfo*>(*src_it,src_info));
-            // Issue the copy contingent on the wait event
-            return_events.insert(src_info->inst.copy_to_untyped((*dst_it)->inst,wait_on)); 
+            dst_ready = reader_inst[idx]->inst.copy_to_untyped(new_instances[idx]->inst,dst_ready);
+          }
+          dst_events.push_back(dst_ready);
+        }
+
+        // Execute each of the sub copies and record the event for when they are ready
+        std::vector<Event> sub_events;
+        for (std::vector<CopyOperation*>::iterator it = sub_copies.begin();
+              it != sub_copies.end(); it++)
+        {
+          sub_events.push_back((*it)->execute(mapper,desc,sources));
+        }
+        std::set<Event> return_events;
+        // Now for each destination and for each source issue a copy
+        for (unsigned dst_idx = 0; dst_idx < new_instances.size(); dst_idx++)
+        {
+          InstanceInfo *dst = new_instances[dst_idx];
+          for (unsigned src_idx = 0; src_idx < sub_copies.size(); src_idx++)
+          {
+            // Figure out the copy
+            Memory src_mem = Memory::NO_MEMORY;
+            mapper->select_copy_source(desc,sub_copies[src_idx]->instance->get_memory_locations(),
+                                    dst->location,src_mem);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(src_mem.exists());
+#endif
+            InstanceInfo *src = sub_copies[src_idx]->instance->find_instance(src_mem);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(src != NULL);
+#endif
+            // Register the reader
+            sub_copies[src_idx]->instance->register_reader(src);
+            sources.push_back(
+                std::pair<AbstractInstance*,InstanceInfo*>(sub_copies[src_idx]->instance,src));
+            // Issue the copy and record the event
+            std::set<Event> conditions;
+            conditions.insert(sub_events[src_idx]);
+            conditions.insert(dst_events[dst_idx]);
+            return_events.insert(src->inst.copy_to_untyped(dst->inst,
+                                          Event::merge_events(conditions)));
           }
         }
+        // Tell any sub copies that we are done using them
+        for (std::vector<CopyOperation*>::iterator it = sub_copies.begin();
+              it != sub_copies.end(); it++)
+        {
+          (*it)->instance->release_user();
+        }
+        // Compute the finished event and return
+        finished_event = Event::merge_events(return_events);
+        return finished_event;
       }
+      else
+      {
+        // Tell our abstract instance that we've used it
+        finished_event = wait_event;
+        // There are no subcopies, just return the event to wait on for this task to be finished
+        return finished_event;
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    Event CopyOperation::execute_close(Mapper *mapper, TaskDescription *desc, InstanceInfo *target,
+                          std::vector<std::pair<AbstractInstance*,InstanceInfo*> > &sources)
+    //--------------------------------------------------------------------------------------------
+    {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(!return_events.empty());
+      assert(!triggered);
 #endif
-      return Event::merge_events(return_events);
+      triggered = true;
+      // Copy to the target from the current valid instance
+      Memory src_mem = Memory::NO_MEMORY;
+      // Ask the mapper where to do the initial copy from
+      mapper->select_copy_source(desc,instance->get_memory_locations(),target->location,src_mem);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(src_mem.exists());
+#endif
+      InstanceInfo *src_info = instance->find_instance(src_mem);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(src_info != NULL);
+#endif
+      // Register the reader and writer
+      instance->register_reader(src_info);
+      instance->register_writer(target,true);
+      sources.push_back(
+          std::pair<AbstractInstance*,InstanceInfo*>(instance,src_info));
+      sources.push_back(
+          std::pair<AbstractInstance*,InstanceInfo*>(instance,target));
+      Event copy_event = wait_event;
+      if (!(src_info->inst == target->inst))
+      {
+        copy_event = src_info->inst.copy_to_untyped(target->inst,copy_event);
+      }
+      // If there are no sub events, we're done
+      if (sub_copies.empty())
+      {
+        finished_event = copy_event;
+        return finished_event;
+      }
+      // Now issue each of the sub events
+      std::vector<Event> sub_events;
+      for (std::vector<CopyOperation*>::iterator copy_it = sub_copies.begin();
+            copy_it != sub_copies.end(); copy_it++)
+      {
+        sub_events.push_back((*copy_it)->execute(mapper,desc,sources));
+      }
+      // For each sub copy chose an instance to do the copy up to this instance
+      std::set<Event> return_events;
+      for (unsigned idx = 0; idx < sub_copies.size(); idx++)
+      {
+        Memory sub_mem = Memory::NO_MEMORY;
+        mapper->select_copy_source(desc,sub_copies[idx]->instance->get_memory_locations(),
+                                    target->location,sub_mem);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(sub_mem.exists());
+#endif
+        InstanceInfo *sub_info = sub_copies[idx]->instance->find_instance(sub_mem);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(sub_info != NULL);
+#endif
+        sub_copies[idx]->instance->register_reader(sub_info);
+        sources.push_back(
+            std::pair<AbstractInstance*,InstanceInfo*>(sub_copies[idx]->instance,sub_info));
+        // Issue the copy
+        std::set<Event> up_events;
+        up_events.insert(copy_event);
+        up_events.insert(sub_events[idx]);
+        return_events.insert(sub_info->inst.copy_to_untyped(target->inst,
+                              Event::merge_events(up_events)));
+      }
+      // Tell any sub copies that we are done using them
+      for (std::vector<CopyOperation*>::iterator it = sub_copies.begin();
+            it != sub_copies.end(); it++)
+      {
+        (*it)->instance->release_user();
+      }
+      // Get the return event
+      finished_event = Event::merge_events(return_events);
+      return finished_event;
     }
 
     /////////////////////////////////////////////////////////////
@@ -572,6 +999,7 @@ namespace RegionRuntime {
           region_nodes = new std::map<LogicalHandle,RegionNode*>();
           partition_nodes = new std::map<PartitionID,PartitionNode*>();
         }
+        log_task(LEVEL_SPEW,"Activating task %d",local_ctx);
         return true;
       }
       return false;
@@ -590,29 +1018,15 @@ namespace RegionRuntime {
       arglen = 0;
       result_size = 0;
       parent_task = NULL;
-      // Regardless of whether we are remote or not, we can always delete the
-      // instances that we own
-      for (std::vector<InstanceInfo*>::iterator it = instances.begin();
-            it != instances.end(); it++)
-      {
-        delete *it;
-      }
-      instances.clear();
       // If this is a remote there were some things that were cloned that we
       // now need to clean up
       if (remote)
       {
-        for (std::vector<InstanceInfo*>::iterator it = src_instances.begin();
-              it != src_instances.end(); it++)
-        {
-          delete *it;
-        }
-
         // We can also delete the region trees
         for (std::vector<RegionRequirement>::iterator it = regions.begin();
               it != regions.end(); it++)
         {
-          if (!it->aliased)
+          if (!it->subregion)
           {
             delete (*region_nodes)[it->handle]; 
           }
@@ -630,21 +1044,21 @@ namespace RegionRuntime {
         }
         // Clear out the created regions since they were sent back, otherwise
         // the parent became the owner of them
-        for (std::map<LogicalHandle,InstanceInfo*>::iterator it = created_regions.begin();
+        for (std::map<LogicalHandle,AbstractInstance*>::iterator it = created_regions.begin();
               it != created_regions.end(); it++)
         {
           delete it->second;
         }
       }
-      // Before we can clear the regions, check to see if there
-      // are any aliased regions which we had to have separate contexts for
-      for (std::vector<RegionRequirement>::iterator it = regions.begin();
-            it != regions.end(); it++)
+      // Give back any contexts that aren't ours to the runtime
+      // The first one should always be our context
+#ifdef DEBUG_HIGH_LEVEL
+      if (!valid_contexts.empty())
+        assert(valid_contexts[0] == local_ctx);
+#endif
+      for (unsigned idx = 1; idx < valid_contexts.size(); idx++)
       {
-        if (it->aliased)
-        {
-          runtime->free_context(it->ctx);
-        }
+        runtime->free_context(valid_contexts[idx]);
       }
       // Clear out the abstract instances
       for (std::vector<AbstractInstance*>::iterator it = all_instances.begin();
@@ -652,21 +1066,26 @@ namespace RegionRuntime {
       {
         delete *it;
       }
-      // Delete all the copy trees
+      // Delete all the copy trees created within our context
       for (std::vector<CopyOperation*>::iterator it = pre_copy_trees.begin();
             it != pre_copy_trees.end(); it++)
       {
         delete *it;
       }
       regions.clear();
+      valid_contexts.clear();
       all_instances.clear();
+      abstract_src.clear();
+      abstract_inst.clear();
       wait_events.clear();
       dependent_tasks.clear();
       child_tasks.clear();
       pre_copy_trees.clear();
       src_instances.clear();
+      instances.clear();
       created_regions.clear();
       deleted_regions.clear();
+      added_partitions.clear();
       region_nodes = NULL;
       partition_nodes = NULL;
       active = false;
@@ -676,22 +1095,26 @@ namespace RegionRuntime {
       remote = false;
       // Tell this runtime that this context is free again
       runtime->free_context(local_ctx);
+      log_task(LEVEL_SPEW,"Deactivating task %d",local_ctx);
     }
 
     //--------------------------------------------------------------------------------------------
     void TaskDescription::register_child_task(TaskDescription *child)
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"Registering child task %d with parent task %d",
+                            child->task_id, task_id);
       // Add it to the list of child tasks
       child_tasks.push_back(child);
 
       child->region_nodes = region_nodes;
       child->partition_nodes = partition_nodes;
+      child->valid_contexts.push_back(child->local_ctx); // local context is always valid
       // Update the child task with information about where it's top level regions are
       for (unsigned idx = 0; idx < child->regions.size(); idx++)
       {
         LogicalHandle handle = child->regions[idx].handle;
-        child->regions[idx].aliased = false;
+        child->regions[idx].subregion = false;
         // by default use the local context, only get new contexts if aliasing
         child->regions[idx].ctx = child->local_ctx;
         // Make sure we don't get any regions which are sub regions of other region arguments 
@@ -701,27 +1124,35 @@ namespace RegionRuntime {
           // Check if they are the same region, if not check for disjointness
           if (handle == top)
           {
-            // mark the more recent one as aliased and get a new context
-            child->regions[idx].aliased = true;
-            child->regions[idx].ctx = runtime->get_available_context(); 
+            // mark the more recent one as a subregion and get a new context
+            child->regions[idx].subregion = true;
+            Context new_ctx = runtime->get_available_context();
+            child->regions[idx].ctx = new_ctx; 
+            child->valid_contexts.push_back(new_ctx);
           }
           else if (!disjoint(handle, top))
           {
             // top is already the parent, update the new region
             if (subregion(top, handle))
             {
-              child->regions[idx].aliased = true;
-              child->regions[idx].ctx = runtime->get_available_context();
+              child->regions[idx].subregion = true;
+              Context new_ctx = runtime->get_available_context();
+              child->regions[idx].ctx = new_ctx;
+              child->valid_contexts.push_back(new_ctx);
             }
             else if (subregion(handle,top)) // the new region is the parent, put it in place
             {
-              child->regions[other].aliased = true;
-              child->regions[other].ctx = runtime->get_available_context();
+              child->regions[other].subregion = true;
+              Context new_ctx = runtime->get_available_context();
+              child->regions[other].ctx = new_ctx;
+              child->valid_contexts.push_back(new_ctx);
             } 
             else // Aliased, but neither is sub-region, egad!
             {
-              // TODO: handle this case
-              assert(false);
+              // Get a new context for the region
+              Context new_ctx = runtime->get_available_context();
+              child->regions[idx].ctx = new_ctx;
+              child->valid_contexts.push_back(new_ctx);
             }
             // Continue traversing as there might be multiple levels of aliasing
           }
@@ -751,6 +1182,9 @@ namespace RegionRuntime {
             
             // Register the region dependence beginning at the top level region
             RegionNode *top = (*region_nodes)[regions[parent_idx].handle];
+            log_region(LEVEL_DEBUG,"registering region dependence for region %d"
+                                    " with parent %d in context %d",child->regions[idx].handle.id,
+                                    child->regions[idx].parent.id,dep.ctx);
             top->register_region_dependence(dep);
             break;
           }
@@ -758,7 +1192,7 @@ namespace RegionRuntime {
         // It wasn't in one of the argument regions, check the created regions
         if (!found)
         {
-          if (created_regions.find(child->regions[idx].handle) != created_regions.end())
+          if (created_regions.find(child->regions[idx].parent) != created_regions.end())
           {
             found = true;
             DependenceDetector dep;
@@ -776,6 +1210,10 @@ namespace RegionRuntime {
 
             // Register the dependence
             RegionNode *top = (*region_nodes)[child->regions[idx].parent];
+            log_region(LEVEL_DEBUG,"registering region dependence for region %d"
+                                    " with created parent %d in context %d",
+                                    child->regions[idx].handle.id,
+                                    child->regions[idx].parent.id,dep.ctx);
             top->register_region_dependence(dep);
           }
         }
@@ -787,6 +1225,11 @@ namespace RegionRuntime {
           exit(1);
         }
       }
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"task %d in context %d dependends on %d tasks to map",
+                          child->task_id,child->local_ctx,
+                          child->remaining_events);
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -810,76 +1253,107 @@ namespace RegionRuntime {
     void TaskDescription::mark_ready(void)
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"Marking task %d in context %d ready to execute",task_id,local_ctx);
       // Issue the copy operations and compute the merged wait event
+#if 0
       for (std::vector<CopyOperation*>::iterator copy_it = pre_copy_trees.begin();
                 copy_it != pre_copy_trees.end(); copy_it++)
       {
         CopyOperation *copy_op = *copy_it;
-        // Ask the mapper for the set of valid physical instances to use
-        std::vector<std::vector<Memory> > target_ranking;
-        mapper->rank_copy_targets(this,copy_op->dst_instance
-                                        ->get_memory_locations(),target_ranking);
-
-        std::vector<Memory> destinations;
-        std::vector<InstanceInfo*> dst_infos;
-        std::set<Event> init_copy_events;
-        for (std::vector<std::vector<Memory> >::iterator rank_it = target_ranking.begin();
-              rank_it != target_ranking.end(); rank_it++)
+        // Check to see if the copy operation has already been triggered, if not
+        // issue it ourselves, otherwise get the event to wait on
+        if (!copy_op->is_triggered())
         {
-          std::vector<Memory> &ranking = *rank_it;
-          bool found = false;
-          for (std::vector<Memory>::iterator mem_it = ranking.begin();
-                mem_it != ranking.end(); mem_it++)
+          // Ask the mapper for the set of valid physical instances to use
+          std::vector<std::vector<Memory> > target_ranking;
+          mapper->rank_copy_targets(this,copy_op->instance
+                                          ->get_memory_locations(),target_ranking);
+
+          std::vector<Memory> destinations;
+          std::vector<InstanceInfo*> dst_infos;
+          std::set<Event> init_copy_events;
+          for (std::vector<std::vector<Memory> >::iterator rank_it = target_ranking.begin();
+                rank_it != target_ranking.end(); rank_it++)
           {
-            InstanceInfo *info = copy_op->dst_instance->get_instance(*mem_it);
-            if (info != NULL)
+            std::vector<Memory> &ranking = *rank_it;
+            bool found = false;
+            for (std::vector<Memory>::iterator mem_it = ranking.begin();
+                  mem_it != ranking.end(); mem_it++)
             {
-              found = true;
-              destinations.push_back(*mem_it);
-              dst_infos.push_back(info);
-              // Ask the mapper to choose how to copy to the new instance
-              Memory src_location = Memory::NO_MEMORY;
-              mapper->select_copy_source(this,copy_op->dst_instance->get_memory_locations(),
-                                          *mem_it,src_location);
-#ifdef DEBUG_HIGH_LEVEL
-              assert(src_location.exists());
-#endif
-              // Get the infor and register the reader if we need to make a copy
-              InstanceInfo *src_info = copy_op->dst_instance->get_instance(src_location);
-              // If they are the same instance, just ignore it
-              if (!(src_info->inst == info->inst))
+              InstanceInfo *info = copy_op->instance->get_instance(*mem_it);
+              if (info != NULL)
               {
-                copy_op->dst_instance->register_reader(src_info);
-                init_copy_events.insert(src_info->inst.copy_to_untyped(info->inst));
-                // Add the source to the list of reads that we've performed
-                copy_instances.push_back(
-                    std::pair<AbstractInstance*,InstanceInfo*>(copy_op->dst_instance,src_info));
+                found = true;
+                destinations.push_back(*mem_it);
+                dst_infos.push_back(info);
+                // Ask the mapper to choose how to copy to the new instance
+                Memory src_location = Memory::NO_MEMORY;
+                mapper->select_copy_source(this,copy_op->dst_instance->get_memory_locations(),
+                                            *mem_it,src_location);
+#ifdef DEBUG_HIGH_LEVEL
+                assert(src_location.exists());
+#endif
+                // Get the infor and register the reader if we need to make a copy
+                InstanceInfo *src_info = copy_op->dst_instance->find_instance(src_location);
+                // If they are the same instance, just ignore it
+                if (!(src_info->inst == info->inst))
+                {
+                  copy_op->dst_instance->register_reader(src_info);
+                  init_copy_events.insert(src_info->inst.copy_to_untyped(info->inst));
+                  // Add the source to the list of reads that we've performed
+                  copy_instances.push_back(
+                      std::pair<AbstractInstance*,InstanceInfo*>(copy_op->dst_instance,src_info));
+                }
+                break;
               }
-              break;
+            }
+            if (!found)
+            {
+              log_inst(LEVEL_ERROR,"Unable to get instance for copy up operations");
+              exit(1);
             }
           }
-          if (!found)
+          // Add all the destination events to the list of writers, only make the first
+          // one exclusive so they all are valid at after this loop
+          bool exclusive = true;
+          for (std::vector<InstanceInfo*>::iterator it = dst_infos.begin();
+                it != dst_infos.end(); it++)
           {
-            fprintf(stderr,"Unable to get instance for copy up operations\n");
-            exit(1);
+            copy_op->dst_instance->register_writer(*it,exclusive);
+            exclusive = false;
+            copy_instances.push_back(
+                std::pair<AbstractInstance*,InstanceInfo*>(copy_op->dst_instance,*it));
           }
+          // Get the event corresponding to all the destinations being created
+          // and use that as the event to wait for before issuing the copies
+          wait_events.insert(copy_op->execute(mapper,this,Event::merge_events(init_copy_events),
+                              destinations,dst_infos,copy_instances));
         }
-        // Add all the destination events to the list of writers, only make the first
-        // one exclusive so they all are valid at after this loop
-        bool exclusive = true;
-        for (std::vector<InstanceInfo*>::iterator it = dst_infos.begin();
-              it != dst_infos.end(); it++)
+        else
         {
-          copy_op->dst_instance->register_writer(*it,exclusive);
-          exclusive = false;
-          copy_instances.push_back(
-              std::pair<AbstractInstance*,InstanceInfo*>(copy_op->dst_instance,*it));
+          wait_events.insert(copy_op->get_result_event());
         }
-        // Get the event corresponding to all the destinations being created
-        // and use that as the event to wait for before issuing the copies
-        wait_events.insert(copy_op->execute(mapper,this,Event::merge_events(init_copy_events),
-                            destinations,dst_infos,copy_instances));
       }
+#else
+      // Issue the copy operations
+      for (std::vector<CopyOperation*>::iterator it = pre_copy_trees.begin();
+            it != pre_copy_trees.end(); it++)
+      {
+        if (!((*it)->is_triggered()))
+        {
+          wait_events.insert((*it)->execute(mapper,this,copy_instances)); 
+          // Tell the instance at the top of the copy operation that we are done using it
+          (*it)->instance->release_user();
+        }
+        else
+        {
+          wait_events.insert((*it)->get_result_event());
+        }
+      }
+#endif
+      // Clear out our copy trees, so we can use this vector to track all the copy trees
+      // created in our context and can clean them up
+      pre_copy_trees.clear();
       // Compute the merged event indicating the event to wait on before starting the task
       if (wait_events.size() > 0)
         merged_wait_event = Event::merge_events(wait_events);
@@ -924,18 +1398,6 @@ namespace RegionRuntime {
       std::set<Event> copy_events;
       for (unsigned idx = 0; idx < instances.size(); idx++)
       {
-        // tell the abstract instances about the reading and the writing
-        // even if they are aliased this is still safe
-        abstract_src[idx]->register_reader(src_instances[idx]);
-        // Check the coherence properties to see if this is a read or a write
-        if ((regions[idx].mode == READ_ONLY) || (regions[idx].mode == NO_ACCESS))
-        {
-          abstract_inst[idx]->register_reader(instances[idx]);
-        }
-        else
-        {
-          abstract_inst[idx]->register_writer(instances[idx], (regions[idx].prop != RELAXED));
-        }
         // Check to see if they have different instances, if so issue the copy
         if (!(src_instances[idx]->inst == instances[idx]->inst))
         {
@@ -963,6 +1425,9 @@ namespace RegionRuntime {
         dep.trace.push_front(node->handle.id);
         dep.trace.push_front(node->parent->pid);
 #ifdef DEBUG_HIGH_LEVEL
+        assert(node->parent->children.find(node->handle) != node->parent->children.end());
+        assert(node->parent->parent->partitions.find(node->parent->pid) !=
+                node->parent->parent->partitions.end());
         assert(node->parent != NULL);
 #endif
         node = node->parent->parent;
@@ -991,17 +1456,23 @@ namespace RegionRuntime {
       // Instance and copy information
       // The size of src_instances is the same as regions
 #ifdef DEBUG_HIGH_LEVEL
-      assert(src_instances.size() == regions.size());
+      assert(abstract_src.size() == regions.size());
+      assert(abstract_inst.size() == regions.size());
 #endif
-      bytes += (src_instances.size() * sizeof(InstanceInfo));
+      // Get the sizes of all the abstract instances we need to send
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        bytes += abstract_src[idx]->compute_instance_size();
+        bytes += abstract_inst[idx]->compute_instance_size();
+      }
 
       // Region trees
       // Don't need to get the number of region trees, we'll get this
-      // from the aliased information in the region requirements
+      // from the subregion information in the region requirements
       for (std::vector<RegionRequirement>::const_iterator it = regions.begin();
             it != regions.end(); it++)
       {
-        if (!it->aliased)
+        if (!it->subregion)
         {
           bytes += ((*region_nodes)[it->handle]->compute_region_tree_size());
         }
@@ -1013,6 +1484,7 @@ namespace RegionRuntime {
     void TaskDescription::pack_task(char *&buffer) const
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"Packing task %d in context %d",task_id,local_ctx);
       *((Processor::TaskFuncID*)buffer) = task_id;
       buffer += sizeof(Processor::TaskFuncID);
       *((size_t*)buffer) = regions.size();
@@ -1048,23 +1520,18 @@ namespace RegionRuntime {
       buffer += sizeof(Context);
       *((Event*)buffer) = merged_wait_event;
       buffer += sizeof(Event);
-      // Pack the instance 
-      for (std::vector<InstanceInfo*>::const_iterator it = src_instances.begin();
-            it != src_instances.end(); it++)
+      // Pack the abstract instances
+      for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        *((LogicalHandle*)buffer) = (*it)->handle;
-        buffer += sizeof(LogicalHandle);
-        *((RegionInstance*)buffer) = (*it)->inst;
-        buffer += sizeof(RegionInstance);
-        *((Memory*)buffer) = (*it)->location;
-        buffer += sizeof(Memory);
+        abstract_src[idx]->pack_instance(buffer);
+        abstract_inst[idx]->pack_instance(buffer);
       }
 
       // Pack the region trees
       for (std::vector<RegionRequirement>::const_iterator it = regions.begin();
             it != regions.end(); it++)
       {
-        if (!it->aliased)
+        if (!it->subregion)
         {
           (*region_nodes)[it->handle]->pack_region_tree(buffer);
         }
@@ -1084,9 +1551,9 @@ namespace RegionRuntime {
       {
         regions[idx] = *((const RegionRequirement*)buffer);
         buffer += sizeof(RegionRequirement); 
-        // Check to see if the region is aliased, if it is
+        // Check to see if the region is a subregion, if it is
         // get a new context for it to use
-        if (regions[idx].aliased)
+        if (regions[idx].subregion)
         {
           regions[idx].ctx = runtime->get_available_context();
         }
@@ -1120,51 +1587,42 @@ namespace RegionRuntime {
       remote = true; // If we're unpacking this it is definitely remote
       merged_wait_event = *((const Event*)buffer);
       buffer += sizeof(Event);
-      // Unapck the instance information
-      // For the instances we can just make this based on the regions
-      for (std::vector<RegionRequirement>::iterator it = regions.begin();
-            it != regions.end(); it++)
+      // Unapck the abstract instance information
+      for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        InstanceInfo *info = new InstanceInfo();
-        info->handle = it->handle;
-        instances.push_back(info);
-      }
-      // Unpack the source instance information
-      // There will be the same number of sources as regions
-      for (unsigned idx = 0; idx < num_regions; idx++)
-      {
-        InstanceInfo *info = new InstanceInfo();
-        info->handle = *((const LogicalHandle*)buffer);
-        buffer += sizeof(LogicalHandle);
-        info->inst = *((const RegionInstance*)buffer);
-        buffer += sizeof(RegionInstance);
-        info->location = *((const Memory*)buffer);
-        buffer += sizeof(Memory);
-        // Add this to the list of src instances
-        src_instances.push_back(info);
+        AbstractInstance *abs_src = AbstractInstance::unpack_instance(buffer);
+        abstract_src.push_back(abs_src);
+        all_instances.push_back(abs_src); // Allow us to clean up later
+
+        AbstractInstance *abs_dst = AbstractInstance::unpack_instance(buffer);
+        abstract_inst.push_back(abs_dst);
+        all_instances.push_back(abs_dst); // Allow us to clean up later
       }
       
       // Unpack the region trees
       // Create new maps for region and partition nodes
       region_nodes = new std::map<LogicalHandle,RegionNode*>();
       partition_nodes = new std::map<PartitionID,PartitionNode*>();
-      // Unpack as many region trees as there are unaliased regions
+      // Unpack as many region trees as there are top level regions
       for (std::vector<RegionRequirement>::iterator it = regions.begin();
             it != regions.end(); it++)
       {
-        if (!it->aliased)
+        if (!it->subregion)
         {
           RegionNode *top = RegionNode::unpack_region_tree(buffer,NULL,local_ctx,
                                                     region_nodes, partition_nodes, false/*add*/);
           region_nodes->insert(std::pair<LogicalHandle,RegionNode*>(top->handle,top));
         }
       }
+      log_task(LEVEL_DEBUG,"Unpacking task %d into context %d from old context %d",
+                            task_id,local_ctx,orig_ctx);
     }
 
     //--------------------------------------------------------------------------------------------
     std::vector<PhysicalRegion<AccessorGeneric> > TaskDescription::start_task(void)
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"Task %d in context %d is starting",task_id,local_ctx);
 #ifdef DEBUG_HIGH_LEVEL
       // There should be an instance for every one of the required mappings
       assert(instances.size() == regions.size());
@@ -1179,6 +1637,12 @@ namespace RegionRuntime {
           it->first->free_instance(it->second); 
         }
         copy_instances.clear();
+        // We can also free the src instances since we know that the copies
+        // had to have completed in order for the task to start
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          abstract_src[idx]->free_instance(src_instances[idx]);
+        }
       }
 
       // Get the set of physical regions for the task
@@ -1208,6 +1672,7 @@ namespace RegionRuntime {
     void TaskDescription::complete_task(const void *ret_arg, size_t ret_size)
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"Task %d in context %d has completed",task_id,local_ctx);
       // Save the future result to be set later
       result = malloc(ret_size);
       memcpy(result,ret_arg,ret_size);
@@ -1258,10 +1723,7 @@ namespace RegionRuntime {
     void TaskDescription::children_mapped(void)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Handling all children mapped for task %d on processor %d in context %d\n",
-              task_id, local_proc.id, local_ctx);
-#endif
+      log_task(LEVEL_DEBUG,"all children mapped for task %d in context %d",task_id,local_ctx);
       // Compute the event that will be triggered when all the children are finished
       std::set<Event> cleanup_events;
       for (std::vector<TaskDescription*>::iterator it = child_tasks.begin();
@@ -1280,17 +1742,8 @@ namespace RegionRuntime {
       {
         // This is a root instance, clean it up
         RegionNode *top = (*region_nodes)[regions[idx].handle];
-        // Do the copy operation to the abstract instance of the region
-        CopyOperation *copy_op = new CopyOperation(abstract_inst[idx]);
-        top->close_subtree(regions[idx].ctx, this, copy_op);
-        // Issue all the copies and record their events
-        // We already know where to put each of these instances
-        std::vector<Memory> destinations;
-        destinations.push_back(instances[idx]->location);
-        std::vector<InstanceInfo*> dst_insts;
-        dst_insts.push_back(instances[idx]);
-        cleanup_events.insert(copy_op->execute(mapper,this,Event::NO_EVENT,
-                              destinations,dst_insts,copy_instances));
+        
+        cleanup_events.insert(top->close_region(regions[idx].ctx,this,instances[idx]));
       }
 
       // Get the event for when the copy operations are complete
@@ -1304,34 +1757,33 @@ namespace RegionRuntime {
     void TaskDescription::finish_task(void)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Handling finish for task %d on processor %d in context %d\n",
-              task_id, local_proc.id, local_ctx);
-#endif
-
+      log_task(LEVEL_DEBUG,"finishing task %d in context %d",task_id,local_ctx);
       // Set the return results
       if (remote)
       {
+        std::vector<std::pair<LogicalHandle,PartitionNode*> > updates;
         // This is a remote task, we need to send the results back to the original processor
         size_t buffer_size = 0;
-        unsigned num_tree_updates = 0;
         {
           buffer_size += sizeof(Context);
           buffer_size += sizeof(size_t); // result size
           buffer_size += result_size; // size of the actual result
           buffer_size += sizeof(size_t); // number of created regions
-          buffer_size += (created_regions.size() * (sizeof(LogicalHandle) +
-                            sizeof(RegionInstance) + sizeof(Memory)));
+          for (std::map<LogicalHandle,AbstractInstance*>::iterator it = 
+                created_regions.begin(); it != created_regions.end(); it++)
+          {
+            buffer_size += sizeof(LogicalHandle);
+            buffer_size += (it->second->compute_instance_size());
+          }
           buffer_size += sizeof(size_t); // number of deleted regions
           buffer_size += (deleted_regions.size() * sizeof(LogicalHandle));
           buffer_size += sizeof(unsigned); // number of udpates
           for (std::vector<RegionRequirement>::iterator it = regions.begin();
                 it != regions.end(); it++)
           {
-            if (!it->aliased)
+            if (!it->subregion)
             {
-              buffer_size += ((*region_nodes)[it->handle]->
-                        compute_region_tree_update_size(num_tree_updates)); 
+              buffer_size += ((*region_nodes)[it->handle]->find_region_tree_updates(updates));
             }
           }
         }
@@ -1347,15 +1799,12 @@ namespace RegionRuntime {
         // First encode the created regions and the deleted regions
         *((size_t*)ptr) = created_regions.size();
         ptr += sizeof(size_t);
-        for (std::map<LogicalHandle,InstanceInfo*>::iterator it = created_regions.begin();
+        for (std::map<LogicalHandle,AbstractInstance*>::iterator it = created_regions.begin();
               it != created_regions.end(); it++)
         {
           *((LogicalHandle*)ptr) = it->first;
           ptr += sizeof(LogicalHandle);
-          *((RegionInstance*)ptr) = it->second->inst;
-          ptr += sizeof(RegionInstance);
-          *((Memory*)ptr) = it->second->location;
-          ptr += sizeof(Memory);
+          it->second->pack_instance(ptr);
         }
         *((size_t*)ptr) = deleted_regions.size();
         ptr += sizeof(size_t);
@@ -1366,15 +1815,14 @@ namespace RegionRuntime {
           ptr += sizeof(LogicalHandle);
         }
         // Now encode the actual tree updates
-        *((unsigned*)ptr) = num_tree_updates;
+        *((unsigned*)ptr) = updates.size();
         ptr += sizeof(unsigned);
-        for (std::vector<RegionRequirement>::iterator it = regions.begin();
-              it != regions.end(); it++)
+        for (std::vector<std::pair<LogicalHandle,PartitionNode*> >::iterator it = updates.begin();
+              it != updates.end(); it++)
         {
-          if (!it->aliased)
-          {
-            (*region_nodes)[it->handle]->pack_region_tree_update(ptr);
-          }
+          *((LogicalHandle*)ptr) = it->first;
+          ptr += sizeof(LogicalHandle);
+          it->second->pack_region_tree(ptr);
         }
 
         // Launch the notify finish on the original processor (no need to wait for anything)
@@ -1388,34 +1836,52 @@ namespace RegionRuntime {
         // If the parent task is not null, update its region tree
         if (parent_task != NULL)
         {
-          // Propagate information about created regions and delete regions
+          // Propagate information about created regions and deleted regions
           // The parent task will find other changes
 
           // All created regions become
           // new root regions for the parent as well as staying in the set
           // of created regions
-          for (std::map<LogicalHandle,InstanceInfo*>::iterator it = created_regions.begin();
+          for (std::map<LogicalHandle,AbstractInstance*>::iterator it = created_regions.begin();
                 it != created_regions.end(); it++)
           {
-            // Have to create a new instance info for the parent
-            InstanceInfo *info = new InstanceInfo();
-            info->handle = it->second->handle;
-            info->inst = it->second->inst;
-            info->location = it->second->location;
-            parent_task->created_regions.insert(
-                std::pair<LogicalHandle,InstanceInfo*>(it->first,info));
-            // Also give the parent ownership of the new info
-            parent_task->instances.push_back(info);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(parent_task->created_regions.find(it->first) == 
+                    parent_task->created_regions.end());
+#endif
+            parent_task->created_regions.insert(*it);
+            // Initialize with the parents context
+#ifdef DEBUG_HIGH_LEVEL
+            assert(region_nodes->find(it->first) != region_nodes->end());
+            assert(parent_ctx == parent_task->local_ctx);
+#endif
+            (*region_nodes)[it->first]->initialize_context(parent_ctx);
           }
 
-          // Add all the deleted regions to the parent task's set of deleted regions
+          // Also have to initialize any newly added partitions 
+          // for all of the parent's contexts
+          for (std::set<PartitionNode*>::iterator it = added_partitions.begin();
+                it != added_partitions.end(); it++)
+          {
+            for (std::vector<Context>::iterator ctx_it = parent_task->valid_contexts.begin();
+                  ctx_it != parent_task->valid_contexts.end(); ctx_it++)
+            {
+              (*it)->initialize_context(*ctx_it);
+            }
+          }
+          // add the list of deleted tasks to the parent's list
           parent_task->deleted_regions.insert(deleted_regions.begin(),deleted_regions.end());
         }
 
         future->set_result(result,result_size);
-        
+        future->trigger();        
         // Trigger the event indicating that this task is complete!
         termination_event.trigger();
+        // We can now free our destination instances since the task is finished  
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          abstract_inst[idx]->free_instance(instances[idx]);
+        }
       }
       // Before we deactivate anyone, we first have to release any references to the
       // clean up copies
@@ -1440,6 +1906,7 @@ namespace RegionRuntime {
     void TaskDescription::remote_start(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"processing remote start for task %d in context %d",task_id,local_ctx);
 #ifdef DEBUG_HIGH_LEVEL
       assert(active);
 #endif
@@ -1456,15 +1923,52 @@ namespace RegionRuntime {
         (*it)->remaining_events--;
       }
 
-      // Now unpack the instance information
-      for (std::vector<InstanceInfo*>::iterator it = instances.begin();
-            it != instances.end(); it++)
+      // Unpack the source instances
+      for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        InstanceInfo *info = (*it);
+        Memory mem = *((const Memory*)ptr);
+        ptr += sizeof(Memory);
+        InstanceInfo *info = abstract_src[idx]->find_instance(mem);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(info != NULL);
+#endif
+        src_instances.push_back(info);
+        abstract_src[idx]->register_reader(info);
+        abstract_src[idx]->release_user();
+      }
+      // Unapck the destination instances
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        InstanceInfo *info = new InstanceInfo();
+        info->handle = regions[idx].handle;
         info->inst = *((const RegionInstance*)ptr);
         ptr += sizeof(RegionInstance);
         info->location = *((const Memory*)ptr);
         ptr += sizeof(Memory);
+        // Try adding the region if it doesn't already exist
+        // If it does, we'll just delete it
+        if (!abstract_inst[idx]->add_instance(info))
+        {
+          // There was already a instance 
+          InstanceInfo *actual = abstract_inst[idx]->get_instance(info->location);
+          // We can now delete the info we created
+          delete info;
+          instances.push_back(actual);
+        }
+        else
+        {
+          instances.push_back(info);
+        }
+        if ((regions[idx].mode == READ_ONLY) || (regions[idx].mode == NO_ACCESS))
+        {
+          abstract_inst[idx]->register_reader(instances[idx]);
+        }
+        else
+        {
+          abstract_inst[idx]->register_writer(instances[idx], (regions[idx].prop != RELAXED));
+        }
+        // Also mark that we used the abstract instances
+        abstract_inst[idx]->release_user();
       }
 
       // Register that the task has been mapped
@@ -1485,6 +1989,7 @@ namespace RegionRuntime {
     void TaskDescription::remote_finish(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"processing remote finish for task %d in context %d",task_id,local_ctx);
 #ifdef DEBUG_HIGH_LEVEL
       assert(active);
 #endif
@@ -1504,11 +2009,9 @@ namespace RegionRuntime {
       {
         LogicalHandle handle = *((const LogicalHandle*)ptr);
         ptr += sizeof(LogicalHandle);
-        RegionInstance inst = *((const RegionInstance*)ptr);
-        ptr += sizeof(RegionInstance);
-        Memory location= *((const Memory*)ptr);
-        ptr += sizeof(Memory);
-        create_region(handle, inst, location);
+        AbstractInstance *new_inst = AbstractInstance::unpack_instance(ptr);
+        // Tell the parent to create the instance, since this task is done
+        parent_task->create_region(handle, new_inst);
       }
       // Now get information about the deleted regions
       size_t num_deleted_regions = *((const size_t*)ptr);
@@ -1517,7 +2020,7 @@ namespace RegionRuntime {
       {
         LogicalHandle handle = *((const LogicalHandle*)ptr);
         ptr += sizeof(LogicalHandle);
-        remove_region(handle);
+        parent_task->remove_region(handle);
       }
       // Finally perform the updates to the region tree
       unsigned num_updates = *((const unsigned*)ptr);
@@ -1528,41 +2031,74 @@ namespace RegionRuntime {
         LogicalHandle parent_handle = *((const LogicalHandle*)ptr);
         ptr += sizeof(LogicalHandle);
         RegionNode *parent_region = (*region_nodes)[parent_handle];
-        // Now upack the region tree
+        // Now upack the region tree into the parent's context (since that's where it's going)
         PartitionNode *part_node = PartitionNode::unpack_region_tree(ptr,parent_region,
-                                    local_ctx, region_nodes, partition_nodes, true/*add*/);
+                                    parent_ctx, region_nodes, partition_nodes, true/*add*/);
+        // Initialize these new nodes with any of the parents other parent contexts
+        // We get the first one (the parent's native context in the unpack operation)
+        for (unsigned idx = 1; idx < parent_task->valid_contexts.size(); idx++)
+        {
+          part_node->initialize_context(parent_task->valid_contexts[idx]);
+        }
+        // Add this partition to its parent region
+        parent_region->add_partition(part_node);
         partition_nodes->insert(std::pair<PartitionID,PartitionNode*>(part_node->pid,part_node));
+        // Finally add this to the list of partitions added by the parent task in
+        // case they get passed back to another local task
+        parent_task->added_partitions.insert(part_node);
       }
 
+      // Trigger the future saying that it is now valid
+      future->trigger();
       // Finally trigger the user event indicating that this task is finished!
       termination_event.trigger();
+
+      // We can also free all the references to the physical instances that we held for
+      // the task.  Since this was remote we had to wait until the task actually finished
+      // to know that the source instances were free
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        abstract_src[idx]->free_instance(src_instances[idx]);
+        abstract_inst[idx]->free_instance(instances[idx]);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
     void TaskDescription::create_region(LogicalHandle handle, RegionInstance inst, Memory m)
     //--------------------------------------------------------------------------------------------
     {
+      // Create the new abstract instance for this region and its initial instance
+      InstanceInfo *info = new InstanceInfo();
+      info->handle = handle;
+      info->location = m;
+      info->inst = inst;
+      log_inst(LEVEL_DEBUG,"creating instance %d as initial instance of region %d in memory %d",
+                            inst.id,handle.id,m.id);
+      AbstractInstance *new_inst = new AbstractInstance(handle,NULL,info);
+      create_region(handle,new_inst);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskDescription::create_region(LogicalHandle handle, AbstractInstance *new_inst)
+    //--------------------------------------------------------------------------------------------
+    {
+      log_region(LEVEL_DEBUG,"creating top level region %d in task %d in context %d",
+                              handle.id, task_id, local_ctx);
       RegionNode *node = new RegionNode(handle, 0, NULL, true, local_ctx);
       (*region_nodes)[handle] = node;
       // Initialize the node with the context for this task
       node->initialize_context(local_ctx);
-      // Add this to the list of created regions and the list of root regions
-      InstanceInfo *info = new InstanceInfo();
-      info->handle = handle;
-      info->inst = inst;
-      info->location = m;
-      created_regions[handle] = info;
+      created_regions[handle] = new_inst;
       // Also create an abstract instance for the region node here
-      node->region_states[local_ctx].valid_instance = new AbstractInstance(handle,
-                                                                NULL/*parent*/, info);
-      // Append the info onto 'instances' so that it gets deleted when the task finishes
-      instances.push_back(info);
+      node->region_states[local_ctx].valid_instance = new_inst; 
     }
 
     //--------------------------------------------------------------------------------------------
     void TaskDescription::remove_region(LogicalHandle handle, bool recursive)
     //--------------------------------------------------------------------------------------------
     {
+      log_region(LEVEL_DEBUG,"delete top level region %d in task %d in context %d",
+                              handle.id, task_id, local_ctx);
       std::map<LogicalHandle,RegionNode*>::iterator find_it = region_nodes->find(handle);
 #ifdef DEBUG_HIGH_LEVEL
       assert(find_it != region_nodes->end());
@@ -1588,9 +2124,14 @@ namespace RegionRuntime {
         }
         // Check to see if this is in the created regions, if so erase it,
         {
-          std::map<LogicalHandle,InstanceInfo*>::iterator finder = created_regions.find(handle);
+          std::map<LogicalHandle,AbstractInstance*>::iterator finder = created_regions.find(handle);
           if (finder != created_regions.end())
+          {
+            // Add the abstract instance to the list of instances that we own so it
+            // will be deleted when this task completes
+            all_instances.push_back(finder->second);
             created_regions.erase(finder);
+          }
         }
         delete find_it->second; 
       }
@@ -1601,6 +2142,7 @@ namespace RegionRuntime {
     void TaskDescription::create_subregion(LogicalHandle handle, PartitionID parent, Color c)
     //--------------------------------------------------------------------------------------------
     {
+      log_region(LEVEL_DEBUG,"creating subregion %d of partition %d", handle.id, parent);
 #ifdef DEBUG_HIGH_LEVEL
       assert(partition_nodes->find(parent) != partition_nodes->end());
 #endif
@@ -1615,6 +2157,7 @@ namespace RegionRuntime {
                                             bool recursive)
     //--------------------------------------------------------------------------------------------
     {
+      log_region(LEVEL_DEBUG,"deleting subregion %d of partition %d",handle.id, parent);
       std::map<LogicalHandle,RegionNode*>::iterator find_it = region_nodes->find(handle);
 #ifdef DEBUG_HIGH_LEVEL
       assert(find_it != region_nodes->end());
@@ -1646,6 +2189,8 @@ namespace RegionRuntime {
     void TaskDescription::create_partition(PartitionID pid, LogicalHandle parent, bool disjoint)
     //--------------------------------------------------------------------------------------------
     {
+      log_region(LEVEL_DEBUG,"creating partition %d of region %d in task %d in context %d",
+                              pid, parent.id, task_id, local_ctx);
 #ifdef DEBUG_HIGH_LEVEL
       assert(region_nodes->find(parent) != region_nodes->end());
 #endif
@@ -1653,12 +2198,16 @@ namespace RegionRuntime {
       PartitionNode *node = new PartitionNode(pid, par_node->depth+1,par_node,disjoint,true,local_ctx);
       par_node->add_partition(node);
       (*partition_nodes)[pid] = node;
+      // Add this to the list of partitions added in this node
+      added_partitions.insert(node);
     }
 
     //--------------------------------------------------------------------------------------------
     void TaskDescription::remove_partition(PartitionID pid, LogicalHandle parent, bool recursive)
     //--------------------------------------------------------------------------------------------
     {
+      log_region(LEVEL_DEBUG,"deleting partition %d of region %d in task %d in context %d",
+                              pid, parent.id, task_id, local_ctx);
       std::map<PartitionID,PartitionNode*>::iterator find_it = partition_nodes->find(pid);
 #ifdef DEBUG_HIGH_LEVEL
       assert(find_it != partition_nodes->end());
@@ -1667,6 +2216,15 @@ namespace RegionRuntime {
       for (std::map<LogicalHandle,RegionNode*>::iterator part_it = 
             find_it->second->children.begin(); part_it != find_it->second->children.end(); part_it++)
         remove_subregion(part_it->first, pid, true);
+
+      // check to see if we made this partition
+      {
+        std::set<PartitionNode*>::iterator finder = added_partitions.find(find_it->second);
+        if (finder != added_partitions.end())
+        {
+          added_partitions.erase(finder);
+        }
+      }
 
       if (!recursive)
       {
@@ -1859,24 +2417,26 @@ namespace RegionRuntime {
           conflict = true;
           //war_conflict = false;
           // Add this to the list of tasks we need to wait for 
-          if (it->second->mapped)
-            dep.child->wait_events.insert(it->second->termination_event);
-          else
-          {
-            // The active task hasn't been mapped yet, tell it to wait
-            // until we're mapped before giving us its termination event
-            // check to make sure that we haven't registered ourselves previously
-            if (it->second->dependent_tasks.find(dep.child) == it->second->dependent_tasks.end())
-            {
-              dep.child->remaining_events++;
-              it->second->dependent_tasks.insert(dep.child);
-            }
-          }
+          log_task(LEVEL_DEBUG,"task %d in context %d dependends on task %d in context %d",
+                    dep.child->task_id,dep.child->local_ctx,it->second->task_id,
+                    it->second->local_ctx);
+          dep.child->wait_events.insert(it->second->termination_event);
         }
         //else if(war_conflict && !RegionRequirement::region_war_conflict(it->first, dep.req))
         //{
         //  war_conflict = false;
         //}
+        
+        // Mark that we need to wait for this task to be mapped
+        if (!it->second->mapped)
+        {
+          // Try inserting, if it inserted, increment our count
+          // otherwise it was alreayd there
+          if ((it->second->dependent_tasks.insert(dep.child)).second)
+          {
+            dep.child->remaining_events++;
+          }
+        }
       }
 
       // Now check to see if this region that we're searching for
@@ -1890,16 +2450,29 @@ namespace RegionRuntime {
         if (conflict ) //|| war_conflict)
         {
           state.active_tasks.clear();
+          state.prev_copy = NULL; // we can now set this back to being null
         }
         // Add this to the list of active tasks
         state.active_tasks.push_back(
                   std::pair<RegionRequirement*,TaskDescription*>(dep.req,dep.child));
+        // If prev copy is not NULL, we need to register it as a copy we need to perform
+        if (state.prev_copy != NULL)
+        {
+          dep.child->pre_copy_trees.push_back(state.prev_copy);
+          // Register all the dependent tasks as well
+          state.prev_copy->register_dependent_tasks(dep.child);
+        }
         
         // Check to see if there is a previous abstract instance if not make one
         if (state.valid_instance == NULL)
         {
           state.valid_instance = dep.parent->get_abstract_instance(
                                                               handle,dep.prev_instance);
+        }
+        else
+        {
+          // Use the abstract instance that was already here
+          dep.prev_instance = state.valid_instance;
         }
         //else if (war_conflict)
         {
@@ -1913,34 +2486,37 @@ namespace RegionRuntime {
           //state.valid_instance = dep.parent->get_abstract_instance(
           //                                                    handle,dep.prev_instance);
         }
-        // Update the previous instance
-        dep.prev_instance = state.valid_instance;
 
         // Check to see if there is an open partition that we need to close 
         if (state.open_valid)
         {
-          // Create a new copy operation to copy close up the subtree
-          CopyOperation *copy_op = new CopyOperation(state.valid_instance);
-          // Close the open partition, tracking the copies we need to do 
-          partitions[state.open_partition]->close_subtree(dep.ctx, dep.child, copy_op);
-          // Add the copy operation for this list of copy ops to do
-          dep.child->pre_copy_trees.push_back(copy_op);
-          // Mark the subtree as closed
-          state.open_valid = false;
+          copy_close(dep);
         }
 
         // Use the existing abstract instance
         dep.child->abstract_inst.push_back(state.valid_instance);
         dep.child->abstract_src.push_back(dep.prev_instance);
         // Increment the reference count on the source and destination instance
-        dep.prev_instance->register_task_user();
-        state.valid_instance->register_task_user();
-      }
+        log_region(LEVEL_DEBUG,"region %d in context %d has source abstract instance from region %d"
+                                " and uses abstract instance from region %d",dep.req->handle.id,
+                            dep.ctx,dep.prev_instance->handle.id,state.valid_instance->handle.id);
+        dep.prev_instance->register_user();
+        state.valid_instance->register_user();
+      } 
       else
       {
         // Update the previous instance
         if (state.valid_instance != NULL)
           dep.prev_instance = state.valid_instance;
+
+        // Check to see if there was not a conflict and there was a valid copy tree
+        // If there was, we need to make sure it's been issued
+        if (!conflict && (state.prev_copy != NULL))
+        {
+          dep.child->pre_copy_trees.push_back(state.prev_copy);
+          // Register all dependent tasks
+          state.prev_copy->register_dependent_tasks(dep.child);
+        }
 
         // Continue the traversal
         // Get the partition id out of the trace
@@ -1960,15 +2536,11 @@ namespace RegionRuntime {
           }
           else
           {
-            // The open partition is not the one we want,
-            // close the old one and then open the new one
-            // Create a new copy operation to be performed
-            CopyOperation *copy_op = new CopyOperation(dep.prev_instance);
-            partitions[state.open_partition]->close_subtree(dep.ctx, dep.child, copy_op);
-            dep.child->pre_copy_trees.push_back(copy_op);
+            copy_close(dep);
             partitions[pid]->open_subtree(dep);
             // Mark the new subtree as being the correct open partition
             state.open_partition = pid;
+            state.open_valid = true;
           }
         }
         else
@@ -1976,10 +2548,122 @@ namespace RegionRuntime {
           // There is no open partition, jump straight to where we're going
           partitions[pid]->open_subtree(dep);
           // Mark the partition as being open
-          state.open_valid = true;
           state.open_partition = pid;
+          state.open_valid = true;
         }
       }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::copy_close(DependenceDetector &dep)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(dep.ctx < region_states.size());
+#endif
+      RegionState &state = region_states[dep.ctx];
+      // If the valid instance here is NULL, we need to create an abstract
+      // instance to represent it
+      std::set<Event> active_events;
+      if (state.valid_instance == NULL)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(dep.prev_instance != NULL);
+#endif
+        // If we have to make a new instance, ask the mapper where to put it
+        std::vector<std::vector<Memory> > target_ranking;
+        dep.child->mapper->rank_copy_targets(dep.child,dep.prev_instance->get_memory_locations(),
+                                            target_ranking);
+        // Create the new abstract instance
+        state.valid_instance = dep.parent->get_abstract_instance(handle,dep.prev_instance);
+        // Register that we are using the abstract instances
+        dep.prev_instance->register_user();
+        state.valid_instance->register_user();
+        // Make new instances and add them to the abstract instance 
+        for (std::vector<std::vector<Memory> >::iterator rank_it = target_ranking.begin();
+              rank_it != target_ranking.end(); rank_it++)
+        {
+          std::vector<Memory> &ranking = *rank_it;
+          bool found = false;
+          InstanceInfo *result = new InstanceInfo();
+          for (std::vector<Memory>::iterator mem_it = ranking.begin();
+                mem_it != ranking.end(); mem_it++)
+          {
+            // Try creating the instance
+            result->inst = handle.create_instance_untyped(*mem_it);
+            if (result->inst.exists())
+            {
+              found = true;
+              result->handle = handle;
+              result->location = *mem_it;
+              break;
+            }
+          }
+          if (!found)
+          {
+            log_inst(LEVEL_ERROR,"Unable to create a new instance for handle %d"
+                                  " in copy close operation",handle.id);
+            exit(1);
+          }
+          else
+          {
+            // Add it to the new instance
+            state.valid_instance->add_instance(result);
+            // Ask the mapper where to get the copy from
+            Memory src_mem = Memory::NO_MEMORY;
+            dep.child->mapper->select_copy_source(dep.child,
+                dep.prev_instance->get_memory_locations(),result->location,src_mem);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(src_mem.exists());
+#endif
+            InstanceInfo *src_info = dep.prev_instance->find_instance(src_mem);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(src_info != NULL);
+#endif
+            // Register the readers and the writers
+            dep.prev_instance->register_reader(src_info);
+            state.valid_instance->register_writer(result,false/*exclusive*/);
+            dep.child->copy_instances.push_back(
+                std::pair<AbstractInstance*,InstanceInfo*>(dep.prev_instance,src_info));
+            dep.child->copy_instances.push_back(
+                std::pair<AbstractInstance*,InstanceInfo*>(state.valid_instance,result));
+            // Issue the copy and save the event
+            active_events.insert(src_info->inst.copy_to_untyped(result->inst));
+          }
+        }
+        dep.prev_instance->release_user();
+        // Not done with the valid state until after the copy operation completes
+      }
+      else
+      {
+        // Mark that we're using the valid instance
+        state.valid_instance->register_user();
+      }
+      // Also add the event to wait for all the active tasks to finish
+      for (std::vector<std::pair<RegionRequirement*,TaskDescription*> >::iterator it =
+            state.active_tasks.begin(); it != state.active_tasks.end(); it++)
+      {
+        active_events.insert(it->second->termination_event);
+      }
+      Event wait_event;
+      if (active_events.empty())
+        wait_event = Event::NO_EVENT;
+      else
+        wait_event = Event::merge_events(active_events);
+      // Create a new copy operation to copy close up the subtree
+      CopyOperation *copy_op = new CopyOperation(state.valid_instance,wait_event);
+      // Close the open partition, tracking the copies we need to do 
+      partitions[state.open_partition]->close_subtree(dep.ctx, dep.child, copy_op);
+      // Add the copy operation for this list of copy ops to do
+      dep.child->pre_copy_trees.push_back(copy_op);
+      //Register the dependent tasks
+      copy_op->register_dependent_tasks(dep.child);
+      // Mark the subtree as closed
+      state.open_valid = false;
+      state.prev_copy = copy_op;
+      // Register this in the set of copy trees for the parent task, so it can be deleted
+      // This is safe since all the parent's copies have already been issued and cleared out
+      dep.parent->pre_copy_trees.push_back(copy_op);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1994,21 +2678,11 @@ namespace RegionRuntime {
       // a new copy operation and add it to the results
       if (region_states[ctx].valid_instance != NULL)
       {
-        // check to see if there is an open partition
-        if (region_states[ctx].open_valid)
-        {
-          // No need to wait on the task since the tasks below either conflicted
-          // and waited, or didn't conflict so the copy doesn't have to wait
-          // for any active tasks.  The copy will automatically wait for all
-          // of its subcopies.
-          CopyOperation *op = new CopyOperation(region_states[ctx].valid_instance);
-          partitions[region_states[ctx].open_partition]->close_subtree(ctx,desc,op);
-          copy_op->add_sub_copy(op);
-        }
+        CopyOperation *op;
         // Always do this no matter what
         if (region_states[ctx].active_tasks.size() == 1)
         {
-          copy_op->add_src_inst(region_states[ctx].valid_instance,
+          op = new CopyOperation(region_states[ctx].valid_instance,
                        (region_states[ctx].active_tasks.begin())->second->termination_event);
         }
         else
@@ -2021,11 +2695,31 @@ namespace RegionRuntime {
           {
             active_events.insert(it->second->termination_event);
           }
-          copy_op->add_src_inst(region_states[ctx].valid_instance,
+          op = new CopyOperation(region_states[ctx].valid_instance,
                                   Event::merge_events(active_events));
         }
+        // Add all of the active tasks to this copy operation to indicate that
+        // we need them all to be mapped before we can run
+        for (std::vector<std::pair<RegionRequirement*,TaskDescription*> >::iterator it =
+              region_states[ctx].active_tasks.begin(); it !=
+              region_states[ctx].active_tasks.end(); it++)
+        {
+          op->add_dependent_task(it->second);
+        }
+        // add the op as a sub op of the previous copy op
+        copy_op->add_sub_copy(op);
+        // If there are sub regions keep going down
+        // check to see if there is an open partition
+        if (region_states[ctx].open_valid)
+        {
+          // No need to wait on the task since the tasks below either conflicted
+          // and waited, or didn't conflict so the copy doesn't have to wait
+          // for any active tasks.  The copy will automatically wait for all
+          // of its subcopies.
+          partitions[region_states[ctx].open_partition]->close_subtree(ctx,desc,op);
+        }
         // Mark this valid instance as being used by the op and then closed
-        region_states[ctx].valid_instance->register_task_user();
+        region_states[ctx].valid_instance->register_user();
         region_states[ctx].valid_instance->mark_closed();
       }
       else
@@ -2064,8 +2758,12 @@ namespace RegionRuntime {
         dep.child->abstract_inst.push_back(abs_inst);
         dep.child->abstract_src.push_back(dep.prev_instance);
         // Increment the count on the prev instance
-        dep.prev_instance->register_task_user();
-        abs_inst->register_task_user();
+        log_region(LEVEL_DEBUG,"region %d in context %d has source abstract instance from region %d"
+                                " and uses abstract instance from region %d",dep.req->handle.id,
+                            dep.ctx,dep.prev_instance->handle.id,
+                            region_states[dep.ctx].valid_instance->handle.id);
+        dep.prev_instance->register_user();
+        abs_inst->register_user();
       }
       else
       {
@@ -2086,20 +2784,25 @@ namespace RegionRuntime {
     void RegionNode::initialize_context(Context ctx)
     //--------------------------------------------------------------------------------------------
     {
+      log_region(LEVEL_DEBUG,"initializing region %d in context %d",handle.id,ctx);
       // Handle the local context
       if (ctx < region_states.size())
       {
         region_states[ctx].open_valid = false;;
+        region_states[ctx].open_partition = 0;
         region_states[ctx].active_tasks.clear();
         region_states[ctx].valid_instance = NULL;
+        region_states[ctx].prev_copy = NULL;
       }
       else
       {
         // Resize for the new context
-        region_states.reserve(ctx+1);
+        region_states.resize(ctx+1);
         region_states[ctx].open_valid = false;
+        region_states[ctx].open_partition = 0;
         region_states[ctx].valid_instance = NULL;
         region_states[ctx].active_tasks.clear();
+        region_states[ctx].prev_copy = NULL;
       }
       
       // Initialize any subregions
@@ -2171,32 +2874,67 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    size_t RegionNode::compute_region_tree_update_size(unsigned &num_updates) const
+    size_t RegionNode::find_region_tree_updates(
+                        std::vector<std::pair<LogicalHandle,PartitionNode*> > &updates) const
     //--------------------------------------------------------------------------------------------
     {
-      // No need to check for added here, all added regions will either be subregions
-      // of a partition or handled by created regions
-      // Check all the partitions
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!added);
+#endif
       size_t result = 0;
       for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
             it != partitions.end(); it++)
       {
-        result += (it->second->compute_region_tree_update_size(num_updates));
+        result += (it->second->find_region_tree_updates(updates));
       }
       return result;
     }
-    
+
     //--------------------------------------------------------------------------------------------
-    void RegionNode::pack_region_tree_update(char *&buffer) const
+    Event RegionNode::close_region(Context ctx, TaskDescription *desc, InstanceInfo *target)
     //--------------------------------------------------------------------------------------------
     {
-      // No need to check for added here, all added regions will either be subregions of
-      // an added partition or handled by created regions
-      for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
-            it != partitions.end(); it++)
+#ifdef DEBUG_HIGH_LEVEL
+      assert(ctx < region_states.size());
+#endif
+      RegionState &state = region_states[ctx];
+      // Compute the wait event
+      Event wait_event;
+      if (state.active_tasks.size() == 1)
       {
-        it->second->pack_region_tree_update(buffer);
+        wait_event = state.active_tasks[0].second->termination_event;
       }
+      else
+      {
+        std::set<Event> wait_events;
+        for (std::vector<std::pair<RegionRequirement*,TaskDescription*> >::iterator it =
+              state.active_tasks.begin(); it != state.active_tasks.end(); it++)
+        {
+          wait_events.insert(it->second->termination_event);
+        }
+        wait_event = Event::merge_events(wait_events);
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(state.valid_instance != NULL);
+#endif
+      // Mark that we're about to use the abstract instance and that this is the last use
+      state.valid_instance->register_user();
+      state.valid_instance->mark_closed();
+      // Create the new copy operation
+      CopyOperation *close_op = new CopyOperation(state.valid_instance,wait_event); 
+      // Record this so we can delete it later
+      desc->pre_copy_trees.push_back(close_op);
+      // close up the subtree
+      if (state.open_valid)
+      {
+        partitions[state.open_valid]->close_subtree(ctx,desc,close_op); 
+      }
+      // No need to register dependent tasks since all the children have already been mapped
+      // Issue the copy operation, and close the subtree
+      Event result = close_op->execute_close(desc->mapper,desc,target,desc->copy_instances);
+      // Tell the top of the copy operation that we are done using it
+      state.valid_instance->release_user();
+      return result;
     }
 
     /////////////////////////////////////////////////////////////
@@ -2288,11 +3026,9 @@ namespace RegionRuntime {
       {
         // The partition is aliased
         // There should only be at most one open region in an aliased partition
-#ifdef DEBUG_HIGH_LEVEL
-        assert(state.open_regions.size() < 2);
-#endif
-        if (state.open_regions.size() == 1)
+        if (!state.open_regions.empty())
         {
+#if 0
           LogicalHandle open = (*(state.open_regions.begin()));
           if (open == next_reg)
           {
@@ -2301,22 +3037,78 @@ namespace RegionRuntime {
           }
           else
           {
-            CopyOperation *copy_op = new CopyOperation(dep.prev_instance);
-            // Close up the other region and open up the new one
-            children[open]->close_subtree(dep.ctx, dep.child, copy_op);
-            // Add the copy operation to the childs copy trees
-            dep.child->pre_copy_trees.push_back(copy_op);
-            state.open_regions.clear();
-            // Open up the new one
-            children[next_reg]->open_subtree(dep);
-            state.open_regions.insert(next_reg);
+            // We need to close this partition from the perspective
+            // of the parent region
+#ifdef DEBUG_HIGH_LEVEL
+            assert(dep.prev_instance != NULL);
+#endif
+            parent->copy_close(dep);
+            // Now open this partition from the perspecitve of the
+            // parent region. To do this we need to muck with
+            // trace to make it look right.  Push the child ID
+            // and then the partition ID back onto the trace.
+            dep.trace.push_front(next_reg.id);
+            dep.trace.push_front(pid);
+            parent->open_subtree(dep);
           }
+#else
+          // Go through and look for any conflicts with current
+          // tasks using this partition
+          bool conflict = false;
+          for (std::vector<std::pair<RegionRequirement*,TaskDescription*> >::iterator it = 
+                state.active_tasks.begin(); it != state.active_tasks.end(); it++)
+          {
+            if (RegionRequirement::region_conflict(it->first,dep.req))
+            {
+              conflict = true;
+              // No need to register the dependence we'll get it when we
+              // compute the copy operation
+            }
+            // Mark that we need to wait for this task to be mapped
+            if (!it->second->mapped)
+            {
+              if ((it->second->dependent_tasks.insert(dep.child)).second)
+              {
+                dep.child->remaining_events++;
+              }
+            }
+          }
+          // If there was a conflict, we have to close up this partition and start again
+          if (conflict)
+          {
+            // We need to close this partition from the perspective
+            // of the parent region
+#ifdef DEBUG_HIGH_LEVEL
+            assert(dep.prev_instance != NULL);
+#endif
+            parent->copy_close(dep);
+            // Now open this partition from the perspecitve of the
+            // parent region. To do this we need to muck with
+            // trace to make it look right.  Push the child ID
+            // and then the partition ID back onto the trace.
+            dep.trace.push_front(next_reg.id);
+            dep.trace.push_front(pid);
+            parent->open_subtree(dep);
+          }
+          else
+          {
+            // There was no conflict, add ourselves to the list of tasks
+            // open up the partition and continue the traversal
+            state.active_tasks.push_back(
+                std::pair<RegionRequirement*,TaskDescription*>(dep.req,dep.child));
+            state.open_regions.insert(next_reg);
+            children[next_reg]->register_region_dependence(dep);
+          }
+#endif
         }
         else
         {
           // There are no open child regions, open the one we need
           children[next_reg]->open_subtree(dep);
           state.open_regions.insert(next_reg);
+          // Insert ourselves into the list of active tasks
+          state.active_tasks.push_back(
+              std::pair<RegionRequirement*,TaskDescription*>(dep.req,dep.child));
         }
       }
     }
@@ -2341,6 +3133,10 @@ namespace RegionRuntime {
       }
       // Mark that all the children are closed
       partition_states[ctx].open_regions.clear();
+      if (!disjoint)
+      {
+        partition_states[ctx].active_tasks.clear();
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2359,19 +3155,27 @@ namespace RegionRuntime {
 #endif
       partition_states[dep.ctx].open_regions.insert(next);
       children[next]->open_subtree(dep);
+      if (!disjoint)
+      {
+        partition_states[dep.ctx].active_tasks.push_back(
+            std::pair<RegionRequirement*,TaskDescription*>(dep.req,dep.child));
+      }
     }
 
     //--------------------------------------------------------------------------------------------
     void PartitionNode::initialize_context(Context ctx)
     //--------------------------------------------------------------------------------------------
     {
+      log_region(LEVEL_DEBUG,"initializing parition %d in context %d",pid,ctx);
       if (ctx < partition_states.size())
       {
         partition_states[ctx].open_regions.clear();
       }
       else
       {
-        partition_states.reserve(ctx+1);
+        partition_states.resize(ctx+1);
+        partition_states[ctx].open_regions.clear();
+        partition_states[ctx].active_tasks.clear();
       }
       for (std::map<LogicalHandle,RegionNode*>::iterator it = children.begin();
             it != children.end(); it++)
@@ -2409,6 +3213,7 @@ namespace RegionRuntime {
       *((bool*)buffer) = disjoint;
       buffer += sizeof(bool);
       *((size_t*)buffer) = children.size();
+      buffer += sizeof(size_t);
 #ifdef DEBUG_HIGH_LEVEL
       assert(color_map.size() == children.size());
 #endif
@@ -2458,53 +3263,29 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    size_t PartitionNode::compute_region_tree_update_size(unsigned &num_updates) const
+    size_t PartitionNode::find_region_tree_updates(
+                            std::vector<std::pair<LogicalHandle,PartitionNode*> > &updates) const
     //--------------------------------------------------------------------------------------------
     {
       size_t result = 0;
-      // Check to see if this partition is new
       if (added)
       {
-        // Found a new update
-        num_updates++;
         // include adding the region handle for the parent region
         result += sizeof(LogicalHandle);
         // Now figure out how much space it takes to pack up the entire subtree
         result += this->compute_region_tree_size();
+        updates.push_back(std::pair<LogicalHandle,PartitionNode*>(parent->handle,
+                            const_cast<PartitionNode*>(this))); 
       }
       else
       {
-        // Continue the traversal 
         for (std::map<LogicalHandle,RegionNode*>::const_iterator it = children.begin();
               it != children.end(); it++)
         {
-          result += (it->second->compute_region_tree_update_size(num_updates));
+          result += (it->second->find_region_tree_updates(updates));
         }
       }
       return result;
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void PartitionNode::pack_region_tree_update(char *&buffer) const
-    //--------------------------------------------------------------------------------------------
-    {
-      if (added)
-      {
-        // pack the handle of the parent region
-        *((LogicalHandle*)buffer) = parent->handle;
-        buffer += sizeof(LogicalHandle);
-        // now pack up this whole partition and its subtree
-        this->pack_region_tree(buffer);
-      }
-      else
-      {
-        // Continue the traversal
-        for (std::map<LogicalHandle,RegionNode*>::const_iterator it = children.begin();
-              it != children.end(); it++)
-        {
-          it->second->pack_region_tree_update(buffer);
-        }
-      }
     }
 
     /////////////////////////////////////////////////////////////
@@ -2522,9 +3303,7 @@ namespace RegionRuntime {
       next_partition_id(local_proc.id), partition_stride(m->get_all_processors().size())
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Initializing high level runtime on processor %d\n",local_proc.id);
-#endif 
+      log_task(LEVEL_SPEW,"Initializing high level runtime on processor %d",local_proc.id);
       for (unsigned int i=0; i<mapper_objects.size(); i++)
         mapper_objects[i] = NULL;
       mapper_objects[0] = new Mapper(machine,this,local_proc);
@@ -2541,9 +3320,7 @@ namespace RegionRuntime {
       const std::set<Processor> &all_procs = machine->get_all_processors();
       if (local_proc == (*(all_procs.begin())))
       {
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-        fprintf(stderr,"Issuing region main task on processor %d\n",local_proc.id);
-#endif
+        log_task(LEVEL_SPEW,"Issuing region main task on processor %d",local_proc.id);
         TaskDescription *desc = get_available_description(true/*new tree*/);
         desc->task_id = TASK_ID_REGION_MAIN; 
         desc->args = malloc(sizeof(Context)); // The value will get written in later
@@ -2561,6 +3338,7 @@ namespace RegionRuntime {
         desc->remote = false;
         desc->parent_task = NULL;
         desc->mapper = mapper_objects[0];
+        desc->valid_contexts.push_back(desc->local_ctx);
 
         // Put this task in the ready queue
         ready_queue.push_back(desc);
@@ -2577,9 +3355,7 @@ namespace RegionRuntime {
     HighLevelRuntime::~HighLevelRuntime()
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Shutting down high level runtime on processor %d\n", local_proc.id);
-#endif
+      log_task(LEVEL_SPEW,"Shutting down high level runtime on processor %d", local_proc.id);
       // Go through and delete all the mapper objects
       for (unsigned int i=0; i<mapper_objects.size(); i++)
         if (mapper_objects[i] != NULL) delete mapper_objects[i];
@@ -2612,6 +3388,7 @@ namespace RegionRuntime {
       table[FINISH_ID]          = HighLevelRuntime::finish_task;
       table[NOTIFY_START_ID]    = HighLevelRuntime::notify_start;
       table[NOTIFY_FINISH_ID]   = HighLevelRuntime::notify_finish;
+      table[ADVERTISEMENT_ID]   = HighLevelRuntime::advertise_work;
       table[TERMINATION_ID]     = HighLevelRuntime::detect_termination;
       // Check to see if an init mappers has been declared, if not, give a dummy version
       // The application can write over it if it wants
@@ -2619,6 +3396,15 @@ namespace RegionRuntime {
       {
         table[TASK_ID_INIT_MAPPERS] = init_mapper_wrapper<dummy_init>;
       }
+    }
+
+    /*static*/ MapperCallbackFnptr HighLevelRuntime::mapper_callback = 0;
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::set_mapper_init_callback(MapperCallbackFnptr callback)
+    //--------------------------------------------------------------------------------------------
+    {
+      mapper_callback = callback;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2637,9 +3423,8 @@ namespace RegionRuntime {
 
       // Now initialize any mappers
       // Issue a task to initialize the mappers
-      Event init_mappers = p.spawn(TASK_ID_INIT_MAPPERS,NULL,0);
-      // Make sure this has finished before returning
-      init_mappers.wait();
+      if(mapper_callback != 0)
+	(*mapper_callback)(Machine::get_machine(), get_runtime(p), p);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2699,6 +3484,13 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::advertise_work(const void * args, size_t arglen, Processor p)
+    //--------------------------------------------------------------------------------------------
+    {
+      HighLevelRuntime::get_runtime(p)->process_advertisement(args, arglen);
+    }
+
+    //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::detect_termination(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
@@ -2713,6 +3505,7 @@ namespace RegionRuntime {
 					MapperID id, MappingTagID tag)	
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"Registering task %d with high level runtime",task_id);
       TaskDescription *desc = get_available_description(false/*new tree*/);		
       desc->task_id = task_id;
       desc->regions = regions;
@@ -2746,8 +3539,11 @@ namespace RegionRuntime {
       desc->parent_task = all_tasks[ctx];
       
       // Figure out where to put this task
-      if (desc->remaining_events == 0)
+      if (desc->is_ready())
+      {
+        desc->mark_ready();
         ready_queue.push_back(desc);
+      }
       else
         waiting_queue.push_back(desc);
 
@@ -2775,6 +3571,14 @@ namespace RegionRuntime {
       assert(mapper_objects[id] == NULL);
 #endif
       mapper_objects[id] = m;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::replace_default_mapper(Mapper *m)
+    //--------------------------------------------------------------------------------------------
+    {
+      delete mapper_objects[0];
+      mapper_objects[0] = m;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2830,10 +3634,8 @@ namespace RegionRuntime {
       assert(ctx < all_tasks.size());
 #endif
       TaskDescription *desc= all_tasks[ctx];
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Beginning task %d on processor %d in context %d\n",
-              desc->task_id,desc->local_proc.id,desc->local_ctx);
-#endif
+      log_task(LEVEL_DEBUG,"Beginning task %d on processor %x in context %d",
+                            desc->task_id,desc->local_proc.id,desc->local_ctx);
       return desc->start_task(); 
     }
 
@@ -2845,10 +3647,8 @@ namespace RegionRuntime {
       assert(ctx < all_tasks.size());
 #endif
       TaskDescription *desc= all_tasks[ctx];
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Ending task %d on processor %d in context %d\n",
-              desc->task_id,desc->local_proc.id,desc->local_ctx);
-#endif
+      log_task(LEVEL_DEBUG,"Ending task %d on processor %x in context %d",
+                            desc->task_id,desc->local_proc.id,desc->local_ctx);
       desc->complete_task(arg,arglen); 
     }
 
@@ -2857,7 +3657,21 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       const char *buffer = (const char*)args;
-      // First get the number of tasks to process
+      // First get the processor that this comes from
+      Processor source = *((const Processor*)buffer);
+      buffer += sizeof(Processor); 
+      // Check to see if the source processor is on our list of failed steals, if so
+      // a steal no longer failed.  Note that if a task was explicitly sent to us, it
+      // might not have been a steal request, but at least there is work there, so
+      // attempting a steal on the source processor is not a bad thing.
+      {
+        std::set<Processor>::iterator finder = failed_steals.find(source);
+        if (finder != failed_steals.end())
+        {
+          failed_steals.erase(finder);
+        }
+      }
+      // Then get the number of tasks to process
       int num_tasks = *((const int*)buffer);
       buffer += sizeof(int);
       // Unpack each of the tasks
@@ -2869,6 +3683,8 @@ namespace RegionRuntime {
         // Get the mapper for the description
         desc->mapper = mapper_objects[desc->map_id];
         ready_queue.push_back(desc);
+        log_task(LEVEL_DEBUG,"HLR on processor %d adding task %d into context %d from orig %d",
+                              desc->local_proc.id,desc->task_id,desc->local_ctx,desc->orig_ctx);
       }
     }
 
@@ -2883,10 +3699,8 @@ namespace RegionRuntime {
       // Get the number of mappers that requested this processor for stealing 
       int num_stealers = *((int*)buffer);
       buffer += sizeof(int);
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Handling a steal request on processor %d from processor %d\n",
+      log_task(LEVEL_SPEW,"handling a steal request on processor %d from processor %d",
               local_proc.id,thief.id);
-#endif      
 
       // Iterate over the task descriptions, asking the appropriate mapper
       // whether we can steal them
@@ -2900,7 +3714,7 @@ namespace RegionRuntime {
         // requests to another processor before the mappers have been initialized
         // on that processor.  There's no correctness problem for ignoring a steal
         // request so just do that.
-        if (mapper_objects[stealer] == NULL)
+        if (mapper_objects.size() <= stealer)
           continue;
 
         // Go through the ready queue and construct the list of tasks
@@ -2911,7 +3725,8 @@ namespace RegionRuntime {
         for (std::list<TaskDescription*>::reverse_iterator it = ready_queue.rbegin();
               it != ready_queue.rend(); it++)
         {
-          if ((*it)->map_id == stealer)
+          // The tasks also must be stealable
+          if ((*it)->stealable && ((*it)->map_id == stealer))
             mapper_tasks.push_back(*it);
         }
         // Now call the mapper and get back the results
@@ -2931,7 +3746,7 @@ namespace RegionRuntime {
       // We've now got our tasks to steal
       if (!stolen.empty())
       {
-        size_t total_buffer_size = sizeof(int);
+        size_t total_buffer_size = sizeof(Processor) + sizeof(int);
         // Count up the size of elements to steal
         for (std::set<TaskDescription*>::iterator it = stolen.begin();
                 it != stolen.end(); it++)
@@ -2941,6 +3756,8 @@ namespace RegionRuntime {
         // Allocate the buffer
         char * target_buffer = (char*)malloc(total_buffer_size);
         char * target_ptr = target_buffer;
+        *((Processor*)target_ptr) = local_proc;
+        target_ptr += sizeof(Processor);
         *((int*)target_ptr) = int(stolen.size());
         target_ptr += sizeof(int);
         // Write the task descriptions into memory
@@ -2971,11 +3788,19 @@ namespace RegionRuntime {
         for (std::set<TaskDescription*>::iterator it = stolen.begin();
               it != stolen.end(); it++)
         {
+          log_task(LEVEL_DEBUG,"task %d in context %d stolen from processor %d",
+                                (*it)->task_id,(*it)->local_ctx,(*it)->local_proc.id);
           // If they are remote, deactivate the instance
           // If it's not remote, its parent will deactivate it
           if ((*it)->remote)
             (*it)->deactivate();
         }
+      }
+      else
+      {
+        // Record the failed steal attempt so we can tell the theif
+        // when we have more work to do
+        failed_thiefs.insert(thief);
       }
     }
 
@@ -2989,10 +3814,8 @@ namespace RegionRuntime {
 #endif
       TaskDescription *desc = all_tasks[ctx];
 
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"All child tasks mapped for task %d on processor %d in context %d\n",
+      log_task(LEVEL_DEBUG,"All child tasks mapped for task %d on processor %d in context %d",
               desc->task_id,desc->local_proc.id,desc->local_ctx);
-#endif
 
       desc->children_mapped();
     }
@@ -3008,10 +3831,8 @@ namespace RegionRuntime {
 #endif
       // Get the task description out of the context
       TaskDescription *desc = all_tasks[ctx];
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Task %d finished on processor %d in context %d\n", 
+      log_task(LEVEL_DEBUG,"Task %d finished on processor %d in context %d", 
                 desc->task_id, desc->local_proc.id, desc->local_ctx);
-#endif
 
       desc->finish_task();
     }
@@ -3049,6 +3870,20 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_advertisement(const void * args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Get the processor that is advertising work
+      Processor advertiser = *((const Processor*)args);
+      // If it is on our list of failed steals, remove it
+      std::set<Processor>::iterator finder = failed_steals.find(advertiser);
+      if (finder != failed_steals.end())
+      {
+        failed_steals.erase(finder);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::process_termination(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
@@ -3056,9 +3891,7 @@ namespace RegionRuntime {
       Future f = *((const Future*)args);
       // This will wait until the top level task has finished
       f.get_void_result();
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      fprintf(stderr,"Computation has terminated, shutting down high level runtime...\n");
-#endif
+      log_task(LEVEL_SPEW,"Computation has terminated, shutting down high level runtime...");
       // Once this is over, launch a kill task on all the low-level processors
       const std::set<Processor> &all_procs = machine->get_all_processors();
       for (std::set<Processor>::iterator it = all_procs.begin();
@@ -3073,10 +3906,10 @@ namespace RegionRuntime {
     void HighLevelRuntime::process_schedule_request(void)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-      //fprintf(stderr,"Running scheduler on processor %d with %d tasks in ready queue\n",
-       //       local_proc.id, ready_queue.size());
-#endif
+      log_task(LEVEL_SPEW,"Running scheduler on processor %d with %ld tasks in ready queue",
+              local_proc.id, ready_queue.size());
+      // Update the queue to make sure as many tasks are awake as possible
+      update_queue();
       // Launch up to MAX_TASK_MAPS_PER_STEP tasks, either from the ready queue, or
       // by detecting tasks that become ready to map on the waiting queue
       int mapped_tasks = 0;
@@ -3094,7 +3927,14 @@ namespace RegionRuntime {
           // Check the waiting queue for new tasks to move onto our ready queue
           update_queue();
           // If we've launched enough tasks, return
-          if (mapped_tasks == MAX_TASK_MAPS_PER_STEP) return;
+          if (mapped_tasks == MAX_TASK_MAPS_PER_STEP)
+          {
+            // If we've launched enough tasks and we still have leftovers
+            // notify our failed stealers that we have more work
+            if (!ready_queue.empty() && !failed_thiefs.empty())
+              advertise();
+            return;
+          }
         }
         else
         {
@@ -3109,14 +3949,23 @@ namespace RegionRuntime {
             // Check the waiting queue for new tasks to move onto our ready queue
             update_queue();
             // If we've launched enough tasks, return
-            if (mapped_tasks == MAX_TASK_MAPS_PER_STEP) return;
+            if (mapped_tasks == MAX_TASK_MAPS_PER_STEP) 
+            {
+              // If we've launched enough tasks and we still have leftovers
+              // notify our failed stealers that we have more work
+              if (!ready_queue.empty() && !failed_thiefs.empty())
+                advertise();
+              return;
+            }
           }
           else
           {
             // Send the task to the target processor
-            size_t buffer_size = sizeof(int)+task->compute_task_size();
+            size_t buffer_size = sizeof(Processor)+sizeof(int)+task->compute_task_size();
             void * buffer = malloc(buffer_size);
             char * ptr = (char*)buffer;
+            *((Processor*)ptr) = local_proc;
+            ptr += sizeof(Processor);
             *((int*)ptr) = 1; // We're only sending one task
             ptr += sizeof(int); 
             task->pack_task(ptr);
@@ -3145,7 +3994,7 @@ namespace RegionRuntime {
       for (unsigned idx = 0; idx < desc->regions.size(); idx++)
       {
         // Get the mapping for the region 
-        Memory src_mem;
+        Memory src_mem = Memory::NO_MEMORY;
         std::vector<Memory> locations;
         mapper_objects[desc->map_id]->map_task_region(desc, &(desc->regions[idx]),
                                   desc->abstract_src[idx]->get_memory_locations(),
@@ -3155,16 +4004,29 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(src_mem.exists());
 #endif
-        InstanceInfo *src_info = desc->abstract_src[idx]->get_instance(src_mem);
+        InstanceInfo *src_info = desc->abstract_src[idx]->find_instance(src_mem);
+#ifdef DEBUG_HIGH_LEVEL
         if (src_info == NULL)
         {
-          fprintf(stderr,"Unable to get source instance for task region %d " 
-                          "of task %d\n",idx,desc->task_id);
+          std::map<Memory,InstanceInfo*>& valid_instances = 
+                              desc->abstract_src[idx]->get_valid_instances(); 
+          log_inst(LEVEL_ERROR,"Unable to get source instance for region %d " 
+                    "with handle %d of task %d",idx,desc->regions[idx].handle.id,desc->task_id);
+          log_inst(LEVEL_DEBUG,"there are %ld valid instances",valid_instances.size());
+          for (std::map<Memory,InstanceInfo*>::iterator it = valid_instances.begin();
+                it != valid_instances.end(); it++)
+          {
+            log_inst(LEVEL_DEBUG,"valid instance: (%d, %d, %d)",
+                                it->second->handle.id,it->second->inst.id,it->second->location.id);
+          }
           exit(1);
         }
+#endif
         desc->src_instances.push_back(src_info);
-        // Tell the abstract instance that it has been used 
-        desc->abstract_src[idx]->register_task_mapped();
+        log_inst(LEVEL_DEBUG,"Region argument %d with handle %d for task %d in context %d has"
+                              " source instance %d in memory %d",idx,
+                              desc->regions[idx].handle.id,desc->task_id,desc->local_ctx,
+                              src_info->inst.id,src_info->location.id);
 
         bool found = false;
         // Now try and get the destination result
@@ -3180,6 +4042,10 @@ namespace RegionRuntime {
             {
               found = true;
               desc->instances.push_back(dst_info);
+              log_inst(LEVEL_DEBUG,"Region argument %d with handle %d for task %d in context %d "
+                                    "has destination instance %d in memory %d",idx,
+                                    desc->regions[idx].handle.id,desc->task_id,desc->local_ctx,
+                                    dst_info->inst.id,dst_info->location.id);
               break;
             }
           }
@@ -3187,8 +4053,8 @@ namespace RegionRuntime {
         
         if (!found)
         {
-          fprintf(stderr,"Unable to create instance for region %d in any of "
-            "the specified memories for task %d\n", desc->regions[idx].handle.id, desc->task_id);
+          log_inst(LEVEL_ERROR,"Unable to create instance for region %d in any of "
+            "the specified memories for task %d", desc->regions[idx].handle.id, desc->task_id);
           exit(100*(local_proc.id));
         }
       }
@@ -3212,13 +4078,20 @@ namespace RegionRuntime {
       {
         // Package up the data
         size_t buffer_size = sizeof(Context) +
-                              desc->regions.size() * (sizeof(RegionInstance)+sizeof(Memory));
+                              desc->regions.size() * (sizeof(RegionInstance)+2*sizeof(Memory));
         void * buffer = malloc(buffer_size);
         char * ptr = (char*)buffer;
         // Give the context that the task is being created in so we can
         // find the task description on the original processor
         *((Context*)ptr) = desc->orig_ctx;
         ptr += sizeof(Context);
+        for (std::vector<InstanceInfo*>::iterator it = desc->src_instances.begin();
+              it != desc->src_instances.end(); it++)
+        {
+          InstanceInfo *info = *it;
+          *((Memory*)ptr) = info->location;
+          ptr += sizeof(Memory);
+        }
         for (std::vector<InstanceInfo*>::iterator it = desc->instances.begin();
               it != desc->instances.end(); it++)
         {
@@ -3254,6 +4127,25 @@ namespace RegionRuntime {
         }
         // Trigger the mapped event
         desc->map_event.trigger();
+        
+        // Mark that we've used both the source and destination abstract instances
+        for (unsigned idx = 0; idx < desc->regions.size(); idx++)
+        {
+          // Register the readers and the writers
+          desc->abstract_src[idx]->register_reader(desc->src_instances[idx]);
+          if ((desc->regions[idx].mode == READ_ONLY) || (desc->regions[idx].mode == NO_ACCESS))
+          {
+            desc->abstract_inst[idx]->register_reader(desc->instances[idx]);
+          }
+          else
+          {
+            desc->abstract_inst[idx]->register_writer(desc->instances[idx], 
+                                      (desc->regions[idx].prop != RELAXED));
+          }
+          // Tell the abstract instances that we've finished using them
+          desc->abstract_src[idx]->release_user();
+          desc->abstract_inst[idx]->release_user();
+        }
       }
       // Mark this task as having been mapped
       desc->mapped = true;
@@ -3327,11 +4219,19 @@ namespace RegionRuntime {
       for (std::multimap<Processor,MapperID>::const_iterator it = targets.begin();
             it != targets.end(); )
       {
+        // Check to make sure that the processor isn't on the list of failed
+        // steal requests
+        if (failed_steals.find(it->first) != failed_steals.end())
+        {
+          Processor target = it->first;
+          // Count past everything using this processor
+          while (it != targets.upper_bound(target)) it++;
+          continue;
+        }
         Processor target = it->first;
         int num_mappers = targets.count(target);
-#ifdef DEBUG_PRINT_HIGH_LEVEL
-        fprintf(stderr,"Processor %d attempting steal on processor %d\n",local_proc.id,target.id);
-#endif
+        log_task(LEVEL_SPEW,"Processor %d attempting steal on processor %d",
+                              local_proc.id,target.id);
         size_t buffer_size = sizeof(Processor)+sizeof(int)+num_mappers*sizeof(MapperID);
         // Allocate a buffer for launching the steal task
         void * buffer = malloc(buffer_size); 
@@ -3354,9 +4254,23 @@ namespace RegionRuntime {
         Event steal = target.spawn(STEAL_TASK_ID,buffer,buffer_size);
         // Enqueue the steal request on the list of oustanding steals
         outstanding_steal_events.push_back(steal);
+        // Also add this to the list of failed steals in case it never comes back
+        failed_steals.insert(target);
         // Clean up our mess
         free(buffer);
       }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::advertise(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      for (std::set<Processor>::iterator it = failed_thiefs.begin();
+            it != failed_thiefs.end(); it++)
+      {
+        (*it).spawn(ADVERTISEMENT_ID,&local_proc,sizeof(Processor));  
+      }
+      failed_thiefs.clear();
     }
 
 #if 0
@@ -3470,8 +4384,11 @@ namespace RegionRuntime {
                                                 std::vector<std::vector<Memory> > &rankings)
     //--------------------------------------------------------------------------------------------
     {
-      // Figure out how much data will have to be mapped
-      assert(0);
+      // do something stupid
+      for (unsigned idx = 0; idx < num_subregions; idx++)
+      {
+        rankings.push_back(visible_memories);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3536,7 +4453,7 @@ namespace RegionRuntime {
     {
       // Stupid memory mapping
 #ifdef DEBUG_HIGH_LEVEL
-      assert(valid_src_instances.size() > 0);
+      assert(!valid_src_instances.empty());
 #endif
       // Just take the first valid src and make it the src
       chosen_src = valid_src_instances.front();
@@ -3566,6 +4483,9 @@ namespace RegionRuntime {
                                     const Memory &dst, Memory &chose_src)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!current_instances.empty());
+#endif
       // Just pick the first one
       chose_src = current_instances.front();
     }

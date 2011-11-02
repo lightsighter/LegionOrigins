@@ -42,10 +42,10 @@ namespace RegionRuntime {
     class InstanceInfo;
 
     enum {
-      // To see where the +7,8,9 come from, see the top of highlevel.cc
-      TASK_ID_INIT_MAPPERS = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+7,
-      TASK_ID_REGION_MAIN = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+8,
-      TASK_ID_AVAILABLE = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+9,
+      // To see where the +8,9,10 come from, see the top of highlevel.cc
+      TASK_ID_INIT_MAPPERS = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+8,
+      TASK_ID_REGION_MAIN = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+9,
+      TASK_ID_AVAILABLE = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+10,
     };
     
     enum AccessMode {
@@ -86,6 +86,12 @@ namespace RegionRuntime {
 
     struct RegionRequirement {
     public:
+      RegionRequirement(void) {}
+      RegionRequirement(LogicalHandle _handle, AccessMode _mode,
+			AllocateMode _alloc, CoherenceProperty _prop,
+			LogicalHandle _parent)
+        : handle(_handle), mode(_mode), alloc(_alloc), 
+          prop(_prop), parent(_parent) {}
       LogicalHandle handle;
       AccessMode mode;
       AllocateMode alloc;
@@ -95,7 +101,7 @@ namespace RegionRuntime {
     protected: // Things filled in by the runtime
       friend class TaskDescription;
       friend class HighLevelRuntime;
-      bool aliased; // sub regions are marked aliased, not aliased -> root region
+      bool subregion; // sub regions are marked, not subregion -> root region
       Context ctx;
     public:
       // Test whether two region requirements conflict
@@ -111,21 +117,21 @@ namespace RegionRuntime {
       friend class RegionNode;
       friend class PartitionNode;
     protected:
-      AbstractInstance(LogicalHandle h, AbstractInstance *par, InstanceInfo *init = NULL);
+      AbstractInstance(LogicalHandle h, AbstractInstance *par, InstanceInfo *init = NULL, 
+                        bool rem = false);
       ~AbstractInstance();
       size_t compute_instance_size(void) const;
-      void pack_instance(char *&buffer, bool writer) const;
+      void pack_instance(char *&buffer) const;
       static AbstractInstance* unpack_instance(const char *&buffer);
-      size_t compute_update_size(void) const;
-      void pack_update(char *&buffer) const;
-      void unpack_update(const char *&buffer, bool writer);
     protected:
-      // Try to get an instance in the memory, if not, return NULL
-      // Make will try to create the instance if it doesn't already exist
-      // If it has to make a new instance, the call to get instance will mark
-      // new_inst as true.  Use the boolean to detect whether the region
-      // had to be created
+      // Try to get an instance in a memory and if it doesn't
+      // exist then try to create it.  If you still can't create
+      // it return NULL
       InstanceInfo* get_instance(Memory m);
+      // Find instance will try to get an instance for a memory
+      // and will return NULL if the instance doesn't exist
+      // in that memory
+      InstanceInfo* find_instance(Memory m);
       // Return the instance back to the abstract instance, return true
       // if the region can be deleted 
       void free_instance(InstanceInfo *info);
@@ -133,19 +139,21 @@ namespace RegionRuntime {
       void register_reader(InstanceInfo *info);
       // register a writer of an instance
       void register_writer(InstanceInfo *info, bool exclusive = true);
+      // Add instance, for cases where the instance is created remotely 
+      // and has to be added when the information is sent back
+      // Return whether this instance was added
+      bool add_instance(InstanceInfo *info);
     protected:
       // Increases the reference count of the abstract instance
-      void register_task_user(void);
-      // Decreases the reference count of the abstract instance
-      void register_task_mapped(void);
+      void register_user(void);
+      // Release the user
+      void release_user(void);
       // Mark the abstract instance closed for conflict detection
       void mark_closed(void);
       // Make the locations visible
       std::vector<Memory>& get_memory_locations(void);
       // Get the valid instances of the given logical region
       std::map<Memory,InstanceInfo*>& get_valid_instances(void);
-    private:
-      InstanceInfo* get_instance_internal(Memory m); // For read only internal
     protected:
       const LogicalHandle handle; // Movable (Stage 1)
     private:
@@ -159,8 +167,7 @@ namespace RegionRuntime {
       // this abstract instance is alive
       bool first_map;
       AbstractInstance *parent;
-      bool writer; // Track if this abstract instance is checked out
-      unsigned readers; // Track if this abstract instance is checked out for reads
+      bool remote;
     };
 
     class InstanceInfo {
@@ -168,7 +175,6 @@ namespace RegionRuntime {
       LogicalHandle handle;
       Memory location;
       RegionInstance inst;
-      Event valid; // Indicates when this instance is valid (in case we had to make a new one)
     protected:
       friend class AbstractInstance;
       unsigned references;
@@ -181,20 +187,30 @@ namespace RegionRuntime {
       friend class RegionNode;
       friend class PartitionNode;
     protected:
-      CopyOperation(AbstractInstance *dst);
+      CopyOperation(AbstractInstance *inst, Event wait_on);
       ~CopyOperation();
       void add_sub_copy(CopyOperation *sub);
-      void add_src_inst(AbstractInstance *inst, Event wait_on = Event::NO_EVENT);
-      Event execute(Mapper *m, TaskDescription *desc, Event wait_on,
-                    const std::vector<Memory> &destinations,
-                    const std::vector<InstanceInfo*> &dst_inst,
+      // Register tasks that need to be mapped before we can issue this copy op
+      void add_dependent_task(TaskDescription *desc);
+      // Traverse the copy tree looking for any tasks that need to be mapped
+      // before we can issue this copy op
+      void register_dependent_tasks(TaskDescription *desc);
+      Event execute(Mapper *m, TaskDescription *desc, 
                     std::vector<std::pair<AbstractInstance*,InstanceInfo*> > &sources);
+      // A special execute operation that already knows where the close is going to go
+      Event execute_close(Mapper *m, TaskDescription *desc, InstanceInfo *target,
+                    std::vector<std::pair<AbstractInstance*,InstanceInfo*> > &sources);
+      bool is_triggered(void) const;
+      Event get_result_event(void) const;
     protected:
-      AbstractInstance *const dst_instance;
+      AbstractInstance *const instance;
     private:
-      std::vector<AbstractInstance*> src_instances;
+      std::vector<TaskDescription*> dependent_tasks;
       std::vector<Event> src_events; // Events indicating when the sources can be used
       std::vector<CopyOperation*> sub_copies;
+      Event wait_event; // The event to wait on before executing this copy operation
+      Event finished_event; // If we've already triggered, this is the resulting event
+      bool triggered; // Check whether this copy operation has been triggerd
     };
 
     struct DependenceDetector {
@@ -212,9 +228,7 @@ namespace RegionRuntime {
 
     // This is information about a task that will be available to the mapper
     class Task {
-    protected:
-      friend class HighLevelRuntime;
-      friend class Mapper;
+    public:
       Processor::TaskFuncID task_id;
       std::vector<RegionRequirement> regions;
       MapperID map_id;
@@ -228,6 +242,7 @@ namespace RegionRuntime {
       friend class HighLevelRuntime;
       friend class RegionNode;
       friend class PartitionNode;
+      friend class CopyOperation;
       TaskDescription(Context ctx, Processor p, HighLevelRuntime *r);
       ~TaskDescription();
     protected:
@@ -250,6 +265,8 @@ namespace RegionRuntime {
       const Processor local_proc; // The local processor this task is on
       TaskDescription *parent_task; // Only valid when local
       Mapper *mapper;
+      // for the case where we have subregions with different contexts
+      std::vector<Context> valid_contexts; 
     protected:
       // Information to send back to the original processor
       bool remote; // Send back an event if true
@@ -272,13 +289,19 @@ namespace RegionRuntime {
       std::vector<InstanceInfo*> src_instances; // Sources for our regions (immov)
       std::vector<InstanceInfo*> instances; // Region instances for the regions (immov)
       // Copy operations (must be performed before steal/send)
+      // After this task is launched, this vector is emptied, and we use it store
+      // all the copy trees created in this task's context as it executes so we 
+      // can clean them up later
       std::vector<CopyOperation*> pre_copy_trees; // (immov)
       // Instances that we need to return to the abstract instance after copy operations
       std::vector<std::pair<AbstractInstance*,InstanceInfo*> > copy_instances;
     private:
       // New top level regions
-      std::map<LogicalHandle,InstanceInfo*> created_regions;       
+      std::map<LogicalHandle,AbstractInstance*> created_regions;       
       std::set<LogicalHandle> deleted_regions; // The regions deleted in this task and children
+      // Partitions added in THIS task only so we can initialize them in
+      // the parent's context if the task is local
+      std::set<PartitionNode*> added_partitions;
       // Keep track of all the abstract instances so we can free them after the task is finished
       std::vector<AbstractInstance*> all_instances;
     private:
@@ -307,6 +330,7 @@ namespace RegionRuntime {
       void remote_finish(const void * args, size_t arglen);
       // Operations for updating region and partition information
       void create_region(LogicalHandle handle, RegionInstance inst, Memory m);
+      void create_region(LogicalHandle handle, AbstractInstance *new_inst);
       void remove_region(LogicalHandle handle, bool recursive=false);
       void create_subregion(LogicalHandle handle,PartitionID parent,Color c);
       void remove_subregion(LogicalHandle handle,PartitionID parent,bool recursive=false);
@@ -338,6 +362,7 @@ namespace RegionRuntime {
       void reset(void);
       // Also give an event for when the result becomes valid
       void set_result(const void * res, size_t result_size);
+      void trigger(void);
     protected:
       inline bool is_set(void) const { return set; }
       // Give the implementation here so we avoid the template
@@ -391,13 +416,13 @@ namespace RegionRuntime {
       { return static_cast<LowLevel::RegionInstanceAccessor<T,LowLevel::AccessorArray> >(instance).read(ptr); }
       template<typename T> inline void write(ptr_t<T> ptr, T newval)
       { static_cast<LowLevel::RegionInstanceAccessor<T,LowLevel::AccessorArray> >(instance).write(ptr,newval); }
-      template<typename T, typename REDOP> inline void reduce(ptr_t<T> ptr, T newval)
+      template<typename T, typename REDOP, typename RHS> inline void reduce(ptr_t<T> ptr, RHS newval)
       { static_cast<LowLevel::RegionInstanceAccessor<T,LowLevel::AccessorArray> >(instance).reduce<REDOP>(ptr,newval); }
     };
 
     template<>
     class PhysicalRegion<AccessorGeneric> {
-    private:
+    public: // SJT: hack... private:
       bool valid_allocator;
       bool valid_instance;
       LowLevel::RegionAllocatorUntyped allocator;
@@ -421,7 +446,7 @@ namespace RegionRuntime {
       { return static_cast<LowLevel::RegionInstanceAccessor<T,LowLevel::AccessorGeneric> >(instance).read(ptr); }
       template<typename T> inline void write(ptr_t<T> ptr, T newval)
       { static_cast<LowLevel::RegionInstanceAccessor<T,LowLevel::AccessorGeneric> >(instance).write(ptr,newval); }
-      template<typename T, typename REDOP> inline void reduce(ptr_t<T> ptr, T newval)
+      template<typename REDOP, typename T, typename RHS> inline void reduce(ptr_t<T> ptr, RHS newval)
       { static_cast<LowLevel::RegionInstanceAccessor<T,LowLevel::AccessorGeneric> >(instance).reduce<REDOP>(ptr,newval); }
     public:
       bool can_convert(void) const
@@ -443,10 +468,11 @@ namespace RegionRuntime {
     
     class UntypedPartition {
     public:
-      const PartitionID id;
-      const LogicalHandle parent;
-      const bool disjoint;
+      /*const*/ PartitionID id;
+      /*const*/ LogicalHandle parent;
+      /*const*/ bool disjoint;
     protected:
+    UntypedPartition(void) : id(0), parent(LogicalHandle::NO_REGION), disjoint(false) {}
       UntypedPartition(PartitionID pid, LogicalHandle par, bool dis)
               : id(pid), parent(par), disjoint(dis) { }
     protected:
@@ -455,6 +481,8 @@ namespace RegionRuntime {
 
     template<typename T>
     class Partition : public UntypedPartition {
+    public:
+      Partition(void) : UntypedPartition() {}
     protected:
       // Only the runtime should be able to create Partitions
       friend class HighLevelRuntime;
@@ -534,6 +562,7 @@ namespace RegionRuntime {
         PartitionID open_partition;
         std::vector<std::pair<RegionRequirement*,TaskDescription*> > active_tasks;
         AbstractInstance *valid_instance;
+        CopyOperation *prev_copy;  // Previous copy operation in case of no conflict
       };
     protected:
       friend class HighLevelRuntime;
@@ -557,12 +586,17 @@ namespace RegionRuntime {
       void close_subtree(Context ctx, TaskDescription *desc, 
                          CopyOperation *copy_op);
 
+      // Start the copy close computation
+      void copy_close(DependenceDetector &dep);
+
       // Once we've closed a subtree, we don't have to check for dependences on our
       // way to the logical region, we just need to open things up. Open them up
       // and update the state with of all regions along the way.
       void open_subtree(DependenceDetector &dep);
 
       void initialize_context(Context ctx);
+
+      Event close_region(Context ctx, TaskDescription *desc, InstanceInfo *target);
 
       // Functions for packing and unpacking the region tree
       size_t compute_region_tree_size(void) const;
@@ -571,8 +605,8 @@ namespace RegionRuntime {
               Context ctx, std::map<LogicalHandle,RegionNode*> *region_nodes,
                           std::map<PartitionID,PartitionNode*> *partition_nodes, bool add);
       // Functions for packing and unpacking updates to the region tree
-      size_t compute_region_tree_update_size(unsigned &num_updates) const;
-      void pack_region_tree_update(char *&buffer) const;
+      size_t find_region_tree_updates(
+                std::vector<std::pair<LogicalHandle,PartitionNode*> > &updates) const;
 
     protected:
       const LogicalHandle handle;
@@ -589,6 +623,8 @@ namespace RegionRuntime {
       class PartitionState {
       public:
         std::set<LogicalHandle> open_regions;
+        // This is only used for conflict detection in aliased partitions
+        std::vector<std::pair<RegionRequirement*,TaskDescription*> > active_tasks;
       };
     protected:
       friend class HighLevelRuntime;
@@ -618,8 +654,8 @@ namespace RegionRuntime {
               Context ctx, std::map<LogicalHandle,RegionNode*> *region_nodes,
                           std::map<PartitionID,PartitionNode*> *partition_nodes, bool add);
       // Functions for packing and unpacking updates to the region tree
-      size_t compute_region_tree_update_size(unsigned &num_updates) const;
-      void pack_region_tree_update(char *&buffer) const;
+      size_t find_region_tree_updates(
+              std::vector<std::pair<LogicalHandle,PartitionNode*> > &updates) const;
 
     protected:
       const PartitionID pid;
@@ -645,6 +681,7 @@ namespace RegionRuntime {
      * which is our default mapper, but the user can also specify in the 
      * mapping file a mapper and a tag for an operation.
      */
+    typedef void (*MapperCallbackFnptr)(Machine *machine, HighLevelRuntime *runtime, Processor local);
     class HighLevelRuntime {
     private:
       // A static map for tracking the runtimes associated with each processor in a process
@@ -653,6 +690,7 @@ namespace RegionRuntime {
       static HighLevelRuntime* get_runtime(Processor p);
     public:
       static void register_runtime_tasks(Processor::TaskIDTable &table);
+      static void set_mapper_init_callback(MapperCallbackFnptr callback);
       // Static methods for calls from the processor to the high level runtime
       static void initialize_runtime(const void * args, size_t arglen, Processor p);
       static void shutdown_runtime(const void * args, size_t arglen, Processor p);
@@ -663,6 +701,7 @@ namespace RegionRuntime {
       static void finish_task(const void * args, size_t arglen, Processor p);
       static void notify_start(const void * args, size_t arglen, Processor p);
       static void notify_finish(const void * args, size_t arglen, Processor p);
+      static void advertise_work(const void * args, size_t arglen, Processor p);
       // Shutdown methods (one task to detect the termination, another to process it)
       static void detect_termination(const void * args, size_t arglen, Processor p);
       static void notify_termination(const void * args, size_t arglen, Processor p);
@@ -676,6 +715,7 @@ namespace RegionRuntime {
                       const void *args, size_t arglen, bool spawn, 
                       MapperID id = 0, MappingTagID tag = 0);	
     public:
+      void replace_default_mapper(Mapper *m);
       void add_mapper(MapperID id, Mapper *m);
     public:
       // Methods for the wrapper function to access the context
@@ -702,18 +742,21 @@ namespace RegionRuntime {
       void process_notify_start(const void * args, size_t arglen);
       void process_notify_finish(const void* args, size_t arglen);
       void process_termination(const void * args, size_t arglen);
+      void process_advertisement(const void * args, size_t arglen);
       // Where the magic happens!
       void process_schedule_request(void);
       void map_and_launch_task(TaskDescription *task);
       void update_queue(void);
       bool check_steal_requests(void);
       void issue_steal_requests(void);
+      void advertise(void); // Advertise work when we have it
     protected:
       //bool disjoint(LogicalHandle region1, LogicalHandle region2);
     private:
       // Member variables
       Processor local_proc;
       Machine *machine;
+      static MapperCallbackFnptr mapper_callback;
       std::vector<Mapper*> mapper_objects;
       std::list<TaskDescription*> ready_queue; // Tasks ready to be mapped/stolen
       std::list<TaskDescription*> waiting_queue; // Tasks still unmappable
@@ -722,6 +765,10 @@ namespace RegionRuntime {
       std::vector<TaskDescription*> all_tasks; // All available tasks
       PartitionID next_partition_id; // The next partition id for this runtime (unique)
       const unsigned partition_stride;  // Stride for partition ids to guarantee uniqueness
+      // To avoid over subscribing the system with steal requests, keep track of
+      // which processors we failed to steal from, and which failed to steal from us
+      std::set<Processor> failed_steals;
+      std::set<Processor> failed_thiefs;
     public:
       // Functions for creating and destroying logical regions
       template<typename T>
@@ -736,6 +783,14 @@ namespace RegionRuntime {
                                                         LogicalHandle region2);
     public:
       // Functions for creating and destroying partitions
+      template<typename T>
+      Partition<T> create_partition(Context ctx,
+                                    LogicalHandle parent,
+                                    unsigned int num_subregions,
+                                    bool disjoint = true,
+                                    MapperID id = 0,
+                                    MappingTagID tag = 0);
+
       template<typename T>
       Partition<T> create_partition(Context ctx,
                                     LogicalHandle parent,
@@ -1006,7 +1061,10 @@ namespace RegionRuntime {
       std::vector<Memory> locations;
       mapper_objects[id]->rank_initial_region_locations(sizeof(T),num_elmts,tag,locations);
       bool found = false;
-      LogicalHandle region;
+      LogicalHandle region = (LogicalHandle)LowLevel::RegionMetaDataUntyped::create_region_untyped(
+                                                                        num_elmts,sizeof(T));
+      RegionInstance inst;
+      inst.id = 0;
       Memory location;
       // Go through the memories in order and try and create them
       for (std::vector<Memory>::iterator mem_it = locations.begin();
@@ -1019,9 +1077,8 @@ namespace RegionRuntime {
 #endif
           continue;
         }
-        region = (LogicalHandle)LowLevel::RegionMetaDataUntyped::create_region_untyped(
-                                                                    num_elmts,sizeof(T));	
-        if (region.exists())
+        inst = region.create_instance_untyped(*mem_it);
+        if (inst.exists())
         {
           found = true;
           location =  *mem_it;
@@ -1044,7 +1101,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(ctx < all_tasks.size());
 #endif
-      all_tasks[ctx]->create_region(region,region.create_instance_untyped(location),location);
+      all_tasks[ctx]->create_region(region,inst,location);
 
       // Return the handle
       return region;
@@ -1080,6 +1137,73 @@ namespace RegionRuntime {
     template<typename T>
     Partition<T> HighLevelRuntime::create_partition(Context ctx,
                                             LogicalHandle parent,
+                                            unsigned int num_subregions,
+                                            bool disjoint,
+                                            MapperID id,
+                                            MappingTagID tag)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(mapper_objects[id] != NULL);
+#endif
+      PartitionID partition_id = this->next_partition_id;
+      this->next_partition_id += this->partition_stride;
+
+#ifdef DEBUG_HIGH_LEVEL
+      assert(ctx < all_tasks.size());
+#endif
+      // Since there are no allocations in this kind of partition
+      // everything is by defintion disjoint
+      all_tasks[ctx]->create_partition(partition_id, parent, true);
+ 
+      std::vector<std::vector<Memory> > rankings;  
+      mapper_objects[id]->rank_initial_partition_locations(sizeof(T),num_subregions,tag,rankings);
+
+      for (unsigned idx = 0; idx < num_subregions; idx++)
+      {
+        // Get the parent mask
+        LowLevel::ElementMask sub_mask(parent.get_valid_mask().get_num_elmts());
+        std::vector<Memory> &locations = rankings[idx];
+        bool found = false;
+        for (std::vector<Memory>::iterator mem_it = locations.begin();
+                mem_it != locations.end(); mem_it++)
+        {
+          if (!(*mem_it).exists())
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            fprintf(stderr,"Warning: Memory %d returned from mapper %d with tag %d for initial partition %d does not exist.\n",(*mem_it).id, id, tag, idx);
+#endif
+            continue;
+          }
+          LogicalHandle child_region = LowLevel::RegionMetaDataUntyped::create_region_untyped(
+                                        parent,sub_mask);
+          if (child_region.exists())
+          {
+            found = true;
+            // Add it to the partition
+            all_tasks[ctx]->create_subregion(child_region,partition_id,idx);
+            break;
+          }
+#ifdef DEBUG_PRINT
+          else
+          {
+            fprintf(stderr,"Info: Unable to map region with tag %d and mapper %d into memory %d for initial sub region %d\n",tag, id, (*mem_it).id,idx);
+          }	
+#endif
+        }
+        if (!found)
+        {
+          fprintf(stderr,"Unable to place initial subregion %d with tag %d by mapper %d\n",idx,tag, id);
+          exit(100*(local_proc.id)+id);
+        }
+      }
+      return Partition<T>(partition_id,parent,disjoint);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    template<typename T>
+    Partition<T> HighLevelRuntime::create_partition(Context ctx,
+                                            LogicalHandle parent,
                                             const std::vector<std::set<ptr_t<T> > > &coloring,
                                             bool disjoint,
                                             MapperID id,
@@ -1096,7 +1220,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(ctx < all_tasks.size());
 #endif
-      all_tasks[ctx]->create_partition(partition_id, parent, true);
+      all_tasks[ctx]->create_partition(partition_id, parent, disjoint);
  
       std::vector<std::vector<Memory> > rankings;  
       mapper_objects[id]->rank_initial_partition_locations(sizeof(T),coloring.size(),tag,rankings);
@@ -1171,7 +1295,7 @@ namespace RegionRuntime {
       PartitionID partition_id = this->next_partition_id;
       this->next_partition_id += this->partition_stride;
 
-      all_tasks[ctx]->create_partition(partition_id, parent, false);
+      all_tasks[ctx]->create_partition(partition_id, parent, disjoint);
 
       std::vector<std::vector<Memory> > rankings; 
       mapper_objects[id]->rank_initial_partition_locations(sizeof(T),ranges.size(), tag, rankings);

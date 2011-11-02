@@ -83,6 +83,7 @@ pthread_mutex_t debug_mutex;
 
 namespace RegionRuntime {
   namespace LowLevel {
+    
     // Implementation for each of the runtime objects
     class EventImpl;
     class LockImpl;
@@ -109,8 +110,9 @@ namespace RegionRuntime {
       EventImpl*           get_free_event(void);
       LockImpl*            get_free_lock(void);
       RegionMetaDataImpl*  get_free_metadata(size_t num_elmts, size_t elmt_size);
+      RegionMetaDataImpl*  get_free_metadata(RegionMetaDataImpl *par, const ElementMask &mask);
       RegionAllocatorImpl* get_free_allocator(unsigned start, unsigned end);
-      RegionInstanceImpl*  get_free_instance(Memory m, size_t num_elmts, size_t elmt_size);
+      RegionInstanceImpl*  get_free_instance(RegionMetaDataUntyped r, Memory m, size_t num_elmts, size_t elmt_size);
 
       // Return events that are free
       void free_event(EventImpl *event);
@@ -139,6 +141,88 @@ namespace RegionRuntime {
     Runtime *Runtime::runtime = NULL;
 
     __thread unsigned local_proc_id;
+
+    /*static*/ LogLevel Logger::log_level;
+    /*static*/ std::vector<bool> Logger::log_cats_enabled;
+    /*static*/ std::map<std::string, int> Logger::categories_by_name;
+    /*static*/ std::vector<std::string> Logger::categories_by_id;
+
+    /*static*/ void Logger::init(int argc, const char *argv[])
+    {
+      // default (for now) is to spew everything
+      log_level = LEVEL_INFO;
+      for(std::vector<bool>::iterator it = log_cats_enabled.begin();
+	  it != log_cats_enabled.end();
+	  it++)
+	(*it) = true;
+
+      for(int i = 1; i < argc; i++) {
+	if(!strcmp(argv[i], "-level")) {
+	  log_level = (LogLevel)atoi(argv[++i]);
+	  continue;
+	}
+
+	if(!strcmp(argv[i], "-cat")) {
+	  const char *p = argv[++i];
+
+	  if(*p == '*') {
+	    p++;
+	  } else {
+	    // turn off all the bits and then we'll turn on only what's requested
+	    for(std::vector<bool>::iterator it = log_cats_enabled.begin();
+		it != log_cats_enabled.end();
+		it++)
+	      (*it) = false;
+	  }
+
+	  while(*p == ',') p++;
+	  while(*p) {
+	    bool enable = true;
+	    if(*p == '-') {
+	      enable = false;
+	      p++;
+	    }
+	    const char *p2 = p; while(*p2 && (*p2 != ',')) p2++;
+	    std::string name(p, p2);
+	    std::map<std::string, int>::iterator it = categories_by_name.find(name);
+	    if(it == categories_by_name.end()) {
+	      fprintf(stderr, "unknown log category '%s'!\n", name.c_str());
+	      exit(1);
+	    }
+
+	    log_cats_enabled[it->second] = enable;
+
+	    p = p2;
+	    while(*p == ',') p++;
+	  }
+	}
+	continue;
+      }
+#if 1
+      printf("logger settings: level=%d cats=", log_level);
+      bool first = true;
+      for(unsigned i = 0; i < log_cats_enabled.size(); i++)
+	if(log_cats_enabled[i]) {
+	  if(!first) printf(",");
+	  first = false;
+	  printf("%s", categories_by_id[i].c_str());
+	}
+      printf("\n");
+#endif
+    }
+
+    /*static*/ void Logger::logvprintf(LogLevel level, int category, const char *fmt, va_list args)
+    {
+      char buffer[200];
+      sprintf(buffer, "[%d - %lx] {%d}{%s}: ",
+	      0, /*pthread_self()*/long(local_proc_id), level, categories_by_id[category].c_str());
+      int len = strlen(buffer);
+      vsnprintf(buffer+len, 199-len, fmt, args);
+      strcat(buffer, "\n");
+      fflush(stdout);
+      fputs(buffer, stderr);
+    }
+
 
     // Any object which can be triggered should be able to triggered
     // This will include Events and Locks
@@ -986,10 +1070,22 @@ namespace RegionRuntime {
     // This task will always unlock it
     void ProcessorImpl::execute_task(bool permit_shutdown)
     {
+        // Look through the waiting queue, to see if any tasks
+        // have been woken up	
+        for (std::list<TaskDesc>::iterator it = waiting_queue.begin();
+              it != waiting_queue.end(); it++)
+        {
+          if (it->wait.has_triggered())
+          {
+            ready_queue.push_back(*it);
+            waiting_queue.erase(it);
+            break;
+          }	
+        }	
 	// Check to see how many tasks there are
 	// If there are too few, invoke the scheduler
         // If we've been told to shutdown, never invoke the scheduler
-	if (has_scheduler && !shutdown && (ready_queue.size()+waiting_queue.size()) < MIN_SCHED_TASKS)
+	if (has_scheduler && !shutdown && (ready_queue.size()/*+waiting_queue.size()*/) < MIN_SCHED_TASKS)
 	{
 		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
                 Processor::TaskFuncPtr scheduler = task_table[Processor::TASK_ID_PROCESSOR_IDLE];
@@ -1015,23 +1111,9 @@ namespace RegionRuntime {
                         }
                         pthread_exit(NULL);	
 		}
-		// Look through the waiting queue, to see if any events
-		// have been woken up	
-		for (std::list<TaskDesc>::iterator it = waiting_queue.begin();
-			it != waiting_queue.end(); it++)
-		{
-			if (it->wait.has_triggered())
-			{
-				ready_queue.push_back(*it);
-				waiting_queue.erase(it);
-				break;
-			}	
-		}	
+		
 		// Wait until someone tells us there is work to do
-		if (ready_queue.empty())
-		{
-			PTHREAD_SAFE_CALL(pthread_cond_wait(&wait_cond,&mutex));
-		}
+                PTHREAD_SAFE_CALL(pthread_cond_wait(&wait_cond,&mutex));
 		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 	}
 	else
@@ -1098,6 +1180,7 @@ namespace RegionRuntime {
 	size_t remaining_bytes(void);
 	void* allocate_space(size_t size);
 	void free_space(void *ptr, size_t size);
+      
     private:
 	const size_t max_size;
 	size_t remaining;
@@ -1137,6 +1220,269 @@ namespace RegionRuntime {
 	remaining += size;
 	free(ptr);
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+    }
+
+    ////////////////////////////////////////////////////////
+    // Element Masks
+    ////////////////////////////////////////////////////////
+
+    struct ElementMaskImpl {
+      //int count, offset;
+      int dummy;
+      unsigned bits[0];
+
+      static size_t bytes_needed(int offset, int count)
+      {
+	size_t need = sizeof(ElementMaskImpl) + (((count + 31) >> 5) << 2);
+	return need;
+      }
+	
+    };
+
+    ElementMask::ElementMask(void)
+      : first_element(-1), num_elements(-1), memory(Memory::NO_MEMORY), offset(-1),
+	raw_data(0)
+    {
+    }
+
+    ElementMask::ElementMask(int _num_elements, int _first_element /*= 0*/)
+      : first_element(_first_element), num_elements(_num_elements), memory(Memory::NO_MEMORY), offset(-1)
+    {
+      size_t bytes_needed = ElementMaskImpl::bytes_needed(first_element, num_elements);
+      raw_data = calloc(1, bytes_needed);
+      //((ElementMaskImpl *)raw_data)->count = num_elements;
+      //((ElementMaskImpl *)raw_data)->offset = first_element;
+    }
+
+#if 0
+    void ElementMask::init(int _first_element, int _num_elements, Memory _memory, int _offset)
+    {
+      first_element = _first_element;
+      num_elements = _num_elements;
+      memory = _memory;
+      offset = _offset;
+      size_t bytes_needed = ElementMaskImpl::bytes_needed(first_element, num_elements);
+      raw_data = Runtime::get_runtime()->get_memory_impl(memory)->get_direct_ptr(offset, bytes_needed);
+    }
+#endif
+
+    void ElementMask::enable(int start, int count /*= 1*/)
+    {
+      if(raw_data != 0) {
+	ElementMaskImpl *impl = (ElementMaskImpl *)raw_data;
+	//printf("ENABLE %p %d %d %d %x\n", raw_data, offset, start, count, impl->bits[0]);
+	int pos = start - first_element;
+	for(int i = 0; i < count; i++) {
+	  unsigned *ptr = &(impl->bits[pos >> 5]);
+	  *ptr |= (1U << (pos & 0x1f));
+	  pos++;
+	}
+	//printf("ENABLED %p %d %d %d %x\n", raw_data, offset, start, count, impl->bits[0]);
+      } else {
+	assert(0);
+#if 0
+	//printf("ENABLE(2) %x %d %d %d\n", memory.id, offset, start, count);
+	MemoryImpl *m_impl = Runtime::get_runtime()->get_memory_impl(memory);
+
+	int pos = start - first_element;
+	for(int i = 0; i < count; i++) {
+	  unsigned ofs = offset + ((pos >> 5) << 2);
+	  unsigned val;
+	  m_impl->get_bytes(ofs, &val, sizeof(val));
+	  //printf("ENABLED(2) %d,  %x\n", ofs, val);
+	  val |= (1U << (pos & 0x1f));
+	  m_impl->put_bytes(ofs, &val, sizeof(val));
+	  pos++;
+	}
+#endif
+      }
+    }
+
+    void ElementMask::disable(int start, int count /*= 1*/)
+    {
+      if(raw_data != 0) {
+	ElementMaskImpl *impl = (ElementMaskImpl *)raw_data;
+	int pos = start - first_element;
+	for(int i = 0; i < count; i++) {
+	  unsigned *ptr = &(impl->bits[pos >> 5]);
+	  *ptr &= ~(1U << (pos & 0x1f));
+	  pos++;
+	}
+      } else {
+	assert(0);
+#if 0
+	//printf("DISABLE(2) %x %d %d %d\n", memory.id, offset, start, count);
+	Memory::Impl *m_impl = memory.impl();
+
+	int pos = start - first_element;
+	for(int i = 0; i < count; i++) {
+	  unsigned ofs = offset + ((pos >> 5) << 2);
+	  unsigned val;
+	  m_impl->get_bytes(ofs, &val, sizeof(val));
+	  //printf("DISABLED(2) %d,  %x\n", ofs, val);
+	  val &= ~(1U << (pos & 0x1f));
+	  m_impl->put_bytes(ofs, &val, sizeof(val));
+	  pos++;
+	}
+#endif
+      }
+    }
+
+    int ElementMask::find_enabled(int count /*= 1 */)
+    {
+      if(raw_data != 0) {
+	ElementMaskImpl *impl = (ElementMaskImpl *)raw_data;
+	//printf("FIND_ENABLED %p %d %d %x\n", raw_data, first_element, count, impl->bits[0]);
+	for(int pos = 0; pos <= num_elements - count; pos++) {
+	  int run = 0;
+	  while(1) {
+	    unsigned bit = ((impl->bits[pos >> 5] >> (pos & 0x1f))) & 1;
+	    if(bit != 1) break;
+	    pos++; run++;
+	    if(run >= count) return pos - run;
+	  }
+	}
+      } else {
+	assert(0);
+#if 0
+	Memory::Impl *m_impl = memory.impl();
+	//printf("FIND_ENABLED(2) %x %d %d %d\n", memory.id, offset, first_element, count);
+	for(int pos = 0; pos <= num_elements - count; pos++) {
+	  int run = 0;
+	  while(1) {
+	    unsigned ofs = offset + ((pos >> 5) << 2);
+	    unsigned val;
+	    m_impl->get_bytes(ofs, &val, sizeof(val));
+	    unsigned bit = (val >> (pos & 0x1f)) & 1;
+	    if(bit != 1) break;
+	    pos++; run++;
+	    if(run >= count) return pos - run;
+	  }
+	}
+#endif
+      }
+      return -1;
+    }
+
+    int ElementMask::find_disabled(int count /*= 1 */)
+    {
+      if(raw_data != 0) {
+	ElementMaskImpl *impl = (ElementMaskImpl *)raw_data;
+	for(int pos = 0; pos <= num_elements - count; pos++) {
+	  int run = 0;
+	  while(1) {
+	    unsigned bit = ((impl->bits[pos >> 5] >> (pos & 0x1f))) & 1;
+	    if(bit != 0) break;
+	    pos++; run++;
+	    if(run >= count) return pos - run;
+	  }
+	}
+      } else {
+	assert(0);
+      }
+      return -1;
+    }
+
+    size_t ElementMask::raw_size(void) const
+    {
+      return 0;
+    }
+
+    const void *ElementMask::get_raw(void) const
+    {
+      return raw_data;
+    }
+
+    void ElementMask::set_raw(const void *data)
+    {
+      assert(0);
+    }
+
+    ElementMask::Enumerator *ElementMask::enumerate_enabled(int start /*= 0*/) const
+    {
+      return new ElementMask::Enumerator(*this, start, 1);
+    }
+
+    ElementMask::Enumerator *ElementMask::enumerate_disabled(int start /*= 0*/) const
+    {
+      return new ElementMask::Enumerator(*this, start, 0);
+    }
+
+    ElementMask::Enumerator::Enumerator(const ElementMask& _mask, int _start, int _polarity)
+      : mask(_mask), pos(_start), polarity(_polarity) {}
+
+    ElementMask::Enumerator::~Enumerator(void) {}
+
+    bool ElementMask::Enumerator::get_next(int &position, int &length)
+    {
+      if(mask.raw_data != 0) {
+	ElementMaskImpl *impl = (ElementMaskImpl *)(mask.raw_data);
+
+	// scan until we find a bit set with the right polarity
+	while(pos < mask.num_elements) {
+	  int bit = ((impl->bits[pos >> 5] >> (pos & 0x1f))) & 1;
+	  if(bit != polarity) {
+	    pos++;
+	    continue;
+	  }
+
+	  // ok, found one bit with the right polarity - now see how many
+	  //  we have in a row
+	  position = pos++;
+	  while(pos < mask.num_elements) {
+	    int bit = ((impl->bits[pos >> 5] >> (pos & 0x1f))) & 1;
+	    if(bit == polarity) {
+	      pos++;
+	      continue;
+	    }
+	  }
+	  // we get here either because we found the end of the run or we 
+	  //  hit the end of the mask
+	  length = pos - position;
+	  return true;
+	}
+
+	// if we fall off the end, there's no more ranges to enumerate
+	return false;
+      } else {
+	assert(0);
+#if 0
+	Memory::Impl *m_impl = mask.memory.impl();
+
+	// scan until we find a bit set with the right polarity
+	while(pos < mask.num_elements) {
+	  unsigned ofs = mask.offset + ((pos >> 5) << 2);
+	  unsigned val;
+	  m_impl->get_bytes(ofs, &val, sizeof(val));
+	  int bit = ((val >> (pos & 0x1f))) & 1;
+	  if(bit != polarity) {
+	    pos++;
+	    continue;
+	  }
+
+	  // ok, found one bit with the right polarity - now see how many
+	  //  we have in a row
+	  position = pos++;
+	  while(pos < mask.num_elements) {
+	    unsigned ofs = mask.offset + ((pos >> 5) << 2);
+	    unsigned val;
+	    m_impl->get_bytes(ofs, &val, sizeof(val));
+	    int bit = ((val >> (pos & 0x1f))) & 1;
+	    if(bit == polarity) {
+	      pos++;
+	      continue;
+	    }
+	  }
+	  // we get here either because we found the end of the run or we 
+	  //  hit the end of the mask
+	  length = pos - position;
+	  return true;
+	}
+#endif
+
+	// if we fall off the end, there's no more ranges to enumerate
+	return false;
+      }
     }
 
     
@@ -1268,13 +1614,14 @@ namespace RegionRuntime {
 
     class RegionInstanceImpl : public Triggerable { 
     public:
-	RegionInstanceImpl(int idx, Memory m, size_t num, size_t elem_size, bool activate = false)
-		: elmt_size(elem_size), num_elmts(num), index(idx), next_handle(1)
+        RegionInstanceImpl(int idx, RegionMetaDataUntyped r, Memory m, size_t num, size_t elem_size, bool activate = false)
+	        : elmt_size(elem_size), num_elmts(num), index(idx), next_handle(1)
 	{
 		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
 		active = activate;
 		if (active)
 		{
+		        region = r;
 			memory = m;
 			// Use the memory to allocate the space, fail if there is none
 			MemoryImpl *mem = Runtime::get_runtime()->get_memory_impl(m);
@@ -1288,7 +1635,7 @@ namespace RegionRuntime {
     public:
 	const void* read(unsigned ptr);
 	void write(unsigned ptr, const void* newval);	
-	bool activate(Memory m, size_t num_elmts, size_t elem_size);
+        bool activate(RegionMetaDataUntyped r, Memory m, size_t num_elmts, size_t elem_size);
 	void deactivate(void);
 	Event copy_to(RegionInstanceUntyped target, Event wait_on);
 	RegionInstanceUntyped get_instance(void) const;
@@ -1302,6 +1649,7 @@ namespace RegionRuntime {
           TriggerHandle id;
         };
     private:
+        RegionMetaDataUntyped region;
 	char *base_ptr;	
 	size_t elmt_size;
 	size_t num_elmts;
@@ -1354,7 +1702,7 @@ namespace RegionRuntime {
       memcpy((base_ptr + ptr),newval,elmt_size);
     }
 
-    bool RegionInstanceImpl::activate(Memory m, size_t num, size_t elem_size)
+    bool RegionInstanceImpl::activate(RegionMetaDataUntyped r, Memory m, size_t num, size_t elem_size)
     {
 	bool result = false;
         int trythis = pthread_mutex_trylock(&mutex);
@@ -1365,6 +1713,7 @@ namespace RegionRuntime {
 	{
 		active = true;
 		result = true;
+		region = r;
 		memory = m;
 		num_elmts = num;
 		elmt_size = elem_size;
@@ -1393,9 +1742,12 @@ namespace RegionRuntime {
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
     }
 
+    Logger::Category log_copy("copy");
+
     Event RegionInstanceImpl::copy_to(RegionInstanceUntyped target, Event wait_on)
     {
 	RegionInstanceImpl *target_impl = Runtime::get_runtime()->get_instance_impl(target);
+	log_copy(LEVEL_INFO, "copy %x/%p/%x -> %x/%p/%x", index, this, region.id, target.id, target_impl, target_impl->region.id);
 #ifdef DEBUG_LOW_LEVEL
 	assert(target_impl->num_elmts == num_elmts);
 	assert(target_impl->elmt_size == elmt_size);
@@ -1403,8 +1755,6 @@ namespace RegionRuntime {
 	// Check to see if the event exists
 	if (wait_on.exists())
 	{
-		// TODO: Need to handle multiple outstanding copies 
-
 		// Try registering this as a triggerable with the event	
 		EventImpl *event_impl = Runtime::get_runtime()->get_event_impl(wait_on);
 		PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
@@ -1511,10 +1861,29 @@ namespace RegionRuntime {
 			master_allocator = allocator->get_allocator();	
 		
 			lock = Runtime::get_runtime()->get_free_lock();
+                        mask = ElementMask(num_elmts);
+                        parent = NULL;
 		}
 	}
+        RegionMetaDataImpl(int idx, RegionMetaDataImpl *par, const ElementMask &m, bool activate = false) {
+                PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
+		active = activate;
+		index = idx;
+		if (activate)
+		{
+			num_elmts = m.get_num_elmts();
+			elmt_size = par->elmt_size;
+			RegionAllocatorImpl *allocator = Runtime::get_runtime()->get_free_allocator(0,num_elmts);
+			master_allocator = allocator->get_allocator();	
+		
+			lock = Runtime::get_runtime()->get_free_lock();
+                        mask = m;
+                        parent = par;
+		}
+        }
     public:
 	bool activate(size_t num_elmts, size_t elmt_size);
+        bool activate(RegionMetaDataImpl *par, const ElementMask &m);
 	void deactivate(void);	
 	RegionMetaDataUntyped get_metadata(void);
 
@@ -1526,6 +1895,7 @@ namespace RegionRuntime {
 
 	Lock get_lock(void);
 
+        const ElementMask& get_element_mask(void);
     private:
 	RegionAllocatorUntyped master_allocator;
 	//std::set<RegionAllocatorUntyped> allocators;
@@ -1536,12 +1906,27 @@ namespace RegionRuntime {
 	int index;
 	size_t num_elmts;
 	size_t elmt_size;
+        ElementMask mask;
+        RegionMetaDataImpl *parent;
     };
+
+    Logger::Category log_region("region");
 
     RegionMetaDataUntyped RegionMetaDataUntyped::create_region_untyped(size_t num_elmts, size_t elmt_size)
     {
 	RegionMetaDataImpl *r = Runtime::get_runtime()->get_free_metadata(num_elmts, elmt_size);	
+	log_region(LEVEL_INFO, "region created: id=%x num=%zd size=%zd",
+		   r->get_metadata().id, num_elmts, elmt_size);
 	return r->get_metadata();
+    }
+
+    RegionMetaDataUntyped RegionMetaDataUntyped::create_region_untyped(RegionMetaDataUntyped parent, const ElementMask &mask)
+    {
+      RegionMetaDataImpl *par = Runtime::get_runtime()->get_metadata_impl(parent);
+      RegionMetaDataImpl *r = Runtime::get_runtime()->get_free_metadata(par, mask);
+      log_region(LEVEL_INFO, "region created: id=%x parent=%x",
+		 r->get_metadata().id, parent.id);
+      return r->get_metadata();
     }
 
     RegionAllocatorUntyped RegionMetaDataUntyped::create_allocator_untyped(Memory m) const
@@ -1576,7 +1961,8 @@ namespace RegionRuntime {
 
     const ElementMask &RegionMetaDataUntyped::get_valid_mask(void)
     {
-      assert(0);
+      RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
+      return r->get_element_mask();
     }
 
     bool RegionMetaDataImpl::activate(size_t num, size_t size)
@@ -1596,9 +1982,35 @@ namespace RegionRuntime {
 		master_allocator = allocator->get_allocator();	
 		
 		lock = Runtime::get_runtime()->get_free_lock();
+                mask = ElementMask(num_elmts);
+                parent = NULL;
 	}
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 	return result;
+    }
+
+    bool RegionMetaDataImpl::activate(RegionMetaDataImpl *par, const ElementMask &m)
+    {
+      bool result = false;
+      int trythis = pthread_mutex_trylock(&mutex);
+      if (trythis == EBUSY)
+        return result;
+      PTHREAD_SAFE_CALL(trythis);
+      if (!active)
+      {
+        active = true;
+        result = true;
+        num_elmts = m.get_num_elmts();
+        elmt_size = par->elmt_size;
+        RegionAllocatorImpl *allocator = Runtime::get_runtime()->get_free_allocator(0,num_elmts);
+        master_allocator = allocator->get_allocator();	
+		
+        lock = Runtime::get_runtime()->get_free_lock();
+        mask = m;
+        parent = par;
+      }
+      PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+      return result;
     }
 
     void RegionMetaDataImpl::deactivate(void)
@@ -1629,6 +2041,11 @@ namespace RegionRuntime {
 	return meta;
     }
 
+    const ElementMask& RegionMetaDataImpl::get_element_mask(void)
+    {
+      return mask;
+    }
+
     RegionAllocatorUntyped RegionMetaDataImpl::create_allocator(Memory m)
     {
 	// We'll only over have one allocator for shared memory	
@@ -1641,7 +2058,8 @@ namespace RegionRuntime {
     RegionInstanceUntyped RegionMetaDataImpl::create_instance(Memory m)
     {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
-	RegionInstanceImpl* impl = Runtime::get_runtime()->get_free_instance(m,num_elmts, elmt_size);
+	RegionMetaDataUntyped r = { index };
+	RegionInstanceImpl* impl = Runtime::get_runtime()->get_free_instance(r,m,num_elmts, elmt_size);
 	RegionInstanceUntyped inst = impl->get_instance();
 	instances.insert(inst);
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
@@ -1694,6 +2112,9 @@ namespace RegionRuntime {
 	
 	// Create the runtime and initialize with this machine
 	Runtime::runtime = new Runtime(this);
+
+        // Initialize the logger
+        Logger::init(*argc, (const char**)*argv);
 	
 	// Fill in the tables
         // find in proc 0 with NULL
@@ -1833,7 +2254,7 @@ namespace RegionRuntime {
 	{
 		Memory m;
 		m.id = 0;
-		instances.push_back(new RegionInstanceImpl(i,m,0,0));
+		instances.push_back(new RegionInstanceImpl(i,RegionMetaDataUntyped::NO_REGION,m,0,0));
 	}
 
 	PTHREAD_SAFE_CALL(pthread_rwlock_init(&event_lock,NULL));
@@ -1882,7 +2303,10 @@ namespace RegionRuntime {
 	if (m.id < memories.size())
 		return memories[m.id];
 	else
+        {
+                assert(false);
 		return NULL;
+        }
     }
 
     ProcessorImpl* Runtime::get_processor_impl(Processor p)
@@ -2058,6 +2482,34 @@ namespace RegionRuntime {
 	return result;
     }
 
+    RegionMetaDataImpl* Runtime::get_free_metadata(RegionMetaDataImpl *parent, const ElementMask &mask)
+    {
+	PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&metadata_lock));
+	for (unsigned int i=1; i<metadatas.size(); i++)
+	{
+		if (metadatas[i]->activate(parent,mask))
+		{
+			RegionMetaDataImpl *result = metadatas[i];
+			PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&metadata_lock));
+			return result;
+		}
+	}
+	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&metadata_lock));
+	// Otherwise there are no free metadata so make a new one
+	PTHREAD_SAFE_CALL(pthread_rwlock_wrlock(&metadata_lock));
+	unsigned int index = metadatas.size();
+	metadatas.push_back(new RegionMetaDataImpl(index,parent,mask,true));
+	RegionMetaDataImpl *result = metadatas[index];
+        // Create a whole bunch of other metas too while we're here
+        for (unsigned idx=1; idx < BASE_METAS; idx++)
+        {
+          metadatas.push_back(new RegionMetaDataImpl(index+idx,0,0,false));
+        }
+	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&metadata_lock));
+	return result;
+    }
+
+
     RegionAllocatorImpl* Runtime::get_free_allocator(unsigned start, unsigned end)
     {
 	PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&allocator_lock));
@@ -2085,12 +2537,12 @@ namespace RegionRuntime {
 	return result;
     }
 
-    RegionInstanceImpl* Runtime::get_free_instance(Memory m, size_t num_elmts, size_t elmt_size)
+    RegionInstanceImpl* Runtime::get_free_instance(RegionMetaDataUntyped r, Memory m, size_t num_elmts, size_t elmt_size)
     {
 	PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&instance_lock));
 	for (unsigned int i=1; i<instances.size(); i++)
 	{
-		if (instances[i]->activate(m, num_elmts,elmt_size))
+	    if (instances[i]->activate(r, m, num_elmts,elmt_size))
 		{
 			RegionInstanceImpl *result = instances[i];
 			PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&instance_lock));
@@ -2101,16 +2553,22 @@ namespace RegionRuntime {
 	// Nothing free so make a new one
 	PTHREAD_SAFE_CALL(pthread_rwlock_wrlock(&instance_lock));
 	unsigned int index = instances.size();
-	instances.push_back(new RegionInstanceImpl(index,m,num_elmts,elmt_size,true));
+	instances.push_back(new RegionInstanceImpl(index,r,m,num_elmts,elmt_size,true));
 	RegionInstanceImpl *result = instances[index];
         // Create a whole bunch of other instances while we're here
         for (unsigned idx=1; idx < BASE_INSTANCES; idx++)
         {
-          instances.push_back(new RegionInstanceImpl(index+idx,m,0,0,false));
+          instances.push_back(new RegionInstanceImpl(index+idx,RegionMetaDataUntyped::NO_REGION,m,0,0,false));
         }
 	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&instance_lock));
 	return result;
     }
 
+  };
+  namespace HighLevel {
+    // Loggers for the high level
+    LowLevel::Logger::Category log_task("tasks");
+    LowLevel::Logger::Category log_region("regions");
+    LowLevel::Logger::Category log_inst("instances");
   };
 };
