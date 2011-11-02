@@ -1,0 +1,71 @@
+\lstset{
+  captionpos=b,
+  language=C++,
+  basicstyle=\scriptsize,
+  numbers=left,
+  numberstyle=\tiny,
+  columns=fullflexible,
+  stepnumber=1,
+  escapechar=\#,
+  keepspaces=true,
+  literate={<}{{$\langle$}}1 {>}{{$\rangle$}}1,
+  morekeywords={region_relation,region,coloring,partition,spawn},
+  deletekeywords=float,
+}
+\begin{lstlisting}[float,caption={Circuit Simulation Code Example}]
+struct Node<rn>    { Node<rn>@rn next;    float charge, capacitance; }
+struct Wire<rn,rn2,rw> { Wire<rn,rn2,rw>@rw next;
+                                          Node<rn2>@rn in_node, out_node; float current, ... ; }
+region_relation Circuit {
+  region< Node<r_all_nodes> >                        r_all_nodes;
+  region< Wire<r_all_nodes,r_all_wires> >       r_all_wires;
+  Node<r_all_nodes>@r_all_nodes                   first_node;
+  Wire<r_all_nodes,r_all_wires>@r_all_wires   first_wire;
+}
+region_relation CircuitPiece<rn, rw> {
+  region< Node<rn_pvt+rn_shr> >                                 rn_pvt (#$\prec$# rn), rn_shr (#$\prec$# rn);
+  region< Node<rn> >                                                   rn_ghost (#$\prec$# rn);
+  region< Wire<rn_pvt+rn_shr+rn_ghost,rn,rw_pvt> >  rw_pvt (#$\prec$# rw);
+  Node<rn_pvt+rn_shr>@(rn_pvt+rn_shr)                     first_node;
+  Wire<rn_pvt+rn_shr+rn_ghost,rn,rw_pvt>@rw_pvt    first_wire;
+};
+void simulate_circuit(Circuit c) : RWE(c.r_all_nodes,c.r_all_wires)
+{
+  partition<c.r_all_wires> p_wires(wire_owner_map); // colored by piece they're in
+  partition<c.r_all_nodes> p_nodes_pvs(node_sharing_map);
+                                                                    // true = some neighbors in other pieces
+  partition<p_nodes_pvs[false]> p_pvt_nodes(node_owner_map);
+                                                                    // colored by piece they're in
+  partition<p_nodes_pvs[true]> p_shr_nodes(node_owner_map);
+                                                                    // colored by piece they're in
+  partition<p_nodes_pvs[true]> p_ghost_nodes(node_nghbr_map);
+                                                                    // colored by pieces they neighbor
+
+  CircuitPiece<c.r_all_nodes,c.r_all_wires> pieces[MAX_PIECES];
+  for(i = 0; i #$<$# MAX_PIECES; i++) 
+    pieces[i] #$\gets$# { rn_pvt = p_pvt_nodes[i], rn_shr = p_shr_nodes[i],
+                            rn_ghost = p_ghost_nodes[i], rw_pvt = p_wires[i] };
+
+  while(!done) {
+    for(i = 0; i #$<$# MAX_PIECES; i++) spawn calc_new_currents(pieces[i]);
+    for(i = 0; i #$<$# MAX_PIECES; i++) spawn distribute_charge(pieces[i]);
+    for(i = 0; i #$<$# MAX_PIECES; i++) spawn update_voltages(pieces[i]);
+  }
+}
+
+void calc_new_currents(CircuitPiece<rn,rw> piece): RWE(piece.rw_pvt),
+                                                                         ROE(piece.rn_pvt,piece.rn_ghost) {
+  // read info from nodes connected to each wire, update state of wire
+}
+
+void distribute_charge(CircuitPiece<rn,rw> piece): ROE(piece.rw_pvt),
+                                                                         RdA(piece.rn_pvt,piece.rn_ghost) {
+  // current moving through wires redistributes charge between nodes
+}
+
+void update_voltages(CircuitPiece<rn,rw> piece): RWE(piece.rn_pvt,piece.rn_shr)
+{
+  // total charge added to a node causes changes in voltage
+}
+\end{lstlisting}
+
