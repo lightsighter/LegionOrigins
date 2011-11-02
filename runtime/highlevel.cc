@@ -488,7 +488,7 @@ namespace RegionRuntime {
         for (std::map<Memory,InstanceInfo*>::iterator it = valid_instances.begin();
               it != valid_instances.end(); it++)
         {
-          if (it->second->references == 0)
+          if ((it->second != info) && (it->second->references == 0))
           {
             // Delete this instance since it is no longer valid and has no references
             InstanceInfo *to_delete = it->second;
