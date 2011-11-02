@@ -64,6 +64,34 @@ namespace RegionRuntime {
 	    }
 	  }
 	}
+
+	inline void debug(const char *fmt, ...) __attribute__((format (printf, 2, 3)))
+	{
+	  if(LEVEL_DEBUG >= COMPILE_TIME_MIN_LEVEL) {  // static opt-out
+	    if(LEVEL_DEBUG >= log_level) {             // dynamic opt-out
+	      if(log_cats_enabled[index]) {      // category filter
+		va_list args;
+		va_start(args, fmt);
+		Logger::logvprintf(LEVEL_DEBUG, index, fmt, args);
+		va_end(args);
+	      }
+	    }
+	  }
+	}
+
+	inline void info(const char *fmt, ...) __attribute__((format (printf, 2, 3)))
+	{
+	  if(LEVEL_INFO >= COMPILE_TIME_MIN_LEVEL) {  // static opt-out
+	    if(LEVEL_INFO >= log_level) {             // dynamic opt-out
+	      if(log_cats_enabled[index]) {      // category filter
+		va_list args;
+		va_start(args, fmt);
+		Logger::logvprintf(LEVEL_INFO, index, fmt, args);
+		va_end(args);
+	      }
+	    }
+	  }
+	}
       };
 
     protected:

@@ -33,6 +33,8 @@ namespace RegionRuntime {
 
       virtual void event_triggered(void);
 
+      virtual void print_info(void);
+
       void run_or_wait(Event start_event);
 
       virtual void execute(void) = 0;
@@ -162,6 +164,11 @@ namespace RegionRuntime {
     void GPUJob::event_triggered(void)
     {
       gpu->internal->enqueue_job(this);
+    }
+
+    void GPUJob::print_info(void)
+    {
+      printf("gpu job\n");
     }
 
     // little helper function for the check-event-and-enqueue-or-wait bit

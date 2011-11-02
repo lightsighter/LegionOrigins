@@ -200,23 +200,6 @@ namespace RegionRuntime {
       Memory::Impl *global_memory;
     };
 
-    enum ActiveMessageIDs {
-      FIRST_AVAILABLE = 128,
-      NODE_ANNOUNCE_MSGID,
-      SPAWN_TASK_MSGID,
-      LOCK_REQUEST_MSGID,
-      LOCK_RELEASE_MSGID,
-      LOCK_GRANT_MSGID,
-      EVENT_SUBSCRIBE_MSGID,
-      EVENT_TRIGGER_MSGID,
-      REMOTE_MALLOC_MSGID,
-      REMOTE_MALLOC_RPLID,
-      CREATE_ALLOC_MSGID,
-      CREATE_ALLOC_RPLID,
-      CREATE_INST_MSGID,
-      CREATE_INST_RPLID,
-    };
-
     struct ElementMaskImpl {
       //int count, offset;
       int dummy;
@@ -511,6 +494,7 @@ namespace RegionRuntime {
       class EventWaiter {
       public:
 	virtual void event_triggered(void) = 0;
+	virtual void print_info(void) = 0;
       };
 
       void add_waiter(Event event, EventWaiter *waiter);

@@ -54,6 +54,174 @@ GASNETT_THREADKEY_DEFINE(cur_thread);
 // GASnet helper stuff
 #endif
 
+struct LongMessageBuffer {
+  gasnet_hsl_t mutex;
+  char *w_bases[2];
+  char *r_bases[2];
+  size_t size;
+  int r_counts[2];
+  int w_counts[2];
+  bool w_avail[2];
+  int w_buffer;
+  off_t offset;
+};
+
+static LongMessageBuffer *lmbs;
+
+static void init_lmbs(size_t lmb_size)
+{
+  lmbs = new LongMessageBuffer[gasnet_nodes()];
+
+  gasnet_seginfo_t *seginfos = new gasnet_seginfo_t[gasnet_nodes()];
+  CHECK_GASNET( gasnet_getSegmentInfo(seginfos, gasnet_nodes()) );
+  
+  for(int i = 0; i < gasnet_nodes(); i++) {
+    gasnet_hsl_init(&lmbs[i].mutex);
+    lmbs[i].w_bases[0] = ((char *)(seginfos[i].addr)) + lmb_size * (2 * gasnet_mynode());
+    lmbs[i].w_bases[1] = ((char *)(seginfos[i].addr)) + lmb_size * (2 * gasnet_mynode() + 1);
+    lmbs[i].r_bases[0] = ((char *)(seginfos[gasnet_mynode()].addr)) + lmb_size * (2 * i);
+    lmbs[i].r_bases[1] = ((char *)(seginfos[gasnet_mynode()].addr)) + lmb_size * (2 * i + 1);
+    lmbs[i].size = lmb_size;
+    lmbs[i].r_counts[0] = 0;
+    lmbs[i].r_counts[1] = 0;
+    lmbs[i].w_counts[0] = 0;
+    lmbs[i].w_counts[1] = 0;
+    lmbs[i].w_avail[0] = false;
+    lmbs[i].w_avail[1] = true;
+    lmbs[i].w_buffer = 0;
+    lmbs[i].offset = 0;
+  }
+
+  delete[] seginfos;
+}
+
+struct FlipLMBArgs {
+  int source;
+  int buffer;
+  int count;
+};
+
+void handle_lmb_flip_request(FlipLMBArgs args);
+
+enum { FLIP_LMB_MSGID = 200,
+       FLIP_LMB_ACK_MSGID,
+};
+
+typedef ActiveMessageShortNoReply<FLIP_LMB_MSGID, 
+				  FlipLMBArgs,
+				  handle_lmb_flip_request> FlipLMBMessage;
+
+struct FlipLMBAckArgs {
+  int source;
+  int buffer;
+};
+
+void handle_lmb_flip_ack(FlipLMBAckArgs args);
+
+typedef ActiveMessageShortNoReply<FLIP_LMB_ACK_MSGID, 
+				  FlipLMBAckArgs,
+				  handle_lmb_flip_ack> FlipLMBAckMessage;
+
+void *get_remote_msgptr(int target, size_t bytes_needed)
+{
+  LongMessageBuffer *lmb = &lmbs[target];
+
+  gasnet_hsl_lock(&lmb->mutex);
+
+  while(1) {
+    // do we have enough space in the current buffer?
+    if((lmb->offset + bytes_needed) < lmb->size) {
+      void *ptr = lmb->w_bases[lmb->w_buffer] + lmb->offset;
+      lmb->offset += bytes_needed;
+      lmb->w_counts[lmb->w_buffer]++;
+      gasnet_hsl_unlock(&lmb->mutex);
+      return ptr;
+    }
+
+    // no? close out the current buffer then by sending a flip message
+    FlipLMBArgs args;
+    args.source = gasnet_mynode();
+    args.buffer = lmb->w_buffer;
+    args.count = lmb->w_counts[lmb->w_buffer];
+    lmb->w_counts[lmb->w_buffer] = 0;
+    lmb->offset = 0;
+    lmb->w_buffer = (lmb->w_buffer + 1) % 2;
+    // new buffer better be available
+    assert(lmb->w_avail[lmb->w_buffer]);
+    lmb->w_avail[lmb->w_buffer] = false;
+
+    // let go of lock to send message
+    gasnet_hsl_unlock(&lmb->mutex);
+    FlipLMBMessage::request(target, args);
+    gasnet_hsl_lock(&lmb->mutex);
+
+    // go back around in case a whole bunch of people cut in line...
+  }
+  
+  assert(0);
+}
+
+void handle_long_msgptr(int source, void *ptr)
+{
+  LongMessageBuffer *lmb = &lmbs[source];
+
+  // can figure out which buffer it is without holding lock
+  int r_buffer = -1;
+  for(int i = 0; i < 2; i++)
+    if((ptr >= lmb->r_bases[i]) && (ptr < (lmb->r_bases[i] + lmb->size))) {
+      r_buffer = i;
+      break;
+    }
+  assert(r_buffer >= 0);
+
+  // now take the lock to increment the r_count and possibly send an ack
+  gasnet_hsl_lock(&lmb->mutex);
+  lmb->r_counts[r_buffer]++;
+  if(lmb->r_counts[r_buffer] == 0) {
+    FlipLMBAckArgs args;
+    args.source = gasnet_mynode();
+    args.buffer = r_buffer;
+    gasnet_hsl_unlock(&lmb->mutex);
+    FlipLMBAckMessage::request(source, args);
+  } else {
+    // no message, just release mutex
+    gasnet_hsl_unlock(&lmb->mutex);
+  }  
+}
+
+void handle_lmb_flip_request(FlipLMBArgs args)
+{
+  LongMessageBuffer *lmb = &lmbs[args.source];
+
+  gasnet_hsl_lock(&lmb->mutex);
+  // subtract the expected count from the count we've received
+  // should end up negative (returning to 0 when all messages arrive) or 0
+  //   if all messages have already arrived
+  lmb->r_counts[args.buffer] -= args.count;
+  assert(lmb->r_counts[args.buffer] <= 0);
+  if(lmb->r_counts[args.buffer] == 0) {
+    FlipLMBAckArgs args;
+    args.source = gasnet_mynode();
+    args.buffer = args.buffer;
+    gasnet_hsl_unlock(&lmb->mutex);
+    FlipLMBAckMessage::request(args.source, args);
+  } else {
+    // no message, just release mutex
+    gasnet_hsl_unlock(&lmb->mutex);
+  }  
+}
+
+void handle_lmb_flip_ack(FlipLMBAckArgs args)
+{
+  LongMessageBuffer *lmb = &lmbs[args.source];
+
+  // don't really need to take lock here, but what the hell...
+  gasnet_hsl_lock(&lmb->mutex);
+  assert(!lmb->w_avail[args.buffer]);
+  lmb->w_avail[args.buffer] = true;
+  gasnet_hsl_unlock(&lmb->mutex);
+}
+
 namespace RegionRuntime {
   namespace LowLevel {
     /*static*/ LogLevel Logger::log_level;
@@ -133,11 +301,29 @@ namespace RegionRuntime {
       int len = strlen(buffer);
       vsnprintf(buffer+len, 199-len, fmt, args);
       strcat(buffer, "\n");
+      fflush(stdout);
       fputs(buffer, stderr);
     }
 
     Logger::Category log_gpu("gpu");
     Logger::Category log_mutex("mutex");
+
+    enum ActiveMessageIDs {
+      FIRST_AVAILABLE = 140,
+      NODE_ANNOUNCE_MSGID,
+      SPAWN_TASK_MSGID,
+      LOCK_REQUEST_MSGID,
+      LOCK_RELEASE_MSGID,
+      LOCK_GRANT_MSGID,
+      EVENT_SUBSCRIBE_MSGID,
+      EVENT_TRIGGER_MSGID,
+      REMOTE_MALLOC_MSGID,
+      REMOTE_MALLOC_RPLID,
+      CREATE_ALLOC_MSGID,
+      CREATE_ALLOC_RPLID,
+      CREATE_INST_MSGID,
+      CREATE_INST_RPLID,
+    };
 
 #if 0
 
@@ -293,23 +479,6 @@ namespace RegionRuntime {
 
       Node *nodes;
       Memory::Impl *global_memory;
-    };
-
-    enum ActiveMessageIDs {
-      FIRST_AVAILABLE = 128,
-      NODE_ANNOUNCE_MSGID,
-      SPAWN_TASK_MSGID,
-      LOCK_REQUEST_MSGID,
-      LOCK_RELEASE_MSGID,
-      LOCK_GRANT_MSGID,
-      EVENT_SUBSCRIBE_MSGID,
-      EVENT_TRIGGER_MSGID,
-      REMOTE_MALLOC_MSGID,
-      REMOTE_MALLOC_RPLID,
-      CREATE_ALLOC_MSGID,
-      CREATE_ALLOC_RPLID,
-      CREATE_INST_MSGID,
-      CREATE_INST_RPLID,
     };
 
     /*static*/ Runtime *Runtime::runtime = 0;
@@ -678,6 +847,38 @@ namespace RegionRuntime {
       }
     }
 
+    void show_event_waiters(void)
+    {
+      printf("PRINTING ALL PENDING EVENTS:\n");
+      for(int i = 0; i < gasnet_nodes(); i++) {
+	Node *n = &Runtime::runtime->nodes[i];
+	AutoHSLLock a1(n->mutex);
+
+	for(unsigned j = 0; j < n->events.size(); j++) {
+	  Event::Impl *e = &(n->events[j]);
+	  AutoHSLLock a2(e->mutex);
+
+	  if(!e->in_use) continue;
+
+	  printf("Event %x: gen=%d subscr=%d remote=%lx waiters=%zd\n",
+		 e->me.id, e->generation, e->gen_subscribed, e->remote_waiters,
+		 e->local_waiters.size());
+	  for(std::map<Event::gen_t, std::vector<Event::Impl::EventWaiter *> >::iterator it = e->local_waiters.begin();
+	      it != e->local_waiters.end();
+	      it++) {
+	    for(std::vector<Event::Impl::EventWaiter *>::iterator it2 = it->second.begin();
+		it2 != it->second.end();
+		it2++) {
+	      printf("  [%d] %p ", it->first, *it2);
+	      (*it2)->print_info();
+	    }
+	  }
+	}
+      }
+      printf("DONE\n");
+      fflush(stdout);
+    }
+
     void handle_event_trigger(Event event)
     {
       log_event(LEVEL_DEBUG, "Remote trigger of event %x/%d!", event.id, event.gen);
@@ -731,6 +932,8 @@ namespace RegionRuntime {
 
       virtual void event_triggered(void)
       {
+	log_event(LEVEL_INFO, "recevied trigger merged event %x/%d",
+		  finish_event.id, finish_event.gen);
 	bool last_trigger = false;
 	{
 	  AutoHSLLock a(mutex);
@@ -741,6 +944,11 @@ namespace RegionRuntime {
 	//  feels safer :)
 	if(last_trigger)
 	  finish_event.impl()->trigger(finish_event.gen, true);
+      }
+
+      virtual void print_info(void)
+      {
+	printf("event merger: %x/%d\n", finish_event.id, finish_event.gen);
       }
 
     protected:
@@ -764,6 +972,8 @@ namespace RegionRuntime {
 	  if(!wait_count) first_wait = *it;
 	  wait_count++;
 	}
+      log_event(LEVEL_INFO, "merging events - at least %d not triggered",
+		wait_count);
 
       // counts of 0 or 1 don't require any merging
       if(wait_count == 0) return Event::NO_EVENT;
@@ -774,9 +984,12 @@ namespace RegionRuntime {
       EventMerger *m = new EventMerger(finish_event);
 
       for(std::set<Event>::const_iterator it = wait_for.begin();
-	  (it != wait_for.end()) && (wait_count < 2);
-	  it++)
+	  it != wait_for.end();
+	  it++) {
+	log_event(LEVEL_INFO, "merged event %x/%d waiting for %x/%d",
+		  finish_event.id, finish_event.gen, (*it).id, (*it).gen);
 	m->add_event(*it);
+      }
 
       // once they're all added - arm the thing (it might go off immediately)
       m->arm();
@@ -1126,11 +1339,6 @@ namespace RegionRuntime {
       log_lock(LEVEL_DEBUG, "local lock request: lock=%x mode=%d excl=%d event=%x/%d",
 	       me.id, new_mode, exclusive, after_lock.id, after_lock.gen);
 
-      // deferred lock case
-      if(after_lock.exists()) {
-	assert(0);
-      }
-
       // collapse exclusivity into mode
       if(exclusive) new_mode = MODE_EXCL;
 
@@ -1345,6 +1553,12 @@ namespace RegionRuntime {
 	lock.impl()->lock(mode, exclusive, after_lock);
       }
 
+      virtual void print_info(void)
+      {
+	printf("deferred lock: lock=%x after=%x/%d\n",
+	       lock.id, after_lock.id, after_lock.gen);
+      }
+
     protected:
       Lock lock;
       unsigned mode;
@@ -1380,6 +1594,11 @@ namespace RegionRuntime {
 	lock.impl()->unlock();
       }
 
+      virtual void print_info(void)
+      {
+	printf("deferred unlock: lock=%x\n",
+	       lock.id);
+      }
     protected:
       Lock lock;
     };
@@ -1613,12 +1832,17 @@ namespace RegionRuntime {
 
     class GASNetMemory : public Memory::Impl {
     public:
-      GASNetMemory(Memory _me) 
+      GASNetMemory(Memory _me, size_t lmb_skip) 
 	: Memory::Impl(_me, 0 /* we'll calculate it below */, MKIND_GASNET)
       {
 	num_nodes = gasnet_nodes();
 	seginfos = new gasnet_seginfo_t[num_nodes];
 	CHECK_GASNET( gasnet_getSegmentInfo(seginfos, num_nodes) );
+
+	for(int i = 0; i < num_nodes; i++) {
+	  seginfos[i].addr = ((char *)seginfos[i].addr)+lmb_skip;
+	  seginfos[i].size -= lmb_skip;
+	}
 
 	size = seginfos[0].size * num_nodes;
 	memory_stride = 1024;
@@ -2085,20 +2309,27 @@ namespace RegionRuntime {
 	  }
 	}
 
+	virtual void print_info(void)
+	{
+	  printf("running task: func=%d proc=%x finish=%x/%d\n",
+		 task->func_id, task->proc->me.id, task->finish_event.id,
+		 task->finish_event.gen);
+	}
+
 	void sleep_on_event(Event wait_for)
 	{
 #define MULTIPLE_TASKS_PER_THREAD	  
 #ifdef MULTIPLE_TASKS_PER_THREAD	  
 	  // if we're going to wait, see if there's something useful
 	  //  we can do in the meantime
+	  log_task(LEVEL_DEBUG, "thread needs to wait on event: event=%x/%d",
+		   wait_for.id, wait_for.gen);
 	  while(1) {
 	    if(wait_for.has_triggered()) return; // early out
 
 	    AutoHSLLock a(proc->mutex);
 
 	    proc->active_thread_count--;
-	    log_task(LEVEL_DEBUG, "thread needs to wait on event: event=%x/%d",
-		     wait_for.id, wait_for.gen);
 	    Task *new_task = proc->select_task();
 	    if(!new_task) {
 	      proc->active_thread_count++; //put count back (we'll dec below)
@@ -2106,7 +2337,7 @@ namespace RegionRuntime {
 	    }
 
 	    Task *old_task = task;
-	    log_task(LEVEL_DEBUG, "thread task swap: old=%p new=%p",
+	    log_task(LEVEL_SPEW, "thread task swap: old=%p new=%p",
 		     old_task, new_task);
 	    task = new_task;
 
@@ -2121,7 +2352,7 @@ namespace RegionRuntime {
 	      proc->in_idle_task = false;
 	    }
 
-	    log_task(LEVEL_DEBUG, "thread returning to old task: old=%p new=%p",
+	    log_task(LEVEL_SPEW, "thread returning to old task: old=%p new=%p",
 		     old_task, new_task);
 	    task = old_task;
 	  }
@@ -2360,6 +2591,12 @@ namespace RegionRuntime {
 	  task->proc->add_ready_task(task);
 	}
 
+	virtual void print_info(void)
+	{
+	  printf("deferred task: func=%d proc=%x finish=%x/%d\n",
+		 task->func_id, task->proc->me.id, task->finish_event.id, task->finish_event.gen);
+	}
+
       protected:
 	Task *task;
       };
@@ -2502,6 +2739,9 @@ namespace RegionRuntime {
 	// early out - if the event has obviously triggered (or is NO_EVENT)
 	//  don't build up continuation
 	if(start_event.has_triggered()) {
+	  log_task(LEVEL_DEBUG, "new ready task: func=%d start=%x/%d finish=%x/%d",
+		   func_id, start_event.id, start_event.gen,
+		   finish_event.id, finish_event.gen);
 	  add_ready_task(task);
 	} else {
 	  log_task(LEVEL_DEBUG, "deferring spawn: func=%d event=%x/%d",
@@ -3391,10 +3631,12 @@ namespace RegionRuntime {
 	assert(0);
       }
 
+#if 0
       // don't forget to release the locks on the instances!
       src_impl->lock.unlock();
       if(tgt_impl != src_impl)
 	tgt_impl->lock.unlock();
+#endif
 
       if(after_copy.exists())
 	after_copy.impl()->trigger(after_copy.gen, true);
@@ -3413,6 +3655,12 @@ namespace RegionRuntime {
 	RegionInstanceUntyped::Impl::copy(src, target, bytes_to_copy, after_copy);
       }
 
+      virtual void print_info(void)
+      {
+	printf("deferred copy: src=%x tgt=%x after=%x/%d\n",
+	       src.id, target.id, after_copy.id, after_copy.gen);
+      }
+
     protected:
       RegionInstanceUntyped src, target;
       size_t bytes_to_copy;
@@ -3427,7 +3675,7 @@ namespace RegionRuntime {
       Memory::Impl *src_mem = src_impl->memory.impl();
       Memory::Impl *dst_mem = dst_impl->memory.impl();
 
-      printf("COPY %x (%d) -> %x (%d)\n", id, src_mem->kind, target.id, dst_mem->kind);
+      //printf("COPY %x (%d) -> %x (%d)\n", id, src_mem->kind, target.id, dst_mem->kind);
 
       // first check - if either or both memories are remote, we're going to
       //  need to find somebody else to do this copy
@@ -3438,11 +3686,12 @@ namespace RegionRuntime {
 
       size_t bytes_to_copy = StaticAccess<RegionInstanceUntyped::Impl>(src_impl)->region.impl()->instance_size();
 
+#if 0
       // ok - we're going to do the copy locally, but we need locks on the 
       //  two instances, and those locks may need to be deferred
-      Event lock_event = src_impl->lock.lock(1, false, wait_on);
+      Event lock_event = src_impl->lock.me.lock(1, false, wait_on);
       if(dst_impl != src_impl) {
-	Event dst_lock_event = dst_impl->lock.lock(1, false, wait_on);
+	Event dst_lock_event = dst_impl->lock.me.lock(1, false, wait_on);
 	lock_event = Event::merge_events(lock_event, dst_lock_event);
       }
       // now do we have to wait?
@@ -3454,6 +3703,16 @@ namespace RegionRuntime {
 						       after_copy));
 	return after_copy;
       }
+#else
+      if(!wait_on.has_triggered()) {
+	Event after_copy = Event::Impl::create_event();
+	wait_on.impl()->add_waiter(wait_on,
+				   new DeferredCopy(*this, target,
+						    bytes_to_copy, 
+						    after_copy));
+	return after_copy;
+      }
+#endif
 
       // we can do the copy immediately here
       return RegionInstanceUntyped::Impl::copy(*this, target, bytes_to_copy);
@@ -3717,7 +3976,7 @@ namespace RegionRuntime {
 	    unsigned size = *cur++;
 	    if(remote) {
 	      RemoteMemory *mem = new RemoteMemory(m, size);
-	      Runtime::runtime->nodes[ID(m).node()].memories[ID(m).index()] = mem;
+	      Runtime::runtime->nodes[ID(m).node()].memories[ID(m).index_h()] = mem;
 	    }
 	  }
 	  break;
@@ -3854,6 +4113,12 @@ namespace RegionRuntime {
 	    continue;					\
 	  } } while(0)
 
+#define BOOL_ARG(argname, varname) do { \
+	  if(!strcmp((*argv)[i], argname)) {		\
+	    varname = true;				\
+	    continue;					\
+	  } } while(0)
+
 	INT_ARG("-ll:gsize", gasnet_mem_size_in_mb);
 	INT_ARG("-ll:csize", cpu_mem_size_in_mb);
 	INT_ARG("-ll:cpu", num_local_cpus);
@@ -3865,6 +4130,8 @@ namespace RegionRuntime {
 
       gasnet_handlerentry_t handlers[128];
       int hcount = 0;
+      hcount += FlipLMBMessage::add_handler_entries(&handlers[hcount]);
+      hcount += FlipLMBAckMessage::add_handler_entries(&handlers[hcount]);
       hcount += NodeAnnounceMessage::add_handler_entries(&handlers[hcount]);
       hcount += SpawnTaskMessage::add_handler_entries(&handlers[hcount]);
       hcount += LockRequestMessage::add_handler_entries(&handlers[hcount]);
@@ -3880,6 +4147,9 @@ namespace RegionRuntime {
 
       CHECK_GASNET( gasnet_attach(handlers, hcount, (gasnet_mem_size_in_mb << 20), 0) );
 
+      size_t lmb_size = 1 << 20;
+      init_lmbs(lmb_size);
+
       pthread_t poll_thread;
       CHECK_PTHREAD( pthread_create(&poll_thread, 0, gasnet_poll_thread_loop, 0) );
 	
@@ -3889,12 +4159,12 @@ namespace RegionRuntime {
       Runtime *r = Runtime::runtime = new Runtime;
       r->nodes = new Node[gasnet_nodes()];
       
-      r->global_memory = new GASNetMemory(ID(ID::ID_MEMORY, 0, ID::ID_GLOBAL_MEM, 0).convert<Memory>());
+      r->global_memory = new GASNetMemory(ID(ID::ID_MEMORY, 0, ID::ID_GLOBAL_MEM, 0).convert<Memory>(), lmb_size * gasnet_nodes() * 2);
 
       Node *n = &r->nodes[gasnet_mynode()];
 
       NodeAnnounceData announce_data;
-      const unsigned ADATA_SIZE = 100;
+      const unsigned ADATA_SIZE = 4096;
       unsigned adata[ADATA_SIZE];
       unsigned apos = 0;
 
@@ -3922,24 +4192,30 @@ namespace RegionRuntime {
       }
 
       // create local memory
-      LocalCPUMemory *cpumem = new LocalCPUMemory(ID(ID::ID_MEMORY, 
-						     gasnet_mynode(),
-						     n->memories.size(), 0).convert<Memory>(),
-						  cpu_mem_size_in_mb << 20);
-      n->memories.push_back(cpumem);
-      adata[apos++] = NODE_ANNOUNCE_MEM;
-      adata[apos++] = cpumem->me.id;
-      adata[apos++] = cpumem->size;
+      LocalCPUMemory *cpumem;
+      if(cpu_mem_size_in_mb > 0) {
+	cpumem = new LocalCPUMemory(ID(ID::ID_MEMORY, 
+				       gasnet_mynode(),
+				       n->memories.size(), 0).convert<Memory>(),
+				    cpu_mem_size_in_mb << 20);
+	n->memories.push_back(cpumem);
+	adata[apos++] = NODE_ANNOUNCE_MEM;
+	adata[apos++] = cpumem->me.id;
+	adata[apos++] = cpumem->size;
+      } else
+	cpumem = 0;
 
       // list affinities between local CPUs / memories
       for(std::set<LocalProcessor *>::iterator it = local_cpu_procs.begin();
 	  it != local_cpu_procs.end();
 	  it++) {
-	adata[apos++] = NODE_ANNOUNCE_PMA;
-	adata[apos++] = (*it)->me.id;
-	adata[apos++] = cpumem->me.id;
-	adata[apos++] = 100;  // "large" bandwidth
-	adata[apos++] = 1;    // "small" latency
+	if(cpu_mem_size_in_mb > 0) {
+	  adata[apos++] = NODE_ANNOUNCE_PMA;
+	  adata[apos++] = (*it)->me.id;
+	  adata[apos++] = cpumem->me.id;
+	  adata[apos++] = 100;  // "large" bandwidth
+	  adata[apos++] = 1;    // "small" latency
+	}
 
 	adata[apos++] = NODE_ANNOUNCE_PMA;
 	adata[apos++] = (*it)->me.id;
@@ -3948,11 +4224,13 @@ namespace RegionRuntime {
 	adata[apos++] = 50;    // "higher" latency
       }
 
-      adata[apos++] = NODE_ANNOUNCE_MMA;
-      adata[apos++] = cpumem->me.id;
-      adata[apos++] = r->global_memory->me.id;
-      adata[apos++] = 30;  // "lower" bandwidth
-      adata[apos++] = 25;    // "higher" latency
+      if(cpu_mem_size_in_mb > 0) {
+	adata[apos++] = NODE_ANNOUNCE_MMA;
+	adata[apos++] = cpumem->me.id;
+	adata[apos++] = r->global_memory->me.id;
+	adata[apos++] = 30;  // "lower" bandwidth
+	adata[apos++] = 25;    // "higher" latency
+      }
 
 #ifdef USE_GPU
       if(num_local_gpus > 0) {
@@ -4191,3 +4469,6 @@ namespace RegionRuntime {
     LowLevel::Logger::Category log_inst("instances");
   };
 }; // namespace RegionRuntime
+
+RegionRuntime::LowLevel::Logger::Category log_app("app");
+RegionRuntime::LowLevel::Logger::Category log_mapper("mapper");
