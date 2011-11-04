@@ -1,6 +1,6 @@
 DOC=legion
 
-$(DOC).pdf: $(DOC).tex bibliography.bib
+$(DOC).pdf: $(DOC).tex bibliography.bib exec.tex lowlevel.tex circuit.tex code_ex.tex part_fig.tex highlevel.tex
 	pdflatex $(DOC).tex
 	bibtex $(DOC)
 	pdflatex $(DOC).tex
