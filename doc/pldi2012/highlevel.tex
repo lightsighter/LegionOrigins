@@ -136,7 +136,7 @@ will perform dependence detection for every region that the task requests with
 prior tasks that have been registered in the same parent task context.  Since
 tasks are registered in program order we will always perform dependence detection
 in program order which guarantees correctness even if tasks are executed out-of-order.  
-Performing dependence detection in order is also annalogous to how an out of order
+Performing dependence detection in program order is also annalogous to how an out of order
 processor works.  Out-of-order processors load instructions in order and only after
 analyzing their instructions and register dependencies do they execute instructions
 out of order.  The regions that a task requires are annalogous
@@ -144,7 +144,7 @@ to the registers listed in an instruction and the goal of the high level
 runtime is to detect the same dependences and use them to enforce scheudling constraints
 upon a task.  However, there is a catch to this analogy: in the Legion programming
 model two different logical regions are not necessarily independent from each other.  In
-order to do the dependence detection we rely on the region tree data structure to be
+order to do the dependence detection we rely on the forest of region tree data structures to be
 able to detect dependences between tasks which require different logical regions.
 
 To perform dependence detection, we first find the {\em root region} for the 
@@ -155,16 +155,95 @@ we must always be able to find such a root region or else an error is thrown.
 Once we have found the root region for the requested region, we then proceed to walk
 down the region tree from the node corresponding to the root region to the node
 for the requested region.  At each node, we determine if any potential dependences exist.
+Determining whether dependencies exist involves checking information both about the current
+node being visited as well as whether there are any potential dependences farther down
+in the region tree.  We now describe the decision procedure performed at both region
+nodes and partition nodes in the region trees.
 
-For region nodes we first check to see if the required region has any dependences on
-tasks currently using the logical region by performing the check on coherence properties
-described in section \ref{subsec:cohdep}.  If a conflict is discovered
-we record that the task must wait on the previous task before executing.  We also check
-to see if any of the partitions of the region have been marked open.  If they have
-we must {\em close} the partitions to detect any possible conflicts
+For region nodes, we begin by checking if there are any tasks actively using the logical
+region which we depend.  We determine this using the coherence dependence analysis described 
+in section \ref{cohdep}.  For each dependence that is found, we record that the previous
+task must have completed prior to the start of the task we are registering.  After performing
+dependence analysis we then check if there is an open partition which may contain additional
+dependencies.  If the open partition is the partition we intend to traverse then we
+simply continue the traversal.  However, if the partition we want is not open then we must
+first {\em close} up any open partition and then open the partition we are going to
+traverse.  The act of closing a partition involves traversing the region tree and recording
+all active tasks as dependences.  The reason for this is that we have no disjointness
+information about tasks that use different partitions and therefore to be safe must register
+all task touching subregions as dependences.  After closing any open partitions, we
+can then open the partition on our path and continue the traversal.
 
+When we reach our target logical region we again perform the coherence dependence analysis.
+We also close up any open partitions as they might contain tasks which could contain
+a dependence.  If our task was dependent on all of the previous active tasks in a region
+we say that our task was a {\em dominator} of all the previous active tasks.  We can
+then clear the list of active tasks and replace it with the current task.  This is safe since
+any later tasks that depend on the current task will have a transitive dependence 
+through the dominator task.  If our task is not a dominator task, then we simply append
+it to the list of active tasks making it possible for future task registrations to detect
+it as a dependence.
+
+When traversing partition nodes we perform a similar, but less complicated analysis.  There
+are two cases to consider for partition nodes: disjoint partitions and aliased partitions.
+In the case of disjoint partitions, we simply open the subregion that we intend to traverse
+and then traverse it.  This is correct because we know by definition that any two logical
+subregions in a disjoint partition are disjoint and therefore a dependence can never exits
+between them.
+
+For aliased partitions we have to perform an additional dependence analysis.  At every
+aliased partition node we maintain a list of tasks active in all of the subregions.  We
+perform a coherence dependence analysis between every pair of tasks regardless of the subregion
+they are accessing to see if a dependence could exist.  We do this regardless of the subregion
+because we have no disjointness information in an aliased partition.  If there are any
+potential dependences, we close up all the subregions and then open the subregion required.  If
+no dependence was detected then we open the subregion we need, append the task to the list
+of active tasks, and continue the traversal.  Allowing multiple open subregions in an aliased
+partition is safe because we performed an analysis between all active tasks regardless of
+whether the particular subregions were aliased or not.
+
+\subsubsection{Putting It All Together: Circuit Example}
+\label{subsec:cirdependence}
+
+\subsection{Implicit Dataflow Construction}
+\label{subsec:dataflow}
+In addition to computing the dependences between tasks, we also have to compute where
+a task is permitted to acquire its data from when it goes to execute.
+It is insufficient to simply record the producer task as there
+may be multiple active tasks for a logical region, all of which may produce different physical
+instances.  In addition, it is likely that the producer tasks have not been mapped
+yet which makes it impossible to know the set of physical instances from which to pull data.
+
+To solve this problem we create the notion of an {\em abstract instance}.  An abstract instance
+is a place holder for the set of physical instances from which a task can choose to pull
+data when it creates its own physical instances before executing.  For each region in
+a task we record the source and destination abstract instances that correspond to the physical
+instances from which a task will read its input data and then place its output data.
+When the task is mapped as described in section \ref{subsec:mapping} we will update these
+abstract instances with the actual physical instances chosen.
+
+To determine the source and destination abstract instances of a region, we keep track of 
+the previous abstract instances that were observed on the way to our target region node
+when performing dependence analysis.  These abstract instances describe the set of physical
+instances from which valid data for our task can be chosen when it is mapped.  If a region
+subtree must be closed then all the abstract instances in that subtree are marked closed
+so no additional tasks can register them as sources.  We can also chose to create a new
+abstract instance to replace a currently valid abstract instance to avoid a WAR conflict.
+By creating an abstract instance we will force the mapper to choose a different physical
+instance from the existing ones when mapping is performed.
+
+Abstract instances correspond to a dynamic construction of the dataflow graph.  Each abstract
+instance is a node in the dataflow graph corresponding to a specific version of a logical 
+region and its instantiations as physical regions.  Tasks are then edges between abstract
+instances indicating operations on different versions of data.  By computing this information
+during conflict detection, we can record it before tasks begin executing out of order allowing
+us to guarantee program correctness in the presence of out of order task execution.  Continuing
+the analogy with out-of-order processors, this implicit construction of the dataflow graph
+is annalogous to register renaming which is done in order, but allows the processor to remove
+WAR dependences and execute instructions in parallel that may have had false dependences.
 
 \subsection{Mapping}
+\label{subsec:mapping}
 
 \subsubsection{Placing Tasks}
 
