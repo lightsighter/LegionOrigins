@@ -18,7 +18,7 @@ is hopefully a gain in clarity and simplicity for illustrating the core ideas in
 Legion.    We consider programs written in the following language:
 
 \begin{eqnarray*}
-\mbox{def}\ f(r_1,\ldots,r_n): P_1,\ldots,P_m & = & s_1; \ldots s_n; \\[.15in]
+F & := & \mbox{def}\ f(r_1,\ldots,r_n): P_1,\ldots,P_m  =   s_1; \ldots s_n; \\[.15in]
 P & := & R(r) | W(r) \\[.15in]
 s & := & f(r_1,\ldots,r_n) \\
 &| & \deref r = x \\
@@ -26,7 +26,6 @@ s & := & f(r_1,\ldots,r_n) \\
 &| & \mbox{\tt newregion}\ r \\
 &| & (r_1, r_2)_{p} = \mbox{\tt partition}(r) \\ 
 &| & \mbox{\tt close}\ p 
-
 \end{eqnarray*}
 
 There are four kinds of names: functions $f$, regions $r$, local
@@ -44,7 +43,7 @@ $r$.  A $\mbox{\tt newregion} r$ statement creates a new region with
 name $r$. 
 
 The statement $(r_1, r_2)_{p} = \mbox{\tt partition}(r)$
-creates two {\em subregions} $r_1$ and $r_$ partitioning the parent
+creates two {\em subregions} $r_1$ and $r_2$ partitioning the parent
 region $r$.  All three region names ($r_1$,$r_2$,and $r$) can be used
 after the partition.  Regions $r_1$ and $r_2$ are disjoint but neither
 $r_1$ nor $r_2$ is disjoint from $r$.  The partition itself also has a name $p$,
