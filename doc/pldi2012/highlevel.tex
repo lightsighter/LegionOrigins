@@ -85,17 +85,35 @@ there is never a conflict.  If at least one of them is a write we use table
 \begin{tabular}{|c|c|c|c|c|} \hline
              & Exclusive & Atomic   & Simultaneous & Relaxed \\ \hline 
 Exclusive    & Conflict  & Conflict & Conflict     & Conflict \\ \hline
-Atomic       & Conflict  & Same Instance & Conflict & Conflict \\ \hline
-Simultaneous & Conflict  & Conflict & Same Instance & None \\ \hline
-Relaxed      & Conflict  & Conflict & None & None \\ \hline
+Atomic       & Conflict  & Same Instance & Contingent & Contingent \\ \hline
+Simultaneous & Conflict  & Contingent & Same Instance & None \\ \hline
+Relaxed      & Conflict  & Contingent & None & None \\ \hline
 \end{tabular}
-\caption{Conflict detection cases}
+\caption{Conflict detection cases when at least one access is a write.\label{tab:conflicts}}
 \end{table}
 \end{center}
+In this table, {\em Conflict} indicates that there will always be a conflict between
+regions while {\em None} indicates that there will never be a conflict regardless
+of mapping decisions.  In the case of {\em Same Instance} there is a conflict contingent
+upon a mapping decision.  If both tasks map to the same physical instance (described in 
+more detail in section \ref{subsec:instmang}) then there is no conflict, which if
+they map to different instances there is a conflict as the system will have to generate
+a copy between the two tasks running.
 
+For the case of {\tt Contingent} there are two special cases that we handle.
+One special case is Write-After-Read (WAR) conflicts.  For the WAR case, if neither coherence property
+is {\em Exclusive} then we can ensure that different physical instances
+are used to avoid a conflict and increase parallelism.  If either property is {\em Exclusive} then the semantics
+of the programming model mandate that we detect a conflict and serialize the task.
+
+Another special case occurs if there is an {\tt Atomic} writer and either {\tt Simultaneous}
+or {\tt Relaxed} reader.  In this case it is acceptable for the tasks to run in
+parallel as it is valid for the reader to see updates form the writer, and the
+reader will not violate the atomic access semantics of the writer.
 
 \subsection{Abstract Instances}
 \label{subsec:absinsts}
+
 
 \subsection{Dependence Detection}
 \label{subsec:depdetect}
@@ -133,6 +151,7 @@ we must {\em close} the partitions to detect any possible conflicts
 \subsubsection{Placing Tasks}
 
 \subsubsection{Instance Management}
+\label{subsec:instmang}
 
 \subsection{Execution}
 
