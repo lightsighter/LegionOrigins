@@ -202,10 +202,7 @@ of active tasks, and continue the traversal.  Allowing multiple open subregions 
 partition is safe because we performed an analysis between all active tasks regardless of
 whether the particular subregions were aliased or not.
 
-\subsubsection{Putting It All Together: Circuit Example}
-\label{subsec:cirdependence}
-
-\subsection{Implicit Dataflow Construction}
+\subsubsection{Implicit Dataflow Construction}
 \label{subsec:dataflow}
 In addition to computing the dependences between tasks, we also have to compute where
 a task is permitted to acquire its data from when it goes to execute.
@@ -228,7 +225,7 @@ when performing dependence analysis.  These abstract instances describe the set 
 instances from which valid data for our task can be chosen when it is mapped.  If a region
 subtree must be closed then all the abstract instances in that subtree are marked closed
 so no additional tasks can register them as sources.  We can also chose to create a new
-abstract instance to replace a currently valid abstract instance to avoid a WAR conflict.
+abstract instance to replace a currently valid abstract instance to avoid a WAR dependence.
 By creating an abstract instance we will force the mapper to choose a different physical
 instance from the existing ones when mapping is performed.
 
@@ -236,21 +233,172 @@ Abstract instances correspond to a dynamic construction of the dataflow graph.  
 instance is a node in the dataflow graph corresponding to a specific version of a logical 
 region and its instantiations as physical regions.  Tasks are then edges between abstract
 instances indicating operations on different versions of data.  By computing this information
-during conflict detection, we can record it before tasks begin executing out of order allowing
+during dependence detection, we can record it before tasks begin executing out of order allowing
 us to guarantee program correctness in the presence of out of order task execution.  Continuing
 the analogy with out-of-order processors, this implicit construction of the dataflow graph
 is annalogous to register renaming which is done in order, but allows the processor to remove
 WAR dependences and execute instructions in parallel that may have had false dependences.
 
+\subsubsection{Putting It All Together: Circuit Example}
+\label{subsec:cirdependence}
+To illustrate concretely how dependence analysis works, we describe the steps for
+performing dependence analysis for running circuit example.  When the {\tt simulate\_circuit}
+task begins executing there are two region trees rooted at the logical
+regions for {\tt all\_nodes} and {\tt all\_wires}.  For conciseness we will only
+show the region tree for {\tt all\_nodes}.  At the start of the task, there exists
+a single abstract instance at the root node representing the valid set of physical
+instances from which sub tasks will be allowed to pull data.  The state of the
+system at this point can be observed in figure \ref{fig:circdep1}.
+
+When each of the {\tt compute\_new\_current} tasks are issued they must perform dependence
+analysis for two node regions.  In the {\tt private\_node} case they will first open
+up the {\tt p\_nodes\_pvs} partition and then open up the {\tt p\_pvt\_nodes} sub partition
+for each of their subregions.  Since all of the private regions use a different subregion
+of a disjoint partition for the private node accesses, no dependence is detected.  Similarly,
+when all the dependence analysis is performed for the {\tt p\_ghost\_nodes} subregions,
+each of the necessary partitions are opened.  There is no dependence with any of the private
+nodes since all the ghost nodes traverse a different sub region of the disjoint partition
+{\tt p\_nodes\_pvs}.  There is also no dependence between any tasks even though the
+{\tt p\_ghost\_nodes} partition is aliased because all the ghost accesses are read-only.
+The state of the region tree after dependence analysis has been performed for the
+{\tt compute\_new\_current} nodes can be seen in figure \ref{fig:circdep2}.
+
+In the second phase of the computation, all of the {\tt distribute\_charge} tasks
+will be issued.  For these tasks they will first analyze traverse the region tree
+for their subregions containing their private nodes.  The path to these regions are
+already open, but when the dependence analysis arrives at the specific private node subregion it will
+discover a dependence between the task and the {\tt compute\_new\_currents} task that operated
+on that region previously.  This dependence will be recorded and the 
+{\tt distribute\_charge} task will be made the new active task as it dominated the
+previous task.  For the ghost node regions, the dependence analysis will discover that the
+there is a dependence between each of the {\tt distribute\_charge} tasks and all of the
+{\tt compute\_new\_current} tasks because the {\tt distribute\_charge} tasks are
+performing writes and the partition is aliased.  However, the runtime will detect this as
+anti-dependences which are resolved by forcing the {\tt distribute\_charge} tasks to
+create new valid abstract instances rather than use the same abstract instances as
+each of the {\tt compute\_new\_current} tasks.  There are no dependences detected
+between each of the {\tt distribute\_charge} tasks on the ghost regions because
+the {\tt Simultaneous} coherence property permits multiple tasks to be using the same
+partition at the same time even if the subregions they are accessing are aliased.  The
+state of the region tree after dependence analysis for {\tt distribute\_charge} can
+be seen in figure \ref{fig:circdep3}.
+
+For the final phase of the computation, all of the {\tt update\_voltage} tasks
+are issued requiring their private node region and their shared node region.  Again
+the private node paths are already open, but a WAR dependence is detected which
+requires a new abstract instance to be created to avoid a dependence.  The
+shared nodes present a more interesting case.  The first shared node to be registered
+will detect a dependence with every prior task since it must open the shared partition
+instead of the ghost partition.  A new abstract instance is created at the 
+{\tt all\_shared} node and copies are recorded for each valid instance in the ghost partition
+back to the new {\tt all\_shared} abstract instance.  After this is complete, the
+ghost partition can be opened.  Each corresponding {\tt update\_voltage} task will record
+a dependence on the copy operation to close ghost partition as it traverses the {\tt all\_shared}
+node ensuring that there is no requirement on the ordering of {\tt update\_voltage}
+tasks.  The state of the region tree after this phase can be seen in figure \ref{fig:circdep4}.
+
 \subsection{Mapping}
 \label{subsec:mapping}
+After tasks have undergone dependence analysis, the tasks are placed on either a ready
+queue to be mapped or waiting queue.  A task is placed on the ready queue if all the tasks with
+which it registered a dependence have mapped.  If any of the task's dependences have
+not mapped then the task is placed on the waiting queue.  The task also registers
+itself with the task it depends on so that when the dependent task is mapped it will notify
+the task on the waiting queue. Tasks are mapped based on the partial ordering created by 
+their data dependences.  By mapping tasks based on data dependences we guarantee the 
+semantics of the programming model, while still allowing tasks to execute out of order.
 
-\subsubsection{Placing Tasks}
+When the scheduler is invoked, it will pull a series of tasks off the ready queue, map them,
+and then issue them to be executed by the low level runtime.  The process of mapping a task
+consists of several different queries made by the runtime to an application level object
+called a {\em mapper}.  A mapper is an object which has control over how both tasks and
+data can be placed in the machine.  This idea is a dynamic instantiation of the idea
+initially presented in \cite{Fatahalian06} of creating mapping files for specifying how
+tasks and data were placed in a memory hierarchy.  Rather than rely on a static mapping
+we opted for a dynamic interface that could make decisions both based on application specific
+input data as well as the machine specifics both at start-up and throughout the execution
+of an application.  The interface for a mapper is described in section \ref{subsec:mapinter}.
 
-\subsubsection{Instance Management}
-\label{subsec:instmang}
+\subsubsection{Mapper Interface}
+\label{subsec:mapinter}
+The interface for a mapper is designed to give the programmer control over how data and tasks
+are placed in the machine.  Every mapper must support the following function calls:
+
+\begin{itemize}
+\item {\tt rank\_initial\_region\_locations} - When a new logical region is created, the runtime
+will ask the mapper to give a ranking of physical memories of where to place the inital instance.
+
+\item {\tt rank\_initial\_partition\_locations} - When a new partition is created, the mapper
+must provide a ranking of memory locations for each of the new sub partitions.
+
+\item {\tt select\_initial\_processor} - Given a task to be mapped, select a processor to
+send this task to for mapping.  
+
+\item {\tt target\_task\_steal} - select a processor to attempt task stealing.  This is explained
+in more detail in section \ref{subsec:steal}.  
+
+\item {\tt permit\_task\_steal} - also covered in section \ref{subsec:steal}
+
+\item {\tt map\_task\_region} - Given a specific task and the logical region to be mapped, select
+a source physical instance for the data, and provide a ranking of memories in which to create
+or reuse an existing physical instance.
+
+\item {\tt rank\_copy\_targets} - Given a task and a set of valid instances, generate a set of
+rankings for new memories in which to place new phsyical instances.  This operation is used to
+manage the copy operations performed when closing a subtree as they allow the programmer to
+eagerly migrate regions through the memory hierarchy as copy ups are occuring.
+
+\item {\tt select\_copy\_source} - Given a set of currently valid source instances and destination
+physical instance, select the instance from which a copy should be made.
+\end{itemize}
+
+These eight task calls give the programmer complete control over where all tasks are executed, and
+where all data is placed within the memory hierarchy.  While this interface does give the programmer
+complete control over data and task movement, it will never allow the programmer to affect the
+correctness of the program.  The highlevel runtime still manages all the task dependences and the
+ordering in which tasks are executed and copies are performed.  Therefore, regardless of choices
+made by any mapper, the resulting program will always be executed correctly.
+
+In order to make it easy for programmers to write programs, we provide an initial implementation 
+of the mapper interface that uses simple heuristics to place task and data.  This makes it easy
+for the programmer to get an initial program running, while allowing them to write their own
+mapper to tune for application or machine specific scenarios at a later time.
+
+Lastly, the runtime supports multiple mappers in use in the same application.  For each task 
+call the programmer can choose a mapper to be used for the runtime calls made inside that
+task.  This allows for the creation of library code which provides their own mappers indpendent
+from any application level mappers that may be created.
+
+\subsubsection{Task Stealing for Load Balance}
+\label{subsec:steal}
+In order to achieve load balancing in an application the runtime supports an interface
+for task stealing.  Our task stealing algorithm is loosely based on the stealing algorithm
+used by Cilk\ref{CILK95} with guidance from the mapper about how stealing should be
+performed.  Tasks are initially placed on the ready queue on the processor in which they
+were registered.  However, a task can be moved to a different processor either by a mapper
+explicitly choosing to relocate it, or by a steal request from another processor.
+
+When a processor notices that it has no work on its ready queue, it will inquire into each
+mapper asking for a target processor to attempt a steal via the {\tt target\_task\_steal}
+call in the mapper interface.  A mapper can either respond with
+a target processor, or indicate that no steal should be attempted.  The runtime will then
+send steal requests to each processor on behalf of the specific mapper.  
+
+When a steal request is received at a processor it will determine the mapper(s) that generated
+the list of steal requests.  For each mapper that issued a steal request, the runtime will
+give to the local instance of that mapper a list of the tasks in the ready queue that that
+specific mapper is responsible for mapping.  The mapper must then determine the set which
+it is going to permit to be stolen if any.  Any tasks that the mapper marks as stolen are
+sent back to the stealing processor.  By only allowing mappers to make steal requests about
+the tasks they own, we are giving the mappers complete control over where tasks are mapped.
+In addition, we are also giving the mappers control over how steal requests are made for
+the case where the mapper has better knowledge about where additional work is than the 
+runtime.  Finally, note that this mapping interface is sufficiently powerful to allow a user to
+disable all stealing if desired, and to map tasks to explicit processors with no interference
+from the runtime.
 
 \subsection{Execution}
 
 \subsection{Task Completion}
+
 
