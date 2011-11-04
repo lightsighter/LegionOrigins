@@ -3,6 +3,8 @@
 
 #include "lowlevel_impl.h"
 
+GASNETT_THREADKEY_DECLARE(gpu_thread);
+
 namespace RegionRuntime {
   namespace LowLevel {
     class GPUProcessor : public Processor::Impl {
@@ -10,6 +12,8 @@ namespace RegionRuntime {
       GPUProcessor(Processor _me, int _gpu_index, size_t _zcmem_size, size_t _fbmem_size);
 
       ~GPUProcessor(void);
+
+      void start_worker_thread(void);
 
       void *get_zcmem_cpu_base(void);
 
@@ -23,6 +27,15 @@ namespace RegionRuntime {
 
       void copy_from_fb(void *dst, off_t src_offset, size_t bytes,
 			Event start_event, Event finish_event);
+
+      void copy_to_fb_generic(off_t dst_offset, 
+			      Memory::Impl *src_mem, off_t src_offset,
+			      size_t bytes,
+			      Event start_event, Event finish_event);
+
+      void copy_from_fb_generic(Memory::Impl *dst_mem, off_t dst_offset, 
+				off_t src_offset, size_t bytes,
+				Event start_event, Event finish_event);
 
     public:
       class Internal;

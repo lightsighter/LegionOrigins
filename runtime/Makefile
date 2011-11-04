@@ -75,5 +75,11 @@ ckt2:	lowlevel.o lowlevel_gpu.o highlevel.o circuit.o
 cktgpu2:	lowlevel.o lowlevel_gpu.o highlevel.o circuit_gpu.o
 	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
 
+fluid:	shared_lowlevel.o highlevel.o fluid.o
+	g++ -o $@ $(GCCFLAGS) $^ -lpthread
+
+fluid2:	lowlevel.o lowlevel_gpu.o highlevel.o fluid.o
+	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
+
 clean:
-	rm -f ckt ring tree *.o
+	rm -f fluid ckt ring tree *.o

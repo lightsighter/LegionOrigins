@@ -1,0 +1,139 @@
+
+\section{High-Level Runtime} 
+\label{sec:highlevel}
+The high-level runtime is responsible for guaranteeing the semantics 
+of programs written in the Legion programming model while at the same
+time extracting high performance.  This goal is challenging because
+the high-level runtime must be capable of operating on top of many 
+different architectures abstracted by the low-level runtime.  This 
+includes those with very large latencies for transferring data such
+as distributed memory clusters.  To hide these latencies, the high
+level runtime uses a deffered model of execution made possible by the
+event model of the low-level runtime.  By deffering execution, the 
+runtime can hide the latencies of data and task movement and acieve
+good throughput and high performance.
+
+However, a deffered execution model presents challenges to implementing
+the semantics of the Legion programming model.  Deffered execution
+does not necessarily imply that tasks will be executed in the order in
+which they are scheduled, but only in the order in which low-level
+event dependencies are created.  To orchestrate the execution of Legion
+programs in this environment the high-level runtime is architected
+in a manner similar to an out-of-order hardware processor.  There are
+multiple stages to executing a task which allows the runtime to extract
+as much task-level parallelism as possible from an application whithin
+the constraints of the Legion programming model.  We now investigate
+each of these stages in further detail.
+
+\subsection{Dependence Analysis} 
+\label{subsec:depanalysis}
+The first step in the execution of a task is dependence analysis.  When
+a task is registered with the high level runtime the task call includes
+information about both the logical regions that the task will require
+when it is executed as well as the read-write access and coherence properties
+for each of the regions.  The runtime uses this information to perform
+conflict detection with each of the previous tasks that have been registered
+in the same parent task.  Conflict detection only needs to be performed at
+the scope of an enclosing task because the semantics of the Legion programming
+model ensure that all tasks can only use regions which are subregions of
+regions that the parent task uses.  This implies that if a child task were
+to have a conflict with task at a higher level of the task tree, then the
+parent task would also have had a conflict.  
+
+Lemma: If a task {\tt t} with ancestor task {\tt p} conflicts with task {\tt t'}
+a sibling task of {\tt p}, then tasks {\tt p} and {\tt t'} must conflict.
+
+This property of the Legion programming model enables the runtime to only 
+have to perform dependence analysis between tasks which share the same 
+parent task.  By restricting dependence analysis to tasks which share the same
+parent task, the runtime can perform dependence analysis locally and not
+have to be concerned with tasks being created in other parts of the machine.
+
+When performing dependence analysis the runtime relies on its knowledge about
+the relationships between logical regions and partitions.  We first describe
+the the components to dependence analysis in sections \ref{subsec:regiontree},
+\ref{subsec:cohconf}, and \ref{absinsts}.  We then describe the algorithm for performing 
+dependence analysis on this data structures in section \ref{subsec:depdetect}.
+
+\subsection{Region Trees}
+\label{subsec:regiontree}
+To detect dependences between the tasks, the runtime leverages its knowledge
+about logical regions and their partitions.  To create a new logical region
+or partition, the application must invoke the corresponding call in the
+runtime.  As these calls occur, the runtime constructs a data strcture
+called a {\em region tree}.  A region tree describes the relationship between
+logical regions and partitions.  A region tree contains two types of nodes:
+region nodes and partition nodes.  Every region tree is rooted with a region
+node and alternates between region and partition nodes at each corresponding level.
+A region node represents a specific logical region and tracks the set of
+partitions of that logical region.  Similarly a partition node represents 
+a specific partitioning of a logical region and keeps track of the logical regions 
+which are subregions of the partition.  
+
+\subsection{Coherence Conflicts}
+\label{subsec:cohconf}
+To detect conflicts between any two tasks using a logical region, we leverage
+the information contained in the access and cohrence properties provided by the programmer
+for how the region is to be used.  Conflict checks are performed pair-wise between regions
+to determine whether two tasks conflict with each other.  When checking for
+conflicts we first examine the access property.  If both tasks are reads, then 
+there is never a conflict.  If at least one of them is a write we use table
+\ref{tab:conflicts} to determine whether there is a conflict.
+
+\begin{center}
+\begin{table}
+\begin{tabular}{|c|c|c|c|c|} \hline
+             & Exclusive & Atomic   & Simultaneous & Relaxed \\ \hline 
+Exclusive    & Conflict  & Conflict & Conflict     & Conflict \\ \hline
+Atomic       & Conflict  & Same Instance & Conflict & Conflict \\ \hline
+Simultaneous & Conflict  & Conflict & Same Instance & None \\ \hline
+Relaxed      & Conflict  & Conflict & None & None \\ \hline
+\end{tabular}
+\caption{Conflict detection cases}
+\end{table}
+\end{center}
+
+
+\subsection{Abstract Instances}
+\label{subsec:absinsts}
+
+\subsection{Dependence Detection}
+\label{subsec:depdetect}
+When a task is registered, the runtime
+will perform conflict detection for every region that the task requests with
+prior tasks that have been registered in the same parent task context.  Referring
+back to our analogy of the high level runtime as an out of order processor, this
+corresponds to the wake-up logic that detects when an instruction is ready to be
+executed.  Continuing this analogy, the regions that a task requires are annalogous
+to the registers listed in an instruction.  However, this poses a difficulty for the
+high level runtime as two logical regions are not necessarily independent.  In
+order to do the conflict detection we rely on the region tree data structure to be
+able to detect conflicts between tasks which require different logical regions.
+
+To perform dependence detection, we first find the {\em root region} for the 
+requested region.  The root region is the ancestor region for which the parent task
+has privliges.  Note that the semantics of the Legion programming model state that
+we must always be able to find such a root region or else an error is thrown.  
+
+Once we have found the root region for the requested region, we then proceed to walk
+down the region tree from the node corresponding to the root region to the node
+for the requested region.  At each node, we determine if any potential conflicts exist.
+
+For region nodes we first check to see if any tasks currently using this region
+conflict based on the coherence proprties the two task require.  We describe coherence
+conflicts in more detail in section \ref{subsec:cohconf}.  If a conflict is discovered
+we record that the task must wait on the previous task before executing.  We also check
+to see if any of the partitions of the region have been marked open.  If they have
+we must {\em close} the partitions to detect any possible conflicts
+
+\subsection{Correctness}
+
+\subsection{Mapping}
+
+\subsubsection{Placing Tasks}
+
+\subsubsection{Instance Management}
+
+\subsection{Execution}
+
+\subsection{Task Completion}

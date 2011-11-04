@@ -65,6 +65,20 @@ namespace RegionRuntime {
 	  }
 	}
 
+	inline void spew(const char *fmt, ...) __attribute__((format (printf, 2, 3)))
+	{
+	  if(LEVEL_SPEW >= COMPILE_TIME_MIN_LEVEL) {  // static opt-out
+	    if(LEVEL_SPEW >= log_level) {             // dynamic opt-out
+	      if(log_cats_enabled[index]) {      // category filter
+		va_list args;
+		va_start(args, fmt);
+		Logger::logvprintf(LEVEL_SPEW, index, fmt, args);
+		va_end(args);
+	      }
+	    }
+	  }
+	}
+
 	inline void debug(const char *fmt, ...) __attribute__((format (printf, 2, 3)))
 	{
 	  if(LEVEL_DEBUG >= COMPILE_TIME_MIN_LEVEL) {  // static opt-out
@@ -442,10 +456,10 @@ namespace RegionRuntime {
 
       template <class T>
       __device__ void write(ptr_t<T> ptr, T newval) const { ((T*)array_base)[ptr.value] = newval; }
-#endif
 
-      //template <class REDOP, class T, class RHS>
-      //void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::apply(((T*)array_base)[ptr.value], newval); }
+      template <class REDOP, class T, class RHS>
+      __device__ void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::apply(&((T*)array_base)[ptr.value], newval); }
+#endif
     };
 
     template <class ET, AccessorType AT = AccessorGeneric>
