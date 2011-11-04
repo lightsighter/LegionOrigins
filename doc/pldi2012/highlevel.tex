@@ -32,16 +32,16 @@ a task is registered with the high level runtime the task call includes
 information about both the logical regions that the task will require
 when it is executed as well as the read-write access and coherence properties
 for each of the regions.  The runtime uses this information to perform
-conflict detection with each of the previous tasks that have been registered
-in the same parent task.  Conflict detection only needs to be performed at
+dependence detection with each of the previous tasks that have been registered
+in the same parent task.  Dependence detection only needs to be performed at
 the scope of an enclosing task because the semantics of the Legion programming
 model ensure that all tasks can only use regions which are subregions of
 regions that the parent task uses.  This implies that if a child task were
-to have a conflict with task at a higher level of the task tree, then the
-parent task would also have had a conflict.  
+to depend on a task at a higher level of the task tree, then the
+parent task would also have had a dependence.  
 
-Lemma: If a task {\tt t} with ancestor task {\tt p} conflicts with task {\tt t'}
-a sibling task of {\tt p}, then tasks {\tt p} and {\tt t'} must conflict.
+Lemma: If a task {\tt t} with ancestor task {\tt p} depends on task {\tt t'}
+a sibling task of {\tt p}, then task {\tt p} must depend on task {\tt t'}.
 
 This property of the Legion programming model enables the runtime to only 
 have to perform dependence analysis between tasks which share the same 
@@ -52,10 +52,10 @@ have to be concerned with tasks being created in other parts of the machine.
 When performing dependence analysis the runtime relies on its knowledge about
 the relationships between logical regions and partitions.  We first describe
 the the components to dependence analysis in sections \ref{subsec:regiontree},
-\ref{subsec:cohconf}, and \ref{absinsts}.  We then describe the algorithm for performing 
+\ref{subsec:cohdep}, and \ref{absinsts}.  We then describe the algorithm for performing 
 dependence analysis on this data structures in section \ref{subsec:depdetect}.
 
-\subsection{Region Trees}
+\subsubsection{Region Trees}
 \label{subsec:regiontree}
 To detect dependences between the tasks, the runtime leverages its knowledge
 about logical regions and their partitions.  To create a new logical region
@@ -70,63 +70,82 @@ partitions of that logical region.  Similarly a partition node represents
 a specific partitioning of a logical region and keeps track of the logical regions 
 which are subregions of the partition.  
 
-\subsection{Coherence Conflicts}
-\label{subsec:cohconf}
-To detect conflicts between any two tasks using a logical region, we leverage
+\subsubsection{Dependencies From Coherence Properties}
+\label{subsec:cohdep}
+To detect dependencies between any two tasks using a logical region, we leverage
 the information contained in the access and cohrence properties provided by the programmer
-for how the region is to be used.  Conflict checks are performed pair-wise between regions
-to determine whether two tasks conflict with each other.  When checking for
-conflicts we first examine the access property.  If both tasks are reads, then 
-there is never a conflict.  If at least one of them is a write we use table
-\ref{tab:conflicts} to determine whether there is a conflict.
+for how the region is to be used.  Dependency checks are performed pair-wise between regions
+to determine whether one task depends on the other.  When checking for
+dependencies we first examine the access property.  If both tasks are reads, then 
+there is never a dependence.  If at least one of them is a write we use table
+\ref{tab:depsdetect} to determine whether there is a dependence.
 
 \begin{center}
 \begin{table}
 \begin{tabular}{|c|c|c|c|c|} \hline
              & Exclusive & Atomic   & Simultaneous & Relaxed \\ \hline 
-Exclusive    & Conflict  & Conflict & Conflict     & Conflict \\ \hline
-Atomic       & Conflict  & Same Instance & Contingent & Contingent \\ \hline
-Simultaneous & Conflict  & Contingent & Same Instance & None \\ \hline
-Relaxed      & Conflict  & Contingent & None & None \\ \hline
+Exclusive    & Dependence & Dependence & Dependence & Dependence \\ \hline
+Atomic       & Dependence & Same Instance & Contingent & Contingent \\ \hline
+Simultaneous & Dependence & Contingent & Same Instance & None \\ \hline
+Relaxed      & Dependence & Contingent & None & None \\ \hline
 \end{tabular}
-\caption{Conflict detection cases when at least one access is a write.\label{tab:conflicts}}
+\caption{Dependence detection cases when at least one access is a write.\label{tab:depsdetect}}
 \end{table}
 \end{center}
-In this table, {\em Conflict} indicates that there will always be a conflict between
-regions while {\em None} indicates that there will never be a conflict regardless
-of mapping decisions.  In the case of {\em Same Instance} there is a conflict contingent
+In this table, {\em Dependence} indicates that there will always be a dependence between
+regions while {\em None} indicates that there will never be a dependence regardless
+of mapping decisions.  In the case of {\em Same Instance} there is a dependence contingent
 upon a mapping decision.  If both tasks map to the same physical instance (described in 
-more detail in section \ref{subsec:instmang}) then there is no conflict, which if
-they map to different instances there is a conflict as the system will have to generate
+more detail in section \ref{subsec:instmang}) then there is no dependence, which if
+they map to different instances there is a dependence as the system will have to generate
 a copy between the two tasks running.
 
 For the case of {\tt Contingent} there are two special cases that we handle.
-One special case is Write-After-Read (WAR) conflicts.  For the WAR case, if neither coherence property
+One special case is Write-After-Read (WAR) dependencies.  For the WAR case, if neither coherence property
 is {\em Exclusive} then we can ensure that different physical instances
-are used to avoid a conflict and increase parallelism.  If either property is {\em Exclusive} then the semantics
-of the programming model mandate that we detect a conflict and serialize the task.
+are used to avoid an anti-dependence and increase parallelism.  If either property is {\em Exclusive} then the semantics
+of the programming model mandate that we detect a dependence and serialize the task.
 
 Another special case occurs if there is an {\tt Atomic} writer and either {\tt Simultaneous}
 or {\tt Relaxed} reader.  In this case it is acceptable for the tasks to run in
 parallel as it is valid for the reader to see updates form the writer, and the
 reader will not violate the atomic access semantics of the writer.
 
-\subsection{Abstract Instances}
+\subsubsection{Abstract Instances}
 \label{subsec:absinsts}
+For the cases where tasks do not depend, they are allowed to create different physical
+instances of the same logical region.  The decision to do this however does not
+happen until the mapping phase of a task execution.  However, we need to have a place
+holder that is capable of representing all the possible valid physical instances
+from which to choose even if those instances do not exist because the prior
+tasks have not been mapped.  We call these place holders {\tt abstract instances}.
 
+Abstract instances represent the set of possible valid physical instances which a
+task will be capable of selecting from or adding to when it is mapped.  The value
+of abstract instances is that they allow us to remember which physical instances
+are valuable while continuing to perform dependence detection on newly registered
+tasks.  In the analogy to out-of-order processors abstract instances allow us
+to perform the same operation as register-renaming of instructions to avoid
+anti-dependences and to remember actual dependences even though our dependence detection
+analysis may run ahead of the actual execution of tasks.
 
-\subsection{Dependence Detection}
+\subsubsection{Dependence Detection}
 \label{subsec:depdetect}
 When a task is registered, the runtime
-will perform conflict detection for every region that the task requests with
-prior tasks that have been registered in the same parent task context.  Referring
-back to our analogy of the high level runtime as an out of order processor, this
-corresponds to the wake-up logic that detects when an instruction is ready to be
-executed.  Continuing this analogy, the regions that a task requires are annalogous
-to the registers listed in an instruction.  However, this poses a difficulty for the
-high level runtime as two logical regions are not necessarily independent.  In
-order to do the conflict detection we rely on the region tree data structure to be
-able to detect conflicts between tasks which require different logical regions.
+will perform dependence detection for every region that the task requests with
+prior tasks that have been registered in the same parent task context.  Since
+tasks are registered in program order we will always perform dependence detection
+in program order which guarantees correctness even if tasks are executed out-of-order.  
+Performing dependence detection in order is also annalogous to how an out of order
+processor works.  Out-of-order processors load instructions in order and only after
+analyzing their instructions and register dependencies do they execute instructions
+out of order.  The regions that a task requires are annalogous
+to the registers listed in an instruction and the goal of the high level
+runtime is to detect the same dependences and use them to enforce scheudling constraints
+upon a task.  However, there is a catch to this analogy: in the Legion programming
+model two different logical regions are not necessarily independent from each other.  In
+order to do the dependence detection we rely on the region tree data structure to be
+able to detect dependences between tasks which require different logical regions.
 
 To perform dependence detection, we first find the {\em root region} for the 
 requested region.  The root region is the ancestor region for which the parent task
@@ -135,16 +154,15 @@ we must always be able to find such a root region or else an error is thrown.
 
 Once we have found the root region for the requested region, we then proceed to walk
 down the region tree from the node corresponding to the root region to the node
-for the requested region.  At each node, we determine if any potential conflicts exist.
+for the requested region.  At each node, we determine if any potential dependences exist.
 
-For region nodes we first check to see if any tasks currently using this region
-conflict based on the coherence proprties the two task require.  We describe coherence
-conflicts in more detail in section \ref{subsec:cohconf}.  If a conflict is discovered
+For region nodes we first check to see if the required region has any dependences on
+tasks currently using the logical region by performing the check on coherence properties
+described in section \ref{subsec:cohdep}.  If a conflict is discovered
 we record that the task must wait on the previous task before executing.  We also check
 to see if any of the partitions of the region have been marked open.  If they have
 we must {\em close} the partitions to detect any possible conflicts
 
-\subsection{Correctness}
 
 \subsection{Mapping}
 
@@ -156,3 +174,4 @@ we must {\em close} the partitions to detect any possible conflicts
 \subsection{Execution}
 
 \subsection{Task Completion}
+
