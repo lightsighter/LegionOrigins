@@ -398,7 +398,32 @@ disable all stealing if desired, and to map tasks to explicit processors with no
 from the runtime.
 
 \subsection{Execution}
+\label{subsec:execution}
+Once task mapping is complete the high level runtime performs the necessary operations
+to be issue the task to the low level runtime.  It first creates any new physical instances
+for the regions which the task requires.  It then issues the necessary copies required
+for the task to execute contignent on the tasks producing the source physical instances
+have finished.  Then it issues the task itself to the low level processor contingent
+on all the copies for the task haveing finished as well as the the set of tasks
+on which the issuing task dependends having finished.  These dependences are all encoded
+using event dependencies in the low level runtime.  Once all the necessary events
+have triggered the task will be run.
+
+Once a task starts running, the runtime is asked to create the region accessors for
+the task.  The runtime investigates whether or not fast accessors can be created for
+each of the regions that the task requires.  Fast accessors are described in more
+detail in section \ref{sec:fastaccess}.  If fast accessors can be created for every
+region in a task, then the runtime chooses to execute a task instantiated with fast
+region accessor methods.  However, if any region can not be specialized into a fast
+accessor the runtime defaults to a task instantiation that relies on {\tt get} and
+{\tt put} operations to access regions.
+
+The runtime will also return to the executing task a unique identifier describing the
+context in which the task is executing.  All calls into the runtime require the task
+to pass this context identifier which is what permits the runtime to know the context
+for incoming calls.  
 
 \subsection{Task Completion}
+\label{subsec:cleanup}
 
 
