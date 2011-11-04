@@ -1,63 +1,4 @@
-\newcommand{\mygraph}{
-%\draw[step=0.5,gray,very thin] (0,0) grid (8,5);
-
-\node[cn,s0] (n1) at (0.77,1.27) {};
-\node[cn,p0] (n2) at (1.6165,3.3865) {};
-\node[cn,s0] (n3) at (2.463,2.54) {};
-\node[cn,p0] (n4) at (0.8755,2.54) {};
-\node[cn,p2] (n5) at (2.463,0.529) {};
-\node[cn,s2] (n6) at (3.945,1.799) {};
-\node[cn,s0] (n7) at (3.6275,2.963) {};
-\node[cn,p2] (n8) at (4.7915,0.529) {};
-\node[cn,s1] (n9) at (5.638,1.5875) {};
-\node[cn,s1] (n10) at (6.6965,1.164) {};
-\node[cn,s1] (n11) at (5.215,2.6455) {};
-\node[cn,p1] (n12) at (6.379,2.7515) {};
-\node[cn,p1] (n13) at (5.3205,3.598) {};
-\node[cn,s1,g0] (n14) at (4.1565,4.1275) {};
-\node[cn,s0] (n15) at (2.8865,3.81) {};
-\node[cn,p0] (n16) at (0.77,4.1275) {};
-\node[cn,s2,g0] (n17) at (1.405,0.423) {};
-\node[cn,p1] (n18) at (6.379,4.0215) {};
-\node[cn,s2,g0] (n19) at (2.7805,1.4815) {};
-\node[cn,s0] (n20) at (1.7225,1.799) {};
-\node[cn,p2] (n21) at (3.733,0.7405) {};
-\node[cn,s2] (n22) at (5.85,0.635) {};
-
-\draw (n16) to (n2);
-\draw (n16) to (n4);
-\draw (n5) to (n21);
-\draw (n21) to (n8);
-\draw (n12) to (n13) to (n18) to (n12);
-
-
-\draw[p2s] (n1) to (n4) to (n20);
-\draw[p2s] (n4) to (n3) to (n15) to (n2);
-\draw[p2s] (n15) to (n7);
-
-\draw[p2s] (n14) to (n13) to (n11) to (n9) to (n12) to (n10);
-
-\draw[p2s] (n17) to (n19) to (n5);
-\draw[p2s] (n19) to (n6) to (n8) to (n22);
-
-\draw[s2s] (n1) to (n17);
-\draw[s2s] (n20) to (n19) to (n3);
-\draw[s2s] (n15) to (n14) to (n7);
-\draw[s2s] (n11) to (n6) to (n9) to (n22) to (n10);
-
-\draw[thick] (0.5,0.5) to (4,2.5);
-\draw[thick] (3.75,4.5) to (4,2.5);
-\draw[thick] (6.5,0.5) to (4,2.5);
-
-\draw[dashed] (0.5,2) .. controls (1,2) and (1.5,2.5) .. (1.9,3.1) .. controls (2,4) .. (1.75,4.5);
-\draw[dashed] (5.25,4.5) .. controls (4.75,3.5) .. (5.25,3.25) .. controls (6,3) .. (6.25,2.5) .. controls (6.25,2.25) .. (7,2);
-\draw[dashed] (2,0.25) .. controls (2.25,1) .. (3.5,1.1) .. controls (5,1.25) .. (5.5,0.25);
-}
-
-\begin{figure}[t]
-  \centering
-\subfigure[partitioning tree]{
-\begin{tikzpicture}
+\def\partitiontree{
 %\draw[step=0.5,gray,very thin] (0,0) grid (8,5);
 
 \node(top) at (3.5,4.5) { $all{\_}nodes$ };
@@ -110,6 +51,69 @@
   node[pos=0.5,inner sep=0] {} edge (pvst.310)
   node[pos=0.8,inner sep=0] {} edge (gn.north)
   ;
+}
+
+\def\partitiongraph{
+%\draw[step=0.5,gray,very thin] (0,0) grid (8,5);
+
+\node[cn,s0] (n1) at (0.77,1.27) {};
+\node[cn,p0] (n2) at (1.6165,3.3865) {};
+\node[cn,s0] (n3) at (2.463,2.54) {};
+\node[cn,p0] (n4) at (0.8755,2.54) {};
+\node[cn,p2] (n5) at (2.463,0.529) {};
+\node[cn,s2] (n6) at (3.945,1.799) {};
+\node[cn,s0] (n7) at (3.6275,2.963) {};
+\node[cn,p2] (n8) at (4.7915,0.529) {};
+\node[cn,s1] (n9) at (5.638,1.5875) {};
+\node[cn,s1] (n10) at (6.6965,1.164) {};
+\node[cn,s1] (n11) at (5.215,2.6455) {};
+\node[cn,p1] (n12) at (6.379,2.7515) {};
+\node[cn,p1] (n13) at (5.3205,3.598) {};
+\node[cn,s1,g0] (n14) at (4.1565,4.1275) {};
+\node[cn,s0] (n15) at (2.8865,3.81) {};
+\node[cn,p0] (n16) at (0.77,4.1275) {};
+\node[cn,s2,g0] (n17) at (1.405,0.423) {};
+\node[cn,p1] (n18) at (6.379,4.0215) {};
+\node[cn,s2,g0] (n19) at (2.7805,1.4815) {};
+\node[cn,s0] (n20) at (1.7225,1.799) {};
+\node[cn,p2] (n21) at (3.733,0.7405) {};
+\node[cn,s2] (n22) at (5.85,0.635) {};
+
+\draw (n16) to (n2);
+\draw (n16) to (n4);
+\draw (n5) to (n21);
+\draw (n21) to (n8);
+\draw (n12) to (n13) to (n18) to (n12);
+
+
+\draw[p2s] (n1) to (n4) to (n20);
+\draw[p2s] (n4) to (n3) to (n15) to (n2);
+\draw[p2s] (n15) to (n7);
+
+\draw[p2s] (n14) to (n13) to (n11) to (n9) to (n12) to (n10);
+
+\draw[p2s] (n17) to (n19) to (n5);
+\draw[p2s] (n19) to (n6) to (n8) to (n22);
+
+\draw[s2s] (n1) to (n17);
+\draw[s2s] (n20) to (n19) to (n3);
+\draw[s2s] (n15) to (n14) to (n7);
+\draw[s2s] (n11) to (n6) to (n9) to (n22) to (n10);
+
+\draw[thick] (0.5,0.5) to (4,2.5);
+\draw[thick] (3.75,4.5) to (4,2.5);
+\draw[thick] (6.5,0.5) to (4,2.5);
+
+\draw[dashed] (0.5,1.5) .. controls (1,2) and (1.5,2.5) .. (1.9,3.1) .. controls (2,4) .. (1.75,4.5);
+\draw[dashed] (5.25,4.5) .. controls (4.75,3.5) .. (5.25,3.25) .. controls (6,3) .. (6,2.5) .. controls (6,2.25) .. (7,2.5);
+\draw[dashed] (2,0.25) .. controls (2.25,1) .. (3.5,1.1) .. controls (5,1.25) .. (5.5,0.25);
+}
+
+\begin{figure}[t]
+  \centering
+\subfigure[partitioning tree]{
+\begin{tikzpicture}
+\partitiontree
 \end{tikzpicture}
 }
 
@@ -127,7 +131,7 @@
    p2p/.style={very thin},
    p2s/.style={very thin},
    s2s/.style={very thin}]
-\mygraph
+\partitiongraph
 \end{tikzpicture}
 }
   \subfigure[$p_i$]{
@@ -144,7 +148,7 @@
    p2p/.style={very thin},
    p2s/.style={very thin},
    s2s/.style={very thin}]
-\mygraph
+\partitiongraph
 \end{tikzpicture}
 }
   \subfigure[$s_i$]{
@@ -161,7 +165,7 @@
    p2p/.style={very thin},
    p2s/.style={very thin},
    s2s/.style={very thin}]
-\mygraph
+\partitiongraph
 \end{tikzpicture}
 }
   \subfigure[$g_i$]{
@@ -178,7 +182,7 @@
    p2p/.style={very thin},
    p2s/.style={very thin},
    s2s/.style={very thin}]
-\mygraph
+\partitiongraph
 \end{tikzpicture}
 }
   \label{fig:part_fig}
