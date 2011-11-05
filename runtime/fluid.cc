@@ -15,6 +15,11 @@ using namespace RegionRuntime::HighLevel;
 
 extern RegionRuntime::LowLevel::Logger::Category log_mapper;
 
+namespace Config {
+  unsigned num_steps = 4;
+  bool args_read = false;
+};
+
 enum {
   TASKID_INIT_SIMULATION = TASK_ID_AVAILABLE,
   TASKID_INIT_CELLS,
@@ -29,8 +34,9 @@ enum {
 #define DIMX 8
 #define DIMY 8
 #define NUM_BLOCKS (DIMX*DIMY)
-#define CELLS_X 4
-#define CELLS_Y 4
+#define CELLS_X 8
+#define CELLS_Y 8
+#define MAX_PARTICLES 64
 
 #define UP(y)    (((y)==0) ? (DIMY-1) : ((y)-1))
 #define DOWN(y)  (((y)==(DIMY-1)) ? 0 : ((y)+1))
@@ -54,6 +60,7 @@ enum { // don't change the order of these!  needs to be symmetric
   LOWER_LEFT,
   LOWER_CENTER,
   LOWER_RIGHT,
+  MIDDLE,
 };
 
 class Vec2
@@ -85,11 +92,11 @@ public:
 struct Cell
 {
 public:
-  Vec2 p[16];
-  Vec2 hv[16];
-  Vec2 v[16];
-  Vec2 a[16];
-  float density[16];
+  Vec2 p[MAX_PARTICLES];
+  Vec2 hv[MAX_PARTICLES];
+  Vec2 v[MAX_PARTICLES];
+  Vec2 a[MAX_PARTICLES];
+  float density[MAX_PARTICLES];
   unsigned num_particles;
   //ptr_t<Cell> neigh_ptrs[8];
   unsigned x;
@@ -118,10 +125,12 @@ struct Block {
   LogicalHandle edge[2][8];
   BufferRegions regions[2];
   ptr_t<Cell> cells[2][CELLS_Y+2][CELLS_X+2];
+  int cb;  // which is the current buffer?
+  int id;
 };
 
 struct TopLevelRegions {
-  LogicalHandle real_cells0, real_cells1;
+  LogicalHandle real_cells[2];
   LogicalHandle edge_cells;
 };
 
@@ -139,6 +148,8 @@ float h, hSq;
 float densityCoeff, pressureCoeff, viscosityCoeff;
 unsigned nx, ny, numCells;
 Vec2 delta;				// cell dimensions
+
+extern RegionRuntime::LowLevel::Logger::Category log_app;
 
 
 void get_all_regions(LogicalHandle *ghosts, std::vector<RegionRequirement> &reqs,
@@ -163,6 +174,8 @@ void top_level_task(const void *args, size_t arglen,
 
   std::vector<Block> blocks;
   blocks.resize(NUM_BLOCKS);
+  for(unsigned i = 0; i < NUM_BLOCKS; i++)
+    blocks[i].id = i;
 
   // first, do two passes of the "real" cells
   for(int b = 0; b < 2; b++) {
@@ -178,7 +191,7 @@ void top_level_task(const void *args, size_t arglen,
 	unsigned id = idy*DIMX+idx;
 
 	for(unsigned cy = 0; cy < CELLS_Y; cy++)
-	  for(unsigned cx = 0; cy < CELLS_X; cx++) {
+	  for(unsigned cx = 0; cx < CELLS_X; cx++) {
 	    ptr_t<Cell> cell = real_cells.alloc();
 	    coloring[id].insert(cell);
 	    blocks[id].cells[b][cy+1][cx+1] = cell;
@@ -188,7 +201,7 @@ void top_level_task(const void *args, size_t arglen,
     // Create the partitions
     Partition<Cell> cell_part = runtime->create_partition<Cell>(ctx,all_cells,
 								coloring,
-								NUM_BLOCKS,
+								//NUM_BLOCKS,
 								true/*disjoint*/);
 
     for (unsigned idy = 0; idy < DIMY; idy++)
@@ -230,7 +243,7 @@ void top_level_task(const void *args, size_t arglen,
       // horizontal edges
 #define HORIZ(dir,cy) do { \
 	unsigned id2 = MOVE_Y(idy,dir)*DIMX+idx;     \
-	for(unsigned cx = 0; cx < CELLS_X; cx++) {   \
+	for(unsigned cx = 1; cx <= CELLS_X; cx++) {   \
 	  ptr_t<Cell> cell = edge_cells.alloc();     \
 	  coloring[color + dir].insert(cell);	     \
 	  blocks[id].cells[0][cy][cx] = cell;		      \
@@ -244,7 +257,7 @@ void top_level_task(const void *args, size_t arglen,
       // vertical edges
 #define VERT(dir,cx) do { \
 	unsigned id2 = idy*DIMX+MOVE_X(idx,dir);     \
-	for(unsigned cy = 0; cy < CELLS_Y; cy++) {   \
+	for(unsigned cy = 1; cy <= CELLS_Y; cy++) {   \
 	  ptr_t<Cell> cell = edge_cells.alloc();     \
 	  coloring[color + dir].insert(cell);	     \
 	  blocks[id].cells[0][cy][cx] = cell;		      \
@@ -261,7 +274,7 @@ void top_level_task(const void *args, size_t arglen,
   // now partition the edge cells
   Partition<Cell> edge_part = runtime->create_partition<Cell>(ctx, edge_cells,
 							      coloring,
-							      NUM_BLOCKS * 8,
+							      //NUM_BLOCKS * 8,
 							      true/*disjoint*/);
 
   // now go back through and store subregion handles in the right places
@@ -281,46 +294,29 @@ void top_level_task(const void *args, size_t arglen,
     }
 #endif
 
-  // Initialize the simulation
-  h = kernelRadiusMultiplier / restParticlesPerMeter;
-  hSq = h*h;
-  const float pi = 3.14159265358979f;
-  float coeff1 = 315.f / (64.f*pi*pow(h,9.f));
-  float coeff2 = 15.f / (pi*pow(h,6.f));
-  float coeff3 = 45.f / (pi*pow(h,6.f));
-  float particleMass = 0.5f*doubleRestDensity / (restParticlesPerMeter*restParticlesPerMeter*restParticlesPerMeter);
-  densityCoeff = particleMass * coeff1;
-  pressureCoeff = 3.f*coeff2 * 0.5f*stiffness * particleMass;
-  viscosityCoeff = viscosity * coeff3 * particleMass;
-
-  // TODO: Update this code to scale up
-  Vec2 range = domainMax - domainMin;
-  nx = (int)(range.x / h);
-  ny = (int)(range.y / h);
-  numCells = nx*ny;
-  delta.x = range.x / nx;
-  delta.y = range.y / ny;
-  assert(delta.x >= h && delta.y >= h);
+  // don't do anything until all the command-line args have been ready
+  while(!Config::args_read)
+    sleep(1);
 
   // workaround for inability to use a region in task that created it
   // build regions for cells and then do all work in a subtask
   {
     TopLevelRegions tlr;
-    tlr.real_cells0 = runtime->create_logical_region<Cell>(ctx,
-							   (NUM_BLOCKS*CELLS_X*CELLS_Y));
-    tlr.real_cells1 = runtime->create_logical_region<Cell>(ctx,
-							   (NUM_BLOCKS*CELLS_X*CELLS_Y));
+    tlr.real_cells[0] = runtime->create_logical_region<Cell>(ctx,
+							     (NUM_BLOCKS*CELLS_X*CELLS_Y));
+    tlr.real_cells[1] = runtime->create_logical_region<Cell>(ctx,
+							     (NUM_BLOCKS*CELLS_X*CELLS_Y));
     tlr.edge_cells = runtime->create_logical_region<Cell>(ctx,
 							  (NUM_BLOCKS*
 							   (2*CELLS_X+2*CELLS_Y+4)));
     
     std::vector<RegionRequirement> main_regions;
-    main_regions.push_back(RegionRequirement(tlr.real_cells0,
+    main_regions.push_back(RegionRequirement(tlr.real_cells[0],
 					     READ_WRITE, ALLOCABLE, EXCLUSIVE,
-					     tlr.real_cells0));
-    main_regions.push_back(RegionRequirement(tlr.real_cells1,
+					     tlr.real_cells[0]));
+    main_regions.push_back(RegionRequirement(tlr.real_cells[1],
 					     READ_WRITE, ALLOCABLE, EXCLUSIVE,
-					     tlr.real_cells1));
+					     tlr.real_cells[1]));
     main_regions.push_back(RegionRequirement(tlr.edge_cells,
 					     READ_WRITE, ALLOCABLE, EXCLUSIVE,
 					     tlr.edge_cells));
@@ -338,18 +334,20 @@ void main_task(const void *args, size_t arglen,
 	       const std::vector<PhysicalRegion<AT> > &regions,
 	       Context ctx, HighLevelRuntime *runtime)
 {
-  PhysicalRegion<AT> real_cells0 = regions[0];
-  PhysicalRegion<AT> real_cells1 = regions[1];
+  PhysicalRegion<AT> real_cells[2];
+  real_cells[0] = regions[0];
+  real_cells[1] = regions[1];
   PhysicalRegion<AT> edge_cells = regions[2];
 
   TopLevelRegions *tlr = (TopLevelRegions *)args;
     
   std::vector<Block> blocks;
   blocks.resize(NUM_BLOCKS);
+  for(unsigned i = 0; i < NUM_BLOCKS; i++)
+    blocks[i].id = i;
 
   // first, do two passes of the "real" cells
   for(int b = 0; b < 2; b++) {
-    PhysicalRegion<AT> real_cells = (b ? real_cells1 : real_cells0);
     std::vector<std::set<ptr_t<Cell> > > coloring;
     coloring.resize(NUM_BLOCKS);
 
@@ -359,8 +357,8 @@ void main_task(const void *args, size_t arglen,
 	unsigned id = idy*DIMX+idx;
 
 	for(unsigned cy = 0; cy < CELLS_Y; cy++)
-	  for(unsigned cx = 0; cy < CELLS_X; cx++) {
-	    ptr_t<Cell> cell = real_cells.template alloc<Cell>();
+	  for(unsigned cx = 0; cx < CELLS_X; cx++) {
+	    ptr_t<Cell> cell = real_cells[b].template alloc<Cell>();
 	    coloring[id].insert(cell);
 	    blocks[id].cells[b][cy+1][cx+1] = cell;
 	  }
@@ -368,9 +366,9 @@ void main_task(const void *args, size_t arglen,
     
     // Create the partitions
     Partition<Cell> cell_part = runtime->create_partition<Cell>(ctx,
-								(b ? tlr->real_cells1 : tlr->real_cells0),
+								tlr->real_cells[b],
 								coloring,
-								NUM_BLOCKS,
+								//NUM_BLOCKS,
 								true/*disjoint*/);
 
     for (unsigned idy = 0; idy < DIMY; idy++)
@@ -408,7 +406,7 @@ void main_task(const void *args, size_t arglen,
       // horizontal edges
 #define HORIZ(dir,cy) do { \
 	unsigned id2 = MOVE_Y(idy,dir)*DIMX+idx;     \
-	for(unsigned cx = 0; cx < CELLS_X; cx++) {   \
+	for(unsigned cx = 1; cx <= CELLS_X; cx++) {   \
 	  ptr_t<Cell> cell = edge_cells.template alloc<Cell>();	\
 	  coloring[color + dir].insert(cell);	     \
 	  blocks[id].cells[0][cy][cx] = cell;		      \
@@ -422,7 +420,7 @@ void main_task(const void *args, size_t arglen,
       // vertical edges
 #define VERT(dir,cx) do { \
 	unsigned id2 = idy*DIMX+MOVE_X(idx,dir);     \
-	for(unsigned cy = 0; cy < CELLS_Y; cy++) {   \
+	for(unsigned cy = 1; cy <= CELLS_Y; cy++) {   \
 	  ptr_t<Cell> cell = edge_cells.template alloc<Cell>();	\
 	  coloring[color + dir].insert(cell);	     \
 	  blocks[id].cells[0][cy][cx] = cell;		      \
@@ -439,7 +437,7 @@ void main_task(const void *args, size_t arglen,
   // now partition the edge cells
   Partition<Cell> edge_part = runtime->create_partition<Cell>(ctx, tlr->edge_cells,
 							      coloring,
-							      NUM_BLOCKS * 8,
+							      //NUM_BLOCKS * 8,
 							      true/*disjoint*/);
 
   // now go back through and store subregion handles in the right places
@@ -464,7 +462,7 @@ void main_task(const void *args, size_t arglen,
     std::vector<RegionRequirement> init_regions;
     init_regions.push_back(RegionRequirement(blocks[id].base[1],
 					     READ_WRITE, ALLOCABLE, EXCLUSIVE,
-					     tlr->real_cells1));
+					     tlr->real_cells[1]));
 #if 0
     get_all_regions(blocks[id].ghosts1,init_regions,
                                   READ_WRITE, ALLOCABLE, EXCLUSIVE,
@@ -476,204 +474,150 @@ void main_task(const void *args, size_t arglen,
                                   false, 0, id);
     f.get_void_result();
   }
-#if 0
-  bool phase = true;
+
+  printf("STARTING MAIN SIMULATION LOOP\n");
+  struct timespec ts_start, ts_end;
+  std::list<Future> futures;
+  clock_gettime(CLOCK_MONOTONIC, &ts_start);
+
+  int cur_buffer = 0;  // buffer we're generating on this pass
   // Run the simulation
-  for (unsigned step = 0; step < 4; step++)
+  for (unsigned step = 0; step < Config::num_steps; step++)
   {
+    for (unsigned id = 0; id < NUM_BLOCKS; id++)
+      blocks[id].cb = cur_buffer;
+
     // Initialize cells
     for (unsigned id = 0; id < NUM_BLOCKS; id++)
     {
+      // init and rebuild reads the real cells from the previous pass and
+      //  moves atoms into the real cells for this pass or the edge0 cells
       std::vector<RegionRequirement> init_regions;
-      if (phase)
-      {
-        // read old
-        init_regions.push_back(RegionRequirement(blocks[id].base1,
-                                      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                      all_cells_1));
-        // write new
-        init_regions.push_back(RegionRequirement(blocks[id].base0,
-                                      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-                                      all_cells_0));
-        // read old
-        get_all_regions(blocks[id].ghosts1,init_regions,
-                              READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                              all_cells_1);
-        // write new
-        get_all_regions(blocks[id].ghosts0,init_regions,
-                              READ_WRITE, NO_MEMORY, EXCLUSIVE,
-                              all_cells_0);
-      }
-      else
-      {
-        // read old
-        init_regions.push_back(RegionRequirement(blocks[id].base0,
-                                      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                      all_cells_0));
-        // write new
-        init_regions.push_back(RegionRequirement(blocks[id].base1,
-                                      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-                                      all_cells_1));
-        // read old
-        get_all_regions(blocks[id].ghosts0,init_regions,
-                              READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                              all_cells_0);
-        // write new
-        get_all_regions(blocks[id].ghosts1,init_regions,
-                              READ_WRITE, NO_MEMORY, EXCLUSIVE,
-                              all_cells_1);
-      }
+
+      // read old
+      init_regions.push_back(RegionRequirement(blocks[id].base[1 - cur_buffer],
+					       READ_ONLY, NO_MEMORY, EXCLUSIVE,
+					       tlr->real_cells[1 - cur_buffer]));
+      // write new
+      init_regions.push_back(RegionRequirement(blocks[id].base[cur_buffer],
+					       READ_WRITE, NO_MEMORY, EXCLUSIVE,
+					       tlr->real_cells[cur_buffer]));
+
+      // write edge0
+      get_all_regions(blocks[id].edge[0], init_regions,
+		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
+		      tlr->edge_cells);
+
       Future f = runtime->execute_task(ctx, TASKID_INIT_CELLS,
-                            init_regions, 
-                            &(blocks[id]), sizeof(Block),
-                            true, 0, id);
+				       init_regions, 
+				       &(blocks[id]), sizeof(Block),
+				       true, 0, id);
     }
 
     // Rebuild reduce (reduction)
     for (unsigned id = 0; id < NUM_BLOCKS; id++)
     {
+      // rebuild reduce reads the cells provided by neighbors, incorporates
+      //  them into its own cells, and puts copies of those boundary cells into
+      //  the ghosts to exchange back
+      //
+      // edge phase here is _1_
+
       std::vector<RegionRequirement> rebuild_regions;
-      if (phase)
-      {
-        rebuild_regions.push_back(RegionRequirement(blocks[id].base0,
-                                    READ_WRITE, NO_MEMORY, EXCLUSIVE,
-                                    all_cells_0));
-        get_all_regions(blocks[id].neighbors0,rebuild_regions,
-                                    READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                    all_cells_0);
-      }
-      else
-      {
-        rebuild_regions.push_back(RegionRequirement(blocks[id].base1,
-                                    READ_WRITE, NO_MEMORY, EXCLUSIVE,
-                                    all_cells_1));
-        get_all_regions(blocks[id].neighbors1,rebuild_regions,
-                                    READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                    all_cells_1);
-      }
+
+      rebuild_regions.push_back(RegionRequirement(blocks[id].base[cur_buffer],
+						  READ_WRITE, NO_MEMORY, EXCLUSIVE,
+						  tlr->real_cells[cur_buffer]));
+
+      // write edge1
+      get_all_regions(blocks[id].edge[1], rebuild_regions,
+		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
+		      tlr->edge_cells);
+
       Future f = runtime->execute_task(ctx, TASKID_REBUILD_REDUCE,
-                                  rebuild_regions,
-                                  &(blocks[id]), sizeof(Block),
-                                  true, 0, id);
+				       rebuild_regions,
+				       &(blocks[id]), sizeof(Block),
+				       true, 0, id);
     }
 
     // init forces and scatter densities
     for (unsigned id = 0; id < NUM_BLOCKS; id++)
     {
+      // this step looks at positions in real and edge cells and updates
+      // densities for all owned particles - boundary real cells are copied to
+      // the edge cells for exchange
+      //
+      // edge phase here is _0_
+
       std::vector<RegionRequirement> density_regions;
-      if (phase)
-      {
-        density_regions.push_back(RegionRequirement(blocks[id].base0,
-                                      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-                                      all_cells_0));
-        get_all_regions(blocks[id].ghosts0,density_regions,
-                              READ_WRITE, NO_MEMORY, EXCLUSIVE,
-                              all_cells_0);
-      }
-      else
-      {
-        density_regions.push_back(RegionRequirement(blocks[id].base1,
-                                      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-                                      all_cells_1));
-        get_all_regions(blocks[id].ghosts1,density_regions,
-                              READ_WRITE, NO_MEMORY, EXCLUSIVE,
-                              all_cells_1);
-      }
+
+      density_regions.push_back(RegionRequirement(blocks[id].base[cur_buffer],
+						  READ_WRITE, NO_MEMORY, EXCLUSIVE,
+						  tlr->real_cells[cur_buffer]));
+
+      // write edge1
+      get_all_regions(blocks[id].edge[0], density_regions,
+		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
+		      tlr->edge_cells);
+
       Future f = runtime->execute_task(ctx, TASKID_SCATTER_DENSITIES,
-                            density_regions, 
-                            &(blocks[id]), sizeof(Block),
-                            true, 0, id);
-    }
-
-    // Gather densities (reduction)
-    for (unsigned id = 0; id < NUM_BLOCKS; id++)
-    {
-      std::vector<RegionRequirement> density_regions;
-      if (phase)
-      {
-        density_regions.push_back(RegionRequirement(blocks[id].base0,
-                                    READ_WRITE, NO_MEMORY, EXCLUSIVE,
-                                    all_cells_0));
-        get_all_regions(blocks[id].neighbors0,density_regions,
-                                    READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                    all_cells_0);
-      }
-      else
-      {
-        density_regions.push_back(RegionRequirement(blocks[id].base1,
-                                    READ_WRITE, NO_MEMORY, EXCLUSIVE,
-                                    all_cells_1));
-        get_all_regions(blocks[id].neighbors1,density_regions,
-                                    READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                    all_cells_1);
-      }
-      Future f = runtime->execute_task(ctx, TASKID_GATHER_DENSITIES,
-                                  density_regions,
-                                  &(blocks[id]), sizeof(Block),
-                                  true, 0, id);
+				       density_regions, 
+				       &(blocks[id]), sizeof(Block),
+				       true, 0, id);
     }
     
-    // Scatter forces
+    // Gather forces and advance
     for (unsigned id = 0; id < NUM_BLOCKS; id++)
     {
+      // this is very similar to scattering of density - basically just 
+      //  different math, and a different edge phase
+      // actually, since this fully calculates the accelerations, we just
+      //  advance positions in this task as well and we're done with an
+      //  iteration
+      //
+      // edge phase here is _1_
+
       std::vector<RegionRequirement> force_regions;
-      if (phase)
-      {
-        force_regions.push_back(RegionRequirement(blocks[id].base0,
-                                      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-                                      all_cells_0));
-        get_all_regions(blocks[id].ghosts0,force_regions,
-                              READ_WRITE, NO_MEMORY, EXCLUSIVE,
-                              all_cells_0);
-      }
-      else
-      {
-        force_regions.push_back(RegionRequirement(blocks[id].base1,
-                                      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-                                      all_cells_1));
-        get_all_regions(blocks[id].ghosts1,force_regions,
-                              READ_WRITE, NO_MEMORY, EXCLUSIVE,
-                              all_cells_1);
-      }
-      Future f = runtime->execute_task(ctx, TASKID_SCATTER_FORCES,
+
+      force_regions.push_back(RegionRequirement(blocks[id].base[cur_buffer],
+						READ_WRITE, NO_MEMORY, EXCLUSIVE,
+						tlr->real_cells[cur_buffer]));
+
+      // write edge1
+      get_all_regions(blocks[id].edge[1], force_regions,
+		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
+		      tlr->edge_cells);
+
+      Future f = runtime->execute_task(ctx, TASKID_GATHER_FORCES,
                             force_regions, 
                             &(blocks[id]), sizeof(Block),
                             true, 0, id);
-    }
-    
-    // Gather forces and advance (reduction)
-    for (unsigned id = 0; id < NUM_BLOCKS; id++)
-    {
-      std::vector<RegionRequirement> force_regions;
-      if (phase)
-      {
-        force_regions.push_back(RegionRequirement(blocks[id].base0,
-                                      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-                                      all_cells_0));
-        get_all_regions(blocks[id].neighbors0,force_regions,
-                              READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                              all_cells_0);
-      }
-      else
-      {
-        force_regions.push_back(RegionRequirement(blocks[id].base1,
-                                      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-                                      all_cells_1));
-        get_all_regions(blocks[id].neighbors1,force_regions,
-                              READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                              all_cells_1);
 
-      }
-      Future f = runtime->execute_task(ctx, TASKID_SCATTER_FORCES,
-                            force_regions, 
-                            &(blocks[id]), sizeof(Block),
-                            true, 0, id);
+      // remember the futures for the last pass so we can wait on them
+      if(step == Config::num_steps - 1)
+	futures.push_back(f);
     }
 
     // flip the phase
-    phase = !phase;
+    cur_buffer = 1 - cur_buffer;
   }
-#endif
+
+  log_app.info("waiting for all simulation tasks to complete");
+
+  while(futures.size() > 0) {
+    futures.front().get_void_result();
+    futures.pop_front();
+  }
+  clock_gettime(CLOCK_MONOTONIC, &ts_end);
+
+  double sim_time = ((1.0 * (ts_end.tv_sec - ts_start.tv_sec)) +
+		     (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
+  printf("ELAPSED TIME = %7.3f s\n", sim_time);
+
+  log_app.info("all done!");
+
+  // SJT: mapper is exploding on exit from this task...
+  exit(0);
 }
 
 static float get_rand_float(void)
@@ -699,7 +643,7 @@ void init_simulation(const void *args, size_t arglen,
       Cell next;
       next.x = idx;
       next.y = idy;
-      next.num_particles = (rand() % 16);
+      next.num_particles = (rand() % MAX_PARTICLES);
       for (unsigned p = 0; p < next.num_particles; p++)
       {
         // These are the only three fields we need to initialize
@@ -713,27 +657,99 @@ void init_simulation(const void *args, size_t arglen,
   }
 }
 
+#define GET_DIR(idy, idx) \
+  (((idy) == 0) ? (((idx) == 0) ? UPPER_LEFT : (((idx) == CELLS_X+1) ? UPPER_RIGHT : UPPER_CENTER)) : \
+   ((idy) == CELLS_Y+1) ? (((idx) == 0) ? LOWER_LEFT : (((idx) == CELLS_X+1) ? LOWER_RIGHT : LOWER_CENTER)) : \
+   (((idx) == 0) ? SIDE_LEFT : (((idx) == CELLS_X+1) ? SIDE_RIGHT : MIDDLE)))
+
+#define GET_REGION(idy, idx, base, edge) \
+  (((idy) == 0) ? (((idx) == 0) ? ((edge)[UPPER_LEFT]) : (((idx) == CELLS_X+1) ? ((edge)[UPPER_RIGHT]) : ((edge)[UPPER_CENTER]))) : \
+   ((idy) == CELLS_Y+1) ? (((idx) == 0) ? ((edge)[LOWER_LEFT]) : (((idx) == CELLS_X+1) ? ((edge)[LOWER_RIGHT]) : ((edge)[LOWER_CENTER]))) : \
+   (((idx) == 0) ? ((edge)[SIDE_LEFT]) : (((idx) == CELLS_X+1) ? ((edge)[SIDE_RIGHT]) : (base))))
+
+#define READ_CELL(cy, cx, base, edge, cell) do {	\
+  int dir = GET_DIR(cy,cx); \
+  if(dir == MIDDLE) {			       \
+    (cell) = (base).read(b.cells[cb][cy][cx]); \
+    if(0) printf("RC: (%d,%d) %d %d %p+%d (%d)\n", cx, cy, cb, eb, base.instance.internal_data, b.cells[cb][cy][cx].value, (cell).num_particles); \
+  } else {								\
+    (cell) = (edge)[dir].read(b.cells[eb][cy][cx]);			\
+    if(0) printf("RC: (%d,%d) %d %d %p+%d (%d)\n", cx, cy, cb, eb, edge[dir].instance.internal_data, b.cells[eb][cy][cx].value, (cell).num_particles); \
+	 } } while(0)
+
+#define WRITE_CELL(cy, cx, base, edge, cell) do {	\
+  int dir = GET_DIR(cy,cx); \
+  if(dir == MIDDLE) \
+    (base).write(b.cells[cb][cy][cx], (cell));	\
+  else \
+    (edge)[dir].write(b.cells[eb][cy][cx], (cell));	\
+  } while(0)
+
+
 template<AccessorType AT>
 void init_and_rebuild(const void *args, size_t arglen,
                 const std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
   Block b = *((const Block*)args);
+  int cb = b.cb; // current buffer
+  int eb = 0; // edge phase for this task is 0
   // Initialize all the cells and update all our cells
   PhysicalRegion<AT> src_block = regions[0];
   PhysicalRegion<AT> dst_block = regions[1];
-#if 0
-  // Set all the particle counts to zero
-  for (unsigned off = 0; off < (CELLS_X*CELLS_Y); off++)
+  PhysicalRegion<AT> edge_blocks[8];
+  for(int i = 0; i < 8; i++) edge_blocks[i] = regions[i + 2];
+
+  log_app.info("In init_and_rebuild() for block %d", b.id);
+
+  // start by clearing the particle count on all the destination cells
   {
-    ptr_t<Cell> cell_ptr;
-    cell_ptr.value = b.start.value + off;
-    Cell cell = src_block.read(cell_ptr);
-    cell.num_particles = 0;
-    dst_block.write(cell_ptr,cell);
-  }
-  // Iterate over the cells and put things in the right place
+    Cell blank;
+    blank.num_particles = 0;
+    for(int cy = 0; cy <= CELLS_Y + 1; cy++)
+      for(int cx = 0; cx <= CELLS_X + 1; cx++)
+	WRITE_CELL(cy, cx, dst_block, edge_blocks, blank);
+#if 0
+	int dir = GET_DIR(cy,dx);
+	if(dir == MIDDLE)
+	  dst_block.write(b.cells[cb][cy][cx], blank);
+	else
+	  edge_blocks[dir].write(b.cells[eb][cy][cx], blank);
+      }
 #endif
+  }
+
+  // now go through each source cell and move particles that have wandered too
+  //  far
+  for(int cy = 1; cy < CELLS_Y + 1; cy++)
+    for(int cx = 1; cx < CELLS_X + 1; cx++) {
+      // don't need to macro-ize this because it's known to be a real cell
+      Cell c_src = src_block.read(b.cells[1-cb][cy][cx]);
+      for(unsigned p = 0; p < c_src.num_particles; p++) {
+	int dy = cy;
+	int dx = cx;
+	Vec2 pos = c_src.p[p];
+	if(pos.x < 0) { pos.x += delta.x; dx--; }
+	if(pos.x >= delta.x) { pos.x -= delta.x; dx++; }
+	if(pos.y < 0) { pos.y += delta.y; dy--; }
+	if(pos.y >= delta.y) { pos.y -= delta.y; dy++; }
+
+	Cell c_dst;
+	READ_CELL(dy, dx, dst_block, edge_blocks, c_dst);
+	if(c_dst.num_particles < MAX_PARTICLES) {
+	  int dp = c_dst.num_particles++;
+
+	  // just have to copy p, hv, v
+	  c_dst.p[dp] = pos;
+	  c_dst.hv[dp] = c_src.hv[p];
+	  c_dst.v[dp] = c_src.v[p];
+
+	  WRITE_CELL(dy, dx, dst_block, edge_blocks, c_dst);
+	}
+      }
+    }
+
+  log_app.info("Done with init_and_rebuild() for block %d", b.id);
 }
 
 template<AccessorType AT>
@@ -741,7 +757,54 @@ void rebuild_reduce(const void *args, size_t arglen,
                 const std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
+  Block b = *((const Block*)args);
+  int cb = b.cb; // current buffer
+  int eb = 1; // edge phase for this task is 1
+  // Initialize all the cells and update all our cells
+  PhysicalRegion<AT> base_block = regions[0];
+  PhysicalRegion<AT> edge_blocks[8];
+  for(int i = 0; i < 8; i++) edge_blocks[i] = regions[i + 1];
 
+  log_app.info("In rebuild_reduce() for block %d", b.id);
+
+  // for each edge cell, copy inward
+  for(int cy = 0; cy <= CELLS_Y+1; cy++)
+    for(int cx = 0; cx <= CELLS_X+1; cx++) {
+      int dir = GET_DIR(cy, cx);
+      if(dir == MIDDLE) continue;
+      int dy = MOVE_Y(cy, REVERSE(dir));
+      int dx = MOVE_X(cx, REVERSE(dir));
+
+      Cell c_src;
+      READ_CELL(cy, cx, base_block, edge_blocks, c_src);
+      Cell c_dst = base_block.read(b.cells[cb][dy][dx]);
+
+      for(unsigned p = 0; p < c_src.num_particles; p++) {
+	if(c_dst.num_particles == MAX_PARTICLES) break;
+	int dp = c_dst.num_particles++;
+	// just have to copy p, hv, v
+	c_dst.p[dp] = c_src.p[p];
+	c_dst.hv[dp] = c_src.hv[p];
+	c_dst.v[dp] = c_src.v[p];
+      }
+
+      base_block.write(b.cells[cb][dy][dx], c_dst);
+    }
+
+  // now turn around and have each edge grab a copy of the boundary real cell
+  //  to share for the next step
+  for(int cy = 0; cy <= CELLS_Y+1; cy++)
+    for(int cx = 0; cx <= CELLS_X+1; cx++) {
+      int dir = GET_DIR(cy, cx);
+      if(dir == MIDDLE) continue;
+      int dy = MOVE_Y(cy, REVERSE(dir));
+      int dx = MOVE_X(cx, REVERSE(dir));
+
+      Cell cell = base_block.read(b.cells[cb][dy][dx]);
+      WRITE_CELL(cy, cx, base_block, edge_blocks, cell);
+    }
+
+  log_app.info("Done with rebuild_reduce() for block %d", b.id);
 }
 
 template<AccessorType AT>
@@ -749,7 +812,104 @@ void scatter_densities(const void *args, size_t arglen,
                 const std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
+  Block b = *((const Block*)args);
+  int cb = b.cb; // current buffer
+  int eb = 0; // edge phase for this task is 0
+  // Initialize all the cells and update all our cells
+  PhysicalRegion<AT> base_block = regions[0];
+  PhysicalRegion<AT> edge_blocks[8];
+  for(int i = 0; i < 8; i++) edge_blocks[i] = regions[i + 1];
 
+  log_app.info("In scatter_densities() for block %d", b.id);
+
+  // first, clear our density (and acceleration, while we're at it) values
+  for(int cy = 1; cy < CELLS_Y+1; cy++)
+    for(int cx = 1; cx < CELLS_X+1; cx++) {
+      int dir = GET_DIR(cy, cx);
+      if(dir == MIDDLE) continue;
+      int dy = MOVE_Y(cy, REVERSE(dir));
+      int dx = MOVE_X(cx, REVERSE(dir));
+
+      Cell cell = base_block.read(b.cells[cb][dy][dx]);
+      for(unsigned p = 0; p < cell.num_particles; p++) {
+	cell.density[p] = 0;
+	cell.a[p] = externalAcceleration;
+      }
+      base_block.write(b.cells[cb][dy][dx], cell);
+    }
+
+  // now for each cell, look at neighbors and calculate density contributions
+  // two things to watch out for:
+  //  position vectors have to be augmented by relative block positions
+  //  for pairs of real cells, we can do the calculation once instead of twice
+  for(int cy = 1; cy < CELLS_Y+1; cy++)
+    for(int cx = 1; cx < CELLS_X+1; cx++) {
+      Cell cell = base_block.read(b.cells[cb][cy][cx]);
+      assert(cell.num_particles <= MAX_PARTICLES);
+
+      for(int dy = cy - 1; dy <= cy + 1; dy++)
+	for(int dx = cx - 1; dx <= cx + 1; dx++) {
+	  // did we already get updated by this neighbor's bidirectional update?
+	  if((dy > 0) && (dx > 0) && (dx < CELLS_X+1) && 
+	     ((dy < cy) || ((dy == cy) && (dx < cx))))
+	    continue;
+
+	  Cell c2;
+	  READ_CELL(dy, dx, base_block, edge_blocks, c2);
+	  assert(c2.num_particles <= MAX_PARTICLES);
+
+	  // do bidirectional update if other cell is a real cell and it is
+	  //  either below or to the right (but not up-right) of us
+	  bool update_other = ((dy < CELLS_Y+1) && (dx > 0) && (dx < CELLS_X+1) &&
+			       ((dy > cy) || ((dy == cy) && (dx > cx))));
+	  
+	  // pairwise across particles - watch out for identical particle case!
+	  for(unsigned p = 0; p < cell.num_particles; p++)
+	    for(unsigned p2 = 0; p2 < c2.num_particles; p2++) {
+	      if((dx == cx) && (dy == cy) && (p == p2)) continue;
+
+	      Vec2 pdiff = cell.p[p] - c2.p[p2];
+	      pdiff.x += (cx - dx) * delta.x;
+	      pdiff.y += (cy - dy) * delta.y;
+	      float distSq = pdiff.GetLengthSq();
+	      if(distSq >= hSq) continue;
+
+	      float t = hSq - distSq;
+	      float tc = t*t*t;
+
+	      cell.density[p] += tc;
+	      if(update_other)
+		c2.density[p2] += tc;
+	    }
+
+	  if(update_other)
+	    WRITE_CELL(dy, dx, base_block, edge_blocks, c2);
+	}
+
+      // a little offset for every particle once we're done
+      const float tc = hSq*hSq*hSq;
+      for(unsigned p = 0; p < cell.num_particles; p++) {
+	cell.density[p] += tc;
+	cell.density[p] *= densityCoeff;
+      }
+
+      base_block.write(b.cells[cb][cy][cx], cell);
+    }
+
+  // now turn around and have each edge grab a copy of the boundary real cell
+  //  to share for the next step
+  for(int cy = 0; cy <= CELLS_Y+1; cy++)
+    for(int cx = 0; cx <= CELLS_X+1; cx++) {
+      int dir = GET_DIR(cy, cx);
+      if(dir == MIDDLE) continue;
+      int dy = MOVE_Y(cy, REVERSE(dir));
+      int dx = MOVE_X(cx, REVERSE(dir));
+
+      Cell cell = base_block.read(b.cells[cb][dy][dx]);
+      WRITE_CELL(cy, cx, base_block, edge_blocks, cell);
+    }
+
+  log_app.info("Done with scatter_densities() for block %d", b.id);
 }
 
 template<AccessorType AT>
@@ -765,7 +925,6 @@ void scatter_forces(const void *args, size_t arglen,
                 const std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
-
 }
 
 template<AccessorType AT>
@@ -773,7 +932,85 @@ void gather_forces_and_advance(const void *args, size_t arglen,
                 const std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
+  Block b = *((const Block*)args);
+  int cb = b.cb; // current buffer
+  int eb = 1; // edge phase for this task is 1
+  // Initialize all the cells and update all our cells
+  PhysicalRegion<AT> base_block = regions[0];
+  PhysicalRegion<AT> edge_blocks[8];
+  for(int i = 0; i < 8; i++) edge_blocks[i] = regions[i + 1];
 
+  log_app.info("In gather_forces_and_advance() for block %d", b.id);
+
+  // acceleration was cleared out for us in the previous step
+
+  // now for each cell, look at neighbors and calculate acceleration
+  // two things to watch out for:
+  //  position vectors have to be augmented by relative block positions
+  //  for pairs of real cells, we can do the calculation once instead of twice
+  for(int cy = 1; cy < CELLS_Y+1; cy++)
+    for(int cx = 1; cx < CELLS_X+1; cx++) {
+      Cell cell = base_block.read(b.cells[cb][cy][cx]);
+      assert(cell.num_particles <= MAX_PARTICLES);
+
+      for(int dy = cy - 1; dy <= cy + 1; dy++)
+	for(int dx = cx - 1; dx <= cx + 1; dx++) {
+	  // did we already get updated by this neighbor's bidirectional update?
+	  if((dy > 0) && (dx > 0) && (dx < CELLS_X+1) && 
+	     ((dy < cy) || ((dy == cy) && (dx < cx))))
+	    continue;
+
+	  Cell c2;
+	  READ_CELL(dy, dx, base_block, edge_blocks, c2);
+	  assert(c2.num_particles <= MAX_PARTICLES);
+
+	  // do bidirectional update if other cell is a real cell and it is
+	  //  either below or to the right (but not up-right) of us
+	  bool update_other = ((dy < CELLS_Y+1) && (dx > 0) && (dx < CELLS_X+1) &&
+			       ((dy > cy) || ((dy == cy) && (dx > cx))));
+	  
+	  // pairwise across particles - watch out for identical particle case!
+	  for(unsigned p = 0; p < cell.num_particles; p++)
+	    for(unsigned p2 = 0; p2 < c2.num_particles; p2++) {
+	      if((dx == cx) && (dy == cy) && (p == p2)) continue;
+
+	      Vec2 disp = cell.p[p] - c2.p[p2];
+	      disp.x += (cx - dx) * delta.x;
+	      disp.y += (cy - dy) * delta.y;
+	      float distSq = disp.GetLengthSq();
+	      if(distSq >= hSq) continue;
+
+	      float dist = sqrtf(std::max(distSq, 1e-12f));
+	      float hmr = h - dist;
+
+	      Vec2 acc = (disp * pressureCoeff * (hmr*hmr/dist) * 
+			  (cell.density[p] + c2.density[p2] - doubleRestDensity));
+	      acc += (c2.v[p2] - cell.v[p]) * viscosityCoeff * hmr;
+	      acc /= cell.density[p] * c2.density[p2];
+
+	      cell.a[p] += acc;
+	      if(update_other)
+		c2.a[p2] -= acc;
+	    }
+
+	  if(update_other)
+	    WRITE_CELL(dy, dx, base_block, edge_blocks, c2);
+	}
+
+      // we have everything we need to go ahead and update positions, so
+      //  do that here instead of in a different task
+      for(unsigned p = 0; p < cell.num_particles; p++) {
+	Vec2 v_half = cell.hv[p] + cell.a[p]*timeStep;
+	cell.p[p] += v_half * timeStep;
+	cell.v[p] = cell.hv[p] + v_half;
+	cell.v[p] *= 0.5f;
+	cell.hv[p] = v_half;
+      }
+
+      base_block.write(b.cells[cb][cy][cx], cell);
+    }
+
+  log_app.info("Done with gather_forces_and_advance() for block %d", b.id);
 }
 
 static bool sort_by_proc_id(const std::pair<Processor,Memory> &a,
@@ -948,6 +1185,7 @@ public:
       if(req == &(task->regions[i]))
 	idx = i;
     log_mapper.info("func_id=%d map_tag=%d region_index=%d", task->task_id, task->tag, idx);
+#if 0
     printf("taskid=%d tag=%d idx=%d srcs=[", task->task_id, task->tag, idx);
     for(unsigned i = 0; i < valid_src_instances.size(); i++) {
       if(i) printf(", ");
@@ -961,6 +1199,7 @@ public:
     }
     printf("]\n");
     fflush(stdout);
+#endif
     std::vector< std::pair<Processor, Memory> >& loc_procs = cpu_mem_pairs[Processor::LOC_PROC];
     std::pair<Processor, Memory> cmp = loc_procs[task->tag % loc_procs.size()];
 
@@ -1028,7 +1267,7 @@ public:
           {
             // These are the neighbor cells, try reading them into local memory, otherwise keep them in global
             chosen_src = safe_prioritized_pick(valid_src_instances, cmp.second, global_memory);
-            dst_ranking.push_back(cmp.second);
+            //dst_ranking.push_back(cmp.second);
             dst_ranking.push_back(global_memory);
           }
         }
@@ -1095,8 +1334,37 @@ int main(int argc, char **argv)
   HighLevelRuntime::register_runtime_tasks(task_table);
   HighLevelRuntime::set_mapper_init_callback(create_mappers);
 
+  // Initialize the simulation
+  h = kernelRadiusMultiplier / restParticlesPerMeter;
+  hSq = h*h;
+  const float pi = 3.14159265358979f;
+  float coeff1 = 315.f / (64.f*pi*pow(h,9.f));
+  float coeff2 = 15.f / (pi*pow(h,6.f));
+  float coeff3 = 45.f / (pi*pow(h,6.f));
+  float particleMass = 0.5f*doubleRestDensity / (restParticlesPerMeter*restParticlesPerMeter*restParticlesPerMeter);
+  densityCoeff = particleMass * coeff1;
+  pressureCoeff = 3.f*coeff2 * 0.5f*stiffness * particleMass;
+  viscosityCoeff = viscosity * coeff3 * particleMass;
+
+  // TODO: Update this code to scale up
+  Vec2 range = domainMax - domainMin;
+  nx = (int)(range.x / h);
+  ny = (int)(range.y / h);
+  numCells = nx*ny;
+  delta.x = range.x / nx;
+  delta.y = range.y / ny;
+  assert(delta.x >= h && delta.y >= h);
+
   // Initialize the machine
   Machine m(&argc, &argv, task_table, false);
+
+  for(int i = 1; i < argc; i++) {
+    if(!strcmp(argv[i], "-s")) {
+      Config::num_steps = atoi(argv[++i]);
+      continue;
+    }
+  }
+  Config::args_read = true;
 
   m.run();
 

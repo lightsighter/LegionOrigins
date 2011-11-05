@@ -3036,7 +3036,7 @@ namespace RegionRuntime {
 	AutoHSLLock a(mem->mutex);
 
 	if(!mem->instances[id.index_l()]) {
-	  printf("[%d] creating proxy instance: inst=%x\n", gasnet_mynode(), id.id());
+	  //printf("[%d] creating proxy instance: inst=%x\n", gasnet_mynode(), id.id());
 	  mem->instances[id.index_l()] = new RegionInstanceUntyped::Impl(id.convert<RegionInstanceUntyped>(), mem->me);
 	}
       }
@@ -3549,6 +3549,8 @@ namespace RegionRuntime {
 
     /*static*/ const RegionInstanceUntyped RegionInstanceUntyped::NO_INST = RegionInstanceUntyped();
 
+    static Logger::Category log_copy("copy");
+
     // a generic accessor just holds a pointer to the impl and passes all 
     //  requests through
     RegionInstanceAccessorUntyped<AccessorGeneric> RegionInstanceUntyped::get_accessor_untyped(void) const
@@ -3569,6 +3571,14 @@ namespace RegionRuntime {
 
       Memory::Impl *src_mem = src_impl->memory.impl();
       Memory::Impl *tgt_mem = tgt_impl->memory.impl();
+
+      // HACK!  Don't forget to remove!
+      if(bytes_to_copy >= (4 << 20)) {
+	log_copy.info("skipping big copy!");
+	if(after_copy.exists())
+	  after_copy.impl()->trigger(after_copy.gen, true);
+	return after_copy;
+      }
 
       switch(src_mem->kind) {
       case Memory::Impl::MKIND_SYSMEM:
@@ -3749,8 +3759,6 @@ namespace RegionRuntime {
       size_t bytes_to_copy;
       Event after_copy;
     };
-
-    static Logger::Category log_copy("copy");
 
     struct RemoteCopyArgs {
       RegionInstanceUntyped source, target;

@@ -427,7 +427,7 @@ namespace RegionRuntime {
       bool valid_instance;
       LowLevel::RegionAllocatorUntyped allocator;
       LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric> instance;
-    protected:
+    public: // SJT: hack... protected:
       friend class TaskDescription;
       PhysicalRegion(void) :
         valid_allocator(false), valid_instance(false), 
