@@ -1,7 +1,8 @@
 GASNET = /usr/local/gasnet-1.16.2
 
 CCFLAGS = -I$(GASNET)/include
-#CCFLAGS = -I$(GASNET)/include -O3 -Wall
+#CCFLAGS = -I$(GASNET)/include -O3
+#CCFLAGS = -I$(GASNET)/include -O3 -DCOMPILE_TIME_MIN_LEVEL=LEVEL_NONE
 
 GCC = gcc
 GCCFLAGS = $(CCFLAGS) -ggdb -Wall
@@ -13,7 +14,7 @@ LDFLAGS += -lgasnet-ibv-par -libverbs
 
 CCFLAGS += -I/usr/local/cuda/include
 NVCC = /usr/local/cuda/bin/nvcc
-NVCCFLAGS = -g $(CCFLAGS)
+NVCCFLAGS = -g $(CCFLAGS) -arch=sm_20
 LDFLAGS += -L/usr/local/cuda/lib64 -lcudart -lcuda -Wl,-rpath=/usr/local/cuda/lib64
 
 %.o : %.cc

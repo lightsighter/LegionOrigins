@@ -61,29 +61,29 @@ namespace RegionRuntime {
 	return create_instance_local(r, bytes_needed);
       }
 
-      virtual int alloc_bytes(size_t size)
+      virtual off_t alloc_bytes(size_t size)
       {
 	return alloc_bytes_local(size);
       }
 
-      virtual void free_bytes(int offset, size_t size)
+      virtual void free_bytes(off_t offset, size_t size)
       {
 	free_bytes_local(offset, size);
       }
 
-      virtual void get_bytes(unsigned offset, void *dst, size_t size)
+      virtual void get_bytes(off_t offset, void *dst, size_t size)
       {
 	assert(0);
 	//memcpy(dst, base+offset, size);
       }
 
-      virtual void put_bytes(unsigned offset, const void *src, size_t size)
+      virtual void put_bytes(off_t offset, const void *src, size_t size)
       {
 	assert(0);
 	//memcpy(base+offset, src, size);
       }
 
-      virtual void *get_direct_ptr(unsigned offset, size_t size)
+      virtual void *get_direct_ptr(off_t offset, size_t size)
       {
 	return 0;
       }
@@ -111,27 +111,27 @@ namespace RegionRuntime {
 	return create_instance_local(r, bytes_needed);
       }
 
-      virtual int alloc_bytes(size_t size)
+      virtual off_t alloc_bytes(size_t size)
       {
 	return alloc_bytes_local(size);
       }
 
-      virtual void free_bytes(int offset, size_t size)
+      virtual void free_bytes(off_t offset, size_t size)
       {
 	free_bytes_local(offset, size);
       }
 
-      virtual void get_bytes(unsigned offset, void *dst, size_t size)
+      virtual void get_bytes(off_t offset, void *dst, size_t size)
       {
 	memcpy(dst, cpu_base+offset, size);
       }
 
-      virtual void put_bytes(unsigned offset, const void *src, size_t size)
+      virtual void put_bytes(off_t offset, const void *src, size_t size)
       {
 	memcpy(cpu_base+offset, src, size);
       }
 
-      virtual void *get_direct_ptr(unsigned offset, size_t size)
+      virtual void *get_direct_ptr(off_t offset, size_t size)
       {
 	return (cpu_base + offset);
       }

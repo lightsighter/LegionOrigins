@@ -120,6 +120,14 @@ namespace RegionRuntime {
 	  }
 	}
 
+#if 0
+	if((gasnet_mynode() > 0) && (gpu_index > 0)) {
+	  log_gpu.info("second GPU sleeping for a long time");
+	  usleep(100000000);
+	  log_gpu.info("second GPU resuming");
+	}
+#endif
+
 	while(!shutdown_requested) {
 	  // get a job off the job queue - sleep if nothing there
 	  GPUJob *job;
@@ -201,6 +209,7 @@ namespace RegionRuntime {
 
     void GPUJob::event_triggered(void)
     {
+      log_gpu.info("gpu job %p now runnable", this);
       gpu->internal->enqueue_job(this);
     }
 
@@ -213,8 +222,10 @@ namespace RegionRuntime {
     void GPUJob::run_or_wait(Event start_event)
     {
       if(start_event.has_triggered()) {
+	log_gpu.info("job %p can start right away!?", this);
 	gpu->internal->enqueue_job(this);
       } else {
+	log_gpu.info("job %p waiting for %x/%d", this, start_event.id, start_event.gen);
 	start_event.impl()->add_waiter(start_event, this);
       }
     }
@@ -284,6 +295,8 @@ namespace RegionRuntime {
 
       virtual void execute(void)
       {
+	log_gpu.info("gpu memcpy generic: gpuptr=%p mem=%x offset=%zd bytes=%zd kind=%d",
+		     gpu_ptr, memory->me.id, mem_offset, bytes, kind);
 	const size_t BUFFER_SIZE = 65536;
 	char buffer[BUFFER_SIZE];
 	size_t bytes_done = 0;
@@ -302,7 +315,8 @@ namespace RegionRuntime {
 	  }
 	  bytes_done += chunk_size;
 	}
-	printf("done with gasnet<->gpufb copy\n");
+	log_gpu.info("gpu memcpy generic done: gpuptr=%p mem=%x offset=%zd bytes=%zd kind=%d",
+		     gpu_ptr, memory->me.id, mem_offset, bytes, kind);
       }
 
     protected:

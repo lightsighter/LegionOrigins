@@ -50,6 +50,7 @@ namespace RegionRuntime {
     extern LowLevel::Logger::Category log_task;
     extern LowLevel::Logger::Category log_region;
     extern LowLevel::Logger::Category log_inst;
+    extern LowLevel::Logger::Category log_sjt;
 
     /////////////////////////////////////////////////////////////
     // Future
@@ -819,6 +820,7 @@ namespace RegionRuntime {
           // If they're not equal issue the copy
           if (!(new_instances[idx]->inst == reader_inst[idx]->inst))
           {
+	    log_sjt.info("HERE: %s %d", __FILE__, __LINE__);
             dst_ready = reader_inst[idx]->inst.copy_to_untyped(new_instances[idx]->inst,dst_ready);
           }
           dst_events.push_back(dst_ready);
@@ -857,6 +859,7 @@ namespace RegionRuntime {
             std::set<Event> conditions;
             conditions.insert(sub_events[src_idx]);
             conditions.insert(dst_events[dst_idx]);
+	    log_sjt.info("HERE: %s %d", __FILE__, __LINE__);
             return_events.insert(src->inst.copy_to_untyped(dst->inst,
                                           Event::merge_events(conditions)));
           }
@@ -910,6 +913,7 @@ namespace RegionRuntime {
       Event copy_event = wait_event;
       if (!(src_info->inst == target->inst))
       {
+	    log_sjt.info("HERE: %s %d", __FILE__, __LINE__);
         copy_event = src_info->inst.copy_to_untyped(target->inst,copy_event);
       }
       // If there are no sub events, we're done
@@ -946,6 +950,7 @@ namespace RegionRuntime {
         std::set<Event> up_events;
         up_events.insert(copy_event);
         up_events.insert(sub_events[idx]);
+	    log_sjt.info("HERE: %s %d", __FILE__, __LINE__);
         return_events.insert(sub_info->inst.copy_to_untyped(target->inst,
                               Event::merge_events(up_events)));
       }
@@ -1299,6 +1304,7 @@ namespace RegionRuntime {
                 if (!(src_info->inst == info->inst))
                 {
                   copy_op->dst_instance->register_reader(src_info);
+	    log_sjt.info("HERE: %s %d", __FILE__, __LINE__);
                   init_copy_events.insert(src_info->inst.copy_to_untyped(info->inst));
                   // Add the source to the list of reads that we've performed
                   copy_instances.push_back(
@@ -1401,6 +1407,7 @@ namespace RegionRuntime {
         // Check to see if they have different instances, if so issue the copy
         if (!(src_instances[idx]->inst == instances[idx]->inst))
         {
+	    log_sjt.info("HERE: %s %d", __FILE__, __LINE__);
           copy_events.insert(src_instances[idx]->inst.copy_to_untyped(
                               instances[idx]->inst, merged_wait_event));
         }
@@ -2628,6 +2635,7 @@ namespace RegionRuntime {
             dep.child->copy_instances.push_back(
                 std::pair<AbstractInstance*,InstanceInfo*>(state.valid_instance,result));
             // Issue the copy and save the event
+	    log_sjt.info("HERE: %s %d", __FILE__, __LINE__);
             active_events.insert(src_info->inst.copy_to_untyped(result->inst));
           }
         }
@@ -4070,6 +4078,8 @@ namespace RegionRuntime {
       // Next issue the copies from the src_instances to the instances
       Event prev = desc->issue_region_copy_ops();
       // Now launch the task itself (finally!)
+      log_sjt.info("post-copy spawn: task=%d wait=%x/%d",
+		   desc->task_id, prev.id, prev.gen);
       local_proc.spawn(desc->task_id, desc->args, desc->arglen, prev);
 
       // Now update the dependent tasks, if we're local we can do this directly, if not

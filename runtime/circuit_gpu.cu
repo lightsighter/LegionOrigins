@@ -18,6 +18,8 @@ enum {
   TASKID_CALC_NEW_CURRENTS,
   TASKID_DISTRIBUTE_CHARGE,
   TASKID_UPDATE_VOLTAGES,
+  TASKID_UNROLL_LISTS,
+  TASKID_DUMMY,
 };
 
 struct CircuitNode {
@@ -28,11 +30,17 @@ struct CircuitNode {
   float leakage;
 };
 
+#define WIRE_SEGMENTS 10
+
 struct CircuitWire {
   ptr_t<CircuitWire> next;
   ptr_t<CircuitNode> in_node, out_node;
-  float resistance;
-  float current;
+  int out_node_is_shared;
+  float inductance; // per segment
+  float resistance; // per segment
+  float current[WIRE_SEGMENTS];
+  float capacitance; // between segments
+  float voltage[WIRE_SEGMENTS-1];
 };
 
 struct Circuit {
@@ -43,13 +51,14 @@ struct Circuit {
 };
 
 struct CircuitPiece {
+  int index;
   LogicalHandle rn_pvt, rn_shr, rn_ghost;
   LogicalHandle rw_pvt;
   ptr_t<CircuitNode> first_node;
   ptr_t<CircuitWire> first_wire;
 };
 
-#define MAX_PIECES 10
+#define MAX_PIECES 32
 
 struct Partitions {
   Partition<CircuitWire> p_wires;
@@ -60,10 +69,10 @@ struct Partitions {
 
 extern RegionRuntime::LowLevel::Logger::Category log_mapper;
 
-static bool sort_by_proc_id(const std::pair<Processor, Memory>& a,
-			    const std::pair<Processor, Memory>& b)
+template <class T>
+static bool sort_by_proc_id(const T& a, const T& b)
 {
-  return (a.first.id < b.first.id);
+  return (a.proc.id < b.proc.id);
 }
 
 template <class T>
@@ -82,6 +91,116 @@ T prioritized_pick(const std::vector<T>& vec, T choice1, T choice2)
 
 class CircuitMapper : public Mapper {
 public:
+  struct CPUMemoryChain {
+    Processor proc;
+    Memory sysmem;
+    Memory gasnet;
+  };
+
+  struct GPUMemoryChain {
+    Processor proc;
+    Memory fbmem;
+    Memory zcmem;
+    Memory sysmem;
+    Memory gasnet;
+  };
+
+  std::vector<CPUMemoryChain> cpu_mems;
+  std::vector<GPUMemoryChain> gpu_mems;
+
+  CircuitMapper(Machine *m, HighLevelRuntime *r, Processor p)
+    : Mapper(m, r, p)
+  {
+    // go through all processors, taking the kind we want, and finding its
+    //  best memory
+    std::vector<Memory> sysmems;
+    Memory gasnet;
+
+    const std::set<Processor>& all_procs = m->get_all_processors();
+    for(std::set<Processor>::const_iterator it = all_procs.begin();
+	it != all_procs.end();
+	it++) {
+      Processor proc = *it;
+      unsigned node = (proc.id >> 24) & 0x1f; // HACK!
+      Processor::Kind kind = m->get_processor_kind(proc);
+      std::vector<Machine::ProcessorMemoryAffinity> pmas;
+      m->get_proc_mem_affinity(pmas, proc);
+
+      if(kind == Processor::LOC_PROC) {
+	// cpu
+	CPUMemoryChain mems;
+	mems.proc = proc;
+
+	// expect CPU to see sysmem, gasnet, and some zercopies
+	for(std::vector<Machine::ProcessorMemoryAffinity>::iterator it2 = pmas.begin();
+	    it2 != pmas.end();
+	    it2++) {
+	  // terrible terrible hacks here
+	  if(it2->bandwidth == 100) {
+	    mems.sysmem = it2->m;
+	    if(node >= sysmems.size()) sysmems.resize(node + 1);
+	    sysmems[node] = it2->m;
+	  } else
+	    if(it2->bandwidth == 10) {
+	      mems.gasnet = it2->m;
+	      gasnet = it2->m;
+	    } else if(it2->bandwidth != 40) { // ZC
+	      assert(0);
+	    }
+	}
+	cpu_mems.push_back(mems);
+      }
+    }
+    sort(cpu_mems.begin(), cpu_mems.end(), sort_by_proc_id<CPUMemoryChain>);
+
+#ifdef DEBUG_MAPPER
+    for(std::vector<CPUMemoryChain>::iterator it = cpu_mems.begin();
+	it != cpu_mems.end();
+	it++)
+      printf("CPU %x: s=%x g=%x\n",
+	     (*it).proc.id, (*it).sysmem.id, (*it).gasnet.id);
+#endif
+
+    for(std::set<Processor>::const_iterator it = all_procs.begin();
+	it != all_procs.end();
+	it++) {
+      Processor proc = *it;
+      unsigned node = (proc.id >> 24) & 0x1f; // HACK!
+      Processor::Kind kind = m->get_processor_kind(proc);
+      std::vector<Machine::ProcessorMemoryAffinity> pmas;
+      m->get_proc_mem_affinity(pmas, proc);
+
+      if(kind == Processor::TOC_PROC) {
+	// gpu
+	GPUMemoryChain mems;
+	mems.proc = proc;
+
+	// expect GPU to see FB and ZC
+	assert(pmas.size() == 2);
+	if(pmas[0].bandwidth == 200) {
+	  mems.fbmem = pmas[0].m;
+	  mems.zcmem = pmas[1].m;
+	} else {
+	  mems.fbmem = pmas[1].m;
+	  mems.zcmem = pmas[0].m;
+	}
+	mems.sysmem = sysmems[node];
+	mems.gasnet = gasnet;
+	gpu_mems.push_back(mems);
+      }
+    }
+    sort(gpu_mems.begin(), gpu_mems.end(), sort_by_proc_id<GPUMemoryChain>);
+
+#ifdef DEBUG_MAPPER
+    for(std::vector<GPUMemoryChain>::iterator it = gpu_mems.begin();
+	it != gpu_mems.end();
+	it++)
+      printf("GPU %x: f=%x z=%x s=%x g=%x\n",
+	     (*it).proc.id, (*it).fbmem.id, (*it).zcmem.id, (*it).sysmem.id, (*it).gasnet.id);
+#endif
+  }
+
+#ifdef OLD_STATIC_MAPPER
   std::map<Processor::Kind, std::vector< std::pair<Processor, Memory> > > cpu_mem_pairs;
   Memory global_memory;
 
@@ -135,6 +254,7 @@ public:
 
     log_mapper.info("global memory = %x (%d)?\n", best_global.id, best_count);
   }
+#endif
 
   virtual void rank_initial_region_locations(size_t elmt_size, 
 					     size_t num_elmts, 
@@ -146,7 +266,7 @@ public:
     //Mapper::rank_initial_region_locations(elmt_size, num_elmts, tag, ranking);
 
     // for now, ALWAYS choose the global memory
-    ranking.push_back(global_memory);
+    ranking.push_back(cpu_mems[0].gasnet);
   }
 
   virtual void rank_initial_partition_locations(size_t elmt_size, 
@@ -162,7 +282,7 @@ public:
     // for now, ALWAYS choose the global memory
     rankings.resize(num_subregions);
     for(unsigned i = 0; i < num_subregions; i++)
-      rankings[i].push_back(global_memory);
+      rankings[i].push_back(cpu_mems[0].gasnet);
   }
 
   virtual bool compact_partition(const UntypedPartition &partition, 
@@ -175,39 +295,46 @@ public:
     return false;
   }
 
+
   virtual Processor select_initial_processor(const Task *task)
   {
     //    log_mapper("mapper: select initial processor (%p)\n", task);
-    std::vector< std::pair<Processor, Memory> >& loc_procs = cpu_mem_pairs[Processor::LOC_PROC];
-    std::vector< std::pair<Processor, Memory> >& toc_procs = cpu_mem_pairs[Processor::TOC_PROC];
 
     switch(task->task_id) {
     case TOP_LEVEL_TASK_ID:
     case TASKID_LOAD_CIRCUIT:
+    case TASKID_DUMMY:
       {
 	// load circuit on first CPU
-	return cpu_mem_pairs[Processor::LOC_PROC][0].first;
+	return cpu_mems[0].proc;
       }
       //break;
 
     case TASKID_CALC_NEW_CURRENTS:
       {
-	// distribute evenly over CPUs
-	return toc_procs[task->tag % toc_procs.size()].first;
+	// distribute evenly over GPUs
+	return gpu_mems[task->tag % gpu_mems.size()].proc;
       }
       //break;
 
     case TASKID_DISTRIBUTE_CHARGE:
       {
-	// distribute evenly over CPUs
-	return toc_procs[task->tag % toc_procs.size()].first;
+	// distribute evenly over GPUs
+	return gpu_mems[task->tag % gpu_mems.size()].proc;
       }
       //break;
 
     case TASKID_UPDATE_VOLTAGES:
       {
-	// distribute evenly over CPUs
-	return toc_procs[task->tag % toc_procs.size()].first;
+	// distribute evenly over GPUs
+	return gpu_mems[task->tag % gpu_mems.size()].proc;
+      }
+      //break;
+
+    case TASKID_UNROLL_LISTS:
+      {
+	// distribute evenly over GPUs
+	return gpu_mems[task->tag % gpu_mems.size()].proc;
       }
       //break;
 
@@ -262,6 +389,7 @@ public:
       if(req == &(task->regions[i]))
 	idx = i;
     log_mapper.info("func_id=%d map_tag=%d region_index=%d", task->task_id, task->tag, idx);
+#ifdef DEBUG_MAPPER
     printf("taskid=%d tag=%d idx=%d srcs=[", task->task_id, task->tag, idx);
     for(unsigned i = 0; i < valid_src_instances.size(); i++) {
       if(i) printf(", ");
@@ -275,34 +403,58 @@ public:
     }
     printf("]\n");
     fflush(stdout);
-    std::vector< std::pair<Processor, Memory> >& loc_procs = cpu_mem_pairs[Processor::LOC_PROC];
-    std::vector< std::pair<Processor, Memory> >& toc_procs = cpu_mem_pairs[Processor::TOC_PROC];
-    std::pair<Processor, Memory> loc_cmp = loc_procs[task->tag % loc_procs.size()];
-    std::pair<Processor, Memory> toc_cmp = toc_procs[task->tag % toc_procs.size()];
+#endif
+
+    CPUMemoryChain *cpu = &cpu_mems[task->tag % cpu_mems.size()];
+    GPUMemoryChain *gpu = &gpu_mems[task->tag % gpu_mems.size()];
+
 #if 1
     switch(task->task_id) {
     case TOP_LEVEL_TASK_ID:
     case TASKID_LOAD_CIRCUIT:
       {
-	// sources will be global, as will dest
-	chosen_src = global_memory;
-	dst_ranking.push_back(global_memory);
+	// runs on cpu - sources and dests are gasnet
+	chosen_src = cpu->gasnet;
+	dst_ranking.push_back(cpu->gasnet);
+      }
+      break;
+
+    case TASKID_DUMMY:
+      {
+	// dummy task to get things back to gasnet
+	chosen_src = valid_src_instances[0];
+	dst_ranking.push_back(cpu->gasnet);
+      }
+
+    case TASKID_UNROLL_LISTS:
+      {
+	// everything in sysmem (work actually done on CPU)
+	chosen_src = prioritized_pick(valid_src_instances,
+				      gpu->sysmem, gpu->gasnet);
+	dst_ranking.push_back(gpu->sysmem);
       }
       break;
 
     case TASKID_CALC_NEW_CURRENTS:
       {
 	switch(idx) {
-	case 0: // index 0 = wires - keep in CPU's local memory
+	case 0: // index 0 = wires - keep in GPU's local memory
+	case 1: // index 1 = private nodes - same
 	  chosen_src = prioritized_pick(valid_src_instances,
-					toc_cmp.second, global_memory);
-	  dst_ranking.push_back(toc_cmp.second);
+					gpu->fbmem, gpu->gasnet);
+	  dst_ranking.push_back(gpu->fbmem);
+	  break;
+
+	case 2: // index 2 = ghost nodes - pull to zerocopy
+	  // SJT: ACK!  gasnet can't RDMA to zcmem (pinned by GPU) - so move
+	  //  to sysmem and we'll copy it the rest of the way ourselves
+	  chosen_src = prioritized_pick(valid_src_instances,
+					gpu->sysmem, gpu->gasnet);
+	  dst_ranking.push_back(gpu->sysmem);
 	  break;
 
 	default:
-	  chosen_src = prioritized_pick(valid_src_instances,
-					toc_cmp.second, global_memory);
-	  dst_ranking.push_back(toc_cmp.second);
+	  assert(0);
 	}
       }
       break;
@@ -310,26 +462,44 @@ public:
     case TASKID_DISTRIBUTE_CHARGE:
       {
 	switch(idx) {
-	case 0: // index 0 = wires - keep in CPU's local memory
+	case 0: // index 0 = wires - keep in GPU's local memory
+	case 1: // index 1 = private nodes - same
 	  chosen_src = prioritized_pick(valid_src_instances,
-					toc_cmp.second, global_memory);
-	  dst_ranking.push_back(toc_cmp.second);
+					gpu->fbmem, gpu->gasnet);
+	  dst_ranking.push_back(gpu->fbmem);
+	  break;
+
+	case 2: // index 2 = ghost nodes - reduce to gasnet
+	  // SJT: temp change - put in sysmem for now
+	  chosen_src = prioritized_pick(valid_src_instances,
+					gpu->sysmem, gpu->gasnet);
+	  dst_ranking.push_back(gpu->sysmem);
 	  break;
 
 	default:
-	  chosen_src = prioritized_pick(valid_src_instances,
-					toc_cmp.second, global_memory);
-	  dst_ranking.push_back(toc_cmp.second);
+	  assert(0);
 	}
       }
       break;
 
     case TASKID_UPDATE_VOLTAGES:
       {
-	// distribute evenly over CPUs
-	chosen_src = prioritized_pick(valid_src_instances,
-				      toc_cmp.second, global_memory);
-	dst_ranking.push_back(toc_cmp.second);
+	switch(idx) {
+	case 0: // index 0 = private nodes - keep in GPU's local memory
+	  chosen_src = prioritized_pick(valid_src_instances,
+					gpu->fbmem, gpu->gasnet);
+	  dst_ranking.push_back(gpu->fbmem);
+	  break;
+
+	case 1: // index 1 = shared nodes - pull into framebuffer
+	  chosen_src = prioritized_pick(valid_src_instances,
+					gpu->fbmem, gpu->gasnet);
+	  dst_ranking.push_back(gpu->fbmem);
+	  break;
+	  
+	default:
+	  assert(0);
+	}
       }
       break;
 
@@ -367,6 +537,8 @@ public:
     // easy case: if there's only 1 valid choice, pick it
     if(current_instances.size() == 1) {
       chosen_src = *(current_instances.begin());
+      log_mapper.info("mapper: forced copy: %x -> %x",
+		      chosen_src.id, dst.id);
       return;
     }
     log_mapper.info("mapper: selecting copy source (%p)\n", task);
@@ -483,6 +655,10 @@ void top_level_task(const void *args, size_t arglen,
 				   load_circuit_regions, 
 				   &circuit, sizeof(Circuit), false, //spawn_tasks);
 				   0, 0);
+  Future f2 = runtime->execute_task(ctx, TASKID_DUMMY,
+				    load_circuit_regions, 
+				    &circuit, sizeof(Circuit), false, //spawn_tasks);
+				    0, 0);
   Partitions pp = f.template get_result<Partitions>();
 
 #if 0
@@ -512,6 +688,7 @@ void top_level_task(const void *args, size_t arglen,
   std::vector<CircuitPiece> pieces;
   pieces.resize(Config::num_pieces);
   for(int i = 0; i < Config::num_pieces; i++) {
+    pieces[i].index = i;
     pieces[i].rn_pvt = runtime->get_subregion(ctx, pp.p_pvt_nodes, i);
     pieces[i].rn_shr = runtime->get_subregion(ctx, pp.p_shr_nodes, i);
     pieces[i].rn_ghost = runtime->get_subregion(ctx, pp.p_ghost_nodes, i);
@@ -519,6 +696,33 @@ void top_level_task(const void *args, size_t arglen,
     pieces[i].first_node = pp.first_nodes[i];
     pieces[i].first_wire = pp.first_wires[i];
   }
+
+  std::list<Future> futures;
+  for(int p = 0; p < Config::num_pieces; p++) {
+    std::vector<RegionRequirement> unr_regions;
+    unr_regions.push_back(RegionRequirement(pieces[p].rw_pvt,
+					    READ_ONLY, NO_MEMORY, EXCLUSIVE,
+					    circuit.r_all_wires));
+    unr_regions.push_back(RegionRequirement(pieces[p].rn_pvt,
+					    READ_ONLY, NO_MEMORY, EXCLUSIVE,
+					    circuit.r_all_nodes));
+    unr_regions.push_back(RegionRequirement(pieces[p].rn_shr,
+					    READ_ONLY, NO_MEMORY, EXCLUSIVE,
+					    circuit.r_all_nodes));
+    Future f = runtime->execute_task(ctx, TASKID_UNROLL_LISTS,
+				     unr_regions, 
+				     &pieces[p], sizeof(CircuitPiece),
+				     spawn_tasks,
+				     0, p);
+    futures.push_back(f);
+  }
+  while(futures.size() > 0) {
+    futures.front().get_void_result();
+    futures.pop_front();
+  }
+  printf("STARTING MAIN SIMULATION LOOP\n");
+  struct timespec ts_start, ts_end;
+  clock_gettime(CLOCK_MONOTONIC, &ts_start);
 
   // main loop
   for(int i = 0; i < Config::num_loops; i++) {
@@ -586,19 +790,42 @@ void top_level_task(const void *args, size_t arglen,
 				       &pieces[p], sizeof(CircuitPiece),
 				       spawn_tasks,
 				       0, p);
+      // remember the futures for the last pass so we can wait on them
+      if(i == Config::num_loops - 1)
+	futures.push_back(f);
     }
   }
 
-  log_app.info("all done!\n");
+  log_app.info("waiting for all simulation tasks to complete");
+
+  while(futures.size() > 0) {
+    futures.front().get_void_result();
+    futures.pop_front();
+  }
+  clock_gettime(CLOCK_MONOTONIC, &ts_end);
+
+  double sim_time = ((1.0 * (ts_end.tv_sec - ts_start.tv_sec)) +
+		     (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
+  printf("ELAPSED TIME = %7.3f s\n", sim_time);
+
+  log_app.info("all done!");
 }
 
 template <class T>
 static T random_element(const std::set<T>& set)
 {
+  assert(0);
   int index = int(drand48() * set.size());
   typename std::set<T>::const_iterator it = set.begin();
   while(index-- > 0) it++;
   return *it;
+}
+
+template <class T>
+static T random_element(const std::vector<T>& vec)
+{
+  int index = int(drand48() * vec.size());
+  return vec[index];
 }
 
 template<AccessorType AT>
@@ -611,19 +838,23 @@ Partitions load_circuit_task(const void *args, size_t arglen,
   PhysicalRegion<AT> inst_rw = regions[1];
   Partitions pp;
 
-  log_app.debug("In load_circuit()\n");
+  log_app.debug("In load_circuit()");
 
   std::vector<std::set<ptr_t<CircuitWire> > > wire_owner_map;
   std::vector<std::set<ptr_t<CircuitNode> > > node_privacy_map,
                                               node_owner_map,
                                               node_neighbors_multimap;
+  std::vector<std::vector<ptr_t<CircuitNode> > > node_owner_list;
 
   wire_owner_map.resize(Config::num_pieces);
   node_privacy_map.resize(Config::num_pieces);
   node_owner_map.resize(Config::num_pieces);
   node_neighbors_multimap.resize(Config::num_pieces);
+  node_owner_list.resize(Config::num_pieces);
 
   srand48(Config::random_seed);
+
+  log_app.debug("load_circuit: creating nodes");
 
   // first step - allocate lots of nodes
   for(int n = 0; n < Config::num_pieces; n++) {
@@ -648,9 +879,13 @@ Partitions load_circuit_task(const void *args, size_t arglen,
       node_owner_map[n].insert(cur_node);
       node_privacy_map[n].insert(cur_node); // default is private
 
+      node_owner_list[n].push_back(cur_node);
+
       cur_node = next_node;
     }
   }
+
+  log_app.debug("load_circuit: creating wires");
 
   // now allocate a lot of wires
   for(int n = 0; n < Config::num_pieces; n++) {
@@ -660,22 +895,28 @@ Partitions load_circuit_task(const void *args, size_t arglen,
     ptr_t<CircuitWire> cur_wire = first_wire;
     for(int i = 0; i < Config::wires_per_piece; i++) {
       CircuitWire wire;
-      wire.current = 0;
+      for(int j = 0; j < WIRE_SEGMENTS; j++) wire.current[j] = 0;
+      for(int j = 0; j < WIRE_SEGMENTS-1; j++) wire.voltage[j] = 0;
+
       wire.resistance = drand48() * 10 + 1;
+      wire.inductance = drand48() * 0.01 + 0.1;
+      wire.capacitance = drand48() * 0.1;
+
+      wire.out_node_is_shared = 0;
       
       // input node is always from same piece
-      wire.in_node = random_element(node_owner_map[n]);
+      wire.in_node = random_element(node_owner_list[n]);
 
       if((100 * drand48()) < Config::pct_wire_in_piece) {
 	// output node also from same piece
-	wire.out_node = random_element(node_owner_map[n]);
+	wire.out_node = random_element(node_owner_list[n]);
       } else {
 	// pick a random other piece and a node from there
 	int nn = int(drand48() * (Config::num_pieces - 1));
 	if(nn >= n) nn++;
 
 	// that node becomes shared and we're a neighbor
-	wire.out_node = random_element(node_owner_map[nn]);
+	wire.out_node = random_element(node_owner_list[nn]);
 	node_privacy_map[0].erase(wire.out_node);
 	node_privacy_map[1].insert(wire.out_node);
 	node_neighbors_multimap[n].insert(wire.out_node);
@@ -694,9 +935,33 @@ Partitions load_circuit_task(const void *args, size_t arglen,
     }
   }
 
+  log_app.debug("load_circuit: wire sharing annotation");
+
+  // do second pass through all the wires, annotating which ones have out
+  //  nodes that ended up being shared
+  for(int n = 0; n < Config::num_pieces; n++) {
+    ptr_t<CircuitWire> first_wire = pp.first_wires[n];
+
+    ptr_t<CircuitWire> cur_wire = first_wire;
+    do {
+      CircuitWire w = inst_rw.read(cur_wire);
+
+      if(node_privacy_map[1].find(w.out_node) != node_privacy_map[1].end()) {
+	w.out_node_is_shared = 1;
+	inst_rw.write(cur_wire, w);
+      }
+
+      cur_wire = w.next;
+    } while(cur_wire != first_wire);
+  }
+
+  log_app.debug("load_circuit: partitioning wires");
+
   // wires just have one level of partitioning - by piece
   pp.p_wires = runtime->create_partition(ctx, c->r_all_wires,
 					 wire_owner_map);
+
+  log_app.debug("load_circuit: partitioning nodes");
 
   // nodes split first by private vs shared and then by piece
   Partition<CircuitNode> p_node_pvs = runtime->create_partition<CircuitNode>(ctx, c->r_all_nodes,
@@ -717,21 +982,113 @@ Partitions load_circuit_task(const void *args, size_t arglen,
 
 typedef RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorGPU> GPU_Accessor;
 
-__global__ void calc_new_currents_kernel(ptr_t<CircuitWire> first_wire,
+__thread ptr_t<CircuitNode> *unrolled_node_lists[100];
+__thread int unrolled_node_counts[100];
+__thread ptr_t<CircuitWire> *unrolled_wire_lists[100];
+__thread int unrolled_wire_counts[100];
+
+template<AccessorType AT>
+void unroll_lists_task(const void *args, size_t arglen, 
+			    const std::vector<PhysicalRegion<AT> > &regions,
+			    Context ctx, HighLevelRuntime *runtime)
+{
+  CircuitPiece *p = (CircuitPiece *)args;
+  PhysicalRegion<AT> inst_rw_pvt = regions[0];
+  PhysicalRegion<AT> inst_rn_pvt = regions[1];
+  PhysicalRegion<AT> inst_rn_shr = regions[2];
+
+  //printf("UNROLL: %lx [%d] = %p\n", pthread_self(), p->index, unrolled_wire_lists[p->index]);
+
+  // unroll wires first
+  std::vector<ptr_t<CircuitWire> > wires;
+  ptr_t<CircuitWire> cur_wire = p->first_wire;
+  do {
+    //printf("WW: %d\n", cur_wire.value);
+    wires.push_back(cur_wire);
+    assert(wires.size() <= Config::wires_per_piece);
+    CircuitWire w = inst_rw_pvt.read(cur_wire);
+    cur_wire = w.next;
+  } while(cur_wire != p->first_wire);
+
+  int size = wires.size();
+  //printf("got %d wires\n", size);
+  ptr_t<CircuitWire> *dev_wire_list;
+  cudaMalloc((void **)&dev_wire_list, size * sizeof(ptr_t<CircuitWire>));
+  //printf("ptr = %p\n", dev_wire_list);
+  cudaMemcpy(dev_wire_list, &wires[0], size * sizeof(ptr_t<CircuitWire>),
+	     cudaMemcpyHostToDevice);
+
+  unrolled_wire_lists[p->index] = dev_wire_list;
+  unrolled_wire_counts[p->index] = size;
+
+  // unroll nodes next
+  std::vector<ptr_t<CircuitNode> > nodes;
+  ptr_t<CircuitNode> cur_node = p->first_node;
+  do {
+    nodes.push_back(cur_node);
+    assert(nodes.size() <= Config::nodes_per_piece);
+    CircuitNode n = inst_rn_pvt.read(cur_node);
+    cur_node = n.next;
+  } while(cur_node != p->first_node);
+
+  int node_size = nodes.size();
+  //printf("got %d nodes\n", node_size);
+  ptr_t<CircuitNode> *dev_node_list;
+  cudaMalloc((void **)&dev_node_list, node_size * sizeof(ptr_t<CircuitNode>));
+  //printf("ptr = %p\n", dev_node_list);
+  cudaMemcpy(dev_node_list, &nodes[0], node_size * sizeof(ptr_t<CircuitNode>),
+	     cudaMemcpyHostToDevice);
+
+  unrolled_node_lists[p->index] = dev_node_list;
+  unrolled_node_counts[p->index] = node_size;
+}
+
+__global__ void calc_new_currents_kernel(ptr_t<CircuitWire>* wire_list,
+					 int num_wires,
 					 GPU_Accessor inst_rw_pvt,
 					 GPU_Accessor inst_rn_pvt,
 					 GPU_Accessor inst_rn_ghost)
 {
-  ptr_t<CircuitWire> cur_wire = first_wire;
-  do {
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if(tid < num_wires) {
+    ptr_t<CircuitWire> cur_wire = wire_list[tid];
+
     CircuitWire w = inst_rw_pvt.read(cur_wire);
     CircuitNode n_in = inst_rn_pvt.read(w.in_node);
     CircuitNode n_out = inst_rn_pvt.read(w.out_node);
-    w.current = (n_out.voltage - n_in.voltage) / w.resistance;
-    inst_rw_pvt.write(cur_wire, w);
 
-    cur_wire = w.next;
-  } while(cur_wire.value != first_wire.value);
+    // solve our little RLC model iteratively
+    float dt = 1e-6;
+    int steps = 10000;
+    float new_v[WIRE_SEGMENTS+1];
+    float new_i[WIRE_SEGMENTS];
+    for(int i = 0; i < WIRE_SEGMENTS; i++) new_i[i] = w.current[i];
+    new_v[0] = n_in.voltage;
+    for(int i = 0; i < WIRE_SEGMENTS-1; i++) new_v[i+1] = w.voltage[i];
+    new_v[WIRE_SEGMENTS] = n_out.voltage;
+
+    for(int j = 0; j < steps; j++) {
+      // first, figure out the new current from the voltage differential
+      // and our inductance:
+      // dV = R*I + L*I' ==> I = (dV - L*I')/R
+      for(int i = 0; i < WIRE_SEGMENTS; i++) {
+	new_i[i] = ((new_v[i+1] - new_v[i]) - 
+		    w.inductance*(new_i[i]-w.current[i])/dt) / w.resistance;
+      }
+
+      // now update the inter-node voltages
+      for(int i = 0; i < WIRE_SEGMENTS-1; i++) {
+	new_v[i+1] = w.voltage[i] + dt*(new_i[i] - new_i[i+1]) / w.capacitance;
+      }
+    }
+
+    // all done - copy current and voltages back
+    for(int i = 0; i < WIRE_SEGMENTS; i++) w.current[i] = new_i[i];
+    for(int i = 0; i < WIRE_SEGMENTS-1; i++) w.voltage[i] = new_v[i+1];
+
+    inst_rw_pvt.write(cur_wire, w);
+  }
 }
 
 template<AccessorType AT>
@@ -747,12 +1104,19 @@ void calc_new_currents_task(const void *args, size_t arglen,
 
   log_app.debug("In calc_new_currents()\n");
 
-  if(0)
-  calc_new_currents_kernel<<<1,1>>>(p->first_wire,
+  //printf("UNROLL: %lx [%d] = %p\n", pthread_self(), p->index, unrolled_wire_lists[p->index]);
+  assert(unrolled_wire_lists[p->index] != 0);
+
+  int wire_count = unrolled_wire_counts[p->index];
+  int num_blocks = (wire_count+255) >> 8;
+
+  calc_new_currents_kernel<<<num_blocks,256>>>(unrolled_wire_lists[p->index],
+				    wire_count,
 				    inst_rw_pvt.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>(),
 				    inst_rn_pvt.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>(),
+					       inst_rn_pvt.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>());
 				  
-				    inst_rn_ghost.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>());
+					       //				    inst_rn_ghost.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>());
 
   log_app.debug("Done with calc_new_currents()\n");
 }
@@ -771,22 +1135,24 @@ public:
   }
 };
 
-__global__ void distribute_charge_kernel(ptr_t<CircuitWire> first_wire,
+__global__ void distribute_charge_kernel(ptr_t<CircuitWire>* wire_list,
+					 int num_wires,
 					 GPU_Accessor inst_rw_pvt,
 					 GPU_Accessor inst_rn_pvt,
 					 GPU_Accessor inst_rn_ghost)
 {
-  ptr_t<CircuitWire> cur_wire = first_wire;
-  do {
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if(tid < num_wires) {
+    ptr_t<CircuitWire> cur_wire = wire_list[tid];
+
     CircuitWire w = inst_rw_pvt.read(cur_wire);
 
-    float delta_q = w.current * 1e-6;  // arbitrarily do a 1us time step
+    float dt = 1e-6;
 
-    inst_rn_pvt.template reduce<AccumulateCharge>(w.in_node, -delta_q);
-    //    inst_rn_pvt.template reduce<CircuitNode,AccumulateCharge,float>(w.out_node, delta_q);
-
-    cur_wire = w.next;
-  } while(cur_wire.value != first_wire.value);
+    inst_rn_pvt.template reduce<AccumulateCharge>(w.in_node, -dt * w.current[0]);
+    //    inst_rn_pvt.template reduce<CircuitNode,AccumulateCharge,float>(w.out_node, dt * w.current[WIRE_SEGMENTS-1]);
+  }
 }
 
 template<AccessorType AT>
@@ -802,22 +1168,33 @@ void distribute_charge_task(const void *args, size_t arglen,
 
   log_app.debug("In distribute_charge()\n");
 
-  if(0)
-  distribute_charge_kernel<<<1,1>>>(p->first_wire,
+  //printf("UNROLL: %lx [%d] = %p\n", pthread_self(), p->index, unrolled_wire_lists[p->index]);
+  assert(unrolled_wire_lists[p->index] != 0);
+
+  int wire_count = unrolled_wire_counts[p->index];
+  int num_blocks = (wire_count+255) >> 8;
+
+  distribute_charge_kernel<<<num_blocks,256>>>(unrolled_wire_lists[p->index],
+				    wire_count,
 				    inst_rw_pvt.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>(),
 				    inst_rn_pvt.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>(),
 				  
-				    inst_rn_ghost.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>());
+				    inst_rn_pvt.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>());
+				    //inst_rn_ghost.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>());
 
   log_app.debug("Done with distribute_charge()\n");
 }
 
-__global__ void update_voltages_kernel(ptr_t<CircuitNode> first_node,
+__global__ void update_voltages_kernel(ptr_t<CircuitNode>* node_list,
+				       int num_nodes,
 				       GPU_Accessor inst_rn_pvt,
 				       GPU_Accessor inst_rn_shr)
 {
-  ptr_t<CircuitNode> cur_node = first_node;
-  do {
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if(tid < num_nodes) {
+    ptr_t<CircuitNode> cur_node = node_list[tid];
+
     CircuitNode n = inst_rn_pvt.read(cur_node);
     //printf("R: %d -> %d\n", cur_node.value, n.next.value);
 
@@ -829,7 +1206,7 @@ __global__ void update_voltages_kernel(ptr_t<CircuitNode> first_node,
     inst_rn_pvt.write(cur_node, n);
 
     cur_node = n.next;
-  } while(cur_node.value != first_node.value);
+  }
 }
 
 template<AccessorType AT>
@@ -843,8 +1220,14 @@ void update_voltages_task(const void *args, size_t arglen,
 
   log_app.debug("In update_voltages()\n");
 
-  if(0)
-  update_voltages_kernel<<<1,1>>>(p->first_node,
+  //printf("UNROLL: %lx [%d] = %p\n", pthread_self(), p->index, unrolled_node_lists[p->index]);
+  assert(unrolled_node_lists[p->index] != 0);
+
+  int node_count = unrolled_node_counts[p->index];
+  int num_blocks = (node_count+255) >> 8;
+
+  update_voltages_kernel<<<num_blocks,256>>>(unrolled_node_lists[p->index],
+				    node_count,
 				  inst_rn_pvt.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>(),
 				  
 				  inst_rn_shr.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>());
@@ -853,17 +1236,27 @@ void update_voltages_task(const void *args, size_t arglen,
   log_app.debug("Done with update_voltages()\n");
 }
 
+template<AccessorType AT>
+void dummy_task(const void *args, size_t arglen, 
+		const std::vector<PhysicalRegion<AT> > &regions,
+		Context ctx, HighLevelRuntime *runtime)
+{
+}
+
 int main(int argc, char **argv)
 {
   Processor::TaskIDTable task_table;  
 
-  task_table[TASK_ID_INIT_MAPPERS] = init_mapper_wrapper<create_mappers>;
+  //task_table[TASK_ID_INIT_MAPPERS] = init_mapper_wrapper<create_mappers>;
 
   task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
   task_table[TASKID_LOAD_CIRCUIT] = high_level_task_wrapper<Partitions, load_circuit_task<AccessorGeneric> >;
+  task_table[TASKID_UNROLL_LISTS] = high_level_task_wrapper<unroll_lists_task<AccessorGeneric> >;
   task_table[TASKID_CALC_NEW_CURRENTS] = high_level_task_wrapper<calc_new_currents_task<AccessorGeneric> >;
   task_table[TASKID_DISTRIBUTE_CHARGE] = high_level_task_wrapper<distribute_charge_task<AccessorGeneric> >;
   task_table[TASKID_UPDATE_VOLTAGES] = high_level_task_wrapper<update_voltages_task<AccessorGeneric> >;
+
+  task_table[TASKID_DUMMY] = high_level_task_wrapper<dummy_task<AccessorGeneric> >;
 
   HighLevelRuntime::register_runtime_tasks(task_table);
   HighLevelRuntime::set_mapper_init_callback(create_mappers);

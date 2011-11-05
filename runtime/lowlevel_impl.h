@@ -205,7 +205,7 @@ namespace RegionRuntime {
       int dummy;
       unsigned bits[0];
 
-      static size_t bytes_needed(int offset, int count)
+      static size_t bytes_needed(off_t offset, off_t count)
       {
 	size_t need = sizeof(ElementMaskImpl) + (((count + 31) >> 5) << 2);
 	return need;
@@ -412,19 +412,19 @@ namespace RegionRuntime {
       void destroy_allocator(RegionAllocatorUntyped a, bool local_destroy);
       void destroy_instance(RegionInstanceUntyped i, bool local_destroy);
 
-      int alloc_bytes_local(size_t size);
-      void free_bytes_local(int offset, size_t size);
+      off_t alloc_bytes_local(size_t size);
+      void free_bytes_local(off_t offset, size_t size);
 
-      int alloc_bytes_remote(size_t size);
-      void free_bytes_remote(int offset, size_t size);
+      off_t alloc_bytes_remote(size_t size);
+      void free_bytes_remote(off_t offset, size_t size);
 
-      virtual int alloc_bytes(size_t size) = 0;
-      virtual void free_bytes(int offset, size_t size) = 0;
+      virtual off_t alloc_bytes(size_t size) = 0;
+      virtual void free_bytes(off_t offset, size_t size) = 0;
 
-      virtual void get_bytes(unsigned offset, void *dst, size_t size) = 0;
-      virtual void put_bytes(unsigned offset, const void *src, size_t size) = 0;
+      virtual void get_bytes(off_t offset, void *dst, size_t size) = 0;
+      virtual void put_bytes(off_t offset, const void *src, size_t size) = 0;
 
-      virtual void *get_direct_ptr(unsigned offset, size_t size) = 0;
+      virtual void *get_direct_ptr(off_t offset, size_t size) = 0;
 
     public:
       Memory me;
@@ -433,20 +433,20 @@ namespace RegionRuntime {
       gasnet_hsl_t mutex; // protection for resizing vectors
       std::vector<RegionAllocatorUntyped::Impl *> allocators;
       std::vector<RegionInstanceUntyped::Impl *> instances;
-      std::map<int, int> free_blocks;
+      std::map<off_t, off_t> free_blocks;
     };
 
     class RegionInstanceUntyped::Impl {
     public:
-      Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, int _offset);
+      Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset);
 
       // when we auto-create a remote instance, we don't know region/offset
       Impl(RegionInstanceUntyped _me, Memory _memory);
 
       ~Impl(void);
 
-      void get_bytes(unsigned ptr_value, void *dst, size_t size);
-      void put_bytes(unsigned ptr_value, const void *src, size_t size);
+      void get_bytes(off_t ptr_value, void *dst, size_t size);
+      void put_bytes(off_t ptr_value, const void *src, size_t size);
 
       static Event copy(RegionInstanceUntyped src, 
 			RegionInstanceUntyped target,
@@ -462,7 +462,7 @@ namespace RegionRuntime {
       struct StaticData {
 	bool valid;
 	RegionMetaDataUntyped region;
-	int offset;
+	off_t offset;
       } locked_data;
 
       Lock::Impl lock;

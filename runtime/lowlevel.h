@@ -20,7 +20,9 @@ namespace RegionRuntime {
       LEVEL_ERROR,
       LEVEL_NONE,
     };
+#ifndef COMPILE_TIME_MIN_LEVEL
 #define COMPILE_TIME_MIN_LEVEL LEVEL_SPEW
+#endif
     class Logger {
     public:
       static void init(int argc, const char *argv[]);
@@ -284,7 +286,7 @@ namespace RegionRuntime {
       ElementMask(int num_elements, int first_element = 0);
       ElementMask(const ElementMask &copy_from, int num_elements = -1, int first_element = 0);
 
-      void init(int _first_element, int _num_elements, Memory _memory, int _offset);
+      void init(int _first_element, int _num_elements, Memory _memory, off_t _offset);
 
       int get_num_elmts(void) const { return num_elements; }
 
@@ -325,8 +327,9 @@ namespace RegionRuntime {
       int first_element;
       int num_elements;
       Memory memory;
-      int offset;
+      off_t offset;
       void *raw_data;
+      int first_enabled_elmt, last_enabled_elmt;
     };
 
     class RegionMetaDataUntyped {
@@ -663,7 +666,10 @@ namespace RegionRuntime {
       std::map<Memory,std::set<Processor> > visible_procs_from_memory;
 
     public:
+      struct NodeAnnounceData;
+
       void parse_node_announce_data(const void *args, size_t arglen,
+				    const NodeAnnounceData& annc_data,
 				    bool remote);
     };
 

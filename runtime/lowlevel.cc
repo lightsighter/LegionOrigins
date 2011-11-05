@@ -723,7 +723,7 @@ namespace RegionRuntime {
 
     class RegionAllocatorUntyped::Impl {
     public:
-      Impl(RegionAllocatorUntyped _me, RegionMetaDataUntyped _region, Memory _memory, int _mask_start);
+      Impl(RegionAllocatorUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _mask_start);
 
       ~Impl(void);
 
@@ -735,7 +735,7 @@ namespace RegionRuntime {
 	bool valid;
 	RegionMetaDataUntyped region;
 	Memory memory;
-	int mask_start;
+	off_t mask_start;
       };
 
       RegionAllocatorUntyped me;
@@ -746,7 +746,7 @@ namespace RegionRuntime {
       ElementMask avail_elmts, changed_elmts;
     };
 
-    RegionInstanceUntyped::Impl::Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, int _offset)
+    RegionInstanceUntyped::Impl::Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset)
       : me(_me), memory(_memory)
     {
       locked_data.valid = true;
@@ -1255,6 +1255,8 @@ namespace RegionRuntime {
 	//  to whoever we think the owner is
 	if(impl->owner != gasnet_mynode()) {
 	  // can reuse the args we were given
+	  log_lock(LEVEL_DEBUG, "forwarding lock request: lock=%x, from=%d, to=%d, mode=%d",
+		   args.lock.id, args.node, impl->owner, args.mode);
 	  req_forward_target = impl->owner;
 	  break;
 	}
@@ -1440,10 +1442,10 @@ namespace RegionRuntime {
 	
 	mode = it->first;
 	count = it->second.size();
-
+	assert(count > 0);
 	// grab the list of events wanting to share the lock
 	to_wake.swap(it->second);
-	  
+	local_waiters.erase(it);  // actually pull list off map!
 	// TODO: can we share with any other nodes?
       }
 
@@ -1489,6 +1491,7 @@ namespace RegionRuntime {
 	// case 2: we own the lock, so we can give it to another waiter
 	//  (local or remote)
 	bool any_local = select_local_waiters(to_wake);
+	assert(!any_local || (to_wake.size() > 0));
 
 	if(!any_local && (remote_waiter_mask != 0)) {
 	  // nobody local wants it, but another node does
@@ -1671,61 +1674,66 @@ namespace RegionRuntime {
       size_t size;
     };
 
-    int handle_remote_mem_alloc(RemoteMemAllocArgs args)
+    off_t handle_remote_mem_alloc(RemoteMemAllocArgs args)
     {
       //printf("[%d] handling remote alloc of size %zd\n", gasnet_mynode(), args.size);
-      int result = args.memory.impl()->alloc_bytes(args.size);
+      off_t result = args.memory.impl()->alloc_bytes(args.size);
       //printf("[%d] remote alloc will return %d\n", gasnet_mynode(), result);
       return result;
     }
 
     typedef ActiveMessageShortReply<REMOTE_MALLOC_MSGID, REMOTE_MALLOC_RPLID,
-				    RemoteMemAllocArgs, int,
+				    RemoteMemAllocArgs, off_t,
 				    handle_remote_mem_alloc> RemoteMemAllocMessage;
 
-    int Memory::Impl::alloc_bytes_local(size_t size)
+    Logger::Category log_malloc("malloc");
+
+    off_t Memory::Impl::alloc_bytes_local(size_t size)
     {
-      for(std::map<int, int>::iterator it = free_blocks.begin();
+      for(std::map<off_t, off_t>::iterator it = free_blocks.begin();
 	  it != free_blocks.end();
 	  it++) {
-	if(it->second == (int)size) {
+	if(it->second == (off_t)size) {
 	  // perfect match
-	  int retval = it->first;
+	  off_t retval = it->first;
 	  free_blocks.erase(it);
+	  log_malloc.info("alloc full block: mem=%x size=%zd ofs=%zd\n", me.id, size, retval);
 	  return retval;
 	}
 	
-	if(it->second > (int)size) {
+	if(it->second > (off_t)size) {
 	  // some left over
-	  int leftover = it->second - size;
-	  int retval = it->first + leftover;
+	  off_t leftover = it->second - size;
+	  off_t retval = it->first + leftover;
 	  it->second = leftover;
+	  log_malloc.info("alloc partial block: mem=%x size=%zd ofs=%zd\n", me.id, size, retval);
 	  return retval;
 	}
       }
 
       // no blocks large enough - boo hoo
+      log_malloc.info("alloc FAILED: mem=%x size=%zd\n", me.id, size);
       return -1;
     }
 
-    void Memory::Impl::free_bytes_local(int offset, size_t size)
+    void Memory::Impl::free_bytes_local(off_t offset, size_t size)
     {
       assert(0);
     }
 
-    int Memory::Impl::alloc_bytes_remote(size_t size)
+    off_t Memory::Impl::alloc_bytes_remote(size_t size)
     {
       // RPC over to owner's node for allocation
 
       RemoteMemAllocArgs args;
       args.memory = me;
       args.size = size;
-      int retval = RemoteMemAllocMessage::request(ID(me).node(), args);
+      off_t retval = RemoteMemAllocMessage::request(ID(me).node(), args);
       //printf("got: %d\n", retval);
       return retval;
     }
 
-    void Memory::Impl::free_bytes_remote(int offset, size_t size)
+    void Memory::Impl::free_bytes_remote(off_t offset, size_t size)
     {
       assert(0);
     }
@@ -1756,27 +1764,27 @@ namespace RegionRuntime {
 	return create_instance_local(r, bytes_needed);
       }
 
-      virtual int alloc_bytes(size_t size)
+      virtual off_t alloc_bytes(size_t size)
       {
 	return alloc_bytes_local(size);
       }
 
-      virtual void free_bytes(int offset, size_t size)
+      virtual void free_bytes(off_t offset, size_t size)
       {
 	free_bytes_local(offset, size);
       }
 
-      virtual void get_bytes(unsigned offset, void *dst, size_t size)
+      virtual void get_bytes(off_t offset, void *dst, size_t size)
       {
 	memcpy(dst, base+offset, size);
       }
 
-      virtual void put_bytes(unsigned offset, const void *src, size_t size)
+      virtual void put_bytes(off_t offset, const void *src, size_t size)
       {
 	memcpy(base+offset, src, size);
       }
 
-      virtual void *get_direct_ptr(unsigned offset, size_t size)
+      virtual void *get_direct_ptr(off_t offset, size_t size)
       {
 	return (base + offset);
       }
@@ -1804,29 +1812,29 @@ namespace RegionRuntime {
 	return create_instance_remote(r, bytes_needed);
       }
 
-      virtual int alloc_bytes(size_t size)
+      virtual off_t alloc_bytes(size_t size)
       {
 	return alloc_bytes_remote(size);
       }
 
-      virtual void free_bytes(int offset, size_t size)
+      virtual void free_bytes(off_t offset, size_t size)
       {
 	free_bytes_remote(offset, size);
       }
 
-      virtual void get_bytes(unsigned offset, void *dst, size_t size)
+      virtual void get_bytes(off_t offset, void *dst, size_t size)
       {
 	// can't read/write a remote memory
 	assert(0);
       }
 
-      virtual void put_bytes(unsigned offset, const void *src, size_t size)
+      virtual void put_bytes(off_t offset, const void *src, size_t size)
       {
 	// can't read/write a remote memory
 	assert(0);
       }
 
-      virtual void *get_direct_ptr(unsigned offset, size_t size)
+      virtual void *get_direct_ptr(off_t offset, size_t size)
       {
 	return 0;
       }
@@ -1876,24 +1884,26 @@ namespace RegionRuntime {
 	}
       }
 
-      virtual int alloc_bytes(size_t size)
+      virtual off_t alloc_bytes(size_t size)
       {
 	if(gasnet_mynode() == 0) {
+	  return alloc_bytes_local(size);
+#if 0
 	  // node 0 performs all allocations
-	  for(std::map<int, int>::iterator it = free_blocks.begin();
+	  for(std::map<off_t, off_t>::iterator it = free_blocks.begin();
 	      it != free_blocks.end();
 	      it++) {
-	    if(it->second == (int)size) {
+	    if(it->second == (off_t)size) {
 	      // perfect match
-	      int retval = it->first;
+	      off_t retval = it->first;
 	      free_blocks.erase(it);
 	      return retval;
 	    }
 
-	    if(it->second > (int)size) {
+	    if(it->second > (off_t)size) {
 	      // some left over
-	      int leftover = it->second - size;
-	      int retval = it->first + leftover;
+	      off_t leftover = it->second - size;
+	      off_t retval = it->first + leftover;
 	      it->second = leftover;
 	      return retval;
 	    }
@@ -1901,28 +1911,32 @@ namespace RegionRuntime {
 
 	  // no blocks large enough - boo hoo
 	  return -1;
+#endif
 	} else {
+	  return alloc_bytes_remote(size);
+#if 0
 	  RemoteMemAllocArgs args;
 	  args.memory = me;
 	  args.size = size;
-	  int retval = RemoteMemAllocMessage::request(0, args);
-	  //printf("got: %d\n", retval);
+	  off_t retval = RemoteMemAllocMessage::request(0, args);
+	  //proff_tf("got: %d\n", retval);
 	  return retval;
+#endif
 	}
       }
 
-      virtual void free_bytes(int offset, size_t size)
+      virtual void free_bytes(off_t offset, size_t size)
       {
 	assert(0);
       }
 
-      virtual void get_bytes(unsigned offset, void *dst, size_t size)
+      virtual void get_bytes(off_t offset, void *dst, size_t size)
       {
 	char *dst_c = (char *)dst;
 	while(size > 0) {
-	  int blkid = (offset / memory_stride / num_nodes);
-	  int node = (offset / memory_stride) % num_nodes;
-	  int blkoffset = offset % memory_stride;
+	  off_t blkid = (offset / memory_stride / num_nodes);
+	  off_t node = (offset / memory_stride) % num_nodes;
+	  off_t blkoffset = offset % memory_stride;
 	  size_t chunk_size = memory_stride - blkoffset;
 	  if(chunk_size > size) chunk_size = size;
 	  gasnet_get(dst_c, node, ((char *)seginfos[node].addr)+(blkid * memory_stride)+blkoffset, chunk_size);
@@ -1932,13 +1946,13 @@ namespace RegionRuntime {
 	}
       }
 
-      virtual void put_bytes(unsigned offset, const void *src, size_t size)
+      virtual void put_bytes(off_t offset, const void *src, size_t size)
       {
 	char *src_c = (char *)src; // dropping const on purpose...
 	while(size > 0) {
-	  int blkid = (offset / memory_stride / num_nodes);
-	  int node = (offset / memory_stride) % num_nodes;
-	  int blkoffset = offset % memory_stride;
+	  off_t blkid = (offset / memory_stride / num_nodes);
+	  off_t node = (offset / memory_stride) % num_nodes;
+	  off_t blkoffset = offset % memory_stride;
 	  size_t chunk_size = memory_stride - blkoffset;
 	  if(chunk_size > size) chunk_size = size;
 	  gasnet_put(node, ((char *)seginfos[node].addr)+(blkid * memory_stride)+blkoffset, src_c, chunk_size);
@@ -1948,22 +1962,23 @@ namespace RegionRuntime {
 	}
       }
 
-      virtual void *get_direct_ptr(unsigned offset, size_t size)
+      virtual void *get_direct_ptr(off_t offset, size_t size)
       {
 	return 0;  // can't give a pointer to the caller - have to use RDMA
       }
 
     protected:
       int num_nodes;
-      int memory_stride;
+      off_t memory_stride;
       gasnet_seginfo_t *seginfos;
-      std::map<int, int> free_blocks;
+      //std::map<off_t, off_t> free_blocks;
     };
 
     RegionAllocatorUntyped Memory::Impl::create_allocator_local(RegionMetaDataUntyped r,
 								size_t bytes_needed)
     {
-      int mask_start = alloc_bytes(bytes_needed);
+      off_t mask_start = alloc_bytes(bytes_needed);
+      assert(mask_start >= 0);
 
       // now find/make an available index to store this in
       unsigned index;
@@ -1992,7 +2007,8 @@ namespace RegionRuntime {
     RegionInstanceUntyped Memory::Impl::create_instance_local(RegionMetaDataUntyped r,
 							      size_t bytes_needed)
     {
-      int inst_offset = alloc_bytes(bytes_needed);
+      off_t inst_offset = alloc_bytes(bytes_needed);
+      assert(inst_offset >= 0);
 
       // find/make an available index to store this in
       unsigned index;
@@ -2031,7 +2047,7 @@ namespace RegionRuntime {
 
     struct CreateAllocatorResp {
       RegionAllocatorUntyped a;
-      int mask_start;
+      off_t mask_start;
     };
 
     CreateAllocatorResp handle_create_allocator(CreateAllocatorArgs args)
@@ -2075,14 +2091,15 @@ namespace RegionRuntime {
 
     struct CreateInstanceResp {
       RegionInstanceUntyped i;
-      int inst_offset;
+      off_t inst_offset;
     };
 
     CreateInstanceResp handle_create_instance(CreateInstanceArgs args)
     {
       CreateInstanceResp resp;
       resp.i = args.m.impl()->create_instance(args.r, args.bytes_needed);
-      resp.inst_offset = resp.i.impl()->locked_data.offset; // TODO: Static
+      //resp.inst_offset = resp.i.impl()->locked_data.offset; // TODO: Static
+      resp.inst_offset = StaticAccess<RegionInstanceUntyped::Impl>(resp.i.impl())->offset;
       return resp;
     }
 
@@ -2101,7 +2118,7 @@ namespace RegionRuntime {
       args.bytes_needed = bytes_needed;
       log_inst(LEVEL_DEBUG, "creating remote instance: node=%d", ID(me).node());
       CreateInstanceResp resp = CreateInstanceMessage::request(ID(me).node(), args);
-      log_inst(LEVEL_DEBUG, "created remote instance: inst=%x offset=%d", resp.i.id, resp.inst_offset);
+      log_inst(LEVEL_DEBUG, "created remote instance: inst=%x offset=%zd", resp.i.id, resp.inst_offset);
       RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(resp.i, r, me, resp.inst_offset);
       unsigned index = ID(resp.i).index_l();
       // resize array if needed
@@ -2789,10 +2806,10 @@ namespace RegionRuntime {
       // maybe a GPU thread?
       ptr = gasnett_threadkey_get(gpu_thread);
       if(ptr != 0) {
-	printf("oh, good - we're a gpu thread - we'll spin for now\n");
-	printf("waiting for %x/%d\n", id, gen);
+	//printf("oh, good - we're a gpu thread - we'll spin for now\n");
+	//printf("waiting for %x/%d\n", id, gen);
 	while(!e->has_triggered(gen)) usleep(1000);
-	printf("done\n");
+	//printf("done\n");
 	return;
       }
       // we're probably screwed here - try waiting and polling gasnet while
@@ -3019,7 +3036,7 @@ namespace RegionRuntime {
 	AutoHSLLock a(mem->mutex);
 
 	if(!mem->instances[id.index_l()]) {
-	  printf("[%d] creating proxy instance: inst=%x", gasnet_mynode(), id.id());
+	  printf("[%d] creating proxy instance: inst=%x\n", gasnet_mynode(), id.id());
 	  mem->instances[id.index_l()] = new RegionInstanceUntyped::Impl(id.convert<RegionInstanceUntyped>(), mem->me);
 	}
       }
@@ -3130,8 +3147,8 @@ namespace RegionRuntime {
       size_t inst_bytes = impl()->instance_size();
 
       RegionInstanceUntyped i = m_impl->create_instance(*this, inst_bytes);
-      log_meta(LEVEL_INFO, "instance created: region=%x memory=%x id=%x",
-	       this->id, memory.id, i.id);
+      log_meta(LEVEL_INFO, "instance created: region=%x memory=%x id=%x bytes=%zd",
+	       this->id, memory.id, i.id, inst_bytes);
       return i;
     }
 
@@ -3170,12 +3187,12 @@ namespace RegionRuntime {
 
     ElementMask::ElementMask(void)
       : first_element(-1), num_elements(-1), memory(Memory::NO_MEMORY), offset(-1),
-	raw_data(0)
+	raw_data(0), first_enabled_elmt(-1), last_enabled_elmt(-1)
     {
     }
 
     ElementMask::ElementMask(int _num_elements, int _first_element /*= 0*/)
-      : first_element(_first_element), num_elements(_num_elements), memory(Memory::NO_MEMORY), offset(-1)
+      : first_element(_first_element), num_elements(_num_elements), memory(Memory::NO_MEMORY), offset(-1), first_enabled_elmt(-1), last_enabled_elmt(-1)
     {
       size_t bytes_needed = ElementMaskImpl::bytes_needed(first_element, num_elements);
       raw_data = calloc(1, bytes_needed);
@@ -3188,6 +3205,8 @@ namespace RegionRuntime {
     {
       first_element = copy_from.first_element;
       num_elements = copy_from.num_elements;
+      first_enabled_elmt = copy_from.first_enabled_elmt;
+      last_enabled_elmt = copy_from.last_enabled_elmt;
       size_t bytes_needed = ElementMaskImpl::bytes_needed(first_element, num_elements);
       raw_data = calloc(1, bytes_needed);
 
@@ -3198,7 +3217,7 @@ namespace RegionRuntime {
       }
     }
 
-    void ElementMask::init(int _first_element, int _num_elements, Memory _memory, int _offset)
+    void ElementMask::init(int _first_element, int _num_elements, Memory _memory, off_t _offset)
     {
       first_element = _first_element;
       num_elements = _num_elements;
@@ -3226,7 +3245,7 @@ namespace RegionRuntime {
 
 	int pos = start - first_element;
 	for(int i = 0; i < count; i++) {
-	  unsigned ofs = offset + ((pos >> 5) << 2);
+	  off_t ofs = offset + ((pos >> 5) << 2);
 	  unsigned val;
 	  m_impl->get_bytes(ofs, &val, sizeof(val));
 	  //printf("ENABLED(2) %d,  %x\n", ofs, val);
@@ -3235,6 +3254,12 @@ namespace RegionRuntime {
 	  pos++;
 	}
       }
+
+      if((first_enabled_elmt < 0) || (start < first_enabled_elmt))
+	first_enabled_elmt = start;
+
+      if((last_enabled_elmt < 0) || ((start+count-1) > last_enabled_elmt))
+	last_enabled_elmt = start + count - 1;
     }
 
     void ElementMask::disable(int start, int count /*= 1*/)
@@ -3253,7 +3278,7 @@ namespace RegionRuntime {
 
 	int pos = start - first_element;
 	for(int i = 0; i < count; i++) {
-	  unsigned ofs = offset + ((pos >> 5) << 2);
+	  off_t ofs = offset + ((pos >> 5) << 2);
 	  unsigned val;
 	  m_impl->get_bytes(ofs, &val, sizeof(val));
 	  //printf("DISABLED(2) %d,  %x\n", ofs, val);
@@ -3262,6 +3287,12 @@ namespace RegionRuntime {
 	  pos++;
 	}
       }
+
+      // not really right
+      if(start == first_enabled_elmt) {
+	//printf("pushing first: %d -> %d\n", first_enabled_elmt, first_enabled_elmt+1);
+	first_enabled_elmt++;
+      }
     }
 
     int ElementMask::find_enabled(int count /*= 1 */)
@@ -3269,7 +3300,7 @@ namespace RegionRuntime {
       if(raw_data != 0) {
 	ElementMaskImpl *impl = (ElementMaskImpl *)raw_data;
 	//printf("FIND_ENABLED %p %d %d %x\n", raw_data, first_element, count, impl->bits[0]);
-	for(int pos = 0; pos <= num_elements - count; pos++) {
+	for(int pos = first_enabled_elmt; pos <= num_elements - count; pos++) {
 	  int run = 0;
 	  while(1) {
 	    unsigned bit = ((impl->bits[pos >> 5] >> (pos & 0x1f))) & 1;
@@ -3281,10 +3312,10 @@ namespace RegionRuntime {
       } else {
 	Memory::Impl *m_impl = memory.impl();
 	//printf("FIND_ENABLED(2) %x %d %d %d\n", memory.id, offset, first_element, count);
-	for(int pos = 0; pos <= num_elements - count; pos++) {
+	for(int pos = first_enabled_elmt; pos <= num_elements - count; pos++) {
 	  int run = 0;
 	  while(1) {
-	    unsigned ofs = offset + ((pos >> 5) << 2);
+	    off_t ofs = offset + ((pos >> 5) << 2);
 	    unsigned val;
 	    m_impl->get_bytes(ofs, &val, sizeof(val));
 	    unsigned bit = (val >> (pos & 0x1f)) & 1;
@@ -3382,7 +3413,7 @@ namespace RegionRuntime {
 
 	// scan until we find a bit set with the right polarity
 	while(pos < mask.num_elements) {
-	  unsigned ofs = mask.offset + ((pos >> 5) << 2);
+	  off_t ofs = mask.offset + ((pos >> 5) << 2);
 	  unsigned val;
 	  m_impl->get_bytes(ofs, &val, sizeof(val));
 	  int bit = ((val >> (pos & 0x1f))) & 1;
@@ -3395,7 +3426,7 @@ namespace RegionRuntime {
 	  //  we have in a row
 	  position = pos++;
 	  while(pos < mask.num_elements) {
-	    unsigned ofs = mask.offset + ((pos >> 5) << 2);
+	    off_t ofs = mask.offset + ((pos >> 5) << 2);
 	    unsigned val;
 	    m_impl->get_bytes(ofs, &val, sizeof(val));
 	    int bit = ((val >> (pos & 0x1f))) & 1;
@@ -3435,7 +3466,7 @@ namespace RegionRuntime {
       return impl()->free_elements(ptr, count);
     }
 
-    RegionAllocatorUntyped::Impl::Impl(RegionAllocatorUntyped _me, RegionMetaDataUntyped _region, Memory _memory, int _mask_start)
+    RegionAllocatorUntyped::Impl::Impl(RegionAllocatorUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _mask_start)
       : me(_me)
     {
       locked_data.valid = true;
@@ -3502,14 +3533,14 @@ namespace RegionRuntime {
       return Runtime::runtime->get_instance_impl(*this);
     }
 
-    void RegionInstanceUntyped::Impl::get_bytes(unsigned ptr_value, void *dst, size_t size)
+    void RegionInstanceUntyped::Impl::get_bytes(off_t ptr_value, void *dst, size_t size)
     {
       Memory::Impl *m = Runtime::runtime->get_memory_impl(memory);
       StaticAccess<RegionInstanceUntyped::Impl> data(this);
       m->get_bytes(data->offset + ptr_value, dst, size);
     }
 
-    void RegionInstanceUntyped::Impl::put_bytes(unsigned ptr_value, const void *src, size_t size)
+    void RegionInstanceUntyped::Impl::put_bytes(off_t ptr_value, const void *src, size_t size)
     {
       Memory::Impl *m = Runtime::runtime->get_memory_impl(memory);
       StaticAccess<RegionInstanceUntyped::Impl> data(this);
@@ -3759,10 +3790,14 @@ namespace RegionRuntime {
       Memory::Impl *src_mem = src_impl->memory.impl();
       Memory::Impl *dst_mem = dst_impl->memory.impl();
 
-      //printf("COPY %x (%d) -> %x (%d)\n", id, src_mem->kind, target.id, dst_mem->kind);
+      log_copy.debug("copy instance: %x (%d) -> %x (%d), wait=%x/%d", id, src_mem->kind, target.id, dst_mem->kind, wait_on.id, wait_on.gen);
 
-      size_t bytes_to_copy = StaticAccess<RegionInstanceUntyped::Impl>(src_impl)->region.impl()->instance_size();
-
+      size_t bytes_to_copy;
+      {
+	StaticAccess<RegionInstanceUntyped::Impl> src_data(src_impl);
+	bytes_to_copy = src_data->region.impl()->instance_size();
+      }
+      log_copy.debug("COPY %x (%d) -> %x (%d) - %zd bytes", id, src_mem->kind, target.id, dst_mem->kind, bytes_to_copy);
 
       // first check - if either or both memories are remote, we're going to
       //  need to find somebody else to do this copy
@@ -3837,6 +3872,7 @@ namespace RegionRuntime {
 #else
       if(!wait_on.has_triggered()) {
 	Event after_copy = Event::Impl::create_event();
+	log_copy.debug("copy deferred: %x (%d) -> %x (%d), wait=%x/%d after=%x/%d", id, src_mem->kind, target.id, dst_mem->kind, wait_on.id, wait_on.gen, after_copy.id, after_copy.gen);
 	wait_on.impl()->add_waiter(wait_on,
 				   new DeferredCopy(*this, target,
 						    bytes_to_copy, 
@@ -4063,12 +4099,6 @@ namespace RegionRuntime {
       AMQueueEntry *buffer;
     };	
 
-    struct NodeAnnounceData {
-      gasnet_node_t node_id;
-      unsigned num_procs;
-      unsigned num_memories;
-    };
-
     static gasnet_hsl_t announcement_mutex = GASNET_HSL_INITIALIZER;
     static int announcements_received = 0;
 
@@ -4080,7 +4110,14 @@ namespace RegionRuntime {
       NODE_ANNOUNCE_MMA,  // MMA mem1_id mem2_id bw latency
     };
 
+    struct Machine::NodeAnnounceData {
+      gasnet_node_t node_id;
+      unsigned num_procs;
+      unsigned num_memories;
+    };
+
     void Machine::parse_node_announce_data(const void *args, size_t arglen,
+					   const Machine::NodeAnnounceData& annc_data,
 					   bool remote)
     {
       const unsigned *cur = (const unsigned *)args;
@@ -4092,7 +4129,9 @@ namespace RegionRuntime {
 	switch(*cur++) {
 	case NODE_ANNOUNCE_PROC:
 	  {
-	    Processor p = ID(*cur++).convert<Processor>();
+	    ID id(*cur++);
+	    Processor p = id.convert<Processor>();
+	    assert(id.index() < annc_data.num_procs);
 	    Processor::Kind kind = (Processor::Kind)(*cur++);
 	    if(remote) {
 	      RemoteProcessor *proc = new RemoteProcessor(p, kind);
@@ -4103,7 +4142,9 @@ namespace RegionRuntime {
 
 	case NODE_ANNOUNCE_MEM:
 	  {
-	    Memory m = ID(*cur++).convert<Memory>();
+	    ID id(*cur++);
+	    Memory m = id.convert<Memory>();
+	    assert(id.index_h() < annc_data.num_memories);
 	    unsigned size = *cur++;
 	    if(remote) {
 	      RemoteMemory *mem = new RemoteMemory(m, size);
@@ -4142,7 +4183,7 @@ namespace RegionRuntime {
       }
     }
 
-    void node_announce_handler(NodeAnnounceData annc_data, const void *data, size_t datalen)
+    void node_announce_handler(Machine::NodeAnnounceData annc_data, const void *data, size_t datalen)
     {
       printf("%d: received announce from %d (%d procs, %d memories)\n", gasnet_mynode(), annc_data.node_id, annc_data.num_procs, annc_data.num_memories);
       Node *n = &(Runtime::get_runtime()->nodes[annc_data.node_id]);
@@ -4153,7 +4194,8 @@ namespace RegionRuntime {
       //  data structures
       gasnet_hsl_lock(&announcement_mutex);
 
-      Machine::get_machine()->parse_node_announce_data(data, datalen, true);
+      Machine::get_machine()->parse_node_announce_data(data, datalen,
+						       annc_data, true);
 #if 0
       for(unsigned i = 0; i < data.num_procs; i++) {
 	Processor p = ID(ID::ID_PROCESSOR, data.node_id, i).convert<Processor>();
@@ -4171,7 +4213,7 @@ namespace RegionRuntime {
     }
 
     typedef ActiveMessageMediumNoReply<NODE_ANNOUNCE_MSGID,
-				       NodeAnnounceData,
+				       Machine::NodeAnnounceData,
 				       node_announce_handler> NodeAnnounceMessage;
 
     static void *gasnet_poll_thread_loop(void *data)
@@ -4229,8 +4271,8 @@ namespace RegionRuntime {
       CHECK_GASNET( gasnet_init(argc, argv) );
 
       // low-level runtime parameters
-      size_t gasnet_mem_size_in_mb = 32;
-      size_t cpu_mem_size_in_mb = 48;
+      size_t gasnet_mem_size_in_mb = 256;
+      size_t cpu_mem_size_in_mb = 512;
       size_t zc_mem_size_in_mb = 64;
       size_t fb_mem_size_in_mb = 256;
       unsigned num_local_cpus = 1;
@@ -4252,6 +4294,8 @@ namespace RegionRuntime {
 
 	INT_ARG("-ll:gsize", gasnet_mem_size_in_mb);
 	INT_ARG("-ll:csize", cpu_mem_size_in_mb);
+	INT_ARG("-ll:fsize", fb_mem_size_in_mb);
+	INT_ARG("-ll:zsize", zc_mem_size_in_mb);
 	INT_ARG("-ll:cpu", num_local_cpus);
 	INT_ARG("-ll:gpu", num_local_gpus);
 	INT_ARG("-ll:workers", cpu_worker_threads);
@@ -4302,7 +4346,7 @@ namespace RegionRuntime {
 
       announce_data.node_id = gasnet_mynode();
       announce_data.num_procs = num_local_cpus + num_local_gpus;
-      announce_data.num_memories = (num_local_gpus ? 3 : 1);
+      announce_data.num_memories = (1 + 2 * num_local_gpus);
 
       // create local processors
       std::set<LocalProcessor *> local_cpu_procs;
@@ -4436,7 +4480,8 @@ namespace RegionRuntime {
       assert(apos < ADATA_SIZE);
 
       // parse our own data (but don't create remote proc/mem objects)
-      parse_node_announce_data(adata, apos*sizeof(unsigned), false);
+      parse_node_announce_data(adata, apos*sizeof(unsigned), 
+			       announce_data, false);
 
       // now announce ourselves to everyone else
       for(int i = 0; i < gasnet_nodes(); i++)
@@ -4607,6 +4652,7 @@ namespace RegionRuntime {
     LowLevel::Logger::Category log_task("tasks");
     LowLevel::Logger::Category log_region("regions");
     LowLevel::Logger::Category log_inst("instances");
+    LowLevel::Logger::Category log_sjt("sjt");
   };
 }; // namespace RegionRuntime
 
