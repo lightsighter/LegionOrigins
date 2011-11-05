@@ -450,6 +450,7 @@ namespace RegionRuntime {
 
       static Event copy(RegionInstanceUntyped src, 
 			RegionInstanceUntyped target,
+			size_t elmt_size,
 			size_t bytes_to_copy,
 			Event after_copy = Event::NO_EVENT);
 

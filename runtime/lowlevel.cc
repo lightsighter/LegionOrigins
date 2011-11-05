@@ -281,7 +281,7 @@ namespace RegionRuntime {
 	}
 	continue;
       }
-#if 1
+#if 0
       printf("logger settings: level=%d cats=", log_level);
       bool first = true;
       for(unsigned i = 0; i < log_cats_enabled.size(); i++)
@@ -325,6 +325,8 @@ namespace RegionRuntime {
       CREATE_INST_MSGID,
       CREATE_INST_RPLID,
       REMOTE_COPY_MSGID,
+      VALID_MASK_REQ_MSGID,
+      VALID_MASK_DATA_MSGID,
     };
 
 #if 0
@@ -365,8 +367,8 @@ namespace RegionRuntime {
       Node(void)
       {
 	gasnet_hsl_init(&mutex);
-	events.reserve(1000);
-	locks.reserve(1000);
+	events.reserve(10000);
+	locks.reserve(10000);
       }
 
       gasnet_hsl_t mutex;  // used to cover resizing activities on vectors below
@@ -645,6 +647,29 @@ namespace RegionRuntime {
 				       LockGrantArgs,
 				       handle_lock_grant> LockGrantMessage;
 
+    struct ValidMaskRequestArgs {
+      RegionMetaDataUntyped region;
+      int sender;
+    };
+
+    void handle_valid_mask_request(ValidMaskRequestArgs args);
+
+    typedef ActiveMessageShortNoReply<VALID_MASK_REQ_MSGID,
+				      ValidMaskRequestArgs,
+				      handle_valid_mask_request> ValidMaskRequestMessage;
+
+
+    struct ValidMaskDataArgs {
+      RegionMetaDataUntyped region;
+      unsigned block_id;
+    };
+
+    void handle_valid_mask_data(ValidMaskDataArgs args, const void *data, size_t datalen);
+
+    typedef ActiveMessageMediumNoReply<VALID_MASK_DATA_MSGID,
+				       ValidMaskDataArgs,
+				       handle_valid_mask_data> ValidMaskDataMessage;
+
     class RegionMetaDataUntyped::Impl {
     public:
       Impl(RegionMetaDataUntyped _me, RegionMetaDataUntyped _parent,
@@ -662,6 +687,8 @@ namespace RegionRuntime {
 	valid_mask = (_initial_valid_mask?
 		        new ElementMask(*_initial_valid_mask) :
 		        new ElementMask(_num_elmts));
+	valid_mask_complete = true;
+	gasnet_hsl_init(&valid_mask_mutex);
 	if(_frozen) {
 	  avail_mask = 0;
 	} else {
@@ -686,6 +713,9 @@ namespace RegionRuntime {
 	locked_data.avail_mask_owner = -1;
 	lock.init(ID(me).convert<Lock>(), ID(me).node());
 	lock.set_local_data(&locked_data);
+	valid_mask = 0;
+	valid_mask_complete = false;
+	gasnet_hsl_init(&valid_mask_mutex);
       }
 
       ~Impl(void)
@@ -700,6 +730,35 @@ namespace RegionRuntime {
 	assert(data->elmt_size > 0);
 	size_t bytes = data->num_elmts * data->elmt_size;
 	return bytes;
+      }
+
+      Event request_valid_mask(void)
+      {
+	size_t num_elmts = StaticAccess<RegionMetaDataUntyped::Impl>(this)->num_elmts;
+	int valid_mask_owner = -1;
+
+	{
+	  AutoHSLLock a(valid_mask_mutex);
+
+	  if(valid_mask != 0) {
+	    // if the mask exists, we've already requested it, so just provide
+	    //  the event that we have
+	    return valid_mask_event;
+	  }
+
+	  valid_mask = new ElementMask(num_elmts);
+	  valid_mask_owner = ID(me).node(); // a good guess?
+	  valid_mask_count = (valid_mask->raw_size() + 2047) >> 11;
+	  valid_mask_complete = false;
+	  valid_mask_event = Event::Impl::create_event();
+	}
+
+	ValidMaskRequestArgs args;
+	args.region = me;
+	args.sender = gasnet_mynode();
+	ValidMaskRequestMessage::request(valid_mask_owner, args);
+
+	return valid_mask_event;
       }
 
       RegionMetaDataUntyped me;
@@ -717,9 +776,78 @@ namespace RegionRuntime {
       };
 
       CoherentData locked_data;
+      gasnet_hsl_t valid_mask_mutex;
       ElementMask *valid_mask;
+      int valid_mask_count;
+      bool valid_mask_complete;
+      Event valid_mask_event;
+      int valid_mask_first, valid_mask_last;
+      bool valid_mask_contig;
       ElementMask *avail_mask;
     };
+
+    void handle_valid_mask_request(ValidMaskRequestArgs args)
+    {
+      RegionMetaDataUntyped::Impl *r_impl = args.region.impl();
+
+      assert(r_impl->valid_mask);
+      const char *mask_data = (const char *)(r_impl->valid_mask->get_raw());
+      assert(mask_data);
+
+      size_t mask_len = r_impl->valid_mask->raw_size();
+
+      // send data in 2KB blocks
+      ValidMaskDataArgs resp_args;
+      resp_args.region = args.region;
+      resp_args.block_id = 0;
+      //printf("sending mask data for region %x to %d (%p, %zd)\n",
+      //	     args.region.id, args.sender, mask_data, mask_len);
+      while(mask_len >= (1 << 11)) {
+	ValidMaskDataMessage::request(args.sender, resp_args,
+				      mask_data,
+				      1 << 11);
+	mask_data += 1 << 11;
+	mask_len -= 1 << 11;
+	resp_args.block_id++;
+      }
+      if(mask_len) {
+	ValidMaskDataMessage::request(args.sender, resp_args,
+				      mask_data, mask_len);
+      }
+    }
+
+    void handle_valid_mask_data(ValidMaskDataArgs args, const void *data, size_t datalen)
+    {
+      RegionMetaDataUntyped::Impl *r_impl = args.region.impl();
+
+      assert(r_impl->valid_mask);
+      // removing const on purpose here...
+      char *mask_data = (char *)(r_impl->valid_mask->get_raw());
+      assert(mask_data);
+      assert((args.block_id << 11) < r_impl->valid_mask->raw_size());
+
+      memcpy(mask_data + (args.block_id << 11), data, datalen);
+
+      bool trigger = false;
+      {
+	AutoHSLLock a(r_impl->valid_mask_mutex);
+	//printf("got piece of valid mask data for region %x (%d expected)\n",
+	//       args.region.id, r_impl->valid_mask_count);
+	r_impl->valid_mask_count--;
+        if(r_impl->valid_mask_count == 0) {
+	  r_impl->valid_mask_complete = true;
+	  trigger = true;
+	}
+      }
+
+      if(trigger) {
+	//printf("triggering %x/%d\n",
+	//       r_impl->valid_mask_event.id, r_impl->valid_mask_event.gen);
+	r_impl->valid_mask_event.impl()->trigger(r_impl->valid_mask_event.gen,
+						 true);
+      }
+    }
+    
 
     class RegionAllocatorUntyped::Impl {
     public:
@@ -1980,27 +2108,33 @@ namespace RegionRuntime {
       off_t mask_start = alloc_bytes(bytes_needed);
       assert(mask_start >= 0);
 
+      // SJT: think about this more to see if there are any race conditions
+      //  with an allocator temporarily having the wrong ID
+      RegionAllocatorUntyped a = ID(ID::ID_ALLOCATOR, 
+				    ID(me).node(),
+				    ID(me).index_h(),
+				    0).convert<RegionAllocatorUntyped>();
+      RegionAllocatorUntyped::Impl *a_impl = new RegionAllocatorUntyped::Impl(a, r, me, mask_start);
+
       // now find/make an available index to store this in
       unsigned index;
       {
-	AutoHSLLock a(mutex);
+	AutoHSLLock al(mutex);
 
 	unsigned size = allocators.size();
 	for(index = 0; index < size; index++)
 	  if(!allocators[index]) {
-	    allocators[index] = (RegionAllocatorUntyped::Impl *)1;
+	    a.id |= index;
+	    a_impl->me = a;
+	    allocators[index] = a_impl;
 	    break;
 	  }
 
-	if(index >= size) allocators.push_back(0);
+	a.id |= index;
+	a_impl->me = a;
+	if(index >= size) allocators.push_back(a_impl);
       }
 
-      RegionAllocatorUntyped a = ID(ID::ID_ALLOCATOR, 
-				    ID(me).node(),
-				    ID(me).index_h(),
-				    index).convert<RegionAllocatorUntyped>();
-      RegionAllocatorUntyped::Impl *a_impl = new RegionAllocatorUntyped::Impl(a, r, me, mask_start);
-      allocators[index] = a_impl;
       return a;
     }
 
@@ -2010,31 +2144,35 @@ namespace RegionRuntime {
       off_t inst_offset = alloc_bytes(bytes_needed);
       assert(inst_offset >= 0);
 
-      // find/make an available index to store this in
-      unsigned index;
-      {
-	AutoHSLLock a(mutex);
-
-	unsigned size = instances.size();
-	for(index = 0; index < size; index++)
-	  if(!instances[index]) {
-	    instances[index] = (RegionInstanceUntyped::Impl *)1;
-	    break;
-	  }
-
-	if(index >= size) instances.push_back(0);
-      }
-
+      // SJT: think about this more to see if there are any race conditions
+      //  with an allocator temporarily having the wrong ID
       RegionInstanceUntyped i = ID(ID::ID_INSTANCE, 
 				   ID(me).node(),
 				   ID(me).index_h(),
-				   index).convert<RegionInstanceUntyped>();
+				   0).convert<RegionInstanceUntyped>();
 
       //RegionMetaDataImpl *r_impl = Runtime::runtime->get_metadata_impl(r);
 
       RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(i, r, me, inst_offset);
 
-      instances[index] = i_impl;
+      // find/make an available index to store this in
+      unsigned index;
+      {
+	AutoHSLLock al(mutex);
+
+	unsigned size = instances.size();
+	for(index = 0; index < size; index++)
+	  if(!instances[index]) {
+	    i.id |= index;
+	    i_impl->me = i;
+	    instances[index] = i_impl;
+	    break;
+	  }
+
+	i.id |= index;
+	i_impl->me = i;
+	if(index >= size) instances.push_back(i_impl);
+      }
 
       return i;
     }
@@ -3349,7 +3487,7 @@ namespace RegionRuntime {
 
     size_t ElementMask::raw_size(void) const
     {
-      return 0;
+      return ElementMaskImpl::bytes_needed(offset, num_elements);
     }
 
     const void *ElementMask::get_raw(void) const
@@ -3395,10 +3533,8 @@ namespace RegionRuntime {
 	  position = pos++;
 	  while(pos < mask.num_elements) {
 	    int bit = ((impl->bits[pos >> 5] >> (pos & 0x1f))) & 1;
-	    if(bit == polarity) {
-	      pos++;
-	      continue;
-	    }
+	    if(bit != polarity) break;
+	    pos++;
 	  }
 	  // we get here either because we found the end of the run or we 
 	  //  hit the end of the mask
@@ -3430,10 +3566,8 @@ namespace RegionRuntime {
 	    unsigned val;
 	    m_impl->get_bytes(ofs, &val, sizeof(val));
 	    int bit = ((val >> (pos & 0x1f))) & 1;
-	    if(bit == polarity) {
-	      pos++;
-	      continue;
-	    }
+	    if(bit != polarity) break;
+	    pos++;
 	  }
 	  // we get here either because we found the end of the run or we 
 	  //  hit the end of the mask
@@ -3558,8 +3692,35 @@ namespace RegionRuntime {
       return RegionInstanceAccessorUntyped<AccessorGeneric>((void *)impl());
     }
 
+    class DeferredCopy : public Event::Impl::EventWaiter {
+    public:
+      DeferredCopy(RegionInstanceUntyped _src, RegionInstanceUntyped _target,
+		   size_t _elmt_size, size_t _bytes_to_copy, Event _after_copy)
+	: src(_src), target(_target), 
+	  elmt_size(_elmt_size), bytes_to_copy(_bytes_to_copy), 
+	  after_copy(_after_copy) {}
+
+      virtual void event_triggered(void)
+      {
+	RegionInstanceUntyped::Impl::copy(src, target, 
+					  elmt_size, bytes_to_copy, after_copy);
+      }
+
+      virtual void print_info(void)
+      {
+	printf("deferred copy: src=%x tgt=%x after=%x/%d\n",
+	       src.id, target.id, after_copy.id, after_copy.gen);
+      }
+
+    protected:
+      RegionInstanceUntyped src, target;
+      size_t elmt_size, bytes_to_copy;
+      Event after_copy;
+    };
+
     /*static*/ Event RegionInstanceUntyped::Impl::copy(RegionInstanceUntyped src, 
 						       RegionInstanceUntyped target,
+						       size_t elmt_size,
 						       size_t bytes_to_copy,
 						       Event after_copy /*= Event::NO_EVENT*/)
     {
@@ -3572,13 +3733,69 @@ namespace RegionRuntime {
       Memory::Impl *src_mem = src_impl->memory.impl();
       Memory::Impl *tgt_mem = tgt_impl->memory.impl();
 
-      // HACK!  Don't forget to remove!
-      if(bytes_to_copy >= (4 << 20)) {
-	log_copy.info("skipping big copy!");
-	if(after_copy.exists())
-	  after_copy.impl()->trigger(after_copy.gen, true);
+      // get valid masks from regions
+      RegionMetaDataUntyped::Impl *src_reg = src_data->region.impl();
+      RegionMetaDataUntyped::Impl *tgt_reg = tgt_data->region.impl();
+
+      log_copy.info("copy: %x->%x (%x/%p -> %x/%p)",
+		    src.id, target.id, src_data->region.id, 
+		    src_reg->valid_mask, tgt_data->region.id, tgt_reg->valid_mask);
+
+      // if we're missing either valid mask, we'll need to request them and
+      //  wait again
+      if(!src_reg->valid_mask_complete || !tgt_reg->valid_mask_complete) {
+	Event wait_on;
+	if(!src_reg->valid_mask_complete) {
+	  wait_on = src_reg->request_valid_mask();
+	  //printf("SRC=%x/%d\n", wait_on.id, wait_on.gen);
+
+	  if((tgt_reg != src_reg) && !tgt_reg->valid_mask_complete) {
+	    Event tgt_event = tgt_reg->request_valid_mask();
+	    //printf("TGT=%x/%d\n", tgt_event.id, tgt_event.gen);
+	    Event merged = Event::Impl::merge_events(wait_on, tgt_event);
+	    //printf("waiting on two events: %x/%d + %x/%d -> %x/%d\n",
+	    //	   wait_on.id, wait_on.gen, tgt_event.id, tgt_event.gen,
+	    //	   merged.id, merged.gen);
+	    wait_on = merged;
+	  } 
+	} else {
+	  wait_on = tgt_reg->request_valid_mask();
+	  //printf("TGT=%x/%d\n", wait_on.id, wait_on.gen);
+	}
+	fflush(stdout);
+	log_copy.info("missing at least one valid mask (%x/%p, %x/%p) - waiting for %x/%d",
+		      src_reg->me.id, src_reg->valid_mask, tgt_reg->me.id, tgt_reg->valid_mask,
+		      wait_on.id, wait_on.gen);
+	if(!after_copy.exists())
+	  after_copy = Event::Impl::create_event();
+
+	wait_on.impl()->add_waiter(wait_on,
+				   new DeferredCopy(src,
+						    target,
+						    elmt_size,
+						    bytes_to_copy,
+						    after_copy));
 	return after_copy;
       }
+
+      ElementMask *src_mask = src_reg->valid_mask;
+      ElementMask *tgt_mask = tgt_reg->valid_mask;
+
+#if 0
+      ElementMask::Enumerator src_ranges(*src_mask, 0, 1);
+      ElementMask::Enumerator tgt_ranges(*tgt_mask, 0, 1);
+
+      printf("source ranges:");
+      int pos, len;
+      while(src_ranges.get_next(pos, len))
+	printf(" %d(%d)", pos, len);
+      printf("\n");
+      printf("target ranges:");
+      //int pos, len;
+      while(tgt_ranges.get_next(pos, len))
+	printf(" %d(%d)", pos, len);
+      printf("\n");
+#endif
 
       switch(src_mem->kind) {
       case Memory::Impl::MKIND_SYSMEM:
@@ -3594,13 +3811,93 @@ namespace RegionRuntime {
 	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->offset, bytes_to_copy);
 	      assert(tgt_ptr != 0);
 
-	      memcpy(tgt_ptr, src_ptr, bytes_to_copy);
+	      ElementMask::Enumerator src_ranges(*src_mask, 0, 1);
+	      ElementMask::Enumerator tgt_ranges(*tgt_mask, 0, 1);
+	      int src_pos, src_len, tgt_pos, tgt_len;
+	      if(src_ranges.get_next(src_pos, src_len) &&
+		 tgt_ranges.get_next(tgt_pos, tgt_len))
+		while(true) {
+		  //printf("S:%d(%d) T:%d(%d)\n", src_pos, src_len, tgt_pos, tgt_len);
+		  if(src_len <= 0) {
+		    if(!src_ranges.get_next(src_pos, src_len)) break;
+		    continue;
+		  }
+		  if(tgt_len <= 0) {
+		    if(!tgt_ranges.get_next(tgt_pos, tgt_len)) break;
+		    continue;
+		  }
+		  if(src_pos < tgt_pos) {
+		    src_len -= (tgt_pos - src_pos);
+		    src_pos = tgt_pos;
+		    continue;
+		  }
+		  if(tgt_pos < src_pos) {
+		    tgt_len -= (src_pos - tgt_pos);
+		    tgt_pos = src_pos;
+		    continue;
+		  }
+		  assert((src_pos == tgt_pos) && (src_len > 0) && (tgt_len > 0));
+		  int to_copy = (src_len < tgt_len) ? src_len : tgt_len;
+		  //printf("C:%d(%d)\n", src_pos, to_copy);
+
+		  // actual copy!
+		  off_t offset = src_pos * elmt_size;
+		  size_t amount = to_copy * elmt_size;
+		  memcpy(((char *)tgt_ptr)+offset, 
+			 ((const char *)src_ptr)+offset, amount);
+
+		  src_pos += to_copy;
+		  tgt_pos += to_copy;
+		  src_len -= to_copy;
+		  tgt_len -= to_copy;
+		}
 	    }
 	    break;
 
 	  case Memory::Impl::MKIND_GASNET:
 	    {
-	      tgt_mem->put_bytes(tgt_data->offset, src_ptr, bytes_to_copy);
+	      ElementMask::Enumerator src_ranges(*src_mask, 0, 1);
+	      ElementMask::Enumerator tgt_ranges(*tgt_mask, 0, 1);
+	      int src_pos, src_len, tgt_pos, tgt_len;
+	      if(src_ranges.get_next(src_pos, src_len) &&
+		 tgt_ranges.get_next(tgt_pos, tgt_len))
+		while(true) {
+		  //printf("S:%d(%d) T:%d(%d)\n", src_pos, src_len, tgt_pos, tgt_len);
+		  if(src_len <= 0) {
+		    if(!src_ranges.get_next(src_pos, src_len)) break;
+		    continue;
+		  }
+		  if(tgt_len <= 0) {
+		    if(!tgt_ranges.get_next(tgt_pos, tgt_len)) break;
+		    continue;
+		  }
+		  if(src_pos < tgt_pos) {
+		    src_len -= (tgt_pos - src_pos);
+		    src_pos = tgt_pos;
+		    continue;
+		  }
+		  if(tgt_pos < src_pos) {
+		    tgt_len -= (src_pos - tgt_pos);
+		    tgt_pos = src_pos;
+		    continue;
+		  }
+		  assert((src_pos == tgt_pos) && (src_len > 0) && (tgt_len > 0));
+		  int to_copy = (src_len < tgt_len) ? src_len : tgt_len;
+		  //printf("C:%d(%d)\n", src_pos, to_copy);
+
+		  // actual copy!
+		  off_t offset = src_pos * elmt_size;
+		  size_t amount = to_copy * elmt_size;
+		  tgt_mem->put_bytes(offset + tgt_data->offset, 
+				     ((const char *)src_ptr)+offset,
+				     amount);
+
+		  src_pos += to_copy;
+		  tgt_pos += to_copy;
+		  src_len -= to_copy;
+		  tgt_len -= to_copy;
+		}
+	      //tgt_mem->put_bytes(tgt_data->offset, src_ptr, bytes_to_copy);
 	    }
 	    break;
 
@@ -3634,15 +3931,107 @@ namespace RegionRuntime {
 	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->offset, bytes_to_copy);
 	      assert(tgt_ptr != 0);
 
-	      src_mem->get_bytes(src_data->offset, tgt_ptr, bytes_to_copy);
+	      ElementMask::Enumerator src_ranges(*src_mask, 0, 1);
+	      ElementMask::Enumerator tgt_ranges(*tgt_mask, 0, 1);
+	      int src_pos, src_len, tgt_pos, tgt_len;
+	      if(src_ranges.get_next(src_pos, src_len) &&
+		 tgt_ranges.get_next(tgt_pos, tgt_len))
+		while(true) {
+		  //printf("S:%d(%d) T:%d(%d)\n", src_pos, src_len, tgt_pos, tgt_len);
+		  if(src_len <= 0) {
+		    if(!src_ranges.get_next(src_pos, src_len)) break;
+		    continue;
+		  }
+		  if(tgt_len <= 0) {
+		    if(!tgt_ranges.get_next(tgt_pos, tgt_len)) break;
+		    continue;
+		  }
+		  if(src_pos < tgt_pos) {
+		    src_len -= (tgt_pos - src_pos);
+		    src_pos = tgt_pos;
+		    continue;
+		  }
+		  if(tgt_pos < src_pos) {
+		    tgt_len -= (src_pos - tgt_pos);
+		    tgt_pos = src_pos;
+		    continue;
+		  }
+		  assert((src_pos == tgt_pos) && (src_len > 0) && (tgt_len > 0));
+		  int to_copy = (src_len < tgt_len) ? src_len : tgt_len;
+		  //printf("C:%d(%d)\n", src_pos, to_copy);
+
+		  // actual copy!
+		  off_t offset = src_pos * elmt_size;
+		  size_t amount = to_copy * elmt_size;
+		  src_mem->get_bytes(offset + src_data->offset, 
+				     ((char *)tgt_ptr)+offset,
+				     amount);
+
+		  src_pos += to_copy;
+		  tgt_pos += to_copy;
+		  src_len -= to_copy;
+		  tgt_len -= to_copy;
+		}
+	      //src_mem->get_bytes(src_data->offset, tgt_ptr, bytes_to_copy);
 	    }
 	    break;
 
 	  case Memory::Impl::MKIND_GASNET:
 	    {
-	      const unsigned BLOCK_SIZE = 4096;
+	      const unsigned BLOCK_SIZE = 64 << 10;
 	      unsigned char temp_block[BLOCK_SIZE];
 
+	      ElementMask::Enumerator src_ranges(*src_mask, 0, 1);
+	      ElementMask::Enumerator tgt_ranges(*tgt_mask, 0, 1);
+	      int src_pos, src_len, tgt_pos, tgt_len;
+	      if(src_ranges.get_next(src_pos, src_len) &&
+		 tgt_ranges.get_next(tgt_pos, tgt_len))
+		while(true) {
+		  //printf("S:%d(%d) T:%d(%d)\n", src_pos, src_len, tgt_pos, tgt_len);
+		  if(src_len <= 0) {
+		    if(!src_ranges.get_next(src_pos, src_len)) break;
+		    continue;
+		  }
+		  if(tgt_len <= 0) {
+		    if(!tgt_ranges.get_next(tgt_pos, tgt_len)) break;
+		    continue;
+		  }
+		  if(src_pos < tgt_pos) {
+		    src_len -= (tgt_pos - src_pos);
+		    src_pos = tgt_pos;
+		    continue;
+		  }
+		  if(tgt_pos < src_pos) {
+		    tgt_len -= (src_pos - tgt_pos);
+		    tgt_pos = src_pos;
+		    continue;
+		  }
+		  assert((src_pos == tgt_pos) && (src_len > 0) && (tgt_len > 0));
+		  int to_copy = (src_len < tgt_len) ? src_len : tgt_len;
+		  //printf("C:%d(%d)\n", src_pos, to_copy);
+
+		  // actual copy!
+		  off_t offset = src_pos * elmt_size;
+		  size_t amount = to_copy * elmt_size;
+		  {
+		    size_t bytes_copied = 0;
+		    while(bytes_copied < amount) {
+		      size_t chunk_size = bytes_to_copy - bytes_copied;
+		      if(chunk_size > BLOCK_SIZE) chunk_size = BLOCK_SIZE;
+
+		      src_mem->get_bytes(offset + src_data->offset + bytes_copied, temp_block, chunk_size);
+		      tgt_mem->put_bytes(offset + tgt_data->offset + bytes_copied, temp_block, chunk_size);
+		      bytes_copied += chunk_size;
+		    }
+		  }
+
+		  src_pos += to_copy;
+		  tgt_pos += to_copy;
+		  src_len -= to_copy;
+		  tgt_len -= to_copy;
+		}
+
+#if 0
 	      size_t bytes_copied = 0;
 	      while(bytes_copied < bytes_to_copy) {
 		size_t chunk_size = bytes_to_copy - bytes_copied;
@@ -3652,6 +4041,7 @@ namespace RegionRuntime {
 		tgt_mem->put_bytes(tgt_data->offset + bytes_copied, temp_block, chunk_size);
 		bytes_copied += chunk_size;
 	      }
+#endif
 	    }
 	    break;
 
@@ -3736,33 +4126,9 @@ namespace RegionRuntime {
       return after_copy;
     }
 
-    class DeferredCopy : public Event::Impl::EventWaiter {
-    public:
-      DeferredCopy(RegionInstanceUntyped _src, RegionInstanceUntyped _target,
-		   size_t _bytes_to_copy, Event _after_copy)
-	: src(_src), target(_target), 
-	  bytes_to_copy(_bytes_to_copy), after_copy(_after_copy) {}
-
-      virtual void event_triggered(void)
-      {
-	RegionInstanceUntyped::Impl::copy(src, target, bytes_to_copy, after_copy);
-      }
-
-      virtual void print_info(void)
-      {
-	printf("deferred copy: src=%x tgt=%x after=%x/%d\n",
-	       src.id, target.id, after_copy.id, after_copy.gen);
-      }
-
-    protected:
-      RegionInstanceUntyped src, target;
-      size_t bytes_to_copy;
-      Event after_copy;
-    };
-
     struct RemoteCopyArgs {
       RegionInstanceUntyped source, target;
-      size_t bytes_to_copy;
+      size_t elmt_size, bytes_to_copy;
       Event before_copy, after_copy;
     };
 
@@ -3775,12 +4141,14 @@ namespace RegionRuntime {
 
       if(args.before_copy.has_triggered()) {
 	RegionInstanceUntyped::Impl::copy(args.source, args.target,
+					  args.elmt_size,
 					  args.bytes_to_copy,
 					  args.after_copy);
       } else {
 	args.before_copy.impl()->add_waiter(args.before_copy,
 					    new DeferredCopy(args.source,
 							     args.target,
+							     args.elmt_size,
 							     args.bytes_to_copy,
 							     args.after_copy));
       }
@@ -3800,12 +4168,13 @@ namespace RegionRuntime {
 
       log_copy.debug("copy instance: %x (%d) -> %x (%d), wait=%x/%d", id, src_mem->kind, target.id, dst_mem->kind, wait_on.id, wait_on.gen);
 
-      size_t bytes_to_copy;
+      size_t bytes_to_copy, elmt_size;
       {
 	StaticAccess<RegionInstanceUntyped::Impl> src_data(src_impl);
 	bytes_to_copy = src_data->region.impl()->instance_size();
+	elmt_size = StaticAccess<RegionMetaDataUntyped::Impl>(src_data->region.impl())->elmt_size;
       }
-      log_copy.debug("COPY %x (%d) -> %x (%d) - %zd bytes", id, src_mem->kind, target.id, dst_mem->kind, bytes_to_copy);
+      log_copy.debug("COPY %x (%d) -> %x (%d) - %zd bytes (%zd)", id, src_mem->kind, target.id, dst_mem->kind, bytes_to_copy, elmt_size);
 
       // first check - if either or both memories are remote, we're going to
       //  need to find somebody else to do this copy
@@ -3827,6 +4196,7 @@ namespace RegionRuntime {
 	      RemoteCopyArgs args;
 	      args.source = *this;
 	      args.target = target;
+	      args.elmt_size = elmt_size;
 	      args.bytes_to_copy = bytes_to_copy;
 	      args.before_copy = wait_on;
 	      args.after_copy = after_copy;
@@ -3848,6 +4218,7 @@ namespace RegionRuntime {
 	  RemoteCopyArgs args;
 	  args.source = *this;
 	  args.target = target;
+	  args.elmt_size = elmt_size;
 	  args.bytes_to_copy = bytes_to_copy;
 	  args.before_copy = wait_on;
 	  args.after_copy = after_copy;
@@ -3883,6 +4254,7 @@ namespace RegionRuntime {
 	log_copy.debug("copy deferred: %x (%d) -> %x (%d), wait=%x/%d after=%x/%d", id, src_mem->kind, target.id, dst_mem->kind, wait_on.id, wait_on.gen, after_copy.id, after_copy.gen);
 	wait_on.impl()->add_waiter(wait_on,
 				   new DeferredCopy(*this, target,
+						    elmt_size,
 						    bytes_to_copy, 
 						    after_copy));
 	return after_copy;
@@ -3890,7 +4262,8 @@ namespace RegionRuntime {
 #endif
 
       // we can do the copy immediately here
-      return RegionInstanceUntyped::Impl::copy(*this, target, bytes_to_copy);
+      return RegionInstanceUntyped::Impl::copy(*this, target, 
+					       elmt_size, bytes_to_copy);
     }
 
     Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target,
@@ -4118,6 +4491,8 @@ namespace RegionRuntime {
       NODE_ANNOUNCE_MMA,  // MMA mem1_id mem2_id bw latency
     };
 
+    Logger::Category log_annc("announce");
+
     struct Machine::NodeAnnounceData {
       gasnet_node_t node_id;
       unsigned num_procs;
@@ -4193,7 +4568,7 @@ namespace RegionRuntime {
 
     void node_announce_handler(Machine::NodeAnnounceData annc_data, const void *data, size_t datalen)
     {
-      printf("%d: received announce from %d (%d procs, %d memories)\n", gasnet_mynode(), annc_data.node_id, annc_data.num_procs, annc_data.num_memories);
+      log_annc.info("%d: received announce from %d (%d procs, %d memories)\n", gasnet_mynode(), annc_data.node_id, annc_data.num_procs, annc_data.num_memories);
       Node *n = &(Runtime::get_runtime()->nodes[annc_data.node_id]);
       n->processors.resize(annc_data.num_procs);
       n->memories.resize(annc_data.num_memories);
@@ -4326,6 +4701,8 @@ namespace RegionRuntime {
       hcount += CreateAllocatorMessage::add_handler_entries(&handlers[hcount]);
       hcount += CreateInstanceMessage::add_handler_entries(&handlers[hcount]);
       hcount += RemoteCopyMessage::add_handler_entries(&handlers[hcount]);
+      hcount += ValidMaskRequestMessage::add_handler_entries(&handlers[hcount]);
+      hcount += ValidMaskDataMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage2::add_handler_entries(&handlers[hcount]);
 
@@ -4424,7 +4801,7 @@ namespace RegionRuntime {
 	  Processor p = ID(ID::ID_PROCESSOR, 
 			   gasnet_mynode(), 
 			   n->processors.size()).convert<Processor>();
-	  printf("GPU's ID is %x\n", p.id);
+	  //printf("GPU's ID is %x\n", p.id);
  	  GPUProcessor *gp = new GPUProcessor(p, i,
 					      zc_mem_size_in_mb << 20,
 					      fb_mem_size_in_mb << 20);
@@ -4500,7 +4877,7 @@ namespace RegionRuntime {
       while(announcements_received < (gasnet_nodes() - 1))
 	gasnet_AMPoll();
 
-      printf("node %d has received all of its announcements\n", gasnet_mynode());
+      log_annc.info("node %d has received all of its announcements\n", gasnet_mynode());
 
       // build old proc/mem lists from affinity data
       for(std::vector<ProcessorMemoryAffinity>::const_iterator it = proc_mem_affinities.begin();
@@ -4539,7 +4916,7 @@ namespace RegionRuntime {
 	    visible_memories_from_procs[pid].insert(Runtime::runtime->global_memory->me);
 	    visible_procs_from_memory[mid].insert(pid);
 	    visible_procs_from_memory[Runtime::runtime->global_memory->me].insert(pid);
-	    printf("P:%x <-> M:%x\n", pid.id, mid.id);
+	    //printf("P:%x <-> M:%x\n", pid.id, mid.id);
 	  }
 	}
       }	
