@@ -1,0 +1,50 @@
+
+\section{Related Work}
+
+The Chapel programming language \cite{Chamberlain:Chapel} is the closest related work to the Legion
+programming model.  Chapel has several concepts built into the language to aid in
+the expression of locality.  The first concept is that of domains.  Domains
+are similar to logical regions in that they describe a collections of indexes
+into items of the same type.  Domains can create sub-domains by slicing the index sets from
+a parent domain.  There are two differences between domains and logical regions.
+First, domains are a higher level concept than regions since they track index sets which
+have concepts such as dimensionality and support iterators.  Logical regions in Legion 
+are only allowed to be accessed with pointers.  Second, the act of creating
+subdomains doesn't track disjointness information the way that partitioning of logical regions
+does making it challenging for the compiler or the runtime to infer task independence.
+
+In addition to domains, Chapel also supports the notion of domain maps and locales to enable 
+the programmer to efficiently map domains onto hardware \cite{CHAPEL11}.  Locales are a flat array
+of abstract locations.  Programmers can use locales by writing domain maps that specify
+how domains are broken up and assigned to locales.  Domain maps provide the same functionality
+as partitions and mappers in Legion, but require the user to correctly implement domain
+maps in order for the program to be correct.  Legion explicitly isolates correctness
+from performance by defining the Mapper interface.  In addition, Chapel's flat array of locales
+makes it challenging to fully utilize deep memory hierarchies.
+
+X10 is another parallel programming environment designed to operate on distributed
+memory machines \cite{X1005}.  In X10 the concept of places enables programmers to talk about where
+to place both data and tasks in the machine.  However, once data and tasks have
+been placed they are fixed which mandates that data movement be explictly managed by
+user level code or implicitly by the compiler or runtime \cite{X1008}.  Recently X10 has introduced
+the concept of a region into the compiler's intermediate representation \cite{X1011}.
+Unlike Legion, regions in X10 are not visible to the programmer but are inferred
+from high level arrays through static analysis.
+
+SPMD languages such as Titanium \cite{JV:Yel98} and UPC \cite{UPC99} have mechanisms for
+describing array partitions in distributed memories.  However, the partition
+operations supported only operate on two-level memory hierarchies consisting of local
+and global memory and do not reason about pointer data structures.  Part of Legion's 
+low-level runtime system is constructed using UPC's underlying GASNet 
+runtime system \cite{GASNET07}. 
+
+In previous programming systems regions have primarily been used as a construct for
+describing memory management schemes \cite{REAPS02}\cite{RC01}  
+or for enforcing security policies \cite{CYCLONE01}.  In all cases, regions had
+memory layout implications.  Logical regions in Legion enable the programmer to
+describe locality and independence without any memory layout implications.
+
+Marino introduces a generic flow-insensitive type-effect system capable of verifying 
+accesses to statically tagged locations of memory \cite{PRIVLIGES09}.  Legion's programming
+system allows for dynamic creation and partitioning of regions requiring a 
+flow-sensitive analysis to track privleges.
