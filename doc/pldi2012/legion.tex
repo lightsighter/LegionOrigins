@@ -33,28 +33,27 @@ Very.
 Modern parallel machines are increasingly complex, with deep,
 distributed memory hierarchies and heterogeneous processing units.  On
 these architectures, it is crucial for performance that the programmer
-and the compiler be able to reason about {\em locality}, the property
-of having data reside close to where it is used by computation, and
-{\em independence}, the property that two subsets of the data are in
-fact disjoint.  Most contemporary languages have no facilities for the
-programmer to reason about locality and independence, and the existing
-research proposals are limited in several ways, but particularly in a
-lack of support for expressing these properties for pointer data structures.
+and the compiler be able to reason about {\em locality} (data residing
+close to computation that uses it) and {\em independence} (two
+computations on disjoint data are independent).  Most contemporary
+languages have no facilities for the programmer to express locality
+and independence, and the existing research proposals are particularly
+limited in expressing these properties for pointer data structures.
 
 In this paper we describe Legion, a parallel programming system based
-on using {\em logical regions} to describe the organization of data..
+on using {\em logical regions} to describe the organization of data.
 A logical region names a set of objects.  Logical regions are first
 class values in Legion, and in particular may be passed as arguments
 to functions that access the data in those regions, providing locality
 information.  Logical regions may be {\em partitioned} into (usually)
-disjoint subregions, providing independence information.  Furthermore,
+disjoint subregions, providing information for determining independence of computations.  Furthermore,
 computations access logical regions with a particular {\em coherence}
 (e.g., {\em exclusive access}and {\em atomic access}, among others)
 and only if they have the correct {\em permissions} (e.g., {\em
   read-only} and {\em read-write}, among others).
 
-We begin with an extended example of a Legion program in Section~\ref{sec:ex}).
-The subsequent sections each highlight a contribution of our work:
+We begin with an extended example of a Legion program in Section~\ref{sec:ex}.
+Subsequent sections each highlight a contribution of our work:
  
 \begin{itemize}
 
@@ -63,7 +62,7 @@ analyzing region dependencies with a single function is sufficient to
 guarantee that a Legion execution preserves sequential program
 behavior if regions are accessed with the strongest (exclusive)
 coherence (Section~\ref{sec:exec}).  This local scheduling property is central to 
-scalable and distributed dynamic scheduling.
+scalable and distributed Legion implementation.
 
 \item We summarize Legion's static type system (Section~\ref{sec:type}), which serves two primary
   purposes.  First, pointers to regions are checked
@@ -76,17 +75,17 @@ scalable and distributed dynamic scheduling.
 data.  
 
 \item We describe the design and implementation of the Legion {\em high-level runtime}
-system (Section~\ref{sec:highlevel}), which performs scheduling of {\\em tasks} (functions to be executed in parallel)
+system (Section~\ref{sec:highlevel}), which performs scheduling of {\em tasks} (functions to be executed in parallel)
 and implements each logical region as one or more {\em physical regions}.
-The high-level runtimes scheduling is analogous to the capabilities of an out-of-order processor,
+The high-level runtime's scheduling is analogous to the capabilities of an out-of-order processor,
 but works at the granularity of the tasks and regions in a function body rather than instructions and registers
 in a code block.  We describe the stages of the task execution pipeline, and how the high-level runtime coordinates parallel
 scheduling decisions across the machine.  We also present the {\em mapping} interface, an API by which
-application-specific knowledge can be incorporated into the decisions made by the high-level runtime.
+application-specific knowledge can be incorporated into decisions made by the high-level runtime.
 
 \item We describe the design and implementation of the Legion {\em low-level runtime} (Section~\ref{sec:lowlevel} ,
 a portability layer designed to abstract a wide variety of hardware, including multicor chips, clusters, and accelerators
-such as GPUs.
+such as GPUs. 
 
 \item We present the results of experiments on three applications running on a cluster of multicore processors with
 attached GPUs (Section~\ref{sec:exp}).  The applications are all highly irregular and dynamic and illustrate the capability of Legion to 
