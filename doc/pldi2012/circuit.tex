@@ -52,36 +52,40 @@ the use of {\tt rn} for {\tt rn\_ghost}'s parameter and the second parameter
 in the wire type places no constraints on which nodes a ghost node might point
 to.
 
-Line 17 declares the main simulator function, which accepts a \emph{Circuit}
-to be simulated.  In addition to specifying the return type and the types and
-names of the formal parameters, it must also specify which regions of memory
-it will access, how it will access them (e.g. read-only, read-write, or with
-reductions), and what coherence guarantees are needed (e.g. exclusive access).
-The regions listed in these access declarations may be anything in the static
-scope of the function definition, the formal parameters, or fields of the formal
-parameters.  In our example, the simulation of the circuit will need to read
-and write all of the nodes and all of the wires in the circuit, and it must
-be done with exclusive access to ensure a correct result.
+Line 17 declares the main simulator function, which takes a
+\emph{Circuit} to be simulated.  This function specifies the regions it
+will access as well as the {\em permissions} and {\em coherence}
+properties it requires of those regions.  In this case, the {\tt RWE}
+annotation specifies that the function accesses {\tt c.r\_all\_nodes}
+and {\tt c.r\_all\_wires} with read-write permissions and exclusive
+access (the strongest coherence mode).  The simulation of the circuit
+will read and write all of the nodes and all of the wires, and it must
+be done with exclusive access to ensure a correct result.  Functions that
+declare their accessed regions, permissions, and coherence properties are
+called {\em tasks} and will be considered by the Legion runtime for parallel
+execution.
 
 %\include{part_fig}
 
 Lines 19-27 are responsible for partitioning the circuit into \emph{MAX\_PIECES}
 pieces that can be worked on in parallel.  In order to partition a region, we
 need to provide a \emph{coloring}, which is a relation over the valid elements
-in a region and a set of ``colors''.  Our current implementation uses small
-integers or booleans for the names of colors, but any enumerable set would be
-fine.  The coloring relation need not be total - it can leave out some elements entirely.  And although it is not required to be injective (it can map a single
-element to multiple colors), the fact that injective mappings will always
-result in disjoint subregions makes them strongly encouraged (when possible).
-
-Our example uses four colorings to help create the partitions of the circuit.
+in a region and a set of colors.  
+%Our current implementation uses small
+%integers or booleans for the names of colors, but any enumerable set would be
+%fine.  The coloring relation need not be total - it can leave out some elements entirely.  And although it is not required to be injective (it can map a single
+%element to multiple colors), the fact that injective mappings will always
+%result in disjoint subregions makes them strongly encouraged (when possible).
+Our example uses four colorings to  create circuit partitions.
 A graph partitioning algorithm
-(not shown) is run on to divide the nodes of the graph into \emph{MAX\_PIECES}
-subsets.  (These subsets are hopefully reasonably compact, but the correctness
-of the simulation is not dependent on that.)  The thick lines in \ref{sfig:part_fig:pvs}
-show a how the nodes in a small graph might be partitioned into 3 subsets.
+(not shown) divides nodes of the graph into \emph{MAX\_PIECES}
+subsets.  
+%(These subsets are hopefully reasonably compact, but the correctness
+%of the simulation is not dependent on that.)  
+The thick lines in \ref{sfig:part_fig:pvs}
+show how the nodes in a small graph might be partitioned into 3 subsets.
 Once the subsets are known, the \emph{node\_owner\_map} is created by assigning
-each node a color corresponding to which subset it was placed in.  The 
+each node the color corresponding to its subset.  The 
 \emph{wire\_owner\_map} assigns each wire to the same subset as its ``in\_node''.
 The \emph{node\_nghbr\_map} maps a node to color(s) of all wires that 
 connect to it.  Finally, the \emph{node\_sharing\_map} is derived from the
@@ -97,7 +101,7 @@ First, the \emph{node\_sharing\_map} is used to create two subregions: $p\_nodes
 never be needed for the computations in any other piece), while $p\_nodes\_pvs[true]$ contains nodes that will be accessed by multiple pieces' computations.
 Each of these subregions is then partitioned using the $node\_owner\_map$ to
 create the subregions owned by each computation.  These are the $p_i$ and $s_i$
-subregions, shown in figures \ref{sfig:part_fig:p_i} and \ref{sfig:part_fig:s_i}.  Finally, the $g_i$ subregions (shown in figure~\ref{sfig:part_fig:g_i}) are
+subregions, shown in Figures \ref{sfig:part_fig:p_i} and \ref{sfig:part_fig:s_i}.  Finally, the $g_i$ subregions (shown in Figure~\ref{sfig:part_fig:g_i}) are
 created using the $node\_nghbr\_map$ to 
 create subregions that include the ``ghost'' nodes needed to perform each
 piece's calculations.
@@ -120,7 +124,7 @@ Lines 34-38 form the bulk of the actual simulation, performing three passes
 over the circuit on each iteration.  For each pass, a for loop is used to 
 spawn a task for each piece of the circuit.  There are no explicit requests for
 parallel execution, nor is there explicit synchronization required between the
-passes.  As we will see, bBoth the fact that the pieces can be run in parallel
+passes.  As we will see, both the fact that the pieces can be run in parallel
 for a single 
 pass and the the required inter-task dependencies are determined automatically
 by the runtime based on the region access annotations on the task declarations.
