@@ -57,8 +57,8 @@ close to computation that uses it) and {\em independence} (computations
 operating on disjoint data).  Most contemporary
 languages have no facilities for the programmer to express locality
 and independence.  The few languages that do focus primarily on
-array based locality \cite{Fatahalian06,CHAPEL04,UPC99} and 
-avoid irregular pointer data structures
+array-based locality \cite{Fatahalian06,CHAPEL04,UPC99} and 
+avoid irregular pointer data structures.
 %encode such structures in arrays, which 
 %data structures encoded in arrays which are impossible for compilers
 %and runtime systems to reason about with regard to locality and independence.
@@ -70,14 +70,13 @@ class values in Legion, and in particular may be passed as arguments
 to functions that access the data in those regions, providing locality
 information.  Logical regions may be {\em partitioned} into (usually)
 disjoint {\em subregions}, providing information for determining independence of computations.  Furthermore,
-computations access logical regions with particular {\em privileges}, including a coherence mode
-(e.g., {\em exclusive access} and {\em atomic access}, among others)
-and access rights (e.g., {\em
-  read-only} and {\em read-write}, among others).
+computations access logical regions with particular {\em privileges} (e.g., {\em
+  read-only} and {\em read-write}, among others) 
+and {\em coherence} (e.g., {\em exclusive access} and {\em atomic access}, among others).
 
 We begin with an extended example of a Legion program in Section~\ref{sec:ex}.
 Each subsequent section describes a level in the Legion programming
-system from the application level down to the machine:
+system from the application down to the machine:
  
 \begin{itemize}
 
@@ -104,8 +103,8 @@ and implements each logical region as one or more {\em physical regions}.
 The high-level runtime's scheduling algorithm is analogous to an out-of-order processor,
 but works at the granularity of the tasks and regions in a function body rather than the instructions and registers
 in a code block.  We describe the stages of the task execution pipeline, and how the high-level runtime coordinates parallel
-scheduling decisions across the machine.  We also present the {\em mapping} interface, an API by which
-application-specific knowledge can be incorporated into decisions made by the high-level runtime.
+scheduling decisions across the machine.  We also present the {\em mapping} interface, an API for incorporating
+application-specific knowledge into the high-level runtime's decisions.
 
 \item We describe the design and implementation of the Legion {\em low-level runtime} (Section~\ref{sec:lowlevel}),
 a portability layer designed to abstract a wide variety of hardware, including multicore chips, clusters, and accelerators
