@@ -70,9 +70,9 @@ class values in Legion, and in particular may be passed as arguments
 to functions that access the data in those regions, providing locality
 information.  Logical regions may be {\em partitioned} into (usually)
 disjoint subregions, providing information for determining independence of computations.  Furthermore,
-computations access logical regions with a particular {\em coherence}
+computations access logical regions with particular {\em privileges}, including a coherence mode
 (e.g., {\em exclusive access} and {\em atomic access}, among others)
-and only if they have the correct {\em permissions} (e.g., {\em
+and access rights (e.g., {\em
   read-only} and {\em read-write}, among others).
 
 We begin with an extended example of a Legion program in Section~\ref{sec:ex}.
