@@ -1,105 +1,122 @@
 
 \section{High-Level Runtime} 
 \label{sec:highlevel}
-The high-level runtime is responsible for guaranteeing the semantics 
-of programs written in the Legion programming model while at the same
-time extracting high performance.  This goal is challenging because
-the high-level runtime must be capable of operating on top of many 
-different architectures abstracted by the low-level runtime.  This 
-includes those with very large latencies for transferring data such
-as distributed memory clusters.  To hide these latencies, the high
-level runtime uses a deffered model of execution made possible by the
-event model of the low-level runtime.  By deffering execution, the 
-runtime can hide the latencies of data and task movement and acieve
-good throughput and high performance.
+In this section we describe a high level runtime system
+that is designed to implement the Legion programming
+and execution models while remaining machine agnostic.  
+The high level runtime system operates on top of the 
+low-level runtime which hides machine specific details
+and is described in detail in section \ref{sec:lowlevel}.
 
-However, a deffered execution model presents challenges to implementing
+The biggest challenge to a implementing the high level
+runtime is to avoid the latencies associated with distributed
+memory systems and deep memory hierarchies.  To aid
+in this battle, the high level runtime employs two useful 
+scheduling techniques.  The first useful technique was proved
+in section \ref{sec:exec}: all scheduling decisions for a
+task can be made locally in the context in which the
+task was created.  The second technique is a deferred execution
+model that allows the runtime to hide the latencies associated
+with moving data through deep memory hierarchies.
+
+%The high-level runtime is responsible for guaranteeing the semantics 
+%of programs written in the Legion programming model while at the same
+%time extracting high performance.  This goal is challenging because
+%the high-level runtime must be capable of operating on top of many 
+%different architectures abstracted by the low-level runtime.  This 
+%includes those with very large latencies for transferring data such
+%as distributed memory clusters.  To hide these latencies, the high
+%level runtime uses a deffered model of execution made possible by the
+%event model of the low-level runtime.  By deffering execution, the 
+%runtime can hide the latencies of data and task movement and acieve
+%good throughput and high performance.
+
+A deffered execution model however presents challenges to implementing
 the semantics of the Legion programming model.  Deffered execution
 does not necessarily imply that tasks will be executed in the order in
-which they are scheduled, but only in the order in which low-level
-event dependencies are created.  To orchestrate the execution of Legion
+which they are scheduled, but only in the order in which dependences
+are expressed.  To orchestrate the execution of Legion
 programs in this environment the high-level runtime is architected
-in a manner similar to an out-of-order hardware processor.  There are
-multiple stages to executing a task which allows the runtime to extract
+in a manner similar to an out-of-order hardware processor, but at
+a coarser granularity with task corresponding to instructions and
+regions corresponding to registers.  There are multiple stages to 
+executing a task which allows the runtime to extract
 as much task-level parallelism as possible from an application whithin
-the constraints of the Legion programming model.  We now investigate
-each of these stages in further detail.
+the constraints of the Legion programming model.  To illustrate
+the implementation of the high level runtime we now describe the
+details of how each stage of task execution is performed.
 
 \subsection{Dependence Analysis} 
 \label{subsec:depanalysis}
 The first step in the execution of a task is dependence analysis.  When
 a task is registered with the high level runtime the task call includes
 information about both the logical regions that the task will require
-when it is executed as well as the read-write access and coherence properties
+when it is executed as well as the read-write permissions and coherence properties
 for each of the regions.  The runtime uses this information to perform
 dependence detection with each of the previous tasks that have been registered
-in the same parent task.  Dependence detection only needs to be performed at
-the scope of an enclosing task because the semantics of the Legion programming
-model ensure that all tasks can only use regions which are subregions of
-regions that the parent task uses.  This implies that if a child task were
-to depend on a task at a higher level of the task tree, then the
-parent task would also have had a dependence.  
+in the same context.  Dependence detection only needs to be performed at
+the scope of an enclosing context as was proved in section \ref{sec:exec}. 
 
-Lemma: If a task {\tt t} with ancestor task {\tt p} depends on task {\tt t'}
-a sibling task of {\tt p}, then task {\tt p} must depend on task {\tt t'}.
+We initially describe how dependences are detected from logical regions
+in section \ref{subsec:cohdep}.  We then describe the algorithm that
+is used to perform dependence detection in section \ref{subsec:depdetect}.
+Section \ref{subsec:dataflow} describes how data is versioned correctly
+during deffered execution.  For concreteness we describe how dependence
+analysis is performed for the circuit simulation from section \ref{sec:ex}.
 
-This property of the Legion programming model enables the runtime to only 
-have to perform dependence analysis between tasks which share the same 
-parent task.  By restricting dependence analysis to tasks which share the same
-parent task, the runtime can perform dependence analysis locally and not
-have to be concerned with tasks being created in other parts of the machine.
+%When performing dependence analysis the runtime relies on its knowledge about
+%the relationships between logical regions and partitions.  We first describe
+%the the components to dependence analysis in sections \ref{subsec:regiontree},
+%\ref{subsec:cohdep}, and \ref{absinsts}.  We then describe the algorithm for performing 
+%dependence analysis on this data structures in section \ref{subsec:depdetect}.
 
-When performing dependence analysis the runtime relies on its knowledge about
-the relationships between logical regions and partitions.  We first describe
-the the components to dependence analysis in sections \ref{subsec:regiontree},
-\ref{subsec:cohdep}, and \ref{absinsts}.  We then describe the algorithm for performing 
-dependence analysis on this data structures in section \ref{subsec:depdetect}.
-
-\subsubsection{Region Trees}
-\label{subsec:regiontree}
-To detect dependences between the tasks, the runtime leverages its knowledge
-about logical regions and their partitions.  To create a new logical region
-or partition, the application must invoke the corresponding call in the
-runtime.  As these calls occur, the runtime constructs a data strcture
-called a {\em region tree}.  A region tree describes the relationship between
-logical regions and partitions.  A region tree contains two types of nodes:
-region nodes and partition nodes.  Every region tree is rooted with a region
-node and alternates between region and partition nodes at each corresponding level.
-A region node represents a specific logical region and tracks the set of
-partitions of that logical region.  Similarly a partition node represents 
-a specific partitioning of a logical region and keeps track of the logical regions 
-which are subregions of the partition.  
+%\subsubsection{Region Trees}
+%\label{subsec:regiontree}
+%To detect dependences between the tasks, the runtime leverages its knowledge
+%about logical regions and their partitions.  To create a new logical region
+%or partition, the application must invoke the corresponding call in the
+%runtime.  As these calls occur, the runtime constructs a data strcture
+%called a {\em region tree}.  A region tree describes the relationship between
+%logical regions and partitions.  A region tree contains two types of nodes:
+%region nodes and partition nodes.  Every region tree is rooted with a region
+%node and alternates between region and partition nodes at each corresponding level.
+%A region node represents a specific logical region and tracks the set of
+%partitions of that logical region.  Similarly a partition node represents 
+%a specific partitioning of a logical region and keeps track of the logical regions 
+%which are subregions of the partition.  
 
 \subsubsection{Dependencies From Coherence Properties}
 \label{subsec:cohdep}
 To detect dependencies between any two tasks using a logical region, we leverage
-the information contained in the access and cohrence properties provided by the programmer
-for how the region is to be used.  Dependency checks are performed pair-wise between regions
+the information contained in the permission and cohrence properties provided by the
+task call.  Dependency checks are performed pair-wise between regions
 to determine whether one task depends on the other.  When checking for
-dependencies we first examine the access property.  If both tasks are reads, then 
+dependencies we first examine the permission.  If both tasks are reads, then 
 there is never a dependence.  If at least one of them is a write we use table
 \ref{tab:depsdetect} to determine whether there is a dependence.
-
 \begin{center}
 \begin{table}
 \begin{tabular}{|c|c|c|c|c|} \hline
              & Exclusive & Atomic   & Simultaneous & Relaxed \\ \hline 
-Exclusive    & Dependence & Dependence & Dependence & Dependence \\ \hline
-Atomic       & Dependence & Same Instance & Contingent & Contingent \\ \hline
-Simultaneous & Dependence & Contingent & Same Instance & None \\ \hline
-Relaxed      & Dependence & Contingent & None & None \\ \hline
+Exclusive    & Dep & Dep & Dep & Dep \\ \hline
+Atomic       & Dep & Same & Cont & Cont \\ \hline
+Simultaneous & Dep & Cont & Same & None \\ \hline
+Relaxed      & Dep & Cont & None & None \\ \hline
 \end{tabular}
-\caption{Dependence detection cases when at least one access is a write.\label{tab:depsdetect}}
+\caption{Dependence detection cases when at least one access is a write. {\tt Dep}
+indicates a dependence is detected.  {\tt Same} indicates a dependence is detected
+only if the task uses different instances.  {\tt Cont} means that the dependence
+is contingent upon the permissions.  {\tt None} means there will never
+be a conflict.\label{tab:depsdetect}}
 \end{table}
 \end{center}
-In this table, {\em Dependence} indicates that there will always be a dependence between
-regions while {\em None} indicates that there will never be a dependence regardless
-of mapping decisions.  In the case of {\em Same Instance} there is a dependence contingent
-upon a mapping decision.  If both tasks map to the same physical instance (described in 
-more detail in section \ref{subsec:instmang}) then there is no dependence, which if
-they map to different instances there is a dependence as the system will have to generate
-a copy between the two tasks running.
-
+%In this table, {\em Dependence} indicates that there will always be a dependence between
+%regions while {\em None} indicates that there will never be a dependence regardless
+%of mapping decisions.  In the case of {\em Same Instance} there is a dependence contingent
+%upon a mapping decision.  If both tasks map to the same physical instance (described in 
+%more detail in section \ref{subsec:instmang}) then there is no dependence, which if
+%they map to different instances there is a dependence as the system will have to generate
+%a copy between the two tasks running.
 For the case of {\tt Contingent} there are two special cases that we handle.
 One special case is Write-After-Read (WAR) dependencies.  For the WAR case, if neither coherence property
 is {\em Exclusive} then we can ensure that different physical instances
@@ -111,32 +128,32 @@ or {\tt Relaxed} reader.  In this case it is acceptable for the tasks to run in
 parallel as it is valid for the reader to see updates form the writer, and the
 reader will not violate the atomic access semantics of the writer.
 
-\subsubsection{Abstract Instances}
-\label{subsec:absinsts}
-For the cases where tasks do not depend, they are allowed to create different physical
-instances of the same logical region.  The decision to do this however does not
-happen until the mapping phase of a task execution.  However, we need to have a place
-holder that is capable of representing all the possible valid physical instances
-from which to choose even if those instances do not exist because the prior
-tasks have not been mapped.  We call these place holders {\tt abstract instances}.
+%\subsubsection{Abstract Instances}
+%\label{subsec:absinsts}
+%For the cases where tasks do not depend, they are allowed to create different physical
+%instances of the same logical region.  The decision to do this however does not
+%happen until the mapping phase of a task execution.  However, we need to have a place
+%holder that is capable of representing all the possible valid physical instances
+%from which to choose even if those instances do not exist because the prior
+%tasks have not been mapped.  We call these place holders {\tt abstract instances}.
 
-Abstract instances represent the set of possible valid physical instances which a
-task will be capable of selecting from or adding to when it is mapped.  The value
-of abstract instances is that they allow us to remember which physical instances
-are valuable while continuing to perform dependence detection on newly registered
-tasks.  In the analogy to out-of-order processors abstract instances allow us
-to perform the same operation as register-renaming of instructions to avoid
-anti-dependences and to remember actual dependences even though our dependence detection
-analysis may run ahead of the actual execution of tasks.
+%Abstract instances represent the set of possible valid physical instances which a
+%task will be capable of selecting from or adding to when it is mapped.  The value
+%of abstract instances is that they allow us to remember which physical instances
+%are valuable while continuing to perform dependence detection on newly registered
+%tasks.  In the analogy to out-of-order processors abstract instances allow us
+%to perform the same operation as register-renaming of instructions to avoid
+%anti-dependences and to remember actual dependences even though our dependence detection
+%analysis may run ahead of the actual execution of tasks.
 
 \subsubsection{Dependence Detection}
 \label{subsec:depdetect}
 When a task is registered, the runtime
 will perform dependence detection for every region that the task requests with
-prior tasks that have been registered in the same parent task context.  Since
+prior tasks that have been registered in the same context.  Since
 tasks are registered in program order we will always perform dependence detection
 in program order which guarantees correctness even if tasks are executed out-of-order.  
-Performing dependence detection in program order is also annalogous to how an out of order
+Performing dependence detection in program order is annalogous to how an out of order
 processor works.  Out-of-order processors load instructions in order and only after
 analyzing their instructions and register dependencies do they execute instructions
 out of order.  The regions that a task requires are annalogous
@@ -144,16 +161,13 @@ to the registers listed in an instruction and the goal of the high level
 runtime is to detect the same dependences and use them to enforce scheudling constraints
 upon a task.  However, there is a catch to this analogy: in the Legion programming
 model two different logical regions are not necessarily independent from each other.  In
-order to do the dependence detection we rely on the forest of region tree data structures to be
+order to do the dependence detection we rely on the forest of regions to be
 able to detect dependences between tasks which require different logical regions.
 
 To perform dependence detection, we first find the {\em root region} for the 
 requested region.  The root region is the ancestor region for which the parent task
-has privliges.  Note that the semantics of the Legion programming model state that
-we must always be able to find such a root region or else an error is thrown.  
-
-Once we have found the root region for the requested region, we then proceed to walk
-down the region tree from the node corresponding to the root region to the node
+has privliges.  Once we have found the root region for the requested region, we then proceed to walk
+down the region tree from the root region to the node
 for the requested region.  At each node, we determine if any potential dependences exist.
 Determining whether dependencies exist involves checking information both about the current
 node being visited as well as whether there are any potential dependences farther down
@@ -204,8 +218,8 @@ whether the particular subregions were aliased or not.
 
 \subsubsection{Implicit Dataflow Construction}
 \label{subsec:dataflow}
-In addition to computing the dependences between tasks, we also have to compute where
-a task is permitted to acquire its data from when it goes to execute.
+In addition to computing the dependences between tasks, we also have to compute the version
+of data that a task is permitted to use when it goes to execute.
 It is insufficient to simply record the producer task as there
 may be multiple active tasks for a logical region, all of which may produce different physical
 instances.  In addition, it is likely that the producer tasks have not been mapped

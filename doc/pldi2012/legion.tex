@@ -29,7 +29,19 @@
 \maketitle
 
 \begin{abstract}
-Very.
+As transistor counts have continued to scale with Moore's Law, computer
+architectures are becoming increasingly parallel to avoid fundamental
+physical limitations.  These new parallel architectures contain both
+heterogeneous processors and deep, complex memory hierarchies.  New
+programming abstractions are required to grant programmers the power
+to leverage these architectures.  With this problem in mind we present Legion, 
+a programming model, type system, and runtime that leverage 
+logical regions to express both locality and independence of program data.  
+Legion also enables explicit, programmer controlled movement of data through
+the memory hierarchy and placement of tasks based on locality information
+via a novel mapping interface.  Running on a 4 node cluster with 8 total GPUs 
+and 4 levels of memory hierarchy, our implementation of Legion 
+achieves up to 5.9X speedup over a single CPU-GPU node on real-world applications.
 \end{abstract}
 
 \section{Introduction}
@@ -37,12 +49,15 @@ Very.
 Modern parallel machines are increasingly complex, with deep,
 distributed memory hierarchies and heterogeneous processing units.  On
 these architectures, it is crucial for performance that the programmer
-and the compiler be able to reason about {\em locality} (data residing
-close to computation that uses it) and {\em independence} (two
-computations on disjoint data are independent).  Most contemporary
+and the compiler be able to reason about {\em locality} (data resident
+close to computation that uses it) and {\em independence} (computations
+operating on disjoint data).  Most contemporary
 languages have no facilities for the programmer to express locality
-and independence, and the existing research proposals are particularly
-limited in expressing these properties for pointer data structures.
+and independence.  The few languages that do focus primarily on
+array based locality \cite{Fatahalian06,CHAPEL04,UPC99} and 
+avoid handling irregular pointer data structures.  This results in
+data structures encoded in arrays which are impossible for compilers
+and runtime systems to reason about with regard to locality and independence.
 
 In this paper we describe Legion, a parallel programming system based
 on using {\em logical regions} to describe the organization of data.
@@ -57,16 +72,10 @@ and only if they have the correct {\em permissions} (e.g., {\em
   read-only} and {\em read-write}, among others).
 
 We begin with an extended example of a Legion program in Section~\ref{sec:ex}.
-Subsequent sections each highlight a contribution of our work:
+Each subsequent section describes a level in the Legion programming
+system from the application level down to the machine:
  
 \begin{itemize}
-
-\item We describe the execution semantics for Legion and show that 
-analyzing region dependencies with a single function is sufficient to 
-guarantee that a Legion execution preserves sequential program
-behavior if regions are accessed with the strongest (exclusive)
-coherence (Section~\ref{sec:exec}).  This local scheduling property is central to 
-scalable and distributed Legion implementation.
 
 \item We summarize Legion's static type system (Section~\ref{sec:type}), which serves two primary
   purposes.  First, pointers to regions are checked
@@ -78,17 +87,24 @@ scalable and distributed Legion implementation.
   region arguments, their computations access disjoint
 data.  
 
+\item We describe the execution semantics for Legion and show that
+analyzing region dependencies with a single function is sufficient to 
+guarantee that a Legion execution preserves sequential program
+behavior if regions are accessed with the strongest (exclusive)
+coherence privilege (Section~\ref{sec:exec}).  This local scheduling property is central to 
+the scalability of Legion on distributed memory machines.
+
 \item We describe the design and implementation of the Legion {\em high-level runtime}
 system (Section~\ref{sec:highlevel}), which performs scheduling of {\em tasks} (functions to be executed in parallel)
 and implements each logical region as one or more {\em physical regions}.
-The high-level runtime's scheduling is analogous to the capabilities of an out-of-order processor,
+The high-level runtime's scheduling algorithm is analogous that of an out-of-order processor,
 but works at the granularity of the tasks and regions in a function body rather than instructions and registers
 in a code block.  We describe the stages of the task execution pipeline, and how the high-level runtime coordinates parallel
 scheduling decisions across the machine.  We also present the {\em mapping} interface, an API by which
 application-specific knowledge can be incorporated into decisions made by the high-level runtime.
 
-\item We describe the design and implementation of the Legion {\em low-level runtime} (Section~\ref{sec:lowlevel} ,
-a portability layer designed to abstract a wide variety of hardware, including multicor chips, clusters, and accelerators
+\item We describe the design and implementation of the Legion {\em low-level runtime} (Section~\ref{sec:lowlevel}),
+a portability layer designed to abstract a wide variety of hardware, including multicore chips, clusters, and accelerators
 such as GPUs. 
 
 \item We present the results of experiments on three applications running on a cluster of multicore processors with
@@ -101,8 +117,8 @@ exploit locality and independence on such platforms.
 \input{code_ex}
 \input{part_fig}
 
-\input{exec}
 \input{type_system}
+\input{exec}
 
 \input{highlevel}
 \input{mapping_fig}

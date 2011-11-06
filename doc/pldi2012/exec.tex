@@ -2,9 +2,21 @@
 \section{Execution Model}
 \label{sec:exec}
 
-In this section we present the Legion execution model and show that
-it is correct in that it is guaranteed to preserve the sequential
-execution semantics of programs.  The correctness argument is
+%In this section we present the Legion execution model and show that
+%it is correct in that it is guaranteed to preserve the sequential
+%execution semantics of programs.  The correctness argument is
+%instructive in that the properties that ensure correctness are also
+%exploited in the implementation of the Legion high-level runtime
+%system to achieve high performance and highly distributed scheduling
+%of parallel tasks.
+
+In section \ref{sec:type} we showed that the type system
+only enables privileges to be passed with task calls.  Based on
+this property of privileges we have claimed that our runtime
+will be able to make local scheduling decisions.  In this
+section we present the Legion execution model and show that
+this property of scheduling preserves the sequential execution 
+semantics of a program.  The correctness argument is
 instructive in that the properties that ensure correctness are also
 exploited in the implementation of the Legion high-level runtime
 system to achieve high performance and highly distributed scheduling
