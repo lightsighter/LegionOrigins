@@ -3,60 +3,48 @@
 
 %\include{code_ex}
 
-Listing~\ref{lst:code_ex} shows an example of Legion code for an electrical
-circuit simulation.  Although it does not use all the capabilities of Legion
-(or all the aspects of the language), it covers the core set.  Legion code is
-derived from C, but different in several important ways.
+In this section we give an informal overview of Legion through an example.
+Listing~\ref{lst:code_ex} shows Legion code for an electrical
+circuit simulation, which illustrates the core features of the programming model.
 
-Lines 1-16 
-define the data structures used in the rest of the code.  A {\tt Circuit}
-is an irregular data structure that describes the wires in the circuit and
-the 'nodes' (where the wires meet).  The basic nodes and wires are defined
-first.  Nodes have a few fields for the simulation (e.g. charge, capacitance),
-and are hooked up in a circular linked list to allow the simulation to be
-able to iterate over all of them.  Pointers in data structures (e.g. the
-``next'' fields in this linked list) must be constrained
-to a particular region, so Legion uses a {\tt Type@region} syntax rather than
-C's unconstrained {\tt Type~*}.  The example relies on the ability to
-constrain different linked lists of nodes differently, so rather than using
-the name of some static region the {\tt Node} definition is parameterized on
-a region {\tt rn}.  The use of the same parameter on the type pointed to by
-the next pointer means that every single node in the linked list is constrained
-to reside in the specified region.
 
-The definition of a {\tt Wire} is similar, except that a wire must refer to
-the two nodes to which it is electrically connected.  The pointers to the nodes
-must be constrained, and the type that the pointer points to requires a region
-as well, but unlike in the linked list case, two different regions are used.
-This is a common occurrance in Legion code, and arises when one needs to place
-one constraint on the objects directly referenced, and a second (presumably
-weaker) constraint on objects that are indirectly referencable through the
-direct pointers.
+Lines 1-16 define data structures.  A circuit consists of wires and
+nodes where wires meet.  {\tt Node}s have fields for the simulation
+(e.g. charge, capacitance) and are linked in a circular list.
+Pointers in data structures (e.g. the {\tt next} fields in the list)
+point to a particular region given by the standard {\tt Type@region}
+syntax.  The program relies on different lists being in different
+regions, so the {\tt Node} definition is parameterized on a region
+{\tt rn}.  The {\tt next} field of a $\tt Node \langle rn \rangle$ has
+type $\tt Node \langle rn \rangle \mbox{\tt @} rn$, which implies that
+all nodes in the list are in region {\tt rn}.
 
-With the definition of nodes and wires out of the way, lines 4-9 declare how
-they are formed into a {\tt Circuit}, and is our first example of a
-\emph{region relationship}.  At the language level, a region relationship is
-similar to a structure, except that it is allowed to contain references to
-dynamically allocated regions as fields, and the types of the fields of a region
-relationship are allowed to refer to those region fields.  (This will be 
-discussed in additional detail below.)  It is also allowed
-to place constraints on those region fields, which we'll see in the next
-declaration.  In this example, a circuit is defined
-by two regions, one for its nodes and one for its wires.  The element type of
-the node region (and of the {\tt first\_node} pointer) guarantees that every
-node in the circuit reside in this region.  Simiarly, the type of the wire
-region's element (and of the {\tt first\_wire} pointer) not only guarantees
-that every wire in the circuit is in the wire region, but also guarantees that
-every node referred to by any wire is in the circuit's node region.
+{\tt Wire}s are similar, except that a wire refers to two nodes to
+which it is electrically connected.  The two {\tt Node}s are in region {\tt rn},
+but they may point to {\tt Node}s in a different region {\tt rn2}.  This is a common pattern in Legion code, and
+arises when one needs to place one constraint on the objects directly
+referenced, and a second (presumably weaker) constraint on objects
+that are indirectly reached through the direct pointers.
 
-The last definition is for the pieces that the circuit is partitioned into.
+Lines 4-9 declare {\tt Circuit}s, which is our first example of a
+\emph{region relationship}.  A region relationship is just a structure
+with named fields, except that any region fields can be used in the
+type declarations.  Thus the region {\tt r\_all\_nodes} contains {\tt
+Node}s that point only into region {\tt r\_all\_nodes}, guaranteeing that
+all {\tt Node}s are in region {\tt r\_all\_nodes}.  (Note that regions are
+declared with the single data type they can contain.)  Simiarly, the
+type of the wire region's element not only guarantees that every wire
+in the circuit is in the wire region, but also guarantees that every
+node referred to by any wire is in the circuit's node region.
+
+The last definition is for the pieces into which the circuit is partitioned.
 The original node and wire regions are specified as parameters, and the
-four kinds of subregions that are created below are made fields of the
-{\tt CircuitPiece}.  Constraints are placed on all four of these fields that
-they must be subregions of the original node and wire regions that were
-provided as parameters.  Since the simulation code will need to be able to
-iterate over the nodes owned by a piece, the parameterization of the {\tt rn\_pvt},
-{\tt rn\_shr}, and {\tt first\_node} fields constrains the linked list of
+four kinds of subregions that are created are made fields of the
+{\tt CircuitPiece}.  This declaration also illustrates {\em subregion constraints}
+placed on the three region fields stating the region fields  must be subregions of the 
+node and wire regions provided as parameters.  Since the simulation code will need to be able to
+iterate over the nodes owned by a {\tt CircuitPiece}, the parameterization of the {\tt rn\_pvt} (private nodes),
+{\tt rn\_shr} (shared nodes), and {\tt first\_node} fields constrains the linked list of
 nodes to reside entirely in those two regions.  The linked list of wires is
 similarly constrained, and the wire's node pointers are constrained to fall
 into one of the three subregions defined in the {\tt CircuitPiece}.  Finally,
