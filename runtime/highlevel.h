@@ -784,6 +784,7 @@ namespace RegionRuntime {
       const unsigned partition_stride;  // Stride for partition ids to guarantee uniqueness
       // To avoid over subscribing the system with steal requests, keep track of
       // which processors we failed to steal from, and which failed to steal from us
+      const unsigned int max_failed_steals;
       std::set<Processor> failed_steals;
       std::set<Processor> failed_thiefs;
     public:

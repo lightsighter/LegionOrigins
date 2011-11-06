@@ -3308,7 +3308,8 @@ namespace RegionRuntime {
     HighLevelRuntime::HighLevelRuntime(LowLevel::Machine *m, Processor local)
       : local_proc(local), machine(m),
       mapper_objects(std::vector<Mapper*>(DEFAULT_MAPPER_SLOTS)), 
-      next_partition_id(local_proc.id), partition_stride(m->get_all_processors().size())
+      next_partition_id(local_proc.id), partition_stride(m->get_all_processors().size()),
+      max_failed_steals (m->get_all_processors().size()-1)
     //--------------------------------------------------------------------------------------------
     {
       log_task(LEVEL_SPEW,"Initializing high level runtime on processor %d",local_proc.id);
@@ -4206,6 +4207,12 @@ namespace RegionRuntime {
     bool HighLevelRuntime::check_steal_requests(void)
     //--------------------------------------------------------------------------------------------
     {
+      // Check to see if there are any possible processors we can steal from
+      if (failed_steals.size() == max_failed_steals)
+      {
+        // Can't steal from anything
+        return false;
+      }
       // Iterate over the steal requests seeing if any of triggered
       // and removing them if they have
       std::list<Event>::iterator it = outstanding_steal_events.begin();
