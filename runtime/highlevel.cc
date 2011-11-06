@@ -3958,6 +3958,9 @@ namespace RegionRuntime {
         {
           // ask the mapper for where to place the task
           Processor target = mapper_objects[task->map_id]->select_initial_processor(task);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(target.exists());
+#endif
           task->chosen = true;
           if (target == local_proc)
           {

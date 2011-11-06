@@ -1,0 +1,55 @@
+\documentclass[9pt,nocopyrightspace]{sigplanconf}
+
+\bibliographystyle{plainnat}
+\usepackage{amsmath,amsthm}
+\usepackage{listings}
+\usepackage{tikz}
+\usepackage{subfigure}
+\usepackage{multirow}
+
+\newcommand{\infrule}[2]{\displaystyle\frac{\displaystyle\strut{#1}}{\displaystyle\strut {#2}}}
+\newcommand{\deref}{\ast}
+\newcommand{\rread}[1]{\mbox{\em Read}(#1)}
+\newcommand{\rwrite}[1]{\mbox{\em Write}(#1)}
+\newcommand{\lca}[2]{#1 \sqcup #2}
+\newcommand{\rleq}{\leq_r}
+\newcommand{\interval}[1]{\mbox{\em interval}(#1)}
+\newcommand{\context}[1]{\mbox{\em context}(#1)}
+\newtheorem{theorem}{Theorem} 
+\newtheorem{lemma}[theorem]{Lemma}
+
+\begin{document}
+
+\title{Legion: Expressing Locality and Independence with Logical Regions}
+\authorinfo{}{}{}
+\maketitle
+
+\begin{abstract}
+Very.
+\end{abstract}
+
+\section{Introduction}
+\label{sect:intro}
+
+\input{circuit}
+\input{code_ex}
+\input{part_fig}
+
+\input{exec}
+\input{type_system}
+
+\input{highlevel}
+\input{mapping_fig}
+
+\input{lowlevel}
+
+
+
+{
+\small
+\bibliography{bibliography}
+}
+
+\end{document}
+
+

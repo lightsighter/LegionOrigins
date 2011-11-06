@@ -1,0 +1,278 @@
+
+\section{Execution Model}
+\label{sec:exec}
+
+In this section we present the Legion execution model and show that
+it is correct in that it is guaranteed to preserve the sequential
+execution semantics of programs.  The correctness argument is
+instructive in that the properties that ensure correctness are also
+exploited in the implementation of the Legion high-level runtime
+system to achieve high performance and highly distributed scheduling
+of parallel tasks.
+
+For the purposes of describing and reasoning about the
+execution model we consider an extremely restricted core language, so
+simple in fact that it is not even Turing complete and is also very
+inconvenient for writing programs.  The loss in expressive power, however,
+is hopefully a gain in clarity and simplicity for illustrating the core ideas in
+Legion.    We consider programs written in the following language:
+
+\begin{eqnarray*}
+P & := & F_1 \ldots F_n \\[.1in]
+F & := & \mbox{\tt def}\ f(r_1,\ldots,r_n) =   s_1; \ldots s_n; \\[.1in]
+s & := & f(r_1,\ldots,r_n) \\
+&| & \deref r = x \\
+& | & x = \deref r \\
+&| & (r_1, r_2)_{p} = \mbox{\tt partition}(r) \\ 
+%&| & \mbox{\tt close}\ p 
+\end{eqnarray*}
+
+There are four kinds of names: functions $f$, regions $r$, local
+variables $x$, and partitions $p$.  A function takes only regions as
+arguments and a function body consists of an ordered list of
+statements.  The core language has no permissions or coherence annotations
+on functions; for simplicity, in this section we consider only exclusive access in the case
+that a function writes a region.  The statement $f(r_1,\ldots,r_n)$ calls a function, which
+is executed for its effects on the region arguments.  The statement $x
+= \deref r$ reads a value from region $r$ and stores it in local
+variable $x$, and the statement $\deref r = x$ stores the value of $x$
+in region $r$.  
+
+The statement $(r_1, r_2)_{p} = \mbox{\tt partition}(r)$ creates two
+{\em subregions} $r_1$ and $r_2$ partitioning the parent region $r$.
+All three region names ($r_1$,$r_2$,and $r$) can be used after the
+partition.  Regions $r_1$ and $r_2$ are disjoint, meaning that writes
+to $r_1$ have no effect on the contents of $r_2$ and vice versa, but
+neither $r_1$ nor $r_2$ is disjoint from $r$.  The partition itself
+also has a name $p$.  We define a relation $\rleq$ which is the
+reflexive, transitive closure of
+\[ r_1 \rleq p \ \ \ r_2 \rleq p \ \ \ p \rleq r \]
+The $\rleq$ relation defines a {\em region forest} with regions at the
+roots, and alternating levels where partitions are always children of
+regions and regions are always children of partitions.  If we ignore
+partitions, $\rleq$ is just the subregion relationship: $r \rleq r'$
+means that $r$ is a subregion (either immmediately or transitively) of
+$r'$.  Including partitions also gives information about disjointness.
+Let $\lca{r}{r'}$ be the meet of $r$ and $r'$ (the least-common
+ancestor of $r$ and $r'$ in the region forest).  If $r \neq r'$ and
+$\lca{r}{r'} = p$ then $r$ and $r'$ are disjoint, as $r$ and $r'$ must
+be in distinct subregions of the partition $p$ and partitions
+guarantee disjoint subregions.  If $\lca{r}{r'} = r''$ then either $r
+\rleq r' = r''$ , $r \rleq r = r''$, or $r \leq p$, $r' \leq p'$, and
+$p$ and $p'$ are two distinct partitions of $r''$.  In any of these
+cases $r$ and $r'$ cannot be proven disjoint using $\rleq$.
+
+%which is used to {\em close} the partition in the $\mbox{\tt close}\
+%p$ statement Intuitively, closing a partition reconciles modifications
+%to the subregions with the {\em parent} region: $r$ is updated to
+%incorporate any changes to $r_1$ and $r_2$.  In our source language
+%{\tt close} is not available to the programmer, but is invoked by the
+%language implementation to reconcile distributed copies of regions
+%whenever necessary, and it is impossible for the program to observe
+%discrepencies between a region and its subregions. This toy language,
+%then, is closer to the level of ourintermediate representation, which
+%is most appropriate for discussing our runtime system.
+
+A program is a list of functions, with the entry point the first
+function on the list.  We further require that every function (except
+the entry point) is called in exactly one place and that the formal
+parameters are named identically to the actual parameters in the
+call.  Further, local variables, new region names and
+partition names in {\tt partition} are chosen to be distinct from all
+other names in the program.  These restrictions allow us to avoid
+dealing with variable renaming and also mean that each runtime call is
+uniquely named by its function name.  
+
+The state of an execution step for a program is a map $M$ from the
+variable and region names of the program to their values.  We leave the values
+abstract, assuming only that each statement performs a deterministic
+update of the variables/regions it writes that depends only on the
+current state of the regions/variables it reads.
+The sets of regions read and written by statements are defined as follows:
+\[
+\begin{array}{rcl}
+\rread{x = \deref r} & = & \{ r \} \\
+\rwrite{\deref r = x} & = & \{ r \} \\
+\rwrite{(r_1, r_2)_{p} = \mbox{\tt partition}(r)} & = & \{ r_1,r_2,r \} \\[.15in]
+\rwrite{f(r_1,\ldots,r_n)} & = & \bigcup_{1 \leq i \leq n}{\rwrite{s_i}} \\
+\multicolumn{3}{l}{\ \ \ \ \mbox{where\ {\tt def}}\ f(r_1,\ldots,r_n): =   s_1; \ldots s_n;} \\[.15in]
+\rread{f(r_1,\ldots,r_n)} & = & \bigcup_{1 \leq i \leq n}{\rread{s_i}} \\
+\multicolumn{3}{l}{\ \ \ \ \mbox{where\ {\tt def}}\ f(r_1,\ldots,r_n): =   s_1; \ldots s_n;} \\[.15in]
+\end{array}
+\]
+In all other cases the read/write set is empty (e.g., $\rread{\deref r = x} = \emptyset$).
+
+The {\em sequential execution order} is the canonical order in which reads, writes, and partitions of regions are performed.
+Th sequential order is obtained by inlining all function calls---repeatedly
+replace function calls $g(r_1,\ldots,r_n)$ by their function bodies until the entry function contains no function calls.
+The order of statements in the entry function is then the sequential execution order. 
+Two programs $P_1$ and $P_2$ are equivalent, written $P_1 \equiv P_2$, if starting in the same initial states they halt in
+the same final states when evaluated in the sequential execution order.
+
+Consider the following program, where reads, writes, and partitions are numbered in the sequential execution order:
+{\small 
+\begin{tabbing}
+\ \ \ \ \ \= {\tt def} \= $\rm f(r_0) =$ \\
+1. \>\>   $\rm (r_1,r_2)_a = \mbox{\tt partition}(r_0);$   \\
+2. \>\>  $\rm (r_3,r_4)_b = \mbox{\tt partition}(r_1);$ \\
+\>\>     $\rm g(r_1); h(r_2); j(r_3); k(r_3,r_4);$ \\
+\> {\tt def} $\rm g(r_1) =$   \\
+3. \>\>  $\rm \ast r_1 = u;$ \\ \\
+\> {\tt def} $\rm h(r_2) =$ \\      
+4. \>\>   $\rm \ast r_2 = v;$\\ \\
+\> {\tt def} $\rm j(r_3) = $ \\
+5.\>\>   $\rm w = \ast r_3;$ \\ \\
+\> {\tt def} $\rm k(r_3,r_4) = $\\
+6.\>\>   $\rm x = \ast r_3;$ \\
+7.\>\>   $\rm (r_5,r_6)_c = \mbox{\tt partition}(r_4);$ \\ 
+\>\>     $\rm m(r_5);$ \\ \\
+\> {\tt def} $\rm m(r_5) = $ \\
+8. \>\>  $\rm \ast r_5 = y;$
+\end{tabbing}
+}
+
+Consider any two statements $s_1$ and $s_2$.  We say $s_1$ and $s_2$ are {\em independent} if
+\[
+\begin{array}{l}
+   (\forall r_1 \in \rread{s_1} \cup \rwrite{s_1}.\forall r_2 \in \rwrite{s_2}. \exists p. \lca{r_1}{r_2} = p) \wedge \\
+   (\forall r_2 \in \rread{s_2} \cup \rwrite{s_2}.\forall r_1 \in \rwrite{s_1}. \exists p. \lca{r_1}{r_2} = p)
+\end{array}
+\]
+The definition captures the usual idea that two statements are independent if whenever one of them is a write they do not access the same memory location, but the notion of ``location'' is generalized to regions and must take into account that two regions
+are disjoint only if they are in different components of some partition.
+
+\begin{lemma}
+\rm
+\label{lem:independence}
+If $s_1$ and $s_2$ are independent, then $s_1; s_2 \equiv s_2; s_1$.
+\end{lemma}
+\begin{proof}
+For a contradiction, assume that $s_1$ writes a region $r_1$ and $s_2$ may read from some $r_2$ where $r_1$ and $r_2$
+are not disjoint; then reversing the order of the statements clearly violates the claim.  Now $r_1 \in \rwrite{s_1}$
+and $r_2 \in \rread{s_2}$, and therefore $\lca{r_1}{r_2} = p$ for some partition $p$.  But then $r_1$ and $r_2$ are disjoint.
+The reasoning is symmetric if $s_1$ reads $r_1$ and $s_2$ writes $r_2$ or $s_1$ writes $r_1$ and $s_2$ writes $r_2$.
+Since the read-read case cannot violate independence, the result follows.
+\end{proof}
+We say $s_2$ {\em depends on} $s_1$ if $s_2$ follows $s_1$ in the sequential execution order and the statements are not independent.
+\begin{lemma}
+\rm
+\label{lem:dataflow}
+Let $S = s_1; \ldots s_n;$ be the sequential execution order of reads, writes, and partitions and let $S'$ be any permutation of $S$ such that the order of dependent statements is preserved.  Then $S \equiv S'$.
+\end{lemma}
+\begin{proof}
+By induction on the number of swaps needed to transpose $S'$ into $S$.
+If $S = S'$ then we are done.  If $S$ and $S'$ are different then
+there must be two adjacent statements $s_1; s_2$ in $S'$ that are
+reversed with respect to the sequential execution order.  Since the order of
+dependent statements is preserved by the permutation, $s_1$ and $s_2$ are also independent.
+But then $s_1; s_2 \equiv s_2; s_1$ by Lemma~\ref{lem:independence} and the result follows.
+\end{proof}
+Lemma~\ref{lem:dataflow} captures the standard idea that any
+topological sort of the statements that preserves dependencies also
+preserves sequential execution semantics.  While this is the basis for
+dataflow parallelism, in the large distributed memory machines we
+target instruction-level dataflow parallelism is both too fine-grain
+and incurs too much communication, as we must compute a global
+dependence graph across the entire program.  In Legion we use a
+different notion of what can be executed in parallel that works at the
+granularity of functions and also requires only local reasoning.  We
+first need a few additional definitions.  Define $\context{s}$ to be
+the function call statement that invokes the function in which
+statement $s$ occurs (here we assume some way of distinguishing
+identical statements that occur in different functions).  Let
+$\interval{f}$ to be the set of statements executed by the one call to
+function $f$ and all the functions $f$ transitively calls; we define
+$\interval{s} = \{ s \}$ for any statement $s$ other than a function call.
+Finally we say statements $s_1$ and $s_2$ are {\em siblings} if they
+occur in the same function body.
+
+\begin{lemma}
+\rm
+\label{lem:locality}
+If $s_2$ and $s_1$ are not independent and $s_1$ and $s_2$ are not siblings, then $\context{s_2}$ and $s_1$ are not independent
+and $s_2$ and $\context{s_1}$ are not independent.
+\end{lemma}
+\begin{proof}
+Follows immediately from the fact that the read/writes sets of $\context{s}$ are supersetsn of the read/write sets of $s$.
+\end{proof}
+We use Lemma~\ref{lem:locality} in the following way.  Consider two
+statements $s_1$ and $s_2$ such that $s_2$ depends on $s_1$.  Let $f$ be the function that is the least
+common ancestor of $s_1$ and $s_2$ in the call tree of the
+program---the unique function $f$ with the smallest interval such that
+$s_1,s_2 \in \interval{f}$.  Then one of the following is true:
+\begin{itemize}
+\item $s_1$ and $s_2$ are siblings.
+
+\item $s_1$ occurs in $f$, there is a function call $f_2(\ldots)$ in $f$ such that $s_2 \in \interval{f_2}$, and $f_2(\ldots)$
+is dependent on $s_1$.
+
+\item $s_2$ occurs in $f$, there is a function call $f_1(\ldots)$ in $f$ such that $s_1 \in \interval{f_1}$, and
+$s_2$ is dependent on $f_1(\ldots)$.
+
+\item There are two distinct function call statements $f_1(\ldots)$ and $f_2(\ldots)$ in the body of $f$ such
+that $s_1 \in \interval{f_1}$ and $s_2 \in \interval{f_2}$ and $f_2(\ldots)$ is dependent on $f_1(\ldots)$.
+\end{itemize}
+In other words, any dependence between arbitrary statements
+in different functions can be identified at a coarser granularity as a
+dependence between two statements (one or both of which may be a function call) within the same function body.  For
+example, in the example program above, statements 3 and 8 are
+dependent because they write into regions that are in different
+partitions of region $r_0$.  This dependence means that any functions
+that include these statements in their interval cannot be independent,
+and in particular in the entry point function $f$ the function call
+$k(r_3,r_4)$ depends on sibling $g(r_1)$.
+
+The following lemma gives another class of statement orderings based on these observations.
+\begin{lemma}
+\rm
+\label{lem:scheduling}
+Let $S$ be the sequential execution order of reads, writes and partitions.  Let $S'$ be any permutation of $S$ such that
+for any sibling statements $s_1$ and $s_2$ such that $s_2$ depends on $s_1$, all statements in $\interval{s_1}$ precede
+all statements in $\interval{s_2}$.  Then $S \equiv S'$.
+\end{lemma}
+\begin{proof}
+It suffices to show that the order of any two dependent statements $s_1$ and $s_2$ is the same in $S$ and $S'$.
+From the discussion above, we know that if $s_2$ depends on $s_1$ then there are two sibling statements $s_1'$ and $s_2'$
+such that $s_1 \in \interval{s_1'}$, $s_2 \in \interval{s_2'}$, and $s_2'$ depends
+on $s_1'$.
+\end{proof}
+The advantage of Lemma~\ref{lem:scheduling} is that provided we have
+a way to efficiently obtain the read and write sets for function calls, scheduling
+decisions can be made completely locally for the statements in a
+single function body at a time, independently of any decisions for
+other function calls.  This observation eliminates any global
+computation to determine what statements can execute in parallel, and
+furtherore allows decisions to be made in parallel, as the statements
+in each function can be scheduled separately.  As a practical matter
+our Legion implementation only parallelizes function calls---the other
+statements within a function body are executed in sequential
+order.
+
+Returning to our example above, in function $f$ the function calls
+$g(r_1)$ and $h(r_2)$ are independent, as they work on disjoint
+regions $r_1$ and $r_2$.  Similarly $j(r_3)$ and $k(r_3,r_4)$ are
+also independent as they both only read from $r_3$.  However, $j$ and $k$
+are both dependent on $g$ and $h$, as the earlier functions modify a different
+partition of the same data.  Thus Legion will ensure functions $j$ and $k$
+begin only after $g$ and $h$ complete, while it will allow $g$ and $h$
+to run in parallel, and $j$ and $k$ to run in parallel.
+
+
+
+
+
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+

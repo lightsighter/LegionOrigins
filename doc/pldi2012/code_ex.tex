@@ -12,13 +12,13 @@
   morekeywords={region_relation,region,coloring,partition,spawn},
   deletekeywords=float,
 }
-\begin{lstlisting}[float,caption={Circuit Simulation Code Example}]
+\begin{lstlisting}[float={t},label={lst:code_ex},caption={Circuit Simulation Code Example}]
 struct Node<rn>    { Node<rn>@rn next;    float charge, capacitance; }
 struct Wire<rn,rn2,rw> { Wire<rn,rn2,rw>@rw next;
                                           Node<rn2>@rn in_node, out_node; float current, ... ; }
 region_relation Circuit {
   region< Node<r_all_nodes> >                        r_all_nodes;
-  region< Wire<r_all_nodes,r_all_wires> >       r_all_wires;
+  region< Wire<r_all_nodes,r_all_nodes,r_all_wires> >       r_all_wires;
   Node<r_all_nodes>@r_all_nodes                   first_node;
   Wire<r_all_nodes,r_all_wires>@r_all_wires   first_wire;
 }
@@ -53,19 +53,14 @@ void simulate_circuit(Circuit c) : RWE(c.r_all_nodes,c.r_all_wires)
   }
 }
 
+// read info from nodes connected to each wire, update state of wire
 void calc_new_currents(CircuitPiece<rn,rw> piece): RWE(piece.rw_pvt),
-                                                                         ROE(piece.rn_pvt,piece.rn_ghost) {
-  // read info from nodes connected to each wire, update state of wire
-}
+                                                                         ROE(piece.rn_pvt,piece.rn_ghost)
 
+// current moving through wires redistributes charge between nodes
 void distribute_charge(CircuitPiece<rn,rw> piece): ROE(piece.rw_pvt),
-                                                                         RdA(piece.rn_pvt,piece.rn_ghost) {
-  // current moving through wires redistributes charge between nodes
-}
+                                                                         RdA(piece.rn_pvt,piece.rn_ghost)
 
+// total charge added to a node causes changes in voltage
 void update_voltages(CircuitPiece<rn,rw> piece): RWE(piece.rn_pvt,piece.rn_shr)
-{
-  // total charge added to a node causes changes in voltage
-}
 \end{lstlisting}
-
