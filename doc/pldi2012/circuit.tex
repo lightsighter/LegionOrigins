@@ -4,53 +4,51 @@
 %\include{code_ex}
 
 In this section we give an informal overview of Legion through an example.
-Listing~\ref{lst:code_ex} shows Legion code for an electrical
+Listing~\ref{lst:code_ex} shows code for an electrical
 circuit simulation, which illustrates the core features of the programming model.
 
-The circuit simulation is an application that takes a collection of
-circuit elements consisting of wires and nodes where wires meet.  
-The simulation is a three-phase algorithm that repeatedly updates
+The circuit simulation takes a collection of
+of wires and nodes where wires meet.  
+The simulation repeatedly updates
 currents, distributes charges, and updates voltages for as many
 time steps as the simulation demands.  We first
-describe the partitioning of regions for the simulation and how
-the program exececutes in section \ref{subsec:partitioning}.  
-We then describe the data type declarations 
+describe the partitioning of regions in Section~\ref{subsec:partitioning}
+and then describe the data type declarations 
 and the constraints they enforce on the simulation that enable
 the runtime to efficiently execute the application
-in section \ref{subsec:datatypes}.
+in Section~\ref{subsec:datatypes}.
 
 \subsection{Regions and Partitions}
 \label{subsec:partitioning}
 
-Line 18 declares the main simulator function, which takes a
-{\tt Circuit} to be simulated.  This function specifies the regions it
-will access as well as the {\em permissions} and {\em coherence}
-properties it requires of those regions.  In this case, the {\tt RWE}
-annotation specifies that the function accesses the regions {\tt c.r\_all\_nodes}
-and {\tt c.r\_all\_wires} with read-write permissions and exclusive
-access (the strongest coherence mode).  The simulation of the circuit
-will read and write all of the nodes and all of the wires, and it must
-be done with exclusive access to ensure a correct result.  Functions that
-declare their accessed regions, permissions, and coherence properties are
-called {\em tasks} and will be considered by the Legion runtime for parallel
-execution.
+Line 18 declares the main simulator function, which takes a {\tt
+Circuit} to be simulated.  This function specifies the regions it 
+accesses and the {\em privileges} and {\em coherence} it requires of those regions.
+In this case, the {\tt RWE} annotation specifies that the function
+accesses the regions {\tt c.r\_all\_nodes} and {\tt c.r\_all\_wires}
+with read-write privileges and {\em exclusive} coherence (i.e., no other
+function can access the regions concurrently).  The simulation 
+reads and writes all nodes and wires, and it must be done
+with exclusive access to ensure correct results.  Privileges specify what
+the function can do with the regions; coherence specifies what other
+functions can do with the regions concurrently.  Functions that
+declare their accessed regions, privileges, and coherence are called {\em tasks}
+and are the unit of parallel execution in Legion.
 
 Lines 19-27 are responsible for partitioning the circuit into {\tt MAX\_PIECES}
-pieces that can be worked on in parallel.  In order to partition a region, we
-need to provide a {\em coloring}, which is a relation over the valid elements
-in a region and a set of colors.  A {\em partition} is an object which given
-a coloring and a parent region, will contain a subregion of the parent region
-for every color with each subregion containing the elements corresponding 
-to the elements colored with the subregions color. 
+pieces that can be worked on in parallel.  To partition a region, we
+provide a {\em coloring}, which is a relation on the elements
+of a region and a set of colors.  A {\em partition} is an object which given
+a coloring and a region $r$ contains for each color $c$ a {\em subregion} of $r$
+with all the elements of $r$ colored $c$.
 
-The first step in partitioning the graph
-is to partition it into two sets of nodes consisting of 
+The region of all nodes in the circuit is first partitioned into 
 {\em private} and {\em shared} nodes (lines 20-21).  Private nodes
-will only be touched by a single task in a phase, while shared nodes may
+are touched by a single task in a phase, while shared nodes may
 be referenced by multiple tasks in a phase.  The thick lines in figure \ref{sfig:part_fig:pvs}
-show how the nodes in a small graph might be partitioned into 3 subsets.  Gray
-nodes correspond to shared nodes while black nodes are private.  Note that
-this partition is disjoint since each node will only be colored once.
+show how the nodes in a small graph might be partitioned into three subsets.  Gray
+nodes are shared and black nodes are private.  Note that
+this partition is disjoint since each node has one color.
 %Our current implementation uses small
 %integers or booleans for the names of colors, but any enumerable set would be
 %fine.  The coloring relation need not be total - it can leave out some elements entirely.  And although it is not required to be injective (it can map a single
