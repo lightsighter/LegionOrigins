@@ -4002,7 +4002,6 @@ namespace RegionRuntime {
       // so we need to issue a steal request to another processor
       // Check that we don't have any outstanding steal requests
       if (!check_steal_requests()) {
-	DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_ISSUE_STEAL);
         issue_steal_requests(); 
       }
     }
@@ -4260,6 +4259,7 @@ namespace RegionRuntime {
           while (it != targets.upper_bound(target)) it++;
           continue;
         }
+        DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_ISSUE_STEAL);
         Processor target = it->first;
         int num_mappers = targets.count(target);
         log_task(LEVEL_SPEW,"Processor %d attempting steal on processor %d",
