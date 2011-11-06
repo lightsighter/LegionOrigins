@@ -68,6 +68,22 @@ namespace RegionRuntime {
       RELAXED,
     };
 
+    enum {
+      TIME_HIGH_LEVEL_CREATE_REGION = 100,
+      TIME_HIGH_LEVEL_DESTROY_REGION = 101,
+      TIME_HIGH_LEVEL_CREATE_PARTITION = 102,
+      TIME_HIGH_LEVEL_DESTROY_PARTITION = 103,
+      TIME_HIGH_LEVEL_ENQUEUE_TASKS = 104,
+      TIME_HIGH_LEVEL_STEAL_REQUEST = 105,
+      TIME_HIGH_LEVEL_CHILDREN_MAPPED = 106,
+      TIME_HIGH_LEVEL_FINISH_TASK = 107,
+      TIME_HIGH_LEVEL_NOTIFY_START = 108,
+      TIME_HIGH_LEVEL_NOTIFY_FINISH = 109,
+      TIME_HIGH_LEVEL_EXECUTE_TASK = 110,
+      TIME_HIGH_LEVEL_SCHEDULER = 111,
+      TIME_HIGH_LEVEL_ISSUE_STEAL = 112,
+    };
+
     
     typedef LowLevel::Machine Machine;
     typedef LowLevel::RegionMetaDataUntyped LogicalHandle;
@@ -1072,6 +1088,7 @@ namespace RegionRuntime {
 							MapperID id, MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_REGION);
 #ifdef DEBUG_HIGH_LEVEL
       assert(mapper_objects[id] != NULL);
 #endif
@@ -1129,6 +1146,7 @@ namespace RegionRuntime {
     void HighLevelRuntime::destroy_logical_region(Context ctx, LogicalHandle handle)	
     //--------------------------------------------------------------------------------------------
     {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_DESTROY_REGION);
 #ifdef DEBUG_HIGH_LEVEL
       assert(ctx < all_tasks.size());
 #endif
@@ -1161,6 +1179,7 @@ namespace RegionRuntime {
                                             MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_PARTITION);
 #ifdef DEBUG_HIGH_LEVEL
       assert(mapper_objects[id] != NULL);
 #endif
@@ -1228,6 +1247,7 @@ namespace RegionRuntime {
                                             MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_PARTITION);
 #ifdef DEBUG_HIGH_LEVEL
       assert(mapper_objects[id] != NULL);
 #endif
@@ -1306,6 +1326,7 @@ namespace RegionRuntime {
                         MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_PARTITION);
 #ifdef DEBUG_HIGH_LEVEL
       assert(mapper_objects[id] != NULL);
       assert(ctx < all_tasks.size());
@@ -1374,6 +1395,7 @@ namespace RegionRuntime {
     void HighLevelRuntime::destroy_partition(Context ctx, Partition<T> partition)
     //--------------------------------------------------------------------------------------------
     {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_DESTROY_PARTITION);
 #ifdef DEBUG_HIGH_LEVEL
       assert(ctx < all_tasks.size());
 #endif
