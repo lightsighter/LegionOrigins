@@ -9,6 +9,8 @@ with 6 cores, and 2 NVIDIA Tesla C2070 GPUs.  The systems were running Linux
 with the standard OFED software stack, with GASnet using its ``ibv'' conduit
 to run directly on top.
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 \subsection{Circuit Simulator}
 
 The circuit simulator benchmark was designed to be representative of the
@@ -19,7 +21,8 @@ between neighboring nodes.  Careful partitioning of the system can minimize
 the amount of information that must be exchanged, but the irregularity of the
 underlying graph mandates similar irregularity in the sharing pattern.
 
-The structure of the circuit simulator was presented in section~\ref{sec:code_example}.  Our implementation uses CUDA to perform the computations on the GPU, and Legion
+The structure of the circuit simulator was presented in section~\ref{sec:ex}.
+Our implementation uses CUDA to perform the computations on the GPU, and Legion
 automatically handles the movement of data between the GPUs' memories and the
 system memory, but only when necessary.  In fact, with the help of an
 application-specific mapper, it is able to keep much of
@@ -37,6 +40,67 @@ perfect linear scaling would keep the bars flat in this graph.  The total
 overhead introduced by Legion is XX \% for the single-node case.
 shows a breakdown of the
 total amount of time spent 
+
+\pgfplotsset{every axis legend/.append style={
+  font=\tiny,
+  at={(0.02,0.98)},
+  anchor=north west}}
+
+
+\begin{figure}
+  \centering
+  \subfigure[Performance Scaling]{
+    \begin{tikzpicture}
+      \begin{axis}[xlabel=Number of Nodes,ylabel=Normalized Speedup,height=5cm,width=8.5cm,xtick={1,2,3,4}]
+        \addplot coordinates {
+% num gpus = 2
+  (1, 1.99)
+  (2, 3.46)
+  (3, 3.44)
+  (4, 5.90)
+        };
+        \addplot coordinates {
+% num gpus = 1
+  (1, 1.00)
+  (2, 1.86)
+  (3, 2.40)
+  (4, 3.41)
+        };
+      \legend{2 GPU/node,1 GPU/node}
+      \end{axis}
+    \end{tikzpicture}
+    \label{sfig:results1:perf}
+  }
+
+  \subtable[Execution Time Breakdown]{
+   \tiny
+    \begin{tabular}{c@{\hspace{2pt}}cD{.}{.}{3}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}}
+\toprule
+GPUs/ & \# \\
+node & nodes & \multicolumn{1}{c}{Wall Clock} & \multicolumn{1}{c}{Application} & \multicolumn{1}{c}{Copies} & \multicolumn{1}{c}{High-level} & \multicolumn{1}{c}{Low-level} & \multicolumn{1}{c}{Mapper} & \multicolumn{1}{c}{System} \\
+\midrule
+\multirow{4}{*}{$1$} & $1$ & 106.892 & 105.387 & 1.578 & 0.003 & 21.624 & 0 & 0\\
+ & $2$ & 57.388 & 105.407 & 10.348 & 0.003 & 15.177 & 0 & 0.001\\
+ & $3$ & 44.552 & 105.41 & 11.935 & 0.003 & 11.695 & 0 & 0.002\\
+ & $4$ & 31.368 & 105.42 & 12.875 & 0.004 & 8.419 & 0 & 0.003\\
+\midrule
+\multirow{4}{*}{$2$} & $1$ & 53.787 & 105.397 & 1.857 & 0.004 & 10.953 & 0 & 0\\
+ & $2$ & 30.923 & 105.415 & 10.716 & 0.004 & 7.937 & 0 & 0.002\\
+ & $3$ & 31.037 & 105.414 & 12.558 & 0.004 & 7.996 & 0 & 0.001\\
+ & $4$ & 18.103 & 105.42 & 13.747 & 0.004 & 4.638 & 0 & 0.003\\
+\bottomrule \\
+    \end{tabular}
+    \label{sfig:results1:timers}
+  }
+  \caption{Circuit Simulator Results}
+\end{figure}
+
+\pgfplotsset{every axis legend/.append style={
+  font=\tiny,
+  at={(0.02,0.98)},
+  anchor=north west}}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 \subsection{Fluid}
 
@@ -68,7 +132,106 @@ one of the ghose cells this task needs).
 Figure~\ref{sfig:results2:perf} shows the performance of the fluid benchmark
 relative to the serial Legion version.  MORE TEXT HERE.
 
-The bar chart in figure~\ref{sdif:results2:timers} shows MORE STUFF.
+The bar chart in figure~\ref{sfig:results2:timers} shows MORE STUFF.
+
+\begin{figure}
+  \centering
+  \subfigure[Performance Scaling]{
+    \begin{tikzpicture}
+      \begin{axis}[xlabel=Number of Nodes,ylabel=Normalized Speedup,height=5cm,width=8.5cm,xtick={1,2,3,4}]
+        \addplot coordinates {
+% 12 CPUs
+  (1, 5.29)
+  (2, 7.34)
+  (3, 7.30)
+  (4, 10.14)
+        };
+        \addplot coordinates {
+% 6 CPUs
+  (1, 4.51)
+  (2, 6.00)
+  (3, 6.57)
+  (4, 8.83)
+        };
+        \addplot coordinates {
+% 4 CPUs
+  (1, 3.36)
+  (2, 4.05)
+  (3, 5.86)
+  (4, 6.68)
+        };
+        \addplot coordinates {
+% 3 CPUs
+  (1, 2.58)
+  (2, 3.55)
+  (3, 4.35)
+  (4, 5.61)
+        };
+        \addplot coordinates {
+% 2 CPUs
+  (1, 1.83)
+  (2, 2.43)
+  (3, 3.48)
+  (4, 4.15)
+        };
+        \addplot coordinates {
+% 1 CPUs
+  (1, 1.00)
+  (2, 1.61)
+  (3, 1.87)
+  (4, 2.33)
+        };
+      \legend{12 CPU/node,6 CPU/node,4 CPU/node,3 CPU/node,2 CPU/node,1 CPU/node}
+      \end{axis}
+    \end{tikzpicture}
+    \label{sfig:results2:perf}
+  }
+
+  \subtable[Execution Time Breakdown]{
+   \tiny
+    \begin{tabular}{c@{\hspace{2pt}}cD{.}{.}{3}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}}
+\toprule
+GPUs/ & \# \\
+node & nodes & \multicolumn{1}{c}{Wall Clock} & \multicolumn{1}{c}{Application} & \multicolumn{1}{c}{Copies} & \multicolumn{1}{c}{High-level} & \multicolumn{1}{c}{Low-level} & \multicolumn{1}{c}{Mapper} & \multicolumn{1}{c}{System} \\
+\midrule
+\multirow{4}{*}{$1$} & $1$ & 40.718 & 38.486 & 0.008 & 0.996 & 0.544 & 0 & 0\\
+ & $2$ & 25.365 & 43.602 & 0.455 & 2.027 & 0.682 & 0 & 0.043\\
+ & $3$ & 21.808 & 49.256 & 0.513 & 2.377 & 0.765 & 0 & 0.06\\
+ & $4$ & 17.476 & 53.181 & 0.501 & 2.912 & 0.743 & 0 & 0.072\\
+\midrule
+\multirow{4}{*}{$2$} & $1$ & 22.289 & 38.55 & 0.009 & 1.694 & 0.68 & 0 & 0\\
+ & $2$ & 16.787 & 51.081 & 0.573 & 2.373 & 0.756 & 0 & 0.056\\
+ & $3$ & 11.706 & 49.502 & 0.733 & 2.661 & 0.749 & 0 & 0.072\\
+ & $4$ & 9.817 & 50.798 & 0.86 & 2.755 & 0.735 & 0 & 0.1\\
+\midrule
+\multirow{4}{*}{$3$} & $1$ & 15.799 & 38.507 & 0.01 & 2.056 & 0.765 & 0 & 0\\
+ & $2$ & 11.462 & 48.698 & 0.951 & 2.682 & 0.819 & 0 & 0.109\\
+ & $3$ & 9.363 & 50.786 & 1.282 & 2.976 & 0.767 & 0 & 0.081\\
+ & $4$ & 7.26 & 51.778 & 1.285 & 3.172 & 0.818 & 0 & 0.117\\
+\midrule
+\multirow{4}{*}{$4$} & $1$ & 12.11 & 39.296 & 0.011 & 2.17 & 0.827 & 0 & 0\\
+ & $2$ & 10.05 & 49.799 & 1.145 & 3.023 & 0.82 & 0 & 0.24\\
+ & $3$ & 6.951 & 51.216 & 1.367 & 3.137 & 0.798 & 0 & 0.12\\
+ & $4$ & 6.093 & 52.183 & 1.216 & 3.317 & 0.782 & 0 & 0.135\\
+\midrule
+\multirow{4}{*}{$6$} & $1$ & 9.031 & 40.265 & 0.013 & 2.536 & 0.969 & 0 & 0\\
+ & $2$ & 6.79 & 48.992 & 0.946 & 3.182 & 0.937 & 0 & 0.145\\
+ & $3$ & 6.199 & 51.904 & 1.061 & 3.752 & 0.909 & 0 & 0.185\\
+ & $4$ & 4.612 & 52.603 & 1.238 & 3.712 & 0.872 & 0 & 0.222\\
+\midrule
+\multirow{4}{*}{$12$} & $1$ & 7.704 & 45.959 & 0.03 & 4.01 & 1.765 & 0 & 0\\
+ & $2$ & 5.547 & 65.432 & 1.019 & 4.762 & 1.328 & 0 & 0.232\\
+ & $3$ & 5.577 & 68.74 & 1.059 & 5.922 & 1.384 & 0 & 0.322\\
+ & $4$ & 4.017 & 67.662 & 1.19 & 4.882 & 1.22 & 0 & 1.485\\
+\bottomrule \\
+    \end{tabular}
+    \label{sfig:results2:timers}
+  }
+
+  \caption{Fluid Results}
+\end{figure}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 \subsection{Tree Search}
 
@@ -100,417 +263,49 @@ relative to the single node with partitioning case. MORE TEXT HERE.
 
 \begin{figure}
   \centering
-  \subfigure[Relative Performance]{
+  \subfigure[Performance Scaling]{
     \begin{tikzpicture}
-      \begin{axis}[xlabel=Processors per Node,ylabel=Normalized Speedup,height=6cm]
+      \begin{axis}[xlabel=Number of Nodes,ylabel=Normalized Speedup,height=5cm,width=8.5cm,xtick={1,2,3,4}]
+        \addplot coordinates {
+% num gpus = 2
+  (1, 1.99)
+  (2, 3.46)
+  (3, 3.44)
+  (4, 5.90)
+        };
+        \addplot coordinates {
+% num gpus = 1
+  (1, 1.00)
+  (2, 1.86)
+  (3, 2.40)
+  (4, 3.41)
+        };
+      \legend{2 GPU/node,1 GPU/node}
       \end{axis}
     \end{tikzpicture}
-    \label{sfig:results1:perf}
+    \label{sfig:results3:perf}
   }
-  \subfigure[Execution Time Breakdown]{
-  \begin{tikzpicture}
-    \begin{axis}[ybar stacked,bar width=5pt,ylabel=Execution Time (in s)]
-    \addplot coordinates {
-(1, 25.66)
-(2, 32.59)
-(3, 35.77)
-(4, 36.65)
-(5, 25.37)
-(6, 31.58)
-(7, 34.19)
-(8, 36.09)
-(9, 25.42)
-(10, 31.70)
-(11, 34.03)
-(12, 35.56)
-(13, 28.66)
-(14, 32.38)
-(15, 33.93)
-(16, 37.31)
-(17, 26.26)
-(18, 34.34)
-(19, 35.18)
-(20, 36.33)
-(21, 31.12)
-(22, 36.91)
-(23, 38.96)
-(24, 41.52)
-(25, 31.35)
-(26, 45.08)
-(27, 46.56)
-(28, 47.01)
-};
-    \addplot coordinates {
-(1, 0.01)
-(2, 0.75)
-(3, 0.89)
-(4, 0.93)
-(5, 0.01)
-(6, 0.96)
-(7, 1.26)
-(8, 1.34)
-(9, 0.01)
-(10, 1.49)
-(11, 1.53)
-(12, 1.98)
-(13, 0.02)
-(14, 1.67)
-(15, 1.60)
-(16, 2.45)
-(17, 0.02)
-(18, 1.59)
-(19, 1.86)
-(20, 2.23)
-(21, 0.03)
-(22, 1.74)
-(23, 2.06)
-(24, 2.18)
-(25, 0.05)
-(26, 2.31)
-(27, 2.12)
-(28, 2.32)
-};
-    \addplot coordinates {
-(1, 0.59)
-(2, 2.09)
-(3, 4.30)
-(4, 6.02)
-(5, 1.31)
-(6, 3.83)
-(7, 7.17)
-(8, 10.96)
-(9, 2.08)
-(10, 5.24)
-(11, 11.38)
-(12, 14.28)
-(13, 2.59)
-(14, 7.40)
-(15, 13.45)
-(16, 19.04)
-(17, 3.66)
-(18, 13.03)
-(19, 23.48)
-(20, 28.21)
-(21, 8.68)
-(22, 16.42)
-(23, 34.34)
-(24, 46.12)
-(25, 11.02)
-(26, 32.69)
-(27, 60.49)
-(28, 87.13)
-};
-    \addplot coordinates {
-(1, 0.58)
-(2, 4.77)
-(3, 4.53)
-(4, 4.35)
-(5, 1.17)
-(6, 2.75)
-(7, 2.02)
-(8, 2.28)
-(9, 0.99)
-(10, 1.40)
-(11, 1.49)
-(12, 1.57)
-(13, 2.48)
-(14, 1.72)
-(15, 1.56)
-(16, 1.78)
-(17, 1.05)
-(18, 1.33)
-(19, 1.74)
-(20, 1.80)
-(21, 1.61)
-(22, 1.75)
-(23, 1.80)
-(24, 1.95)
-(25, 1.76)
-(26, 2.02)
-(27, 2.12)
-(28, 2.15)
-};
-    \addplot coordinates {
-(1, 0.00)
-(2, 0.00)
-(3, 0.00)
-(4, 0.00)
-(5, 0.00)
-(6, 0.00)
-(7, 0.00)
-(8, 0.00)
-(9, 0.00)
-(10, 0.00)
-(11, 0.00)
-(12, 0.00)
-(13, 0.00)
-(14, 0.00)
-(15, 0.00)
-(16, 0.00)
-(17, 0.00)
-(18, 0.00)
-(19, 0.00)
-(20, 0.00)
-(21, 0.00)
-(22, 0.00)
-(23, 0.00)
-(24, 0.00)
-(25, 0.00)
-(26, 0.00)
-(27, 0.00)
-(28, 0.00)
-};
-    \addplot coordinates {
-(1, 0.00)
-(2, 0.03)
-(3, 0.04)
-(4, 0.05)
-(5, 0.00)
-(6, 0.04)
-(7, 0.06)
-(8, 0.08)
-(9, 0.00)
-(10, 0.14)
-(11, 0.11)
-(12, 0.19)
-(13, 0.00)
-(14, 0.57)
-(15, 0.27)
-(16, 0.47)
-(17, 0.00)
-(18, 0.34)
-(19, 0.61)
-(20, 0.52)
-(21, 0.00)
-(22, 0.64)
-(23, 0.63)
-(24, 0.96)
-(25, 0.00)
-(26, 0.78)
-(27, 1.06)
-(28, 1.49)
-};
-    \legend{Application,Memory Copies,High-level,Low-level,Mapper,System}
-    \end{axis}
-  \end{tikzpicture}
-    \label{sfig:results1:timers}
+
+  \subtable[Execution Time Breakdown]{
+   \tiny
+    \begin{tabular}{c@{\hspace{2pt}}cD{.}{.}{3}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}}
+\toprule
+GPUs/ & \# \\
+node & nodes & \multicolumn{1}{c}{Wall Clock} & \multicolumn{1}{c}{Application} & \multicolumn{1}{c}{Copies} & \multicolumn{1}{c}{High-level} & \multicolumn{1}{c}{Low-level} & \multicolumn{1}{c}{Mapper} & \multicolumn{1}{c}{System} \\
+\midrule
+\multirow{4}{*}{$1$} & $1$ & 106.892 & 105.387 & 1.578 & 0.003 & 21.624 & 0 & 0\\
+ & $2$ & 57.388 & 105.407 & 10.348 & 0.003 & 15.177 & 0 & 0.001\\
+ & $3$ & 44.552 & 105.41 & 11.935 & 0.003 & 11.695 & 0 & 0.002\\
+ & $4$ & 31.368 & 105.42 & 12.875 & 0.004 & 8.419 & 0 & 0.003\\
+\midrule
+\multirow{4}{*}{$2$} & $1$ & 53.787 & 105.397 & 1.857 & 0.004 & 10.953 & 0 & 0\\
+ & $2$ & 30.923 & 105.415 & 10.716 & 0.004 & 7.937 & 0 & 0.002\\
+ & $3$ & 31.037 & 105.414 & 12.558 & 0.004 & 7.996 & 0 & 0.001\\
+ & $4$ & 18.103 & 105.42 & 13.747 & 0.004 & 4.638 & 0 & 0.003\\
+\bottomrule \\
+    \end{tabular}
+    \label{sfig:results3:timers}
   }
-  \caption{Circuit Simulator Results}
+  \caption{Tree Search Results}
 \end{figure}
 
-\begin{figure}
-  \centering
-  \begin{tikzpicture}
-    \begin{axis}[xlabel=Total Processors,ylabel=Normalized Speedup]
-    \end{axis}
-  \end{tikzpicture}
-  \caption{This is a caption}
-\end{figure}
-
-\begin{figure}
-  \centering
-  \begin{tikzpicture}
-    \begin{axis}[xlabel=Total Processors,ylabel=Normalized Speedup,xmin=0,xmax=24]
-    \end{axis}
-  \end{tikzpicture}
-  \caption{This is a caption}
-\end{figure}
-
-\begin{figure}
-  \centering
-  \begin{tikzpicture}
-    \begin{loglogaxis}[xlabel=Total Processors,ylabel=Normalized Speedup]
-    \end{loglogaxis}
-  \end{tikzpicture}
-  \caption{This is a caption}
-\end{figure}
-
-\begin{figure}
-  \centering
-  \begin{tikzpicture}
-    \begin{axis}[ybar stacked,bar width=5pt]
-    \addplot coordinates {
-(1, 25.66)
-(2, 32.59)
-(3, 35.77)
-(4, 36.65)
-(5, 25.37)
-(6, 31.58)
-(7, 34.19)
-(8, 36.09)
-(9, 25.42)
-(10, 31.70)
-(11, 34.03)
-(12, 35.56)
-(13, 28.66)
-(14, 32.38)
-(15, 33.93)
-(16, 37.31)
-(17, 26.26)
-(18, 34.34)
-(19, 35.18)
-(20, 36.33)
-(21, 31.12)
-(22, 36.91)
-(23, 38.96)
-(24, 41.52)
-(25, 31.35)
-(26, 45.08)
-(27, 46.56)
-(28, 47.01)
-};
-    \addplot coordinates {
-(1, 0.01)
-(2, 0.75)
-(3, 0.89)
-(4, 0.93)
-(5, 0.01)
-(6, 0.96)
-(7, 1.26)
-(8, 1.34)
-(9, 0.01)
-(10, 1.49)
-(11, 1.53)
-(12, 1.98)
-(13, 0.02)
-(14, 1.67)
-(15, 1.60)
-(16, 2.45)
-(17, 0.02)
-(18, 1.59)
-(19, 1.86)
-(20, 2.23)
-(21, 0.03)
-(22, 1.74)
-(23, 2.06)
-(24, 2.18)
-(25, 0.05)
-(26, 2.31)
-(27, 2.12)
-(28, 2.32)
-};
-    \addplot coordinates {
-(1, 0.59)
-(2, 2.09)
-(3, 4.30)
-(4, 6.02)
-(5, 1.31)
-(6, 3.83)
-(7, 7.17)
-(8, 10.96)
-(9, 2.08)
-(10, 5.24)
-(11, 11.38)
-(12, 14.28)
-(13, 2.59)
-(14, 7.40)
-(15, 13.45)
-(16, 19.04)
-(17, 3.66)
-(18, 13.03)
-(19, 23.48)
-(20, 28.21)
-(21, 8.68)
-(22, 16.42)
-(23, 34.34)
-(24, 46.12)
-(25, 11.02)
-(26, 32.69)
-(27, 60.49)
-(28, 87.13)
-};
-    \addplot coordinates {
-(1, 0.58)
-(2, 4.77)
-(3, 4.53)
-(4, 4.35)
-(5, 1.17)
-(6, 2.75)
-(7, 2.02)
-(8, 2.28)
-(9, 0.99)
-(10, 1.40)
-(11, 1.49)
-(12, 1.57)
-(13, 2.48)
-(14, 1.72)
-(15, 1.56)
-(16, 1.78)
-(17, 1.05)
-(18, 1.33)
-(19, 1.74)
-(20, 1.80)
-(21, 1.61)
-(22, 1.75)
-(23, 1.80)
-(24, 1.95)
-(25, 1.76)
-(26, 2.02)
-(27, 2.12)
-(28, 2.15)
-};
-    \addplot coordinates {
-(1, 0.00)
-(2, 0.00)
-(3, 0.00)
-(4, 0.00)
-(5, 0.00)
-(6, 0.00)
-(7, 0.00)
-(8, 0.00)
-(9, 0.00)
-(10, 0.00)
-(11, 0.00)
-(12, 0.00)
-(13, 0.00)
-(14, 0.00)
-(15, 0.00)
-(16, 0.00)
-(17, 0.00)
-(18, 0.00)
-(19, 0.00)
-(20, 0.00)
-(21, 0.00)
-(22, 0.00)
-(23, 0.00)
-(24, 0.00)
-(25, 0.00)
-(26, 0.00)
-(27, 0.00)
-(28, 0.00)
-};
-    \addplot coordinates {
-(1, 0.00)
-(2, 0.03)
-(3, 0.04)
-(4, 0.05)
-(5, 0.00)
-(6, 0.04)
-(7, 0.06)
-(8, 0.08)
-(9, 0.00)
-(10, 0.14)
-(11, 0.11)
-(12, 0.19)
-(13, 0.00)
-(14, 0.57)
-(15, 0.27)
-(16, 0.47)
-(17, 0.00)
-(18, 0.34)
-(19, 0.61)
-(20, 0.52)
-(21, 0.00)
-(22, 0.64)
-(23, 0.63)
-(24, 0.96)
-(25, 0.00)
-(26, 0.78)
-(27, 1.06)
-(28, 1.49)
-};
-    \legend{Application,Memory Copies,High-level,Low-level,Mapper,System}
-    \end{axis}
-  \end{tikzpicture}
-  \caption{This is a caption}
-\end{figure}

@@ -22,34 +22,34 @@
 \node(gn) at (7.3,0.5) { $g_{n-1}$ };
 
 \draw[xshift=3.5cm,yshift=3.5cm] (-1,0) -- (1,0)
-  node[pos=0.25,inner sep=0] {} edge (pvsf.north)
+  node(ptf)[pos=0.25,inner sep=0] {} edge (pvsf.north)
   node[pos=0.5,anchor=south east] {$*$}
-  node[pos=0.5,inner sep=0] {} edge (top.south)
-  node[pos=0.75,inner sep=0] {} edge (pvst.north)
+  node(ptp)[pos=0.5,inner sep=0] {} edge (top.south)
+  node(ptt)[pos=0.75,inner sep=0] {} edge (pvst.north)
   ;
 
 \draw[xshift=1.5cm,yshift=1.5cm] (-1,0) -- (1,0)
-  node[pos=0.2,inner sep=0] {} edge (p0.north)
-  node[pos=0.4,inner sep=0] {} edge (p1.north)
+  node(pp0)[pos=0.2,inner sep=0] {} edge (p0.north)
+  node(pp1)[pos=0.4,inner sep=0] {} edge (p1.north)
   node[pos=0.5,anchor=south east] {$*$}
-  node[pos=0.5,inner sep=0] {} edge (pvsf.250)
-  node[pos=0.8,inner sep=0] {} edge (pn.north)
+  node(ppp)[pos=0.5,inner sep=0] {} edge (pvsf.250)
+  node(ppn)[pos=0.8,inner sep=0] {} edge (pn.north)
   ;
 
 \draw[xshift=4cm,yshift=1.5cm] (-1,0) -- (1,0)
-  node[pos=0.2,inner sep=0] {} edge (s0.north)
-  node[pos=0.4,inner sep=0] {} edge (s1.north)
+  node(ps0)[pos=0.2,inner sep=0] {} edge (s0.north)
+  node(ps1)[pos=0.4,inner sep=0] {} edge (s1.north)
   node[pos=0.5,anchor=south east] {$*$}
-  node[pos=0.5,inner sep=0] {} edge (pvst.230)
-  node[pos=0.8,inner sep=0] {} edge (sn.north)
+  node(psp)[pos=0.5,inner sep=0] {} edge (pvst.230)
+  node(psn)[pos=0.8,inner sep=0] {} edge (sn.north)
   ;
 
 \draw[xshift=6.5cm,yshift=1.5cm] (-1,0) -- (1,0)
-  node[pos=0.2,inner sep=0] {} edge (g0.north)
-  node[pos=0.4,inner sep=0] {} edge (g1.north)
+  node(pg0)[pos=0.2,inner sep=0] {} edge (g0.north)
+  node(pg1)[pos=0.4,inner sep=0] {} edge (g1.north)
   node[pos=0.5,anchor=south east] {}
-  node[pos=0.5,inner sep=0] {} edge (pvst.310)
-  node[pos=0.8,inner sep=0] {} edge (gn.north)
+  node(pgp)[pos=0.5,inner sep=0] {} edge (pvst.310)
+  node(pgn)[pos=0.8,inner sep=0] {} edge (gn.north)
   ;
 }
 

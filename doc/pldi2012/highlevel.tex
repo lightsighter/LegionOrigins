@@ -248,7 +248,7 @@ regions for {\tt all\_nodes} and {\tt all\_wires}.  For conciseness we will only
 show the region tree for {\tt all\_nodes}.  At the start of the task, there exists
 a single abstract instance at the root node representing the valid set of physical
 instances from which sub tasks will be allowed to pull data.  The state of the
-system at this point can be observed in figure \ref{fig:circdep1}.
+system at this point can be observed in figure~\ref{sfig:mapping_fig:cnc}.
 
 When each of the {\tt compute\_new\_current} tasks are issued they must perform dependence
 analysis for two node regions.  In the {\tt private\_node} case they will first open
@@ -261,7 +261,7 @@ nodes since all the ghost nodes traverse a different sub region of the disjoint 
 {\tt p\_nodes\_pvs}.  There is also no dependence between any tasks even though the
 {\tt p\_ghost\_nodes} partition is aliased because all the ghost accesses are read-only.
 The state of the region tree after dependence analysis has been performed for the
-{\tt compute\_new\_current} nodes can be seen in figure \ref{fig:circdep2}.
+{\tt compute\_new\_current} nodes can be seen in figure~\ref{sfig:mapping_fig:dc}.
 
 In the second phase of the computation, all of the {\tt distribute\_charge} tasks
 will be issued.  For these tasks they will first analyze traverse the region tree
@@ -281,7 +281,7 @@ between each of the {\tt distribute\_charge} tasks on the ghost regions because
 the {\tt Simultaneous} coherence property permits multiple tasks to be using the same
 partition at the same time even if the subregions they are accessing are aliased.  The
 state of the region tree after dependence analysis for {\tt distribute\_charge} can
-be seen in figure \ref{fig:circdep3}.
+be seen in figure~\ref{sfig:mapping_fig:volt}.
 
 For the final phase of the computation, all of the {\tt update\_voltage} tasks
 are issued requiring their private node region and their shared node region.  Again
