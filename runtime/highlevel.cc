@@ -3453,6 +3453,7 @@ namespace RegionRuntime {
     void HighLevelRuntime::enqueue_tasks(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL);
       HighLevelRuntime::get_runtime(p)->process_tasks(args,arglen);
     }
 
@@ -3460,6 +3461,7 @@ namespace RegionRuntime {
     void HighLevelRuntime::steal_request(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL);
       HighLevelRuntime::get_runtime(p)->process_steal(args,arglen);
     }
 
@@ -3467,6 +3469,7 @@ namespace RegionRuntime {
     void HighLevelRuntime::children_mapped(const void *result, size_t result_size, Processor p)
     //--------------------------------------------------------------------------------------------
     {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL);
       HighLevelRuntime::get_runtime(p)->process_mapped(result, result_size);
     }
 
@@ -3474,6 +3477,7 @@ namespace RegionRuntime {
     void HighLevelRuntime::finish_task(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL);
       HighLevelRuntime::get_runtime(p)->process_finish(args, arglen);
     }
     
@@ -3481,6 +3485,7 @@ namespace RegionRuntime {
     void HighLevelRuntime::notify_start(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL);
       HighLevelRuntime::get_runtime(p)->process_notify_start(args, arglen);
     }
 
@@ -3488,6 +3493,7 @@ namespace RegionRuntime {
     void HighLevelRuntime::notify_finish(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL);
       HighLevelRuntime::get_runtime(p)->process_notify_finish(args, arglen);
     }
 
@@ -3495,6 +3501,7 @@ namespace RegionRuntime {
     void HighLevelRuntime::advertise_work(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL);
       HighLevelRuntime::get_runtime(p)->process_advertisement(args, arglen);
     }
 
@@ -3502,6 +3509,7 @@ namespace RegionRuntime {
     void HighLevelRuntime::detect_termination(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL);
       HighLevelRuntime::get_runtime(p)->process_termination(args, arglen);
     }
     
@@ -3513,6 +3521,7 @@ namespace RegionRuntime {
 					MapperID id, MappingTagID tag)	
     //--------------------------------------------------------------------------------------------
     {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL);
       log_task(LEVEL_DEBUG,"Registering task %d with high level runtime",task_id);
       TaskDescription *desc = get_available_description(false/*new tree*/);		
       desc->task_id = task_id;
@@ -3924,6 +3933,7 @@ namespace RegionRuntime {
       // First try launching from the ready queue
       while (!ready_queue.empty())
       {
+	DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL);
         TaskDescription *task = ready_queue.front();
         ready_queue.pop_front();
         // Check to see if this task has been chosen already
@@ -3987,8 +3997,10 @@ namespace RegionRuntime {
       // If we've made it here, we've run out of work to do on our local processor
       // so we need to issue a steal request to another processor
       // Check that we don't have any outstanding steal requests
-      if (!check_steal_requests()) 
+      if (!check_steal_requests()) {
+	DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL);
         issue_steal_requests(); 
+      }
     }
 
     //--------------------------------------------------------------------------------------------

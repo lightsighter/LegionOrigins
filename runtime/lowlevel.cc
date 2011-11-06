@@ -327,7 +327,246 @@ namespace RegionRuntime {
       REMOTE_COPY_MSGID,
       VALID_MASK_REQ_MSGID,
       VALID_MASK_DATA_MSGID,
+      ROLL_UP_TIMER_MSGID,
+      ROLL_UP_DATA_MSGID,
     };
+
+    // detailed timer stuff
+
+    struct TimerStackEntry {
+      int timer_kind;
+      double start_time;
+      double accum_child_time;
+    };
+
+    struct PerThreadTimerData {
+    public:
+      PerThreadTimerData(void)
+      {
+	thread = pthread_self();
+	gasnet_hsl_init(&mutex);
+      }
+
+      pthread_t thread;
+      std::list<TimerStackEntry> timer_stack;
+      std::map<int, double> timer_accum;
+      gasnet_hsl_t mutex;
+    };
+
+    gasnet_hsl_t timer_data_mutex = GASNET_HSL_INITIALIZER;
+    std::vector<PerThreadTimerData *> timer_data;
+    __thread PerThreadTimerData *thread_timer_data;
+    
+#ifdef DETAILED_TIMING
+    /*static*/ void DetailedTimer::clear_timers(void)
+    {
+      // take global mutex because we need to walk the list
+      AutoHSLLock l1(timer_data_mutex);
+      for(std::vector<PerThreadTimerData *>::iterator it = timer_data.begin();
+	  it != timer_data.end();
+	  it++) {
+	// take each thread's data's lock too
+	AutoHSLLock l2((*it)->mutex);
+	(*it)->timer_accum.clear();
+      }
+    }
+
+    /*static*/ void DetailedTimer::push_timer(int timer_kind)
+    {
+      if(!thread_timer_data) {
+	//printf("creating timer data for thread %lx\n", pthread_self());
+	AutoHSLLock l1(timer_data_mutex);
+	thread_timer_data = new PerThreadTimerData;
+	timer_data.push_back(thread_timer_data);
+      }
+
+      // no lock needed here - only our thread touches the stack
+      TimerStackEntry entry;
+      entry.timer_kind = timer_kind;
+      struct timespec ts;
+      clock_gettime(CLOCK_MONOTONIC, &ts);
+      entry.start_time = (1.0 * ts.tv_sec + 1e-9 * ts.tv_nsec);
+      entry.accum_child_time = 0;
+      thread_timer_data->timer_stack.push_back(entry);
+    }
+	
+    /*static*/ void DetailedTimer::pop_timer(void)
+    {
+      if(!thread_timer_data) {
+	printf("got pop without initialized thread data!?\n");
+	exit(1);
+      }
+
+      // no conflicts on stack
+      TimerStackEntry old_top = thread_timer_data->timer_stack.back();
+      thread_timer_data->timer_stack.pop_back();
+
+      struct timespec ts;
+      clock_gettime(CLOCK_MONOTONIC, &ts);
+      double elapsed = (1.0 * ts.tv_sec + 1e-9 * ts.tv_nsec) - old_top.start_time;
+
+      // all the elapsed time is added to new top as child time
+      if(thread_timer_data->timer_stack.size() > 0)
+	thread_timer_data->timer_stack.back().accum_child_time += elapsed;
+
+      // only the elapsed minus our own child time goes into the timer accumulator
+      elapsed -= old_top.accum_child_time;
+
+      // we do need a lock to touch the accumulator map
+      if(old_top.timer_kind > 0) {
+	AutoHSLLock l1(thread_timer_data->mutex);
+
+	std::map<int,double>::iterator it = thread_timer_data->timer_accum.find(old_top.timer_kind);
+	if(it != thread_timer_data->timer_accum.end())
+	  it->second += elapsed;
+	else
+	  thread_timer_data->timer_accum.insert(std::make_pair<int,double>(old_top.timer_kind, elapsed));
+      }
+    }
+#endif
+
+    class MultiNodeRollUp {
+    public:
+      MultiNodeRollUp(std::map<int,double>& _timers);
+
+      void execute(void);
+
+      void handle_data(const void *data, size_t datalen);
+
+    protected:
+      gasnet_hsl_t mutex;
+      std::map<int,double> *timerp;
+      int count_left;
+    };
+
+    struct RollUpRequestArgs {
+      int sender;
+      void *rollup_ptr;
+    };
+
+    void handle_roll_up_request(RollUpRequestArgs args);
+
+    typedef ActiveMessageShortNoReply<ROLL_UP_TIMER_MSGID,
+				      RollUpRequestArgs,
+				      handle_roll_up_request> RollUpRequestMessage;
+
+    void handle_roll_up_data(void *rollup_ptr, const void *data, size_t datalen)
+    {
+      ((MultiNodeRollUp *)rollup_ptr)->handle_data(data, datalen);
+    }
+
+    typedef ActiveMessageMediumNoReply<ROLL_UP_DATA_MSGID,
+				       void *,
+				       handle_roll_up_data> RollUpDataMessage;
+
+    void handle_roll_up_request(RollUpRequestArgs args)
+    {
+      std::map<int,double> timers;
+      DetailedTimer::roll_up_timers(timers, true);
+
+      double return_data[200];
+      int count = 0;
+      for(std::map<int,double>::iterator it = timers.begin();
+	  it != timers.end();
+	  it++) {
+	*(int *)(&return_data[count]) = it->first;
+	return_data[count+1] = it->second;
+	count += 2;
+      }
+      RollUpDataMessage::request(args.sender, args.rollup_ptr,
+				 return_data, count*sizeof(double));
+    }
+
+    MultiNodeRollUp::MultiNodeRollUp(std::map<int,double>& _timers)
+      : timerp(&_timers)
+    {
+      gasnet_hsl_init(&mutex);
+      count_left = 0;
+    }
+
+    void MultiNodeRollUp::execute(void)
+    {
+      count_left = gasnet_nodes()-1;
+
+      RollUpRequestArgs args;
+      args.sender = gasnet_mynode();
+      args.rollup_ptr = this;
+      for(int i = 0; i < gasnet_nodes(); i++)
+	if(i != gasnet_mynode())
+	  RollUpRequestMessage::request(i, args);
+
+      // we can look at counter without the lock
+      while(count_left > 0)
+	gasnet_AMPoll();
+    }
+
+    void MultiNodeRollUp::handle_data(const void *data, size_t datalen)
+    {
+      // have to take mutex here since we're updating shared data
+      AutoHSLLock a(mutex);
+
+      const double *p = (const double *)data;
+      int count = datalen / (2 * sizeof(double));
+      for(int i = 0; i < count; i++) {
+	int kind = *(int *)(&p[2*i]);
+	double accum = p[2*i+1];
+
+	std::map<int,double>::iterator it = timerp->find(kind);
+	if(it != timerp->end())
+	  it->second += accum;
+	else
+	  timerp->insert(std::make_pair<int,double>(kind,accum));
+      }
+
+      count_left--;
+    }
+
+#ifdef DETAILED_TIMING
+    /*static*/ void DetailedTimer::roll_up_timers(std::map<int, double>& timers,
+						  bool local_only)
+    {
+      // TODO: actually incorporate other gasnet nodes!
+      // take global mutex because we need to walk the list
+      AutoHSLLock l1(timer_data_mutex);
+      for(std::vector<PerThreadTimerData *>::iterator it = timer_data.begin();
+	  it != timer_data.end();
+	  it++) {
+	// take each thread's data's lock too
+	AutoHSLLock l2((*it)->mutex);
+
+	for(std::map<int,double>::iterator it2 = (*it)->timer_accum.begin();
+	    it2 != (*it)->timer_accum.end();
+	    it2++) {
+	  std::map<int,double>::iterator it3 = timers.find(it2->first);
+	  if(it3 != timers.end())
+	    it3->second += it2->second;
+	  else
+	    timers.insert(*it2);
+	}
+      }
+
+      // get data from other nodes if requested
+      if(!local_only) {
+	MultiNodeRollUp mnru(timers);
+	mnru.execute();
+      }
+    }
+
+    /*static*/ void DetailedTimer::report_timers(bool local_only /*= false*/)
+    {
+      std::map<int,double> timers;
+      
+      roll_up_timers(timers, local_only);
+
+      printf("DETAILED TIMING SUMMARY:\n");
+      for(std::map<int,double>::iterator it = timers.begin();
+	  it != timers.end();
+	  it++) {
+	printf("%4d - %7.3f s\n", it->first, it->second);
+      }
+      printf("END OF DETAILED TIMING SUMMARY\n");
+    }
+#endif
 
 #if 0
 
@@ -788,6 +1027,7 @@ namespace RegionRuntime {
 
     void handle_valid_mask_request(ValidMaskRequestArgs args)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       RegionMetaDataUntyped::Impl *r_impl = args.region.impl();
 
       assert(r_impl->valid_mask);
@@ -818,6 +1058,7 @@ namespace RegionRuntime {
 
     void handle_valid_mask_data(ValidMaskDataArgs args, const void *data, size_t datalen)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       RegionMetaDataUntyped::Impl *r_impl = args.region.impl();
 
       assert(r_impl->valid_mask);
@@ -1011,6 +1252,7 @@ namespace RegionRuntime {
 
     void handle_event_trigger(Event event)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       log_event(LEVEL_DEBUG, "Remote trigger of event %x/%d!", event.id, event.gen);
       event.impl()->trigger(event.gen, false);
     }
@@ -1024,6 +1266,7 @@ namespace RegionRuntime {
 
     bool Event::has_triggered(void) const
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       if(!id) return true; // special case: NO_EVENT has always triggered
       Event::Impl *e = Runtime::get_runtime()->get_event_impl(*this);
       return e->has_triggered(gen);
@@ -1167,6 +1410,7 @@ namespace RegionRuntime {
     // creates an event that won't trigger until all input events have
     /*static*/ Event Event::merge_events(const std::set<Event>& wait_for)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       return Event::Impl::merge_events(wait_for);
     }
 
@@ -1174,11 +1418,13 @@ namespace RegionRuntime {
 					 Event ev3 /*= NO_EVENT*/, Event ev4 /*= NO_EVENT*/,
 					 Event ev5 /*= NO_EVENT*/, Event ev6 /*= NO_EVENT*/)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       return Event::Impl::merge_events(ev1, ev2, ev3, ev4, ev5, ev6);
     }
 
     /*static*/ UserEvent UserEvent::create_user_event(void)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       Event e = Event::Impl::create_event();
       assert(e.id != 0);
       UserEvent u;
@@ -1189,6 +1435,7 @@ namespace RegionRuntime {
 
     void UserEvent::trigger(void) const
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       impl()->trigger(gen, true);
       //Runtime::get_runtime()->get_event_impl(*this)->trigger();
     }
@@ -1365,6 +1612,7 @@ namespace RegionRuntime {
 
     /*static*/ void /*Lock::Impl::*/handle_lock_request(LockRequestArgs args)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       Lock::Impl *impl = args.lock.impl();
 
       log_lock(LEVEL_DEBUG, "lock request: lock=%x, node=%d, mode=%d",
@@ -1423,11 +1671,13 @@ namespace RegionRuntime {
 
     /*static*/ void /*Lock::Impl::*/handle_lock_release(LockReleaseArgs args)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       assert(0);
     }
 
     void handle_lock_grant(LockGrantArgs args, const void *data, size_t datalen)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       log_lock(LEVEL_DEBUG, "lock request granted: lock=%x mode=%d mask=%lx",
 	       args.lock.id, args.mode, args.remote_waiter_mask);
 
@@ -1702,6 +1952,7 @@ namespace RegionRuntime {
     Event Lock::lock(unsigned mode /* = 0 */, bool exclusive /* = true */,
 		     Event wait_on /* = Event::NO_EVENT */) const
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       //printf("LOCK(%x, %d, %d, %x) -> ", id, mode, exclusive, wait_on.id);
       // early out - if the event has obviously triggered (or is NO_EVENT)
       //  don't build up continuation
@@ -1739,6 +1990,7 @@ namespace RegionRuntime {
     // releases a held lock - release can be deferred until an event triggers
     void Lock::unlock(Event wait_on /* = Event::NO_EVENT */) const
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       // early out - if the event has obviously triggered (or is NO_EVENT)
       //  don't build up continuation
       if(wait_on.has_triggered()) {
@@ -1751,6 +2003,7 @@ namespace RegionRuntime {
     // Create a new lock, destroy an existing lock
     /*static*/ Lock Lock::create_lock(void)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       // TODO: figure out if it's safe to iterate over a vector that is
       //  being resized?
       AutoHSLLock a(Runtime::runtime->nodes[gasnet_mynode()].mutex);
@@ -1804,6 +2057,7 @@ namespace RegionRuntime {
 
     off_t handle_remote_mem_alloc(RemoteMemAllocArgs args)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       //printf("[%d] handling remote alloc of size %zd\n", gasnet_mynode(), args.size);
       off_t result = args.memory.impl()->alloc_bytes(args.size);
       //printf("[%d] remote alloc will return %d\n", gasnet_mynode(), result);
@@ -2190,6 +2444,7 @@ namespace RegionRuntime {
 
     CreateAllocatorResp handle_create_allocator(CreateAllocatorArgs args)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       CreateAllocatorResp resp;
       resp.a = args.m.impl()->create_allocator(args.r, args.bytes_needed);
       resp.mask_start = StaticAccess<RegionAllocatorUntyped::Impl>(resp.a.impl())->mask_start;
@@ -2234,6 +2489,7 @@ namespace RegionRuntime {
 
     CreateInstanceResp handle_create_instance(CreateInstanceArgs args)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       CreateInstanceResp resp;
       resp.i = args.m.impl()->create_instance(args.r, args.bytes_needed);
       //resp.inst_offset = resp.i.impl()->locked_data.offset; // TODO: Static
@@ -2928,6 +3184,7 @@ namespace RegionRuntime {
 
     void Event::wait(void) const
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       if(!id) return;  // special case: never wait for NO_EVENT
       Event::Impl *e = Runtime::get_runtime()->get_event_impl(*this);
 
@@ -2952,7 +3209,7 @@ namespace RegionRuntime {
       }
       // we're probably screwed here - try waiting and polling gasnet while
       //  we wait
-      printf("waiting on event, polling gasnet to hopefully not die\n");
+      //printf("waiting on event, polling gasnet to hopefully not die\n");
       while(!e->has_triggered(gen))
 	gasnet_AMPoll();
       return;
@@ -2963,6 +3220,7 @@ namespace RegionRuntime {
     void handle_spawn_task_message(SpawnTaskArgs args,
 				   const void *data, size_t datalen)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       Processor::Impl *p = args.proc.impl();
       log_task(LEVEL_DEBUG, "remote spawn request: proc_id=%x task_id=%d event=%x/%d",
 	       args.proc.id, args.func_id, args.start_event.id, args.start_event.gen);
@@ -3007,6 +3265,7 @@ namespace RegionRuntime {
 			   //std::set<RegionInstanceUntyped> instances_needed,
 			   Event wait_on) const
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       Processor::Impl *p = impl();
       Event finish_event = Event::Impl::create_event();
       p->spawn_task(func_id, args, arglen, //instances_needed, 
@@ -3196,6 +3455,7 @@ namespace RegionRuntime {
 
     /*static*/ RegionMetaDataUntyped RegionMetaDataUntyped::create_region_untyped(size_t num_elmts, size_t elmt_size)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       // find an available ID
       std::vector<RegionMetaDataUntyped::Impl *>& metadatas = Runtime::runtime->nodes[gasnet_mynode()].metadatas;
 
@@ -3226,6 +3486,7 @@ namespace RegionRuntime {
 
     /*static*/ RegionMetaDataUntyped RegionMetaDataUntyped::create_region_untyped(RegionMetaDataUntyped parent, const ElementMask &mask)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       // find an available ID
       std::vector<RegionMetaDataUntyped::Impl *>& metadatas = Runtime::runtime->nodes[gasnet_mynode()].metadatas;
 
@@ -3259,6 +3520,7 @@ namespace RegionRuntime {
 
     RegionAllocatorUntyped RegionMetaDataUntyped::create_allocator_untyped(Memory memory) const
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       ID id(memory);
 
       // we have to calculate the number of bytes needed in case the request
@@ -3277,7 +3539,7 @@ namespace RegionRuntime {
 
     RegionInstanceUntyped RegionMetaDataUntyped::create_instance_untyped(Memory memory) const
     {
-      
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);      
       ID id(memory);
 
       Memory::Impl *m_impl = Runtime::runtime->get_memory_impl(memory);
@@ -3297,6 +3559,7 @@ namespace RegionRuntime {
 
     void RegionMetaDataUntyped::destroy_allocator_untyped(RegionAllocatorUntyped allocator) const
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       log_meta(LEVEL_INFO, "allocator destroyed: region=%x id=%x",
 	       this->id, allocator.id);
       Memory::Impl *m_impl = StaticAccess<RegionAllocatorUntyped::Impl>(allocator.impl())->memory.impl();
@@ -3305,6 +3568,7 @@ namespace RegionRuntime {
 
     void RegionMetaDataUntyped::destroy_instance_untyped(RegionInstanceUntyped instance) const
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       log_meta(LEVEL_INFO, "instance destroyed: region=%x id=%x",
 	       this->id, instance.id);
       instance.impl()->memory.impl()->destroy_instance(instance, true);
@@ -3312,6 +3576,7 @@ namespace RegionRuntime {
 
     const ElementMask &RegionMetaDataUntyped::get_valid_mask(void)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       // for now, just hand out the valid mask for the master allocator
       //  and hope it's accessible to the caller
       RegionMetaDataUntyped::Impl *r_impl = impl();
@@ -3592,11 +3857,13 @@ namespace RegionRuntime {
 
     unsigned RegionAllocatorUntyped::alloc_untyped(unsigned count /*= 1*/) const
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       return impl()->alloc_elements(count);
     }
 
     void RegionAllocatorUntyped::free_untyped(unsigned ptr, unsigned count /*= 1  */) const
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       return impl()->free_elements(ptr, count);
     }
 
@@ -3724,6 +3991,8 @@ namespace RegionRuntime {
 						       size_t bytes_to_copy,
 						       Event after_copy /*= Event::NO_EVENT*/)
     {
+      DetailedTimer::ScopedPush sp(TIME_COPY);
+
       RegionInstanceUntyped::Impl *src_impl = src.impl();
       RegionInstanceUntyped::Impl *tgt_impl = target.impl();
 
@@ -3733,6 +4002,7 @@ namespace RegionRuntime {
       Memory::Impl *src_mem = src_impl->memory.impl();
       Memory::Impl *tgt_mem = tgt_impl->memory.impl();
 
+#ifdef USE_MASKED_COPIES
       // get valid masks from regions
       RegionMetaDataUntyped::Impl *src_reg = src_data->region.impl();
       RegionMetaDataUntyped::Impl *tgt_reg = tgt_data->region.impl();
@@ -3780,6 +4050,7 @@ namespace RegionRuntime {
 
       ElementMask *src_mask = src_reg->valid_mask;
       ElementMask *tgt_mask = tgt_reg->valid_mask;
+#endif
 
 #if 0
       ElementMask::Enumerator src_ranges(*src_mask, 0, 1);
@@ -3811,6 +4082,7 @@ namespace RegionRuntime {
 	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->offset, bytes_to_copy);
 	      assert(tgt_ptr != 0);
 
+#ifdef USE_MASKED_COPIES
 	      ElementMask::Enumerator src_ranges(*src_mask, 0, 1);
 	      ElementMask::Enumerator tgt_ranges(*tgt_mask, 0, 1);
 	      int src_pos, src_len, tgt_pos, tgt_len;
@@ -3851,11 +4123,15 @@ namespace RegionRuntime {
 		  src_len -= to_copy;
 		  tgt_len -= to_copy;
 		}
+#else
+	      memcpy(tgt_ptr, src_ptr, bytes_to_copy);
+#endif
 	    }
 	    break;
 
 	  case Memory::Impl::MKIND_GASNET:
 	    {
+#ifdef USE_MASKED_COPIES
 	      ElementMask::Enumerator src_ranges(*src_mask, 0, 1);
 	      ElementMask::Enumerator tgt_ranges(*tgt_mask, 0, 1);
 	      int src_pos, src_len, tgt_pos, tgt_len;
@@ -3897,7 +4173,9 @@ namespace RegionRuntime {
 		  src_len -= to_copy;
 		  tgt_len -= to_copy;
 		}
-	      //tgt_mem->put_bytes(tgt_data->offset, src_ptr, bytes_to_copy);
+#else
+	      tgt_mem->put_bytes(tgt_data->offset, src_ptr, bytes_to_copy);
+#endif
 	    }
 	    break;
 
@@ -3931,6 +4209,7 @@ namespace RegionRuntime {
 	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->offset, bytes_to_copy);
 	      assert(tgt_ptr != 0);
 
+#ifdef USE_MASKED_COPIES
 	      ElementMask::Enumerator src_ranges(*src_mask, 0, 1);
 	      ElementMask::Enumerator tgt_ranges(*tgt_mask, 0, 1);
 	      int src_pos, src_len, tgt_pos, tgt_len;
@@ -3972,7 +4251,9 @@ namespace RegionRuntime {
 		  src_len -= to_copy;
 		  tgt_len -= to_copy;
 		}
-	      //src_mem->get_bytes(src_data->offset, tgt_ptr, bytes_to_copy);
+#else
+	      src_mem->get_bytes(src_data->offset, tgt_ptr, bytes_to_copy);
+#endif
 	    }
 	    break;
 
@@ -3981,6 +4262,7 @@ namespace RegionRuntime {
 	      const unsigned BLOCK_SIZE = 64 << 10;
 	      unsigned char temp_block[BLOCK_SIZE];
 
+#ifdef USE_MASKED_COPIES
 	      ElementMask::Enumerator src_ranges(*src_mask, 0, 1);
 	      ElementMask::Enumerator tgt_ranges(*tgt_mask, 0, 1);
 	      int src_pos, src_len, tgt_pos, tgt_len;
@@ -4016,7 +4298,7 @@ namespace RegionRuntime {
 		  {
 		    size_t bytes_copied = 0;
 		    while(bytes_copied < amount) {
-		      size_t chunk_size = bytes_to_copy - bytes_copied;
+		      size_t chunk_size = amount - bytes_copied;
 		      if(chunk_size > BLOCK_SIZE) chunk_size = BLOCK_SIZE;
 
 		      src_mem->get_bytes(offset + src_data->offset + bytes_copied, temp_block, chunk_size);
@@ -4030,8 +4312,7 @@ namespace RegionRuntime {
 		  src_len -= to_copy;
 		  tgt_len -= to_copy;
 		}
-
-#if 0
+#else
 	      size_t bytes_copied = 0;
 	      while(bytes_copied < bytes_to_copy) {
 		size_t chunk_size = bytes_to_copy - bytes_copied;
@@ -4134,6 +4415,7 @@ namespace RegionRuntime {
 
     void handle_remote_copy(RemoteCopyArgs args)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       log_copy.info("received remote copy request: src=%x tgt=%x before=%x/%d after=%x/%d",
 		    args.source.id, args.target.id,
 		    args.before_copy.id, args.before_copy.gen,
@@ -4161,6 +4443,7 @@ namespace RegionRuntime {
     Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, 
 						 Event wait_on /*= Event::NO_EVENT*/)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       RegionInstanceUntyped::Impl *src_impl = impl();
       RegionInstanceUntyped::Impl *dst_impl = target.impl();
       Memory::Impl *src_mem = src_impl->memory.impl();
@@ -4270,6 +4553,7 @@ namespace RegionRuntime {
 						 const ElementMask &mask,
 						 Event wait_on /*= Event::NO_EVENT*/)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       assert(0);
     }
 
@@ -4568,6 +4852,7 @@ namespace RegionRuntime {
 
     void node_announce_handler(Machine::NodeAnnounceData annc_data, const void *data, size_t datalen)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       log_annc.info("%d: received announce from %d (%d procs, %d memories)\n", gasnet_mynode(), annc_data.node_id, annc_data.num_procs, annc_data.num_memories);
       Node *n = &(Runtime::get_runtime()->nodes[annc_data.node_id]);
       n->processors.resize(annc_data.num_procs);
@@ -4703,6 +4988,8 @@ namespace RegionRuntime {
       hcount += RemoteCopyMessage::add_handler_entries(&handlers[hcount]);
       hcount += ValidMaskRequestMessage::add_handler_entries(&handlers[hcount]);
       hcount += ValidMaskDataMessage::add_handler_entries(&handlers[hcount]);
+      hcount += RollUpRequestMessage::add_handler_entries(&handlers[hcount]);
+      hcount += RollUpDataMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage2::add_handler_entries(&handlers[hcount]);
 

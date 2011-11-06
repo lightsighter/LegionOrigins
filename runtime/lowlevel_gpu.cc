@@ -270,6 +270,7 @@ namespace RegionRuntime {
 
       virtual void execute(void)
       {
+	DetailedTimer::ScopedPush sp(TIME_COPY);
 	log_gpu.info("gpu memcpy: dst=%p src=%p bytes=%zd kind=%d",
 		     dst, src, bytes, kind);
 	fflush(stdout);
@@ -295,6 +296,7 @@ namespace RegionRuntime {
 
       virtual void execute(void)
       {
+	DetailedTimer::ScopedPush sp(TIME_COPY);
 	log_gpu.info("gpu memcpy generic: gpuptr=%p mem=%x offset=%zd bytes=%zd kind=%d",
 		     gpu_ptr, memory->me.id, mem_offset, bytes, kind);
 	const size_t BUFFER_SIZE = 65536;

@@ -13,6 +13,8 @@ using namespace RegionRuntime::HighLevel;
 
 #define TOP_LEVEL_TASK_ID   TASK_ID_REGION_MAIN 
 
+#define NO_SYNC_AFTER_KERNELS
+
 enum {
   TASKID_LOAD_CIRCUIT = TASK_ID_AVAILABLE,
   TASKID_CALC_NEW_CURRENTS,
@@ -261,6 +263,7 @@ public:
 					     MappingTagID tag,
 					     std::vector<Memory> &ranking)
   {
+    DetailedTimer::ScopedPush sp(TIME_MAPPER);
     //log_mapper("mapper: ranking initial region locations (%zd,%zd,%d)\n",
     //	       elmt_size, num_elmts, tag);
     //Mapper::rank_initial_region_locations(elmt_size, num_elmts, tag, ranking);
@@ -274,6 +277,7 @@ public:
 						MappingTagID tag,
 						std::vector<std::vector<Memory> > &rankings)
   {
+    DetailedTimer::ScopedPush sp(TIME_MAPPER);
     //    log_mapper("mapper: ranking initial partition locations (%zd,%d,%d)\n",
     //	       elmt_size, num_subregions, tag);
     //Mapper::rank_initial_partition_locations(elmt_size, num_subregions,
@@ -288,6 +292,7 @@ public:
   virtual bool compact_partition(const UntypedPartition &partition, 
 				 MappingTagID tag)
   {
+    DetailedTimer::ScopedPush sp(TIME_MAPPER);
     //    log_mapper("mapper: compact partition? (%d)\n",
     //	   tag);
     //return Mapper::compact_partition(partition, tag);
@@ -298,6 +303,7 @@ public:
 
   virtual Processor select_initial_processor(const Task *task)
   {
+    DetailedTimer::ScopedPush sp(TIME_MAPPER);
     //    log_mapper("mapper: select initial processor (%p)\n", task);
 
     switch(task->task_id) {
@@ -347,6 +353,7 @@ public:
 
   virtual Processor target_task_steal(void)
   {
+    DetailedTimer::ScopedPush sp(TIME_MAPPER);
     //log_mapper("mapper: select target of task steal\n");
     //return Mapper::target_task_steal();
 
@@ -358,6 +365,7 @@ public:
 				 const std::vector<const Task*> &tasks,
 				 std::set<const Task*> &to_steal)
   {
+    DetailedTimer::ScopedPush sp(TIME_MAPPER);
     //Mapper::permit_task_steal(thief, tasks, to_steal);
 
     // no stealing - leave 'to_steal' set empty
@@ -383,6 +391,7 @@ public:
 			       Memory &chosen_src,
 			       std::vector<Memory> &dst_ranking)
   {
+    DetailedTimer::ScopedPush sp(TIME_MAPPER);
     log_mapper.info("mapper: mapping region for task (%p,%p) region=%x/%x", task, req, req->handle.id, req->parent.id);
     int idx = -1;
     for(unsigned i = 0; i < task->regions.size(); i++)
@@ -526,6 +535,7 @@ public:
 				 const std::vector<Memory> &current_instances,
 				 std::vector<std::vector<Memory> > &future_ranking)
   {
+    DetailedTimer::ScopedPush sp(TIME_MAPPER);
     log_mapper.info("mapper: ranking copy targets (%p)\n", task);
     Mapper::rank_copy_targets(task, current_instances, future_ranking);
   }
@@ -534,6 +544,7 @@ public:
 				  const std::vector<Memory> &current_instances,
 				  const Memory &dst, Memory &chosen_src)
   {
+    DetailedTimer::ScopedPush sp(TIME_MAPPER);
     // easy case: if there's only 1 valid choice, pick it
     if(current_instances.size() == 1) {
       chosen_src = *(current_instances.begin());
@@ -723,6 +734,7 @@ void top_level_task(const void *args, size_t arglen,
   printf("STARTING MAIN SIMULATION LOOP\n");
   struct timespec ts_start, ts_end;
   clock_gettime(CLOCK_MONOTONIC, &ts_start);
+  DetailedTimer::clear_timers();
 
   // main loop
   for(int i = 0; i < Config::num_loops; i++) {
@@ -807,6 +819,7 @@ void top_level_task(const void *args, size_t arglen,
   double sim_time = ((1.0 * (ts_end.tv_sec - ts_start.tv_sec)) +
 		     (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
   printf("ELAPSED TIME = %7.3f s\n", sim_time);
+  DetailedTimer::report_timers();
 
   log_app.info("all done!");
 }
@@ -1115,6 +1128,9 @@ void calc_new_currents_task(const void *args, size_t arglen,
 				    inst_rw_pvt.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>(),
 				    inst_rn_pvt.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>(),
 					       inst_rn_pvt.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>());
+#ifdef SYNC_AFTER_KERNELS
+  cudaDeviceSynchronize(); // for getting proper timing numbers
+#endif
 				  
 					       //				    inst_rn_ghost.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>());
 
@@ -1181,6 +1197,9 @@ void distribute_charge_task(const void *args, size_t arglen,
 				  
 				    inst_rn_pvt.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>());
 				    //inst_rn_ghost.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>());
+#ifdef SYNC_AFTER_KERNELS
+  cudaDeviceSynchronize(); // for getting proper timing numbers
+#endif
 
   log_app.debug("Done with distribute_charge()\n");
 }
@@ -1231,7 +1250,9 @@ void update_voltages_task(const void *args, size_t arglen,
 				  inst_rn_pvt.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>(),
 				  
 				  inst_rn_shr.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>());
-
+#ifdef SYNC_AFTER_KERNELS
+  cudaDeviceSynchronize(); // for getting proper timing numbers
+#endif
 
   log_app.debug("Done with update_voltages()\n");
 }

@@ -78,6 +78,7 @@ namespace RegionRuntime {
     typedef LowLevel::UserEvent UserEvent;
     typedef LowLevel::Lock Lock;
     typedef LowLevel::ElementMask Mask;
+    typedef LowLevel::DetailedTimer DetailedTimer;
     typedef unsigned int Color;
     typedef unsigned int MapperID;
     typedef unsigned int Context;
@@ -835,7 +836,11 @@ namespace RegionRuntime {
       arglen -= sizeof(Context);
       
       // Invoke the task with the given context
-      T return_value = (*TASK_PTR)((const void*)arg_ptr, arglen, regions, ctx, runtime);
+      T return_value;
+      {
+	DetailedTimer::ScopedPush sp(TIME_KERNEL);
+	return_value = (*TASK_PTR)((const void*)arg_ptr, arglen, regions, ctx, runtime);
+      }
 
       // Send the return value back
       runtime->end_task(ctx, (void*)(&return_value), sizeof(T));
@@ -859,7 +864,10 @@ namespace RegionRuntime {
       arglen -= sizeof(Context);
       
       // Invoke the task with the given context
-      (*TASK_PTR)((const void*)arg_ptr, arglen, regions, ctx, runtime);
+      {
+	DetailedTimer::ScopedPush sp(TIME_KERNEL);
+	(*TASK_PTR)((const void*)arg_ptr, arglen, regions, ctx, runtime);
+      }
 
       // Send an empty return value back
       runtime->end_task(ctx, NULL, 0); 
@@ -907,11 +915,17 @@ namespace RegionRuntime {
         {
           fast_regions.push_back(it->convert());
         }
-        return_value = (*FAST_TASK_PTR)((const void*)arg_ptr, arglen, fast_regions, ctx, runtime);
+	{
+	  DetailedTimer::ScopedPush sp(TIME_KERNEL);
+	  return_value = (*FAST_TASK_PTR)((const void*)arg_ptr, arglen, fast_regions, ctx, runtime);
+	}
       }
       else
       {
-        return_value = (*SLOW_TASK_PTR)((const void *)arg_ptr, arglen, regions, ctx, runtime);
+	{
+	  DetailedTimer::ScopedPush sp(TIME_KERNEL);
+	  return_value = (*SLOW_TASK_PTR)((const void *)arg_ptr, arglen, regions, ctx, runtime);
+	}
       }
 
       // Send the return value back
@@ -958,10 +972,14 @@ namespace RegionRuntime {
         {
           fast_regions.push_back(it->convert());
         }
-        (*FAST_TASK_PTR)((const void*)arg_ptr, arglen, fast_regions, ctx, runtime);
+	{
+	  DetailedTimer::ScopedPush sp(TIME_KERNEL);
+	  (*FAST_TASK_PTR)((const void*)arg_ptr, arglen, fast_regions, ctx, runtime);
+	}
       }
       else
       {
+	DetailedTimer::ScopedPush sp(TIME_KERNEL);
         (*SLOW_TASK_PTR)((const void *)arg_ptr, arglen, regions, ctx, runtime);
       }
 

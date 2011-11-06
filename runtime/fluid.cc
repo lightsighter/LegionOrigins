@@ -479,6 +479,7 @@ void main_task(const void *args, size_t arglen,
   struct timespec ts_start, ts_end;
   std::list<Future> futures;
   clock_gettime(CLOCK_MONOTONIC, &ts_start);
+  DetailedTimer::clear_timers();
 
   int cur_buffer = 0;  // buffer we're generating on this pass
   // Run the simulation
@@ -613,6 +614,7 @@ void main_task(const void *args, size_t arglen,
   double sim_time = ((1.0 * (ts_end.tv_sec - ts_start.tv_sec)) +
 		     (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
   printf("ELAPSED TIME = %7.3f s\n", sim_time);
+  DetailedTimer::report_timers();
 
   log_app.info("all done!");
 

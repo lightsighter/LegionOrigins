@@ -9,6 +9,19 @@
 
 #include "common.h"
 
+// outside of namespace because 50-letter-long enums are annoying
+enum {
+  TIME_NONE,
+  TIME_KERNEL,
+  TIME_COPY,
+  TIME_HIGH_LEVEL,
+  TIME_LOW_LEVEL,
+  TIME_MAPPER,
+  TIME_SYSTEM,
+};
+
+#define NO_DETAILED_TIMING
+
 namespace RegionRuntime {
   namespace LowLevel {
     // widget for generating debug/info messages
@@ -132,6 +145,30 @@ namespace RegionRuntime {
 	}
 	return index;
       }
+    };
+
+    class DetailedTimer {
+    public:
+#ifdef DETAILED_TIMING
+      static void clear_timers(void);
+      static void push_timer(int timer_kind);
+      static void pop_timer(void);
+      static void roll_up_timers(std::map<int, double>& timers, bool local_only);
+      static void report_timers(bool local_only = false);
+#else
+      static void clear_timers(void) {}
+      static void push_timer(int timer_kind) {}
+      static void pop_timer(void) {}
+      static void roll_up_timers(std::map<int, double>& timers, bool local_only) {}
+      static void report_timers(bool local_only = false) {}
+#endif
+
+      class ScopedPush {
+      public:
+	ScopedPush(int timer_kind) { push_timer(timer_kind); }
+	~ScopedPush(void) { pop_timer(); }
+      };
+
     };
 
     // forward class declarations because these things all refer to each other
