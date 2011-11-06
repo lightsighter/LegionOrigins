@@ -6,8 +6,8 @@ three benchmarks were developed and run on a small cluster under a variety
 of configurations.  The cluster consists of four systems connected by a 40~Gb/s
 Infiniband fabric.  Each system is powered by 2 Intel Xeon X5680 CPUs, each
 with 6 cores, and 2 NVIDIA Tesla C2070 GPUs.  The systems were running Linux
-with the standard OFED software stack, with GASnet using its ``ibv'' conduit
-to run directly on top.
+with GASNet using the {\tt ibv} conduit to interface directly with the standard
+OFED software stack for low-latency access to the Infiniband hardware.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -21,7 +21,7 @@ between neighboring nodes.  Careful partitioning of the system can minimize
 the amount of information that must be exchanged, but the irregularity of the
 underlying graph mandates similar irregularity in the sharing pattern.
 
-The structure of the circuit simulator was presented in section~\ref{sec:ex}.
+The structure of the circuit simulator was presented in Section~\ref{sec:ex}.
 Our implementation uses CUDA to perform the computations on the GPU, and Legion
 automatically handles the movement of data between the GPUs' memories and the
 system memory, but only when necessary.  In fact, with the help of an
@@ -31,15 +31,28 @@ Figure~\ref{sfig:results1:perf} shows the relative speedup as the simulation is
 spread over multiple nodes in the cluster.  The size of the circuit
 being simulated is not changed as the node count increases.  This is therefore
 a demonstration of ``strong scaling''.  Adding a second node to the simulation
-speeds it up by 77\%, and with four nodes, the simulation is sped up by a total
-of 216\% (i.e. a factor of 3.16x).
+speeds it up by 86\%, and with four nodes, the simulation is sped up by a total
+of 241\% (i.e. a factor of 3.41x).  When enabling the use of both GPUs in each
+node (a decision that requires no changes to the application), the we achieve
+a speedup of 5.90x when using all eight GPUs.
 
-The bar graph in figure~\ref{sfig:results1:timers} breaks down the simulation's
-run time by where it was spent.  The times are summed over all threads, so 
-perfect linear scaling would keep the bars flat in this graph.  The total
-overhead introduced by Legion is XX \% for the single-node case.
-shows a breakdown of the
-total amount of time spent 
+The dip in the performance graph for the 6 GPU case is an artifact of the
+application code's decision to partition the circuit into 8 pieces.  The
+current runtime interface does not allow the application to make queries
+regarding the machine configuration, so it is not able to adapt to
+configurations that differ from the initial design target.  The Legion runtime
+will always guarantee correct execution, but performance can suffer if the
+tasks provided by the application do not divide evenly over the machine.
+
+Table\~ref{sfig:results1:timers} breaks down the execution time by where it was
+spent.  The times are summed over all threads, so the aggregate execution time
+will always exceed the elapsed wall clock time.  The time spent in the 
+application code is nearly constant in all configurations, but the time spent
+copying data jumps as soon as the simulation is spread across multiple nodes.
+This is not unexpected, and while the the overhead is responsible for the
+less-than-linear performance scaling, the slow growth in the absolute overhead
+(after the initial jump) suggests that larger clusters would enjoy additional
+speedup, even without increasing the size of the problem being tackled.
 
 \pgfplotsset{every axis legend/.append style={
   font=\tiny,
@@ -105,34 +118,61 @@ node & nodes & \multicolumn{1}{c}{Wall Clock} & \multicolumn{1}{c}{Application} 
 \subsection{Fluid}
 
 To show that Legion remains efficient for regular partitioning cases as well,
-we have implemented a particle simulation benchmark, based heavily on the
-{\tt fluidanimate} benchmark from the PARSEC suite.  The simulation uses a
-cyclic 2D grid of cells instead of PARSEC's 3D grid with boundaries, and 
-The fluid benchmark used here differs slightly from the PARSEC version.  It
-uses a 2D grid of cells instead of a 3D grid, but the computations being 
-performed are preserved.
+we have implemented a particle simulation benchmark based heavily on the
+{\tt fluidanimate} benchmark from the PARSEC \cite{bienia11benchmarking} suite.
+Our simulation uses a cyclic 2D grid of cells instead of PARSEC's 3D grid with
+boundaries, but the computations being performed are preserved.
 Although the 
 simulation is moving and colliding individual particles, those particles
-are placed in cells that make up a regular grid, and the time steps and grid
-sizes are chosen carefully to ensure that a particle can only interact with
-particles in the same cell or in one immediately adjacent.  The grid is
+are placed in cells that make up a regular grid.  The grid is
 divided into blocks to be processed by individual threads, with only the
 particles in the edge cells being of interest to other threads.  The PARSEC
 implementation uses fine-grained locking and the assumption of cache
-coherence to access neighboring particles, but neither of these are available
-across a cluster.  Our fluid benchmark replaces these accesses with rings of
+coherence to access neighboring particles, but neither of these are conducive
+to performance scaling across a cluster.  Our fluid benchmark replaces these
+accesses with rings of
 explicit edge, or \emph{ghost}, cells that are exchanged between adjacent
-blocks several times in each iteration.  The capturing of these inter-block
+blocks several times per iteration.  The capturing of these inter-block
 interactions through edge cells and the partitioning of those cells into
-subregions shoulds the runtime the ability to schedule data movement in
-advance and do a more precise enforcement of ordering constraints (e.g.
-requiring a task to wait only for the tasks in the previous pass that computed
-one of the ghose cells this task needs).
+subregions provides the runtime the ability to schedule data movement in
+advance and perform a more precise enforcement of the ordering
+constraints necessary for correctness (e.g.
+requiring a task to wait only for the subset of tasks in the previous pass 
+that computed one of the ghost cells being read by this task).
 
-Figure~\ref{sfig:results2:perf} shows the performance of the fluid benchmark
-relative to the serial Legion version.  MORE TEXT HERE.
+Figure~\ref{sfig:results2:perf} shows the throughput of the fluid benchmark when
+run on various subsets of the CPUs and nodes in the cluster.  Performance is
+normalized with respect to the serial execution case.  As in the circuit
+simulation case, the same size problem is used for all runs, and we see 
+speedups of up to 10.14x when using the entire cluster (a total of 48 CPUs).
+The execution time breakdown in Table~\ref{sfig:results2:timers} shows some
+differences in scaling behavior compared to the circuit simulation.  The time
+spent performing copies is much smaller on absolute scale, but shows the same
+large step when leaving a single node, but then relative insensitivity to the
+number of nodes.  This indicates that the runtime is able to send data only to
+the task that needs it rather than having to perform conservative broadcasts of
+data to maintain consistency.
 
-The bar chart in figure~\ref{sfig:results2:timers} shows MORE STUFF.
+A more qualitative difference between the two simulations is that fluid shows
+significant variability in the time spent in the application code, and there
+are two separate issues at work.  First, the runtime is taking advantage of
+the CPU's ability to perform RDMA operations to place some of the shared data
+in the remotely-accessible memory windows provided by GASNet.  Although access
+to this memory is significantly slower than accesses to a node's system memory,
+being able to avoid copies entirely in some cases is a net win.
+
+The second significant jump in application time is when using all 12 CPUs in
+each node.  With application tasks running on all the available CPU cores,
+there are no ``extra'' cores for running the OS, device drivers, and the like.
+For example, GASNet's low-latency implementation counts on a CPU core being
+available for 
+a thread to spin on message arrival notifications.  Allowing that thread to
+sleep (and then wait for the OS rescheduling delay) degrades system performance
+much more than the penalty being observed in our fluid simulation.  Now that
+one can generally count on having many CPU cores in any new system, it might
+make sense to reserve one (or more) in the low-level runtime for background
+tasks like these in order to provide more predictable performance on the CPU
+cores that are exposed to the high-level runtime.
 
 \begin{figure}
   \centering
