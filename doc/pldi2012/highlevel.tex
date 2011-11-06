@@ -8,16 +8,19 @@ The high level runtime system operates on top of the
 low-level runtime which hides machine specific details
 and is described in detail in section \ref{sec:lowlevel}.
 
-The biggest challenge to a implementing the high level
+The biggest challenge to implementing the high level
 runtime is to avoid the latencies associated with distributed
 memory systems and deep memory hierarchies.  To aid
-in this battle, the high level runtime employs two useful 
-scheduling techniques.  The first useful technique was proved
+in solving this problem, the high level runtime employs two useful 
+scheduling techniques.  The first technique was proved
 in section \ref{sec:exec}: all scheduling decisions for a
 task can be made locally in the context in which the
-task was created.  The second technique is a deferred execution
-model that allows the runtime to hide the latencies associated
-with moving data through deep memory hierarchies.
+task was created.  The second technique is a {\em deferred execution model} 
+that allows the runtime to hide the latencies associated
+with moving data through deep memory hierarchies.  A
+deffered execution model decouples the issuing of operations
+from when they are actually performed.  This model is supported
+by features in the low-level runtime that are discussed in section \ref{sec:lowlevel}.
 
 %The high-level runtime is responsible for guaranteeing the semantics 
 %of programs written in the Legion programming model while at the same
@@ -38,7 +41,7 @@ which they are scheduled, but only in the order in which dependences
 are expressed.  To orchestrate the execution of Legion
 programs in this environment the high-level runtime is architected
 in a manner similar to an out-of-order hardware processor, but at
-a coarser granularity with task corresponding to instructions and
+a coarser granularity with tasks corresponding to instructions and
 regions corresponding to registers.  There are multiple stages to 
 executing a task which allows the runtime to extract
 as much task-level parallelism as possible from an application whithin
@@ -51,7 +54,7 @@ details of how each stage of task execution is performed.
 The first step in the execution of a task is dependence analysis.  When
 a task is registered with the high level runtime the task call includes
 information about both the logical regions that the task will require
-when it is executed as well as the read-write permissions and coherence properties
+when it is executed as well as the read-write privileges and coherence properties
 for each of the regions.  The runtime uses this information to perform
 dependence detection with each of the previous tasks that have been registered
 in the same context.  Dependence detection only needs to be performed at
@@ -63,13 +66,11 @@ is used to perform dependence detection in section \ref{subsec:depdetect}.
 Section \ref{subsec:dataflow} describes how data is versioned correctly
 during deffered execution.  For concreteness we describe how dependence
 analysis is performed for the circuit simulation from section \ref{sec:ex}.
-
 %When performing dependence analysis the runtime relies on its knowledge about
 %the relationships between logical regions and partitions.  We first describe
 %the the components to dependence analysis in sections \ref{subsec:regiontree},
 %\ref{subsec:cohdep}, and \ref{absinsts}.  We then describe the algorithm for performing 
 %dependence analysis on this data structures in section \ref{subsec:depdetect}.
-
 %\subsubsection{Region Trees}
 %\label{subsec:regiontree}
 %To detect dependences between the tasks, the runtime leverages its knowledge
@@ -84,15 +85,14 @@ analysis is performed for the circuit simulation from section \ref{sec:ex}.
 %partitions of that logical region.  Similarly a partition node represents 
 %a specific partitioning of a logical region and keeps track of the logical regions 
 %which are subregions of the partition.  
-
-\subsubsection{Dependencies From Coherence Properties}
+\subsubsection{Dependencies From Coherence and Privileges}
 \label{subsec:cohdep}
 To detect dependencies between any two tasks using a logical region, we leverage
-the information contained in the permission and cohrence properties provided by the
+the information contained in the privileges and cohrence properties provided by the
 task call.  Dependency checks are performed pair-wise between regions
 to determine whether one task depends on the other.  When checking for
-dependencies we first examine the permission.  If both tasks are reads, then 
-there is never a dependence.  If at least one of them is a write we use table
+dependencies we first examine the region privileges.  If both tasks have reads privileges, then 
+there is never a dependence.  If at least one task has write privileges we use table
 \ref{tab:depsdetect} to determine whether there is a dependence.
 \begin{center}
 \begin{table}
@@ -103,7 +103,7 @@ Atomic       & Dep & Same & Cont & Cont \\ \hline
 Simultaneous & Dep & Cont & Same & None \\ \hline
 Relaxed      & Dep & Cont & None & None \\ \hline
 \end{tabular}
-\caption{Dependence detection cases when at least one access is a write. {\tt Dep}
+\caption{Dependence detection cases when at least one access has a write privilege. {\tt Dep}
 indicates a dependence is detected.  {\tt Same} indicates a dependence is detected
 only if the task uses different instances.  {\tt Cont} means that the dependence
 is contingent upon the permissions.  {\tt None} means there will never
@@ -161,7 +161,7 @@ to the registers listed in an instruction and the goal of the high level
 runtime is to detect the same dependences and use them to enforce scheudling constraints
 upon a task.  However, there is a catch to this analogy: in the Legion programming
 model two different logical regions are not necessarily independent from each other.  In
-order to do the dependence detection we rely on the forest of regions to be
+order to perform dependence detection we rely on knowledge of the forest of regions to be
 able to detect dependences between tasks which require different logical regions.
 
 To perform dependence detection, we first find the {\em root region} for the 
@@ -171,24 +171,26 @@ down the region tree from the root region to the node
 for the requested region.  At each node, we determine if any potential dependences exist.
 Determining whether dependencies exist involves checking information both about the current
 node being visited as well as whether there are any potential dependences farther down
-in the region tree.  We now describe the decision procedure performed at both region
-nodes and partition nodes in the region trees.
+in the region tree.  
 
-For region nodes, we begin by checking if there are any tasks actively using the logical
-region which we depend.  We determine this using the coherence dependence analysis described 
-in section \ref{cohdep}.  For each dependence that is found, we record that the previous
-task must have completed prior to the start of the task we are registering.  After performing
+When traversing a region node, we begin by checking if there are any tasks actively using
+the node.  We determine this using the pair-wise dependence analysis described 
+in section \ref{cohdep} to detect dependences between the region we are looking for and the
+region represented by the current node.  For each dependence that is found, we record that the previous
+task must have completed prior to the start of the task we are registering.  
+
+After performing
 dependence analysis we then check if there is an open partition which may contain additional
 dependencies.  If the open partition is the partition we intend to traverse then we
 simply continue the traversal.  However, if the partition we want is not open then we must
-first {\em close} up any open partition and then open the partition we are going to
-traverse.  The act of closing a partition involves traversing the region tree and recording
-all active tasks as dependences.  The reason for this is that we have no disjointness
+first {\em close} up any open partition.   The act of closing a partition 
+involves traversing the region tree and recording
+all active tasks as dependences.  The reason for closing a partition is that we have no disjointness
 information about tasks that use different partitions and therefore to be safe must register
 all task touching subregions as dependences.  After closing any open partitions, we
-can then open the partition on our path and continue the traversal.
+can then open the partition on our path and continue the traversal. 
 
-When we reach our target logical region we again perform the coherence dependence analysis.
+When we reach our target logical region we again perform the pair-wise dependence analysis.
 We also close up any open partitions as they might contain tasks which could contain
 a dependence.  If our task was dependent on all of the previous active tasks in a region
 we say that our task was a {\em dominator} of all the previous active tasks.  We can
@@ -198,16 +200,16 @@ through the dominator task.  If our task is not a dominator task, then we simply
 it to the list of active tasks making it possible for future task registrations to detect
 it as a dependence.
 
-When traversing partition nodes we perform a similar, but less complicated analysis.  There
+When traversing partition nodes we perform a similar, but less expensive analysis.  There
 are two cases to consider for partition nodes: disjoint partitions and aliased partitions.
 In the case of disjoint partitions, we simply open the subregion that we intend to traverse
-and then traverse it.  This is correct because we know by definition that any two logical
+and then traverse it.  This is correct because we know by definition that any two 
 subregions in a disjoint partition are disjoint and therefore a dependence can never exits
 between them.
 
 For aliased partitions we have to perform an additional dependence analysis.  At every
 aliased partition node we maintain a list of tasks active in all of the subregions.  We
-perform a coherence dependence analysis between every pair of tasks regardless of the subregion
+perform a pair-wise dependence analysis between every pair of tasks regardless of the subregion
 they are accessing to see if a dependence could exist.  We do this regardless of the subregion
 because we have no disjointness information in an aliased partition.  If there are any
 potential dependences, we close up all the subregions and then open the subregion required.  If
@@ -216,44 +218,58 @@ of active tasks, and continue the traversal.  Allowing multiple open subregions 
 partition is safe because we performed an analysis between all active tasks regardless of
 whether the particular subregions were aliased or not.
 
-\subsubsection{Implicit Dataflow Construction}
+\subsubsection{Managing Data Versions}
 \label{subsec:dataflow}
-In addition to computing the dependences between tasks, we also have to compute the version
-of data that a task is permitted to use when it goes to execute.
-It is insufficient to simply record the producer task as there
-may be multiple active tasks for a logical region, all of which may produce different physical
-instances.  In addition, it is likely that the producer tasks have not been mapped
-yet which makes it impossible to know the set of physical instances from which to pull data.
+One aspect of the deffered execution model is that it allows dependence analysis to run
+ahead of the actual execution of tasks.  As a result the runtime must maintain information
+about which {\em physical instances} of a logical region a task is allowed to use when executing.
+A physical instance is a copy of the data in a logical region.  There can be multiple
+physical instances of a logical region.  It is the responsibility of the high level runtime
+to ensure tasks use instances corresponding to the appropriate version of data.
 
-To solve this problem we create the notion of an {\em abstract instance}.  An abstract instance
-is a place holder for the set of physical instances from which a task can choose to pull
-data when it creates its own physical instances before executing.  For each region in
+%In addition to computing the dependences between tasks, we also have to compute the version
+%of data that a task is permitted to use when it goes to execute since the computation.
+%It is insufficient to simply record the producer task as there
+%may be multiple active tasks for a logical region, all of which may produce different physical
+%instances.  In addition, it is likely that the producer tasks have not been mapped
+%yet which makes it impossible to know the set of physical instances from which to pull data.
+
+In an out-of-order processor this problem is solved by register-renaming which maps logical
+registers to a larger set of physical registers.  Our solution employs a similar technique
+that maps logical regions to a larger set of {\em abstract instances}.  An abstract instance
+is a place holder for the set of physical instances which a task will reference.  We call these
+abstract instances because we may not know the actual physical instances until a task's predecessors
+are mapped as described in section \ref{subsec:mapping}.  For each region in
 a task we record the source and destination abstract instances that correspond to the physical
 instances from which a task will read its input data and then place its output data.
-When the task is mapped as described in section \ref{subsec:mapping} we will update these
-abstract instances with the actual physical instances chosen.
+%When the task is mapped as described in section \ref{subsec:mapping} we will update these
+%abstract instances with the actual physical instances chosen.
 
 To determine the source and destination abstract instances of a region, we keep track of 
-the previous abstract instances that were observed on the way to our target region node
-when performing dependence analysis.  These abstract instances describe the set of physical
-instances from which valid data for our task can be chosen when it is mapped.  If a region
-subtree must be closed then all the abstract instances in that subtree are marked closed
-so no additional tasks can register them as sources.  We can also chose to create a new
-abstract instance to replace a currently valid abstract instance to avoid a WAR dependence.
-By creating an abstract instance we will force the mapper to choose a different physical
-instance from the existing ones when mapping is performed.
+the previous valid abstract instances that were observed while traversing the region tree
+during dependence analysis.  Every region node in the region tree that has active tasks
+has a valid abstract instance.  Every time we close a region tree we close all the valid
+abstract instances.  When a node is reopened it must then create a new abstract instance
+to reflect that new physical instances must be created.
+%If a region
+%subtree must be closed then all the abstract instances in that subtree are marked closed
+%so no additional tasks can register them as sources.  We can also chose to create a new
+%abstract instance to replace a currently valid abstract instance to avoid a WAR dependence.
+%By creating an abstract instance we will force the mapper to choose a different physical
+%instance from the existing ones when mapping is performed.
 
 Abstract instances correspond to a dynamic construction of the dataflow graph.  Each abstract
 instance is a node in the dataflow graph corresponding to a specific version of a logical 
 region and its instantiations as physical regions.  Tasks are then edges between abstract
 instances indicating operations on different versions of data.  By computing this information
 during dependence detection, we can record it before tasks begin executing out of order allowing
-us to guarantee program correctness in the presence of out of order task execution.  Continuing
-the analogy with out-of-order processors, this implicit construction of the dataflow graph
-is annalogous to register renaming which is done in order, but allows the processor to remove
-WAR dependences and execute instructions in parallel that may have had false dependences.
+us to guarantee program correctness.  
+%Continuing
+%the analogy with out-of-order processors, this implicit construction of the dataflow graph
+%is annalogous to register renaming which is done in order, but allows the processor to remove
+%WAR dependences and execute instructions in parallel that may have had false dependences.
 
-\subsubsection{Putting It All Together: Circuit Example}
+\subsubsection{Circuit Execution Example}
 \label{subsec:cirdependence}
 To illustrate concretely how dependence analysis works, we describe the steps for
 performing dependence analysis for running circuit example.  When the {\tt simulate\_circuit}
