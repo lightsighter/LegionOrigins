@@ -32,7 +32,7 @@ result from partitioning ($a \prec b$ if $a$ was a result of a partitioning of
 $b$), the more general anywhere-in-the-subregion-tree relationship ($a \le b$ if $a$ equals $b$ or is either a direct or indirect subregion), and equality (or
 inequality) of integer expressions.  More complicated constraints can be formed
 through conjunctions, but neither negation nor disjunctions are permitted.  For
-an example of how these work, here is the typing rule for reading an element
+an example of how these work, below is the typing rule for reading an element
 from a region:
 
 \begin{center}
@@ -55,7 +55,7 @@ from a region:
 \end{center}
 
 This rule tells us that in order to read from a pointer, we must be able to
-provide a region ($r_2$ in this case) for which we possess read privilege that 
+provide a region ($r_2$ in this case) for which we possess a read privilege that 
 is known to either be, or contain, the region to which the pointer is
 constrained.  Similar rules exist for the other four region access operations.
 
@@ -109,7 +109,7 @@ introduces a fresh region variable for each region that was bound in the
 quantification.  The fresh region variables are substitued into the region
 relaionship's type, and a corresponding substituion is performed on the
 constraints that were captured by the region relationship.  These substituted
-constraints are added to the current function's (flow-sensitive) constraints.
+constraints are added to the current task's (flow-sensitive) constraints.
 
 Packing an expression into a region relationship works in reverse.  If the type
 of an expression can be unified with the region relationship's type and the
@@ -121,7 +121,7 @@ Although the type system uses explicit packing and unpacking operations, they
 are implicit in the Legion application code.  Unpacking operations are 
 automatically inserted whenever a variable comes into scope.  Packing operations
 are attemped whenever a variable is written to memory or passed as an argument
-to a function.  Additionally, the simultaneous assignment operation essentially
+to a task.  Additionally, the simultaneous assignment operation essentially
 performs a pack for the result of the assignments and will also perform an
 unpack if one ore more fields of the structure are left unchanged.
 
@@ -156,11 +156,11 @@ C & ::= & (r_1 \prec r_2) \\
 \end{table}
 
 Region access privileges cannot be stored or packed.  Instead, they follow the
-function call tree, and it is this property that allows the runtime to make
+task call tree, and it is this property that allows the runtime to make
 its scheduling decisions in a distributed way.  The original source of any
 privilege for a given region is the \emph{newrr} operation that created that
 region, but the way in which privileges can be provided to a subtask, or
-returned to a parent task, is described in the function application rule:
+returned to a parent task, is described in the task application rule:
 
 \begin{center}
 \begin{math}
@@ -187,10 +187,10 @@ returned to a parent task, is described in the function application rule:
 \end{math}
 \end{center}
 
-In this rule, expression $e_1$ has the type of a Legion function.  In addition
-to the function's input and output types, it specifies the privileges and
-constraints that must exist at the point where the function is called.  It also
+In this rule, expression $e_1$ has the type of a Legion task.  In addition
+to the task's input and output types, it specifies the privileges and
+constraints that must exist at the point where the task is called.  It also
 describes the privileges and constraints that exist as post-conditions of the
-function invocation.  The output type, privileges, and constraints can be
-captured in an existential quantification, allowing a function to return one
+task invocation.  The output type, privileges, and constraints can be
+captured in an existential quantification, allowing a task to return one
 or more regions that were previously unknown to the caller.
