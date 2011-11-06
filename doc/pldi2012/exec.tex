@@ -31,7 +31,7 @@ There are four kinds of names: functions $f$, regions $r$, local
 variables $x$, and partitions $p$.  A function takes only regions as
 arguments and a function body consists of an ordered list of
 statements.  The core language has no permissions or coherence annotations
-on functions; for simplicity, in this section we consider only exclusive access in the case
+on functions; for simplicity, in this section we simply use exclusive access in the case
 that a function writes a region.  The statement $f(r_1,\ldots,r_n)$ calls a function, which
 is executed for its effects on the region arguments.  The statement $x
 = \deref r$ reads a value from region $r$ and stores it in local
@@ -74,7 +74,7 @@ cases $r$ and $r'$ cannot be proven disjoint using $\rleq$.
 %is most appropriate for discussing our runtime system.
 
 A program is a list of functions, with the entry point the first
-function on the list.  We further require that every function (except
+function on the list.  We require that every function (except
 the entry point) is called in exactly one place and that the formal
 parameters are named identically to the actual parameters in the
 call.  Further, local variables, new region names and
@@ -103,11 +103,11 @@ The sets of regions read and written by statements are defined as follows:
 In all other cases the read/write set is empty (e.g., $\rread{\deref r = x} = \emptyset$).
 
 The {\em sequential execution order} is the canonical order in which reads, writes, and partitions of regions are performed.
-Th sequential order is obtained by inlining all function calls---repeatedly
+The sequential order is obtained by inlining all function calls---repeatedly
 replace function calls $g(r_1,\ldots,r_n)$ by their function bodies until the entry function contains no function calls.
 The order of statements in the entry function is then the sequential execution order. 
-Two programs $P_1$ and $P_2$ are equivalent, written $P_1 \equiv P_2$, if starting in the same initial states they halt in
-the same final states when evaluated in the sequential execution order.
+Two programs $P_1$ and $P_2$ are equivalent, written $P_1 \equiv P_2$, if starting in the same initial state they halt in
+the same final state when evaluated in the sequential execution order.
 
 Consider the following program, where reads, writes, and partitions are numbered in the sequential execution order:
 {\small 
@@ -175,12 +175,12 @@ target instruction-level dataflow parallelism is both too fine-grain
 and incurs too much communication, as we must compute a global
 dependence graph across the entire program.  In Legion we use a
 different notion of what can be executed in parallel that works at the
-granularity of functions and also requires only local reasoning.  We
+granularity of functions and also requires analysis only within a function body.  We
 first need a few additional definitions.  Define $\context{s}$ to be
 the function call statement that invokes the function in which
 statement $s$ occurs (here we assume some way of distinguishing
 identical statements that occur in different functions).  Let
-$\interval{f}$ to be the set of statements executed by the one call to
+$\interval{f}$ be the set of statements executed by the one call to
 function $f$ and all the functions $f$ transitively calls; we define
 $\interval{s} = \{ s \}$ for any statement $s$ other than a function call.
 Finally we say statements $s_1$ and $s_2$ are {\em siblings} if they
@@ -189,11 +189,11 @@ occur in the same function body.
 \begin{lemma}
 \rm
 \label{lem:locality}
-If $s_2$ and $s_1$ are not independent and $s_1$ and $s_2$ are not siblings, then $\context{s_2}$ and $s_1$ are not independent
+If $s_1$ and $s_2$ are not independent and not siblings, then $s_1$ and $\context{s_2}$ are not independent
 and $s_2$ and $\context{s_1}$ are not independent.
 \end{lemma}
 \begin{proof}
-Follows immediately from the fact that the read/writes sets of $\context{s}$ are supersetsn of the read/write sets of $s$.
+Follows immediately from the fact that the read/writes sets of $\context{s}$ are supersets of the read/write sets of $s$.
 \end{proof}
 We use Lemma~\ref{lem:locality} in the following way.  Consider two
 statements $s_1$ and $s_2$ such that $s_2$ depends on $s_1$.  Let $f$ be the function that is the least
@@ -201,7 +201,7 @@ common ancestor of $s_1$ and $s_2$ in the call tree of the
 program---the unique function $f$ with the smallest interval such that
 $s_1,s_2 \in \interval{f}$.  Then one of the following is true:
 \begin{itemize}
-\item $s_1$ and $s_2$ are siblings.
+\item $s_1$ and $s_2$ are siblings in $f$.
 
 \item $s_1$ occurs in $f$, there is a function call $f_2(\ldots)$ in $f$ such that $s_2 \in \interval{f_2}$, and $f_2(\ldots)$
 is dependent on $s_1$.
@@ -214,8 +214,8 @@ that $s_1 \in \interval{f_1}$ and $s_2 \in \interval{f_2}$ and $f_2(\ldots)$ is 
 \end{itemize}
 In other words, any dependence between arbitrary statements
 in different functions can be identified at a coarser granularity as a
-dependence between two statements (one or both of which may be a function call) within the same function body.  For
-example, in the example program above, statements 3 and 8 are
+dependence between two statements (one or both of which may be a function call) within the same function body.  
+In the example program above, statements 3 and 8 are
 dependent because they write into regions that are in different
 partitions of region $r_0$.  This dependence means that any functions
 that include these statements in their interval cannot be independent,
@@ -237,13 +237,13 @@ such that $s_1 \in \interval{s_1'}$, $s_2 \in \interval{s_2'}$, and $s_2'$ depen
 on $s_1'$.
 \end{proof}
 The advantage of Lemma~\ref{lem:scheduling} is that provided we have
-a way to efficiently obtain the read and write sets for function calls, scheduling
+a way to obtain the read and write sets for function calls, scheduling
 decisions can be made completely locally for the statements in a
 single function body at a time, independently of any decisions for
-other function calls.  This observation eliminates any global
+other functions.  This observation eliminates any global
 computation to determine what statements can execute in parallel, and
-furtherore allows decisions to be made in parallel, as the statements
-in each function can be scheduled separately.  As a practical matter
+furthermore allows scheduling decisions theselves to be parallelized, as the statements
+in different functions can be scheduled separately.  As a practical matter
 our Legion implementation only parallelizes function calls---the other
 statements within a function body are executed in sequential
 order.
