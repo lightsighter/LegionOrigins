@@ -57,7 +57,10 @@ speedup, even without increasing the size of the problem being tackled.
 \pgfplotsset{every axis legend/.append style={
   font=\tiny,
   at={(0.02,0.98)},
-  anchor=north west}}
+  anchor=north west},
+  cycle list={{black, mark=x}, {black, mark=+},
+              {black, mark=o}, {black, mark=diamond},
+              {black, mark=triangle}, {black, mark=star}}};
 
 
 \begin{figure}
@@ -178,11 +181,19 @@ tasks to provide more predictable performance when using all CPU cores.
 %tasks like these in order to provide more predictable performance on the CPU
 %cores that are exposed to the high-level runtime.
 
+\usepgflibrary{plotmarks}
 \begin{figure}
   \centering
   \subfigure[Performance Scaling]{
     \begin{tikzpicture}
-      \begin{axis}[xlabel=Number of Nodes,ylabel=Normalized Speedup,height=5cm,width=8.5cm,xtick={1,2,3,4}]
+      \begin{axis}[
+          xlabel=Number of Nodes,
+          ylabel=Normalized Speedup,
+          height=5cm,
+          width=8.5cm,
+          xtick={1,2,3,4},
+          legend columns=3,
+        ]
         \addplot coordinates {
 % 12 CPUs
   (1, 5.29)
