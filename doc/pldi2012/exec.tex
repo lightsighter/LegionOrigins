@@ -10,13 +10,14 @@
 %system to achieve high performance and highly distributed scheduling
 %of parallel tasks.
 
-In section \ref{sec:type} we showed that the type system
-only enables privileges to be passed with task calls.  Based on
-this property of privileges we have claimed that our runtime
-will be able to make local scheduling decisions.  In this
+In section \ref{sec:type} we showed that the Legion type system
+only enables privileges to be passed with task calls. 
+ In this
 section we present the Legion execution model and show that
-this property of scheduling preserves the sequential execution 
-semantics of a program.  The correctness argument is
+the sequential execution 
+semantics of a program can be preserved while making only local scheduling
+decisions.
+  The correctness argument is
 instructive in that the properties that ensure correctness are also
 exploited in the implementation of the Legion high-level runtime
 system to achieve high performance and highly distributed scheduling
@@ -43,8 +44,8 @@ There are four kinds of names: functions $f$, regions $r$, local
 variables $x$, and partitions $p$.  A function takes only regions as
 arguments and a function body consists of an ordered list of
 statements.  The core language has no permissions or coherence annotations
-on functions; for simplicity, in this section we simply use exclusive access in the case
-that a function writes a region.  The statement $f(r_1,\ldots,r_n)$ calls a function, which
+on functions; in this section we simply use exclusive access in all cases.
+ The statement $f(r_1,\ldots,r_n)$ calls a function, which
 is executed for its effects on the region arguments.  The statement $x
 = \deref r$ reads a value from region $r$ and stores it in local
 variable $x$, and the statement $\deref r = x$ stores the value of $x$
@@ -66,13 +67,11 @@ partitions, $\rleq$ is just the subregion relationship: $r \rleq r'$
 means that $r$ is a subregion (either immmediately or transitively) of
 $r'$.  Including partitions also gives information about disjointness.
 Let $\lca{r}{r'}$ be the meet of $r$ and $r'$ (the least-common
-ancestor of $r$ and $r'$ in the region forest).  If $r \neq r'$ and
+ancestor of $r$ and $r'$ in the region forest).  If 
 $\lca{r}{r'} = p$ then $r$ and $r'$ are disjoint, as $r$ and $r'$ must
 be in distinct subregions of the partition $p$ and partitions
-guarantee disjoint subregions.  If $\lca{r}{r'} = r''$ then either $r
-\rleq r' = r''$ , $r \rleq r = r''$, or $r \leq p$, $r' \leq p'$, and
-$p$ and $p'$ are two distinct partitions of $r''$.  In any of these
-cases $r$ and $r'$ cannot be proven disjoint using $\rleq$.
+guarantee disjoint subregions.  If $r$ and $r'$ meet at a region (i.e. $\lca{r}{r'} = r''$) then either one of $r$ or $r'$ is a subregion of the other, or they
+lie in two distinct partitions of $r''$ and disjointness cannot be guaranteed.
 
 %which is used to {\em close} the partition in the $\mbox{\tt close}\
 %p$ statement Intuitively, closing a partition reconciles modifications

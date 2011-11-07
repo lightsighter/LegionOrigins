@@ -2,11 +2,8 @@
 \label{sec:type}
 
 The key to both performance and correctness in Legion is the
-accuracy of the region usage declarations.  The runtime places data and
-schedules tasks based on these declarations and has no way to recover if a 
-task attempts to access data outside the declared regions or
-writes a region the runtime expected would only be read.
-The purpose of the Legion type system is to statically check that region usage declarations are adhered to.
+accuracy of the region usage declarations.  The Legion type system has been
+designed to statically check that region usage declarations are adhered to.
 In this section we summarize the main features of the type system; due to space limitations we omit more than
 we include.
 Type judgments have the form:
@@ -44,12 +41,11 @@ Our first type rule checks region reads:
 }
 \end{center}
 
-This rule says that to read from a pointer, we must 
-provide a region ($r_2$ in this case) for which we possess a read privilege that 
-is known to either be, or contain, the region to which the pointer is
-constrained.  The rule for region writes is similar.
+In order to safely read from a pointer into $r_1$, we must 
+provide a region $r_2$ which is known to contain $r_1$ and for which we possess
+a read privilege.  Rules for region writes and reductions are similar.
 
-Region relationships are first-class values and so can be stored in data structures
+Region relationships are first-class values and can be stored in data structures
 and passed around the program.  However, the Legion type
 system cannot afford to lose information about regions that are stored
 in the heap.  To track the regions
@@ -73,7 +69,7 @@ r'_1, \ldots, r'_n \not\in \mathit{RegionsOf}\left(\Gamma, \Phi_3, C_3\right)
 \end{array}
 }{
 \begin{array}{l@{}l}
-\Gamma, \Phi_2, C_2 \vdash unpackrr{ }e :  & [r'_1/r_1,\ldots,r'_n/r_n]T_1, \Phi_3, \\
+\Gamma, \Phi_2, C_2 \vdash unpackrr{~}e :~  & [r'_1/r_1,\ldots,r'_n/r_n]T_1, \Phi_3, \\
 & C_3 \wedge [r'_1/r_1,\ldots,r'_n/r_n]C_1
 \end{array}
 }
@@ -106,7 +102,7 @@ expression can be packed into the region relationship and used
 interchangeably with any other instance of that region relationship.
 
 Although the type system uses explicit packing and unpacking operations, 
-note that these are implicit in Legion application code, such as the
+these are implicit in Legion application code, such as the
 circuit simulation in Listing~\ref{lst:code_ex}.  Unpacking is
 inserted whenever a variable comes into scope, and packing is used
 whenever a variable is written to the heap or passed as a task argument.
@@ -146,21 +142,21 @@ C & ::= & (r_1 \rleq r_2) \\
 \end{table}
 
 As mentioned above, region privileges are not stored in packed types;
-instead, privileges are passed through the task call tree.  This is a key property of the type
-system, and is what allows the runtime to 
-track which regions are in use by which tasks and to make distributed scheduling decisions.
-Each subtask gets the privileges it requires from
+instead, privileges are passed through the task call tree.  This is a key
+property of the type system, and is what allows the runtime to 
+track which regions are in use by which tasks and to make distributed
+scheduling decisions.
+Each subtask must obtain its privileges from
 the task that calls it.  For example, in Listing~\ref{lst:code_ex},
-the task {\tt calc\_new\_currents} takes regions {\tt piece.rw\_ovt} with {\tt RW} privileges
-and {\tt piece.rn\_pvt} and {\tt piece.rn\_ghost} with {\tt RO} (read-only) privileges
-as arguments.  Because the calling task has {\tt RW} privileges on the parent regions of these
-region arguments, the type checker confirms that the subtask can execute with the needed privileges.
-The coherence property for a task argument is always identical to the one of the parent task.
+the task {\tt calc\_new\_currents} requires regions {\tt piece.rw\_pvt} with {\tt RW} privileges
+and {\tt piece.rn\_pvt} and {\tt piece.rn\_ghost} with {\tt RO} (read-only) privileges.  Because the calling task has {\tt RW} privileges on the parent regions of these
+region arguments, the type checker is able to confirm that the subtask can execute with the needed privileges.
 
-Because privileges are forgotten when a region relationship is packed, one may wonder how
-a task can ever actually use a region $r$ in the region relationship when it is unpacked.
-The answer is that if $r \rleq r'$ and the task already holds privileges for $r'$, then it is able
-to use $r'$ with those same privileges.  
+%The coherence property for a task argument is always identical to the one of the parent task.
+
+Due the the inability for a packed region relationship to hold privileges, any
+useful region relationship will leave at least one region free (i.e. unquantified) and include constraints that relate the quantified region(s) to the free one(s).  As long as a task holds a privilege for the region that is kept free, the
+region relationship can be unpacked and used.
 
 
 
