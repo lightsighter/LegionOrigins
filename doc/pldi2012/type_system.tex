@@ -1,39 +1,29 @@
 \section{Type System}
 \label{sec:type}
 
-The key to both performance and correctness in the Legion system is the
-accuracy of the region usage declarations.  The runtime will place data and
-schedule tasks based on these declarations, and has no way to recover if a 
-task attempts to access data that lies outside the mapped regions or attempts
-to write to a region that the runtime expected would only be read.
-
-The guarantee that these region usage declarations will be adhered to is
-provided by Legion's type system which is able to statically verify that a 
-task will stay within its declared boundaries.  The Legion type system is
-flow-sensitive, and uses judgements of the form:
-
+The key to both performance and correctness in Legion is the
+accuracy of the region usage declarations.  The runtime places data and
+schedules tasks based on these declarations and has no way to recover if a 
+task attempts to access data outside the declared regions or
+writes a region the runtime expected would only be read.
+The purpose of the Legion type system is to statically check that region usage declarations are adhered to.
+In this section we summarize the main features of the type system; due to space limitations we omit more than
+we include.
+Type judgments have the form:
 \begin{center}
 $\Gamma, \Phi_i, C_i \vdash e : T, \Phi_o, C_o$
 \end{center}
-
-In addition to the mapping of variables to types (i.e. $\Gamma$), the
-environment includes a set of \emph{privileges} $\Phi_i$ that are possessed
-and a set of \emph{constraints} $C_i$ that are known to hold before the 
-expression $e$ is evaluated.  The judgement says that $e$ has some type $T$,
-but also tells us that the privileges possessed after the
-evaluation are a potentially-different $\Phi_o$ and that the new set of 
-constraints is $C_o$.
+In addition to tracking the types of variables $\Gamma$, the
+type environment includes the current privileges $\Phi_i$ 
+and region constraints $C_i$.  A judgment concludes $e$ has some type $T$,
+but also tells us how the evaluation of $e$ changes the privileges $\Phi_o$ and constraints $C_o$.
 
 Table~\ref{tbl:priv_const} shows the form of the individual privileges and
 constraints that make up $\Phi$ and $C$.  Privileges represent the ability to
-perform some operation on a region (or, as we will see, on any of its
-subregions).  Constraints are used to capture the subregion relationships that
-result from partitioning ($a \prec b$ if $a$ was a result of a partitioning of
-$b$), the more general anywhere-in-the-subregion-tree relationship ($a \le b$ if $a$ equals $b$ or is either a direct or indirect subregion), and equality (or
-inequality) of integer expressions.  More complicated constraints can be formed
-through conjunctions, but neither negation nor disjunctions are permitted.  For
-an example of how these work, below is the typing rule for reading an element
-from a region:
+perform some operation on a region and its subregions.  Constraints capture relationships between regions
+resulting from partitioning: $a \rleq b$ if $a$ is a subregion $b$ (directly or transitively) and $a \ast b$ if
+$a$ and $b$ are disjoint (e.g., because they are distinct subregions of a disjoint partition).
+Our first type rule checks region reads:
 
 \begin{center}
 {\small
@@ -54,37 +44,37 @@ from a region:
 }
 \end{center}
 
-This rule tells us that in order to read from a pointer, we must be able to
+This rule says that to read from a pointer, we must 
 provide a region ($r_2$ in this case) for which we possess a read privilege that 
 is known to either be, or contain, the region to which the pointer is
-constrained.  Similar rules exist for the other four region access operations.
+constrained.  The rule for region writes is similar.
 
-The Legion type system also has to be able to express the self-referential
-nature of region relationships.  It does this through existential quantification
-over regions.  The quantifiers captures both types and constraints, but does
-not capture privileges.  Region relations have the following form in the
-type system:
-
+Region relationships are first-class values and so can be stored in data structures
+and passed around the program.  However, the Legion type
+system cannot afford to lose information about regions that are stored
+in the heap.  To track the regions
+in region relationships accurately we use existential quantification
+over regions.  The quantifiers capture both types and constraints, but 
+not privileges.  The type of a region relation has the form:
 \begin{center}
 $RR = \exists r_1, \ldots, r_n.\left(T, \emptyset, C\right)$
 \end{center}
-
-Explicit pack and unpack operations are used in the type system
-to add and remove the existential quantifiers, shown here:
-
+Pack and unpack operations are used in the type system
+to add and remove the existential quantifiers:
 \begin{center}
+{\small
 \begin{math}
 \begin{array}{c}
 \infrule{
 \begin{array}{l}
 RR = \exists r_1, \ldots, r_n.\left(T_1, \emptyset, C_1\right) \\
-\Gamma, \Phi_2, C_2 \vdash e : \left(RR, \Phi_3, C_3\right) \\
+\Gamma, \Phi_2, C_2 \vdash e : RR, \Phi_3, C_3  \\
 r'_1, \ldots, r'_n \not\in \mathit{RegionsOf}\left(\Gamma, \Phi_3, C_3\right)
 \end{array}
 }{
 \begin{array}{l@{}l}
-\Gamma, \Phi_2, C_2 \vdash unpackrr{ }e : ( & [r'_1/r_1,\ldots,r'_n/r_n]T_1, \Phi_3, \\
-& C_3 \wedge [r'_1/r_1,\ldots,r'_n/r_n]C_1)
+\Gamma, \Phi_2, C_2 \vdash unpackrr{ }e :  & [r'_1/r_1,\ldots,r'_n/r_n]T_1, \Phi_3, \\
+& C_3 \wedge [r'_1/r_1,\ldots,r'_n/r_n]C_1
 \end{array}
 }
 \\
@@ -92,38 +82,38 @@ r'_1, \ldots, r'_n \not\in \mathit{RegionsOf}\left(\Gamma, \Phi_3, C_3\right)
 \infrule{
 \begin{array}{l}
 RR = \exists r_1, \ldots, r_n.\left(T_1, \emptyset, C_1\right) \\
-\Gamma, \Phi_2, C_2 \vdash e : \left([r'_1/r_1,\ldots,r'_n/r_n]T_1, \Phi_3, C_3\right) \\
+\Gamma, \Phi_2, C_2 \vdash e : [r'_1/r_1,\ldots,r'_n/r_n]T_1, \Phi_3, C_3 \\
 C_3 \models [r'_1/r_1,\ldots,r'_n/r_n]C_1
 \end{array}
 }{
 \begin{array}{l}
-\Gamma, \Phi_2, C_2 \vdash packrr{ }RR\mbox{ }e : \left(RR, \Phi_3, C_3\right) \\
+\Gamma, \Phi_2, C_2 \vdash packrr{ }RR\mbox{ }e : RR, \Phi_3, C_3 \\
 \end{array}
 }
 \end{array}
 \end{math}
+}
 \end{center}
+Any expression whose type is a region relationship can be unpacked.
+Doing so introduces a fresh region variable into the current type
+environment for each region that was bound in the quantification.  The
+fresh region variables are substituted into the region relationship's
+type and constraints.  Packing an expression into a region
+relationship does the reverse.  If the type of an expression can be
+unified with the region relationship's type and the corresponding
+constraints of the region relationship can be shown to hold, the
+expression can be packed into the region relationship and used
+interchangeably with any other instance of that region relationship.
 
-Any expression whose type is a region relationship can be unpacked.  Doing so
-introduces a fresh region variable for each region that was bound in the 
-quantification.  The fresh region variables are substitued into the region
-relaionship's type, and a corresponding substituion is performed on the
-constraints that were captured by the region relationship.  These substituted
-constraints are added to the current task's (flow-sensitive) constraints.
+Although the type system uses explicit packing and unpacking operations, 
+note that these are implicit in Legion application code, such as the
+circuit simulation in Listing~\ref{lst:code_ex}.  Unpacking is
+inserted whenever a variable comes into scope, and packing is used
+whenever a variable is written to the heap or passed as a task argument.
 
-Packing an expression into a region relationship works in reverse.  If the type
-of an expression can be unified with the region relationship's type and the
-corresponding constraints of the region relationship can be shown to hold, the
-expression can be packed into the region relationship and used interchangably
-with any other instance of that region relationship.
-
-Although the type system uses explicit packing and unpacking operations, they 
-are implicit in the Legion application code.  Unpacking operations are 
-automatically inserted whenever a variable comes into scope.  Packing operations
-are attemped whenever a variable is written to memory or passed as an argument
-to a task.  Additionally, the simultaneous assignment operation essentially
-performs a pack for the result of the assignments and will also perform an
-unpack if one ore more fields of the structure are left unchanged.
+%Additionally, the simultaneous assignment operation essentially
+%performs a pack for the result of the assignments and will also perform an
+%unpack if one ore more fields of the structure are left unchanged.
 
 \begin{table}
 \centering
@@ -134,18 +124,18 @@ unpack if one ore more fields of the structure are left unchanged.
 $\phi$ & ::= & $readable(r)$ \\
   &$\mid$&$writeable(r)$ \\
   &$\mid$&$reduceable(r,f)$ \\
-  &$\mid$&$allocable(r)$ \\
-  &$\mid$&$freeable(r)$ \\
+%  &$\mid$&$allocable(r)$ \\
+%  &$\mid$&$freeable(r)$ \\
 \\
 $\Phi$ & ::= & $\{ \phi_1, \ldots, \phi_n \}$
 \end{tabular}
 &
 \begin{array}{ccc}
-C & ::= & (r_1 \prec r_2) \\
-  &\mid&(r_1 \le r_2) \\
+C & ::= & (r_1 \rleq r_2) \\
+%  &\mid&(r_1 \le r_2) \\
   &\mid&(r_1 * r_2) \\
-  &\mid&(i_1 = i_2) \\
-  &\mid&(i_1 \ne i_2) \\
+%  &\mid&(i_1 = i_2) \\
+%  &\mid&(i_1 \ne i_2) \\
   &\mid&(C_1 \wedge C_2) \\
 \end{array}
 \end{array}
@@ -155,42 +145,58 @@ C & ::= & (r_1 \prec r_2) \\
 \caption{Privileges and Constraints}
 \end{table}
 
-Region access privileges cannot be stored or packed.  Instead, they follow the
-task call tree, and it is this property that allows the runtime to make
-its scheduling decisions in a distributed way.  The original source of any
-privilege for a given region is the \emph{newrr} operation that created that
-region, but the way in which privileges can be provided to a subtask, or
-returned to a parent task, is described in the task application rule:
+As mentioned above, region privileges are not stored in packed types;
+instead, privileges are passed through the task call tree.  This is a key property of the type
+system, and is what allows the runtime to 
+track which regions are in use by which tasks and to make distributed scheduling decisions.
+Each subtask gets the privileges it requires from
+the task that calls it.  For example, in Listing~\ref{lst:code_ex},
+the task {\tt calc\_new\_currents} takes regions {\tt piece.rw\_ovt} with {\tt RW} privileges
+and {\tt piece.rn\_pvt} and {\tt piece.rn\_ghost} with {\tt RO} (read-only) privileges
+as arguments.  Because the calling task has {\tt RW} privileges on the parent regions of these
+region arguments, the type checker confirms that the subtask can execute with the needed privileges.
+The coherence property for a task argument is always identical to the one of the parent task.
 
-\begin{center}
-\begin{math}
-\begin{array}{c}
-\infrule
-{
-\begin{array}{lc}
-  \Gamma, \Phi_1, C_1 \vdash e_1 : \left(\left(T_i, \Phi_i, C_i\right) \rightarrow \exists r_1, \ldots, r_n . \left(T_o, \Phi_o, C_o\right), \Phi_2, C_2\right) \\
-  \Gamma, \Phi_2, C_2 \vdash e_2 : \left(T_i, \Phi_3, C_3\right) \\
-  r'_1, \ldots, r'_n \not\in \mathit{RegionsOf}(\Gamma, \Phi_3, C_3) \hspace{1cm} 
-  \Phi_i \subset \Phi_3 \hspace{1cm}
-  C_3 \models C_i
-\end{array}
-}
-{
-\begin{array}{l@{}l}
+Because privileges are forgotten when a region relationship is packed, one may wonder how
+a task can ever actually use a region $r$ in the region relationship when it is unpacked.
+The answer is that if $r \rleq r'$ and the task already holds privileges for $r'$, then it is able
+to use $r'$ with those same privileges.  
+
+
+
+%bprivilege for a given region is the \emph{newrr} operation that created that
+%region, but the way in which privileges can be provided to a subtask, or
+%returned to a parent task, is described in the task application rule:
+%
+%\begin{center}
+%\begin{math}
+%\begin{array}{c}
+%\infrule
+%{
+%\begin{array}{lc}
+%  \Gamma, \Phi_1, C_1 \vdash e_1 : \left(\left(T_i, \Phi_i, C_i\right) \rightarrow \exists r_1, \ldots, r_n . \left(T_o, \Phi_o, C_o\right), \Phi_2, C_2\right) \\
+%  \Gamma, \Phi_2, C_2 \vdash e_2 : \left(T_i, \Phi_3, C_3\right) \\
+%  r'_1, \ldots, r'_n \not\in \mathit{RegionsOf}(\Gamma, \Phi_3, C_3) \hspace{1cm} 
+%  \Phi_i \subset \Phi_3 \hspace{1cm}
+%  C_3 \models C_i
+%\end{array}
+%}
+%{
+%\begin{array}{l@{}l}
 %  \envsub{1}{1} e_1 e_2 : \rtriple{& \regionexpand T_o}{\left(\Phi_3 \cup \regionexpand \Phi_o\right)}{\\ & \left(C_3 \wedge \regionexpand C_o \wedge \bigwedge_{\substack{{\footnotesize r_f \in \{ r | \regionexpand C_o \models fresh(r) \} } \\ {\tiny r_o \in \mathit{RegionsOf}(\Gamma, \Phi_3, C_3)}}} r_f * r_o\right)}
-  \Gamma, \Phi_1, C_1 \vdash e_1 e_2 : \Big( & [r'_1/r_1,\ldots,r'_n/r_n]T_o, \\
- & \left(\Phi_3 \cup [r'_1/r_1,\ldots,r'_n/r_n] \Phi_o\right) , \\
- & \left(C_3 \wedge [r'_1/r_1,\ldots,r'_n/r_n] C_o\right) \Big)
-\end{array}
-}
-\end{array}
-\end{math}
-\end{center}
-
-In this rule, expression $e_1$ has the type of a Legion task.  In addition
-to the task's input and output types, it specifies the privileges and
-constraints that must exist at the point where the task is called.  It also
-describes the privileges and constraints that exist as post-conditions of the
-task invocation.  The output type, privileges, and constraints can be
-captured in an existential quantification, allowing a task to return one
-or more regions that were previously unknown to the caller.
+%  \Gamma, \Phi_1, C_1 \vdash e_1 e_2 : \Big( & [r'_1/r_1,\ldots,r'_n/r_n]T_o, \\
+% & \left(\Phi_3 \cup [r'_1/r_1,\ldots,r'_n/r_n] \Phi_o\right) , \\
+% & \left(C_3 \wedge [r'_1/r_1,\ldots,r'_n/r_n] C_o\right) \Big)
+%\end{array}
+%}
+%\end{array}
+%\end{math}
+%\end{center}
+%
+%In this rule, expression $e_1$ has the type of a Legion task.  In addition
+%to the task's input and output types, it specifies the privileges and
+%constraints that must exist at the point where the task is called.  It also
+%describes the privileges and constraints that exist as post-conditions of the
+%task invocation.  The output type, privileges, and constraints can be
+%captured in an existential quantification, allowing a task to return one
+%or more regions that were previously unknown to the caller.
