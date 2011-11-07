@@ -418,7 +418,7 @@ The high-level runtime also supports the use of multiple mappers in the same app
 call may (but does not need to) have an associated mapper,
 %runtime  can choose a mapper to be used for the runtime calls made inside that
 %task.  
-which allows for the creation of library code that provides its own mappers indpendent
+which allows for the creation of library code that provides its own mappers ind pendent
 from any application level mappers.
 
 \subsubsection{Task Stealing for Load Balance}
@@ -453,9 +453,9 @@ from the runtime.
 Once task mapping is complete the high-level runtime performs the necessary operations
 to issue the task to the low level runtime.  It first creates any new physical instances
 for the regions the task requires.  It then issues copy operations required
-for the task to execute contignent on predecessor tasks producing the source physical instances
+for the task to execute contingent on predecessor tasks producing the source physical instances
 having finished.  Then it issues the task itself to the low level processor contingent
-on all the copies for the task haveing finished as well as the the set of tasks
+on all the copies for the task having finished as well as the the set of tasks
 on which the issuing task depends having finished.  These dependences are all encoded
 using {\em events} (see Section \ref{subsec:events}).  Continuing the analogy of an out-of-order
 processor, the execution phase is equivalent to issuing an instruction to an
@@ -501,7 +501,7 @@ and marks the task completed once the copy operations are complete.
 This is similar to the write-back phase of an out-of-order processor where store instructions cannot be
 considered complete until the store effects the state of memory.
 
-The last part of the completetion phase is garbage collecting physical instances.  Physical
+The last part of the completion phase is garbage collecting physical instances.  Physical
 instances are not a visible part of the programming model and therefore cannot be managed
 directly by the programmer.  Having the mapper manage them would introduce correctness
 issues.  We use a two-level reference counting scheme on both abstract instances and physical
