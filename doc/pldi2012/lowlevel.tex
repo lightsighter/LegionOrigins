@@ -1,105 +1,119 @@
 \section{Low-Level Runtime}
 \label{sec:lowlevel}
 
-The job of the low-level runtime is to provide a machine-independent layer
-for the high-level runtime to sit on top of.  It needs to hide the
-ideosynchracies of the underlying machine, operating system, and device
-drivers.  At the same time, it needs to avoid getting too far away from the 
-native capabilities of the hardware and software in order to obtain an 
-efficient implementation.
+The purpose of the low-level runtime is to provide a machine-independent layer
+for the high-level runtime.  This abstraction will provide portability to the Legion
+programming model and the high-level runtime.  To achieve this goal the low-level
+runtime needs to hide the ideosynchracies of the underlying machine.  At the same time, it needs to avoid 
+straying too far from the native capabilities of the underlying hardware 
+and software in order to obtain an efficient implementation.  The Legion
+low-level runtime does this by abstracting the machine into a base set
+of objects required to implement the Legion high-level.  These objects,
+include processors, memories, regions, events, and deffered locks.
 
-The target machines for Legion include both clusters and GPU-equipped nodes,
-and neither of these are able to efficiently provide a uniformly addressable
-and accessible memory space across the system.  The magic of an
-apparently-unified address space is left to the high-level runtime, and the
-interface to the low-level runtime is done in terms of handles rather than 
-pointers for runtime objects and relative offsets rather than absolute 
-pointers for resource allocations.
+%The target machines for Legion include both clusters and GPU-equipped nodes,
+%and neither of which are able to efficiently provide a uniformly addressable
+%and accessible memory space across the system.  The low-level runtime does
+%not hide this fact from the high-level runtime, but rather relies on the
+%high-level runtime to manage data movement.  Consequently all objects in
+%the low-level runtime are named by handles 
+%which can be copied by value and moved around the machine.
 
-The low-level runtime chooses to provide a ``deferred execution'' model rather
-than the more common ``immediate'' model.  Requests made of the low-level 
-runtime usually return to the caller immediately, with the requested action
-performing asynchronously to the caller's thread of execution.  This is done
-for two different, but equally important, reasons.  First, it matches the
-standard GPU execution model.  GPUs tend to have very deep pipelines, and
-maximum performance cannot be achieved if each command has to be run to
-completion before the next command can be started.  Second, in clusters, the
-latency of inter-node communication can be significant, and a caller that
-waited for every request of a remote node to return before continuing on would
-also be similarly underutilizing the computational resources of the system.
+%The low-level runtime provides a deferred execution model rather
+%than the more common immediate model where operations occur as soon
+%as requested.  Requests made of the low-level 
+%runtime usually return to the caller immediately, with the requested action
+%performing asynchronously to the caller's thread of execution.  This is done
+%for two different, but equally important, reasons.  First, it matches the
+%standard GPU execution model.  GPUs tend to have very deep pipelines, and
+%maximum performance cannot be achieved if each command has to be run to
+%completion before the next command can be started.  Second, in clusters, the
+%latency of inter-node communication can be significant, and a caller that
+%waited for every request of a remote node to return before continuing on would
+%also be similarly underutilizing the computational resources of the system.
 
-Although it does not show up explicitly in the interface, the low-level runtime
-was also architected to permit a distributed and hierarchical implementation.
-Critical resources can be replicated or migrated between nodes to reduce
-both average latencies and the amount of traffic that use the scarce inter-node
-communication bandwidth.
+%Although it does not show up explicitly in the interface, the low-level runtime
+%was also architected to permit a distributed and hierarchical implementation.
+%Critical resources can be replicated or migrated between nodes to reduce
+%both average latencies and the amount of traffic that use the scarce inter-node
+%communication bandwidth.
 
-\subsection{Events}
+
+
+\subsection{Low-Level Abstractions}
+\label{subsec:lowobjects}
+\subsubsection{Events}
 \label{subsec:events}
+The low-level runtime supports a deffered execution model to help hide
+the latencies associated with communicating in a distributed memory
+system.  The basic building block of the low-level runtime's deferred execution model
+is the {\em event}.  An event is a placeholder for the completion of a deferred
+operation.  When an asynchronous call is made to any of the low-level runtime objects, an event is 
+immediately returned to the caller.  The caller may query whether the event has {\em triggered}
+which happens when an even occurs.  The common use case for events is
+to provide them as prerequisites to subsequent requests made of the runtime. 
+These dependences cause the later requests to be automatically deferred until the previous
+operations have completed.  By using events as dependences, the caller can
+set up complicated, but coordinated chains of operations to be executed without
+having to wait for the low-level runtime to execute them.
+%These requests will
+%also return events, and the caller can set up a complicated, but coordinated,
+%set of operations to be performed by the low-level runtime with no babysitting
+%required of the original caller.
 
-The basic building block of the low-level runtime's deferred execution model
-is the Event.  An Event is a placeholder for the completion of a deferred
-operation.  When a call is made to the low-level runtime, an Event is usually
-returned to the caller.  The caller may query whether the event has occurred,
-and may also ask to wait until the event occurs, but the more common case is
-to provide one or more Events to subsequent requests made of the runtime, 
-causing those requests to be automatically deferred until the previous
-operations corresponding to those Events have completed.  These requests will
-also return Events, and the caller can set up a complicated, but coordinated,
-set of operations to be performed by the low-level runtime with no babysitting
-required of the original caller.
-
-With nearly every single runtime operation creating a new Event and referring
-to potentially any number of past Events, both the time and space overhead of
-these Events is a serious concern.  The time overhead is addressed by a
-mechanism that allows a node to create a new Event without needing to
-communicate with any other node.  The Event's handle identifies which node
+With nearly every single runtime operation creating a new event and referring
+to potentially any number of past events, both the time and space overhead of
+implementing events is a serious concern.  The time overhead is addressed by a
+mechanism that allows a node to create a new event without needing to
+communicate with any other node.  The event's handle identifies which node
 created it, allowing another node to lazily access it only when and if it 
-is asked to perform an operation on it.  Checking to see if an Event has
+is asked to perform an operation on it.  Checking to see if an event has
 occurred is done via a subscription mechanism.  Any number of threads or
-deferred operations on one node can query or wait on an Event with a single
+deferred operations on one node can query or wait on an event with a single
 message sent to the originating node.  The requesting node tracks the multiple
 local requestors and upon receiving the trigger message from the originating
 node, distributes that message to all the local parties that are interested.
 
-The potential space concern with Events is addressed by a generation scheme
-that allows Events to be reclaimed and reused without tracking references.  The
-naive implementation of an Event cannot reclaim the storage used by an Event
-until the Event has triggered \emph{and} all waiters on the event have been
-notified.  Some of these waiters may take quite a while to make their query,
-and worse, we must somehow track how many queries to expect if we want to know
-when they've all been performed.  However, if the Event handle is paired with a
-``generation'' count that tracks how many times the Event has been triggered,
-the Event can be reused as soon as the previous generation has been triggered.
+The potential space concern with events is addressed by a {\em generation scheme}
+that allows events to be reclaimed and reused without tracking references.  The
+naive implementation of an event cannot reclaim the storage used by an event
+until the event has triggered and all waiters on the event have been
+notified.  Some of these waiters may take quite a while to query the event.
+Additionaly, we must somehow track how many queries to expect to know
+when they've all been performed.  However, if the event handle is paired with a
+{\em generation count} that tracks how many times the event has been triggered,
+the event can be reused as soon as the previous generation has been triggered.
 Holders of an older (handle,generation) pair are able to query the newer
-incarnation of the Event and determine from the generation mismatch that their
-Event must have already triggered.  With this technique, there is no need to
-count references to the Event at all.  An Event can only be reused until the
-generation counter reaches its maximum value, the current implementation
-supports $2^{32}-1$ generations, and should that not be sufficient, extending
-it to $2^{64}-1$ is trivial.
+incarnation of the event and determine from the generation mismatch that their
+event must have already triggered.  With this technique, there is no need to
+count references to the event at all. 
+% An event can only be reused until the
+%generation counter reaches its maximum value, the current implementation
+%supports $2^{32}-1$ generations, and should that not be sufficient, extending
+%it to $2^{64}-1$ is trivial.
 
-\subsection{Deferred Locks}
-
+\subsubsection{Deferred Locks}
+\label{subsec:defferedlocks}
 Events are used to provide a deterministic ordering between operations, but in
-some cases, enforcing only serializability is a sufficient for correctness and
-can result in much better performance.  The traditional tool for this job is
+some cases is overly restrictive.  To implement the more relaxed coherence
+properties supported in Legion we need a less restrictive ordering semantics that
+can result in better performance.  The traditional tool for this job is
 the mutex (a.k.a. lock), and it is from the common reader/writer lock that
-the low-level runtime's \emph{deferred lock} is derived.  The key visible 
+the low-level runtime's {\em deferred lock} is derived.  The key visible 
 difference between a mutex and a deferred lock is that the request does not
-block the caller's execution.  Many libraries offer ``nonblocking locks'', but
+block the caller's execution.  Many libraries offer nonblocking locks, but
 they achieve this by returning without the lock if it is unavailable.  If
 a deferred lock is currently unavailable, the request is guaranteed to be
 granted at some time in the future (with no further action required of the 
-caller).  That time in the future is described with an Event.  Like all other
-Events, it can be given to other threads, or to the runtime, or even stored
-in a data structure in memory to be extracted by an arbitrary thread at an 
-arbitrary time.  This dissociation of a held lock from the thread that
+caller).  That time in the future is described with an event.  Like all other
+events, it can be given to other threads, or even stored
+in a data structure in memory to be extracted by an arbitrary thread at a 
+later time.  This dissociation of a held lock from the thread that
 requested it is another important difference between the deferred lock and
 existing mutexes.
 
 The deferred nature of a deferred lock also allows a distributed implementation
-of locks.  Similar to Events, a deferred lock can be created on any node
+of locks.  Similar to events, a deferred lock can be created on any node
 without communication with the other nodes in the cluster.  That node becomes
 the initial home for the lock, but the deferred lock (unlike events) can 
 migrate to other nodes or even be shared between nodes, allowing repeated
@@ -118,8 +132,8 @@ but is done per-object rather than on cache lines.  This is currently only
 used for object within the runtime itself, but we are exploring ways to expose
 it at the Legion application level.
 
-\subsection{Processors}
-
+\subsubsection{Processors}
+\label{subsec:processors}
 Hardware units capable of performing computation are captured as generic
 processors in the low-level runtime.  Like other runtime objects, a processor
 has a globally unique name and can be referred to anywhere in the system.
@@ -127,7 +141,7 @@ Processors come in different \emph{kinds} (e.g. X86 CPU core, CUDA-capable GPU),
 but they all support the same
 interface and execution model.  A request to spawn a task on a given processor
 may come from anywhere in the system.  The request names which task should
-be spawn and provides input arguments and zero or more events.  Once those
+be spawned and provides input arguments and zero or more events.  Once those
 events have occurred, the task is placed into a queue of ready tasks, which
 the processor works through in the order in which they were enqueued.  A
 processor will generally run a task to completion before taking another, but
@@ -137,8 +151,8 @@ it may not be moved or deleted.  Load-balancing of tasks is expected to be done
 by the high-level runtime.  The primary purpose of the queue for the low-level
 Processor is to be able to hide the latency of starting new tasks.
 
-\subsection{Memories}
-
+\subsubsection{Memories}
+\label{subsec:memories}
 Application-visible storage in the low-level runtime is described in terms of
 memory objects.  A memory object has a size and describes its affinity to 
 processors (and other memories) in terms of relative bandwidth and latency.
@@ -148,8 +162,8 @@ These bulk transfers can often be implemented using dedicated DMA (or RDMA)
 hardware, freeing up the processors to perform more interesting
 computation. 
 
-\subsection{Regions}
-
+\subsubsection{Region Meta-Data Objects}
+\label{subsec:regionmeta}
 Application-level regions are broken into four inter-related pieces in the
 low-level runtime:
 \begin{description}
@@ -157,9 +171,10 @@ low-level runtime:
 \item[MetaData] The metadata for a logical region captures attributes of a
 logical region that are common across all instances.  These attributes include
 the size of the logical region, the element type, and the allocation mask,
-which tracks which portions of the logical region are actually in use.  Region
-MetaDatas are created independently of any memory objects and are accessible
-(via a globally unique name) to all nodes in the machine.
+which tracks which portions of the logical region are actually in use.  
+%Region
+%MetaDatas are created independently of any memory objects and are accessible
+%(via a globally unique name) to all nodes in the machine.
 
 \item[Allocator] The dynamic memory allocation capability of a region instance
 is provided via an allocator object.  An allocator is associated with a
@@ -170,13 +185,13 @@ processor that has non-zero affinity with the memory.
 \item[Instance] Each physical instance of a region stores some version of all
 the elements in a region.  As with allocators, a physical instance is
 associated with a particular region metadata and spends its entire lifetime in
-the memory objecy in which it was created.  When multiple physical instances
-exist for the same region, the low-level runtime does nothing to keep them
-coherent - it is the job of the high-level runtime to perform the appropriate
-copies and set up the right inter-operation dependencies to provide the level
-of coherence requested by the application.  Although a physical instance 
-stores the contents of a region, it does not directly offer access to those
-contents.
+the memory objecy in which it was created.  
+%When multiple physical instances
+%exist for the same region, the low-level runtime does nothing to keep them
+%copies and set up the right inter-operation dependencies to provide the level
+%of coherence requested by the application.  Although a physical instance 
+%stores the contents of a region, it does not directly offer access to those
+%contents.
 
 \item[Accessor] Access to the contents of a physical region instance are 
 handled by accessor objects.  These are lightweight objects that allow a given
@@ -188,28 +203,43 @@ memory that's accessed via RMDA put and get calls).
 
 \end{description}
 
-\subsection{Initialization}
 
-On startup, the low-level runtime allocates all the resources it needs from
-the operating system and set up the communication channels between nodes.
-Each processor in the system then automatically runs the high-level runtime's
-initialization task, which will usually spawn more tasks.  These tasks are
-started, and whenever any processor's task queue is empty , the high-level
-runtime's scheduler task is automatically called to explore the possibility
-of moving tasks around for load balancing.
+\subsection{Low-Level Implementations}
+\label{subsec:lowimpl}
+The primary goal of the low-level runtime is to provide an
+abstraction that enables efficient execution of Legion programs
+on a wide array of machines.  To support this claim we describe
+two implementation of the low-level runtime: one based on POSIX
+threads for a shared memory SMP and one based on GASNet and CUDA
+for distributed memory clusters with multiple GPUs.
+%The magic of an
+%apparently-unified address space is left to the high-level runtime, and the
+%interface to the low-level runtime is done in terms of handles rather than 
+%pointers for runtime objects and relative offsets rather than absolute 
+%pointers for resource allocations.
 
-\subsection{SMP Implementation}
+%\subsection{Initialization}
 
-The SMP implementation of the low-level runtime is a relatively simple one.
-It runs on any SMP computer that supports POSIX threads.  A single memory
-object is created for the shared memory, and a processor object is created for
-each CPU core in the system.  Any GPUs in the system are ignore.  Events are 
+%On startup, the low-level runtime allocates all the resources it needs from
+%the operating system and set up the communication channels between nodes.
+%Each processor in the system then automatically runs the high-level runtime's
+%initialization task, which will usually spawn more tasks.  These tasks are
+%started, and whenever any processor's task queue is empty , the high-level
+%runtime's scheduler task is automatically called to explore the possibility
+%of moving tasks around for load balancing.
+
+\subsubsection{SMP Implementation}
+\label{subsec:smpimpl}
+The SMP implementation of the low-level runs on any SMP computer that supports 
+POSIX threads.  A single memory object is created for the shared memory, and 
+a processor object is created for
+each CPU core in the system.  Events are 
 mutex-protected data structures that maintain a list of callbacks to call when
 the corresponding event is triggered.  Locks are similar, except that the list
 is of pending lock requests to attempt when the previous lock is released.
 
-\subsection{GPU Cluster Implementation}
-
+\subsubsection{GPU Cluster Implementation}
+\label{subsec:clusterimpl}
 The cluster implementation of the low-level runtime is implemented on a mix
 of POSIX threads for intra-node threading and communication, GASnet for 
 inter-node communication, and CUDA for access to resources of the GPUs in 
@@ -222,8 +252,8 @@ to expose the GPU's computational resources at a finer granularity, but
 current GPU hardware doesn't directly allow this flexibility and recent attempts
 at implementing such control in a software layer on top of CUDA have suffered
 from significant overhead.  The memory hierarchy is expanded to include a 
-``global'' memory that is striped across all nodes and accessible via GASnet
-RDMA calls, and two memories per GPU: one for the GPU's framebuffer that is
+{\em global} memory that is striped across all nodes and accessible via GASnet
+RDMA calls, one process local memory per cluster node, and two memories per GPU: one for the GPU's framebuffer that is
 accessible only to that GPU and by bulk DMA operations, and one for the pinned
-``zero copy'' system memory that is accessible to the GPU and all the CPU cores
+{\em zero copy} system memory that is accessible to the GPU and all the CPU cores
 in a single system.

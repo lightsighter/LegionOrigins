@@ -1,17 +1,17 @@
 
 \section{High-Level Runtime} 
 \label{sec:highlevel}
-In this Section we describe a high level runtime system
+In this Section we describe a high-level runtime system
 that is designed to implement the Legion programming
 and execution models while remaining machine agnostic.  
-The high level runtime system operates on top of the 
+The high-level runtime system operates on top of the 
 low-level runtime which hides machine specific details
 and is described in detail in Section \ref{sec:lowlevel}.
 
-The biggest challenge to implementing the high level
+The biggest challenge to implementing the high-level
 runtime is to avoid the latencies associated with distributed
 memory systems and deep memory hierarchies.  To aid
-in solving this problem, the high level runtime employs two useful 
+in solving this problem, the high-level runtime employs two useful 
 scheduling techniques.  The first technique was proved
 in Section \ref{sec:exec}: all scheduling decisions for a
 task can be made locally in the context in which the
@@ -46,13 +46,13 @@ regions corresponding to registers.  There are multiple stages to
 executing a task which allows the runtime to extract
 as much task-level parallelism as possible from an application whithin
 the constraints of the Legion programming model.  To illustrate
-the implementation of the high level runtime we now describe the
+the implementation of the high-level runtime we now describe the
 details of how each stage of task execution is performed.
 
 \subsection{Dependence Analysis} 
 \label{subsec:depanalysis}
 The first step in the execution of a task is dependence analysis.  When
-a task is registered with the high level runtime the task call includes
+a task is registered with the high-level runtime the task call includes
 information about both the logical regions that the task will require
 when it is executed as well as the read-write privileges and coherence properties
 for each of the regions.  The runtime uses this information to perform
@@ -157,7 +157,7 @@ Performing dependence detection in program order is annalogous to how an out of 
 processor works.  Out-of-order processors load instructions in order and only after
 analyzing their instructions and register dependencies do they execute instructions
 out of order.  The regions that a task requires are annalogous
-to the registers listed in an instruction and the goal of the high level
+to the registers listed in an instruction and the goal of the high-level
 runtime is to detect the same dependences and use them to enforce scheudling constraints
 upon a task.  However, there is a catch to this analogy: in the Legion programming
 model two different logical regions are not necessarily independent from each other.  In
@@ -224,7 +224,7 @@ One aspect of the deffered execution model is that it allows dependence analysis
 ahead of the actual execution of tasks.  As a result the runtime must maintain information
 about which {\em physical instances} of a logical region a task is allowed to use when executing.
 A physical instance is a copy of the data in a logical region.  There can be multiple
-physical instances of a logical region.  It is the responsibility of the high level runtime
+physical instances of a logical region.  It is the responsibility of the high-level runtime
 to ensure tasks use instances corresponding to the appropriate version of data.
 
 %In addition to computing the dependences between tasks, we also have to compute the version
@@ -393,7 +393,7 @@ tasks should be run, and how task stealing should be performed.
 These eight task calls give the programmer complete control over where all tasks are executed, and
 where all data is placed within the memory hierarchy.  While this interface does give the programmer
 complete control over data and task movement, it will never allow the programmer to affect the
-correctness of the program.  The highlevel runtime still manages all the task dependences and the
+correctness of the program.  The high-level runtime still manages all the task dependences and the
 ordering in which tasks are executed and copies are performed.  Therefore, regardless of choices
 made by any mapper, the resulting program will always be executed correctly.
 
@@ -405,7 +405,7 @@ together.  The default mapper implementation makes it easy for the programmer to
 initial program running.  As the programmer tunes the application, he can write mappers that
 specialize for both application specific and/or machine specific parameters.
 
-The high level runtime also supports the use of multiple mappers in the same application.  For each task 
+The high-level runtime also supports the use of multiple mappers in the same application.  For each task 
 call the programmer can choose a mapper to be used for the runtime calls made inside that
 task.  This allows for the creation of library code which provides its own mappers indpendent
 from any application level mappers.
@@ -439,7 +439,7 @@ from the runtime.
 
 \subsection{Execution}
 \label{subsec:execution}
-Once task mapping is complete the high level runtime performs the necessary operations
+Once task mapping is complete the high-level runtime performs the necessary operations
 to issue the task to the low level runtime.  It first creates any new physical instances
 for the regions which the task requires.  It then issues the necessary copies required
 for the task to execute contignent on the tasks producing the source physical instances
