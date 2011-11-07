@@ -1,12 +1,12 @@
 
 \section{High-Level Runtime} 
 \label{sec:highlevel}
-In this Section we describe a high-level runtime system
+In this Section we describe the high-level runtime system
 that is designed to implement the Legion programming
 and execution models while remaining machine agnostic for portability.  
 The high-level runtime system operates on top of the 
 low-level runtime which hides machine specific details
-and is described in detail in Section \ref{sec:lowlevel}.
+and is described in Section \ref{sec:lowlevel}.
 
 The biggest challenge to implementing the high-level
 runtime is to avoid the latencies associated with distributed
@@ -20,7 +20,7 @@ that allows the runtime to hide the latencies associated
 with moving data through deep memory hierarchies.  A
 deffered execution model decouples the issuing of operations
 from when they are actually performed.  This model is supported
-by features in the low-level runtime that are discussed in Section \ref{sec:lowlevel}.
+by features in the low-level runtime.
 
 %The high-level runtime is responsible for guaranteeing the semantics 
 %of programs written in the Legion programming model while at the same
@@ -40,9 +40,9 @@ does not necessarily imply that tasks will be executed in the order in
 which they are scheduled, but only in the order in which dependences
 are expressed.  To orchestrate the execution of Legion
 programs in this environment the high-level runtime is architected
-in a manner similar to an out-of-order hardware processor, but at
+in a manner similar to a pipelined out-of-order hardware processor, but at
 a coarser granularity with tasks corresponding to instructions and
-regions corresponding to registers.  There are multiple stages to 
+regions corresponding to registers.  There is a pipeline of stages to 
 executing a task which allows the runtime to extract
 as much task-level parallelism as possible from an application whithin
 the constraints of the Legion programming model.  To illustrate
@@ -54,7 +54,7 @@ details of how each stage of task execution is performed.
 The first step in the execution of a task is dependence analysis.  When
 a task is registered with the high-level runtime the task call includes
 information about both the logical regions that the task will require
-when it is executed as well as the read-write privileges and coherence properties
+as well as the read-write privileges and coherence properties
 for each of the regions.  The runtime uses this information to perform
 dependence detection with each of the previous tasks that have been registered
 in the same context.  Dependence detection only needs to be performed at
@@ -94,22 +94,6 @@ to determine whether one task depends on the other.  When checking for
 dependencies we first examine the region privileges.  If both tasks have reads privileges, then 
 there is never a dependence.  If at least one task has write privileges we use table
 \ref{tab:depsdetect} to determine whether there is a dependence.
-\begin{center}
-\begin{table}
-\begin{tabular}{|c|c|c|c|c|} \hline
-             & Exclusive & Atomic   & Simultaneous & Relaxed \\ \hline 
-Exclusive    & Dep & Dep & Dep & Dep \\ \hline
-Atomic       & Dep & Same & Cont & Cont \\ \hline
-Simultaneous & Dep & Cont & Same & None \\ \hline
-Relaxed      & Dep & Cont & None & None \\ \hline
-\end{tabular}
-\caption{Dependence detection cases when at least one access has a write privilege. {\tt Dep}
-indicates a dependence is detected.  {\tt Same} indicates a dependence is detected
-only if the task uses different instances.  {\tt Cont} means that the dependence
-is contingent upon the permissions.  {\tt None} means there will never
-be a conflict.\label{tab:depsdetect}}
-\end{table}
-\end{center}
 %In this table, {\em Dependence} indicates that there will always be a dependence between
 %regions while {\em None} indicates that there will never be a dependence regardless
 %of mapping decisions.  In the case of {\em Same Instance} there is a dependence contingent
@@ -127,6 +111,23 @@ Another special case occurs if there is an {\tt Atomic} writer and either {\tt S
 or {\tt Relaxed} reader.  In this case it is acceptable for the tasks to run in
 parallel as it is valid for the reader to see updates form the writer, and the
 reader will not violate the atomic access semantics of the writer.
+\begin{center}
+\begin{table}
+\small
+\begin{tabular}{|c|c|c|c|c|} \hline
+             & Exclusive & Atomic   & Simultaneous & Relaxed \\ \hline 
+Exclusive    & Dep & Dep & Dep & Dep \\ \hline
+Atomic       & Dep & Same & Cont & Cont \\ \hline
+Simultaneous & Dep & Cont & Same & None \\ \hline
+Relaxed      & Dep & Cont & None & None \\ \hline
+\end{tabular}
+\caption{Dependence detection cases when at least one access has a write privilege. {\tt Dep}
+indicates a dependence is detected.  {\tt Same} indicates a dependence is detected
+only if the task uses different instances.  {\tt Cont} means that the dependence
+is contingent upon the permissions.  {\tt None} means there will never
+be a conflict.\label{tab:depsdetect}}
+\end{table}
+\end{center}
 
 %\subsubsection{Abstract Instances}
 %\label{subsec:absinsts}
@@ -463,10 +464,10 @@ have occurred.
 %accessor the runtime defaults to a task instantiation that relies on {\tt get} and
 %{\tt put} operations to access regions.
 
-The runtime also assigns a unique identifier describing the context
-in which the task is executing.  All calls into the runtime require the task
-to pass this context identifier which is what permits the runtime to know the context
-for incoming calls for creating/destroying regions and launching sub-tasks.  
+%The runtime also assigns a unique identifier describing the context
+%in which the task is executing.  All calls into the runtime require the task
+%to pass this context identifier which is what permits the runtime to know the context
+%for incoming calls for creating/destroying regions and launching sub-tasks.  
 
 \subsection{Task Completion}
 \label{subsec:cleanup}
@@ -544,8 +545,8 @@ we omit the details of this algorithm.
 %to map to an abstract instance, and there are no current tasks using the physical
 %instance.
 
-While reference counting normally doesn't allow for garbage collection of all data structures
-it will always work in this case because both our tasks and our regions are organized as 
-trees which ensures that it is impossible to create cyclic region references in our system.
+%While reference counting normally doesn't allow for garbage collection of all data structures
+%it will always work in this case because both our tasks and our regions are organized as 
+%trees which ensures that it is impossible to create cyclic region references in our system.
 
 
