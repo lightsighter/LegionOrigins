@@ -138,7 +138,8 @@ it at the Legion application level.
 \label{subsec:regionmeta}
 Application-level regions are broken into three inter-related pieces in the
 low-level runtime.  The metadata object tracks global information such as
-region size and valid mask.  Allocators are used to dynamically allocate and
+region size and the set of valid elements, which is used in partitioning
+operations.  Allocators are used to dynamically allocate and
 free entries in a region.  Finally, physical instances hold versions of the data for 
 a logical region.
 
