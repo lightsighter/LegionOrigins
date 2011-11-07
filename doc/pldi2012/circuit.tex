@@ -113,8 +113,8 @@ by the Legion runtime based on the region access annotations on the task declara
 %The declarations for the three subtasks are shown on lines 42-51.  
 The  {\tt calc\_new\_currents} task reads and writes the wires subregion, 
 the nodes subregion, and the ghost node region for its piece.
-The {\tt distribute\_charge} subtask turns things around, reading the piece's 
-wires subregion and updating all nodes those wires touch.  However,
+The {\tt distribute\_charge} subtask is a different phase that reads the piece's 
+wires subregion and updates all nodes those wires touch.  However,
 rather than requesting the ability to read and write the nodes (which would
 require serialization of these tasks for correctness), the task declares that
 it will use reorderable {\em reduction} operations and that the coherence requirement
@@ -187,7 +187,7 @@ in the circuit is in the wire region, but also guarantees that every
 node referred to by any wire is in the circuit's node region.
 
 Since a region relationship can have
-fields with types that refer its own fields' regions, it is often not possible
+fields with types that refer to its own fields' regions, it is often not possible
 to assign fields one at a time without violating the type checking rules.
 The simultaneous assignment operator asks the type checker only to ensure
 that fields have the correct types after all the fields are updated.  
