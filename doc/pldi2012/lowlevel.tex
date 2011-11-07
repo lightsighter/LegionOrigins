@@ -7,7 +7,7 @@ for our Legion implementation.
 %at the same time not straying 
 %too far from the native capabilities of the underlying hardware.  
 The low-level runtime abstracts the machine as a base set of objects:
-events, deferred locks, processors, memories, and regions.
+events, deferred locks, regions, memories, and processors.
 
 %The target machines for Legion include both clusters and GPU-equipped nodes,
 %and neither of which are able to efficiently provide a uniformly addressable
@@ -87,7 +87,7 @@ which allows an event to be reused with a new generation as soon as the previous
 Holders of an older (handle,generation) pair are able to query the newer
 incarnation of the event and determine from the generation mismatch that their
 event must have already triggered.  With this technique, there is no need to
-count references to the event at all. 
+count references to the event. 
 % An event can only be reused until the
 %generation counter reaches its maximum value, the current implementation
 %supports $2^{32}-1$ generations, and should that not be sufficient, extending
@@ -96,7 +96,8 @@ count references to the event at all.
 \subsubsection{Deferred Locks}
 \label{subsec:defferedlocks}
 Events provide a deterministic ordering between operations, 
-but the more relaxed coherence do not require strict ordering.  The traditional tool for this job is
+but the more relaxed coherence properties do not require strict ordering.  
+The traditional tool for this job is
 the mutex (a.k.a. lock), and it is from the common reader/writer lock that
 the low-level runtime's {\em deferred lock} is derived.  The key visible 
 difference between a mutex and a deferred lock is that the request does not
@@ -138,7 +139,7 @@ it at the Legion application level.
 Application-level regions are broken into three inter-related pieces in the
 low-level runtime.  The metadata object tracks global information such as
 region size and valid mask.  Allocators are used to dynamically allocate and
-free entries in a region.  Finally, instances hold versions of the data for 
+free entries in a region.  Finally, physical instances hold versions of the data for 
 a logical region.
 
 \subsubsection{Memories}
