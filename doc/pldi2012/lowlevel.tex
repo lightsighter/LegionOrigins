@@ -122,34 +122,24 @@ message is sent to the current owner.
 %while the message is in flight, the previous owner forwards the request to
 %the new owner.  The highly unlikely, but possible, case in which multiple 
 %forwardings are required is bounded at the number of nodes in the machine.)
-The ability to migrate locks between nodes allows the performance of a
+%The ability to migrate locks between nodes 
+This allows the performance of a
 heavily-contended cluster-level lock to approach that of a single-node lock.
 
 The final interesting feature of the deferred lock is that it can be associated
 with an object in memory and that object will automatically be kept coherent
 across the cluster.  This is similar to MESI coherence in a distributed cache,
 but is done per-object rather than on cache lines.  This is currently only 
-used for object within the runtime itself, but we are exploring ways to expose
+used for objects within the runtime itself, but we are exploring ways to expose
 it at the Legion application level.
 
-\subsubsection{Processors}
-\label{subsec:processors}
-Hardware units capable of performing computation are captured as generic
-processors in the low-level runtime.  Like other runtime objects, a processor
-has a globally unique name and can be referred to anywhere in the system.
-Processors come in different \emph{kinds} (e.g. X86 CPU core, CUDA-capable GPU),
-but they all support the same
-interface and execution model.  A request to spawn a task on a given processor
-may come from anywhere in the system.  The request names which task should
-be spawned and provides input arguments and zero or more events.  Once those
-events have occurred, the task is placed into a queue of ready tasks, which
-the processor works through in the order in which they were enqueued.  A
-processor will generally run a task to completion before taking another, but
-will try to run another task (resources permitting) if the current task needs
-to wait for an event to occur.  Once a task is placed on a processor's queue,
-it may not be moved or deleted.  Load-balancing of tasks is expected to be done
-by the high-level runtime.  The primary purpose of the queue for the low-level
-Processor is to be able to hide the latency of starting new tasks.
+\subsubsection{Regions}
+\label{subsec:regionmeta}
+Application-level regions are broken into three inter-related pieces in the
+low-level runtime.  The metadata object tracks global information such as
+region size and valid mask.  Allocators are used to dynamically allocate and
+free entries in a region.  Finally, instances hold versions of the data for 
+a logical region.
 
 \subsubsection{Memories}
 \label{subsec:memories}
@@ -160,48 +150,30 @@ The low-level runtime allows for the allocation and freeing of region instances
 and allocators.  It also supports bulk transfers from one memory to another.
 These bulk transfers can often be implemented using dedicated DMA (or RDMA)
 hardware, freeing up the processors to perform more interesting
-computation. 
+computation.  Finally, the runtime is able to provide memory-specific accessors,
+lightweight objects that allow a given task to access a given physical region
+instance.  In the most common case, reads and write access is done through a 
+single array dereference, but the interface allows seamless use of other
+access modes (e.g. use of RDMA puts and gets for access to remote memory).
 
-\subsubsection{Regions}
-\label{subsec:regionmeta}
-Application-level regions are broken into four inter-related pieces in the
-low-level runtime:
-\begin{description}
-
-\item[MetaData] The metadata for a logical region captures attributes of a
-logical region that are common across all instances.  These attributes include
-the size of the logical region, the element type, and the allocation mask,
-which tracks which portions of the logical region are actually in use.  
-%Region
-%MetaDatas are created independently of any memory objects and are accessible
-%(via a globally unique name) to all nodes in the machine.
-
-\item[Allocator] The dynamic memory allocation capability of a region instance
-is provided via an allocator object.  An allocator is associated with a
-region metadata and must be created in a particular memory.  Once created, it
-may be used to allocate and free elements of the region by any task on any
-processor that has non-zero affinity with the memory.
-
-\item[Instance] Each physical instance of a region stores some version of all
-the elements in a region.  As with allocators, a physical instance is
-associated with a particular region metadata and spends its entire lifetime in
-the memory object in which it was created.  
-%When multiple physical instances
-%exist for the same region, the low-level runtime does nothing to keep them
-%copies and set up the right inter-operation dependencies to provide the level
-%of coherence requested by the application.  Although a physical instance 
-%stores the contents of a region, it does not directly offer access to those
-%contents.
-
-\item[Accessor] Access to the contents of a physical region instance are 
-handled by accessor objects.  These are lightweight objects that allow a given
-task to access a given physical region instance, regardless of the
-implementation of that instance or the underlying memory.  In the most common
-case, read and write access is done through a single array dereference, but the
-accessor interface allows seamless use of other types of memory as well (e.g.
-memory that's accessed via RMDA put and get calls).
-
-\end{description}
+\subsubsection{Processors}
+\label{subsec:processors}
+Hardware units capable of performing computation are captured as generic
+processors in the low-level runtime.  Like other runtime objects, a processor
+has a globally unique name and can be referred to anywhere in the system.
+Processors come in different \emph{kinds} (e.g. X86 CPU core, CUDA-capable GPU),
+but they all support the same
+interface and execution model.  A request to spawn a task on a given processor
+may come from anywhere in the system, and names a task along with zero or
+more events that must happen before the task may start.  Once those
+events have occurred, the task is placed into a queue of ready tasks, which
+the processor works through in the order in which they were enqueued.  A
+processor will generally run a task to completion before taking another, but
+will try to run another task (resources permitting) if the current task needs
+to wait for an event to occur.  Once a task is placed on a processor's queue,
+it may not be moved or deleted.  Load-balancing of tasks is expected to be done
+by the high-level runtime.  The primary purpose of the queue for the low-level
+Processor is to be able to hide the latency of starting new tasks.
 
 
 \subsection{Low-Level Implementations}
@@ -210,8 +182,8 @@ The primary goal of the low-level runtime is to provide an
 abstraction that enables efficient execution of Legion programs
 on a wide array of machines.  To support this claim we describe
 two implementation of the low-level runtime: one based on POSIX
-threads for a shared memory SMP and one based on GASNet and CUDA
-for distributed memory clusters with multiple GPUs.
+threads for a shared memory SMP and one based on GASNet \cite{GASNET07} 
+and CUDA for distributed memory clusters with multiple GPUs.
 %The magic of an
 %apparently-unified address space is left to the high-level runtime, and the
 %interface to the low-level runtime is done in terms of handles rather than 
@@ -241,10 +213,10 @@ is of pending lock requests to attempt when the previous lock is released.
 \subsubsection{GPU Cluster Implementation}
 \label{subsec:clusterimpl}
 The cluster implementation of the low-level runtime is implemented on a mix
-of POSIX threads for intra-node threading and communication, GASnet for 
+of POSIX threads for intra-node threading and communication, GASNet for 
 inter-node communication, and CUDA for access to resources of the GPUs in 
 each node.  Locks and events have roughly the same implementation as the SMP
-runtime for handling multiple local requestors, but use GASnet active messages
+runtime for handling multiple local requestors, but use GASNet active messages
 to coordinate lock ownership and event subscription and triggering between
 nodes.  In addition to the processor objects for each CPU core, a single
 processor object is created for each GPU in the system.  It would be preferable
@@ -252,7 +224,7 @@ to expose the GPU's computational resources at a finer granularity, but
 current GPU hardware doesn't directly allow this flexibility and recent attempts
 at implementing such control in a software layer on top of CUDA have suffered
 from significant overhead.  The memory hierarchy is expanded to include a 
-{\em global} memory that is striped across all nodes and accessible via GASnet
+{\em global} memory that is striped across all nodes and accessible via GASNet
 RDMA calls, one process local memory per cluster node, and two memories per GPU: one for the GPU's framebuffer that is
 accessible only to that GPU and by bulk DMA operations, and one for the pinned
 {\em zero copy} system memory that is accessible to the GPU and all the CPU cores
