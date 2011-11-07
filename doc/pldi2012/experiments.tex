@@ -2,10 +2,10 @@
 \label{sec:exp}
 
 To measure Legion's ability to distribute work across a distributed machine, 
-three benchmarks were developed and run on a small cluster under a variety
-of configurations.  The cluster consists of four nodes connected by a 40~Gb/s
-Infiniband fabric.  Each node is powered by 2 Intel Xeon X5680 CPUs, each
-with 6 cores, and 2 NVIDIA Tesla C2070 GPUs.  The cluster is running Linux
+two real-world benchmarks were developed and run on a small cluster under a
+variety of configurations.  The cluster consists of four nodes connected by a
+40~Gb/s Infiniband fabric.  Each node is powered by 2 Intel Xeon X5680 CPUs,
+each with 6 cores, and 2 NVIDIA Tesla C2070 GPUs.  The cluster is running Linux
 with GASNet using the {\tt ibv} conduit to interface directly with the standard
 OFED software stack for low-latency access to the Infiniband hardware.
 
@@ -60,14 +60,13 @@ speedup, even without increasing the size of the problem being tackled.
   anchor=north west},
   cycle list={{black, mark=x}, {black, mark=+},
               {black, mark=o}, {black, mark=diamond},
-              {black, mark=triangle}, {black, mark=star}}};
-
+              {black, mark=triangle}, {black, mark=star}}}
 
 \begin{figure}
   \centering
   \subfigure[Performance Scaling]{
-    \begin{tikzpicture}
-      \begin{axis}[xlabel=Number of Nodes,ylabel=Normalized Speedup,height=5cm,width=8.5cm,xtick={1,2,3,4}]
+    \begin{tikzpicture}[scale=0.8]
+      \begin{axis}[xlabel=Number of Nodes,ylabel=Normalized Speedup,height=5cm,width=8.5cm,xtick={1,2,3,4},font=\small]
         \addplot coordinates {
 % num gpus = 2
   (1, 1.99)
@@ -89,6 +88,7 @@ speedup, even without increasing the size of the problem being tackled.
   }
 
   \subtable[Execution Time Breakdown]{
+    \scalebox{0.8}{
    \tiny
     \begin{tabular}{c@{\hspace{2pt}}cD{.}{.}{3}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}}
 \toprule
@@ -106,6 +106,7 @@ node & nodes & \multicolumn{1}{c}{Wall Clock} & \multicolumn{1}{c}{Application} 
  & $4$ & 18.103 & 105.42 & 13.747 & 0.004 & 4.638 & 0 & 0.003\\
 \bottomrule \\
     \end{tabular}
+}
     \label{sfig:results1:timers}
   }
   \caption{Circuit Simulator Results}
@@ -185,7 +186,7 @@ tasks to provide more predictable performance when using all CPU cores.
 \begin{figure}
   \centering
   \subfigure[Performance Scaling]{
-    \begin{tikzpicture}
+    \begin{tikzpicture}[scale=0.8]
       \begin{axis}[
           xlabel=Number of Nodes,
           ylabel=Normalized Speedup,
@@ -193,6 +194,7 @@ tasks to provide more predictable performance when using all CPU cores.
           width=8.5cm,
           xtick={1,2,3,4},
           legend columns=3,
+          font=\small
         ]
         \addplot coordinates {
 % 12 CPUs
@@ -243,6 +245,7 @@ tasks to provide more predictable performance when using all CPU cores.
   }
 
   \subtable[Execution Time Breakdown]{
+    \scalebox{0.8}{
    \tiny
     \begin{tabular}{c@{\hspace{2pt}}cD{.}{.}{3}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}}
 \toprule
@@ -280,87 +283,9 @@ node & nodes & \multicolumn{1}{c}{Wall Clock} & \multicolumn{1}{c}{Application} 
  & $4$ & 4.017 & 67.662 & 1.19 & 4.882 & 1.22 & 0 & 1.485\\
 \bottomrule \\
     \end{tabular}
+}
     \label{sfig:results2:timers}
   }
 
   \caption{Fluid Results}
 \end{figure}
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-\subsection{Tree Search}
-
-The circuit simulation was able to count on a static, if irregular,
-partition of its workload, but that is not possible in some cases.  One
-such example arises in ray tracing, in which the components of a scene to be
-rendered are partitioned in a binary tree to minimize the number of expensive
-object intersection tests that must be performed.  By traversing its path 
-through the tree, a ray is able to efficiently skip entire chunks of the 
-scene that it is guaranteed not to intersect with.  The trees tend to be
-highly imbalanced (often intentionally so), and the set of rays that traverse
-the tree tend to have similar path.  Both of these factors contribute to
-large fluctuations in the load on any particular part of the tree, complicating
-attempts to statically partition the tree.  The {\tt Tree Search} benchmark
-explores Legion's ability to load-balance tasks in a locality-aware manner.
-
-The benchmark constructs an irregular binary tree, and then partitions it into
-roughly subregions that have roughly equal numbers of nodes.  Partition
-crossings are annotated on the tree and traversal tasks are re-spawned when
-a ray crosses into another partition.  Load imbalances will occur, but when
-they do, the default mapper's ability to provide a set of tasks with good
-locality should minimize the amount of data that must be copied around.  To
-measure this benefit, each run is also done with the tree partitioning 
-disabled.  This denies the mapper the locality information it would need to 
-make good choices, reducing it to making essentially random choices.
-
-Figure~\ref{sfig:results3:perf} shows performance of the tree search test
-relative to the single node with partitioning case. MORE TEXT HERE.
-
-\begin{figure}
-  \centering
-  \subfigure[Performance Scaling]{
-    \begin{tikzpicture}
-      \begin{axis}[xlabel=Number of Nodes,ylabel=Normalized Speedup,height=5cm,width=8.5cm,xtick={1,2,3,4}]
-        \addplot coordinates {
-% num gpus = 2
-  (1, 1.99)
-  (2, 3.46)
-  (3, 3.44)
-  (4, 5.90)
-        };
-        \addplot coordinates {
-% num gpus = 1
-  (1, 1.00)
-  (2, 1.86)
-  (3, 2.40)
-  (4, 3.41)
-        };
-      \legend{2 GPU/node,1 GPU/node}
-      \end{axis}
-    \end{tikzpicture}
-    \label{sfig:results3:perf}
-  }
-
-  \subtable[Execution Time Breakdown]{
-   \tiny
-    \begin{tabular}{c@{\hspace{2pt}}cD{.}{.}{3}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}@{\hspace{2pt}}D{.}{.}{3}}
-\toprule
-GPUs/ & \# \\
-node & nodes & \multicolumn{1}{c}{Wall Clock} & \multicolumn{1}{c}{Application} & \multicolumn{1}{c}{Copies} & \multicolumn{1}{c}{High-level} & \multicolumn{1}{c}{Low-level} & \multicolumn{1}{c}{Mapper} & \multicolumn{1}{c}{System} \\
-\midrule
-\multirow{4}{*}{$1$} & $1$ & 106.892 & 105.387 & 1.578 & 0.003 & 21.624 & 0 & 0\\
- & $2$ & 57.388 & 105.407 & 10.348 & 0.003 & 15.177 & 0 & 0.001\\
- & $3$ & 44.552 & 105.41 & 11.935 & 0.003 & 11.695 & 0 & 0.002\\
- & $4$ & 31.368 & 105.42 & 12.875 & 0.004 & 8.419 & 0 & 0.003\\
-\midrule
-\multirow{4}{*}{$2$} & $1$ & 53.787 & 105.397 & 1.857 & 0.004 & 10.953 & 0 & 0\\
- & $2$ & 30.923 & 105.415 & 10.716 & 0.004 & 7.937 & 0 & 0.002\\
- & $3$ & 31.037 & 105.414 & 12.558 & 0.004 & 7.996 & 0 & 0.001\\
- & $4$ & 18.103 & 105.42 & 13.747 & 0.004 & 4.638 & 0 & 0.003\\
-\bottomrule \\
-    \end{tabular}
-    \label{sfig:results3:timers}
-  }
-  \caption{Tree Search Results}
-\end{figure}
-
