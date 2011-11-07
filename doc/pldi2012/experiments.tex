@@ -3,9 +3,9 @@
 
 To measure Legion's ability to distribute work across a distributed machine, 
 three benchmarks were developed and run on a small cluster under a variety
-of configurations.  The cluster consists of four systems connected by a 40~Gb/s
-Infiniband fabric.  Each system is powered by 2 Intel Xeon X5680 CPUs, each
-with 6 cores, and 2 NVIDIA Tesla C2070 GPUs.  The systems were running Linux
+of configurations.  The cluster consists of four nodes connected by a 40~Gb/s
+Infiniband fabric.  Each node is powered by 2 Intel Xeon X5680 CPUs, each
+with 6 cores, and 2 NVIDIA Tesla C2070 GPUs.  The cluster is running Linux
 with GASNet using the {\tt ibv} conduit to interface directly with the standard
 OFED software stack for low-latency access to the Infiniband hardware.
 
@@ -16,7 +16,7 @@ OFED software stack for low-latency access to the Infiniband hardware.
 The circuit simulator benchmark was designed to be representative of the
 general class of finite-element simulations on irregular grids.  It relies
 on many iterations using small stencils (e.g. just the neighboring nodes) to
-propagate changes through the system, and each iteration requires communication
+propagate changes through the system.  Each iteration requires communication
 between neighboring nodes.  Careful partitioning of the system can minimize
 the amount of information that must be exchanged, but the irregularity of the
 underlying graph mandates similar irregularity in the sharing pattern.
@@ -24,16 +24,16 @@ underlying graph mandates similar irregularity in the sharing pattern.
 The structure of the circuit simulator was presented in Section~\ref{sec:ex}.
 Our implementation uses CUDA to perform the computations on the GPU, and Legion
 automatically handles the movement of data between the GPUs' memories and the
-system memory, but only when necessary.  In fact, with the help of an
-application-specific mapper, it is able to keep much of
+system memory when communication is necessary.  By utilizing an  
+application-specific mapper, our implementation is able to keep much of
 the data permanently resident in a given GPU for the entirety of the simulation.
-Figure~\ref{sfig:results1:perf} shows the relative speedup as the simulation is
-spread over multiple nodes in the cluster.  The size of the circuit
-being simulated is not changed as the node count increases.  This is therefore
-a demonstration of ``strong scaling''.  Adding a second node to the simulation
+Figure ~\ref{sfig:results1:perf} shows the relative speedup as the simulation is
+spread over multiple nodes in the cluster.  We demonstrate strong scaling by
+keeping the size of the circuit fixed as node count increases.
+Adding a second node to the simulation
 speeds it up by 86\%, and with four nodes, the simulation is sped up by a total
 of 241\% (i.e. a factor of 3.41x).  When enabling the use of both GPUs in each
-node (a decision that requires no changes to the application), the we achieve
+node (a decision that requires no changes to the application), we achieve
 a speedup of 5.90x when using all eight GPUs.
 
 The dip in the performance graph for the 6 GPU case is an artifact of the
@@ -44,7 +44,7 @@ configurations that differ from the initial design target.  The Legion runtime
 will always guarantee correct execution, but performance can suffer if the
 tasks provided by the application do not divide evenly over the machine.
 
-Table\~ref{sfig:results1:timers} breaks down the execution time by where it was
+Table~\ref{sfig:results1:timers} breaks down the execution time by where it was
 spent.  The times are summed over all threads, so the aggregate execution time
 will always exceed the elapsed wall clock time.  The time spent in the 
 application code is nearly constant in all configurations, but the time spent
@@ -121,7 +121,7 @@ node & nodes & \multicolumn{1}{c}{Wall Clock} & \multicolumn{1}{c}{Application} 
 \subsection{Fluid}
 
 To show that Legion remains efficient for regular partitioning cases as well,
-we have implemented a particle simulation benchmark based heavily on the
+we have implemented a particle simulation benchmark based on the
 {\tt fluidanimate} benchmark from the PARSEC \cite{bienia11benchmarking} suite.
 Our simulation uses a cyclic 2D grid of cells instead of PARSEC's 3D grid with
 boundaries, but the computations being performed are preserved.
@@ -166,16 +166,20 @@ being able to avoid copies entirely in some cases is a net win.
 
 The second significant jump in application time is when using all 12 CPUs in
 each node.  With application tasks running on all the available CPU cores,
-there are no ``extra'' cores for running the OS, device drivers, and the like.
+there are no extra cores for running the OS or device drivers.
 For example, GASNet's low-latency implementation counts on a CPU core being
 available for 
-a thread to spin on message arrival notifications.  Allowing that thread to
+a thread to spin on active message arrival notifications.  Allowing that thread to
 sleep (and then wait for the OS rescheduling delay) degrades system performance
-much more than the penalty being observed in our fluid simulation.  Now that
-one can generally count on having many CPU cores in any new system, it might
-make sense to reserve one (or more) in the low-level runtime for background
-tasks like these in order to provide more predictable performance on the CPU
-cores that are exposed to the high-level runtime.
+much more than the penalty being observed in our fluid simulation.  In future
+work we plan to reserve low-level runtime processors for these background
+tasks to provide more predictable performance when using all CPU cores.
+
+%Now that
+%one can generally count on having many CPU cores in any new system, it might
+%make sense to reserve one (or more) in the low-level runtime for background
+%tasks like these in order to provide more predictable performance on the CPU
+%cores that are exposed to the high-level runtime.
 
 \usepgflibrary{plotmarks}
 \begin{figure}
@@ -286,7 +290,7 @@ node & nodes & \multicolumn{1}{c}{Wall Clock} & \multicolumn{1}{c}{Application} 
 
 \subsection{Tree Search}
 
-The circuit simulation was able to count on a good static, if irregular,
+The circuit simulation was able to count on a static, if irregular,
 partition of its workload, but that is not possible in some cases.  One
 such example arises in ray tracing, in which the components of a scene to be
 rendered are partitioned in a binary tree to minimize the number of expensive
