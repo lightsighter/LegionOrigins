@@ -83,7 +83,7 @@ notified.
 %when they've all been performed.  
 Our events include a
 {\em generation count} that tracks how many times the event has been triggered,
-which allows an event to ve reused with a new generation as soon as the previous generation has triggered.
+which allows an event to be reused with a new generation as soon as the previous generation has triggered.
 Holders of an older (handle,generation) pair are able to query the newer
 incarnation of the event and determine from the generation mismatch that their
 event must have already triggered.  With this technique, there is no need to
@@ -117,10 +117,11 @@ without communication with the other nodes.  That node becomes
 the initial home for the lock, but the deferred lock (unlike events) can 
 migrate to other nodes or even be shared between nodes, allowing repeated
 lock requests from a single node to be kept local to that node after a single
-message is sent to the current owner.  (Should the ownership of the lock change
-while the message is in flight, the previous owner forwards the request to
-the new owner.  The highly unlikely, but possible, case in which multiple 
-forwardings are required is bounded at the number of nodes in the machine.)
+message is sent to the current owner.  
+%(Should the ownership of the lock change
+%while the message is in flight, the previous owner forwards the request to
+%the new owner.  The highly unlikely, but possible, case in which multiple 
+%forwardings are required is bounded at the number of nodes in the machine.)
 The ability to migrate locks between nodes allows the performance of a
 heavily-contended cluster-level lock to approach that of a single-node lock.
 
