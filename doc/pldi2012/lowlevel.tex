@@ -1,14 +1,13 @@
 \section{Low-Level Runtime}
 \label{sec:lowlevel}
 
-The purpose of the low-level runtime is to provide a machine-independent layer
-for the high-level runtime.  This abstraction will provide portability to the Legion
-programming model and the high-level runtime.  To achieve this goal the low-level
-runtime needs to hide the ideosynchracies of the underlying machine.  At the same time, it needs to avoid 
-straying too far from the native capabilities of the underlying hardware 
-and software in order to obtain an efficient implementation.  The Legion
-low-level runtime does this by abstracting the machine into a base set
-of objects required to implement the Legion high-level.  These objects,
+The low-level runtime is a machine-independent layer that provides portability
+to the high-level runtime and consequently the Legion programming model.
+The low-level runtime hides the ideosynchracies of the underlying machine while
+at the same time not straying 
+too far from the native capabilities of the underlying hardware.  
+The machine abstraction that the Legion low-level runtime presents is a base set
+of objects.  These objects,
 include processors, memories, regions, events, and deffered locks.
 
 %The target machines for Legion include both clusters and GPU-equipped nodes,
@@ -44,16 +43,16 @@ include processors, memories, regions, events, and deffered locks.
 \label{subsec:lowobjects}
 \subsubsection{Events}
 \label{subsec:events}
-The low-level runtime supports a deffered execution model to help hide
+The low-level runtime supports a deffered execution model to hide
 the latencies associated with communicating in a distributed memory
 system.  The basic building block of the low-level runtime's deferred execution model
 is the {\em event}.  An event is a placeholder for the completion of a deferred
 operation.  When an asynchronous call is made to any of the low-level runtime objects, an event is 
 immediately returned to the caller.  The caller may query whether the event has {\em triggered}
-which happens when an even occurs.  The common use case for events is
+which happens when the operation corresponding to the event completes.  The common use case for events is
 to provide them as prerequisites to subsequent requests made of the runtime. 
 These dependences cause the later requests to be automatically deferred until the previous
-operations have completed.  By using events as dependences, the caller can
+events have triggered.  By using events as dependences, the caller can
 set up complicated, but coordinated chains of operations to be executed without
 having to wait for the low-level runtime to execute them.
 %These requests will
@@ -95,7 +94,7 @@ count references to the event at all.
 \subsubsection{Deferred Locks}
 \label{subsec:defferedlocks}
 Events are used to provide a deterministic ordering between operations, but in
-some cases is overly restrictive.  To implement the more relaxed coherence
+some cases are overly restrictive.  To implement the more relaxed coherence
 properties supported in Legion we need a less restrictive ordering semantics that
 can result in better performance.  The traditional tool for this job is
 the mutex (a.k.a. lock), and it is from the common reader/writer lock that
@@ -162,7 +161,7 @@ These bulk transfers can often be implemented using dedicated DMA (or RDMA)
 hardware, freeing up the processors to perform more interesting
 computation. 
 
-\subsubsection{Region Meta-Data Objects}
+\subsubsection{Regions}
 \label{subsec:regionmeta}
 Application-level regions are broken into four inter-related pieces in the
 low-level runtime:
@@ -230,7 +229,7 @@ for distributed memory clusters with multiple GPUs.
 
 \subsubsection{SMP Implementation}
 \label{subsec:smpimpl}
-The SMP implementation of the low-level runs on any SMP computer that supports 
+The SMP implementation of the low-level runs on any SMP machine that supports 
 POSIX threads.  A single memory object is created for the shared memory, and 
 a processor object is created for
 each CPU core in the system.  Events are 

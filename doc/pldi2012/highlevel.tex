@@ -8,17 +8,17 @@ The high-level runtime system operates on top of the
 low-level runtime which hides machine specific details
 and is described in Section \ref{sec:lowlevel}.
 
-The biggest challenge to implementing the high-level
+The biggest challenge in implementing the high-level
 runtime is to avoid the latencies associated with distributed
 memory systems and deep memory hierarchies.  To aid
 in solving this problem, the high-level runtime employs two useful 
-scheduling techniques.  The first technique was proved
-in Section \ref{sec:exec}: all scheduling decisions for a
-task can be made locally in the context in which the
+scheduling techniques.  The first technique, validated in 
+Section~\ref{sec:exec}, is to make all scheduling decisions for a
+task locally, i.e. in the context in which the
 task was created.  The second technique is a {\em deferred execution model} 
 that allows the runtime to hide the latencies associated
-with moving data through deep memory hierarchies.  A
-deffered execution model decouples the issuing of operations
+with moving data through deep memory hierarchies by decoupling the issuing
+of operations
 from when they are actually performed.  This model is supported
 by features in the low-level runtime.
 
@@ -34,38 +34,38 @@ by features in the low-level runtime.
 %runtime can hide the latencies of data and task movement and acieve
 %good throughput and high performance.
 
-A deffered execution model however presents challenges to implementing
-the semantics of the Legion programming model.  Deffered execution
-does not necessarily imply that tasks will be executed in the order in
-which they are scheduled, but only in the order in which dependences
-are expressed.  To orchestrate the execution of Legion
-programs in this environment the high-level runtime is architected
-in a manner similar to a pipelined out-of-order hardware processor, but at
-a coarser granularity with tasks corresponding to instructions and
-regions corresponding to registers.  There is a pipeline of stages to 
-executing a task which allows the runtime to extract
-as much task-level parallelism as possible from an application whithin
-the constraints of the Legion programming model.  To illustrate
+A deferred execution model however presents challenges to implementing
+the semantics of the Legion programming model.  Deferred operations
+may not be executed in the order they were scheduled if no dependency
+is expressed between them.  To orchestrate the execution of Legion
+programs in this environment the high-level runtime uses an architecture
+similar to that of a pipelined out-of-order hardware processor, but at
+a coarser granularity.  Tasks can be though of as corresponding to instructions
+and regions to registers.  The runtime uses a pipeline of task execution stages
+to extract
+as much task-level parallelism as possible from an application, while
+preserving the guarantees of the Legion programming model.  To illustrate
 the implementation of the high-level runtime we now describe the
 details of how each stage of task execution is performed.
 
 \subsection{Dependence Analysis} 
 \label{subsec:depanalysis}
-The first step in the execution of a task is dependence analysis.  When
-a task is registered with the high-level runtime the task call includes
-information about both the logical regions that the task will require
-as well as the read-write privileges and coherence properties
-for each of the regions.  The runtime uses this information to perform
+The first step in the execution of a task is dependence analysis.  Tasks are
+registered with the high-level runtime in sequential program order.  The
+registration lists the logical
+regions to be accessed, specifying the needed privileges and the coherence.
+The runtime uses this information to perform
 dependence detection with each of the previous tasks that have been registered
-in the same context.  Dependence detection only needs to be performed at
-the scope of an enclosing context as was proved in Section \ref{sec:exec}. 
+in the same context (i.e. called by the same parent task).  These checks will
+be sufficient to ensure correct program order, as was proved in Section~\ref{sec:exec}. 
 
-We initially describe how dependences are detected from logical regions
-in Section \ref{subsec:cohdep}.  We then describe the algorithm that
-is used to perform dependence detection in Section \ref{subsec:depdetect}.
-Section \ref{subsec:dataflow} describes how data is versioned correctly
-during deffered execution.  For concreteness we describe how dependence
-analysis is performed for the circuit simulation from Section \ref{sec:ex}.
+%We initially describe how dependences are detected from logical regions
+%in Section \ref{subsec:cohdep}.  We then describe the algorithm that
+%is used to perform dependence detection in Section \ref{subsec:depdetect}.
+%Section \ref{subsec:dataflow} describes how data is versioned correctly
+%during deferred execution.  For concreteness we describe how dependence
+%analysis is performed for the circuit simulation from Section \ref{sec:ex}.
+
 %When performing dependence analysis the runtime relies on its knowledge about
 %the relationships between logical regions and partitions.  We first describe
 %the the components to dependence analysis in sections \ref{subsec:regiontree},
@@ -87,13 +87,45 @@ analysis is performed for the circuit simulation from Section \ref{sec:ex}.
 %which are subregions of the partition.  
 \subsubsection{Dependencies From Coherence and Privileges}
 \label{subsec:cohdep}
-To detect dependencies between any two tasks using a logical region, we leverage
-the information contained in the privileges and cohrence properties provided by the
-task call.  Dependency checks are performed pair-wise between regions
-to determine whether one task depends on the other.  When checking for
-dependencies we first examine the region privileges.  If both tasks have reads privileges, then 
-there is never a dependence.  If at least one task has write privileges we use table
-\ref{tab:depsdetect} to determine whether there is a dependence.
+Conceptually, dependence detection with a previous task requires comparing the two sets of
+logical regions being accessed.  For each logical reason from the previous task
+that may overlap with a logical region needed by the new task, the privileges
+and coherence modes are compared to determine whether a dependence exists.  If
+only read privileges are in use, there is never a conflict, but if either or
+both task needs write or reduction privileges, the coherence modes are compared
+according to this table:
+
+\vspace{2mm}
+{\small
+\begin{tabular}{c|cccc}
+             & Exclusive & Atomic   & Simultaneous & Relaxed \\
+\midrule
+Exclusive    & Dep & Dep & Dep & Dep \\ 
+Atomic       & Dep & Same & Cont & Cont \\
+Simultaneous & Dep & Cont & Same & None \\
+Relaxed      & Dep & Cont & None & None \\
+\end{tabular}
+}
+\vspace{2mm}
+
+An entry of {\tt Dep} means there is always a dependence, whereas {\tt None}
+means that there is no dependency created by this region pair.  An entry of
+{\tt Same} indicates a dependency that can be avoided if the two tasks are
+able to use the same physical region.  Finally, an entry labeled {\tt Cont}
+indicates a dependency that can be avoided if a single writer is using the
+atomic coherence mode.  When a dependence is detected, the new task will
+generally have to wait for the older task to complete before it can begin
+execution.
+
+%For each previously registered task, 
+%To detect dependencies between any two tasks using a logical region, we leverage
+%the information contained in the privileges and cohrence properties provided by the
+%task call.  Dependency checks are performed pair-wise between regions
+%to determine whether one task depends on the other.  When checking for
+%dependencies we first examine the region privileges.  If both tasks have reads privileges, then 
+%there is never a dependence.  If at least one task has write privileges we use table
+%\ref{tab:depsdetect} to determine whether there is a dependence.
+
 %In this table, {\em Dependence} indicates that there will always be a dependence between
 %regions while {\em None} indicates that there will never be a dependence regardless
 %of mapping decisions.  In the case of {\em Same Instance} there is a dependence contingent
@@ -101,33 +133,33 @@ there is never a dependence.  If at least one task has write privileges we use t
 %more detail in section \ref{subsec:instmang}) then there is no dependence, which if
 %they map to different instances there is a dependence as the system will have to generate
 %a copy between the two tasks running.
-For the case of {\tt Contingent} there are two special cases that we handle.
-One special case is Write-After-Read (WAR) dependencies.  For the WAR case, if neither coherence property
-is {\em Exclusive} then we can ensure that different physical instances
-are used to avoid an anti-dependence and increase parallelism.  If either property is {\em Exclusive} then the semantics
-of the programming model mandate that we detect a dependence and serialize the task.
+%For the case of {\tt Contingent} there are two special cases that we handle.
+%One special case is Write-After-Read (WAR) dependencies.  For the WAR case, if neither coherence property
+%is {\em Exclusive} then we can ensure that different physical instances
+%are used to avoid an anti-dependence and increase parallelism.  If either property is {\em Exclusive} then the semantics
+%of the programming model mandate that we detect a dependence and serialize the task.
 
-Another special case occurs if there is an {\tt Atomic} writer and either {\tt Simultaneous}
-or {\tt Relaxed} reader.  In this case it is acceptable for the tasks to run in
-parallel as it is valid for the reader to see updates form the writer, and the
-reader will not violate the atomic access semantics of the writer.
-\begin{center}
-\begin{table}
-\small
-\begin{tabular}{|c|c|c|c|c|} \hline
-             & Exclusive & Atomic   & Simultaneous & Relaxed \\ \hline 
-Exclusive    & Dep & Dep & Dep & Dep \\ \hline
-Atomic       & Dep & Same & Cont & Cont \\ \hline
-Simultaneous & Dep & Cont & Same & None \\ \hline
-Relaxed      & Dep & Cont & None & None \\ \hline
-\end{tabular}
-\caption{Dependence detection cases when at least one access has a write privilege. {\tt Dep}
-indicates a dependence is detected.  {\tt Same} indicates a dependence is detected
-only if the task uses different instances.  {\tt Cont} means that the dependence
-is contingent upon the permissions.  {\tt None} means there will never
-be a conflict.\label{tab:depsdetect}}
-\end{table}
-\end{center}
+%Another special case occurs if there is an {\tt Atomic} writer and either {\tt Simultaneous}
+%or {\tt Relaxed} reader.  In this case it is acceptable for the tasks to run in
+%parallel as it is valid for the reader to see updates form the writer, and the
+%reader will not violate the atomic access semantics of the writer.
+%XS\begin{center}
+%\begin{table}
+%\small
+%\begin{tabular}{|c|c|c|c|c|} \hline
+%             & Exclusive & Atomic   & Simultaneous & Relaxed \\ \hline 
+%Exclusive    & Dep & Dep & Dep & Dep \\ \hline
+%Atomic       & Dep & Same & Cont & Cont \\ \hline
+%Simultaneous & Dep & Cont & Same & None \\ \hline
+%Relaxed      & Dep & Cont & None & None \\ \hline
+%\end{tabular}
+%\caption{Dependence detection cases when at least one access has a write privilege. {\tt Dep}
+%indicates a dependence is detected.  {\tt Same} indicates a dependence is detected
+%only if the task uses different instances.  {\tt Cont} means that the dependence
+%is contingent upon the permissions.  {\tt None} means there will never
+%be a conflict.\label{tab:depsdetect}}
+%\end{table}
+%\end{center}
 
 %\subsubsection{Abstract Instances}
 %\label{subsec:absinsts}
@@ -149,75 +181,51 @@ be a conflict.\label{tab:depsdetect}}
 
 \subsubsection{Dependence Detection}
 \label{subsec:depdetect}
-When a task is registered, the runtime
-will perform dependence detection for every region that the task requests with
-prior tasks that have been registered in the same context.  Since
-tasks are registered in program order we will always perform dependence detection
-in program order which guarantees correctness even if tasks are executed out-of-order.  
-Performing dependence detection in program order is annalogous to how an out of order
-processor works.  Out-of-order processors load instructions in order and only after
-analyzing their instructions and register dependencies do they execute instructions
-out of order.  The regions that a task requires are annalogous
-to the registers listed in an instruction and the goal of the high-level
-runtime is to detect the same dependences and use them to enforce scheudling constraints
-upon a task.  However, there is a catch to this analogy: in the Legion programming
-model two different logical regions are not necessarily independent from each other.  In
-order to perform dependence detection we rely on knowledge of the forest of regions to be
-able to detect dependences between tasks which require different logical regions.
 
-To perform dependence detection, we first find the {\em root region} for the 
+Although the above algorithm for dependence detection is correct, the
+high-level runtime is able to perform the detection much more efficiently with
+the help of a custom data structure.
+
+To perform dependence detection, the runtime will first find the {\em root region} for the 
 requested region.  The root region is the ancestor region for which the parent task
-has privliges.  Once we have found the root region for the requested region, we then proceed to walk
-down the region tree from the root region to the node
-for the requested region.  At each node, we determine if any potential dependences exist.
-Determining whether dependencies exist involves checking information both about the current
-node being visited as well as whether there are any potential dependences farther down
-in the region tree.  
+has priviliges.  Once the root region for the requested region is found, 
+the runtime can walk down the region tree from the root region to the node
+for the requested region.  Each node contains a list of tasks that are
+actively using the region corresponding to the node, potential dependencies are
+discovered by comparing privileges and coherence modes with any tasks on that
+list.
 
-When traversing a region node, we begin by checking if there are any tasks actively using
-the node.  We determine this using the pair-wise dependence analysis described 
-in Section \ref{subsec:cohdep} to detect dependences between the region we are looking for and the
-region represented by the current node.  For each dependence that is found, we record that the previous
-task must have completed prior to the start of the task we are registering.  
+After check the list of tasks actively using the current node, the runtime
+checks to see if one of the partitions of current node is {\em open}.  An
+open partition indicates that there are some active tasks using subregions
+of the current region.  No more than one partition of a node can be open
+at any given time.  If the open partition is is along the path to the desired
+region's node, traversal continues.  If the open partition lies along another 
+path, or if the current node is the intended destination, the runtime must
+{\em close} the currently active partition because it cannot guarantee
+disjointness with the region the new task wishes to access.  To close a
+partition in the region tree, the runtime must find all active tasks in that
+subtree and consider them all to be dependencies for the task currently being
+registered.  With the previously active partition closed, the runtime can 
+then open up the desired partition and traverse further down the tree as
+needed.
 
-After performing
-dependence analysis we then check if there is an open partition which may contain additional
-dependencies.  If the open partition is the partition we intend to traverse then we
-simply continue the traversal.  However, if the partition we want is not open then we must
-first {\em close} up any open partition.   The act of closing a partition 
-involves traversing the region tree and recording
-all active tasks as dependences.  The reason for closing a partition is that we have no disjointness
-information about tasks that use different partitions and therefore to be safe must register
-all task touching subregions as dependences.  After closing any open partitions, we
-can then open the partition on our path and continue the traversal. 
+When the runtime traverses an open partition, its behavior depends on the kind
+of partition being traversed.  If the partition is disjoint, no other subregion
+can overlap with the target region, so the state of the other subregions can
+be ignored in the traversal.  However, if the partition is aliases, any one
+of those other subregions could overlap with the current partition, so
+the runtime must close all of the open subregions (recording new dependencies
+as it does so) before opening the subregion it intends to.
 
-When we reach our target logical region we again perform the pair-wise dependence analysis.
-We also close up any open partitions as they might contain tasks which could contain
-a dependence.  If our task was dependent on all of the previous active tasks in a region
-we say that our task was a {\em dominator} of all the previous active tasks.  We can
-then clear the list of active tasks and replace it with the current task.  This is safe since
-any later tasks that depend on the current task will have a transitive dependence 
-through the dominator task.  If our task is not a dominator task, then we simply append
-it to the list of active tasks making it possible for future task registrations to detect
-it as a dependence.
-
-When traversing partition nodes we perform a similar, but less expensive analysis.  There
-are two cases to consider for partition nodes: disjoint partitions and aliased partitions.
-In the case of disjoint partitions, we simply open the subregion that we intend to traverse
-and then traverse it.  This is correct because we know by definition that any two 
-subregions in a disjoint partition are disjoint and therefore a dependence can never exits
-between them.
-
-For aliased partitions we have to perform an additional dependence analysis.  At every
-aliased partition node we maintain a list of tasks active in all of the subregions.  We
-perform a pair-wise dependence analysis between every pair of tasks regardless of the subregion
-they are accessing to see if a dependence could exist.  We do this regardless of the subregion
-because we have no disjointness information in an aliased partition.  If there are any
-potential dependences, we close up all the subregions and then open the subregion required.  If
-no dependence was detected then we open the subregion we need, append the task to the list
-of active tasks, and continue the traversal.  Allowing multiple open subregions in an aliased
-partition is safe because we performed an analysis between all active tasks regardless of
-whether the particular subregions were aliased or not.
+After the runtime reaches the target logical region, it performs dependence
+checks against any active tasks listed for that region.  If a dependence is 
+discovered, it is added to the current task's dependence list.  It can then
+be removed from the region tree's active task list, as the current task (which
+will be pushed onto the active task list) {\em dominates} the previous task.
+In a case where the new task has dependencies with all existing active tasks
+for the target node, that whole list is replaced by a single entry for the
+new task.
 
 \subsubsection{Managing Data Versions}
 \label{subsec:dataflow}
