@@ -150,7 +150,7 @@ Each subtask must obtain its privileges from
 the task that calls it.  For example, in Listing~\ref{lst:code_ex},
 the task {\tt calc\_new\_currents} requires regions {\tt piece.rw\_pvt} with {\tt RW} privileges
 and {\tt piece.rn\_pvt} and {\tt piece.rn\_ghost} with {\tt RO} (read-only) privileges.  Because the calling task has {\tt RW} privileges on the parent regions of these
-region arguments, the type checker is able to confirm that the subtask can execute with the needed privileges.
+region arguments, the type checker can confirm that the subtask can execute with the needed privileges.
 
 %The coherence property for a task argument is always identical to the one of the parent task.
 
