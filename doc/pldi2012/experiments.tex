@@ -151,7 +151,7 @@ simulation case, the same size problem is used for all runs, and we see
 speedups of up to 10.14x when using the entire cluster (a total of 48 CPUs).
 The execution time breakdown in Table~\ref{sfig:results2:timers} shows some
 differences in scaling behavior compared to the circuit simulation.  The time
-spent performing copies is much smaller on absolute scale, but shows the same
+spent performing copies is much smaller on an absolute scale, but shows the same
 large step when leaving a single node, but then relative insensitivity to the
 number of nodes.  This indicates that the runtime is able to send data only to
 the task that needs it rather than having to perform conservative broadcasts of
@@ -162,8 +162,8 @@ significant variability in the time spent in the application code, and there
 are two separate issues at work.  First, the runtime is taking advantage of
 the CPU's ability to perform RDMA operations to place some of the shared data
 in the remotely-accessible memory windows provided by GASNet.  Although access
-to this memory is significantly slower than accesses to a node's system memory,
-being able to avoid copies entirely in some cases is a net win.
+to this memory is slower than accesses to a node's system memory,
+avoiding copies entirely in some cases is a net win.
 
 The second significant jump in application time is when using all 12 CPUs in
 each node.  With application tasks running on all the available CPU cores,
