@@ -3,7 +3,7 @@
 \label{sec:highlevel}
 In this Section we describe a high-level runtime system
 that is designed to implement the Legion programming
-and execution models while remaining machine agnostic.  
+and execution models while remaining machine agnostic for portability.  
 The high-level runtime system operates on top of the 
 low-level runtime which hides machine specific details
 and is described in detail in Section \ref{sec:lowlevel}.
@@ -175,7 +175,7 @@ in the region tree.
 
 When traversing a region node, we begin by checking if there are any tasks actively using
 the node.  We determine this using the pair-wise dependence analysis described 
-in Section \ref{cohdep} to detect dependences between the region we are looking for and the
+in Section \ref{subsec:cohdep} to detect dependences between the region we are looking for and the
 region represented by the current node.  For each dependence that is found, we record that the previous
 task must have completed prior to the start of the task we are registering.  
 
