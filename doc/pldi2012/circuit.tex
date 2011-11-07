@@ -101,8 +101,8 @@ disjoint.
 %that the fields in the structure would have the right (self-referential) types
 %after all the fields have been changed.
 
-Lines 35-39 form the bulk of the actual simulation, performing three passes
-over the circuit in each iteration.  Each pass loops over an array of pieces (constructed on lines 30-33 from the partitions),
+Lines 36-40 form the bulk of the actual simulation, performing three passes
+over the circuit in each iteration.  Each pass loops over an array of pieces (constructed on lines 30-34 from the partitions),
 spawning a task for each piece.   There are no explicit requests for
 parallel execution, nor is there synchronization required between the
 passes.  Both the fact that the tasks can be run in parallel within a pass
@@ -190,8 +190,12 @@ Since a region relationship can have
 fields with types that refer to its own fields' regions, it is often not possible
 to assign fields one at a time without violating the type checking rules.
 The simultaneous assignment operator asks the type checker only to ensure
-that fields have the correct types after all the fields are updated.  
-Lines 32 and 33 illustrate a simultaneous
+that fields have the correct types after all the fields are updated.  In
+many cases, the target type also tries to describe tighter constraints on
+the region parameters used for field types.  The {\tt region\_cast} operator
+allows the programmer to assert the correctness of this transformation, which
+can be verified with a linear scan over the elements of a region.
+Lines 32-34 illustrate a simultaneous
 assignment to update a {\tt CircuitPiece} region relationship.
 
 The last type definition is for the pieces into which the circuit is partitioned.
