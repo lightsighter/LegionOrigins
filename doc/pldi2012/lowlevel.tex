@@ -127,12 +127,12 @@ message is sent to the current owner.
 This allows the performance of a
 heavily-contended cluster-level lock to approach that of a single-node lock.
 
-The final interesting feature of the deferred lock is that it can be associated
-with an object in memory and that object will automatically be kept coherent
-across the cluster.  This is similar to MESI coherence in a distributed cache,
-but is done per-object rather than on cache lines.  This is currently only 
-used for objects within the runtime itself, but we are exploring ways to expose
-it at the Legion application level.
+%The final interesting feature of the deferred lock is that it can be associated
+%with an object in memory and that object will automatically be kept coherent
+%across the cluster.  This is similar to MESI coherence in a distributed cache,
+%but is done per-object rather than on cache lines.  This is currently only 
+%used for objects within the runtime itself, but we are exploring ways to expose
+%it at the Legion application level.
 
 \subsubsection{Regions}
 \label{subsec:regionmeta}
