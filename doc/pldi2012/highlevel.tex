@@ -87,8 +87,9 @@ in the same context (i.e. called by the same parent task).
 Conceptually, dependence detection between a new task $t$ and a previous task $t'$ requires comparing the two sets of
 logical regions accessed.  For each logical region from $t'$
 that may overlap with a logical region needed by $t$, the privileges
-and coherence modes are compared to determine whether a dependence exists.  Read
-privileges never cause conflicts, but if either 
+and coherence modes are compared to determine whether a dependence exists.  If
+both regions need read
+privileges there is never a dependence, but if either 
 task needs write or reduction privileges, the coherence modes are compared:
 
 \vspace{2mm}
@@ -188,7 +189,7 @@ logical region by other tasks executing at the same time.
 \label{subsec:depdetect}
 
 To detect dependencies efficiently, the high-level runtime maintains a
-local region forest (recall Section~\ref{sec:ex}) for each task.  The
+local region forest (recall Section~\ref{sec:exec}) for each task.  The
 root regions are the task's region arguments, and the forest includes
 all partitions and subregions created within the task.  To perform
 dependence detection on a region $r$, the runtime first finds a root
@@ -208,7 +209,7 @@ disjointness with the region the new task wishes to access.  To close a
 partition, the runtime finds all active tasks in that
 subtree and considers them all dependencies for the new task.  
 With the previously active partition closed, the runtime can 
-then opens the desired partition and traverses further down the tree as
+then open the desired partition and traverse further down the tree as
 needed.
 
 When the runtime traverses an open partition, its behavior depends on the kind
@@ -247,8 +248,9 @@ during dependence analysis.  Every region in the region forest that has active t
 has a valid abstract instance.  Every time we close a region we close all the valid
 abstract instances.  When a region is reopened it must then create a new abstract instance
 to reflect that new physical instances must be created (i.e., a fresh version of the data must be copied from
-the parent region).  In addition, whenever a task writes a region, a new abstract instance is usually created
-to represent the new version of the data.
+the parent region).  
+%In addition, whenever a task writes a region, a new abstract instance is usually created
+%to represent the new version of the data.
 
 
 %For each region in
@@ -317,7 +319,7 @@ on that region previously.  This dependence is recorded and the
 For the ghost node regions, dependence analysis discovers 
 a dependence between each of the {\tt distribute\_charge} tasks and all of the
 {\tt compute\_new\_current} tasks because the {\tt distribute\_charge} tasks are
-performing writes and the partition is aliased.  However, the runtime will detect this as
+performing writes and the partition is aliased.  However, the runtime will detect these as
 anti-dependences which are resolved by forcing the {\tt distribute\_charge} tasks to
 create new valid abstract instances rather than use the same abstract instances as
 each of the {\tt compute\_new\_current} tasks.  There are no dependences detected
@@ -344,7 +346,7 @@ has been registered can be seen in Figure~\ref{sfig:mapping_fig:volt}.
 
 \subsection{Mapping}
 \label{subsec:mapping}
-After dependence analysis a task is placed on either a {\em ready queue} to be mapped or a 
+%After dependence analysis a task is placed on either a {\em ready queue} to be mapped or a 
 The high-level runtime maintains the invariant that a task {\em maps} only after all tasks on which it depends have mapped. 
 While some predecessor tasks have not mapped a task remains in the {\em waiting queue}; otherwise it is placed on the {\em ready queue}.  
 
@@ -405,7 +407,7 @@ where all data is placed within the memory hierarchy.  While this interface allo
 to tune performance, it cannot affect correctness.  The high-level runtime still manages all the task dependences and the
 ordering in which tasks are executed and copies are performed.  Therefore, regardless of choices
 made by any mapper, the resulting program will always be executed correctly.
-To make it easy for programmers to write programs, we also provide a default
+To make it easy for programmers to write programs, we provide a default
  mapper that uses simple heuristics to place tasks and data.  
 %For example, when
 %performing task stealing, the default mapper only encourages stealing tasks in groups that use
@@ -418,7 +420,7 @@ The high-level runtime also supports the use of multiple mappers in the same app
 call may (but does not need to) have an associated mapper,
 %runtime  can choose a mapper to be used for the runtime calls made inside that
 %task.  
-which allows for the creation of library code that provides its own mappers ind pendent
+which allows for the creation of library code that provides its own mappers independent
 from any application level mappers.
 
 \subsubsection{Task Stealing for Load Balance}
@@ -433,12 +435,12 @@ explicitly choosing to relocate it, or by a steal request from another processor
 When a processor notices that it has no work on its ready queue, it will inquire into each
 mapper asking for a target processor to attempt a steal.  A mapper can either respond with
 a target processor, or indicate that no steal should be attempted.  The runtime will then
-send steal requests to each processor on behalf of each specific mapper.  
+send steal requests to each processor on behalf of each mapper.  
 
 When a steal request is received at a processor it will determine the mapper(s) that generated
 the list of steal requests.  For each mapper that issued a steal request, the runtime will
 give the local instance of that mapper a list of the tasks in the ready queue that that
-specific mapper is responsible for mapping.  The mapper must then determine the set which
+specific mapper is responsible for mapping.  The mapper must then determine the set of tasks which
 it is going to permit to be stolen, if any.  Any tasks that the mapper marks as stolen are
 sent back to the stealing processor.  By only allowing mappers to make steal requests about
 the tasks they own, we give mappers complete control over where tasks are mapped.
@@ -454,7 +456,7 @@ Once task mapping is complete the high-level runtime performs the necessary oper
 to issue the task to the low level runtime.  It first creates any new physical instances
 for the regions the task requires.  It then issues copy operations required
 for the task to execute contingent on predecessor tasks producing the source physical instances
-having finished.  Then it issues the task itself to the low level processor contingent
+having finished.  Then it issues the task to the low level processor contingent
 on all the copies for the task having finished as well as the the set of tasks
 on which the issuing task depends having finished.  These dependences are all encoded
 using {\em events} (see Section \ref{subsec:events}).  Continuing the analogy of an out-of-order
@@ -480,7 +482,7 @@ have occurred.
 
 \subsection{Task Completion}
 \label{subsec:cleanup}
-We define a task to have {\tt completed} once all of the task's regions reflect
+We define a task to have {\em completed} once all of the task's regions reflect
 the updated state of the task and all its sub-tasks.  
 %This reflects an underlying assumption 
 %of the mapping process that the regions for which a task has priviliges will represent the data produced 
