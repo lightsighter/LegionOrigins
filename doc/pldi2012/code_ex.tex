@@ -25,9 +25,9 @@ region_relation Circuit {
 region_relation CircuitPiece<rn, rw> {
   region< Node<rn_pvt+rn_shr> >                                 rn_pvt, rn_shr;
   region< Node<rn> >                                                   rn_ghost;
-  region< Wire<rn_pvt+rn_shr+rn_ghost,rn,rw_pvt> >  rw_pvt;
+  region< Wire<rn_pvt+rn_ghost,rn,rw_pvt> >               rw_pvt;
   Node<rn_pvt+rn_shr>@(rn_pvt+rn_shr)                     first_node;
-  Wire<rn_pvt+rn_shr+rn_ghost,rn,rw_pvt>@rw_pvt    first_wire;
+  Wire<rn_pvt+rn_ghost,rn,rw_pvt>@rw_pvt                first_wire;
   where rn_pvt #$\le$# rn, rn_shr #$\le$# rn, rn_ghost #$\le$# rn, rw_pvt #$\le$# rw;
 };
 void simulate_circuit(Circuit c) : RWE(c.r_all_nodes,c.r_all_wires)
