@@ -721,6 +721,12 @@ namespace RegionRuntime {
       for (std::vector<TaskDescription*>::iterator it = dependent_tasks.begin();
             it != dependent_tasks.end(); it++)
       {
+	// skip ourselves if we're already listed
+	if ((*it)->local_ctx == desc->local_ctx) {
+	  log_task(LEVEL_DEBUG, "task %d in context %d found itself in dependency list",
+		   desc->task_id, desc->local_ctx);
+	  continue;
+	}
         // This task definitely conflicts with the other tasks in this copy operation
         desc->wait_events.insert((*it)->termination_event);
         log_task(LEVEL_DEBUG,"task %d in context %d dependends on task %d in context %d",
@@ -2419,6 +2425,13 @@ namespace RegionRuntime {
       for (std::vector<std::pair<RegionRequirement*,TaskDescription*> >::iterator it =
             state.active_tasks.begin(); it != state.active_tasks.end(); it++)
       {
+	// skip any previously-registered incarnations of ourself
+	if (it->second->local_ctx == dep.child->local_ctx)
+	{
+	  log_task(LEVEL_DEBUG,"caught self-dependence on task %d in context %d",
+		   dep.child->task_id, dep.child->local_ctx);
+	  continue;
+	}
         if (RegionRequirement::region_conflict(it->first, dep.req))
         {
           conflict = true;

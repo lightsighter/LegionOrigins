@@ -21,6 +21,10 @@ public:
   bool operator==(const ptr_t<T> &ptr) const { return (ptr.value == this->value); }
   bool operator!=(const ptr_t<T> &ptr) const { return (ptr.value != this->value); }
   bool operator< (const ptr_t<T> &ptr) const { return (ptr.value <  this->value); }
+  operator bool(void) const { return (value != (unsigned)-1); }
+  bool operator!(void) const { return (value == (unsigned)-1); }
+
+  static ptr_t<T> nil(void) { ptr_t<T> p; p.value = (unsigned)-1; return p; }
 };
 
 #endif // COMMON_H

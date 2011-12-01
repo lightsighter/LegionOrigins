@@ -353,12 +353,12 @@ public:
 
   virtual Processor target_task_steal(void)
   {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
     //log_mapper("mapper: select target of task steal\n");
     //return Mapper::target_task_steal();
 
     // no stealing allowed
     return Processor::NO_PROC;
+    DetailedTimer::ScopedPush sp(TIME_MAPPER);
   }
 
   virtual void permit_task_steal(Processor thief,

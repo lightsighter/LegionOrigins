@@ -157,10 +157,16 @@ namespace RegionRuntime {
 	    jobs.pop_front();
 	  }
 
-	  //printf("executing job %p\n", job);
-	  job->execute();
-	  // TODO: use events here!
-	  CHECK_CUDART( cudaDeviceSynchronize() );
+	  // charge all the time from the start of the execute until the end
+	  //  of the device synchronize to the app - anything that wasn't
+	  //  really the app will be claimed anyway
+	  {
+	    DetailedTimer::ScopedPush sp(TIME_KERNEL);
+	    //printf("executing job %p\n", job);
+	    job->execute();
+	    // TODO: use events here!
+	    CHECK_CUDART( cudaDeviceSynchronize() );
+	  }
 	  log_gpu.info("gpu device synchronized");
 	  if(job->finish_event.exists())
 	    job->finish_event.impl()->trigger(job->finish_event.gen, true);

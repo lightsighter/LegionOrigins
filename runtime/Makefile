@@ -1,15 +1,21 @@
 GASNET = /usr/local/gasnet-1.16.2
 
-#CCFLAGS = -I$(GASNET)/include
+CCFLAGS = -I$(GASNET)/include -DDEBUG_LOW_LEVEL -DDEBUG_HIGH_LEVEL #-DDEBUG_PRINT_HIGH_LEVEL #-DDEBUG_PRINT
 #CCFLAGS = -I$(GASNET)/include -O3
-CCFLAGS = -I$(GASNET)/include -O3 -DCOMPILE_TIME_MIN_LEVEL=LEVEL_NONE
+#CCFLAGS = -I$(GASNET)/include -O3 -DCOMPILE_TIME_MIN_LEVEL=LEVEL_NONE
+
+# for circuit
+#CCFLAGS = -I$(GASNET)/include -O3 -DCOMPILE_TIME_MIN_LEVEL=LEVEL_NONE
+
+# for fluid
+#CCFLAGS = -I$(GASNET)/include -O3 -DCOMPILE_TIME_MIN_LEVEL=LEVEL_NONE -DUSE_MASKED_COPIES
 
 GCC = gcc
 GCCFLAGS = $(CCFLAGS) -ggdb -Wall
 
 LDFLAGS = -L$(GASNET)/lib -lrt
 
-CCFLAGS += -DGASNET_CONDUIT_IBV -I$(GASNET)/include/ibv-conduit -DDEBUG_LOW_LEVEL -DDEBUG_HIGH_LEVEL #-DDEBUG_PRINT_HIGH_LEVEL #-DDEBUG_PRINT
+CCFLAGS += -DGASNET_CONDUIT_IBV -I$(GASNET)/include/ibv-conduit
 LDFLAGS += -lgasnet-ibv-par -libverbs
 
 CCFLAGS += -I/usr/local/cuda/include
@@ -80,6 +86,9 @@ fluid:	shared_lowlevel.o highlevel.o fluid.o
 	g++ -o $@ $(GCCFLAGS) $^ -lpthread
 
 fluid2:	lowlevel.o lowlevel_gpu.o highlevel.o fluid.o
+	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
+
+srch2:	lowlevel.o lowlevel_gpu.o highlevel.o search.o
 	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
 
 clean:

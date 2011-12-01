@@ -3191,6 +3191,9 @@ namespace RegionRuntime {
       // early out case too
       if(e->has_triggered(gen)) return;
 
+      // waiting on an event does not count against the low level's time
+      DetailedTimer::ScopedPush sp2(TIME_NONE);
+
       // figure out which thread we are - better be a local CPU thread!
       void *ptr = gasnett_threadkey_get(cur_thread);
       if(ptr != 0) {

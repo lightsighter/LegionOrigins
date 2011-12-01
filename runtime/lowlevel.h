@@ -20,7 +20,7 @@ enum {
   TIME_SYSTEM,
 };
 
-#define NO_DETAILED_TIMING
+#define DETAILED_TIMING
 
 namespace RegionRuntime {
   namespace LowLevel {

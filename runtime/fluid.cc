@@ -31,17 +31,14 @@ enum {
   TASKID_MAIN_TASK,
 };
 
-#define DIMX 8
-#define DIMY 8
-#define NUM_BLOCKS (DIMX*DIMY)
 #define CELLS_X 8
 #define CELLS_Y 8
 #define MAX_PARTICLES 64
 
-#define UP(y)    (((y)==0) ? (DIMY-1) : ((y)-1))
-#define DOWN(y)  (((y)==(DIMY-1)) ? 0 : ((y)+1))
-#define LEFT(x)  (((x)==0) ? (DIMX-1) : ((x)-1))
-#define RIGHT(x) (((x)==(DIMX-1)) ? 0 : ((x)+1))
+#define UP(y)    (((y)==0) ? (nby-1) : ((y)-1))
+#define DOWN(y)  (((int)(y)==(int)(nby-1)) ? 0 : ((y)+1))
+#define LEFT(x)  (((x)==0) ? (nbx-1) : ((x)-1))
+#define RIGHT(x) (((int)(x)==(int)(nbx-1)) ? 0 : ((x)+1))
 
 #define REVERSE(dir) (7 - (dir))
 
@@ -147,6 +144,7 @@ const Vec2 domainMax(0.065f, 0.1f);
 float h, hSq;
 float densityCoeff, pressureCoeff, viscosityCoeff;
 unsigned nx, ny, numCells;
+unsigned nbx, nby, numBlocks;
 Vec2 delta;				// cell dimensions
 
 extern RegionRuntime::LowLevel::Logger::Category log_app;
@@ -170,25 +168,25 @@ void top_level_task(const void *args, size_t arglen,
                     Context ctx, HighLevelRuntime *runtime)
 {
 #if 0
-  int num_subregions = NUM_BLOCKS + NUM_BLOCKS*8; // 9 = 1 block + 8 ghost regions 
+  int num_subregions = numBlocks + numBlocks*8; // 9 = 1 block + 8 ghost regions 
 
   std::vector<Block> blocks;
-  blocks.resize(NUM_BLOCKS);
-  for(unsigned i = 0; i < NUM_BLOCKS; i++)
+  blocks.resize(numBlocks);
+  for(unsigned i = 0; i < numBlocks; i++)
     blocks[i].id = i;
 
   // first, do two passes of the "real" cells
   for(int b = 0; b < 2; b++) {
     LogicalHandle real_cells = runtime->create_logical_region<Cell>(ctx,
-								    (NUM_BLOCKS*CELLS_X*CELLS_Y));
+								    (numBlocks*CELLS_X*CELLS_Y));
 
     std::vector<std::set<ptr_t<Cell> > > coloring;
-    coloring.resize(NUM_BLOCKS);
+    coloring.resize(numBlocks);
 
     // allocate cells, store pointers, set up colors
-    for (unsigned idy = 0; idy < DIMY; idy++)
-      for (unsigned idx = 0; idx < DIMX; idx++)	{
-	unsigned id = idy*DIMX+idx;
+    for (unsigned idy = 0; idy < nby; idy++)
+      for (unsigned idx = 0; idx < nbx; idx++)	{
+	unsigned id = idy*nbx+idx;
 
 	for(unsigned cy = 0; cy < CELLS_Y; cy++)
 	  for(unsigned cx = 0; cx < CELLS_X; cx++) {
@@ -201,12 +199,12 @@ void top_level_task(const void *args, size_t arglen,
     // Create the partitions
     Partition<Cell> cell_part = runtime->create_partition<Cell>(ctx,all_cells,
 								coloring,
-								//NUM_BLOCKS,
+								//numBlocks,
 								true/*disjoint*/);
 
-    for (unsigned idy = 0; idy < DIMY; idy++)
-      for (unsigned idx = 0; idx < DIMX; idx++)	{
-	unsigned id = idy*DIMX+idx;
+    for (unsigned idy = 0; idy < nby; idy++)
+      for (unsigned idx = 0; idx < nbx; idx++)	{
+	unsigned id = idy*nbx+idx;
 	blocks[id].base[b] = runtime->get_subregion(ctx, cell_part, id);
       }
   }
@@ -214,21 +212,21 @@ void top_level_task(const void *args, size_t arglen,
   // the edge cells work a bit different - we'll create one region, partition
   //  it once, and use each subregion in two places
   LogicalHandle edge_cells = runtime->create_logical_region<Cell>(ctx,
-								  (NUM_BLOCKS*
+								  (numBlocks*
 								   (2*CELLS_X+2*CELLS_Y+4)));
 
   std::vector<std::set<ptr_t<Cell> > > coloring;
-  coloring.resize(NUM_BLOCKS * 8);
+  coloring.resize(numBlocks * 8);
 
   // allocate cells, set up coloring
   int color = 0;
-  for (unsigned idy = 0; idy < DIMY; idy++)
-    for (unsigned idx = 0; idx < DIMX; idx++) {
-      unsigned id = idy*DIMX+idx;
+  for (unsigned idy = 0; idy < nby; idy++)
+    for (unsigned idx = 0; idx < nbx; idx++) {
+      unsigned id = idy*nbx+idx;
 
       // four corners
 #define CORNER(dir,cx,cy) do { \
-	unsigned id2 = MOVE_Y(idy,dir)*DIMX+MOVE_X(idx,dir);	\
+	unsigned id2 = MOVE_Y(idy,dir)*nbx+MOVE_X(idx,dir);	\
 	ptr_t<Cell> cell = edge_cells.alloc();			\
 	coloring[color + dir].insert(cell);			\
 	blocks[id].cells[0][cy][cx] = cell;				\
@@ -242,7 +240,7 @@ void top_level_task(const void *args, size_t arglen,
 
       // horizontal edges
 #define HORIZ(dir,cy) do { \
-	unsigned id2 = MOVE_Y(idy,dir)*DIMX+idx;     \
+	unsigned id2 = MOVE_Y(idy,dir)*nbx+idx;     \
 	for(unsigned cx = 1; cx <= CELLS_X; cx++) {   \
 	  ptr_t<Cell> cell = edge_cells.alloc();     \
 	  coloring[color + dir].insert(cell);	     \
@@ -256,7 +254,7 @@ void top_level_task(const void *args, size_t arglen,
 
       // vertical edges
 #define VERT(dir,cx) do { \
-	unsigned id2 = idy*DIMX+MOVE_X(idx,dir);     \
+	unsigned id2 = idy*nbx+MOVE_X(idx,dir);     \
 	for(unsigned cy = 1; cy <= CELLS_Y; cy++) {   \
 	  ptr_t<Cell> cell = edge_cells.alloc();     \
 	  coloring[color + dir].insert(cell);	     \
@@ -274,17 +272,17 @@ void top_level_task(const void *args, size_t arglen,
   // now partition the edge cells
   Partition<Cell> edge_part = runtime->create_partition<Cell>(ctx, edge_cells,
 							      coloring,
-							      //NUM_BLOCKS * 8,
+							      //numBlocks * 8,
 							      true/*disjoint*/);
 
   // now go back through and store subregion handles in the right places
   color = 0;
-  for (unsigned idy = 0; idy < DIMY; idy++)
-    for (unsigned idx = 0; idx < DIMX; idx++) {
-      unsigned id = idy*DIMX+idx;
+  for (unsigned idy = 0; idy < nby; idy++)
+    for (unsigned idx = 0; idx < nbx; idx++) {
+      unsigned id = idy*nbx+idx;
 
       for(int dir = 0; dir < 8; dir++) {
-	unsigned id2 = MOVE_Y(idy,dir)*DIMX+MOVE_X(idx,dir);
+	unsigned id2 = MOVE_Y(idy,dir)*nbx+MOVE_X(idx,dir);
 	LogicalHandle subr = runtime->get_subregion(ctx,edge_part,color+dir);
         blocks[id].edge[0][dir] = color+dir;
 	blocks[id2].edge[1][REVERSE(dir)] = color+dir;
@@ -303,11 +301,11 @@ void top_level_task(const void *args, size_t arglen,
   {
     TopLevelRegions tlr;
     tlr.real_cells[0] = runtime->create_logical_region<Cell>(ctx,
-							     (NUM_BLOCKS*CELLS_X*CELLS_Y));
+							     (numBlocks*CELLS_X*CELLS_Y));
     tlr.real_cells[1] = runtime->create_logical_region<Cell>(ctx,
-							     (NUM_BLOCKS*CELLS_X*CELLS_Y));
+							     (numBlocks*CELLS_X*CELLS_Y));
     tlr.edge_cells = runtime->create_logical_region<Cell>(ctx,
-							  (NUM_BLOCKS*
+							  (numBlocks*
 							   (2*CELLS_X+2*CELLS_Y+4)));
     
     std::vector<RegionRequirement> main_regions;
@@ -342,19 +340,19 @@ void main_task(const void *args, size_t arglen,
   TopLevelRegions *tlr = (TopLevelRegions *)args;
     
   std::vector<Block> blocks;
-  blocks.resize(NUM_BLOCKS);
-  for(unsigned i = 0; i < NUM_BLOCKS; i++)
+  blocks.resize(numBlocks);
+  for(unsigned i = 0; i < numBlocks; i++)
     blocks[i].id = i;
 
   // first, do two passes of the "real" cells
   for(int b = 0; b < 2; b++) {
     std::vector<std::set<ptr_t<Cell> > > coloring;
-    coloring.resize(NUM_BLOCKS);
+    coloring.resize(numBlocks);
 
     // allocate cells, store pointers, set up colors
-    for (unsigned idy = 0; idy < DIMY; idy++)
-      for (unsigned idx = 0; idx < DIMX; idx++)	{
-	unsigned id = idy*DIMX+idx;
+    for (unsigned idy = 0; idy < nby; idy++)
+      for (unsigned idx = 0; idx < nbx; idx++)	{
+	unsigned id = idy*nbx+idx;
 
 	for(unsigned cy = 0; cy < CELLS_Y; cy++)
 	  for(unsigned cx = 0; cx < CELLS_X; cx++) {
@@ -368,12 +366,12 @@ void main_task(const void *args, size_t arglen,
     Partition<Cell> cell_part = runtime->create_partition<Cell>(ctx,
 								tlr->real_cells[b],
 								coloring,
-								//NUM_BLOCKS,
+								//numBlocks,
 								true/*disjoint*/);
 
-    for (unsigned idy = 0; idy < DIMY; idy++)
-      for (unsigned idx = 0; idx < DIMX; idx++)	{
-	unsigned id = idy*DIMX+idx;
+    for (unsigned idy = 0; idy < nby; idy++)
+      for (unsigned idx = 0; idx < nbx; idx++)	{
+	unsigned id = idy*nbx+idx;
 	blocks[id].base[b] = runtime->get_subregion(ctx, cell_part, id);
       }
   }
@@ -381,17 +379,17 @@ void main_task(const void *args, size_t arglen,
   // the edge cells work a bit different - we'll create one region, partition
   //  it once, and use each subregion in two places
   std::vector<std::set<ptr_t<Cell> > > coloring;
-  coloring.resize(NUM_BLOCKS * 8);
+  coloring.resize(numBlocks * 8);
 
   // allocate cells, set up coloring
   int color = 0;
-  for (unsigned idy = 0; idy < DIMY; idy++)
-    for (unsigned idx = 0; idx < DIMX; idx++) {
-      unsigned id = idy*DIMX+idx;
+  for (unsigned idy = 0; idy < nby; idy++)
+    for (unsigned idx = 0; idx < nbx; idx++) {
+      unsigned id = idy*nbx+idx;
 
       // four corners
 #define CORNER(dir,cx,cy) do { \
-	unsigned id2 = MOVE_Y(idy,dir)*DIMX+MOVE_X(idx,dir);	\
+	unsigned id2 = MOVE_Y(idy,dir)*nbx+MOVE_X(idx,dir);	\
 	ptr_t<Cell> cell = edge_cells.template alloc<Cell>();		\
 	coloring[color + dir].insert(cell);			\
 	blocks[id].cells[0][(cy)][(cx)] = cell;				\
@@ -405,7 +403,7 @@ void main_task(const void *args, size_t arglen,
 
       // horizontal edges
 #define HORIZ(dir,cy) do { \
-	unsigned id2 = MOVE_Y(idy,dir)*DIMX+idx;     \
+	unsigned id2 = MOVE_Y(idy,dir)*nbx+idx;     \
 	for(unsigned cx = 1; cx <= CELLS_X; cx++) {   \
 	  ptr_t<Cell> cell = edge_cells.template alloc<Cell>();	\
 	  coloring[color + dir].insert(cell);	     \
@@ -419,7 +417,7 @@ void main_task(const void *args, size_t arglen,
 
       // vertical edges
 #define VERT(dir,cx) do { \
-	unsigned id2 = idy*DIMX+MOVE_X(idx,dir);     \
+	unsigned id2 = idy*nbx+MOVE_X(idx,dir);     \
 	for(unsigned cy = 1; cy <= CELLS_Y; cy++) {   \
 	  ptr_t<Cell> cell = edge_cells.template alloc<Cell>();	\
 	  coloring[color + dir].insert(cell);	     \
@@ -437,17 +435,17 @@ void main_task(const void *args, size_t arglen,
   // now partition the edge cells
   Partition<Cell> edge_part = runtime->create_partition<Cell>(ctx, tlr->edge_cells,
 							      coloring,
-							      //NUM_BLOCKS * 8,
+							      //numBlocks * 8,
 							      true/*disjoint*/);
 
   // now go back through and store subregion handles in the right places
   color = 0;
-  for (unsigned idy = 0; idy < DIMY; idy++)
-    for (unsigned idx = 0; idx < DIMX; idx++) {
-      unsigned id = idy*DIMX+idx;
+  for (unsigned idy = 0; idy < nby; idy++)
+    for (unsigned idx = 0; idx < nbx; idx++) {
+      unsigned id = idy*nbx+idx;
 
       for(int dir = 0; dir < 8; dir++) {
-	unsigned id2 = MOVE_Y(idy,dir)*DIMX+MOVE_X(idx,dir);
+	unsigned id2 = MOVE_Y(idy,dir)*nbx+MOVE_X(idx,dir);
 	LogicalHandle subr = runtime->get_subregion(ctx,edge_part,color+dir);
         blocks[id].edge[0][dir] = subr;
 	blocks[id2].edge[1][REVERSE(dir)] = subr;
@@ -457,7 +455,7 @@ void main_task(const void *args, size_t arglen,
     }
 
   // Initialize the simulation in buffer 1
-  for (unsigned id = 0; id < NUM_BLOCKS; id++)
+  for (unsigned id = 0; id < numBlocks; id++)
   {
     std::vector<RegionRequirement> init_regions;
     init_regions.push_back(RegionRequirement(blocks[id].base[1],
@@ -485,11 +483,11 @@ void main_task(const void *args, size_t arglen,
   // Run the simulation
   for (unsigned step = 0; step < Config::num_steps; step++)
   {
-    for (unsigned id = 0; id < NUM_BLOCKS; id++)
+    for (unsigned id = 0; id < numBlocks; id++)
       blocks[id].cb = cur_buffer;
 
     // Initialize cells
-    for (unsigned id = 0; id < NUM_BLOCKS; id++)
+    for (unsigned id = 0; id < numBlocks; id++)
     {
       // init and rebuild reads the real cells from the previous pass and
       //  moves atoms into the real cells for this pass or the edge0 cells
@@ -516,7 +514,7 @@ void main_task(const void *args, size_t arglen,
     }
 
     // Rebuild reduce (reduction)
-    for (unsigned id = 0; id < NUM_BLOCKS; id++)
+    for (unsigned id = 0; id < numBlocks; id++)
     {
       // rebuild reduce reads the cells provided by neighbors, incorporates
       //  them into its own cells, and puts copies of those boundary cells into
@@ -542,7 +540,7 @@ void main_task(const void *args, size_t arglen,
     }
 
     // init forces and scatter densities
-    for (unsigned id = 0; id < NUM_BLOCKS; id++)
+    for (unsigned id = 0; id < numBlocks; id++)
     {
       // this step looks at positions in real and edge cells and updates
       // densities for all owned particles - boundary real cells are copied to
@@ -568,7 +566,7 @@ void main_task(const void *args, size_t arglen,
     }
     
     // Gather forces and advance
-    for (unsigned id = 0; id < NUM_BLOCKS; id++)
+    for (unsigned id = 0; id < numBlocks; id++)
     {
       // this is very similar to scattering of density - basically just 
       //  different math, and a different edge phase
@@ -1356,6 +1354,8 @@ int main(int argc, char **argv)
   delta.x = range.x / nx;
   delta.y = range.y / ny;
   assert(delta.x >= h && delta.y >= h);
+  nbx = 8;
+  nby = 8;
 
   // Initialize the machine
   Machine m(&argc, &argv, task_table, false);
@@ -1365,7 +1365,19 @@ int main(int argc, char **argv)
       Config::num_steps = atoi(argv[++i]);
       continue;
     }
+    
+    if(!strcmp(argv[i], "-nbx")) {
+      nbx = atoi(argv[++i]);
+      continue;
+    }
+    
+    if(!strcmp(argv[i], "-nby")) {
+      nby = atoi(argv[++i]);
+      continue;
+    }
   }
+  numBlocks = nbx * nby;
+  printf("fluid: grid size = %d x %d\n", nbx, nby);
   Config::args_read = true;
 
   m.run();
