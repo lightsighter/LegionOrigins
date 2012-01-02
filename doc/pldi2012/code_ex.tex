@@ -23,11 +23,12 @@ region_relation Circuit {
   Wire<r_all_nodes,r_all_wires>@r_all_wires   first_wire;
 }
 region_relation CircuitPiece<rn, rw> {
-  region< Node<rn_pvt+rn_shr> >                                 rn_pvt (#$\prec$# rn), rn_shr (#$\prec$# rn);
-  region< Node<rn> >                                                   rn_ghost (#$\prec$# rn);
-  region< Wire<rn_pvt+rn_shr+rn_ghost,rn,rw_pvt> >  rw_pvt (#$\prec$# rw);
+  region< Node<rn_pvt+rn_shr> >                                 rn_pvt, rn_shr;
+  region< Node<rn> >                                                   rn_ghost;
+  region< Wire<rn_pvt+rn_ghost,rn,rw_pvt> >               rw_pvt;
   Node<rn_pvt+rn_shr>@(rn_pvt+rn_shr)                     first_node;
-  Wire<rn_pvt+rn_shr+rn_ghost,rn,rw_pvt>@rw_pvt    first_wire;
+  Wire<rn_pvt+rn_ghost,rn,rw_pvt>@rw_pvt                first_wire;
+  where rn_pvt #$\le$# rn, rn_shr #$\le$# rn, rn_ghost #$\le$# rn, rw_pvt #$\le$# rw;
 };
 void simulate_circuit(Circuit c) : RWE(c.r_all_nodes,c.r_all_wires)
 {
@@ -43,8 +44,9 @@ void simulate_circuit(Circuit c) : RWE(c.r_all_nodes,c.r_all_wires)
 
   CircuitPiece<c.r_all_nodes,c.r_all_wires> pieces[MAX_PIECES];
   for(i = 0; i #$<$# MAX_PIECES; i++) 
-    pieces[i] #$\gets$# { rn_pvt = p_pvt_nodes[i], rn_shr = p_shr_nodes[i],
-                            rn_ghost = p_ghost_nodes[i], rw_pvt = p_wires[i] };
+    pieces[i] #$\gets$# region_cast<CircuitPiece<c.r_all_nodes,c.r_all_wires> >
+                          { rn_pvt = p_pvt_nodes[i], rn_shr = p_shr_nodes[i],
+                             rn_ghost = p_ghost_nodes[i], rw_pvt = p_wires[i] };
 
   while(!done) {
     for(i = 0; i #$<$# MAX_PIECES; i++) spawn calc_new_currents(pieces[i]);

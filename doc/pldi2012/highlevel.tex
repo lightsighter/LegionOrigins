@@ -1,497 +1,681 @@
 
 \section{High-Level Runtime} 
 \label{sec:highlevel}
-The high-level runtime is responsible for guaranteeing the semantics 
-of programs written in the Legion programming model while at the same
-time extracting high performance.  This goal is challenging because
-the high-level runtime must be capable of operating on top of many 
-different architectures abstracted by the low-level runtime.  This 
-includes those with very large latencies for transferring data such
-as distributed memory clusters.  To hide these latencies, the high
-level runtime uses a deffered model of execution made possible by the
-event model of the low-level runtime.  By deffering execution, the 
-runtime can hide the latencies of data and task movement and acieve
-good throughput and high performance.
+%In this Section we describe the high-level runtime system
+%that is designed to implement the Legion programming
+%and execution models while remaining machine agnostic for portability.  
+%The high-level runtime system operates on top of the 
+%low-level runtime which hides machine specific details
+%and is described in Section \ref{sec:lowlevel}.
 
-However, a deffered execution model presents challenges to implementing
-the semantics of the Legion programming model.  Deffered execution
-does not necessarily imply that tasks will be executed in the order in
-which they are scheduled, but only in the order in which low-level
-event dependencies are created.  To orchestrate the execution of Legion
-programs in this environment the high-level runtime is architected
-in a manner similar to an out-of-order hardware processor.  There are
-multiple stages to executing a task which allows the runtime to extract
-as much task-level parallelism as possible from an application whithin
-the constraints of the Legion programming model.  We now investigate
-each of these stages in further detail.
+The major challenge in implementing the high-level
+runtime is to avoid the latencies associated with distributed
+memory systems and deep memory hierarchies.  To aid
+in solving this problem, the high-level runtime employs two useful 
+scheduling techniques.  The first, validated in 
+Section~\ref{sec:exec}, is to make all scheduling decisions for a
+task locally, i.e. in the context in which the
+task was created.  The second is a {\em deferred execution model} 
+that allows the runtime to hide the latencies associated
+with moving data through deep memory hierarchies by decoupling the issuing
+of operations
+from when they are performed.  This model is supported
+by features in the low-level runtime (see Section~\ref{sec:lowlevel}).
+
+%The high-level runtime is responsible for guaranteeing the semantics 
+%of programs written in the Legion programming model while at the same
+%time extracting high performance.  This goal is challenging because
+%the high-level runtime must be capable of operating on top of many 
+%different architectures abstracted by the low-level runtime.  This 
+%includes those with very large latencies for transferring data such
+%as distributed memory clusters.  To hide these latencies, the high
+%level runtime uses a deffered model of execution made possible by the
+%event model of the low-level runtime.  By deffering execution, the 
+%runtime can hide the latencies of data and task movement and acieve
+%good throughput and high performance.
+
+A problem with deferred execution is that deferred operations must
+still be executed in the correct order if they are dependent.
+To ensure correctness the high-level runtime uses an architecture
+similar to a pipelined out-of-order hardware processor, but at
+the coarser granularity of tasks and regions rather than instructions and registers.
+The stages of the task execution pipeline seek to extract
+as much task-level parallelism as possible from an application, while
+preserving dependencies.  We describe some
+details of the four pipeline stages: dependence analysis, mapping, execution, and
+task completion.
 
 \subsection{Dependence Analysis} 
 \label{subsec:depanalysis}
-The first step in the execution of a task is dependence analysis.  When
-a task is registered with the high level runtime the task call includes
-information about both the logical regions that the task will require
-when it is executed as well as the read-write access and coherence properties
-for each of the regions.  The runtime uses this information to perform
-dependence detection with each of the previous tasks that have been registered
-in the same parent task.  Dependence detection only needs to be performed at
-the scope of an enclosing task because the semantics of the Legion programming
-model ensure that all tasks can only use regions which are subregions of
-regions that the parent task uses.  This implies that if a child task were
-to depend on a task at a higher level of the task tree, then the
-parent task would also have had a dependence.  
+The first step in the execution of a task is dependence analysis.  Within a task call, subtasks are
+registered with the high-level runtime in sequential execution order.  The
+registration lists the logical regions to be accessed with needed privileges and coherence.
+The runtime uses this information to perform
+dependence detection with each of the subtasks already registered
+in the same context (i.e. called by the same parent task).  
+%These checks will
+%be sufficient to ensure correct program order, as was proved in Section~\ref{sec:exec}. 
 
-Lemma: If a task {\tt t} with ancestor task {\tt p} depends on task {\tt t'}
-a sibling task of {\tt p}, then task {\tt p} must depend on task {\tt t'}.
+%We initially describe how dependences are detected from logical regions
+%in Section \ref{subsec:cohdep}.  We then describe the algorithm that
+%is used to perform dependence detection in Section \ref{subsec:depdetect}.
+%Section \ref{subsec:dataflow} describes how data is versioned correctly
+%during deferred execution.  For concreteness we describe how dependence
+%analysis is performed for the circuit simulation from Section \ref{sec:ex}.
 
-This property of the Legion programming model enables the runtime to only 
-have to perform dependence analysis between tasks which share the same 
-parent task.  By restricting dependence analysis to tasks which share the same
-parent task, the runtime can perform dependence analysis locally and not
-have to be concerned with tasks being created in other parts of the machine.
-
-When performing dependence analysis the runtime relies on its knowledge about
-the relationships between logical regions and partitions.  We first describe
-the the components to dependence analysis in sections \ref{subsec:regiontree},
-\ref{subsec:cohdep}, and \ref{absinsts}.  We then describe the algorithm for performing 
-dependence analysis on this data structures in section \ref{subsec:depdetect}.
-
-\subsubsection{Region Trees}
-\label{subsec:regiontree}
-To detect dependences between the tasks, the runtime leverages its knowledge
-about logical regions and their partitions.  To create a new logical region
-or partition, the application must invoke the corresponding call in the
-runtime.  As these calls occur, the runtime constructs a data strcture
-called a {\em region tree}.  A region tree describes the relationship between
-logical regions and partitions.  A region tree contains two types of nodes:
-region nodes and partition nodes.  Every region tree is rooted with a region
-node and alternates between region and partition nodes at each corresponding level.
-A region node represents a specific logical region and tracks the set of
-partitions of that logical region.  Similarly a partition node represents 
-a specific partitioning of a logical region and keeps track of the logical regions 
-which are subregions of the partition.  
-
-\subsubsection{Dependencies From Coherence Properties}
+%When performing dependence analysis the runtime relies on its knowledge about
+%the relationships between logical regions and partitions.  We first describe
+%the the components to dependence analysis in sections \ref{subsec:regiontree},
+%\ref{subsec:cohdep}, and \ref{absinsts}.  We then describe the algorithm for performing 
+%dependence analysis on this data structures in section \ref{subsec:depdetect}.
+%\subsubsection{Region Trees}
+%\label{subsec:regiontree}
+%To detect dependences between the tasks, the runtime leverages its knowledge
+%about logical regions and their partitions.  To create a new logical region
+%or partition, the application must invoke the corresponding call in the
+%runtime.  As these calls occur, the runtime constructs a data strcture
+%called a {\em region tree}.  A region tree describes the relationship between
+%logical regions and partitions.  A region tree contains two types of nodes:
+%region nodes and partition nodes.  Every region tree is rooted with a region
+%node and alternates between region and partition nodes at each corresponding level.
+%A region node represents a specific logical region and tracks the set of
+%partitions of that logical region.  Similarly a partition node represents 
+%a specific partitioning of a logical region and keeps track of the logical regions 
+%which are subregions of the partition.  
+\subsubsection{Dependencies From Coherence and Privileges}
 \label{subsec:cohdep}
-To detect dependencies between any two tasks using a logical region, we leverage
-the information contained in the access and cohrence properties provided by the programmer
-for how the region is to be used.  Dependency checks are performed pair-wise between regions
-to determine whether one task depends on the other.  When checking for
-dependencies we first examine the access property.  If both tasks are reads, then 
-there is never a dependence.  If at least one of them is a write we use table
-\ref{tab:depsdetect} to determine whether there is a dependence.
+Conceptually, dependence detection between a new task $t$ and a previous task $t'$ requires comparing the two sets of
+logical regions accessed.  For each logical region from $t'$
+that may overlap with a logical region needed by $t$, the privileges
+and coherence modes are compared to determine whether a dependence exists.  If
+both regions need read
+privileges there is never a dependence, but if either 
+task needs write or reduction privileges, the coherence modes are compared:
 
-\begin{center}
-\begin{table}
-\begin{tabular}{|c|c|c|c|c|} \hline
-             & Exclusive & Atomic   & Simultaneous & Relaxed \\ \hline 
-Exclusive    & Dependence & Dependence & Dependence & Dependence \\ \hline
-Atomic       & Dependence & Same Instance & Contingent & Contingent \\ \hline
-Simultaneous & Dependence & Contingent & Same Instance & None \\ \hline
-Relaxed      & Dependence & Contingent & None & None \\ \hline
+\vspace{2mm}
+{\small
+\begin{tabular}{c|cccc}
+             & Exclusive & Atomic   & Simultaneous & Relaxed \\
+\midrule
+Exclusive    & Dep & Dep & Dep & Dep \\ 
+Atomic       & Dep & Same & Cont & Cont \\
+Simultaneous & Dep & Cont & Same & None \\
+Relaxed      & Dep & Cont & None & None \\
 \end{tabular}
-\caption{Dependence detection cases when at least one access is a write.\label{tab:depsdetect}}
-\end{table}
-\end{center}
-In this table, {\em Dependence} indicates that there will always be a dependence between
-regions while {\em None} indicates that there will never be a dependence regardless
-of mapping decisions.  In the case of {\em Same Instance} there is a dependence contingent
-upon a mapping decision.  If both tasks map to the same physical instance (described in 
-more detail in section \ref{subsec:instmang}) then there is no dependence, which if
-they map to different instances there is a dependence as the system will have to generate
-a copy between the two tasks running.
+}
+\vspace{2mm}
 
-For the case of {\tt Contingent} there are two special cases that we handle.
-One special case is Write-After-Read (WAR) dependencies.  For the WAR case, if neither coherence property
-is {\em Exclusive} then we can ensure that different physical instances
-are used to avoid an anti-dependence and increase parallelism.  If either property is {\em Exclusive} then the semantics
-of the programming model mandate that we detect a dependence and serialize the task.
+An {\tt Dep} entry indicates a dependence, whereas {\tt None}
+means no dependence.  A
+{\tt Same} entry indicates a dependence unless the two tasks 
+use the same {\em physical region}.  Finally, a {\tt Cont} entry
+indicates a dependence unless a single writer is using the
+atomic coherence mode.  When a dependence is detected, the new task 
+waits for the older task to complete before it begins execution.
 
-Another special case occurs if there is an {\tt Atomic} writer and either {\tt Simultaneous}
-or {\tt Relaxed} reader.  In this case it is acceptable for the tasks to run in
-parallel as it is valid for the reader to see updates form the writer, and the
-reader will not violate the atomic access semantics of the writer.
+The table lists coherence modes we have not yet discussed.  Atomic
+allows tasks to be reordered as long as the result is
+serializable.  Both simultaneous and relaxed allow other tasks to
+execute at the same time.  The difference comes in the restriction of
+what data must be observed in the different modes.  In Simultaneous
+mode, a task must see all updates to the logical region made by other
+tasks operating on the same region at the same time.  In Relaxed mode,
+a task is ambivalent as to whether it observes any updates to the
+logical region by other tasks executing at the same time.
 
-\subsubsection{Abstract Instances}
-\label{subsec:absinsts}
-For the cases where tasks do not depend, they are allowed to create different physical
-instances of the same logical region.  The decision to do this however does not
-happen until the mapping phase of a task execution.  However, we need to have a place
-holder that is capable of representing all the possible valid physical instances
-from which to choose even if those instances do not exist because the prior
-tasks have not been mapped.  We call these place holders {\tt abstract instances}.
+%For each previously registered task, 
+%To detect dependencies between any two tasks using a logical region, we leverage
+%the information contained in the privileges and cohrence properties provided by the
+%task call.  Dependency checks are performed pair-wise between regions
+%to determine whether one task depends on the other.  When checking for
+%dependencies we first examine the region privileges.  If both tasks have reads privileges, then 
+%there is never a dependence.  If at least one task has write privileges we use table
+%\ref{tab:depsdetect} to determine whether there is a dependence.
 
-Abstract instances represent the set of possible valid physical instances which a
-task will be capable of selecting from or adding to when it is mapped.  The value
-of abstract instances is that they allow us to remember which physical instances
-are valuable while continuing to perform dependence detection on newly registered
-tasks.  In the analogy to out-of-order processors abstract instances allow us
-to perform the same operation as register-renaming of instructions to avoid
-anti-dependences and to remember actual dependences even though our dependence detection
-analysis may run ahead of the actual execution of tasks.
+%In this table, {\em Dependence} indicates that there will always be a dependence between
+%regions while {\em None} indicates that there will never be a dependence regardless
+%of mapping decisions.  In the case of {\em Same Instance} there is a dependence contingent
+%upon a mapping decision.  If both tasks map to the same physical instance (described in 
+%more detail in section \ref{subsec:instmang}) then there is no dependence, which if
+%they map to different instances there is a dependence as the system will have to generate
+%a copy between the two tasks running.
+%For the case of {\tt Contingent} there are two special cases that we handle.
+%One special case is Write-After-Read (WAR) dependencies.  For the WAR case, if neither coherence property
+%is {\em Exclusive} then we can ensure that different physical instances
+%are used to avoid an anti-dependence and increase parallelism.  If either property is {\em Exclusive} then the semantics
+%of the programming model mandate that we detect a dependence and serialize the task.
+
+%Another special case occurs if there is an {\tt Atomic} writer and either {\tt Simultaneous}
+%or {\tt Relaxed} reader.  In this case it is acceptable for the tasks to run in
+%parallel as it is valid for the reader to see updates form the writer, and the
+%reader will not violate the atomic access semantics of the writer.
+%XS\begin{center}
+%\begin{table}
+%\small
+%\begin{tabular}{|c|c|c|c|c|} \hline
+%             & Exclusive & Atomic   & Simultaneous & Relaxed \\ \hline 
+%Exclusive    & Dep & Dep & Dep & Dep \\ \hline
+%Atomic       & Dep & Same & Cont & Cont \\ \hline
+%Simultaneous & Dep & Cont & Same & None \\ \hline
+%Relaxed      & Dep & Cont & None & None \\ \hline
+%\end{tabular}
+%\caption{Dependence detection cases when at least one access has a write privilege. {\tt Dep}
+%indicates a dependence is detected.  {\tt Same} indicates a dependence is detected
+%only if the task uses different instances.  {\tt Cont} means that the dependence
+%is contingent upon the permissions.  {\tt None} means there will never
+%be a conflict.\label{tab:depsdetect}}
+%\end{table}
+%\end{center}
+
+%\subsubsection{Abstract Instances}
+%\label{subsec:absinsts}
+%For the cases where tasks do not depend, they are allowed to create different physical
+%instances of the same logical region.  The decision to do this however does not
+%happen until the mapping phase of a task execution.  However, we need to have a place
+%holder that is capable of representing all the possible valid physical instances
+%from which to choose even if those instances do not exist because the prior
+%tasks have not been mapped.  We call these place holders {\tt abstract instances}.
+
+%Abstract instances represent the set of possible valid physical instances which a
+%task will be capable of selecting from or adding to when it is mapped.  The value
+%of abstract instances is that they allow us to remember which physical instances
+%are valuable while continuing to perform dependence detection on newly registered
+%tasks.  In the analogy to out-of-order processors abstract instances allow us
+%to perform the same operation as register-renaming of instructions to avoid
+%anti-dependences and to remember actual dependences even though our dependence detection
+%analysis may run ahead of the actual execution of tasks.
 
 \subsubsection{Dependence Detection}
 \label{subsec:depdetect}
-When a task is registered, the runtime
-will perform dependence detection for every region that the task requests with
-prior tasks that have been registered in the same parent task context.  Since
-tasks are registered in program order we will always perform dependence detection
-in program order which guarantees correctness even if tasks are executed out-of-order.  
-Performing dependence detection in program order is also annalogous to how an out of order
-processor works.  Out-of-order processors load instructions in order and only after
-analyzing their instructions and register dependencies do they execute instructions
-out of order.  The regions that a task requires are annalogous
-to the registers listed in an instruction and the goal of the high level
-runtime is to detect the same dependences and use them to enforce scheudling constraints
-upon a task.  However, there is a catch to this analogy: in the Legion programming
-model two different logical regions are not necessarily independent from each other.  In
-order to do the dependence detection we rely on the forest of region tree data structures to be
-able to detect dependences between tasks which require different logical regions.
 
-To perform dependence detection, we first find the {\em root region} for the 
-requested region.  The root region is the ancestor region for which the parent task
-has privliges.  Note that the semantics of the Legion programming model state that
-we must always be able to find such a root region or else an error is thrown.  
+To detect dependencies efficiently, the high-level runtime maintains a
+local region forest (recall Section~\ref{sec:exec}) for each task.  The
+root regions are the task's region arguments, and the forest includes
+all partitions and subregions created within the task.  To perform
+dependence detection on a region $r$, the runtime first finds a root
+region $r'$ such that $r \rleq r'$.  The runtime then walks the region
+forest from $r'$ to $r$.  Each region $r''$ on the path contains a
+list $L$ of registered tasks using $r''$, and potential dependencies
+are discovered by comparing privileges and coherence modes with the
+tasks in $L$.
 
-Once we have found the root region for the requested region, we then proceed to walk
-down the region tree from the node corresponding to the root region to the node
-for the requested region.  At each node, we determine if any potential dependences exist.
-Determining whether dependencies exist involves checking information both about the current
-node being visited as well as whether there are any potential dependences farther down
-in the region tree.  We now describe the decision procedure performed at both region
-nodes and partition nodes in the region trees.
+The runtime next checks if a partition of $r''$ is {\em open}.  An
+open partition indicates that there are active tasks using subregions
+of $r''$.  No more than one partition of a node can be open
+at any time.  If the open partition is is along the path to $r$,
+traversal continues.  If the open partition lies along another 
+path the runtime must {\em close} the currently active partition because it cannot guarantee
+disjointness with the region the new task wishes to access.  To close a
+partition, the runtime finds all active tasks in that
+subtree and considers them all dependencies for the new task.  
+With the previously active partition closed, the runtime can 
+then open the desired partition and traverse further down the tree as
+needed.
 
-For region nodes, we begin by checking if there are any tasks actively using the logical
-region which we depend.  We determine this using the coherence dependence analysis described 
-in section \ref{cohdep}.  For each dependence that is found, we record that the previous
-task must have completed prior to the start of the task we are registering.  After performing
-dependence analysis we then check if there is an open partition which may contain additional
-dependencies.  If the open partition is the partition we intend to traverse then we
-simply continue the traversal.  However, if the partition we want is not open then we must
-first {\em close} up any open partition and then open the partition we are going to
-traverse.  The act of closing a partition involves traversing the region tree and recording
-all active tasks as dependences.  The reason for this is that we have no disjointness
-information about tasks that use different partitions and therefore to be safe must register
-all task touching subregions as dependences.  After closing any open partitions, we
-can then open the partition on our path and continue the traversal.
+When the runtime traverses an open partition, its behavior depends on the kind
+of partition being traversed.  If the partition is disjoint, no other subregion
+can overlap with the target region, so the state of other subregions is
+ignored.  However, if the partition is not disjoint, any 
+of subregion could overlap with the desired subregion, so
+the runtime must close all open subregions (recording new dependencies
+as it does so) before continuing the traversal.
 
-When we reach our target logical region we again perform the coherence dependence analysis.
-We also close up any open partitions as they might contain tasks which could contain
-a dependence.  If our task was dependent on all of the previous active tasks in a region
-we say that our task was a {\em dominator} of all the previous active tasks.  We can
-then clear the list of active tasks and replace it with the current task.  This is safe since
-any later tasks that depend on the current task will have a transitive dependence 
-through the dominator task.  If our task is not a dominator task, then we simply append
-it to the list of active tasks making it possible for future task registrations to detect
-it as a dependence.
+After the runtime reaches the target logical region, it performs dependence
+checks against any active tasks listed for that region.  If a dependence is 
+discovered, it is added to the current task's dependence list.  It can then
+be removed from the region tree's active task list, as the current task (which
+will be pushed onto the active task list) {\em dominates} the previous task.
+In a case where the new task has dependencies with all existing active tasks
+for the target node, that whole list is replaced by a single entry for the
+new task.
 
-When traversing partition nodes we perform a similar, but less complicated analysis.  There
-are two cases to consider for partition nodes: disjoint partitions and aliased partitions.
-In the case of disjoint partitions, we simply open the subregion that we intend to traverse
-and then traverse it.  This is correct because we know by definition that any two logical
-subregions in a disjoint partition are disjoint and therefore a dependence can never exits
-between them.
+\usetikzlibrary{calc}
+\begin{figure*}[t]
+  \centering
+  \subfigure[mapping of $cnc_0$ task]{
+    \label{sfig:mapping_fig:cnc}
+    \tiny
+    \begin{tikzpicture}[scale=0.7]
+      \partitiontree
+      \node(cnc_p0)[very thick,draw,fill=white] at (0.45,0.30) {\tiny $cnc_0$};
+      \node(cnc_g0)[very thick,draw,fill=white] at (5.45,0.30) {\tiny $cnc_0$};
+      \node(def_top)[very thin,draw,fill=white] at (3.3,4.35) {\tiny ~~---~~};
+      \draw[very thick] ($ (top.south)!.5!(ptp.center) $) circle (2pt);
+      \draw[very thick] ($ (pvsf.north)!.5!(ptf.center) $) circle (2pt);
+      \draw[very thick] ($ (pvsf.250)!.5!(ppp.center) $) circle (2pt);
+      \draw[very thick] ($ (p0.north)!.5!(pp0.center) $) circle (2pt);
+      \draw[very thick] ($ (pvst.north)!.5!(ptt.center) $) circle (2pt);
+      \draw[very thick] ($ (pvst.310)!.5!(pgp.center) $) circle (2pt);
+      \draw[very thick] ($ (g0.north)!.5!(pg0.center) $) circle (2pt);
+      \draw[very thick,->] (def_top) to [bend right=45] (cnc_p0);
+      \draw[very thick,->] (def_top) to [bend left=45] (cnc_g0);
+    \end{tikzpicture}
+  }
+  \subfigure[mapping of $dc_0$ task]{
+    \label{sfig:mapping_fig:dc}
+    \tiny
+    \begin{tikzpicture}[scale=0.7]
+      \partitiontree
+      %\node(cnc_p0)[very thick,draw,fill=white] at (0.45,0.30) {\tiny $\begin{array}{c}\cancel{cnc_0} \\ dc_0\end{array}$};
+      \node(cnc_pn)[very thin,draw,fill=white] at (2.25,0.30) {\tiny $cnc_{n-1}$};
+      \node(cnc_p1)[very thin,draw,fill=white] at (1.25,0.30) {\tiny $cnc_1$};
+      \node(dc_p0)[very thick,draw,fill=white] at (0.45,0.30) 
+{\tiny
+$\begin{array}{@{}c@{}}
+\cancel{cnc_0} \\
+dc_0
+\end{array}$};
+      \node(cnc_gn)[very thin,draw,fill=white] at (7.25,0.30) {\tiny $cnc_{n-1}$};
+      \node(cnc_g1)[very thin,draw,fill=white] at (6.25,0.30) {\tiny $cnc_1$};
+      \node(cnc_g0)[very thin,draw,fill=white] at (5.45,0.30) {\tiny $cnc_0$};
+      \node(dc_g0)[very thick,draw,fill=white] at (5.45,0.75) {\tiny $dc_0$};
+      \draw[very thick,->] (cnc_g0.west) to [bend left=70] (dc_g0.west);
+      \draw[very thick] ($ (cnc_g0.center) - (0.25,0.25) $) -- ++(0.5,0.5);
+      \draw[very thick] ($ (cnc_g0.center) - (0.25,-0.25) $) -- ++(0.5,-0.5);
+      \node(def_top)[very thin,draw,fill=white] at (3.3,4.35) {\tiny ~~---~~};
+      \draw[very thin] ($ (top.south)!.5!(ptp.center) $) circle (2pt);
+      \draw[very thin] ($ (pvsf.north)!.5!(ptf.center) $) circle (2pt);
+      \draw[very thin] ($ (pvsf.250)!.5!(ppp.center) $) circle (2pt);
+      \draw[very thin] ($ (p0.north)!.5!(pp0.center) $) circle (2pt);
+      \draw[very thin] ($ (p1.north)!.5!(pp1.center) $) circle (2pt);
+      \draw[very thin] ($ (pn.north)!.5!(ppn.center) $) circle (2pt);
+      \draw[very thin] ($ (pvst.north)!.5!(ptt.center) $) circle (2pt);
+      \draw[very thin] ($ (pvst.310)!.5!(pgp.center) $) circle (2pt);
+      \draw[very thin] ($ (g0.north)!.5!(pg0.center) $) circle (2pt);
+      \draw[very thin] ($ (g1.north)!.5!(pg1.center) $) circle (2pt);
+      \draw[very thin] ($ (gn.north)!.5!(pgn.center) $) circle (2pt);
+    \end{tikzpicture}
+  }
+  \subfigure[mapping of $volt_0$ task]{
+    \label{sfig:mapping_fig:volt}
+    \tiny
+    \begin{tikzpicture}[scale=0.7]
+      \partitiontree
+      \node(dc_p0)[very thin,draw,fill=white] at (0.45,0.30) {\tiny $dc_0$};
+      \node(dc_p1)[very thin,draw,fill=white] at (1.25,0.30) {\tiny $dc_1$};
+      \node(dc_pn)[very thin,draw,fill=white] at (2.25,0.30) {\tiny $dc_{n-1}$};
+      \node(dc_g0)[very thin,draw,fill=white] at (5.45,0.30) {\tiny $dc_0$};
+      \node(volt_p0)[very thick,draw,fill=white] at (0.45,0.75) {\tiny $volt_0$};
+      \draw[very thick,->] (dc_p0.west) to [bend left=70] (volt_p0.west);
+      \draw[very thick] ($ (dc_p0.center) - (0.25,0.25) $) -- ++(0.5,0.5);
+      \draw[very thick] ($ (dc_p0.center) - (0.25,-0.25) $) -- ++(0.5,-0.5);
+      \draw[very thick] ($ (dc_g0.center) - (0.25,0.25) $) -- ++(0.5,0.5);
+      \draw[very thick] ($ (dc_g0.center) - (0.25,-0.25) $) -- ++(0.5,-0.5);
+      \node(dc_g0)[very thin,draw,fill=white] at (5.45,0.30) {\tiny $dc_0$};
+      \node(dc_g1)[very thin,draw,fill=white] at (6.25,0.30) {\tiny $dc_1$};
+      \node(dc_gn)[very thin,draw,fill=white] at (7.25,0.30) {\tiny $dc_{n-1}$};
+      \draw[very thick] ($ (dc_g0.center) - (0.25,0.25) $) -- ++(0.5,0.5);
+      \draw[very thick] ($ (dc_g0.center) - (0.25,-0.25) $) -- ++(0.5,-0.5);
+      \draw[very thick] ($ (dc_g1.center) - (0.25,0.25) $) -- ++(0.5,0.5);
+      \draw[very thick] ($ (dc_g1.center) - (0.25,-0.25) $) -- ++(0.5,-0.5);
+      \draw[very thick] ($ (dc_gn.center) - (0.25,0.25) $) -- ++(0.5,0.5);
+      \draw[very thick] ($ (dc_gn.center) - (0.25,-0.25) $) -- ++(0.5,-0.5);
+      \node(def_top)[very thin,draw,fill=white] at (3.3,4.35) {\tiny ~~---~~};
+      \draw[very thin] ($ (top.south)!.5!(ptp.center) $) circle (2pt);
+      \draw[very thin] ($ (pvsf.north)!.5!(ptf.center) $) circle (2pt);
+      \draw[very thin] ($ (pvsf.250)!.5!(ppp.center) $) circle (2pt);
+      \draw[very thin] ($ (p0.north)!.5!(pp0.center) $) circle (2pt);
+      \draw[very thin] ($ (p1.north)!.5!(pp1.center) $) circle (2pt);
+      \draw[very thin] ($ (pn.north)!.5!(ppn.center) $) circle (2pt);
+      \draw[very thin] ($ (pvst.north)!.5!(ptt.center) $) circle (2pt);
+      \draw[very thin] ($ (pvst.310)!.5!(pgp.center) $) circle (2pt);
+      \draw[very thin] ($ (g0.north)!.5!(pg0.center) $) circle (2pt);
+      \draw[very thin] ($ (g1.north)!.5!(pg1.center) $) circle (2pt);
+      \draw[very thin] ($ (gn.north)!.5!(pgn.center) $) circle (2pt);
+      \draw[very thick] ($ (g0.north)!.5!(pg0.center) - (0.1,0.1) $) -- ++(0.2,0.2);
+      \draw[very thick] ($ (g0.north)!.5!(pg0.center) - (0.1,-0.1) $) -- ++(0.2,-0.2);
+      \draw[very thick] ($ (g1.north)!.5!(pg1.center) - (0.1,0.1) $) -- ++(0.2,0.2);
+      \draw[very thick] ($ (g1.north)!.5!(pg1.center) - (0.1,-0.1) $) -- ++(0.2,-0.2);
+      \draw[very thick] ($ (gn.north)!.5!(pgn.center) - (0.1,0.1) $) -- ++(0.2,0.2);
+      \draw[very thick] ($ (gn.north)!.5!(pgn.center) - (0.1,-0.1) $) -- ++(0.2,-0.2);
+      \draw[very thick] ($ (pvst.310)!.5!(pgp.center) - (0.1,0.1) $) -- ++(0.2,0.2);
+      \draw[very thick] ($ (pvst.310)!.5!(pgp.center) - (0.1,-0.1) $) -- ++(0.2,-0.2);
+      \draw[very thick] ($ (pvst.230)!.5!(psp.center) $) circle (2pt);
+      \draw[very thick] ($ (s0.north)!.5!(ps0.center) $) circle (2pt);
+      \node(def_pvst)[very thick,draw,fill=white] at (5.3,2.75) {\tiny ~~---~~};
+      \draw[very thick,->] (dc_g0.north) to [bend right=30] (def_pvst.270);
+      \draw[very thick,->] (dc_g1.north) to [bend right=30] (def_pvst.315);
+      \draw[very thick,->] (dc_gn.north) to [bend right=30] (def_pvst.0);
+      \node(volt_s0)[very thick,draw,fill=white] at (3.2,0.30) {\tiny $volt_0$};
+      \draw[very thick,->] (def_pvst.190) to [bend right=40] (volt_s0.130);
+    \end{tikzpicture}
+  }
+  \label{fig:mapping_fig}
+  \caption{Mapping of tasks in region tree}
+\end{figure*}
 
-For aliased partitions we have to perform an additional dependence analysis.  At every
-aliased partition node we maintain a list of tasks active in all of the subregions.  We
-perform a coherence dependence analysis between every pair of tasks regardless of the subregion
-they are accessing to see if a dependence could exist.  We do this regardless of the subregion
-because we have no disjointness information in an aliased partition.  If there are any
-potential dependences, we close up all the subregions and then open the subregion required.  If
-no dependence was detected then we open the subregion we need, append the task to the list
-of active tasks, and continue the traversal.  Allowing multiple open subregions in an aliased
-partition is safe because we performed an analysis between all active tasks regardless of
-whether the particular subregions were aliased or not.
 
-\subsubsection{Implicit Dataflow Construction}
+\subsubsection{Managing Data Versions}
 \label{subsec:dataflow}
-In addition to computing the dependences between tasks, we also have to compute where
-a task is permitted to acquire its data from when it goes to execute.
-It is insufficient to simply record the producer task as there
-may be multiple active tasks for a logical region, all of which may produce different physical
-instances.  In addition, it is likely that the producer tasks have not been mapped
-yet which makes it impossible to know the set of physical instances from which to pull data.
 
-To solve this problem we create the notion of an {\em abstract instance}.  An abstract instance
-is a place holder for the set of physical instances from which a task can choose to pull
-data when it creates its own physical instances before executing.  For each region in
-a task we record the source and destination abstract instances that correspond to the physical
-instances from which a task will read its input data and then place its output data.
-When the task is mapped as described in section \ref{subsec:mapping} we will update these
-abstract instances with the actual physical instances chosen.
+A {\em physical instance} is a copy of the data in a logical region.  Multiple
+physical instances of a logical region may exist simultaneously, and it is the responsibility of the high-level runtime
+to ensure tasks use the correct version.
+In an out-of-order processor this problem is solved by register-renaming which maps logical
+registers to a larger set of physical registers.  Our solution employs a similar technique
+that maps logical regions to a larger set of {\em abstract instances}.  An abstract instance
+is a place holder for the set of physical instances a task will reference when it actually runs.  
+Abstract instances are needed because we may not know the actual physical instances a task will
+use until its predecessors in the dependence graph are {\em mapped} 
+(see Section \ref{subsec:mapping}).  
+To determine the abstract instances of a region, we keep track of 
+the previous valid abstract instances that were observed while traversing the region forest
+during dependence analysis.  Every region in the region forest that has active tasks
+has a valid abstract instance.  Every time we close a region we close all the valid
+abstract instances.  When a region is reopened it must then create a new abstract instance
+to reflect that new physical instances must be created (i.e., a fresh version of the data must be copied from
+the parent region).  
+%In addition, whenever a task writes a region, a new abstract instance is usually created
+%to represent the new version of the data.
 
-To determine the source and destination abstract instances of a region, we keep track of 
-the previous abstract instances that were observed on the way to our target region node
-when performing dependence analysis.  These abstract instances describe the set of physical
-instances from which valid data for our task can be chosen when it is mapped.  If a region
-subtree must be closed then all the abstract instances in that subtree are marked closed
-so no additional tasks can register them as sources.  We can also chose to create a new
-abstract instance to replace a currently valid abstract instance to avoid a WAR dependence.
-By creating an abstract instance we will force the mapper to choose a different physical
-instance from the existing ones when mapping is performed.
 
-Abstract instances correspond to a dynamic construction of the dataflow graph.  Each abstract
-instance is a node in the dataflow graph corresponding to a specific version of a logical 
-region and its instantiations as physical regions.  Tasks are then edges between abstract
-instances indicating operations on different versions of data.  By computing this information
-during dependence detection, we can record it before tasks begin executing out of order allowing
-us to guarantee program correctness in the presence of out of order task execution.  Continuing
-the analogy with out-of-order processors, this implicit construction of the dataflow graph
-is annalogous to register renaming which is done in order, but allows the processor to remove
-WAR dependences and execute instructions in parallel that may have had false dependences.
+%For each region in
+%a task we record the source and destination abstract instances that correspond to the physical
+%instances from which a task will read its input data and then place its output data.
+%When the task is mapped as described in section \ref{subsec:mapping} we will update these
+%abstract instances with the actual physical instances chosen.
+%In addition to computing the dependences between tasks, we also have to compute the version
+%of data that a task is permitted to use when it goes to execute since the computation.
+%It is insufficient to simply record the producer task as there
+%may be multiple active tasks for a logical region, all of which may produce different physical
+%instances.  In addition, it is likely that the producer tasks have not been mapped
+%yet which makes it impossible to know the set of physical instances from which to pull data.
 
-\subsubsection{Putting It All Together: Circuit Example}
+
+
+
+%If a region
+%subtree must be closed then all the abstract instances in that subtree are marked closed
+%so no additional tasks can register them as sources.  We can also chose to create a new
+%abstract instance to replace a currently valid abstract instance to avoid a WAR dependence.
+%By creating an abstract instance we will force the mapper to choose a different physical
+%instance from the existing ones when mapping is performed.
+
+%Abstract instances correspond to a dynamic construction of the dataflow graph.  Each abstract
+%instance is a node in the dataflow graph corresponding to a specific version of a logical 
+%region and its instantiations as physical regions.  Tasks are then edges between abstract
+%instances indicating operations on different versions of data.  By computing this information
+%during dependence detection, we can record it before tasks begin executing out of order allowing
+%us to guarantee program correctness.  
+%Continuing
+%the analogy with out-of-order processors, this implicit construction of the dataflow graph
+%is annalogous to register renaming which is done in order, but allows the processor to remove
+%WAR dependences and execute instructions in parallel that may have had false dependences.
+
+\subsubsection{Circuit Execution Example}
 \label{subsec:cirdependence}
 To illustrate concretely how dependence analysis works, we describe the steps for
-performing dependence analysis for running circuit example.  When the {\tt simulate\_circuit}
-task begins executing there are two region trees rooted at the logical
-regions for {\tt all\_nodes} and {\tt all\_wires}.  For conciseness we will only
-show the region tree for {\tt all\_nodes}.  At the start of the task, there exists
-a single abstract instance at the root node representing the valid set of physical
-instances from which sub tasks will be allowed to pull data.  The state of the
-system at this point can be observed in figure \ref{fig:circdep1}.
-
+performing dependence analysis for the circuit simulation in Listing~\ref{lst:code_ex}.
+For conciseness we will only show the node region forest.  At the start of the task, there exists
+a single abstract instance at the root representing the valid set of physical
+instances from the parent task. 
 When each of the {\tt compute\_new\_current} tasks are issued they must perform dependence
 analysis for two node regions.  In the {\tt private\_node} case they will first open
-up the {\tt p\_nodes\_pvs} partition and then open up the {\tt p\_pvt\_nodes} sub partition
-for each of their subregions.  Since all of the private regions use a different subregion
-of a disjoint partition for the private node accesses, no dependence is detected.  Similarly,
-when all the dependence analysis is performed for the {\tt p\_ghost\_nodes} subregions,
+up the {\tt p\_nodes\_pvs} partition and then open up the {\tt p\_pvt\_nodes} sub-partition
+for each of their subregions.  We use a bold circle on an edge to indicate that it has been
+opened.  Since all of the private regions use a different subregion
+of a disjoint partition for the private node accesses, no dependence is detected.  
+
+Similarly, when the dependence analysis is performed for the {\tt p\_ghost\_nodes} subregions,
 each of the necessary partitions are opened.  There is no dependence with any of the private
-nodes since all the ghost nodes traverse a different sub region of the disjoint partition
+nodes since all the ghost nodes traverse a different subregion of the disjoint partition
 {\tt p\_nodes\_pvs}.  There is also no dependence between any tasks even though the
 {\tt p\_ghost\_nodes} partition is aliased because all the ghost accesses are read-only.
-The state of the region tree after dependence analysis has been performed for the
-{\tt compute\_new\_current} nodes can be seen in figure \ref{fig:circdep2}.
+The state of the region forest after dependence analysis has been performed for the first
+{\tt compute\_new\_current} task can be seen in figure~\ref{sfig:mapping_fig:cnc}.
 
-In the second phase of the computation, all of the {\tt distribute\_charge} tasks
-will be issued.  For these tasks they will first analyze traverse the region tree
-for their subregions containing their private nodes.  The path to these regions are
-already open, but when the dependence analysis arrives at the specific private node subregion it will
-discover a dependence between the task and the {\tt compute\_new\_currents} task that operated
-on that region previously.  This dependence will be recorded and the 
-{\tt distribute\_charge} task will be made the new active task as it dominated the
-previous task.  For the ghost node regions, the dependence analysis will discover that the
-there is a dependence between each of the {\tt distribute\_charge} tasks and all of the
+In the second phase of the computation, the {\tt distribute\_charge} tasks
+are issued.  For these tasks they will first traverse the region forest
+for the regions containing their private nodes.  The path to these regions are
+already open, but when the dependence analysis arrives at the specific private node subregion it 
+discovers a dependence between the task and the {\tt compute\_new\_currents} task that operated
+on that region previously.  This dependence is recorded and the 
+{\tt distribute\_charge} task becomes the new active task.
+
+For the ghost node regions, dependence analysis discovers 
+a dependence between each of the {\tt distribute\_charge} tasks and all of the
 {\tt compute\_new\_current} tasks because the {\tt distribute\_charge} tasks are
-performing writes and the partition is aliased.  However, the runtime will detect this as
+performing writes and the partition is aliased.  However, the runtime will detect these as
 anti-dependences which are resolved by forcing the {\tt distribute\_charge} tasks to
 create new valid abstract instances rather than use the same abstract instances as
 each of the {\tt compute\_new\_current} tasks.  There are no dependences detected
 between each of the {\tt distribute\_charge} tasks on the ghost regions because
 the {\tt Simultaneous} coherence property permits multiple tasks to be using the same
 partition at the same time even if the subregions they are accessing are aliased.  The
-state of the region tree after dependence analysis for {\tt distribute\_charge} can
-be seen in figure \ref{fig:circdep3}.
+state of the region forest after dependence analysis for the first {\tt distribute\_charge} task can
+be seen in figure~\ref{sfig:mapping_fig:dc}.
 
 For the final phase of the computation, all of the {\tt update\_voltage} tasks
 are issued requiring their private node region and their shared node region.  Again
-the private node paths are already open, but a WAR dependence is detected which
+the private node paths are already open, but a write-after-read dependence is detected which
 requires a new abstract instance to be created to avoid a dependence.  The
 shared nodes present a more interesting case.  The first shared node to be registered
-will detect a dependence with every prior task since it must open the shared partition
+detects a dependence with every prior task since it must open the shared partition
 instead of the ghost partition.  A new abstract instance is created at the 
 {\tt all\_shared} node and copies are recorded for each valid instance in the ghost partition
 back to the new {\tt all\_shared} abstract instance.  After this is complete, the
 ghost partition can be opened.  Each corresponding {\tt update\_voltage} task will record
 a dependence on the copy operation to close ghost partition as it traverses the {\tt all\_shared}
 node ensuring that there is no requirement on the ordering of {\tt update\_voltage}
-tasks.  The state of the region tree after this phase can be seen in figure \ref{fig:circdep4}.
+tasks.  The state of the region forest after the first update voltage task
+has been registered can be seen in Figure~\ref{sfig:mapping_fig:volt}.
 
 \subsection{Mapping}
 \label{subsec:mapping}
-After tasks have undergone dependence analysis, the tasks are placed on either a ready
-queue to be mapped or waiting queue.  A task is placed on the ready queue if all the tasks with
-which it registered a dependence have mapped.  If any of the task's dependences have
-not mapped then the task is placed on the waiting queue.  The task also registers
-itself with the task it depends on so that when the dependent task is mapped it will notify
-the task on the waiting queue. Tasks are mapped based on the partial ordering created by 
-their data dependences.  By mapping tasks based on data dependences we guarantee the 
-semantics of the programming model, while still allowing tasks to execute out of order.
+%After dependence analysis a task is placed on either a {\em ready queue} to be mapped or a 
+The high-level runtime maintains the invariant that a task {\em maps} only after all tasks on which it depends have mapped. 
+While some predecessor tasks have not mapped a task remains in the {\em waiting queue}; otherwise it is placed on the {\em ready queue}.  
 
-When the scheduler is invoked, it will pull a series of tasks off the ready queue, map them,
+%Tasks are mapped observing the partial ordering created by 
+%their data dependences.  By mapping tasks based on data dependences we guarantee the 
+%semantics of the programming model, while still allowing tasks to execute out of order.
+
+When the scheduler is invoked, it pulls tasks off the ready queue, maps them,
 and then issue them to be executed by the low level runtime.  The process of mapping a task
-consists of several different queries made by the runtime to an application level object
-called a {\em mapper}.  A mapper is an object which has control over how both tasks and
-data can be placed in the machine.  This idea is a dynamic instantiation of the idea
-initially presented in \cite{Fatahalian06} of creating mapping files for specifying how
-tasks and data were placed in a memory hierarchy.  Rather than rely on a static mapping
-we opted for a dynamic interface that could make decisions both based on application specific
-input data as well as the machine specifics both at start-up and throughout the execution
-of an application.  The interface for a mapper is described in section \ref{subsec:mapinter}.
+consists of several different queries made by the runtime to an application level {\em mapper} object.
+A mapper controls how tasks and data can be placed in the machine.  Mappers are a dynamic version of 
+the static mapping files of \cite{Fatahalian06}.  
+%Rather than rely on a static mapping
+%we opted for a dynamic interface that could make decisions both based on application specific
+%input data as well as the machine specifics both at start-up and throughout the execution
+%of an application.  %The interface for a mapper is described in Section \ref{subsec:mapinter}.
 
-\subsubsection{Mapper Interface}
-\label{subsec:mapinter}
-The interface for a mapper is designed to give the programmer control over how data and tasks
-are placed in the machine.  Every mapper must support the following function calls:
+%\subsubsection{Mapper Interface}
+The mapper interface is a collection of eight function calls that allow the runtime to query
+the application for information about how to map tasks and regions.  Mapper calls are made
+from the runtime to ask where physical instances of regions should be placed in the memory hierarchy,
+which physical instances should be the source for copy operations, on which processors
+tasks should be run, and how task stealing should be performed.
+%\label{subsec:mapinter}
+%The interface for a mapper is designed to give the programmer control over how data and tasks
+%are placed in the machine.  Every mapper must support the following function calls:
 
-\begin{itemize}
-\item {\tt rank\_initial\_region\_locations} - When a new logical region is created, the runtime
-will ask the mapper to give a ranking of physical memories of where to place the inital instance.
+%\begin{itemize}
+%\item {\tt rank\_initial\_region\_locations} - When a new logical region is created, the runtime
+%will ask the mapper to give a ranking of physical memories of where to place the inital instance.
 
-\item {\tt rank\_initial\_partition\_locations} - When a new partition is created, the mapper
-must provide a ranking of memory locations for each of the new sub partitions.
+%\item {\tt rank\_initial\_partition\_locations} - When a new partition is created, the mapper
+%must provide a ranking of memory locations for each of the new sub partitions.
 
-\item {\tt select\_initial\_processor} - Given a task to be mapped, select a processor to
-send this task to for mapping.  
+%\item {\tt select\_initial\_processor} - Given a task to be mapped, select a processor to
+%send this task to for mapping.  
 
-\item {\tt target\_task\_steal} - select a processor to attempt task stealing.  This is explained
-in more detail in section \ref{subsec:steal}.  
+%\item {\tt target\_task\_steal} - select a processor to attempt task stealing.  This is explained
+%in more detail in Section \ref{subsec:steal}.  
 
-\item {\tt permit\_task\_steal} - also covered in section \ref{subsec:steal}
+%\item {\tt permit\_task\_steal} - also covered in Section \ref{subsec:steal}
 
-\item {\tt map\_task\_region} - Given a specific task and the logical region to be mapped, select
-a source physical instance for the data, and provide a ranking of memories in which to create
-or reuse an existing physical instance.
+%\item {\tt map\_task\_region} - Given a specific task and the logical region to be mapped, select
+%a source physical instance for the data, and provide a ranking of memories in which to create
+%or reuse an existing physical instance.
 
-\item {\tt rank\_copy\_targets} - Given a task and a set of valid instances, generate a set of
-rankings for new memories in which to place new phsyical instances.  This operation is used to
-manage the copy operations performed when closing a subtree as they allow the programmer to
-eagerly migrate regions through the memory hierarchy as copy ups are occuring.
+%\item {\tt rank\_copy\_targets} - Given a task and a set of valid instances, generate a set of
+%rankings for new memories in which to place new phsyical instances.  This operation is used to
+%manage the copy operations performed when closing a subtree as they allow the programmer to
+%eagerly migrate regions through the memory hierarchy as copy ups are occuring.
 
-\item {\tt select\_copy\_source} - Given a set of currently valid source instances and destination
-physical instance, select the instance from which a copy should be made.
-\end{itemize}
+%\item {\tt select\_copy\_source} - Given a set of currently valid source instances and destination
+%physical instance, select the instance from which a copy should be made.
+%\end{itemize}
 
-These eight task calls give the programmer complete control over where all tasks are executed, and
-where all data is placed within the memory hierarchy.  While this interface does give the programmer
-complete control over data and task movement, it will never allow the programmer to affect the
-correctness of the program.  The highlevel runtime still manages all the task dependences and the
+These eight mapper calls give the programmer complete control over where all tasks are executed, and
+where all data is placed within the memory hierarchy.  While this interface allows the programmer
+to tune performance, it cannot affect correctness.  The high-level runtime still manages all the task dependences and the
 ordering in which tasks are executed and copies are performed.  Therefore, regardless of choices
 made by any mapper, the resulting program will always be executed correctly.
+To make it easy for programmers to write programs, we provide a default
+ mapper that uses simple heuristics to place tasks and data.  
+%For example, when
+%performing task stealing, the default mapper only encourages stealing tasks in groups that use
+%the same logical regions, which improves locality by moving tasks that use the same regions
+%together.  The default mapper implementation makes it easy for the programmer to get an 
+%initial program running.  As the programmer tunes the application, he can write mappers that
+%specialize for both application specific and/or machine specific parameters.
 
-In order to make it easy for programmers to write programs, we provide an initial implementation 
-of the mapper interface that uses simple heuristics to place task and data.  This makes it easy
-for the programmer to get an initial program running, while allowing them to write their own
-mapper to tune for application or machine specific scenarios at a later time.
-
-Lastly, the runtime supports multiple mappers in use in the same application.  For each task 
-call the programmer can choose a mapper to be used for the runtime calls made inside that
-task.  This allows for the creation of library code which provides their own mappers indpendent
-from any application level mappers that may be created.
+The high-level runtime also supports the use of multiple mappers in the same application.  Each task 
+call may (but does not need to) have an associated mapper,
+%runtime  can choose a mapper to be used for the runtime calls made inside that
+%task.  
+which allows for the creation of library code that provides its own mappers independent
+from any application level mappers.
 
 \subsubsection{Task Stealing for Load Balance}
 \label{subsec:steal}
-In order to achieve load balancing in an application the runtime supports an interface
-for task stealing.  Our task stealing algorithm is loosely based on the stealing algorithm
-used by Cilk\ref{CILK95} with guidance from the mapper about how stealing should be
+To achieve load balancing in an application the runtime uses
+task stealing.  Our task stealing algorithm is loosely based on the Cilk algorithm
+\cite{CILK95} with guidance from the mapper about how stealing should be
 performed.  Tasks are initially placed on the ready queue on the processor in which they
 were registered.  However, a task can be moved to a different processor either by a mapper
-explicitly choosing to relocate it, or by a steal request from another processor.
+explicitly choosing to relocate it, or by a steal request from another processor's mappers.
 
 When a processor notices that it has no work on its ready queue, it will inquire into each
-mapper asking for a target processor to attempt a steal via the {\tt target\_task\_steal}
-call in the mapper interface.  A mapper can either respond with
+mapper asking for a target processor to attempt a steal.  A mapper can either respond with
 a target processor, or indicate that no steal should be attempted.  The runtime will then
-send steal requests to each processor on behalf of the specific mapper.  
+send steal requests to each processor on behalf of each mapper.  
 
 When a steal request is received at a processor it will determine the mapper(s) that generated
 the list of steal requests.  For each mapper that issued a steal request, the runtime will
-give to the local instance of that mapper a list of the tasks in the ready queue that that
-specific mapper is responsible for mapping.  The mapper must then determine the set which
-it is going to permit to be stolen if any.  Any tasks that the mapper marks as stolen are
+give the local instance of that mapper a list of the tasks in the ready queue that that
+specific mapper is responsible for mapping.  The mapper must then determine the set of tasks which
+it is going to permit to be stolen, if any.  Any tasks that the mapper marks as stolen are
 sent back to the stealing processor.  By only allowing mappers to make steal requests about
-the tasks they own, we are giving the mappers complete control over where tasks are mapped.
-In addition, we are also giving the mappers control over how steal requests are made for
+the tasks they own, we give mappers complete control over where tasks are mapped.
+In addition, we also give the mappers control over how steal requests are made for
 the case where the mapper has better knowledge about where additional work is than the 
-runtime.  Finally, note that this mapping interface is sufficiently powerful to allow a user to
-disable all stealing if desired, and to map tasks to explicit processors with no interference
+runtime.  Note that this mapping interface is sufficiently powerful to allow a user to
+disable all stealing if desired, and to map tasks to specific processors with no interference
 from the runtime.
 
 \subsection{Execution}
 \label{subsec:execution}
-Once task mapping is complete the high level runtime performs the necessary operations
-to be issue the task to the low level runtime.  It first creates any new physical instances
-for the regions which the task requires.  It then issues the necessary copies required
-for the task to execute contignent on the tasks producing the source physical instances
-have finished.  Then it issues the task itself to the low level processor contingent
-on all the copies for the task haveing finished as well as the the set of tasks
-on which the issuing task dependends having finished.  These dependences are all encoded
-using event dependencies in the low level runtime.  Once all the necessary events
-have triggered the task will be run.
+Once task mapping is complete the high-level runtime performs the necessary operations
+to issue the task to the low level runtime.  It first creates any new physical instances
+for the regions the task requires.  It then issues copy operations required
+for the task to execute contingent on predecessor tasks producing the source physical instances
+having finished.  Then it issues the task to the low level processor contingent
+on all the copies for the task having finished as well as the the set of tasks
+on which the issuing task depends having finished.  These dependences are all encoded
+using {\em events} (see Section \ref{subsec:events}).  Continuing the analogy of an out-of-order
+processor, the execution phase is equivalent to issuing an instruction to an
+execution unit, and having the execution unit defer the instruction's execution until all its
+operands are ready.  The low-level runtime contains processors that act as execution
+units that will run a task once all of the events required for the task to run
+have occurred. 
 
-Once a task starts running, the runtime is asked to create the region accessors for
-the task.  The runtime investigates whether or not fast accessors can be created for
-each of the regions that the task requires.  Fast accessors are described in more
-detail in section \ref{sec:fastaccess}.  If fast accessors can be created for every
-region in a task, then the runtime chooses to execute a task instantiated with fast
-region accessor methods.  However, if any region can not be specialized into a fast
-accessor the runtime defaults to a task instantiation that relies on {\tt get} and
-{\tt put} operations to access regions.
+%Once a task starts running, the runtime is asked to create the region accessors for
+%the task.  The runtime investigates whether or not fast accessors can be created for
+%each of the regions that the task requires.  Fast accessors are described in more
+%detail in Section \ref{sec:fastaccess}.  If fast accessors can be created for every
+%region in a task, then the runtime chooses to execute a task instantiated with fast
+%region accessor methods.  However, if any region can not be specialized into a fast
+%accessor the runtime defaults to a task instantiation that relies on {\tt get} and
+%{\tt put} operations to access regions.
 
-The runtime will also return to the executing task a unique identifier describing the
-context in which the task is executing.  All calls into the runtime require the task
-to pass this context identifier which is what permits the runtime to know the context
-for incoming calls.  
+%The runtime also assigns a unique identifier describing the context
+%in which the task is executing.  All calls into the runtime require the task
+%to pass this context identifier which is what permits the runtime to know the context
+%for incoming calls for creating/destroying regions and launching sub-tasks.  
 
 \subsection{Task Completion}
 \label{subsec:cleanup}
-We define a task to have {\em completed} once the actual code for the task has completed.
-We also define a task to have {\tt terminated} once all of the operations for a task
-have finished.  We can only consider a task to be terminated once all of the regions that
-the task accessed reflect all the changes made by a task and its child tasks.  However,
-even after a task has completed it is possible for child tasks of that task
-not to have been executed or even mapped.  We describe how we handle this scenario in
-section \ref{subsec:restore}.  We also describe how physical instances are garbage
-collected in seciont \ref{subsec:garbage}.
-
-The runtime needs to know the mappings for
-the child tasks as it must issue restoring copy operations so that the set of regions
-that the task operated on are up to date with any data generated by child tasks.  
-
-\subsubsection{Restoring Copy Operations}
-\label{subsec:restore}
-An underlying assumption of the mapping process is that the resulting regions that
-a task access will represent the data produced by that task.  However, this may not
-be true if a task has child tasks which also modify subregions of the parent task.
-In order to handle this issue the runtime must compute the necessary copy operations
+We define a task to have {\em completed} once all of the task's regions reflect
+the updated state of the task and all its sub-tasks.  
+%This reflects an underlying assumption 
+%of the mapping process that the regions for which a task has priviliges will represent the data produced 
+%by that task.  However, this is not inherently true that a physical instance of a task reflects
+%this state after the task finishes executing.  
+It is possible for a task to terminate but to have subtasks that are still in the execution phase.
+%If a task has child tasks these tasks may
+%still be executing when the parent task finishes the execution phase.  
+To handle this scenario the runtime must compute the necessary copy operations
 from child task physical instances back to the parent task's physical instances.  To
-compute these copy operations, the runtime first will wait until all the child tasks
+compute these copy operations, the runtime must first wait until all the child tasks
 have been mapped.  The runtime then issues a close operation to the each of the parent
-task's region trees.  These close operations record all of the necessary copies to
-restore the parent task's regions as well as the child tasks on which these copies
-are contingent.  We call these copy operations at the end of a task {\em restoring copies}.
-The runtime then issues these copies with the required dependences
-and marks the task terminated once the restoring copy operations are complete.
+task's region forests.  These close operations record all of the necessary copies to
+restore the parent task's regions.  
+%We call these copy operations at the end of  a task {\em restoring copies}.
+The runtime issues these copies with the required dependences
+and marks the task completed once the copy operations are complete.
+This is similar to the write-back phase of an out-of-order processor where store instructions cannot be
+considered complete until the store effects the state of memory.
 
-\subsubsection{Garbage Collecting Physical Instances}
-\label{subsec:garbage}
-In addition to cleaning up task execution, the runtime must also deal with the problem
-of garbage collecting physical instances of regions.  Physical instances must be
-garbage collected since they are not visible to the application and would present
-a correctness problem if deleting instances was an option for the mapper.  
-Garbage collecting physical instances is a challenging problem
-due to both the distributed environment of the machine and the deffered execution
-model.  To solve this problem we employ a two-level reference counting scheme.  We
-reference count both abstract instances and as well as physical instances.  
+The last part of the completion phase is garbage collecting physical instances.  Physical
+instances are not a visible part of the programming model and therefore cannot be managed
+directly by the programmer.  Having the mapper manage them would introduce correctness
+issues.  We use a two-level reference counting scheme on both abstract instances and physical
+instances to know when it is safe to reclaim physical instances.  Due to space constraints
+we omit the details of this algorithm. 
 
-An abstract instance maintains a count of the number of tasks that have referenced 
-that abstract instance, but have not yet been mapped.  An abstract instance also tracks
-whether or not it is open or closed.  An abstract instance is open if it is still
-a valid abstract instance in a region tree.  An abstract instance is marked closed
-once it is no longer a valid abstract instance and can therefore no longer be used
-by any new tasks that are registered.
+%Even after a task has completed it is possible for child tasks of that task not to have been 
+%executed or even mapped.  This is similar
+%to the write-back phase in an out-of-order processor where store instructions can only
+%be considered terminated when they finish effecting the state of memory.   
 
-When a task is mapped it notifies an abstract instance that it has been used and can
-decrement its reference count.  The task mapping also notifies the abstract instance
-of the specific physical instance that was used and whether or not this use invalidates
-previous physical instances of the abstract instance.  The abstract instance maintains
-a reference count for each physical instance of it that has been made as well as
-the set that are currently valid physical instances to be used for mapping.  When a 
-task terminates, it notifies the abstract instances that it used to decrement the
-reference counts for the task's specific physical instances.
+%The runtime needs to know the mappings for
+%the child tasks as it must issue restoring copy operations so that the set of regions
+%that the task operated on are up to date with any data generated by child tasks.  
 
-There are two conditions under which a physical instance can be garbage collected.  The
-first condition is when a physical instance is not a valid physical instance of
-an abstract instance and its reference count is zero.  This condition occurs once no
-more tasks are using a physical instance and it can longer be mapped by any task.  The
-second condition is when an abstract instance is both closed and has a reference count
-of zero as well as the physical instance's reference count being zero.  This handles the
-case when no more tasks can be set to use an abstract instance, there are no more tasks
-to map to an abstract instance, and there are no current tasks using the physical
-instance.
+%\subsubsection{Restoring Copy Operations}
+%\label{subsec:restore}
+%\subsubsection{Garbage Collecting Physical Instances}
+%\label{subsec:garbage}
+%In addition to cleaning up task execution, the runtime must also deal with the problem
+%of garbage collecting physical instances of regions.  Physical instances must be
+%garbage collected since they are not visible to the application and would present
+%a correctness problem if deleting instances was an option for the mapper.  
+%Garbage collecting physical instances is a challenging problem
+%due to both the distributed environment of the machine and the deffered execution
+%model.  To solve this problem we employ a two-level reference counting scheme.  We
+%reference count both abstract instances and as well as physical instances.  
 
-While reference counting normally doesn't allow for garbage collection of all data structures
-it will always work in this case because both our tasks and our regions are organized as 
-trees which ensures that it is impossible to create cyclic region references in our system.
+%An abstract instance maintains a count of the number of tasks that have referenced 
+%that abstract instance, but have not yet been mapped.  An abstract instance also tracks
+%whether or not it is open or closed.  An abstract instance is open if it is still
+%a valid abstract instance in a region tree.  An abstract instance is marked closed
+%once it is no longer a valid abstract instance and can therefore no longer be used
+%by any new tasks that are registered.
+
+%When a task is mapped it notifies an abstract instance that it has been used and can
+%decrement its reference count.  The task mapping also notifies the abstract instance
+%of the specific physical instance that was used and whether or not this use invalidates
+%previous physical instances of the abstract instance.  The abstract instance maintains
+%a reference count for each physical instance of it that has been made as well as
+%the set that are currently valid physical instances to be used for mapping.  When a 
+%task terminates, it notifies the abstract instances that it used to decrement the
+%reference counts for the task's specific physical instances.
+
+%There are two conditions under which a physical instance can be garbage collected.  The
+%first condition is when a physical instance is not a valid physical instance of
+%an abstract instance and its reference count is zero.  This condition occurs once no
+%more tasks are using a physical instance and it can longer be mapped by any task.  The
+%second condition is when an abstract instance is both closed and has a reference count
+%of zero as well as the physical instance's reference count being zero.  This handles the
+%case when no more tasks can be set to use an abstract instance, there are no more tasks
+%to map to an abstract instance, and there are no current tasks using the physical
+%instance.
+
+%While reference counting normally doesn't allow for garbage collection of all data structures
+%it will always work in this case because both our tasks and our regions are organized as 
+%trees which ensures that it is impossible to create cyclic region references in our system.
 
 
