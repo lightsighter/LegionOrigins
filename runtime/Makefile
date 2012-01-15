@@ -91,5 +91,8 @@ fluid2:	lowlevel.o lowlevel_gpu.o highlevel.o fluid.o
 srch2:	lowlevel.o lowlevel_gpu.o highlevel.o search.o
 	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
 
+saxpy:  lowlevel.o lowlevel_gpu.o highlevel.o saxpy.o
+	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
+
 clean:
-	rm -f fluid ckt ring tree *.o
+	rm -f fluid ckt ring tree saxpy *.o
