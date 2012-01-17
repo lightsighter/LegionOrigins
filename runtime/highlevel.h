@@ -1165,7 +1165,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       // TODO: actually implement this method
-      LogicalHandle smash_region;
+      LogicalHandle smash_region = { };
       assert(false);
       return smash_region;
     }
