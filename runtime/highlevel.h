@@ -272,7 +272,7 @@ namespace RegionRuntime {
       bool chosen; // Check to see if the mapper has already been invoked to chose a processor
       bool stealable; // Can be stolen (corresponds to 'spawn' call)
       bool mapped; // Mapped to a specific processor and no longer stealable
-      UserEvent map_event; // Even that is triggered when this event is mapped
+      UserEvent map_event; // Even that is triggered when this task is mapped
       // Mappable is true when remaining_events==0
     protected:
       // Information about where this task originated
@@ -287,6 +287,7 @@ namespace RegionRuntime {
     protected:
       // Information to send back to the original processor
       bool remote; // Send back an event if true
+      Event remote_start_event; // Make sure the remote finish task executes after the remote start task 
       FutureImpl *const future;
       void *result; // For storing the result of the task
       size_t result_size;
