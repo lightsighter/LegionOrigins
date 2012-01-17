@@ -490,7 +490,7 @@ namespace RegionRuntime {
 				Event ev5 = NO_EVENT, Event ev6 = NO_EVENT);
 
       // record that the event has triggered and notify anybody who cares
-      void trigger(Event::gen_t gen_triggered, bool local_trigger);
+      void trigger(Event::gen_t gen_triggered, int trigger_node);
 
       class EventWaiter {
       public:

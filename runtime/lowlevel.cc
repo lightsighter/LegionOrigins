@@ -1085,7 +1085,7 @@ namespace RegionRuntime {
 	//printf("triggering %x/%d\n",
 	//       r_impl->valid_mask_event.id, r_impl->valid_mask_event.gen);
 	r_impl->valid_mask_event.impl()->trigger(r_impl->valid_mask_event.gen,
-						 true);
+						 gasnet_mynode());
       }
     }
     
@@ -1171,10 +1171,15 @@ namespace RegionRuntime {
 				      EventSubscribeArgs,
 				      handle_event_subscribe> EventSubscribeMessage;
 
-    void handle_event_trigger(Event event);
+    struct EventTriggerArgs {
+      gasnet_node_t node;
+      Event event;
+    };
+
+    void handle_event_trigger(EventTriggerArgs args);
 
     typedef ActiveMessageShortNoReply<EVENT_TRIGGER_MSGID,
-				      Event,
+				      EventTriggerArgs,
 				      handle_event_trigger> EventTriggerMessage;
 
     static Logger::Category log_event("event");
@@ -1192,9 +1197,11 @@ namespace RegionRuntime {
       if(stale_gen >= args.event.gen) {
 	log_event(LEVEL_DEBUG, "event subscription early-out: node=%d event=%x/%d (<= %d)",
 		  args.node, args.event.id, args.event.gen, stale_gen);
-	Event e = args.event;
-	e.gen = stale_gen;
-	EventTriggerMessage::request(args.node, e);
+	EventTriggerArgs trigger_args;
+	trigger_args.node = gasnet_mynode();
+	trigger_args.event = args.event;
+	trigger_args.event.gen = stale_gen;
+	EventTriggerMessage::request(args.node, trigger_args);
 	return;
       }
 
@@ -1205,9 +1212,11 @@ namespace RegionRuntime {
 	if(impl->generation >= args.event.gen) {
 	  log_event(LEVEL_DEBUG, "event subscription already done: node=%d event=%x/%d (<= %d)",
 		    args.node, args.event.id, args.event.gen, impl->generation);
-	  Event e = args.event;
-	  e.gen = impl->generation;
-	  EventTriggerMessage::request(args.node, e);
+	  EventTriggerArgs trigger_args;
+	  trigger_args.node = gasnet_mynode();
+	  trigger_args.event = args.event;
+	  trigger_args.event.gen = impl->generation;
+	  EventTriggerMessage::request(args.node, trigger_args);
 	} else {
 	  // nope - needed generation hasn't happened yet, so add this node to
 	  //  the mask
@@ -1250,11 +1259,12 @@ namespace RegionRuntime {
       fflush(stdout);
     }
 
-    void handle_event_trigger(Event event)
+    void handle_event_trigger(EventTriggerArgs args)
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
-      log_event(LEVEL_DEBUG, "Remote trigger of event %x/%d!", event.id, event.gen);
-      event.impl()->trigger(event.gen, false);
+      log_event(LEVEL_DEBUG, "Remote trigger of event %x/%d from node %d!",
+		args.event.id, args.event.gen, args.node);
+      args.event.impl()->trigger(args.event.gen, args.node);
     }
 
     /*static*/ const Event Event::NO_EVENT = Event();
@@ -1316,7 +1326,7 @@ namespace RegionRuntime {
 	// actually do triggering outside of lock (maybe not necessary, but
 	//  feels safer :)
 	if(last_trigger)
-	  finish_event.impl()->trigger(finish_event.gen, true);
+	  finish_event.impl()->trigger(finish_event.gen, gasnet_mynode());
       }
 
       virtual void print_info(void)
@@ -1523,9 +1533,10 @@ namespace RegionRuntime {
       return (needed_gen <= generation);
     }
     
-    void Event::Impl::trigger(Event::gen_t gen_triggered, bool local_trigger)
+    void Event::Impl::trigger(Event::gen_t gen_triggered, int trigger_node)
     {
-      log_event(LEVEL_SPEW, "event triggered: event=%x/%d", me.id, gen_triggered);
+      log_event(LEVEL_SPEW, "event triggered: event=%x/%d by node %d", 
+		me.id, gen_triggered, trigger_node);
       //printf("[%d] TRIGGER %x/%d\n", gasnet_mynode(), me.id, gen_triggered);
       std::deque<EventWaiter *> to_wake;
       {
@@ -1535,6 +1546,7 @@ namespace RegionRuntime {
 
 	//printf("[%d] TRIGGER GEN: %x/%d->%d\n", gasnet_mynode(), me.id, generation, gen_triggered);
 	assert(gen_triggered > generation);
+	generation = gen_triggered;
 
 	//printf("[%d] LOCAL WAITERS: %zd\n", gasnet_mynode(), local_waiters.size());
 	std::map<Event::gen_t, std::vector<EventWaiter *> >::iterator it = local_waiters.begin();
@@ -1548,24 +1560,28 @@ namespace RegionRuntime {
 	// notify remote waiters and/or event's actual owner
 	if(owner == gasnet_mynode()) {
 	  // send notifications to every other node that has subscribed
-	  Event ev = me;
-	  ev.gen = gen_triggered;
+	  //  (except the one that triggered)
+	  EventTriggerArgs args;
+	  args.node = trigger_node;
+	  args.event = me;
+	  args.event.gen = gen_triggered;
 	  for(int node = 0; remote_waiters != 0; node++, remote_waiters >>= 1)
-	    if(remote_waiters & 1)
-	      EventTriggerMessage::request(node, ev);
+	    if((remote_waiters & 1) && (node != trigger_node))
+	      EventTriggerMessage::request(node, args);
 	} else {
-	  if(local_trigger) {
+	  if(trigger_node == gasnet_mynode()) {
 	    // if we're not the owner, we just send to the owner and let him
 	    //  do the broadcast (assuming the trigger was local)
 	    assert(remote_waiters == 0);
 
-	    Event ev = me;
-	    ev.gen = gen_triggered;
-	    EventTriggerMessage::request(owner, ev);
+	    EventTriggerArgs args;
+	    args.node = trigger_node;
+	    args.event = me;
+	    args.event.gen = gen_triggered;
+	    EventTriggerMessage::request(owner, args);
 	  }
 	}
 
-	generation = gen_triggered;
 	in_use = false;
       }
 
