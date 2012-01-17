@@ -325,9 +325,10 @@ namespace RegionRuntime {
         result = new InstanceInfo();
         result->handle = handle;
         result->location = m;
+        log_inst(LEVEL_DEBUG,"creating instance of region %d in memory %d",
+                      handle.id,m.id);
         result->inst = handle.create_instance_untyped(m);
-        log_inst(LEVEL_DEBUG,"creating instance %d of region %d in memory %d",
-                              result->inst.id,handle.id,m.id);
+
         // Check that the instance exists, otherwise just return NULL
         if (!result->inst.exists())
         {
@@ -1838,8 +1839,9 @@ namespace RegionRuntime {
           it->second->pack_region_tree(ptr);
         }
 
-        // Launch the notify finish on the original processor (no need to wait for anything)
-        orig_proc.spawn(NOTIFY_FINISH_ID,buffer,buffer_size);
+        // Launch the notify finish on the original processor 
+        // Make sure to wait for the start_event task to finish
+        orig_proc.spawn(NOTIFY_FINISH_ID,buffer,buffer_size,remote_start_event);
 
         // Clean up our mess
         free(buffer);
@@ -4142,7 +4144,7 @@ namespace RegionRuntime {
         // Launch the event notification task on the original processor
         // No need to wait on anything since we're just telling the original
         // processor about the mapping
-        desc->orig_proc.spawn(NOTIFY_START_ID, buffer, buffer_size);
+        desc->remote_start_event = desc->orig_proc.spawn(NOTIFY_START_ID, buffer, buffer_size);
         // Clean up our mess
         free(buffer);
         // The remote notify start will trigger the mapping event
