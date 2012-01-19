@@ -11,7 +11,9 @@ using namespace RegionRuntime::HighLevel;
 
 #define TOP_LEVEL_TASK_ID TASK_ID_REGION_MAIN
 
-#define CHECK_CORRECTNESS
+#define SYNC_AFTER_KERNELS
+
+// #define CHECK_CORRECTNESS
 
 namespace Config {
   unsigned num_blocks = 64;
@@ -194,6 +196,20 @@ void init_vectors_task(const void *args, size_t arglen,
   }
 }
 
+typedef RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorGPU> GPU_Accessor;
+
+__global__ void add_vectors_kernel(float alpha,
+				   ptr_t<Entry>* entry_x,
+				   ptr_t<Entry>* entry_y,
+				   GPU_Accessor r_x,
+				   GPU_Accessor r_y) {
+  unsigned tid = blockIdx.x * blockDim.x + threadIdx.x;
+  Entry x = r_x.read(entry_x[tid]);
+  Entry y = r_y.read(entry_y[tid]);
+  y.v += alpha * x.v;
+  r_y.write(entry_y[tid], y);
+}
+
 template<AccessorType AT>
 void add_vectors_task(const void *args, size_t arglen,
 		      const std::vector<PhysicalRegion<AT> > &regions,
@@ -202,12 +218,29 @@ void add_vectors_task(const void *args, size_t arglen,
   PhysicalRegion<AT> r_x = regions[0];
   PhysicalRegion<AT> r_y = regions[1];
 
-  for (unsigned i = 0; i < BLOCK_SIZE; i++) {
-    Entry entry_x = r_x.read(block->entry_x[i]);
-    Entry entry_y = r_y.read(block->entry_y[i]);
-    entry_y.v += block->alpha * entry_x.v;
-    r_y.write(block->entry_y[i], entry_y);
-  }
+  ptr_t<Entry> *dev_entry_x;
+  cudaMalloc((void **)&dev_entry_x, BLOCK_SIZE * sizeof(ptr_t<Entry>));
+  cudaMemcpy(dev_entry_x, block->entry_x, BLOCK_SIZE * sizeof(ptr_t<Entry>),
+	     cudaMemcpyHostToDevice);
+
+  ptr_t<Entry> *dev_entry_y;
+  cudaMalloc((void **)&dev_entry_y, BLOCK_SIZE * sizeof(ptr_t<Entry>));
+  cudaMemcpy(dev_entry_y, block->entry_y, BLOCK_SIZE * sizeof(ptr_t<Entry>),
+	     cudaMemcpyHostToDevice);
+
+  GPU_Accessor r_x_gpu =
+    r_x.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>();
+  GPU_Accessor r_y_gpu =
+    r_y.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>();
+  add_vectors_kernel<<<1,BLOCK_SIZE>>>(block->alpha, dev_entry_x, dev_entry_y,
+				       r_x_gpu, r_y_gpu);
+
+#ifdef SYNC_AFTER_KERNELS
+  cudaDeviceSynchronize();
+#endif
+
+  cudaFree(dev_entry_x);
+  cudaFree(dev_entry_y);
 
 #ifdef CHECK_CORRECTNESS
   std::vector<RegionRequirement> copy_regions;
@@ -234,9 +267,9 @@ void copy_back_task(const void *args, size_t arglen,
   }
 }
 
-static bool sort_by_proc_id(const std::pair<Processor, Memory> &a,
-			    const std::pair<Processor, Memory> &b) {
-  return a.first.id < b.first.id;
+template <class T>
+static bool sort_by_proc_id(const T& a, const T& b) {
+  return a.proc.id < b.proc.id;
 }
 
 template<typename T>
@@ -254,45 +287,87 @@ T safe_prioritized_pick(const std::vector<T> &vec, T choice1, T choice2) {
 
 class SaxpyMapper : public Mapper {
 public:
-  std::map<Processor::Kind, std::vector<std::pair<Processor, Memory> > > cpu_mem_pairs;
-  Memory global_memory;
+  struct CPUMemoryChain {
+    Processor proc;
+    Memory sysmem;
+    Memory gasnet;
+  };
+
+  struct GPUMemoryChain {
+    Processor proc;
+    Memory fbmem;
+    Memory zcmem;
+    Memory sysmem;
+    Memory gasnet;
+  };
+
+  std::vector<CPUMemoryChain> cpu_mems;
+  std::vector<GPUMemoryChain> gpu_mems;
 
   SaxpyMapper(Machine *m, HighLevelRuntime *r, Processor p) : Mapper(m, r, p) {
-    const std::set<Processor> &all_procs = m->get_all_processors();
+    std::vector<Memory> sysmems;
+    Memory gasnet;
+
+    const std::set<Processor>& all_procs = m->get_all_processors();
     for (std::set<Processor>::const_iterator it = all_procs.begin();
 	 it != all_procs.end(); ++it) {
       Processor proc = *it;
+      unsigned node = (proc.id >> 24) & 0x1f;
       Processor::Kind kind = m->get_processor_kind(proc);
-
-      Memory best_mem;
-      unsigned best_bw = 0;
       std::vector<Machine::ProcessorMemoryAffinity> pmas;
       m->get_proc_mem_affinity(pmas, proc);
-      for (unsigned i = 0; i < pmas.size(); i++) {
-	if (pmas[i].bandwidth > best_bw) {
-	  best_bw = pmas[i].bandwidth;
-	  best_mem = pmas[i].m;
+
+      if (kind == Processor::LOC_PROC) {
+	CPUMemoryChain mems;
+	mems.proc = proc;
+
+	for (unsigned i = 0; i < pmas.size(); i++) {
+	  Machine::ProcessorMemoryAffinity pma = pmas[i];
+	  if (pma.bandwidth == 100) {
+	    mems.sysmem = pma.m;
+	    if (node >= sysmems.size())
+	      sysmems.resize(node + 1);
+	    sysmems[node] = pma.m;
+	  } else {
+	    if (pma.bandwidth == 10) {
+	      mems.gasnet = pma.m;
+	      gasnet = pma.m;
+	    } else if (pma.bandwidth != 40) {
+	      assert(false);
+	    }
+	  }
 	}
-      }
-      cpu_mem_pairs[kind].push_back(std::make_pair(proc, best_mem));
-    }
-
-    for (std::map<Processor::Kind, std::vector<std::pair<Processor, Memory> > >::iterator it = cpu_mem_pairs.begin(); it != cpu_mem_pairs.end(); ++it)
-      std::sort(it->second.begin(), it->second.end(), sort_by_proc_id);
-
-    Memory best_global;
-    unsigned best_count = 0;
-    const std::set<Memory> &all_mems = m->get_all_memories();
-    for (std::set<Memory>::const_iterator it = all_mems.begin();
-	 it != all_mems.end(); ++it) {
-      Memory memory = *it;
-      unsigned count = m->get_shared_processors(memory).size();
-      if (count > best_count) {
-	best_count = count;
-	best_global = memory;
+	cpu_mems.push_back(mems);
       }
     }
-    global_memory = best_global;
+    sort(cpu_mems.begin(), cpu_mems.end(), sort_by_proc_id<CPUMemoryChain>);
+
+    for (std::set<Processor>::const_iterator it = all_procs.begin();
+	 it != all_procs.end(); ++it) {
+      Processor proc = *it;
+      unsigned node = (proc.id >> 24) & 0x1f;
+      Processor::Kind kind = m->get_processor_kind(proc);
+      std::vector<Machine::ProcessorMemoryAffinity> pmas;
+      m->get_proc_mem_affinity(pmas, proc);
+
+      if (kind == Processor::TOC_PROC) {
+        GPUMemoryChain mems;
+        mems.proc = proc;
+
+        assert(pmas.size() == 2);
+        if (pmas[0].bandwidth == 200) {
+          mems.fbmem = pmas[0].m;
+          mems.zcmem = pmas[1].m;
+        } else {
+          mems.fbmem = pmas[1].m;
+          mems.zcmem = pmas[0].m;
+        }
+        mems.sysmem = sysmems[node];
+        mems.gasnet = gasnet;
+        gpu_mems.push_back(mems);
+      }
+    }
+    sort(gpu_mems.begin(), gpu_mems.end(), sort_by_proc_id<GPUMemoryChain>);
   }
 
   virtual void rank_initial_region_locations(size_t elmt_size,
@@ -300,7 +375,7 @@ public:
                                              MappingTagID tag,
                                              std::vector<Memory> &ranking) {
     DetailedTimer::ScopedPush sp(TIME_MAPPER);
-    ranking.push_back(global_memory);
+    ranking.push_back(cpu_mems[0].gasnet);
   }
 
   virtual void rank_initial_partition_locations(size_t elmt_size,
@@ -310,7 +385,7 @@ public:
     DetailedTimer::ScopedPush sp(TIME_MAPPER);
     rankings.resize(num_subregions);
     for (unsigned i = 0; i < num_subregions; i++)
-      rankings[i].push_back(global_memory);
+      rankings[i].push_back(cpu_mems[0].gasnet);
   }
 
   virtual bool compact_partition(const UntypedPartition &partition,
@@ -321,18 +396,15 @@ public:
 
   virtual Processor select_initial_processor(const Task *task) {
     DetailedTimer::ScopedPush sp(TIME_MAPPER);
-    std::vector<std::pair<Processor, Memory> > &loc_procs =
-      cpu_mem_pairs[Processor::LOC_PROC];
-
     switch (task->task_id) {
     case TOP_LEVEL_TASK_ID:
     case TASKID_MAIN:
     case TASKID_INIT_VECTORS:
-      return loc_procs[0].first;
+      return cpu_mems[0].proc;
     case TASKID_ADD_VECTORS:
-      return loc_procs[task->tag % loc_procs.size()].first;
+      return gpu_mems[task->tag % gpu_mems.size()].proc;
     case TASKID_COPY_BACK:
-      return loc_procs[0].first;
+      return cpu_mems[0].proc;
     default:
       assert(false);
     }
@@ -357,26 +429,24 @@ public:
                                Memory &chosen_src,
                                std::vector<Memory> &dst_ranking) {
     DetailedTimer::ScopedPush sp(TIME_MAPPER);
-    std::vector< std::pair<Processor, Memory> >& loc_procs =
-      cpu_mem_pairs[Processor::LOC_PROC];
-    std::pair<Processor, Memory> cpu_mem_pair =
-      loc_procs[task->tag % loc_procs.size()];
+    CPUMemoryChain *cpu = &cpu_mems[task->tag % cpu_mems.size()];
+    GPUMemoryChain *gpu = &gpu_mems[task->tag % gpu_mems.size()];
 
     switch (task->task_id) {
     case TOP_LEVEL_TASK_ID:
     case TASKID_MAIN:
     case TASKID_INIT_VECTORS:
-      chosen_src = global_memory;
-      dst_ranking.push_back(global_memory);
+      chosen_src = cpu->gasnet;
+      dst_ranking.push_back(cpu->gasnet);
       break;
     case TASKID_ADD_VECTORS:
       chosen_src = safe_prioritized_pick(valid_src_instances,
-					 cpu_mem_pair.second, global_memory);
-      dst_ranking.push_back(cpu_mem_pair.second);
+					 gpu->fbmem, gpu->gasnet);
+      dst_ranking.push_back(gpu->fbmem);
       break;
     case TASKID_COPY_BACK:
       chosen_src = valid_src_instances[0];
-      dst_ranking.push_back(global_memory);
+      dst_ranking.push_back(gpu->gasnet);
       break;
     default:
       assert(false);
