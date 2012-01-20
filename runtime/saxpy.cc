@@ -11,7 +11,9 @@ using namespace RegionRuntime::HighLevel;
 
 #define TOP_LEVEL_TASK_ID TASK_ID_REGION_MAIN
 
-#define CHECK_CORRECTNESS
+#define TEST_STEALING
+
+// #define CHECK_CORRECTNESS
 
 namespace Config {
   unsigned num_blocks = 64;
@@ -330,7 +332,11 @@ public:
     case TASKID_INIT_VECTORS:
       return loc_procs[0].first;
     case TASKID_ADD_VECTORS:
+#ifdef TEST_STEALING
+      return loc_procs[0].first;
+#else
       return loc_procs[task->tag % loc_procs.size()].first;
+#endif
     case TASKID_COPY_BACK:
       return loc_procs[0].first;
     default:
@@ -341,14 +347,20 @@ public:
 
   virtual Processor target_task_steal() {
     DetailedTimer::ScopedPush sp(TIME_MAPPER);
+#ifdef TEST_STEALING
+    return Mapper::target_task_steal();
+#else
     return Processor::NO_PROC;
+#endif
   }
 
   virtual void permit_task_steal(Processor thief,
                                  const std::vector<const Task*> &tasks,
                                  std::set<const Task*> &to_steal) {
     DetailedTimer::ScopedPush sp(TIME_MAPPER);
-    return;
+#ifdef TEST_STEALING
+    Mapper::permit_task_steal(thief, tasks, to_steal);
+#endif
   }
 
   virtual void map_task_region(const Task *task, const RegionRequirement *req,
@@ -370,9 +382,14 @@ public:
       dst_ranking.push_back(global_memory);
       break;
     case TASKID_ADD_VECTORS:
+#ifdef TEST_STEALING
+      chosen_src = global_memory;
+      dst_ranking.push_back(global_memory);
+#else
       chosen_src = safe_prioritized_pick(valid_src_instances,
-					 cpu_mem_pair.second, global_memory);
+                                         cpu_mem_pair.second, global_memory);
       dst_ranking.push_back(cpu_mem_pair.second);
+#endif
       break;
     case TASKID_COPY_BACK:
       chosen_src = valid_src_instances[0];
