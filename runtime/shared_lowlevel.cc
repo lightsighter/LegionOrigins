@@ -26,9 +26,9 @@
 
 // The number of threads for this version
 #define NUM_PROCS	4
-// Maximum memory in global in bytes
-#define MAX_GLOBAL_MEM 	67108864
-#define MAX_LOCAL_MEM	32768
+// Maximum memory in global
+#define GLOBAL_MEM      512 // (MB)	
+#define LOCAL_MEM       32  // (KB)
 
 #ifdef DEBUG_LOW_LEVEL
 #define PTHREAD_SAFE_CALL(cmd)			\
@@ -142,6 +142,146 @@ namespace RegionRuntime {
 
     __thread unsigned local_proc_id;
 
+    struct TimerStackEntry {
+    public:
+      int timer_kind;
+      double start_time;
+      double accum_child_time;
+    };
+
+    struct PerThreadTimerData {
+    public:
+      PerThreadTimerData(void)
+      {
+        thread = local_proc_id; 
+        PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
+      }
+
+      unsigned thread;
+      std::list<TimerStackEntry> timer_stack;
+      std::map<int, double> timer_accum;
+      pthread_mutex_t mutex;
+    };
+
+    pthread_mutex_t global_timer_mutex = PTHREAD_MUTEX_INITIALIZER;
+    std::vector<PerThreadTimerData*> timer_data;
+    __thread PerThreadTimerData *thread_timer_data;
+
+#ifdef DETAILED_TIMING
+    /*static*/ void DetailedTimer::clear_timers(void)
+    {
+      PTHREAD_SAFE_CALL(pthread_mutex_lock(&global_timer_mutex));
+      for (std::vector<PerThreadTimerData*>::iterator it = timer_data.begin();
+            it != timer_data.end(); it++)
+      {
+        // Take each thread's data lock as well
+        PTHREAD_SAFE_CALL(pthread_mutex_lock(&((*it)->mutex)));
+        (*it)->timer_accum.clear();
+        PTHREAD_SAFE_CALL(pthread_mutex_unlock(&((*it)->mutex)));
+      }
+      PTHREAD_SAFE_CALL(pthread_mutex_unlock(&global_timer_mutex));
+    }
+
+    /*static*/ void DetailedTimer::push_timer(int timer_kind)
+    {
+      if (!thread_timer_data)
+      {
+        PTHREAD_SAFE_CALL(pthread_mutex_lock(&global_timer_mutex));
+        thread_timer_data = new PerThreadTimerData();
+        timer_data.push_back(thread_timer_data);
+        PTHREAD_SAFE_CALL(pthread_mutex_unlock(&global_timer_mutex));
+      }
+
+      // no lock required here - only our thread touches the stack
+      TimerStackEntry entry;
+      entry.timer_kind = timer_kind;
+      struct timespec ts;
+      clock_gettime(CLOCK_MONOTONIC, &ts);
+      entry.start_time = (1.0 * ts.tv_sec + 1e-9 * ts.tv_nsec);
+      entry.accum_child_time = 0;
+      thread_timer_data->timer_stack.push_back(entry);
+    }
+
+    /*static*/ void DetailedTimer::pop_timer(void)
+    {
+      if (!thread_timer_data)
+      {
+        printf("Got pop without initialized thread data !?\n");
+        exit(1);
+      }
+
+      // no conflicts on stack
+      TimerStackEntry old_top = thread_timer_data->timer_stack.back();
+      thread_timer_data->timer_stack.pop_back();
+
+      struct timespec ts;
+      clock_gettime(CLOCK_MONOTONIC, &ts);
+      double elapsed = (1.0 * ts.tv_sec + 1e-9 * ts.tv_nsec) - old_top.start_time;
+
+      // all the elapsed time is added to the new top as child time
+      if (!thread_timer_data->timer_stack.empty())
+        thread_timer_data->timer_stack.back().accum_child_time += elapsed;
+
+      // only the elapsed time minus our own child time goes into the timer accumulator
+      elapsed -= old_top.accum_child_time;
+
+      // We do need a lock to touch the accumulator
+      if (old_top.timer_kind > 0)
+      {
+        PTHREAD_SAFE_CALL(pthread_mutex_lock(&thread_timer_data->mutex));
+        
+        std::map<int,double>::iterator it = thread_timer_data->timer_accum.find(old_top.timer_kind);
+        if (it != thread_timer_data->timer_accum.end())
+          it->second += elapsed;
+        else
+          thread_timer_data->timer_accum.insert(std::make_pair<int,double>(old_top.timer_kind,elapsed));
+
+        PTHREAD_SAFE_CALL(pthread_mutex_unlock(&thread_timer_data->mutex));
+      }
+    }
+
+    /*static*/ void DetailedTimer::roll_up_timers(std::map<int,double> &timers, bool local_only)
+    {
+      PTHREAD_SAFE_CALL(pthread_mutex_lock(&global_timer_mutex));
+
+      for (std::vector<PerThreadTimerData*>::iterator it = timer_data.begin();
+            it != timer_data.end(); it++)
+      {
+        // Take the local lock for each thread's data too
+        PTHREAD_SAFE_CALL(pthread_mutex_lock(&((*it)->mutex)));
+
+        for (std::map<int,double>::iterator it2 = (*it)->timer_accum.begin();
+              it2 != (*it)->timer_accum.end(); it2++)
+        {
+          std::map<int,double>::iterator it3 = timers.find(it2->first);
+          if (it3 != timers.end())
+            it3->second += it2->second;
+          else
+            timers.insert(*it2);
+        }
+
+        PTHREAD_SAFE_CALL(pthread_mutex_unlock(&((*it)->mutex)));
+      }
+
+      PTHREAD_SAFE_CALL(pthread_mutex_unlock(&global_timer_mutex));
+    }
+
+    /*static*/ void DetailedTimer::report_timers(bool local_only /* = false*/)
+    {
+      std::map<int, double> timers;
+
+      roll_up_timers(timers, local_only);
+
+      printf("DETAILED_TIMING_SUMMARY:\n");
+      for (std::map<int,double>::iterator it = timers.begin();
+            it != timers.end(); it++)
+      {
+        printf("%4d - %7.3f s\n", it->first, it->second);
+      }
+      printf("END OF DETAILED TIMING SUMMARY\n");
+    }
+#endif
+    
     /*static*/ LogLevel Logger::log_level;
     /*static*/ std::vector<bool> Logger::log_cats_enabled;
     /*static*/ std::map<std::string, int> Logger::categories_by_name;
@@ -351,6 +491,7 @@ namespace RegionRuntime {
 
     bool Event::has_triggered(void) const
     {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 	if (!id) return true;
 	EventImpl *e = Runtime::get_runtime()->get_event_impl(*this);
 	return e->has_triggered(gen);
@@ -358,6 +499,7 @@ namespace RegionRuntime {
 
     void Event::wait(void) const
     {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL); 
 	if (!id) return;
 	EventImpl *e = Runtime::get_runtime()->get_event_impl(*this);
 	e->wait(gen);
@@ -365,6 +507,7 @@ namespace RegionRuntime {
 
     Event Event::merge_events(const std::set<Event>& wait_for)
     {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
         // Check to see if there are any events to actually wait for
         if (wait_for.size() == 0)
           return Event::NO_EVENT;
@@ -584,12 +727,14 @@ namespace RegionRuntime {
 
     UserEvent UserEvent::create_user_event(void)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       EventImpl *impl = Runtime::get_runtime()->get_free_event();
       return impl->get_user_event();
     }
 
     void UserEvent::trigger(void) const
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       if (!id) return;
       EventImpl *impl = Runtime::get_runtime()->get_event_impl(*this);
       impl->trigger();
@@ -646,23 +791,27 @@ namespace RegionRuntime {
 
     Event Lock::lock(unsigned mode, bool exclusive, Event wait_on) const
     {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 	LockImpl *l = Runtime::get_runtime()->get_lock_impl(*this);
 	return l->lock(mode,exclusive, wait_on);
     }
 
     void Lock::unlock(Event wait_on) const
     {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 	LockImpl *l = Runtime::get_runtime()->get_lock_impl(*this);
 	l->unlock(wait_on);
     }
 
     Lock Lock::create_lock(void)
     {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 	return Runtime::get_runtime()->get_free_lock()->get_lock();
     }
 
     void Lock::destroy_lock(void)
     {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 	LockImpl *l = Runtime::get_runtime()->get_lock_impl(*this);
 	l->deactivate();
     }
@@ -964,11 +1113,14 @@ namespace RegionRuntime {
     // Processor 
     ////////////////////////////////////////////////////////
 
+    /*static*/ const Processor Processor::NO_PROC = { 0 };
+
     // Processor Impl at top due to use in event
     
     Event Processor::spawn(Processor::TaskFuncID func_id, const void * args,
 				size_t arglen, Event wait_on) const
     {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 	ProcessorImpl *p = Runtime::get_runtime()->get_processor_impl(*this);
 	return p->spawn(func_id, args, arglen, wait_on);
     }
@@ -1180,7 +1332,7 @@ namespace RegionRuntime {
 	size_t remaining_bytes(void);
 	void* allocate_space(size_t size);
 	void free_space(void *ptr, size_t size);
-      
+        size_t total_space(void) const;  
     private:
 	const size_t max_size;
 	size_t remaining;
@@ -1220,6 +1372,11 @@ namespace RegionRuntime {
 	remaining += size;
 	free(ptr);
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+    }
+
+    size_t MemoryImpl::total_space(void) const
+    {
+      return max_size;
     }
 
     ////////////////////////////////////////////////////////
@@ -1521,11 +1678,13 @@ namespace RegionRuntime {
 
     unsigned RegionAllocatorUntyped::alloc_untyped(unsigned count /*= 1*/) const
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       return Runtime::get_runtime()->get_allocator_impl(*this)->alloc_elmt(count);
     }
 
     void RegionAllocatorUntyped::free_untyped(unsigned ptr, unsigned count /*= 1 */) const
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       Runtime::get_runtime()->get_allocator_impl(*this)->free_elmt(ptr, count);
     }
 
@@ -1667,6 +1826,7 @@ namespace RegionRuntime {
 
    RegionInstanceAccessorUntyped<AccessorGeneric> RegionInstanceUntyped::get_accessor_untyped(void) const
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       RegionInstanceImpl *impl = Runtime::get_runtime()->get_instance_impl(*this);
       return RegionInstanceAccessorUntyped<AccessorGeneric>((void *)impl);
     }
@@ -1680,12 +1840,14 @@ namespace RegionRuntime {
 
     Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, Event wait_on)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       return Runtime::get_runtime()->get_instance_impl(*this)->copy_to(target,wait_on);
     }
 
     Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, const ElementMask &mask,
                                                 Event wait_on)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       // TODO: Update this to take the mask into account
       return Runtime::get_runtime()->get_instance_impl(*this)->copy_to(target,wait_on);
     }
@@ -1746,6 +1908,7 @@ namespace RegionRuntime {
 
     Event RegionInstanceImpl::copy_to(RegionInstanceUntyped target, Event wait_on)
     {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 	RegionInstanceImpl *target_impl = Runtime::get_runtime()->get_instance_impl(target);
 	log_copy(LEVEL_INFO, "copy %x/%p/%x -> %x/%p/%x", index, this, region.id, target.id, target_impl, target_impl->region.id);
 #ifdef DEBUG_LOW_LEVEL
@@ -1914,6 +2077,7 @@ namespace RegionRuntime {
 
     RegionMetaDataUntyped RegionMetaDataUntyped::create_region_untyped(size_t num_elmts, size_t elmt_size)
     {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 	RegionMetaDataImpl *r = Runtime::get_runtime()->get_free_metadata(num_elmts, elmt_size);	
 	log_region(LEVEL_INFO, "region created: id=%x num=%zd size=%zd",
 		   r->get_metadata().id, num_elmts, elmt_size);
@@ -1922,6 +2086,7 @@ namespace RegionRuntime {
 
     RegionMetaDataUntyped RegionMetaDataUntyped::create_region_untyped(RegionMetaDataUntyped parent, const ElementMask &mask)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       RegionMetaDataImpl *par = Runtime::get_runtime()->get_metadata_impl(parent);
       RegionMetaDataImpl *r = Runtime::get_runtime()->get_free_metadata(par, mask);
       log_region(LEVEL_INFO, "region created: id=%x parent=%x",
@@ -1931,36 +2096,42 @@ namespace RegionRuntime {
 
     RegionAllocatorUntyped RegionMetaDataUntyped::create_allocator_untyped(Memory m) const
     {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
 	return r->create_allocator(m);
     }
 
     RegionInstanceUntyped RegionMetaDataUntyped::create_instance_untyped(Memory m) const
     {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
 	return r->create_instance(m);
     }
 
     void RegionMetaDataUntyped::destroy_region_untyped(void) const
     {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
 	r->deactivate();
     }
 
     void RegionMetaDataUntyped::destroy_allocator_untyped(RegionAllocatorUntyped a) const
     {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
 	r->destroy_allocator(a);
     }
 
     void RegionMetaDataUntyped::destroy_instance_untyped(RegionInstanceUntyped i) const
     {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
 	r->destroy_instance(i);
     }
 
     const ElementMask &RegionMetaDataUntyped::get_valid_mask(void)
     {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
       return r->get_element_mask();
     }
@@ -2106,9 +2277,27 @@ namespace RegionRuntime {
 		exit(1);
 	}
 
+        unsigned num_cpus = NUM_PROCS;
+        size_t cpu_mem_size_in_mb = GLOBAL_MEM;
+        size_t cpu_l1_size_in_kb = LOCAL_MEM;
+
 #ifdef DEBUG_PRINT
 	PTHREAD_SAFE_CALL(pthread_mutex_init(&debug_mutex,NULL));
 #endif
+
+        for (int i=1; i < *argc; i++)
+        {
+#define INT_ARG(argname, varname) do { \
+	  if(!strcmp((*argv)[i], argname)) {		\
+	    varname = atoi((*argv)[++i]);		\
+	    continue;					\
+	  } } while(0)
+          
+          INT_ARG("-ll:csize", cpu_mem_size_in_mb);
+          INT_ARG("-ll:l1size", cpu_l1_size_in_kb);
+          INT_ARG("-ll:cpu", num_cpus);
+#undef INT_ARG
+        }
 	
 	// Create the runtime and initialize with this machine
 	Runtime::runtime = new Runtime(this);
@@ -2119,7 +2308,7 @@ namespace RegionRuntime {
 	// Fill in the tables
         // find in proc 0 with NULL
         Runtime::runtime->processors.push_back(NULL);
-	for (int id=1; id<=NUM_PROCS; id++)
+	for (unsigned id=1; id<=num_cpus; id++)
 	{
 		Processor p;
 		p.id = id;
@@ -2134,26 +2323,26 @@ namespace RegionRuntime {
 		Memory global;
 		global.id = 1;
 		memories.insert(global);
-		MemoryImpl *impl = new MemoryImpl(MAX_GLOBAL_MEM);
+		MemoryImpl *impl = new MemoryImpl(cpu_mem_size_in_mb*1024*1024);
 		Runtime::runtime->memories.push_back(impl);
 	}
-	for (int id=2; id<=(NUM_PROCS+1); id++)
+	for (unsigned id=2; id<=(num_cpus+1); id++)
 	{
 		Memory m;
 		m.id = id;
 		memories.insert(m);
-		MemoryImpl *impl = new MemoryImpl(MAX_LOCAL_MEM);
+		MemoryImpl *impl = new MemoryImpl(cpu_l1_size_in_kb*1024);
 		Runtime::runtime->memories.push_back(impl);
 	}
 	// All memories are visible from each processor
-	for (int id=1; id<=NUM_PROCS; id++)
+	for (unsigned id=1; id<=num_cpus; id++)
 	{
 		Processor p;
 		p.id = id;
 		visible_memories_from_procs.insert(std::pair<Processor,std::set<Memory> >(p,memories));
 	}	
 	// All memories are visible from all memories, all processors are visible from all memories
-	for (int id=1; id<=(NUM_PROCS+1); id++)
+	for (unsigned id=1; id<=(num_cpus+1); id++)
 	{
 		Memory m;
 		m.id = id;
@@ -2161,9 +2350,54 @@ namespace RegionRuntime {
 		visible_procs_from_memory.insert(std::pair<Memory,std::set<Processor> >(m,procs));
 	}
 
+        // Now set up the affinities for each of the different processors and memories
+        for (std::set<Processor>::iterator it = procs.begin(); it != procs.end(); it++)
+        {
+          // Give all processors 32 GB/s to the global memory
+          {
+            ProcessorMemoryAffinity global_affin = { *it, {1}, 32, 50/* higher latency */ };
+            proc_mem_affinities.push_back(global_affin);
+          }
+          // Give the processor good affinity to its L1, but not to other L1
+          for (unsigned id = 2; id <= (num_cpus+1); id++)
+          {
+            if (id == (it->id+1))
+            {
+              // Our L1, high bandwidth with low latency
+              ProcessorMemoryAffinity local_affin = { *it, {id}, 100, 1/* small latency */};
+              proc_mem_affinities.push_back(local_affin);
+            }
+            else
+            {
+              // Other L1, low bandwidth with long latency
+              ProcessorMemoryAffinity other_affin = { *it, {id}, 10, 100 /*high latency*/ };
+              proc_mem_affinities.push_back(other_affin);
+            }
+          }
+        }
+        // Set up the affinities between the different memories
+        {
+          // Global to all others
+          for (unsigned id = 2; id <= (num_cpus+1); id++)
+          {
+            MemoryMemoryAffinity global_affin = { {1}, {id}, 32, 50 };
+            mem_mem_affinities.push_back(global_affin);
+          }
+
+          // From any one to any other one
+          for (unsigned id = 2; id <= (num_cpus+1); id++)
+          {
+            for (unsigned other=id+1; other <= (num_cpus+1); other++)
+            {
+              MemoryMemoryAffinity pair_affin = { {id}, {other}, 10, 100 };
+              mem_mem_affinities.push_back(pair_affin);
+            }
+          }
+        }
+
 	// Now start the threads for each of the processors
 	// except for processor 0 which is this thread
-	for (int id=2; id<=NUM_PROCS; id++)
+	for (unsigned id=2; id<=num_cpus; id++)
 	{
 		ProcessorImpl *impl = Runtime::runtime->processors[id];
 		pthread_t thread;
@@ -2211,10 +2445,7 @@ namespace RegionRuntime {
 
     size_t Machine::get_memory_size(const Memory m) const
     {
-	if (m.id == 0)
-		return MAX_GLOBAL_MEM;
-	else
-		return MAX_LOCAL_MEM;
+        return Runtime::runtime->get_memory_impl(m)->total_space();
     }
 
     Machine* Machine::get_machine(void)
@@ -2222,7 +2453,51 @@ namespace RegionRuntime {
 	return Runtime::get_runtime()->machine;
     }
     
+    int Machine::get_proc_mem_affinity(std::vector<ProcessorMemoryAffinity> &result,
+                                        Processor restrict_proc /*= Processor::NO_PROC*/,
+                                        Memory restrict_memory /*= Memory::NO_MEMORY*/)
+    {
+      int count = 0;
 
+      for (std::vector<Machine::ProcessorMemoryAffinity>::const_iterator it =
+            proc_mem_affinities.begin(); it != proc_mem_affinities.end(); it++)
+      {
+        if (restrict_proc.exists() && ((*it).p != restrict_proc)) continue;
+        if (restrict_memory.exists() && ((*it).m != restrict_memory)) continue;
+        result.push_back(*it);
+        count++;
+      }
+
+      return count;
+    }
+
+    int Machine::get_mem_mem_affinity(std::vector<MemoryMemoryAffinity> &result,
+                                      Memory restrict_mem1 /*= Memory::NO_MEMORY*/,
+                                      Memory restrict_mem2 /*= Memory::NO_MEMORY*/)
+    {
+      int count = 0;
+
+      for (std::vector<Machine::MemoryMemoryAffinity>::const_iterator it =
+            mem_mem_affinities.begin(); it != mem_mem_affinities.end(); it++)
+      {
+        if (restrict_mem1.exists() &&
+            ((*it).m1 != restrict_mem1) && ((*it).m2 != restrict_mem1)) continue;
+        if (restrict_mem2.exists() &&
+            ((*it).m1 != restrict_mem2) && ((*it).m2 != restrict_mem2)) continue;
+        result.push_back(*it);
+        count++;
+      }
+
+      return count;
+    }
+
+    void Machine::parse_node_announce_data(const void *args, size_t arglen,
+                                           const NodeAnnounceData &annc_data,
+                                           bool remote)
+    {
+      // Should never be called in this version of the low level runtime
+      assert(false);
+    }
 
     ////////////////////////////////////////////////////////
     // Runtime 
@@ -2570,5 +2845,6 @@ namespace RegionRuntime {
     LowLevel::Logger::Category log_task("tasks");
     LowLevel::Logger::Category log_region("regions");
     LowLevel::Logger::Category log_inst("instances");
+    LowLevel::Logger::Category log_sjt("sjt");
   };
 };
