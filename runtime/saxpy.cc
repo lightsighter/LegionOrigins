@@ -47,6 +47,10 @@ struct VectorRegions {
   LogicalHandle r_x, r_y, r_z;
 };
 
+struct AddResult {
+  bool flag;
+};
+
 struct CheckResult {
   float max_error;
   float avg_error;
@@ -91,6 +95,7 @@ void main_task(const void *args, size_t arglen,
   PhysicalRegion<AT> r_z = regions[2];
 
   vr->alpha = get_rand_float();
+  printf("alpha: %f\n", vr->alpha);
 
   std::vector<Block> blocks(Config::num_blocks);
   std::vector<std::set<ptr_t<Entry> > > color_x(Config::num_blocks);
@@ -153,14 +158,25 @@ void main_task(const void *args, size_t arglen,
     futures.push_back(f);
   }
 
-  for (unsigned i = 0; i < futures.size(); i++)
-    futures[i].get_void_result();
-  clock_gettime(CLOCK_MONOTONIC, &ts_end);
+  std::vector<unsigned> flagged;
+  for (unsigned i = 0; i < Config::num_blocks; i++) {
+    AddResult result = futures[i].template get_result<AddResult>();
+    if (result.flag)
+      flagged.push_back(i);
+  }
 
+  clock_gettime(CLOCK_MONOTONIC, &ts_end);
   double sim_time = ((1.0 * (ts_end.tv_sec - ts_start.tv_sec)) +
 		     (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
   printf("ELAPSED TIME = %7.3f s\n", sim_time);
   DetailedTimer::report_timers();
+
+  if (flagged.size() > 0) {
+    printf("FLAGGED BLOCKS = {");
+    for (unsigned i = 0; i < flagged.size(); i++)
+      printf(" %u", flagged[i]);
+    printf(" }\n");
+  }
 
 #ifdef CHECK_CORRECTNESS
   CheckResult result;
@@ -168,6 +184,7 @@ void main_task(const void *args, size_t arglen,
   result.avg_error = 0;
   result.avg_zabs = 0;
   result.mismatch = 0;
+  std::vector<unsigned> mismatched;
   for (unsigned i = 0; i < Config::num_blocks; i++) {
     std::vector<RegionRequirement> check_regions;
     check_regions.push_back(RegionRequirement(blocks[i].r_x, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_x));
@@ -182,6 +199,9 @@ void main_task(const void *args, size_t arglen,
     result.avg_error += sub_result.avg_error;
     result.avg_zabs += sub_result.avg_zabs;
     result.mismatch += sub_result.mismatch;
+    if (sub_result.mismatch > 0) {
+      mismatched.push_back(i);
+    }
   }
   result.avg_error /= Config::num_blocks;
   result.avg_zabs /= Config::num_blocks;
@@ -190,6 +210,12 @@ void main_task(const void *args, size_t arglen,
   printf("AVG ERROR = %f\n", result.avg_error);
   printf("AVG ZABS  = %f\n", result.avg_zabs);
   printf("MISMATCH  = %u\n", result.mismatch);
+  if (mismatched.size() > 0) {
+    printf("MISMATCHED BLOCKS = {");
+    for (unsigned i = 0; i < mismatched.size(); i++)
+      printf(" %u", mismatched[i]);
+    printf(" }\n");
+  }
 #endif
 
   exit(0);
@@ -215,21 +241,34 @@ void init_vectors_task(const void *args, size_t arglen,
 }
 
 template<AccessorType AT>
-void add_vectors_task(const void *args, size_t arglen,
-		      const std::vector<PhysicalRegion<AT> > &regions,
-		      Context ctx, HighLevelRuntime *runtime) {
+AddResult add_vectors_task(const void *args, size_t arglen,
+			   const std::vector<PhysicalRegion<AT> > &regions,
+			   Context ctx, HighLevelRuntime *runtime) {
   Block *block = (Block *)args;
   PhysicalRegion<AT> r_x = regions[0];
   PhysicalRegion<AT> r_y = regions[1];
   PhysicalRegion<AT> r_z = regions[2];
 
+  // unsigned spin = 0;
+  // while (++spin <= 100000000);
+
+  float avg_xabs = 0, avg_yabs = 0;
   for (unsigned i = 0; i < BLOCK_SIZE; i++) {
     float x = r_x.read(block->entry_x[i]).v;
     float y = r_y.read(block->entry_y[i]).v;
+    avg_xabs += fabs(x);
+    avg_yabs += fabs(y);
+    
     Entry entry_z;
     entry_z.v = block->alpha * x + y;
     r_z.write(block->entry_z[i], entry_z);
   }
+  avg_xabs /= BLOCK_SIZE;
+  avg_yabs /= BLOCK_SIZE;
+  
+  AddResult result;
+  result.flag = (avg_xabs < 1e-6 || avg_yabs < 1e-6);
+  return result;
 }
 
 template<AccessorType AT>
@@ -246,13 +285,14 @@ CheckResult check_correct_task(const void *args, size_t arglen,
   result.avg_error = 0;
   result.avg_zabs = 0;
   result.mismatch = 0;
+
   for (unsigned i = 0; i < BLOCK_SIZE; i++) {
     float x = r_x.read(block->entry_x[i]).v;
     float y = r_y.read(block->entry_y[i]).v;
     float z = r_z.read(block->entry_z[i]).v;
     float error = fabs(z - block->alpha * x - y);
     if (error > 1e-6) {
-      // printf("%f %f %f %f\n", z, block->alpha, x, y);
+      // printf("mismatch %u: %f %f %f\n", block->id, z, x, y);
       result.mismatch++;
     }
 
@@ -459,11 +499,13 @@ void create_mappers(Machine *machine, HighLevelRuntime *runtime,
 }
 
 int main(int argc, char **argv) {
+  srand(time(NULL));
+
   Processor::TaskIDTable task_table;
   task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
   task_table[TASKID_MAIN] = high_level_task_wrapper<main_task<AccessorGeneric> >;
   task_table[TASKID_INIT_VECTORS] = high_level_task_wrapper<init_vectors_task<AccessorGeneric> >;
-  task_table[TASKID_ADD_VECTORS] = high_level_task_wrapper<add_vectors_task<AccessorGeneric> >;
+  task_table[TASKID_ADD_VECTORS] = high_level_task_wrapper<AddResult, add_vectors_task<AccessorGeneric> >;
   task_table[TASKID_CHECK_CORRECT] = high_level_task_wrapper<CheckResult, check_correct_task<AccessorGeneric> >;
 
   HighLevelRuntime::register_runtime_tasks(task_table);
