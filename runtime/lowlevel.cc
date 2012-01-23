@@ -1446,7 +1446,7 @@ namespace RegionRuntime {
     void UserEvent::trigger(void) const
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
-      impl()->trigger(gen, true);
+      impl()->trigger(gen, gasnet_mynode());
       //Runtime::get_runtime()->get_event_impl(*this)->trigger();
     }
 
@@ -1727,7 +1727,7 @@ namespace RegionRuntime {
 	  it++) {
 	log_lock(LEVEL_DEBUG, "unlock trigger: lock=%x event=%x/%d",
 		 args.lock.id, (*it).id, (*it).gen);
-	(*it).impl()->trigger((*it).gen, true);
+	(*it).impl()->trigger((*it).gen, gasnet_mynode());
       }
     }
 
@@ -1799,7 +1799,7 @@ namespace RegionRuntime {
 
       // if we got the lock, trigger an event if we were given one
       if(got_lock && after_lock.exists()) 
-	after_lock.impl()->trigger(after_lock.gen, true);
+	after_lock.impl()->trigger(after_lock.gen, gasnet_mynode());
 
       return after_lock;
     }
@@ -1917,7 +1917,7 @@ namespace RegionRuntime {
 	  it++) {
 	log_lock(LEVEL_DEBUG, "unlock trigger: lock=%x event=%x/%d",
 		 me.id, (*it).id, (*it).gen);
-	(*it).impl()->trigger((*it).gen, true);
+	(*it).impl()->trigger((*it).gen, gasnet_mynode());
       }
     }
 
@@ -2672,11 +2672,13 @@ namespace RegionRuntime {
 	  for(size_t i = 0; (i < arglen) && (i < 40); i++)
 	    sprintf(argstr+2*i, "%02x", ((unsigned char *)args)[i]);
 	  if(arglen > 40) strcpy(argstr+80, "...");
-	  log_task(LEVEL_DEBUG, "task start: %d (%p) (%s)", func_id, fptr, argstr);
+	  log_task(((func_id == 3) ? LEVEL_SPEW : LEVEL_DEBUG), 
+		   "task start: %d (%p) (%s)", func_id, fptr, argstr);
 	  (*fptr)(args, arglen, proc->me);
-	  log_task(LEVEL_DEBUG, "task end: %d (%p) (%s)", func_id, fptr, argstr);
+	  log_task(((func_id == 3) ? LEVEL_SPEW : LEVEL_DEBUG), 
+		   "task end: %d (%p) (%s)", func_id, fptr, argstr);
 	  if(finish_event.exists())
-	    finish_event.impl()->trigger(finish_event.gen, true);
+	    finish_event.impl()->trigger(finish_event.gen, gasnet_mynode());
 	}
 
 	LocalProcessor *proc;
@@ -3106,7 +3108,7 @@ namespace RegionRuntime {
 	if(idle_task && !in_idle_task) {
 	  in_idle_task = true;
 	  active_thread_count++;
-	  log_task(LEVEL_DEBUG, "idle task assigned to thread: proc=%x", me.id);
+	  log_task(LEVEL_SPEW, "idle task assigned to thread: proc=%x", me.id);
 	  return idle_task;
 	}
 
@@ -4087,6 +4089,8 @@ namespace RegionRuntime {
       printf("\n");
 #endif
 
+      log_copy.debug("performing copy %x (%d) -> %x (%d) - %zd bytes (%zd)", src.id, src_mem->kind, target.id, tgt_mem->kind, bytes_to_copy, elmt_size);
+
       switch(src_mem->kind) {
       case Memory::Impl::MKIND_SYSMEM:
       case Memory::Impl::MKIND_ZEROCOPY:
@@ -4421,8 +4425,10 @@ namespace RegionRuntime {
 	tgt_impl->lock.unlock();
 #endif
 
+      log_copy.debug("finished copy %x (%d) -> %x (%d) - %zd bytes (%zd), event=%x/%d", src.id, src_mem->kind, target.id, tgt_mem->kind, bytes_to_copy, elmt_size, after_copy.id, after_copy.gen);
+
       if(after_copy.exists())
-	after_copy.impl()->trigger(after_copy.gen, true);
+	after_copy.impl()->trigger(after_copy.gen, gasnet_mynode());
       return after_copy;
     }
 
