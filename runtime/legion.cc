@@ -15,7 +15,7 @@
 #include <cstring>
 
 #define DEFAULT_MAPPER_SLOTS 	8
-#define DEFAULT_DESCRIPTIONS    16 
+#define DEFAULT_CONTEXTS        16 
 
 #define MAX_TASK_MAPS_PER_STEP  1
 
@@ -135,6 +135,125 @@ namespace RegionRuntime {
     }
 
     /////////////////////////////////////////////////////////////
+    // Region Mapping 
+    /////////////////////////////////////////////////////////////
+    
+    //--------------------------------------------------------------------------
+    RegionMapping::RegionMapping(void)
+      : impl(NULL)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    RegionMapping::RegionMapping(RegionMappingImpl *i)
+      : impl(i)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    RegionMapping::RegionMapping(const RegionMapping &rm)
+      : impl(rm.impl)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    RegionMapping::~RegionMapping(void)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Region Mapping Implementation
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    RegionMappingImpl::RegionMappingImpl(unsigned int id)
+      : idx(id), active(false)
+    //--------------------------------------------------------------------------
+    {
+    }
+    
+    //--------------------------------------------------------------------------
+    RegionMappingImpl::~RegionMappingImpl(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!active);
+#endif
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionMappingImpl::activate(const RegionRequirement &r)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!active);
+#endif
+      req = r;
+      mapped_event = UserEvent::create_user_event();
+      unmapped_event = UserEvent::create_user_event();
+      result = PhysicalRegion<AccessorGeneric>();
+      active = true;
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionMappingImpl::deactivate(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      // Mark that the region has been unmapped
+      unmapped_event.trigger();
+      active = false;
+    }
+
+    //--------------------------------------------------------------------------
+    Event RegionMappingImpl::get_unmapped_event(void) const
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      return unmapped_event;
+    }
+    
+    //--------------------------------------------------------------------------
+    void RegionMappingImpl::set_instance(
+        LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric> inst)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      result.set_instance(inst);
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionMappingImpl::set_allocator(LowLevel::RegionAllocatorUntyped alloc)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      result.set_allocator(alloc);
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionMappingImpl::set_mapped(Event ready)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      ready_event = ready;
+      mapped_event.trigger();
+    }
+
+    /////////////////////////////////////////////////////////////
     // High Level Runtime 
     ///////////////////////////////////////////////////////////// 
 
@@ -156,12 +275,20 @@ namespace RegionRuntime {
         mapper_objects[i] = NULL;
       mapper_objects[0] = new Mapper(machine,this,local_proc);
 
-      // Create some tasks descriptions
-      all_tasks.resize(DEFAULT_DESCRIPTIONS);
-      for (unsigned ctx = 0; ctx < DEFAULT_DESCRIPTIONS; ctx++)
+      // Create some tasks contexts 
+      all_tasks.resize(DEFAULT_CONTEXTS);
+      for (unsigned ctx = 0; ctx < DEFAULT_CONTEXTS; ctx++)
       {
         available_contexts.push_back(ctx);
         all_tasks[ctx] = new TaskContext((Context)ctx, local_proc, this); 
+      }
+
+      // Create some region mappings
+      all_maps.resize(DEFAULT_CONTEXTS);
+      for (unsigned idx = 0; idx < DEFAULT_CONTEXTS; idx++)
+      {
+        available_maps.push_back(idx);
+        all_maps[idx] = new RegionMappingImpl(idx);
       }
 
       // If this is the first processor, launch the legion main task on this processor
@@ -169,7 +296,7 @@ namespace RegionRuntime {
       if (local_proc == (*(all_procs.begin())))
       {
         log_task(LEVEL_SPEW,"Issuing region main task on processor %d",local_proc.id);
-        TaskContext *desc = get_available_description(true);
+        TaskContext *desc = get_available_context(true);
         TaskID tid = this->next_task_id;
         this->next_task_id += this->unique_stride;
         desc->initialize_task(tid, TASK_ID_REGION_MAIN,malloc(sizeof(Context)),
@@ -353,7 +480,7 @@ namespace RegionRuntime {
       assert(ctx < all_tasks.size());
       assert(id < mapper_objects.size());
 #endif
-      TaskContext *desc = get_available_description(false/*new tree*/);
+      TaskContext *desc = get_available_context(false/*new tree*/);
       // Allocate more space for context
       void *args_prime = malloc(arglen+sizeof(Context));
       memcpy(((char*)args_prime)+sizeof(Context), args, arglen);
@@ -397,7 +524,7 @@ namespace RegionRuntime {
       assert(ctx < all_tasks.size());
       assert(id < mapper_objects.size());
 #endif
-      TaskContext *desc = get_available_description(false/*new tree*/);
+      TaskContext *desc = get_available_context(false/*new tree*/);
       // Allocate more space for the context when copying the args
       void *args_prime = malloc(arglen+sizeof(Context));
       memcpy(((char*)args_prime)+sizeof(Context), args, arglen);
@@ -637,21 +764,142 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    Future HighLevelRuntime::map_region(Context ctx, LogicalRegion region)
+    RegionMapping HighLevelRuntime::map_region(Context ctx, RegionRequirement req)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(ctx < all_tasks.size());
+#endif
+      RegionMappingImpl *impl = get_available_mapping(req); 
 
+      log_region(LEVEL_DEBUG,"Registering a map operation for region %d in task %d\n",
+                  req.handle.region.id, all_tasks[ctx]->unique_id);
+      all_tasks[ctx]->register_mapping(impl); 
+
+      return RegionMapping(impl);
     }
 
     //--------------------------------------------------------------------------------------------
-    template<AccessorType AT>
-    void HighLevelRuntime::unmap_region(Context ctx, LogicalRegion region, 
-                                        PhysicalRegion<AT> instance)
+    void HighLevelRuntime::unmap_region(Context ctx, RegionMapping mapping) 
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(ctx < all_tasks.size());
+#endif
+      log_region(LEVEL_DEBUG,"Unmapping region %d in task %d\n",
+                  mapping.impl->req.handle.region.id, all_tasks[ctx]->unique_id);
 
+      mapping.impl->deactivate();
+
+      // Put this back on the list of available mapping implementations
+      available_maps.push_back(mapping.impl->idx);
     }
 
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::add_mapper(MapperID id, Mapper *m)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      // Only the default mapper should have id 0
+      assert(id > 0);
+#endif
+      // Increase the size of the mapper vector if necessary
+      if (id >= mapper_objects.size())
+      {
+        int old_size = mapper_objects.size();
+        mapper_objects.resize(id+1);
+        for (unsigned int i=old_size; i<(id+1); i++)
+          mapper_objects[i] = NULL;
+      } 
+#ifdef DEBUG_HIGH_LEVEL
+      assert(id < mapper_objects.size());
+      assert(mapper_objects[id] == NULL);
+#endif
+      mapper_objects[id] = m;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::replace_default_mapper(Mapper *m)
+    //--------------------------------------------------------------------------------------------
+    {
+      delete mapper_objects[0];
+      mapper_objects[0] = m;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    std::vector<PhysicalRegion<AccessorGeneric> > HighLevelRuntime::begin_task(Context ctx)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(ctx < all_tasks.size());
+#endif
+      TaskContext *desc = all_tasks[ctx];
+      log_task(LEVEL_DEBUG,"Beginning task %d with unique id %d on processor %x in context %d",
+                            desc->task_id,desc->unique_id,desc->local_proc.id,desc->local_ctx);
+      return desc->start_task(); 
+    }
+
+    //-------------------------------------------------------------------------------------------- 
+    void HighLevelRuntime::end_task(Context ctx, const void * arg, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(ctx < all_tasks.size());
+#endif
+      TaskContext *desc= all_tasks[ctx];
+      log_task(LEVEL_DEBUG,"Ending task %d with unique id %d on processor %x in context %d",
+                            desc->task_id,desc->unique_id,desc->local_proc.id,desc->local_ctx);
+      desc->complete_task(arg,arglen); 
+    }
+
+    //-------------------------------------------------------------------------------------------- 
+    TaskContext* HighLevelRuntime::get_available_context(bool new_tree)
+    //--------------------------------------------------------------------------------------------
+    {
+      TaskContext *result;
+      if (!available_contexts.empty())
+      {
+        Context ctx = available_contexts.front();
+        available_contexts.pop_front();
+        result = all_tasks[ctx];
+      }
+      else
+      {
+        Context ctx = all_tasks.size();
+        result = new TaskContext(ctx,local_proc,this);
+        all_tasks.push_back(result);
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      bool activated = 
+#endif
+      result->activate(new_tree);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(activated);
+#endif
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    RegionMappingImpl* HighLevelRuntime::get_available_mapping(const RegionRequirement &req)
+    //--------------------------------------------------------------------------------------------
+    {
+      RegionMappingImpl *result;
+      if (!available_maps.empty())
+      {
+        unsigned idx = available_maps.front();
+        available_maps.pop_front();
+        result = all_maps[idx];
+      }
+      else
+      {
+        unsigned idx = all_maps.size();
+        result = new RegionMappingImpl(idx);
+        all_maps.push_back(result);
+      }
+      result->activate(req);
+
+      return result;
+    }
   };
 };
 

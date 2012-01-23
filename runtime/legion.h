@@ -73,6 +73,7 @@ namespace RegionRuntime {
     // Forward declarations for user level objects
     class Task;
     class Future;
+    class RegionMapping;
     class RegionRequirement;
     class PartitionRequirement;
     template<AccessorType AT> class PhysicalRegion;
@@ -81,6 +82,7 @@ namespace RegionRuntime {
 
     // Forward declarations for runtime level objects
     class FutureImpl;
+    class RegionMappingImpl;
     class TaskContext;
     class RegionNode;
     class PartitionNode;
@@ -168,7 +170,7 @@ namespace RegionRuntime {
      * have templated virtual functions
      */
     struct UntypedConstraint {
-      std::vector<int> weights; // dim = weights.size()
+      std::vector<int> weights; // dim == N == weights.size()
       int offset;
     };
 
@@ -208,14 +210,37 @@ namespace RegionRuntime {
       FutureImpl *const impl; // The actual implementation of this future
     protected:
       friend class HighLevelRuntime;
-      Future(FutureImpl *impl); // Pass the event that will be set when the future is ready
-    public:
       Future();
+      Future(FutureImpl *impl); 
+    public:
       Future(const Future& f);
       ~Future(void);
     public:
       template<typename T> inline T get_result(void);
       inline void get_void_result(void);
+    };
+
+    /////////////////////////////////////////////////////////////
+    // Region Mapping 
+    /////////////////////////////////////////////////////////////
+    /**
+     * An object for tracking when a region has been mapped in
+     * a parent task. 
+     */
+    class RegionMapping {
+    protected:
+      friend class HighLevelRuntime;
+      RegionMappingImpl *const impl;
+    protected:
+      RegionMapping();
+      RegionMapping(RegionMappingImpl *impl);
+    public:
+      RegionMapping(const RegionMapping& rm);
+      ~RegionMapping(void);
+    public:
+      template<AccessorType AT>
+      inline PhysicalRegion<AT> get_physical_region(void);
+      inline bool can_convert(void);
     };
 
     /////////////////////////////////////////////////////////////
@@ -236,25 +261,25 @@ namespace RegionRuntime {
       AccessMode        mode;
       AllocateMode      alloc;
       CoherenceProperty prop;
-      LogicalRegion     parent;
+      bool verified; // has this been verified already
     public:
       RegionRequirement(void) { }
       RegionRequirement(LogicalRegion _handle, AccessMode _mode,
                         AllocateMode _alloc, CoherenceProperty _prop,
-                        LogicalRegion _parent)
-        : mode(_mode), alloc(_alloc),
-          prop(_prop), parent(_parent) { handle.region = _handle; }
+                        bool _verified = false)
+        : mode(_mode), alloc(_alloc), prop(_prop), 
+          verified(_verified) { handle.region = _handle; }
       RegionRequirement(PartitionID pid, AccessMode _mode,
                         AllocateMode _alloc, CoherenceProperty _prop,
-                        LogicalRegion _parent)
-        : mode(_mode), alloc(_alloc),
-          prop(_prop), parent(_parent) { handle.partition = pid; }
+                        bool _verified = false)
+        : mode(_mode), alloc(_alloc), prop(_prop), 
+          verified(_verified) { handle.partition = pid; }
     };
 
     /////////////////////////////////////////////////////////////
     // Colorize Function 
     ///////////////////////////////////////////////////////////// 
-       /**
+    /**
      * A colorize function for launching tasks over index spaces.
      * Allows for different kinds of colorize functions.  Singular
      * functions simply interpret the region requirement as all
@@ -304,6 +329,8 @@ namespace RegionRuntime {
       LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorArray> instance;
     protected:
       friend class HighLevelRuntime;
+      friend class TaskContext;
+      friend class RegionMappingImpl;
       friend class PhysicalRegion<AccessorGeneric>;
       PhysicalRegion(void) 
         : instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorArray>(NULL)) { }
@@ -332,7 +359,9 @@ namespace RegionRuntime {
       LowLevel::RegionAllocatorUntyped allocator;
       LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric> instance;
     protected:
+      friend class HighLevelRuntime;
       friend class TaskContext;
+      friend class RegionMappingImpl;
       PhysicalRegion(void) :
         valid_allocator(false), valid_instance(false), 
         instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric>(NULL)) { }
@@ -487,10 +516,9 @@ namespace RegionRuntime {
        * an unspecialized physical instance.  The logical region must be
        * a subregion of one of the regions for which the task has a privilege.
        */
-      Future map_region(Context ctx, LogicalRegion region);
+      RegionMapping map_region(Context ctx, RegionRequirement req);
 
-      template<AccessorType AT>
-      void unmap_region(Context ctx, LogicalRegion region, PhysicalRegion<AT> instance);
+      void unmap_region(Context ctx, RegionMapping mapping);
     public:
       // Functions for managing mappers
       void add_mapper(MapperID id, Mapper *m);
@@ -500,7 +528,8 @@ namespace RegionRuntime {
       std::vector<PhysicalRegion<AccessorGeneric> > begin_task(Context ctx);
       void end_task(Context ctx, const void *result, size_t result_size);
     private:
-      TaskContext* get_available_description(bool new_tree);
+      TaskContext* get_available_context(bool new_tree);
+      RegionMappingImpl* get_available_mapping(const RegionRequirement &req);
       // Operations invoked by static methods
       void process_tasks(const void * args, size_t arglen);
       void process_steal(const void * args, size_t arglen);
@@ -526,10 +555,16 @@ namespace RegionRuntime {
       const Processor local_proc;
       Machine *const machine;
       std::vector<Mapper*> mapper_objects;
+      // Task Contexts
       std::list<TaskContext*> ready_queue; // Tasks ready to be mapped/stolen
       std::list<TaskContext*> waiting_queue; // Tasks still unmappable
       std::vector<TaskContext*> all_tasks; // all task descriptions;
       std::list<Context> available_contexts; // open task descriptions
+      // Region Mappings
+      std::list<RegionMappingImpl*> ready_maps;
+      std::list<RegionMappingImpl*> waiting_maps;
+      std::vector<RegionMappingImpl*> all_maps;
+      std::list<unsigned> available_maps;
       // Keep track of how to do partition numbering
       PartitionID next_partition_id; // The next partition id for this instance (unique)
       TaskID next_task_id; // Give all tasks a unique id for debugging purposes
@@ -623,6 +658,38 @@ namespace RegionRuntime {
       inline void get_void_result(void);
     };
 
+    /////////////////////////////////////////////////////////////
+    // Region Mapping Implementation
+    /////////////////////////////////////////////////////////////
+    /**
+     * An implementation of the region mapping object for tracking
+     * when an inline region mapping is available.
+     */
+    class RegionMappingImpl {
+    protected:
+      const unsigned int idx;
+    private:
+      RegionRequirement req;
+      UserEvent mapped_event;
+      Event ready_event;
+      UserEvent unmapped_event;
+      PhysicalRegion<AccessorGeneric> result;
+      bool active;
+    protected:
+      friend class HighLevelRuntime;
+      RegionMappingImpl(unsigned int idx); 
+      ~RegionMappingImpl();
+      void activate(const RegionRequirement &req);
+      void deactivate(void);
+      Event get_unmapped_event(void) const;
+      void set_instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric> inst);
+      void set_allocator(LowLevel::RegionAllocatorUntyped alloc);
+      void set_mapped(Event ready = Event::NO_EVENT); // Indicate mapping complete
+    public:
+      template<AccessorType AT>
+      inline PhysicalRegion<AT> get_physical_region(void);
+      inline bool can_convert(void);
+    };
 
     /////////////////////////////////////////////////////////////
     // Task Context
@@ -656,7 +723,12 @@ namespace RegionRuntime {
       void unpack_task(const char *&buffer);
     protected:
       // functions for updating a task's state
-      void register_child_task(TaskContext*desc);
+      void register_child_task(TaskContext *desc);
+      void register_mapping(RegionMappingImpl *impl);
+      std::vector<PhysicalRegion<AccessorGeneric> > start_task(void);
+      void complete_task(const void *result, size_t result_size);
+    protected:
+      // functions for updating logical region trees
       void create_region(LogicalRegion handle);
       void destroy_region(LogicalRegion handle);
       void smash_region(LogicalRegion smashed, const std::vector<LogicalRegion> &regions);
@@ -668,7 +740,7 @@ namespace RegionRuntime {
       LogicalRegion get_subregion(PartitionID pid, Color c) const;
       LogicalRegion find_parent_region(const std::vector<LogicalRegion> &regions) const;
     protected:
-      // functions for checking the state of the task
+      // functions for checking the state of the task for scheduling
       bool is_ready(void) const;
       void mark_ready(void);
     private:
@@ -970,6 +1042,92 @@ namespace RegionRuntime {
         set_event.wait();
       }
       active = false;
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT>
+    inline PhysicalRegion<AT> RegionMapping::get_physical_region(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      return impl->get_physical_region<AT>();
+    }
+
+    //--------------------------------------------------------------------------
+    inline bool RegionMapping::can_convert(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      return impl->can_convert();
+    }
+
+    //--------------------------------------------------------------------------
+    template<>
+    inline PhysicalRegion<AccessorGeneric> RegionMappingImpl::get_physical_region(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      // First check to make sure that it has been mapped
+      if (!mapped_event.has_triggered())
+      {
+        mapped_event.wait();
+      }
+      // Now check that it is ready
+      if (!ready_event.has_triggered())
+      {
+        ready_event.wait();
+      }
+      return result;
+    }
+    
+    //--------------------------------------------------------------------------
+    template<>
+    inline PhysicalRegion<AccessorArray> RegionMappingImpl::get_physical_region(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      // First check that it has been mapped
+      if (!mapped_event.has_triggered())
+      {
+        mapped_event.wait();
+      }
+      // Now check that it is ready
+      if (!ready_event.has_triggered())
+      {
+        ready_event.wait();
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      if (!result.can_convert())
+      {
+        // TODO: Add error reporting here
+        assert(false);
+      }
+#endif
+      return result.convert();
+    }
+    
+    //--------------------------------------------------------------------------
+    inline bool RegionMappingImpl::can_convert(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      // First check to see if region has been mapped
+      if (!mapped_event.has_triggered())
+      {
+        mapped_event.wait();
+      }
+      // Now you can check the instance
+      return result.can_convert();
     }
 
     //--------------------------------------------------------------------------
