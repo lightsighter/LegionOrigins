@@ -15,6 +15,8 @@ using namespace RegionRuntime::HighLevel;
 
 #define CHECK_CORRECTNESS
 
+#define USE_SHARED
+
 namespace Config {
   unsigned num_blocks = 64;
   bool args_read = false;
@@ -323,6 +325,123 @@ T safe_prioritized_pick(const std::vector<T> &vec, T choice1, T choice2) {
   return garbage;
 }
 
+class SharedMapper : public Mapper {
+public:
+  Memory global_memory;
+  unsigned num_procs;
+
+  SharedMapper(Machine *m, HighLevelRuntime *r, Processor p)
+    : Mapper(m, r, p) {
+    global_memory.id = 1;
+    num_procs = m->get_all_processors().size();
+  }
+
+  virtual void rank_initial_region_locations(size_t elmt_size,
+					     size_t num_elmts,
+					     MappingTagID tag,
+					     std::vector<Memory> &ranking) {
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    ranking.push_back(global_memory);
+  }
+
+  virtual void rank_initial_partition_locations(size_t elmt_size,
+						unsigned num_subregions,
+						MappingTagID tag,
+						std::vector<std::vector<Memory> > &rankings) {
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    rankings.resize(num_subregions);
+    for (unsigned i = 0; i < num_subregions; i++)
+      rankings[i].push_back(global_memory);
+  }
+
+  virtual bool compact_partition(const UntypedPartition &partition,
+				 MappingTagID tag) {
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    return false;
+  }
+
+  virtual Processor select_initial_processor(const Task *task) {
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    Processor proc_one, loc_proc;
+    proc_one.id = 1;
+    loc_proc.id = (task->tag % num_procs) + 1;
+
+    switch (task->task_id) {
+    case TOP_LEVEL_TASK_ID:
+    case TASKID_MAIN:
+    case TASKID_INIT_VECTORS:
+      return proc_one;
+    case TASKID_ADD_VECTORS:
+      return loc_proc;
+    case TASKID_CHECK_CORRECT:
+      return proc_one;
+    default:
+      assert(false);
+    }
+    return Processor::NO_PROC;
+  }
+
+  virtual Processor target_task_steal() {
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    return Processor::NO_PROC;
+  }
+
+  virtual void permit_task_steal(Processor thief,
+				 const std::vector<const Task*> &tasks,
+				 std::set<const Task*> &to_steal) {
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    return;
+  }
+
+  virtual void map_task_region(const Task *task, const RegionRequirement *req,
+			       const std::vector<Memory> &valid_src_instances,
+                               const std::vector<Memory> &valid_dst_instances,
+                               Memory &chosen_src,
+                               std::vector<Memory> &dst_ranking) {
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    Memory loc_mem;
+    loc_mem.id = (task->tag % num_procs) + 2;
+    switch (task->task_id) {
+    case TOP_LEVEL_TASK_ID:
+    case TASKID_MAIN:
+    case TASKID_INIT_VECTORS:
+      chosen_src = global_memory;
+      dst_ranking.push_back(global_memory);
+      break;
+    case TASKID_ADD_VECTORS:
+      chosen_src = safe_prioritized_pick(valid_src_instances,
+					 loc_mem, global_memory);
+      dst_ranking.push_back(loc_mem);
+      break;
+    case TASKID_CHECK_CORRECT:
+      chosen_src = valid_src_instances[0];
+      dst_ranking.push_back(global_memory);
+      break;
+    default:
+      assert(false);
+    }
+  }
+
+  virtual void rank_copy_targets(const Task *task,
+				 const std::vector<Memory> &current_instances,
+                                 std::vector<std::vector<Memory> > &future_ranking) {
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    Mapper::rank_copy_targets(task, current_instances, future_ranking);
+  }
+
+  virtual void select_copy_source(const Task *task,
+                                  const std::vector<Memory> &current_instances,
+                                  const Memory &dst, Memory &chosen_src) {
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    if (current_instances.size() == 1) {
+      chosen_src = current_instances[0];
+      return;
+    }
+
+    Mapper::select_copy_source(task, current_instances, dst, chosen_src);
+  }
+};
+
 class SaxpyMapper : public Mapper {
 public:
   std::map<Processor::Kind, std::vector<std::pair<Processor, Memory> > > cpu_mem_pairs;
@@ -495,7 +614,11 @@ public:
 
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
 		    Processor local) {
+#ifdef USE_SHARED
+  runtime->replace_default_mapper(new SharedMapper(machine, runtime, local));
+#else
   runtime->replace_default_mapper(new SaxpyMapper(machine, runtime, local));
+#endif
 }
 
 int main(int argc, char **argv) {
