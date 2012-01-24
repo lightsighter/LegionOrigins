@@ -58,7 +58,7 @@ struct Partitions {
   ptr_t<CircuitWire> first_wires[MAX_PIECES];
 };
 
-extern RegionRuntime::LowLevel::Logger::Category log_mapper;
+RegionRuntime::Logger::Category log_mapper("mapper");
 
 static bool sort_by_proc_id(const std::pair<Processor, Memory>& a,
 			    const std::pair<Processor, Memory>& b)
@@ -443,7 +443,7 @@ namespace Config {
   int random_seed = 12345;
 };
 
-extern RegionRuntime::LowLevel::Logger::Category log_app;
+RegionRuntime::Logger::Category log_app("application");
 
 template<AccessorType AT>
 void top_level_task(const void *args, size_t arglen, 
