@@ -340,7 +340,7 @@ public:
 					     size_t num_elmts,
 					     MappingTagID tag,
 					     std::vector<Memory> &ranking) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     ranking.push_back(global_memory);
   }
 
@@ -348,7 +348,7 @@ public:
 						unsigned num_subregions,
 						MappingTagID tag,
 						std::vector<std::vector<Memory> > &rankings) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     rankings.resize(num_subregions);
     for (unsigned i = 0; i < num_subregions; i++)
       rankings[i].push_back(global_memory);
@@ -356,12 +356,12 @@ public:
 
   virtual bool compact_partition(const UntypedPartition &partition,
 				 MappingTagID tag) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     return false;
   }
 
   virtual Processor select_initial_processor(const Task *task) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     Processor proc_one, loc_proc;
     proc_one.id = 1;
     loc_proc.id = (task->tag % num_procs) + 1;
@@ -382,14 +382,14 @@ public:
   }
 
   virtual Processor target_task_steal() {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     return Processor::NO_PROC;
   }
 
   virtual void permit_task_steal(Processor thief,
 				 const std::vector<const Task*> &tasks,
 				 std::set<const Task*> &to_steal) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     return;
   }
 
@@ -398,7 +398,7 @@ public:
                                const std::vector<Memory> &valid_dst_instances,
                                Memory &chosen_src,
                                std::vector<Memory> &dst_ranking) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     Memory loc_mem;
     loc_mem.id = (task->tag % num_procs) + 2;
     switch (task->task_id) {
@@ -425,14 +425,14 @@ public:
   virtual void rank_copy_targets(const Task *task,
 				 const std::vector<Memory> &current_instances,
                                  std::vector<std::vector<Memory> > &future_ranking) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     Mapper::rank_copy_targets(task, current_instances, future_ranking);
   }
 
   virtual void select_copy_source(const Task *task,
                                   const std::vector<Memory> &current_instances,
                                   const Memory &dst, Memory &chosen_src) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     if (current_instances.size() == 1) {
       chosen_src = current_instances[0];
       return;

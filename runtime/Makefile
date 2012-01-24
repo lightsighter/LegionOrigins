@@ -94,9 +94,6 @@ srch2:	lowlevel.o lowlevel_gpu.o highlevel.o search.o
 saxpy:  lowlevel.o lowlevel_gpu.o highlevel.o saxpy.o
 	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
 
-saxpy2:	shared_lowlevel.o highlevel.o saxpy.o
-	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
-
 saxpy_gpu:	lowlevel.o lowlevel_gpu.o highlevel.o saxpy_gpu.o
 	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
 
