@@ -94,7 +94,6 @@ namespace RegionRuntime {
     typedef LowLevel::UserEvent UserEvent;
     typedef LowLevel::Lock Lock;
     typedef LowLevel::ElementMask Mask;
-    typedef LowLevel::DetailedTimer DetailedTimer;
     typedef unsigned int Color;
     typedef unsigned int MapperID;
     typedef unsigned int Context;

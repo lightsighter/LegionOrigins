@@ -146,7 +146,7 @@ void main_task(const void *args, size_t arglen,
   printf("STARTING MAIN SIMULATION LOOP\n");
   struct timespec ts_start, ts_end;
   clock_gettime(CLOCK_MONOTONIC, &ts_start);
-  DetailedTimer::clear_timers();
+  RegionRuntime::DetailedTimer::clear_timers();
 
   std::vector<Future> futures;
   for (unsigned i = 0; i < Config::num_blocks; i++) {
@@ -171,7 +171,7 @@ void main_task(const void *args, size_t arglen,
   double sim_time = ((1.0 * (ts_end.tv_sec - ts_start.tv_sec)) +
 		     (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
   printf("ELAPSED TIME = %7.3f s\n", sim_time);
-  DetailedTimer::report_timers();
+  RegionRuntime::DetailedTimer::report_timers();
 
   if (flagged.size() > 0) {
     printf("FLAGGED BLOCKS = {");
@@ -489,7 +489,7 @@ public:
                                              size_t num_elmts,
                                              MappingTagID tag,
                                              std::vector<Memory> &ranking) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     ranking.push_back(global_memory);
   }
 
@@ -497,7 +497,7 @@ public:
                                                 unsigned num_subregions,
                                                 MappingTagID tag,
                                                 std::vector<std::vector<Memory> > &rankings) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     rankings.resize(num_subregions);
     for (unsigned i = 0; i < num_subregions; i++)
       rankings[i].push_back(global_memory);
@@ -505,12 +505,12 @@ public:
 
   virtual bool compact_partition(const UntypedPartition &partition,
 				 MappingTagID tag) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     return false;
   }
 
   virtual Processor select_initial_processor(const Task *task) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     std::vector<std::pair<Processor, Memory> > &loc_procs =
       cpu_mem_pairs[Processor::LOC_PROC];
 
@@ -534,7 +534,7 @@ public:
   }
 
   virtual Processor target_task_steal() {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
 #ifdef TEST_STEALING
     return Mapper::target_task_steal();
 #else
@@ -545,7 +545,7 @@ public:
   virtual void permit_task_steal(Processor thief,
                                  const std::vector<const Task*> &tasks,
                                  std::set<const Task*> &to_steal) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
 #ifdef TEST_STEALING
     for (unsigned i = 0; i < tasks.size(); i++) {
       to_steal.insert(tasks[i]);
@@ -560,7 +560,7 @@ public:
                                const std::vector<Memory> &valid_dst_instances,
                                Memory &chosen_src,
                                std::vector<Memory> &dst_ranking) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     std::vector< std::pair<Processor, Memory> >& loc_procs =
       cpu_mem_pairs[Processor::LOC_PROC];
     std::pair<Processor, Memory> cpu_mem_pair =
@@ -595,14 +595,14 @@ public:
   virtual void rank_copy_targets(const Task *task,
                                  const std::vector<Memory> &current_instances,
                                  std::vector<std::vector<Memory> > &future_ranking) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     Mapper::rank_copy_targets(task, current_instances, future_ranking);
   }
 
   virtual void select_copy_source(const Task *task,
                                   const std::vector<Memory> &current_instances,
                                   const Memory &dst, Memory &chosen_src) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     if (current_instances.size() == 1) {
       chosen_src = current_instances[0];
       return;

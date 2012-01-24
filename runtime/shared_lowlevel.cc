@@ -81,6 +81,9 @@
 pthread_mutex_t debug_mutex;
 #endif // DEBUG_PRINT
 
+// Local processor id
+__thread unsigned local_proc_id;
+
 namespace RegionRuntime {
   namespace LowLevel {
     
@@ -139,9 +142,7 @@ namespace RegionRuntime {
 
     /* static */
     Runtime *Runtime::runtime = NULL;
-
-    __thread unsigned local_proc_id;
-
+    
     struct TimerStackEntry {
     public:
       int timer_kind;
@@ -282,87 +283,7 @@ namespace RegionRuntime {
     }
 #endif
     
-    /*static*/ LogLevel Logger::log_level;
-    /*static*/ std::vector<bool> Logger::log_cats_enabled;
-    /*static*/ std::map<std::string, int> Logger::categories_by_name;
-    /*static*/ std::vector<std::string> Logger::categories_by_id;
-
-    /*static*/ void Logger::init(int argc, const char *argv[])
-    {
-      // default (for now) is to spew everything
-      log_level = LEVEL_INFO;
-      for(std::vector<bool>::iterator it = log_cats_enabled.begin();
-	  it != log_cats_enabled.end();
-	  it++)
-	(*it) = true;
-
-      for(int i = 1; i < argc; i++) {
-	if(!strcmp(argv[i], "-level")) {
-	  log_level = (LogLevel)atoi(argv[++i]);
-	  continue;
-	}
-
-	if(!strcmp(argv[i], "-cat")) {
-	  const char *p = argv[++i];
-
-	  if(*p == '*') {
-	    p++;
-	  } else {
-	    // turn off all the bits and then we'll turn on only what's requested
-	    for(std::vector<bool>::iterator it = log_cats_enabled.begin();
-		it != log_cats_enabled.end();
-		it++)
-	      (*it) = false;
-	  }
-
-	  while(*p == ',') p++;
-	  while(*p) {
-	    bool enable = true;
-	    if(*p == '-') {
-	      enable = false;
-	      p++;
-	    }
-	    const char *p2 = p; while(*p2 && (*p2 != ',')) p2++;
-	    std::string name(p, p2);
-	    std::map<std::string, int>::iterator it = categories_by_name.find(name);
-	    if(it == categories_by_name.end()) {
-	      fprintf(stderr, "unknown log category '%s'!\n", name.c_str());
-	      exit(1);
-	    }
-
-	    log_cats_enabled[it->second] = enable;
-
-	    p = p2;
-	    while(*p == ',') p++;
-	  }
-	}
-	continue;
-      }
-#if 1
-      printf("logger settings: level=%d cats=", log_level);
-      bool first = true;
-      for(unsigned i = 0; i < log_cats_enabled.size(); i++)
-	if(log_cats_enabled[i]) {
-	  if(!first) printf(",");
-	  first = false;
-	  printf("%s", categories_by_id[i].c_str());
-	}
-      printf("\n");
-#endif
-    }
-
-    /*static*/ void Logger::logvprintf(LogLevel level, int category, const char *fmt, va_list args)
-    {
-      char buffer[200];
-      sprintf(buffer, "[%d - %lx] {%d}{%s}: ",
-	      0, /*pthread_self()*/long(local_proc_id), level, categories_by_id[category].c_str());
-      int len = strlen(buffer);
-      vsnprintf(buffer+len, 199-len, fmt, args);
-      strcat(buffer, "\n");
-      fflush(stdout);
-      fputs(buffer, stderr);
-    }
-
+    
 
     // Any object which can be triggered should be able to triggered
     // This will include Events and Locks
@@ -2840,11 +2761,17 @@ namespace RegionRuntime {
     }
 
   };
-  namespace HighLevel {
-    // Loggers for the high level
-    LowLevel::Logger::Category log_task("tasks");
-    LowLevel::Logger::Category log_region("regions");
-    LowLevel::Logger::Category log_inst("instances");
-    LowLevel::Logger::Category log_sjt("sjt");
-  };
+
+  // Machine specific implementation of logvprintf
+  /*static*/ void Logger::logvprintf(LogLevel level, int category, const char *fmt, va_list args)
+  {
+    char buffer[200];
+    sprintf(buffer, "[%d - %lx] {%d}{%s}: ",
+            0, /*pthread_self()*/long(local_proc_id), level, Logger::get_categories_by_id()[category].c_str());
+    int len = strlen(buffer);
+    vsnprintf(buffer+len, 199-len, fmt, args);
+    strcat(buffer, "\n");
+    fflush(stdout);
+    fputs(buffer, stderr);
+  }
 };

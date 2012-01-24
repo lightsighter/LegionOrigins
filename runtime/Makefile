@@ -32,7 +32,7 @@ LDFLAGS += -L/usr/local/cuda/lib64 -lcudart -lcuda -Wl,-rpath=/usr/local/cuda/li
 foo : lowlevel.o
 	g++ $(GCCFLAGS) $^ $(LDFLAGS) -o $@
 
-hello : hello.o lowlevel.o
+hello : hello.o lowlevel.o lowlevel_gpu.o
 	g++ $(GCCFLAGS) $^ $(LDFLAGS) -o $@
 
 gas_simple : gas_simple.c
@@ -100,5 +100,8 @@ saxpy2:	shared_lowlevel.o highlevel.o saxpy.o
 saxpy_gpu:	lowlevel.o lowlevel_gpu.o highlevel.o saxpy_gpu.o
 	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
 
+saxpy_shared: shared_lowlevel.o highlevel.o saxpy.o
+	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
+
 clean:
-	rm -f fluid fluid2 ckt ckt2 cktgpu2 ring tree saxpy saxpy_gpu *.o
+	rm -f fluid fluid2 ckt ckt2 cktgpu2 ring tree saxpy saxpy_gpu saxpy_shared *.o

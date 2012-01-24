@@ -1,5 +1,6 @@
 
 #include "highlevel.h"
+#include "utilities.h"
 
 #include <map>
 #include <set>
@@ -39,18 +40,10 @@ namespace RegionRuntime {
     };
 
     // Loggers declared elsewhere
-    enum LogLevel {
-      LEVEL_SPEW = LowLevel::LEVEL_SPEW,
-      LEVEL_DEBUG = LowLevel::LEVEL_DEBUG,
-      LEVEL_INFO = LowLevel::LEVEL_INFO,
-      LEVEL_WARNING = LowLevel::LEVEL_WARNING,
-      LEVEL_ERROR = LowLevel::LEVEL_ERROR,
-      LEVEL_NONE = LowLevel::LEVEL_NONE,
-    };
-    extern LowLevel::Logger::Category log_task;
-    extern LowLevel::Logger::Category log_region;
-    extern LowLevel::Logger::Category log_inst;
-    extern LowLevel::Logger::Category log_sjt;
+    Logger::Category log_task("tasks");
+    Logger::Category log_region("regions");
+    Logger::Category log_inst("instances");
+    Logger::Category log_sjt("sjt");
 
     /////////////////////////////////////////////////////////////
     // Future

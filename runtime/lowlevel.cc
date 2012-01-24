@@ -223,89 +223,10 @@ void handle_lmb_flip_ack(FlipLMBAckArgs args)
   gasnet_hsl_unlock(&lmb->mutex);
 }
 
+// Implementation of Detailed Timer
 namespace RegionRuntime {
   namespace LowLevel {
-    /*static*/ LogLevel Logger::log_level;
-    /*static*/ std::vector<bool> Logger::log_cats_enabled;
-    /*static*/ std::map<std::string, int> Logger::categories_by_name;
-    /*static*/ std::vector<std::string> Logger::categories_by_id;
-
-    /*static*/ void Logger::init(int argc, const char *argv[])
-    {
-      // default (for now) is to spew everything
-      log_level = LEVEL_INFO;
-      for(std::vector<bool>::iterator it = log_cats_enabled.begin();
-	  it != log_cats_enabled.end();
-	  it++)
-	(*it) = true;
-
-      for(int i = 1; i < argc; i++) {
-	if(!strcmp(argv[i], "-level")) {
-	  log_level = (LogLevel)atoi(argv[++i]);
-	  continue;
-	}
-
-	if(!strcmp(argv[i], "-cat")) {
-	  const char *p = argv[++i];
-
-	  if(*p == '*') {
-	    p++;
-	  } else {
-	    // turn off all the bits and then we'll turn on only what's requested
-	    for(std::vector<bool>::iterator it = log_cats_enabled.begin();
-		it != log_cats_enabled.end();
-		it++)
-	      (*it) = false;
-	  }
-
-	  while(*p == ',') p++;
-	  while(*p) {
-	    bool enable = true;
-	    if(*p == '-') {
-	      enable = false;
-	      p++;
-	    }
-	    const char *p2 = p; while(*p2 && (*p2 != ',')) p2++;
-	    std::string name(p, p2);
-	    std::map<std::string, int>::iterator it = categories_by_name.find(name);
-	    if(it == categories_by_name.end()) {
-	      fprintf(stderr, "unknown log category '%s'!\n", name.c_str());
-	      exit(1);
-	    }
-
-	    log_cats_enabled[it->second] = enable;
-
-	    p = p2;
-	    while(*p == ',') p++;
-	  }
-	}
-	continue;
-      }
-#if 0
-      printf("logger settings: level=%d cats=", log_level);
-      bool first = true;
-      for(unsigned i = 0; i < log_cats_enabled.size(); i++)
-	if(log_cats_enabled[i]) {
-	  if(!first) printf(",");
-	  first = false;
-	  printf("%s", categories_by_id[i].c_str());
-	}
-      printf("\n");
-#endif
-    }
-
-    /*static*/ void Logger::logvprintf(LogLevel level, int category, const char *fmt, va_list args)
-    {
-      char buffer[200];
-      sprintf(buffer, "[%d - %lx] {%d}{%s}: ",
-	      gasnet_mynode(), pthread_self(), level, categories_by_id[category].c_str());
-      int len = strlen(buffer);
-      vsnprintf(buffer+len, 199-len, fmt, args);
-      strcat(buffer, "\n");
-      fflush(stdout);
-      fputs(buffer, stderr);
-    }
-
+    
     Logger::Category log_gpu("gpu");
     Logger::Category log_mutex("mutex");
 
@@ -343,8 +264,8 @@ namespace RegionRuntime {
     public:
       PerThreadTimerData(void)
       {
-	thread = pthread_self();
-	gasnet_hsl_init(&mutex);
+        thread = pthread_self();
+        gasnet_hsl_init(&mutex);
       }
 
       pthread_t thread;
@@ -363,21 +284,21 @@ namespace RegionRuntime {
       // take global mutex because we need to walk the list
       AutoHSLLock l1(timer_data_mutex);
       for(std::vector<PerThreadTimerData *>::iterator it = timer_data.begin();
-	  it != timer_data.end();
-	  it++) {
-	// take each thread's data's lock too
-	AutoHSLLock l2((*it)->mutex);
-	(*it)->timer_accum.clear();
+          it != timer_data.end();
+          it++) {
+        // take each thread's data's lock too
+        AutoHSLLock l2((*it)->mutex);
+        (*it)->timer_accum.clear();
       }
     }
 
     /*static*/ void DetailedTimer::push_timer(int timer_kind)
     {
       if(!thread_timer_data) {
-	//printf("creating timer data for thread %lx\n", pthread_self());
-	AutoHSLLock l1(timer_data_mutex);
-	thread_timer_data = new PerThreadTimerData;
-	timer_data.push_back(thread_timer_data);
+        //printf("creating timer data for thread %lx\n", pthread_self());
+        AutoHSLLock l1(timer_data_mutex);
+        thread_timer_data = new PerThreadTimerData;
+        timer_data.push_back(thread_timer_data);
       }
 
       // no lock needed here - only our thread touches the stack
@@ -389,12 +310,12 @@ namespace RegionRuntime {
       entry.accum_child_time = 0;
       thread_timer_data->timer_stack.push_back(entry);
     }
-	
+        
     /*static*/ void DetailedTimer::pop_timer(void)
     {
       if(!thread_timer_data) {
-	printf("got pop without initialized thread data!?\n");
-	exit(1);
+        printf("got pop without initialized thread data!?\n");
+        exit(1);
       }
 
       // no conflicts on stack
@@ -407,20 +328,20 @@ namespace RegionRuntime {
 
       // all the elapsed time is added to new top as child time
       if(thread_timer_data->timer_stack.size() > 0)
-	thread_timer_data->timer_stack.back().accum_child_time += elapsed;
+        thread_timer_data->timer_stack.back().accum_child_time += elapsed;
 
       // only the elapsed minus our own child time goes into the timer accumulator
       elapsed -= old_top.accum_child_time;
 
       // we do need a lock to touch the accumulator map
       if(old_top.timer_kind > 0) {
-	AutoHSLLock l1(thread_timer_data->mutex);
+        AutoHSLLock l1(thread_timer_data->mutex);
 
-	std::map<int,double>::iterator it = thread_timer_data->timer_accum.find(old_top.timer_kind);
-	if(it != thread_timer_data->timer_accum.end())
-	  it->second += elapsed;
-	else
-	  thread_timer_data->timer_accum.insert(std::make_pair<int,double>(old_top.timer_kind, elapsed));
+        std::map<int,double>::iterator it = thread_timer_data->timer_accum.find(old_top.timer_kind);
+        if(it != thread_timer_data->timer_accum.end())
+          it->second += elapsed;
+        else
+          thread_timer_data->timer_accum.insert(std::make_pair<int,double>(old_top.timer_kind, elapsed));
       }
     }
 #endif
@@ -447,8 +368,8 @@ namespace RegionRuntime {
     void handle_roll_up_request(RollUpRequestArgs args);
 
     typedef ActiveMessageShortNoReply<ROLL_UP_TIMER_MSGID,
-				      RollUpRequestArgs,
-				      handle_roll_up_request> RollUpRequestMessage;
+                                      RollUpRequestArgs,
+                                      handle_roll_up_request> RollUpRequestMessage;
 
     void handle_roll_up_data(void *rollup_ptr, const void *data, size_t datalen)
     {
@@ -456,8 +377,8 @@ namespace RegionRuntime {
     }
 
     typedef ActiveMessageMediumNoReply<ROLL_UP_DATA_MSGID,
-				       void *,
-				       handle_roll_up_data> RollUpDataMessage;
+                                       void *,
+                                       handle_roll_up_data> RollUpDataMessage;
 
     void handle_roll_up_request(RollUpRequestArgs args)
     {
@@ -467,14 +388,14 @@ namespace RegionRuntime {
       double return_data[200];
       int count = 0;
       for(std::map<int,double>::iterator it = timers.begin();
-	  it != timers.end();
-	  it++) {
-	*(int *)(&return_data[count]) = it->first;
-	return_data[count+1] = it->second;
-	count += 2;
+          it != timers.end();
+          it++) {
+        *(int *)(&return_data[count]) = it->first;
+        return_data[count+1] = it->second;
+        count += 2;
       }
       RollUpDataMessage::request(args.sender, args.rollup_ptr,
-				 return_data, count*sizeof(double));
+                                 return_data, count*sizeof(double));
     }
 
     MultiNodeRollUp::MultiNodeRollUp(std::map<int,double>& _timers)
@@ -492,12 +413,12 @@ namespace RegionRuntime {
       args.sender = gasnet_mynode();
       args.rollup_ptr = this;
       for(int i = 0; i < gasnet_nodes(); i++)
-	if(i != gasnet_mynode())
-	  RollUpRequestMessage::request(i, args);
+        if(i != gasnet_mynode())
+          RollUpRequestMessage::request(i, args);
 
       // we can look at counter without the lock
       while(count_left > 0)
-	gasnet_AMPoll();
+        gasnet_AMPoll();
     }
 
     void MultiNodeRollUp::handle_data(const void *data, size_t datalen)
@@ -508,14 +429,14 @@ namespace RegionRuntime {
       const double *p = (const double *)data;
       int count = datalen / (2 * sizeof(double));
       for(int i = 0; i < count; i++) {
-	int kind = *(int *)(&p[2*i]);
-	double accum = p[2*i+1];
+        int kind = *(int *)(&p[2*i]);
+        double accum = p[2*i+1];
 
-	std::map<int,double>::iterator it = timerp->find(kind);
-	if(it != timerp->end())
-	  it->second += accum;
-	else
-	  timerp->insert(std::make_pair<int,double>(kind,accum));
+        std::map<int,double>::iterator it = timerp->find(kind);
+        if(it != timerp->end())
+          it->second += accum;
+        else
+          timerp->insert(std::make_pair<int,double>(kind,accum));
       }
 
       count_left--;
@@ -523,32 +444,32 @@ namespace RegionRuntime {
 
 #ifdef DETAILED_TIMING
     /*static*/ void DetailedTimer::roll_up_timers(std::map<int, double>& timers,
-						  bool local_only)
+                                                  bool local_only)
     {
       // TODO: actually incorporate other gasnet nodes!
       // take global mutex because we need to walk the list
       AutoHSLLock l1(timer_data_mutex);
       for(std::vector<PerThreadTimerData *>::iterator it = timer_data.begin();
-	  it != timer_data.end();
-	  it++) {
-	// take each thread's data's lock too
-	AutoHSLLock l2((*it)->mutex);
+          it != timer_data.end();
+          it++) {
+        // take each thread's data's lock too
+        AutoHSLLock l2((*it)->mutex);
 
-	for(std::map<int,double>::iterator it2 = (*it)->timer_accum.begin();
-	    it2 != (*it)->timer_accum.end();
-	    it2++) {
-	  std::map<int,double>::iterator it3 = timers.find(it2->first);
-	  if(it3 != timers.end())
-	    it3->second += it2->second;
-	  else
-	    timers.insert(*it2);
-	}
+        for(std::map<int,double>::iterator it2 = (*it)->timer_accum.begin();
+            it2 != (*it)->timer_accum.end();
+            it2++) {
+          std::map<int,double>::iterator it3 = timers.find(it2->first);
+          if(it3 != timers.end())
+            it3->second += it2->second;
+          else
+            timers.insert(*it2);
+        }
       }
 
       // get data from other nodes if requested
       if(!local_only) {
-	MultiNodeRollUp mnru(timers);
-	mnru.execute();
+        MultiNodeRollUp mnru(timers);
+        mnru.execute();
       }
     }
 
@@ -560,9 +481,9 @@ namespace RegionRuntime {
 
       printf("DETAILED TIMING SUMMARY:\n");
       for(std::map<int,double>::iterator it = timers.begin();
-	  it != timers.end();
-	  it++) {
-	printf("%4d - %7.3f s\n", it->first, it->second);
+          it != timers.end();
+          it++) {
+        printf("%4d - %7.3f s\n", it->first, it->second);
       }
       printf("END OF DETAILED TIMING SUMMARY\n");
     }
@@ -5344,14 +5265,17 @@ namespace RegionRuntime {
     }
 
   }; // namespace LowLevel
-  namespace HighLevel {
-    // Loggers for the high level
-    LowLevel::Logger::Category log_task("tasks");
-    LowLevel::Logger::Category log_region("regions");
-    LowLevel::Logger::Category log_inst("instances");
-    LowLevel::Logger::Category log_sjt("sjt");
-  };
+  // Implementation of logger for low level runtime
+  /*static*/ void Logger::logvprintf(LogLevel level, int category, const char *fmt, va_list args)
+  {
+    char buffer[200];
+    sprintf(buffer, "[%d - %lx] {%d}{%s}: ",
+            gasnet_mynode(), pthread_self(), level, Logger::get_categories_by_id()[category].c_str());
+    int len = strlen(buffer);
+    vsnprintf(buffer+len, 199-len, fmt, args);
+    strcat(buffer, "\n");
+    fflush(stdout);
+    fputs(buffer, stderr);
+  }
 }; // namespace RegionRuntime
 
-RegionRuntime::LowLevel::Logger::Category log_app("app");
-RegionRuntime::LowLevel::Logger::Category log_mapper("mapper");
