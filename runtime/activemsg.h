@@ -8,6 +8,8 @@
 GASNETT_THREADKEY_DECLARE(in_handler);
 #endif
 
+#include "utilities.h"
+
 extern void *get_remote_msgptr(int target, size_t bytes_needed);
 extern void handle_long_msgptr(int source, void *ptr);
 
@@ -140,21 +142,21 @@ struct MessageRawArgs<MSGTYPE, MSGID, SHORT_HNDL_PTR, MED_HNDL_PTR, n> { \
 \
   void request_short(gasnet_node_t dest) \
   { \
-    RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(TIME_SYSTEM);	\
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_SYSTEM);	\
     MACROPROXY(gasnet_AMRequestShort ## n, dest, MSGID, HANDLERARG_VALS_ ## n); \
   } \
 \
   void request_medium(gasnet_node_t dest, \
 		      const void *data, size_t datalen) \
   { \
-    RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(TIME_SYSTEM); \
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_SYSTEM); \
     MACROPROXY(gasnet_AMRequestMedium ## n, dest, MSGID, (void *)data, datalen, HANDLERARG_VALS_ ## n); \
   } \
 \
   void request_long(gasnet_node_t dest, \
 		    const void *data, size_t datalen, void *dstptr)	\
   { \
-    RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(TIME_SYSTEM); \
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_SYSTEM); \
     MACROPROXY(gasnet_AMRequestLong ## n, dest, MSGID, (void *)data, datalen, dstptr, HANDLERARG_VALS_ ## n); \
   } \
 \
@@ -194,7 +196,7 @@ struct RequestRawArgs<REQTYPE, REQID, RPLTYPE, RPLID, FNPTR, RPL_N, n> { \
 \
   void request_short(gasnet_node_t dest) \
   { \
-    RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(TIME_SYSTEM); \
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_SYSTEM); \
     MACROPROXY(gasnet_AMRequestShort ## n, dest, REQID, HANDLERARG_VALS_ ## n ); \
   } \
 \
@@ -225,7 +227,7 @@ template <class RPLTYPE, int RPLID> struct ReplyRawArgs<RPLTYPE, RPLID, n> { \
 \
   void reply_short(gasnet_token_t token) \
   { \
-    RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(TIME_SYSTEM); \
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_SYSTEM); \
     MACROPROXY(gasnet_AMReplyShort ## n, token, RPLID, HANDLERARG_VALS_ ## n ); \
   } \
  \
