@@ -74,7 +74,7 @@ tree2:	lowlevel.o highlevel.o tree_test.o
 	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
 
 ckt:	shared_lowlevel.o highlevel.o circuit.o
-	g++ -o $@ $(GCCFLAGS) $^ -lpthread
+	g++ -o $@ $(GCCFLAGS) $^ -lpthread -lrt
 
 ckt2:	lowlevel.o lowlevel_gpu.o highlevel.o circuit.o
 	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
