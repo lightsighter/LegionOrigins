@@ -9,6 +9,7 @@ CCFLAGS = -I$(GASNET)/include -DDEBUG_LOW_LEVEL -DDEBUG_HIGH_LEVEL #-DDEBUG_PRIN
 
 # for fluid
 #CCFLAGS = -I$(GASNET)/include -O3 -DCOMPILE_TIME_MIN_LEVEL=LEVEL_NONE -DUSE_MASKED_COPIES
+#CCFLAGS += -DUSE_MASKED_COPIES
 
 GCC = gcc
 GCCFLAGS = $(CCFLAGS) -ggdb -Wall
@@ -98,7 +99,7 @@ saxpy_gpu:	lowlevel.o lowlevel_gpu.o highlevel.o saxpy_gpu.o
 	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
 
 saxpy_shared: shared_lowlevel.o highlevel.o saxpy.o
-	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
+	g++ -o $@ -DUSE_SHARED $(GCCFLAGS) $^ $(LDFLAGS)
 
 clean:
 	rm -f fluid fluid2 ckt ckt2 cktgpu2 ring tree saxpy saxpy_gpu saxpy_shared *.o
