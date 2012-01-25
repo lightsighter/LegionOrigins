@@ -117,10 +117,10 @@ namespace RegionRuntime {
 
       bool exists(void) const { return id != 0; }
 
-      Processor utility_proc(void) const { return *this; }
+      Processor get_utility_processor(void) const { return *this; }
 
-      void enable_idle_task(void) {}
-      void disable_idle_task(void) {}
+      void enable_idle_task(void) { }
+      void disable_idle_task(void) { }
 
       typedef unsigned TaskFuncID;
       typedef void (*TaskFuncPtr)(const void *args, size_t arglen, Processor proc);

@@ -1466,7 +1466,11 @@ namespace RegionRuntime {
 	//printf("[%d] TRIGGER MUTEX HOLD %x/%d\n", gasnet_mynode(), me.id, gen_triggered);
 
 	//printf("[%d] TRIGGER GEN: %x/%d->%d\n", gasnet_mynode(), me.id, generation, gen_triggered);
-	assert(gen_triggered > generation);
+	// SJT: there is at least one unavoidable case where we'll receive
+	//  duplicate trigger notifications, so if we see a triggering of
+	//  an older generation, just ignore it
+	if(gen_triggered <= generation) return;
+	//assert(gen_triggered > generation);
 	generation = gen_triggered;
 
 	//printf("[%d] LOCAL WAITERS: %zd\n", gasnet_mynode(), local_waiters.size());
@@ -2009,6 +2013,8 @@ namespace RegionRuntime {
 
     off_t Memory::Impl::alloc_bytes_local(size_t size)
     {
+      AutoHSLLock al(mutex);
+
       for(std::map<off_t, off_t>::iterator it = free_blocks.begin();
 	  it != free_blocks.end();
 	  it++) {
@@ -2057,12 +2063,15 @@ namespace RegionRuntime {
       assert(0);
     }
 
+    static Logger::Category log_copy("copy");
+
     class LocalCPUMemory : public Memory::Impl {
     public:
       LocalCPUMemory(Memory _me, size_t _size) 
 	: Memory::Impl(_me, _size, MKIND_SYSMEM)
       {
 	base = new char[_size];
+	log_copy.debug("CPU memory at %p, size = %zd", base, _size);
 	free_blocks[0] = _size;
       }
 
@@ -2364,6 +2373,9 @@ namespace RegionRuntime {
 	i_impl->me = i;
 	if(index >= size) instances.push_back(i_impl);
       }
+
+      log_copy.debug("local instance %x created in memory %x at offset %zd",
+		     i.id, me.id, inst_offset);
 
       return i;
     }
@@ -3152,8 +3164,10 @@ namespace RegionRuntime {
       // we're probably screwed here - try waiting and polling gasnet while
       //  we wait
       //printf("waiting on event, polling gasnet to hopefully not die\n");
-      while(!e->has_triggered(gen))
+      while(!e->has_triggered(gen)) {
 	gasnet_AMPoll();
+	//usleep(10000);
+      }
       return;
       //assert(ptr != 0);
     }
@@ -3891,8 +3905,6 @@ namespace RegionRuntime {
     }
 
     /*static*/ const RegionInstanceUntyped RegionInstanceUntyped::NO_INST = RegionInstanceUntyped();
-
-    static Logger::Category log_copy("copy");
 
     // a generic accessor just holds a pointer to the impl and passes all 
     //  requests through

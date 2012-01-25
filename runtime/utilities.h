@@ -189,6 +189,34 @@ namespace RegionRuntime {
           }
         }
       }
+
+      inline void warning(const char *fmt, ...) __attribute__((format (printf, 2, 3)))
+      {
+        if(LEVEL_WARNING >= COMPILE_TIME_MIN_LEVEL) {  // static opt-out
+          if(LEVEL_WARNING >= Logger::get_log_level()) {             // dynamic opt-out
+            if(Logger::get_log_cats_enabled()[index]) {      // category filter
+              va_list args;
+              va_start(args, fmt);
+              Logger::logvprintf(LEVEL_WARNING, index, fmt, args);
+              va_end(args);
+            }
+          }
+        }
+      }
+
+      inline void error(const char *fmt, ...) __attribute__((format (printf, 2, 3)))
+      {
+        if(LEVEL_ERROR >= COMPILE_TIME_MIN_LEVEL) {  // static opt-out
+          if(LEVEL_ERROR >= Logger::get_log_level()) {             // dynamic opt-out
+            if(Logger::get_log_cats_enabled()[index]) {      // category filter
+              va_list args;
+              va_start(args, fmt);
+              Logger::logvprintf(LEVEL_ERROR, index, fmt, args);
+              va_end(args);
+            }
+          }
+        }
+      }
     };
 
   protected:
