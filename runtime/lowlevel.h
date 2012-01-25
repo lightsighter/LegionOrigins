@@ -117,6 +117,11 @@ namespace RegionRuntime {
 
       bool exists(void) const { return id != 0; }
 
+      Processor get_utility_processor(void) const { return *this; }
+
+      void enable_idle_task(void) { }
+      void disable_idle_task(void) { }
+
       typedef unsigned TaskFuncID;
       typedef void (*TaskFuncPtr)(const void *args, size_t arglen, Processor proc);
       typedef std::map<TaskFuncID, TaskFuncPtr> TaskIDTable;
