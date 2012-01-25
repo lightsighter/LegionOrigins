@@ -104,8 +104,8 @@ namespace RegionRuntime {
     typedef unsigned int Color;
     typedef unsigned int MapperID;
     typedef unsigned int PartitionID;
-    typedef unsigned int Context;
     typedef unsigned int TaskID;
+    typedef TaskContext* Context;
     typedef void (*MapperCallbackFnptr)(Machine *machine, HighLevelRuntime *rt, Processor local);
 
     ///////////////////////////////////////////////////////////////////////////
@@ -428,18 +428,18 @@ namespace RegionRuntime {
     protected:
       friend class LowLevel::Processor;
       // Static methods for calls from the processor to the high level runtime
-      static void initialize_runtime(const void * args, size_t arglen, Processor p);
-      static void shutdown_runtime(const void * args, size_t arglen, Processor p);
-      static void schedule(const void * args, size_t arglen, Processor p);
-      static void enqueue_tasks(const void * args, size_t arglen, Processor p);
-      static void steal_request(const void * args, size_t arglen, Processor p);
-      static void children_mapped(const void * args, size_t arglen, Processor p);
-      static void finish_task(const void * args, size_t arglen, Processor p);
-      static void notify_start(const void * args, size_t arglen, Processor p);
-      static void notify_finish(const void * args, size_t arglen, Processor p);
-      static void advertise_work(const void * args, size_t arglen, Processor p);
+      static void initialize_runtime(const void * args, size_t arglen, Processor p); // application
+      static void shutdown_runtime(const void * args, size_t arglen, Processor p);   // application
+      static void schedule(const void * args, size_t arglen, Processor p);           // application
+      static void enqueue_tasks(const void * args, size_t arglen, Processor p);      // utility
+      static void steal_request(const void * args, size_t arglen, Processor p);      // utility
+      static void children_mapped(const void * args, size_t arglen, Processor p);    // utility
+      static void finish_task(const void * args, size_t arglen, Processor p);        // utility
+      static void notify_start(const void * args, size_t arglen, Processor p);       // utility
+      static void notify_finish(const void * args, size_t arglen, Processor p);      // utility
+      static void advertise_work(const void * args, size_t arglen, Processor p);     // utility
       // Shutdown methods (one task to detect the termination, another to process it)
-      static void detect_termination(const void * args, size_t arglen, Processor p);
+      static void detect_termination(const void * args, size_t arglen, Processor p); // application
     protected:
       HighLevelRuntime(Machine *m, Processor local);
       ~HighLevelRuntime();
@@ -530,19 +530,26 @@ namespace RegionRuntime {
     private:
       TaskContext* get_available_context(bool new_tree);
       RegionMappingImpl* get_available_mapping(const RegionRequirement &req);
+    protected:
+      // Make it so TaskContext and RegionMappingImpl can put themselves
+      // back on the free list
+      friend class TaskContext;
+      void free_context(TaskContext *ctx);
+      friend class RegionMappingImpl;
+      void free_mapping(RegionMappingImpl *impl);
+    private:
       // Operations invoked by static methods
-      void process_tasks(const void * args, size_t arglen);
-      void process_steal(const void * args, size_t arglen);
-      void process_mapped(const void* args, size_t arglen);
-      void process_finish(const void* args, size_t arglen);
-      void process_notify_start(const void * args, size_t arglen);
-      void process_notify_finish(const void* args, size_t arglen);
-      void process_termination(const void * args, size_t arglen);
-      void process_advertisement(const void * args, size_t arglen);
+      void process_tasks(const void * args, size_t arglen); 
+      void process_steal(const void * args, size_t arglen); 
+      void process_mapped(const void* args, size_t arglen); 
+      void process_finish(const void* args, size_t arglen); 
+      void process_notify_start(const void * args, size_t arglen);  
+      void process_notify_finish(const void* args, size_t arglen);  
+      void process_termination(const void * args, size_t arglen);    
+      void process_advertisement(const void * args, size_t arglen); 
       // Where the magic happens!
-      void process_schedule_request(void);
-      void map_and_launch_task(TaskContext *task);
-      void update_queue(void);
+      void process_schedule_request(void); 
+      bool update_queue(void); // Return if ready queue has work
       bool check_steal_requests(void);
       void issue_steal_requests(void);
       void advertise(void); // Advertise work when we have it
@@ -555,16 +562,17 @@ namespace RegionRuntime {
       const Processor local_proc;
       Machine *const machine;
       std::vector<Mapper*> mapper_objects;
+      std::vector<Lock> mapper_locks;
+      Lock mapping_lock; // Protect mapping data structures
       // Task Contexts
       std::list<TaskContext*> ready_queue; // Tasks ready to be mapped/stolen
       std::list<TaskContext*> waiting_queue; // Tasks still unmappable
-      std::vector<TaskContext*> all_tasks; // all task descriptions;
-      std::list<Context> available_contexts; // open task descriptions
+      Lock queue_lock; // Protect ready and waiting queues
+      std::list<TaskContext*> available_contexts; // open task descriptions
+      Lock available_lock; // Protect available contexts
       // Region Mappings
-      std::list<RegionMappingImpl*> ready_maps;
       std::list<RegionMappingImpl*> waiting_maps;
-      std::vector<RegionMappingImpl*> all_maps;
-      std::list<unsigned> available_maps;
+      std::list<RegionMappingImpl*> available_maps;
       // Keep track of how to do partition numbering
       PartitionID next_partition_id; // The next partition id for this instance (unique)
       TaskID next_task_id; // Give all tasks a unique id for debugging purposes
@@ -574,6 +582,7 @@ namespace RegionRuntime {
       std::set<Processor> failed_steals;
       std::set<Processor> failed_thiefs;
       std::list<Event> outstanding_steal_events; // steal tasks to run
+      Lock stealing_lock; // Protect stealing information
     };
 
     /////////////////////////////////////////////////////////////
@@ -666,9 +675,8 @@ namespace RegionRuntime {
      * when an inline region mapping is available.
      */
     class RegionMappingImpl {
-    protected:
-      const unsigned int idx;
     private:
+      HighLevelRuntime *const runtime;
       RegionRequirement req;
       UserEvent mapped_event;
       Event ready_event;
@@ -677,7 +685,7 @@ namespace RegionRuntime {
       bool active;
     protected:
       friend class HighLevelRuntime;
-      RegionMappingImpl(unsigned int idx); 
+      RegionMappingImpl(HighLevelRuntime *rt); 
       ~RegionMappingImpl();
       void activate(const RegionRequirement &req);
       void deactivate(void);
@@ -685,6 +693,8 @@ namespace RegionRuntime {
       void set_instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric> inst);
       void set_allocator(LowLevel::RegionAllocatorUntyped alloc);
       void set_mapped(Event ready = Event::NO_EVENT); // Indicate mapping complete
+      bool is_ready(void) const; // Ready to be mapped
+      void perform_mapping(void);
     public:
       template<AccessorType AT>
       inline PhysicalRegion<AT> get_physical_region(void);
@@ -700,7 +710,7 @@ namespace RegionRuntime {
       friend class RegionNode;
       friend class PartitionNode;
       friend class RestoringCopy;
-      TaskContext(Context ctx, Processor p, HighLevelRuntime *r);
+      TaskContext(Processor p, HighLevelRuntime *r);
       ~TaskContext();
     protected:
       void initialize_task(TaskID unique_id, Processor::TaskFuncID task_id, 
@@ -725,8 +735,13 @@ namespace RegionRuntime {
       // functions for updating a task's state
       void register_child_task(TaskContext *desc);
       void register_mapping(RegionMappingImpl *impl);
+      void map_and_launch(void);
       std::vector<PhysicalRegion<AccessorGeneric> > start_task(void);
-      void complete_task(const void *result, size_t result_size);
+      void complete_task(const void *result, size_t result_size); // task completed running
+      void children_mapped(void); // all children have been mapped
+      void finish_task(void); // task and all children finished
+      void remote_start(const char *args, size_t arglen);
+      void remote_finish(const char *args, size_t arglen);
     protected:
       // functions for updating logical region trees
       void create_region(LogicalRegion handle);
@@ -754,9 +769,8 @@ namespace RegionRuntime {
       UserEvent map_event; // Event triggered when the task is mapped
       // Mappable is true when remaining events==0
     protected:
-      Context parent_ctx; // The parent task on the originating processor
+      TaskContext *parent_ctx; // The parent task on the originating processor
       Context orig_ctx; // Context on the original processor if remote
-      const Context local_ctx; // Context for this task
       const Processor local_proc; // The local processor
     protected:
       // Remoteness information
@@ -1136,10 +1150,7 @@ namespace RegionRuntime {
                                                 Color c, ptr_t<T> ptr) const
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(ctx < all_tasks.size());
-#endif
-      LogicalRegion subregion = all_tasks[ctx]->get_subregion(part.id,c);
+      LogicalRegion subregion = ctx->get_subregion(part.id,c);
       // Get the mask for the subregion
       const LowLevel::ElementMask &mask = subregion.get_valid_mask();
       // See if the pointer is valid in the specified child

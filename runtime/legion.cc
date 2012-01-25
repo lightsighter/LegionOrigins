@@ -39,18 +39,27 @@ namespace RegionRuntime {
       TERMINATION_ID     = (Processor::TASK_ID_FIRST_AVAILABLE+7),
     };
 
-    // Loggers declared elsewhere
-    enum LogLevel {
-      LEVEL_SPEW = LowLevel::LEVEL_SPEW,
-      LEVEL_DEBUG = LowLevel::LEVEL_DEBUG,
-      LEVEL_INFO = LowLevel::LEVEL_INFO,
-      LEVEL_WARNING = LowLevel::LEVEL_WARNING,
-      LEVEL_ERROR = LowLevel::LEVEL_ERROR,
-      LEVEL_NONE = LowLevel::LEVEL_NONE,
+    Logger::Category log_task("tasks");
+    Logger::Category log_region("regions");
+    Logger::Category log_inst("instances");
+
+    // An auto locking class for taking a lock and releasing it when
+    // the object goes out of scope
+    class AutoLock {
+    private:
+      Lock lock;
+    public:
+      AutoLock(Lock l, unsigned mode = 0, bool exclusive = true, Event wait_on = Event::NO_EVENT)
+        : lock(l)
+      {
+        Event lock_event = l.lock(mode,exclusive,wait_on);
+        lock_event.wait();
+      }
+      ~AutoLock()
+      {
+        lock.unlock();
+      }
     };
-    extern LowLevel::Logger::Category log_task;
-    extern LowLevel::Logger::Category log_region;
-    extern LowLevel::Logger::Category log_inst;
 
     /////////////////////////////////////////////////////////////
     // Future 
@@ -170,8 +179,8 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
-    RegionMappingImpl::RegionMappingImpl(unsigned int id)
-      : idx(id), active(false)
+    RegionMappingImpl::RegionMappingImpl(HighLevelRuntime *rt)
+      : runtime(rt), active(false)
     //--------------------------------------------------------------------------
     {
     }
@@ -209,6 +218,9 @@ namespace RegionRuntime {
       // Mark that the region has been unmapped
       unmapped_event.trigger();
       active = false;
+
+      // Put this back on this list of free mapping implementations for the runtime
+      runtime->free_mapping(this);
     }
 
     //--------------------------------------------------------------------------
@@ -265,6 +277,7 @@ namespace RegionRuntime {
     HighLevelRuntime::HighLevelRuntime(LowLevel::Machine *m, Processor local)
       : local_proc(local), machine(m),
       mapper_objects(std::vector<Mapper*>(DEFAULT_MAPPER_SLOTS)), 
+      mapper_locks(std::vector<Lock>(DEFAULT_MAPPER_SLOTS)),
       next_partition_id(local_proc.id), next_task_id(local_proc.id),
       unique_stride(m->get_all_processors().size()),
       max_failed_steals (m->get_all_processors().size()-1)
@@ -272,23 +285,29 @@ namespace RegionRuntime {
     {
       log_task(LEVEL_SPEW,"Initializing high level runtime on processor %d",local_proc.id);
       for (unsigned int i=0; i<mapper_objects.size(); i++)
+      {
         mapper_objects[i] = NULL;
+        mapper_locks[i] = Lock::NO_LOCK;
+      }
       mapper_objects[0] = new Mapper(machine,this,local_proc);
+      mapper_locks[0] = Lock::create_lock();
+
+      // Initialize our locks
+      this->mapping_lock = Lock::create_lock();
+      this->queue_lock = Lock::create_lock();
+      this->available_lock= Lock::create_lock();
+      this->stealing_lock = Lock::create_lock();
 
       // Create some tasks contexts 
-      all_tasks.resize(DEFAULT_CONTEXTS);
       for (unsigned ctx = 0; ctx < DEFAULT_CONTEXTS; ctx++)
       {
-        available_contexts.push_back(ctx);
-        all_tasks[ctx] = new TaskContext((Context)ctx, local_proc, this); 
+        available_contexts.push_back(new TaskContext(local_proc, this)); 
       }
 
       // Create some region mappings
-      all_maps.resize(DEFAULT_CONTEXTS);
       for (unsigned idx = 0; idx < DEFAULT_CONTEXTS; idx++)
       {
-        available_maps.push_back(idx);
-        all_maps[idx] = new RegionMappingImpl(idx);
+        available_maps.push_back(new RegionMappingImpl(this));
       }
 
       // If this is the first processor, launch the legion main task on this processor
@@ -318,9 +337,19 @@ namespace RegionRuntime {
       for (unsigned int i=0; i<mapper_objects.size(); i++)
         if (mapper_objects[i] != NULL) delete mapper_objects[i];
 
-      for (std::vector<TaskContext*>::iterator it = all_tasks.begin();
-              it != all_tasks.end(); it++)
+      {
+        AutoLock ctx_lock(available_lock);
+        for (std::list<TaskContext*>::iterator it = available_contexts.begin();
+              it != available_contexts.end(); it++)
+          delete *it;
+        available_contexts.clear();
+      }
+
+      // Clear the available maps too
+      for (std::list<RegionMappingImpl*>::iterator it = available_maps.begin();
+            it != available_maps.end(); it++)
         delete *it;
+      available_maps.clear();
     }
 
     void dummy_init(Machine *machine, HighLevelRuntime *runtime, Processor p)
@@ -399,12 +428,17 @@ namespace RegionRuntime {
       HighLevelRuntime::get_runtime(p)->process_schedule_request();
     }
 
+#define UNPACK_ORIGINAL_PROCESSOR(input,output,set_proc)    \
+        const char *output = (const char*)input;            \
+        Processor set_proc = *((const Processor*)output);   \
+        output += sizeof(Processor);
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::enqueue_tasks(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_ENQUEUE_TASKS);
-      HighLevelRuntime::get_runtime(p)->process_tasks(args,arglen);
+      UNPACK_ORIGINAL_PROCESSOR(args,buffer,proc);
+      HighLevelRuntime::get_runtime(proc)->process_tasks(buffer,arglen-sizeof(Processor));
     }
 
     //--------------------------------------------------------------------------------------------
@@ -412,7 +446,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_STEAL_REQUEST);
-      HighLevelRuntime::get_runtime(p)->process_steal(args,arglen);
+      UNPACK_ORIGINAL_PROCESSOR(args,buffer,proc);
+      HighLevelRuntime::get_runtime(proc)->process_steal(buffer,arglen-sizeof(Processor));
     }
 
     //--------------------------------------------------------------------------------------------
@@ -420,7 +455,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CHILDREN_MAPPED);
-      HighLevelRuntime::get_runtime(p)->process_mapped(result, result_size);
+      UNPACK_ORIGINAL_PROCESSOR(result,buffer,proc);
+      HighLevelRuntime::get_runtime(proc)->process_mapped(buffer,result_size-sizeof(Processor));
     }
 
     //--------------------------------------------------------------------------------------------
@@ -428,7 +464,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_FINISH_TASK);
-      HighLevelRuntime::get_runtime(p)->process_finish(args, arglen);
+      UNPACK_ORIGINAL_PROCESSOR(args,buffer,proc);
+      HighLevelRuntime::get_runtime(proc)->process_finish(buffer, arglen-sizeof(Processor));
     }
     
     //--------------------------------------------------------------------------------------------
@@ -436,7 +473,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_NOTIFY_START);
-      HighLevelRuntime::get_runtime(p)->process_notify_start(args, arglen);
+      UNPACK_ORIGINAL_PROCESSOR(args,buffer,proc);
+      HighLevelRuntime::get_runtime(proc)->process_notify_start(buffer, arglen-sizeof(Processor));
     }
 
     //--------------------------------------------------------------------------------------------
@@ -444,7 +482,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_NOTIFY_FINISH);
-      HighLevelRuntime::get_runtime(p)->process_notify_finish(args, arglen);
+      UNPACK_ORIGINAL_PROCESSOR(args,buffer,proc);
+      HighLevelRuntime::get_runtime(proc)->process_notify_finish(buffer, arglen-sizeof(Processor));
     }
 
     //--------------------------------------------------------------------------------------------
@@ -452,8 +491,10 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL);
-      HighLevelRuntime::get_runtime(p)->process_advertisement(args, arglen);
+      UNPACK_ORIGINAL_PROCESSOR(args,buffer,proc);
+      HighLevelRuntime::get_runtime(proc)->process_advertisement(buffer, arglen-sizeof(Processor));
     }
+#undef UNPACK_ORIGINAL_PROCESSOR
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::detect_termination(const void * args, size_t arglen, Processor p)
@@ -477,7 +518,6 @@ namespace RegionRuntime {
       log_task(LEVEL_DEBUG,"Registering new single task with unique id %d and task id %d with high level runtime on processor %d\n",
                 unique_id, task_id, local_proc.id);
 #ifdef DEBUG_HIGH_LEVEl
-      assert(ctx < all_tasks.size());
       assert(id < mapper_objects.size());
 #endif
       TaskContext *desc = get_available_context(false/*new tree*/);
@@ -488,7 +528,7 @@ namespace RegionRuntime {
       desc->set_regions(regions);
 
       // Register the task with the parent (performs dependence analysis)
-      all_tasks[ctx]->register_child_task(desc);
+      ctx->register_child_task(desc);
 
       // Figure out where to put this task
       if (desc->is_ready())
@@ -521,7 +561,6 @@ namespace RegionRuntime {
       log_task(LEVEL_DEBUG,"Registering new index space task with unique id %d and task id %d with high level runtime on processor %d\n",
                 unique_id, task_id, local_proc.id);
 #ifdef DEBUG_HIGH_LEVEL
-      assert(ctx < all_tasks.size());
       assert(id < mapper_objects.size());
 #endif
       TaskContext *desc = get_available_context(false/*new tree*/);
@@ -533,7 +572,7 @@ namespace RegionRuntime {
       desc->set_regions(regions, functions);
 
       // Register the task with the parent (performs dependence analysis)
-      all_tasks[ctx]->register_child_task(desc);
+      ctx->register_child_task(desc);
 
       // Figure out where to put this task
       if (desc->is_ready())
@@ -558,14 +597,11 @@ namespace RegionRuntime {
       // Create the logical region by invoking the low-level runtime
       LogicalRegion region = 
         (LogicalRegion)LowLevel::RegionMetaDataUntyped::create_region_untyped(num_elmts,elmt_size);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(ctx < all_tasks.size());
-#endif
       log_region(LEVEL_DEBUG,"Creating logical region %d in task %d\n",
-                  region.id,all_tasks[ctx]->unique_id);
+                  region.id,ctx->unique_id);
 
       // Make the context aware of the logical region
-      all_tasks[ctx]->create_region(region);
+      ctx->create_region(region);
 
       return region;
     }
@@ -575,15 +611,12 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_DESTROY_REGION);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(ctx < all_tasks.size());
-#endif
       LowLevel::RegionMetaDataUntyped low_region = (LowLevel::RegionMetaDataUntyped)handle;
       log_region(LEVEL_DEBUG,"Destroying logical region %d in task %d\n",
-                  low_region.id, all_tasks[ctx]->unique_id);
+                  low_region.id, ctx->unique_id);
 
       // Notify the context that we destroyed the logical region
-      all_tasks[ctx]->destroy_region(handle);
+      ctx->destroy_region(handle);
 
       low_region.destroy_region_untyped();
     }
@@ -594,11 +627,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_SMASH_REGION);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(ctx < all_tasks.size());
-#endif
       // Find the parent region of all the regions
-      LogicalRegion parent = all_tasks[ctx]->find_parent_region(regions);
+      LogicalRegion parent = ctx->find_parent_region(regions);
 
       LowLevel::ElementMask smash_mask(parent.get_valid_mask().get_num_elmts());
       // Create a new mask for the region based on the set of all parent task
@@ -622,10 +652,10 @@ namespace RegionRuntime {
         LowLevel::RegionMetaDataUntyped::create_region_untyped(parent,smash_mask);
 
       log_region(LEVEL_DEBUG,"Creating smashed logical region %d in task %d\n",
-                  smash_region.id, all_tasks[ctx]->unique_id);
+                  smash_region.id, ctx->unique_id);
 
       // Tell the context about the new smash region
-      all_tasks[ctx]->smash_region(smash_region, regions);
+      ctx->smash_region(smash_region, regions);
 
       return smash_region;
     }
@@ -640,12 +670,9 @@ namespace RegionRuntime {
       PartitionID partition_id = this->next_partition_id;
       this->next_partition_id += this->unique_stride;
 
-#ifdef DEBUG_HIGH_LEVEL
-      assert(ctx < all_tasks.size());
-#endif
       // Since there are no allocations in this kind of partition everything
       // is by definition disjoint
-      all_tasks[ctx]->create_partition(partition_id, parent, true/*disjoint*/);
+      ctx->create_partition(partition_id, parent, true/*disjoint*/);
 
       // Create all of the subregions
       for (unsigned idx = 0; idx < num_subregions; idx++)
@@ -655,8 +682,8 @@ namespace RegionRuntime {
         LogicalRegion child_region = 
           LowLevel::RegionMetaDataUntyped::create_region_untyped(parent,sub_mask);
         log_region(LEVEL_DEBUG,"Creating subregion %d of region %d in task %d\n",
-                    child_region.id, parent.id, all_tasks[ctx]->unique_id);
-        all_tasks[ctx]->create_subregion(child_region, partition_id, idx);
+                    child_region.id, parent.id, ctx->unique_id);
+        ctx->create_subregion(child_region, partition_id, idx);
       }
 
       return Partition(partition_id,parent,true/*disjoint*/);
@@ -673,11 +700,7 @@ namespace RegionRuntime {
       PartitionID partition_id = this->next_partition_id;
       this->next_partition_id += this->unique_stride;
 
-#ifdef DEBUG_HIGH_LEVEL
-      assert(ctx < all_tasks.size());
-#endif
-
-      all_tasks[ctx]->create_partition(partition_id, parent, disjoint);
+      ctx->create_partition(partition_id, parent, disjoint);
 
       for (unsigned idx = 0; idx < coloring.size(); idx++)
       {
@@ -695,8 +718,8 @@ namespace RegionRuntime {
         LogicalRegion child_region = 
           LowLevel::RegionMetaDataUntyped::create_region_untyped(parent,sub_mask);
         log_region(LEVEL_DEBUG,"Creating subregion %d of region %d in task %d\n",
-                    child_region.id, parent.id, all_tasks[ctx]->unique_id);
-        all_tasks[ctx]->create_subregion(child_region, partition_id, idx);
+                    child_region.id, parent.id, ctx->unique_id);
+        ctx->create_subregion(child_region, partition_id, idx);
       }
 
       return Partition(partition_id,parent,disjoint);
@@ -713,11 +736,7 @@ namespace RegionRuntime {
       PartitionID partition_id = this->next_partition_id;
       this->next_partition_id += this->unique_stride;
 
-#ifdef DEBUG_HIGH_LEVEL
-      assert(ctx < all_tasks.size());
-#endif
-
-      all_tasks[ctx]->create_partition(partition_id, parent, disjoint);
+      ctx->create_partition(partition_id, parent, disjoint);
 
       for (unsigned idx = 0; idx < ranges.size(); idx++)
       {
@@ -733,8 +752,8 @@ namespace RegionRuntime {
         LogicalRegion child_region =
           LowLevel::RegionMetaDataUntyped::create_region_untyped(parent,sub_mask);
         log_region(LEVEL_DEBUG,"Creating subregion %d of region %d in task %d\n",
-                    child_region.id, parent.id, all_tasks[ctx]->unique_id);
-        all_tasks[ctx]->create_subregion(child_region, partition_id, idx);
+                    child_region.id, parent.id, ctx->unique_id);
+        ctx->create_subregion(child_region, partition_id, idx);
       }
 
       return Partition(partition_id,parent,disjoint);
@@ -745,36 +764,27 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_DESTROY_PARTITION);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(ctx < all_tasks.size());
-#endif
       log_region(LEVEL_DEBUG,"Destroying partition %d in task %d\n",
-                  part.id, all_tasks[ctx]->unique_id);
-      all_tasks[ctx]->remove_partition(part.id, part.parent);
+                  part.id, ctx->unique_id);
+      ctx->remove_partition(part.id, part.parent);
     }
 
     //--------------------------------------------------------------------------------------------
     LogicalRegion HighLevelRuntime::get_subregion(Context ctx, Partition part, Color c) const
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(ctx < all_tasks.size());
-#endif
-      return all_tasks[ctx]->get_subregion(part.id, c);
+      return ctx->get_subregion(part.id, c);
     }
 
     //--------------------------------------------------------------------------------------------
     RegionMapping HighLevelRuntime::map_region(Context ctx, RegionRequirement req)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(ctx < all_tasks.size());
-#endif
       RegionMappingImpl *impl = get_available_mapping(req); 
 
       log_region(LEVEL_DEBUG,"Registering a map operation for region %d in task %d\n",
-                  req.handle.region.id, all_tasks[ctx]->unique_id);
-      all_tasks[ctx]->register_mapping(impl); 
+                  req.handle.region.id, ctx->unique_id);
+      ctx->register_mapping(impl); 
 
       return RegionMapping(impl);
     }
@@ -783,22 +793,18 @@ namespace RegionRuntime {
     void HighLevelRuntime::unmap_region(Context ctx, RegionMapping mapping) 
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(ctx < all_tasks.size());
-#endif
       log_region(LEVEL_DEBUG,"Unmapping region %d in task %d\n",
-                  mapping.impl->req.handle.region.id, all_tasks[ctx]->unique_id);
+                  mapping.impl->req.handle.region.id, ctx->unique_id);
 
       mapping.impl->deactivate();
-
-      // Put this back on the list of available mapping implementations
-      available_maps.push_back(mapping.impl->idx);
     }
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::add_mapper(MapperID id, Mapper *m)
     //--------------------------------------------------------------------------------------------
     {
+      // Take an exclusive lock on the mapper data structure
+      AutoLock map_lock(mapping_lock);
 #ifdef DEBUG_HIGH_LEVEL
       // Only the default mapper should have id 0
       assert(id > 0);
@@ -809,19 +815,25 @@ namespace RegionRuntime {
         int old_size = mapper_objects.size();
         mapper_objects.resize(id+1);
         for (unsigned int i=old_size; i<(id+1); i++)
+        {
           mapper_objects[i] = NULL;
+          mapper_locks[i] = Lock::NO_LOCK;
+        }
       } 
 #ifdef DEBUG_HIGH_LEVEL
       assert(id < mapper_objects.size());
       assert(mapper_objects[id] == NULL);
 #endif
       mapper_objects[id] = m;
+      mapper_locks[id] = Lock::create_lock();
     }
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::replace_default_mapper(Mapper *m)
     //--------------------------------------------------------------------------------------------
     {
+      // Take an exclusive lock on the mapper data structure
+      AutoLock map_lock(mapping_lock);
       delete mapper_objects[0];
       mapper_objects[0] = m;
     }
@@ -830,26 +842,18 @@ namespace RegionRuntime {
     std::vector<PhysicalRegion<AccessorGeneric> > HighLevelRuntime::begin_task(Context ctx)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(ctx < all_tasks.size());
-#endif
-      TaskContext *desc = all_tasks[ctx];
-      log_task(LEVEL_DEBUG,"Beginning task %d with unique id %d on processor %x in context %d",
-                            desc->task_id,desc->unique_id,desc->local_proc.id,desc->local_ctx);
-      return desc->start_task(); 
+      log_task(LEVEL_DEBUG,"Beginning task %d with unique id %d on processor %x",
+                            ctx->task_id,ctx->unique_id,ctx->local_proc.id);
+      return ctx->start_task(); 
     }
 
     //-------------------------------------------------------------------------------------------- 
     void HighLevelRuntime::end_task(Context ctx, const void * arg, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(ctx < all_tasks.size());
-#endif
-      TaskContext *desc= all_tasks[ctx];
-      log_task(LEVEL_DEBUG,"Ending task %d with unique id %d on processor %x in context %d",
-                            desc->task_id,desc->unique_id,desc->local_proc.id,desc->local_ctx);
-      desc->complete_task(arg,arglen); 
+      log_task(LEVEL_DEBUG,"Ending task %d with unique id %d on processor %x",
+                            ctx->task_id,ctx->unique_id,ctx->local_proc.id);
+      ctx->complete_task(arg,arglen); 
     }
 
     //-------------------------------------------------------------------------------------------- 
@@ -857,17 +861,19 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       TaskContext *result;
-      if (!available_contexts.empty())
       {
-        Context ctx = available_contexts.front();
-        available_contexts.pop_front();
-        result = all_tasks[ctx];
-      }
-      else
-      {
-        Context ctx = all_tasks.size();
-        result = new TaskContext(ctx,local_proc,this);
-        all_tasks.push_back(result);
+        // Get the lock on the available contexts
+        AutoLock ctx_lock(available_lock);
+
+        if (!available_contexts.empty())
+        {
+          result = available_contexts.front();
+          available_contexts.pop_front();
+        }
+        else
+        {
+          result = new TaskContext(local_proc,this);
+        }
       }
 #ifdef DEBUG_HIGH_LEVEL
       bool activated = 
@@ -886,20 +892,552 @@ namespace RegionRuntime {
       RegionMappingImpl *result;
       if (!available_maps.empty())
       {
-        unsigned idx = available_maps.front();
+        result = available_maps.front();
         available_maps.pop_front();
-        result = all_maps[idx];
       }
       else
       {
-        unsigned idx = all_maps.size();
-        result = new RegionMappingImpl(idx);
-        all_maps.push_back(result);
+        result = new RegionMappingImpl(this);
       }
       result->activate(req);
 
       return result;
     }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::free_context(TaskContext *ctx)
+    //--------------------------------------------------------------------------------------------
+    {
+      AutoLock ctx_lock(available_lock);
+      available_contexts.push_back(ctx); 
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::free_mapping(RegionMappingImpl *impl)
+    //--------------------------------------------------------------------------------------------
+    {
+      available_maps.push_back(impl);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_tasks(const void * args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+      const char *buffer = (const char*)args;
+      // First get the processor that this comes from
+      Processor source = *((const Processor*)buffer);
+      buffer += sizeof(Processor); 
+      // Check to see if the source processor is on our list of failed steals, if so
+      // a steal no longer failed.  Note that if a task was explicitly sent to us, it
+      // might not have been a steal request, but at least there is work there, so
+      // attempting a steal on the source processor is not a bad thing.
+      {
+        AutoLock steal_lock(stealing_lock);
+        std::set<Processor>::iterator finder = failed_steals.find(source);
+        if (finder != failed_steals.end())
+        {
+          failed_steals.erase(finder);
+        }
+      }
+      // Then get the number of tasks to process
+      int num_tasks = *((const int*)buffer);
+      buffer += sizeof(int);
+      // Unpack each of the tasks
+      for (int i=0; i<num_tasks; i++)
+      {
+        // Add the task description to the task queue
+        TaskContext *desc = get_available_context(true/*new tree*/);
+        desc->unpack_task(buffer);
+        {
+          // Take the lock when adding to the ready queue
+          AutoLock q_lock(queue_lock);
+          ready_queue.push_back(desc);
+        }
+        log_task(LEVEL_DEBUG,"HLR on processor %d adding task %d with unique id %d from orig %d",
+                              desc->local_proc.id,desc->task_id,desc->unique_id,desc->orig_proc.id);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_steal(const void * args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+      const char * buffer = ((const char*)args);
+      // Unpack the stealing processor
+      Processor thief = *((Processor*)buffer);	
+      buffer += sizeof(Processor);
+      // Get the number of mappers that requested this processor for stealing 
+      int num_stealers = *((int*)buffer);
+      buffer += sizeof(int);
+      log_task(LEVEL_SPEW,"handling a steal request on processor %d from processor %d",
+              local_proc.id,thief.id);
+
+      // Iterate over the task descriptions, asking the appropriate mapper
+      // whether we can steal them
+      std::set<TaskContext*> stolen;
+      // Need read-write access to the ready queue to try stealing
+      {
+        AutoLock ready_queue_lock(queue_lock);
+        for (int i=0; i<num_stealers; i++)
+        {
+          // Get the mapper id out of the buffer
+          MapperID stealer = *((MapperID*)buffer);
+          
+          // Handle a race condition here where some processors can issue steal
+          // requests to another processor before the mappers have been initialized
+          // on that processor.  There's no correctness problem for ignoring a steal
+          // request so just do that.
+          if (mapper_objects.size() <= stealer)
+            continue;
+
+          // Go through the ready queue and construct the list of tasks
+          // that this mapper has access to
+          // Iterate in reverse order so the latest tasks put in the
+          // ready queue appear first
+          std::vector<const Task*> mapper_tasks;
+          for (std::list<TaskContext*>::reverse_iterator it = ready_queue.rbegin();
+                it != ready_queue.rend(); it++)
+          {
+            // The tasks also must be stealable
+            if ((*it)->stealable && ((*it)->map_id == stealer))
+              mapper_tasks.push_back(*it);
+          }
+          // Now call the mapper and get back the results
+          std::set<const Task*> to_steal; 
+          {
+            // Need read-only access to the mapper vector to access the mapper objects
+            AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
+            // Also need exclusive access to the mapper itself
+            AutoLock mapper_lock(mapper_locks[stealer]);
+            mapper_objects[stealer]->permit_task_steal(thief, mapper_tasks, to_steal);
+          }
+          // Add the results to the set of stolen tasks
+          // Do this explicitly since we need to upcast the pointers
+          for (std::set<const Task*>::iterator it = to_steal.begin();
+                it != to_steal.end(); it++)
+          {
+            // Mark the task as stolen
+            Task *t = const_cast<Task*>(*it);
+            t->stolen = true;
+            stolen.insert(static_cast<TaskContext*>(t));
+          }
+        }
+
+        // Now go through and remove any stolen tasks from the ready queue
+        // so we can release the lock on the ready queue
+        std::list<TaskContext*>::iterator it = ready_queue.begin();
+        while (it != ready_queue.end())
+        {
+          if (stolen.find(*it) != stolen.end())
+            it = ready_queue.erase(it);
+          else
+            it++;
+        }
+        // Release lock on the ready queue
+      }
+      // We've now got our tasks to steal
+      if (!stolen.empty())
+      {
+        size_t total_buffer_size = sizeof(Processor) + sizeof(int);
+        // Count up the size of elements to steal
+        for (std::set<TaskContext*>::iterator it = stolen.begin();
+                it != stolen.end(); it++)
+        {
+          total_buffer_size += (*it)->compute_task_size();
+        }
+        // Allocate the buffer
+        char * target_buffer = (char*)malloc(total_buffer_size);
+        char * target_ptr = target_buffer;
+        *((Processor*)target_ptr) = local_proc;
+        target_ptr += sizeof(Processor);
+        *((int*)target_ptr) = int(stolen.size());
+        target_ptr += sizeof(int);
+        // Write the task descriptions into memory
+        for (std::set<TaskContext*>::iterator it = stolen.begin();
+                it != stolen.end(); it++)
+        {
+          (*it)->pack_task(target_ptr);
+        }
+        // Invoke the task on the right processor to send tasks back
+        thief.spawn(ENQUEUE_TASK_ID, target_buffer, total_buffer_size);
+
+        // Clean up our mess
+        free(target_buffer);
+
+        // Delete any remote tasks that we will no longer have a reference to
+        for (std::set<TaskContext*>::iterator it = stolen.begin();
+              it != stolen.end(); it++)
+        {
+          log_task(LEVEL_DEBUG,"task %d with unique id %d stolen from processor %d",
+                                (*it)->task_id,(*it)->unique_id,(*it)->local_proc.id);
+          // If they are remote, deactivate the instance
+          // If it's not remote, its parent will deactivate it
+          if ((*it)->remote)
+            (*it)->deactivate();
+        }
+      }
+      else
+      {
+        // Record the failed steal attempt so we can tell the theif
+        // when we have more work to do
+        // Need the write lock on failed thiefs
+        AutoLock steal_lock(stealing_lock);
+        failed_thiefs.insert(thief);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_mapped(const void * args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+      Context ctx = *((const Context*)args);
+      log_task(LEVEL_DEBUG,"All child tasks mapped for task %d with unique id %d on processor %d",
+              ctx->task_id,ctx->unique_id,ctx->local_proc.id);
+
+      ctx->children_mapped();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_finish(const void * args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Unpack the context from the arguments
+      Context ctx = *((const Context*)args);
+      log_task(LEVEL_DEBUG,"Task %d with unique id %d finished on processor %d", 
+                ctx->task_id, ctx->unique_id, ctx->local_proc.id);
+
+      ctx->finish_task();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_notify_start(const void * args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Unpack context, task, and event info
+      const char * ptr = (const char*)args;
+      Context local_ctx = *((const Context*)ptr);
+      ptr += sizeof(Context);
+     
+      local_ctx->remote_start(ptr, arglen-sizeof(Context));
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_notify_finish(const void * args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Unpack the user event to be trigged when we finished
+      const char *ptr = (const char*)args;
+      Context local_ctx = *((const Context*)ptr);
+      ptr += sizeof(Context);
+
+      local_ctx->remote_finish(ptr, arglen-sizeof(Context));
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_termination(const void * args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Unpack the future from the buffer
+      Future f = *((const Future*)args);
+      // This will wait until the top level task has finished
+      f.get_void_result();
+      log_task(LEVEL_INFO,"Computation has terminated, shutting down high level runtime...");
+      // Once this is over, launch a kill task on all the low-level processors
+      const std::set<Processor> &all_procs = machine->get_all_processors();
+      for (std::set<Processor>::iterator it = all_procs.begin();
+            it != all_procs.end(); it++)
+      {
+        // Kill pill
+        it->spawn(0,NULL,0);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_advertisement(const void * args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Get the processor that is advertising work
+      Processor advertiser = *((const Processor*)args);
+      // Need exclusive access to the list steal data structures
+      AutoLock steal_lock(stealing_lock);
+      // If it is on our list of failed steals, remove it
+      std::set<Processor>::iterator finder = failed_steals.find(advertiser);
+      if (finder != failed_steals.end())
+      {
+        failed_steals.erase(finder);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_schedule_request(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      log_task(LEVEL_SPEW,"Running scheduler on processor %d with %ld tasks in ready queue",
+              local_proc.id, ready_queue.size());
+      // Update the queue to make sure as many tasks are awake as possible
+      update_queue();
+      // Launch up to MAX_TASK_MAPS_PER_STEP tasks, either from the ready queue, or
+      // by detecting tasks that become ready to map on the waiting queue
+      int mapped_tasks = 0;
+      // First try launching from the ready queue
+
+      // Get the lock for the ready queue lock in exclusive mode
+      Event lock_event = queue_lock.lock(0,true);
+      lock_event.wait();
+      while (!ready_queue.empty())
+      {
+	DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_SCHEDULER);
+        TaskContext *task = ready_queue.front();
+        ready_queue.pop_front();
+        // Release the queue lock
+        queue_lock.unlock();
+        // Check to see if this task has been chosen already
+        if (task->chosen)
+        {
+          mapped_tasks++;
+          // Now map the task and then launch it on the processor
+          task->map_and_launch();
+          // Check the waiting queue for new tasks to move onto our ready queue
+          bool more_work = update_queue();
+          // If we've launched enough tasks, return
+          if (mapped_tasks == MAX_TASK_MAPS_PER_STEP)
+          {
+            // If we've launched enough tasks and we still have leftovers
+            // notify our failed stealers that we have more work
+            // Get stealing lock in exclusive mode for accessing stealing data structures
+            {
+              AutoLock steal_lock(stealing_lock);
+              // Note there is a race here on more_work as the work might be gone
+              // by the time we sent the ads, but it won't affect correctness
+              if (more_work && !failed_thiefs.empty())
+                advertise();
+            }
+            return;
+          }
+        }
+        else
+        {
+          // ask the mapper for where to place the task
+          // Need to acquire the necessary mapper locks
+          Processor target;
+          {
+            AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
+            AutoLock mapper_lock(mapper_locks[task->map_id]);
+            target = mapper_objects[task->map_id]->select_initial_processor(task);
+          }
+#ifdef DEBUG_HIGH_LEVEL
+          assert(target.exists());
+#endif
+          task->chosen = true;
+          if (target == local_proc)
+          {
+            mapped_tasks++;
+            // Now map the task and then launch it on the processor
+            task->map_and_launch();
+            // Check the waiting queue for new tasks to move onto our ready queue
+            bool more_work = update_queue();
+            // If we've launched enough tasks, return
+            if (mapped_tasks == MAX_TASK_MAPS_PER_STEP) 
+            {
+              // If we've launched enough tasks and we still have leftovers
+              // notify our failed stealers that we have more work
+              // Get stealing lock in exclusive mode for accessing stealing data structures
+              {
+                AutoLock steal_lock(stealing_lock);
+                // Note there is a race here on more_work as the work might be gone
+                // by the time we send the ads, but it won't affect correctness
+                if (more_work && !failed_thiefs.empty())
+                  advertise();
+              }
+              return;
+            }
+          }
+          else
+          {
+            // Send the task to the target processor
+            size_t buffer_size = sizeof(Processor)+sizeof(int)+task->compute_task_size();
+            void * buffer = malloc(buffer_size);
+            char * ptr = (char*)buffer;
+            *((Processor*)ptr) = local_proc;
+            ptr += sizeof(Processor);
+            *((int*)ptr) = 1; // We're only sending one task
+            ptr += sizeof(int); 
+            task->pack_task(ptr);
+            // Send the task to the target processor, no need to wait on anything
+            target.spawn(ENQUEUE_TASK_ID,buffer,buffer_size);
+            // Clean up our mess
+            free(buffer);
+          }
+        }
+        // Need to acquire the lock for the next time we go around the loop
+        lock_event = queue_lock.lock(0,true/*exclusive*/);
+        lock_event.wait();
+      }
+      // If we make it here, we can unlock the queue lock
+      queue_lock.unlock();
+      // If we've made it here, we've run out of work to do on our local processor
+      // so we need to issue a steal request to another processor
+      // Check that we don't have any outstanding steal requests
+      if (!check_steal_requests()) {
+        issue_steal_requests(); 
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool HighLevelRuntime::update_queue(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      bool result;
+      {
+        // Need the queue lock in exclusive mode
+        AutoLock ready_queue_lock(queue_lock);
+        // Iterate over the waiting queue looking for tasks that are now mappable
+        std::list<TaskContext*>::iterator task_it = waiting_queue.begin();
+        while (task_it != waiting_queue.end())
+        {
+          if ((*task_it)->is_ready())
+          {
+            TaskContext *desc = *task_it;
+            // All of the dependent task have been mapped, we can now issue all the 
+            // pre copy operations
+            desc->mark_ready();
+            // Push it onto the ready queue
+            ready_queue.push_back(desc);
+            // Remove it from the waiting queue
+            task_it = waiting_queue.erase(task_it);
+          }
+          else
+          {
+            task_it++;
+          }
+        }
+        result = !ready_queue.empty();
+      }
+      // Also check any of the mapping operations that we need to perform to
+      // see if they are ready to be performed.  If so we can just perform them here
+      std::list<RegionMappingImpl*>::iterator map_it = waiting_maps.begin();
+      while (map_it != waiting_maps.end())
+      {
+        if ((*map_it)->is_ready())
+        {
+          RegionMappingImpl *mapping = *map_it;
+          // All of the dependences on this mapping have been satisfied, map it
+          mapping->perform_mapping();
+
+          map_it = waiting_maps.erase(map_it);
+        }
+        else
+        {
+          map_it++;
+        }
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool HighLevelRuntime::check_steal_requests(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Check to see if there are any possible processors we can steal from
+      if (failed_steals.size() == max_failed_steals)
+      {
+        // Can't steal from anything
+        return false;
+      }
+      // Iterate over the steal requests seeing if any of triggered
+      // and removing them if they have
+      std::list<Event>::iterator it = outstanding_steal_events.begin();
+      while (it != outstanding_steal_events.end())
+      {
+        if (it->has_triggered())
+        {
+          // This moves us to the next element in the list
+          it = outstanding_steal_events.erase(it);
+        }
+        else
+        {
+          it++;
+        }
+      }
+      // Return true if there are still outstanding steal requests to be run
+      return (!outstanding_steal_events.empty());
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::issue_steal_requests(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Iterate through the mappers asking them which processor to steal from
+      std::multimap<Processor,MapperID> targets;
+      for (unsigned i=0; i<mapper_objects.size(); i++)
+      {
+        if (mapper_objects[i] == NULL) 
+          continue;
+        Processor p = mapper_objects[i]->target_task_steal();
+        // Check that the processor exists and isn't us
+        if (p.exists() && !(p==local_proc))
+          targets.insert(std::pair<Processor,MapperID>(p,(MapperID)i));
+      }
+      // For each processor go through and find the list of mappers to send
+      for (std::multimap<Processor,MapperID>::const_iterator it = targets.begin();
+            it != targets.end(); )
+      {
+        // Check to make sure that the processor isn't on the list of failed
+        // steal requests
+        if (failed_steals.find(it->first) != failed_steals.end())
+        {
+          Processor target = it->first;
+          // Count past everything using this processor
+          while (it != targets.upper_bound(target)) it++;
+          continue;
+        }
+        DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_ISSUE_STEAL);
+        Processor target = it->first;
+        int num_mappers = targets.count(target);
+        log_task(LEVEL_SPEW,"Processor %d attempting steal on processor %d",
+                              local_proc.id,target.id);
+        size_t buffer_size = sizeof(Processor)+sizeof(int)+num_mappers*sizeof(MapperID);
+        // Allocate a buffer for launching the steal task
+        void * buffer = malloc(buffer_size); 
+        char * buf_ptr = (char*)buffer;
+        // Give the stealing (this) processor
+        *((Processor*)buf_ptr) = local_proc;
+        buf_ptr += sizeof(Processor); 
+        *((int*)buf_ptr) = num_mappers;
+        buf_ptr += sizeof(int);
+        for ( ; it != targets.upper_bound(target); it++)
+        {
+          *((MapperID*)buf_ptr) = it->second;
+          buf_ptr += sizeof(MapperID);
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        if (it != targets.end())
+          assert(!((target.id) == (it->first.id)));
+#endif
+        // Now launch the task to perform the steal operation
+        Event steal = target.spawn(STEAL_TASK_ID,buffer,buffer_size);
+        // Enqueue the steal request on the list of oustanding steals
+        outstanding_steal_events.push_back(steal);
+        // Also add this to the list of failed steals in case it never comes back
+        failed_steals.insert(target);
+        // Clean up our mess
+        free(buffer);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::advertise(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Lock acquired from callsite
+      for (std::set<Processor>::iterator it = failed_thiefs.begin();
+            it != failed_thiefs.end(); it++)
+      {
+        (*it).spawn(ADVERTISEMENT_ID,&local_proc,sizeof(Processor));  
+      }
+      failed_thiefs.clear();
+    }
+
   };
 };
 
