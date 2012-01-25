@@ -33,24 +33,28 @@ enum {
 
 #define CELLS_X 8
 #define CELLS_Y 8
+#define CELLS_Z 8
 #define MAX_PARTICLES 64
 
 // Number of ghost cells needed for each block
 // 8 for 2D or 26 for 3D
 #define GHOST_CELLS 26
 
-#define MOVE3_TOP(z)    (((int)(z)==(int)(nbz-1)) ? 0 : ((z)+1))
-#define MOVE3_BOTTOM(z) (((z)==0) ? (nbz-1) : ((z)-1))
-#define MOVE3_LEFT(x)   (((x)==0) ? (nbx-1) : ((x)-1))
-#define MOVE3_RIGHT(x)  (((int)(x)==(int)(nbx-1)) ? 0 : ((x)+1))
-#define MOVE3_FRONT(y)  (((y)==0) ? (nby-1) : ((y)-1))
-#define MOVE3_BACK(y)   (((int)(y)==(int)(nby-1)) ? 0 : ((y)+1))
+#define MOVE_TOP(z)    (((int)(z)==(int)(nbz-1)) ? 0 : ((z)+1))
+#define MOVE_BOTTOM(z) (((z)==0) ? (nbz-1) : ((z)-1))
+#define MOVE_LEFT(x)   (((x)==0) ? (nbx-1) : ((x)-1))
+#define MOVE_RIGHT(x)  (((int)(x)==(int)(nbx-1)) ? 0 : ((x)+1))
+#define MOVE_FRONT(y)  (((y)==0) ? (nby-1) : ((y)-1))
+#define MOVE_BACK(y)   (((int)(y)==(int)(nby-1)) ? 0 : ((y)+1))
 
-#define REVERSE3(dir) (25 - (dir))
+#define REVERSE(dir) (25 - (dir))
 
-#define MOVE3_X(x,dir) ((SIDES[dir] & SIDE3_RIGHT) ? MOVE3_RIGHT(x) : ((SIDES[dir] & SIDE3_LEFT) ? MOVE3_LEFT(x) : (x)))
-#define MOVE3_Y(y,dir) ((SIDES[dir] & SIDE3_BACK) ? MOVE3_BACK(y) : ((SIDES[dir] & SIDE3_FRONT) ? MOVE3_FRONT(y) : (y)))
-#define MOVE3_Z(z,dir) ((SIDES[dir] & SIDE3_TOP) ? MOVE3_TOP(z) : ((SIDES[dir] & SIDE3_BOTTOM) ? MOVE3_BOTTOM(z) : (z)))
+#define MOVE_X(x,dir) ((DIR2SIDES[dir] & SIDE_RIGHT) ? MOVE_RIGHT(x) : ((DIR2SIDES[dir] & SIDE_LEFT) ? MOVE_LEFT(x) : (x)))
+#define MOVE_Y(y,dir) ((DIR2SIDES[dir] & SIDE_BACK) ? MOVE_BACK(y) : ((DIR2SIDES[dir] & SIDE_FRONT) ? MOVE_FRONT(y) : (y)))
+#define MOVE_Z(z,dir) ((DIR2SIDES[dir] & SIDE_TOP) ? MOVE_TOP(z) : ((DIR2SIDES[dir] & SIDE_BOTTOM) ? MOVE_BOTTOM(z) : (z)))
+
+// maps {-1, 0, 1}^3 to directions
+#define LOOKUP_DIR(x,y,z) (SIDES2DIR[(((z)+1)*3 + (y)+1)*3 + (x)+1])
 
 enum { // don't change the order of these!  needs to be symmetric
   TOP_FRONT_LEFT = 0,
@@ -83,43 +87,74 @@ enum { // don't change the order of these!  needs to be symmetric
 };
 
 enum {
-  SIDE3_TOP    = 0x01,
-  SIDE3_BOTTOM = 0x02,
-  SIDE3_FRONT  = 0x04,
-  SIDE3_BACK   = 0x08,
-  SIDE3_RIGHT  = 0x10,
-  SIDE3_LEFT   = 0x20,
+  SIDE_TOP    = 0x01,
+  SIDE_BOTTOM = 0x02,
+  SIDE_FRONT  = 0x04,
+  SIDE_BACK   = 0x08,
+  SIDE_RIGHT  = 0x10,
+  SIDE_LEFT   = 0x20,
 };
 
 // order corresponds to order of elements in enum above
-const unsigned char SIDES[] = {
-  SIDE3_TOP | SIDE3_FRONT | SIDE3_LEFT,
-  SIDE3_TOP | SIDE3_FRONT,
-  SIDE3_TOP | SIDE3_FRONT | SIDE3_RIGHT,
-  SIDE3_FRONT | SIDE3_LEFT,
-  SIDE3_FRONT,
-  SIDE3_FRONT | SIDE3_RIGHT,
-  SIDE3_BOTTOM | SIDE3_FRONT | SIDE3_LEFT,
-  SIDE3_BOTTOM | SIDE3_FRONT,
-  SIDE3_BOTTOM | SIDE3_FRONT | SIDE3_RIGHT,
-  SIDE3_BOTTOM | SIDE3_LEFT,
-  SIDE3_BOTTOM,
-  SIDE3_BOTTOM | SIDE3_RIGHT,
-  SIDE3_LEFT,
-  SIDE3_RIGHT,
-  SIDE3_TOP | SIDE3_LEFT,
-  SIDE3_TOP,
-  SIDE3_TOP | SIDE3_RIGHT,
-  SIDE3_TOP | SIDE3_BACK | SIDE3_LEFT,
-  SIDE3_TOP | SIDE3_BACK,
-  SIDE3_TOP | SIDE3_BACK | SIDE3_RIGHT,
-  SIDE3_BACK | SIDE3_LEFT,
-  SIDE3_BACK,
-  SIDE3_BACK | SIDE3_RIGHT,
-  SIDE3_BOTTOM | SIDE3_BACK | SIDE3_LEFT,
-  SIDE3_BOTTOM | SIDE3_BACK,
-  SIDE3_BOTTOM | SIDE3_BACK | SIDE3_RIGHT,
+const unsigned char DIR2SIDES[] = {
+  SIDE_TOP | SIDE_FRONT | SIDE_LEFT,
+  SIDE_TOP | SIDE_FRONT,
+  SIDE_TOP | SIDE_FRONT | SIDE_RIGHT,
+  SIDE_FRONT | SIDE_LEFT,
+  SIDE_FRONT,
+  SIDE_FRONT | SIDE_RIGHT,
+  SIDE_BOTTOM | SIDE_FRONT | SIDE_LEFT,
+  SIDE_BOTTOM | SIDE_FRONT,
+  SIDE_BOTTOM | SIDE_FRONT | SIDE_RIGHT,
+  SIDE_BOTTOM | SIDE_LEFT,
+  SIDE_BOTTOM,
+  SIDE_BOTTOM | SIDE_RIGHT,
+  SIDE_LEFT,
+  SIDE_RIGHT,
+  SIDE_TOP | SIDE_LEFT,
+  SIDE_TOP,
+  SIDE_TOP | SIDE_RIGHT,
+  SIDE_TOP | SIDE_BACK | SIDE_LEFT,
+  SIDE_TOP | SIDE_BACK,
+  SIDE_TOP | SIDE_BACK | SIDE_RIGHT,
+  SIDE_BACK | SIDE_LEFT,
+  SIDE_BACK,
+  SIDE_BACK | SIDE_RIGHT,
+  SIDE_BOTTOM | SIDE_BACK | SIDE_LEFT,
+  SIDE_BOTTOM | SIDE_BACK,
+  SIDE_BOTTOM | SIDE_BACK | SIDE_RIGHT,
   0,
+};
+
+// order corresponds to zyx [3][3][3] lookup array
+const unsigned char SIDES2DIR[] = {
+  BOTTOM_FRONT_LEFT,
+  BOTTOM_FRONT,
+  BOTTOM_FRONT_RIGHT,
+  BOTTOM_LEFT,
+  BOTTOM,
+  BOTTOM_RIGHT,
+  BOTTOM_BACK_LEFT,
+  BOTTOM_BACK,
+  BOTTOM_BACK_RIGHT,
+  FRONT_LEFT,
+  FRONT,
+  FRONT_RIGHT,
+  LEFT,
+  CENTER,
+  RIGHT,
+  BACK_LEFT,
+  BACK,
+  BACK_RIGHT,
+  TOP_FRONT_LEFT,
+  TOP_FRONT,
+  TOP_FRONT_RIGHT,
+  TOP_LEFT,
+  TOP,
+  TOP_RIGHT,
+  TOP_BACK_LEFT,
+  TOP_BACK,
+  TOP_BACK_RIGHT,
 };
 
 class Vec3
@@ -160,6 +195,7 @@ public:
   //ptr_t<Cell> neigh_ptrs[8];
   unsigned x;
   unsigned y;
+  unsigned z;
 };
 
 struct BufferRegions {
@@ -175,7 +211,7 @@ struct BufferRegions {
 //     two copies for bidirectional exchanges
 //
 // in addition to the requisite 2*1 + 2*26 = 54 regions, we track 
-//  2 sets of (CELLS_X+2)*(CELLS_Y+2) pointers
+//  2 sets of (CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2) pointers
 // have to pay attention though, because the phase of the "real" cells changes
 //  only once per simulation iteration, while the phase of the "edge" cells
 //  changes every task
@@ -183,7 +219,7 @@ struct Block {
   LogicalHandle base[2];
   LogicalHandle edge[2][GHOST_CELLS];
   BufferRegions regions[2];
-  ptr_t<Cell> cells[2][CELLS_Y+2][CELLS_X+2];
+  ptr_t<Cell> cells[2][CELLS_Z+2][CELLS_Y+2][CELLS_X+2];
   int cb;  // which is the current buffer?
   int id;
 };
@@ -205,8 +241,8 @@ const Vec3 domainMax(0.065f, 0.1f, 0.065f);
 
 float h, hSq;
 float densityCoeff, pressureCoeff, viscosityCoeff;
-unsigned nx, ny, numCells;
-unsigned nbx, nby, numBlocks;
+unsigned nx, ny, nz, numCells;
+unsigned nbx, nby, nbz, numBlocks;
 Vec3 delta;				// cell dimensions
 
 RegionRuntime::Logger::Category log_app("application");
@@ -239,24 +275,26 @@ void top_level_task(const void *args, size_t arglen,
 
   // first, do two passes of the "real" cells
   for(int b = 0; b < 2; b++) {
-    LogicalHandle real_cells = runtime->create_logical_region<Cell>(ctx,
-								    (numBlocks*CELLS_X*CELLS_Y));
+    LogicalHandle real_cells =
+      runtime->create_logical_region<Cell>(ctx, (numBlocks*CELLS_X*CELLS_Y*CELLS_Z));
 
     std::vector<std::set<ptr_t<Cell> > > coloring;
     coloring.resize(numBlocks);
 
     // allocate cells, store pointers, set up colors
-    for (unsigned idy = 0; idy < nby; idy++)
-      for (unsigned idx = 0; idx < nbx; idx++)	{
-	unsigned id = idy*nbx+idx;
+    for (unsigned idz = 0; idz < nbz; idz++)
+      for (unsigned idy = 0; idy < nby; idy++)
+        for (unsigned idx = 0; idx < nbx; idx++) {
+          unsigned id = (idz*nby+idy)*nbx+idx;
 
-	for(unsigned cy = 0; cy < CELLS_Y; cy++)
-	  for(unsigned cx = 0; cx < CELLS_X; cx++) {
-	    ptr_t<Cell> cell = real_cells.alloc();
-	    coloring[id].insert(cell);
-	    blocks[id].cells[b][cy+1][cx+1] = cell;
-	  }
-      }
+          for(unsigned cz = 0; cz < CELLS_Z; cz++)
+            for(unsigned cy = 0; cy < CELLS_Y; cy++)
+              for(unsigned cx = 0; cx < CELLS_X; cx++) {
+                ptr_t<Cell> cell = real_cells.alloc();
+                coloring[id].insert(cell);
+                blocks[id].cells[b][cz+1][cy+1][cx+1] = cell;
+              }
+        }
     
     // Create the partitions
     Partition<Cell> cell_part = runtime->create_partition<Cell>(ctx,all_cells,
@@ -264,69 +302,138 @@ void top_level_task(const void *args, size_t arglen,
 								//numBlocks,
 								true/*disjoint*/);
 
-    for (unsigned idy = 0; idy < nby; idy++)
-      for (unsigned idx = 0; idx < nbx; idx++)	{
-	unsigned id = idy*nbx+idx;
-	blocks[id].base[b] = runtime->get_subregion(ctx, cell_part, id);
-      }
+    for (unsigned idz = 0; idz < nbz; idz++)
+      for (unsigned idy = 0; idy < nby; idy++)
+        for (unsigned idx = 0; idx < nbx; idx++) {
+          unsigned id = (idz*nby+idy)*nbx+idx;
+          blocks[id].base[b] = runtime->get_subregion(ctx, cell_part, id);
+        }
   }
 
   // the edge cells work a bit different - we'll create one region, partition
   //  it once, and use each subregion in two places
-  LogicalHandle edge_cells = runtime->create_logical_region<Cell>(ctx,
-								  (numBlocks*
-								   (2*CELLS_X+2*CELLS_Y+4)));
+  LogicalHandle edge_cells =
+    runtime->create_logical_region<Cell>(ctx,
+                                         (numBlocks*
+                                          ((CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2) -
+                                           CELLS_X*CELLS_Y*CELLS_Z)));
 
   std::vector<std::set<ptr_t<Cell> > > coloring;
   coloring.resize(numBlocks * GHOST_CELLS);
 
   // allocate cells, set up coloring
   int color = 0;
-  for (unsigned idy = 0; idy < nby; idy++)
-    for (unsigned idx = 0; idx < nbx; idx++) {
-      unsigned id = idy*nbx+idx;
+  for (unsigned idz = 0; idz < nbz; idz++)
+    for (unsigned idy = 0; idy < nby; idy++)
+      for (unsigned idx = 0; idx < nbx; idx++) {
+        unsigned id = (idz*nby+idy)*nbx+idx;
 
-      // four corners
-#define CORNER(dir,cx,cy) do { \
-	unsigned id2 = MOVE3_Y(idy,dir)*nbx+MOVE3_X(idx,dir);	\
-	ptr_t<Cell> cell = edge_cells.alloc();			\
-	coloring[color + dir].insert(cell);			\
-	blocks[id].cells[0][cy][cx] = cell;				\
-	blocks[id].cells[1][CELLS_Y + 1 - cy][CELLS_X + 1 - cx] = cell; \
-      } while(0)
-      CORNER(FRONT_LEFT, 0, 0);
-      CORNER(FRONT_RIGHT, 0, CELLS_X + 1);
-      CORNER(BACK_LEFT, CELLS_Y + 1, 0);
-      CORNER(BACK_RIGHT, CELLS_Y + 1, CELLS_X + 1);
+        // eight corners
+#define CORNER(dir,cx,cy,cz) do {                                         \
+          ptr_t<Cell> cell = edge_cells.alloc();                          \
+          coloring[color + dir].insert(cell);                             \
+          blocks[id].cells[0][cz][cy][cx] = cell;			  \
+          blocks[id].cells[1][CELLS_Z + 1 - cz][CELLS_Y + 1 - cy][CELLS_X + 1 - cx] = cell; \
+        } while(0)
+        CORNER(TOP_FRONT_LEFT, 0, 0, CELLS_Z + 1);
+        CORNER(TOP_FRONT_RIGHT, CELLS_X + 1, 0, CELLS_Z + 1);
+        CORNER(TOP_BACK_LEFT, 0, CELLS_Y + 1, CELLS_Z + 1);
+        CORNER(TOP_BACK_RIGHT, CELLS_X + 1, CELLS_Y + 1, CELLS_Z + 1);
+        CORNER(BOTTOM_FRONT_LEFT, 0, 0, 0);
+        CORNER(BOTTOM_FRONT_RIGHT, CELLS_X + 1, 0, 0);
+        CORNER(BOTTOM_BACK_LEFT, 0, CELLS_Y + 1, 0);
+        CORNER(BOTTOM_BACK_RIGHT, CELLS_X + 1, CELLS_Y + 1, 0);
 #undef CORNER
 
-      // horizontal edges
-#define HORIZ(dir,cy) do { \
-	unsigned id2 = MOVE3_Y(idy,dir)*nbx+idx;     \
-	for(unsigned cx = 1; cx <= CELLS_X; cx++) {   \
-	  ptr_t<Cell> cell = edge_cells.alloc();     \
-	  coloring[color + dir].insert(cell);	     \
-	  blocks[id].cells[0][cy][cx] = cell;		      \
-	  blocks[id].cells[1][CELLS_Y + 1 - cy][cx] = cell;   \
-	}						      \
-      } while(0)
-      HORIZ(FRONT, 0);
-      HORIZ(BACK, CELLS_Y + 1);
-#undef HORIZ
+        // x-axis edges
+#define XAXIS(dir,cy,cz) do {                                           \
+          for(unsigned cx = 1; cx <= CELLS_X; cx++) {                   \
+            ptr_t<Cell> cell = edge_cells.alloc();                      \
+            coloring[color + dir].insert(cell);                         \
+            blocks[id].cells[0][cz][cy][cx] = cell;                     \
+            blocks[id].cells[1][CELLS_Z + 1 - cz][CELLS_Y + 1 - cy][cx] = cell; \
+          }                                                             \
+        } while(0)
+        XAXIS(TOP_FRONT, 0, CELLS_Z + 1);
+        XAXIS(TOP_BACK, CELLS_Y + 1, CELLS_Z + 1);
+        XAXIS(BOTTOM_FRONT, 0, 0);
+        XAXIS(BOTTOM_BACK, CELLS_Y + 1, 0);
+#undef XAXIS
 
-      // vertical edges
-#define VERT(dir,cx) do { \
-	unsigned id2 = idy*nbx+MOVE3_X(idx,dir);     \
-	for(unsigned cy = 1; cy <= CELLS_Y; cy++) {   \
-	  ptr_t<Cell> cell = edge_cells.alloc();     \
-	  coloring[color + dir].insert(cell);	     \
-	  blocks[id].cells[0][cy][cx] = cell;		      \
-	  blocks[id].cells[1][cy][CELLS_X + 1 - cx] = cell;   \
-	}						      \
-      } while(0)
-      VERT(LEFT, 0);
-      VERT(RIGHT, CELLS_X + 1);
-#undef VERT
+        // y-axis edges
+#define YAXIS(dir,cx,cz) do {                                           \
+          for(unsigned cy = 1; cy <= CELLS_Y; cy++) {                   \
+            ptr_t<Cell> cell = edge_cells.alloc();                      \
+            coloring[color + dir].insert(cell);                         \
+            blocks[id].cells[0][cz][cy][cx] = cell;                     \
+            blocks[id].cells[1][CELLS_Z + 1 - cz][cy][CELLS_X + 1 - cx] = cell; \
+          }                                                             \
+        } while(0)
+        YAXIS(TOP_LEFT, 0, CELLS_Z + 1);
+        YAXIS(TOP_RIGHT, CELLS_X + 1, CELLS_Z + 1);
+        YAXIS(BOTTOM_LEFT, 0, 0);
+        YAXIS(BOTTOM_RIGHT, CELLS_X + 1, 0);
+#undef YAXIS
+
+        // z-axis edges
+#define ZAXIS(dir,cx,cy) do {                                           \
+          for(unsigned cz = 1; cz <= CELLS_Z; cz++) {                   \
+            ptr_t<Cell> cell = edge_cells.alloc();                      \
+            coloring[color + dir].insert(cell);                         \
+            blocks[id].cells[0][cz][cy][cx] = cell;                     \
+            blocks[id].cells[1][cz][CELLS_Y + 1 - cy][CELLS_X + 1 - cx] = cell; \
+          }                                                             \
+        } while(0)
+        ZAXIS(FRONT_LEFT, 0, 0);
+        ZAXIS(FRONT_RIGHT, CELLS_X + 1, 0);
+        ZAXIS(BACK_LEFT, 0, CELLS_Y + 1);
+        ZAXIS(BACK_RIGHT, CELLS_X + 1, CELLS_Y + 1);
+#undef ZAXIS
+
+        // xy-plane edges
+#define XYPLANE(dir,cz) do {                                            \
+          for(unsigned cy = 1; cy <= CELLS_Y; cy++) {                   \
+            for(unsigned cx = 1; cx <= CELLS_X; cx++) {                 \
+              ptr_t<Cell> cell = edge_cells.alloc();                    \
+              coloring[color + dir].insert(cell);                       \
+              blocks[id].cells[0][cz][cy][cx] = cell;                   \
+              blocks[id].cells[1][CELLS_Z + 1 - cz][cy][cx] = cell;     \
+            }                                                           \
+          }                                                             \
+        } while(0)
+        XYPLANE(TOP, CELLS_Z + 1);
+        XYPLANE(BOTTOM, 0);
+#undef XYPLANE
+
+        // xz-plane edges
+#define XZPLANE(dir,cy) do {                                            \
+          for(unsigned cz = 1; cz <= CELLS_Z; cz++) {                   \
+            for(unsigned cx = 1; cx <= CELLS_X; cx++) {                 \
+              ptr_t<Cell> cell = edge_cells.alloc();                    \
+              coloring[color + dir].insert(cell);                       \
+              blocks[id].cells[0][cz][cy][cx] = cell;                   \
+              blocks[id].cells[1][cz][CELLS_Y + 1 - cy][cx] = cell;     \
+            }                                                           \
+          }                                                             \
+        } while(0)
+        XZPLANE(FRONT, 0);
+        XZPLANE(BACK, CELLS_Y + 1);
+#undef XZPLANE
+
+        // yz-plane edges
+#define YZPLANE(dir,cx) do {                                            \
+          for(unsigned cz = 1; cz <= CELLS_Z; cz++) {                   \
+            for(unsigned cy = 1; cy <= CELLS_Y; cy++) {                 \
+              ptr_t<Cell> cell = edge_cells.alloc();                    \
+              coloring[color + dir].insert(cell);                       \
+              blocks[id].cells[0][cz][cy][cx] = cell;                   \
+              blocks[id].cells[1][cz][cy][CELLS_X + 1 - cx] = cell;     \
+            }                                                           \
+          }                                                             \
+        } while(0)
+        YZPLANE(LEFT, 0);
+        YZPLANE(RIGHT, CELLS_X + 1);
+#undef YZPLANE
 
       color += GHOST_CELLS;
     }
@@ -339,19 +446,20 @@ void top_level_task(const void *args, size_t arglen,
 
   // now go back through and store subregion handles in the right places
   color = 0;
-  for (unsigned idy = 0; idy < nby; idy++)
-    for (unsigned idx = 0; idx < nbx; idx++) {
-      unsigned id = idy*nbx+idx;
+  for (unsigned idz = 0; idz < nbz; idz++)
+    for (unsigned idy = 0; idy < nby; idy++)
+      for (unsigned idx = 0; idx < nbx; idx++) {
+        unsigned id = (idz*nby+idy)*nbx+idx;
 
-      for(int dir = 0; dir < GHOST_CELLS; dir++) {
-	unsigned id2 = MOVE3_Y(idy,dir)*nbx+MOVE3_X(idx,dir);
-	LogicalHandle subr = runtime->get_subregion(ctx,edge_part,color+dir);
-        blocks[id].edge[0][dir] = color+dir;
-	blocks[id2].edge[1][REVERSE3(dir)] = color+dir;
+        for(int dir = 0; dir < GHOST_CELLS; dir++) {
+          unsigned id2 = (MOVE_Z(idz,dir)*nby + MOVE_Y(idy,dir))*nbx + MOVE_X(idx,dir);
+          LogicalHandle subr = runtime->get_subregion(ctx,edge_part,color+dir);
+          blocks[id].edge[0][dir] = color+dir;
+          blocks[id2].edge[1][REVERSE(dir)] = color+dir;
+        }
+
+        color += GHOST_CELLS;
       }
-
-      color += GHOST_CELLS;
-    }
 #endif
 
   // don't do anything until all the command-line args have been ready
@@ -363,12 +471,14 @@ void top_level_task(const void *args, size_t arglen,
   {
     TopLevelRegions tlr;
     tlr.real_cells[0] = runtime->create_logical_region<Cell>(ctx,
-							     (numBlocks*CELLS_X*CELLS_Y));
+							     (numBlocks*CELLS_X*CELLS_Y*CELLS_Z));
     tlr.real_cells[1] = runtime->create_logical_region<Cell>(ctx,
-							     (numBlocks*CELLS_X*CELLS_Y));
-    tlr.edge_cells = runtime->create_logical_region<Cell>(ctx,
-							  (numBlocks*
-							   (2*CELLS_X+2*CELLS_Y+4)));
+							     (numBlocks*CELLS_X*CELLS_Y*CELLS_Z));
+    tlr.edge_cells =
+      runtime->create_logical_region<Cell>(ctx,
+                                           (numBlocks*
+                                            ((CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2) -
+                                             CELLS_X*CELLS_Y*CELLS_Z)));
     
     std::vector<RegionRequirement> main_regions;
     main_regions.push_back(RegionRequirement(tlr.real_cells[0],
@@ -412,17 +522,19 @@ void main_task(const void *args, size_t arglen,
     coloring.resize(numBlocks);
 
     // allocate cells, store pointers, set up colors
-    for (unsigned idy = 0; idy < nby; idy++)
-      for (unsigned idx = 0; idx < nbx; idx++)	{
-	unsigned id = idy*nbx+idx;
+    for (unsigned idz = 0; idz < nbz; idz++)
+      for (unsigned idy = 0; idy < nby; idy++)
+        for (unsigned idx = 0; idx < nbx; idx++) {
+          unsigned id = (idz*nby+idy)*nbx+idx;
 
-	for(unsigned cy = 0; cy < CELLS_Y; cy++)
-	  for(unsigned cx = 0; cx < CELLS_X; cx++) {
-	    ptr_t<Cell> cell = real_cells[b].template alloc<Cell>();
-	    coloring[id].insert(cell);
-	    blocks[id].cells[b][cy+1][cx+1] = cell;
-	  }
-      }
+          for(unsigned cz = 0; cz < CELLS_Z; cz++)
+            for(unsigned cy = 0; cy < CELLS_Y; cy++)
+              for(unsigned cx = 0; cx < CELLS_X; cx++) {
+                ptr_t<Cell> cell = real_cells[b].template alloc<Cell>();
+                coloring[id].insert(cell);
+                blocks[id].cells[b][cz+1][cy+1][cx+1] = cell;
+              }
+        }
     
     // Create the partitions
     Partition<Cell> cell_part = runtime->create_partition<Cell>(ctx,
@@ -431,11 +543,12 @@ void main_task(const void *args, size_t arglen,
 								//numBlocks,
 								true/*disjoint*/);
 
-    for (unsigned idy = 0; idy < nby; idy++)
-      for (unsigned idx = 0; idx < nbx; idx++)	{
-	unsigned id = idy*nbx+idx;
-	blocks[id].base[b] = runtime->get_subregion(ctx, cell_part, id);
-      }
+    for (unsigned idz = 0; idz < nbz; idz++)
+      for (unsigned idy = 0; idy < nby; idy++)
+        for (unsigned idx = 0; idx < nbx; idx++) {
+          unsigned id = (idz*nby+idy)*nbx+idx;
+          blocks[id].base[b] = runtime->get_subregion(ctx, cell_part, id);
+        }
   }
 
   // the edge cells work a bit different - we'll create one region, partition
@@ -445,54 +558,127 @@ void main_task(const void *args, size_t arglen,
 
   // allocate cells, set up coloring
   int color = 0;
-  for (unsigned idy = 0; idy < nby; idy++)
-    for (unsigned idx = 0; idx < nbx; idx++) {
-      unsigned id = idy*nbx+idx;
+  for (unsigned idz = 0; idz < nbz; idz++)
+    for (unsigned idy = 0; idy < nby; idy++)
+      for (unsigned idx = 0; idx < nbx; idx++) {
+        unsigned id = (idz*nby+idy)*nbx+idx;
 
-      // four corners
-#define CORNER(dir,cx,cy) do { \
-	unsigned id2 = MOVE3_Y(idy,dir)*nbx+MOVE3_X(idx,dir);	\
-	ptr_t<Cell> cell = edge_cells.template alloc<Cell>();		\
-	coloring[color + dir].insert(cell);			\
-	blocks[id].cells[0][(cy)][(cx)] = cell;				\
-	blocks[id2].cells[1][CELLS_Y + 1 - (cy)][CELLS_X + 1 - (cx)] = cell; \
-      } while(0)
-      CORNER(FRONT_LEFT, 0, 0);
-      CORNER(FRONT_RIGHT, 0, CELLS_X + 1);
-      CORNER(BACK_LEFT, CELLS_Y + 1, 0);
-      CORNER(BACK_RIGHT, CELLS_Y + 1, CELLS_X + 1);
+        // eight corners
+#define CORNER(dir,cx,cy,cz) do {                                       \
+          unsigned id2 = (MOVE_Z(idz,dir)*nby + MOVE_Y(idy,dir))*nbx + MOVE_X(idx,dir); \
+          ptr_t<Cell> cell = edge_cells.template alloc<Cell>();         \
+          coloring[color + dir].insert(cell);                           \
+          blocks[id].cells[0][cz][cy][cx] = cell;                       \
+          blocks[id2].cells[1][CELLS_Z + 1 - cz][CELLS_Y + 1 - cy][CELLS_X + 1 - cx] = cell; \
+        } while(0)
+        CORNER(TOP_FRONT_LEFT, 0, 0, CELLS_Z + 1);
+        CORNER(TOP_FRONT_RIGHT, CELLS_X + 1, 0, CELLS_Z + 1);
+        CORNER(TOP_BACK_LEFT, 0, CELLS_Y + 1, CELLS_Z + 1);
+        CORNER(TOP_BACK_RIGHT, CELLS_X + 1, CELLS_Y + 1, CELLS_Z + 1);
+        CORNER(BOTTOM_FRONT_LEFT, 0, 0, 0);
+        CORNER(BOTTOM_FRONT_RIGHT, CELLS_X + 1, 0, 0);
+        CORNER(BOTTOM_BACK_LEFT, 0, CELLS_Y + 1, 0);
+        CORNER(BOTTOM_BACK_RIGHT, CELLS_X + 1, CELLS_Y + 1, 0);
 #undef CORNER
 
-      // horizontal edges
-#define HORIZ(dir,cy) do { \
-	unsigned id2 = MOVE3_Y(idy,dir)*nbx+idx;     \
-	for(unsigned cx = 1; cx <= CELLS_X; cx++) {   \
-	  ptr_t<Cell> cell = edge_cells.template alloc<Cell>();	\
-	  coloring[color + dir].insert(cell);	     \
-	  blocks[id].cells[0][cy][cx] = cell;		      \
-	  blocks[id2].cells[1][CELLS_Y + 1 - (cy)][cx] = cell; \
-	}						      \
-      } while(0)
-      HORIZ(FRONT, 0);
-      HORIZ(BACK, CELLS_Y + 1);
-#undef HORIZ
+        // x-axis edges
+#define XAXIS(dir,cy,cz) do {                                           \
+          unsigned id2 = (MOVE_Z(idz,dir)*nby + MOVE_Y(idy,dir))*nbx + idx; \
+          for(unsigned cx = 1; cx <= CELLS_X; cx++) {                   \
+            ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
+            coloring[color + dir].insert(cell);                         \
+            blocks[id].cells[0][cz][cy][cx] = cell;                     \
+            blocks[id2].cells[1][CELLS_Z + 1 - cz][CELLS_Y + 1 - cy][cx] = cell; \
+          }                                                             \
+        } while(0)
+        XAXIS(TOP_FRONT, 0, CELLS_Z + 1);
+        XAXIS(TOP_BACK, CELLS_Y + 1, CELLS_Z + 1);
+        XAXIS(BOTTOM_FRONT, 0, 0);
+        XAXIS(BOTTOM_BACK, CELLS_Y + 1, 0);
+#undef XAXIS
 
-      // vertical edges
-#define VERT(dir,cx) do { \
-	unsigned id2 = idy*nbx+MOVE3_X(idx,dir);     \
-	for(unsigned cy = 1; cy <= CELLS_Y; cy++) {   \
-	  ptr_t<Cell> cell = edge_cells.template alloc<Cell>();	\
-	  coloring[color + dir].insert(cell);	     \
-	  blocks[id].cells[0][cy][cx] = cell;		      \
-	  blocks[id2].cells[1][cy][CELLS_X + 1 - (cx)] = cell; \
-	}						      \
-      } while(0)
-      VERT(LEFT, 0);
-      VERT(RIGHT, CELLS_X + 1);
-#undef VERT
+        // y-axis edges
+#define YAXIS(dir,cx,cz) do {                                           \
+          unsigned id2 = (MOVE_Z(idz,dir)*nby + idy)*nbx + MOVE_X(idx,dir); \
+          for(unsigned cy = 1; cy <= CELLS_Y; cy++) {                   \
+            ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
+            coloring[color + dir].insert(cell);                         \
+            blocks[id].cells[0][cz][cy][cx] = cell;                     \
+            blocks[id2].cells[1][CELLS_Z + 1 - cz][cy][CELLS_X + 1 - cx] = cell; \
+          }                                                             \
+        } while(0)
+        YAXIS(TOP_LEFT, 0, CELLS_Z + 1);
+        YAXIS(TOP_RIGHT, CELLS_X + 1, CELLS_Z + 1);
+        YAXIS(BOTTOM_LEFT, 0, 0);
+        YAXIS(BOTTOM_RIGHT, CELLS_X + 1, 0);
+#undef YAXIS
 
-      color += GHOST_CELLS;
-    }
+        // z-axis edges
+#define ZAXIS(dir,cx,cy) do {                                           \
+          unsigned id2 = (idz*nby + MOVE_Y(idy,dir))*nbx + MOVE_X(idx,dir); \
+          for(unsigned cz = 1; cz <= CELLS_Z; cz++) {                   \
+            ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
+            coloring[color + dir].insert(cell);                         \
+            blocks[id].cells[0][cz][cy][cx] = cell;                     \
+            blocks[id2].cells[1][cz][CELLS_Y + 1 - cy][CELLS_X + 1 - cx] = cell; \
+          }                                                             \
+        } while(0)
+        ZAXIS(FRONT_LEFT, 0, 0);
+        ZAXIS(FRONT_RIGHT, CELLS_X + 1, 0);
+        ZAXIS(BACK_LEFT, 0, CELLS_Y + 1);
+        ZAXIS(BACK_RIGHT, CELLS_X + 1, CELLS_Y + 1);
+#undef ZAXIS
+
+        // xy-plane edges
+#define XYPLANE(dir,cz) do {                                            \
+          unsigned id2 = (MOVE_Z(idz,dir)*nby + idy)*nbx + idx;         \
+          for(unsigned cy = 1; cy <= CELLS_Y; cy++) {                   \
+            for(unsigned cx = 1; cx <= CELLS_X; cx++) {                 \
+              ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
+              coloring[color + dir].insert(cell);                       \
+              blocks[id].cells[0][cz][cy][cx] = cell;                   \
+              blocks[id2].cells[1][CELLS_Z + 1 - cz][cy][cx] = cell;    \
+            }                                                           \
+          }                                                             \
+        } while(0)
+        XYPLANE(TOP, CELLS_Z + 1);
+        XYPLANE(BOTTOM, 0);
+#undef XYPLANE
+
+        // xz-plane edges
+#define XZPLANE(dir,cy) do {                                            \
+          unsigned id2 = (idz*nby + MOVE_Y(idy,dir))*nbx + idx;         \
+          for(unsigned cz = 1; cz <= CELLS_Z; cz++) {                   \
+            for(unsigned cx = 1; cx <= CELLS_X; cx++) {                 \
+              ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
+              coloring[color + dir].insert(cell);                       \
+              blocks[id].cells[0][cz][cy][cx] = cell;                   \
+              blocks[id2].cells[1][cz][CELLS_Y + 1 - cy][cx] = cell;    \
+            }                                                           \
+          }                                                             \
+        } while(0)
+        XZPLANE(FRONT, 0);
+        XZPLANE(BACK, CELLS_Y + 1);
+#undef XZPLANE
+
+        // yz-plane edges
+#define YZPLANE(dir,cx) do {                                            \
+          unsigned id2 = (idz*nby + idy)*nbx + MOVE_X(idx,dir);         \
+          for(unsigned cz = 1; cz <= CELLS_Z; cz++) {                   \
+            for(unsigned cy = 1; cy <= CELLS_Y; cy++) {                 \
+              ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
+              coloring[color + dir].insert(cell);                       \
+              blocks[id].cells[0][cz][cy][cx] = cell;                   \
+              blocks[id2].cells[1][cz][cy][CELLS_X + 1 - cx] = cell;    \
+            }                                                           \
+          }                                                             \
+        } while(0)
+        YZPLANE(LEFT, 0);
+        YZPLANE(RIGHT, CELLS_X + 1);
+#undef YZPLANE
+
+        color += GHOST_CELLS;
+      }
 
   // now partition the edge cells
   Partition<Cell> edge_part = runtime->create_partition<Cell>(ctx, tlr->edge_cells,
@@ -502,19 +688,20 @@ void main_task(const void *args, size_t arglen,
 
   // now go back through and store subregion handles in the right places
   color = 0;
-  for (unsigned idy = 0; idy < nby; idy++)
-    for (unsigned idx = 0; idx < nbx; idx++) {
-      unsigned id = idy*nbx+idx;
+  for (unsigned idz = 0; idz < nbz; idz++)
+    for (unsigned idy = 0; idy < nby; idy++)
+      for (unsigned idx = 0; idx < nbx; idx++) {
+        unsigned id = (idz*nby+idy)*nbx+idx;
 
-      for(int dir = 0; dir < GHOST_CELLS; dir++) {
-	unsigned id2 = MOVE3_Y(idy,dir)*nbx+MOVE3_X(idx,dir);
-	LogicalHandle subr = runtime->get_subregion(ctx,edge_part,color+dir);
-        blocks[id].edge[0][dir] = subr;
-	blocks[id2].edge[1][REVERSE3(dir)] = subr;
+        for(int dir = 0; dir < GHOST_CELLS; dir++) {
+          unsigned id2 = (MOVE_Z(idz,dir)*nby + MOVE_Y(idy,dir))*nbx + MOVE_X(idx,dir); \
+          LogicalHandle subr = runtime->get_subregion(ctx,edge_part,color+dir);
+          blocks[id].edge[0][dir] = subr;
+          blocks[id2].edge[1][REVERSE(dir)] = subr;
+        }
+
+        color += GHOST_CELLS;
       }
-
-      color += GHOST_CELLS;
-    }
 
   // Initialize the simulation in buffer 1
   for (unsigned id = 0; id < numBlocks; id++)
@@ -698,55 +885,50 @@ void init_simulation(const void *args, size_t arglen,
   // only region we need is real1
   PhysicalRegion<AT> real_cells = regions[0];
 
-  for (unsigned idy = 0; idy < CELLS_Y; idy++)
-  {
-    for (unsigned idx = 0; idx < CELLS_X; idx++)
-    {
-      Cell next;
-      next.x = idx;
-      next.y = idy;
-      next.num_particles = (rand() % MAX_PARTICLES);
-      for (unsigned p = 0; p < next.num_particles; p++)
-      {
-        // These are the only three fields we need to initialize
-        next.p[p] = Vec3(get_rand_float(),get_rand_float(),get_rand_float());
-        next.hv[p] = Vec3(get_rand_float(),get_rand_float(),get_rand_float());
-        next.v[p] = Vec3(get_rand_float(),get_rand_float(),get_rand_float());
-      }
+  for (unsigned idz = 0; idz < CELLS_Z; idz++) {
+    for (unsigned idy = 0; idy < CELLS_Y; idy++) {
+      for (unsigned idx = 0; idx < CELLS_X; idx++) {
+        Cell next;
+        next.x = idx;
+        next.y = idy;
+        next.z = idz;
+        next.num_particles = (rand() % MAX_PARTICLES);
+        for (unsigned p = 0; p < next.num_particles; p++) {
+          // These are the only three fields we need to initialize
+          next.p[p] = Vec3(get_rand_float(),get_rand_float(),get_rand_float());
+          next.hv[p] = Vec3(get_rand_float(),get_rand_float(),get_rand_float());
+          next.v[p] = Vec3(get_rand_float(),get_rand_float(),get_rand_float());
+        }
 
-      real_cells.write(b.cells[1][idy+1][idx+1], next);
+        real_cells.write(b.cells[1][idz+1][idy+1][idx+1], next);
+      }
     }
   }
 }
 
-#define GET_DIR(idy, idx) \
-  (((idy) == 0) ? (((idx) == 0) ? FRONT_LEFT : (((idx) == CELLS_X+1) ? FRONT_RIGHT : FRONT)) : \
-   ((idy) == CELLS_Y+1) ? (((idx) == 0) ? BACK_LEFT : (((idx) == CELLS_X+1) ? BACK_RIGHT : BACK)) : \
-   (((idx) == 0) ? LEFT : (((idx) == CELLS_X+1) ? RIGHT : CENTER)))
+#define GET_DIR(idz, idy, idx)                                          \
+  LOOKUP_DIR(((idx) == 0 ? -1 : ((idx == CELLS_X+1) ? 1 : 0)), ((idy) == 0 ? -1 : ((idy == CELLS_Y+1) ? 1 : 0)), ((idz) == 0 ? -1 : ((idz == CELLS_Z+1) ? 1 : 0)))
 
-#define GET_REGION(idy, idx, base, edge) \
-  (((idy) == 0) ? (((idx) == 0) ? ((edge)[FRONT_LEFT]) : (((idx) == CELLS_X+1) ? ((edge)[FRONT_RIGHT]) : ((edge)[FRONT]))) : \
-   ((idy) == CELLS_Y+1) ? (((idx) == 0) ? ((edge)[BACK_LEFT]) : (((idx) == CELLS_X+1) ? ((edge)[BACK_RIGHT]) : ((edge)[BACK]))) : \
-   (((idx) == 0) ? ((edge)[LEFT]) : (((idx) == CELLS_X+1) ? ((edge)[RIGHT]) : (base))))
+#define GET_REGION(idz, idy, idx, base, edge)                           \
+  (GET_DIR(idz, idy, idx) == CENTER ? (edge)[GET_DIR(idz, idy, idx)] : (base))
 
-#define READ_CELL(cy, cx, base, edge, cell) do {	\
-  int dir = GET_DIR(cy,cx); \
-  if(dir == CENTER) {			       \
-    (cell) = (base).read(b.cells[cb][cy][cx]); \
-    if(0) printf("RC: (%d,%d) %d %d %p+%d (%d)\n", cx, cy, cb, eb, base.instance.internal_data, b.cells[cb][cy][cx].value, (cell).num_particles); \
-  } else {								\
-    (cell) = (edge)[dir].read(b.cells[eb][cy][cx]);			\
-    if(0) printf("RC: (%d,%d) %d %d %p+%d (%d)\n", cx, cy, cb, eb, edge[dir].instance.internal_data, b.cells[eb][cy][cx].value, (cell).num_particles); \
-	 } } while(0)
+#define READ_CELL(cz, cy, cx, base, edge, cell) do {  \
+    int dir = GET_DIR(cz, cy,cx);                     \
+    if(dir == CENTER) {                                                 \
+      (cell) = (base).read(b.cells[cb][cz][cy][cx]);                    \
+      if(0) printf("RC: (%d,%d,%d) %d %d %p+%d (%d)\n", cx, cy, cz, cb, eb, base.instance.internal_data, b.cells[cb][cz][cy][cx].value, (cell).num_particles); \
+    } else {								\
+      (cell) = (edge)[dir].read(b.cells[eb][cz][cy][cx]);               \
+      if(0) printf("RC: (%d,%d,%d) %d %d %p+%d (%d)\n", cx, cy, cz, cb, eb, edge[dir].instance.internal_data, b.cells[eb][cz][cy][cx].value, (cell).num_particles); \
+    } } while(0)
 
-#define WRITE_CELL(cy, cx, base, edge, cell) do {	\
-  int dir = GET_DIR(cy,cx); \
-  if(dir == CENTER) \
-    (base).write(b.cells[cb][cy][cx], (cell));	\
-  else \
-    (edge)[dir].write(b.cells[eb][cy][cx], (cell));	\
+#define WRITE_CELL(cz, cy, cx, base, edge, cell) do {    \
+    int dir = GET_DIR(cz, cy,cx);                        \
+    if(dir == CENTER)                                           \
+      (base).write(b.cells[cb][cz][cy][cx], (cell));            \
+    else                                                        \
+      (edge)[dir].write(b.cells[eb][cz][cy][cx], (cell));       \
   } while(0)
-
 
 template<AccessorType AT>
 void init_and_rebuild(const void *args, size_t arglen,
@@ -768,9 +950,10 @@ void init_and_rebuild(const void *args, size_t arglen,
   {
     Cell blank;
     blank.num_particles = 0;
-    for(int cy = 0; cy <= CELLS_Y + 1; cy++)
-      for(int cx = 0; cx <= CELLS_X + 1; cx++)
-	WRITE_CELL(cy, cx, dst_block, edge_blocks, blank);
+    for(int cz = 0; cz <= CELLS_Z + 1; cz++)
+      for(int cy = 0; cy <= CELLS_Y + 1; cy++)
+        for(int cx = 0; cx <= CELLS_X + 1; cx++)
+          WRITE_CELL(cz, cy, cx, dst_block, edge_blocks, blank);
 #if 0
 	int dir = GET_DIR(cy,dx);
 	if(dir == CENTER)
@@ -783,33 +966,37 @@ void init_and_rebuild(const void *args, size_t arglen,
 
   // now go through each source cell and move particles that have wandered too
   //  far
-  for(int cy = 1; cy < CELLS_Y + 1; cy++)
-    for(int cx = 1; cx < CELLS_X + 1; cx++) {
-      // don't need to macro-ize this because it's known to be a real cell
-      Cell c_src = src_block.read(b.cells[1-cb][cy][cx]);
-      for(unsigned p = 0; p < c_src.num_particles; p++) {
-	int dy = cy;
-	int dx = cx;
-	Vec3 pos = c_src.p[p];
-	if(pos.x < 0) { pos.x += delta.x; dx--; }
-	if(pos.x >= delta.x) { pos.x -= delta.x; dx++; }
-	if(pos.y < 0) { pos.y += delta.y; dy--; }
-	if(pos.y >= delta.y) { pos.y -= delta.y; dy++; }
+  for(int cz = 1; cz < CELLS_Z + 1; cz++)
+    for(int cy = 1; cy < CELLS_Y + 1; cy++)
+      for(int cx = 1; cx < CELLS_X + 1; cx++) {
+        // don't need to macro-ize this because it's known to be a real cell
+        Cell c_src = src_block.read(b.cells[1-cb][cz][cy][cx]);
+        for(unsigned p = 0; p < c_src.num_particles; p++) {
+          int dz = cz;
+          int dy = cy;
+          int dx = cx;
+          Vec3 pos = c_src.p[p];
+          if(pos.x < 0) { pos.x += delta.x; dx--; }
+          if(pos.x >= delta.x) { pos.x -= delta.x; dx++; }
+          if(pos.y < 0) { pos.y += delta.y; dy--; }
+          if(pos.y >= delta.y) { pos.y -= delta.y; dy++; }
+          if(pos.z < 0) { pos.z += delta.z; dz--; }
+          if(pos.z >= delta.z) { pos.z -= delta.z; dz++; }
 
-	Cell c_dst;
-	READ_CELL(dy, dx, dst_block, edge_blocks, c_dst);
-	if(c_dst.num_particles < MAX_PARTICLES) {
-	  int dp = c_dst.num_particles++;
+          Cell c_dst;
+          READ_CELL(dz, dy, dx, dst_block, edge_blocks, c_dst);
+          if(c_dst.num_particles < MAX_PARTICLES) {
+            int dp = c_dst.num_particles++;
 
-	  // just have to copy p, hv, v
-	  c_dst.p[dp] = pos;
-	  c_dst.hv[dp] = c_src.hv[p];
-	  c_dst.v[dp] = c_src.v[p];
+            // just have to copy p, hv, v
+            c_dst.p[dp] = pos;
+            c_dst.hv[dp] = c_src.hv[p];
+            c_dst.v[dp] = c_src.v[p];
 
-	  WRITE_CELL(dy, dx, dst_block, edge_blocks, c_dst);
-	}
+            WRITE_CELL(cz, dy, dx, dst_block, edge_blocks, c_dst);
+          }
+        }
       }
-    }
 
   log_app.info("Done with init_and_rebuild() for block %d", b.id);
 }
@@ -830,41 +1017,45 @@ void rebuild_reduce(const void *args, size_t arglen,
   log_app.info("In rebuild_reduce() for block %d", b.id);
 
   // for each edge cell, copy inward
-  for(int cy = 0; cy <= CELLS_Y+1; cy++)
-    for(int cx = 0; cx <= CELLS_X+1; cx++) {
-      int dir = GET_DIR(cy, cx);
-      if(dir == CENTER) continue;
-      int dy = MOVE3_Y(cy, REVERSE3(dir));
-      int dx = MOVE3_X(cx, REVERSE3(dir));
+  for(int cz = 0; cz <= CELLS_Z+1; cz++)
+    for(int cy = 0; cy <= CELLS_Y+1; cy++)
+      for(int cx = 0; cx <= CELLS_X+1; cx++) {
+        int dir = GET_DIR(cz, cy, cx);
+        if(dir == CENTER) continue;
+        int dz = MOVE_Z(cz, REVERSE(dir));
+        int dy = MOVE_Y(cy, REVERSE(dir));
+        int dx = MOVE_X(cx, REVERSE(dir));
 
-      Cell c_src;
-      READ_CELL(cy, cx, base_block, edge_blocks, c_src);
-      Cell c_dst = base_block.read(b.cells[cb][dy][dx]);
+        Cell c_src;
+        READ_CELL(cz, cy, cx, base_block, edge_blocks, c_src);
+        Cell c_dst = base_block.read(b.cells[cb][dz][dy][dx]);
 
-      for(unsigned p = 0; p < c_src.num_particles; p++) {
-	if(c_dst.num_particles == MAX_PARTICLES) break;
-	int dp = c_dst.num_particles++;
-	// just have to copy p, hv, v
-	c_dst.p[dp] = c_src.p[p];
-	c_dst.hv[dp] = c_src.hv[p];
-	c_dst.v[dp] = c_src.v[p];
+        for(unsigned p = 0; p < c_src.num_particles; p++) {
+          if(c_dst.num_particles == MAX_PARTICLES) break;
+          int dp = c_dst.num_particles++;
+          // just have to copy p, hv, v
+          c_dst.p[dp] = c_src.p[p];
+          c_dst.hv[dp] = c_src.hv[p];
+          c_dst.v[dp] = c_src.v[p];
+        }
+
+        base_block.write(b.cells[cb][dz][dy][dx], c_dst);
       }
-
-      base_block.write(b.cells[cb][dy][dx], c_dst);
-    }
 
   // now turn around and have each edge grab a copy of the boundary real cell
   //  to share for the next step
-  for(int cy = 0; cy <= CELLS_Y+1; cy++)
-    for(int cx = 0; cx <= CELLS_X+1; cx++) {
-      int dir = GET_DIR(cy, cx);
-      if(dir == CENTER) continue;
-      int dy = MOVE3_Y(cy, REVERSE3(dir));
-      int dx = MOVE3_X(cx, REVERSE3(dir));
+  for(int cz = 0; cz <= CELLS_Z+1; cz++)
+    for(int cy = 0; cy <= CELLS_Y+1; cy++)
+      for(int cx = 0; cx <= CELLS_X+1; cx++) {
+        int dir = GET_DIR(cz, cy, cx);
+        if(dir == CENTER) continue;
+        int dz = MOVE_Z(cz, REVERSE(dir));
+        int dy = MOVE_Y(cy, REVERSE(dir));
+        int dx = MOVE_X(cx, REVERSE(dir));
 
-      Cell cell = base_block.read(b.cells[cb][dy][dx]);
-      WRITE_CELL(cy, cx, base_block, edge_blocks, cell);
-    }
+        Cell cell = base_block.read(b.cells[cb][dz][dy][dx]);
+        WRITE_CELL(cz, cy, cx, base_block, edge_blocks, cell);
+      }
 
   log_app.info("Done with rebuild_reduce() for block %d", b.id);
 }
@@ -885,91 +1076,100 @@ void scatter_densities(const void *args, size_t arglen,
   log_app.info("In scatter_densities() for block %d", b.id);
 
   // first, clear our density (and acceleration, while we're at it) values
-  for(int cy = 1; cy < CELLS_Y+1; cy++)
-    for(int cx = 1; cx < CELLS_X+1; cx++) {
-      int dir = GET_DIR(cy, cx);
-      if(dir == CENTER) continue;
-      int dy = MOVE3_Y(cy, REVERSE3(dir));
-      int dx = MOVE3_X(cx, REVERSE3(dir));
+  for(int cz = 1; cz < CELLS_Z+1; cz++)
+    for(int cy = 1; cy < CELLS_Y+1; cy++)
+      for(int cx = 1; cx < CELLS_X+1; cx++) {
+        int dir = GET_DIR(cz, cy, cx);
+        if(dir == CENTER) continue;
+        int dz = MOVE_Z(cz, REVERSE(dir));
+        int dy = MOVE_Y(cy, REVERSE(dir));
+        int dx = MOVE_X(cx, REVERSE(dir));
 
-      Cell cell = base_block.read(b.cells[cb][dy][dx]);
-      for(unsigned p = 0; p < cell.num_particles; p++) {
-	cell.density[p] = 0;
-	cell.a[p] = externalAcceleration;
+        Cell cell = base_block.read(b.cells[cb][dz][dy][dx]);
+        for(unsigned p = 0; p < cell.num_particles; p++) {
+          cell.density[p] = 0;
+          cell.a[p] = externalAcceleration;
+        }
+        base_block.write(b.cells[cb][dz][dy][dx], cell);
       }
-      base_block.write(b.cells[cb][dy][dx], cell);
-    }
 
   // now for each cell, look at neighbors and calculate density contributions
   // two things to watch out for:
   //  position vectors have to be augmented by relative block positions
   //  for pairs of real cells, we can do the calculation once instead of twice
-  for(int cy = 1; cy < CELLS_Y+1; cy++)
-    for(int cx = 1; cx < CELLS_X+1; cx++) {
-      Cell cell = base_block.read(b.cells[cb][cy][cx]);
-      assert(cell.num_particles <= MAX_PARTICLES);
+  for(int cz = 1; cz < CELLS_Z+1; cz++)
+    for(int cy = 1; cy < CELLS_Y+1; cy++)
+      for(int cx = 1; cx < CELLS_X+1; cx++) {
+        Cell cell = base_block.read(b.cells[cb][cz][cy][cx]);
+        assert(cell.num_particles <= MAX_PARTICLES);
 
-      for(int dy = cy - 1; dy <= cy + 1; dy++)
-	for(int dx = cx - 1; dx <= cx + 1; dx++) {
-	  // did we already get updated by this neighbor's bidirectional update?
-	  if((dy > 0) && (dx > 0) && (dx < CELLS_X+1) && 
-	     ((dy < cy) || ((dy == cy) && (dx < cx))))
-	    continue;
+        for(int dz = cz - 1; dz <= cz + 1; dz++)
+          for(int dy = cy - 1; dy <= cy + 1; dy++)
+            for(int dx = cx - 1; dx <= cx + 1; dx++) {
+              // did we already get updated by this neighbor's bidirectional update?
+              // FIXME: ummmmmmmmmm.... ?????
+              if((dy > 0) && (dx > 0) && (dx < CELLS_X+1) && 
+                 ((dy < cy) || ((dy == cy) && (dx < cx))))
+                continue;
 
-	  Cell c2;
-	  READ_CELL(dy, dx, base_block, edge_blocks, c2);
-	  assert(c2.num_particles <= MAX_PARTICLES);
+              Cell c2;
+              READ_CELL(dz, dy, dx, base_block, edge_blocks, c2);
+              assert(c2.num_particles <= MAX_PARTICLES);
 
-	  // do bidirectional update if other cell is a real cell and it is
-	  //  either below or to the right (but not up-right) of us
-	  bool update_other = ((dy < CELLS_Y+1) && (dx > 0) && (dx < CELLS_X+1) &&
-			       ((dy > cy) || ((dy == cy) && (dx > cx))));
+              // do bidirectional update if other cell is a real cell and it is
+              //  either below or to the right (but not up-right) of us
+              // FIXME: ummmmmmmmmm.... ?????
+              bool update_other = ((dy < CELLS_Y+1) && (dx > 0) && (dx < CELLS_X+1) &&
+                                   ((dy > cy) || ((dy == cy) && (dx > cx))));
 	  
-	  // pairwise across particles - watch out for identical particle case!
-	  for(unsigned p = 0; p < cell.num_particles; p++)
-	    for(unsigned p2 = 0; p2 < c2.num_particles; p2++) {
-	      if((dx == cx) && (dy == cy) && (p == p2)) continue;
+              // pairwise across particles - watch out for identical particle case!
+              for(unsigned p = 0; p < cell.num_particles; p++)
+                for(unsigned p2 = 0; p2 < c2.num_particles; p2++) {
+                  if((dx == cx) && (dy == cy) && (dz == cz) && (p == p2)) continue;
 
-	      Vec3 pdiff = cell.p[p] - c2.p[p2];
-	      pdiff.x += (cx - dx) * delta.x;
-	      pdiff.y += (cy - dy) * delta.y;
-	      float distSq = pdiff.GetLengthSq();
-	      if(distSq >= hSq) continue;
+                  Vec3 pdiff = cell.p[p] - c2.p[p2];
+                  pdiff.x += (cx - dx) * delta.x;
+                  pdiff.y += (cy - dy) * delta.y;
+                  pdiff.z += (cz - dz) * delta.z;
+                  float distSq = pdiff.GetLengthSq();
+                  if(distSq >= hSq) continue;
 
-	      float t = hSq - distSq;
-	      float tc = t*t*t;
+                  float t = hSq - distSq;
+                  float tc = t*t*t;
 
-	      cell.density[p] += tc;
-	      if(update_other)
-		c2.density[p2] += tc;
-	    }
+                  cell.density[p] += tc;
+                  if(update_other)
+                    c2.density[p2] += tc;
+                }
 
-	  if(update_other)
-	    WRITE_CELL(dy, dx, base_block, edge_blocks, c2);
-	}
+              if(update_other)
+                WRITE_CELL(dz, dy, dx, base_block, edge_blocks, c2);
+            }
 
-      // a little offset for every particle once we're done
-      const float tc = hSq*hSq*hSq;
-      for(unsigned p = 0; p < cell.num_particles; p++) {
-	cell.density[p] += tc;
-	cell.density[p] *= densityCoeff;
+        // a little offset for every particle once we're done
+        const float tc = hSq*hSq*hSq;
+        for(unsigned p = 0; p < cell.num_particles; p++) {
+          cell.density[p] += tc;
+          cell.density[p] *= densityCoeff;
+        }
+
+        base_block.write(b.cells[cb][cz][cy][cx], cell);
       }
-
-      base_block.write(b.cells[cb][cy][cx], cell);
-    }
 
   // now turn around and have each edge grab a copy of the boundary real cell
   //  to share for the next step
-  for(int cy = 0; cy <= CELLS_Y+1; cy++)
-    for(int cx = 0; cx <= CELLS_X+1; cx++) {
-      int dir = GET_DIR(cy, cx);
-      if(dir == CENTER) continue;
-      int dy = MOVE3_Y(cy, REVERSE3(dir));
-      int dx = MOVE3_X(cx, REVERSE3(dir));
+  for(int cz = 0; cz <= CELLS_Z+1; cz++)
+    for(int cy = 0; cy <= CELLS_Y+1; cy++)
+      for(int cx = 0; cx <= CELLS_X+1; cx++) {
+        int dir = GET_DIR(cz, cy, cx);
+        if(dir == CENTER) continue;
+        int dz = MOVE_Z(cz, REVERSE(dir));
+        int dy = MOVE_Y(cy, REVERSE(dir));
+        int dx = MOVE_X(cx, REVERSE(dir));
 
-      Cell cell = base_block.read(b.cells[cb][dy][dx]);
-      WRITE_CELL(cy, cx, base_block, edge_blocks, cell);
-    }
+        Cell cell = base_block.read(b.cells[cb][dz][dy][dx]);
+        WRITE_CELL(cz, cy, cx, base_block, edge_blocks, cell);
+      }
 
   log_app.info("Done with scatter_densities() for block %d", b.id);
 }
@@ -1010,67 +1210,72 @@ void gather_forces_and_advance(const void *args, size_t arglen,
   // two things to watch out for:
   //  position vectors have to be augmented by relative block positions
   //  for pairs of real cells, we can do the calculation once instead of twice
-  for(int cy = 1; cy < CELLS_Y+1; cy++)
-    for(int cx = 1; cx < CELLS_X+1; cx++) {
-      Cell cell = base_block.read(b.cells[cb][cy][cx]);
-      assert(cell.num_particles <= MAX_PARTICLES);
+  for(int cz = 1; cz < CELLS_Z+1; cz++)
+    for(int cy = 1; cy < CELLS_Y+1; cy++)
+      for(int cx = 1; cx < CELLS_X+1; cx++) {
+        Cell cell = base_block.read(b.cells[cb][cz][cy][cx]);
+        assert(cell.num_particles <= MAX_PARTICLES);
 
-      for(int dy = cy - 1; dy <= cy + 1; dy++)
-	for(int dx = cx - 1; dx <= cx + 1; dx++) {
-	  // did we already get updated by this neighbor's bidirectional update?
-	  if((dy > 0) && (dx > 0) && (dx < CELLS_X+1) && 
-	     ((dy < cy) || ((dy == cy) && (dx < cx))))
-	    continue;
+        for(int dz = cz - 1; dz <= cz + 1; dz++)
+          for(int dy = cy - 1; dy <= cy + 1; dy++)
+            for(int dx = cx - 1; dx <= cx + 1; dx++) {
+              // did we already get updated by this neighbor's bidirectional update?
+              // FIXME: ummmmmmm... ????
+              if((dy > 0) && (dx > 0) && (dx < CELLS_X+1) && 
+                 ((dy < cy) || ((dy == cy) && (dx < cx))))
+                continue;
 
-	  Cell c2;
-	  READ_CELL(dy, dx, base_block, edge_blocks, c2);
-	  assert(c2.num_particles <= MAX_PARTICLES);
+              Cell c2;
+              READ_CELL(dz, dy, dx, base_block, edge_blocks, c2);
+              assert(c2.num_particles <= MAX_PARTICLES);
 
-	  // do bidirectional update if other cell is a real cell and it is
-	  //  either below or to the right (but not up-right) of us
-	  bool update_other = ((dy < CELLS_Y+1) && (dx > 0) && (dx < CELLS_X+1) &&
-			       ((dy > cy) || ((dy == cy) && (dx > cx))));
+              // do bidirectional update if other cell is a real cell and it is
+              //  either below or to the right (but not up-right) of us
+              // FIXME: ummmmmmm... ????
+              bool update_other = ((dy < CELLS_Y+1) && (dx > 0) && (dx < CELLS_X+1) &&
+                                   ((dy > cy) || ((dy == cy) && (dx > cx))));
 	  
-	  // pairwise across particles - watch out for identical particle case!
-	  for(unsigned p = 0; p < cell.num_particles; p++)
-	    for(unsigned p2 = 0; p2 < c2.num_particles; p2++) {
-	      if((dx == cx) && (dy == cy) && (p == p2)) continue;
+              // pairwise across particles - watch out for identical particle case!
+              for(unsigned p = 0; p < cell.num_particles; p++)
+                for(unsigned p2 = 0; p2 < c2.num_particles; p2++) {
+                  if((dx == cx) && (dy == cy) && (dz == cz) && (p == p2)) continue;
 
-	      Vec3 disp = cell.p[p] - c2.p[p2];
-	      disp.x += (cx - dx) * delta.x;
-	      disp.y += (cy - dy) * delta.y;
-	      float distSq = disp.GetLengthSq();
-	      if(distSq >= hSq) continue;
+                  Vec3 disp = cell.p[p] - c2.p[p2];
+                  disp.x += (cx - dx) * delta.x;
+                  disp.y += (cy - dy) * delta.y;
+                  disp.z += (cz - dz) * delta.z;
+                  float distSq = disp.GetLengthSq();
+                  if(distSq >= hSq) continue;
 
-	      float dist = sqrtf(std::max(distSq, 1e-12f));
-	      float hmr = h - dist;
+                  float dist = sqrtf(std::max(distSq, 1e-12f));
+                  float hmr = h - dist;
 
-	      Vec3 acc = (disp * pressureCoeff * (hmr*hmr/dist) * 
-			  (cell.density[p] + c2.density[p2] - doubleRestDensity));
-	      acc += (c2.v[p2] - cell.v[p]) * viscosityCoeff * hmr;
-	      acc /= cell.density[p] * c2.density[p2];
+                  Vec3 acc = (disp * pressureCoeff * (hmr*hmr/dist) * 
+                              (cell.density[p] + c2.density[p2] - doubleRestDensity));
+                  acc += (c2.v[p2] - cell.v[p]) * viscosityCoeff * hmr;
+                  acc /= cell.density[p] * c2.density[p2];
 
-	      cell.a[p] += acc;
-	      if(update_other)
-		c2.a[p2] -= acc;
-	    }
+                  cell.a[p] += acc;
+                  if(update_other)
+                    c2.a[p2] -= acc;
+                }
 
-	  if(update_other)
-	    WRITE_CELL(dy, dx, base_block, edge_blocks, c2);
-	}
+              if(update_other)
+                WRITE_CELL(dz, dy, dx, base_block, edge_blocks, c2);
+            }
 
-      // we have everything we need to go ahead and update positions, so
-      //  do that here instead of in a different task
-      for(unsigned p = 0; p < cell.num_particles; p++) {
-	Vec3 v_half = cell.hv[p] + cell.a[p]*timeStep;
-	cell.p[p] += v_half * timeStep;
-	cell.v[p] = cell.hv[p] + v_half;
-	cell.v[p] *= 0.5f;
-	cell.hv[p] = v_half;
+        // we have everything we need to go ahead and update positions, so
+        //  do that here instead of in a different task
+        for(unsigned p = 0; p < cell.num_particles; p++) {
+          Vec3 v_half = cell.hv[p] + cell.a[p]*timeStep;
+          cell.p[p] += v_half * timeStep;
+          cell.v[p] = cell.hv[p] + v_half;
+          cell.v[p] *= 0.5f;
+          cell.hv[p] = v_half;
+        }
+
+        base_block.write(b.cells[cb][cz][cy][cx], cell);
       }
-
-      base_block.write(b.cells[cb][cy][cx], cell);
-    }
 
   log_app.info("Done with gather_forces_and_advance() for block %d", b.id);
 }
@@ -1412,12 +1617,15 @@ int main(int argc, char **argv)
   Vec3 range = domainMax - domainMin;
   nx = (int)(range.x / h);
   ny = (int)(range.y / h);
-  numCells = nx*ny;
+  nz = (int)(range.z / h);
+  numCells = nx*ny*nz;
   delta.x = range.x / nx;
   delta.y = range.y / ny;
-  assert(delta.x >= h && delta.y >= h);
+  delta.z = range.z / nz;
+  assert(delta.x >= h && delta.y >= h && delta.z >= h);
   nbx = 8;
   nby = 8;
+  nbz = 8;
 
   // Initialize the machine
   Machine m(&argc, &argv, task_table, false);
@@ -1437,9 +1645,14 @@ int main(int argc, char **argv)
       nby = atoi(argv[++i]);
       continue;
     }
+
+    if(!strcmp(argv[i], "-nbz")) {
+      nbz = atoi(argv[++i]);
+      continue;
+    }
   }
-  numBlocks = nbx * nby;
-  printf("fluid: grid size = %d x %d\n", nbx, nby);
+  numBlocks = nbx * nby * nbz;
+  printf("fluid: grid size = %d x %d x %d\n", nbx, nby, nbz);
   Config::args_read = true;
 
   m.run();
