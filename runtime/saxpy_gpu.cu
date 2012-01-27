@@ -11,9 +11,9 @@ using namespace RegionRuntime::HighLevel;
 
 #define TOP_LEVEL_TASK_ID TASK_ID_REGION_MAIN
 
-#define SYNC_AFTER_KERNELS
+// #define TEST_STEALING
 
-// #define CHECK_CORRECTNESS
+#define CHECK_CORRECTNESS
 
 namespace Config {
   unsigned num_blocks = 64;
@@ -23,8 +23,10 @@ namespace Config {
 enum {
   TASKID_MAIN = TASK_ID_AVAILABLE,
   TASKID_INIT_VECTORS,
+  TASKID_VALIDATE,
+  TASKID_VALIDATE_GLOBAL,
   TASKID_ADD_VECTORS,
-  TASKID_COPY_BACK,
+  TASKID_CHECK_CORRECT,
 };
 
 #define BLOCK_SIZE 256
@@ -35,18 +37,28 @@ struct Entry {
 
 struct Block {
   float alpha;
-  LogicalHandle r_x, r_y;
-  ptr_t<Entry> entry_x[BLOCK_SIZE], entry_y[BLOCK_SIZE];
+  LogicalHandle r_x, r_y, r_z;
+  ptr_t<Entry> entry_x[BLOCK_SIZE], entry_y[BLOCK_SIZE], entry_z[BLOCK_SIZE];
   unsigned id;
 };
 
+// computes z = alpha * x + y
 struct VectorRegions {
   unsigned num_elems;
   float alpha;
-  LogicalHandle r_x, r_y;
+  LogicalHandle r_x, r_y, r_z;
 };
 
-float *xv, *yv, *zv;
+struct ValResult {
+  bool flag;
+};
+
+struct CheckResult {
+  float max_error;
+  float avg_error;
+  float avg_zabs;
+  unsigned mismatch;
+};
 
 float get_rand_float() {
   return (((float)2*rand()-RAND_MAX)/((float)RAND_MAX));
@@ -63,14 +75,42 @@ void top_level_task(const void *args, size_t arglen,
   vr.num_elems = Config::num_blocks * BLOCK_SIZE;
   vr.r_x = runtime->create_logical_region<Entry>(ctx, vr.num_elems);
   vr.r_y = runtime->create_logical_region<Entry>(ctx, vr.num_elems);
+  vr.r_z = runtime->create_logical_region<Entry>(ctx, vr.num_elems);
 
   std::vector<RegionRequirement> main_regions;
   main_regions.push_back(RegionRequirement(vr.r_x, READ_WRITE, ALLOCABLE, EXCLUSIVE, vr.r_x));
   main_regions.push_back(RegionRequirement(vr.r_y, READ_WRITE, ALLOCABLE, EXCLUSIVE, vr.r_y));
+  main_regions.push_back(RegionRequirement(vr.r_z, READ_WRITE, ALLOCABLE, EXCLUSIVE, vr.r_z));
 
   Future f = runtime->execute_task(ctx, TASKID_MAIN, main_regions,
 				   &vr, sizeof(VectorRegions), false, 0, 0);
   f.get_void_result();
+}
+
+template<AccessorType AT>
+void do_validation(VectorRegions *vr, std::vector<Block> &blocks,
+		   Context ctx, HighLevelRuntime *runtime, bool global) {
+  std::vector<Future> futures;
+  for (unsigned i = 0; i < Config::num_blocks; i++) {
+    std::vector<RegionRequirement> validate_regions;
+    validate_regions.push_back(RegionRequirement(blocks[i].r_x, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_x));
+    validate_regions.push_back(RegionRequirement(blocks[i].r_y, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_y));
+
+    unsigned task_id = global ? TASKID_VALIDATE_GLOBAL : TASKID_VALIDATE;
+    Future f = runtime->execute_task(ctx, task_id, validate_regions,
+				     &(blocks[i]), sizeof(Block), false, 0, i);
+    futures.push_back(f);
+  }
+
+  unsigned validate_fail = 0;
+  for (unsigned i = 0; i < Config::num_blocks; i++) {
+    ValResult result = futures[i].template get_result<ValResult>();
+    if (result.flag)
+      validate_fail++;
+  }
+
+  if (validate_fail > 0)
+    printf("VALIDATION FAILED = %u (global = %u)\n", validate_fail, global);
 }
 
 template<AccessorType AT>
@@ -80,12 +120,15 @@ void main_task(const void *args, size_t arglen,
   VectorRegions *vr = (VectorRegions *)args;
   PhysicalRegion<AT> r_x = regions[0];
   PhysicalRegion<AT> r_y = regions[1];
-  
+  PhysicalRegion<AT> r_z = regions[2];
+
   vr->alpha = get_rand_float();
+  printf("alpha: %f\n", vr->alpha);
 
   std::vector<Block> blocks(Config::num_blocks);
   std::vector<std::set<ptr_t<Entry> > > color_x(Config::num_blocks);
   std::vector<std::set<ptr_t<Entry> > > color_y(Config::num_blocks);
+  std::vector<std::set<ptr_t<Entry> > > color_z(Config::num_blocks);
   for (unsigned i = 0; i < Config::num_blocks; i++) {
     blocks[i].alpha = vr->alpha;
     blocks[i].id = i;
@@ -97,6 +140,10 @@ void main_task(const void *args, size_t arglen,
       ptr_t<Entry> entry_y = r_y.template alloc<Entry>();
       blocks[i].entry_y[j] = entry_y;
       color_y[i].insert(entry_y);
+
+      ptr_t<Entry> entry_z = r_z.template alloc<Entry>();
+      blocks[i].entry_z[j] = entry_z;
+      color_z[i].insert(entry_z);
     }
   }
 
@@ -104,16 +151,13 @@ void main_task(const void *args, size_t arglen,
     runtime->create_partition<Entry>(ctx, vr->r_x, color_x, true);
   Partition<Entry> p_y =
     runtime->create_partition<Entry>(ctx, vr->r_y, color_y, true);
+  Partition<Entry> p_z =
+    runtime->create_partition<Entry>(ctx, vr->r_z, color_z, true);
   for (unsigned i = 0; i < Config::num_blocks; i++) {
     blocks[i].r_x = runtime->get_subregion(ctx, p_x, i);
     blocks[i].r_y = runtime->get_subregion(ctx, p_y, i);
+    blocks[i].r_z = runtime->get_subregion(ctx, p_z, i);
   }
-
-#ifdef CHECK_CORRECTNESS
-  xv = (float *)malloc(vr->num_elems * sizeof(float));
-  yv = (float *)malloc(vr->num_elems * sizeof(float));
-  zv = (float *)malloc(vr->num_elems * sizeof(float));
-#endif
 
   for (unsigned i = 0; i < Config::num_blocks; i++) {
     std::vector<RegionRequirement> init_regions;
@@ -125,48 +169,78 @@ void main_task(const void *args, size_t arglen,
     f.get_void_result();
   }
 
+#ifdef CHECK_CORRECTNESS
+  do_validation<AT>(vr, blocks, ctx, runtime, true);
+  do_validation<AT>(vr, blocks, ctx, runtime, false);
+#endif
+
   printf("STARTING MAIN SIMULATION LOOP\n");
   struct timespec ts_start, ts_end;
   clock_gettime(CLOCK_MONOTONIC, &ts_start);
-  DetailedTimer::clear_timers();
+  RegionRuntime::DetailedTimer::clear_timers();
 
   std::vector<Future> futures;
   for (unsigned i = 0; i < Config::num_blocks; i++) {
     std::vector<RegionRequirement> add_regions;
     add_regions.push_back(RegionRequirement(blocks[i].r_x, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_x));
-    add_regions.push_back(RegionRequirement(blocks[i].r_y, READ_WRITE, NO_MEMORY, EXCLUSIVE, vr->r_y));
+    add_regions.push_back(RegionRequirement(blocks[i].r_y, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_y));
+    add_regions.push_back(RegionRequirement(blocks[i].r_z, READ_WRITE, NO_MEMORY, EXCLUSIVE, vr->r_z));
 
     Future f = runtime->execute_task(ctx, TASKID_ADD_VECTORS, add_regions,
 				     &(blocks[i]), sizeof(Block), true, 0, i);
     futures.push_back(f);
   }
 
-  for (unsigned i = 0; i < futures.size(); i++)
+  for (unsigned i = 0; i < Config::num_blocks; i++)
     futures[i].get_void_result();
-  clock_gettime(CLOCK_MONOTONIC, &ts_end);
 
+  clock_gettime(CLOCK_MONOTONIC, &ts_end);
   double sim_time = ((1.0 * (ts_end.tv_sec - ts_start.tv_sec)) +
 		     (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
   printf("ELAPSED TIME = %7.3f s\n", sim_time);
-  DetailedTimer::report_timers();
+  RegionRuntime::DetailedTimer::report_timers();
 
 #ifdef CHECK_CORRECTNESS
-  float max_error = 0, avg_error = 0, avg_abs = 0;
-  for (unsigned i = 0; i < vr->num_elems; i++) {
-    float error = fabs(zv[i] - (vr->alpha * xv[i] + yv[i]));
-    max_error = std::max(max_error, error);
-    avg_error += error;
-    avg_abs += fabs(zv[i]);
-  }
-  avg_error /= vr->num_elems;
-  avg_abs /= vr->num_elems;
-  printf("MAX ERROR = %f\n", max_error);
-  printf("AVG ERROR = %f\n", avg_error);
-  printf("AVG ZVABS = %f\n", avg_abs);
+  do_validation<AT>(vr, blocks, ctx, runtime, true);
+  do_validation<AT>(vr, blocks, ctx, runtime, false);
 
-  free(xv);
-  free(yv);
-  free(zv);
+  CheckResult result;
+  result.max_error = 0;
+  result.avg_error = 0;
+  result.avg_zabs = 0;
+  result.mismatch = 0;
+  std::vector<unsigned> mismatched;
+  for (unsigned i = 0; i < Config::num_blocks; i++) {
+    std::vector<RegionRequirement> check_regions;
+    check_regions.push_back(RegionRequirement(blocks[i].r_x, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_x));
+    check_regions.push_back(RegionRequirement(blocks[i].r_y, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_y));
+    check_regions.push_back(RegionRequirement(blocks[i].r_z, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_z));
+
+    Future f = runtime->execute_task(ctx, TASKID_CHECK_CORRECT, check_regions,
+				     &(blocks[i]), sizeof(Block), false, 0, i);
+    CheckResult sub_result = f.template get_result<CheckResult>();
+
+    result.max_error = std::max(result.max_error, sub_result.max_error);
+    result.avg_error += sub_result.avg_error;
+    result.avg_zabs += sub_result.avg_zabs;
+    result.mismatch += sub_result.mismatch;
+    if (sub_result.mismatch > 0) {
+      mismatched.push_back(i);
+    }
+  }
+  result.avg_error /= Config::num_blocks;
+  result.avg_zabs /= Config::num_blocks;
+
+  printf("MAX ERROR = %f\n", result.max_error);
+  printf("AVG ERROR = %f\n", result.avg_error);
+  printf("AVG ZABS  = %f\n", result.avg_zabs);
+  printf("MISMATCH  = %u\n", result.mismatch);
+  if (mismatched.size() > 0) {
+    printf("MISMATCHED BLOCKS = {");
+    for (unsigned i = 0; i < mismatched.size(); i++)
+      printf(" %u", mismatched[i]);
+    printf(" }\n");
+  }
 #endif
 
   exit(0);
@@ -188,26 +262,47 @@ void init_vectors_task(const void *args, size_t arglen,
     Entry entry_y;
     entry_y.v = get_rand_float();
     r_y.write(block->entry_y[i], entry_y);
-
-#ifdef CHECK_CORRECTNESS
-    xv[block->id * BLOCK_SIZE + i] = entry_x.v;
-    yv[block->id * BLOCK_SIZE + i] = entry_y.v;
-#endif
   }
+}
+
+template<AccessorType AT>
+ValResult validate_task(const void *args, size_t arglen,
+			const std::vector<PhysicalRegion<AT> > &regions,
+			Context ctx, HighLevelRuntime *runtime) {
+  Block *block = (Block *)args;
+  PhysicalRegion<AT> r_x = regions[0];
+  PhysicalRegion<AT> r_y = regions[1];
+
+  float avg_xabs = 0, avg_yabs = 0;
+  for (unsigned i = 0; i < BLOCK_SIZE; i++) {
+    float x = r_x.read(block->entry_x[i]).v;
+    float y = r_y.read(block->entry_y[i]).v;
+    avg_xabs += fabs(x);
+    avg_yabs += fabs(y);
+  }
+  avg_xabs /= BLOCK_SIZE;
+  avg_yabs /= BLOCK_SIZE;
+
+  ValResult result;
+  result.flag = (avg_xabs < 1e-6 || avg_yabs < 1e-6);
+  return result;
 }
 
 typedef RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorGPU> GPU_Accessor;
 
 __global__ void add_vectors_kernel(float alpha,
-				   ptr_t<Entry>* entry_x,
-				   ptr_t<Entry>* entry_y,
-				   GPU_Accessor r_x,
-				   GPU_Accessor r_y) {
+                                   ptr_t<Entry>* entry_x,
+                                   ptr_t<Entry>* entry_y,
+				   ptr_t<Entry>* entry_z,
+                                   GPU_Accessor r_x,
+                                   GPU_Accessor r_y,
+				   GPU_Accessor r_z) {
   unsigned tid = blockIdx.x * blockDim.x + threadIdx.x;
-  Entry x = r_x.read(entry_x[tid]);
-  Entry y = r_y.read(entry_y[tid]);
-  y.v += alpha * x.v;
-  r_y.write(entry_y[tid], y);
+  float x = r_x.read(entry_x[tid]).v;
+  float y = r_y.read(entry_y[tid]).v;
+  Entry z;
+  z.v = alpha * x + y;
+  r_z.write(entry_z[tid], z);
 }
 
 template<AccessorType AT>
@@ -217,57 +312,73 @@ void add_vectors_task(const void *args, size_t arglen,
   Block *block = (Block *)args;
   PhysicalRegion<AT> r_x = regions[0];
   PhysicalRegion<AT> r_y = regions[1];
+  PhysicalRegion<AT> r_z = regions[2];
 
   ptr_t<Entry> *dev_entry_x;
   cudaMalloc((void **)&dev_entry_x, BLOCK_SIZE * sizeof(ptr_t<Entry>));
   cudaMemcpy(dev_entry_x, block->entry_x, BLOCK_SIZE * sizeof(ptr_t<Entry>),
-	     cudaMemcpyHostToDevice);
+             cudaMemcpyHostToDevice);
 
   ptr_t<Entry> *dev_entry_y;
   cudaMalloc((void **)&dev_entry_y, BLOCK_SIZE * sizeof(ptr_t<Entry>));
   cudaMemcpy(dev_entry_y, block->entry_y, BLOCK_SIZE * sizeof(ptr_t<Entry>),
-	     cudaMemcpyHostToDevice);
+             cudaMemcpyHostToDevice);
+
+  ptr_t<Entry> *dev_entry_z;
+  cudaMalloc((void **)&dev_entry_z, BLOCK_SIZE * sizeof(ptr_t<Entry>));
+  cudaMemcpy(dev_entry_z, block->entry_z, BLOCK_SIZE * sizeof(ptr_t<Entry>),
+             cudaMemcpyHostToDevice);
 
   GPU_Accessor r_x_gpu =
     r_x.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>();
   GPU_Accessor r_y_gpu =
     r_y.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>();
+  GPU_Accessor r_z_gpu =
+    r_z.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>();
   add_vectors_kernel<<<1,BLOCK_SIZE>>>(block->alpha, dev_entry_x, dev_entry_y,
-				       r_x_gpu, r_y_gpu);
-
-#ifdef SYNC_AFTER_KERNELS
+				       dev_entry_z, r_x_gpu, r_y_gpu, r_z_gpu);
   cudaDeviceSynchronize();
-#endif
 
   cudaFree(dev_entry_x);
   cudaFree(dev_entry_y);
-
-#ifdef CHECK_CORRECTNESS
-  std::vector<RegionRequirement> copy_regions;
-  copy_regions.push_back(RegionRequirement(block->r_y, READ_ONLY, NO_MEMORY, EXCLUSIVE, block->r_y));
-
-  Future f = runtime->execute_task(ctx, TASKID_COPY_BACK, copy_regions,
-				   block, sizeof(Block), false, 0, block->id);
-  f.get_void_result();
-#endif
+  cudaFree(dev_entry_z);
 }
 
 template<AccessorType AT>
-void copy_back_task(const void *args, size_t arglen,
-		    const std::vector<PhysicalRegion<AT> > &regions,
-		    Context ctx, HighLevelRuntime *runtime) {
+CheckResult check_correct_task(const void *args, size_t arglen,
+			       const std::vector<PhysicalRegion<AT> > &regions,
+			       Context ctx, HighLevelRuntime *runtime) {
   Block *block = (Block *)args;
-  PhysicalRegion<AT> r_y = regions[0];
+  PhysicalRegion<AT> r_x = regions[0];
+  PhysicalRegion<AT> r_y = regions[1];
+  PhysicalRegion<AT> r_z = regions[2];
+
+  CheckResult result;
+  result.max_error = 0;
+  result.avg_error = 0;
+  result.avg_zabs = 0;
+  result.mismatch = 0;
 
   for (unsigned i = 0; i < BLOCK_SIZE; i++) {
-    Entry entry_y = r_y.read(block->entry_y[i]);
-#ifdef CHECK_CORRECTNESS
-    zv[block->id * BLOCK_SIZE + i] = entry_y.v;
-#endif
+    float x = r_x.read(block->entry_x[i]).v;
+    float y = r_y.read(block->entry_y[i]).v;
+    float z = r_z.read(block->entry_z[i]).v;
+    float error = fabs(z - block->alpha * x - y);
+    if (error > 1e-6) {
+      fprintf(stderr, "mismatch %u: %f %f %f\n", block->id, z, x, y);
+      result.mismatch++;
+    }
+
+    result.max_error = std::max(result.max_error, error);
+    result.avg_error += error;
+    result.avg_zabs += fabs(z);
   }
+  result.avg_error /= BLOCK_SIZE;
+  result.avg_zabs /= BLOCK_SIZE;
+  return result;
 }
 
-template <class T>
+template <typename T>
 static bool sort_by_proc_id(const T& a, const T& b) {
   return a.proc.id < b.proc.id;
 }
@@ -374,7 +485,7 @@ public:
                                              size_t num_elmts,
                                              MappingTagID tag,
                                              std::vector<Memory> &ranking) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     ranking.push_back(cpu_mems[0].gasnet);
   }
 
@@ -382,7 +493,7 @@ public:
                                                 unsigned num_subregions,
                                                 MappingTagID tag,
                                                 std::vector<std::vector<Memory> > &rankings) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     rankings.resize(num_subregions);
     for (unsigned i = 0; i < num_subregions; i++)
       rankings[i].push_back(cpu_mems[0].gasnet);
@@ -390,20 +501,23 @@ public:
 
   virtual bool compact_partition(const UntypedPartition &partition,
 				 MappingTagID tag) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     return false;
   }
 
   virtual Processor select_initial_processor(const Task *task) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     switch (task->task_id) {
     case TOP_LEVEL_TASK_ID:
     case TASKID_MAIN:
     case TASKID_INIT_VECTORS:
+    case TASKID_VALIDATE_GLOBAL:
       return cpu_mems[0].proc;
+    case TASKID_VALIDATE:
+      return cpu_mems[task->tag % cpu_mems.size()].proc;
     case TASKID_ADD_VECTORS:
       return gpu_mems[task->tag % gpu_mems.size()].proc;
-    case TASKID_COPY_BACK:
+    case TASKID_CHECK_CORRECT:
       return cpu_mems[0].proc;
     default:
       assert(false);
@@ -412,14 +526,14 @@ public:
   }
 
   virtual Processor target_task_steal() {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     return Processor::NO_PROC;
   }
 
   virtual void permit_task_steal(Processor thief,
                                  const std::vector<const Task*> &tasks,
                                  std::set<const Task*> &to_steal) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     return;
   }
 
@@ -428,7 +542,7 @@ public:
                                const std::vector<Memory> &valid_dst_instances,
                                Memory &chosen_src,
                                std::vector<Memory> &dst_ranking) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     CPUMemoryChain *cpu = &cpu_mems[task->tag % cpu_mems.size()];
     GPUMemoryChain *gpu = &gpu_mems[task->tag % gpu_mems.size()];
 
@@ -436,16 +550,18 @@ public:
     case TOP_LEVEL_TASK_ID:
     case TASKID_MAIN:
     case TASKID_INIT_VECTORS:
+    case TASKID_VALIDATE:
+    case TASKID_VALIDATE_GLOBAL:
       chosen_src = cpu->gasnet;
       dst_ranking.push_back(cpu->gasnet);
       break;
     case TASKID_ADD_VECTORS:
-      chosen_src = safe_prioritized_pick(valid_src_instances,
-					 gpu->fbmem, gpu->gasnet);
+      chosen_src = gpu->gasnet;
       dst_ranking.push_back(gpu->fbmem);
       break;
-    case TASKID_COPY_BACK:
-      chosen_src = valid_src_instances[0];
+    case TASKID_CHECK_CORRECT:
+      chosen_src = safe_prioritized_pick(valid_src_instances,
+					 gpu->gasnet, gpu->fbmem);
       dst_ranking.push_back(gpu->gasnet);
       break;
     default:
@@ -456,14 +572,14 @@ public:
   virtual void rank_copy_targets(const Task *task,
                                  const std::vector<Memory> &current_instances,
                                  std::vector<std::vector<Memory> > &future_ranking) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     Mapper::rank_copy_targets(task, current_instances, future_ranking);
   }
 
   virtual void select_copy_source(const Task *task,
                                   const std::vector<Memory> &current_instances,
                                   const Memory &dst, Memory &chosen_src) {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     if (current_instances.size() == 1) {
       chosen_src = current_instances[0];
       return;
@@ -479,12 +595,16 @@ void create_mappers(Machine *machine, HighLevelRuntime *runtime,
 }
 
 int main(int argc, char **argv) {
+  srand(time(NULL));
+
   Processor::TaskIDTable task_table;
   task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
   task_table[TASKID_MAIN] = high_level_task_wrapper<main_task<AccessorGeneric> >;
   task_table[TASKID_INIT_VECTORS] = high_level_task_wrapper<init_vectors_task<AccessorGeneric> >;
+  task_table[TASKID_VALIDATE] = high_level_task_wrapper<ValResult, validate_task<AccessorGeneric> >;
+  task_table[TASKID_VALIDATE_GLOBAL] = high_level_task_wrapper<ValResult, validate_task<AccessorGeneric> >;
   task_table[TASKID_ADD_VECTORS] = high_level_task_wrapper<add_vectors_task<AccessorGeneric> >;
-  task_table[TASKID_COPY_BACK] = high_level_task_wrapper<copy_back_task<AccessorGeneric> >;
+  task_table[TASKID_CHECK_CORRECT] = high_level_task_wrapper<CheckResult, check_correct_task<AccessorGeneric> >;
 
   HighLevelRuntime::register_runtime_tasks(task_table);
   HighLevelRuntime::set_mapper_init_callback(create_mappers);

@@ -59,6 +59,9 @@ circuit.o : highlevel.h
 
 circuit_gpu.o : highlevel.h lowlevel.h
 
+saxpy_shared.o : saxpy.cc
+	g++ -DUSE_SAXPY_SHARED $(GCCFLAGS) -c $< -o $@
+
 gputest:	gputest.o lowlevel_gpu.o lowlevel.o
 	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
 
@@ -98,11 +101,11 @@ srch2:	lowlevel.o lowlevel_gpu.o highlevel.o search.o
 saxpy:  lowlevel.o lowlevel_gpu.o highlevel.o saxpy.o
 	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
 
-saxpy_gpu:	lowlevel.o lowlevel_gpu.o highlevel.o saxpy_gpu.o
+saxpy_shared: shared_lowlevel.o highlevel.o saxpy_shared.o
 	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
 
-saxpy_shared: shared_lowlevel.o highlevel.o saxpy.o
-	g++ -o $@ -DUSE_SHARED $(GCCFLAGS) $^ $(LDFLAGS)
+saxpy_gpu:	lowlevel.o lowlevel_gpu.o highlevel.o saxpy_gpu.o
+	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
 
 clean:
 	rm -f fluid fluid2 ckt ckt2 cktgpu2 ring tree saxpy saxpy_gpu saxpy_shared *.o
