@@ -532,6 +532,7 @@ namespace RegionRuntime {
       memcpy(((char*)args_prime)+sizeof(Context), args, arglen);
       desc->initialize_task(unique_id, task_id, args_prime, arglen+sizeof(Context), id, tag, spawn);
       desc->set_regions(regions);
+      // Don't free memory as the task becomes the owner
 
       // Register the task with the parent (performs dependence analysis)
       ctx->register_child_task(desc);
@@ -581,6 +582,7 @@ namespace RegionRuntime {
       desc->initialize_task(unique_id, task_id, args_prime, arglen+sizeof(Context), id, tag, spawn);
       desc->set_index_space<N>(index_space, must);
       desc->set_regions(regions, functions);
+      // Don't free memory as the task becomes the owner
 
       // Register the task with the parent (performs dependence analysis)
       ctx->register_child_task(desc);
@@ -990,29 +992,29 @@ namespace RegionRuntime {
     void HighLevelRuntime::process_tasks(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
-      const char *buffer = (const char*)args;
+      Deserializer des(args,arglen);
       // First get the processor that this comes from
-      Processor source = *((const Processor*)buffer);
-      buffer += sizeof(Processor); 
+      Processor source;
+      des.deserialize<Processor>(source);
       // Then get the number of tasks to process
-      int num_tasks = *((const int*)buffer);
-      buffer += sizeof(int);
+      int num_tasks; 
+      des.deserialize<int>(num_tasks);
       // Unpack each of the tasks
       for (int i=0; i<num_tasks; i++)
       {
         // Add the task description to the task queue
-        TaskContext *desc = get_available_context(true/*new tree*/);
-        desc->unpack_task(buffer);
-        add_to_ready_queue(desc);
+        TaskContext *ctx= get_available_context(true/*new tree*/);
+        ctx->unpack_task(des);
+        add_to_ready_queue(ctx);
         // check to see if this is a steal result coming back
-        if (desc->stolen)
+        if (ctx->stolen)
         {
           AutoLock steal_lock(stealing_lock);
           // Check to see if we've already cleared our outstanding steal request
 #ifdef DEBUG_HIGH_LEVEL
-          assert(desc->map_id < mapper_objects.size());
+          assert(ctx->map_id < mapper_objects.size());
 #endif
-          std::set<Processor> &outstanding = outstanding_steals[desc->map_id];
+          std::set<Processor> &outstanding = outstanding_steals[ctx->map_id];
           std::set<Processor>::iterator finder = outstanding.find(source);
           if (finder != outstanding.end())
           {
@@ -1020,7 +1022,7 @@ namespace RegionRuntime {
           }
         }
         log_task(LEVEL_DEBUG,"HLR on processor %d adding task %d with unique id %d from orig %d",
-                              desc->local_proc.id,desc->task_id,desc->unique_id,desc->orig_proc.id);
+                              ctx->local_proc.id,ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
       }
     }
 
@@ -1120,28 +1122,20 @@ namespace RegionRuntime {
         {
           total_buffer_size += (*it)->compute_task_size();
         }
-        // Allocate the buffer
-        char * target_buffer = (char*)malloc(total_buffer_size);
-        char * target_ptr = target_buffer;
-        *((Processor*)target_ptr) = thief; // actual theif processor 
-        target_ptr += sizeof(Processor);
-        *((Processor*)target_ptr) = local_proc; // this processor
-        target_ptr += sizeof(Processor);
-        *((int*)target_ptr) = int(stolen.size());
-        target_ptr += sizeof(int);
+        Serializer ser(total_buffer_size);
+        ser.serialize<Processor>(thief); // actual thief processor
+        ser.serialize<Processor>(local_proc); // this processor
+        ser.serialize<int>(stolen.size());
         // Write the task descriptions into memory
         for (std::set<TaskContext*>::iterator it = stolen.begin();
                 it != stolen.end(); it++)
         {
-          (*it)->pack_task(target_ptr);
+          (*it)->pack_task(ser);
         }
         // Send the task the theif's utility processor
         Processor utility = thief.get_utility_processor();
         // Invoke the task on the right processor to send tasks back
-        utility.spawn(ENQUEUE_TASK_ID, target_buffer, total_buffer_size);
-
-        // Clean up our mess
-        free(target_buffer);
+        utility.spawn(ENQUEUE_TASK_ID, ser.get_buffer(), total_buffer_size);
 
         // Delete any remote tasks that we will no longer have a reference to
         for (std::set<TaskContext*>::iterator it = stolen.begin();
@@ -1373,19 +1367,13 @@ namespace RegionRuntime {
 
         // Package up the task and send it
         size_t buffer_size = 2*sizeof(Processor)+sizeof(int)+task->compute_task_size();
-        void * buffer = malloc(buffer_size);
-        char * ptr = (char*)buffer;
-        *((Processor*)ptr) = target; // The actual target processor
-        ptr += sizeof(Processor);
-        *((Processor*)ptr) = local_proc; // The origin processor
-        ptr += sizeof(Processor);
-        *((int*)ptr) = 1; // We're only sending one task
-        ptr += sizeof(int);
-        task->pack_task(ptr);
+        Serializer ser(buffer_size);
+        ser.serialize<Processor>(target); // The actual target processor
+        ser.serialize<Processor>(local_proc); // The origin processor
+        ser.serialize<int>(1); // We're only sending one task
+        task->pack_task(ser);
         // Send the task to the utility processor
-        utility.spawn(ENQUEUE_TASK_ID,buffer,buffer_size);
-        // Clean up our mess
-        free(buffer);
+        utility.spawn(ENQUEUE_TASK_ID,ser.get_buffer(),buffer_size);
 
         return false;
       }
@@ -1505,6 +1493,49 @@ namespace RegionRuntime {
       }
     }
 
+
+    ///////////////////////////////////////////
+    // Serializer
+    ///////////////////////////////////////////
+
+    //-------------------------------------------------------------------------
+    Serializer::Serializer(size_t buffer_size)
+      : buffer(malloc(sizeof(buffer_size))), location((char*)buffer)
+#ifdef DEBUG_HIGH_LEVEL
+        , remaining_bytes(buffer_size)
+#endif
+    //-------------------------------------------------------------------------
+    {
+    }
+
+    //-------------------------------------------------------------------------
+    Serializer::~Serializer(void)
+    //-------------------------------------------------------------------------
+    {
+      // Reclaim the buffer memory
+      free(buffer);
+    }
+
+    ///////////////////////////////////////////
+    // Deserializer
+    ///////////////////////////////////////////
+    
+    //-------------------------------------------------------------------------
+    Deserializer::Deserializer(const void *buffer, size_t buffer_size)
+      : location((const char*)buffer)
+#ifdef DEBUG_HIGH_LEVEL
+        , remaining_bytes(buffer_size)
+#endif
+    //-------------------------------------------------------------------------
+    {
+    }
+
+    //-------------------------------------------------------------------------
+    Deserializer::~Deserializer(void)
+    //-------------------------------------------------------------------------
+    {
+      // No need to do anything since we don't own the buffer
+    }
   };
 };
 

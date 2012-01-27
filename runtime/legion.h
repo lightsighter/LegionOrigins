@@ -735,8 +735,8 @@ namespace RegionRuntime {
     protected:
       // functions for packing and unpacking tasks
       size_t compute_task_size(void) const;
-      void pack_task(char *&buffer) const;
-      void unpack_task(const char *&buffer);
+      void pack_task(Serializer &serializer) const;
+      void unpack_task(Deserializer &deserializer);
     protected:
       // functions for updating a task's state
       void register_child_task(TaskContext *desc);
@@ -837,15 +837,19 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
     class Serializer {
     protected:
+      friend class HighLevelRuntime;
       Serializer(size_t buffer_size);
       ~Serializer(void);
     protected:
       template<typename T>
-      void serialize(T element);
-      const void* get_buffer(void) const;
+      inline void serialize(const T &element);
+      inline const void* get_buffer(void) const { return buffer; }
     private:
       void *const buffer;
       char *location;
+#ifdef DEBUG_HIGH_LEVEL
+      size_t remaining_bytes;
+#endif
     };
 
     /////////////////////////////////////////////////////////////
@@ -853,14 +857,17 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
     class Deserializer {
     protected:
-      Deserializer(const void *buffer);
+      friend class HighLevelRuntime;
+      Deserializer(const void *buffer, size_t buffer_size);
       ~Deserializer(void);
     protected:
       template<typename T>
-      void deserialize(T &element) const;
+      inline void deserialize(T &element);
     private:
-      void *const buffer;
-      char *location;
+      const char *location;
+#ifdef DEBUG_HIGH_LEVEL
+      size_t remaining_bytes;
+#endif
     };
 
     /////////////////////////////////////////////////////////////////////////////////
@@ -1100,9 +1107,6 @@ namespace RegionRuntime {
     inline PhysicalRegion<AT> RegionMapping::get_physical_region(void)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(active);
-#endif
       return impl->get_physical_region<AT>();
     }
 
@@ -1110,9 +1114,6 @@ namespace RegionRuntime {
     inline bool RegionMapping::can_convert(void)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(active);
-#endif
       return impl->can_convert();
     }
 
@@ -1200,6 +1201,31 @@ namespace RegionRuntime {
         ptr_t<T> null_ptr = {0};
         return null_ptr;
       }
+    }
+
+    //--------------------------------------------------------------------------
+    template<typename T>
+    void Serializer::serialize(const T &element)
+    //--------------------------------------------------------------------------
+    {
+      *((T*)location) = element; 
+      location += sizeof(T);
+#ifdef DEBUG_HIGH_LEVEL
+      remaining_bytes -= sizeof(T);
+      assert(remaining_bytes >= 0); // If not we overflowed our buffer 
+#endif
+    }
+
+    //-------------------------------------------------------------------------- 
+    template<typename T>
+    void Deserializer::deserialize(T &element)
+    //--------------------------------------------------------------------------
+    {
+      element = *((const T*)location);
+#ifdef DEBUG_HIGH_LEVEL
+      remaining_bytes -= sizeof(T);
+      assert(remaining_bytes >= 0); // If not we've read past our buffer
+#endif
     }
   };
 };
