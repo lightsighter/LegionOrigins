@@ -280,7 +280,7 @@ namespace RegionRuntime {
       mapper_locks(std::vector<Lock>(DEFAULT_MAPPER_SLOTS)),
       next_partition_id(local_proc.id), next_task_id(local_proc.id),
       unique_stride(m->get_all_processors().size()),
-      max_failed_steals (m->get_all_processors().size()-1)
+      max_outstanding_steals (m->get_all_processors().size()-1)
     //--------------------------------------------------------------------------------------------
     {
       log_task(LEVEL_SPEW,"Initializing high level runtime on processor %d",local_proc.id);
@@ -288,6 +288,7 @@ namespace RegionRuntime {
       {
         mapper_objects[i] = NULL;
         mapper_locks[i] = Lock::NO_LOCK;
+        outstanding_steals[i] = std::set<Processor>();
       }
       mapper_objects[0] = new Mapper(machine,this,local_proc);
       mapper_locks[0] = Lock::create_lock();
@@ -297,6 +298,7 @@ namespace RegionRuntime {
       this->queue_lock = Lock::create_lock();
       this->available_lock= Lock::create_lock();
       this->stealing_lock = Lock::create_lock();
+      this->thieving_lock = Lock::create_lock();
 
       // Create some tasks contexts 
       for (unsigned ctx = 0; ctx < DEFAULT_CONTEXTS; ctx++)
@@ -326,6 +328,10 @@ namespace RegionRuntime {
         Future fut(&desc->future);
         local_proc.spawn(TERMINATION_ID,&fut,sizeof(Future));
       }
+      // enable the idle task
+      Processor copy = local_proc;
+      copy.enable_idle_task();
+      this->idle_task_enabled = true;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -534,11 +540,16 @@ namespace RegionRuntime {
       if (desc->is_ready())
       {
         desc->mark_ready();
-        // TODO: Jump straight to chosing where to put it
+        // Figure out where to place this task
+        // If local put it in the ready queue (otherwise it's already been sent away)
+        if (target_task(desc))
+        {
+          add_to_ready_queue(desc);
+        }
       }
       else
       {
-        waiting_queue.push_back(desc);
+        add_to_waiting_queue(desc);
       }
 
       return Future(&desc->future);
@@ -578,11 +589,16 @@ namespace RegionRuntime {
       if (desc->is_ready())
       {
         desc->mark_ready();
-        // TODO: Jump straight to chosing where to put it
+        // Figure out where to place this task
+        // If local put it in the ready queue (otherwise it's already been sent away)
+        if (target_task(desc))
+        {
+          add_to_ready_queue(desc); 
+        }
       }
       else
       {
-        waiting_queue.push_back(desc);
+        add_to_waiting_queue(desc);
       }
 
       return Future(&desc->future);
@@ -818,6 +834,7 @@ namespace RegionRuntime {
         {
           mapper_objects[i] = NULL;
           mapper_locks[i] = Lock::NO_LOCK;
+          outstanding_steals[i] = std::set<Processor>();
         }
       } 
 #ifdef DEBUG_HIGH_LEVEL
@@ -836,6 +853,7 @@ namespace RegionRuntime {
       AutoLock map_lock(mapping_lock);
       delete mapper_objects[0];
       mapper_objects[0] = m;
+      outstanding_steals[0].clear();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -905,6 +923,55 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::add_to_ready_queue(TaskContext *ctx, bool acquire_lock)
+    //--------------------------------------------------------------------------------------------
+    {
+      if (!acquire_lock)
+      {
+        AutoLock q_lock(queue_lock);
+        // Put it on the ready_queue
+        ready_queue.push_back(ctx);
+        // enable the idle task so it will get scheduled
+        if (!idle_task_enabled)
+        {
+          Processor copy = local_proc;
+          copy.enable_idle_task();
+        }
+        // advertise the task to any people looking for it
+        advertise(ctx->map_id);
+      }
+      else
+      {
+        // Assume we already have the lock
+        ready_queue.push_back(ctx);
+        // enable the idle task
+        if (!idle_task_enabled)
+        {
+          Processor copy = local_proc;
+          copy.enable_idle_task();
+        }
+        // advertise the task to any people looking for it
+        advertise(ctx->map_id);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::add_to_waiting_queue(TaskContext *ctx)
+    //--------------------------------------------------------------------------------------------
+    {
+      AutoLock q_lock(queue_lock);
+      // Put it on the waiting queue
+      waiting_queue.push_back(ctx);
+      // enable the idle task so it will get scheduled eventually
+      if (!idle_task_enabled)
+      {
+        Processor copy = local_proc;
+        copy.enable_idle_task();
+      }
+      // No need to advertise this yet since it can't be stolen
+    }
+
+    //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::free_context(TaskContext *ctx)
     //--------------------------------------------------------------------------------------------
     {
@@ -927,18 +994,6 @@ namespace RegionRuntime {
       // First get the processor that this comes from
       Processor source = *((const Processor*)buffer);
       buffer += sizeof(Processor); 
-      // Check to see if the source processor is on our list of failed steals, if so
-      // a steal no longer failed.  Note that if a task was explicitly sent to us, it
-      // might not have been a steal request, but at least there is work there, so
-      // attempting a steal on the source processor is not a bad thing.
-      {
-        AutoLock steal_lock(stealing_lock);
-        std::set<Processor>::iterator finder = failed_steals.find(source);
-        if (finder != failed_steals.end())
-        {
-          failed_steals.erase(finder);
-        }
-      }
       // Then get the number of tasks to process
       int num_tasks = *((const int*)buffer);
       buffer += sizeof(int);
@@ -948,10 +1003,21 @@ namespace RegionRuntime {
         // Add the task description to the task queue
         TaskContext *desc = get_available_context(true/*new tree*/);
         desc->unpack_task(buffer);
+        add_to_ready_queue(desc);
+        // check to see if this is a steal result coming back
+        if (desc->stolen)
         {
-          // Take the lock when adding to the ready queue
-          AutoLock q_lock(queue_lock);
-          ready_queue.push_back(desc);
+          AutoLock steal_lock(stealing_lock);
+          // Check to see if we've already cleared our outstanding steal request
+#ifdef DEBUG_HIGH_LEVEL
+          assert(desc->map_id < mapper_objects.size());
+#endif
+          std::set<Processor> &outstanding = outstanding_steals[desc->map_id];
+          std::set<Processor>::iterator finder = outstanding.find(source);
+          if (finder != outstanding.end())
+          {
+            outstanding.erase(finder);
+          }
         }
         log_task(LEVEL_DEBUG,"HLR on processor %d adding task %d with unique id %d from orig %d",
                               desc->local_proc.id,desc->task_id,desc->unique_id,desc->orig_proc.id);
@@ -1013,13 +1079,22 @@ namespace RegionRuntime {
           }
           // Add the results to the set of stolen tasks
           // Do this explicitly since we need to upcast the pointers
-          for (std::set<const Task*>::iterator it = to_steal.begin();
-                it != to_steal.end(); it++)
+          if (!to_steal.empty())
           {
-            // Mark the task as stolen
-            Task *t = const_cast<Task*>(*it);
-            t->stolen = true;
-            stolen.insert(static_cast<TaskContext*>(t));
+            for (std::set<const Task*>::iterator it = to_steal.begin();
+                  it != to_steal.end(); it++)
+            {
+              // Mark the task as stolen
+              Task *t = const_cast<Task*>(*it);
+              t->stolen = true;
+              stolen.insert(static_cast<TaskContext*>(t));
+            }
+          }
+          else
+          {
+            AutoLock thief_lock(thieving_lock);
+            // Mark a failed steal attempt
+            failed_thiefs.insert(std::pair<MapperID,Processor>(stealer,thief));
           }
         }
 
@@ -1038,7 +1113,7 @@ namespace RegionRuntime {
       // We've now got our tasks to steal
       if (!stolen.empty())
       {
-        size_t total_buffer_size = sizeof(Processor) + sizeof(int);
+        size_t total_buffer_size = 2*sizeof(Processor) + sizeof(int);
         // Count up the size of elements to steal
         for (std::set<TaskContext*>::iterator it = stolen.begin();
                 it != stolen.end(); it++)
@@ -1048,7 +1123,9 @@ namespace RegionRuntime {
         // Allocate the buffer
         char * target_buffer = (char*)malloc(total_buffer_size);
         char * target_ptr = target_buffer;
-        *((Processor*)target_ptr) = local_proc;
+        *((Processor*)target_ptr) = thief; // actual theif processor 
+        target_ptr += sizeof(Processor);
+        *((Processor*)target_ptr) = local_proc; // this processor
         target_ptr += sizeof(Processor);
         *((int*)target_ptr) = int(stolen.size());
         target_ptr += sizeof(int);
@@ -1058,8 +1135,10 @@ namespace RegionRuntime {
         {
           (*it)->pack_task(target_ptr);
         }
+        // Send the task the theif's utility processor
+        Processor utility = thief.get_utility_processor();
         // Invoke the task on the right processor to send tasks back
-        thief.spawn(ENQUEUE_TASK_ID, target_buffer, total_buffer_size);
+        utility.spawn(ENQUEUE_TASK_ID, target_buffer, total_buffer_size);
 
         // Clean up our mess
         free(target_buffer);
@@ -1075,14 +1154,6 @@ namespace RegionRuntime {
           if ((*it)->remote)
             (*it)->deactivate();
         }
-      }
-      else
-      {
-        // Record the failed steal attempt so we can tell the theif
-        // when we have more work to do
-        // Need the write lock on failed thiefs
-        AutoLock steal_lock(stealing_lock);
-        failed_thiefs.insert(thief);
       }
     }
 
@@ -1156,16 +1227,21 @@ namespace RegionRuntime {
     void HighLevelRuntime::process_advertisement(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
+      const char *ptr = (const char *)args;
       // Get the processor that is advertising work
-      Processor advertiser = *((const Processor*)args);
+      Processor advertiser = *((const Processor*)ptr);
+      ptr += sizeof(MapperID);
+      MapperID map_id = *((const MapperID*)ptr);
       // Need exclusive access to the list steal data structures
       AutoLock steal_lock(stealing_lock);
-      // If it is on our list of failed steals, remove it
-      std::set<Processor>::iterator finder = failed_steals.find(advertiser);
-      if (finder != failed_steals.end())
-      {
-        failed_steals.erase(finder);
-      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(outstanding_steals.find(map_id) != outstanding_steals.end());
+#endif
+      std::set<Processor> &procs = outstanding_steals[map_id];
+#ifdef DEBUG_HIGH_LEVEL
+      assert(procs.find(advertiser) != procs.end()); // This should be in our outstanding list
+#endif
+      procs.erase(advertiser);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1184,110 +1260,51 @@ namespace RegionRuntime {
       // Get the lock for the ready queue lock in exclusive mode
       Event lock_event = queue_lock.lock(0,true);
       lock_event.wait();
-      while (!ready_queue.empty())
+      while (!ready_queue.empty() && (mapped_tasks<MAX_TASK_MAPS_PER_STEP))
       {
 	DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_SCHEDULER);
         TaskContext *task = ready_queue.front();
         ready_queue.pop_front();
-        // Release the queue lock
+        // Release the queue lock (maybe make this locking more efficient)
         queue_lock.unlock();
         // Check to see if this task has been chosen already
-        if (task->chosen)
+        // If not, then check to see if it is local, if it is
+        // then map it here (otherwise it has already been sent away)
+        if (task->chosen || target_task(task))
         {
           mapped_tasks++;
           // Now map the task and then launch it on the processor
           task->map_and_launch();
           // Check the waiting queue for new tasks to move onto our ready queue
-          bool more_work = update_queue();
-          // If we've launched enough tasks, return
-          if (mapped_tasks == MAX_TASK_MAPS_PER_STEP)
-          {
-            // If we've launched enough tasks and we still have leftovers
-            // notify our failed stealers that we have more work
-            // Get stealing lock in exclusive mode for accessing stealing data structures
-            {
-              AutoLock steal_lock(stealing_lock);
-              // Note there is a race here on more_work as the work might be gone
-              // by the time we sent the ads, but it won't affect correctness
-              if (more_work && !failed_thiefs.empty())
-                advertise();
-            }
-            return;
-          }
-        }
-        else
-        {
-          // ask the mapper for where to place the task
-          // Need to acquire the necessary mapper locks
-          Processor target;
-          {
-            AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
-            AutoLock mapper_lock(mapper_locks[task->map_id]);
-            target = mapper_objects[task->map_id]->select_initial_processor(task);
-          }
-#ifdef DEBUG_HIGH_LEVEL
-          assert(target.exists());
-#endif
-          task->chosen = true;
-          if (target == local_proc)
-          {
-            mapped_tasks++;
-            // Now map the task and then launch it on the processor
-            task->map_and_launch();
-            // Check the waiting queue for new tasks to move onto our ready queue
-            bool more_work = update_queue();
-            // If we've launched enough tasks, return
-            if (mapped_tasks == MAX_TASK_MAPS_PER_STEP) 
-            {
-              // If we've launched enough tasks and we still have leftovers
-              // notify our failed stealers that we have more work
-              // Get stealing lock in exclusive mode for accessing stealing data structures
-              {
-                AutoLock steal_lock(stealing_lock);
-                // Note there is a race here on more_work as the work might be gone
-                // by the time we send the ads, but it won't affect correctness
-                if (more_work && !failed_thiefs.empty())
-                  advertise();
-              }
-              return;
-            }
-          }
-          else
-          {
-            // Send the task to the target processor
-            size_t buffer_size = sizeof(Processor)+sizeof(int)+task->compute_task_size();
-            void * buffer = malloc(buffer_size);
-            char * ptr = (char*)buffer;
-            *((Processor*)ptr) = local_proc;
-            ptr += sizeof(Processor);
-            *((int*)ptr) = 1; // We're only sending one task
-            ptr += sizeof(int); 
-            task->pack_task(ptr);
-            // Send the task to the target processor, no need to wait on anything
-            target.spawn(ENQUEUE_TASK_ID,buffer,buffer_size);
-            // Clean up our mess
-            free(buffer);
-          }
+          update_queue();
         }
         // Need to acquire the lock for the next time we go around the loop
         lock_event = queue_lock.lock(0,true/*exclusive*/);
         lock_event.wait();
       }
+      // Check to see if have any remaining work in our queues, 
+      // if not, then disable the idle task
+      if (ready_queue.empty() && waiting_queue.empty())
+      {
+        idle_task_enabled = false;
+        Processor copy = local_proc;
+        copy.disable_idle_task();
+      }
       // If we make it here, we can unlock the queue lock
       queue_lock.unlock();
+      // If we mapped enough tasks, we can return now
+      if (mapped_tasks == MAX_TASK_MAPS_PER_STEP)
+        return;
       // If we've made it here, we've run out of work to do on our local processor
       // so we need to issue a steal request to another processor
       // Check that we don't have any outstanding steal requests
-      if (!check_steal_requests()) {
-        issue_steal_requests(); 
-      }
+      issue_steal_requests(); 
     }
 
     //--------------------------------------------------------------------------------------------
-    bool HighLevelRuntime::update_queue(void)
+    void HighLevelRuntime::update_queue(void)
     //--------------------------------------------------------------------------------------------
     {
-      bool result;
       {
         // Need the queue lock in exclusive mode
         AutoLock ready_queue_lock(queue_lock);
@@ -1302,7 +1319,7 @@ namespace RegionRuntime {
             // pre copy operations
             desc->mark_ready();
             // Push it onto the ready queue
-            ready_queue.push_back(desc);
+            add_to_ready_queue(desc, false/*already hold lock*/);
             // Remove it from the waiting queue
             task_it = waiting_queue.erase(task_it);
           }
@@ -1311,7 +1328,6 @@ namespace RegionRuntime {
             task_it++;
           }
         }
-        result = !ready_queue.empty();
       }
       // Also check any of the mapping operations that we need to perform to
       // see if they are ready to be performed.  If so we can just perform them here
@@ -1331,75 +1347,104 @@ namespace RegionRuntime {
           map_it++;
         }
       }
-      return result;
     }
 
     //--------------------------------------------------------------------------------------------
-    bool HighLevelRuntime::check_steal_requests(void)
+    bool HighLevelRuntime::target_task(TaskContext *task)
     //--------------------------------------------------------------------------------------------
     {
-      // Check to see if there are any possible processors we can steal from
-      if (failed_steals.size() == max_failed_steals)
+      Processor target;
       {
-        // Can't steal from anything
+        // Need to get access to array of mappers
+        AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
+        AutoLock mapper_lock(mapper_locks[task->map_id]);
+        target = mapper_objects[task->map_id]->select_initial_processor(task);
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(target.exists());
+#endif
+      // Mark that we selected a target processor for this task
+      task->chosen = true;
+      if (target != local_proc)
+      {
+        // We need to send the task to its remote target
+        // First get the utility processor for the target
+        Processor utility = target.get_utility_processor();
+
+        // Package up the task and send it
+        size_t buffer_size = 2*sizeof(Processor)+sizeof(int)+task->compute_task_size();
+        void * buffer = malloc(buffer_size);
+        char * ptr = (char*)buffer;
+        *((Processor*)ptr) = target; // The actual target processor
+        ptr += sizeof(Processor);
+        *((Processor*)ptr) = local_proc; // The origin processor
+        ptr += sizeof(Processor);
+        *((int*)ptr) = 1; // We're only sending one task
+        ptr += sizeof(int);
+        task->pack_task(ptr);
+        // Send the task to the utility processor
+        utility.spawn(ENQUEUE_TASK_ID,buffer,buffer_size);
+        // Clean up our mess
+        free(buffer);
+
         return false;
       }
-      // Iterate over the steal requests seeing if any of triggered
-      // and removing them if they have
-      std::list<Event>::iterator it = outstanding_steal_events.begin();
-      while (it != outstanding_steal_events.end())
+      else
       {
-        if (it->has_triggered())
-        {
-          // This moves us to the next element in the list
-          it = outstanding_steal_events.erase(it);
-        }
-        else
-        {
-          it++;
-        }
+        // Task can be kept local
+        return true;
       }
-      // Return true if there are still outstanding steal requests to be run
-      return (!outstanding_steal_events.empty());
     }
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::issue_steal_requests(void)
     //--------------------------------------------------------------------------------------------
     {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_ISSUE_STEAL);
       // Iterate through the mappers asking them which processor to steal from
       std::multimap<Processor,MapperID> targets;
-      for (unsigned i=0; i<mapper_objects.size(); i++)
       {
-        if (mapper_objects[i] == NULL) 
-          continue;
-        Processor p = mapper_objects[i]->target_task_steal();
-        // Check that the processor exists and isn't us
-        if (p.exists() && !(p==local_proc))
-          targets.insert(std::pair<Processor,MapperID>(p,(MapperID)i));
+        // First get the stealing lock, then get the lock for the map vector
+        AutoLock steal_lock(stealing_lock);
+        // Only need this lock in read-only mode
+        AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
+        for (unsigned i=0; i<mapper_objects.size(); i++)
+        {
+          // If no mapper, or mapper has exceeded maximum outstanding steal requests
+          std::set<Processor> &blacklist = outstanding_steals[i];
+          if (mapper_objects[i] == NULL || (blacklist.size() > max_outstanding_steals)) 
+            continue;
+          Processor p = Processor::NO_PROC;
+          {
+            // Need to get the individual mapper lock
+            AutoLock mapper_lock(mapper_locks[i]);
+            p = mapper_objects[i]->target_task_steal(blacklist);
+          }
+          std::set<Processor>::const_iterator finder = blacklist.find(p);
+          // Check that the processor exists and isn't us and isn't already on the blacklist
+          if (p.exists() && !(p==local_proc) && (finder == blacklist.end()))
+          {
+            targets.insert(std::pair<Processor,MapperID>(p,(MapperID)i));
+            // Update the list of oustanding steal requests
+            blacklist.insert(p);
+          }
+        }
       }
       // For each processor go through and find the list of mappers to send
       for (std::multimap<Processor,MapperID>::const_iterator it = targets.begin();
             it != targets.end(); )
       {
-        // Check to make sure that the processor isn't on the list of failed
-        // steal requests
-        if (failed_steals.find(it->first) != failed_steals.end())
-        {
-          Processor target = it->first;
-          // Count past everything using this processor
-          while (it != targets.upper_bound(target)) it++;
-          continue;
-        }
-        DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_ISSUE_STEAL);
         Processor target = it->first;
         int num_mappers = targets.count(target);
         log_task(LEVEL_SPEW,"Processor %d attempting steal on processor %d",
                               local_proc.id,target.id);
-        size_t buffer_size = sizeof(Processor)+sizeof(int)+num_mappers*sizeof(MapperID);
+        size_t buffer_size = 2*sizeof(Processor)+sizeof(int)+num_mappers*sizeof(MapperID);
         // Allocate a buffer for launching the steal task
         void * buffer = malloc(buffer_size); 
         char * buf_ptr = (char*)buffer;
+        // Give the actual target processor
+        *((Processor*)buf_ptr) = target;
+        buf_ptr += sizeof(Processor);
         // Give the stealing (this) processor
         *((Processor*)buf_ptr) = local_proc;
         buf_ptr += sizeof(Processor); 
@@ -1414,28 +1459,50 @@ namespace RegionRuntime {
         if (it != targets.end())
           assert(!((target.id) == (it->first.id)));
 #endif
+        // Get the utility processor to send the steal request to
+        Processor utility = target.get_utility_processor();
         // Now launch the task to perform the steal operation
-        Event steal = target.spawn(STEAL_TASK_ID,buffer,buffer_size);
-        // Enqueue the steal request on the list of oustanding steals
-        outstanding_steal_events.push_back(steal);
-        // Also add this to the list of failed steals in case it never comes back
-        failed_steals.insert(target);
+        utility.spawn(STEAL_TASK_ID,buffer,buffer_size);
         // Clean up our mess
         free(buffer);
       }
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::advertise(void)
+    void HighLevelRuntime::advertise(MapperID map_id)
     //--------------------------------------------------------------------------------------------
     {
-      // Lock acquired from callsite
-      for (std::set<Processor>::iterator it = failed_thiefs.begin();
-            it != failed_thiefs.end(); it++)
+      // Check to see if we have any failed thieves with the mapper id
+      AutoLock theif_lock(thieving_lock);
+      if (failed_thiefs.lower_bound(map_id) != failed_thiefs.upper_bound(map_id))
       {
-        (*it).spawn(ADVERTISEMENT_ID,&local_proc,sizeof(Processor));  
+        size_t buffer_size = 2*sizeof(Processor)+sizeof(MapperID);
+        void * buffer = malloc(buffer_size);
+        {
+          // Initialize the buffer with everything but the target pointer
+          char * buf_ptr = (char*)buffer;
+          buf_ptr += sizeof(Processor);
+          *((Processor*)buf_ptr) = local_proc; // This processor
+          buf_ptr += sizeof(Processor);
+          *((MapperID*)buf_ptr) = map_id;
+        }
+
+        for (std::multimap<MapperID,Processor>::iterator it = failed_thiefs.lower_bound(map_id);
+              it != failed_thiefs.upper_bound(map_id); it++)
+        {
+          // Send a message to the processor saying that a specific mapper has work now
+          char * buf_ptr = (char*)buffer;
+          *((Processor*)buf_ptr) = it->second; // The actual target processor
+          // Get the utility processor to send the advertisement to 
+          Processor utility = it->second.get_utility_processor();
+          // Send the advertisement
+          utility.spawn(ADVERTISEMENT_ID,buffer,buffer_size);
+        }
+        // Now we can free our buffer
+        free(buffer);
+        // Erase all the failed theives
+        failed_thiefs.erase(failed_thiefs.lower_bound(map_id),failed_thiefs.upper_bound(map_id));
       }
-      failed_thiefs.clear();
     }
 
   };
