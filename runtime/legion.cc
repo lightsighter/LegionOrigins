@@ -843,6 +843,7 @@ namespace RegionRuntime {
       assert(id < mapper_objects.size());
       assert(mapper_objects[id] == NULL);
 #endif
+      AutoLock mapper_lock(mapper_locks[id]);
       mapper_objects[id] = m;
       mapper_locks[id] = Lock::create_lock();
     }
@@ -853,6 +854,7 @@ namespace RegionRuntime {
     {
       // Take an exclusive lock on the mapper data structure
       AutoLock map_lock(mapping_lock);
+      AutoLock mapper_lock(mapper_locks[0]);
       delete mapper_objects[0];
       mapper_objects[0] = m;
       outstanding_steals[0].clear();
@@ -992,19 +994,19 @@ namespace RegionRuntime {
     void HighLevelRuntime::process_tasks(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
-      Deserializer des(args,arglen);
+      Deserializer derez(args,arglen);
       // First get the processor that this comes from
       Processor source;
-      des.deserialize<Processor>(source);
+      derez.deserialize<Processor>(source);
       // Then get the number of tasks to process
       int num_tasks; 
-      des.deserialize<int>(num_tasks);
+      derez.deserialize<int>(num_tasks);
       // Unpack each of the tasks
       for (int i=0; i<num_tasks; i++)
       {
         // Add the task description to the task queue
         TaskContext *ctx= get_available_context(true/*new tree*/);
-        ctx->unpack_task(des);
+        ctx->unpack_task(derez);
         add_to_ready_queue(ctx);
         // check to see if this is a steal result coming back
         if (ctx->stolen)
@@ -1030,13 +1032,13 @@ namespace RegionRuntime {
     void HighLevelRuntime::process_steal(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
-      const char * buffer = ((const char*)args);
+      Deserializer derez(args,arglen);
       // Unpack the stealing processor
-      Processor thief = *((Processor*)buffer);	
-      buffer += sizeof(Processor);
+      Processor thief;
+      derez.deserialize<Processor>(thief);	
       // Get the number of mappers that requested this processor for stealing 
-      int num_stealers = *((int*)buffer);
-      buffer += sizeof(int);
+      int num_stealers;
+      derez.deserialize<int>(num_stealers);
       log_task(LEVEL_SPEW,"handling a steal request on processor %d from processor %d",
               local_proc.id,thief.id);
 
@@ -1049,7 +1051,8 @@ namespace RegionRuntime {
         for (int i=0; i<num_stealers; i++)
         {
           // Get the mapper id out of the buffer
-          MapperID stealer = *((MapperID*)buffer);
+          MapperID stealer;
+          derez.deserialize<MapperID>(stealer);
           
           // Handle a race condition here where some processors can issue steal
           // requests to another processor before the mappers have been initialized
@@ -1122,20 +1125,20 @@ namespace RegionRuntime {
         {
           total_buffer_size += (*it)->compute_task_size();
         }
-        Serializer ser(total_buffer_size);
-        ser.serialize<Processor>(thief); // actual thief processor
-        ser.serialize<Processor>(local_proc); // this processor
-        ser.serialize<int>(stolen.size());
+        Serializer rez(total_buffer_size);
+        rez.serialize<Processor>(thief); // actual thief processor
+        rez.serialize<Processor>(local_proc); // this processor
+        rez.serialize<int>(stolen.size());
         // Write the task descriptions into memory
         for (std::set<TaskContext*>::iterator it = stolen.begin();
                 it != stolen.end(); it++)
         {
-          (*it)->pack_task(ser);
+          (*it)->pack_task(rez);
         }
         // Send the task the theif's utility processor
         Processor utility = thief.get_utility_processor();
         // Invoke the task on the right processor to send tasks back
-        utility.spawn(ENQUEUE_TASK_ID, ser.get_buffer(), total_buffer_size);
+        utility.spawn(ENQUEUE_TASK_ID, rez.get_buffer(), total_buffer_size);
 
         // Delete any remote tasks that we will no longer have a reference to
         for (std::set<TaskContext*>::iterator it = stolen.begin();
@@ -1221,11 +1224,12 @@ namespace RegionRuntime {
     void HighLevelRuntime::process_advertisement(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
-      const char *ptr = (const char *)args;
+      Deserializer derez(args,arglen);
       // Get the processor that is advertising work
-      Processor advertiser = *((const Processor*)ptr);
-      ptr += sizeof(MapperID);
-      MapperID map_id = *((const MapperID*)ptr);
+      Processor advertiser;
+      derez.deserialize<Processor>(advertiser);
+      MapperID map_id;
+      derez.deserialize<MapperID>(map_id);
       // Need exclusive access to the list steal data structures
       AutoLock steal_lock(stealing_lock);
 #ifdef DEBUG_HIGH_LEVEL
@@ -1367,13 +1371,13 @@ namespace RegionRuntime {
 
         // Package up the task and send it
         size_t buffer_size = 2*sizeof(Processor)+sizeof(int)+task->compute_task_size();
-        Serializer ser(buffer_size);
-        ser.serialize<Processor>(target); // The actual target processor
-        ser.serialize<Processor>(local_proc); // The origin processor
-        ser.serialize<int>(1); // We're only sending one task
-        task->pack_task(ser);
+        Serializer rez(buffer_size);
+        rez.serialize<Processor>(target); // The actual target processor
+        rez.serialize<Processor>(local_proc); // The origin processor
+        rez.serialize<int>(1); // We're only sending one task
+        task->pack_task(rez);
         // Send the task to the utility processor
-        utility.spawn(ENQUEUE_TASK_ID,ser.get_buffer(),buffer_size);
+        utility.spawn(ENQUEUE_TASK_ID,rez.get_buffer(),buffer_size);
 
         return false;
       }
@@ -1428,20 +1432,15 @@ namespace RegionRuntime {
                               local_proc.id,target.id);
         size_t buffer_size = 2*sizeof(Processor)+sizeof(int)+num_mappers*sizeof(MapperID);
         // Allocate a buffer for launching the steal task
-        void * buffer = malloc(buffer_size); 
-        char * buf_ptr = (char*)buffer;
+        Serializer rez(buffer_size);
         // Give the actual target processor
-        *((Processor*)buf_ptr) = target;
-        buf_ptr += sizeof(Processor);
+        rez.serialize<Processor>(target);
         // Give the stealing (this) processor
-        *((Processor*)buf_ptr) = local_proc;
-        buf_ptr += sizeof(Processor); 
-        *((int*)buf_ptr) = num_mappers;
-        buf_ptr += sizeof(int);
+        rez.serialize<Processor>(local_proc);
+        rez.serialize<int>(num_mappers);
         for ( ; it != targets.upper_bound(target); it++)
         {
-          *((MapperID*)buf_ptr) = it->second;
-          buf_ptr += sizeof(MapperID);
+          rez.serialize<MapperID>(it->second);
         }
 #ifdef DEBUG_HIGH_LEVEL
         if (it != targets.end())
@@ -1450,9 +1449,7 @@ namespace RegionRuntime {
         // Get the utility processor to send the steal request to
         Processor utility = target.get_utility_processor();
         // Now launch the task to perform the steal operation
-        utility.spawn(STEAL_TASK_ID,buffer,buffer_size);
-        // Clean up our mess
-        free(buffer);
+        utility.spawn(STEAL_TASK_ID,rez.get_buffer(),buffer_size);
       }
     }
 
@@ -1465,34 +1462,24 @@ namespace RegionRuntime {
       if (failed_thiefs.lower_bound(map_id) != failed_thiefs.upper_bound(map_id))
       {
         size_t buffer_size = 2*sizeof(Processor)+sizeof(MapperID);
-        void * buffer = malloc(buffer_size);
-        {
-          // Initialize the buffer with everything but the target pointer
-          char * buf_ptr = (char*)buffer;
-          buf_ptr += sizeof(Processor);
-          *((Processor*)buf_ptr) = local_proc; // This processor
-          buf_ptr += sizeof(Processor);
-          *((MapperID*)buf_ptr) = map_id;
-        }
 
         for (std::multimap<MapperID,Processor>::iterator it = failed_thiefs.lower_bound(map_id);
               it != failed_thiefs.upper_bound(map_id); it++)
         {
+          Serializer rez(buffer_size);
           // Send a message to the processor saying that a specific mapper has work now
-          char * buf_ptr = (char*)buffer;
-          *((Processor*)buf_ptr) = it->second; // The actual target processor
+          rez.serialize<Processor>(it->second); // The actual target processor
+          rez.serialize<Processor>(local_proc); // This processor
+          rez.serialize<MapperID>(map_id);
           // Get the utility processor to send the advertisement to 
           Processor utility = it->second.get_utility_processor();
           // Send the advertisement
-          utility.spawn(ADVERTISEMENT_ID,buffer,buffer_size);
+          utility.spawn(ADVERTISEMENT_ID,rez.get_buffer(),buffer_size);
         }
-        // Now we can free our buffer
-        free(buffer);
         // Erase all the failed theives
         failed_thiefs.erase(failed_thiefs.lower_bound(map_id),failed_thiefs.upper_bound(map_id));
       }
     }
-
 
     ///////////////////////////////////////////
     // Serializer
