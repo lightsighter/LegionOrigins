@@ -89,6 +89,8 @@ namespace RegionRuntime {
     class AbstractInstance;
     class InstanceInfo;
     class RestoringCopy;
+    class Serializer;
+    class Deserializer;
 
     // Some typedefs
     typedef LowLevel::Machine Machine;
@@ -530,6 +532,9 @@ namespace RegionRuntime {
     private:
       TaskContext* get_available_context(bool new_tree);
       RegionMappingImpl* get_available_mapping(const RegionRequirement &req);
+    private:
+      void add_to_ready_queue(TaskContext *ctx, bool acquire_lock = true);
+      void add_to_waiting_queue(TaskContext *ctx);
     protected:
       // Make it so TaskContext and RegionMappingImpl can put themselves
       // back on the free list
@@ -549,10 +554,10 @@ namespace RegionRuntime {
       void process_advertisement(const void * args, size_t arglen); 
       // Where the magic happens!
       void process_schedule_request(void); 
-      bool update_queue(void); // Return if ready queue has work
-      bool check_steal_requests(void);
+      void update_queue(void); 
+      bool target_task(TaskContext *ctx); // Select a target processor, return true if local 
       void issue_steal_requests(void);
-      void advertise(void); // Advertise work when we have it
+      void advertise(MapperID map_id); // Advertise work when we have it for a given mapper
     private:
       // Static variables
       static HighLevelRuntime *runtime_map;
@@ -565,9 +570,10 @@ namespace RegionRuntime {
       std::vector<Lock> mapper_locks;
       Lock mapping_lock; // Protect mapping data structures
       // Task Contexts
+      bool idle_task_enabled; // Keep track if the idle task enabled or not
       std::list<TaskContext*> ready_queue; // Tasks ready to be mapped/stolen
       std::list<TaskContext*> waiting_queue; // Tasks still unmappable
-      Lock queue_lock; // Protect ready and waiting queues
+      Lock queue_lock; // Protect ready and waiting queues and idle_task_enabled
       std::list<TaskContext*> available_contexts; // open task descriptions
       Lock available_lock; // Protect available contexts
       // Region Mappings
@@ -578,11 +584,11 @@ namespace RegionRuntime {
       TaskID next_task_id; // Give all tasks a unique id for debugging purposes
       const unsigned unique_stride; // Stride for ids to guarantee uniqueness
       // Information for stealing
-      const unsigned int max_failed_steals;
-      std::set<Processor> failed_steals;
-      std::set<Processor> failed_thiefs;
-      std::list<Event> outstanding_steal_events; // steal tasks to run
-      Lock stealing_lock; // Protect stealing information
+      const unsigned int max_outstanding_steals;
+      std::map<MapperID,std::set<Processor> > outstanding_steals;
+      Lock stealing_lock;
+      std::multimap<MapperID,Processor> failed_thiefs;
+      Lock thieving_lock;
     };
 
     /////////////////////////////////////////////////////////////
@@ -606,7 +612,7 @@ namespace RegionRuntime {
 
       virtual Processor select_initial_processor(const Task *task);
 
-      virtual Processor target_task_steal(void);
+      virtual Processor target_task_steal(const std::set<Processor> &blacklisted);
 
       virtual void permit_task_steal( Processor theif, const std::vector<const Task*> &tasks,
                                       std::set<const Task*> &to_steal);
@@ -824,6 +830,37 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////////////// 
     class RestoringCopy {
 
+    };
+
+    /////////////////////////////////////////////////////////////
+    // Serializer 
+    /////////////////////////////////////////////////////////////
+    class Serializer {
+    protected:
+      Serializer(size_t buffer_size);
+      ~Serializer(void);
+    protected:
+      template<typename T>
+      void serialize(T element);
+      const void* get_buffer(void) const;
+    private:
+      void *const buffer;
+      char *location;
+    };
+
+    /////////////////////////////////////////////////////////////
+    // Deserializer 
+    /////////////////////////////////////////////////////////////
+    class Deserializer {
+    protected:
+      Deserializer(const void *buffer);
+      ~Deserializer(void);
+    protected:
+      template<typename T>
+      void deserialize(T &element) const;
+    private:
+      void *const buffer;
+      char *location;
     };
 
     /////////////////////////////////////////////////////////////////////////////////
