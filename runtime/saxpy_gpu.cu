@@ -23,8 +23,6 @@ namespace Config {
 enum {
   TASKID_MAIN = TASK_ID_AVAILABLE,
   TASKID_INIT_VECTORS,
-  TASKID_VALIDATE,
-  TASKID_VALIDATE_GLOBAL,
   TASKID_ADD_VECTORS,
   TASKID_CHECK_CORRECT,
 };
@@ -47,10 +45,6 @@ struct VectorRegions {
   unsigned num_elems;
   float alpha;
   LogicalHandle r_x, r_y, r_z;
-};
-
-struct ValResult {
-  bool flag;
 };
 
 struct CheckResult {
@@ -85,32 +79,6 @@ void top_level_task(const void *args, size_t arglen,
   Future f = runtime->execute_task(ctx, TASKID_MAIN, main_regions,
 				   &vr, sizeof(VectorRegions), false, 0, 0);
   f.get_void_result();
-}
-
-template<AccessorType AT>
-void do_validation(VectorRegions *vr, std::vector<Block> &blocks,
-		   Context ctx, HighLevelRuntime *runtime, bool global) {
-  std::vector<Future> futures;
-  for (unsigned i = 0; i < Config::num_blocks; i++) {
-    std::vector<RegionRequirement> validate_regions;
-    validate_regions.push_back(RegionRequirement(blocks[i].r_x, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_x));
-    validate_regions.push_back(RegionRequirement(blocks[i].r_y, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_y));
-
-    unsigned task_id = global ? TASKID_VALIDATE_GLOBAL : TASKID_VALIDATE;
-    Future f = runtime->execute_task(ctx, task_id, validate_regions,
-				     &(blocks[i]), sizeof(Block), false, 0, i);
-    futures.push_back(f);
-  }
-
-  unsigned validate_fail = 0;
-  for (unsigned i = 0; i < Config::num_blocks; i++) {
-    ValResult result = futures[i].template get_result<ValResult>();
-    if (result.flag)
-      validate_fail++;
-  }
-
-  if (validate_fail > 0)
-    printf("VALIDATION FAILED = %u (global = %u)\n", validate_fail, global);
 }
 
 template<AccessorType AT>
@@ -169,11 +137,6 @@ void main_task(const void *args, size_t arglen,
     f.get_void_result();
   }
 
-#ifdef CHECK_CORRECTNESS
-  do_validation<AT>(vr, blocks, ctx, runtime, true);
-  do_validation<AT>(vr, blocks, ctx, runtime, false);
-#endif
-
   printf("STARTING MAIN SIMULATION LOOP\n");
   struct timespec ts_start, ts_end;
   clock_gettime(CLOCK_MONOTONIC, &ts_start);
@@ -201,9 +164,6 @@ void main_task(const void *args, size_t arglen,
   RegionRuntime::DetailedTimer::report_timers();
 
 #ifdef CHECK_CORRECTNESS
-  do_validation<AT>(vr, blocks, ctx, runtime, true);
-  do_validation<AT>(vr, blocks, ctx, runtime, false);
-
   CheckResult result;
   result.max_error = 0;
   result.avg_error = 0;
@@ -263,29 +223,6 @@ void init_vectors_task(const void *args, size_t arglen,
     entry_y.v = get_rand_float();
     r_y.write(block->entry_y[i], entry_y);
   }
-}
-
-template<AccessorType AT>
-ValResult validate_task(const void *args, size_t arglen,
-			const std::vector<PhysicalRegion<AT> > &regions,
-			Context ctx, HighLevelRuntime *runtime) {
-  Block *block = (Block *)args;
-  PhysicalRegion<AT> r_x = regions[0];
-  PhysicalRegion<AT> r_y = regions[1];
-
-  float avg_xabs = 0, avg_yabs = 0;
-  for (unsigned i = 0; i < BLOCK_SIZE; i++) {
-    float x = r_x.read(block->entry_x[i]).v;
-    float y = r_y.read(block->entry_y[i]).v;
-    avg_xabs += fabs(x);
-    avg_yabs += fabs(y);
-  }
-  avg_xabs /= BLOCK_SIZE;
-  avg_yabs /= BLOCK_SIZE;
-
-  ValResult result;
-  result.flag = (avg_xabs < 1e-6 || avg_yabs < 1e-6);
-  return result;
 }
 
 typedef RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorGPU> GPU_Accessor;
@@ -511,10 +448,7 @@ public:
     case TOP_LEVEL_TASK_ID:
     case TASKID_MAIN:
     case TASKID_INIT_VECTORS:
-    case TASKID_VALIDATE_GLOBAL:
       return cpu_mems[0].proc;
-    case TASKID_VALIDATE:
-      return cpu_mems[task->tag % cpu_mems.size()].proc;
     case TASKID_ADD_VECTORS:
       return gpu_mems[task->tag % gpu_mems.size()].proc;
     case TASKID_CHECK_CORRECT:
@@ -550,8 +484,6 @@ public:
     case TOP_LEVEL_TASK_ID:
     case TASKID_MAIN:
     case TASKID_INIT_VECTORS:
-    case TASKID_VALIDATE:
-    case TASKID_VALIDATE_GLOBAL:
       chosen_src = cpu->gasnet;
       dst_ranking.push_back(cpu->gasnet);
       break;
@@ -601,8 +533,6 @@ int main(int argc, char **argv) {
   task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
   task_table[TASKID_MAIN] = high_level_task_wrapper<main_task<AccessorGeneric> >;
   task_table[TASKID_INIT_VECTORS] = high_level_task_wrapper<init_vectors_task<AccessorGeneric> >;
-  task_table[TASKID_VALIDATE] = high_level_task_wrapper<ValResult, validate_task<AccessorGeneric> >;
-  task_table[TASKID_VALIDATE_GLOBAL] = high_level_task_wrapper<ValResult, validate_task<AccessorGeneric> >;
   task_table[TASKID_ADD_VECTORS] = high_level_task_wrapper<add_vectors_task<AccessorGeneric> >;
   task_table[TASKID_CHECK_CORRECT] = high_level_task_wrapper<CheckResult, check_correct_task<AccessorGeneric> >;
 
@@ -618,7 +548,7 @@ int main(int argc, char **argv) {
     }
   }
 
-  printf("saxpy: num elems = %d\n", Config::num_blocks * BLOCK_SIZE);
+  printf("saxpy_gpu: num elems = %d\n", Config::num_blocks * BLOCK_SIZE);
   Config::args_read = true;
 
   m.run();
