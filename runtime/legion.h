@@ -70,6 +70,12 @@ namespace RegionRuntime {
       RELAXED,
     };
 
+    enum ColoringType {
+      SINGULAR_FUNC,  // only a single region
+      EXECUTABLE_FUNC, // interpret union as a function pointer
+      MAPPED_FUNC, // interpret union as a map
+    };
+
     // Forward declarations for user level objects
     class Task;
     class Future;
@@ -91,6 +97,8 @@ namespace RegionRuntime {
     class RestoringCopy;
     class Serializer;
     class Deserializer;
+    class UnsizedConstraint;
+    class UnsizedColorize;
 
     // Some typedefs
     typedef LowLevel::Machine Machine;
@@ -102,13 +110,15 @@ namespace RegionRuntime {
     typedef LowLevel::UserEvent UserEvent;
     typedef LowLevel::Lock Lock;
     typedef LowLevel::ElementMask Mask;
-    typedef LowLevel::DetailedTimer DetailedTimer;
+    typedef LowLevel::Barrier Barrier;
     typedef unsigned int Color;
     typedef unsigned int MapperID;
     typedef unsigned int PartitionID;
     typedef unsigned int TaskID;
+    typedef unsigned int ColorizeID;
     typedef TaskContext* Context;
     typedef void (*MapperCallbackFnptr)(Machine *machine, HighLevelRuntime *rt, Processor local);
+    typedef Color (*ColorizeFnptr)(const std::vector<int> &solution);
 
     ///////////////////////////////////////////////////////////////////////////
     //                                                                       //
@@ -147,7 +157,16 @@ namespace RegionRuntime {
      */
     template<unsigned N>
     struct Vector {
-      int x[N];
+    public:
+      int data[N];
+    public:
+      inline int& operator[](unsigned x)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(x < N);
+#endif
+        return data[x];
+      }
     };
 
     /////////////////////////////////////////////////////////////
@@ -162,20 +181,17 @@ namespace RegionRuntime {
      */
     template<unsigned N>
     struct Constraint {
+    public:
       Vector<N> weights;
       int offset;
+    public:
+      inline int& operator[](unsigned x)
+      {
+        return weights[x];
+      }
     };
 
-    /**
-     * An untyped constraint for use in runtime internals
-     * and calls to the mapper interface because we can't
-     * have templated virtual functions
-     */
-    struct UntypedConstraint {
-      std::vector<int> weights; // dim == N == weights.size()
-      int offset;
-    };
-
+    
     /////////////////////////////////////////////////////////////
     // Task 
     ///////////////////////////////////////////////////////////// 
@@ -263,18 +279,19 @@ namespace RegionRuntime {
       AccessMode        mode;
       AllocateMode      alloc;
       CoherenceProperty prop;
+      LogicalRegion     parent;
       bool verified; // has this been verified already
     public:
       RegionRequirement(void) { }
       RegionRequirement(LogicalRegion _handle, AccessMode _mode,
                         AllocateMode _alloc, CoherenceProperty _prop,
-                        bool _verified = false)
-        : mode(_mode), alloc(_alloc), prop(_prop), 
+                        LogicalRegion _parent, bool _verified = false)
+        : mode(_mode), alloc(_alloc), prop(_prop), parent(_parent),
           verified(_verified) { handle.region = _handle; }
       RegionRequirement(PartitionID pid, AccessMode _mode,
                         AllocateMode _alloc, CoherenceProperty _prop,
-                        bool _verified = false)
-        : mode(_mode), alloc(_alloc), prop(_prop), 
+                        LogicalRegion _parent, bool _verified = false)
+        : mode(_mode), alloc(_alloc), prop(_prop), parent(_parent),
           verified(_verified) { handle.partition = pid; }
     };
 
@@ -292,21 +309,15 @@ namespace RegionRuntime {
     template<unsigned N>
     class ColorizeFunction {
     public:
-      enum ColorType {
-        SINGULAR_FUNC,  // only a single region
-        EXECUTABLE_FUNC, // interpret union as a function pointer
-        MAPPED_FUNC, // interpret union as a map
-      };
-    public:
-      const ColorType func_type; // how to interpret unions
-      union Function_t {
-        Color (*colorize)(Vector<N> v);  // Pointer to a function
+      const ColoringType func_type; // how to interpret unions
+      union ColorizeFunction_t {
+        ColorizeID colorize;
         std::map<Vector<N>,Color> mapping; // An explicit mapping
       } func;
     public:
       ColorizeFunction()
         : func_type(SINGULAR_FUNC) { }
-      ColorizeFunction(Color (*f)(Vector<N> v))
+      ColorizeFunction(ColorizeID f)
         : func_type(EXECUTABLE_FUNC) { func.colorize = f; }
       ColorizeFunction(std::map<Vector<N>,Color> map)
         : func_type(MAPPED_FUNC) { func.mapping = map; }
@@ -525,6 +536,8 @@ namespace RegionRuntime {
       // Functions for managing mappers
       void add_mapper(MapperID id, Mapper *m);
       void replace_default_mapper(Mapper *m);
+      // Functions for registering colorize function
+      ColorizeID register_colorize_function(ColorizeFnptr f);
     public:
       // Methods for the wrapper functions to notify the runtime
       std::vector<PhysicalRegion<AccessorGeneric> > begin_task(Context ctx);
@@ -556,6 +569,7 @@ namespace RegionRuntime {
       void process_schedule_request(void); 
       void update_queue(void); 
       bool target_task(TaskContext *ctx); // Select a target processor, return true if local 
+      bool split_task(TaskContext *ctx); // Return true if still local
       void issue_steal_requests(void);
       void advertise(MapperID map_id); // Advertise work when we have it for a given mapper
     private:
@@ -569,6 +583,8 @@ namespace RegionRuntime {
       std::vector<Mapper*> mapper_objects;
       std::vector<Lock> mapper_locks;
       Lock mapping_lock; // Protect mapping data structures
+      // Colorize Functions
+      std::vector<ColorizeFnptr> colorize_functions;
       // Task Contexts
       bool idle_task_enabled; // Keep track if the idle task enabled or not
       std::list<TaskContext*> ready_queue; // Tasks ready to be mapped/stolen
@@ -589,6 +605,13 @@ namespace RegionRuntime {
       Lock stealing_lock;
       std::multimap<MapperID,Processor> failed_thiefs;
       Lock thieving_lock;
+      // There is a partial ordering on all the locks in the high level runtime
+      // Here are the edges in the lock dependency graph (guarantee no deadlocks)
+      // stealing_lock -> mapping_lock
+      // queue_lock -> mapping_lock
+      // queue_lock -> theiving_lock
+      // queue_lock -> mapper_lock[x]
+      // mapping_lock -> mapper_lock[x]
     };
 
     /////////////////////////////////////////////////////////////
@@ -597,7 +620,7 @@ namespace RegionRuntime {
     class Mapper {
     public:
       struct IndexSplit {
-        std::vector<UntypedConstraint> constraints;
+        std::vector<UnsizedConstraint> constraints;
         Processor p;
         bool recurse;
       };
@@ -614,10 +637,10 @@ namespace RegionRuntime {
 
       virtual Processor target_task_steal(const std::set<Processor> &blacklisted);
 
-      virtual void permit_task_steal( Processor theif, const std::vector<const Task*> &tasks,
+      virtual void permit_task_steal( Processor thief, const std::vector<const Task*> &tasks,
                                       std::set<const Task*> &to_steal);
 
-      virtual void split_index_space(const Task *task, const std::vector<UntypedConstraint> &index_space,
+      virtual void split_index_space(const Task *task, const std::vector<UnsizedConstraint> &index_space,
                                       std::vector<IndexSplit> &chunks);
 
       virtual void map_task_region(const Task *task, const RegionRequirement *req,
@@ -664,7 +687,8 @@ namespace RegionRuntime {
       bool active;
     protected:
       friend class HighlevelRuntime;
-      FutureImpl(Event set_e); // Pass the event that will be set when the future is ready
+      friend class TaskContext;
+      FutureImpl(Event set_e = Event::NO_EVENT); 
       ~FutureImpl(void);
       void reset(Event set_e); // Event that will be set when task is finished
       void set_result(const void *res, size_t result_size);
@@ -707,6 +731,45 @@ namespace RegionRuntime {
       inline bool can_convert(void);
     };
 
+    /**
+     * An untyped constraint for use in runtime internals
+     * and calls to the mapper interface because we can't
+     * have templated virtual functions
+     */
+    struct UnsizedConstraint {
+    public:
+      std::vector<int> weights; // dim == N == weights.size()
+      int offset;
+    public:
+      UnsizedConstraint(int off) : offset(off) { }
+      UnsizedConstraint(int off, const int dim)
+        : weights(std::vector<int>(dim)), offset(off) { }
+    public:
+      inline int& operator[](unsigned x)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(x < weights.size());
+#endif
+        return weights[x];
+      }
+    };
+
+    /**
+     * An unsized coloring function/mapping for being able to pass
+     * the map independent of the number of dimensions.
+     */
+    class UnsizedColorize {
+    public:
+      const ColoringType func_type;
+      ColorizeID colorize;
+      std::map<std::vector<int>,Color> mapping;
+    public:
+      UnsizedColorize(ColoringType t)
+        : func_type(t) { }
+      UnsizedColorize(ColoringType t, ColorizeID ize)
+        : func_type(t), colorize(ize) { }
+    };
+
     /////////////////////////////////////////////////////////////
     // Task Context
     ///////////////////////////////////////////////////////////// 
@@ -719,8 +782,12 @@ namespace RegionRuntime {
       TaskContext(Processor p, HighLevelRuntime *r);
       ~TaskContext();
     protected:
-      void initialize_task(TaskID unique_id, Processor::TaskFuncID task_id, 
-                            void *args, size_t arglen,
+      // functions for reusing task descriptions
+      bool activate(bool new_tree);
+      void deactivate(void);
+    protected:
+      void initialize_task(TaskContext *parent, TaskID unique_id, 
+                            Processor::TaskFuncID task_id, void *args, size_t arglen,
                             MapperID map_id, MappingTagID tag, bool stealable);
       template<unsigned N>
       void set_index_space(const std::vector<Constraint<N> > &index_space, bool must);
@@ -729,14 +796,12 @@ namespace RegionRuntime {
       void set_regions(const std::vector<RegionRequirement> &regions,
                        const std::vector<ColorizeFunction<N> > &functions);
     protected:
-      // functions for reusing task descriptions
-      bool activate(bool new_tree);
-      void deactivate(void);
-    protected:
       // functions for packing and unpacking tasks
       size_t compute_task_size(void) const;
-      void pack_task(Serializer &serializer) const;
-      void unpack_task(Deserializer &deserializer);
+      void pack_task(Serializer &rez) const;
+      void unpack_task(Deserializer &derez);
+      // Return true if this task still has index parts on this machine
+      bool distribute_index_space(std::vector<Mapper::IndexSplit> &chunks);
     protected:
       // functions for updating a task's state
       void register_child_task(TaskContext *desc);
@@ -753,8 +818,7 @@ namespace RegionRuntime {
       void create_region(LogicalRegion handle);
       void destroy_region(LogicalRegion handle);
       void smash_region(LogicalRegion smashed, const std::vector<LogicalRegion> &regions);
-      void create_subregion(LogicalRegion handle, PartitionID parent, Color c);
-      void create_partition(PartitionID pid, LogicalRegion parent, bool disjoint);
+      void create_partition(PartitionID pid, LogicalRegion parent, bool disjoint, std::vector<LogicalRegion> &children);
       void remove_partition(PartitionID pid, LogicalRegion parent);
     protected:
       // functions for getting logical regions
@@ -774,6 +838,15 @@ namespace RegionRuntime {
       bool mapped; // Mapped to a specific processor
       UserEvent map_event; // Event triggered when the task is mapped
       // Mappable is true when remaining events==0
+    protected:
+      // Index Space meta data
+      bool is_index_space; // Track whether this task is an index space
+      bool need_split; // Does this index space still need to be split
+      bool must; // Is this a must parallel index space
+      std::vector<UnsizedConstraint> index_space;
+      std::vector<UnsizedColorize> colorize_functions;
+      // Barrier event for when all the tasks are ready to run for must parallelism
+      Barrier index_space_event; 
     protected:
       TaskContext *parent_ctx; // The parent task on the originating processor
       Context orig_ctx; // Context on the original processor if remote
@@ -838,6 +911,7 @@ namespace RegionRuntime {
     class Serializer {
     protected:
       friend class HighLevelRuntime;
+      friend class TaskContext;
       Serializer(size_t buffer_size);
       ~Serializer(void);
     protected:
@@ -858,6 +932,7 @@ namespace RegionRuntime {
     class Deserializer {
     protected:
       friend class HighLevelRuntime;
+      friend class TaskContext;
       Deserializer(const void *buffer, size_t buffer_size);
       ~Deserializer(void);
     protected:

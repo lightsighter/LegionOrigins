@@ -320,7 +320,7 @@ namespace RegionRuntime {
         TaskContext *desc = get_available_context(true);
         TaskID tid = this->next_task_id;
         this->next_task_id += this->unique_stride;
-        desc->initialize_task(tid, TASK_ID_REGION_MAIN,malloc(sizeof(Context)),
+        desc->initialize_task(NULL/*no parent*/,tid, TASK_ID_REGION_MAIN,malloc(sizeof(Context)),
                               sizeof(Context), 0, 0, false);
         // Put this task in the ready queue
         ready_queue.push_back(desc);
@@ -530,7 +530,7 @@ namespace RegionRuntime {
       // Allocate more space for context
       void *args_prime = malloc(arglen+sizeof(Context));
       memcpy(((char*)args_prime)+sizeof(Context), args, arglen);
-      desc->initialize_task(unique_id, task_id, args_prime, arglen+sizeof(Context), id, tag, spawn);
+      desc->initialize_task(ctx, unique_id, task_id, args_prime, arglen+sizeof(Context), id, tag, spawn);
       desc->set_regions(regions);
       // Don't free memory as the task becomes the owner
 
@@ -579,7 +579,7 @@ namespace RegionRuntime {
       // Allocate more space for the context when copying the args
       void *args_prime = malloc(arglen+sizeof(Context));
       memcpy(((char*)args_prime)+sizeof(Context), args, arglen);
-      desc->initialize_task(unique_id, task_id, args_prime, arglen+sizeof(Context), id, tag, spawn);
+      desc->initialize_task(ctx, unique_id, task_id, args_prime, arglen+sizeof(Context), id, tag, spawn);
       desc->set_index_space<N>(index_space, must);
       desc->set_regions(regions, functions);
       // Don't free memory as the task becomes the owner
@@ -688,10 +688,7 @@ namespace RegionRuntime {
       PartitionID partition_id = this->next_partition_id;
       this->next_partition_id += this->unique_stride;
 
-      // Since there are no allocations in this kind of partition everything
-      // is by definition disjoint
-      ctx->create_partition(partition_id, parent, true/*disjoint*/);
-
+      std::vector<LogicalRegion> children(num_subregions);
       // Create all of the subregions
       for (unsigned idx = 0; idx < num_subregions; idx++)
       {
@@ -701,8 +698,10 @@ namespace RegionRuntime {
           LowLevel::RegionMetaDataUntyped::create_region_untyped(parent,sub_mask);
         log_region(LEVEL_DEBUG,"Creating subregion %d of region %d in task %d\n",
                     child_region.id, parent.id, ctx->unique_id);
-        ctx->create_subregion(child_region, partition_id, idx);
+        children[idx] = child_region;
       }
+
+      ctx->create_partition(partition_id, parent, true/*disjoint*/, children);
 
       return Partition(partition_id,parent,true/*disjoint*/);
     }
@@ -718,8 +717,7 @@ namespace RegionRuntime {
       PartitionID partition_id = this->next_partition_id;
       this->next_partition_id += this->unique_stride;
 
-      ctx->create_partition(partition_id, parent, disjoint);
-
+      std::vector<LogicalRegion> children(coloring.size());
       for (unsigned idx = 0; idx < coloring.size(); idx++)
       {
         // Compute the element mask for the subregion
@@ -737,8 +735,10 @@ namespace RegionRuntime {
           LowLevel::RegionMetaDataUntyped::create_region_untyped(parent,sub_mask);
         log_region(LEVEL_DEBUG,"Creating subregion %d of region %d in task %d\n",
                     child_region.id, parent.id, ctx->unique_id);
-        ctx->create_subregion(child_region, partition_id, idx);
+        children.push_back(child_region);
       }
+
+      ctx->create_partition(partition_id, parent, disjoint, children);
 
       return Partition(partition_id,parent,disjoint);
     }
@@ -754,8 +754,7 @@ namespace RegionRuntime {
       PartitionID partition_id = this->next_partition_id;
       this->next_partition_id += this->unique_stride;
 
-      ctx->create_partition(partition_id, parent, disjoint);
-
+      std::vector<LogicalRegion> children(ranges.size());
       for (unsigned idx = 0; idx < ranges.size(); idx++)
       {
         // Compute the element mask for the subregion
@@ -771,8 +770,10 @@ namespace RegionRuntime {
           LowLevel::RegionMetaDataUntyped::create_region_untyped(parent,sub_mask);
         log_region(LEVEL_DEBUG,"Creating subregion %d of region %d in task %d\n",
                     child_region.id, parent.id, ctx->unique_id);
-        ctx->create_subregion(child_region, partition_id, idx);
+        children.push_back(child_region);
       }
+
+      ctx->create_partition(partition_id, parent, disjoint, children);
 
       return Partition(partition_id,parent,disjoint);
     }
@@ -846,6 +847,15 @@ namespace RegionRuntime {
       AutoLock mapper_lock(mapper_locks[id]);
       mapper_objects[id] = m;
       mapper_locks[id] = Lock::create_lock();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    ColorizeID HighLevelRuntime::register_colorize_function(ColorizeFnptr f)
+    //--------------------------------------------------------------------------------------------
+    {
+      ColorizeID result = colorize_functions.size();
+      colorize_functions.push_back(f);
+      return result;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1007,7 +1017,46 @@ namespace RegionRuntime {
         // Add the task description to the task queue
         TaskContext *ctx= get_available_context(true/*new tree*/);
         ctx->unpack_task(derez);
-        add_to_ready_queue(ctx);
+        // First check to see if this is a task of index_space or
+        // a single task.  If index_space, see if we need to divide it
+        if (ctx->is_index_space)
+        {
+          // Check to see if this index space still needs to be split
+          if (ctx->need_split)
+          {
+            bool still_local = split_task(ctx);
+            // If it's still local add it to the ready queue
+            if (still_local)
+            {
+              add_to_ready_queue(ctx);
+              log_task(LEVEL_DEBUG,"HLR on processor %d adding index space"
+                                    " task %d with unique id %d from orig %d",
+                ctx->local_proc.id,ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
+            }
+            else
+            {
+              // No longer any versions of this task to keep locally
+              // Return the context to the free list
+              free_context(ctx);
+            }
+          }
+          else // doesn't need split
+          {
+            // This context doesn't need any splitting, add to ready queue 
+            add_to_ready_queue(ctx);
+            log_task(LEVEL_DEBUG,"HLR on processor %d adding index space"
+                                  " task %d with unique id %d from orig %d",
+              ctx->local_proc.id,ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
+          }
+        }
+        else // not an index space
+        {
+          // Single task, put it on the ready queue
+          add_to_ready_queue(ctx);
+          log_task(LEVEL_DEBUG,"HLR on processor %d adding task %d "
+                                "with unique id %d from orig %d",
+            ctx->local_proc.id,ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
+        }
         // check to see if this is a steal result coming back
         if (ctx->stolen)
         {
@@ -1023,8 +1072,6 @@ namespace RegionRuntime {
             outstanding.erase(finder);
           }
         }
-        log_task(LEVEL_DEBUG,"HLR on processor %d adding task %d with unique id %d from orig %d",
-                              ctx->local_proc.id,ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
       }
     }
 
@@ -1261,6 +1308,7 @@ namespace RegionRuntime {
       while (!ready_queue.empty() && (mapped_tasks<MAX_TASK_MAPS_PER_STEP))
       {
 	DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_SCHEDULER);
+        // TODO: Something more intelligent than the first thing on the ready queue
         TaskContext *task = ready_queue.front();
         ready_queue.pop_front();
         // Release the queue lock (maybe make this locking more efficient)
@@ -1351,41 +1399,69 @@ namespace RegionRuntime {
     bool HighLevelRuntime::target_task(TaskContext *task)
     //--------------------------------------------------------------------------------------------
     {
-      Processor target;
-      {
-        // Need to get access to array of mappers
-        AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
-        AutoLock mapper_lock(mapper_locks[task->map_id]);
-        target = mapper_objects[task->map_id]->select_initial_processor(task);
-      }
-#ifdef DEBUG_HIGH_LEVEL
-      assert(target.exists());
-#endif
-      // Mark that we selected a target processor for this task
+      // Mark that we've done selecting/splitting for this task
       task->chosen = true;
-      if (target != local_proc)
+      // This is a single task
+      if (!task->is_index_space)
       {
-        // We need to send the task to its remote target
-        // First get the utility processor for the target
-        Processor utility = target.get_utility_processor();
+        Processor target;
+        {
+          // Need to get access to array of mappers
+          AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
+          AutoLock mapper_lock(mapper_locks[task->map_id]);
+          target = mapper_objects[task->map_id]->select_initial_processor(task);
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        assert(target.exists());
+#endif
+        if (target != local_proc)
+        {
+          // We need to send the task to its remote target
+          // First get the utility processor for the target
+          Processor utility = target.get_utility_processor();
 
-        // Package up the task and send it
-        size_t buffer_size = 2*sizeof(Processor)+sizeof(int)+task->compute_task_size();
-        Serializer rez(buffer_size);
-        rez.serialize<Processor>(target); // The actual target processor
-        rez.serialize<Processor>(local_proc); // The origin processor
-        rez.serialize<int>(1); // We're only sending one task
-        task->pack_task(rez);
-        // Send the task to the utility processor
-        utility.spawn(ENQUEUE_TASK_ID,rez.get_buffer(),buffer_size);
+          // Package up the task and send it
+          size_t buffer_size = 2*sizeof(Processor)+sizeof(int)+task->compute_task_size();
+          Serializer rez(buffer_size);
+          rez.serialize<Processor>(target); // The actual target processor
+          rez.serialize<Processor>(local_proc); // The origin processor
+          rez.serialize<int>(1); // We're only sending one task
+          task->pack_task(rez);
+          // Send the task to the utility processor
+          utility.spawn(ENQUEUE_TASK_ID,rez.get_buffer(),buffer_size);
 
-        return false;
+          return false;
+        }
+        else
+        {
+          // Task can be kept local
+          return true;
+        }
       }
-      else
+      else // This is an index space of tasks
       {
-        // Task can be kept local
-        return true;
+        return split_task(task);
       }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool HighLevelRuntime::split_task(TaskContext *ctx)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Keep splitting this task until it doesn't need to be split anymore
+      bool still_local = true;
+      while (still_local && ctx->need_split)
+      {
+        std::vector<Mapper::IndexSplit> chunks;
+        {
+          // Ask the mapper to perform the division
+          AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
+          AutoLock mapper_lock(mapper_locks[ctx->map_id]);
+          mapper_objects[ctx->map_id]->split_index_space(ctx, ctx->index_space, chunks);
+        }
+        still_local = ctx->distribute_index_space(chunks);
+      }
+      return still_local;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1479,6 +1555,246 @@ namespace RegionRuntime {
         // Erase all the failed theives
         failed_thiefs.erase(failed_thiefs.lower_bound(map_id),failed_thiefs.upper_bound(map_id));
       }
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Task Context
+    ///////////////////////////////////////////////////////////// 
+
+    //--------------------------------------------------------------------------------------------
+    TaskContext::TaskContext(Processor p, HighLevelRuntime *r)
+      : runtime(r), local_proc(p), result(NULL), result_size(0)
+    //--------------------------------------------------------------------------------------------
+    {
+      this->args = NULL;
+      this->arglen = 0;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    TaskContext::~TaskContext(void)
+    //--------------------------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool TaskContext::activate(bool new_tree)
+    //--------------------------------------------------------------------------------------------
+    {
+      if (!active)
+      {
+
+        active = true;
+        return true;
+      }
+      return false;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::deactivate(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      // Free the arg space
+      if (args != NULL)
+      {
+        free(args);
+        args = NULL;
+        arglen = 0;
+      }
+      if (result != NULL)
+      {
+        free(result);
+        result = NULL;
+        result_size = 0;
+      }
+      index_space.clear();
+      colorize_functions.clear();
+      wait_events.clear();
+      dependent_tasks.clear();
+      child_tasks.clear();
+      active = false;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::initialize_task(TaskContext *parent, TaskID _unique_id, 
+                                      Processor::TaskFuncID _task_id, void *_args, size_t _arglen,
+                                      MapperID _map_id, MappingTagID _tag, bool _stealable)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      unique_id = _unique_id;
+      task_id = _task_id;
+      // Need our own copy of these
+      args = malloc(_arglen);
+      memcpy(args,_args,_arglen);
+      arglen = _arglen;
+      map_id = _map_id;
+      tag = _tag;
+      stealable = _stealable;
+      stolen = false;
+      regions.clear();
+      chosen = false;
+      mapped = false;
+      map_event = UserEvent::create_user_event();
+      is_index_space = false; // Not unless someone tells us it is later
+      need_split = false;
+      parent_ctx = parent;
+      orig_ctx = this;
+      remote = false;
+      termination_event = UserEvent::create_user_event();
+      future.reset(termination_event);
+      remaining_events = 0;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    template<unsigned N>
+    void TaskContext::set_index_space(const std::vector<Constraint<N> > &index_space, bool _must)
+    //--------------------------------------------------------------------------------------------
+    {
+      is_index_space = true;
+      need_split = true;
+      must = _must;
+      if (must)
+      {
+        // Make a new barrier for must parallelism
+        index_space_event = Barrier::create_barrier(1);
+      }
+      // Have to turn these into unsized constraints
+      for (typename std::vector<Constraint<N> >::const_iterator it = index_space.begin();
+            it != index_space.end(); it++)
+      {
+        UnsizedConstraint constraint(it->offset,N);
+        for (int i = 0; i < N; i++)
+        {
+          constraint[i] = (*it)[i];
+        }
+        index_space.push_back(constraint);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::set_regions(const std::vector<RegionRequirement> &_regions)
+    //--------------------------------------------------------------------------------------------
+    {
+      regions = _regions;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    template<unsigned N>
+    void TaskContext::set_regions(const std::vector<RegionRequirement> &_regions,
+                                  const std::vector<ColorizeFunction<N> > &functions)
+    //--------------------------------------------------------------------------------------------
+    {
+      regions = _regions;
+      // Convert the functions to unsigned colorize 
+      for (typename std::vector<ColorizeFunction<N> >::const_iterator it = functions.begin();
+            it != functions.end(); it++)
+      {
+        switch (it->func_type)
+        {
+        case SINGULAR_FUNC:
+        {
+          UnsizedColorize next(SINGULAR_FUNC);
+          colorize_functions.push_back(next);
+          break;
+        }
+        case EXECUTABLE_FUNC:
+        {
+          UnsizedColorize next(EXECUTABLE_FUNC, it->func.colorize);
+          colorize_functions.push_back(next);
+          break;
+        } 
+        case MAPPED_FUNC:
+        {
+          UnsizedColorize next(SINGULAR_FUNC);
+          // Convert all the static vectors into dynamic vectors
+          for (typename std::map<Vector<N>,Color>::iterator vec_it = it->func.mapping.begin();
+                vec_it != it->func.mapping.end(); vec_it++)
+          {
+            std::vector<int> vec(N);
+            for (int i = 0; i < N; i++)
+            {
+              vec[i] = vec_it->first[i];
+            }
+            next.mapping[vec] = it->second;
+          }
+          colorize_functions.push_back(next);
+          break;
+        }
+        default:
+          assert(false); // Should never make it here
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    size_t TaskContext::compute_task_size(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      size_t result = 0;
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::pack_task(Serializer &rez) const
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::unpack_task(Deserializer &derez)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool TaskContext::distribute_index_space(std::vector<Mapper::IndexSplit> &chunks)
+    //--------------------------------------------------------------------------------------------
+    {
+      bool has_local = false;
+      std::vector<UnsizedConstraint> local_space;
+      bool split = false;
+      // Iterate over all the chunks, if they're remote processors
+      // then make this task look like the remote one and send it off
+      for (std::vector<Mapper::IndexSplit>::iterator it = chunks.begin();
+            it != chunks.end(); it++)
+      {
+        if (it->p != local_proc)
+        {
+          // set need_split
+          this->need_split = it->recurse;
+          this->index_space = it->constraints;
+          // Package it up and send it
+          size_t buffer_size = compute_task_size();
+          Serializer rez(buffer_size);
+          rez.serialize<Processor>(it->p); // Actual target processor
+          rez.serialize<Processor>(local_proc); // local processor 
+          rez.serialize<int>(1); // number of processors
+          pack_task(rez);
+          // Send the task to the utility processor
+          Processor utility = it->p.get_utility_processor();
+          utility.spawn(ENQUEUE_TASK_ID,rez.get_buffer(),buffer_size);
+        }
+        else
+        {
+          has_local = true;
+          local_space = it->constraints; 
+          split = it->recurse;
+        }
+      }
+      // If there is still a local component, save it
+      if (has_local)
+      {
+        this->need_split = split;
+        this->index_space = local_space;
+      }
+      return has_local;
     }
 
     ///////////////////////////////////////////
