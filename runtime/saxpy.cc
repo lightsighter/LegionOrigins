@@ -15,8 +15,6 @@ using namespace RegionRuntime::HighLevel;
 
 #define CHECK_CORRECTNESS
 
-// #define USE_SHARED
-
 namespace Config {
   unsigned num_blocks = 64;
   bool args_read = false;
@@ -51,7 +49,7 @@ struct VectorRegions {
   LogicalHandle r_x, r_y, r_z;
 };
 
-struct AddResult {
+struct ValResult {
   bool flag;
 };
 
@@ -106,7 +104,7 @@ void do_validation(VectorRegions *vr, std::vector<Block> &blocks,
 
   unsigned validate_fail = 0;
   for (unsigned i = 0; i < Config::num_blocks; i++) {
-    AddResult result = futures[i].template get_result<AddResult>();
+    ValResult result = futures[i].template get_result<ValResult>();
     if (result.flag)
       validate_fail++;
   }
@@ -171,8 +169,10 @@ void main_task(const void *args, size_t arglen,
     f.get_void_result();
   }
 
+#ifdef CHECK_CORRECTNESS
   do_validation<AT>(vr, blocks, ctx, runtime, true);
   do_validation<AT>(vr, blocks, ctx, runtime, false);
+#endif
 
   printf("STARTING MAIN SIMULATION LOOP\n");
   struct timespec ts_start, ts_end;
@@ -193,7 +193,7 @@ void main_task(const void *args, size_t arglen,
 
   std::vector<unsigned> flagged;
   for (unsigned i = 0; i < Config::num_blocks; i++) {
-    AddResult result = futures[i].template get_result<AddResult>();
+    ValResult result = futures[i].template get_result<ValResult>();
     if (result.flag)
       flagged.push_back(i);
   }
@@ -211,10 +211,10 @@ void main_task(const void *args, size_t arglen,
     printf(" }\n");
   }
 
+#ifdef CHECK_CORRECTNESS
   do_validation<AT>(vr, blocks, ctx, runtime, true);
   do_validation<AT>(vr, blocks, ctx, runtime, false);
 
-#ifdef CHECK_CORRECTNESS
   CheckResult result;
   result.max_error = 0;
   result.avg_error = 0;
@@ -277,7 +277,7 @@ void init_vectors_task(const void *args, size_t arglen,
 }
 
 template<AccessorType AT>
-AddResult validate_task(const void *args, size_t arglen,
+ValResult validate_task(const void *args, size_t arglen,
 			const std::vector<PhysicalRegion<AT> > &regions,
 			Context ctx, HighLevelRuntime *runtime) {
   Block *block = (Block *)args;
@@ -294,13 +294,13 @@ AddResult validate_task(const void *args, size_t arglen,
   avg_xabs /= BLOCK_SIZE;
   avg_yabs /= BLOCK_SIZE;
 
-  AddResult result;
+  ValResult result;
   result.flag = (avg_xabs < 1e-6 || avg_yabs < 1e-6);
   return result;
 }
 
 template<AccessorType AT>
-AddResult add_vectors_task(const void *args, size_t arglen,
+ValResult add_vectors_task(const void *args, size_t arglen,
 			   const std::vector<PhysicalRegion<AT> > &regions,
 			   Context ctx, HighLevelRuntime *runtime) {
   Block *block = (Block *)args;
@@ -322,7 +322,7 @@ AddResult add_vectors_task(const void *args, size_t arglen,
   avg_xabs /= BLOCK_SIZE;
   avg_yabs /= BLOCK_SIZE;
   
-  AddResult result;
+  ValResult result;
   result.flag = (avg_xabs < 1e-6 || avg_yabs < 1e-6);
   return result;
 }
@@ -348,7 +348,7 @@ CheckResult check_correct_task(const void *args, size_t arglen,
     float z = r_z.read(block->entry_z[i]).v;
     float error = fabs(z - block->alpha * x - y);
     if (error > 1e-6) {
-      // printf("mismatch %u: %f %f %f\n", block->id, z, x, y);
+      fprintf(stderr, "mismatch %u: %f %f %f\n", block->id, z, x, y);
       result.mismatch++;
     }
 
@@ -424,9 +424,9 @@ public:
     case TOP_LEVEL_TASK_ID:
     case TASKID_MAIN:
     case TASKID_INIT_VECTORS:
-    case TASKID_VALIDATE_GLOBAL:
       return proc_one;
     case TASKID_VALIDATE:
+    case TASKID_VALIDATE_GLOBAL:
     case TASKID_ADD_VECTORS:
       return loc_proc;
     case TASKID_CHECK_CORRECT:
@@ -576,9 +576,9 @@ public:
     case TOP_LEVEL_TASK_ID:
     case TASKID_MAIN:
     case TASKID_INIT_VECTORS:
-    case TASKID_VALIDATE_GLOBAL:
       return loc_procs[0].first;
     case TASKID_VALIDATE:
+    case TASKID_VALIDATE_GLOBAL:
     case TASKID_ADD_VECTORS:
 #ifdef TEST_STEALING
       return loc_procs[0].first;
@@ -607,11 +607,8 @@ public:
                                  std::set<const Task*> &to_steal) {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
 #ifdef TEST_STEALING
-    for (unsigned i = 0; i < tasks.size(); i++) {
+    for (unsigned i = 0; i < tasks.size(); i++)
       to_steal.insert(tasks[i]);
-      if (to_steal.size() >= 2)
-	break;
-    }
 #endif
   }
 
@@ -676,7 +673,7 @@ public:
 
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
 		    Processor local) {
-#ifdef USE_SHARED
+#ifdef USE_SAXPY_SHARED
   runtime->replace_default_mapper(new SharedMapper(machine, runtime, local));
 #else
   runtime->replace_default_mapper(new SaxpyMapper(machine, runtime, local));
@@ -690,9 +687,9 @@ int main(int argc, char **argv) {
   task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
   task_table[TASKID_MAIN] = high_level_task_wrapper<main_task<AccessorGeneric> >;
   task_table[TASKID_INIT_VECTORS] = high_level_task_wrapper<init_vectors_task<AccessorGeneric> >;
-  task_table[TASKID_VALIDATE] = high_level_task_wrapper<AddResult, validate_task<AccessorGeneric> >;
-  task_table[TASKID_VALIDATE_GLOBAL] = high_level_task_wrapper<AddResult, validate_task<AccessorGeneric> >;
-  task_table[TASKID_ADD_VECTORS] = high_level_task_wrapper<AddResult, add_vectors_task<AccessorGeneric> >;
+  task_table[TASKID_VALIDATE] = high_level_task_wrapper<ValResult, validate_task<AccessorGeneric> >;
+  task_table[TASKID_VALIDATE_GLOBAL] = high_level_task_wrapper<ValResult, validate_task<AccessorGeneric> >;
+  task_table[TASKID_ADD_VECTORS] = high_level_task_wrapper<ValResult, add_vectors_task<AccessorGeneric> >;
   task_table[TASKID_CHECK_CORRECT] = high_level_task_wrapper<CheckResult, check_correct_task<AccessorGeneric> >;
 
   HighLevelRuntime::register_runtime_tasks(task_table);
@@ -706,6 +703,10 @@ int main(int argc, char **argv) {
       continue;
     }
   }
+
+#ifdef USE_SAXPY_SHARED
+  printf("USING SHARED LOW-LEVEL RUNTIME\n");
+#endif
 
   printf("saxpy: num elems = %d\n", Config::num_blocks * BLOCK_SIZE);
   Config::args_read = true;

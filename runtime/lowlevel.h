@@ -75,6 +75,18 @@ namespace RegionRuntime {
       void trigger(void) const;
     };
 
+    // a Barrier is similar to a UserEvent, except that it has a count of how
+    //  many threads (or whatever) need to "trigger" before the actual trigger
+    //  occurs
+    class Barrier : public Event {
+    public:
+      static Barrier create_barrier(unsigned expected_arrivals);
+
+      void alter_arrival_count(int delta) const;
+
+      void arrive(int count = 1) const;
+    };
+
     class Lock {
     public:
       typedef unsigned id_t;
