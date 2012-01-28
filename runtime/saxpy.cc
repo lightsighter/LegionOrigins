@@ -428,7 +428,11 @@ public:
     case TASKID_VALIDATE:
     case TASKID_VALIDATE_GLOBAL:
     case TASKID_ADD_VECTORS:
+#ifdef TEST_STEALING
+      return proc_one;
+#else
       return loc_proc;
+#endif
     case TASKID_CHECK_CORRECT:
       return proc_one;
     default:
@@ -439,14 +443,24 @@ public:
 
   virtual Processor target_task_steal() {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+#ifdef TEST_STEALING
+    return Mapper::target_task_steal();
+#else
     return Processor::NO_PROC;
+#endif
   }
 
   virtual void permit_task_steal(Processor thief,
 				 const std::vector<const Task*> &tasks,
 				 std::set<const Task*> &to_steal) {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
-    return;
+#ifdef TEST_STEALING
+    for (unsigned i = 0; i < tasks.size(); i++) {
+      to_steal.insert(tasks[i]);
+      if (to_steal.size() >= 8)
+	break;
+    }
+#endif
   }
 
   virtual void map_task_region(const Task *task, const RegionRequirement *req,
@@ -456,7 +470,7 @@ public:
                                std::vector<Memory> &dst_ranking) {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     Memory loc_mem;
-    loc_mem.id = (task->tag % num_procs) + 2;
+    loc_mem.id = local_proc.id + 1;
     switch (task->task_id) {
     case TOP_LEVEL_TASK_ID:
     case TASKID_MAIN:
@@ -467,12 +481,12 @@ public:
       break;
     case TASKID_VALIDATE:
     case TASKID_ADD_VECTORS:
-      chosen_src = safe_prioritized_pick(valid_src_instances,
-					 loc_mem, global_memory);
+      chosen_src = global_memory;
       dst_ranking.push_back(loc_mem);
       break;
     case TASKID_CHECK_CORRECT:
-      chosen_src = valid_src_instances[0];
+      chosen_src = safe_prioritized_pick(valid_src_instances, global_memory,
+					 valid_src_instances[0]);
       dst_ranking.push_back(global_memory);
       break;
     default:
@@ -504,14 +518,13 @@ class SaxpyMapper : public Mapper {
 public:
   std::map<Processor::Kind, std::vector<std::pair<Processor, Memory> > > cpu_mem_pairs;
   Memory global_memory;
+  Memory local_memory;
 
   SaxpyMapper(Machine *m, HighLevelRuntime *r, Processor p) : Mapper(m, r, p) {
     const std::set<Processor> &all_procs = m->get_all_processors();
     for (std::set<Processor>::const_iterator it = all_procs.begin();
 	 it != all_procs.end(); ++it) {
       Processor proc = *it;
-      Processor::Kind kind = m->get_processor_kind(proc);
-
       Memory best_mem;
       unsigned best_bw = 0;
       std::vector<Machine::ProcessorMemoryAffinity> pmas;
@@ -522,7 +535,11 @@ public:
 	  best_mem = pmas[i].m;
 	}
       }
+      Processor::Kind kind = m->get_processor_kind(proc);
       cpu_mem_pairs[kind].push_back(std::make_pair(proc, best_mem));
+
+      if (proc == local_proc)
+	local_memory = best_mem;
     }
 
     for (std::map<Processor::Kind, std::vector<std::pair<Processor, Memory> > >::iterator it = cpu_mem_pairs.begin(); it != cpu_mem_pairs.end(); ++it)
@@ -607,8 +624,11 @@ public:
                                  std::set<const Task*> &to_steal) {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
 #ifdef TEST_STEALING
-    for (unsigned i = 0; i < tasks.size(); i++)
+    for (unsigned i = 0; i < tasks.size(); i++) {
       to_steal.insert(tasks[i]);
+      if (to_steal.size() >= 8)
+	break;
+    }
 #endif
   }
 
@@ -618,11 +638,6 @@ public:
                                Memory &chosen_src,
                                std::vector<Memory> &dst_ranking) {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
-    std::vector< std::pair<Processor, Memory> >& loc_procs =
-      cpu_mem_pairs[Processor::LOC_PROC];
-    std::pair<Processor, Memory> cpu_mem_pair =
-      loc_procs[task->tag % loc_procs.size()];
-
     switch (task->task_id) {
     case TOP_LEVEL_TASK_ID:
     case TASKID_MAIN:
@@ -633,17 +648,12 @@ public:
       break;
     case TASKID_VALIDATE:
     case TASKID_ADD_VECTORS:
-#ifdef TEST_STEALING
       chosen_src = global_memory;
-      dst_ranking.push_back(global_memory);
-#else
-      chosen_src = global_memory;
-      dst_ranking.push_back(cpu_mem_pair.second);
-#endif
+      dst_ranking.push_back(local_memory);
       break;
     case TASKID_CHECK_CORRECT:
-      chosen_src = safe_prioritized_pick(valid_src_instances,
-					 global_memory, cpu_mem_pair.second);
+      chosen_src = safe_prioritized_pick(valid_src_instances, global_memory,
+					 valid_src_instances[0]);
       dst_ranking.push_back(global_memory);
       break;
     default:
