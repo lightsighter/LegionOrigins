@@ -1849,7 +1849,8 @@ namespace RegionRuntime {
           {
             found = true;
             if (!child->regions[idx].verified)
-              verify_privilege(parent_idx, child, idx);
+              verify_privilege(regions[parent_idx],child->regions[idx],child->task_id,
+                              idx, child->unique_id);
             register_region_dependence(regions[parent_idx].handle.region,child,idx);
             break;
           }
@@ -1859,46 +1860,44 @@ namespace RegionRuntime {
         {
           if (created_regions.find(child->regions[idx].parent) != created_regions.end())
           {
-            found = true;
             // No need to verify privilege here, we have read-write access to created
             register_region_dependence(child->regions[idx].parent,child,idx);
           }
-        }
-        // Error case, unable to find the parent logical region
-        if (!found)
-        {
-          if (child->is_index_space)
+          else // if we make it here, it's an error
           {
-            switch (child->colorize_functions[idx].func_type)
+            if (child->is_index_space)
             {
-              case SINGULAR_FUNC:
-                {
-                  log_region(LEVEL_ERROR,"Unable to find parent region %d for logical "
-                                          "region %d (index %d) for task %d with unique id %d",
-                                          child->regions[idx].parent.id, child->regions[idx].handle.region.id,
-                                          idx,child->task_id,child->unique_id);
-                  break;
-                }
-              case EXECUTABLE_FUNC:
-              case MAPPED_FUNC:
-                {
-                  log_region(LEVEL_ERROR,"Unable to find parent region %d for partition "
-                                          "%d (index %d) for task %d with unique id %d",
-                                          child->regions[idx].parent.id, child->regions[idx].handle.partition,
-                                          idx,child->task_id,child->unique_id);
-                  break;
-                }
-              default:
-                assert(false); // Should never make it here
+              switch (child->colorize_functions[idx].func_type)
+              {
+                case SINGULAR_FUNC:
+                  {
+                    log_region(LEVEL_ERROR,"Unable to find parent region %d for logical "
+                                            "region %d (index %d) for task %d with unique id %d",
+                                            child->regions[idx].parent.id, child->regions[idx].handle.region.id,
+                                            idx,child->task_id,child->unique_id);
+                    break;
+                  }
+                case EXECUTABLE_FUNC:
+                case MAPPED_FUNC:
+                  {
+                    log_region(LEVEL_ERROR,"Unable to find parent region %d for partition "
+                                            "%d (index %d) for task %d with unique id %d",
+                                            child->regions[idx].parent.id, child->regions[idx].handle.partition,
+                                            idx,child->task_id,child->unique_id);
+                    break;
+                  }
+                default:
+                  assert(false); // Should never make it here
+              }
             }
+            else
+            {
+              log_region(LEVEL_ERROR,"Unable to find parent region %d for logical region %d (index %d)"
+                                      " for task %d with unique id %d",child->regions[idx].parent.id,
+                                child->regions[idx].handle.region.id,idx,child->task_id,child->unique_id);
+            }
+            exit(1);
           }
-          else
-          {
-            log_region(LEVEL_ERROR,"Unable to find parent region %d for logical region %d (index %d)"
-                                    " for task %d with unique id %d",child->regions[idx].parent.id,
-                              child->regions[idx].handle.region.id,idx,child->task_id,child->unique_id);
-          }
-          exit(1);
         }
       }
     }
@@ -1908,12 +1907,7 @@ namespace RegionRuntime {
                                                   TaskContext *child, unsigned child_idx)
     //--------------------------------------------------------------------------------------------
     {
-      DependenceDetector dep;
-      dep.ctx = this->ctx_id; // we're checking in the parent's context
-      dep.req = &(child->regions[child_idx]);
-      dep.child = child;
-      dep.parent = this;
-      dep.prev_instance = NULL;
+      DependenceDetector dep(this->ctx_id, &(child->regions[child_idx]),child,this);
 
       // Get the trace to put in the dependence detector
       // Check to see if we are looking for a logical region or a partition
@@ -1957,23 +1951,25 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void TaskContext::verify_privilege(unsigned parent_idx, TaskContext *child, unsigned child_idx)
+    void TaskContext::verify_privilege(const RegionRequirement &par_req, 
+                                       const RegionRequirement &child_req,
+                                       unsigned task, unsigned idx, unsigned unique)
     //--------------------------------------------------------------------------------------------
     {
       bool pass = true;
       // Switch on the parent's privilege
-      switch (regions[parent_idx].privilege)
+      switch (par_req.privilege)
       {
         case NO_ACCESS:
           {
-            if (child->regions[child_idx].privilege != NO_ACCESS)
+            if (child_req.privilege != NO_ACCESS)
               pass = false;
             break;
           }
         case READ_ONLY:
           {
-            if ((child->regions[child_idx].privilege != NO_ACCESS) &&
-                (child->regions[child_idx].privilege != READ_ONLY))
+            if ((child_req.privilege != NO_ACCESS) &&
+                (child_req.privilege != READ_ONLY))
               pass = false;
             break;
           }
@@ -1984,8 +1980,8 @@ namespace RegionRuntime {
           }
         case REDUCE:
           {
-            if ((child->regions[child_idx].privilege != NO_ACCESS) &&
-                (child->regions[child_idx].privilege != REDUCE))
+            if ((child_req.privilege != NO_ACCESS) &&
+                (child_req.privilege != REDUCE))
               pass = false;
           }
         default:
@@ -1993,11 +1989,20 @@ namespace RegionRuntime {
       }
       if (!pass)
       {
-        log_region(LEVEL_ERROR,"Child task %d with unique id %d requests region %d (index %d)"
-            " in mode %s but parent task only has parent region %d in mode %s",child->task_id,
-            child->unique_id,child->regions[child_idx].handle.region.id,child_idx,
-            get_privilege(child->regions[child_idx].privilege),regions[parent_idx].handle.region.id,
-            get_privilege(regions[parent_idx].privilege));
+        if (task)
+        {
+          log_region(LEVEL_ERROR,"Child task %d with unique id %d requests region %d (index %d)"
+              " in mode %s but parent task only has parent region %d in mode %s", task,
+              unique, child_req.handle.region.id, idx, get_privilege(child_req.privilege),
+              par_req.handle.region.id, get_privilege(par_req.privilege));
+        }
+        else
+        {
+          log_region(LEVEL_ERROR,"Mapping request for region %d in mode %s but parent task only "
+              "has parent region %d in mode %s",child_req.handle.region.id,
+              get_privilege(child_req.privilege),par_req.handle.region.id,
+              get_privilege(par_req.privilege));
+        }
         exit(1);
       }
     }
@@ -2006,7 +2011,47 @@ namespace RegionRuntime {
     void TaskContext::register_mapping(RegionMappingImpl *impl)
     //--------------------------------------------------------------------------------------------
     {
-      
+      // Check to see if we can find the parent region in the list
+      // of parent task region requirements
+      bool found = false;
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        if (regions[idx].handle.region == impl->req.parent)
+        {
+          found = true;
+          // Check the privileges
+          if (!impl->req.verified)
+            verify_privilege(regions[idx],impl->req);
+          DependenceDetector dep(this->ctx_id,&(impl->req),NULL,this);
+
+          log_region(LEVEL_DEBUG,"registering mapping dependence for region %d "
+            "with parent %d in task %d with unique id %d",impl->req.handle.region.id,
+            regions[idx].handle.region.id,this->task_id,this->unique_id);
+          compute_region_trace(dep, regions[idx].handle.region, impl->req.handle.region);
+
+          RegionNode *top = (*region_nodes)[regions[idx].handle.region];
+          top->register_region_dependence(dep);
+          break;
+        }
+      }
+      // If not found, check the created regions
+      if (!found)
+      {
+        if (created_regions.find(impl->req.parent) != created_regions.end())
+        {
+          // No need to verify privileges here, we have read-write access to created
+          DependenceDetector dep(this->ctx_id,&(impl->req),NULL,this);
+          RegionNode *top = (*region_nodes)[impl->req.parent]; 
+          top->register_region_dependence(dep);
+        }
+        else // error condition
+        {
+          log_region(LEVEL_ERROR,"Unable to find parent region %d for mapping region %d "
+              "in task %d with unique id %d",impl->req.parent.id,impl->req.handle.region.id,
+              this->task_id,this->unique_id);
+          exit(1);
+        }
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2020,6 +2065,171 @@ namespace RegionRuntime {
         enumerate_index_space(mapper);
       }
       // After we make it here, we are just a single task (even if we're part of index space)
+#ifdef DEBUG_HIGH_LEVEL
+      assert(abstract_sources.size() == regions.size());
+      assert(abstract_uses.size() == regions.size());
+#endif
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        // Get the mapping for the region
+        Memory src_mem = Memory::NO_MEMORY;
+        // Get the available memory locations
+        std::vector<Memory> sources;
+        abstract_sources[idx]->get_memory_locations(sources);
+        std::vector<Memory> uses;
+        abstract_uses[idx]->get_memory_locations(uses);
+        std::vector<Memory> locations;
+        mapper->map_task_region(this, &(regions[idx]),sources,uses,src_mem,locations);
+        // Check to see if the user actually wants an instance
+        if (src_mem.exists() && !locations.empty())
+        {
+          // User wants an instance, first find the source instance
+          InstanceInfo *src_info = abstract_sources[idx]->find_instance(src_mem);
+          if (src_info == NULL)
+          {
+            log_inst(LEVEL_ERROR,"Unable to get physical instance in memory %d "
+                "for region %d (index %d) in task %d with unique id %d",src_mem.id,
+                regions[idx].handle.region.id,idx,this->task_id,this->unique_id);
+            exit(1);
+          }
+          src_instances.push_back(src_info); 
+
+          // Now try to get the destination physical instance 
+          bool found = false;
+          for (std::vector<Memory>::iterator it = locations.begin();
+                it != locations.end(); it++)
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            if (it->exists())
+#endif
+            {
+              InstanceInfo *dst_info = abstract_uses[idx]->find_instance(*it);
+              if (dst_info != NULL)
+              {
+                found = true;
+                use_instances.push_back(dst_info);
+                log_inst(LEVEL_DEBUG,"Using instance %d in memory %d for region %d (index %d) "
+                    "of task %d with unique id %d",dst_info->inst.id,it->id,
+                    regions[idx].handle.region.id,idx,this->task_id,this->unique_id);
+                break;
+              }
+              else
+              {
+                // Couldn't find it, try making it
+                dst_info = abstract_uses[idx]->create_instance(*it);
+                // Check to see if it's still NULL, if it is then we couldn't make it
+                if (dst_info != NULL)
+                {
+                  found = true;
+                  use_instances.push_back(dst_info); 
+                  log_inst(LEVEL_DEBUG,"Created new instance %d in memory %d for region %d "
+                      "(index %d) of task %d with unique id %d",dst_info->inst.id,it->id,
+                      regions[idx].handle.region.id,idx,this->task_id,this->unique_id);
+                  break;
+                }
+                else
+                {
+                  // Didn't find anything, try the next one
+                  log_inst(LEVEL_DEBUG,"Unable to create instance in memory %d for region %d "
+                      "(index %d) of task %d with unique id %d",it->id,
+                      regions[idx].handle.region.id,idx,this->task_id,this->unique_id);
+                }
+              }
+            }
+          }
+          // Check to make sure that we found an instance
+          if (!found)
+          {
+            log_inst(LEVEL_ERROR,"Unable to find or create physical instance for region %d"
+                " (index %d) of task %d with unique id %d",regions[idx].handle.region.id,
+                idx,this->task_id,this->unique_id);
+            exit(1);
+          }
+        }
+        else
+        {
+          log_inst(LEVEL_DEBUG,"Not creating physical instance for region %d (index %d) "
+              "for task %d with unique id %d",regions[idx].handle.region.id,idx,
+              this->task_id,this->unique_id);
+          // Push null instance info's into the 
+          src_instances.push_back(AbstractInstance::get_no_instance());
+          use_instances.push_back(AbstractInstance::get_no_instance());
+        }
+      }
+      // We've created all the region instances, now issue all the events for the task
+      // and get the event corresponding to when the task is completed
+
+      // Write this context in the arguments for the task
+      // (We make space for this when we created the task description)
+      *((Context*)this->args) = this; 
+
+      // Initialize region tree contexts
+      initialize_region_tree_contexts();
+      // Issue the copy operations
+      Event dep_event = issue_copy_ops_and_get_dependence();
+      // Now launch the task itself (finally!)
+      local_proc.spawn(this->task_id, this->args, this->arglen, dep_event);
+      
+      // Now update the dependent tasks, if we're local we can do this directly, if not
+      // launch a task on the original processor to do it
+      if (remote)
+      {
+        // This is a remote task, package up the information about the instances
+        size_t buffer_size = sizeof(Processor) + sizeof(Context) +
+                              regions.size() * (sizeof(RegionInstance)+2*sizeof(Memory));
+        Serializer rez(buffer_size);
+        // Write in the target processor
+        rez.serialize<Processor>(orig_proc);
+        rez.serialize<Context>(orig_ctx);
+        for (std::vector<InstanceInfo*>::iterator it = src_instances.begin();
+              it != src_instances.end(); it++)
+        {
+          rez.serialize<Memory>((*it)->location); 
+        }
+        for (std::vector<InstanceInfo*>::iterator it = use_instances.begin();
+              it != use_instances.end(); it++)
+        {
+          rez.serialize<RegionInstance>((*it)->inst);
+          rez.serialize<Memory>((*it)->location);
+        }
+        // Launch the begin notification on the utility processor 
+        // for the original processor 
+        // Save the remote start event so you can make sure the remote finish task
+        // happens after the remote start task
+        Processor utility = orig_proc.get_utility_processor();
+        this->remote_start_event = utility.spawn(NOTIFY_START_ID, rez.get_buffer(), buffer_size);
+        // Remote notify task will trigger the mapping event
+      }
+      else
+      {
+        // Local case
+        // Notify each of the dependent tasks with the event that they need to
+        // wait on before executing
+        for (std::set<TaskContext*>::iterator it = dependent_tasks.begin();
+              it != dependent_tasks.end(); it++)
+        {
+          (*it)->wait_events.insert(termination_event);
+#ifdef DEBUG_HIGH_LEVEL
+          assert((*it)->remaining_events > 0);
+#endif
+          // Decrement the count of the remaining events that the
+          // dependent task has to see
+          (*it)->remaining_events--;
+        }
+        this->map_event.trigger();
+        
+        // Update the references for the instances and abstract instances
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          if (src_instances[idx] != AbstractInstance::get_no_instance())
+            abstract_sources[idx]->add_reference(src_instances[idx]);
+          abstract_sources[idx]->release_user();
+          if (use_instances[idx] != AbstractInstance::get_no_instance())
+            abstract_uses[idx]->add_reference(use_instances[idx]);
+          abstract_uses[idx]->release_user(); 
+        }
+      }
+      this->mapped = true;
     }
 
     //--------------------------------------------------------------------------------------------

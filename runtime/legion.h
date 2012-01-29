@@ -718,6 +718,7 @@ namespace RegionRuntime {
       bool active;
     protected:
       friend class HighLevelRuntime;
+      friend class TaskContext;
       RegionMappingImpl(HighLevelRuntime *rt); 
       ~RegionMappingImpl();
       void activate(const RegionRequirement &req);
@@ -829,7 +830,10 @@ namespace RegionRuntime {
       void compute_region_trace(DependenceDetector &dep, LogicalRegion parent, LogicalRegion child);
       void compute_partition_trace(DependenceDetector &dep, LogicalRegion parent, PartitionID part);
       void register_region_dependence(LogicalRegion parent, TaskContext *child, unsigned child_idx);
-      void verify_privilege(unsigned parent_idx, TaskContext *child, unsigned child_idx);
+      void verify_privilege(const RegionRequirement &par_req, const RegionRequirement &child_req,
+                      /*for error reporting*/unsigned task = false, unsigned idx = 0, unsigned unique = 0);
+      void initialize_region_tree_contexts(void);
+      Event issue_copy_ops_and_get_dependence(void); // Return event corresponding to when the task can start
     protected:
       // functions for getting logical regions
       LogicalRegion get_subregion(PartitionID pid, Color c) const;
@@ -970,6 +974,15 @@ namespace RegionRuntime {
       InstanceInfo* create_instance(Memory m);
       // Free the instance
       void free_instance(InstanceInfo *info);
+      // Get a dummy no-instance
+      static InstanceInfo* get_no_instance(void);
+      // Add a reference to an instance info
+      void add_reference(InstanceInfo *info);
+      // Remove a reference to an instance info
+      void remove_reference(InstanceInfo *info);
+      // Unpdate an instance info (from remote side)
+      // Return the local one
+      InstanceInfo* update_instance(InstanceInfo *info);
     protected:
       // Mark that there is a user (either task or other abstract instance)
       // of this particular abstract instance
@@ -995,9 +1008,18 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////////////// 
     class InstanceInfo {
     public:
-      LogicalRegion handle;
-      Memory location;
-      RegionInstance inst;
+      const LogicalRegion handle;
+      const Memory location;
+      const RegionInstance inst;
+    public:
+      InstanceInfo(void)
+        : handle(LogicalRegion::NO_REGION),
+          location(Memory::NO_MEMORY),
+          inst(RegionInstance::NO_INST),
+          references(0) { }
+      InstanceInfo(LogicalRegion r, Memory m,
+          RegionInstance i) : handle(r),
+          location(m), inst(i), references(0) { }
     protected:
       friend class AbstractInstance;
       unsigned references;
@@ -1018,12 +1040,16 @@ namespace RegionRuntime {
       friend class TaskContext;
       friend class RegionNode;
       friend class PartitionNode;
-      ContextID ctx;
-      RegionRequirement *req;
-      TaskContext *child;
-      TaskContext *parent;
+      const ContextID ctx;
+      RegionRequirement *const req;
+      TaskContext *const child;
+      TaskContext *const parent;
       std::vector<unsigned> trace;
       AbstractInstance *prev_instance;
+    protected:
+      DependenceDetector(ContextID id, RegionRequirement *r,
+          TaskContext *c, TaskContext *p, AbstractInstance *a = NULL) 
+        : ctx(id), req(r), child(c), parent(p), prev_instance(a) { }
     };
 
     /////////////////////////////////////////////////////////////
