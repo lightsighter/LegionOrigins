@@ -61,6 +61,24 @@ namespace RegionRuntime {
       }
     };
 
+    static inline const char* get_privilege(PrivilegeMode mode)
+    {
+      switch (mode)
+      {
+        case NO_ACCESS:
+          return "NO ACCESS";
+        case READ_ONLY:
+          return "READ-ONLY";
+        case READ_WRITE:
+          return "READ-WRITE";
+        case REDUCE:
+          return "REDUCE";
+        default:
+          assert(false);
+      }
+      return NULL;
+    }
+
     /////////////////////////////////////////////////////////////
     // Future 
     ///////////////////////////////////////////////////////////// 
@@ -301,9 +319,10 @@ namespace RegionRuntime {
       this->thieving_lock = Lock::create_lock();
 
       // Create some tasks contexts 
-      for (unsigned ctx = 0; ctx < DEFAULT_CONTEXTS; ctx++)
+      total_contexts = DEFAULT_CONTEXTS;
+      for (unsigned ctx = 0; ctx < total_contexts; ctx++)
       {
-        available_contexts.push_back(new TaskContext(local_proc, this)); 
+        available_contexts.push_back(new TaskContext(local_proc, this, ctx)); 
       }
 
       // Create some region mappings
@@ -904,7 +923,8 @@ namespace RegionRuntime {
         }
         else
         {
-          result = new TaskContext(local_proc,this);
+          ContextID id = total_contexts++;
+          result = new TaskContext(local_proc,this,id);
         }
       }
 #ifdef DEBUG_HIGH_LEVEL
@@ -1320,7 +1340,12 @@ namespace RegionRuntime {
         {
           mapped_tasks++;
           // Now map the task and then launch it on the processor
-          task->map_and_launch();
+          {
+            // Need the mapper locks to give the task its mapper to use
+            AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
+            AutoLock mapper_lock(mapper_locks[task->map_id]);
+            task->map_and_launch(mapper_objects[task->map_id]);
+          }
           // Check the waiting queue for new tasks to move onto our ready queue
           update_queue();
         }
@@ -1562,8 +1587,8 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////////////// 
 
     //--------------------------------------------------------------------------------------------
-    TaskContext::TaskContext(Processor p, HighLevelRuntime *r)
-      : runtime(r), local_proc(p), result(NULL), result_size(0)
+    TaskContext::TaskContext(Processor p, HighLevelRuntime *r, ContextID id)
+      : runtime(r), active(false), ctx_id(id), local_proc(p), result(NULL), result_size(0)
     //--------------------------------------------------------------------------------------------
     {
       this->args = NULL;
@@ -1610,6 +1635,7 @@ namespace RegionRuntime {
         result_size = 0;
       }
       index_space.clear();
+      index_point.clear();
       colorize_functions.clear();
       wait_events.clear();
       dependent_tasks.clear();
@@ -1660,9 +1686,9 @@ namespace RegionRuntime {
       must = _must;
       if (must)
       {
-        // Make a new barrier for must parallelism
-        index_space_event = Barrier::create_barrier(1);
+        start_index_event = Barrier::create_barrier(1);
       }
+      finish_index_event = Barrier::create_barrier(1);
       // Have to turn these into unsized constraints
       for (typename std::vector<Constraint<N> >::const_iterator it = index_space.begin();
             it != index_space.end(); it++)
@@ -1696,37 +1722,37 @@ namespace RegionRuntime {
       {
         switch (it->func_type)
         {
-        case SINGULAR_FUNC:
-        {
-          UnsizedColorize next(SINGULAR_FUNC);
-          colorize_functions.push_back(next);
-          break;
-        }
-        case EXECUTABLE_FUNC:
-        {
-          UnsizedColorize next(EXECUTABLE_FUNC, it->func.colorize);
-          colorize_functions.push_back(next);
-          break;
-        } 
-        case MAPPED_FUNC:
-        {
-          UnsizedColorize next(SINGULAR_FUNC);
-          // Convert all the static vectors into dynamic vectors
-          for (typename std::map<Vector<N>,Color>::iterator vec_it = it->func.mapping.begin();
-                vec_it != it->func.mapping.end(); vec_it++)
-          {
-            std::vector<int> vec(N);
-            for (int i = 0; i < N; i++)
+          case SINGULAR_FUNC:
             {
-              vec[i] = vec_it->first[i];
+              UnsizedColorize next(SINGULAR_FUNC);
+              colorize_functions.push_back(next);
+              break;
             }
-            next.mapping[vec] = it->second;
-          }
-          colorize_functions.push_back(next);
-          break;
-        }
-        default:
-          assert(false); // Should never make it here
+          case EXECUTABLE_FUNC:
+            {
+              UnsizedColorize next(EXECUTABLE_FUNC, it->func.colorize);
+              colorize_functions.push_back(next);
+              break;
+            } 
+          case MAPPED_FUNC:
+            {
+              UnsizedColorize next(SINGULAR_FUNC);
+              // Convert all the static vectors into dynamic vectors
+              for (typename std::map<Vector<N>,Color>::iterator vec_it = it->func.mapping.begin();
+                    vec_it != it->func.mapping.end(); vec_it++)
+              {
+                std::vector<int> vec(N);
+                for (int i = 0; i < N; i++)
+                {
+                  vec[i] = vec_it->first[i];
+                }
+                next.mapping[vec] = it->second;
+              }
+              colorize_functions.push_back(next);
+              break;
+            }
+          default:
+            assert(false); // Should never make it here
         }
       }
     }
@@ -1783,6 +1809,9 @@ namespace RegionRuntime {
         }
         else
         {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(!has_local); // Make sure we don't alias local information
+#endif
           has_local = true;
           local_space = it->constraints; 
           split = it->recurse;
@@ -1795,6 +1824,253 @@ namespace RegionRuntime {
         this->index_space = local_space;
       }
       return has_local;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::register_child_task(TaskContext *child)
+    //--------------------------------------------------------------------------------------------
+    {
+      log_task(LEVEL_DEBUG,"Registering child task %d with parent task %d",
+                child->unique_id, this->unique_id);
+
+      child_tasks.push_back(child);
+      // Use the same maps as the parent task
+      child->region_nodes = region_nodes;
+      child->partition_nodes = partition_nodes;
+
+      // Now register each of the child task's region dependences
+      for (unsigned idx = 0; idx < child->regions.size(); idx++)
+      {
+        bool found = false;
+        // Find the top level region which this region is contained within
+        for (unsigned parent_idx = 0; parent_idx < regions.size(); parent_idx++)
+        {
+          if (regions[parent_idx].handle.region == child->regions[idx].parent)
+          {
+            found = true;
+            if (!child->regions[idx].verified)
+              verify_privilege(parent_idx, child, idx);
+            register_region_dependence(regions[parent_idx].handle.region,child,idx);
+            break;
+          }
+        }
+        // If we still didn't find it, check the created regions
+        if (!found)
+        {
+          if (created_regions.find(child->regions[idx].parent) != created_regions.end())
+          {
+            found = true;
+            // No need to verify privilege here, we have read-write access to created
+            register_region_dependence(child->regions[idx].parent,child,idx);
+          }
+        }
+        // Error case, unable to find the parent logical region
+        if (!found)
+        {
+          if (child->is_index_space)
+          {
+            switch (child->colorize_functions[idx].func_type)
+            {
+              case SINGULAR_FUNC:
+                {
+                  log_region(LEVEL_ERROR,"Unable to find parent region %d for logical "
+                                          "region %d (index %d) for task %d with unique id %d",
+                                          child->regions[idx].parent.id, child->regions[idx].handle.region.id,
+                                          idx,child->task_id,child->unique_id);
+                  break;
+                }
+              case EXECUTABLE_FUNC:
+              case MAPPED_FUNC:
+                {
+                  log_region(LEVEL_ERROR,"Unable to find parent region %d for partition "
+                                          "%d (index %d) for task %d with unique id %d",
+                                          child->regions[idx].parent.id, child->regions[idx].handle.partition,
+                                          idx,child->task_id,child->unique_id);
+                  break;
+                }
+              default:
+                assert(false); // Should never make it here
+            }
+          }
+          else
+          {
+            log_region(LEVEL_ERROR,"Unable to find parent region %d for logical region %d (index %d)"
+                                    " for task %d with unique id %d",child->regions[idx].parent.id,
+                              child->regions[idx].handle.region.id,idx,child->task_id,child->unique_id);
+          }
+          exit(1);
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::register_region_dependence(LogicalRegion parent, 
+                                                  TaskContext *child, unsigned child_idx)
+    //--------------------------------------------------------------------------------------------
+    {
+      DependenceDetector dep;
+      dep.ctx = this->ctx_id; // we're checking in the parent's context
+      dep.req = &(child->regions[child_idx]);
+      dep.child = child;
+      dep.parent = this;
+      dep.prev_instance = NULL;
+
+      // Get the trace to put in the dependence detector
+      // Check to see if we are looking for a logical region or a partition
+      if (child->is_index_space)
+      {
+        // Check to see what we're looking for
+        switch (child->colorize_functions[child_idx].func_type)
+        {
+          case SINGULAR_FUNC:
+            {
+              log_region(LEVEL_DEBUG,"registering region dependence for region %d "
+                "with parent %d in task %d",child->regions[child_idx].handle.region.id,
+                                            parent.id,unique_id);
+              compute_region_trace(dep, parent, child->regions[child_idx].handle.region);
+              break;
+            }
+          case EXECUTABLE_FUNC:
+          case MAPPED_FUNC:
+            {
+              log_region(LEVEL_DEBUG,"registering partition dependence for region %d "
+                "with parent region %d in task %d",child->regions[child_idx].handle.partition,
+                                                    parent.id,unique_id);
+              compute_partition_trace(dep, parent, child->regions[child_idx].handle.partition);
+              break;
+            }
+          default:
+            assert(false); // Should never make it here
+        }
+      }
+      else
+      {
+        // We're looking for a logical region
+        log_region(LEVEL_DEBUG,"registering region dependence for region %d "
+          "with parent %d in task %d",child->regions[child_idx].handle.region.id,
+                                      parent.id,unique_id);
+        compute_region_trace(dep, parent, child->regions[child_idx].handle.region);
+      }
+
+      RegionNode *top = (*region_nodes)[parent];
+      top->register_region_dependence(dep);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::verify_privilege(unsigned parent_idx, TaskContext *child, unsigned child_idx)
+    //--------------------------------------------------------------------------------------------
+    {
+      bool pass = true;
+      // Switch on the parent's privilege
+      switch (regions[parent_idx].privilege)
+      {
+        case NO_ACCESS:
+          {
+            if (child->regions[child_idx].privilege != NO_ACCESS)
+              pass = false;
+            break;
+          }
+        case READ_ONLY:
+          {
+            if ((child->regions[child_idx].privilege != NO_ACCESS) &&
+                (child->regions[child_idx].privilege != READ_ONLY))
+              pass = false;
+            break;
+          }
+        case READ_WRITE:
+          {
+            // Always passes
+            break;
+          }
+        case REDUCE:
+          {
+            if ((child->regions[child_idx].privilege != NO_ACCESS) &&
+                (child->regions[child_idx].privilege != REDUCE))
+              pass = false;
+          }
+        default:
+          assert(false); // Should never make it here
+      }
+      if (!pass)
+      {
+        log_region(LEVEL_ERROR,"Child task %d with unique id %d requests region %d (index %d)"
+            " in mode %s but parent task only has parent region %d in mode %s",child->task_id,
+            child->unique_id,child->regions[child_idx].handle.region.id,child_idx,
+            get_privilege(child->regions[child_idx].privilege),regions[parent_idx].handle.region.id,
+            get_privilege(regions[parent_idx].privilege));
+        exit(1);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::register_mapping(RegionMappingImpl *impl)
+    //--------------------------------------------------------------------------------------------
+    {
+      
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::map_and_launch(Mapper *mapper)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Check to see if this is an index space and it hasn't been enumerated
+      if (is_index_space && !enumerated)
+      {
+        // enumerate this task
+        enumerate_index_space(mapper);
+      }
+      // After we make it here, we are just a single task (even if we're part of index space)
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::enumerate_index_space(Mapper *mapper)
+    //--------------------------------------------------------------------------------------------
+    {
+      // For each point in the index space get a new TaskContext, clone it from
+      // this task context with correct region requirements, 
+      // and then call map and launch on the task with the mapper
+    }
+
+    //--------------------------------------------------------------------------------------------
+    std::vector<PhysicalRegion<AccessorGeneric> > TaskContext::start_task(void)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::complete_task(const void *result, size_t result_size)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::children_mapped(void)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::finish_task(void)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::remote_start(const char *args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::remote_finish(const char *args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+
     }
 
     ///////////////////////////////////////////
