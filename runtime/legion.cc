@@ -2284,6 +2284,226 @@ namespace RegionRuntime {
     }
 
     ///////////////////////////////////////////
+    // Abstract Instance 
+    ///////////////////////////////////////////
+
+    //--------------------------------------------------------------------------------------------
+    AbstractInstance::AbstractInstance(LogicalRegion r, AbstractInstance *par, bool rem)
+      : handle(r), closed(false), references(0), remote(rem), parent(par)
+    //--------------------------------------------------------------------------------------------
+    {
+      if (parent != NULL)
+        parent->register_user();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    AbstractInstance::~AbstractInstance()
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(closed); // Should be closed
+      assert(references == 0); // Should be no more references
+#endif
+      // TODO: Clean up any remaining physical instances
+    }
+
+    //--------------------------------------------------------------------------------------------
+    InstanceInfo* AbstractInstance::find_instance(Memory m)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Check to see if we have a local copy
+      if (valid_instances.find(m) != valid_instances.end())
+      {
+        return valid_instances[m];
+      }
+      // Try to find an instance in the parent
+      if (parent != NULL)
+      {
+        return parent->find_instance(m);
+      }
+      // Otherwise we couldn't find it, return NULL
+      return NULL;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    InstanceInfo* AbstractInstance::create_instance(Memory m)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(valid_instances.find(m) == valid_instances.end());
+#endif
+      // Try creating an instance of this region in the specified memory, if we can't
+      // then return null
+      RegionInstance inst = handle.create_instance_untyped(m);
+      if (inst.exists())
+      {
+        InstanceInfo *result = new InstanceInfo(handle,m,inst); 
+        // Add it to the list of valid instances
+        valid_instances[m] = result;
+        return result;
+      }
+      return NULL;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    /*static*/ InstanceInfo* AbstractInstance::get_no_instance()
+    //--------------------------------------------------------------------------------------------
+    {
+      static InstanceInfo no_instance;
+      return &no_instance;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void AbstractInstance::add_reference(InstanceInfo *info)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(info->handle == handle || (find_instance(info->location) == info));
+#endif
+      info->references++;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void AbstractInstance::remove_reference(InstanceInfo *info)
+    //--------------------------------------------------------------------------------------------
+    {
+      if (info->handle == handle)
+      {
+        // Do the removal here
+#ifdef DEBUG_HIGH_LEVEL
+        assert(valid_instances.find(info->location) != valid_instances.end());
+        assert(info->references > 0);
+#endif
+        info->references--;
+        // Check to see if we can garbage collect this instance 
+        if ((info->references == 0) && closed && (references == 0))
+        {
+          // We can reclaim this instance
+          handle.destroy_instance_untyped(info->inst);
+          // Remove it from the set of valid instances
+          valid_instances.erase(info->location);
+          // delete the info
+          delete info;
+        }
+        return;
+      }
+      // Otherwise go up the tree
+      if (parent != NULL)
+      {
+        remove_reference(info);
+        return;
+      }
+      log_inst(LEVEL_ERROR,"Unable to find instance in abstract instance tree");
+      exit(1);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    InstanceInfo* AbstractInstance::update_instance(InstanceInfo *info) 
+    //--------------------------------------------------------------------------------------------
+    {
+      if (info->handle == handle)
+      {
+        if (valid_instances.find(info->location) != valid_instances.end())
+        {
+          return valid_instances[info->location];
+        }
+        // Otherwise make one
+        InstanceInfo *result = new InstanceInfo(handle,info->location,info->inst);
+        result->ready_event = info->ready_event;
+        valid_instances[info->location] = result;
+        return result;
+      }
+      if (parent != NULL)
+      {
+        return update_instance(info);
+      }
+      log_inst(LEVEL_ERROR,"Unable to find equivalent instance in abstract instance tree");
+      exit(1);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void AbstractInstance::register_user(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      references++;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void AbstractInstance::release_user(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(references > 0);
+#endif
+      references--;
+      // Now check to see if we are done with this abstract instance
+      if ((references == 0) && closed)
+      {
+        garbage_collect();
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void AbstractInstance::mark_closed(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!closed);
+#endif
+      closed = true;
+      if (references == 0)
+      {
+        garbage_collect();
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void AbstractInstance::get_memory_locations(std::vector<Memory> &locations)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Add our memory locations to the list
+      for (std::map<Memory,InstanceInfo*>::iterator it = valid_instances.begin();
+            it != valid_instances.end(); it++)
+      {
+        locations.push_back(it->first);
+      }
+      // If there is a parent, add it as well
+      if (parent != NULL)
+        get_memory_locations(locations);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void AbstractInstance::garbage_collect(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Tell the parent that we are done
+      if (parent != NULL)
+        parent->release_user();
+      std::vector<Memory> to_delete;
+      // Now see if there are any physical instances we can remove
+      for (std::map<Memory,InstanceInfo*>::iterator it = valid_instances.begin();
+            it != valid_instances.end(); it++)
+      {
+        if (it->second->references == 0)
+        {
+          // Delete the instance
+          handle.destroy_instance_untyped(it->second->inst);
+          // Add to the list to delete
+          to_delete.push_back(it->first);
+        }
+      }
+      // Now go through and delete
+      for (std::vector<Memory>::iterator it = to_delete.begin();
+            it != to_delete.end(); it++)
+      {
+        // Delete the info
+        delete valid_instances[*it];
+        // Remove it from the map
+        valid_instances.erase(*it);
+      }
+    }
+
+    ///////////////////////////////////////////
     // Serializer
     ///////////////////////////////////////////
 

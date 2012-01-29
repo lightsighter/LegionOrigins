@@ -964,7 +964,7 @@ namespace RegionRuntime {
       friend class TaskContext;
       friend class RegionNode;
       friend class PartitionNode;
-      AbstractInstance(LogicalRegion r, AbstractInstance *parent);
+      AbstractInstance(LogicalRegion r, AbstractInstance *parent = NULL, bool rem = false);
       ~AbstractInstance(void);
     protected:
       // Try to find the instance for this particular memory
@@ -972,8 +972,6 @@ namespace RegionRuntime {
       InstanceInfo* find_instance(Memory m);
       // Create an instance in the particular memory
       InstanceInfo* create_instance(Memory m);
-      // Free the instance
-      void free_instance(InstanceInfo *info);
       // Get a dummy no-instance
       static InstanceInfo* get_no_instance(void);
       // Add a reference to an instance info
@@ -981,7 +979,7 @@ namespace RegionRuntime {
       // Remove a reference to an instance info
       void remove_reference(InstanceInfo *info);
       // Unpdate an instance info (from remote side)
-      // Return the local one
+      // Return the local one, if it doesn't exist add it
       InstanceInfo* update_instance(InstanceInfo *info);
     protected:
       // Mark that there is a user (either task or other abstract instance)
@@ -993,6 +991,8 @@ namespace RegionRuntime {
       void mark_closed(void);
       // Get the locations of valid instances
       void get_memory_locations(std::vector<Memory> &locations);
+    private:
+      void garbage_collect(void);
     protected:
       const LogicalRegion handle;
     private:
@@ -1011,15 +1011,18 @@ namespace RegionRuntime {
       const LogicalRegion handle;
       const Memory location;
       const RegionInstance inst;
+      Event ready_event;
     public:
       InstanceInfo(void)
         : handle(LogicalRegion::NO_REGION),
           location(Memory::NO_MEMORY),
           inst(RegionInstance::NO_INST),
+          ready_event(Event::NO_EVENT),
           references(0) { }
       InstanceInfo(LogicalRegion r, Memory m,
           RegionInstance i) : handle(r),
-          location(m), inst(i), references(0) { }
+          location(m), inst(i), 
+          ready_event(Event::NO_EVENT), references(0) { }
     protected:
       friend class AbstractInstance;
       unsigned references;
