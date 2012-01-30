@@ -528,7 +528,9 @@ namespace RegionRuntime {
       {
 	gasnet_hsl_init(&mutex);
 	events.reserve(10000);
+	num_events = 0;
 	locks.reserve(10000);
+	num_locks = 0;
       }
 
       gasnet_hsl_t mutex;  // used to cover resizing activities on vectors below
@@ -769,7 +771,9 @@ namespace RegionRuntime {
     {
       gasnet_hsl_init(&mutex);
       events.reserve(1000);
+      num_events = 0;
       locks.reserve(1000);
+      num_locks = 0;
     }
 
     struct LockRequestArgs {
@@ -1406,6 +1410,7 @@ namespace RegionRuntime {
       Event ev = ID(ID::ID_EVENT, gasnet_mynode(), index).convert<Event>();
       events[index].init(ev, gasnet_mynode());
       events[index].in_use = true;
+      Runtime::runtime->nodes[gasnet_mynode()].num_events = index + 1;
       ev.gen = 1; // waiting for first generation of this new event
       //printf("NEW EVENT %x/%d\n", ev.id, ev.gen);
       log_event(LEVEL_SPEW, "event created: event=%x/%d", ev.id, ev.gen);
@@ -1974,6 +1979,7 @@ namespace RegionRuntime {
       locks.resize(index + 1);
       Lock l = ID(ID::ID_LOCK, gasnet_mynode(), index).convert<Lock>();
       locks[index].init(l, gasnet_mynode());
+      Runtime::runtime->nodes[gasnet_mynode()].num_locks = index + 1;
       return l;
     }
 
@@ -3240,7 +3246,7 @@ namespace RegionRuntime {
 	  Node *n = &runtime->nodes[id.node()];
 
 	  unsigned index = id.index();
-	  if(index >= n->events.size()) {
+	  if(index >= n->num_events) {
 	    AutoHSLLock a(n->mutex); // take lock before we actually resize
 
 	    // grow our array to mirror additions by other nodes
@@ -3253,6 +3259,7 @@ namespace RegionRuntime {
 	      for(unsigned i = oldsize; i <= index; i++)
 		n->events[i].init(ID(ID::ID_EVENT, id.node(), i).convert<Event>(),
 				  id.node());
+	      n->num_events = index + 1;
 	    }
 	  }
 	  return &(n->events[index]);
@@ -3272,7 +3279,7 @@ namespace RegionRuntime {
 	  std::vector<Lock::Impl>& locks = nodes[id.node()].locks;
 
 	  unsigned index = id.index();
-	  if(index >= locks.size()) {
+	  if(index >= n->num_locks) {
 	    AutoHSLLock a(n->mutex); // take lock before we actually resize
 
 	    // grow our array to mirror additions by other nodes
@@ -3285,6 +3292,7 @@ namespace RegionRuntime {
 	      for(unsigned i = oldsize; i <= index; i++)
 		n->locks[i].init(ID(ID::ID_LOCK, id.node(), i).convert<Lock>(),
 				 id.node());
+	      n->num_locks = index + 1;
 	    }
 	  }
 	  return &(locks[index]);
@@ -3365,11 +3373,10 @@ namespace RegionRuntime {
     {
       assert(id.type() == ID::ID_INSTANCE);
       Memory::Impl *mem = get_memory_impl(id);
-      if(id.index_l() >= mem->instances.size()) {
-	// haven't seen this instance before
-	Node *n = &Runtime::runtime->nodes[id.node()];
-	AutoHSLLock a(n->mutex); // take lock before we actually resize
+      
+      AutoHSLLock al(mem->mutex);
 
+      if(id.index_l() >= mem->instances.size()) {
 	assert(id.node() != gasnet_mynode());
 
 	size_t old_size = mem->instances.size();
@@ -3385,9 +3392,6 @@ namespace RegionRuntime {
       }
 
       if(!mem->instances[id.index_l()]) {
-	// haven't seen this instance before?  create a proxy (inside a mutex)
-	AutoHSLLock a(mem->mutex);
-
 	if(!mem->instances[id.index_l()]) {
 	  //printf("[%d] creating proxy instance: inst=%x\n", gasnet_mynode(), id.id());
 	  mem->instances[id.index_l()] = new RegionInstanceUntyped::Impl(id.convert<RegionInstanceUntyped>(), mem->me);
@@ -5110,8 +5114,11 @@ namespace RegionRuntime {
       assert(apos < ADATA_SIZE);
 
       // parse our own data (but don't create remote proc/mem objects)
-      parse_node_announce_data(adata, apos*sizeof(unsigned), 
-			       announce_data, false);
+      {
+	AutoHSLLock al(announcement_mutex);
+	parse_node_announce_data(adata, apos*sizeof(unsigned), 
+				 announce_data, false);
+      }
 
       // now announce ourselves to everyone else
       for(int i = 0; i < gasnet_nodes(); i++)

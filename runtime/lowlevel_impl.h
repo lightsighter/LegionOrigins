@@ -88,7 +88,9 @@ namespace RegionRuntime {
 
       gasnet_hsl_t mutex;  // used to cover resizing activities on vectors below
       std::vector<Event::Impl> events;
+      size_t num_events;
       std::vector<Lock::Impl> locks;
+      size_t num_locks;
       std::vector<Memory::Impl *> memories;
       std::vector<Processor::Impl *> processors;
       std::vector<RegionMetaDataUntyped::Impl *> metadatas;
