@@ -54,6 +54,7 @@ namespace RegionRuntime {
       NO_ACCESS,
       READ_ONLY,
       READ_WRITE,
+      WRITE_ONLY,
       REDUCE,
     };
 
@@ -92,9 +93,7 @@ namespace RegionRuntime {
     class TaskContext;
     class RegionNode;
     class PartitionNode;
-    class AbstractInstance;
     class InstanceInfo;
-    class RestoringCopy;
     class Serializer;
     class Deserializer;
     class UnsizedConstraint;
@@ -647,10 +646,8 @@ namespace RegionRuntime {
                                       std::vector<IndexSplit> &chunks);
 
       virtual void map_task_region(const Task *task, const RegionRequirement *req,
-                                    const std::vector<Memory> &valid_src_instances,
-                                    const std::vector<Memory> &valid_dst_instances,
-                                    Memory &chosen_src,
-                                    std::vector<Memory> &dst_ranking);
+                                    const std::vector<Memory> &current_instances,
+                                    std::vector<Memory> &target_ranking);
 
       virtual void rank_copy_targets(const Task *task,
                                     const std::vector<Memory> &current_instances,
@@ -779,6 +776,15 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////////////// 
     class TaskContext: public Task {
     protected:
+      enum DependenceType {
+        READ_AFTER_WRITE, // true dependence
+        WRITE_AFTER_WRITE, // anti-dependence
+        WRITE_AFTER_READ, // anti-dependence
+        ATOMIC_CHECK, // if two atomic accesses use the same instance 
+        SIMULTANEOUS_CHECK, // if two simultaneous accesses use the same instance
+      };
+      typedef std::map<TaskContext*,DependenceType> RegionDependence;
+    protected:
       friend class HighLevelRuntime;
       friend class RegionNode;
       friend class PartitionNode;
@@ -821,7 +827,7 @@ namespace RegionRuntime {
     protected:
       // functions for updating logical region trees
       void create_region(LogicalRegion handle);
-      void destroy_region(LogicalRegion handle);
+      void remove_region(LogicalRegion handle);
       void smash_region(LogicalRegion smashed, const std::vector<LogicalRegion> &regions);
       void create_partition(PartitionID pid, LogicalRegion parent, bool disjoint, std::vector<LogicalRegion> &children);
       void remove_partition(PartitionID pid, LogicalRegion parent);
@@ -851,6 +857,7 @@ namespace RegionRuntime {
       bool chosen; // Mapper been invoked
       bool stealable; // Can be stolen
       bool mapped; // Mapped to a specific processor
+      unsigned unmapped; // Track the number of unmapped regions we need to get from our child tasks
       UserEvent map_event; // Event triggered when the task is mapped
       // Mappable is true when remaining events==0
     protected:
@@ -881,26 +888,40 @@ namespace RegionRuntime {
       UserEvent termination_event;
     private:
       // Dependence information
-      int remaining_events; // Number of events we still need to see before being mappable
       std::set<Event> wait_events; // Events to wait on before executing
-      std::set<TaskContext*> dependent_tasks; // Tasks waiting for us to be mapped
+      // A summary of the dependencies vector that enables easy testing for whether the task is mappable
+      int remaining_notifications;
+      // Dependencies on previous tasks, organized by dependence type on region
+      std::vector<RegionDependence> dependencies; 
+      // The set of tasks waiting on us to notify them when we each region we need is mapped
+      std::vector<std::set<TaskContext*> > dependent_tasks; 
     private:
       std::vector<TaskContext*> child_tasks;
     private:
       // Information for figuring out which regions to use
-      std::vector<AbstractInstance*> abstract_sources;
-      std::vector<AbstractInstance*> abstract_uses;
-      std::vector<InstanceInfo*> src_instances;
-      std::vector<InstanceInfo*> use_instances;
+      // Mappings for the logical regions at call-time (can be no-instance == covered)
+      std::vector<InstanceInfo*> physical_instances;
+      // If a region is not covered use the same physical ctx as the parent task's context,
+      // otherwise use 'ctx_id'
+      // If this is remote, everything is the same and things will get placed back in the right
+      // context when it is sent back
+      std::vector<ContextID> physical_ctx;
     private:
       // Pointers to the maps for logical regions
       std::map<LogicalRegion,RegionNode*> *region_nodes; // Can be aliased with other tasks map
       std::map<PartitionID,PartitionNode*> *partition_nodes; // Can be aliased with other tasks map
     private:
       // Track updates to the region tree
-      std::map<LogicalRegion,AbstractInstance*> created_regions;
+      std::set<LogicalRegion> created_regions;
       std::set<LogicalRegion> delelted_regions;
       std::set<PartitionNode*> added_partitions;
+    private:
+      // This is the lock for this context.  It will be shared with all contexts of sub-tasks that
+      // stay on the same node as they all can access the same aliased region-tree.  However, tasks
+      // that have no overlap on their region trees will have different locks and can operate in
+      // parallel.  Each new task therefore takes its parent task's lock until it gets moved to a
+      // remote node in which case, it will get its own lock (separate copy of the region tree).
+      Lock context_lock;
     };
 
     /////////////////////////////////////////////////////////////
@@ -909,9 +930,12 @@ namespace RegionRuntime {
     class RegionNode {
     protected:
       struct RegionState {
-        std::set<PartitionID> open_partitions;
-        AbstractInstance *valid_instance;
-        RestoringCopy *current_copy;
+      public:
+        bool logical_exclusive;
+        std::set<PartitionID> open_logical;
+        bool physical_exclusive;
+        std::set<PartitionID> open_physical;
+        std::set<InstanceInfo*> valid_instances;
       };
     protected:
       friend class TaskContext;
@@ -920,13 +944,32 @@ namespace RegionRuntime {
                   bool add, ContextID ctx);
       ~RegionNode(void);
     protected:
+      // Operations on the logical part of the region tree
       void register_region_dependence(DependenceDetector &dep);
+    protected:
+      // Operations on the physical part of the region tree
+      void get_physical_locations(std::vector<Memory> &locations);
+      // Try finding a physical instance in the specified memory. 
+      InstanceInfo* find_physical_instance(Memory m);
+      // Try creating a physical instance in the specified memory. 
+      InstanceInfo* create_physical_instance(Memory m);
+      // See if we already have a physical instance like this, if not make one
+      InstanceInfo* update_physical_instance(InstanceInfo *info);
+      // Register a user of a physical instance.  Give the privilege and coherence
+      // mode.  This will fill in the InstanceInfo field specifying when the event 
+      // for when instance is valid.  Note we also need the mapper here to help in
+      // directing copy operations.
+      void register_user(InstanceInfo *info, PrivilegeMode priv, CoherenceProperty prop, 
+                          TaskContext *ctx, Mapper *mapper);
+      // Release a user of a physical instance after a task is finished
+      void release_user(InstanceInfo *info);
     private:
       const LogicalRegion handle;
       const unsigned depth;
       PartitionNode *const parent;
       std::map<PartitionID,PartitionNode*> partitions;
-      std::vector<RegionState> region_states;
+      std::vector<RegionState> region_states; // indexed by ctx_id
+      std::vector<InstanceInfo*> all_instances; // all physical instances of this node created
       const bool added; // track whether this is a new node
     };
 
@@ -936,7 +979,11 @@ namespace RegionRuntime {
     class PartitionNode {
     protected:
       struct PartitionState {
-        std::set<LogicalRegion> open_regions;
+      public:
+        bool logical_exclusive; // for aliased only (disjoint doesn't matter)
+        std::set<LogicalRegion> open_logical;
+        bool physical_exclusive; // same as above
+        std::set<LogicalRegion> open_physical;
       };
     protected:
       friend class TaskContext;
@@ -957,53 +1004,6 @@ namespace RegionRuntime {
     };
 
     /////////////////////////////////////////////////////////////
-    // AbstractInstance 
-    ///////////////////////////////////////////////////////////// 
-    class AbstractInstance {
-    protected:
-      friend class TaskContext;
-      friend class RegionNode;
-      friend class PartitionNode;
-      AbstractInstance(LogicalRegion r, AbstractInstance *parent = NULL, bool rem = false);
-      ~AbstractInstance(void);
-    protected:
-      // Try to find the instance for this particular memory
-      // Can return anything from parent instances
-      InstanceInfo* find_instance(Memory m);
-      // Create an instance in the particular memory
-      InstanceInfo* create_instance(Memory m);
-      // Get a dummy no-instance
-      static InstanceInfo* get_no_instance(void);
-      // Add a reference to an instance info
-      void add_reference(InstanceInfo *info);
-      // Remove a reference to an instance info
-      void remove_reference(InstanceInfo *info);
-      // Unpdate an instance info (from remote side)
-      // Return the local one, if it doesn't exist add it
-      InstanceInfo* update_instance(InstanceInfo *info);
-    protected:
-      // Mark that there is a user (either task or other abstract instance)
-      // of this particular abstract instance
-      void register_user(void);
-      // Mark that a user no longer needs the abstract instance
-      void release_user(void);
-      // Mark that nobody else can ever use this abstract instance
-      void mark_closed(void);
-      // Get the locations of valid instances
-      void get_memory_locations(std::vector<Memory> &locations);
-    private:
-      void garbage_collect(void);
-    protected:
-      const LogicalRegion handle;
-    private:
-      bool closed;
-      unsigned references;
-      bool remote; // If this abstract instance has been moved
-      std::map<Memory,InstanceInfo*> valid_instances;
-      AbstractInstance *const parent;
-    };
-
-    /////////////////////////////////////////////////////////////
     // InstanceInfo 
     ///////////////////////////////////////////////////////////// 
     class InstanceInfo {
@@ -1011,28 +1011,28 @@ namespace RegionRuntime {
       const LogicalRegion handle;
       const Memory location;
       const RegionInstance inst;
-      Event ready_event;
     public:
       InstanceInfo(void)
         : handle(LogicalRegion::NO_REGION),
           location(Memory::NO_MEMORY),
           inst(RegionInstance::NO_INST),
-          ready_event(Event::NO_EVENT),
+          valid_event(Event::NO_EVENT),
           references(0) { }
       InstanceInfo(LogicalRegion r, Memory m,
-          RegionInstance i) : handle(r),
-          location(m), inst(i), 
-          ready_event(Event::NO_EVENT), references(0) { }
+          RegionInstance i, Event v = Event::NO_EVENT) 
+        : handle(r), location(m), inst(i), 
+          valid_event(v), references(0) { }
+    public:
+      inline Event get_valid(void) const { return valid_event; }
     protected:
-      friend class AbstractInstance;
+      friend class TaskContext;
+      friend class RegionNode;
+      friend class PhysicalNode;
+      static InstanceInfo* get_no_instance(void);
+    protected:
+      Event valid_event; // Event when the copy for this instance is valid
       unsigned references;
-    };
-
-    /////////////////////////////////////////////////////////////
-    // RestoringCopy 
-    ///////////////////////////////////////////////////////////// 
-    class RestoringCopy {
-
+      bool remote; // If remote info, we can't deallocate locally
     };
 
     /////////////////////////////////////////////////////////////
@@ -1048,11 +1048,10 @@ namespace RegionRuntime {
       TaskContext *const child;
       TaskContext *const parent;
       std::vector<unsigned> trace;
-      AbstractInstance *prev_instance;
     protected:
       DependenceDetector(ContextID id, RegionRequirement *r,
-          TaskContext *c, TaskContext *p, AbstractInstance *a = NULL) 
-        : ctx(id), req(r), child(c), parent(p), prev_instance(a) { }
+          TaskContext *c, TaskContext *p) 
+        : ctx(id), req(r), child(c), parent(p) { }
     };
 
     /////////////////////////////////////////////////////////////

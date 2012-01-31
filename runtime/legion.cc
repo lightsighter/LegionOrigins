@@ -653,7 +653,7 @@ namespace RegionRuntime {
                   low_region.id, ctx->unique_id);
 
       // Notify the context that we destroyed the logical region
-      ctx->destroy_region(handle);
+      ctx->remove_region(handle);
 
       low_region.destroy_region_untyped();
     }
@@ -1665,6 +1665,7 @@ namespace RegionRuntime {
       regions.clear();
       chosen = false;
       mapped = false;
+      unmapped = 0;
       map_event = UserEvent::create_user_event();
       is_index_space = false; // Not unless someone tells us it is later
       need_split = false;
@@ -1673,7 +1674,7 @@ namespace RegionRuntime {
       remote = false;
       termination_event = UserEvent::create_user_event();
       future.reset(termination_event);
-      remaining_events = 0;
+      remaining_notifications = 0;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1837,6 +1838,8 @@ namespace RegionRuntime {
       // Use the same maps as the parent task
       child->region_nodes = region_nodes;
       child->partition_nodes = partition_nodes;
+      // Use the same context lock as the parent
+      child->context_lock = context_lock;
 
       // Now register each of the child task's region dependences
       for (unsigned idx = 0; idx < child->regions.size(); idx++)
@@ -2065,76 +2068,46 @@ namespace RegionRuntime {
         enumerate_index_space(mapper);
       }
       // After we make it here, we are just a single task (even if we're part of index space)
-#ifdef DEBUG_HIGH_LEVEL
-      assert(abstract_sources.size() == regions.size());
-      assert(abstract_uses.size() == regions.size());
-#endif
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        // Get the mapping for the region
-        Memory src_mem = Memory::NO_MEMORY;
-        // Get the available memory locations
+        // TODO: Get the available memory locations
         std::vector<Memory> sources;
-        abstract_sources[idx]->get_memory_locations(sources);
-        std::vector<Memory> uses;
-        abstract_uses[idx]->get_memory_locations(uses);
+        RegionNode *handle = (*region_nodes)[regions[idx].handle.region];
+        handle->get_physical_locations(sources);
         std::vector<Memory> locations;
-        mapper->map_task_region(this, &(regions[idx]),sources,uses,src_mem,locations);
+        mapper->map_task_region(this, &(regions[idx]),sources,locations);
         // Check to see if the user actually wants an instance
-        if (src_mem.exists() && !locations.empty())
+        if (!locations.empty())
         {
-          // User wants an instance, first find the source instance
-          InstanceInfo *src_info = abstract_sources[idx]->find_instance(src_mem);
-          if (src_info == NULL)
-          {
-            log_inst(LEVEL_ERROR,"Unable to get physical instance in memory %d "
-                "for region %d (index %d) in task %d with unique id %d",src_mem.id,
-                regions[idx].handle.region.id,idx,this->task_id,this->unique_id);
-            exit(1);
-          }
-          src_instances.push_back(src_info); 
-
-          // Now try to get the destination physical instance 
           bool found = false;
-          for (std::vector<Memory>::iterator it = locations.begin();
+          // Iterate over the possible memories to see if we can make an instance 
+          for (std::vector<Memory>::const_iterator it = locations.begin();
                 it != locations.end(); it++)
           {
-#ifdef DEBUG_HIGH_LEVEL
-            if (it->exists())
-#endif
+            // If there were any physical instances, see if we can get a prior copy
+            if (!sources.empty())
             {
-              InstanceInfo *dst_info = abstract_uses[idx]->find_instance(*it);
-              if (dst_info != NULL)
+              InstanceInfo *info = handle->find_physical_instance(*it);
+              if (info != InstanceInfo::get_no_instance())
               {
+                // We've got our instance, register that we're going to use it
+                handle->register_user(info,regions[idx].privilege,
+                                      regions[idx].prop, this, mapper);
+                physical_instances.push_back(info);
                 found = true;
-                use_instances.push_back(dst_info);
-                log_inst(LEVEL_DEBUG,"Using instance %d in memory %d for region %d (index %d) "
-                    "of task %d with unique id %d",dst_info->inst.id,it->id,
-                    regions[idx].handle.region.id,idx,this->task_id,this->unique_id);
                 break;
               }
-              else
-              {
-                // Couldn't find it, try making it
-                dst_info = abstract_uses[idx]->create_instance(*it);
-                // Check to see if it's still NULL, if it is then we couldn't make it
-                if (dst_info != NULL)
-                {
-                  found = true;
-                  use_instances.push_back(dst_info); 
-                  log_inst(LEVEL_DEBUG,"Created new instance %d in memory %d for region %d "
-                      "(index %d) of task %d with unique id %d",dst_info->inst.id,it->id,
-                      regions[idx].handle.region.id,idx,this->task_id,this->unique_id);
-                  break;
-                }
-                else
-                {
-                  // Didn't find anything, try the next one
-                  log_inst(LEVEL_DEBUG,"Unable to create instance in memory %d for region %d "
-                      "(index %d) of task %d with unique id %d",it->id,
-                      regions[idx].handle.region.id,idx,this->task_id,this->unique_id);
-                }
-              }
+            }
+            // We couldn't find a pre-existing instance, try to make a new one
+            InstanceInfo* info = handle->create_physical_instance(*it);
+            if (info != InstanceInfo::get_no_instance())
+            {
+              // Register that we got our instance 
+              handle->register_user(info,regions[idx].privilege,
+                                    regions[idx].prop, this, mapper);
+              physical_instances.push_back(info);
+              found = true;
+              break;
             }
           }
           // Check to make sure that we found an instance
@@ -2151,9 +2124,10 @@ namespace RegionRuntime {
           log_inst(LEVEL_DEBUG,"Not creating physical instance for region %d (index %d) "
               "for task %d with unique id %d",regions[idx].handle.region.id,idx,
               this->task_id,this->unique_id);
-          // Push null instance info's into the 
-          src_instances.push_back(AbstractInstance::get_no_instance());
-          use_instances.push_back(AbstractInstance::get_no_instance());
+          // Push back a no-instance for this physical instance
+          physical_instances.push_back(InstanceInfo::get_no_instance());
+          // We have an unmapped child region
+          this->unmapped++;
         }
       }
       // We've created all the region instances, now issue all the events for the task
@@ -2171,26 +2145,32 @@ namespace RegionRuntime {
       local_proc.spawn(this->task_id, this->args, this->arglen, dep_event);
       
       // Now update the dependent tasks, if we're local we can do this directly, if not
-      // launch a task on the original processor to do it
+      // launch a task on the original processor to do it.
       if (remote)
       {
+        // Only send back information about instances that have been mapped
         // This is a remote task, package up the information about the instances
-        size_t buffer_size = sizeof(Processor) + sizeof(Context) +
-                              regions.size() * (sizeof(RegionInstance)+2*sizeof(Memory));
+        size_t buffer_size = sizeof(Processor) + sizeof(Context) + regions.size()*sizeof(bool) +
+          (regions.size()-unmapped)*(sizeof(LogicalRegion)+sizeof(Memory)+sizeof(RegionInstance)+sizeof(Event));
         Serializer rez(buffer_size);
         // Write in the target processor
         rez.serialize<Processor>(orig_proc);
         rez.serialize<Context>(orig_ctx);
-        for (std::vector<InstanceInfo*>::iterator it = src_instances.begin();
-              it != src_instances.end(); it++)
+        for (std::vector<InstanceInfo*>::const_iterator it = physical_instances.begin();
+              it != physical_instances.end(); it++)
         {
-          rez.serialize<Memory>((*it)->location); 
-        }
-        for (std::vector<InstanceInfo*>::iterator it = use_instances.begin();
-              it != use_instances.end(); it++)
-        {
-          rez.serialize<RegionInstance>((*it)->inst);
-          rez.serialize<Memory>((*it)->location);
+          if ((*it) == InstanceInfo::get_no_instance())
+          {
+            rez.serialize<bool>(false);
+          }
+          else
+          {
+            rez.serialize<bool>(true);
+            rez.serialize<LogicalRegion>((*it)->handle);
+            rez.serialize<Memory>((*it)->location); 
+            rez.serialize<RegionInstance>((*it)->inst);
+            rez.serialize<Event>((*it)->valid_event);
+          }
         }
         // Launch the begin notification on the utility processor 
         // for the original processor 
@@ -2199,37 +2179,44 @@ namespace RegionRuntime {
         Processor utility = orig_proc.get_utility_processor();
         this->remote_start_event = utility.spawn(NOTIFY_START_ID, rez.get_buffer(), buffer_size);
         // Remote notify task will trigger the mapping event
+        if (unmapped == 0)
+        {
+          this->mapped = true;
+        }
       }
       else
       {
         // Local case
-        // Notify each of the dependent tasks with the event that they need to
-        // wait on before executing
-        for (std::set<TaskContext*>::iterator it = dependent_tasks.begin();
-              it != dependent_tasks.end(); it++)
-        {
-          (*it)->wait_events.insert(termination_event);
+        // For each of our mapped physical instances, notify the dependent tasks that
+        // we have been mapped
 #ifdef DEBUG_HIGH_LEVEL
-          assert((*it)->remaining_events > 0);
+        assert(physical_instances.size() == dependent_tasks.size());
 #endif
-          // Decrement the count of the remaining events that the
-          // dependent task has to see
-          (*it)->remaining_events--;
-        }
-        this->map_event.trigger();
-        
-        // Update the references for the instances and abstract instances
-        for (unsigned idx = 0; idx < regions.size(); idx++)
+        for (unsigned idx = 0; idx < physical_instances.size(); idx++)
         {
-          if (src_instances[idx] != AbstractInstance::get_no_instance())
-            abstract_sources[idx]->add_reference(src_instances[idx]);
-          abstract_sources[idx]->release_user();
-          if (use_instances[idx] != AbstractInstance::get_no_instance())
-            abstract_uses[idx]->add_reference(use_instances[idx]);
-          abstract_uses[idx]->release_user(); 
+          if (physical_instances[idx] != InstanceInfo::get_no_instance())
+          {
+            // Iterate over our dependent tasks and notify them that this region is ready
+          
+            for (std::set<TaskContext*>::iterator it = dependent_tasks[idx].begin();
+                  it != dependent_tasks[idx].end(); it++)
+            {
+              (*it)->wait_events.insert(termination_event);
+#ifdef DEBUG_HIGH_LEVEL
+              assert((*it)->remaining_notifications > 0);
+#endif
+              // Decrement the count of the remaining events that the
+              // dependent task has to see
+              (*it)->remaining_notifications--;
+            }
+          }
+        }
+        if (unmapped == 0)
+        {
+          this->map_event.trigger();
+          this->mapped = true;
         }
       }
-      this->mapped = true;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2272,8 +2259,13 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     void TaskContext::remote_start(const char *args, size_t arglen)
     //--------------------------------------------------------------------------------------------
-    {
-
+    { 
+      log_task(LEVEL_DEBUG,"Processing remote start for task %d with unique id %d",task_id,unique_id);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      mapped = true;
+      map_event.trigger();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2283,224 +2275,82 @@ namespace RegionRuntime {
 
     }
 
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::create_region(LogicalRegion handle)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::remove_region(LogicalRegion handle)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::smash_region(LogicalRegion smashed, const std::vector<LogicalRegion> &regions)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::create_partition(PartitionID pid, LogicalRegion parent,
+                                        bool disjoint, std::vector<LogicalRegion> &children)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+    
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::remove_partition(PartitionID pid, LogicalRegion parent)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+    
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::compute_region_trace(DependenceDetector &dep,
+                                            LogicalRegion parent, LogicalRegion child)
+    //-------------------------------------------------------------------------------------------- 
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::compute_partition_trace(DependenceDetector &dep,
+                                              LogicalRegion parent, PartitionID part)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::initialize_region_tree_contexts(void)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+    
+    //--------------------------------------------------------------------------------------------
+    Event TaskContext::issue_copy_ops_and_get_dependence(void)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
     ///////////////////////////////////////////
-    // Abstract Instance 
+    // Instance Info 
     ///////////////////////////////////////////
 
     //--------------------------------------------------------------------------------------------
-    AbstractInstance::AbstractInstance(LogicalRegion r, AbstractInstance *par, bool rem)
-      : handle(r), closed(false), references(0), remote(rem), parent(par)
+    /*static*/ InstanceInfo* InstanceInfo::get_no_instance(void)
     //--------------------------------------------------------------------------------------------
     {
-      if (parent != NULL)
-        parent->register_user();
-    }
-
-    //--------------------------------------------------------------------------------------------
-    AbstractInstance::~AbstractInstance()
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(closed); // Should be closed
-      assert(references == 0); // Should be no more references
-#endif
-      // TODO: Clean up any remaining physical instances
-    }
-
-    //--------------------------------------------------------------------------------------------
-    InstanceInfo* AbstractInstance::find_instance(Memory m)
-    //--------------------------------------------------------------------------------------------
-    {
-      // Check to see if we have a local copy
-      if (valid_instances.find(m) != valid_instances.end())
-      {
-        return valid_instances[m];
-      }
-      // Try to find an instance in the parent
-      if (parent != NULL)
-      {
-        return parent->find_instance(m);
-      }
-      // Otherwise we couldn't find it, return NULL
-      return NULL;
-    }
-
-    //--------------------------------------------------------------------------------------------
-    InstanceInfo* AbstractInstance::create_instance(Memory m)
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(valid_instances.find(m) == valid_instances.end());
-#endif
-      // Try creating an instance of this region in the specified memory, if we can't
-      // then return null
-      RegionInstance inst = handle.create_instance_untyped(m);
-      if (inst.exists())
-      {
-        InstanceInfo *result = new InstanceInfo(handle,m,inst); 
-        // Add it to the list of valid instances
-        valid_instances[m] = result;
-        return result;
-      }
-      return NULL;
-    }
-
-    //--------------------------------------------------------------------------------------------
-    /*static*/ InstanceInfo* AbstractInstance::get_no_instance()
-    //--------------------------------------------------------------------------------------------
-    {
-      static InstanceInfo no_instance;
-      return &no_instance;
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void AbstractInstance::add_reference(InstanceInfo *info)
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(info->handle == handle || (find_instance(info->location) == info));
-#endif
-      info->references++;
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void AbstractInstance::remove_reference(InstanceInfo *info)
-    //--------------------------------------------------------------------------------------------
-    {
-      if (info->handle == handle)
-      {
-        // Do the removal here
-#ifdef DEBUG_HIGH_LEVEL
-        assert(valid_instances.find(info->location) != valid_instances.end());
-        assert(info->references > 0);
-#endif
-        info->references--;
-        // Check to see if we can garbage collect this instance 
-        if ((info->references == 0) && closed && (references == 0))
-        {
-          // We can reclaim this instance
-          handle.destroy_instance_untyped(info->inst);
-          // Remove it from the set of valid instances
-          valid_instances.erase(info->location);
-          // delete the info
-          delete info;
-        }
-        return;
-      }
-      // Otherwise go up the tree
-      if (parent != NULL)
-      {
-        remove_reference(info);
-        return;
-      }
-      log_inst(LEVEL_ERROR,"Unable to find instance in abstract instance tree");
-      exit(1);
-    }
-
-    //--------------------------------------------------------------------------------------------
-    InstanceInfo* AbstractInstance::update_instance(InstanceInfo *info) 
-    //--------------------------------------------------------------------------------------------
-    {
-      if (info->handle == handle)
-      {
-        if (valid_instances.find(info->location) != valid_instances.end())
-        {
-          return valid_instances[info->location];
-        }
-        // Otherwise make one
-        InstanceInfo *result = new InstanceInfo(handle,info->location,info->inst);
-        result->ready_event = info->ready_event;
-        valid_instances[info->location] = result;
-        return result;
-      }
-      if (parent != NULL)
-      {
-        return update_instance(info);
-      }
-      log_inst(LEVEL_ERROR,"Unable to find equivalent instance in abstract instance tree");
-      exit(1);
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void AbstractInstance::register_user(void)
-    //--------------------------------------------------------------------------------------------
-    {
-      references++;
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void AbstractInstance::release_user(void)
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(references > 0);
-#endif
-      references--;
-      // Now check to see if we are done with this abstract instance
-      if ((references == 0) && closed)
-      {
-        garbage_collect();
-      }
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void AbstractInstance::mark_closed(void)
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(!closed);
-#endif
-      closed = true;
-      if (references == 0)
-      {
-        garbage_collect();
-      }
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void AbstractInstance::get_memory_locations(std::vector<Memory> &locations)
-    //--------------------------------------------------------------------------------------------
-    {
-      // Add our memory locations to the list
-      for (std::map<Memory,InstanceInfo*>::iterator it = valid_instances.begin();
-            it != valid_instances.end(); it++)
-      {
-        locations.push_back(it->first);
-      }
-      // If there is a parent, add it as well
-      if (parent != NULL)
-        get_memory_locations(locations);
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void AbstractInstance::garbage_collect(void)
-    //--------------------------------------------------------------------------------------------
-    {
-      // Tell the parent that we are done
-      if (parent != NULL)
-        parent->release_user();
-      std::vector<Memory> to_delete;
-      // Now see if there are any physical instances we can remove
-      for (std::map<Memory,InstanceInfo*>::iterator it = valid_instances.begin();
-            it != valid_instances.end(); it++)
-      {
-        if (it->second->references == 0)
-        {
-          // Delete the instance
-          handle.destroy_instance_untyped(it->second->inst);
-          // Add to the list to delete
-          to_delete.push_back(it->first);
-        }
-      }
-      // Now go through and delete
-      for (std::vector<Memory>::iterator it = to_delete.begin();
-            it != to_delete.end(); it++)
-      {
-        // Delete the info
-        delete valid_instances[*it];
-        // Remove it from the map
-        valid_instances.erase(*it);
-      }
+      static InstanceInfo no_info;
+      return &no_info;
     }
 
     ///////////////////////////////////////////
@@ -2521,6 +2371,12 @@ namespace RegionRuntime {
     Serializer::~Serializer(void)
     //-------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      if (remaining_bytes > 0)
+      {
+        log_task(LEVEL_DEBUG,"WARNING: unused space in serializer");
+      }
+#endif
       // Reclaim the buffer memory
       free(buffer);
     }
@@ -2544,6 +2400,12 @@ namespace RegionRuntime {
     //-------------------------------------------------------------------------
     {
       // No need to do anything since we don't own the buffer
+#ifdef DEBUG_HIGH_LEVEL
+      if (remaining_bytes > 0)
+      {
+        log_task(LEVEL_DEBUG,"WARNING: unread bytes in deserializer");
+      }
+#endif
     }
   };
 };
