@@ -21,10 +21,10 @@ namespace RegionRuntime {
 
     // Enumerations
     enum {
-      // To see where the +8,9,10 come from, see the top of legion.cc
-      TASK_ID_INIT_MAPPERS = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+8,
-      TASK_ID_REGION_MAIN = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+9,
-      TASK_ID_AVAILABLE = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+10,
+      // To see where the +9,10,11 come from, see the top of legion.cc
+      TASK_ID_INIT_MAPPERS = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+9,
+      TASK_ID_REGION_MAIN = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+10,
+      TASK_ID_AVAILABLE = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+11,
     };
 
     // Timing events
@@ -39,10 +39,11 @@ namespace RegionRuntime {
       TIME_HIGH_LEVEL_CHILDREN_MAPPED = TIME_HIGH_LEVEL, //= 107,
       TIME_HIGH_LEVEL_FINISH_TASK = TIME_HIGH_LEVEL, //= 108,
       TIME_HIGH_LEVEL_NOTIFY_START = TIME_HIGH_LEVEL, //= 109,
-      TIME_HIGH_LEVEL_NOTIFY_FINISH = TIME_HIGH_LEVEL, //= 110,
-      TIME_HIGH_LEVEL_EXECUTE_TASK = TIME_HIGH_LEVEL, //= 111,
-      TIME_HIGH_LEVEL_SCHEDULER = TIME_HIGH_LEVEL, //= 112,
-      TIME_HIGH_LEVEL_ISSUE_STEAL = TIME_HIGH_LEVEL, //= 113,
+      TIME_HIGH_LEVEL_NOTIFY_MAPPED = TIME_HIGH_LEVEL, //= 110,
+      TIME_HIGH_LEVEL_NOTIFY_FINISH = TIME_HIGH_LEVEL, //= 111,
+      TIME_HIGH_LEVEL_EXECUTE_TASK = TIME_HIGH_LEVEL, //= 112,
+      TIME_HIGH_LEVEL_SCHEDULER = TIME_HIGH_LEVEL, //= 113,
+      TIME_HIGH_LEVEL_ISSUE_STEAL = TIME_HIGH_LEVEL, //= 114,
     };
 
     enum AccessorType {
@@ -99,6 +100,7 @@ namespace RegionRuntime {
     class UnsizedConstraint;
     class UnsizedColorize;
     class DependenceDetector;
+    class RegionRenamer;
 
     // Some typedefs
     typedef LowLevel::Machine Machine;
@@ -450,6 +452,7 @@ namespace RegionRuntime {
       static void children_mapped(const void * args, size_t arglen, Processor p);    // utility
       static void finish_task(const void * args, size_t arglen, Processor p);        // utility
       static void notify_start(const void * args, size_t arglen, Processor p);       // utility
+      static void notify_children_mapped(const void * args, size_t arglen, Processor p); // utility
       static void notify_finish(const void * args, size_t arglen, Processor p);      // utility
       static void advertise_work(const void * args, size_t arglen, Processor p);     // utility
       // Shutdown methods (one task to detect the termination, another to process it)
@@ -563,6 +566,7 @@ namespace RegionRuntime {
       void process_mapped(const void* args, size_t arglen); 
       void process_finish(const void* args, size_t arglen); 
       void process_notify_start(const void * args, size_t arglen);  
+      void process_notify_children_mapped(const void * args, size_t arglen);
       void process_notify_finish(const void* args, size_t arglen);  
       void process_termination(const void * args, size_t arglen);    
       void process_advertisement(const void * args, size_t arglen); 
@@ -823,6 +827,7 @@ namespace RegionRuntime {
       void children_mapped(void); // all children have been mapped
       void finish_task(void); // task and all children finished
       void remote_start(const char *args, size_t arglen);
+      void remote_children_mapped(const char *args, size_t arglen);
       void remote_finish(const char *args, size_t arglen);
     protected:
       // functions for updating logical region trees
@@ -906,6 +911,10 @@ namespace RegionRuntime {
       // If this is remote, everything is the same and things will get placed back in the right
       // context when it is sent back
       std::vector<ContextID> physical_ctx;
+      // Keep track of source physical instances that we are copying from when creating our physical
+      // instances.  We add references to these physical instances when performing a copy from them
+      // so we know when they can be deleted
+      std::vector<InstanceInfo*> source_physical_instances;
     private:
       // Pointers to the maps for logical regions
       std::map<LogicalRegion,RegionNode*> *region_nodes; // Can be aliased with other tasks map
@@ -946,7 +955,11 @@ namespace RegionRuntime {
     protected:
       // Operations on the logical part of the region tree
       void register_region_dependence(DependenceDetector &dep);
+      // Initialize the logical context
+      void initialize_logical_context(ContextID ctx);
     protected:
+      // Initialize the physical context
+      void initialize_physical_context(ContextID ctx);
       // Operations on the physical part of the region tree
       void get_physical_locations(std::vector<Memory> &locations);
       // Try finding a physical instance in the specified memory. 
@@ -958,11 +971,14 @@ namespace RegionRuntime {
       // Register a user of a physical instance.  Give the privilege and coherence
       // mode.  This will fill in the InstanceInfo field specifying when the event 
       // for when instance is valid.  Note we also need the mapper here to help in
-      // directing copy operations.
-      void register_user(InstanceInfo *info, PrivilegeMode priv, CoherenceProperty prop, 
-                          TaskContext *ctx, Mapper *mapper);
+      // directing copy operations.  This also updates source_physical_instances
+      // with InstanceInfo that we've used in performing our copies.
+      void register_user(RegionRenamer &renamer);
       // Release a user of a physical instance after a task is finished
       void release_user(InstanceInfo *info);
+      // Close up any lower physical instances to this physical instance
+      // Return the event corresponding to when this instance is available
+      Event close_instance(InstanceInfo *info);
     private:
       const LogicalRegion handle;
       const unsigned depth;
@@ -1028,7 +1044,11 @@ namespace RegionRuntime {
       friend class TaskContext;
       friend class RegionNode;
       friend class PhysicalNode;
-      static InstanceInfo* get_no_instance(void);
+      static inline InstanceInfo* get_no_instance(void)
+      {
+        static InstanceInfo no_info;
+        return &no_info;
+      }
     protected:
       Event valid_event; // Event when the copy for this instance is valid
       unsigned references;
@@ -1052,6 +1072,25 @@ namespace RegionRuntime {
       DependenceDetector(ContextID id, RegionRequirement *r,
           TaskContext *c, TaskContext *p) 
         : ctx(id), req(r), child(c), parent(p) { }
+    };
+
+    /////////////////////////////////////////////////////////////
+    // Region Renamer 
+    /////////////////////////////////////////////////////////////
+    class RegionRenamer {
+    protected:
+      friend class TaskContext;
+      friend class RegionNode;
+      friend class PartitionNode;
+      const ContextID ctx_id;
+      RegionRequirement *const req;
+      TaskContext *const ctx;
+      InstanceInfo *const info;
+      Mapper *const mapper;
+    protected:
+      RegionRenamer(ContextID id, RegionRequirement *r,
+          TaskContext *c, InstanceInfo *i, Mapper *m)
+        : ctx_id(id), req(r), ctx(c), info(i), mapper(m) { }
     };
 
     /////////////////////////////////////////////////////////////

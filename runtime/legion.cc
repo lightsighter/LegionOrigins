@@ -34,9 +34,10 @@ namespace RegionRuntime {
       CHILDREN_MAPPED_ID = (Processor::TASK_ID_FIRST_AVAILABLE+2),
       FINISH_ID          = (Processor::TASK_ID_FIRST_AVAILABLE+3),
       NOTIFY_START_ID    = (Processor::TASK_ID_FIRST_AVAILABLE+4),
-      NOTIFY_FINISH_ID   = (Processor::TASK_ID_FIRST_AVAILABLE+5),
-      ADVERTISEMENT_ID   = (Processor::TASK_ID_FIRST_AVAILABLE+6),
-      TERMINATION_ID     = (Processor::TASK_ID_FIRST_AVAILABLE+7),
+      NOTIFY_MAPPED_ID   = (Processor::TASK_ID_FIRST_AVAILABLE+5),
+      NOTIFY_FINISH_ID   = (Processor::TASK_ID_FIRST_AVAILABLE+6),
+      ADVERTISEMENT_ID   = (Processor::TASK_ID_FIRST_AVAILABLE+7),
+      TERMINATION_ID     = (Processor::TASK_ID_FIRST_AVAILABLE+8),
     };
 
     Logger::Category log_task("tasks");
@@ -399,6 +400,7 @@ namespace RegionRuntime {
       table[CHILDREN_MAPPED_ID] = HighLevelRuntime::children_mapped;
       table[FINISH_ID]          = HighLevelRuntime::finish_task;
       table[NOTIFY_START_ID]    = HighLevelRuntime::notify_start;
+      table[NOTIFY_MAPPED_ID]   = HighLevelRuntime::notify_children_mapped;
       table[NOTIFY_FINISH_ID]   = HighLevelRuntime::notify_finish;
       table[ADVERTISEMENT_ID]   = HighLevelRuntime::advertise_work;
       table[TERMINATION_ID]     = HighLevelRuntime::detect_termination;
@@ -500,6 +502,15 @@ namespace RegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_NOTIFY_START);
       UNPACK_ORIGINAL_PROCESSOR(args,buffer,proc);
       HighLevelRuntime::get_runtime(proc)->process_notify_start(buffer, arglen-sizeof(Processor));
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::notify_children_mapped(const void * args, size_t arglen, Processor p)
+    //--------------------------------------------------------------------------------------------
+    {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_NOTIFY_MAPPED);
+      UNPACK_ORIGINAL_PROCESSOR(args,buffer,proc);
+      HighLevelRuntime::get_runtime(proc)->process_notify_children_mapped(buffer, arglen-sizeof(Processor));
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1254,6 +1265,18 @@ namespace RegionRuntime {
       ptr += sizeof(Context);
      
       local_ctx->remote_start(ptr, arglen-sizeof(Context));
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_notify_children_mapped(const void * args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Unpack the context
+      const char *ptr = (const char*)args;
+      Context local_ctx = *((const Context*)ptr);
+      ptr += sizeof(Context);
+
+      local_ctx->remote_children_mapped(ptr, arglen-sizeof(Context));
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2090,10 +2113,10 @@ namespace RegionRuntime {
               InstanceInfo *info = handle->find_physical_instance(*it);
               if (info != InstanceInfo::get_no_instance())
               {
-                // We've got our instance, register that we're going to use it
-                handle->register_user(info,regions[idx].privilege,
-                                      regions[idx].prop, this, mapper);
+                RegionRenamer namer(ctx_id,&(regions[idx]),this,info,mapper);
+                handle->register_user(namer);
                 physical_instances.push_back(info);
+                physical_ctx.push_back(ctx_id); // use the local ctx
                 found = true;
                 break;
               }
@@ -2102,10 +2125,11 @@ namespace RegionRuntime {
             InstanceInfo* info = handle->create_physical_instance(*it);
             if (info != InstanceInfo::get_no_instance())
             {
+              RegionRenamer namer(ctx_id,&(regions[idx]),this,info,mapper);
               // Register that we got our instance 
-              handle->register_user(info,regions[idx].privilege,
-                                    regions[idx].prop, this, mapper);
+              handle->register_user(namer);
               physical_instances.push_back(info);
+              physical_ctx.push_back(ctx_id); // use the local ctx
               found = true;
               break;
             }
@@ -2126,6 +2150,39 @@ namespace RegionRuntime {
               this->task_id,this->unique_id);
           // Push back a no-instance for this physical instance
           physical_instances.push_back(InstanceInfo::get_no_instance());
+          // Find the parent region of this region, and use the same context
+          if (remote)
+          {
+            // We've already copied over our the physical region tree, so just use our context
+            physical_ctx.push_back(ctx_id);
+          }
+          else
+          {
+            // This was an unmapped region so we should use the same context as the parent region
+            // Iterate over the parent regions looking for the parent region
+#ifdef DEBUG_HIGH_LEVEL
+            bool found = false;
+#endif
+            for (unsigned parent_idx = 0; parent_ctx->regions.size(); parent_idx++)
+            {
+              if (regions[idx].parent == parent_ctx->regions[parent_idx].handle.region)
+              {
+#ifdef DEBUG_HIGH_LEVEL
+                found = true;
+                assert(parent_idx < parent_ctx->physical_ctx.size());
+#endif
+                physical_ctx.push_back(parent_ctx->physical_ctx[parent_idx]);
+                break;
+              }
+            }
+#ifdef DEBUG_HIGH_LEVEL
+            if (!found)
+            {
+              log_inst(LEVEL_ERROR,"Unable to find parent physical context!");
+              exit(1);
+            }
+#endif
+          }
           // We have an unmapped child region
           this->unmapped++;
         }
@@ -2232,28 +2289,205 @@ namespace RegionRuntime {
     std::vector<PhysicalRegion<AccessorGeneric> > TaskContext::start_task(void)
     //--------------------------------------------------------------------------------------------
     {
-
+      log_task(LEVEL_DEBUG,"Task %d with unique id %d starting on processor %d",task_id,unique_id,local_proc.id);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(physical_instances.size() == regions.size());
+#endif
+      // If not remote, we can release all our copy references
+      if (!remote)
+      {
+        for (std::vector<InstanceInfo*>::const_iterator it = source_physical_instances.begin();
+              it != source_physical_instances.end(); it++)
+        {
+          RegionNode *reg = (*region_nodes)[(*it)->handle];
+          reg->release_user(*it);
+        }
+        source_physical_instances.clear();
+      }
+      
+      // Get the set of physical regions for the task
+      std::vector<PhysicalRegion<AccessorGeneric> > result_regions;
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        PhysicalRegion<AccessorGeneric> reg;
+        reg.set_instance(physical_instances[idx]->inst.get_accessor_untyped());
+        if (regions[idx].alloc != NO_MEMORY)
+        {
+          reg.set_allocator(physical_instances[idx]->handle.create_allocator_untyped(
+                            physical_instances[idx]->location));
+        }
+        result_regions.push_back(reg);
+      }
+      return result_regions;
     }
 
     //--------------------------------------------------------------------------------------------
-    void TaskContext::complete_task(const void *result, size_t result_size)
+    void TaskContext::complete_task(const void *res, size_t res_size)
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"Task %d with unique id %d has completed on processor %d",
+                task_id,unique_id,local_proc.id);
+      if (remote)
+      {
+        // Save the result to be sent back 
+        result = malloc(res_size);
+        memcpy(result,res,res_size);
+        result_size = res_size;
+      }
+      else
+      {
+        // We can set the future result directly
+        future.set_result(res,res_size);
+      }
 
+      // Check to see if there are any child tasks
+      if (!child_tasks.empty())
+      {
+        // check to see if all children have been mapped
+        bool all_mapped = true;
+        for (std::vector<TaskContext*>::iterator it = child_tasks.begin();
+              it != child_tasks.end(); it++)
+        {
+          if (!((*it)->mapped))
+          {
+            all_mapped = false;
+            break;
+          }
+        }
+        if (all_mapped)
+        {
+          // We can call the task for when all children are mapped directly
+          children_mapped();
+        }
+        else
+        {
+          // Wait for all the children to be mapped
+          std::set<Event> map_events;
+          for (std::vector<TaskContext*>::iterator it = child_tasks.begin();
+                it != child_tasks.end(); it++)
+          {
+            if (!((*it)->mapped))
+              map_events.insert((*it)->map_event);
+          }
+          Event merged_map_event = Event::merge_events(map_events);
+          size_t buffer_size = sizeof(Processor) + sizeof(Context);
+          Serializer rez(buffer_size);
+          rez.serialize<Processor>(local_proc);
+          rez.serialize<Context>(this);
+          // Launch the task to handle all the children being mapped on the utility processor
+          Processor utility = local_proc.get_utility_processor();
+          utility.spawn(CHILDREN_MAPPED_ID,rez.get_buffer(),buffer_size,merged_map_event);
+        }
+      }
+      else
+      {
+        // No child tasks so we can finish the task
+        finish_task();
+      }
     }
 
     //--------------------------------------------------------------------------------------------
     void TaskContext::children_mapped(void)
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"All children mapped for task %d with unique id %d on processor %d",
+                task_id,unique_id,local_proc.id);
 
+      if (remote)
+      {
+        // Send back the information about the mappings to the original processor
+        size_t buffer_size = sizeof(Processor) + sizeof(Context);
+        Serializer rez(buffer_size);
+        rez.serialize<Processor>(orig_proc);
+        rez.serialize<Context>(orig_ctx);
+
+        // TODO: Figure out how to send this information back
+
+        // Run this task on the utility processor
+        Processor utility = orig_proc.get_utility_processor();
+        utility.spawn(NOTIFY_MAPPED_ID,rez.get_buffer(),buffer_size);
+      }
+
+      // Get a list of all the child task termination events so we know when they are done
+      std::set<Event> cleanup_events;
+      for (std::vector<TaskContext*>::iterator it = child_tasks.begin();
+            it != child_tasks.end(); it++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert((*it)->mapped);
+        assert((*it)->termination_event.exists());
+#endif
+      }
+
+      // Go through each of the mapped regions that we own and issue the necessary
+      // copy operations to restore data to the physical instances
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        // Check to see if we promised a physical instance
+        if (physical_instances[idx] != InstanceInfo::get_no_instance())
+        {
+          RegionNode *top = (*region_nodes)[regions[idx].handle.region];
+          cleanup_events.insert(top->close_instance(physical_instances[idx]));
+        }
+      }
+
+      size_t buffer_size = sizeof(Processor) + sizeof(Context);
+      Serializer rez(buffer_size);
+      rez.serialize<Processor>(local_proc);
+      rez.serialize<Context>(this);
+      // Launch the finish task on this processor's utility processor
+      Processor utility = local_proc.get_utility_processor();
+      utility.spawn(FINISH_ID,rez.get_buffer(),buffer_size,Event::merge_events(cleanup_events));
     }
 
     //--------------------------------------------------------------------------------------------
     void TaskContext::finish_task(void)
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"Finishing task %d with unique id %d on processor %d",
+                task_id, unique_id, local_proc.id);
 
+      if (remote)
+      {
+        // Send information about the updated logical regions to the parent context 
+        size_t buffer_size = sizeof(Processor) + sizeof(Context);
+        Serializer rez(buffer_size);
+        rez.serialize<Processor>(orig_proc);
+        rez.serialize<Context>(orig_ctx);
+
+        // Put the task on the utility processor
+        Processor utility = orig_proc.get_utility_processor();
+        utility.spawn(NOTIFY_FINISH_ID,rez.get_buffer(),buffer_size);
+      }
+      else
+      {
+        if (parent_ctx != NULL)
+        {
+          // Propagate information to the parent task
+          
+          // Create regions
+
+          // Added partitions
+
+          // Deleted regions
+        }
+        
+        // Set the future result
+
+        // Trigger the termination event
+        termination_event.trigger();
+        // Release our references to the physical instances
+
+      }
+      // Deactivate any child tasks
+      for (std::vector<TaskContext*>::const_iterator it = child_tasks.begin();
+            it != child_tasks.end(); it++)
+      {
+        (*it)->deactivate();
+      }
+      // If this task was remote, we can also deactivate our context
+      if (remote)
+        this->deactivate();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2266,6 +2500,13 @@ namespace RegionRuntime {
 #endif
       mapped = true;
       map_event.trigger();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::remote_children_mapped(const char *args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2342,17 +2583,53 @@ namespace RegionRuntime {
     }
 
     ///////////////////////////////////////////
-    // Instance Info 
+    // Region Node 
     ///////////////////////////////////////////
 
     //--------------------------------------------------------------------------------------------
-    /*static*/ InstanceInfo* InstanceInfo::get_no_instance(void)
+    RegionNode::RegionNode(LogicalRegion h, unsigned dep, PartitionNode *par, bool add, ContextID ctx)
+      : handle(h), depth(dep), parent(par), added(add)
     //--------------------------------------------------------------------------------------------
     {
-      static InstanceInfo no_info;
-      return &no_info;
+      region_states.reserve(ctx); 
     }
 
+    //--------------------------------------------------------------------------------------------
+    RegionNode::~RegionNode(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      
+    }
+    
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::register_region_dependence(DependenceDetector &dep)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    //--------------------------------------------------------------------------------------------
+
+    //--------------------------------------------------------------------------------------------
+    //--------------------------------------------------------------------------------------------
+
+    //--------------------------------------------------------------------------------------------
+    //--------------------------------------------------------------------------------------------
+    
+    //--------------------------------------------------------------------------------------------
+    //--------------------------------------------------------------------------------------------
+
+    //--------------------------------------------------------------------------------------------
+    //--------------------------------------------------------------------------------------------
+
+    //--------------------------------------------------------------------------------------------
+    //--------------------------------------------------------------------------------------------
+
+    //--------------------------------------------------------------------------------------------
+    //--------------------------------------------------------------------------------------------
+    
+      
     ///////////////////////////////////////////
     // Serializer
     ///////////////////////////////////////////
