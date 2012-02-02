@@ -657,8 +657,7 @@ namespace RegionRuntime {
                                     const std::vector<Memory> &current_instances,
                                     std::vector<std::vector<Memory> > &future_ranking);
 
-      virtual void select_copy_source(const Task *task,
-                                    const std::vector<Memory> &current_instances,
+      virtual void select_copy_source(const std::vector<Memory> &current_instances,
                                     const Memory &dst, Memory &chosen_src);
     protected:
       HighLevelRuntime *const runtime;
@@ -709,7 +708,7 @@ namespace RegionRuntime {
      * when an inline region mapping is available.
      */
     class RegionMappingImpl {
-    private:
+    protected:
       HighLevelRuntime *const runtime;
       RegionRequirement req;
       UserEvent mapped_event;
@@ -720,6 +719,10 @@ namespace RegionRuntime {
     protected:
       friend class HighLevelRuntime;
       friend class TaskContext;
+      friend class RegionNode;
+      friend class PartitionNode;
+      friend class DependenceDetector;
+      friend class RegionRenamer;
       RegionMappingImpl(HighLevelRuntime *rt); 
       ~RegionMappingImpl();
       void activate(const RegionRequirement &req);
@@ -792,7 +795,9 @@ namespace RegionRuntime {
       friend class HighLevelRuntime;
       friend class RegionNode;
       friend class PartitionNode;
-      friend class RestoringCopy;
+      friend class RegionMappingImpl;
+      friend class DependenceDetector;
+      friend class RegionRenamer;
       TaskContext(Processor p, HighLevelRuntime *r, ContextID id);
       ~TaskContext();
     protected:
@@ -938,13 +943,23 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////////////// 
     class RegionNode {
     protected:
+      enum DataState {
+        DATA_CLEAN,
+        DATA_DIRTY,
+      };
       struct RegionState {
       public:
+        // Logical State
         bool logical_exclusive;
         std::set<PartitionID> open_logical;
+        // Physical State
         bool physical_exclusive;
+        bool physical_open; // Note physical looks at current instance for openness
         std::set<PartitionID> open_physical;
         std::set<InstanceInfo*> valid_instances;
+        bool physical_top;
+        DataState data_state;
+        bool relaxed_mode; // For detecting when we need multiple copies
       };
     protected:
       friend class TaskContext;
@@ -959,11 +974,11 @@ namespace RegionRuntime {
       void initialize_logical_context(ContextID ctx);
     protected:
       // Initialize the physical context
-      void initialize_physical_context(ContextID ctx);
+      void initialize_physical_context(ContextID ctx, bool top = true);
       // Operations on the physical part of the region tree
-      void get_physical_locations(std::vector<Memory> &locations);
+      void get_physical_locations(ContextID ctx, std::vector<Memory> &locations);
       // Try finding a physical instance in the specified memory. 
-      InstanceInfo* find_physical_instance(Memory m);
+      InstanceInfo* find_physical_instance(ContextID ctx, Memory m);
       // Try creating a physical instance in the specified memory. 
       InstanceInfo* create_physical_instance(Memory m);
       // See if we already have a physical instance like this, if not make one
@@ -973,19 +988,31 @@ namespace RegionRuntime {
       // for when instance is valid.  Note we also need the mapper here to help in
       // directing copy operations.  This also updates source_physical_instances
       // with InstanceInfo that we've used in performing our copies.
-      void register_user(RegionRenamer &renamer);
+      void register_user(RegionRenamer &renamer, bool below = false);
       // Release a user of a physical instance after a task is finished
       void release_user(InstanceInfo *info);
+    private:
+      // Initialize an instance from the set of current valid instances
+      Event initialize_instance(RegionRenamer &renamer);
+      // Perform a copy between two instances
+      Event perform_copy(InstanceInfo *src, RegionRenamer &renamer);
+      // Update the set of valid instances
+      void update_valid_instances(RegionRenamer &renamer);
       // Close up any lower physical instances to this physical instance
       // Return the event corresponding to when this instance is available
       Event close_instance(InstanceInfo *info);
+    private:
+      // Utility functions
+      void help_perform_copy(InstanceInfo *src, RegionRenamer &renamer,
+          std::set<Event> &wait_on_events, const RegionRequirement &req,
+          const RegionRequirement &req2, Event termination_event);
     private:
       const LogicalRegion handle;
       const unsigned depth;
       PartitionNode *const parent;
       std::map<PartitionID,PartitionNode*> partitions;
       std::vector<RegionState> region_states; // indexed by ctx_id
-      std::vector<InstanceInfo*> all_instances; // all physical instances of this node created
+      std::list<InstanceInfo*> all_instances; // all physical instances of this node created
       const bool added; // track whether this is a new node
     };
 
@@ -999,6 +1026,7 @@ namespace RegionRuntime {
         bool logical_exclusive; // for aliased only (disjoint doesn't matter)
         std::set<LogicalRegion> open_logical;
         bool physical_exclusive; // same as above
+        bool physical_open; // note physical looks at current instance for openness
         std::set<LogicalRegion> open_physical;
       };
     protected:
@@ -1008,7 +1036,11 @@ namespace RegionRuntime {
                     bool dis, bool add, ContextID ctx);
       ~PartitionNode(void);
     protected:
+      // Logical operations on partitions 
       void register_region_dependence(DependenceDetector &dep);
+    protected:
+      // Physical operations on partitions
+      void initialize_physical_context(ContextID ctx);
     private:
       const PartitionID pid;
       const unsigned depth;
@@ -1033,15 +1065,19 @@ namespace RegionRuntime {
           location(Memory::NO_MEMORY),
           inst(RegionInstance::NO_INST),
           valid_event(Event::NO_EVENT),
-          references(0) { }
+          references(0), remote(false),
+          initialized(false), inst_lock(Lock::NO_LOCK) { }
       InstanceInfo(LogicalRegion r, Memory m,
           RegionInstance i, Event v = Event::NO_EVENT) 
         : handle(r), location(m), inst(i), 
-          valid_event(v), references(0) { }
+          valid_event(v), references(0), 
+          remote(false), initialized(false),
+          inst_lock(Lock::NO_LOCK) { }
     public:
       inline Event get_valid(void) const { return valid_event; }
     protected:
       friend class TaskContext;
+      friend class RegionMappingImpl;
       friend class RegionNode;
       friend class PhysicalNode;
       static inline InstanceInfo* get_no_instance(void)
@@ -1053,6 +1089,10 @@ namespace RegionRuntime {
       Event valid_event; // Event when the copy for this instance is valid
       unsigned references;
       bool remote; // If remote info, we can't deallocate locally
+      bool initialized;
+      Lock inst_lock; // For atomic access if necessary
+      std::map<TaskContext*,unsigned/*region idx*/> users;
+      std::set<RegionMappingImpl*> other_users;
     };
 
     /////////////////////////////////////////////////////////////
@@ -1061,6 +1101,7 @@ namespace RegionRuntime {
     class DependenceDetector {
     protected:
       friend class TaskContext;
+      friend class RegionMappingImpl;
       friend class RegionNode;
       friend class PartitionNode;
       const ContextID ctx;
@@ -1080,17 +1121,32 @@ namespace RegionRuntime {
     class RegionRenamer {
     protected:
       friend class TaskContext;
+      friend class RegionMappingImpl;
       friend class RegionNode;
       friend class PartitionNode;
       const ContextID ctx_id;
-      RegionRequirement *const req;
-      TaskContext *const ctx;
+      unsigned idx;
+      union UserCtx_t {
+        TaskContext *ctx;
+        RegionMappingImpl *impl;
+      } user_ctx;
+      bool is_ctx;
       InstanceInfo *const info;
       Mapper *const mapper;
     protected:
-      RegionRenamer(ContextID id, RegionRequirement *r,
+      RegionRenamer(ContextID id, unsigned index,
           TaskContext *c, InstanceInfo *i, Mapper *m)
-        : ctx_id(id), req(r), ctx(c), info(i), mapper(m) { }
+        : ctx_id(id), idx(index), is_ctx(true), info(i), mapper(m) 
+          { user_ctx.ctx = c; }
+      RegionRenamer(ContextID id, RegionMappingImpl *r,
+          InstanceInfo *i, Mapper *m)
+        : ctx_id(id), idx(0), is_ctx(false), info(i), mapper(m)
+          { user_ctx.impl = r; }
+    protected:
+      inline const RegionRequirement& get_req(void) 
+      { return (is_ctx ? user_ctx.ctx->regions[ctx_id] : user_ctx.impl->req); }
+      inline Event get_term_event(void)
+      { return (is_ctx ? user_ctx.ctx->termination_event : user_ctx.impl->unmapped_event); }
     };
 
     /////////////////////////////////////////////////////////////

@@ -22,6 +22,15 @@
 // check this relative to the machine file and the low level runtime
 #define MAX_NUM_PROCS           1024
 
+#define IS_READ_ONLY(req) ((req.privilege == NO_ACCESS) || (req.privilege == READ_ONLY))
+#define HAS_WRITE(req) ((req.privilege == READ_WRITE) || (req.privilege == REDUCE) || (req.privilege == WRITE_ONLY))
+#define IS_WRITE_ONLY(req) (req.privilege == WRITE_ONLY)
+#define IS_EXCLUSIVE(req) (req.prop == EXCLUSIVE)
+#define IS_ATOMIC(req) (req.prop == ATOMIC)
+#define IS_SIMULT(req) (req.prop == SIMULTANEOUS)
+#define IS_RELAXED(req) (req.prop == RELAXED)
+ 
+
 namespace RegionRuntime {
   namespace HighLevel {
     // Runtime task numbering 
@@ -78,6 +87,107 @@ namespace RegionRuntime {
           assert(false);
       }
       return NULL;
+    }
+
+    // Stuff for dependence detection
+    enum DependenceType {
+      NO_DEPENDENCE = 0,
+      TRUE_DEPENDENCE = 1,
+      ANTI_DEPENDENCE = 2, // WAR 
+      ATOMIC_DEPENDENCE = 3,
+      SIMULTANEOUS_DEPENDENCE = 4,
+      WO_NO_DEPENDENCE = 5, // No dependence on account of write-only
+    };
+
+    static inline DependenceType check_for_anti_dependence(const RegionRequirement &req1,
+                                                           const RegionRequirement &req2,
+                                                           DependenceType actual)
+    {
+      // Check for WAR or WAW with write-only
+      if (IS_READ_ONLY(req1))
+      {
+        // If second access is write-only, then we have no depenendence
+        if (IS_WRITE_ONLY(req2))
+        {
+          // WAR with a write-only
+          return WO_NO_DEPENDENCE;
+        }
+        else
+        {
+          // This is a standard WAR anti-dependence
+          return ANTI_DEPENDENCE;
+        }
+      }
+      else
+      {
+        if (IS_WRITE_ONLY(req2))
+        {
+          // WAW with a write-only
+          return WO_NO_DEPENDENCE;
+        }
+        else
+        {
+          // This defaults to whatever the actual dependence is
+          return actual;
+        }
+      }
+    }
+
+    static inline DependenceType check_dependence_type(const RegionRequirement &req1, 
+                                                       const RegionRequirement &req2)
+    {
+      // Two readers are never a dependence
+      if (IS_READ_ONLY(req1) && IS_READ_ONLY(req2))
+      {
+        return NO_DEPENDENCE;
+      }
+      else
+      {
+        // Everything in here has at least one right
+#ifdef DEBUG_HIGH_LEVEL
+        assert(HAS_WRITE(req1) || HAS_WRITE(req2));
+#endif
+        // If anything exclusive 
+        if (IS_EXCLUSIVE(req1) || IS_EXCLUSIVE(req2))
+        {
+          return check_for_anti_dependence(req1,req2,TRUE_DEPENDENCE/*default*/);
+        }
+        // Anything atomic (at least one is a write)
+        else if (IS_ATOMIC(req1) || IS_EXCLUSIVE(req2))
+        {
+          // If they're both atomics, return an atomic dependence
+          if (IS_ATOMIC(req1) && IS_ATOMIC(req2))
+          {
+            return check_for_anti_dependence(req1,req2,ATOMIC_DEPENDENCE/*default*/); 
+          }
+          // If the one that is not an atomic is a read, we're also ok
+          else if ((!IS_ATOMIC(req1) && IS_READ_ONLY(req1)) ||
+                   (!IS_ATOMIC(req2) && IS_READ_ONLY(req2)))
+          {
+            return NO_DEPENDENCE;
+          }
+          // Everything else is a dependence
+          return check_for_anti_dependence(req1,req2,TRUE_DEPENDENCE/*default*/);
+        }
+        // If either is simultaneous we have a simultaneous dependence
+        else if (IS_SIMULT(req1) || IS_SIMULT(req2))
+        {
+          return check_for_anti_dependence(req1,req2,SIMULTANEOUS_DEPENDENCE/*default*/);
+        }
+        else if (IS_RELAXED(req1) && IS_RELAXED(req2))
+        {
+          // TODO: Make this truly relaxed, right now it is the same as simultaneous
+          return check_for_anti_dependence(req1,req2,SIMULTANEOUS_DEPENDENCE/*default*/);
+          // This is what it should be: return NO_DEPENDENCE;
+          // What needs to be done:
+          // - RegionNode::update_valid_instances needs to allow multiple outstanding writers
+          // - RegionNode needs to detect relaxed case and make copies from all 
+          //              relaxed instances to non-relaxed instance
+        }
+        // We should never make it here
+        assert(false);
+        return NO_DEPENDENCE;
+      }
     }
 
     /////////////////////////////////////////////////////////////
@@ -2096,7 +2206,7 @@ namespace RegionRuntime {
         // TODO: Get the available memory locations
         std::vector<Memory> sources;
         RegionNode *handle = (*region_nodes)[regions[idx].handle.region];
-        handle->get_physical_locations(sources);
+        handle->get_physical_locations(physical_ctx[idx], sources);
         std::vector<Memory> locations;
         mapper->map_task_region(this, &(regions[idx]),sources,locations);
         // Check to see if the user actually wants an instance
@@ -2110,10 +2220,10 @@ namespace RegionRuntime {
             // If there were any physical instances, see if we can get a prior copy
             if (!sources.empty())
             {
-              InstanceInfo *info = handle->find_physical_instance(*it);
+              InstanceInfo *info = handle->find_physical_instance(physical_ctx[idx], *it);
               if (info != InstanceInfo::get_no_instance())
               {
-                RegionRenamer namer(ctx_id,&(regions[idx]),this,info,mapper);
+                RegionRenamer namer(ctx_id,idx,this,info,mapper);
                 handle->register_user(namer);
                 physical_instances.push_back(info);
                 physical_ctx.push_back(ctx_id); // use the local ctx
@@ -2125,7 +2235,7 @@ namespace RegionRuntime {
             InstanceInfo* info = handle->create_physical_instance(*it);
             if (info != InstanceInfo::get_no_instance())
             {
-              RegionRenamer namer(ctx_id,&(regions[idx]),this,info,mapper);
+              RegionRenamer namer(ctx_id,idx,this,info,mapper);
               // Register that we got our instance 
               handle->register_user(namer);
               physical_instances.push_back(info);
@@ -2609,26 +2719,367 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    void RegionNode::initialize_logical_context(ContextID ctx)
     //--------------------------------------------------------------------------------------------
+    {
+
+    }
 
     //--------------------------------------------------------------------------------------------
+    void RegionNode::initialize_physical_context(ContextID ctx, bool top /*= true*/)
     //--------------------------------------------------------------------------------------------
+    {
+      // Check to see if we have the size
+      if (region_states.size() <= ctx)
+      {
+        region_states.resize(ctx);
+      }
+      region_states[ctx].physical_exclusive = false;
+      region_states[ctx].physical_open = false;
+      region_states[ctx].open_physical.clear();
+      region_states[ctx].valid_instances.clear();
+      region_states[ctx].physical_top = top;
+      region_states[ctx].data_state = DATA_CLEAN;
+      region_states[ctx].relaxed_mode = false;
+      // Initialize the sub regions
+      for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
+            it != partitions.end(); it++)
+      {
+        it->second->initialize_physical_context(ctx);
+      }
+    }
 
     //--------------------------------------------------------------------------------------------
+    void RegionNode::get_physical_locations(ContextID ctx, std::vector<Memory> &locations)
     //--------------------------------------------------------------------------------------------
+    {
+      // Add any physical instances that we have to the list of locations
+      for (std::set<InstanceInfo*>::const_iterator it = region_states[ctx].valid_instances.begin();
+            it != region_states[ctx].valid_instances.end(); it++)
+      {
+        locations.push_back((*it)->location);
+      }
+      // If we are still clean we can see valid physical instances above us too!
+      // Go up the tree looking for any valid physical instances until we get to the top
+      if ((region_states[ctx].data_state == DATA_CLEAN) && 
+          !region_states[ctx].physical_top && (parent != NULL))
+      {
+        parent->parent->get_physical_locations(ctx,locations);
+      }
+    }
     
     //--------------------------------------------------------------------------------------------
+    InstanceInfo* RegionNode::find_physical_instance(ContextID ctx, Memory m)
     //--------------------------------------------------------------------------------------------
+    {
+      // Check to see if we have any valid physical instances that we can use 
+      for (std::set<InstanceInfo*>::const_iterator it = region_states[ctx].valid_instances.begin();
+            it != region_states[ctx].valid_instances.end(); it++)
+      {
+        if ((*it)->location == m)
+          return *it;
+      }
+      // We can only go up the tree if we are clean
+      // If we didn't find anything, go up the tree
+      if ((region_states[ctx].data_state == DATA_CLEAN) &&
+          !region_states[ctx].physical_top && (parent != NULL))
+      {
+        return parent->parent->find_physical_instance(ctx, m);
+      }
+      // Didn't find anything return the no instance
+      return InstanceInfo::get_no_instance();
+    }
 
     //--------------------------------------------------------------------------------------------
+    InstanceInfo* RegionNode::create_physical_instance(Memory m)
     //--------------------------------------------------------------------------------------------
+    {
+      // Try to make the physical instance in the specified memory
+      RegionInstance inst = handle.create_instance_untyped(m); 
+      if (inst.exists())
+      {
+        // Create a new instance info
+        InstanceInfo *info = new InstanceInfo(this->handle,m,inst);
+        // Add this to the list of created instances
+        all_instances.push_back(info);
+        return info;
+      }
+      // We couldn't make it in the memory return the no instance
+      return InstanceInfo::get_no_instance();
+    }
 
     //--------------------------------------------------------------------------------------------
+    InstanceInfo* RegionNode::update_physical_instance(InstanceInfo* info)
     //--------------------------------------------------------------------------------------------
+    {
+      
+    }
 
     //--------------------------------------------------------------------------------------------
+    void RegionNode::register_user(RegionRenamer &renamer, bool below /*= false*/)
     //--------------------------------------------------------------------------------------------
+    {
+      // Awesome versioning logic here!
+      // There are three cases here
+      // 1. the physical instance is above logical region
+      //     -> there are three cases here
+      //     a. physical tree is not open down to physial region, open and copy down
+      //     b. physical region tree is open to exactly physical level, make copy if unitialized
+      //
+      // 2. the physical instances is the same as the logical region
+      //     -> there are three cases here
+      //     a. physical tree is not open down to the physical region, open and copy down
+      //     b. physical region is open to exactly this level, make copy if uninitialized
+      //     c. physical region tree is open below, close up and create any copies
+      //
+      // 3. the physical instances is below the logical region
+      //     -> error!
+      //
+      // We also have to update the set of valid physical instances, do this based on the
+      // privileges and coherence properties
+      // Read-Only: don't need to close up sub-tree or reset privilges
+      // Read-Write: close up all sub-trees and invalidate all prior instances
+      // Reduce: same as read-write
+      // Write-Only: just need a new instance, close up sub-tree but no copies
+      
+      // Check to see if the instance is the same as the logical region, 
+      // if not go up the tree to get to case 2
+      if (!below && (renamer.info->handle != handle))
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        // These are all checks for outer case 3
+        assert(!region_states[renamer.ctx_id].physical_top);
+        assert(parent->parent != NULL);
+#endif
+        // Outer case 1
+        parent->parent->register_user(renamer,true/*below*/);
+      }
+      else
+      {
+        // Now we are in outer case 2
+        if (region_states[renamer.ctx_id].physical_open)
+        {
+          // Check to see if we are in case b or c
+          if (region_states[renamer.ctx_id].open_physical.empty())
+          {
+            // case b
+            // If not initialized, initialize the data
+            if (!renamer.info->initialized)
+            {
+              renamer.info->valid_event = initialize_instance(renamer);
+            }
+          }
+          else
+          {
+            // case c
+                        
+          }
+        }
+        else
+        {
+          // We are in case a
+        }
+        // Update the set of valid regions remaining in this task
+        update_valid_instances(renamer);
+        // Finally mark that this task/mapping is using the instance
+        if (renamer.is_ctx)
+          renamer.info->users.insert(std::pair<TaskContext*,unsigned>(renamer.user_ctx.ctx,renamer.idx));
+        else
+          renamer.info->other_users.insert(renamer.user_ctx.impl);
+      }
+    }
     
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::release_user(InstanceInfo *info)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    Event RegionNode::initialize_instance(RegionRenamer &renamer)
+    //--------------------------------------------------------------------------------------------
+    {  
+#ifdef DEBUG_HIGH_LEVEL
+      assert(region_states[renamer.ctx_id].valid_instances.find(renamer.info) ==
+          region_states[renamer.ctx_id].valid_instances.end());
+      assert(!renamer.info->initialized);
+#endif
+      // Ask the mapper where to pull the data from
+      // First get the set of choices
+      std::vector<Memory> locations;
+      this->get_physical_locations(renamer.ctx_id,locations);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!locations.empty()); // Make sure the mapper has options
+#endif
+      Memory chosen_src;
+      renamer.mapper->select_copy_source(locations,renamer.info->location,chosen_src);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(chosen_src.exists());
+#endif
+      // Find the instance info and issue the copy
+      InstanceInfo *src = this->find_physical_instance(renamer.ctx_id,chosen_src); 
+#ifdef DEBUG_HIGH_LEVEL
+      assert(src != InstanceInfo::get_no_instance());
+#endif
+      // Mark that the info has been initialized
+      renamer.info->initialized = true;
+      // Issue the copy and return the event
+      return perform_copy(src,renamer);
+    }
+
+    // Helper function for doing the same operation over both contexts and mapping impl
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::help_perform_copy(InstanceInfo *src, RegionRenamer &renamer, 
+                      std::set<Event> &wait_on_events, const RegionRequirement &src_req, 
+                      const RegionRequirement &dst_req, Event termination_event)
+    //--------------------------------------------------------------------------------------------
+    {
+      // switch on the dependence type
+      switch (check_dependence_type(src_req,dst_req))
+      {
+        case NO_DEPENDENCE:
+          {
+            // No need to do anything
+            break;
+          }
+        case TRUE_DEPENDENCE:
+          {
+            // Have to wait on the task to finish before using
+            wait_on_events.insert(termination_event);
+            break;
+          }
+        case ANTI_DEPENDENCE:
+          {
+            // No need to wait to make the copy
+            break;
+          }
+        case ATOMIC_DEPENDENCE:
+          {
+            // Check to see if they are using the same instance
+            if (src->inst == renamer.info->inst)
+            {
+              // Should never get here (see no copy above)
+              assert(false);
+            }
+            else
+            {
+              // Different instance, just wait period
+              wait_on_events.insert(termination_event);
+            }
+            break;
+          }
+        case SIMULTANEOUS_DEPENDENCE:
+          {
+            // Check to see if they are using the same instance
+            if (src->inst == renamer.info->inst)
+            {
+              // Should never get here (see no copy above)
+              assert(false);
+            }
+            else
+            {
+              // Different instance, so we have to wait
+              wait_on_events.insert(termination_event);
+            }
+            break;
+          }
+        case WO_NO_DEPENDENCE:
+          {
+            // Should never get here either
+            assert(false);
+            break;
+          }
+        default:
+          assert(false); // Should never make it here
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    Event RegionNode::perform_copy(InstanceInfo *src, RegionRenamer &renamer)
+    //--------------------------------------------------------------------------------------------
+    {
+      // If they are the same physical instance, no need to make a copy
+      if (src->inst == renamer.info->inst)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(src == renamer.info);
+#endif
+        return Event::NO_EVENT;
+      }
+      // If we're making a write-only version there's no need to make a copy
+      if (IS_WRITE_ONLY(renamer.get_req()))
+      {
+        return Event::NO_EVENT;
+      }
+      std::set<Event> wait_on_events;
+      // Go through all the tasks using the event and see if we have any dependencies on them
+      // for actually making the data copy
+      for (std::map<TaskContext*,unsigned>::const_iterator it = src->users.begin();
+            it != src->users.end(); it++)
+      {
+        help_perform_copy(src,renamer,wait_on_events,it->first->regions[it->second],
+                          renamer.get_req(), it->first->termination_event);
+      }
+      // Now do the same thing for each of the mapping implementations
+      for (std::set<RegionMappingImpl*>::const_iterator it = src->other_users.begin();
+            it != src->other_users.begin(); it++)
+      {
+        help_perform_copy(src,renamer,wait_on_events,(*it)->req,
+                renamer.get_req(), (*it)->unmapped_event);
+      }
+      // Got a set of events to wait on before making the copy
+      // Now we can actually issue the copy
+      RegionInstance cpy_inst = src->inst;
+      return cpy_inst.copy_to_untyped(renamer.info->inst,Event::merge_events(wait_on_events));
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::update_valid_instances(RegionRenamer &renamer)
+    //--------------------------------------------------------------------------------------------
+    {
+      // If there is any kind of a write, this becomes the only valid instance, otherwise
+      // just add it to the list
+      if (HAS_WRITE(renamer.get_req()))
+      {
+        // Mark that this data is dirtry
+        region_states[renamer.ctx_id].valid_instances.clear();
+        // Once we write data, it is dirty until it gets written back
+        region_states[renamer.ctx_id].data_state = DATA_DIRTY;
+      }
+      // Add this instance to the new set of physical intances
+      region_states[renamer.ctx_id].valid_instances.insert(renamer.info);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    Event RegionNode::close_instance(InstanceInfo *info)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    ///////////////////////////////////////////
+    // Partition Node 
+    ///////////////////////////////////////////
+
+    //--------------------------------------------------------------------------------------------
+    void PartitionNode::initialize_physical_context(ContextID ctx)
+    //--------------------------------------------------------------------------------------------
+    {
+      if (partition_states.size() <= ctx)
+      {
+        partition_states.resize(ctx);
+      }
+      partition_states[ctx].physical_exclusive = false;
+      partition_states[ctx].physical_open = false;
+      partition_states[ctx].open_physical.clear();
+
+      for (std::map<Color,RegionNode*>::const_iterator it = children_map.begin();
+            it != children_map.end(); it++)
+      {
+        it->second->initialize_physical_context(ctx,false/*top*/);
+      }
+    }
       
     ///////////////////////////////////////////
     // Serializer
@@ -2686,6 +3137,14 @@ namespace RegionRuntime {
     }
   };
 };
+
+#undef IS_RELAXED
+#undef IS_SIMULT
+#undef IS_ATOMIC
+#undef IS_EXCLUSIVE
+#undef IS_WRITE_ONLY
+#undef HAS_WRITE
+#undef IS_READ_ONLY
 
 // EOF
 
