@@ -13,7 +13,7 @@ using namespace RegionRuntime::HighLevel;
 
 // #define TEST_STEALING
 
-#define CHECK_CORRECTNESS
+// #define CHECK_CORRECTNESS
 
 namespace Config {
   unsigned num_blocks = 64;
@@ -27,7 +27,7 @@ enum {
   TASKID_CHECK_CORRECT,
 };
 
-#define BLOCK_SIZE 256
+#define BLOCK_SIZE 512
 
 struct Entry {
   float v;
@@ -127,6 +127,7 @@ void main_task(const void *args, size_t arglen,
     blocks[i].r_z = runtime->get_subregion(ctx, p_z, i);
   }
 
+  std::vector<Future> futures;
   for (unsigned i = 0; i < Config::num_blocks; i++) {
     std::vector<RegionRequirement> init_regions;
     init_regions.push_back(RegionRequirement(blocks[i].r_x, READ_WRITE, NO_MEMORY, EXCLUSIVE, vr->r_x));
@@ -134,15 +135,18 @@ void main_task(const void *args, size_t arglen,
 
     Future f = runtime->execute_task(ctx, TASKID_INIT_VECTORS, init_regions,
 				     &(blocks[i]), sizeof(Block), false, 0, i);
-    f.get_void_result();
+    futures.push_back(f);
   }
+
+  for (unsigned i = 0; i < Config::num_blocks; i++)
+    futures[i].get_void_result();
 
   printf("STARTING MAIN SIMULATION LOOP\n");
   struct timespec ts_start, ts_end;
   clock_gettime(CLOCK_MONOTONIC, &ts_start);
   RegionRuntime::DetailedTimer::clear_timers();
 
-  std::vector<Future> futures;
+  futures.clear();
   for (unsigned i = 0; i < Config::num_blocks; i++) {
     std::vector<RegionRequirement> add_regions;
     add_regions.push_back(RegionRequirement(blocks[i].r_x, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_x));
@@ -272,8 +276,13 @@ void add_vectors_task(const void *args, size_t arglen,
     r_y.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>();
   GPU_Accessor r_z_gpu =
     r_z.instance.template convert<RegionRuntime::LowLevel::AccessorGPU>();
-  add_vectors_kernel<<<1,BLOCK_SIZE>>>(block->alpha, dev_entry_x, dev_entry_y,
-				       dev_entry_z, r_x_gpu, r_y_gpu, r_z_gpu);
+
+  int thread_block = 256;
+  assert(BLOCK_SIZE % thread_block == 0);
+  add_vectors_kernel<<<BLOCK_SIZE/thread_block,thread_block>>>
+    (block->alpha, dev_entry_x, dev_entry_y, dev_entry_z,
+     r_x_gpu, r_y_gpu, r_z_gpu);
+
   cudaDeviceSynchronize();
 
   cudaFree(dev_entry_x);
