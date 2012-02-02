@@ -159,6 +159,7 @@ void main_task(const void *args, size_t arglen,
     blocks[i].r_z = runtime->get_subregion(ctx, p_z, i);
   }
 
+  std::vector<Future> futures;
   for (unsigned i = 0; i < Config::num_blocks; i++) {
     std::vector<RegionRequirement> init_regions;
     init_regions.push_back(RegionRequirement(blocks[i].r_x, READ_WRITE, NO_MEMORY, EXCLUSIVE, vr->r_x));
@@ -166,8 +167,11 @@ void main_task(const void *args, size_t arglen,
 
     Future f = runtime->execute_task(ctx, TASKID_INIT_VECTORS, init_regions,
 				     &(blocks[i]), sizeof(Block), false, 0, i);
-    f.get_void_result();
+    futures.push_back(f);
   }
+
+  for (unsigned i = 0; i < Config::num_blocks; i++)
+    futures[i].get_void_result();
 
 #ifdef CHECK_CORRECTNESS
   do_validation<AT>(vr, blocks, ctx, runtime, true);
@@ -179,7 +183,7 @@ void main_task(const void *args, size_t arglen,
   clock_gettime(CLOCK_MONOTONIC, &ts_start);
   RegionRuntime::DetailedTimer::clear_timers();
 
-  std::vector<Future> futures;
+  futures.clear();
   for (unsigned i = 0; i < Config::num_blocks; i++) {
     std::vector<RegionRequirement> add_regions;
     add_regions.push_back(RegionRequirement(blocks[i].r_x, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_x));
