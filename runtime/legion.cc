@@ -2336,7 +2336,6 @@ namespace RegionRuntime {
             rez.serialize<LogicalRegion>((*it)->handle);
             rez.serialize<Memory>((*it)->location); 
             rez.serialize<RegionInstance>((*it)->inst);
-            rez.serialize<Event>((*it)->valid_event);
           }
         }
         // Launch the begin notification on the utility processor 
@@ -2801,7 +2800,7 @@ namespace RegionRuntime {
         // Create a new instance info
         InstanceInfo *info = new InstanceInfo(this->handle,m,inst);
         // Add this to the list of created instances
-        all_instances.push_back(info);
+        all_instances.insert(info);
         return info;
       }
       // We couldn't make it in the memory return the no instance
@@ -2816,7 +2815,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void RegionNode::register_user(RegionRenamer &renamer, bool below /*= false*/)
+    Event RegionNode::register_user(RegionRenamer &renamer, bool below /*= false*/)
     //--------------------------------------------------------------------------------------------
     {
       // Awesome versioning logic here!
@@ -2852,22 +2851,19 @@ namespace RegionRuntime {
         assert(parent->parent != NULL);
 #endif
         // Outer case 1
-        parent->parent->register_user(renamer,true/*below*/);
+        return parent->parent->register_user(renamer,true/*below*/);
       }
       else
       {
+        Event result = Event::NO_EVENT;
         // Now we are in outer case 2
         if (region_states[renamer.ctx_id].physical_open)
         {
           // Check to see if we are in case b or c
           if (region_states[renamer.ctx_id].open_physical.empty())
           {
-            // case b
-            // If not initialized, initialize the data
-            if (!renamer.info->initialized)
-            {
-              renamer.info->valid_event = initialize_instance(renamer);
-            }
+            // case b: only need to update local instances
+            result = update_local_instances(renamer);
           }
           else
           {
@@ -2879,13 +2875,12 @@ namespace RegionRuntime {
         {
           // We are in case a
         }
-        // Update the set of valid regions remaining in this task
-        update_valid_instances(renamer);
         // Finally mark that this task/mapping is using the instance
         if (renamer.is_ctx)
-          renamer.info->users.insert(std::pair<TaskContext*,unsigned>(renamer.user_ctx.ctx,renamer.idx));
+          renamer.info->add_user(renamer.user_ctx.ctx,renamer.idx);
         else
-          renamer.info->other_users.insert(renamer.user_ctx.impl);
+          renamer.info->add_mapping(renamer.user_ctx.impl);
+        return result;
       }
     }
     
@@ -2897,20 +2892,149 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    Event RegionNode::initialize_instance(RegionRenamer &renamer)
+    Event RegionNode::update_local_instances(RegionRenamer &renamer)
     //--------------------------------------------------------------------------------------------
     {  
+      // There are a few cases here
+      // 1. Not in relaxed mode
+      //    a. Separate Instance: create a copy and chose a source  
+      //                          Update valid instances based on dependences
+      //    b. Pre-existing Instance: check for dependences
+      //       Dependence: wait for previous task, updated valid_instances
+      //       No Dependence: already ready, no need to wait
+      //    (check for whether new region is in relaxed mode)
+      // 2. In relaxed mode
+      //    a. Requested region in relaxed 
+      //        1. Separate instance: create a copy from one instance
+      //        2. Not separate instance: do nothing
+      //    b. Requested region not in relaxed
+      //        1. Separate instance: copy all relaxed to new instance
+      //        2. Not separate instance: copy all relaxed to one instance
+      Event result = Event::NO_EVENT;
+      if (!region_states[renamer.ctx_id].relaxed_mode)
+      {
+        if (region_states[renamer.ctx_id].valid_instances.find(renamer.info) ==
+            region_states[renamer.ctx_id].valid_instances.end())
+        {
+          // New instance, select a location to copy from and initialize the data
+          result = select_and_copy(renamer);
+        }
+        else
+        {
+          // Instance is already in use, compute the wait on events for this instance
+          // Compute the wait on events for all the tasks previously using the instance
+          std::set<Event> wait_on_events;
+          for (std::map<TaskContext*,unsigned>::const_iterator it = renamer.info->users.begin();
+                it != renamer.info->users.end(); it++)
+          {
+            compute_wait_events(renamer.info,renamer,wait_on_events,it->first->regions[it->second],
+                          renamer.get_req(), it->first->termination_event);
+          }
+          for (std::set<RegionMappingImpl*>::const_iterator it = renamer.info->other_users.begin();
+                it != renamer.info->other_users.begin(); it++)
+          {
+            compute_wait_events(renamer.info,renamer,wait_on_events,(*it)->req,
+                    renamer.get_req(), (*it)->unmapped_event);
+          }
+          result = Event::merge_events(wait_on_events);
+        }
+        // Now we need to update the valid instances
+        if (HAS_WRITE(renamer.get_req()))
+        {
+          // Iterate over the current valid states and see if we can delete the instances
+          for (std::set<InstanceInfo*>::iterator it = region_states[renamer.ctx_id].valid_instances.begin();
+                it != region_states[renamer.ctx_id].valid_instances.end(); it++)
+          {
+            if ((*it) == renamer.info)
+              continue;
+            garbage_collect(*it,renamer.ctx_id,false/*maybe on list*/);
+          }
+          // Mark that these instances are now dirty
+          region_states[renamer.ctx_id].valid_instances.clear();
+          // Once we write the data, it is dirty until it gets written back
+          region_states[renamer.ctx_id].data_state = DATA_DIRTY;
+        }
+        // Add this instance to the set of physical instances
+        region_states[renamer.ctx_id].valid_instances.insert(renamer.info);
+        // Check to see if we've entered into relaxed mode
+        if (IS_RELAXED(renamer.get_req()))
+        {
+          region_states[renamer.ctx_id].relaxed_mode = true;
+        }
+      }
+      else
+      {
+        // In relaxed mode, check to see if we are adding a relaxed region
+        if (IS_RELAXED(renamer.get_req()))
+        {
+          if (region_states[renamer.ctx_id].valid_instances.find(renamer.info) ==
+              region_states[renamer.ctx_id].valid_instances.end())
+          {
+            // new instance: initialize it with a copy from anywhere
+            result = select_and_copy(renamer);
+            // Add this to the set of valid instances
+            region_states[renamer.ctx_id].valid_instances.insert(renamer.info);
+          }
+          //else not a new instance, do nothing
+          // We also stay in relaxed mode
+          // Check to see if we are writing, if so mark the data dirty
+          if (HAS_WRITE(renamer.get_req()))
+          {
+            region_states[renamer.ctx_id].data_state = DATA_DIRTY;
+          }
+        }
+        else
+        {
+          // Now leaving relaxed mode...
+          // If we're dirty, we have to copy from all relaxed versions back together
+          if (region_states[renamer.ctx_id].data_state == DATA_DIRTY)
+          {
+            std::set<Event> close_relax_events;
+            // Iterate over all the relaxed regions and copy them all to our source region 
+            for (std::set<InstanceInfo*>::const_iterator it = region_states[renamer.ctx_id].valid_instances.begin();
+                  it != region_states[renamer.ctx_id].valid_instances.end(); it++)
+            {
+              if ((*it) == renamer.info)
+                continue;
+              close_relax_events.insert(perform_copy(*it,renamer));
+            }
+            result = Event::merge_events(close_relax_events);
+          }
+          else
+          {
+            // We can perform a copy from anywhere since everything is clean    
+            result = select_and_copy(renamer);
+          }
+          // Mark that we are no longer in relaxed mode
+          region_states[renamer.ctx_id].relaxed_mode = false;
+          // Clear out all the prior valid instances
+          for (std::set<InstanceInfo*>::const_iterator it = region_states[renamer.ctx_id].valid_instances.begin();
+                it != region_states[renamer.ctx_id].valid_instances.end(); it++)
+          {
+            if ((*it) == renamer.info)
+              continue;
+            garbage_collect(*it,renamer.ctx_id,false/*maybe on list*/);
+          }
+          region_states[renamer.ctx_id].valid_instances.clear();
+          region_states[renamer.ctx_id].valid_instances.insert(renamer.info);
+        }
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    Event RegionNode::select_and_copy(RegionRenamer &renamer)
+    //--------------------------------------------------------------------------------------------
+    {
+      // This can't be in the set of currently valid instances
 #ifdef DEBUG_HIGH_LEVEL
       assert(region_states[renamer.ctx_id].valid_instances.find(renamer.info) ==
-          region_states[renamer.ctx_id].valid_instances.end());
-      assert(!renamer.info->initialized);
+              region_states[renamer.ctx_id].valid_instances.end());
 #endif
-      // Ask the mapper where to pull the data from
-      // First get the set of choices
       std::vector<Memory> locations;
       this->get_physical_locations(renamer.ctx_id,locations);
 #ifdef DEBUG_HIGH_LEVEL
-      assert(!locations.empty()); // Make sure the mapper has options
+      assert(!locations.empty());
 #endif
       Memory chosen_src;
       renamer.mapper->select_copy_source(locations,renamer.info->location,chosen_src);
@@ -2918,19 +3042,16 @@ namespace RegionRuntime {
       assert(chosen_src.exists());
 #endif
       // Find the instance info and issue the copy
-      InstanceInfo *src = this->find_physical_instance(renamer.ctx_id,chosen_src); 
+      InstanceInfo *src = this->find_physical_instance(renamer.ctx_id,chosen_src);
 #ifdef DEBUG_HIGH_LEVEL
       assert(src != InstanceInfo::get_no_instance());
 #endif
-      // Mark that the info has been initialized
-      renamer.info->initialized = true;
-      // Issue the copy and return the event
       return perform_copy(src,renamer);
     }
 
-    // Helper function for doing the same operation over both contexts and mapping impl
+
     //--------------------------------------------------------------------------------------------
-    void RegionNode::help_perform_copy(InstanceInfo *src, RegionRenamer &renamer, 
+    void RegionNode::compute_wait_events(InstanceInfo *src, RegionRenamer &renamer, 
                       std::set<Event> &wait_on_events, const RegionRequirement &src_req, 
                       const RegionRequirement &dst_req, Event termination_event)
     //--------------------------------------------------------------------------------------------
@@ -2951,7 +3072,16 @@ namespace RegionRuntime {
           }
         case ANTI_DEPENDENCE:
           {
-            // No need to wait to make the copy
+            // Check to see if they are using the same instance
+            if (src->inst == renamer.info->inst)
+            {
+              // Same instance, need to wait
+              wait_on_events.insert(termination_event);
+            }
+            else
+            {
+              // No need to wait since they are different instances 
+            }
             break;
           }
         case ATOMIC_DEPENDENCE:
@@ -3018,14 +3148,14 @@ namespace RegionRuntime {
       for (std::map<TaskContext*,unsigned>::const_iterator it = src->users.begin();
             it != src->users.end(); it++)
       {
-        help_perform_copy(src,renamer,wait_on_events,it->first->regions[it->second],
+        compute_wait_events(src,renamer,wait_on_events,it->first->regions[it->second],
                           renamer.get_req(), it->first->termination_event);
       }
       // Now do the same thing for each of the mapping implementations
       for (std::set<RegionMappingImpl*>::const_iterator it = src->other_users.begin();
             it != src->other_users.begin(); it++)
       {
-        help_perform_copy(src,renamer,wait_on_events,(*it)->req,
+        compute_wait_events(src,renamer,wait_on_events,(*it)->req,
                 renamer.get_req(), (*it)->unmapped_event);
       }
       // Got a set of events to wait on before making the copy
@@ -3035,27 +3165,45 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void RegionNode::update_valid_instances(RegionRenamer &renamer)
-    //--------------------------------------------------------------------------------------------
-    {
-      // If there is any kind of a write, this becomes the only valid instance, otherwise
-      // just add it to the list
-      if (HAS_WRITE(renamer.get_req()))
-      {
-        // Mark that this data is dirtry
-        region_states[renamer.ctx_id].valid_instances.clear();
-        // Once we write data, it is dirty until it gets written back
-        region_states[renamer.ctx_id].data_state = DATA_DIRTY;
-      }
-      // Add this instance to the new set of physical intances
-      region_states[renamer.ctx_id].valid_instances.insert(renamer.info);
-    }
-
-    //--------------------------------------------------------------------------------------------
     Event RegionNode::close_instance(InstanceInfo *info)
     //--------------------------------------------------------------------------------------------
     {
 
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::garbage_collect(InstanceInfo *info, ContextID ctx, bool maybe_on_list /*= true*/)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(info->handle == this->handle); // Better be collecting the same instance
+#endif
+      // Are we allowed to garbage collect remote instances here, I think we are
+      // Check to see if it's still on the list of valid instances
+      if (maybe_on_list)
+      {
+        if (region_states[ctx].valid_instances.find(info) != region_states[ctx].valid_instances.end())
+        {
+          // Still on the list of valid instances, return
+          return;
+        }
+      }
+      // See if it still has references
+      if (info->count_references() > 0)
+      {
+        // Still has references to the instance
+        return;
+      }
+      // Otherwise, it's no longer valid and has no references, free it
+      log_inst(LEVEL_INFO,"Freeing instance %d of logical region %d in memory %d",
+                info->inst.id, info->handle.id, info->location.id);
+      info->handle.destroy_instance_untyped(info->inst);
+      // Remove this info from the list of all info
+#ifdef DEBUG_HIGH_LEVEL
+      assert(all_instances.find(info) != all_instances.end());
+#endif
+      all_instances.erase(info);
+      delete info;
     }
 
     ///////////////////////////////////////////
@@ -3080,7 +3228,59 @@ namespace RegionRuntime {
         it->second->initialize_physical_context(ctx,false/*top*/);
       }
     }
+
+    ///////////////////////////////////////////
+    // Instance Info 
+    ///////////////////////////////////////////
+
+    //--------------------------------------------------------------------------------------------
+    void InstanceInfo::add_user(TaskContext *ctx, unsigned idx)
+    //--------------------------------------------------------------------------------------------
+    {
+      // We're going to ignore aliasing here
+      users.insert(std::pair<TaskContext*,unsigned>(ctx,idx));
+      // Increment the count
+      references++;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void InstanceInfo::remove_user(TaskContext *ctx)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(references > 0);
+#endif
+      if (users.find(ctx) != users.end())
+      {
+        users.erase(ctx);
+      }
+      references--;
+    }
       
+    //--------------------------------------------------------------------------------------------
+    void InstanceInfo::add_mapping(RegionMappingImpl *impl)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Don't ignore aliasing here
+#ifdef DEBUG_HIGH_LEVEL
+      assert(other_users.find(impl) == other_users.end());
+#endif
+      other_users.insert(impl);
+      references++;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void InstanceInfo::remove_mapping(RegionMappingImpl *impl)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(other_users.find(impl) != other_users.end());
+      assert(references > 0);
+#endif
+      other_users.erase(impl);
+      references--;
+    }
+
     ///////////////////////////////////////////
     // Serializer
     ///////////////////////////////////////////

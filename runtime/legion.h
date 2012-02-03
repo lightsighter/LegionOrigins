@@ -708,7 +708,7 @@ namespace RegionRuntime {
      * when an inline region mapping is available.
      */
     class RegionMappingImpl {
-    protected:
+    private:
       HighLevelRuntime *const runtime;
       RegionRequirement req;
       UserEvent mapped_event;
@@ -984,35 +984,37 @@ namespace RegionRuntime {
       // See if we already have a physical instance like this, if not make one
       InstanceInfo* update_physical_instance(InstanceInfo *info);
       // Register a user of a physical instance.  Give the privilege and coherence
-      // mode.  This will fill in the InstanceInfo field specifying when the event 
+      // mode.  This will return the event 
       // for when instance is valid.  Note we also need the mapper here to help in
       // directing copy operations.  This also updates source_physical_instances
       // with InstanceInfo that we've used in performing our copies.
-      void register_user(RegionRenamer &renamer, bool below = false);
+      Event register_user(RegionRenamer &renamer, bool below = false);
       // Release a user of a physical instance after a task is finished
       void release_user(InstanceInfo *info);
     private:
-      // Initialize an instance from the set of current valid instances
-      Event initialize_instance(RegionRenamer &renamer);
-      // Perform a copy between two instances
-      Event perform_copy(InstanceInfo *src, RegionRenamer &renamer);
-      // Update the set of valid instances
-      void update_valid_instances(RegionRenamer &renamer);
+      // Update the local instances, return event for when instance is ready
+      Event update_local_instances(RegionRenamer &renamer);
+      // Select copy source and perform copy
+      Event select_and_copy(RegionRenamer &renamer);
       // Close up any lower physical instances to this physical instance
       // Return the event corresponding to when this instance is available
       Event close_instance(InstanceInfo *info);
+      // Try to garbage collect a physical instance
+      void garbage_collect(InstanceInfo *info, ContextID ctx, bool maybe_on_list = true);
     private:
       // Utility functions
-      void help_perform_copy(InstanceInfo *src, RegionRenamer &renamer,
+      void compute_wait_events(InstanceInfo *src, RegionRenamer &renamer,
           std::set<Event> &wait_on_events, const RegionRequirement &req,
           const RegionRequirement &req2, Event termination_event);
+      // Perform a copy between two instances
+      Event perform_copy(InstanceInfo *src, RegionRenamer &renamer);
     private:
       const LogicalRegion handle;
       const unsigned depth;
       PartitionNode *const parent;
       std::map<PartitionID,PartitionNode*> partitions;
       std::vector<RegionState> region_states; // indexed by ctx_id
-      std::list<InstanceInfo*> all_instances; // all physical instances of this node created
+      std::set<InstanceInfo*> all_instances; // all physical instances of this node created
       const bool added; // track whether this is a new node
     };
 
@@ -1059,22 +1061,18 @@ namespace RegionRuntime {
       const LogicalRegion handle;
       const Memory location;
       const RegionInstance inst;
+      Lock inst_lock; // For atomic access if necessary
     public:
       InstanceInfo(void)
         : handle(LogicalRegion::NO_REGION),
           location(Memory::NO_MEMORY),
           inst(RegionInstance::NO_INST),
-          valid_event(Event::NO_EVENT),
-          references(0), remote(false),
-          initialized(false), inst_lock(Lock::NO_LOCK) { }
+          inst_lock(Lock::NO_LOCK),
+          references(0) { }
       InstanceInfo(LogicalRegion r, Memory m,
           RegionInstance i, Event v = Event::NO_EVENT) 
         : handle(r), location(m), inst(i), 
-          valid_event(v), references(0), 
-          remote(false), initialized(false),
-          inst_lock(Lock::NO_LOCK) { }
-    public:
-      inline Event get_valid(void) const { return valid_event; }
+          inst_lock(Lock::NO_LOCK), references(0) { }
     protected:
       friend class TaskContext;
       friend class RegionMappingImpl;
@@ -1086,11 +1084,13 @@ namespace RegionRuntime {
         return &no_info;
       }
     protected:
-      Event valid_event; // Event when the copy for this instance is valid
+      void add_user(TaskContext *ctx, unsigned idx);
+      void remove_user(TaskContext *ctx); 
+      void add_mapping(RegionMappingImpl* impl);
+      void remove_mapping(RegionMappingImpl *impl);
+      inline unsigned count_references(void) const { return references; }
+    private:
       unsigned references;
-      bool remote; // If remote info, we can't deallocate locally
-      bool initialized;
-      Lock inst_lock; // For atomic access if necessary
       std::map<TaskContext*,unsigned/*region idx*/> users;
       std::set<RegionMappingImpl*> other_users;
     };
@@ -1146,7 +1146,7 @@ namespace RegionRuntime {
       inline const RegionRequirement& get_req(void) 
       { return (is_ctx ? user_ctx.ctx->regions[ctx_id] : user_ctx.impl->req); }
       inline Event get_term_event(void)
-      { return (is_ctx ? user_ctx.ctx->termination_event : user_ctx.impl->unmapped_event); }
+      { return (is_ctx ? user_ctx.ctx->termination_event : user_ctx.impl->get_unmapped_event()); }
     };
 
     /////////////////////////////////////////////////////////////
