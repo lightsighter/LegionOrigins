@@ -547,7 +547,7 @@ namespace RegionRuntime {
       std::vector<PhysicalRegion<AccessorGeneric> > begin_task(Context ctx);
       void end_task(Context ctx, const void *result, size_t result_size);
     private:
-      RegionMappingImpl* get_available_mapping(const RegionRequirement &req);
+      RegionMappingImpl* get_available_mapping(TaskContext *ctx, const RegionRequirement &req);
     private:
       void add_to_ready_queue(TaskContext *ctx, bool acquire_lock = true);
       void add_to_waiting_queue(TaskContext *ctx);
@@ -649,13 +649,14 @@ namespace RegionRuntime {
       virtual void split_index_space(const Task *task, const std::vector<UnsizedConstraint> &index_space,
                                       std::vector<IndexSplit> &chunks);
 
-      virtual void map_task_region(const Task *task, const RegionRequirement *req,
+      virtual void map_task_region(const Task *task, const RegionRequirement &req,
                                     const std::vector<Memory> &current_instances,
-                                    std::vector<Memory> &target_ranking);
+                                    std::vector<Memory> &target_ranking,
+                                    bool &enable_WAR_optimization);
 
-      virtual void rank_copy_targets(const Task *task,
+      virtual void rank_copy_targets(const Task *task, const RegionRequirement &req,
                                     const std::vector<Memory> &current_instances,
-                                    std::vector<std::vector<Memory> > &future_ranking);
+                                    std::vector<Memory> &future_ranking);
 
       virtual void select_copy_source(const std::vector<Memory> &current_instances,
                                     const Memory &dst, Memory &chosen_src);
@@ -710,6 +711,7 @@ namespace RegionRuntime {
     class RegionMappingImpl {
     private:
       HighLevelRuntime *const runtime;
+      TaskContext *ctx;
       RegionRequirement req;
       UserEvent mapped_event;
       Event ready_event;
@@ -725,7 +727,7 @@ namespace RegionRuntime {
       friend class RegionRenamer;
       RegionMappingImpl(HighLevelRuntime *rt); 
       ~RegionMappingImpl();
-      void activate(const RegionRequirement &req);
+      void activate(TaskContext *ctx, const RegionRequirement &req);
       void deactivate(void);
       Event get_unmapped_event(void) const;
       void set_instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric> inst);
@@ -733,6 +735,7 @@ namespace RegionRuntime {
       void set_mapped(Event ready = Event::NO_EVENT); // Indicate mapping complete
       bool is_ready(void) const; // Ready to be mapped
       void perform_mapping(void);
+      void add_source_physical_instance(InstanceInfo *info);
     public:
       template<AccessorType AT>
       inline PhysicalRegion<AT> get_physical_region(void);
@@ -782,15 +785,6 @@ namespace RegionRuntime {
     // Task Context
     ///////////////////////////////////////////////////////////// 
     class TaskContext: public Task {
-    protected:
-      enum DependenceType {
-        READ_AFTER_WRITE, // true dependence
-        WRITE_AFTER_WRITE, // anti-dependence
-        WRITE_AFTER_READ, // anti-dependence
-        ATOMIC_CHECK, // if two atomic accesses use the same instance 
-        SIMULTANEOUS_CHECK, // if two simultaneous accesses use the same instance
-      };
-      typedef std::map<TaskContext*,DependenceType> RegionDependence;
     protected:
       friend class HighLevelRuntime;
       friend class RegionNode;
@@ -843,13 +837,13 @@ namespace RegionRuntime {
       void remove_partition(PartitionID pid, LogicalRegion parent);
     private:
       // Utility functions
-      void compute_region_trace(DependenceDetector &dep, LogicalRegion parent, LogicalRegion child);
-      void compute_partition_trace(DependenceDetector &dep, LogicalRegion parent, PartitionID part);
+      void compute_region_trace(std::vector<unsigned> &trace, LogicalRegion parent, LogicalRegion child);
+      void compute_partition_trace(std::vector<unsigned> &trace, LogicalRegion parent, PartitionID part);
       void register_region_dependence(LogicalRegion parent, TaskContext *child, unsigned child_idx);
       void verify_privilege(const RegionRequirement &par_req, const RegionRequirement &child_req,
                       /*for error reporting*/unsigned task = false, unsigned idx = 0, unsigned unique = 0);
       void initialize_region_tree_contexts(void);
-      Event issue_copy_ops_and_get_dependence(void); // Return event corresponding to when the task can start
+      void add_source_physical_instance(InstanceInfo *src_info);
     protected:
       // functions for getting logical regions
       LogicalRegion get_subregion(PartitionID pid, Color c) const;
@@ -901,8 +895,9 @@ namespace RegionRuntime {
       std::set<Event> wait_events; // Events to wait on before executing
       // A summary of the dependencies vector that enables easy testing for whether the task is mappable
       int remaining_notifications;
-      // Dependencies on previous tasks, organized by dependence type on region
-      std::vector<RegionDependence> dependencies; 
+      // For each region, compute the event representing when all the events we have true dependences on
+      // have been mapped
+      std::vector<Event> region_dependences;
       // The set of tasks waiting on us to notify them when we each region we need is mapped
       std::vector<std::set<TaskContext*> > dependent_tasks; 
     private:
@@ -919,7 +914,7 @@ namespace RegionRuntime {
       // Keep track of source physical instances that we are copying from when creating our physical
       // instances.  We add references to these physical instances when performing a copy from them
       // so we know when they can be deleted
-      std::vector<InstanceInfo*> source_physical_instances;
+      std::vector<std::pair<InstanceInfo*,ContextID> > source_physical_instances;
     private:
       // Pointers to the maps for logical regions
       std::map<LogicalRegion,RegionNode*> *region_nodes; // Can be aliased with other tasks map
@@ -947,19 +942,26 @@ namespace RegionRuntime {
         DATA_CLEAN,
         DATA_DIRTY,
       };
+      enum PartState {
+        PART_NOT_OPEN,
+        PART_EXCLUSIVE, // allows only a single open partition
+        PART_READ_ONLY, // allows multiple open partitions
+      };
       struct RegionState {
       public:
         // Logical State
         bool logical_exclusive;
         std::set<PartitionID> open_logical;
         // Physical State
-        bool physical_exclusive;
-        bool physical_open; // Note physical looks at current instance for openness
-        std::set<PartitionID> open_physical;
-        std::set<InstanceInfo*> valid_instances;
-        bool physical_top;
+        std::set<PartitionID> open_physical; 
+        // All these instances obey info->handle == this->handle
+        std::map<InstanceInfo*,Event> valid_instances; //valid instances and the events when they are valid
+        // These instances can have info->handle >= this->handle where (>=) means higher up in the tree
+        std::map<RegionRequirement*,std::pair<InstanceInfo*,Event> > users; // Users of this logical region
+        // State of the open partitions
+        PartState open_state;
+        // TODO: handle the case of different types of reductions
         DataState data_state;
-        bool relaxed_mode; // For detecting when we need multiple copies
       };
     protected:
       friend class TaskContext;
@@ -977,12 +979,38 @@ namespace RegionRuntime {
       void initialize_physical_context(ContextID ctx, bool top = true);
       // Operations on the physical part of the region tree
       void get_physical_locations(ContextID ctx, std::vector<Memory> &locations);
+      // Try to find a valid physical instance in the memory m
+      InstanceInfo* find_physical_instance(ContextID ctx, Memory m);
+      // Create a physical instance in the specified memory
+      InstanceInfo* create_physical_instance(Memory m);
+      // Register a physical instance with the region tree
+      Event register_physical_instance(RegionRenamer &ren, Event precondition); 
+      // Open up a physical region tree returning the event corresponding
+      // to when the physical instance in the renamer is ready
+      Event open_physical_tree(RegionRenamer &ren, Event precondition);
+      // Close up a physical region tree into the given InstanceInfo
+      // returning the event when the close operation is complete
+      Event close_physical_tree(InstanceInfo *target, Event precondition);
+      // Try garbage collecting a physical instance
+      void garbage_collect(InstanceInfo *info, ContextID ctx);
+
+    private:
+      // Update the valid instances with the new physical instance, it's ready event, and
+      // whether the info is being read or written.  Note that this can invalidate other
+      // instances in the intermediate levels of the tree as it goes back up to the
+      // physical instance's logical region
+      void update_valid_instance(InstanceInfo *info, Event ready, bool writer);
+      // Check for dependences on tasks already using the regions.  This will check
+      // for WAR hazards as well as atomic and simultaneous cases.  It will also update
+      // the state of the 'users' map.
+      Event check_for_user_dependences(RegionRenamer &ren, Event precondition);
+      // Perform a copy between two instances with the given precondition
+      Event perform_copy_operation(InstanceInfo *src, InstanceInfo *dst, Event precondition);
+#if 0
       // Try finding a physical instance in the specified memory. 
       InstanceInfo* find_physical_instance(ContextID ctx, Memory m);
       // Try creating a physical instance in the specified memory. 
       InstanceInfo* create_physical_instance(Memory m);
-      // See if we already have a physical instance like this, if not make one
-      InstanceInfo* update_physical_instance(InstanceInfo *info);
       // Register a user of a physical instance.  Give the privilege and coherence
       // mode.  This will return the event 
       // for when instance is valid.  Note we also need the mapper here to help in
@@ -990,7 +1018,9 @@ namespace RegionRuntime {
       // with InstanceInfo that we've used in performing our copies.
       Event register_user(RegionRenamer &renamer, bool below = false);
       // Release a user of a physical instance after a task is finished
-      void release_user(InstanceInfo *info);
+      // User can either be a TaskContext or a RegionMappingImpl
+      template<typename T>
+      void release_user(InstanceInfo *info, T *user);
     private:
       // Update the local instances, return event for when instance is ready
       Event update_local_instances(RegionRenamer &renamer);
@@ -998,7 +1028,7 @@ namespace RegionRuntime {
       Event select_and_copy(RegionRenamer &renamer);
       // Close up any lower physical instances to this physical instance
       // Return the event corresponding to when this instance is available
-      Event close_instance(InstanceInfo *info);
+      Event close_physical_subtree(RegionRenamer &renamer, Event precond);
       // Try to garbage collect a physical instance
       void garbage_collect(InstanceInfo *info, ContextID ctx, bool maybe_on_list = true);
     private:
@@ -1008,6 +1038,7 @@ namespace RegionRuntime {
           const RegionRequirement &req2, Event termination_event);
       // Perform a copy between two instances
       Event perform_copy(InstanceInfo *src, RegionRenamer &renamer);
+#endif
     private:
       const LogicalRegion handle;
       const unsigned depth;
@@ -1028,7 +1059,6 @@ namespace RegionRuntime {
         bool logical_exclusive; // for aliased only (disjoint doesn't matter)
         std::set<LogicalRegion> open_logical;
         bool physical_exclusive; // same as above
-        bool physical_open; // note physical looks at current instance for openness
         std::set<LogicalRegion> open_physical;
       };
     protected:
@@ -1043,6 +1073,14 @@ namespace RegionRuntime {
     protected:
       // Physical operations on partitions
       void initialize_physical_context(ContextID ctx);
+      // Register a physical instance with the region tree
+      Event register_physical_instance(RegionRenamer &ren, Event precondition); 
+      // Open up a physical region tree returning the event corresponding
+      // to when the physical instance in the renamer is ready
+      Event open_physical_tree(RegionRenamer &ren, Event precondition);
+      // Close up a physical region tree into the given InstanceInfo
+      // returning the event when the close operation is complete
+      Event close_physical_tree(InstanceInfo *target, Event precondition);
     private:
       const PartitionID pid;
       const unsigned depth;
@@ -1084,15 +1122,17 @@ namespace RegionRuntime {
         return &no_info;
       }
     protected:
-      void add_user(TaskContext *ctx, unsigned idx);
-      void remove_user(TaskContext *ctx); 
-      void add_mapping(RegionMappingImpl* impl);
-      void remove_mapping(RegionMappingImpl *impl);
-      inline unsigned count_references(void) const { return references; }
+      inline void add_reference(void) { references++; }
+      inline void remove_reference(void)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(references > 0);
+#endif
+        references--;
+      }
+      inline bool has_references(void) const { return (references > 0); }
     private:
       unsigned references;
-      std::map<TaskContext*,unsigned/*region idx*/> users;
-      std::set<RegionMappingImpl*> other_users;
     };
 
     /////////////////////////////////////////////////////////////
@@ -1133,14 +1173,19 @@ namespace RegionRuntime {
       bool is_ctx;
       InstanceInfo *const info;
       Mapper *const mapper;
+      std::vector<unsigned> trace;
+      bool needs_initializing;
+      const bool write_after_read;
     protected:
-      RegionRenamer(ContextID id, unsigned index,
-          TaskContext *c, InstanceInfo *i, Mapper *m)
-        : ctx_id(id), idx(index), is_ctx(true), info(i), mapper(m) 
+      RegionRenamer(ContextID id, unsigned index, TaskContext *c, 
+          InstanceInfo *i, Mapper *m, bool war)
+        : ctx_id(id), idx(index), is_ctx(true), info(i), mapper(m),
+          write_after_read(war)
           { user_ctx.ctx = c; }
       RegionRenamer(ContextID id, RegionMappingImpl *r,
-          InstanceInfo *i, Mapper *m)
-        : ctx_id(id), idx(0), is_ctx(false), info(i), mapper(m)
+          InstanceInfo *i, Mapper *m, bool war)
+        : ctx_id(id), idx(0), is_ctx(false), info(i), mapper(m),
+          write_after_read(war)
           { user_ctx.impl = r; }
     protected:
       inline const RegionRequirement& get_req(void) 
@@ -1524,26 +1569,50 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     template<typename T>
-    void Serializer::serialize(const T &element)
+    inline void Serializer::serialize(const T &element)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(remaining_bytes >= sizeof(T)); // Check to make sure we don't write past the end
+#endif
       *((T*)location) = element; 
       location += sizeof(T);
 #ifdef DEBUG_HIGH_LEVEL
       remaining_bytes -= sizeof(T);
-      assert(remaining_bytes >= 0); // If not we overflowed our buffer 
 #endif
+    }
+
+    //--------------------------------------------------------------------------
+    Serializer::~Serializer(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(remaining_bytes == 0); // We should have used the whole buffer
+#endif
+      free(buffer);
     }
 
     //-------------------------------------------------------------------------- 
     template<typename T>
-    void Deserializer::deserialize(T &element)
+    inline void Deserializer::deserialize(T &element)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(remaining_bytes >= sizeof(T)); // Check to make sure we don't read past the end
+#endif
       element = *((const T*)location);
+      location += sizeof(T);
 #ifdef DEBUG_HIGH_LEVEL
       remaining_bytes -= sizeof(T);
-      assert(remaining_bytes >= 0); // If not we've read past our buffer
+#endif
+    }
+
+    //--------------------------------------------------------------------------
+    Deserializer::~Deserializer(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(remaining_bytes == 0); // Should have read the whole buffer
 #endif
     }
   };
