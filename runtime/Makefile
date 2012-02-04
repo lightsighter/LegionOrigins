@@ -95,6 +95,9 @@ fluid2:	lowlevel.o lowlevel_gpu.o highlevel.o fluid.o
 fluid3d:	lowlevel.o lowlevel_gpu.o highlevel.o fluid3d.o
 	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
 
+fluid3d_shared:	shared_lowlevel.o highlevel.o fluid3d.o
+	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
+
 srch2:	lowlevel.o lowlevel_gpu.o highlevel.o search.o
 	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
 
