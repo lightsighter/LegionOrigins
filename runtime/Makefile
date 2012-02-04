@@ -12,7 +12,7 @@ CCFLAGS = -I$(GASNET)/include -DDEBUG_LOW_LEVEL -DDEBUG_HIGH_LEVEL #-DDEBUG_PRIN
 #CCFLAGS += -DUSE_MASKED_COPIES
 
 GCC = gcc
-GCCFLAGS = $(CCFLAGS) -ggdb -Wall
+GCCFLAGS = $(CCFLAGS) -ggdb -Wall -O0
 
 LDFLAGS = -L$(GASNET)/lib -lrt
 
@@ -93,6 +93,9 @@ fluid2:	lowlevel.o lowlevel_gpu.o highlevel.o fluid.o
 	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
 
 fluid3d:	lowlevel.o lowlevel_gpu.o highlevel.o fluid3d.o
+	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
+
+fluid3d_shared:	shared_lowlevel.o highlevel.o fluid3d.o
 	g++ -o $@ $(GCCFLAGS) $^ $(LDFLAGS)
 
 srch2:	lowlevel.o lowlevel_gpu.o highlevel.o search.o

@@ -31,9 +31,9 @@ enum {
   TASKID_MAIN_TASK,
 };
 
-#define CELLS_X 8
-#define CELLS_Y 8
-#define CELLS_Z 8
+//#define CELLS_X 8
+//#define CELLS_Y 8
+//#define CELLS_Z 8
 #define MAX_PARTICLES 64
 
 // Number of ghost cells needed for each block
@@ -219,7 +219,7 @@ struct Block {
   LogicalHandle base[2];
   LogicalHandle edge[2][GHOST_CELLS];
   BufferRegions regions[2];
-  ptr_t<Cell> cells[2][CELLS_Z+2][CELLS_Y+2][CELLS_X+2];
+  std::vector<std::vector<std::vector<ptr_t<Cell> > > > cells[2];
   int cb;  // which is the current buffer?
   int id;
 };
@@ -243,10 +243,105 @@ float h, hSq;
 float densityCoeff, pressureCoeff, viscosityCoeff;
 unsigned nx, ny, nz, numCells;
 unsigned nbx, nby, nbz, numBlocks;
+unsigned CELLS_X, CELLS_Y, CELLS_Z;
 Vec3 delta;				// cell dimensions
 
 RegionRuntime::Logger::Category log_app("application");
 
+// Undef to skip validity checks on Serializer/Deserializer
+#define DEBUG_SERIALIZER 1
+
+class Serializer {
+public:
+  Serializer(size_t buffer_size)
+    : buffer(malloc(buffer_size)), location((char*)buffer)
+#ifdef DEBUG_SERIALIZER
+    , remaining(buffer_size)
+#endif
+  { assert(buffer); }
+  ~Serializer(void) { free(buffer); }
+public:
+  template<typename T>
+  inline void serialize(const T &element) {
+#ifdef DEBUG_SERIALIZER
+    assert(remaining >= sizeof(T));
+    remaining -= sizeof(T);
+#endif
+    *((T*)location) = element; 
+    location += sizeof(T);
+  }
+  inline void serialize(const Block &block) {
+    for (unsigned i = 0; i < 2; i++)
+      serialize(block.base[i]);
+    for (unsigned i = 0; i < 2; i++)
+      for (unsigned j = 0; j < GHOST_CELLS; j++)
+        serialize(block.edge[i][j]);
+    for (unsigned i = 0; i < 2; i++)
+      serialize(block.regions[i]);
+    for (unsigned b = 0; b < 2; b++)
+      for (unsigned cz = 0; cz < CELLS_Z+2; cz++)
+        for (unsigned cy = 0; cy < CELLS_Y+2; cy++)
+          for (unsigned cx = 0; cx < CELLS_X+2; cx++)
+            serialize(block.cells[b][cz][cy][cx]);
+    serialize(block.cb);
+    serialize(block.id);
+  }
+  inline const void* get_buffer(void) const { return buffer; }
+private:
+  void *const buffer;
+  char *location;
+#ifdef DEBUG_SERIALIZER
+  long unsigned remaining;
+#endif
+};
+
+class Deserializer {
+public:
+  Deserializer(const void *buffer, size_t buffer_size)
+    : location((const char*)buffer)
+#ifdef DEBUG_SERIALIZER
+    , remaining(buffer_size)
+#endif
+  { }
+  ~Deserializer(void) { }
+public:
+  template<typename T>
+  inline void deserialize(T &element) {
+#ifdef DEBUG_SERIALIZER
+    assert(remaining >= sizeof(T));
+    remaining -= sizeof(T);
+#endif
+    element = *((const T*)location);
+    location += sizeof(T);
+  }
+  inline void deserialize(Block &block) {
+    for (unsigned i = 0; i < 2; i++)
+      deserialize(block.base[i]);
+    for (unsigned i = 0; i < 2; i++)
+      for (unsigned j = 0; j < GHOST_CELLS; j++)
+        deserialize(block.edge[i][j]);
+    for (unsigned i = 0; i < 2; i++)
+      deserialize(block.regions[i]);
+    for (unsigned b = 0; b < 2; b++) {
+      block.cells[b].resize(CELLS_Z+2);
+      for (unsigned cz = 0; cz < CELLS_Z+2; cz++) {
+        block.cells[b][cz].resize(CELLS_Y+2);
+        for (unsigned cy = 0; cy < CELLS_Y+2; cy++) {
+          block.cells[b][cz][cy].resize(CELLS_X+2);
+          for (unsigned cx = 0; cx < CELLS_X+2; cx++)
+            deserialize(block.cells[b][cz][cy][cx]);
+        }
+      }
+    }
+    deserialize(block.cb);
+    deserialize(block.id);
+  }
+private:
+  const char *location;
+#ifdef DEBUG_SERIALIZER
+  long unsigned remaining;
+#endif
+};
 
 void get_all_regions(LogicalHandle *ghosts, std::vector<RegionRequirement> &reqs,
                             AccessMode access, AllocateMode mem, 
@@ -270,8 +365,18 @@ void top_level_task(const void *args, size_t arglen,
 
   std::vector<Block> blocks;
   blocks.resize(numBlocks);
-  for(unsigned i = 0; i < numBlocks; i++)
+  for(unsigned i = 0; i < numBlocks; i++) {
     blocks[i].id = i;
+    for (unsigned b = 0; b < 2; b++) {
+      blocks[i].cells[b].resize(CELLS_Z+2);
+      for(unsigned cz = 0; cz < CELLS_Z+2; cz++) {
+        blocks[i].cells[b][cz].resize(CELLS_Y+2);
+        for(unsigned cy = 0; cy < CELLS_Y+2; cy++) {
+          blocks[i].cells[b][cz][cy].resize(CELLS_X+2);
+        }
+      }
+    }
+  }
 
   // first, do two passes of the "real" cells
   for(int b = 0; b < 2; b++) {
@@ -510,11 +615,21 @@ void main_task(const void *args, size_t arglen,
   PhysicalRegion<AT> edge_cells = regions[2];
 
   TopLevelRegions *tlr = (TopLevelRegions *)args;
-    
+
   std::vector<Block> blocks;
   blocks.resize(numBlocks);
-  for(unsigned i = 0; i < numBlocks; i++)
+  for(unsigned i = 0; i < numBlocks; i++) {
     blocks[i].id = i;
+    for (unsigned b = 0; b < 2; b++) {
+      blocks[i].cells[b].resize(CELLS_Z+2);
+      for(unsigned cz = 0; cz < CELLS_Z+2; cz++) {
+        blocks[i].cells[b][cz].resize(CELLS_Y+2);
+        for(unsigned cy = 0; cy < CELLS_Y+2; cy++) {
+          blocks[i].cells[b][cz][cy].resize(CELLS_X+2);
+        }
+      }
+    }
+  }
 
   // first, do two passes of the "real" cells
   for(int b = 0; b < 2; b++) {
@@ -715,10 +830,16 @@ void main_task(const void *args, size_t arglen,
                                   READ_WRITE, ALLOCABLE, EXCLUSIVE,
                                   all_cells_1);
 #endif
+
+    unsigned bufsize =
+      sizeof(Block) + sizeof(ptr_t<Cell>)*2*(CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2);
+    Serializer ser(bufsize);
+    ser.serialize(blocks[id]);
+
     Future f = runtime->execute_task(ctx, TASKID_INIT_SIMULATION,
-                                  init_regions,
-                                  &(blocks[id]), sizeof(Block),
-                                  false, 0, id);
+                                     init_regions,
+                                     ser.get_buffer(), bufsize,
+                                     false, 0, id);
     f.get_void_result();
   }
 
@@ -756,10 +877,15 @@ void main_task(const void *args, size_t arglen,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 		      tlr->edge_cells);
 
+      unsigned bufsize =
+        sizeof(Block) + sizeof(ptr_t<Cell>)*2*(CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2);
+      Serializer ser(bufsize);
+      ser.serialize(blocks[id]);
+
       Future f = runtime->execute_task(ctx, TASKID_INIT_CELLS,
-				       init_regions, 
-				       &(blocks[id]), sizeof(Block),
-				       true, 0, id);
+                                       init_regions,
+                                       ser.get_buffer(), bufsize,
+                                       true, 0, id);
     }
 
     // Rebuild reduce (reduction)
@@ -782,9 +908,14 @@ void main_task(const void *args, size_t arglen,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 		      tlr->edge_cells);
 
+      unsigned bufsize =
+        sizeof(Block) + sizeof(ptr_t<Cell>)*2*(CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2);
+      Serializer ser(bufsize);
+      ser.serialize(blocks[id]);
+
       Future f = runtime->execute_task(ctx, TASKID_REBUILD_REDUCE,
 				       rebuild_regions,
-				       &(blocks[id]), sizeof(Block),
+                                       ser.get_buffer(), bufsize,
 				       true, 0, id);
     }
 
@@ -808,9 +939,14 @@ void main_task(const void *args, size_t arglen,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 		      tlr->edge_cells);
 
+      unsigned bufsize =
+        sizeof(Block) + sizeof(ptr_t<Cell>)*2*(CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2);
+      Serializer ser(bufsize);
+      ser.serialize(blocks[id]);
+
       Future f = runtime->execute_task(ctx, TASKID_SCATTER_DENSITIES,
 				       density_regions, 
-				       &(blocks[id]), sizeof(Block),
+                                       ser.get_buffer(), bufsize,
 				       true, 0, id);
     }
     
@@ -836,10 +972,15 @@ void main_task(const void *args, size_t arglen,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 		      tlr->edge_cells);
 
+      unsigned bufsize =
+        sizeof(Block) + sizeof(ptr_t<Cell>)*2*(CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2);
+      Serializer ser(bufsize);
+      ser.serialize(blocks[id]);
+
       Future f = runtime->execute_task(ctx, TASKID_GATHER_FORCES,
-                            force_regions, 
-                            &(blocks[id]), sizeof(Block),
-                            true, 0, id);
+                                       force_regions, 
+                                       ser.get_buffer(), bufsize,
+                                       true, 0, id);
 
       // remember the futures for the last pass so we can wait on them
       if(step == Config::num_steps - 1)
@@ -880,7 +1021,11 @@ void init_simulation(const void *args, size_t arglen,
                 const std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
-  const Block& b = *((const Block*)args);
+  Block b;
+  {
+    Deserializer deser(args, arglen);
+    deser.deserialize(b);
+  }
 
   // only region we need is real1
   PhysicalRegion<AT> real_cells = regions[0];
@@ -907,7 +1052,7 @@ void init_simulation(const void *args, size_t arglen,
 }
 
 #define GET_DIR(idz, idy, idx)                                          \
-  LOOKUP_DIR(((idx) == 0 ? -1 : ((idx == CELLS_X+1) ? 1 : 0)), ((idy) == 0 ? -1 : ((idy == CELLS_Y+1) ? 1 : 0)), ((idz) == 0 ? -1 : ((idz == CELLS_Z+1) ? 1 : 0)))
+  LOOKUP_DIR(((idx) == 0 ? -1 : ((idx == (int)CELLS_X+1) ? 1 : 0)), ((idy) == 0 ? -1 : ((idy == (int)CELLS_Y+1) ? 1 : 0)), ((idz) == 0 ? -1 : ((idz == (int)CELLS_Z+1) ? 1 : 0)))
 
 #define GET_REGION(idz, idy, idx, base, edge)                           \
   (GET_DIR(idz, idy, idx) == CENTER ? (edge)[GET_DIR(idz, idy, idx)] : (base))
@@ -935,7 +1080,11 @@ void init_and_rebuild(const void *args, size_t arglen,
                 const std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
-  Block b = *((const Block*)args);
+  Block b;
+  {
+    Deserializer deser(args, arglen);
+    deser.deserialize(b);
+  }
   int cb = b.cb; // current buffer
   int eb = 0; // edge phase for this task is 0
   // Initialize all the cells and update all our cells
@@ -950,9 +1099,9 @@ void init_and_rebuild(const void *args, size_t arglen,
   {
     Cell blank;
     blank.num_particles = 0;
-    for(int cz = 0; cz <= CELLS_Z + 1; cz++)
-      for(int cy = 0; cy <= CELLS_Y + 1; cy++)
-        for(int cx = 0; cx <= CELLS_X + 1; cx++)
+    for(int cz = 0; cz <= (int)CELLS_Z + 1; cz++)
+      for(int cy = 0; cy <= (int)CELLS_Y + 1; cy++)
+        for(int cx = 0; cx <= (int)CELLS_X + 1; cx++)
           WRITE_CELL(cz, cy, cx, dst_block, edge_blocks, blank);
 #if 0
 	int dir = GET_DIR(cy,dx);
@@ -966,9 +1115,9 @@ void init_and_rebuild(const void *args, size_t arglen,
 
   // now go through each source cell and move particles that have wandered too
   //  far
-  for(int cz = 1; cz < CELLS_Z + 1; cz++)
-    for(int cy = 1; cy < CELLS_Y + 1; cy++)
-      for(int cx = 1; cx < CELLS_X + 1; cx++) {
+  for(int cz = 1; cz < (int)CELLS_Z + 1; cz++)
+    for(int cy = 1; cy < (int)CELLS_Y + 1; cy++)
+      for(int cx = 1; cx < (int)CELLS_X + 1; cx++) {
         // don't need to macro-ize this because it's known to be a real cell
         Cell c_src = src_block.read(b.cells[1-cb][cz][cy][cx]);
         for(unsigned p = 0; p < c_src.num_particles; p++) {
@@ -1006,7 +1155,11 @@ void rebuild_reduce(const void *args, size_t arglen,
                 const std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
-  Block b = *((const Block*)args);
+  Block b;
+  {
+    Deserializer deser(args, arglen);
+    deser.deserialize(b);
+  }
   int cb = b.cb; // current buffer
   int eb = 1; // edge phase for this task is 1
   // Initialize all the cells and update all our cells
@@ -1017,9 +1170,9 @@ void rebuild_reduce(const void *args, size_t arglen,
   log_app.info("In rebuild_reduce() for block %d", b.id);
 
   // for each edge cell, copy inward
-  for(int cz = 0; cz <= CELLS_Z+1; cz++)
-    for(int cy = 0; cy <= CELLS_Y+1; cy++)
-      for(int cx = 0; cx <= CELLS_X+1; cx++) {
+  for(int cz = 0; cz <= (int)CELLS_Z+1; cz++)
+    for(int cy = 0; cy <= (int)CELLS_Y+1; cy++)
+      for(int cx = 0; cx <= (int)CELLS_X+1; cx++) {
         int dir = GET_DIR(cz, cy, cx);
         if(dir == CENTER) continue;
         int dz = MOVE_Z(cz, REVERSE(dir));
@@ -1044,9 +1197,9 @@ void rebuild_reduce(const void *args, size_t arglen,
 
   // now turn around and have each edge grab a copy of the boundary real cell
   //  to share for the next step
-  for(int cz = 0; cz <= CELLS_Z+1; cz++)
-    for(int cy = 0; cy <= CELLS_Y+1; cy++)
-      for(int cx = 0; cx <= CELLS_X+1; cx++) {
+  for(int cz = 0; cz <= (int)CELLS_Z+1; cz++)
+    for(int cy = 0; cy <= (int)CELLS_Y+1; cy++)
+      for(int cx = 0; cx <= (int)CELLS_X+1; cx++) {
         int dir = GET_DIR(cz, cy, cx);
         if(dir == CENTER) continue;
         int dz = MOVE_Z(cz, REVERSE(dir));
@@ -1065,7 +1218,11 @@ void scatter_densities(const void *args, size_t arglen,
                 const std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
-  Block b = *((const Block*)args);
+  Block b;
+  {
+    Deserializer deser(args, arglen);
+    deser.deserialize(b);
+  }
   int cb = b.cb; // current buffer
   int eb = 0; // edge phase for this task is 0
   // Initialize all the cells and update all our cells
@@ -1076,9 +1233,9 @@ void scatter_densities(const void *args, size_t arglen,
   log_app.info("In scatter_densities() for block %d", b.id);
 
   // first, clear our density (and acceleration, while we're at it) values
-  for(int cz = 1; cz < CELLS_Z+1; cz++)
-    for(int cy = 1; cy < CELLS_Y+1; cy++)
-      for(int cx = 1; cx < CELLS_X+1; cx++) {
+  for(int cz = 1; cz < (int)CELLS_Z+1; cz++)
+    for(int cy = 1; cy < (int)CELLS_Y+1; cy++)
+      for(int cx = 1; cx < (int)CELLS_X+1; cx++) {
         int dir = GET_DIR(cz, cy, cx);
         if(dir == CENTER) continue;
         int dz = MOVE_Z(cz, REVERSE(dir));
@@ -1097,9 +1254,9 @@ void scatter_densities(const void *args, size_t arglen,
   // two things to watch out for:
   //  position vectors have to be augmented by relative block positions
   //  for pairs of real cells, we can do the calculation once instead of twice
-  for(int cz = 1; cz < CELLS_Z+1; cz++)
-    for(int cy = 1; cy < CELLS_Y+1; cy++)
-      for(int cx = 1; cx < CELLS_X+1; cx++) {
+  for(int cz = 1; cz < (int)CELLS_Z+1; cz++)
+    for(int cy = 1; cy < (int)CELLS_Y+1; cy++)
+      for(int cx = 1; cx < (int)CELLS_X+1; cx++) {
         Cell cell = base_block.read(b.cells[cb][cz][cy][cx]);
         assert(cell.num_particles <= MAX_PARTICLES);
 
@@ -1108,7 +1265,7 @@ void scatter_densities(const void *args, size_t arglen,
             for(int dx = cx - 1; dx <= cx + 1; dx++) {
               // did we already get updated by this neighbor's bidirectional update?
               // FIXME: ummmmmmmmmm.... ?????
-              if((dy > 0) && (dx > 0) && (dx < CELLS_X+1) && 
+              if((dy > 0) && (dx > 0) && (dx < (int)CELLS_X+1) && 
                  ((dy < cy) || ((dy == cy) && (dx < cx))))
                 continue;
 
@@ -1119,7 +1276,7 @@ void scatter_densities(const void *args, size_t arglen,
               // do bidirectional update if other cell is a real cell and it is
               //  either below or to the right (but not up-right) of us
               // FIXME: ummmmmmmmmm.... ?????
-              bool update_other = ((dy < CELLS_Y+1) && (dx > 0) && (dx < CELLS_X+1) &&
+              bool update_other = ((dy < (int)CELLS_Y+1) && (dx > 0) && (dx < (int)CELLS_X+1) &&
                                    ((dy > cy) || ((dy == cy) && (dx > cx))));
 	  
               // pairwise across particles - watch out for identical particle case!
@@ -1158,9 +1315,9 @@ void scatter_densities(const void *args, size_t arglen,
 
   // now turn around and have each edge grab a copy of the boundary real cell
   //  to share for the next step
-  for(int cz = 0; cz <= CELLS_Z+1; cz++)
-    for(int cy = 0; cy <= CELLS_Y+1; cy++)
-      for(int cx = 0; cx <= CELLS_X+1; cx++) {
+  for(int cz = 0; cz <= (int)CELLS_Z+1; cz++)
+    for(int cy = 0; cy <= (int)CELLS_Y+1; cy++)
+      for(int cx = 0; cx <= (int)CELLS_X+1; cx++) {
         int dir = GET_DIR(cz, cy, cx);
         if(dir == CENTER) continue;
         int dz = MOVE_Z(cz, REVERSE(dir));
@@ -1194,7 +1351,11 @@ void gather_forces_and_advance(const void *args, size_t arglen,
                 const std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
-  Block b = *((const Block*)args);
+  Block b;
+  {
+    Deserializer deser(args, arglen);
+    deser.deserialize(b);
+  }
   int cb = b.cb; // current buffer
   int eb = 1; // edge phase for this task is 1
   // Initialize all the cells and update all our cells
@@ -1210,9 +1371,9 @@ void gather_forces_and_advance(const void *args, size_t arglen,
   // two things to watch out for:
   //  position vectors have to be augmented by relative block positions
   //  for pairs of real cells, we can do the calculation once instead of twice
-  for(int cz = 1; cz < CELLS_Z+1; cz++)
-    for(int cy = 1; cy < CELLS_Y+1; cy++)
-      for(int cx = 1; cx < CELLS_X+1; cx++) {
+  for(int cz = 1; cz < (int)CELLS_Z+1; cz++)
+    for(int cy = 1; cy < (int)CELLS_Y+1; cy++)
+      for(int cx = 1; cx < (int)CELLS_X+1; cx++) {
         Cell cell = base_block.read(b.cells[cb][cz][cy][cx]);
         assert(cell.num_particles <= MAX_PARTICLES);
 
@@ -1221,7 +1382,7 @@ void gather_forces_and_advance(const void *args, size_t arglen,
             for(int dx = cx - 1; dx <= cx + 1; dx++) {
               // did we already get updated by this neighbor's bidirectional update?
               // FIXME: ummmmmmm... ????
-              if((dy > 0) && (dx > 0) && (dx < CELLS_X+1) && 
+              if((dy > 0) && (dx > 0) && (dx < (int)CELLS_X+1) && 
                  ((dy < cy) || ((dy == cy) && (dx < cx))))
                 continue;
 
@@ -1232,7 +1393,7 @@ void gather_forces_and_advance(const void *args, size_t arglen,
               // do bidirectional update if other cell is a real cell and it is
               //  either below or to the right (but not up-right) of us
               // FIXME: ummmmmmm... ????
-              bool update_other = ((dy < CELLS_Y+1) && (dx > 0) && (dx < CELLS_X+1) &&
+              bool update_other = ((dy < (int)CELLS_Y+1) && (dx > 0) && (dx < (int)CELLS_X+1) &&
                                    ((dy > cy) || ((dy == cy) && (dx > cx))));
 	  
               // pairwise across particles - watch out for identical particle case!
@@ -1626,6 +1787,9 @@ int main(int argc, char **argv)
   nbx = 8;
   nby = 8;
   nbz = 8;
+  CELLS_X = 8;
+  CELLS_Y = 8;
+  CELLS_Z = 8;
 
   // Initialize the machine
   Machine m(&argc, &argv, task_table, false);
