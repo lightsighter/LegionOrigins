@@ -1,4 +1,25 @@
 *~
 *.o
 core
+*.bin
 
+# binaries from runtime/Makefile
+foo
+hello
+gas_simple
+gputest
+ring
+ring2
+tree
+tree2
+ckt
+ckt2
+cktgpu2
+fluid
+fluid2
+fluid3d
+fluid3d_shared
+srch2
+saxpy
+saxpy_shared
+saxpy_gpu
