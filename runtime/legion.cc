@@ -408,6 +408,17 @@ namespace RegionRuntime {
       return req;
     }
 
+    //--------------------------------------------------------------------------
+    InstanceInfo* RegionMappingImpl::get_chosen_instance(unsigned idx) const
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx == 0);
+      assert(info != NULL);
+#endif
+      return info;
+    }
+
     /////////////////////////////////////////////////////////////
     // High Level Runtime 
     ///////////////////////////////////////////////////////////// 
@@ -694,7 +705,6 @@ namespace RegionRuntime {
       // Figure out where to put this task
       if (desc->is_ready())
       {
-        desc->mark_ready();
         // Figure out where to place this task
         // If local put it in the ready queue (otherwise it's already been sent away)
         if (target_task(desc))
@@ -744,7 +754,6 @@ namespace RegionRuntime {
       // Figure out where to put this task
       if (desc->is_ready())
       {
-        desc->mark_ready();
         // Figure out where to place this task
         // If local put it in the ready queue (otherwise it's already been sent away)
         if (target_task(desc))
@@ -1533,9 +1542,6 @@ namespace RegionRuntime {
           if ((*task_it)->is_ready())
           {
             TaskContext *desc = *task_it;
-            // All of the dependent task have been mapped, we can now issue all the 
-            // pre copy operations
-            desc->mark_ready();
             // Push it onto the ready queue
             add_to_ready_queue(desc, false/*already hold lock*/);
             // Remove it from the waiting queue
@@ -2253,6 +2259,14 @@ namespace RegionRuntime {
                 compute_region_trace(namer.trace,regions[idx].parent,info->handle);
                 // Compute the precondition for the region
                 Event precondition = Event::merge_events(true_dependences[idx]);
+                // Check to see if we need this region in atomic mode
+                if (IS_ATOMIC(regions[idx]))
+                {
+                  // Acquire the lock before doing anything for this region
+                  precondition = info->lock_instance(precondition);
+                  // Also issue the unlock operation when the task is done, tee hee :)
+                  info->unlock_instance(termination_event);
+                }
                 // Inject the request to register this physical instance
                 // starting from the parent region's logical node
                 RegionNode *top = (*region_nodes)[regions[idx].parent];
@@ -2273,6 +2287,12 @@ namespace RegionRuntime {
               compute_region_trace(namer.trace,regions[idx].parent,info->handle); 
               // Compute the precondition for the region
               Event precondition = Event::merge_events(true_dependences[idx]);
+              // Check to see if we need this region in atomic mode
+              if (IS_ATOMIC(regions[idx]))
+              {
+                precondition = info->lock_instance(precondition);
+                info->unlock_instance(termination_event);
+              }
               // Inject the request to register this physical instance
               // starting from the parent region's logical node
               RegionNode *top = (*region_nodes)[regions[idx].parent];
@@ -2398,17 +2418,10 @@ namespace RegionRuntime {
           if (physical_instances[idx] != InstanceInfo::get_no_instance())
           {
             // Iterate over our dependent tasks and notify them that this region is ready
-          
-            for (std::set<TaskContext*>::iterator it = map_dependent_tasks[idx].begin();
+            for (std::set<GeneralizedContext*>::iterator it = map_dependent_tasks[idx].begin();
                   it != map_dependent_tasks[idx].end(); it++)
             {
-              (*it)->wait_events.insert(termination_event);
-#ifdef DEBUG_HIGH_LEVEL
-              assert((*it)->remaining_notifications > 0);
-#endif
-              // Decrement the count of the remaining events that the
-              // dependent task has to see
-              (*it)->remaining_notifications--;
+              (*it)->notify();
             }
           }
         }
@@ -2725,6 +2738,88 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    InstanceInfo* TaskContext::resolve_unresolved_dependences(InstanceInfo *info, 
+                                                              unsigned idx, bool war_opt)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Go through all the unresolved dependences for this region and see if need to
+      // add additional events to wait on before this task can execute
+      const std::map<GeneralizedContext*,std::pair<unsigned,DependenceType> > &unresolved = 
+            unresolved_dependences[idx];
+      if (war_opt)
+      {
+        bool has_war_dependence = false;
+        for (std::map<GeneralizedContext*,std::pair<unsigned,DependenceType> >::const_iterator it =
+              unresolved.begin(); it != unresolved.end(); it++)
+        {
+          if ((it->second.second == ANTI_DEPENDENCE) &&
+              (it->first->get_chosen_instance(it->second.first) == info))
+          {
+            has_war_dependence = true;
+            break;
+          }
+        }
+        // If we had a war dependence, try creating a new region in the same region as the info
+        if (has_war_dependence)
+        {
+          // Try making a new instance in the same memory, otherwise add the dependences
+          RegionNode *node = (*region_nodes)[info->handle];
+          InstanceInfo *new_inst = node->create_physical_instance(info->location);
+          if (new_inst == InstanceInfo::get_no_instance())
+          {
+            // Didn't work, add all the anti dependences to the list of events to wait for
+            for (std::map<GeneralizedContext*,std::pair<unsigned,DependenceType> >::const_iterator it =
+                  unresolved.begin(); it != unresolved.end(); it++)
+            {
+              if ((it->second.second == ANTI_DEPENDENCE) &&
+                  (it->first->get_chosen_instance(it->second.first) == info))
+              {
+                true_dependences[idx].insert(it->first->get_termination_event()); 
+              }
+            }
+          }
+          else
+          {
+            // It did work, no more WAR dependences, update the info
+            info = new_inst;
+          }
+        }
+      }
+      // Now check for any simultaneous or atomic dependences
+      for (std::map<GeneralizedContext*,std::pair<unsigned,DependenceType> >::const_iterator it =
+            unresolved.begin(); it != unresolved.end(); it++)
+      {
+        if ((it->second.second == ATOMIC_DEPENDENCE) || (it->second.second == SIMULTANEOUS_DEPENDENCE))
+        {
+          // Check to see if they are the same instance, if so, no dependence
+          if (it->first->get_chosen_instance(it->second.first) != info)
+          {
+            // Need a dependence
+            true_dependences[idx].insert(it->first->get_termination_event());
+          }
+        }
+      }
+      return info;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool TaskContext::is_ready(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      return (remaining_notifications > 0);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::notify(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(remaining_notifications > 0);
+#endif
+      remaining_notifications--;
+    }
+
+    //--------------------------------------------------------------------------------------------
     void TaskContext::add_source_physical_instance(ContextID ctx, InstanceInfo *src_info)
     //--------------------------------------------------------------------------------------------
     {
@@ -2739,6 +2834,16 @@ namespace RegionRuntime {
       assert(idx < regions.size());
 #endif
       return regions[idx];
+    }
+
+    //--------------------------------------------------------------------------------------------
+    InstanceInfo* TaskContext::get_chosen_instance(unsigned idx) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx < physical_instances.size());
+#endif
+      return physical_instances[idx];
     }
     
     ///////////////////////////////////////////
@@ -3274,7 +3379,6 @@ namespace RegionRuntime {
       region_states[ctx].valid_instances.insert(info);
     }
 
-#if 0
     //--------------------------------------------------------------------------------------------
     InstanceInfo* RegionNode::find_physical_instance(ContextID ctx, Memory m)
     //--------------------------------------------------------------------------------------------
@@ -3289,7 +3393,7 @@ namespace RegionRuntime {
       // We can only go up the tree if we are clean
       // If we didn't find anything, go up the tree
       if ((region_states[ctx].data_state == DATA_CLEAN) &&
-          !region_states[ctx].physical_top && (parent != NULL))
+          (parent != NULL))
       {
         return parent->parent->find_physical_instance(ctx, m);
       }
@@ -3315,6 +3419,7 @@ namespace RegionRuntime {
       return InstanceInfo::get_no_instance();
     }
 
+#if 0
     //--------------------------------------------------------------------------------------------
     Event RegionNode::register_user(RegionRenamer &renamer, bool below /*= false*/)
     //--------------------------------------------------------------------------------------------
@@ -4014,6 +4119,40 @@ namespace RegionRuntime {
     // Instance Info 
     ///////////////////////////////////////////
 
+    //-------------------------------------------------------------------------
+    InstanceInfo::~InstanceInfo(void)
+    //-------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(references == 0);
+#endif
+      // If we created a lock, then destroy it
+      if (inst_lock.exists())
+      {
+        inst_lock.destroy_lock();
+      }
+    }
+
+    //-------------------------------------------------------------------------
+    Event InstanceInfo::lock_instance(Event precondition)
+    //-------------------------------------------------------------------------
+    {
+      if (!inst_lock.exists())
+      {
+        inst_lock = Lock::create_lock();
+      }
+      return inst_lock.lock(0, true/*exclusive*/, precondition);
+    }
+
+    //-------------------------------------------------------------------------
+    void InstanceInfo::unlock_instance(Event precondition)
+    //-------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(inst_lock.exists()); // We better have a lock here
+#endif
+      return inst_lock.unlock(precondition);
+    }
 
     ///////////////////////////////////////////
     // Serializer

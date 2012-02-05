@@ -766,6 +766,8 @@ namespace RegionRuntime {
       virtual void add_source_physical_instance(ContextID ctx, InstanceInfo *info) = 0;
       virtual const RegionRequirement& get_requirement(unsigned idx) const = 0;
       virtual const Task*const get_enclosing_task(void) const = 0;
+      virtual InstanceInfo* get_chosen_instance(unsigned idx) const = 0;
+      virtual void notify(void) = 0;
     };
 
     /////////////////////////////////////////////////////////////
@@ -839,11 +841,12 @@ namespace RegionRuntime {
       // functions for checking the state of the task for scheduling
       virtual bool is_context(void) const { return true; }
       virtual bool is_ready(void) const;
-      void mark_ready(void);
+      virtual void notify(void);
       virtual void add_source_physical_instance(ContextID ctx, InstanceInfo *src_info);
       virtual Event get_termination_event(void) const { return termination_event; }
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
       virtual const Task*const get_enclosing_task(void) const { return this; }
+      virtual InstanceInfo* get_chosen_instance(unsigned idx) const;
     private:
       HighLevelRuntime *const runtime;
       bool active;
@@ -890,9 +893,9 @@ namespace RegionRuntime {
       std::vector<std::set<Event> > true_dependences;
       // For each of our regions keep track of unresolved dependences on prior tasks.  Remember which task
       // there was a dependence on as well as the index for that region and the dependence type
-      std::vector<std::map<TaskContext*,std::pair<unsigned,DependenceType> > > unresolved_dependences;
+      std::vector<std::map<GeneralizedContext*,std::pair<unsigned,DependenceType> > > unresolved_dependences;
       // The set of tasks waiting on us to notify them when we each region they need is mapped
-      std::vector<std::set<TaskContext*> > map_dependent_tasks; 
+      std::vector<std::set<GeneralizedContext*> > map_dependent_tasks; 
       // Keep track of the number of notifications we need to see before the task is mappable
       int remaining_notifications;
       // The set of events to wait on before this task can be launched
@@ -945,6 +948,7 @@ namespace RegionRuntime {
       UserEvent mapped_event;
       Event ready_event;
       UserEvent unmapped_event;
+      InstanceInfo *info;
       PhysicalRegion<AccessorGeneric> result;
       bool active;
     protected:
@@ -963,11 +967,13 @@ namespace RegionRuntime {
       void set_mapped(Event ready = Event::NO_EVENT); // Indicate mapping complete
       virtual bool is_context(void) const { return false; }
       virtual bool is_ready(void) const; // Ready to be mapped
+      virtual void notify(void);
       void perform_mapping(void);
       virtual void add_source_physical_instance(ContextID ctx, InstanceInfo *info);
       virtual Event get_termination_event(void) const;
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
       virtual const Task*const get_enclosing_task(void) const { return ctx; }
+      virtual InstanceInfo* get_chosen_instance(unsigned idx) const;
     public:
       template<AccessorType AT>
       inline PhysicalRegion<AT> get_physical_region(void);
@@ -1138,7 +1144,6 @@ namespace RegionRuntime {
       const LogicalRegion handle;
       const Memory location;
       const RegionInstance inst;
-      Lock inst_lock; // For atomic access if necessary
     public:
       InstanceInfo(void)
         : handle(LogicalRegion::NO_REGION),
@@ -1150,6 +1155,7 @@ namespace RegionRuntime {
           RegionInstance i, Event v = Event::NO_EVENT) 
         : handle(r), location(m), inst(i), 
           inst_lock(Lock::NO_LOCK), references(0) { }
+      ~InstanceInfo(void);
     protected:
       friend class TaskContext;
       friend class RegionMappingImpl;
@@ -1171,7 +1177,10 @@ namespace RegionRuntime {
         references--;
       }
       inline bool has_references(void) const { return (references > 0); }
+      Event lock_instance(Event precondition);
+      void unlock_instance(Event precondition);
     private:
+      Lock inst_lock; // For atomic access if necessary
       unsigned references;
     };
 
