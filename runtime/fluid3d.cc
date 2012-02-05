@@ -4,6 +4,11 @@
 #include <cstdlib>
 #include <cmath>
 
+// cstdint complains about C++11 support?
+#include <stdint.h>
+
+#include <fstream>
+#include <string>
 #include <vector>
 #include <algorithm>
 
@@ -29,6 +34,7 @@ enum {
   TASKID_SCATTER_FORCES,
   TASKID_GATHER_FORCES,
   TASKID_MAIN_TASK,
+  TASKID_SAVE_FILE,
 };
 
 //#define CELLS_X 8
@@ -205,7 +211,7 @@ struct BufferRegions {
 };
 
 // two kinds of double-buffering going on here
-// * for the CELLS_X x CELLS_Y grid of "real" cells, we have two copies
+// * for the CELLS_X x CELLS_Y x CELLS_Z grid of "real" cells, we have two copies
 //     for double-buffering the simulation
 // * for the ring of edge/ghost cells around the "real" cells, we have
 //     two copies for bidirectional exchanges
@@ -223,6 +229,11 @@ struct Block {
   int cb;  // which is the current buffer?
   int id;
 };
+
+// the size of a block for serialization purposes
+#define BLOCK_SIZE (sizeof(Block) \
+                    + sizeof(ptr_t<Cell>)*2*(CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2) \
+                    - sizeof(std::vector<std::vector<std::vector<ptr_t<Cell> > > > [2]))
 
 struct TopLevelRegions {
   LogicalHandle real_cells[2];
@@ -258,8 +269,16 @@ public:
 #ifdef DEBUG_SERIALIZER
     , remaining(buffer_size)
 #endif
-  { assert(buffer); }
-  ~Serializer(void) { free(buffer); }
+  {
+    assert(buffer);
+  }
+  ~Serializer(void)
+  {
+#ifdef DEBUG_SERIALIZER
+    assert(remaining == 0);
+#endif
+    free(buffer);
+  }
 public:
   template<typename T>
   inline void serialize(const T &element) {
@@ -286,12 +305,23 @@ public:
     serialize(block.cb);
     serialize(block.id);
   }
+  inline void serialize(const std::string &str) {
+    const char *c_str = str.c_str();
+    size_t len = strlen(c_str);
+    serialize(len);
+#ifdef DEBUG_SERIALIZER
+    assert(remaining >= len);
+    remaining -= len;
+#endif
+    strncpy(location, c_str, len);
+    location += len;
+  }
   inline const void* get_buffer(void) const { return buffer; }
 private:
   void *const buffer;
   char *location;
 #ifdef DEBUG_SERIALIZER
-  long unsigned remaining;
+  size_t remaining;
 #endif
 };
 
@@ -302,8 +332,15 @@ public:
 #ifdef DEBUG_SERIALIZER
     , remaining(buffer_size)
 #endif
-  { }
-  ~Deserializer(void) { }
+  {
+    assert(buffer);
+  }
+  ~Deserializer(void)
+  {
+#ifdef DEBUG_SERIALIZER
+    assert(remaining == 0);
+#endif
+  }
 public:
   template<typename T>
   inline void deserialize(T &element) {
@@ -336,10 +373,20 @@ public:
     deserialize(block.cb);
     deserialize(block.id);
   }
+  inline void deserialize(std::string &str) {
+    size_t len;
+    deserialize(len);
+#ifdef DEBUG_SERIALIZER
+    assert(remaining >= len);
+    remaining -= len;
+#endif
+    str = std::string(location, len);
+    location += len;
+  }
 private:
   const char *location;
 #ifdef DEBUG_SERIALIZER
-  long unsigned remaining;
+  size_t remaining;
 #endif
 };
 
@@ -831,8 +878,7 @@ void main_task(const void *args, size_t arglen,
                                   all_cells_1);
 #endif
 
-    unsigned bufsize =
-      sizeof(Block) + sizeof(ptr_t<Cell>)*2*(CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2);
+    unsigned bufsize = BLOCK_SIZE;
     Serializer ser(bufsize);
     ser.serialize(blocks[id]);
 
@@ -840,6 +886,30 @@ void main_task(const void *args, size_t arglen,
                                      init_regions,
                                      ser.get_buffer(), bufsize,
                                      false, 0, id);
+    f.get_void_result();
+  }
+
+  {
+    std::vector<RegionRequirement> init_regions;
+    for (unsigned id = 0; id < numBlocks; id++) {
+      init_regions.push_back(RegionRequirement(blocks[id].base[1],
+                                               READ_ONLY, NO_MEMORY, EXCLUSIVE,
+                                               tlr->real_cells[1]));
+    }
+
+    std::string fileName = "fluid3d_init.bin";
+
+    unsigned bufsize = BLOCK_SIZE*numBlocks + sizeof(size_t) + fileName.length();
+    Serializer ser(bufsize);
+    for (unsigned id = 0; id < numBlocks; id++) {
+      ser.serialize(blocks[id]);
+    }
+    ser.serialize(fileName);
+
+    Future f = runtime->execute_task(ctx, TASKID_SAVE_FILE,
+                                     init_regions,
+                                     ser.get_buffer(), bufsize,
+                                     false, 0, 0);
     f.get_void_result();
   }
 
@@ -877,8 +947,7 @@ void main_task(const void *args, size_t arglen,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 		      tlr->edge_cells);
 
-      unsigned bufsize =
-        sizeof(Block) + sizeof(ptr_t<Cell>)*2*(CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2);
+      unsigned bufsize = BLOCK_SIZE;
       Serializer ser(bufsize);
       ser.serialize(blocks[id]);
 
@@ -908,8 +977,7 @@ void main_task(const void *args, size_t arglen,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 		      tlr->edge_cells);
 
-      unsigned bufsize =
-        sizeof(Block) + sizeof(ptr_t<Cell>)*2*(CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2);
+      unsigned bufsize = BLOCK_SIZE;
       Serializer ser(bufsize);
       ser.serialize(blocks[id]);
 
@@ -939,8 +1007,7 @@ void main_task(const void *args, size_t arglen,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 		      tlr->edge_cells);
 
-      unsigned bufsize =
-        sizeof(Block) + sizeof(ptr_t<Cell>)*2*(CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2);
+      unsigned bufsize = BLOCK_SIZE;
       Serializer ser(bufsize);
       ser.serialize(blocks[id]);
 
@@ -972,8 +1039,7 @@ void main_task(const void *args, size_t arglen,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 		      tlr->edge_cells);
 
-      unsigned bufsize =
-        sizeof(Block) + sizeof(ptr_t<Cell>)*2*(CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2);
+      unsigned bufsize = BLOCK_SIZE;
       Serializer ser(bufsize);
       ser.serialize(blocks[id]);
 
@@ -1003,6 +1069,30 @@ void main_task(const void *args, size_t arglen,
 		     (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
   printf("ELAPSED TIME = %7.3f s\n", sim_time);
   RegionRuntime::DetailedTimer::report_timers();
+
+  {
+    std::vector<RegionRequirement> init_regions;
+    for (unsigned id = 0; id < numBlocks; id++) {
+      init_regions.push_back(RegionRequirement(blocks[id].base[1],
+                                               READ_ONLY, NO_MEMORY, EXCLUSIVE,
+                                               tlr->real_cells[1]));
+    }
+
+    std::string fileName = "fluid3d_output.bin";
+
+    unsigned bufsize = BLOCK_SIZE*numBlocks + sizeof(size_t) + fileName.length();
+    Serializer ser(bufsize);
+    for (unsigned id = 0; id < numBlocks; id++) {
+      ser.serialize(blocks[id]);
+    }
+    ser.serialize(fileName);
+
+    Future f = runtime->execute_task(ctx, TASKID_SAVE_FILE,
+                                     init_regions,
+                                     ser.get_buffer(), bufsize,
+                                     false, 0, 0);
+    f.get_void_result();
+  }
 
   log_app.info("all done!");
 
@@ -1441,6 +1531,162 @@ void gather_forces_and_advance(const void *args, size_t arglen,
   log_app.info("Done with gather_forces_and_advance() for block %d", b.id);
 }
 
+static inline int isLittleEndian() {
+  union {
+    uint16_t word;
+    uint8_t byte;
+  } endian_test;
+
+  endian_test.word = 0x00FF;
+  return (endian_test.byte == 0xFF);
+}
+
+union __float_and_int {
+  uint32_t i;
+  float    f;
+};
+
+static inline float bswap_float(float x) {
+  union __float_and_int __x;
+
+   __x.f = x;
+   __x.i = ((__x.i & 0xff000000) >> 24) | ((__x.i & 0x00ff0000) >>  8) |
+           ((__x.i & 0x0000ff00) <<  8) | ((__x.i & 0x000000ff) << 24);
+
+  return __x.f;
+}
+
+static inline int bswap_int32(int x) {
+  return ( (((x) & 0xff000000) >> 24) | (((x) & 0x00ff0000) >>  8) |
+           (((x) & 0x0000ff00) <<  8) | (((x) & 0x000000ff) << 24) );
+}
+
+template<AccessorType AT>
+void save_file(const void *args, size_t arglen,
+	       const std::vector<PhysicalRegion<AT> > &regions,
+	       Context ctx, HighLevelRuntime *runtime)
+{
+  std::vector<Block> blocks;
+  std::string fileName;
+  blocks.resize(numBlocks);
+  {
+    Deserializer deser(args, arglen);
+    for (unsigned i = 0; i < numBlocks; i++) {
+      deser.deserialize(blocks[i]);
+    }
+    deser.deserialize(fileName);
+  }
+
+  PhysicalRegion<AT> real_cells = regions[0];
+
+  log_app.info("Saving file \"%s\"...", fileName.c_str());
+
+  std::ofstream file(fileName.c_str(), std::ios::binary);
+  assert(file);
+
+  const int b = 1;
+
+  int count = 0;
+  for (unsigned idz = 0; idz < nbz; idz++)
+    for (unsigned idy = 0; idy < nby; idy++)
+      for (unsigned idx = 0; idx < nbx; idx++) {
+        unsigned id = (idz*nby+idy)*nbx+idx;
+
+        for(unsigned cz = 0; cz < CELLS_Z; cz++)
+          for(unsigned cy = 0; cy < CELLS_Y; cy++)
+            for(unsigned cx = 0; cx < CELLS_X; cx++) {
+              Cell cell = real_cells.read(blocks[id].cells[b][cz+1][cy+1][cx+1]);
+              count += cell.num_particles;
+            }
+      }
+  int origNumParticles = count, numParticles = count;
+
+  if(!isLittleEndian()) {
+    float restParticlesPerMeter_le;
+    int   origNumParticles_le;
+
+    restParticlesPerMeter_le = bswap_float(restParticlesPerMeter);
+    origNumParticles_le      = bswap_int32(origNumParticles);
+    file.write((char *)&restParticlesPerMeter_le, 4);
+    file.write((char *)&origNumParticles_le,      4);
+  } else {
+    file.write((char *)&restParticlesPerMeter, 4);
+    file.write((char *)&origNumParticles,      4);
+  }
+
+  count = 0;
+  for (unsigned idz = 0; idz < nbz; idz++)
+    for (unsigned idy = 0; idy < nby; idy++)
+      for (unsigned idx = 0; idx < nbx; idx++) {
+        unsigned id = (idz*nby+idy)*nbx+idx;
+
+        for(unsigned cz = 0; cz < CELLS_Z; cz++)
+          for(unsigned cy = 0; cy < CELLS_Y; cy++)
+            for(unsigned cx = 0; cx < CELLS_X; cx++) {
+              Cell cell = real_cells.read(blocks[id].cells[b][cz+1][cy+1][cx+1]);
+
+              unsigned np = cell.num_particles;
+              for(unsigned p = 0; p < np; ++p) {
+                if(!isLittleEndian()) {
+                  float px, py, pz, hvx, hvy, hvz, vx,vy, vz;
+
+                  px  = bswap_float(cell.p[p].x);
+                  py  = bswap_float(cell.p[p].y);
+                  pz  = bswap_float(cell.p[p].z);
+                  hvx = bswap_float(cell.hv[p].x);
+                  hvy = bswap_float(cell.hv[p].y);
+                  hvz = bswap_float(cell.hv[p].z);
+                  vx  = bswap_float(cell.v[p].x);
+                  vy  = bswap_float(cell.v[p].y);
+                  vz  = bswap_float(cell.v[p].z);
+
+                  file.write((char *)&px,  4);
+                  file.write((char *)&py,  4);
+                  file.write((char *)&pz,  4);
+                  file.write((char *)&hvx, 4);
+                  file.write((char *)&hvy, 4);
+                  file.write((char *)&hvz, 4);
+                  file.write((char *)&vx,  4);
+                  file.write((char *)&vy,  4);
+                  file.write((char *)&vz,  4);
+                } else {
+                  file.write((char *)&cell.p[p].x,  4);
+                  file.write((char *)&cell.p[p].y,  4);
+                  file.write((char *)&cell.p[p].z,  4);
+                  file.write((char *)&cell.hv[p].x, 4);
+                  file.write((char *)&cell.hv[p].y, 4);
+                  file.write((char *)&cell.hv[p].z, 4);
+                  file.write((char *)&cell.v[p].x,  4);
+                  file.write((char *)&cell.v[p].y,  4);
+                  file.write((char *)&cell.v[p].z,  4);
+                }
+                ++count;
+              }
+            }
+      }
+  assert(count == numParticles);
+
+  int numSkipped = origNumParticles - numParticles;
+  float zero = 0.f;
+  if(!isLittleEndian()) {
+    zero = bswap_float(zero);
+  }
+
+  for(int i = 0; i < numSkipped; ++i) {
+    file.write((char *)&zero, 4);
+    file.write((char *)&zero, 4);
+    file.write((char *)&zero, 4);
+    file.write((char *)&zero, 4);
+    file.write((char *)&zero, 4);
+    file.write((char *)&zero, 4);
+    file.write((char *)&zero, 4);
+    file.write((char *)&zero, 4);
+    file.write((char *)&zero, 4);
+  }
+
+  log_app.info("Done saving file.");
+}
+
 static bool sort_by_proc_id(const std::pair<Processor,Memory> &a,
                             const std::pair<Processor,Memory> &b)
 {
@@ -1564,6 +1810,7 @@ public:
     case TOP_LEVEL_TASK_ID:
     case TASKID_INIT_SIMULATION:
     case TASKID_MAIN_TASK:
+    case TASKID_SAVE_FILE:
       {
         // Put this on the first processor
         return loc_procs[0].first;
@@ -1635,6 +1882,7 @@ public:
     case TOP_LEVEL_TASK_ID:
     case TASKID_INIT_SIMULATION:
     case TASKID_MAIN_TASK:
+    case TASKID_SAVE_FILE:
       {
         // Don't care, put it in global memory
         chosen_src = global_memory;
@@ -1758,6 +2006,7 @@ int main(int argc, char **argv)
   task_table[TASKID_GATHER_DENSITIES] = high_level_task_wrapper<gather_densities<AccessorGeneric> >;
   task_table[TASKID_SCATTER_FORCES] = high_level_task_wrapper<scatter_forces<AccessorGeneric> >;
   task_table[TASKID_GATHER_FORCES] = high_level_task_wrapper<gather_forces_and_advance<AccessorGeneric> >;
+  task_table[TASKID_SAVE_FILE] = high_level_task_wrapper<save_file<AccessorGeneric> >;
 
   HighLevelRuntime::register_runtime_tasks(task_table);
   HighLevelRuntime::set_mapper_init_callback(create_mappers);
