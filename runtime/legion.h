@@ -768,6 +768,8 @@ namespace RegionRuntime {
       virtual const Task*const get_enclosing_task(void) const = 0;
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const = 0;
       virtual void notify(void) = 0;
+      virtual void add_true_dependence(unsigned idx, Event wait_on) = 0;
+      virtual void add_unresolved_dependence(unsigned idx, DependenceType type, GeneralizedContext *ctx, unsigned dep_idx) = 0;
     };
 
     /////////////////////////////////////////////////////////////
@@ -847,6 +849,8 @@ namespace RegionRuntime {
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
       virtual const Task*const get_enclosing_task(void) const { return this; }
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const;
+      virtual void add_true_dependence(unsigned idx, Event wait_on);
+      virtual void add_unresolved_dependence(unsigned idx, DependenceType t, GeneralizedContext *c, unsigned dep_idx);
     private:
       HighLevelRuntime *const runtime;
       bool active;
@@ -974,6 +978,8 @@ namespace RegionRuntime {
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
       virtual const Task*const get_enclosing_task(void) const { return ctx; }
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const;
+      virtual void add_true_dependence(unsigned idx, Event wait_on);
+      virtual void add_unresolved_dependence(unsigned idx, DependenceType t, GeneralizedContext *ctx, unsigned dep_idx);
     public:
       template<AccessorType AT>
       inline PhysicalRegion<AT> get_physical_region(void);
@@ -999,7 +1005,7 @@ namespace RegionRuntime {
         // Logical State
         PartState logical_state;
         std::set<PartitionID> open_logical;
-        std::vector<std::pair<GeneralizedContext*,unsigned/*idx*/> > logical_users;
+        std::list<std::pair<GeneralizedContext*,unsigned/*idx*/> > active_users;
         // Physical State
         std::set<PartitionID> open_physical; 
         // All these instances obey info->handle == this->handle
@@ -1023,7 +1029,7 @@ namespace RegionRuntime {
       // Open up a logical region tree
       void open_logical_tree(DependenceDetector &dep);
       // Close up a logical region tree
-      void close_logical_tree(DependenceDetector &dep);
+      void close_logical_tree(DependenceDetector &dep, bool register_dependences);
     protected:
       // Initialize the physical context
       void initialize_physical_context(ContextID ctx, bool top = true);
@@ -1104,9 +1110,12 @@ namespace RegionRuntime {
       };
       struct PartitionState {
       public:
-        RegState logical_state;
-        std::vector<std::pair<GeneralizedContext*,unsigned/*idx*/> > logical_users;
+        // Logical state
+        RegState logical_state; // For use with aliased partitions
+        std::map<LogicalRegion,RegState> logical_states; // For use with disjoint partitions
+        std::list<std::pair<GeneralizedContext*,unsigned/*idx*/> > active_users;
         std::set<LogicalRegion> open_logical;
+        // Physical state
         RegState physical_state;
         std::set<LogicalRegion> open_physical;
       };
@@ -1118,7 +1127,13 @@ namespace RegionRuntime {
       ~PartitionNode(void);
     protected:
       // Logical operations on partitions 
-      void register_region_dependence(DependenceDetector &dep);
+      void initialize_logical_context(ContextID ctx);
+      // Register a logical region dependence
+      void register_logical_region(DependenceDetector &dep);
+      // Open up a logical region tree
+      void open_logical_tree(DependenceDetector &dep);
+      // Close up a logical region tree
+      void close_logical_tree(DependenceDetector &dep, bool register_dependences);
     protected:
       // Physical operations on partitions
       void initialize_physical_context(ContextID ctx);
@@ -1200,17 +1215,17 @@ namespace RegionRuntime {
       friend class RegionMappingImpl;
       friend class RegionNode;
       friend class PartitionNode;
-      const ContextID ctx;
+      const ContextID ctx_id;
       const unsigned idx;
-      GeneralizedContext *const child;
+      GeneralizedContext *const ctx;
       TaskContext *const parent;
       std::vector<unsigned> trace;
     protected:
       DependenceDetector(ContextID id, unsigned i,
           GeneralizedContext *c, TaskContext *p) 
-        : ctx(id), idx(i), child(c), parent(p) { }
+        : ctx_id(id), idx(i), ctx(c), parent(p) { }
     protected:
-      const RegionRequirement& get_req(void) const { return child->get_requirement(idx); }
+      const RegionRequirement& get_req(void) const { return ctx->get_requirement(idx); }
     };
 
     /////////////////////////////////////////////////////////////
