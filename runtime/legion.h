@@ -828,7 +828,7 @@ namespace RegionRuntime {
       // Utility functions
       void compute_region_trace(std::vector<unsigned> &trace, LogicalRegion parent, LogicalRegion child);
       void compute_partition_trace(std::vector<unsigned> &trace, LogicalRegion parent, PartitionID part);
-      void register_region_dependence(LogicalRegion parent, TaskContext *child, unsigned child_idx);
+      void register_region_dependence(LogicalRegion parent, GeneralizedContext *child, unsigned child_idx);
       void verify_privilege(const RegionRequirement &par_req, const RegionRequirement &child_req,
                       /*for error reporting*/unsigned task = false, unsigned idx = 0, unsigned unique = 0);
       void initialize_region_tree_contexts(void);
@@ -997,8 +997,9 @@ namespace RegionRuntime {
       struct RegionState {
       public:
         // Logical State
-        bool logical_exclusive;
+        PartState logical_state;
         std::set<PartitionID> open_logical;
+        std::vector<std::pair<GeneralizedContext*,unsigned/*idx*/> > logical_users;
         // Physical State
         std::set<PartitionID> open_physical; 
         // All these instances obey info->handle == this->handle
@@ -1015,10 +1016,14 @@ namespace RegionRuntime {
                   bool add, ContextID ctx);
       ~RegionNode(void);
     protected:
-      // Operations on the logical part of the region tree
-      void register_region_dependence(DependenceDetector &dep);
       // Initialize the logical context
       void initialize_logical_context(ContextID ctx);
+      // Register the task with the given requirement on the logical region tree
+      void register_logical_region(DependenceDetector &dep);
+      // Open up a logical region tree
+      void open_logical_tree(DependenceDetector &dep);
+      // Close up a logical region tree
+      void close_logical_tree(DependenceDetector &dep);
     protected:
       // Initialize the physical context
       void initialize_physical_context(ContextID ctx, bool top = true);
@@ -1099,7 +1104,8 @@ namespace RegionRuntime {
       };
       struct PartitionState {
       public:
-        bool logical_exclusive; // for aliased only (disjoint doesn't matter)
+        RegState logical_state;
+        std::vector<std::pair<GeneralizedContext*,unsigned/*idx*/> > logical_users;
         std::set<LogicalRegion> open_logical;
         RegState physical_state;
         std::set<LogicalRegion> open_physical;
@@ -1195,14 +1201,16 @@ namespace RegionRuntime {
       friend class RegionNode;
       friend class PartitionNode;
       const ContextID ctx;
-      RegionRequirement *const req;
-      TaskContext *const child;
+      const unsigned idx;
+      GeneralizedContext *const child;
       TaskContext *const parent;
       std::vector<unsigned> trace;
     protected:
-      DependenceDetector(ContextID id, RegionRequirement *r,
-          TaskContext *c, TaskContext *p) 
-        : ctx(id), req(r), child(c), parent(p) { }
+      DependenceDetector(ContextID id, unsigned i,
+          GeneralizedContext *c, TaskContext *p) 
+        : ctx(id), idx(i), child(c), parent(p) { }
+    protected:
+      const RegionRequirement& get_req(void) const { return child->get_requirement(idx); }
     };
 
     /////////////////////////////////////////////////////////////

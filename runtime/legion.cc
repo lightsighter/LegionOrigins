@@ -2062,50 +2062,60 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     void TaskContext::register_region_dependence(LogicalRegion parent, 
-                                                  TaskContext *child, unsigned child_idx)
+                                                  GeneralizedContext *child, unsigned child_idx)
     //--------------------------------------------------------------------------------------------
     {
-      DependenceDetector dep(this->ctx_id, &(child->regions[child_idx]),child,this);
+      DependenceDetector dep(this->ctx_id, child_idx, child, this);
 
+      const RegionRequirement &req = child->get_requirement(child_idx);
       // Get the trace to put in the dependence detector
       // Check to see if we are looking for a logical region or a partition
-      if (child->is_index_space)
+      if (child->is_context())
       {
-        // Check to see what we're looking for
-        switch (child->colorize_functions[child_idx].func_type)
+        // We're dealing with a task context
+        TaskContext *ctx = static_cast<TaskContext*>(child);
+        if (ctx->is_index_space)
         {
-          case SINGULAR_FUNC:
-            {
-              log_region(LEVEL_DEBUG,"registering region dependence for region %d "
-                "with parent %d in task %d",child->regions[child_idx].handle.region.id,
-                                            parent.id,unique_id);
-              compute_region_trace(dep.trace, parent, child->regions[child_idx].handle.region);
-              break;
-            }
-          case EXECUTABLE_FUNC:
-          case MAPPED_FUNC:
-            {
-              log_region(LEVEL_DEBUG,"registering partition dependence for region %d "
-                "with parent region %d in task %d",child->regions[child_idx].handle.partition,
-                                                    parent.id,unique_id);
-              compute_partition_trace(dep.trace, parent, child->regions[child_idx].handle.partition);
-              break;
-            }
-          default:
-            assert(false); // Should never make it here
+          // Check to see what we're looking for
+          switch (ctx->colorize_functions[child_idx].func_type)
+          {
+            case SINGULAR_FUNC:
+              {
+                log_region(LEVEL_DEBUG,"registering region dependence for region %d "
+                  "with parent %d in task %d",req.handle.region.id,parent.id,unique_id);
+                compute_region_trace(dep.trace, parent, req.handle.region);
+                break;
+              }
+            case EXECUTABLE_FUNC:
+            case MAPPED_FUNC:
+              {
+                log_region(LEVEL_DEBUG,"registering partition dependence for region %d "
+                  "with parent region %d in task %d",req.handle.partition,parent.id,unique_id);
+                compute_partition_trace(dep.trace, parent, req.handle.partition);
+                break;
+              }
+            default:
+              assert(false); // Should never make it here
+          }
+        }
+        else
+        {
+          // We're looking for a logical region
+          log_region(LEVEL_DEBUG,"registering region dependence for region %d "
+            "with parent %d in task %d",req.handle.region.id, parent.id,unique_id);
+          compute_region_trace(dep.trace, parent, req.handle.region);
         }
       }
       else
       {
-        // We're looking for a logical region
-        log_region(LEVEL_DEBUG,"registering region dependence for region %d "
-          "with parent %d in task %d",child->regions[child_idx].handle.region.id,
-                                      parent.id,unique_id);
-        compute_region_trace(dep.trace, parent, child->regions[child_idx].handle.region);
+        // This is a region mapping so we're looking for a logical mapping
+        log_region(LEVEL_DEBUG,"registering region dependence for mapping of region %d "
+            "with parent %d in task %d", req.handle.region.id,parent.id,unique_id);
+        compute_region_trace(dep.trace, parent, req.handle.region);
       }
 
       RegionNode *top = (*region_nodes)[parent];
-      top->register_region_dependence(dep);
+      top->register_logical_region(dep);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2180,15 +2190,7 @@ namespace RegionRuntime {
           // Check the privileges
           if (!impl->req.verified)
             verify_privilege(regions[idx],impl->req);
-          DependenceDetector dep(this->ctx_id,&(impl->req),NULL,this);
-
-          log_region(LEVEL_DEBUG,"registering mapping dependence for region %d "
-            "with parent %d in task %d with unique id %d",impl->req.handle.region.id,
-            regions[idx].handle.region.id,this->task_id,this->unique_id);
-          compute_region_trace(dep.trace, regions[idx].handle.region, impl->req.handle.region);
-
-          RegionNode *top = (*region_nodes)[regions[idx].handle.region];
-          top->register_region_dependence(dep);
+          register_region_dependence(impl->req.parent,impl,0);
           break;
         }
       }
@@ -2198,10 +2200,7 @@ namespace RegionRuntime {
         if (created_regions.find(impl->req.parent) != created_regions.end())
         {
           // No need to verify privileges here, we have read-write access to created
-          DependenceDetector dep(this->ctx_id,&(impl->req),NULL,this);
-          compute_region_trace(dep.trace, impl->req.parent, impl->req.handle.region);
-          RegionNode *top = (*region_nodes)[impl->req.parent]; 
-          top->register_region_dependence(dep);
+          register_region_dependence(impl->req.parent,impl,0);
         }
         else // error condition
         {
@@ -2293,9 +2292,46 @@ namespace RegionRuntime {
                 precondition = info->lock_instance(precondition);
                 info->unlock_instance(termination_event);
               }
+              RegionNode *top = (*region_nodes)[regions[idx].parent];
+              // Since we had to create this region we have to make a copy to initialize it
+              {
+                std::vector<Memory> locations;
+                top->get_physical_locations(ctx_id,locations);
+#ifdef DEBUG_HIGH_LEVEL
+                assert(!locations.empty());
+#endif
+                if (locations.size() == 1)
+                {
+                  // We know which one to pick
+                  InstanceInfo *src_info = top->find_physical_instance(ctx_id,locations.back());
+#ifdef DEBUG_HIGH_LEVEL
+                  assert(src_info != InstanceInfo::get_no_instance());
+#endif
+                  // Issue the copy
+                  precondition = perform_copy_operation(src_info, info, precondition);
+                  // Update the valid instances as well
+                  top->update_valid_instance(ctx_id,info,false/*no write*/);
+                }
+                else
+                {
+                  // Ask the mapper which location to make a copy from
+                  Memory src_mem = Memory::NO_MEMORY;
+                  mapper->select_copy_source(locations, info->location, src_mem);
+#ifdef DEBUG_HIGH_LEVEL
+                  assert(src_mem.exists());
+#endif
+                  InstanceInfo *src_info = top->find_physical_instance(ctx_id,src_mem);
+#ifdef DEBUG_HIGH_LEVEL
+                  assert(src_info != InstanceInfo::get_no_instance());
+#endif
+                  // Issue the copy
+                  precondition = perform_copy_operation(src_info, info, precondition);
+                  // Update the valid instances as well
+                  top->update_valid_instance(ctx_id,info,false/*no write*/); 
+                }
+              }
               // Inject the request to register this physical instance
               // starting from the parent region's logical node
-              RegionNode *top = (*region_nodes)[regions[idx].parent];
               wait_on_events.insert(top->register_physical_instance(namer,precondition));
               found = true;
               break;
@@ -2866,13 +2902,6 @@ namespace RegionRuntime {
     }
     
     //--------------------------------------------------------------------------------------------
-    void RegionNode::register_region_dependence(DependenceDetector &dep)
-    //--------------------------------------------------------------------------------------------
-    {
-
-    }
-
-    //--------------------------------------------------------------------------------------------
     void RegionNode::initialize_logical_context(ContextID ctx)
     //--------------------------------------------------------------------------------------------
     {
@@ -3097,13 +3126,22 @@ namespace RegionRuntime {
                         target = create_physical_instance(*mem_it);
                         if (target != InstanceInfo::get_no_instance())
                         {
-                          // If we make it we have to pick a place to copy from
-                          Memory src_mem = Memory::NO_MEMORY;
-                          ren.mapper->select_copy_source(locations,*mem_it,src_mem);
+                          // Check to see if the size is one, if so no need to invoke mapper
+                          InstanceInfo *src_info; 
+                          if (locations.size() == 1)
+                          {
+                            src_info = find_physical_instance(ren.ctx_id,locations.back());
+                          }
+                          else
+                          {
+                            // If we make it we have to pick a place to copy from
+                            Memory src_mem = Memory::NO_MEMORY;
+                            ren.mapper->select_copy_source(locations,*mem_it,src_mem);
 #ifdef DEBUG_HIGH_LEVEL
-                          assert(src_mem.exists());
+                            assert(src_mem.exists());
 #endif
-                          InstanceInfo *src_info = find_physical_instance(ren.ctx_id,src_mem);
+                            src_info = find_physical_instance(ren.ctx_id,src_mem);
+                          }
                           // Perform the copy and update the precondition
                           precondition = perform_copy_operation(src_info, target, precondition);
                           break;
@@ -4021,12 +4059,21 @@ namespace RegionRuntime {
                         found = true;
                         // We had to make this instance, so we have to make
                         // a copy from somewhere
-                        Memory src_mem = Memory::NO_MEMORY;
-                        ren.mapper->select_copy_source(locations,*it,src_mem);
+                        InstanceInfo *src_info;
+                        if (locations.size() == 1)
+                        {
+                          // No need to ask the mapper since we already know the answer
+                          src_info = parent->find_physical_instance(ren.ctx_id,locations.back());
+                        }
+                        else
+                        {
+                          Memory src_mem = Memory::NO_MEMORY;
+                          ren.mapper->select_copy_source(locations,*it,src_mem);
 #ifdef DEBUG_HIGH_LEVEL
-                        assert(src_mem.exists());
+                          assert(src_mem.exists());
 #endif
-                        InstanceInfo *src_info = parent->find_physical_instance(ren.ctx_id,src_mem);
+                          src_info = parent->find_physical_instance(ren.ctx_id,src_mem);
+                        }
                         // Issue the copy and update the precondition
                         precondition = perform_copy_operation(src_info, target, precondition);
                         break;
