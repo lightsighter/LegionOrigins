@@ -97,24 +97,17 @@ namespace RegionRuntime {
       // Check for WAR or WAW with write-only
       if (IS_READ_ONLY(req1))
       {
-        // If second access is write-only, then we have no depenendence
-        if (IS_WRITE_ONLY(req2))
-        {
-          // WAR with a write-only
-          return WRITE_ONLY_NO_DEPENDENCE;
-        }
-        else
-        {
-          // This is a standard WAR anti-dependence
-          return ANTI_DEPENDENCE;
-        }
+#ifdef DEBUG_HIGH_LEVEL
+        assert(HAS_WRITE(req2)); // We know at least req1 or req2 is a writers, so if req1 is not...
+#endif
+        return ANTI_DEPENDENCE;
       }
       else
       {
         if (IS_WRITE_ONLY(req2))
         {
           // WAW with a write-only
-          return WRITE_ONLY_NO_DEPENDENCE;
+          return ANTI_DEPENDENCE;
         }
         else
         {
@@ -144,7 +137,7 @@ namespace RegionRuntime {
           return check_for_anti_dependence(req1,req2,TRUE_DEPENDENCE/*default*/);
         }
         // Anything atomic (at least one is a write)
-        else if (IS_ATOMIC(req1) || IS_EXCLUSIVE(req2))
+        else if (IS_ATOMIC(req1) || IS_ATOMIC(req2))
         {
           // If they're both atomics, return an atomic dependence
           if (IS_ATOMIC(req1) && IS_ATOMIC(req2))
@@ -1862,6 +1855,8 @@ namespace RegionRuntime {
     void TaskContext::set_regions(const std::vector<RegionRequirement> &_regions)
     //--------------------------------------------------------------------------------------------
     {
+      // No need to check whether there are two aliased regions that conflict for this task
+      // We'll catch it when we do the dependence analysis
       regions = _regions;
     }
 
@@ -1871,7 +1866,7 @@ namespace RegionRuntime {
                                   const std::vector<ColorizeFunction<N> > &functions)
     //--------------------------------------------------------------------------------------------
     {
-      regions = _regions;
+      set_regions(regions);
       // Convert the functions to unsigned colorize 
       for (typename std::vector<ColorizeFunction<N> >::const_iterator it = functions.begin();
             it != functions.end(); it++)
@@ -2226,7 +2221,6 @@ namespace RegionRuntime {
       // After we make it here, we are just a single task (even if we're part of index space)
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        // TODO: Get the available memory locations
         std::vector<Memory> sources;
         RegionNode *handle = (*region_nodes)[regions[idx].handle.region];
         handle->get_physical_locations(physical_ctx[idx], sources);
@@ -2246,92 +2240,45 @@ namespace RegionRuntime {
             // If there were any physical instances, see if we can get a prior copy
             if (!sources.empty())
             {
-              // 
               InstanceInfo *info = handle->find_physical_instance(physical_ctx[idx], *it);
-              if (info != InstanceInfo::get_no_instance())
+              bool needs_initializing = false;
+              if (info == InstanceInfo::get_no_instance())
               {
-                // Resolve any unresolved dependences 
-                info = resolve_unresolved_dependences(info, idx, war_optimization);
-                physical_instances.push_back(info);
-                RegionRenamer namer(ctx_id,idx,this,info,mapper,false/*no initialization*/);
-                // Compute the trace to the physical instance we want to go to
-                compute_region_trace(namer.trace,regions[idx].parent,info->handle);
-                // Compute the precondition for the region
-                Event precondition = Event::merge_events(true_dependences[idx]);
-                // Check to see if we need this region in atomic mode
-                if (IS_ATOMIC(regions[idx]))
+                // We couldn't find a pre-existing instance, try to make one
+                info = handle->create_physical_instance(*it);
+                if (info == InstanceInfo::get_no_instance())
                 {
-                  // Acquire the lock before doing anything for this region
-                  precondition = info->lock_instance(precondition);
-                  // Also issue the unlock operation when the task is done, tee hee :)
-                  info->unlock_instance(termination_event);
+                  // Couldn't make it, try the next location
+                  continue;
                 }
-                // Inject the request to register this physical instance
-                // starting from the parent region's logical node
-                RegionNode *top = (*region_nodes)[regions[idx].parent];
-                wait_on_events.insert(top->register_physical_instance(namer,precondition));
-                found = true;
-                break;
+                else
+                {
+                  // We made it, but it needs to be initialized
+                  needs_initializing = true;
+                }
               }
-            }
-            // We couldn't find a pre-existing instance, try to make a new one
-            InstanceInfo* info = handle->create_physical_instance(*it);
-            if (info != InstanceInfo::get_no_instance())
-            {
-              // Resolve any unresolved dependences
+#ifdef DEBUG_HIGH_LEVEL
+              assert(info != InstanceInfo::get_no_instance());
+#endif
+              // Resolve any unresolved dependences 
               info = resolve_unresolved_dependences(info, idx, war_optimization);
               physical_instances.push_back(info);
-              RegionRenamer namer(ctx_id,idx,this,info,mapper,true/*needs initialization*/);
+              RegionRenamer namer(ctx_id,idx,this,info,mapper,needs_initializing);
               // Compute the trace to the physical instance we want to go to
-              compute_region_trace(namer.trace,regions[idx].parent,info->handle); 
+              compute_region_trace(namer.trace,regions[idx].parent,info->handle);
               // Compute the precondition for the region
               Event precondition = Event::merge_events(true_dependences[idx]);
               // Check to see if we need this region in atomic mode
               if (IS_ATOMIC(regions[idx]))
               {
+                // Acquire the lock before doing anything for this region
                 precondition = info->lock_instance(precondition);
+                // Also issue the unlock operation when the task is done, tee hee :)
                 info->unlock_instance(termination_event);
-              }
-              RegionNode *top = (*region_nodes)[regions[idx].parent];
-              // Since we had to create this region we have to make a copy to initialize it
-              {
-                std::vector<Memory> locations;
-                top->get_physical_locations(ctx_id,locations);
-#ifdef DEBUG_HIGH_LEVEL
-                assert(!locations.empty());
-#endif
-                if (locations.size() == 1)
-                {
-                  // We know which one to pick
-                  InstanceInfo *src_info = top->find_physical_instance(ctx_id,locations.back());
-#ifdef DEBUG_HIGH_LEVEL
-                  assert(src_info != InstanceInfo::get_no_instance());
-#endif
-                  // Issue the copy
-                  precondition = perform_copy_operation(src_info, info, precondition);
-                  // Update the valid instances as well
-                  top->update_valid_instance(ctx_id,info,false/*no write*/);
-                }
-                else
-                {
-                  // Ask the mapper which location to make a copy from
-                  Memory src_mem = Memory::NO_MEMORY;
-                  mapper->select_copy_source(locations, info->location, src_mem);
-#ifdef DEBUG_HIGH_LEVEL
-                  assert(src_mem.exists());
-#endif
-                  InstanceInfo *src_info = top->find_physical_instance(ctx_id,src_mem);
-#ifdef DEBUG_HIGH_LEVEL
-                  assert(src_info != InstanceInfo::get_no_instance());
-#endif
-                  // Issue the copy
-                  precondition = perform_copy_operation(src_info, info, precondition);
-                  // Update the valid instances as well
-                  top->update_valid_instance(ctx_id,info,false/*no write*/); 
-                }
               }
               // Inject the request to register this physical instance
               // starting from the parent region's logical node
+              RegionNode *top = (*region_nodes)[regions[idx].parent];
               wait_on_events.insert(top->register_physical_instance(namer,precondition));
               found = true;
               break;
@@ -2810,7 +2757,16 @@ namespace RegionRuntime {
               if ((it->second.second == ANTI_DEPENDENCE) &&
                   (it->first->get_chosen_instance(it->second.first) == info))
               {
-                true_dependences[idx].insert(it->first->get_termination_event()); 
+#ifdef DEBUG_HIGH_LEVEL
+                if (this == it->first)
+                {
+                  log_region(LEVEL_ERROR,"Illegal dependence between two regions %d and %d "
+                                          "in the same task",this->regions[idx].handle.region.id,
+                              it->first->get_requirement(it->second.second).handle.region.id);
+                  exit(1);
+                }
+#endif
+                add_true_dependence(idx,it->first->get_termination_event());
               }
             }
           }
@@ -2830,8 +2786,17 @@ namespace RegionRuntime {
           // Check to see if they are the same instance, if so, no dependence
           if (it->first->get_chosen_instance(it->second.first) != info)
           {
+#ifdef DEBUG_HIGH_LEVEL
+            if (this == it->first)
+            {
+              log_region(LEVEL_ERROR,"Illegal dependence between two regions %d and %d "
+                                      "in the same task",this->regions[idx].handle.region.id,
+                        it->first->get_requirement(it->second.second).handle.region.id);
+              exit(1);
+            }
+#endif
             // Need a dependence
-            true_dependences[idx].insert(it->first->get_termination_event());
+            add_true_dependence(idx,it->first->get_termination_event());
           }
         }
       }
@@ -2880,6 +2845,28 @@ namespace RegionRuntime {
       assert(idx < physical_instances.size());
 #endif
       return physical_instances[idx];
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::add_true_dependence(unsigned idx, Event wait_on)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx < true_dependences.size());
+#endif
+      true_dependences[idx].insert(wait_on);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::add_unresolved_dependence(unsigned idx, DependenceType t,
+                                                GeneralizedContext *c, unsigned dep_idx)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx < unresolved_dependences.size());
+#endif
+      unresolved_dependences[idx].insert(std::pair<GeneralizedContext*,std::pair<unsigned,DependenceType> >(
+            c, std::pair<unsigned,DependenceType>(dep_idx,t)));
     }
     
     ///////////////////////////////////////////
@@ -2975,7 +2962,6 @@ namespace RegionRuntime {
           switch (dtype)
           {
             case NO_DEPENDENCE:
-            case WRITE_ONLY_NO_DEPENDENCE:
               {
                 // No dependence, move on to the next element
                 it++;
@@ -2983,6 +2969,16 @@ namespace RegionRuntime {
               }
             case TRUE_DEPENDENCE:
               {
+#ifdef DEBUG_HIGH_LEVEL
+                if (dep.ctx == it->first)
+                {
+                  // Can't have dependences on two regions in the same task
+                  log_region(LEVEL_ERROR,"Illegal dependence between logical regions %d and %d "
+                                          "in the same task",dep.get_req().handle.region.id,
+                              it->first->get_requirement(it->second).handle.region.id);
+                  exit(1);
+                }
+#endif
                 // Register the dependence
                 dep.ctx->add_true_dependence(dep.idx, it->first->get_termination_event());
                 // Remove it from the list since we dominate it (moves onto next element)
@@ -3020,13 +3016,22 @@ namespace RegionRuntime {
           switch (dtype)
           {
             case NO_DEPENDENCE:
-            case WRITE_ONLY_NO_DEPENDENCE:
               {
                 // No need to do anything
                 break;
               }
             case TRUE_DEPENDENCE:
               {
+#ifdef DEBUG_HIGH_LEVEL
+                if (dep.ctx == it->first)
+                {
+                  // Can't have dependences on two regions in the same task
+                  log_region(LEVEL_ERROR,"Illegal dependence between logical regions %d and %d "
+                                          "in the same task",dep.get_req().handle.region.id,
+                                it->first->get_requirement(it->second).handle.region.id);
+                  exit(1);
+                }
+#endif
                 dep.ctx->add_true_dependence(dep.idx, it->first->get_termination_event());
                 break;
               }
@@ -3237,6 +3242,15 @@ namespace RegionRuntime {
             region_states[dep.ctx_id].active_users.begin(); it !=
             region_states[dep.ctx_id].active_users.end(); it++)
         {
+#ifdef DEBUG_HIGH_LEVEL
+          if (dep.ctx == it->first)
+          {
+            log_region(LEVEL_ERROR,"Illegal conflict between regions %d and %d "
+                                    "in the same task",dep.get_req().handle.region.id,
+                          it->first->get_requirement(it->second).handle.region.id);
+            exit(1);
+          }
+#endif
           dep.ctx->add_true_dependence(dep.idx,it->first->get_termination_event());
         }
       }
@@ -3311,7 +3325,8 @@ namespace RegionRuntime {
 #endif
         bool written_to = HAS_WRITE(ren.get_req());
         // Now check to see if we have an instance, or whether we have to make one
-        if (ren.needs_initializing)
+        // If it's write only then we don't have to make one
+        if (ren.needs_initializing && !IS_WRITE_ONLY(ren.get_req()))
         {
           // Get the list of valid instances and ask the mapper which one to copy from
           std::vector<Memory> locations;
@@ -3462,24 +3477,30 @@ namespace RegionRuntime {
                         target = create_physical_instance(*mem_it);
                         if (target != InstanceInfo::get_no_instance())
                         {
-                          // Check to see if the size is one, if so no need to invoke mapper
-                          InstanceInfo *src_info; 
-                          if (locations.size() == 1)
+                          // Check to see if this is write-only, if so then there is
+                          // no need to make a copy from anywhere, otherwise make the copy
+                          if (!IS_WRITE_ONLY(ren.get_req()))
                           {
-                            src_info = find_physical_instance(ren.ctx_id,locations.back());
-                          }
-                          else
-                          {
-                            // If we make it we have to pick a place to copy from
-                            Memory src_mem = Memory::NO_MEMORY;
-                            ren.mapper->select_copy_source(locations,*mem_it,src_mem);
+                            // Need to make the copy
+                            // Check to see if there is only one source, if so no need to invoke mapper
+                            InstanceInfo *src_info; 
+                            if (locations.size() == 1)
+                            {
+                              src_info = find_physical_instance(ren.ctx_id,locations.back());
+                            }
+                            else
+                            {
+                              // If we make it we have to pick a place to copy from
+                              Memory src_mem = Memory::NO_MEMORY;
+                              ren.mapper->select_copy_source(locations,*mem_it,src_mem);
 #ifdef DEBUG_HIGH_LEVEL
-                            assert(src_mem.exists());
+                              assert(src_mem.exists());
 #endif
-                            src_info = find_physical_instance(ren.ctx_id,src_mem);
+                              src_info = find_physical_instance(ren.ctx_id,src_mem);
+                            }
+                            // Perform the copy and update the precondition
+                            precondition = perform_copy_operation(src_info, target, precondition);
                           }
-                          // Perform the copy and update the precondition
-                          precondition = perform_copy_operation(src_info, target, precondition);
                           break;
                         }
                       }
@@ -3603,36 +3624,43 @@ namespace RegionRuntime {
 #endif
         region_states[ren.ctx_id].open_state = PART_NOT_OPEN;
         region_states[ren.ctx_id].data_state = DATA_CLEAN; // necessary to find source copies
-        // Find the sources for the instance
-        std::vector<Memory> locations;
-        get_physical_locations(ren.ctx_id,locations);
-#ifdef DEBUG_HIGH_LEVEL
-        assert(!locations.empty()); // There better be source locations
-#endif
-        Memory chosen_src = Memory::NO_MEMORY;
-        if (locations.size() == 1)
+        // Check to see if this is write-only, if so there is no need
+        // to issue the copy
+        if (!IS_WRITE_ONLY(ren.get_req()))
         {
-          chosen_src = locations.front();
-        }
-        else
-        {
-          // Invoke the mapper to chose a source to copy from
-          ren.mapper->select_copy_source(locations, ren.info->location, chosen_src); 
-        }
+          // Not write only so we have to issue the copy
+          // Find the sources for the instance
+          std::vector<Memory> locations;
+          get_physical_locations(ren.ctx_id,locations);
 #ifdef DEBUG_HIGH_LEVEL
-        assert(chosen_src.exists());
+          assert(!locations.empty()); // There better be source locations
 #endif
-        InstanceInfo *src_info = find_physical_instance(ren.ctx_id, chosen_src);
+          Memory chosen_src = Memory::NO_MEMORY;
+          if (locations.size() == 1)
+          {
+            chosen_src = locations.front();
+          }
+          else
+          {
+            // Invoke the mapper to chose a source to copy from
+            ren.mapper->select_copy_source(locations, ren.info->location, chosen_src); 
+          }
 #ifdef DEBUG_HIGH_LEVEL
-        assert(src_info != InstanceInfo::get_no_instance());
+          assert(chosen_src.exists());
 #endif
-        // Register the source instance that we are using
-        ren.ctx->add_source_physical_instance(ren.ctx_id,src_info);
-        // Now perform the copy and update the valid instances
-        Event copy_event = perform_copy_operation(src_info, ren.info, precondition);
+          InstanceInfo *src_info = find_physical_instance(ren.ctx_id, chosen_src);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(src_info != InstanceInfo::get_no_instance());
+#endif
+          // Register the source instance that we are using
+          ren.ctx->add_source_physical_instance(ren.ctx_id,src_info);
+          // Issue the copy operation
+          precondition = perform_copy_operation(src_info, ren.info, precondition);
+        }
+        // Update the valid instances
         update_valid_instance(ren.ctx_id, ren.info, HAS_WRITE(ren.get_req()));
         // Return the event for when the instance will be ready
-        return copy_event;
+        return precondition;
       }
       else
       {
@@ -4308,7 +4336,6 @@ namespace RegionRuntime {
           switch (dtype)
           {
             case NO_DEPENDENCE:
-            case WRITE_ONLY_NO_DEPENDENCE:
               {
                 // No dependence, move on
                 it++;
@@ -4316,6 +4343,15 @@ namespace RegionRuntime {
               }
             case TRUE_DEPENDENCE:
               {
+#ifdef DEBUG_HIGH_LEVEL
+                if (dep.ctx == it->first)
+                {
+                  log_region(LEVEL_ERROR,"Illegal dependence between two regions %d and %d "
+                                          "in the same task", dep.get_req().handle.region.id,
+                                      it->first->get_requirement(it->second).handle.region.id);
+                  exit(1);
+                }
+#endif
                 // Register the true dependence
                 dep.ctx->add_true_dependence(dep.idx, it->first->get_termination_event());
                 // Remove it from the list since we domintate it (moves onto the next element)
@@ -4351,13 +4387,21 @@ namespace RegionRuntime {
           switch (dtype)
           {
             case NO_DEPENDENCE:
-            case WRITE_ONLY_NO_DEPENDENCE:
               {
                 // No need to do anything
                 break;
               }
             case TRUE_DEPENDENCE:
               {
+#ifdef DEBUG_HIGH_LEVEL
+                if (dep.ctx == it->first)
+                {
+                  log_region(LEVEL_ERROR,"Illegal dependence between two regions %d and %d "
+                                          "in the same task", dep.get_req().handle.region.id,
+                                          it->first->get_requirement(it->second).handle.region.id);
+                  exit(1);
+                }
+#endif
                 // Add this to the list of true dependences
                 dep.ctx->add_true_dependence(dep.idx, it->first->get_termination_event());
                 break;
@@ -4673,6 +4717,15 @@ namespace RegionRuntime {
               partition_states[dep.ctx_id].active_users.begin(); it !=
               partition_states[dep.ctx_id].active_users.end(); it++)
         {
+#ifdef DEBUG_HIGH_LEVEL
+          if (dep.ctx == it->first)
+          {
+            log_region(LEVEL_ERROR,"Illegal dependence between two regions %d and %d "
+                                    "in the same task",dep.get_req().handle.region.id,
+                            it->first->get_requirement(it->second).handle.region.id);
+            exit(1);
+          }
+#endif
           dep.ctx->add_true_dependence(dep.idx, it->first->get_termination_event());
         }
       }

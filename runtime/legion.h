@@ -680,10 +680,9 @@ namespace RegionRuntime {
     enum DependenceType {
       NO_DEPENDENCE = 0,
       TRUE_DEPENDENCE = 1,
-      ANTI_DEPENDENCE = 2, // WAR 
+      ANTI_DEPENDENCE = 2, // Write-After-Read or Write-After-Write with Write-Only coherence
       ATOMIC_DEPENDENCE = 3,
       SIMULTANEOUS_DEPENDENCE = 4,
-      WRITE_ONLY_NO_DEPENDENCE = 5, // No dependence on account of write-only
     };
 
 
