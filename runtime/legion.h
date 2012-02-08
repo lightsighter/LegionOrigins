@@ -821,10 +821,10 @@ namespace RegionRuntime {
     protected:
       // functions for updating logical region trees
       void create_region(LogicalRegion handle);
-      void remove_region(LogicalRegion handle);
+      void remove_region(LogicalRegion handle, bool recursive = false);
       void smash_region(LogicalRegion smashed, const std::vector<LogicalRegion> &regions);
       void create_partition(PartitionID pid, LogicalRegion parent, bool disjoint, std::vector<LogicalRegion> &children);
-      void remove_partition(PartitionID pid, LogicalRegion parent);
+      void remove_partition(PartitionID pid, LogicalRegion parent, bool recursive = false);
     private:
       // Utility functions
       void compute_region_trace(std::vector<unsigned> &trace, LogicalRegion parent, LogicalRegion child);
@@ -925,8 +925,9 @@ namespace RegionRuntime {
     private:
       // Track updates to the region tree
       std::set<LogicalRegion> created_regions;
-      std::set<LogicalRegion> delelted_regions;
-      std::set<PartitionNode*> added_partitions;
+      std::set<LogicalRegion> deleted_regions;
+      std::set<PartitionID>   created_partitions;
+      std::set<PartitionID>   deleted_partitions;
     private:
       // This is the lock for this context.  It will be shared with all contexts of sub-tasks that
       // stay on the same node as they all can access the same aliased region-tree.  However, tasks
@@ -1021,6 +1022,9 @@ namespace RegionRuntime {
                   bool add, ContextID ctx);
       ~RegionNode(void);
     protected:
+      void add_partition(PartitionNode *node);
+      void remove_partition(PartitionID pid);
+    protected:
       // Initialize the logical context
       void initialize_logical_context(ContextID ctx);
       // Register the task with the given requirement on the logical region tree
@@ -1031,7 +1035,7 @@ namespace RegionRuntime {
       void close_logical_tree(DependenceDetector &dep, bool register_dependences);
     protected:
       // Initialize the physical context
-      void initialize_physical_context(ContextID ctx, bool top = true);
+      void initialize_physical_context(ContextID ctx);
       // Operations on the physical part of the region tree
       void get_physical_locations(ContextID ctx, std::vector<Memory> &locations);
       // Try to find a valid physical instance in the memory m
@@ -1125,6 +1129,9 @@ namespace RegionRuntime {
                     bool dis, bool add, ContextID ctx);
       ~PartitionNode(void);
     protected:
+      void add_region(RegionNode *child, Color c);
+      void remove_region(LogicalRegion child);
+    protected:
       // Logical operations on partitions 
       void initialize_logical_context(ContextID ctx);
       // Register a logical region dependence
@@ -1170,11 +1177,11 @@ namespace RegionRuntime {
           location(Memory::NO_MEMORY),
           inst(RegionInstance::NO_INST),
           inst_lock(Lock::NO_LOCK),
-          references(0) { }
+          references(0), owner(false) { }
       InstanceInfo(LogicalRegion r, Memory m,
-          RegionInstance i, Event v = Event::NO_EVENT) 
+          RegionInstance i, bool own) 
         : handle(r), location(m), inst(i), 
-          inst_lock(Lock::NO_LOCK), references(0) { }
+          inst_lock(Lock::NO_LOCK), references(0), owner(own) { }
       ~InstanceInfo(void);
     protected:
       friend class TaskContext;
@@ -1202,6 +1209,7 @@ namespace RegionRuntime {
     private:
       Lock inst_lock; // For atomic access if necessary
       unsigned references;
+      bool owner;
     };
 
     /////////////////////////////////////////////////////////////

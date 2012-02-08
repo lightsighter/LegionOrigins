@@ -2665,21 +2665,64 @@ namespace RegionRuntime {
     void TaskContext::create_region(LogicalRegion handle)
     //--------------------------------------------------------------------------------------------
     {
-
+#ifdef DEBUG_HIGH_LEVEL
+      assert(region_nodes->find(handle) == region_nodes->end());
+#endif
+      // Create a new RegionNode for the logical region
+      RegionNode *node = new RegionNode(handle, 0/*depth*/, NULL/*parent*/, true/*add*/,ctx_id);
+      // Add it to the map of nodes
+      (*region_nodes)[handle] = node;
     }
 
     //--------------------------------------------------------------------------------------------
-    void TaskContext::remove_region(LogicalRegion handle)
+    void TaskContext::remove_region(LogicalRegion handle, bool recursive)
     //--------------------------------------------------------------------------------------------
     {
-
+      std::map<LogicalRegion,RegionNode*>::iterator find_it = region_nodes->find(handle);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(find_it != region_nodes->end());
+#endif
+      // Recursively remove the partitions from the tree
+      for (std::map<PartitionID,PartitionNode*>::const_iterator par_it =
+            find_it->second->partitions.begin(); par_it != find_it->second->partitions.end(); par_it++)
+      {
+        remove_partition(par_it->first, handle, true/*recursive*/);
+      }
+      // If not recursive, delete all the sub nodes
+      // Otherwise deletion will come when parent node is deleted
+      if (!recursive)
+      {
+        // Check to see if this node has a parent partition
+        if (find_it->second->parent != NULL)
+        {
+          find_it->second->parent->remove_region(find_it->first);
+        }
+        // If this is not also a node we made, add it to the list of deleted regions 
+        if (!find_it->second->added)
+        {
+          deleted_regions.insert(find_it->second->handle);
+        }
+        else
+        {
+          // We did add it, so it should be on this list
+          std::set<LogicalRegion>::iterator finder = created_regions.find(handle);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(finder != created_regions.end());
+#endif
+          created_regions.erase(finder);
+        }
+        // Delete the node, this will trigger the deletion of all its children
+        delete find_it->second;
+      }
+      region_nodes->erase(find_it);
     }
 
     //--------------------------------------------------------------------------------------------
     void TaskContext::smash_region(LogicalRegion smashed, const std::vector<LogicalRegion> &regions)
     //--------------------------------------------------------------------------------------------
     {
-
+      // Compute the common ancestor of all the regions in the smash and map the logical      
+      assert(false);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2687,14 +2730,69 @@ namespace RegionRuntime {
                                         bool disjoint, std::vector<LogicalRegion> &children)
     //--------------------------------------------------------------------------------------------
     {
-
+#ifdef DEBUG_HIGH_LEVEL
+      assert(partition_nodes->find(pid) == partition_nodes->end());
+      assert(region_nodes->find(parent) != region_nodes->end());
+#endif
+      RegionNode *parent_node = (*region_nodes)[parent];
+      // Create a new partition node for the logical children
+      PartitionNode *part_node = new PartitionNode(pid, parent_node->depth+1,parent_node,
+                                                    disjoint,true/*added*/,ctx_id);
+      (*partition_nodes)[pid] = part_node;
+      parent_node->add_partition(part_node);
+      // Now add all the children
+      for (unsigned idx = 0; idx < children.size(); idx++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(region_nodes->find(children[idx]) == region_nodes->end());
+#endif
+        RegionNode *child = new RegionNode(children[idx],parent_node->depth+2,part_node,true/*added*/,ctx_id);
+        (*region_nodes)[children[idx]] = child;
+        part_node->add_region(child, idx);
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(created_partitions.find(pid) == created_partitions.end());
+#endif
+      created_partitions.insert(pid);
     }
     
     //--------------------------------------------------------------------------------------------
-    void TaskContext::remove_partition(PartitionID pid, LogicalRegion parent)
+    void TaskContext::remove_partition(PartitionID pid, LogicalRegion parent, bool recursive)
     //--------------------------------------------------------------------------------------------
     {
+      std::map<PartitionID,PartitionNode*>::iterator find_it = partition_nodes->find(pid);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(find_it != partition_nodes->end());
+#endif
+      // Recursively remove the child nodes
+      for (std::map<LogicalRegion,RegionNode*>::const_iterator it = find_it->second->children.begin();
+            it != find_it->second->children.end(); it++)
+      {
+        remove_region(it->first, true/*recursive*/);
+      }
 
+      if (!recursive)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(find_it->second->parent != NULL);
+#endif
+        find_it->second->parent->remove_partition(pid);
+        // If this wasn't a partition we added, add it to the list of deleted partitions
+        if (!find_it->second->added)
+        {
+          deleted_partitions.insert(pid);
+        }
+        else
+        {
+          // We did add it, so it should be on this list to remove
+          std::set<PartitionID>::iterator finder = created_partitions.find(pid);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(finder != created_partitions.end());
+#endif
+          created_partitions.erase(finder);
+        }
+      }
+      partition_nodes->erase(find_it);
     }
     
     //--------------------------------------------------------------------------------------------
@@ -2702,7 +2800,24 @@ namespace RegionRuntime {
                                             LogicalRegion parent, LogicalRegion child)
     //-------------------------------------------------------------------------------------------- 
     {
-
+      trace.push_back(child.id);
+      if (parent == child) return; // Early out
+#ifdef DEBUG_HIGH_LEVEL
+      assert(region_nodes->find(parent) != region_nodes->end());
+      assert(region_nodes->find(child)  != region_nodes->end());
+#endif
+      RegionNode *parent_node = (*region_nodes)[parent];
+      RegionNode *child_node  = (*region_nodes)[child];
+      while (parent_node != child_node)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(parent_node->depth < child_node->depth); // Parent better be shallower than child
+        assert(child_node->parent != NULL);
+#endif
+        trace.push_back(child_node->parent->pid); // Push the partition id onto the trace
+        trace.push_back(child_node->parent->parent->handle.id); // Push the next child node onto the trace
+        child_node = child_node->parent->parent;
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2710,7 +2825,17 @@ namespace RegionRuntime {
                                               LogicalRegion parent, PartitionID part)
     //--------------------------------------------------------------------------------------------
     {
-
+#ifdef DEBUG_HIGH_LEVEL
+      assert(partition_nodes->find(part) != partition_nodes->end());
+#endif
+      // Push the partition's id onto the trace and then call compute trace
+      // on the partition's parent region
+      trace.push_back(part);
+      PartitionNode *node = (*partition_nodes)[part];
+#ifdef DEBUG_HIGH_LEVEL
+      assert(node->parent != NULL);
+#endif
+      compute_region_trace(trace,parent,node->parent->handle);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2878,20 +3003,58 @@ namespace RegionRuntime {
       : handle(h), depth(dep), parent(par), added(add)
     //--------------------------------------------------------------------------------------------
     {
-      region_states.reserve(ctx); 
+      // Make sure there are at least this many contexts
+      initialize_logical_context(ctx);
     }
 
     //--------------------------------------------------------------------------------------------
     RegionNode::~RegionNode(void)
     //--------------------------------------------------------------------------------------------
     {
-      
+      // Reclaim all the physical instances that we own
+      for (std::set<InstanceInfo*>::const_iterator it = all_instances.begin();
+            it != all_instances.end(); it++)
+      {
+        delete *it;
+      }
+
+      // Also delete any child partitions 
+      for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
+            it != partitions.end(); it++)
+      {
+        delete it->second;
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::add_partition(PartitionNode *node)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(partitions.find(node->pid) == partitions.end());
+#endif
+      partitions[node->pid] = node;
     }
     
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::remove_partition(PartitionID pid)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(partitions.find(pid) != partitions.end());
+#endif
+      partitions.erase(pid);
+    }
+
     //--------------------------------------------------------------------------------------------
     void RegionNode::initialize_logical_context(ContextID ctx)
     //--------------------------------------------------------------------------------------------
     {
+      // Check to make sure we have enough contexts
+      if (region_states.size() <= ctx)
+      {
+        region_states.resize(ctx+1);
+      }
       region_states[ctx].logical_state = PART_NOT_OPEN;
       region_states[ctx].open_logical.clear();
       region_states[ctx].active_users.clear();
@@ -3259,13 +3422,13 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void RegionNode::initialize_physical_context(ContextID ctx, bool top /*= true*/)
+    void RegionNode::initialize_physical_context(ContextID ctx)
     //--------------------------------------------------------------------------------------------
     {
       // Check to see if we have the size
       if (region_states.size() <= ctx)
       {
-        region_states.resize(ctx);
+        region_states.resize(ctx+1);
       }
       region_states[ctx].open_physical.clear();
       region_states[ctx].valid_instances.clear();
@@ -3811,8 +3974,8 @@ namespace RegionRuntime {
       RegionInstance inst = handle.create_instance_untyped(m); 
       if (inst.exists())
       {
-        // Create a new instance info
-        InstanceInfo *info = new InstanceInfo(this->handle,m,inst);
+        // Create a new instance info, only the owner of this reference if this node is the original 
+        InstanceInfo *info = new InstanceInfo(this->handle,m,inst,added/*owner*/);
         // Add this to the list of created instances
         all_instances.insert(info);
         return info;
@@ -4222,14 +4385,11 @@ namespace RegionRuntime {
         return;
       }
       // Otherwise, it's no longer valid and has no references, free it
-      log_inst(LEVEL_INFO,"Freeing instance %d of logical region %d in memory %d",
-                info->inst.id, info->handle.id, info->location.id);
-      info->handle.destroy_instance_untyped(info->inst);
-      // Remove this info from the list of all info
 #ifdef DEBUG_HIGH_LEVEL
       assert(all_instances.find(info) != all_instances.end());
 #endif
       all_instances.erase(info);
+      // Calling the destructor on InstanceInfo will delete the actual intance
       delete info;
     }
 
@@ -4238,13 +4398,75 @@ namespace RegionRuntime {
     ///////////////////////////////////////////
 
     //--------------------------------------------------------------------------------------------
+    PartitionNode::PartitionNode(PartitionID p, unsigned dep, RegionNode *par,
+                                  bool dis, bool add, ContextID ctx)
+      : pid(p), depth(dep), parent(par), disjoint(dis), added(add)
+    //--------------------------------------------------------------------------------------------
+    {
+      initialize_logical_context(ctx);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    PartitionNode::~PartitionNode(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Delete all the children as well
+      for (std::map<LogicalRegion,RegionNode*>::const_iterator it = children.begin();
+            it != children.end(); it++)
+      {
+        delete it->second;
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void PartitionNode::add_region(RegionNode *child, Color c)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(color_map.find(c) == color_map.end());
+      assert(children.find(child->handle) == children.end());
+#endif
+      color_map[c] = child->handle;
+      children[child->handle] = child;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void PartitionNode::remove_region(LogicalRegion child)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(children.find(child) != children.end());
+#endif
+      for (std::map<Color,LogicalRegion>::iterator it = color_map.begin();
+            it != color_map.end(); it++)
+      {
+        if (it->second == child)
+        {
+          color_map.erase(it);
+          break;
+        }
+      }
+      children.erase(child);
+    }
+
+    //--------------------------------------------------------------------------------------------
     void PartitionNode::initialize_logical_context(ContextID ctx)
     //--------------------------------------------------------------------------------------------
     {
+      if (partition_states.size() <= ctx)
+      {
+        partition_states.resize(ctx+1);
+      }
       partition_states[ctx].logical_state = REG_NOT_OPEN;
       partition_states[ctx].logical_states.clear();
       partition_states[ctx].active_users.clear();
       partition_states[ctx].open_logical.clear();
+      // Also initialize any children
+      for (std::map<LogicalRegion,RegionNode*>::const_iterator it = children.begin();
+            it != children.end(); it++)
+      {
+        it->second->initialize_logical_context(ctx);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4739,7 +4961,7 @@ namespace RegionRuntime {
     {
       if (partition_states.size() <= ctx)
       {
-        partition_states.resize(ctx);
+        partition_states.resize(ctx+1);
       }
 
       partition_states[ctx].physical_state = REG_NOT_OPEN;
@@ -4748,7 +4970,7 @@ namespace RegionRuntime {
       for (std::map<LogicalRegion,RegionNode*>::const_iterator it = children.begin();
             it != children.end(); it++)
       {
-        it->second->initialize_physical_context(ctx,false/*top*/);
+        it->second->initialize_physical_context(ctx);
       }
     }
 
@@ -5030,13 +5252,27 @@ namespace RegionRuntime {
     InstanceInfo::~InstanceInfo(void)
     //-------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(references == 0);
-#endif
-      // If we created a lock, then destroy it
-      if (inst_lock.exists())
+      // Only destroy things if this instance is owner
+      if (owner)
       {
-        inst_lock.destroy_lock();
+#ifdef DEBUG_HIGH_LEVEL
+        if (references != 0)
+        {
+          log_inst(LEVEL_ERROR,"Freeing instance %d of logical region %d in memory %d "
+              "before reference count is zero (currently %d).  This probably means your "
+              "program is not properly synchronized.",inst.id, handle.id, location.id, references);
+          exit(1);
+        }
+#endif
+        log_inst(LEVEL_INFO,"Freeing instance %d of logical region %d in memory %d",
+                  inst.id, handle.id, location.id);
+        handle.destroy_instance_untyped(inst);
+
+        // If we created a lock, then destroy it
+        if (inst_lock.exists())
+        {
+          inst_lock.destroy_lock();
+        }
       }
     }
 
