@@ -477,7 +477,7 @@ namespace RegionRuntime {
        */
       Future execute_task(Context ctx, Processor::TaskFuncID task_id,
                           const std::vector<RegionRequirement> &regions,
-                          const void *args, size_t arglen, bool spawn,
+                          const void *args, size_t arglen, 
                           MapperID id = 0, MappingTagID tag = 0);
 
       /**
@@ -499,7 +499,7 @@ namespace RegionRuntime {
                                 const std::vector<Constraint<N> > &index_space,
                                 const std::vector<RegionRequirement> &regions,
                                 const std::vector<ColorizeFunction<N> > &functions,
-                                const void *args, size_t arglen, bool spawn,
+                                const void *args, size_t arglen, 
                                 bool must, MapperID id = 0, MappingTagID tag = 0);
 
     public:
@@ -573,6 +573,7 @@ namespace RegionRuntime {
       // Where the magic happens!
       void process_schedule_request(void); 
       void update_queue(void); 
+      void check_spawn_task(TaskContext *ctx); // set the spawn parameter
       bool target_task(TaskContext *ctx); // Select a target processor, return true if local 
       bool split_task(TaskContext *ctx); // Return true if still local
       void issue_steal_requests(void);
@@ -638,6 +639,8 @@ namespace RegionRuntime {
                                                 MappingTagID tag, std::vector<Memory> &ranking);
 
       virtual bool compact_partition(const Partition &partition, MappingTagID tag);
+
+      virtual bool spawn_child_task(const Task *task);
 
       virtual Processor select_initial_processor(const Task *task);
 
@@ -767,8 +770,9 @@ namespace RegionRuntime {
       virtual const Task*const get_enclosing_task(void) const = 0;
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const = 0;
       virtual void notify(void) = 0;
-      virtual void add_true_dependence(unsigned idx, Event wait_on) = 0;
+      virtual void add_true_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx) = 0;
       virtual void add_unresolved_dependence(unsigned idx, DependenceType type, GeneralizedContext *ctx, unsigned dep_idx) = 0;
+      virtual void add_waiting_dependence(GeneralizedContext *ctx, unsigned idx/*local*/);
     };
 
     /////////////////////////////////////////////////////////////
@@ -791,7 +795,7 @@ namespace RegionRuntime {
     protected:
       void initialize_task(TaskContext *parent, TaskID unique_id, 
                             Processor::TaskFuncID task_id, void *args, size_t arglen,
-                            MapperID map_id, MappingTagID tag, bool stealable);
+                            MapperID map_id, MappingTagID tag);
       template<unsigned N>
       void set_index_space(const std::vector<Constraint<N> > &index_space, bool must);
       void set_regions(const std::vector<RegionRequirement> &regions);
@@ -848,8 +852,9 @@ namespace RegionRuntime {
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
       virtual const Task*const get_enclosing_task(void) const { return this; }
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const;
-      virtual void add_true_dependence(unsigned idx, Event wait_on);
+      virtual void add_true_dependence(unsigned idx, GeneralizedContext *c, unsigned dep_idx);
       virtual void add_unresolved_dependence(unsigned idx, DependenceType t, GeneralizedContext *c, unsigned dep_idx);
+      virtual void add_waiting_dependence(GeneralizedContext *ctx, unsigned idx);
     private:
       HighLevelRuntime *const runtime;
       bool active;
@@ -978,7 +983,7 @@ namespace RegionRuntime {
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
       virtual const Task*const get_enclosing_task(void) const { return ctx; }
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const;
-      virtual void add_true_dependence(unsigned idx, Event wait_on);
+      virtual void add_true_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx);
       virtual void add_unresolved_dependence(unsigned idx, DependenceType t, GeneralizedContext *ctx, unsigned dep_idx);
     public:
       template<AccessorType AT>
@@ -1006,6 +1011,9 @@ namespace RegionRuntime {
         PartState logical_state;
         std::set<PartitionID> open_logical;
         std::list<std::pair<GeneralizedContext*,unsigned/*idx*/> > active_users;
+        // This is for handling the case where we close up a subtree and then have two tasks 
+        // that don't interfere and have to wait on the same close events
+        std::list<std::pair<GeneralizedContext*,unsigned/*idx*/> > closed_users;
         // Physical State
         std::set<PartitionID> open_physical; 
         // All these instances obey info->handle == this->handle

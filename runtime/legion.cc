@@ -469,7 +469,7 @@ namespace RegionRuntime {
         TaskID tid = this->next_task_id;
         this->next_task_id += this->unique_stride;
         desc->initialize_task(NULL/*no parent*/,tid, TASK_ID_REGION_MAIN,malloc(sizeof(Context)),
-                              sizeof(Context), 0, 0, false);
+                              sizeof(Context), 0, 0);
         // Put this task in the ready queue
         ready_queue.push_back(desc);
 
@@ -671,7 +671,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     Future HighLevelRuntime::execute_task(Context ctx, Processor::TaskFuncID task_id,
                                           const std::vector<RegionRequirement> &regions,
-                                          const void *args, size_t arglen, bool spawn,
+                                          const void *args, size_t arglen,
                                           MapperID id, MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
@@ -688,8 +688,10 @@ namespace RegionRuntime {
       // Allocate more space for context
       void *args_prime = malloc(arglen+sizeof(Context));
       memcpy(((char*)args_prime)+sizeof(Context), args, arglen);
-      desc->initialize_task(ctx, unique_id, task_id, args_prime, arglen+sizeof(Context), id, tag, spawn);
+      desc->initialize_task(ctx, unique_id, task_id, args_prime, arglen+sizeof(Context), id, tag);
       desc->set_regions(regions);
+      // Check if we want to spawn this task 
+      check_spawn_task(desc);
       // Don't free memory as the task becomes the owner
 
       // Register the task with the parent (performs dependence analysis)
@@ -719,7 +721,7 @@ namespace RegionRuntime {
                                           const std::vector<Constraint<N> > &index_space,
                                           const std::vector<RegionRequirement> &regions,
                                           const std::vector<ColorizeFunction<N> > &functions,
-                                          const void *args, size_t arglen, bool spawn,
+                                          const void *args, size_t arglen,
                                           bool must, MapperID id, MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
@@ -736,9 +738,11 @@ namespace RegionRuntime {
       // Allocate more space for the context when copying the args
       void *args_prime = malloc(arglen+sizeof(Context));
       memcpy(((char*)args_prime)+sizeof(Context), args, arglen);
-      desc->initialize_task(ctx, unique_id, task_id, args_prime, arglen+sizeof(Context), id, tag, spawn);
+      desc->initialize_task(ctx, unique_id, task_id, args_prime, arglen+sizeof(Context), id, tag);
       desc->set_index_space<N>(index_space, must);
       desc->set_regions(regions, functions);
+      // Check if we want to spawn this task
+      check_spawn_task(desc);
       // Don't free memory as the task becomes the owner
 
       // Register the task with the parent (performs dependence analysis)
@@ -1567,6 +1571,21 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::check_spawn_task(TaskContext *ctx)
+    //--------------------------------------------------------------------------------------------
+    {
+      bool spawn = false;
+      {
+        // Need to acquire the locks for the mapper array and the mapper
+        AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
+        AutoLock mapper_lock(mapper_locks[ctx->map_id]);
+        spawn = mapper_objects[ctx->map_id]->spawn_child_task(ctx);
+      }
+      // Update the value in the context
+      ctx->stealable = spawn;
+    }
+
+    //--------------------------------------------------------------------------------------------
     bool HighLevelRuntime::target_task(TaskContext *task)
     //--------------------------------------------------------------------------------------------
     {
@@ -1753,7 +1772,6 @@ namespace RegionRuntime {
     {
       if (!active)
       {
-
         active = true;
         return true;
       }
@@ -1794,7 +1812,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     void TaskContext::initialize_task(TaskContext *parent, TaskID _unique_id, 
                                       Processor::TaskFuncID _task_id, void *_args, size_t _arglen,
-                                      MapperID _map_id, MappingTagID _tag, bool _stealable)
+                                      MapperID _map_id, MappingTagID _tag)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1808,7 +1826,7 @@ namespace RegionRuntime {
       arglen = _arglen;
       map_id = _map_id;
       tag = _tag;
-      stealable = _stealable;
+      stealable = false;
       stolen = false;
       regions.clear();
       chosen = false;
@@ -2842,7 +2860,26 @@ namespace RegionRuntime {
     void TaskContext::initialize_region_tree_contexts(void)
     //--------------------------------------------------------------------------------------------
     {
-
+#ifdef DEBUG_HIGH_LEVEL
+      assert(regions.size() == physical_ctx.size());
+      assert(regions.size() == physical_instances.size());
+#endif
+      // For each of the parent logical regions initialize their contexts
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(region_nodes->find(regions[idx].handle.region) != region_nodes->end());
+#endif
+        RegionNode *reg = (*region_nodes)[regions[idx].handle.region]; 
+        reg->initialize_logical_context(ctx_id);
+        // Check to see if the physical context needs to be initialized for a new region
+        if (physical_instances[idx] != InstanceInfo::get_no_instance())
+        {
+          // Initialize the physical context with our region
+          reg->initialize_physical_context(ctx_id);
+          reg->update_valid_instance(ctx_id, physical_instances[idx], true/*writer*/);
+        }
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2882,16 +2919,7 @@ namespace RegionRuntime {
               if ((it->second.second == ANTI_DEPENDENCE) &&
                   (it->first->get_chosen_instance(it->second.first) == info))
               {
-#ifdef DEBUG_HIGH_LEVEL
-                if (this == it->first)
-                {
-                  log_region(LEVEL_ERROR,"Illegal dependence between two regions %d and %d "
-                                          "in the same task",this->regions[idx].handle.region.id,
-                              it->first->get_requirement(it->second.second).handle.region.id);
-                  exit(1);
-                }
-#endif
-                add_true_dependence(idx,it->first->get_termination_event());
+                add_true_dependence(idx,it->first,it->second.first);
               }
             }
           }
@@ -2911,17 +2939,8 @@ namespace RegionRuntime {
           // Check to see if they are the same instance, if so, no dependence
           if (it->first->get_chosen_instance(it->second.first) != info)
           {
-#ifdef DEBUG_HIGH_LEVEL
-            if (this == it->first)
-            {
-              log_region(LEVEL_ERROR,"Illegal dependence between two regions %d and %d "
-                                      "in the same task",this->regions[idx].handle.region.id,
-                        it->first->get_requirement(it->second.second).handle.region.id);
-              exit(1);
-            }
-#endif
             // Need a dependence
-            add_true_dependence(idx,it->first->get_termination_event());
+            add_true_dependence(idx,it->first,it->second.first);
           }
         }
       }
@@ -2973,25 +2992,58 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void TaskContext::add_true_dependence(unsigned idx, Event wait_on)
+    void TaskContext::add_true_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
+      if (this == ctx)
+      {
+        log_region(LEVEL_ERROR,"Illegal dependence between two regions %d and %d (with index %d and %d) "
+                                "in task %d with unique id %d",this->regions[idx].handle.region.id,
+                                this->regions[dep_idx].handle.region.id,idx,dep_idx,task_id,unique_id);
+        exit(1);
+      }
       assert(idx < true_dependences.size());
 #endif
-      true_dependences[idx].insert(wait_on);
+      std::pair<std::set<Event>::iterator, bool> result = 
+        true_dependences[idx].insert(ctx->get_termination_event());
+      ctx->add_waiting_dependence(this, dep_idx);
+      // Check to see if it was a new event, if so we have a new notification to wait for
+      if (result.second)
+      {
+        remaining_notifications++;
+      }
     }
 
     //--------------------------------------------------------------------------------------------
     void TaskContext::add_unresolved_dependence(unsigned idx, DependenceType t,
-                                                GeneralizedContext *c, unsigned dep_idx)
+                                                GeneralizedContext *ctx, unsigned dep_idx)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(idx < unresolved_dependences.size());
 #endif
-      unresolved_dependences[idx].insert(std::pair<GeneralizedContext*,std::pair<unsigned,DependenceType> >(
-            c, std::pair<unsigned,DependenceType>(dep_idx,t)));
+      // I hate templates with passion of a nova! why isn't auto here yet!
+      std::pair<std::map<GeneralizedContext*,std::pair<unsigned,DependenceType> >::iterator, bool>
+        result = unresolved_dependences[idx].insert(
+          std::pair<GeneralizedContext*,std::pair<unsigned,DependenceType> >(
+            ctx, std::pair<unsigned,DependenceType>(dep_idx,t)));
+      ctx->add_waiting_dependence(this, dep_idx);
+      // Check to see if it was a new entry, if so we have a new notification to wait for
+      if (result.second)
+      {
+        remaining_notifications++; 
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::add_waiting_dependence(GeneralizedContext *ctx, unsigned idx)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx < map_dependent_tasks.size());
+#endif
+      map_dependent_tasks[idx].insert(ctx);
     }
     
     ///////////////////////////////////////////
@@ -3132,18 +3184,8 @@ namespace RegionRuntime {
               }
             case TRUE_DEPENDENCE:
               {
-#ifdef DEBUG_HIGH_LEVEL
-                if (dep.ctx == it->first)
-                {
-                  // Can't have dependences on two regions in the same task
-                  log_region(LEVEL_ERROR,"Illegal dependence between logical regions %d and %d "
-                                          "in the same task",dep.get_req().handle.region.id,
-                              it->first->get_requirement(it->second).handle.region.id);
-                  exit(1);
-                }
-#endif
                 // Register the dependence
-                dep.ctx->add_true_dependence(dep.idx, it->first->get_termination_event());
+                dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
                 // Remove it from the list since we dominate it (moves onto next element)
                 it = region_states[dep.ctx_id].active_users.erase(it);
                 break;
@@ -3185,17 +3227,7 @@ namespace RegionRuntime {
               }
             case TRUE_DEPENDENCE:
               {
-#ifdef DEBUG_HIGH_LEVEL
-                if (dep.ctx == it->first)
-                {
-                  // Can't have dependences on two regions in the same task
-                  log_region(LEVEL_ERROR,"Illegal dependence between logical regions %d and %d "
-                                          "in the same task",dep.get_req().handle.region.id,
-                                it->first->get_requirement(it->second).handle.region.id);
-                  exit(1);
-                }
-#endif
-                dep.ctx->add_true_dependence(dep.idx, it->first->get_termination_event());
+                dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
                 break;
               }
             case ANTI_DEPENDENCE:
@@ -3405,16 +3437,7 @@ namespace RegionRuntime {
             region_states[dep.ctx_id].active_users.begin(); it !=
             region_states[dep.ctx_id].active_users.end(); it++)
         {
-#ifdef DEBUG_HIGH_LEVEL
-          if (dep.ctx == it->first)
-          {
-            log_region(LEVEL_ERROR,"Illegal conflict between regions %d and %d "
-                                    "in the same task",dep.get_req().handle.region.id,
-                          it->first->get_requirement(it->second).handle.region.id);
-            exit(1);
-          }
-#endif
-          dep.ctx->add_true_dependence(dep.idx,it->first->get_termination_event());
+          dep.ctx->add_true_dependence(dep.idx,it->first,it->second);
         }
       }
       // Clear out our active users
@@ -4565,17 +4588,8 @@ namespace RegionRuntime {
               }
             case TRUE_DEPENDENCE:
               {
-#ifdef DEBUG_HIGH_LEVEL
-                if (dep.ctx == it->first)
-                {
-                  log_region(LEVEL_ERROR,"Illegal dependence between two regions %d and %d "
-                                          "in the same task", dep.get_req().handle.region.id,
-                                      it->first->get_requirement(it->second).handle.region.id);
-                  exit(1);
-                }
-#endif
                 // Register the true dependence
-                dep.ctx->add_true_dependence(dep.idx, it->first->get_termination_event());
+                dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
                 // Remove it from the list since we domintate it (moves onto the next element)
                 it = partition_states[dep.ctx_id].active_users.erase(it);
                 break;
@@ -4615,17 +4629,8 @@ namespace RegionRuntime {
               }
             case TRUE_DEPENDENCE:
               {
-#ifdef DEBUG_HIGH_LEVEL
-                if (dep.ctx == it->first)
-                {
-                  log_region(LEVEL_ERROR,"Illegal dependence between two regions %d and %d "
-                                          "in the same task", dep.get_req().handle.region.id,
-                                          it->first->get_requirement(it->second).handle.region.id);
-                  exit(1);
-                }
-#endif
                 // Add this to the list of true dependences
-                dep.ctx->add_true_dependence(dep.idx, it->first->get_termination_event());
+                dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
                 break;
               }
             case ANTI_DEPENDENCE:
@@ -4939,16 +4944,7 @@ namespace RegionRuntime {
               partition_states[dep.ctx_id].active_users.begin(); it !=
               partition_states[dep.ctx_id].active_users.end(); it++)
         {
-#ifdef DEBUG_HIGH_LEVEL
-          if (dep.ctx == it->first)
-          {
-            log_region(LEVEL_ERROR,"Illegal dependence between two regions %d and %d "
-                                    "in the same task",dep.get_req().handle.region.id,
-                            it->first->get_requirement(it->second).handle.region.id);
-            exit(1);
-          }
-#endif
-          dep.ctx->add_true_dependence(dep.idx, it->first->get_termination_event());
+          dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
         }
       }
       // Clear out the list of active users
