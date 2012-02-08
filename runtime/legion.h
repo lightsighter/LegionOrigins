@@ -1067,39 +1067,6 @@ namespace RegionRuntime {
       // instances in the intermediate levels of the tree as it goes back up to the
       // physical instance's logical region
       void update_valid_instance(ContextID ctx, InstanceInfo *info, bool writer);
-#if 0
-      // Try finding a physical instance in the specified memory. 
-      InstanceInfo* find_physical_instance(ContextID ctx, Memory m);
-      // Try creating a physical instance in the specified memory. 
-      InstanceInfo* create_physical_instance(Memory m);
-      // Register a user of a physical instance.  Give the privilege and coherence
-      // mode.  This will return the event 
-      // for when instance is valid.  Note we also need the mapper here to help in
-      // directing copy operations.  This also updates source_physical_instances
-      // with InstanceInfo that we've used in performing our copies.
-      Event register_user(RegionRenamer &renamer, bool below = false);
-      // Release a user of a physical instance after a task is finished
-      // User can either be a TaskContext or a RegionMappingImpl
-      template<typename T>
-      void release_user(InstanceInfo *info, T *user);
-    private:
-      // Update the local instances, return event for when instance is ready
-      Event update_local_instances(RegionRenamer &renamer);
-      // Select copy source and perform copy
-      Event select_and_copy(RegionRenamer &renamer);
-      // Close up any lower physical instances to this physical instance
-      // Return the event corresponding to when this instance is available
-      Event close_physical_subtree(RegionRenamer &renamer, Event precond);
-      // Try to garbage collect a physical instance
-      void garbage_collect(InstanceInfo *info, ContextID ctx, bool maybe_on_list = true);
-    private:
-      // Utility functions
-      void compute_wait_events(InstanceInfo *src, RegionRenamer &renamer,
-          std::set<Event> &wait_on_events, const RegionRequirement &req,
-          const RegionRequirement &req2, Event termination_event);
-      // Perform a copy between two instances
-      Event perform_copy(InstanceInfo *src, RegionRenamer &renamer);
-#endif
     private:
       const LogicalRegion handle;
       const unsigned depth;
