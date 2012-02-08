@@ -3110,6 +3110,7 @@ namespace RegionRuntime {
       region_states[ctx].logical_state = PART_NOT_OPEN;
       region_states[ctx].open_logical.clear();
       region_states[ctx].active_users.clear();
+      region_states[ctx].closed_users.clear();
 
       for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
             it != partitions.end(); it++)
@@ -3129,44 +3130,7 @@ namespace RegionRuntime {
       // Check to see if we have arrived at the logical region we are looking for
       if (dep.trace.size() == 1) 
       {
-        // We've arrived at the region we were targetting
-        // First check to see if there are any open partitions below us that we need to close
-        switch (region_states[dep.ctx_id].logical_state)
-        {
-          case PART_NOT_OPEN:
-            {
-#ifdef DEBUG_HIGH_LEVEL
-              assert(region_states[dep.ctx_id].open_logical.empty());
-#endif
-              // No need to do anything here
-              break;
-            }
-          case PART_EXCLUSIVE:
-            {
-#ifdef DEBUG_HIGH_LEVEL
-              assert(region_states[dep.ctx_id].open_logical.size() == 1);
-#endif
-              partitions[*(region_states[dep.ctx_id].open_logical.begin())]
-                ->close_logical_tree(dep,true/*register dependences*/);
-              region_states[dep.ctx_id].open_logical.clear();
-              region_states[dep.ctx_id].logical_state = PART_NOT_OPEN;
-              break;
-            }
-          case PART_READ_ONLY:
-            {
-              for (std::set<PartitionID>::const_iterator it = region_states[dep.ctx_id].open_logical.begin();
-                    it != region_states[dep.ctx_id].open_logical.end(); it++)
-              {
-                partitions[*it]->close_logical_tree(dep,false/*register dependence*/);
-              }
-              region_states[dep.ctx_id].open_logical.clear();
-              region_states[dep.ctx_id].logical_state = PART_NOT_OPEN;
-              break;
-            }
-          default:
-            assert(false);
-        }
-        // Now iterate over the set of active users of this logical region and determine
+        // Iterate over the set of active users of this logical region and determine
         // any dependences we have on them.  If we find one that is a true dependence we
         // can remove it from the list since we dominate it
         for (std::list<std::pair<GeneralizedContext*,unsigned> >::iterator it = 
@@ -3204,9 +3168,68 @@ namespace RegionRuntime {
               assert(false);
           }
         }
-        // Finally add ourselves to the list of active users
+        // Add ourselves to the list of active users
         region_states[dep.ctx_id].active_users.push_back(
             std::pair<GeneralizedContext*,unsigned>(dep.ctx,dep.idx));
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!region_states[dep.ctx_id].active_users.empty()); // Better not be empty
+#endif
+        // Check to see if we dominated all previous tasks, if not add closed users to the
+        // list of true dependences, otherwise we did dominate and we can clear the list of
+        // closed instances
+        if (region_states[dep.ctx_id].active_users.size() == 1)
+        {
+          region_states[dep.ctx_id].closed_users.clear();
+        }
+        else
+        {
+          for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it = 
+                region_states[dep.ctx_id].closed_users.begin(); it !=
+                region_states[dep.ctx_id].closed_users.end(); it++)
+          {
+            dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
+          }
+        }
+
+        // We've arrived at the region we were targetting
+        // First check to see if there are any open partitions below us that we need to close
+        switch (region_states[dep.ctx_id].logical_state)
+        {
+          case PART_NOT_OPEN:
+            {
+#ifdef DEBUG_HIGH_LEVEL
+              assert(region_states[dep.ctx_id].open_logical.empty());
+#endif
+              // No need to do anything here
+              break;
+            }
+          case PART_EXCLUSIVE:
+            {
+#ifdef DEBUG_HIGH_LEVEL
+              assert(region_states[dep.ctx_id].open_logical.size() == 1);
+#endif
+              partitions[*(region_states[dep.ctx_id].open_logical.begin())]
+                ->close_logical_tree(dep,true/*register dependences*/,
+                                      region_states[dep.ctx_id].closed_users);
+              region_states[dep.ctx_id].open_logical.clear();
+              region_states[dep.ctx_id].logical_state = PART_NOT_OPEN;
+              break;
+            }
+          case PART_READ_ONLY:
+            {
+              for (std::set<PartitionID>::const_iterator it = region_states[dep.ctx_id].open_logical.begin();
+                    it != region_states[dep.ctx_id].open_logical.end(); it++)
+              {
+                partitions[*it]->close_logical_tree(dep,false/*register dependence*/,
+                                                    region_states[dep.ctx_id].closed_users);
+              }
+              region_states[dep.ctx_id].open_logical.clear();
+              region_states[dep.ctx_id].logical_state = PART_NOT_OPEN;
+              break;
+            }
+          default:
+            assert(false);
+        }
       }
       else
       {
@@ -3240,6 +3263,12 @@ namespace RegionRuntime {
             default:
               assert(false); // Should never make it here
           }
+        }
+        // Also need to register any closed users as true dependences
+        for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it =
+              region_states[dep.ctx_id].closed_users.begin(); it != region_states[dep.ctx_id].closed_users.end(); it++)
+        {
+          dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
         }
         // Now check to see if the partition we want to traverse is open in the write mode
         switch (region_states[dep.ctx_id].logical_state)
@@ -3278,7 +3307,8 @@ namespace RegionRuntime {
               {
                 // This is a partition than we want, close it up and open the one we want
                 PartitionID other = *(region_states[dep.ctx_id].open_logical.begin());
-                partitions[other]->close_logical_tree(dep,true/*register dependences*/);
+                partitions[other]->close_logical_tree(dep,true/*register dependences*/,
+                                                      region_states[dep.ctx_id].closed_users);
                 partitions[pid]->open_logical_tree(dep);
                 // Update our state to match
                 region_states[dep.ctx_id].open_logical.clear();
@@ -3325,7 +3355,8 @@ namespace RegionRuntime {
                   else
                   {
                     // close this partition (no need to register dependences since read only)
-                    partitions[*it]->close_logical_tree(dep,false/*register dependences*/);
+                    partitions[*it]->close_logical_tree(dep,false/*register dependences*/,
+                                                        region_states[dep.ctx_id].closed_users);
                   }
                 }
                 // Update our state and then continue the traversal
@@ -3358,6 +3389,7 @@ namespace RegionRuntime {
       assert(dep.trace.back() == handle.id);
       assert(region_states[dep.ctx_id].logical_state == PART_NOT_OPEN);
       assert(region_states[dep.ctx_id].active_users.empty());
+      assert(region_states[dep.ctx_id].closed_users.empty());
       assert(region_states[dep.ctx_id].open_logical.empty());
 #endif
       // check to see if we've arrived at the region that we want
@@ -3386,7 +3418,8 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void RegionNode::close_logical_tree(DependenceDetector &dep, bool register_dependences)
+    void RegionNode::close_logical_tree(DependenceDetector &dep, bool register_dependences,
+                                        std::list<std::pair<GeneralizedContext*,unsigned> > &closed)
     //--------------------------------------------------------------------------------------------
     {
       // First check to see if we have any open partitions to close
@@ -3406,7 +3439,7 @@ namespace RegionRuntime {
             for (std::set<PartitionID>::const_iterator it = region_states[dep.ctx_id].open_logical.begin();
                   it != region_states[dep.ctx_id].open_logical.end(); it++)
             {
-              partitions[*it]->close_logical_tree(dep,false/*register dependences*/);
+              partitions[*it]->close_logical_tree(dep,false/*register dependences*/,closed);
             }
             region_states[dep.ctx_id].open_logical.clear();
             region_states[dep.ctx_id].logical_state = PART_NOT_OPEN;
@@ -3420,7 +3453,7 @@ namespace RegionRuntime {
             // Note: that the converse is not true
 #endif
             partitions[*(region_states[dep.ctx_id].open_logical.begin())]
-              ->close_logical_tree(dep,true/*register dependences*/);
+              ->close_logical_tree(dep,true/*register dependences*/,closed);
             region_states[dep.ctx_id].open_logical.clear();
             region_states[dep.ctx_id].logical_state = PART_NOT_OPEN;
             break;
@@ -3438,10 +3471,16 @@ namespace RegionRuntime {
             region_states[dep.ctx_id].active_users.end(); it++)
         {
           dep.ctx->add_true_dependence(dep.idx,it->first,it->second);
+          // Also put them onto the closed list
+          closed.push_back(*it);
         }
       }
       // Clear out our active users
       region_states[dep.ctx_id].active_users.clear();
+      // We can also clear out the closed users, note that we don't need to worry
+      // about recording dependences on the closed users, because all the active tasks
+      // have dependences on them
+      region_states[dep.ctx_id].closed_users.clear();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4483,6 +4522,7 @@ namespace RegionRuntime {
       partition_states[ctx].logical_state = REG_NOT_OPEN;
       partition_states[ctx].logical_states.clear();
       partition_states[ctx].active_users.clear();
+      partition_states[ctx].closed_users.clear();
       partition_states[ctx].open_logical.clear();
       // Also initialize any children
       for (std::map<LogicalRegion,RegionNode*>::const_iterator it = children.begin();
@@ -4503,76 +4543,7 @@ namespace RegionRuntime {
       // Check to see if we have arrived at the partition that we want
       if (dep.trace.size() == 1)
       {
-        // First check to see if there are any open regions below us that need to be closed up
-        if (disjoint)
-        {
-          // for disjoint close them in the appropriate mode
-          for (std::set<LogicalRegion>::const_iterator it = partition_states[dep.ctx_id].open_logical.begin();
-                it != partition_states[dep.ctx_id].open_logical.end(); it++)
-          {
-            switch (partition_states[dep.ctx_id].logical_states[*it])
-            {
-              case REG_OPEN_READ_ONLY:
-                {
-                  children[*it]->close_logical_tree(dep,false/*register dependences*/);
-                  partition_states[dep.ctx_id].logical_states[*it] = REG_NOT_OPEN;
-                  break;
-                }
-              case REG_OPEN_EXCLUSIVE:
-                {
-                  children[*it]->close_logical_tree(dep,true/*register dependences*/);
-                  partition_states[dep.ctx_id].logical_states[*it] = REG_NOT_OPEN;
-                  break;
-                }
-              default:
-                assert(false); // Can't be not open if on the open list
-            }
-          }
-        }
-        else // aliased
-        {
-          // Check the state of the partition
-          switch (partition_states[dep.ctx_id].logical_state)
-          {
-            case REG_NOT_OPEN:
-              {
-#ifdef DEBUG_HIGH_LEVEL
-                assert(partition_states[dep.ctx_id].open_logical.empty());
-#endif
-                break;
-              }
-            case REG_OPEN_READ_ONLY:
-              {
-#ifdef DEBUG_HIGH_LEVEL
-                assert(!partition_states[dep.ctx_id].open_logical.empty());
-#endif
-                // Iterate over them and close them
-                for (std::set<LogicalRegion>::const_iterator it = partition_states[dep.ctx_id].open_logical.begin();
-                      it != partition_states[dep.ctx_id].open_logical.end(); it++)
-                {
-                  children[*it]->close_logical_tree(dep,false/*register dependences*/);
-                }
-                partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
-                break;
-              }
-            case REG_OPEN_EXCLUSIVE:
-              {
-#ifdef DEBUG_HIGH_LEVEL
-                assert(partition_states[dep.ctx_id].open_logical.size() == 1);
-#endif
-                LogicalRegion handle = *(partition_states[dep.ctx_id].open_logical.begin());
-                children[handle]->close_logical_tree(dep,true/*register dependences*/);
-                partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
-                break;
-              }
-            default:
-              assert(false);
-          }
-        }
-        // Clear the list of open logical regions since none are open now
-        partition_states[dep.ctx_id].open_logical.clear();
-
-        // Now update the set of active tasks
+        // First update the set of active tasks and register dependences
         for (std::list<std::pair<GeneralizedContext*,unsigned> >::iterator it =
               partition_states[dep.ctx_id].active_users.begin(); it !=
               partition_states[dep.ctx_id].active_users.end(); /*nothing*/)
@@ -4608,6 +4579,101 @@ namespace RegionRuntime {
               assert(false);
           }
         }
+        // Add ourselves as an active users
+        partition_states[dep.ctx_id].active_users.push_back(std::pair<GeneralizedContext*,unsigned>(dep.ctx,dep.idx));
+        // Check to see if we have any closed users
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(!partition_states[dep.ctx_id].active_users.empty());
+#endif
+          // If we dominated all prior version, no need to wait on closed users, can clear all closed users
+          if (partition_states[dep.ctx_id].active_users.size() == 1)
+          {
+            partition_states[dep.ctx_id].closed_users.clear();
+          }
+          else
+          {
+            for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it = 
+                  partition_states[dep.ctx_id].closed_users.begin(); it !=
+                  partition_states[dep.ctx_id].closed_users.end(); it++)
+            {
+              dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
+            }
+          }
+        }
+
+        // Now check to see if there are any open regions below us that need to be closed up
+        if (disjoint)
+        {
+          // for disjoint close them in the appropriate mode
+          for (std::set<LogicalRegion>::const_iterator it = partition_states[dep.ctx_id].open_logical.begin();
+                it != partition_states[dep.ctx_id].open_logical.end(); it++)
+          {
+            switch (partition_states[dep.ctx_id].logical_states[*it])
+            {
+              case REG_OPEN_READ_ONLY:
+                {
+                  children[*it]->close_logical_tree(dep,false/*register dependences*/,
+                                                    partition_states[dep.ctx_id].closed_users);
+                  partition_states[dep.ctx_id].logical_states[*it] = REG_NOT_OPEN;
+                  break;
+                }
+              case REG_OPEN_EXCLUSIVE:
+                {
+                  children[*it]->close_logical_tree(dep,true/*register dependences*/,
+                                                    partition_states[dep.ctx_id].closed_users);
+                  partition_states[dep.ctx_id].logical_states[*it] = REG_NOT_OPEN;
+                  break;
+                }
+              default:
+                assert(false); // Can't be not open if on the open list
+            }
+          }
+        }
+        else // aliased
+        {
+          // Check the state of the partition
+          switch (partition_states[dep.ctx_id].logical_state)
+          {
+            case REG_NOT_OPEN:
+              {
+#ifdef DEBUG_HIGH_LEVEL
+                assert(partition_states[dep.ctx_id].open_logical.empty());
+#endif
+                break;
+              }
+            case REG_OPEN_READ_ONLY:
+              {
+#ifdef DEBUG_HIGH_LEVEL
+                assert(!partition_states[dep.ctx_id].open_logical.empty());
+#endif
+                // Iterate over them and close them
+                for (std::set<LogicalRegion>::const_iterator it = partition_states[dep.ctx_id].open_logical.begin();
+                      it != partition_states[dep.ctx_id].open_logical.end(); it++)
+                {
+                  children[*it]->close_logical_tree(dep,false/*register dependences*/,
+                                                    partition_states[dep.ctx_id].closed_users);
+                }
+                partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
+                break;
+              }
+            case REG_OPEN_EXCLUSIVE:
+              {
+#ifdef DEBUG_HIGH_LEVEL
+                assert(partition_states[dep.ctx_id].open_logical.size() == 1);
+#endif
+                LogicalRegion handle = *(partition_states[dep.ctx_id].open_logical.begin());
+                children[handle]->close_logical_tree(dep,true/*register dependences*/,
+                                                      partition_states[dep.ctx_id].closed_users);
+                partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
+                break;
+              }
+            default:
+              assert(false);
+          }
+        }
+        // Clear the list of open logical regions since none are open now
+        partition_states[dep.ctx_id].open_logical.clear();
       }
       else
       {
@@ -4645,6 +4711,17 @@ namespace RegionRuntime {
               assert(false);
           }
         }
+
+        // Check to see if we have any closed users to wait for
+        {
+          for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it = 
+                partition_states[dep.ctx_id].closed_users.begin(); it !=
+                partition_states[dep.ctx_id].closed_users.end(); it++)
+          {
+            dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
+          }
+        }
+
         // Now check for the state of the logical regions
         // We have different algorithms here for logical or aliased partitions
         if (disjoint)
@@ -4740,7 +4817,8 @@ namespace RegionRuntime {
                     else
                     {
                       // Close it up
-                      children[*it]->close_logical_tree(dep, false/*register dependences*/);
+                      children[*it]->close_logical_tree(dep, false/*register dependences*/,
+                                                        partition_states[dep.ctx_id].closed_users);
                     }
                   }
                   partition_states[dep.ctx_id].open_logical.clear();
@@ -4790,7 +4868,8 @@ namespace RegionRuntime {
                 {
                   // Different, close up the open one and open the one that we want
                   LogicalRegion other = *(partition_states[dep.ctx_id].open_logical.begin());
-                  children[other]->close_logical_tree(dep,true/*register dependences*/);
+                  children[other]->close_logical_tree(dep,true/*register dependences*/,
+                                                      partition_states[dep.ctx_id].closed_users);
                   partition_states[dep.ctx_id].open_logical.clear();
                   partition_states[dep.ctx_id].open_logical.insert(log);
                   // If the new region is read-only change our state
@@ -4818,6 +4897,8 @@ namespace RegionRuntime {
       assert(!dep.trace.empty());
       assert(dep.trace.back() == pid);
       assert(partition_states[dep.ctx_id].open_logical.empty());
+      assert(partition_states[dep.ctx_id].active_users.empty());
+      assert(partition_states[dep.ctx_id].closed_users.empty());
 #endif
       // Check to see if we have arrived
       if (dep.trace.size() == 1)
@@ -4865,7 +4946,8 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void PartitionNode::close_logical_tree(DependenceDetector &dep, bool register_dependences)
+    void PartitionNode::close_logical_tree(DependenceDetector &dep, bool register_dependences,
+                                           std::list<std::pair<GeneralizedContext*,unsigned> > &closed)
     //--------------------------------------------------------------------------------------------
     {
       // First check to see if we have any open partitions to close
@@ -4879,7 +4961,7 @@ namespace RegionRuntime {
           {
             case REG_OPEN_READ_ONLY:
               {
-                children[*it]->close_logical_tree(dep,false/*register dependences*/);
+                children[*it]->close_logical_tree(dep,false/*register dependences*/,closed);
                 break;
               }
             case REG_OPEN_EXCLUSIVE:
@@ -4887,7 +4969,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
                 assert(register_dependences); // better be registering dependences here
 #endif
-                children[*it]->close_logical_tree(dep,true/*register dependences*/);
+                children[*it]->close_logical_tree(dep,true/*register dependences*/,closed);
                 break;
               }
             default:
@@ -4915,7 +4997,7 @@ namespace RegionRuntime {
               for (std::set<LogicalRegion>::const_iterator it = partition_states[dep.ctx_id].open_logical.begin();
                     it != partition_states[dep.ctx_id].open_logical.end(); it++)
               {
-                children[*it]->close_logical_tree(dep,false/*register dependences*/);
+                children[*it]->close_logical_tree(dep,false/*register dependences*/,closed);
               }
               partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
               break;
@@ -4926,7 +5008,7 @@ namespace RegionRuntime {
               assert(partition_states[dep.ctx_id].open_logical.size() == 1);
 #endif
               LogicalRegion handle = *(partition_states[dep.ctx_id].open_logical.begin());
-              children[handle]->close_logical_tree(dep,true/*register dependences*/);
+              children[handle]->close_logical_tree(dep,true/*register dependences*/,closed);
               break;
             }
           default:
@@ -4945,10 +5027,16 @@ namespace RegionRuntime {
               partition_states[dep.ctx_id].active_users.end(); it++)
         {
           dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
+          // Also put them on the closed list
+          closed.push_back(*it);
         }
       }
       // Clear out the list of active users
       partition_states[dep.ctx_id].active_users.clear();
+      // We can also clear out the closed users, note that we don't need to worry
+      // about recording dependences on the closed users, because all the active tasks
+      // have dependences on them
+      partition_states[dep.ctx_id].closed_users.clear();
     }
 
     //--------------------------------------------------------------------------------------------

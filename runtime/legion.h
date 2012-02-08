@@ -1040,7 +1040,8 @@ namespace RegionRuntime {
       // Open up a logical region tree
       void open_logical_tree(DependenceDetector &dep);
       // Close up a logical region tree
-      void close_logical_tree(DependenceDetector &dep, bool register_dependences);
+      void close_logical_tree(DependenceDetector &dep, bool register_dependences,
+                              std::list<std::pair<GeneralizedContext*,unsigned> > &closed);
     protected:
       // Initialize the physical context
       void initialize_physical_context(ContextID ctx);
@@ -1125,6 +1126,7 @@ namespace RegionRuntime {
         RegState logical_state; // For use with aliased partitions
         std::map<LogicalRegion,RegState> logical_states; // For use with disjoint partitions
         std::list<std::pair<GeneralizedContext*,unsigned/*idx*/> > active_users;
+        std::list<std::pair<GeneralizedContext*,unsigned/*idx*/> > closed_users;
         std::set<LogicalRegion> open_logical;
         // Physical state
         RegState physical_state;
@@ -1147,7 +1149,8 @@ namespace RegionRuntime {
       // Open up a logical region tree
       void open_logical_tree(DependenceDetector &dep);
       // Close up a logical region tree
-      void close_logical_tree(DependenceDetector &dep, bool register_dependences);
+      void close_logical_tree(DependenceDetector &dep, bool register_dependences,
+                              std::list<std::pair<GeneralizedContext*,unsigned> > &closed);
     protected:
       // Physical operations on partitions
       void initialize_physical_context(ContextID ctx);
