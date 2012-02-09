@@ -770,9 +770,11 @@ namespace RegionRuntime {
       virtual const Task*const get_enclosing_task(void) const = 0;
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const = 0;
       virtual void notify(void) = 0;
+      virtual void add_mapping_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx) = 0;
       virtual void add_true_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx) = 0;
       virtual void add_unresolved_dependence(unsigned idx, DependenceType type, GeneralizedContext *ctx, unsigned dep_idx) = 0;
-      virtual void add_waiting_dependence(GeneralizedContext *ctx, unsigned idx/*local*/);
+      virtual bool add_waiting_dependence(GeneralizedContext *ctx, unsigned idx/*local*/) = 0;
+      virtual bool has_true_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx) = 0;
     };
 
     /////////////////////////////////////////////////////////////
@@ -852,9 +854,11 @@ namespace RegionRuntime {
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
       virtual const Task*const get_enclosing_task(void) const { return this; }
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const;
+      virtual void add_mapping_dependence(unsigned idx, GeneralizedContext *c, unsigned dep_idx);
       virtual void add_true_dependence(unsigned idx, GeneralizedContext *c, unsigned dep_idx);
       virtual void add_unresolved_dependence(unsigned idx, DependenceType t, GeneralizedContext *c, unsigned dep_idx);
-      virtual void add_waiting_dependence(GeneralizedContext *ctx, unsigned idx);
+      virtual bool add_waiting_dependence(GeneralizedContext *ctx, unsigned idx);
+      virtual bool has_true_dependence(unsigned idx, GeneralizedContext *c, unsigned dep_idx);
     private:
       HighLevelRuntime *const runtime;
       bool active;
@@ -895,10 +899,8 @@ namespace RegionRuntime {
       UserEvent termination_event;
     private:
       // Dependence information
-      // For each region keep track of the set of events that have to trigger before we can use them
-      // These are all the true dependences.  We put any unresolved dependences in 
-      // the unresolved_dependences vector
-      std::vector<std::set<Event> > true_dependences;
+      // For each of our regions keep track of the tasks on which we have a true dependence
+      std::vector<std::map<GeneralizedContext*,unsigned> > true_dependences;
       // For each of our regions keep track of unresolved dependences on prior tasks.  Remember which task
       // there was a dependence on as well as the index for that region and the dependence type
       std::vector<std::map<GeneralizedContext*,std::pair<unsigned,DependenceType> > > unresolved_dependences;
@@ -906,8 +908,6 @@ namespace RegionRuntime {
       std::vector<std::set<GeneralizedContext*> > map_dependent_tasks; 
       // Keep track of the number of notifications we need to see before the task is mappable
       int remaining_notifications;
-      // The set of events to wait on before this task can be launched
-      std::set<Event> wait_events;
     private:
       std::vector<TaskContext*> child_tasks;
     private:
@@ -983,8 +983,11 @@ namespace RegionRuntime {
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
       virtual const Task*const get_enclosing_task(void) const { return ctx; }
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const;
+      virtual void add_mapping_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx);
       virtual void add_true_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx);
       virtual void add_unresolved_dependence(unsigned idx, DependenceType t, GeneralizedContext *ctx, unsigned dep_idx);
+      virtual bool add_waiting_dependence(GeneralizedContext *ctx, unsigned idx);
+      virtual bool has_true_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx);
     public:
       template<AccessorType AT>
       inline PhysicalRegion<AT> get_physical_region(void);
@@ -1155,17 +1158,21 @@ namespace RegionRuntime {
           location(Memory::NO_MEMORY),
           inst(RegionInstance::NO_INST),
           inst_lock(Lock::NO_LOCK),
-          references(0), owner(false) { }
+          references(0), owner(false),
+          valid_event(Event::NO_EVENT)
+          { }
       InstanceInfo(LogicalRegion r, Memory m,
           RegionInstance i, bool own) 
         : handle(r), location(m), inst(i), 
-          inst_lock(Lock::NO_LOCK), references(0), owner(own) { }
+          inst_lock(Lock::NO_LOCK), references(0), 
+          owner(own), valid_event(Event::NO_EVENT)
+          { }
       ~InstanceInfo(void);
     protected:
       friend class TaskContext;
       friend class RegionMappingImpl;
       friend class RegionNode;
-      friend class PhysicalNode;
+      friend class PartitionNode;
     public:
       static inline InstanceInfo* get_no_instance(void)
       {
@@ -1173,14 +1180,16 @@ namespace RegionRuntime {
         return &no_info;
       }
     protected:
-      inline void add_reference(void) { references++; }
-      inline void remove_reference(void)
-      {
-#ifdef DEBUG_HIGH_LEVEL
-        assert(references > 0);
-#endif
-        references--;
-      }
+      // Add a user of this instance info and return the event
+      // when it can be used
+      Event add_user(GeneralizedContext *ctx, unsigned idx, Event precondition);
+      void  remove_user(GeneralizedContext *ctx, unsigned idx);
+      // Add a copy reference to this instance info and return
+      // the event for when the copy can be made
+      Event add_copy_reference(Event precondition, bool writer);
+      void  remove_copy_reference(void);
+      // Set the valid event
+      void set_valid_event(Event e);
       inline bool has_references(void) const { return (references > 0); }
       Event lock_instance(Event precondition);
       void unlock_instance(Event precondition);
@@ -1188,6 +1197,8 @@ namespace RegionRuntime {
       Lock inst_lock; // For atomic access if necessary
       unsigned references;
       bool owner;
+      std::map<GeneralizedContext*,unsigned> users;
+      Event valid_event;
     };
 
     /////////////////////////////////////////////////////////////

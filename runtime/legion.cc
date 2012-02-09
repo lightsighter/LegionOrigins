@@ -1801,7 +1801,6 @@ namespace RegionRuntime {
       index_space.clear();
       index_point.clear();
       colorize_functions.clear();
-      wait_events.clear();
       true_dependences.clear();
       unresolved_dependences.clear();
       map_dependent_tasks.clear();
@@ -2284,8 +2283,11 @@ namespace RegionRuntime {
               RegionRenamer namer(ctx_id,idx,this,info,mapper,needs_initializing);
               // Compute the trace to the physical instance we want to go to
               compute_region_trace(namer.trace,regions[idx].parent,info->handle);
-              // Compute the precondition for the region
-              Event precondition = Event::merge_events(true_dependences[idx]);
+              
+              // Inject the request to register this physical instance
+              // starting from the parent region's logical node
+              RegionNode *top = (*region_nodes)[regions[idx].parent];
+              Event precondition = top->register_physical_instance(namer,Event::NO_EVENT);
               // Check to see if we need this region in atomic mode
               if (IS_ATOMIC(regions[idx]))
               {
@@ -2294,10 +2296,7 @@ namespace RegionRuntime {
                 // Also issue the unlock operation when the task is done, tee hee :)
                 info->unlock_instance(termination_event);
               }
-              // Inject the request to register this physical instance
-              // starting from the parent region's logical node
-              RegionNode *top = (*region_nodes)[regions[idx].parent];
-              wait_on_events.insert(top->register_physical_instance(namer,precondition));
+              wait_on_events.insert(precondition);
               found = true;
               break;
             }
@@ -2457,7 +2456,7 @@ namespace RegionRuntime {
         for (std::vector<std::pair<InstanceInfo*,ContextID> >::const_iterator it = source_physical_instances.begin();
               it != source_physical_instances.end(); it++)
         {
-          it->first->remove_reference();
+          it->first->remove_copy_reference();
           if (!it->first->has_references())
           {
             RegionNode *node = (*region_nodes)[it->first->handle];
@@ -2992,6 +2991,17 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    void TaskContext::add_mapping_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx)
+    //--------------------------------------------------------------------------------------------
+    {
+      bool new_dep = ctx->add_waiting_dependence(this,dep_idx);
+      if (new_dep)
+      {
+        remaining_notifications++;
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
     void TaskContext::add_true_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx)
     //--------------------------------------------------------------------------------------------
     {
@@ -3004,15 +3014,9 @@ namespace RegionRuntime {
         exit(1);
       }
       assert(idx < true_dependences.size());
+      assert(true_dependences[idx].find(ctx) == true_dependences[idx].end());
 #endif
-      std::pair<std::set<Event>::iterator, bool> result = 
-        true_dependences[idx].insert(ctx->get_termination_event());
-      ctx->add_waiting_dependence(this, dep_idx);
-      // Check to see if it was a new event, if so we have a new notification to wait for
-      if (result.second)
-      {
-        remaining_notifications++;
-      }
+      true_dependences[idx].insert(std::pair<GeneralizedContext*,unsigned>(ctx,dep_idx));
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3023,27 +3027,29 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(idx < unresolved_dependences.size());
 #endif
-      // I hate templates with passion of a nova! why isn't auto here yet!
-      std::pair<std::map<GeneralizedContext*,std::pair<unsigned,DependenceType> >::iterator, bool>
-        result = unresolved_dependences[idx].insert(
-          std::pair<GeneralizedContext*,std::pair<unsigned,DependenceType> >(
+      unresolved_dependences[idx].insert(std::pair<GeneralizedContext*,std::pair<unsigned,DependenceType> >(
             ctx, std::pair<unsigned,DependenceType>(dep_idx,t)));
-      ctx->add_waiting_dependence(this, dep_idx);
-      // Check to see if it was a new entry, if so we have a new notification to wait for
-      if (result.second)
-      {
-        remaining_notifications++; 
-      }
     }
 
     //--------------------------------------------------------------------------------------------
-    void TaskContext::add_waiting_dependence(GeneralizedContext *ctx, unsigned idx)
+    bool TaskContext::add_waiting_dependence(GeneralizedContext *ctx, unsigned idx)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(idx < map_dependent_tasks.size());
 #endif
-      map_dependent_tasks[idx].insert(ctx);
+      std::pair<std::set<GeneralizedContext*>::iterator,bool> result = map_dependent_tasks[idx].insert(ctx);
+      return result.second;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool TaskContext::has_true_dependence(unsigned idx, GeneralizedContext* ctx, unsigned dep_idx)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx < true_dependences.size());
+#endif
+      return (true_dependences[idx].find(ctx) != true_dependences[idx].end());
     }
     
     ///////////////////////////////////////////
@@ -3149,6 +3155,7 @@ namespace RegionRuntime {
             case TRUE_DEPENDENCE:
               {
                 // Register the dependence
+                dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
                 dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
                 // Remove it from the list since we dominate it (moves onto next element)
                 it = region_states[dep.ctx_id].active_users.erase(it);
@@ -3159,6 +3166,7 @@ namespace RegionRuntime {
             case SIMULTANEOUS_DEPENDENCE:
               {
                 // Register the unresolved dependence
+                dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
                 dep.ctx->add_unresolved_dependence(dep.idx, dtype, it->first, it->second);
                 // Move onto the next element
                 it++;
@@ -3175,7 +3183,7 @@ namespace RegionRuntime {
         assert(!region_states[dep.ctx_id].active_users.empty()); // Better not be empty
 #endif
         // Check to see if we dominated all previous tasks, if not add closed users to the
-        // list of true dependences, otherwise we did dominate and we can clear the list of
+        // list of mapping dependences, otherwise we did dominate and we can clear the list of
         // closed instances
         if (region_states[dep.ctx_id].active_users.size() == 1)
         {
@@ -3187,7 +3195,7 @@ namespace RegionRuntime {
                 region_states[dep.ctx_id].closed_users.begin(); it !=
                 region_states[dep.ctx_id].closed_users.end(); it++)
           {
-            dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
+            dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
           }
         }
 
@@ -3250,6 +3258,7 @@ namespace RegionRuntime {
               }
             case TRUE_DEPENDENCE:
               {
+                dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
                 dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
                 break;
               }
@@ -3257,6 +3266,7 @@ namespace RegionRuntime {
             case ATOMIC_DEPENDENCE:
             case SIMULTANEOUS_DEPENDENCE:
               {
+                dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
                 dep.ctx->add_unresolved_dependence(dep.idx, dtype, it->first, it->second);
                 break;
               }
@@ -3268,7 +3278,7 @@ namespace RegionRuntime {
         for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it =
               region_states[dep.ctx_id].closed_users.begin(); it != region_states[dep.ctx_id].closed_users.end(); it++)
         {
-          dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
+          dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
         }
         // Now check to see if the partition we want to traverse is open in the write mode
         switch (region_states[dep.ctx_id].logical_state)
@@ -3464,13 +3474,13 @@ namespace RegionRuntime {
       // Now register any dependences we might have
       if (register_dependences)
       {
-        // Everything here is a true dependence since we will be copying from these
+        // Everything here is a mapping dependence since we will be copying from these
         // regions back into their parent regions
         for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it = 
             region_states[dep.ctx_id].active_users.begin(); it !=
             region_states[dep.ctx_id].active_users.end(); it++)
         {
-          dep.ctx->add_true_dependence(dep.idx,it->first,it->second);
+          dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
           // Also put them onto the closed list
           closed.push_back(*it);
         }
@@ -3551,34 +3561,50 @@ namespace RegionRuntime {
         bool written_to = HAS_WRITE(ren.get_req());
         // Now check to see if we have an instance, or whether we have to make one
         // If it's write only then we don't have to make one
-        if (ren.needs_initializing && !IS_WRITE_ONLY(ren.get_req()))
+        if (ren.needs_initializing)
         {
-          // Get the list of valid instances and ask the mapper which one to copy from
-          std::vector<Memory> locations;
-          get_physical_locations(ren.ctx_id, locations);
-#ifdef DEBUG_HIGH_LEVEL
-          assert(!locations.empty());
-#endif
-          InstanceInfo *src_info = InstanceInfo::get_no_instance();
-          if (locations.size() == 1)
+          if (!IS_WRITE_ONLY(ren.get_req()))
           {
-            // No point in invoking the mapper
-            src_info = find_physical_instance(ren.ctx_id, *(locations.begin()));  
+            // Get the list of valid instances and ask the mapper which one to copy from
+            std::vector<Memory> locations;
+            get_physical_locations(ren.ctx_id, locations);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(!locations.empty());
+#endif
+            InstanceInfo *src_info = InstanceInfo::get_no_instance();
+            if (locations.size() == 1)
+            {
+              // No point in invoking the mapper
+              src_info = find_physical_instance(ren.ctx_id, *(locations.begin()));  
+            }
+            else
+            {
+              Memory chosen_src = Memory::NO_MEMORY;
+              ren.mapper->select_copy_source(locations, ren.info->location, chosen_src);
+#ifdef DEBUG_HIGH_LEVEL
+              assert(chosen_src.exists());
+#endif
+              src_info = find_physical_instance(ren.ctx_id, chosen_src);
+            }
+#ifdef DEBUG_HIGH_LEVEL
+            assert(src_info != InstanceInfo::get_no_instance());
+#endif
+            // Get the condition for waiting on when the copy can be performed from the source
+            precondition = src_info->add_copy_reference(precondition,false/*writer*/);
+            // Record that we used the source instance so we can free it later
+            ren.ctx->add_source_physical_instance(ren.ctx_id,src_info);
+            // Mark that there is no valid instance
+            precondition = ren.info->add_user(ren.ctx, ren.idx, precondition);
+            // Now issue the copy and update the precondition
+            precondition = perform_copy_operation(src_info, ren.info, precondition);
           }
           else
           {
-            Memory chosen_src = Memory::NO_MEMORY;
-            ren.mapper->select_copy_source(locations, ren.info->location, chosen_src);
-#ifdef DEBUG_HIGH_LEVEL
-            assert(chosen_src.exists());
-#endif
-            src_info = find_physical_instance(ren.ctx_id, chosen_src);
+            // Mark that we are using this region
+            precondition = ren.info->add_user(ren.ctx, ren.idx, precondition);
+            // Set that there are no requirements for this to be valid
+            ren.info->set_valid_event(Event::NO_EVENT);
           }
-#ifdef DEBUG_HIGH_LEVEL
-          assert(src_info != InstanceInfo::get_no_instance());
-#endif
-          // Now issue the copy and update the precondition
-          precondition = perform_copy_operation(src_info, ren.info, precondition);
         }
 
         // Check to see if we have any open partitions below, if so close them up
@@ -3591,7 +3617,17 @@ namespace RegionRuntime {
 #endif
               // Close up the open partition
               PartitionID pid = *(region_states[ren.ctx_id].open_physical.begin());
-              precondition = partitions[pid]->close_physical_tree(ren.ctx_id,ren.info,precondition,ren.ctx);
+              // Close it differently if our region is write-only
+              if (!IS_WRITE_ONLY(ren.get_req()))
+              {
+                precondition = partitions[pid]->close_physical_tree(ren.ctx_id,ren.info,precondition,ren.ctx);
+              }
+              else
+              {
+                // This is write-only so there should be no copies to close the tree
+                precondition = partitions[pid]->close_physical_tree(ren.ctx_id,InstanceInfo::get_no_instance(),
+                                                                    precondition, ren.ctx);
+              }
               // Record that we wrote to the instance
               written_to = true;
               break;
@@ -3622,6 +3658,15 @@ namespace RegionRuntime {
         }
         // Now we can update the physical instance
         update_valid_instance(ren.ctx_id, ren.info, written_to);
+        // Also update the valid event for the instance
+        if (!IS_WRITE_ONLY(ren.get_req()))
+        {
+          ren.info->set_valid_event(precondition);
+        }
+        else
+        {
+          ren.info->set_valid_event(Event::NO_EVENT);
+        }
         // Return the value for when the info is ready
         return precondition;
       }
@@ -3723,6 +3768,10 @@ namespace RegionRuntime {
 #endif
                               src_info = find_physical_instance(ren.ctx_id,src_mem);
                             }
+                            // Record that we're using the physical instance as a source
+                            precondition = src_info->add_copy_reference(precondition,false/*writer*/);
+                            // Add it to the list of source physical instances
+                            ren.ctx->add_source_physical_instance(ren.ctx_id,src_info);
                             // Perform the copy and update the precondition
                             precondition = perform_copy_operation(src_info, target, precondition);
                           }
@@ -3736,13 +3785,17 @@ namespace RegionRuntime {
                       exit(1);
                     }
                   }
-                } 
-                // Mark that the target is a source instance info 
+                }
+                // Now that we have our target, register that we're going to use it
+                precondition = target->add_copy_reference(precondition,true/*writer*/);
+                // Add it to the list of copy instances to free once the task starts
                 ren.ctx->add_source_physical_instance(ren.ctx_id,target);
-                // Now that we've got a list of memories to create, issue the close operation
+                // now issue the close operation on the physical instance
                 Event close_event = close_physical_tree(ren.ctx_id, target, precondition,ren.ctx);
                 // Update the valid instances
                 update_valid_instance(ren.ctx_id, target, true/*writer*/);
+                // Update the valid event for the physical instance
+                target->set_valid_event(precondition);
                 // Now that we've closed the other partition, open the one we want
                 region_states[ren.ctx_id].open_physical.clear(); 
                 PartitionID pid = (PartitionID)ren.trace.back();
@@ -3877,10 +3930,20 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           assert(src_info != InstanceInfo::get_no_instance());
 #endif
+          // Get the precondition on using the source physical instance
+          precondition = src_info->add_copy_reference(precondition,false/*writer*/);
           // Register the source instance that we are using
           ren.ctx->add_source_physical_instance(ren.ctx_id,src_info);
+          // Register that we're using the physical instance
+          precondition = ren.info->add_user(ren.ctx, ren.idx, precondition);
           // Issue the copy operation
           precondition = perform_copy_operation(src_info, ren.info, precondition);
+          // Update the valid event for the physical instance
+          ren.info->set_valid_event(precondition);
+        }
+        else
+        {
+          ren.info->add_user(ren.ctx, ren.idx, precondition);
         }
         // Update the valid instances
         update_valid_instance(ren.ctx_id, ren.info, HAS_WRITE(ren.get_req()));
@@ -3921,7 +3984,9 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       // First check the state of our data, if any of it is dirty we need to copy it back
-      if (region_states[ctx].data_state == DATA_DIRTY)
+      // Don't need to copy it back if target is not a valid instance
+      if ((region_states[ctx].data_state == DATA_DIRTY) &&
+          (target != InstanceInfo::get_no_instance()))
       {
         // For each of physical instances, issue a copy back to the target
         std::set<Event> wait_on_events;
@@ -3930,7 +3995,10 @@ namespace RegionRuntime {
         {
           // Mark that we're using the instance in the enclosing task context
           enclosing->add_source_physical_instance(ctx,*it);
-          wait_on_events.insert(perform_copy_operation(*it,target,precondition)); 
+          // Get the event we need to wait on before issuing the copy
+          Event copy_wait = (*it)->add_copy_reference(precondition,false/*writer*/);
+          // Now issue the copy and save the event for when the copy is done
+          wait_on_events.insert(perform_copy_operation(*it,target,copy_wait)); 
         }
         // All these copies need to finish before we can do anything else
         precondition = Event::merge_events(wait_on_events);
@@ -4183,6 +4251,7 @@ namespace RegionRuntime {
             case TRUE_DEPENDENCE:
               {
                 // Register the true dependence
+                dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
                 dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
                 // Remove it from the list since we domintate it (moves onto the next element)
                 it = partition_states[dep.ctx_id].active_users.erase(it);
@@ -4193,6 +4262,7 @@ namespace RegionRuntime {
             case SIMULTANEOUS_DEPENDENCE:
               {
                 // Register the unresolved dependence
+                dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
                 dep.ctx->add_unresolved_dependence(dep.idx, dtype, it->first, it->second);
                 // Move onto the next element
                 it++;
@@ -4220,7 +4290,7 @@ namespace RegionRuntime {
                   partition_states[dep.ctx_id].closed_users.begin(); it !=
                   partition_states[dep.ctx_id].closed_users.end(); it++)
             {
-              dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
+              dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
             }
           }
         }
@@ -4319,6 +4389,7 @@ namespace RegionRuntime {
             case TRUE_DEPENDENCE:
               {
                 // Add this to the list of true dependences
+                dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
                 dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
                 break;
               }
@@ -4327,6 +4398,7 @@ namespace RegionRuntime {
             case SIMULTANEOUS_DEPENDENCE:
               {
                 // Add this to the list of unresolved dependences
+                dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
                 dep.ctx->add_unresolved_dependence(dep.idx, dtype, it->first, it->second);
                 break;
               }
@@ -4341,7 +4413,7 @@ namespace RegionRuntime {
                 partition_states[dep.ctx_id].closed_users.begin(); it !=
                 partition_states[dep.ctx_id].closed_users.end(); it++)
           {
-            dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
+            dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
           }
         }
 
@@ -4643,13 +4715,13 @@ namespace RegionRuntime {
       // Now register any dependences we might have
       if (register_dependences)
       {
-        // Everything here is a true dependence since we will be copying from these regions
+        // Everything here is a mapping dependence since we will be copying from these regions
         // back into their parent regions
         for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it = 
               partition_states[dep.ctx_id].active_users.begin(); it !=
               partition_states[dep.ctx_id].active_users.end(); it++)
         {
-          dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
+          dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
           // Also put them on the closed list
           closed.push_back(*it);
         }
@@ -4863,6 +4935,9 @@ namespace RegionRuntime {
 #endif
                           src_info = parent->find_physical_instance(ren.ctx_id,src_mem);
                         }
+                        // Record that we are using this as a source physical instance for a copy
+                        precondition = src_info->add_copy_reference(precondition,false/*writer*/);
+                        ren.ctx->add_source_physical_instance(ren.ctx_id, src_info);
                         // Issue the copy and update the precondition
                         precondition = perform_copy_operation(src_info, target, precondition);
                         break;
@@ -4880,9 +4955,14 @@ namespace RegionRuntime {
                 }
                 // Update the parent's valid physical intances
                 parent->update_valid_instance(ren.ctx_id, target, true/*writer*/);
+                // Register that we are using this instance
+                precondition = target->add_copy_reference(precondition, true/*writer*/);
+                ren.ctx->add_source_physical_instance(ren.ctx_id, target);
                 // Now issue the close operation to all the open region 
                 precondition = children[log]->close_physical_tree(ren.ctx_id, target,
                                                           precondition, ren.ctx);
+                // Set the valid instance for once the copy up is complete
+                target->set_valid_event(precondition);
                 // Update the state of this partition
                 partition_states[ren.ctx_id].open_physical.clear();
                 partition_states[ren.ctx_id].open_physical.insert(log);
@@ -5002,6 +5082,99 @@ namespace RegionRuntime {
       assert(inst_lock.exists()); // We better have a lock here
 #endif
       return inst_lock.unlock(precondition);
+    }
+
+    //-------------------------------------------------------------------------
+    Event InstanceInfo::add_user(GeneralizedContext *ctx, unsigned idx, Event precondition)
+    //-------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(users.find(ctx) == users.end());
+#endif
+      // Go through all the current users and see if there are any
+      // true dependences between the current users and the new user
+      std::set<Event> wait_on_events;
+      // Add the valid event
+      if (precondition.exists())
+      {
+        wait_on_events.insert(valid_event);
+      }
+      if (precondition.exists())
+      {
+        wait_on_events.insert(precondition);
+      }
+      for (std::map<GeneralizedContext*,unsigned>::const_iterator it = users.begin();
+            it != users.end(); it++)
+      {
+        if (ctx->has_true_dependence(idx, it->first, it->second))
+        {
+          wait_on_events.insert(it->first->get_termination_event());
+        }
+      }
+      // update the references and the users
+      references++;
+      users.insert(std::pair<GeneralizedContext*,unsigned>(ctx,idx));
+      return Event::merge_events(wait_on_events);
+    }
+
+    //-------------------------------------------------------------------------
+    void InstanceInfo::remove_user(GeneralizedContext *ctx, unsigned idx)
+    //-------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(users.find(ctx) != users.end());
+      assert(users[ctx] == idx);
+      assert(references > 0);
+#endif
+      references--;
+      users.erase(ctx);
+    }
+
+    //-------------------------------------------------------------------------
+    Event InstanceInfo::add_copy_reference(Event precondition, bool writer)
+    //-------------------------------------------------------------------------
+    {
+      references++;
+      // Go through all the users and see if they are writing, if so wait
+      // for them to finish
+      std::set<Event> wait_on_events;
+      if (valid_event.exists())
+      {
+        wait_on_events.insert(valid_event);
+      }
+      if (precondition.exists())
+      {
+        wait_on_events.insert(precondition);
+      }
+      for (std::map<GeneralizedContext*,unsigned>::const_iterator it = users.begin();
+            it != users.end(); it++)
+      {
+        // If it's a writer record a dependence on all user task
+        // Otherwise, if it's just a reader, just to see if the user is a writer
+        // in which case we have to wait for the writer to finish
+        if (writer || HAS_WRITE(it->first->get_requirement(it->second)))
+        {
+          wait_on_events.insert(it->first->get_termination_event());
+        }
+      }
+      return Event::merge_events(wait_on_events);
+    }
+
+    //-------------------------------------------------------------------------
+    void InstanceInfo::remove_copy_reference(void)
+    //-------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(references > 0);
+#endif
+      references--;
+    }
+
+    //-------------------------------------------------------------------------
+    void InstanceInfo::set_valid_event(Event e)
+    //-------------------------------------------------------------------------
+    {
+      valid_event = e;
     }
 
     ///////////////////////////////////////////
