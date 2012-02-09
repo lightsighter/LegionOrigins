@@ -116,7 +116,7 @@ namespace RegionRuntime {
     typedef unsigned int Color;
     typedef unsigned int MapperID;
     typedef unsigned int PartitionID;
-    typedef unsigned int TaskID;
+    typedef unsigned int UniqueID;
     typedef unsigned int ColorizeID;
     typedef unsigned int ContextID;
     typedef TaskContext* Context;
@@ -204,7 +204,7 @@ namespace RegionRuntime {
      */
     class Task {
     public:
-      TaskID unique_id; // Unique id for the task in the system
+      UniqueID unique_id; // Unique id for the task in the system
       Processor::TaskFuncID task_id; // Id for the task to perform
       std::vector<RegionRequirement> regions;
       void *args;
@@ -604,7 +604,7 @@ namespace RegionRuntime {
       std::list<RegionMappingImpl*> available_maps;
       // Keep track of how to do partition numbering
       PartitionID next_partition_id; // The next partition id for this instance (unique)
-      TaskID next_task_id; // Give all tasks a unique id for debugging purposes
+      UniqueID next_task_id; // Give all tasks a unique id for debugging purposes
       const unsigned unique_stride; // Stride for ids to guarantee uniqueness
       // Information for stealing
       const unsigned int max_outstanding_steals;
@@ -764,6 +764,7 @@ namespace RegionRuntime {
     public:
       virtual bool is_context(void) const = 0;
       virtual bool is_ready(void) const = 0;
+      virtual UniqueID get_unique_id(void) const = 0;
       virtual Event get_termination_event(void) const = 0;
       virtual void add_source_physical_instance(ContextID ctx, InstanceInfo *info) = 0;
       virtual const RegionRequirement& get_requirement(unsigned idx) const = 0;
@@ -772,9 +773,10 @@ namespace RegionRuntime {
       virtual void notify(void) = 0;
       virtual void add_mapping_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx) = 0;
       virtual void add_true_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx) = 0;
+      virtual void add_true_dependence(unsigned idx, UniqueID uid) = 0;
       virtual void add_unresolved_dependence(unsigned idx, DependenceType type, GeneralizedContext *ctx, unsigned dep_idx) = 0;
       virtual bool add_waiting_dependence(GeneralizedContext *ctx, unsigned idx/*local*/) = 0;
-      virtual bool has_true_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx) = 0;
+      virtual bool has_true_dependence(unsigned idx, UniqueID uid) = 0;
     };
 
     /////////////////////////////////////////////////////////////
@@ -795,7 +797,7 @@ namespace RegionRuntime {
       bool activate(bool new_tree);
       void deactivate(void);
     protected:
-      void initialize_task(TaskContext *parent, TaskID unique_id, 
+      void initialize_task(TaskContext *parent, UniqueID unique_id, 
                             Processor::TaskFuncID task_id, void *args, size_t arglen,
                             MapperID map_id, MappingTagID tag);
       template<unsigned N>
@@ -850,15 +852,17 @@ namespace RegionRuntime {
       virtual bool is_ready(void) const;
       virtual void notify(void);
       virtual void add_source_physical_instance(ContextID ctx, InstanceInfo *src_info);
+      virtual UniqueID get_unique_id(void) const { return unique_id; }
       virtual Event get_termination_event(void) const { return termination_event; }
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
       virtual const Task*const get_enclosing_task(void) const { return this; }
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const;
       virtual void add_mapping_dependence(unsigned idx, GeneralizedContext *c, unsigned dep_idx);
       virtual void add_true_dependence(unsigned idx, GeneralizedContext *c, unsigned dep_idx);
+      virtual void add_true_dependence(unsigned idx, UniqueID uid);
       virtual void add_unresolved_dependence(unsigned idx, DependenceType t, GeneralizedContext *c, unsigned dep_idx);
       virtual bool add_waiting_dependence(GeneralizedContext *ctx, unsigned idx);
-      virtual bool has_true_dependence(unsigned idx, GeneralizedContext *c, unsigned dep_idx);
+      virtual bool has_true_dependence(unsigned idx, UniqueID uid);
     private:
       HighLevelRuntime *const runtime;
       bool active;
@@ -900,10 +904,12 @@ namespace RegionRuntime {
     private:
       // Dependence information
       // For each of our regions keep track of the tasks on which we have a true dependence
-      std::vector<std::map<GeneralizedContext*,unsigned> > true_dependences;
+      std::vector<std::set<UniqueID> > true_dependences;
       // For each of our regions keep track of unresolved dependences on prior tasks.  Remember which task
       // there was a dependence on as well as the index for that region and the dependence type
       std::vector<std::map<GeneralizedContext*,std::pair<unsigned,DependenceType> > > unresolved_dependences;
+      // Keep track of the choices for each of the unresolved dependences, this allows us to do remote mapping
+      std::vector<std::map<UniqueID,std::pair<InstanceInfo*,DependenceType> > > unresolved_choices;
       // The set of tasks waiting on us to notify them when we each region they need is mapped
       std::vector<std::set<GeneralizedContext*> > map_dependent_tasks; 
       // Keep track of the number of notifications we need to see before the task is mappable
@@ -979,15 +985,17 @@ namespace RegionRuntime {
       virtual void notify(void);
       void perform_mapping(void);
       virtual void add_source_physical_instance(ContextID ctx, InstanceInfo *info);
+      virtual UniqueID get_unique_id(void) const;
       virtual Event get_termination_event(void) const;
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
       virtual const Task*const get_enclosing_task(void) const { return ctx; }
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const;
       virtual void add_mapping_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx);
       virtual void add_true_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx);
+      virtual void add_true_dependence(unsigned idx, UniqueID uid);
       virtual void add_unresolved_dependence(unsigned idx, DependenceType t, GeneralizedContext *ctx, unsigned dep_idx);
       virtual bool add_waiting_dependence(GeneralizedContext *ctx, unsigned idx);
-      virtual bool has_true_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx);
+      virtual bool has_true_dependence(unsigned idx, UniqueID uid);
     public:
       template<AccessorType AT>
       inline PhysicalRegion<AT> get_physical_region(void);
@@ -1021,6 +1029,7 @@ namespace RegionRuntime {
         std::set<PartitionID> open_physical; 
         // All these instances obey info->handle == this->handle
         std::set<InstanceInfo*> valid_instances; //valid instances and the events when they are valid
+        std::set<InstanceInfo*> all_instances; // all the instances in this context
         // State of the open partitions
         PartState open_state;
         // TODO: handle the case of different types of reductions
@@ -1053,7 +1062,7 @@ namespace RegionRuntime {
       // Try to find a valid physical instance in the memory m
       InstanceInfo* find_physical_instance(ContextID ctx, Memory m);
       // Create a physical instance in the specified memory
-      InstanceInfo* create_physical_instance(Memory m);
+      InstanceInfo* create_physical_instance(ContextID ctx, Memory m);
       // Register a physical instance with the region tree
       Event register_physical_instance(RegionRenamer &ren, Event precondition); 
       // Open up a physical region tree returning the event corresponding
@@ -1076,7 +1085,6 @@ namespace RegionRuntime {
       PartitionNode *const parent;
       std::map<PartitionID,PartitionNode*> partitions;
       std::vector<RegionState> region_states; // indexed by ctx_id
-      std::set<InstanceInfo*> all_instances; // all physical instances of this node created
       const bool added; // track whether this is a new node
     };
 
@@ -1197,7 +1205,7 @@ namespace RegionRuntime {
       Lock inst_lock; // For atomic access if necessary
       unsigned references;
       bool owner;
-      std::map<GeneralizedContext*,unsigned> users;
+      std::map<UniqueID,std::pair<bool/*writer*/,Event> > users;
       Event valid_event;
     };
 

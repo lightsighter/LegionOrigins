@@ -466,7 +466,7 @@ namespace RegionRuntime {
       {
         log_task(LEVEL_SPEW,"Issuing region main task on processor %d",local_proc.id);
         TaskContext *desc = get_available_context(true);
-        TaskID tid = this->next_task_id;
+        UniqueID tid = this->next_task_id;
         this->next_task_id += this->unique_stride;
         desc->initialize_task(NULL/*no parent*/,tid, TASK_ID_REGION_MAIN,malloc(sizeof(Context)),
                               sizeof(Context), 0, 0);
@@ -677,7 +677,7 @@ namespace RegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_EXECUTE_TASK); 
       // Get a unique id for the task to use
-      TaskID unique_id = next_task_id;
+      UniqueID unique_id = next_task_id;
       next_task_id += unique_stride;
       log_task(LEVEL_DEBUG,"Registering new single task with unique id %d and task id %d with high level runtime on processor %d\n",
                 unique_id, task_id, local_proc.id);
@@ -727,7 +727,7 @@ namespace RegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_EXECUTE_TASK);
       // Get a unique id for the task to use
-      TaskID unique_id = next_task_id;
+      UniqueID unique_id = next_task_id;
       next_task_id += unique_stride;
       log_task(LEVEL_DEBUG,"Registering new index space task with unique id %d and task id %d with high level runtime on processor %d\n",
                 unique_id, task_id, local_proc.id);
@@ -1809,7 +1809,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void TaskContext::initialize_task(TaskContext *parent, TaskID _unique_id, 
+    void TaskContext::initialize_task(TaskContext *parent, UniqueID _unique_id, 
                                       Processor::TaskFuncID _task_id, void *_args, size_t _arglen,
                                       MapperID _map_id, MappingTagID _tag)
     //--------------------------------------------------------------------------------------------
@@ -2262,7 +2262,7 @@ namespace RegionRuntime {
               if (info == InstanceInfo::get_no_instance())
               {
                 // We couldn't find a pre-existing instance, try to make one
-                info = handle->create_physical_instance(*it);
+                info = handle->create_physical_instance(physical_ctx[idx],*it);
                 if (info == InstanceInfo::get_no_instance())
                 {
                   // Couldn't make it, try the next location
@@ -2886,18 +2886,19 @@ namespace RegionRuntime {
                                                               unsigned idx, bool war_opt)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx < unresolved_choices.size());
+#endif
+      const std::map<UniqueID,std::pair<InstanceInfo*,DependenceType> > &unresolved = unresolved_choices[idx];
       // Go through all the unresolved dependences for this region and see if need to
       // add additional events to wait on before this task can execute
-      const std::map<GeneralizedContext*,std::pair<unsigned,DependenceType> > &unresolved = 
-            unresolved_dependences[idx];
       if (war_opt)
       {
         bool has_war_dependence = false;
-        for (std::map<GeneralizedContext*,std::pair<unsigned,DependenceType> >::const_iterator it =
+        for (std::map<UniqueID,std::pair<InstanceInfo*,DependenceType> >::const_iterator it = 
               unresolved.begin(); it != unresolved.end(); it++)
         {
-          if ((it->second.second == ANTI_DEPENDENCE) &&
-              (it->first->get_chosen_instance(it->second.first) == info))
+          if ((it->second.second == ANTI_DEPENDENCE) && (it->second.first == info))
           {
             has_war_dependence = true;
             break;
@@ -2908,17 +2909,15 @@ namespace RegionRuntime {
         {
           // Try making a new instance in the same memory, otherwise add the dependences
           RegionNode *node = (*region_nodes)[info->handle];
-          InstanceInfo *new_inst = node->create_physical_instance(info->location);
+          InstanceInfo *new_inst = node->create_physical_instance(physical_ctx[idx],info->location);
           if (new_inst == InstanceInfo::get_no_instance())
           {
-            // Didn't work, add all the anti dependences to the list of events to wait for
-            for (std::map<GeneralizedContext*,std::pair<unsigned,DependenceType> >::const_iterator it =
+            for (std::map<UniqueID,std::pair<InstanceInfo*,DependenceType> >::const_iterator it =
                   unresolved.begin(); it != unresolved.end(); it++)
             {
-              if ((it->second.second == ANTI_DEPENDENCE) &&
-                  (it->first->get_chosen_instance(it->second.first) == info))
+              if ((it->second.second == ANTI_DEPENDENCE) && (it->second.first == info))
               {
-                add_true_dependence(idx,it->first,it->second.first);
+                add_true_dependence(idx,it->first);
               }
             }
           }
@@ -2929,17 +2928,29 @@ namespace RegionRuntime {
           }
         }
       }
+      else
+      {
+        // All war dependences are true dependences
+        for (std::map<UniqueID,std::pair<InstanceInfo*,DependenceType> >::const_iterator it =
+              unresolved.begin(); it != unresolved.end(); it++)
+        {
+          if ((it->second.second == ANTI_DEPENDENCE) && (it->second.first == info))
+          {
+            add_true_dependence(idx,it->first);
+          }
+        }
+      }
       // Now check for any simultaneous or atomic dependences
-      for (std::map<GeneralizedContext*,std::pair<unsigned,DependenceType> >::const_iterator it =
+      for (std::map<UniqueID,std::pair<InstanceInfo*,DependenceType> >::const_iterator it = 
             unresolved.begin(); it != unresolved.end(); it++)
       {
         if ((it->second.second == ATOMIC_DEPENDENCE) || (it->second.second == SIMULTANEOUS_DEPENDENCE))
         {
-          // Check to see if they are the same instance, if so, no dependence
-          if (it->first->get_chosen_instance(it->second.first) != info)
+          // Check to see if they are the different, if so there is a dependence
+          if (it->second.first != info)
           {
             // Need a dependence
-            add_true_dependence(idx,it->first,it->second.first);
+            add_true_dependence(idx, it->first);
           }
         }
       }
@@ -2961,6 +2972,28 @@ namespace RegionRuntime {
       assert(remaining_notifications > 0);
 #endif
       remaining_notifications--;
+      // If remaining notifications are now zero, we are mappable and can get the choices
+      // for each of our unresolved dependences
+      if (remaining_notifications == 0)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(unresolved_dependences.size() == regions.size());
+#endif
+        unresolved_choices.resize(unresolved_dependences.size());
+        for (unsigned idx = 0; idx < unresolved_dependences.size(); idx++)
+        {
+          std::map<GeneralizedContext*,std::pair<unsigned,DependenceType> > &unresolved = 
+            unresolved_dependences[idx]; 
+          for (std::map<GeneralizedContext*,std::pair<unsigned,DependenceType> >::const_iterator it =
+                unresolved.begin(); it != unresolved.end(); it++)
+          {
+            InstanceInfo *choice_info = it->first->get_chosen_instance(it->second.first); 
+            // Put it into our list of unresolved dependence choices
+            unresolved_choices[idx].insert(std::pair<UniqueID,std::pair<InstanceInfo*,DependenceType> >(
+              it->first->get_unique_id(),std::pair<InstanceInfo*,DependenceType>(choice_info,it->second.second)));
+          }
+        }
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3014,9 +3047,23 @@ namespace RegionRuntime {
         exit(1);
       }
       assert(idx < true_dependences.size());
-      assert(true_dependences[idx].find(ctx) == true_dependences[idx].end());
 #endif
-      true_dependences[idx].insert(std::pair<GeneralizedContext*,unsigned>(ctx,dep_idx));
+      true_dependences[idx].insert(ctx->get_unique_id());
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::add_true_dependence(unsigned idx, UniqueID uid)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      if (this->get_unique_id() == uid)
+      {
+        log_region(LEVEL_ERROR,"Illegal dependence between two regions in the same task!");
+        exit(1);
+      }
+      assert(idx < true_dependences.size());
+#endif
+      true_dependences[idx].insert(uid);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3043,13 +3090,13 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    bool TaskContext::has_true_dependence(unsigned idx, GeneralizedContext* ctx, unsigned dep_idx)
+    bool TaskContext::has_true_dependence(unsigned idx, UniqueID uid)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(idx < true_dependences.size());
 #endif
-      return (true_dependences[idx].find(ctx) != true_dependences[idx].end());
+      return (true_dependences[idx].find(uid) != true_dependences[idx].end());
     }
     
     ///////////////////////////////////////////
@@ -3069,11 +3116,14 @@ namespace RegionRuntime {
     RegionNode::~RegionNode(void)
     //--------------------------------------------------------------------------------------------
     {
-      // Reclaim all the physical instances that we own
-      for (std::set<InstanceInfo*>::const_iterator it = all_instances.begin();
-            it != all_instances.end(); it++)
+      // Reclaim all the physical instances that we 
+      for (unsigned idx = 0; idx < region_states.size(); idx++)
       {
-        delete *it;
+        for (std::set<InstanceInfo*>::const_iterator it = region_states[idx].all_instances.begin();
+              it != region_states[idx].all_instances.end(); it++)
+        {
+          delete *it;
+        }
       }
 
       // Also delete any child partitions 
@@ -3741,7 +3791,7 @@ namespace RegionRuntime {
                       else
                       {
                         // Try to make it
-                        target = create_physical_instance(*mem_it);
+                        target = create_physical_instance(ren.ctx_id,*mem_it);
                         if (target != InstanceInfo::get_no_instance())
                         {
                           // Check to see if this is write-only, if so then there is
@@ -4094,7 +4144,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    InstanceInfo* RegionNode::create_physical_instance(Memory m)
+    InstanceInfo* RegionNode::create_physical_instance(ContextID ctx, Memory m)
     //--------------------------------------------------------------------------------------------
     {
       // Try to make the physical instance in the specified memory
@@ -4104,7 +4154,7 @@ namespace RegionRuntime {
         // Create a new instance info, only the owner of this reference if this node is the original 
         InstanceInfo *info = new InstanceInfo(this->handle,m,inst,added/*owner*/);
         // Add this to the list of created instances
-        all_instances.insert(info);
+        region_states[ctx].all_instances.insert(info);
         return info;
       }
       // We couldn't make it in the memory return the no instance
@@ -4136,9 +4186,9 @@ namespace RegionRuntime {
       }
       // Otherwise, it's no longer valid and has no references, free it
 #ifdef DEBUG_HIGH_LEVEL
-      assert(all_instances.find(info) != all_instances.end());
+      assert(region_states[ctx].all_instances.find(info) != region_states[ctx].all_instances.end());
 #endif
-      all_instances.erase(info);
+      region_states[ctx].all_instances.erase(info);
       // Calling the destructor on InstanceInfo will delete the actual intance
       delete info;
     }
@@ -4905,7 +4955,7 @@ namespace RegionRuntime {
                     }
                     else
                     {
-                      target = parent->create_physical_instance(*it);
+                      target = parent->create_physical_instance(ren.ctx_id,*it);
                       if (target != InstanceInfo::get_no_instance())
                       {
                         found = true;
@@ -5079,9 +5129,6 @@ namespace RegionRuntime {
     Event InstanceInfo::add_user(GeneralizedContext *ctx, unsigned idx, Event precondition)
     //-------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(users.find(ctx) == users.end());
-#endif
       // Go through all the current users and see if there are any
       // true dependences between the current users and the new user
       std::set<Event> wait_on_events;
@@ -5094,17 +5141,18 @@ namespace RegionRuntime {
       {
         wait_on_events.insert(precondition);
       }
-      for (std::map<GeneralizedContext*,unsigned>::const_iterator it = users.begin();
+      for (std::map<UniqueID,std::pair<bool,Event> >::const_iterator it = users.begin();
             it != users.end(); it++)
       {
-        if (ctx->has_true_dependence(idx, it->first, it->second))
+        if (ctx->has_true_dependence(idx, it->first))
         {
-          wait_on_events.insert(it->first->get_termination_event());
+          wait_on_events.insert(it->second.second);
         }
       }
       // update the references and the users
       references++;
-      users.insert(std::pair<GeneralizedContext*,unsigned>(ctx,idx));
+      users.insert(std::pair<UniqueID,std::pair<bool,Event> >(ctx->get_unique_id(),
+        std::pair<bool,Event>(HAS_WRITE(ctx->get_requirement(idx)),ctx->get_termination_event())));
       return Event::merge_events(wait_on_events);
     }
 
@@ -5113,12 +5161,11 @@ namespace RegionRuntime {
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(users.find(ctx) != users.end());
-      assert(users[ctx] == idx);
+      assert(users.find(ctx->get_unique_id()) != users.end());
       assert(references > 0);
 #endif
       references--;
-      users.erase(ctx);
+      users.erase(ctx->get_unique_id());
     }
 
     //-------------------------------------------------------------------------
@@ -5137,15 +5184,15 @@ namespace RegionRuntime {
       {
         wait_on_events.insert(precondition);
       }
-      for (std::map<GeneralizedContext*,unsigned>::const_iterator it = users.begin();
+      for (std::map<UniqueID,std::pair<bool,Event> >::const_iterator it = users.begin();
             it != users.end(); it++)
       {
         // If it's a writer record a dependence on all user task
         // Otherwise, if it's just a reader, just to see if the user is a writer
         // in which case we have to wait for the writer to finish
-        if (writer || HAS_WRITE(it->first->get_requirement(it->second)))
+        if (writer || it->second.first)
         {
-          wait_on_events.insert(it->first->get_termination_event());
+          wait_on_events.insert(it->second.second);
         }
       }
       return Event::merge_events(wait_on_events);
