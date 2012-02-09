@@ -3139,9 +3139,10 @@ namespace RegionRuntime {
         // Iterate over the set of active users of this logical region and determine
         // any dependences we have on them.  If we find one that is a true dependence we
         // can remove it from the list since we dominate it
+        unsigned mapping_dependence_count = 0;
         for (std::list<std::pair<GeneralizedContext*,unsigned> >::iterator it = 
               region_states[dep.ctx_id].active_users.begin(); it !=
-              region_states[dep.ctx_id].active_users.end(); /*nothing*/)
+              region_states[dep.ctx_id].active_users.end(); it++)
         {
           DependenceType dtype = check_dependence_type(it->first->get_requirement(it->second),dep.get_req());
           switch (dtype)
@@ -3149,7 +3150,6 @@ namespace RegionRuntime {
             case NO_DEPENDENCE:
               {
                 // No dependence, move on to the next element
-                it++;
                 break;
               }
             case TRUE_DEPENDENCE:
@@ -3157,8 +3157,7 @@ namespace RegionRuntime {
                 // Register the dependence
                 dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
                 dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
-                // Remove it from the list since we dominate it (moves onto next element)
-                it = region_states[dep.ctx_id].active_users.erase(it);
+                mapping_dependence_count++;
                 break;
               }
             case ANTI_DEPENDENCE:
@@ -3168,29 +3167,24 @@ namespace RegionRuntime {
                 // Register the unresolved dependence
                 dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
                 dep.ctx->add_unresolved_dependence(dep.idx, dtype, it->first, it->second);
-                // Move onto the next element
-                it++;
+                mapping_dependence_count++;
                 break;
               }
             default:
               assert(false);
           }
         }
-        // Add ourselves to the list of active users
-        region_states[dep.ctx_id].active_users.push_back(
-            std::pair<GeneralizedContext*,unsigned>(dep.ctx,dep.idx));
-#ifdef DEBUG_HIGH_LEVEL
-        assert(!region_states[dep.ctx_id].active_users.empty()); // Better not be empty
-#endif
-        // Check to see if we dominated all previous tasks, if not add closed users to the
-        // list of mapping dependences, otherwise we did dominate and we can clear the list of
-        // closed instances
-        if (region_states[dep.ctx_id].active_users.size() == 1)
+        // If we dominated all the previous active users, we can move all the active users
+        // to the set of closed users, otherwise we have to register the closed users as
+        // mapping dependences
+        if (mapping_dependence_count == region_states[dep.ctx_id].active_users.size())
         {
-          region_states[dep.ctx_id].closed_users.clear();
+          region_states[dep.ctx_id].closed_users = region_states[dep.ctx_id].active_users;
+          region_states[dep.ctx_id].active_users.clear();
         }
         else
         {
+          // We didn't dominate everyone, add the closed users to our mapping dependence
           for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it = 
                 region_states[dep.ctx_id].closed_users.begin(); it !=
                 region_states[dep.ctx_id].closed_users.end(); it++)
@@ -3198,6 +3192,9 @@ namespace RegionRuntime {
             dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
           }
         }
+        // Add ourselves to the list of active users
+        region_states[dep.ctx_id].active_users.push_back(
+            std::pair<GeneralizedContext*,unsigned>(dep.ctx,dep.idx));
 
         // We've arrived at the region we were targetting
         // First check to see if there are any open partitions below us that we need to close
@@ -3274,7 +3271,7 @@ namespace RegionRuntime {
               assert(false); // Should never make it here
           }
         }
-        // Also need to register any closed users as true dependences
+        // Also need to register any closed users as mapping dependences
         for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it =
               region_states[dep.ctx_id].closed_users.begin(); it != region_states[dep.ctx_id].closed_users.end(); it++)
         {
@@ -4234,10 +4231,11 @@ namespace RegionRuntime {
       // Check to see if we have arrived at the partition that we want
       if (dep.trace.size() == 1)
       {
+        unsigned mapping_dependence_count = 0;
         // First update the set of active tasks and register dependences
         for (std::list<std::pair<GeneralizedContext*,unsigned> >::iterator it =
               partition_states[dep.ctx_id].active_users.begin(); it !=
-              partition_states[dep.ctx_id].active_users.end(); /*nothing*/)
+              partition_states[dep.ctx_id].active_users.end(); it++)
         {
           DependenceType dtype = check_dependence_type(it->first->get_requirement(it->second),dep.get_req());
           switch (dtype)
@@ -4245,7 +4243,6 @@ namespace RegionRuntime {
             case NO_DEPENDENCE:
               {
                 // No dependence, move on
-                it++;
                 break;
               }
             case TRUE_DEPENDENCE:
@@ -4253,8 +4250,7 @@ namespace RegionRuntime {
                 // Register the true dependence
                 dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
                 dep.ctx->add_true_dependence(dep.idx, it->first, it->second);
-                // Remove it from the list since we domintate it (moves onto the next element)
-                it = partition_states[dep.ctx_id].active_users.erase(it);
+                mapping_dependence_count++;
                 break;
               }
             case ANTI_DEPENDENCE:
@@ -4264,36 +4260,31 @@ namespace RegionRuntime {
                 // Register the unresolved dependence
                 dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
                 dep.ctx->add_unresolved_dependence(dep.idx, dtype, it->first, it->second);
-                // Move onto the next element
-                it++;
+                mapping_dependence_count++;
                 break;
               }
             default:
               assert(false);
           }
         }
-        // Add ourselves as an active users
-        partition_states[dep.ctx_id].active_users.push_back(std::pair<GeneralizedContext*,unsigned>(dep.ctx,dep.idx));
-        // Check to see if we have any closed users
+        // if we dominated all the active tasks, move them to the closed set and start a new active set
+        // otherwise we have to register the closed tasks as mapping dependences
+        if (mapping_dependence_count == partition_states[dep.ctx_id].active_users.size())
         {
-#ifdef DEBUG_HIGH_LEVEL
-          assert(!partition_states[dep.ctx_id].active_users.empty());
-#endif
-          // If we dominated all prior version, no need to wait on closed users, can clear all closed users
-          if (partition_states[dep.ctx_id].active_users.size() == 1)
-          {
-            partition_states[dep.ctx_id].closed_users.clear();
-          }
-          else
-          {
-            for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it = 
+          partition_states[dep.ctx_id].closed_users = partition_states[dep.ctx_id].active_users;
+          partition_states[dep.ctx_id].active_users.clear();
+        }
+        else
+        {
+          for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it = 
                   partition_states[dep.ctx_id].closed_users.begin(); it !=
                   partition_states[dep.ctx_id].closed_users.end(); it++)
-            {
-              dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
-            }
-          }
+          {
+            dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second);
+          } 
         }
+        // Add ourselves as an active users
+        partition_states[dep.ctx_id].active_users.push_back(std::pair<GeneralizedContext*,unsigned>(dep.ctx,dep.idx));
 
         // Now check to see if there are any open regions below us that need to be closed up
         if (disjoint)
