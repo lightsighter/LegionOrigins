@@ -69,7 +69,7 @@ struct Partitions {
   ptr_t<CircuitWire> first_wires[MAX_PIECES];
 };
 
-extern RegionRuntime::LowLevel::Logger::Category log_mapper;
+RegionRuntime::Logger::Category log_mapper("mapper");
 
 template <class T>
 static bool sort_by_proc_id(const T& a, const T& b)
@@ -263,7 +263,7 @@ public:
 					     MappingTagID tag,
 					     std::vector<Memory> &ranking)
   {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     //log_mapper("mapper: ranking initial region locations (%zd,%zd,%d)\n",
     //	       elmt_size, num_elmts, tag);
     //Mapper::rank_initial_region_locations(elmt_size, num_elmts, tag, ranking);
@@ -277,7 +277,7 @@ public:
 						MappingTagID tag,
 						std::vector<std::vector<Memory> > &rankings)
   {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     //    log_mapper("mapper: ranking initial partition locations (%zd,%d,%d)\n",
     //	       elmt_size, num_subregions, tag);
     //Mapper::rank_initial_partition_locations(elmt_size, num_subregions,
@@ -292,7 +292,7 @@ public:
   virtual bool compact_partition(const UntypedPartition &partition, 
 				 MappingTagID tag)
   {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     //    log_mapper("mapper: compact partition? (%d)\n",
     //	   tag);
     //return Mapper::compact_partition(partition, tag);
@@ -303,7 +303,7 @@ public:
 
   virtual Processor select_initial_processor(const Task *task)
   {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     //    log_mapper("mapper: select initial processor (%p)\n", task);
 
     switch(task->task_id) {
@@ -353,19 +353,19 @@ public:
 
   virtual Processor target_task_steal(void)
   {
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     //log_mapper("mapper: select target of task steal\n");
     //return Mapper::target_task_steal();
 
     // no stealing allowed
     return Processor::NO_PROC;
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
   }
 
   virtual void permit_task_steal(Processor thief,
 				 const std::vector<const Task*> &tasks,
 				 std::set<const Task*> &to_steal)
   {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     //Mapper::permit_task_steal(thief, tasks, to_steal);
 
     // no stealing - leave 'to_steal' set empty
@@ -391,7 +391,7 @@ public:
 			       Memory &chosen_src,
 			       std::vector<Memory> &dst_ranking)
   {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     log_mapper.info("mapper: mapping region for task (%p,%p) region=%x/%x", task, req, req->handle.id, req->parent.id);
     int idx = -1;
     for(unsigned i = 0; i < task->regions.size(); i++)
@@ -535,7 +535,7 @@ public:
 				 const std::vector<Memory> &current_instances,
 				 std::vector<std::vector<Memory> > &future_ranking)
   {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     log_mapper.info("mapper: ranking copy targets (%p)\n", task);
     Mapper::rank_copy_targets(task, current_instances, future_ranking);
   }
@@ -544,7 +544,7 @@ public:
 				  const std::vector<Memory> &current_instances,
 				  const Memory &dst, Memory &chosen_src)
   {
-    DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     // easy case: if there's only 1 valid choice, pick it
     if(current_instances.size() == 1) {
       chosen_src = *(current_instances.begin());
@@ -633,7 +633,7 @@ namespace Config {
   bool args_read = false;
 };
 
-extern RegionRuntime::LowLevel::Logger::Category log_app;
+RegionRuntime::Logger::Category log_app("app");
 
 template<AccessorType AT>
 void top_level_task(const void *args, size_t arglen, 
@@ -734,7 +734,7 @@ void top_level_task(const void *args, size_t arglen,
   printf("STARTING MAIN SIMULATION LOOP\n");
   struct timespec ts_start, ts_end;
   clock_gettime(CLOCK_MONOTONIC, &ts_start);
-  DetailedTimer::clear_timers();
+  RegionRuntime::DetailedTimer::clear_timers();
 
   // main loop
   for(int i = 0; i < Config::num_loops; i++) {
@@ -819,7 +819,7 @@ void top_level_task(const void *args, size_t arglen,
   double sim_time = ((1.0 * (ts_end.tv_sec - ts_start.tv_sec)) +
 		     (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
   printf("ELAPSED TIME = %7.3f s\n", sim_time);
-  DetailedTimer::report_timers();
+  RegionRuntime::DetailedTimer::report_timers();
 
   log_app.info("all done!");
 }
@@ -1166,7 +1166,7 @@ __global__ void distribute_charge_kernel(ptr_t<CircuitWire>* wire_list,
 
     float dt = 1e-6;
 
-    inst_rn_pvt.template reduce<AccumulateCharge>(w.in_node, -dt * w.current[0]);
+    inst_rn_pvt.reduce<AccumulateCharge>(w.in_node, -dt * w.current[0]);
     //    inst_rn_pvt.template reduce<CircuitNode,AccumulateCharge,float>(w.out_node, dt * w.current[WIRE_SEGMENTS-1]);
   }
 }
