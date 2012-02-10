@@ -898,7 +898,7 @@ void main_task(const void *args, size_t arglen,
                                                tlr->real_cells[1]));
     }
 
-    std::string fileName = "fluid3d_init.bin";
+    std::string fileName = "fluid3d_init.fluid";
 
     unsigned bufsize = BLOCK_SIZE*numBlocks + sizeof(size_t) + fileName.length();
     Serializer ser(bufsize);
@@ -1079,7 +1079,7 @@ void main_task(const void *args, size_t arglen,
                                                tlr->real_cells[1]));
     }
 
-    std::string fileName = "fluid3d_output.bin";
+    std::string fileName = "fluid3d_output.fluid";
 
     unsigned bufsize = BLOCK_SIZE*numBlocks + sizeof(size_t) + fileName.length();
     Serializer ser(bufsize);

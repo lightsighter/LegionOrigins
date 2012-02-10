@@ -1,7 +1,7 @@
 *~
 *.o
 core
-*.bin
+*.fluid
 
 # binaries from runtime/Makefile
 foo

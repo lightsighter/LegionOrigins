@@ -35,6 +35,9 @@ def distance(vec1, vec2):
                      + (vec1['z']-vec2['z'])**2)
 
 def compare(parts1, parts2):
+    if parts1['rest_particles_per_meter'] != parts2['rest_particles_per_meter']:
+        print 'Error: Number of particles differ'
+        return
     if parts1['orig_num_particles'] != parts2['orig_num_particles']:
         print 'Error: Number of particles differ'
         return
