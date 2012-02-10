@@ -41,6 +41,7 @@ enum {
 //#define CELLS_Y 8
 //#define CELLS_Z 8
 #define MAX_PARTICLES 64
+#define GEN_PARTICLES 16
 
 // Number of ghost cells needed for each block
 // 8 for 2D or 26 for 3D
@@ -1127,7 +1128,7 @@ void init_simulation(const void *args, size_t arglen,
         next.x = idx;
         next.y = idy;
         next.z = idz;
-        next.num_particles = (rand() % MAX_PARTICLES);
+        next.num_particles = (rand() % GEN_PARTICLES);
         for (unsigned p = 0; p < next.num_particles; p++) {
           // These are the only three fields we need to initialize
           next.p[p] = Vec3(get_rand_float(),get_rand_float(),get_rand_float());
