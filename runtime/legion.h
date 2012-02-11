@@ -106,6 +106,7 @@ namespace RegionRuntime {
     typedef LowLevel::Machine Machine;
     typedef LowLevel::RegionMetaDataUntyped LogicalRegion;
     typedef LowLevel::RegionInstanceUntyped RegionInstance;
+    typedef LowLevel::RegionAllocatorUntyped RegionAllocator;
     typedef LowLevel::Memory Memory;
     typedef LowLevel::Processor Processor;
     typedef LowLevel::Event Event;
@@ -724,6 +725,7 @@ namespace RegionRuntime {
       std::vector<int> weights; // dim == N == weights.size()
       int offset;
     public:
+      UnsizedConstraint() { }
       UnsizedConstraint(int off) : offset(off) { }
       UnsizedConstraint(int off, const int dim)
         : weights(std::vector<int>(dim)), offset(off) { }
@@ -735,6 +737,9 @@ namespace RegionRuntime {
 #endif
         return weights[x];
       }
+      size_t compute_size(void) const;
+      void pack_constraint(Serializer &rez) const;
+      void unpack_constraint(Deserializer &derez);
     };
 
     /**
@@ -743,14 +748,19 @@ namespace RegionRuntime {
      */
     class UnsizedColorize {
     public:
-      const ColoringType func_type;
+      ColoringType func_type;
       ColorizeID colorize;
       std::map<std::vector<int>,Color> mapping;
     public:
+      UnsizedColorize() { }
       UnsizedColorize(ColoringType t)
         : func_type(t) { }
       UnsizedColorize(ColoringType t, ColorizeID ize)
         : func_type(t), colorize(ize) { }
+    public:
+      size_t compute_size(void) const;
+      void pack_colorize(Serializer &rez) const;
+      void unpack_colorize(Deserializer &derez);
     };
 
     /////////////////////////////////////////////////////////////
@@ -811,6 +821,7 @@ namespace RegionRuntime {
       size_t compute_task_size(void) const;
       void pack_task(Serializer &rez) const;
       void unpack_task(Deserializer &derez);
+      void final_unpack_task(void);
       // Return true if this task still has index parts on this machine
       bool distribute_index_space(std::vector<Mapper::IndexSplit> &chunks);
     protected:
@@ -841,7 +852,7 @@ namespace RegionRuntime {
       void verify_privilege(const RegionRequirement &par_req, const RegionRequirement &child_req,
                       /*for error reporting*/unsigned task = false, unsigned idx = 0, unsigned unique = 0);
       void initialize_region_tree_contexts(void);
-      InstanceInfo* resolve_unresolved_dependences(InstanceInfo *info, unsigned idx, bool war_opt);
+      InstanceInfo* resolve_unresolved_dependences(InstanceInfo *info, ContextID ctx, unsigned idx, bool war_opt);
     protected:
       // functions for getting logical regions
       LogicalRegion get_subregion(PartitionID pid, Color c) const;
@@ -867,6 +878,11 @@ namespace RegionRuntime {
       HighLevelRuntime *const runtime;
       bool active;
       const ContextID ctx_id;
+    protected:
+      // Partial unpack information so we don't have to unpack everything and repack it all the time
+      bool partially_unpacked;
+      void *cached_buffer;
+      size_t cached_size;
     protected:
       // Status information
       bool chosen; // Mapper been invoked
@@ -925,6 +941,10 @@ namespace RegionRuntime {
       // If this is remote, everything is the same and things will get placed back in the right
       // context when it is sent back
       std::vector<ContextID> physical_ctx;
+      // Precondition events for each task, these are for remote tasks where we had to perform
+      // some close operations prior to moving the task's context
+      bool computed_preconditions;
+      std::vector<Event> preconditions;
       // Keep track of source physical instances that we are copying from when creating our physical
       // instances.  We add references to these physical instances when performing a copy from them
       // so we know when they can be deleted
@@ -945,7 +965,8 @@ namespace RegionRuntime {
       // that have no overlap on their region trees will have different locks and can operate in
       // parallel.  Each new task therefore takes its parent task's lock until it gets moved to a
       // remote node in which case, it will get its own lock (separate copy of the region tree).
-      Lock context_lock;
+      const Lock context_lock;
+      Lock       current_lock;
     };
 
     /////////////////////////////////////////////////////////////
@@ -958,14 +979,27 @@ namespace RegionRuntime {
     class RegionMappingImpl : protected GeneralizedContext {
     private:
       HighLevelRuntime *const runtime;
-      TaskContext *ctx;
+      TaskContext *parent_ctx;
+      ContextID parent_physical_ctx;
       RegionRequirement req;
       UserEvent mapped_event;
       Event ready_event;
       UserEvent unmapped_event;
-      InstanceInfo *info;
+      UniqueID unique_id;
+    private:
+      InstanceInfo *chosen_info;
+      RegionAllocator allocator; 
       PhysicalRegion<AccessorGeneric> result;
       bool active;
+    private:
+      std::set<UniqueID> true_dependences;
+      std::map<GeneralizedContext*,std::pair<unsigned,DependenceType> > unresolved_dependences;
+      std::set<GeneralizedContext*> map_dependent_tasks; 
+      int remaining_notifications;
+      std::vector<std::pair<InstanceInfo*,ContextID> > source_physical_instances;
+    private:
+      std::map<LogicalRegion,RegionNode*> *region_nodes;
+      std::map<PartitionID,PartitionNode*> *partition_nodes;
     protected:
       friend class HighLevelRuntime;
       friend class TaskContext;
@@ -977,18 +1011,15 @@ namespace RegionRuntime {
       ~RegionMappingImpl();
       void activate(TaskContext *ctx, const RegionRequirement &req);
       void deactivate(void);
-      void set_instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric> inst);
-      void set_allocator(LowLevel::RegionAllocatorUntyped alloc);
-      void set_mapped(Event ready = Event::NO_EVENT); // Indicate mapping complete
       virtual bool is_context(void) const { return false; }
       virtual bool is_ready(void) const; // Ready to be mapped
       virtual void notify(void);
-      void perform_mapping(void);
+      void perform_mapping(Mapper *m);
       virtual void add_source_physical_instance(ContextID ctx, InstanceInfo *info);
-      virtual UniqueID get_unique_id(void) const;
-      virtual Event get_termination_event(void) const;
+      virtual UniqueID get_unique_id(void) const { return unique_id; }
+      virtual Event get_termination_event(void) const; 
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
-      virtual const Task*const get_enclosing_task(void) const { return ctx; }
+      virtual const Task*const get_enclosing_task(void) const { return parent_ctx; }
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const;
       virtual void add_mapping_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx);
       virtual void add_true_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx);
@@ -996,6 +1027,9 @@ namespace RegionRuntime {
       virtual void add_unresolved_dependence(unsigned idx, DependenceType t, GeneralizedContext *ctx, unsigned dep_idx);
       virtual bool add_waiting_dependence(GeneralizedContext *ctx, unsigned idx);
       virtual bool has_true_dependence(unsigned idx, UniqueID uid);
+    private:
+      InstanceInfo* resolve_unresolved_dependences(InstanceInfo *info, bool war_optimization);
+      void compute_region_trace(std::vector<unsigned> &trace, LogicalRegion parent, LogicalRegion child);
     public:
       template<AccessorType AT>
       inline PhysicalRegion<AT> get_physical_region(void);
@@ -1037,6 +1071,7 @@ namespace RegionRuntime {
       };
     protected:
       friend class TaskContext;
+      friend class RegionMappingImpl;
       friend class PartitionNode;
       RegionNode(LogicalRegion handle, unsigned dep, PartitionNode *parent,
                   bool add, ContextID ctx);
@@ -1112,6 +1147,7 @@ namespace RegionRuntime {
       };
     protected:
       friend class TaskContext;
+      friend class RegionMappingImpl;
       friend class RegionNode;
       PartitionNode(PartitionID pid, unsigned dep, RegionNode *par,
                     bool dis, bool add, ContextID ctx);
@@ -1249,15 +1285,24 @@ namespace RegionRuntime {
       Mapper *const mapper;
       std::vector<unsigned> trace;
       const bool needs_initializing;
+      const bool sanitizing;
     protected:
+      // A region renamer for task contexts
       RegionRenamer(ContextID id, unsigned index, TaskContext *c, 
           InstanceInfo *i, Mapper *m, bool init)
         : ctx_id(id), idx(index), ctx(c), info(i), mapper(m),
-          needs_initializing(init) { }
+          needs_initializing(init), sanitizing(false) { }
+      // A region renamer for mapping implementations
       RegionRenamer(ContextID id, RegionMappingImpl *c,
           InstanceInfo *i, Mapper *m, bool init)
         : ctx_id(id), idx(0), ctx(c), info(i), mapper(m),
-          needs_initializing(init) { }
+          needs_initializing(init), sanitizing(false) { }
+      // A region renamer for sanitizing a physical region tree
+      // so that there are no remote close operations
+      RegionRenamer(ContextID id, unsigned index,
+          TaskContext *c, Mapper *m)
+        : ctx_id(id), idx(index), ctx(c), info(NULL),
+          mapper(m), needs_initializing(false), sanitizing(true) { }
     protected:
       const RegionRequirement& get_req(void) const { return ctx->get_requirement(idx); }
     };
@@ -1266,14 +1311,13 @@ namespace RegionRuntime {
     // Serializer 
     /////////////////////////////////////////////////////////////
     class Serializer {
-    protected:
-      friend class HighLevelRuntime;
-      friend class TaskContext;
+    public:
       Serializer(size_t buffer_size);
       ~Serializer(void);
-    protected:
+    public:
       template<typename T>
       inline void serialize(const T &element);
+      inline void serialize(const void *src, size_t bytes);
       inline const void* get_buffer(void) const { return buffer; }
     private:
       void *const buffer;
@@ -1287,19 +1331,19 @@ namespace RegionRuntime {
     // Deserializer 
     /////////////////////////////////////////////////////////////
     class Deserializer {
-    protected:
+    public:
       friend class HighLevelRuntime;
       friend class TaskContext;
       Deserializer(const void *buffer, size_t buffer_size);
       ~Deserializer(void);
-    protected:
+    public:
       template<typename T>
       inline void deserialize(T &element);
+      inline void deserialize(void *dst, size_t bytes);
+      inline size_t get_remaining_bytes(void) const { return remaining_bytes; }
     private:
       const char *location;
-#ifdef DEBUG_HIGH_LEVEL
       size_t remaining_bytes;
-#endif
     };
 
     /////////////////////////////////////////////////////////////////////////////////
@@ -1651,6 +1695,20 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    inline void Serializer::serialize(const void *src, size_t bytes)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(remaining_bytes >= bytes);
+#endif
+      memcpy(location,src,bytes);
+      location += bytes;
+#ifdef DEBUG_HIGH_LEVEL
+      remaining_bytes -= bytes;
+#endif
+    }
+
+    //--------------------------------------------------------------------------
     Serializer::~Serializer(void)
     //--------------------------------------------------------------------------
     {
@@ -1670,9 +1728,19 @@ namespace RegionRuntime {
 #endif
       element = *((const T*)location);
       location += sizeof(T);
-#ifdef DEBUG_HIGH_LEVEL
       remaining_bytes -= sizeof(T);
+    }
+
+    //--------------------------------------------------------------------------
+    inline void Deserializer::deserialize(void *dst, size_t bytes)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(remaining_bytes >= bytes);
 #endif
+      memcpy(dst,location,bytes);
+      location += bytes;
+      remaining_bytes -= bytes;
     }
 
     //--------------------------------------------------------------------------
