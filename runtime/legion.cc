@@ -180,6 +180,11 @@ namespace RegionRuntime {
       assert(src != InstanceInfo::get_no_instance());
       assert(dst != InstanceInfo::get_no_instance());
 #endif
+      // Check to see if instances are the same, if they are, no copy necessary
+      if (src->inst == dst->inst)
+      {
+        return precondition;
+      }
       // For right now just issue this copy to the low level runtime
       // TODO: put some intelligence in here to detect when we can't make this copy directly
       RegionInstance src_copy = src->inst;
@@ -378,12 +383,7 @@ namespace RegionRuntime {
             source_physical_instances.begin(); it !=
             source_physical_instances.end(); it++)
       {
-        it->first->remove_copy_reference();
-        if (!it->first->has_references())
-        {
-          RegionNode *node = (*region_nodes)[it->first->handle];
-          node->garbage_collect(it->first,it->second);
-        }
+        it->first->remove_copy_user();
       }
       // If we had an allocator release it
       if (allocator != RegionAllocator::NO_ALLOC)
@@ -391,12 +391,7 @@ namespace RegionRuntime {
         allocator.release(); 
       }
       // Relase our use of the physical instance
-      chosen_info->remove_user(this, parent_physical_ctx);
-      if (!chosen_info->has_references())
-      {
-        RegionNode *node = (*region_nodes)[chosen_info->handle];
-        node->garbage_collect(chosen_info,parent_physical_ctx);
-      }
+      chosen_info->remove_user(this->get_unique_id(),true/*release*/);
 
       true_dependences.clear();
       unresolved_dependences.clear();
@@ -439,7 +434,7 @@ namespace RegionRuntime {
     void RegionMappingImpl::perform_mapping(Mapper *mapper)
     //--------------------------------------------------------------------------
     {
-      std::vector<Memory> sources; 
+      std::set<Memory> sources; 
       RegionNode *handle = (*region_nodes)[req.handle.region];
       handle->get_physical_locations(parent_physical_ctx,sources);
       std::vector<Memory> locations;
@@ -457,7 +452,7 @@ namespace RegionRuntime {
           if (chosen_info == InstanceInfo::get_no_instance())
           {
             // We couldn't find a pre-existing instance, try to make one
-            chosen_info = handle->create_physical_instance(parent_physical_ctx,*it);
+            chosen_info = parent_ctx->create_instance_info(req.handle.region,*it);
             if (chosen_info == InstanceInfo::get_no_instance())
             {
               continue;
@@ -466,6 +461,16 @@ namespace RegionRuntime {
             {
               // We made it but it needs to be initialized
               needs_initializing = true;
+            }
+          }
+          else
+          {
+            // Check to make see if they use the same logical region, if not
+            // make a new instance info 
+            if (chosen_info->handle != req.handle.region)
+            {
+              // Make a clone version of the instance info 
+              chosen_info = parent_ctx->create_instance_info(req.handle.region,chosen_info);
             }
           }
 #ifdef DEBUG_HIGH_LEVEL
@@ -652,8 +657,7 @@ namespace RegionRuntime {
         if (has_war_dependence)
         {
           // Try making a new instance in the same memory, otherwise add the dependences
-          RegionNode *node = (*region_nodes)[info->handle];
-          InstanceInfo *new_inst = node->create_physical_instance(parent_physical_ctx,info->location);
+          InstanceInfo *new_inst = parent_ctx->create_instance_info(info->handle,info->location);
           if (new_inst == InstanceInfo::get_no_instance())
           {
             for (std::map<GeneralizedContext*,std::pair<unsigned,DependenceType> >::const_iterator it =
@@ -697,6 +701,11 @@ namespace RegionRuntime {
           if (it->first->get_chosen_instance(it->second.first) != info)
           {
             // Need a dependence
+            add_true_dependence(0,it->first,it->second.first);
+          }
+          else if (it->first->get_chosen_instance(it->second.first) == InstanceInfo::get_no_instance())
+          {
+            // other task picked no instance, assume a dependence
             add_true_dependence(0,it->first,it->second.first);
           }
         }
@@ -745,6 +754,7 @@ namespace RegionRuntime {
       mapper_objects(std::vector<Mapper*>(DEFAULT_MAPPER_SLOTS)), 
       mapper_locks(std::vector<Lock>(DEFAULT_MAPPER_SLOTS)),
       next_partition_id(local_proc.id), next_task_id(local_proc.id),
+      next_instance_id(local_proc.id),
       unique_stride(m->get_all_processors().size()),
       max_outstanding_steals (m->get_all_processors().size()-1)
     //--------------------------------------------------------------------------------------------
@@ -1481,6 +1491,15 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    InstanceID HighLevelRuntime::get_unique_instance_id(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      InstanceID result = next_instance_id;
+      next_instance_id += unique_stride;
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::process_tasks(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
@@ -2102,6 +2121,12 @@ namespace RegionRuntime {
       if (!active)
       {
         active = true;
+        if (new_tree)
+        {
+          region_nodes = new std::map<LogicalRegion,RegionNode*>();
+          partition_nodes = new std::map<PartitionID,PartitionNode*>();
+          instance_infos = new std::map<InstanceID,InstanceInfo*>();
+        }
         return true;
       }
       return false;
@@ -2133,6 +2158,19 @@ namespace RegionRuntime {
         cached_buffer = NULL;
         cached_size = 0;
         partially_unpacked = false;
+      }
+      if (remote)
+      {
+        // We can delete the region trees
+        for (std::vector<RegionRequirement>::const_iterator it = regions.begin();
+              it != regions.end(); it++)
+        {
+          delete (*region_nodes)[it->handle.region];
+        }
+        // We can also delete the maps that we created
+        delete region_nodes;
+        delete partition_nodes;
+        delete instance_infos;
       }
       regions.clear();
       index_space.clear();
@@ -2784,7 +2822,7 @@ namespace RegionRuntime {
           }
 #endif
         }
-        std::vector<Memory> sources;
+        std::set<Memory> sources;
         RegionNode *handle = (*region_nodes)[regions[idx].handle.region];
         handle->get_physical_locations(parent_physical_ctx, sources);
         std::vector<Memory> locations;
@@ -2800,13 +2838,13 @@ namespace RegionRuntime {
           for (std::vector<Memory>::const_iterator it = locations.begin();
                 it != locations.end(); it++)
           {
-            InstanceInfo *info = handle->find_physical_instance(parent_physical_ctx, *it);
+            InstanceInfo *info = handle->find_physical_instance(parent_physical_ctx,*it);
             bool needs_initializing = false;
-            if (info == InstanceInfo::get_no_instance())
+            if (info != InstanceInfo::get_no_instance())
             {
               // We couldn't find a pre-existing instance, try to make one
-              info = handle->create_physical_instance(parent_physical_ctx,*it);
-              if (info == InstanceInfo::get_no_instance())
+              info = create_instance_info(regions[idx].handle.region, *it);
+              if (info != InstanceInfo::get_no_instance())
               {
                 // Couldn't make it, try the next location
                 continue;
@@ -2817,6 +2855,15 @@ namespace RegionRuntime {
                 needs_initializing = true;
               }
             }
+            else
+            {
+              // Check to see if we need a new instance info to match the logical region we want
+              if (info->handle != regions[idx].handle.region)
+              {
+                // Need to make a new instance info for the logical region we want
+                info = create_instance_info(regions[idx].handle.region, info);
+              }
+            }
 #ifdef DEBUG_HIGH_LEVEL
             assert(info != InstanceInfo::get_no_instance());
 #endif
@@ -2824,8 +2871,8 @@ namespace RegionRuntime {
             info = resolve_unresolved_dependences(info, parent_physical_ctx, idx, war_optimization);
             physical_instances.push_back(info);
             RegionRenamer namer(parent_physical_ctx,idx,this,info,mapper,needs_initializing);
-            // Compute the trace to the physical instance we want to go to
-            compute_region_trace(namer.trace,regions[idx].parent,info->handle);
+            // Compute the region trace to the logical region we want
+            compute_region_trace(namer.trace,regions[idx].parent,regions[idx].handle.region);
             
             // Inject the request to register this physical instance
             // starting from the parent region's logical node
@@ -2840,6 +2887,7 @@ namespace RegionRuntime {
               info->unlock_instance(termination_event);
             }
             wait_on_events.insert(precondition);
+            preconditions[idx] = precondition;
             found = true;
             break;
           }
@@ -2858,7 +2906,7 @@ namespace RegionRuntime {
               "for task %d with unique id %d",regions[idx].handle.region.id,idx,
               this->task_id,this->unique_id);
           // Push back a no-instance for this physical instance
-          physical_instances.push_back(InstanceInfo::get_no_instance());
+          physical_instances.push_back(0/*no instance*/);
           // Find the parent region of this region, and use the same context
           if (remote)
           {
@@ -2970,18 +3018,12 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(physical_instances.size() == regions.size());
 #endif
-      // If not remote, we can release all our copy references
-      if (!remote)
+      // Release all our copy references
       {
         for (std::vector<std::pair<InstanceInfo*,ContextID> >::const_iterator it = source_physical_instances.begin();
               it != source_physical_instances.end(); it++)
         {
-          it->first->remove_copy_reference();
-          if (!it->first->has_references())
-          {
-            RegionNode *node = (*region_nodes)[it->first->handle];
-            node->garbage_collect(it->first,it->second); 
-          }
+          it->first->remove_copy_user();
         }
         source_physical_instances.clear();
       }
@@ -3396,7 +3438,7 @@ namespace RegionRuntime {
         {
           // Initialize the physical context with our region
           reg->initialize_physical_context(ctx_id);
-          reg->update_valid_instance(ctx_id, physical_instances[idx], true/*writer*/);
+          reg->region_states[ctx_id].valid_instances.insert(physical_instances[idx]);
         }
       }
     }
@@ -3429,7 +3471,7 @@ namespace RegionRuntime {
         {
           // Try making a new instance in the same memory, otherwise add the dependences
           RegionNode *node = (*region_nodes)[info->handle];
-          InstanceInfo *new_inst = node->create_physical_instance(ctx,info->location);
+          InstanceInfo *new_inst = create_instance_info(info->handle,info->location);
           if (new_inst == InstanceInfo::get_no_instance())
           {
             for (std::map<UniqueID,std::pair<InstanceInfo*,DependenceType> >::const_iterator it =
@@ -3470,6 +3512,11 @@ namespace RegionRuntime {
           if (it->second.first != info)
           {
             // Need a dependence
+            add_true_dependence(idx, it->first);
+          }
+          else if (it->second.first == InstanceInfo::get_no_instance())
+          {
+            // The other task chose a no-region, so assume a true dependence
             add_true_dependence(idx, it->first);
           }
         }
@@ -3636,16 +3683,6 @@ namespace RegionRuntime {
     RegionNode::~RegionNode(void)
     //--------------------------------------------------------------------------------------------
     {
-      // Reclaim all the physical instances that we 
-      for (unsigned idx = 0; idx < region_states.size(); idx++)
-      {
-        for (std::set<InstanceInfo*>::const_iterator it = region_states[idx].all_instances.begin();
-              it != region_states[idx].all_instances.end(); it++)
-        {
-          delete *it;
-        }
-      }
-
       // Also delete any child partitions 
       for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
             it != partitions.end(); it++)
@@ -4082,21 +4119,29 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void RegionNode::get_physical_locations(ContextID ctx, std::vector<Memory> &locations)
+    void RegionNode::get_physical_locations(ContextID ctx, std::set<Memory> &locations, bool recurse)
     //--------------------------------------------------------------------------------------------
     {
-      // Add any physical instances that we have to the list of locations
-      for (std::set<InstanceInfo*>::const_iterator it = region_states[ctx].valid_instances.begin();
-            it != region_states[ctx].valid_instances.end(); it++)
+      // Check to see if we have any exclusive open partitions if we do,
+      // then there are no valid instances.  This is only true for the
+      // initial region we check.
+      if (!recurse && region_states[ctx].open_state == PART_EXCLUSIVE)
       {
-        locations.push_back((*it)->location);
+        return;
+      }
+      // Add any physical instances that we have to the list of locations
+      for (std::set<InstanceInfo*>::const_iterator it = 
+            region_states[ctx].valid_instances.begin(); it !=
+            region_states[ctx].valid_instances.end(); it++)
+      {
+        locations.insert((*it)->location);
       }
       // If we are still clean we can see valid physical instances above us too!
       // Go up the tree looking for any valid physical instances until we get to the top
       if ((region_states[ctx].data_state == DATA_CLEAN) && 
           (parent != NULL))
       {
-        parent->parent->get_physical_locations(ctx,locations);
+        parent->parent->get_physical_locations(ctx,locations,true/*recurse*/);
       }
     }
 
@@ -4125,11 +4170,6 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(ren.trace.size() == 1);
 #endif
-        // Check to see if we are just sanitizing this region tree
-        if (ren.sanitizing)
-        {
-          return precondition; // We've made it, just return
-        }
         bool written_to = HAS_WRITE(ren.get_req());
         // Now check to see if we have an instance, or whether we have to make one
         // If it's write only then we don't have to make one
@@ -4138,8 +4178,8 @@ namespace RegionRuntime {
           if (!IS_WRITE_ONLY(ren.get_req()))
           {
             // Get the list of valid instances and ask the mapper which one to copy from
-            std::vector<Memory> locations;
-            get_physical_locations(ren.ctx_id, locations);
+            std::set<Memory> locations;
+            get_physical_locations(ren.ctx_id, locations, true/*allow up*/); // allow going up since we're doing a copy up
 #ifdef DEBUG_HIGH_LEVEL
             assert(!locations.empty());
 #endif
@@ -4162,11 +4202,11 @@ namespace RegionRuntime {
             assert(src_info != InstanceInfo::get_no_instance());
 #endif
             // Get the condition for waiting on when the copy can be performed from the source
-            precondition = src_info->add_copy_reference(precondition,false/*writer*/);
+            precondition = src_info->add_copy_user(precondition,false/*writer*/);
             // Record that we used the source instance so we can free it later
             ren.ctx->add_source_physical_instance(ren.ctx_id,src_info);
             // Mark that there is no valid instance
-            precondition = ren.info->add_user(ren.ctx, ren.idx, precondition);
+            precondition = ren.info->add_user(ren.ctx, ren.idx, precondition,true/*first*/);
             // Now issue the copy and update the precondition
             precondition = perform_copy_operation(src_info, ren.info, precondition);
           }
@@ -4174,70 +4214,104 @@ namespace RegionRuntime {
           {
             // Mark that we are using this region
             precondition = ren.info->add_user(ren.ctx, ren.idx, precondition);
-            // Set that there are no requirements for this to be valid
-            ren.info->set_valid_event(Event::NO_EVENT);
           }
         }
 
-        // Check to see if we have any open partitions below, if so close them up
-        switch (region_states[ren.ctx_id].open_state)
+        // If we're santizing we have to do some operations to get this region ready to move,
+        // otherwise check to see if we need to do anything for our mapped instance
+        if (ren.sanitizing)
         {
-          case PART_EXCLUSIVE:
-            {
 #ifdef DEBUG_HIGH_LEVEL
-              assert(region_states[ren.ctx_id].open_physical.size() == 1);
+          assert(!ren.needs_initializing);
 #endif
-              // Close up the open partition
-              PartitionID pid = *(region_states[ren.ctx_id].open_physical.begin());
-              // Close it differently if our region is write-only
-              if (!IS_WRITE_ONLY(ren.get_req()))
-              {
-                precondition = partitions[pid]->close_physical_tree(ren.ctx_id,ren.info,precondition,ren.ctx);
-              }
-              else
-              {
-                // This is write-only so there should be no copies to close the tree
-                precondition = partitions[pid]->close_physical_tree(ren.ctx_id,InstanceInfo::get_no_instance(),
-                                                                    precondition, ren.ctx);
-              }
-              // Record that we wrote to the instance
-              written_to = true;
-              break;
-            }
-          case PART_READ_ONLY:
+          // If we're santizing, create instance infos in this region for all the valid
+          // instances of this region
+          std::set<Memory> locations;
+          get_physical_locations(ren.ctx_id,locations,true/*ignore open below*/);
+          for (std::set<Memory>::const_iterator it = locations.begin();
+                it != locations.end(); it++)
+          {
+            InstanceInfo *info = find_physical_instance(ren.ctx_id, *it);
+            if (info->handle != handle)
             {
-              // Close up all the open partitions below
-              // We can pass the no instance pointer since
-              // everything below should be read only
-              std::set<Event> wait_on_events;
-              for (std::set<PartitionID>::const_iterator it = region_states[ren.ctx_id].open_physical.begin();
-                    it != region_states[ren.ctx_id].open_physical.end(); it++)
-              {
-                wait_on_events.insert(partitions[*it]->close_physical_tree(ren.ctx_id,
-                                          InstanceInfo::get_no_instance(),precondition,ren.ctx)); 
-              }
-              // update the precondition
-              precondition = Event::merge_events(wait_on_events);
-              break;
+              InstanceInfo *new_info = ren.ctx->create_instance_info(handle,info);
+              update_valid_instances(ren.ctx_id,new_info,false/*writer*/);
             }
-          case PART_NOT_OPEN:
-            {
-              // Don't need to close anything up here
-              break;
-            }
-          default:
-            assert(false);
-        }
-        // Now we can update the physical instance
-        update_valid_instance(ren.ctx_id, ren.info, written_to);
-        // Also update the valid event for the instance
-        if (!IS_WRITE_ONLY(ren.get_req()))
-        {
-          ren.info->set_valid_event(precondition);
+          }
+          // There should be at least one valid instance here
+#ifdef DEBUG_HIGH_LEVEL
+          assert(!region_states[ren.ctx_id].valid_instances.empty());
+#endif
         }
         else
         {
-          ren.info->set_valid_event(Event::NO_EVENT);
+          // Check to see if we have any open partitions below, if so close them up
+          switch (region_states[ren.ctx_id].open_state)
+          {
+            case PART_EXCLUSIVE:
+              {
+#ifdef DEBUG_HIGH_LEVEL
+                assert(region_states[ren.ctx_id].open_physical.size() == 1);
+#endif
+                // Close up the open partition
+                PartitionID pid = *(region_states[ren.ctx_id].open_physical.begin());
+                // Close it differently if our region is write-only
+                if (!IS_WRITE_ONLY(ren.get_req()))
+                {
+                    precondition = partitions[pid]->close_physical_tree(ren.ctx_id,ren.info,precondition,ren.ctx);
+                }
+                else
+                {
+                  // This is write-only so there should be no copies to close the tree
+                  precondition = partitions[pid]->close_physical_tree(ren.ctx_id,InstanceInfo::get_no_instance(),
+                                                                      precondition, ren.ctx);
+                }
+                // Record that we wrote to the instance
+                written_to = true;
+                // Mark that the partitions are closed
+                region_states[ren.ctx_id].open_physical.clear();
+                region_states[ren.ctx_id].open_state = PART_NOT_OPEN;
+                break;
+              }
+            case PART_READ_ONLY:
+              {
+                // Close up all the open partitions below
+                // We can pass the no instance pointer since
+                // everything below should be read only
+                std::set<Event> wait_on_events;
+                for (std::set<PartitionID>::const_iterator it = region_states[ren.ctx_id].open_physical.begin();
+                      it != region_states[ren.ctx_id].open_physical.end(); it++)
+                {
+                  wait_on_events.insert(partitions[*it]->close_physical_tree(ren.ctx_id,
+                                            InstanceInfo::get_no_instance(),precondition,ren.ctx)); 
+                }
+                // update the precondition
+                precondition = Event::merge_events(wait_on_events);
+                // Mark that the partitions are closed
+                region_states[ren.ctx_id].open_physical.clear();
+                region_states[ren.ctx_id].open_state = PART_NOT_OPEN;
+                break;
+              }
+            case PART_NOT_OPEN:
+              {
+                // Don't need to close anything up here
+                break;
+              }
+            default:
+              assert(false);
+          }
+          // Update the valid instance
+          if (!IS_WRITE_ONLY(ren.get_req()))
+          {
+            update_valid_instances(ren.ctx_id,ren.info,written_to);
+            ren.info->set_valid_event(precondition);
+          }
+          else
+          {
+            // Write-Only case
+            update_valid_instances(ren.ctx_id,ren.info,written_to);
+            ren.info->set_valid_event(Event::NO_EVENT);
+          }
         }
         // Return the value for when the info is ready
         return precondition;
@@ -4259,11 +4333,6 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
               assert(region_states[ren.ctx_id].open_physical.empty());
 #endif
-              // Check to see if we're sanitizing, if so, we're done at this point
-              if (ren.sanitizing)
-              {
-                return precondition;
-              }
               // It's not open, figure out what state we need it in, and open it
               if (IS_READ_ONLY(ren.get_req()))
               {
@@ -4301,9 +4370,10 @@ namespace RegionRuntime {
                 // target for the copy operations
                 // Get a list of valid physical instances of this region  
                 InstanceInfo *target = InstanceInfo::get_no_instance();
+                bool new_target = false;
                 {
-                  std::vector<Memory> locations;
-                  get_physical_locations(ren.ctx_id,locations);
+                  std::set<Memory> locations;
+                  get_physical_locations(ren.ctx_id,locations,true/*ignore open below*/);
                   // Ask the mapper for a list of target memories 
                   std::vector<Memory> ranking;
                   ren.mapper->rank_copy_targets(ren.ctx->get_enclosing_task(), ren.get_req(), locations, ranking);
@@ -4316,14 +4386,20 @@ namespace RegionRuntime {
                       target = find_physical_instance(ren.ctx_id,*mem_it); 
                       if (target != InstanceInfo::get_no_instance())
                       {
+                        // Check to see if this is an instance info of the right logical region
+                        if (target->handle != handle)
+                        {
+                          target = ren.ctx->create_instance_info(handle,target);
+                        }
                         break;
                       }
                       else
                       {
                         // Try to make it
-                        target = create_physical_instance(ren.ctx_id,*mem_it);
+                        target = ren.ctx->create_instance_info(handle,*mem_it);
                         if (target != InstanceInfo::get_no_instance())
                         {
+                          new_target = true;
                           // Check to see if this is write-only, if so then there is
                           // no need to make a copy from anywhere, otherwise make the copy
                           if (!IS_WRITE_ONLY(ren.get_req()))
@@ -4333,7 +4409,7 @@ namespace RegionRuntime {
                             InstanceInfo *src_info; 
                             if (locations.size() == 1)
                             {
-                              src_info = find_physical_instance(ren.ctx_id,locations.back());
+                              src_info = find_physical_instance(ren.ctx_id,*(locations.begin()));
                             }
                             else
                             {
@@ -4346,7 +4422,7 @@ namespace RegionRuntime {
                               src_info = find_physical_instance(ren.ctx_id,src_mem);
                             }
                             // Record that we're using the physical instance as a source
-                            precondition = src_info->add_copy_reference(precondition,false/*writer*/);
+                            precondition = src_info->add_copy_user(precondition,false/*writer*/);
                             // Add it to the list of source physical instances
                             ren.ctx->add_source_physical_instance(ren.ctx_id,src_info);
                             // Perform the copy and update the precondition
@@ -4364,22 +4440,17 @@ namespace RegionRuntime {
                   }
                 }
                 // Now that we have our target, register that we're going to use it
-                precondition = target->add_copy_reference(precondition,true/*writer*/);
+                precondition = target->add_copy_user(precondition,true/*writer*/,new_target);
                 // Add it to the list of copy instances to free once the task starts
                 ren.ctx->add_source_physical_instance(ren.ctx_id,target);
                 // now issue the close operation on the physical instance
-                Event close_event = close_physical_tree(ren.ctx_id, target, precondition,ren.ctx);
+                precondition = close_physical_tree(ren.ctx_id, target, precondition,ren.ctx);
                 // Update the valid instances
-                update_valid_instance(ren.ctx_id, target, true/*writer*/);
+                update_valid_instances(ren.ctx_id, target, true/*writer*/);
                 // Update the valid event for the physical instance
                 target->set_valid_event(precondition);
                 // Now that we've closed the other partition, open the one we want
                 region_states[ren.ctx_id].open_physical.clear(); 
-                // Check to see if we're sanitizing, if so we don't need to go past this
-                if (ren.sanitizing)
-                {
-                  return precondition;
-                }
                 PartitionID pid = (PartitionID)ren.trace.back();
                 region_states[ren.ctx_id].open_physical.insert(pid);
                 // Figure out which state the partition should be in
@@ -4391,7 +4462,7 @@ namespace RegionRuntime {
                 {
                   region_states[ren.ctx_id].open_state = PART_EXCLUSIVE;
                 }
-                return partitions[pid]->open_physical_tree(ren, close_event);
+                return partitions[pid]->open_physical_tree(ren, precondition);
               }
               break;
             }
@@ -4410,11 +4481,6 @@ namespace RegionRuntime {
                 if (region_states[ren.ctx_id].open_physical.find(pid) == 
                     region_states[ren.ctx_id].open_physical.end())
                 {
-                  // Check to see if we're santizing, if so we're done
-                  if (ren.sanitizing)
-                  {
-                    return precondition;
-                  }
                   // Add it to the list of read-only open partitions and open it
                   region_states[ren.ctx_id].open_physical.insert(pid);
                   return partitions[pid]->open_physical_tree(ren, precondition);
@@ -4457,10 +4523,6 @@ namespace RegionRuntime {
                 }
                 else
                 {
-                  if (ren.sanitizing)
-                  {
-                    return precondition;
-                  }
                   // Open it and return the result
                   return partitions[pid]->open_physical_tree(ren, Event::merge_events(wait_on_events));
                 }
@@ -4483,7 +4545,6 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!ren.trace.empty());
       assert(ren.trace.back() == this->handle.id);
-      assert(!ren.sanitizing); // Should never be here with a sanitizer
 #endif
       if (ren.info->handle == this->handle)
       {
@@ -4494,53 +4555,80 @@ namespace RegionRuntime {
 #endif
         region_states[ren.ctx_id].open_state = PART_NOT_OPEN;
         region_states[ren.ctx_id].data_state = DATA_CLEAN; // necessary to find source copies
-        // Check to see if this is write-only, if so there is no need
-        // to issue the copy
-        if (!IS_WRITE_ONLY(ren.get_req()))
+
+        // First check to see if we're doing sanitizing or actual opening
+        if (ren.sanitizing)
         {
-          // Not write only so we have to issue the copy
-          // Find the sources for the instance
-          std::vector<Memory> locations;
+          // Create an instance info for each of the valid instances we can find 
+          std::set<Memory> locations;
           get_physical_locations(ren.ctx_id,locations);
 #ifdef DEBUG_HIGH_LEVEL
-          assert(!locations.empty()); // There better be source locations
+          assert(!locations.empty());
 #endif
-          Memory chosen_src = Memory::NO_MEMORY;
-          if (locations.size() == 1)
+          // For each location, make a physical instance here
+          for (std::set<Memory>::const_iterator it = locations.begin();
+                it != locations.end(); it++)
           {
-            chosen_src = locations.front();
+            InstanceInfo *info = find_physical_instance(ren.ctx_id,*it);
+            if (info->handle != handle)
+            {
+              info = ren.ctx->create_instance_info(handle,info);
+              update_valid_instances(ren.ctx_id, info, false/*write*/);
+            }
           }
-          else
-          {
-            // Invoke the mapper to chose a source to copy from
-            ren.mapper->select_copy_source(locations, ren.info->location, chosen_src); 
-          }
-#ifdef DEBUG_HIGH_LEVEL
-          assert(chosen_src.exists());
-#endif
-          InstanceInfo *src_info = find_physical_instance(ren.ctx_id, chosen_src);
-#ifdef DEBUG_HIGH_LEVEL
-          assert(src_info != InstanceInfo::get_no_instance());
-#endif
-          // Get the precondition on using the source physical instance
-          precondition = src_info->add_copy_reference(precondition,false/*writer*/);
-          // Register the source instance that we are using
-          ren.ctx->add_source_physical_instance(ren.ctx_id,src_info);
-          // Register that we're using the physical instance
-          precondition = ren.info->add_user(ren.ctx, ren.idx, precondition);
-          // Issue the copy operation
-          precondition = perform_copy_operation(src_info, ren.info, precondition);
-          // Update the valid event for the physical instance
-          ren.info->set_valid_event(precondition);
+          return precondition;
         }
         else
         {
-          ren.info->add_user(ren.ctx, ren.idx, precondition);
+          // This is an actual opening
+          // Check to see if this is write-only, if so there is no need
+          // to issue the copy
+          if (!IS_WRITE_ONLY(ren.get_req()))
+          {
+            // Not write only so we have to issue the copy
+            // Find the sources for the instance
+            std::set<Memory> locations;
+            get_physical_locations(ren.ctx_id,locations);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(!locations.empty()); // There better be source locations
+#endif
+            Memory chosen_src = Memory::NO_MEMORY;
+            if (locations.size() == 1)
+            {
+              chosen_src = *(locations.begin());
+            }
+            else
+            {
+              // Invoke the mapper to chose a source to copy from
+              ren.mapper->select_copy_source(locations, ren.info->location, chosen_src); 
+            }
+#ifdef DEBUG_HIGH_LEVEL
+            assert(chosen_src.exists());
+#endif
+            InstanceInfo *src_info = find_physical_instance(ren.ctx_id, chosen_src);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(src_info != InstanceInfo::get_no_instance());
+#endif
+            // Get the precondition on using the source physical instance
+            precondition = src_info->add_copy_user(precondition,false/*writer*/);
+            // Register the source instance that we are using
+            ren.ctx->add_source_physical_instance(ren.ctx_id,src_info);
+            // Register that we're using the physical instance
+            precondition = ren.info->add_user(ren.ctx, ren.idx, precondition, ren.needs_initializing);
+            // Issue the copy operation
+            precondition = perform_copy_operation(src_info, ren.info, precondition);
+            // Update the valid event for the physical instance
+            ren.info->set_valid_event(precondition);
+          }
+          else
+          {
+            ren.info->add_user(ren.ctx, ren.idx, precondition);
+          }
+          // Update the valid instances
+          update_valid_instances(ren.ctx_id, ren.info, HAS_WRITE(ren.get_req()));
+          // Return the event for when the instance will be ready
+          return precondition;
         }
-        // Update the valid instances
-        update_valid_instance(ren.ctx_id, ren.info, HAS_WRITE(ren.get_req()));
-        // Return the event for when the instance will be ready
-        return precondition;
       }
       else
       {
@@ -4588,7 +4676,7 @@ namespace RegionRuntime {
           // Mark that we're using the instance in the enclosing task context
           enclosing->add_source_physical_instance(ctx,*it);
           // Get the event we need to wait on before issuing the copy
-          Event copy_wait = (*it)->add_copy_reference(precondition,false/*writer*/);
+          Event copy_wait = (*it)->add_copy_user(precondition,false/*writer*/);
           // Now issue the copy and save the event for when the copy is done
           wait_on_events.insert(perform_copy_operation(*it,target,copy_wait)); 
         }
@@ -4642,21 +4730,16 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void RegionNode::update_valid_instance(ContextID ctx, InstanceInfo *info, bool writer)
+    void RegionNode::update_valid_instances(ContextID ctx, InstanceInfo *info, bool writer)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      // This should always hold, if not something is wrong somewhere else
+      assert(info->handle == handle); 
+#endif
       // If it's a writer we invalidate everything and make this the new instance 
       if (writer)
       {
-        // Go through the current valid instances and try and garbage collect them
-        for (std::set<InstanceInfo*>::iterator it = region_states[ctx].valid_instances.begin();
-              it != region_states[ctx].valid_instances.end(); it++)
-        {
-          if ((*it) != info)
-          {
-            garbage_collect(*it,ctx,false/*don't check list*/);
-          }
-        }
         // Clear the list
         region_states[ctx].valid_instances.clear();
         // Mark that we wrote the data
@@ -4667,12 +4750,17 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    InstanceInfo* RegionNode::find_physical_instance(ContextID ctx, Memory m)
+    InstanceInfo* RegionNode::find_physical_instance(ContextID ctx, Memory m, bool recurse)
     //--------------------------------------------------------------------------------------------
     {
+      if (!recurse && (region_states[ctx].open_state == PART_EXCLUSIVE))
+      {
+        return InstanceInfo::get_no_instance();
+      }
       // Check to see if we have any valid physical instances that we can use 
-      for (std::set<InstanceInfo*>::const_iterator it = region_states[ctx].valid_instances.begin();
-            it != region_states[ctx].valid_instances.end(); it++)
+      for (std::set<InstanceInfo*>::const_iterator it = 
+            region_states[ctx].valid_instances.begin(); it !=
+            region_states[ctx].valid_instances.end(); it++)
       {
         if ((*it)->location == m)
           return *it;
@@ -4682,12 +4770,13 @@ namespace RegionRuntime {
       if ((region_states[ctx].data_state == DATA_CLEAN) &&
           (parent != NULL))
       {
-        return parent->parent->find_physical_instance(ctx, m);
+        return parent->parent->find_physical_instance(ctx, m, true/*recurse*/);
       }
       // Didn't find anything return the no instance
       return InstanceInfo::get_no_instance();
     }
 
+#if 0
     //--------------------------------------------------------------------------------------------
     InstanceInfo* RegionNode::create_physical_instance(ContextID ctx, Memory m)
     //--------------------------------------------------------------------------------------------
@@ -4737,6 +4826,7 @@ namespace RegionRuntime {
       // Calling the destructor on InstanceInfo will delete the actual intance
       delete info;
     }
+#endif
 
     ///////////////////////////////////////////
     // Partition Node 
@@ -5354,11 +5444,6 @@ namespace RegionRuntime {
       {
         case REG_NOT_OPEN:
           {
-            // If we're sanitizing, we're done
-            if (ren.sanitizing)
-            {
-              return precondition;
-            }
             // Open it and continue the traversal
             if (HAS_WRITE(ren.get_req()))
             {
@@ -5387,11 +5472,6 @@ namespace RegionRuntime {
                 if (partition_states[ren.ctx_id].open_physical.find(log) ==
                     partition_states[ren.ctx_id].open_physical.end())
                 {
-                  // If we're sanitizing, then we're done
-                  if (ren.sanitizing)
-                  {
-                    return precondition;
-                  }
                   // Not open, add it and open it
                   partition_states[ren.ctx_id].open_physical.insert(log);
                   return children[log]->open_physical_tree(ren, precondition);
@@ -5431,11 +5511,6 @@ namespace RegionRuntime {
                 }
                 else
                 {
-                  // If sanitizing, then we're done
-                  if (ren.sanitizing)
-                  {
-                    return precondition;
-                  }
                   partition_states[ren.ctx_id].open_physical.insert(log);
                   return children[log]->open_physical_tree(ren, precondition);
                 }
@@ -5447,10 +5522,6 @@ namespace RegionRuntime {
               if (partition_states[ren.ctx_id].open_physical.find(log) ==
                   partition_states[ren.ctx_id].open_physical.end())
               {
-                if (ren.sanitizing)
-                {
-                  return precondition;
-                }
                 // Not open yet, add it and then open it
                 partition_states[ren.ctx_id].open_physical.insert(log);
                 return children[log]->open_physical_tree(ren, precondition);
@@ -5472,10 +5543,6 @@ namespace RegionRuntime {
               if (partition_states[ren.ctx_id].open_physical.find(log) ==
                   partition_states[ren.ctx_id].open_physical.end())
               {
-                if (ren.sanitizing)
-                {
-                  return precondition;
-                }
                 // Not already open, so add it and open it
                 partition_states[ren.ctx_id].open_physical.insert(log);
                 return children[log]->open_physical_tree(ren, precondition);
@@ -5502,12 +5569,13 @@ namespace RegionRuntime {
               {
                 // Different instance, need to close up first and then open the other
                 // Get the list of valid instances for the parent region
-                std::vector<Memory> locations;
+                std::set<Memory> locations;
                 parent->get_physical_locations(ren.ctx_id, locations);
 #ifdef DEBUG_HIGH_LEVEL
                 assert(!locations.empty());
 #endif
                 InstanceInfo *target = InstanceInfo::get_no_instance();
+                bool new_target = false;
                 {
                   // Ask the mapper to pick a target
                   std::vector<Memory> ranking;  
@@ -5524,13 +5592,19 @@ namespace RegionRuntime {
                     if (target != InstanceInfo::get_no_instance())
                     {
                       found = true;
+                      // Check to see if the target is for the parent
+                      if (target->handle != parent->handle)
+                      {
+                        target = ren.ctx->create_instance_info(parent->handle,target);
+                      }
                       break;
                     }
                     else
                     {
-                      target = parent->create_physical_instance(ren.ctx_id,*it);
+                      target = ren.ctx->create_instance_info(parent->handle,*it);
                       if (target != InstanceInfo::get_no_instance())
                       {
+                        new_target = true;
                         found = true;
                         // We had to make this instance, so we have to make
                         // a copy from somewhere
@@ -5538,7 +5612,7 @@ namespace RegionRuntime {
                         if (locations.size() == 1)
                         {
                           // No need to ask the mapper since we already know the answer
-                          src_info = parent->find_physical_instance(ren.ctx_id,locations.back());
+                          src_info = parent->find_physical_instance(ren.ctx_id,*(locations.begin()));
                         }
                         else
                         {
@@ -5550,7 +5624,7 @@ namespace RegionRuntime {
                           src_info = parent->find_physical_instance(ren.ctx_id,src_mem);
                         }
                         // Record that we are using this as a source physical instance for a copy
-                        precondition = src_info->add_copy_reference(precondition,false/*writer*/);
+                        precondition = src_info->add_copy_user(precondition,false/*writer*/);
                         ren.ctx->add_source_physical_instance(ren.ctx_id, src_info);
                         // Issue the copy and update the precondition
                         precondition = perform_copy_operation(src_info, target, precondition);
@@ -5568,9 +5642,9 @@ namespace RegionRuntime {
 #endif
                 }
                 // Update the parent's valid physical intances
-                parent->update_valid_instance(ren.ctx_id, target, true/*writer*/);
+                parent->update_valid_instances(ren.ctx_id, target, true/*writer*/);
                 // Register that we are using this instance
-                precondition = target->add_copy_reference(precondition, true/*writer*/);
+                precondition = target->add_copy_user(precondition, true/*writer*/, new_target);
                 ren.ctx->add_source_physical_instance(ren.ctx_id, target);
                 // Now issue the close operation to all the open region 
                 precondition = children[log]->close_physical_tree(ren.ctx_id, target,
@@ -5579,11 +5653,6 @@ namespace RegionRuntime {
                 target->set_valid_event(precondition);
                 // Update the state of this partition
                 partition_states[ren.ctx_id].open_physical.clear();
-                // Check to see if we're sanitizing
-                if (ren.sanitizing)
-                {
-                  return precondition;
-                }
                 partition_states[ren.ctx_id].open_physical.insert(log);
                 if (IS_READ_ONLY(ren.get_req()))
                 {
@@ -5611,7 +5680,6 @@ namespace RegionRuntime {
       assert(partition_states[ren.ctx_id].physical_state == REG_NOT_OPEN);
       assert(ren.trace.size() > 1);
       assert(ren.trace.back() == pid);
-      assert(!ren.sanitizing);
 #endif
       ren.trace.pop_back(); 
       LogicalRegion log = { ren.trace.back() };
@@ -5649,7 +5717,6 @@ namespace RegionRuntime {
       partition_states[ctx].physical_state = REG_NOT_OPEN;
       return Event::merge_events(wait_on_events);
     }
-    
 
     ///////////////////////////////////////////
     // Instance Info 
@@ -5659,28 +5726,7 @@ namespace RegionRuntime {
     InstanceInfo::~InstanceInfo(void)
     //-------------------------------------------------------------------------
     {
-      // Only destroy things if this instance is owner
-      if (owner)
-      {
-#ifdef DEBUG_HIGH_LEVEL
-        if (references != 0)
-        {
-          log_inst(LEVEL_ERROR,"Freeing instance %d of logical region %d in memory %d "
-              "before reference count is zero (currently %d).  This probably means your "
-              "program is not properly synchronized.",inst.id, handle.id, location.id, references);
-          exit(1);
-        }
-#endif
-        log_inst(LEVEL_INFO,"Freeing instance %d of logical region %d in memory %d",
-                  inst.id, handle.id, location.id);
-        handle.destroy_instance_untyped(inst);
 
-        // If we created a lock, then destroy it
-        if (inst_lock.exists())
-        {
-          inst_lock.destroy_lock();
-        }
-      }
     }
 
     //-------------------------------------------------------------------------
@@ -5705,14 +5751,15 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    Event InstanceInfo::add_user(GeneralizedContext *ctx, unsigned idx, Event precondition)
+    Event InstanceInfo::add_user(GeneralizedContext *ctx, unsigned idx, 
+                                  Event precondition, bool first)
     //-------------------------------------------------------------------------
     {
       // Go through all the current users and see if there are any
       // true dependences between the current users and the new user
       std::set<Event> wait_on_events;
       // Add the valid event
-      if (precondition.exists())
+      if (valid_event.exists())
       {
         wait_on_events.insert(valid_event);
       }
@@ -5720,38 +5767,114 @@ namespace RegionRuntime {
       {
         wait_on_events.insert(precondition);
       }
-      for (std::map<UniqueID,std::pair<bool,Event> >::const_iterator it = users.begin();
+      for (std::map<UniqueID,UserTask>::const_iterator it = users.begin();
             it != users.end(); it++)
       {
-        if (ctx->has_true_dependence(idx, it->first))
+        // Check for any dependences on the users
+        DependenceType dtype = check_dependence_type(it->second.req,
+                                ctx->get_requirement(idx));
+        switch (dtype)
         {
-          wait_on_events.insert(it->second.second);
+          case NO_DEPENDENCE:
+          case ATOMIC_DEPENDENCE:
+          case SIMULTANEOUS_DEPENDENCE:
+            {
+              // Do nothing since there is no dependences (using same instance!)
+              break;
+            }
+          case TRUE_DEPENDENCE:
+          case ANTI_DEPENDENCE:
+            {
+              // Record the dependence
+              wait_on_events.insert(it->second.term_event);
+              break;
+            }
+          default:
+            assert(false);
         }
       }
-      // update the references and the users
-      references++;
-      users.insert(std::pair<UniqueID,std::pair<bool,Event> >(ctx->get_unique_id(),
-        std::pair<bool,Event>(HAS_WRITE(ctx->get_requirement(idx)),ctx->get_termination_event())));
+      // Also check any of the added users
+      for (std::map<UniqueID,UserTask>::const_iterator it = added_users.begin();
+            it != added_users.begin(); it++)
+      {
+        DependenceType dtype = check_dependence_type(it->second.req,
+                                ctx->get_requirement(idx));
+        switch (dtype)
+        {
+          case NO_DEPENDENCE:
+          case ATOMIC_DEPENDENCE:
+          case SIMULTANEOUS_DEPENDENCE:
+            {
+              // Do nothing since there is no dependence (using same instance!)
+              break;
+            }
+          case TRUE_DEPENDENCE:
+          case ANTI_DEPENDENCE:
+            {
+              // Record the dependence
+              wait_on_events.insert(it->second.term_event);
+              break;
+            }
+          default:
+            assert(false);
+        }
+      }
+      if (!first) // If this is not the first time, acquire the region
+      {
+        RegionInstance copy_inst = inst;
+        copy_inst.acquire();
+      }
+      if (remote)
+      {
+        // If this is remote, add it to the added users to track the new ones
+        UserTask ut = { ctx->get_requirement(idx), ctx->get_termination_event() };
+        added_users.insert(std::pair<UniqueID,UserTask>(ctx->get_unique_id(),ut));
+      }
+      else
+      {
+        UserTask ut = { ctx->get_requirement(idx), ctx->get_termination_event() }; 
+        users.insert(std::pair<UniqueID,UserTask>(ctx->get_unique_id(),ut));
+      }
       return Event::merge_events(wait_on_events);
     }
 
     //-------------------------------------------------------------------------
-    void InstanceInfo::remove_user(GeneralizedContext *ctx, unsigned idx)
+    void InstanceInfo::remove_user(UniqueID uid, bool release)
     //-------------------------------------------------------------------------
     {
+      if (remote)
+      {
+        // Should only be removing from active users
 #ifdef DEBUG_HIGH_LEVEL
-      assert(users.find(ctx->get_unique_id()) != users.end());
-      assert(references > 0);
+        assert(added_users.find(uid) != added_users.end());
 #endif
-      references--;
-      users.erase(ctx->get_unique_id());
+        added_users.erase(uid);
+      }
+      else
+      {
+        if (users.find(uid) != users.end())
+        {
+          users.erase(uid);
+        }
+        else
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(added_users.find(uid) != added_users.end());
+#endif
+          added_users.erase(uid);
+        }
+      }
+      if (release)
+      {
+        RegionInstance copy_inst = inst;
+        copy_inst.release();
+      }
     }
 
     //-------------------------------------------------------------------------
-    Event InstanceInfo::add_copy_reference(Event precondition, bool writer)
+    Event InstanceInfo::add_copy_user(Event precondition, bool writer, bool first)
     //-------------------------------------------------------------------------
     {
-      references++;
       // Go through all the users and see if they are writing, if so wait
       // for them to finish
       std::set<Event> wait_on_events;
@@ -5763,35 +5886,40 @@ namespace RegionRuntime {
       {
         wait_on_events.insert(precondition);
       }
-      for (std::map<UniqueID,std::pair<bool,Event> >::const_iterator it = users.begin();
+      for (std::map<UniqueID,UserTask>::const_iterator it = users.begin();
             it != users.end(); it++)
       {
         // If it's a writer record a dependence on all user task
         // Otherwise, if it's just a reader, just to see if the user is a writer
         // in which case we have to wait for the writer to finish
-        if (writer || it->second.first)
+        if (writer || HAS_WRITE(it->second.req))
         {
-          wait_on_events.insert(it->second.second);
+          wait_on_events.insert(it->second.term_event);
         }
+      }
+      for (std::map<UniqueID,UserTask>::const_iterator it = added_users.begin();
+            it != added_users.end(); it++)
+      {
+        if (writer || HAS_WRITE(it->second.req))
+        {
+          wait_on_events.insert(it->second.term_event);
+        }
+      }
+      // Added a reference to the instance
+      if (!first)
+      {
+        RegionInstance inst_copy = inst;
+        inst_copy.acquire();
       }
       return Event::merge_events(wait_on_events);
     }
 
     //-------------------------------------------------------------------------
-    void InstanceInfo::remove_copy_reference(void)
+    void InstanceInfo::remove_copy_user(void)
     //-------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(references > 0);
-#endif
-      references--;
-    }
-
-    //-------------------------------------------------------------------------
-    void InstanceInfo::set_valid_event(Event e)
-    //-------------------------------------------------------------------------
-    {
-      valid_event = e;
+      RegionInstance inst_copy = inst;
+      inst_copy.release();
     }
 
     ///////////////////////////////////////////

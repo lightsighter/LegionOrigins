@@ -120,6 +120,7 @@ namespace RegionRuntime {
     typedef unsigned int UniqueID;
     typedef unsigned int ColorizeID;
     typedef unsigned int ContextID;
+    typedef unsigned int InstanceID;
     typedef TaskContext* Context;
     typedef void (*MapperCallbackFnptr)(Machine *machine, HighLevelRuntime *rt, Processor local);
     typedef Color (*ColorizeFnptr)(const std::vector<int> &solution);
@@ -560,6 +561,8 @@ namespace RegionRuntime {
       void free_context(TaskContext *ctx);
       friend class RegionMappingImpl;
       void free_mapping(RegionMappingImpl *impl);
+      // Get a new instance info id
+      InstanceID get_unique_instance_id(void);
     private:
       // Operations invoked by static methods
       void process_tasks(const void * args, size_t arglen); 
@@ -606,6 +609,7 @@ namespace RegionRuntime {
       // Keep track of how to do partition numbering
       PartitionID next_partition_id; // The next partition id for this instance (unique)
       UniqueID next_task_id; // Give all tasks a unique id for debugging purposes
+      InstanceID next_instance_id;
       const unsigned unique_stride; // Stride for ids to guarantee uniqueness
       // Information for stealing
       const unsigned int max_outstanding_steals;
@@ -654,15 +658,15 @@ namespace RegionRuntime {
                                       std::vector<IndexSplit> &chunks);
 
       virtual void map_task_region(const Task *task, const RegionRequirement &req,
-                                    const std::vector<Memory> &current_instances,
+                                    const std::set<Memory> &current_instances,
                                     std::vector<Memory> &target_ranking,
                                     bool &enable_WAR_optimization);
 
       virtual void rank_copy_targets(const Task *task, const RegionRequirement &req,
-                                    const std::vector<Memory> &current_instances,
+                                    const std::set<Memory> &current_instances,
                                     std::vector<Memory> &future_ranking);
 
-      virtual void select_copy_source(const std::vector<Memory> &current_instances,
+      virtual void select_copy_source(const std::set<Memory> &current_instances,
                                     const Memory &dst, Memory &chosen_src);
     protected:
       HighLevelRuntime *const runtime;
@@ -787,6 +791,8 @@ namespace RegionRuntime {
       virtual void add_unresolved_dependence(unsigned idx, DependenceType type, GeneralizedContext *ctx, unsigned dep_idx) = 0;
       virtual bool add_waiting_dependence(GeneralizedContext *ctx, unsigned idx/*local*/) = 0;
       virtual bool has_true_dependence(unsigned idx, UniqueID uid) = 0;
+      virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m) = 0;
+      virtual InstanceInfo* create_instance_info(LogicalRegion newer, InstanceInfo *old) = 0;
     };
 
     /////////////////////////////////////////////////////////////
@@ -874,6 +880,8 @@ namespace RegionRuntime {
       virtual void add_unresolved_dependence(unsigned idx, DependenceType t, GeneralizedContext *c, unsigned dep_idx);
       virtual bool add_waiting_dependence(GeneralizedContext *ctx, unsigned idx);
       virtual bool has_true_dependence(unsigned idx, UniqueID uid);
+      virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m);
+      virtual InstanceInfo* create_instance_info(LogicalRegion newer, InstanceInfo *old);
     private:
       HighLevelRuntime *const runtime;
       bool active;
@@ -951,8 +959,9 @@ namespace RegionRuntime {
       std::vector<std::pair<InstanceInfo*,ContextID> > source_physical_instances;
     private:
       // Pointers to the maps for logical regions
-      std::map<LogicalRegion,RegionNode*> *region_nodes; // Can be aliased with other tasks map
+      std::map<LogicalRegion,RegionNode*>  *region_nodes; // Can be aliased with other tasks map
       std::map<PartitionID,PartitionNode*> *partition_nodes; // Can be aliased with other tasks map
+      std::map<InstanceID,InstanceInfo*>   *instance_infos;  // Can be aliased with other tasks map
     private:
       // Track updates to the region tree
       std::set<LogicalRegion> created_regions;
@@ -1027,6 +1036,8 @@ namespace RegionRuntime {
       virtual void add_unresolved_dependence(unsigned idx, DependenceType t, GeneralizedContext *ctx, unsigned dep_idx);
       virtual bool add_waiting_dependence(GeneralizedContext *ctx, unsigned idx);
       virtual bool has_true_dependence(unsigned idx, UniqueID uid);
+      virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m);
+      virtual InstanceInfo* create_instance_info(LogicalRegion newer, InstanceInfo *old);
     private:
       InstanceInfo* resolve_unresolved_dependences(InstanceInfo *info, bool war_optimization);
       void compute_region_trace(std::vector<unsigned> &trace, LogicalRegion parent, LogicalRegion child);
@@ -1062,8 +1073,7 @@ namespace RegionRuntime {
         // Physical State
         std::set<PartitionID> open_physical; 
         // All these instances obey info->handle == this->handle
-        std::set<InstanceInfo*> valid_instances; //valid instances and the events when they are valid
-        std::set<InstanceInfo*> all_instances; // all the instances in this context
+        std::set<InstanceInfo*> valid_instances; //valid instances
         // State of the open partitions
         PartState open_state;
         // TODO: handle the case of different types of reductions
@@ -1093,11 +1103,9 @@ namespace RegionRuntime {
       // Initialize the physical context
       void initialize_physical_context(ContextID ctx);
       // Operations on the physical part of the region tree
-      void get_physical_locations(ContextID ctx, std::vector<Memory> &locations);
+      void get_physical_locations(ContextID ctx_id, std::set<Memory> &locations, bool recurse = false);
       // Try to find a valid physical instance in the memory m
-      InstanceInfo* find_physical_instance(ContextID ctx, Memory m);
-      // Create a physical instance in the specified memory
-      InstanceInfo* create_physical_instance(ContextID ctx, Memory m);
+      InstanceInfo* find_physical_instance(ContextID ctx_id, Memory m, bool recurse = false);
       // Register a physical instance with the region tree
       Event register_physical_instance(RegionRenamer &ren, Event precondition); 
       // Open up a physical region tree returning the event corresponding
@@ -1107,13 +1115,11 @@ namespace RegionRuntime {
       // returning the event when the close operation is complete
       Event close_physical_tree(ContextID ctx, InstanceInfo *target, 
                                 Event precondition, GeneralizedContext *enclosing);
-      // Try garbage collecting a physical instance
-      void garbage_collect(InstanceInfo *info, ContextID ctx, bool check_list = true);
       // Update the valid instances with the new physical instance, it's ready event, and
       // whether the info is being read or written.  Note that this can invalidate other
       // instances in the intermediate levels of the tree as it goes back up to the
       // physical instance's logical region
-      void update_valid_instance(ContextID ctx, InstanceInfo *info, bool writer);
+      void update_valid_instances(ContextID ctx_id, InstanceInfo *info, bool writer);
     private:
       const LogicalRegion handle;
       const unsigned depth;
@@ -1192,24 +1198,30 @@ namespace RegionRuntime {
     // InstanceInfo 
     ///////////////////////////////////////////////////////////// 
     class InstanceInfo {
+    private:
+      struct UserTask {
+      public:
+        RegionRequirement req;
+        Event term_event;
+      };
     public:
+      const InstanceID iid;
       const LogicalRegion handle;
       const Memory location;
       const RegionInstance inst;
     public:
       InstanceInfo(void)
-        : handle(LogicalRegion::NO_REGION),
+        : iid(0), handle(LogicalRegion::NO_REGION),
           location(Memory::NO_MEMORY),
           inst(RegionInstance::NO_INST),
+          valid_event(Event::NO_EVENT),
           inst_lock(Lock::NO_LOCK),
-          references(0), owner(false),
-          valid_event(Event::NO_EVENT)
-          { }
-      InstanceInfo(LogicalRegion r, Memory m,
-          RegionInstance i, bool own) 
-        : handle(r), location(m), inst(i), 
-          inst_lock(Lock::NO_LOCK), references(0), 
-          owner(own), valid_event(Event::NO_EVENT)
+          remote(false) { }
+      InstanceInfo(InstanceID id, LogicalRegion r, Memory m,
+          RegionInstance i, bool rem) 
+        : iid(id), handle(r), location(m), inst(i), 
+          valid_event(Event::NO_EVENT),
+          inst_lock(Lock::NO_LOCK), remote(rem) 
           { }
       ~InstanceInfo(void);
     protected:
@@ -1226,23 +1238,22 @@ namespace RegionRuntime {
     protected:
       // Add a user of this instance info and return the event
       // when it can be used
-      Event add_user(GeneralizedContext *ctx, unsigned idx, Event precondition);
-      void  remove_user(GeneralizedContext *ctx, unsigned idx);
-      // Add a copy reference to this instance info and return
-      // the event for when the copy can be made
-      Event add_copy_reference(Event precondition, bool writer);
-      void  remove_copy_reference(void);
-      // Set the valid event
-      void set_valid_event(Event e);
-      inline bool has_references(void) const { return (references > 0); }
+      Event add_user(GeneralizedContext *ctx, unsigned idx, Event precondition, bool first = false);
+      void  remove_user(UniqueID uid, bool release);
+      // Compute the precondition on performing copies
+      Event add_copy_user(Event precondition, bool writer, bool first = false);
+      void  remove_copy_user(void);
+      // Allow for locking and unlocking of the instance
       Event lock_instance(Event precondition);
       void unlock_instance(Event precondition);
+      // Set the valid event
+      void set_valid_event(Event valid) { valid_event = valid; }
     private:
-      Lock inst_lock; // For atomic access if necessary
-      unsigned references;
-      bool owner;
-      std::map<UniqueID,std::pair<bool/*writer*/,Event> > users;
       Event valid_event;
+      Lock inst_lock; // For atomic access if necessary
+      bool remote; 
+      std::map<UniqueID,UserTask> users;
+      std::map<UniqueID,UserTask> added_users; // for the remote case to know who to send back
     };
 
     /////////////////////////////////////////////////////////////
@@ -1281,7 +1292,7 @@ namespace RegionRuntime {
       const ContextID ctx_id;
       const unsigned idx;
       GeneralizedContext *const ctx;
-      InstanceInfo *const info;
+      InstanceInfo *info;
       Mapper *const mapper;
       std::vector<unsigned> trace;
       const bool needs_initializing;
