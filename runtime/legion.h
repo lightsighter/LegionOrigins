@@ -825,12 +825,12 @@ namespace RegionRuntime {
                        const std::vector<ColorizeFunction<N> > &functions);
     protected:
       // functions for packing and unpacking tasks
-      size_t compute_task_size(void);
+      size_t compute_task_size(Mapper *m);
       void pack_task(Serializer &rez);
       void unpack_task(Deserializer &derez);
       void final_unpack_task(void);
       // Return true if this task still has index parts on this machine
-      bool distribute_index_space(std::vector<Mapper::IndexSplit> &chunks);
+      bool distribute_index_space(std::vector<Mapper::IndexSplit> &chunks, Mapper *m);
     protected:
       // functions for updating a task's state
       void register_child_task(TaskContext *desc);
@@ -963,14 +963,13 @@ namespace RegionRuntime {
       std::map<InstanceID,InstanceInfo*>   *instance_infos;  // Can be aliased with other tasks map
     private:
       // Track updates to the region tree
-      std::set<LogicalRegion> created_regions;
-      std::set<LogicalRegion> deleted_regions;
-      std::set<PartitionID>   created_partitions;
-      std::set<PartitionID>   deleted_partitions;
+      std::set<LogicalRegion> created_regions; // new top-level created regions
+      std::set<LogicalRegion> deleted_regions; // top of deleted region trees only
+      std::set<PartitionID>   deleted_partitions; // top of deleted trees only
     private:
       // Helper information for serializing task context
       std::set<InstanceInfo*> needed_instances;
-      size_t num_physical_states;
+      bool sanitized;
     private:
       // This is the lock for this context.  It will be shared with all contexts of sub-tasks that
       // stay on the same node as they all can access the same aliased region-tree.  However, tasks
@@ -1098,10 +1097,11 @@ namespace RegionRuntime {
       static RegionNode* unpack_region_tree(Deserializer &derez, PartitionNode *parent,
                 ContextID ctx_id, std::map<LogicalRegion,RegionNode*> *region_nodes,
                 std::map<PartitionID,PartitionNode*> *partition_nodes, bool add);
+      size_t compute_region_tree_update_size(std::set<PartitionNode*> &updates);
     protected:
-      size_t compute_physical_state_size(ContextID ctx, std::set<InstanceInfo*> &needed,size_t &num_states) const;
-      void pack_physical_state(ContextID ctx, Serializer &rez) const;
-      void unpack_physical_state(ContextID ctx, Deserializer &derez);
+      size_t compute_physical_state_size(ContextID ctx, std::set<InstanceInfo*> &needed);
+      void pack_physical_state(ContextID ctx, Serializer &rez);
+      void unpack_physical_state(ContextID ctx, Deserializer &derez, bool write, std::map<InstanceID,InstanceInfo*> &inst_map);
     protected:
       // Initialize the logical context
       void initialize_logical_context(ContextID ctx);
@@ -1139,7 +1139,7 @@ namespace RegionRuntime {
       PartitionNode *const parent;
       std::map<PartitionID,PartitionNode*> partitions;
       std::vector<RegionState> region_states; // indexed by ctx_id
-      const bool added; // track whether this is a new node
+      bool added; // track whether this is a new node
       bool delete_handle; // for knowing when to delete the region meta data
     };
 
@@ -1181,10 +1181,11 @@ namespace RegionRuntime {
       static PartitionNode* unpack_region_tree(Deserializer &derez, RegionNode *parent,
                     ContextID ctx_id, std::map<LogicalRegion,RegionNode*> *region_nodes,
                     std::map<PartitionID,PartitionNode*> *partitino_nodes, bool add);
+      size_t compute_region_tree_update_size(std::set<PartitionNode*> &updates);
     protected:
-      size_t compute_physical_state_size(ContextID ctx, std::set<InstanceInfo*> &needed,size_t &num_states) const;
-      void pack_physical_state(ContextID ctx, Serializer &rez) const;
-      void unpack_physical_state(ContextID ctx, Deserializer &derez);
+      size_t compute_physical_state_size(ContextID ctx, std::set<InstanceInfo*> &needed);
+      void pack_physical_state(ContextID ctx, Serializer &rez);
+      void unpack_physical_state(ContextID ctx, Deserializer &derez, bool write, std::map<InstanceID,InstanceInfo*> &inst_map);
     protected:
       // Logical operations on partitions 
       void initialize_logical_context(ContextID ctx);
@@ -1215,7 +1216,7 @@ namespace RegionRuntime {
       std::map<Color,LogicalRegion> color_map;
       std::map<LogicalRegion,RegionNode*> children;
       std::vector<PartitionState> partition_states;
-      const bool added; // track whether this is a new node
+      bool added; // track whether this is a new node
     };
 
     /////////////////////////////////////////////////////////////
@@ -1276,6 +1277,7 @@ namespace RegionRuntime {
       size_t compute_info_size(void) const;
       void pack_instance_info(Serializer &rez) const;
       static InstanceInfo* unpack_instance_info(Deserializer &derez);
+      void merge_instance_info(Deserializer &derez); // for merging information into a pre-existing instance
     private:
       Event valid_event;
       Lock inst_lock; // For atomic access if necessary
