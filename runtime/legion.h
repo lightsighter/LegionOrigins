@@ -546,8 +546,9 @@ namespace RegionRuntime {
       ColorizeID register_colorize_function(ColorizeFnptr f);
     public:
       // Methods for the wrapper functions to notify the runtime
-      std::vector<PhysicalRegion<AccessorGeneric> > begin_task(Context ctx);
-      void end_task(Context ctx, const void *result, size_t result_size);
+      void begin_task(Context ctx, std::vector<PhysicalRegion<AccessorGeneric> > &physical_regions);
+      void end_task(Context ctx, const void *result, size_t result_size,
+                    std::vector<PhysicalRegion<AccessorGeneric> > &physical_regions);
     private:
       RegionMappingImpl* get_available_mapping(TaskContext *ctx, const RegionRequirement &req);
     private:
@@ -824,8 +825,8 @@ namespace RegionRuntime {
                        const std::vector<ColorizeFunction<N> > &functions);
     protected:
       // functions for packing and unpacking tasks
-      size_t compute_task_size(void) const;
-      void pack_task(Serializer &rez) const;
+      size_t compute_task_size(void);
+      void pack_task(Serializer &rez);
       void unpack_task(Deserializer &derez);
       void final_unpack_task(void);
       // Return true if this task still has index parts on this machine
@@ -836,8 +837,9 @@ namespace RegionRuntime {
       void register_mapping(RegionMappingImpl *impl);
       void map_and_launch(Mapper *mapper);
       void enumerate_index_space(Mapper *mapper);
-      std::vector<PhysicalRegion<AccessorGeneric> > start_task(void);
-      void complete_task(const void *result, size_t result_size); // task completed running
+      void start_task(std::vector<PhysicalRegion<AccessorGeneric> > &physical_regions);
+      void complete_task(const void *result, size_t result_size,
+            std::vector<PhysicalRegion<AccessorGeneric> > &physical_regions); // task completed running
       void children_mapped(void); // all children have been mapped
       void finish_task(void); // task and all children finished
       void remote_start(const char *args, size_t arglen);
@@ -846,10 +848,10 @@ namespace RegionRuntime {
     protected:
       // functions for updating logical region trees
       void create_region(LogicalRegion handle);
-      void remove_region(LogicalRegion handle, bool recursive = false);
+      void remove_region(LogicalRegion handle, bool recursive = false, bool reclaim_resources = false);
       void smash_region(LogicalRegion smashed, const std::vector<LogicalRegion> &regions);
       void create_partition(PartitionID pid, LogicalRegion parent, bool disjoint, std::vector<LogicalRegion> &children);
-      void remove_partition(PartitionID pid, LogicalRegion parent, bool recursive = false);
+      void remove_partition(PartitionID pid, LogicalRegion parent, bool recursive = false, bool reclaim_resources = false);
     private:
       // Utility functions
       void compute_region_trace(std::vector<unsigned> &trace, LogicalRegion parent, LogicalRegion child);
@@ -859,6 +861,7 @@ namespace RegionRuntime {
                       /*for error reporting*/unsigned task = false, unsigned idx = 0, unsigned unique = 0);
       void initialize_region_tree_contexts(void);
       InstanceInfo* resolve_unresolved_dependences(InstanceInfo *info, ContextID ctx, unsigned idx, bool war_opt);
+      ContextID get_enclosing_context(unsigned idx);
     protected:
       // functions for getting logical regions
       LogicalRegion get_subregion(PartitionID pid, Color c) const;
@@ -949,10 +952,6 @@ namespace RegionRuntime {
       // If this is remote, everything is the same and things will get placed back in the right
       // context when it is sent back
       std::vector<ContextID> physical_ctx;
-      // Precondition events for each task, these are for remote tasks where we had to perform
-      // some close operations prior to moving the task's context
-      bool computed_preconditions;
-      std::vector<Event> preconditions;
       // Keep track of source physical instances that we are copying from when creating our physical
       // instances.  We add references to these physical instances when performing a copy from them
       // so we know when they can be deleted
@@ -968,6 +967,10 @@ namespace RegionRuntime {
       std::set<LogicalRegion> deleted_regions;
       std::set<PartitionID>   created_partitions;
       std::set<PartitionID>   deleted_partitions;
+    private:
+      // Helper information for serializing task context
+      std::set<InstanceInfo*> needed_instances;
+      size_t num_physical_states;
     private:
       // This is the lock for this context.  It will be shared with all contexts of sub-tasks that
       // stay on the same node as they all can access the same aliased region-tree.  However, tasks
@@ -1090,6 +1093,16 @@ namespace RegionRuntime {
       void add_partition(PartitionNode *node);
       void remove_partition(PartitionID pid);
     protected:
+      size_t compute_region_tree_size(void) const;
+      void pack_region_tree(Serializer &rez) const;
+      static RegionNode* unpack_region_tree(Deserializer &derez, PartitionNode *parent,
+                ContextID ctx_id, std::map<LogicalRegion,RegionNode*> *region_nodes,
+                std::map<PartitionID,PartitionNode*> *partition_nodes, bool add);
+    protected:
+      size_t compute_physical_state_size(ContextID ctx, std::set<InstanceInfo*> &needed,size_t &num_states) const;
+      void pack_physical_state(ContextID ctx, Serializer &rez) const;
+      void unpack_physical_state(ContextID ctx, Deserializer &derez);
+    protected:
       // Initialize the logical context
       void initialize_logical_context(ContextID ctx);
       // Register the task with the given requirement on the logical region tree
@@ -1127,6 +1140,7 @@ namespace RegionRuntime {
       std::map<PartitionID,PartitionNode*> partitions;
       std::vector<RegionState> region_states; // indexed by ctx_id
       const bool added; // track whether this is a new node
+      bool delete_handle; // for knowing when to delete the region meta data
     };
 
     /////////////////////////////////////////////////////////////
@@ -1161,6 +1175,16 @@ namespace RegionRuntime {
     protected:
       void add_region(RegionNode *child, Color c);
       void remove_region(LogicalRegion child);
+    protected:
+      size_t compute_region_tree_size(void) const;
+      void pack_region_tree(Serializer &rez) const;
+      static PartitionNode* unpack_region_tree(Deserializer &derez, RegionNode *parent,
+                    ContextID ctx_id, std::map<LogicalRegion,RegionNode*> *region_nodes,
+                    std::map<PartitionID,PartitionNode*> *partitino_nodes, bool add);
+    protected:
+      size_t compute_physical_state_size(ContextID ctx, std::set<InstanceInfo*> &needed,size_t &num_states) const;
+      void pack_physical_state(ContextID ctx, Serializer &rez) const;
+      void unpack_physical_state(ContextID ctx, Deserializer &derez);
     protected:
       // Logical operations on partitions 
       void initialize_logical_context(ContextID ctx);
@@ -1248,6 +1272,10 @@ namespace RegionRuntime {
       void unlock_instance(Event precondition);
       // Set the valid event
       void set_valid_event(Event valid) { valid_event = valid; }
+    protected:
+      size_t compute_info_size(void) const;
+      void pack_instance_info(Serializer &rez) const;
+      static InstanceInfo* unpack_instance_info(Deserializer &derez);
     private:
       Event valid_event;
       Lock inst_lock; // For atomic access if necessary
@@ -1373,7 +1401,8 @@ namespace RegionRuntime {
       // Read the context out of the buffer
       Context ctx = *((const Context*)args);
       // Get the arguments associated with the context
-      std::vector<PhysicalRegion<AccessorGeneric> > regions = runtime->begin_task(ctx);
+      std::vector<PhysicalRegion<AccessorGeneric> > regions;
+      runtime->begin_task(ctx,regions);
 
       // Update the pointer and arglen
       const char* arg_ptr = ((const char*)args)+sizeof(Context);
@@ -1387,7 +1416,7 @@ namespace RegionRuntime {
       }
 
       // Send the return value back
-      runtime->end_task(ctx, (void*)(&return_value), sizeof(T));
+      runtime->end_task(ctx, (void*)(&return_value), sizeof(T), regions);
     }
 
     // Overloaded version of the task wrapper for when return type is void
@@ -1401,7 +1430,8 @@ namespace RegionRuntime {
       // Read the context out of the buffer
       Context ctx = *((const Context*)args);
       // Get the arguments associated with the context
-      std::vector<PhysicalRegion<AccessorGeneric> > regions = runtime->begin_task(ctx);
+      std::vector<PhysicalRegion<AccessorGeneric> > regions; 
+      runtime->begin_task(ctx, regions);
 
       // Update the pointer and arglen
       const char* arg_ptr = ((const char*)args)+sizeof(Context);
@@ -1414,7 +1444,7 @@ namespace RegionRuntime {
       }
 
       // Send an empty return value back
-      runtime->end_task(ctx, NULL, 0); 
+      runtime->end_task(ctx, NULL, 0, regions); 
     }
 
     // Overloaded versions of the task wrapper for when you might want to have the
@@ -1433,7 +1463,8 @@ namespace RegionRuntime {
       // Read the context out of the buffer
       Context ctx = *((const Context*)args);
       // Get the arguments associated with the context
-      std::vector<PhysicalRegion<AccessorGeneric> > regions = runtime->begin_task(ctx);
+      std::vector<PhysicalRegion<AccessorGeneric> > regions;
+      runtime->begin_task(ctx,regions);
 
       // Update the pointer and the arglen
       const char* arg_ptr = ((const char*)args)+sizeof(Context);
@@ -1473,7 +1504,7 @@ namespace RegionRuntime {
       }
 
       // Send the return value back
-      runtime->end_task(ctx, (void*)&return_value, sizeof(T));
+      runtime->end_task(ctx, (void*)&return_value, sizeof(T),regions);
     }
 
     // Overloaded version of the task wrapper for when you want fast instances with a
@@ -1491,7 +1522,8 @@ namespace RegionRuntime {
       // Read the context out of the buffer
       Context ctx = *((const Context*)args);
       // Get the arguments associated with the context
-      std::vector<PhysicalRegion<AccessorGeneric> > regions = runtime->begin_task(ctx);
+      std::vector<PhysicalRegion<AccessorGeneric> > regions;
+      runtime->begin_task(ctx,regions);
 
       // Update the pointer and the arglen
       const char* arg_ptr = ((const char*)args)+sizeof(Context);
@@ -1528,7 +1560,7 @@ namespace RegionRuntime {
       }
 
       // Send the return value back
-      runtime->end_task(ctx, NULL, 0);
+      runtime->end_task(ctx, NULL, 0, regions);
     }
 
     // A wrapper task for allowing the application to initialize the set of mappers
