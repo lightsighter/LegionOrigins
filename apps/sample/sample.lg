@@ -1,0 +1,180 @@
+
+// RWE == Read-Write-Exclusive
+// NAE == No-Access-Exclusive
+// ROE == Read-Only-Exclusive
+// WOR == Write-Only-Relaxed (ask me to explain in person)
+
+// One external function call for sequential sort
+void stlSort(int array[], int num_elmts);
+
+__task__
+void sample_sort(int num_keys) : (RWE int keys[])
+{
+  // Some tunable declarations
+  tunable int num_splitters;
+  tunable int divisions;
+  tunable int min_keys;
+
+  // Default case
+  if (num_keys <= min_keys)
+  {
+    stlSort(keys,num_keys);
+  }
+
+  // First compute splitters 
+  // Create an index space to represent the splitters
+  IndexSpace splitter_space[0:num_splitters];
+  // Declare an array to hold data for the splitters
+  int splitters[splitter_space];
+  spawn compute_splitters(num_splitters):(splitters);
+
+  // Create an evenly divided partition of the keys
+  Partition<keys> even_partition = spawn create_even_partition(num_keys,divisions):(keys);
+
+  // Compute the counts of elements in each division
+  int offsets[0:(splitters+1)*divisions];
+  Partition<offsets> offset_partition;
+  Partition<keys> bin_partition;
+  {offset_partition,bin_partition} = spawn compute_compute_offsets(splitters,divisions,even_part):
+        (offsets, splitters, keys);
+
+  // Map the keys array to a new array that will be a physical copy of keys
+  map(keys -> ROA int old_keys[])
+  {
+    // Spawn an index space of tasks to swizzle the elements into the right bins
+    spawn(int i in [0:divisions])
+      swizzle_elements(num_keys/divisions,num_splitters):(offset_partition[i],even_partition[i],old_keys);
+  }
+
+  // Spawn an index space of tasks to sort each of the bins 
+  // separately by recursively invoking sample sort
+  spawn(int i in bin_paritition)
+    sample_sort(bin_partition[i].size()):(bin_parititon[i]); 
+}
+
+__task__
+void compute_splitters(int num_splitters) : (RWE int splitters[])
+{
+  // Select random splitters
+  for (int i in splitters.index_space())
+  {
+    splitters[i] = rand();
+  }
+  // Sort the splitters
+  stlSort(splitters, num_splitters);
+}
+
+__task__
+Partition<keys> create_even_partition(int num_keys, int divisions) : (NAE int keys[])
+{
+  // Create a partition to evenly split up the array
+  // First make the coloring
+  Coloring even_coloring;
+  {
+    int stride = num_keys/divisions;
+    for (int i=0; i<divisions; i++)
+    {
+      // Assuming a nice even division
+      even_coloring[i] = [i*stride:1:(i+1)*stride];
+    }
+  }
+  // Now make the 
+  Parition even_partition = keys.create_partition(even_coloring);
+  return even_partition;
+}
+
+__task__
+{Partition<offsets>,Partition<keys>} compute_global_offsets(int num_splitters, int divisions, 
+                                                            Partition<keys> even_part)  
+                                     : (RWE int offsets[], ROE int splitters[], ROE int keys[])
+{
+  // First compute the counts for each of the divisions
+  int counts[0:(splitters+1)*divisions];
+  // Initialize the counts
+  for (int i = counts.index_space())
+  {
+    counts[i] = 0;
+  }
+  Coloring count_coloring;
+  {
+    for (int i = 0; i<divisons; i++)
+    {
+      count_coloring[i] = [i*(num_splitters+1):1:(i+1)*(num_splitters+1)];
+    }
+  }
+  Partition<counts> count_part = counts.partition(count_coloring);
+  // Launch the task to compute the counts passing down the same splitters
+  // to all subtasks, but different versions of the count array and the key array
+  spawn(int i in [0:divisions])
+    compute_counts(num_splitters, keys.size()/divisions):(count_part[i], splitters, even_part[i]);
+  
+  // Now that we have the counts we can compute the global offsets
+  // Also build the coloring for bins of the keys
+  Coloring bin_coloring;
+  int offset = 0;
+  for (int i = 0; i < (num_splitters+1); i++)
+  {
+    int old_offset = offset;
+    for (int j = 0; j < divisions; j++)
+    {
+      offsets[j*(num_splitters+1) + i] = offset;
+      offset += counts[j*(num_splitters+1) + i];
+    }
+    bin_coloring[i] = [old_offset:1:offset];
+  }
+  // Create partitionings for the offsets and the keys
+  Partition<keys> bin_part = keys.partition(bin_coloring);
+  Coloring offset_coloring;
+  for (int i = 0; i<divisions; i++)
+  {
+    offset_coloring[i] = [i*(num_splitters+1):1:(i+1)*(num_splitters+1)];
+  }
+  Partition<offsets> offset_part = offsets.partition(offset_coloring);
+  return (offset_part,bin_part);
+}
+
+__task__
+int find_bin(int value, int num_splitters) : (ROE int splitters[])
+{
+  int bin = num_splitters;
+  for (int i = 0; i < num_splitters; i++)
+  {
+    if (value < splitters[i])
+    {
+      bin = i;
+      break;
+    }
+  }
+  return bin;
+}
+
+__task__
+void compute_counts(int num_splitters, int num_keys) : 
+          (RWE int counts[], ROE int splitters[], ROE int keys[])
+{
+  // Iterate over the keys counting how many there are in each bin 
+  // I'm assuming I can do array accesses local here like Sequoia
+  // (it's still unclear if this is the right answer)
+  for (int i = 0; i < num_keys; i++)
+  {
+    int bin = find_bin(keys[i],num_splitters):(splitters); 
+    // Update the count for the bin
+    counts[bin]++;
+  }
+}
+
+__task__
+void swizzle_elements(int num_keys, int num_splitters) :
+          (RwE int offsets[], ROE int in_keys[], WOE int out_keys[])
+{
+  // Go through the keys and put them in the right place
+  for (int i = 0; i < num_keys; i++)
+  {
+    int bin = find_bin(keys[i],num_splitters 
+    // FYI: More local array reasoning
+    out_keys[offsets[bin]++] = in_keys[i];
+  }
+}
+
+// EOF
+
