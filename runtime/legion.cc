@@ -273,6 +273,24 @@ namespace RegionRuntime {
       memcpy(result, res, result_size);
     }
 
+    //--------------------------------------------------------------------------
+    void FutureImpl::set_result(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      size_t result_size;
+      derez.deserialize<size_t>(result_size);
+      result = malloc(result_size);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!set_event.has_triggered());
+      assert(active);
+      if (result_size > 0)
+      {
+        assert(result != NULL);
+      }
+#endif
+      derez.deserialize(result,result_size);
+    }
+
     /////////////////////////////////////////////////////////////
     // Region Mapping 
     /////////////////////////////////////////////////////////////
@@ -357,6 +375,18 @@ namespace RegionRuntime {
 #endif
             parent_physical_ctx = parent_ctx->physical_ctx[parent_idx];
             break;
+          }
+        }
+        // Also check the created regions
+        for (std::map<LogicalRegion,ContextID>::const_iterator it = parent_ctx->created_regions.begin();
+              it != parent_ctx->created_regions.end(); it++)
+        {
+          if (req.parent == it->first)
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            found = true;
+#endif
+            parent_physical_ctx = it->second;
           }
         }
 #ifdef DEBUG_HIGH_LEVEL
@@ -1123,7 +1153,7 @@ namespace RegionRuntime {
                   low_region.id, ctx->unique_id);
 
       // Notify the context that we destroyed the logical region
-      ctx->remove_region(handle);
+      ctx->remove_region(handle, false/*recursive*/, true/*reclaim resources*/);
 
       low_region.destroy_region_untyped();
     }
@@ -1274,7 +1304,7 @@ namespace RegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_DESTROY_PARTITION);
       log_region(LEVEL_DEBUG,"Destroying partition %d in task %d\n",
                   part.id, ctx->unique_id);
-      ctx->remove_partition(part.id, part.parent);
+      ctx->remove_partition(part.id, part.parent, false/*recursive*/, true/*reclaim resources*/);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2373,7 +2403,7 @@ namespace RegionRuntime {
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
             // Sanitize the region tree
-            RegionRenamer renamer(get_enclosing_context(idx),idx,this,mapper);
+            RegionRenamer renamer(get_enclosing_physical_context(idx),idx,this,mapper);
             // Compute the trace to the right region
             if (is_index_space)
             {
@@ -2440,12 +2470,12 @@ namespace RegionRuntime {
           if (is_index_space)
           {
             result += (*partition_nodes)[regions[idx].handle.partition]->parent->
-              compute_physical_state_size(get_enclosing_context(idx),needed_instances);
+              compute_physical_state_size(get_enclosing_physical_context(idx),needed_instances);
           }
           else
           {
             result += (*region_nodes)[regions[idx].handle.region]->
-              compute_physical_state_size(get_enclosing_context(idx),needed_instances);
+              compute_physical_state_size(get_enclosing_physical_context(idx),needed_instances);
           }
         }
         // compute the size of the needed instances
@@ -2556,11 +2586,11 @@ namespace RegionRuntime {
         {
           if (is_index_space)
           {
-            (*partition_nodes)[regions[idx].handle.partition]->pack_physical_state(get_enclosing_context(idx),rez);
+            (*partition_nodes)[regions[idx].handle.partition]->pack_physical_state(get_enclosing_physical_context(idx),rez);
           }
           else
           {
-            (*region_nodes)[regions[idx].handle.region]->pack_physical_state(get_enclosing_context(idx),rez);
+            (*region_nodes)[regions[idx].handle.region]->pack_physical_state(get_enclosing_physical_context(idx),rez);
           }
         }
       }
@@ -2620,6 +2650,7 @@ namespace RegionRuntime {
       remote = true;
       sanitized = true;
       remote_start_event = Event::NO_EVENT;
+      remote_children_event = Event::NO_EVENT;
       derez.deserialize<UserEvent>(termination_event);
 
       // Mark that we're only doing a partial unpack
@@ -2700,6 +2731,115 @@ namespace RegionRuntime {
       cached_buffer = NULL;
       cached_size = 0;
       partially_unpacked = false;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    size_t TaskContext::compute_tree_update_size(std::vector<std::set<PartitionNode*> > &region_tree_updates)
+    //--------------------------------------------------------------------------------------------
+    {
+      size_t result = 0;
+      // First get the size of the updates
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        std::set<PartitionNode*> updates;
+        result += sizeof(size_t); // number of updates
+        result += sizeof(LogicalRegion); // parent region
+        result += (*region_nodes)[regions[idx].handle.region]->
+                        compute_region_tree_update_size(updates); 
+        region_tree_updates.push_back(updates);
+      }
+      // Compute the size of the created region trees
+      result += sizeof(size_t); // number of created regions
+      for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
+            it != created_regions.end(); it++)
+      {
+        result += (*region_nodes)[it->first]->compute_region_tree_size();
+      }
+      // Now compute the size of the deleted region and partition information
+      result += sizeof(size_t); // number of deleted regions
+      result += (deleted_regions.size() * sizeof(LogicalRegion));
+      result += sizeof(size_t);
+      result += (deleted_partitions.size() * sizeof(PartitionID));
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::pack_tree_updates(Serializer &rez, const std::vector<std::set<PartitionNode*> > &region_tree_updates)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Pack everything into the buffer
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        rez.serialize<size_t>(region_tree_updates[idx].size());
+        for (std::set<PartitionNode*>::const_iterator it = region_tree_updates[idx].begin();
+              it != region_tree_updates[idx].end(); it++)
+        {
+          rez.serialize<LogicalRegion>((*it)->parent->handle);
+          (*it)->pack_region_tree(rez);
+        }
+      }
+      // Created regions
+      rez.serialize<size_t>(created_regions.size());
+      for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
+            it != created_regions.end(); it++)
+      {
+        (*region_nodes)[it->first]->pack_region_tree(rez);
+      }
+      // deleted regions
+      rez.serialize<size_t>(deleted_regions.size());
+      for (std::set<LogicalRegion>::const_iterator it = deleted_regions.begin();
+            it != deleted_regions.end(); it++)
+      {
+        rez.serialize<LogicalRegion>(*it);
+      }
+      // deleted partitions
+      rez.serialize<size_t>(deleted_partitions.size());
+      for (std::set<PartitionID>::const_iterator it = deleted_partitions.begin();
+            it != deleted_partitions.end(); it++)
+      {
+        rez.serialize<PartitionID>(*it);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::unpack_tree_updates(Deserializer &derez, 
+                                          std::vector<LogicalRegion> &created, ContextID outermost)
+    //--------------------------------------------------------------------------------------------
+    {
+      size_t num_created;
+      derez.deserialize<size_t>(num_created);
+      for (unsigned idx = 0; idx < num_created; idx++)
+      {
+        RegionNode *new_node = RegionNode::unpack_region_tree(derez,NULL,outermost,
+                                            region_nodes, partition_nodes, true/*add*/);
+        // Also initialize logical context
+        new_node->initialize_logical_context(parent_ctx->ctx_id);
+        // Add it to the list of created regions
+        parent_ctx->created_regions.insert(std::pair<LogicalRegion,ContextID>(new_node->handle,outermost));
+        // Save this for when we unpack the states
+        created.push_back(new_node->handle);
+      }
+      // Unpack the deleted regions
+      size_t num_del_regions;
+      derez.deserialize<size_t>(num_del_regions);
+      for (unsigned idx = 0; idx < num_del_regions; idx++)
+      {
+        // Delete the regions, add them to the deleted list
+        LogicalRegion del_region;
+        derez.deserialize<LogicalRegion>(del_region);
+        parent_ctx->remove_region(del_region); // This will also add it to the list of deleted regions
+      }
+      // unpack the deleted partitions
+      size_t num_del_parts;
+      derez.deserialize<size_t>(num_del_parts);
+      for (unsigned idx = 0; idx < num_del_parts; idx++)
+      {
+        // Delete the partitions
+        PartitionID del_part;
+        derez.deserialize<PartitionID>(del_part);
+        PartitionNode *part = (*partition_nodes)[del_part];
+        parent_ctx->remove_partition(del_part,part->parent->handle);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2998,7 +3138,7 @@ namespace RegionRuntime {
       // After we make it here, we are just a single task (even if we're part of index space)
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        ContextID parent_physical_ctx = get_enclosing_context(idx);
+        ContextID parent_physical_ctx = get_enclosing_physical_context(idx);
         std::set<Memory> sources;
         RegionNode *handle = (*region_nodes)[regions[idx].handle.region];
         handle->get_physical_locations(parent_physical_ctx, sources);
@@ -3192,6 +3332,7 @@ namespace RegionRuntime {
     void TaskContext::enumerate_index_space(Mapper *mapper)
     //--------------------------------------------------------------------------------------------
     {
+      // TODO
       // For each point in the index space get a new TaskContext, clone it from
       // this task context with correct region requirements, 
       // and then call map and launch on the task with the mapper
@@ -3329,28 +3470,8 @@ namespace RegionRuntime {
         // Send back the information about the mappings to the original processor
         size_t buffer_size = sizeof(Processor) + sizeof(Context);
 
-        // First get the size of the updates
-        std::set<PartitionNode*> region_tree_updates;
-        buffer_size += sizeof(size_t); // number of updates
-        for (unsigned idx = 0; idx < regions.size(); idx++)
-        {
-          buffer_size += sizeof(LogicalRegion); // parent region
-          buffer_size += (*region_nodes)[regions[idx].handle.region]->
-                          compute_region_tree_update_size(region_tree_updates); 
-        }
-        // Compute the size of the created region trees
-        buffer_size += sizeof(size_t); // number of created regions
-        for (std::set<LogicalRegion>::const_iterator it = created_regions.begin();
-              it != created_regions.end(); it++)
-        {
-          buffer_size += (*region_nodes)[*it]->compute_region_tree_size();
-        }
-        // Now compute the size of the deleted region and partition information
-        buffer_size += sizeof(size_t); // number of deleted regions
-        buffer_size += (deleted_regions.size() * sizeof(LogicalRegion));
-        buffer_size += sizeof(size_t);
-        buffer_size += (deleted_partitions.size() * sizeof(PartitionID));
-        
+        std::vector<std::set<PartitionNode*> > region_tree_updates;
+        buffer_size += compute_tree_update_size(region_tree_updates);      
         // Finally compute the size state information to be passed back
         std::set<InstanceInfo*> required_instances;
         for (unsigned idx = 0; idx < regions.size(); idx++)
@@ -3361,10 +3482,10 @@ namespace RegionRuntime {
                             compute_physical_state_size(ctx_id,required_instances);
           }
         }
-        for (std::set<LogicalRegion>::const_iterator it = created_regions.begin();
+        for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
               it != created_regions.end(); it++)
         {
-          buffer_size += (*region_nodes)[*it]->compute_physical_state_size(ctx_id,required_instances);
+          buffer_size += (*region_nodes)[it->first]->compute_physical_state_size(ctx_id,required_instances);
         }
         // Also include the size of the instances to pass pack
         buffer_size += sizeof(size_t); // num instances
@@ -3379,35 +3500,8 @@ namespace RegionRuntime {
         rez.serialize<Processor>(orig_proc);
         rez.serialize<Context>(orig_ctx);
 
-        // Pack everything into the buffer
-        rez.serialize<size_t>(region_tree_updates.size());
-        for (std::set<PartitionNode*>::const_iterator it = region_tree_updates.begin();
-              it != region_tree_updates.end(); it++)
-        {
-          rez.serialize<LogicalRegion>((*it)->parent->handle);
-          (*it)->pack_region_tree(rez);
-        }
-        // Created regions
-        rez.serialize<size_t>(created_regions.size());
-        for (std::set<LogicalRegion>::const_iterator it = created_regions.begin();
-              it != created_regions.end(); it++)
-        {
-          (*region_nodes)[*it]->pack_region_tree(rez);
-        }
-        // deleted regions
-        rez.serialize<size_t>(deleted_regions.size());
-        for (std::set<LogicalRegion>::const_iterator it = deleted_regions.begin();
-              it != deleted_regions.end(); it++)
-        {
-          rez.serialize<LogicalRegion>(*it);
-        }
-        // deleted partitions
-        rez.serialize<size_t>(deleted_partitions.size());
-        for (std::set<PartitionID>::const_iterator it = deleted_partitions.begin();
-              it != deleted_partitions.end(); it++)
-        {
-          rez.serialize<PartitionID>(*it);
-        }
+        pack_tree_updates(rez,region_tree_updates);
+
         // Now do the instances
         rez.serialize<size_t>(required_instances.size());
         for (std::set<InstanceInfo*>::const_iterator it = required_instances.begin();
@@ -3425,22 +3519,62 @@ namespace RegionRuntime {
           }
         }
         // Physical states for the created regions
-        for (std::set<LogicalRegion>::const_iterator it = created_regions.begin();
+        for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
               it != created_regions.end(); it++)
         {
-          (*region_nodes)[*it]->pack_physical_state(ctx_id,rez);
+          (*region_nodes)[it->first]->pack_physical_state(it->second,rez);
         }
 
-        // Run this task on the utility processor
+        // Run this task on the utility processor waiting for the remote start event
         Processor utility = orig_proc.get_utility_processor();
-        utility.spawn(NOTIFY_MAPPED_ID,rez.get_buffer(),buffer_size);
+        this->remote_children_event = utility.spawn(NOTIFY_MAPPED_ID,rez.get_buffer(),buffer_size,remote_start_event);
 
         // Note that we can clear the region tree updates since we've propagated them back to the parent
         created_regions.clear();
         deleted_regions.clear();
         deleted_partitions.clear();
       }
+      else // Not remote so propagate information back to our parent context
+      {
+        // Propagate the created and deleted region information back to the parent
+        // Since they share the same region tree, we don't actually have to move the data
+        if (parent_ctx != NULL) // handle top-level task case
+        {
+          parent_ctx->created_regions.insert(created_regions.begin(),created_regions.end());
+          parent_ctx->deleted_regions.insert(deleted_regions.begin(),deleted_regions.end());
+          parent_ctx->deleted_partitions.insert(deleted_partitions.begin(),deleted_partitions.end());
+        }
+        // We can clear these out since we're done with them now
+        created_regions.clear();
+        deleted_regions.clear();
+        deleted_partitions.clear();
 
+        // We don't need to pass back any physical state information as it has already
+        // been updated in the same region tree
+
+        // Now notify all of our map dependent tasks that the mapping information
+        // is ready for those regions that had no instance
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          if (physical_instances[idx] == InstanceInfo::get_no_instance())
+          {
+            for (std::set<GeneralizedContext*>::const_iterator it = map_dependent_tasks[idx].begin();
+                  it != map_dependent_tasks[idx].end(); it++)
+            {
+              (*it)->notify();
+            }
+          }
+        }
+        // Check to see if we had any unmapped regions in which case we can now trigger that we've been mapped
+        if (unmapped > 0)
+        {
+          mapped = true;
+          map_event.trigger();
+        }
+      }
+
+      // Now issue the termination task contingent on all our child tasks being done
+      // and the necessary copy up operations being applied
       // Get a list of all the child task termination events so we know when they are done
       std::set<Event> cleanup_events;
       for (std::vector<TaskContext*>::iterator it = child_tasks.begin();
@@ -3485,34 +3619,58 @@ namespace RegionRuntime {
       {
         // Send information about the updated logical regions to the parent context 
         size_t buffer_size = sizeof(Processor) + sizeof(Context);
+
+        // the result information
+        buffer_size += sizeof(size_t);
+        buffer_size += result_size;
+
+        // now pack the information about the returning region tree information
+        std::vector<std::set<PartitionNode*> > region_tree_updates;
+        buffer_size += compute_tree_update_size(region_tree_updates);
+
         Serializer rez(buffer_size);
         rez.serialize<Processor>(orig_proc);
         rez.serialize<Context>(orig_ctx);
 
-        // Put the task on the utility processor
+        // pack the result information
+        rez.serialize<size_t>(result_size);
+        rez.serialize(result,result_size);
+
+        // Pack the region tree updates
+        pack_tree_updates(rez, region_tree_updates);
+
+        // Put the task on the utility processor, make sure it runs after remote_start and remote_children task 
+        std::set<Event> wait_on_events;
+        wait_on_events.insert(remote_start_event);
+        wait_on_events.insert(remote_children_event);
         Processor utility = orig_proc.get_utility_processor();
-        utility.spawn(NOTIFY_FINISH_ID,rez.get_buffer(),buffer_size);
+        utility.spawn(NOTIFY_FINISH_ID,rez.get_buffer(),buffer_size,Event::merge_events(wait_on_events));
       }
       else
       {
         if (parent_ctx != NULL)
         {
-          // Propagate information to the parent task
-          
-          // Create regions
-
-          // Added partitions
-
-          // Deleted regions
+          // Propagate information back to the parent task context
+          parent_ctx->created_regions.insert(created_regions.begin(),created_regions.end());
+          parent_ctx->deleted_regions.insert(deleted_regions.begin(),deleted_regions.end());
+          parent_ctx->deleted_partitions.insert(deleted_partitions.begin(),deleted_partitions.end());
+          // We can clear these out since we're done with them now
+          created_regions.clear();
+          deleted_regions.clear();
+          deleted_partitions.clear();
         }
         
-        // Set the future result
+        // Future result has already been set
 
         // Trigger the termination event
         termination_event.trigger();
-        // Release our references to the physical instances
-
       }
+      // Release any references that we have to physical instances
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        physical_instances[idx]->remove_user(unique_id,true/*release*/);
+      }
+
       // Deactivate any child tasks
       for (std::vector<TaskContext*>::const_iterator it = child_tasks.begin();
             it != child_tasks.end(); it++)
@@ -3557,7 +3715,7 @@ namespace RegionRuntime {
             info->merge_instance_info(derez);
           }
           // Update the valid instances of this region
-          (*region_nodes)[info->handle]->update_valid_instances(get_enclosing_context(idx),info,HAS_WRITE(regions[idx]));
+          (*region_nodes)[info->handle]->update_valid_instances(get_enclosing_physical_context(idx),info,HAS_WRITE(regions[idx]));
           // Now notify all the tasks waiting on this region that it is valid
           for (std::set<GeneralizedContext*>::const_iterator it = map_dependent_tasks[idx].begin();
                 it != map_dependent_tasks[idx].end(); it++)
@@ -3585,14 +3743,123 @@ namespace RegionRuntime {
     void TaskContext::remote_children_mapped(const char *args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"Processing remote children mapped for task %d with unique id %d",task_id,unique_id);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!remote);
+      assert(parent_ctx != NULL);
+#endif
+      Deserializer derez(args,arglen);
+      // This is a remote task having it's children come back
+      // Propagate all of this tasks information back into its parent task's context
+      // First unpack the updates to the region tree
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        size_t num_updates;
+        derez.deserialize<size_t>(num_updates);
+        for (unsigned idx = 0; idx < num_updates; idx++)
+        {
+          LogicalRegion parent;
+          derez.deserialize<LogicalRegion>(parent);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(region_nodes->find(parent) != region_nodes->end());
+#endif
+          // Now unpack the update
+          PartitionNode *add = PartitionNode::unpack_region_tree(derez,(*region_nodes)[parent],physical_ctx[idx],
+                                            region_nodes, partition_nodes, true/*add*/);
+          // Also initialize the logical contexts for the parent task
+          add->initialize_logical_context(parent_ctx->ctx_id);
+        }
+      }
+      // unpack the created regions, do this in whatever the outermost enclosing context is
+      ContextID outermost = get_outermost_physical_context();
+      std::vector<LogicalRegion> created;
+      // unpack the region tree updates
+      unpack_tree_updates(derez,created,outermost);
 
+      // Unpack the physical instances
+      size_t num_instances;
+      derez.deserialize<size_t>(num_instances);
+      for (unsigned idx = 0; idx < num_instances; idx++)
+      {
+        InstanceID iid;
+        derez.deserialize<InstanceID>(iid);
+        // check to see if it already exists
+        if (instance_infos->find(iid) != instance_infos->end())
+        {
+          (*instance_infos)[iid]->merge_instance_info(derez);
+        }
+        else
+        {
+          InstanceInfo *new_info = InstanceInfo::unpack_instance_info(derez);
+          (*instance_infos)[iid] = new_info;
+        }
+      }
+      // Unpack the physical state of the regions
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        if (physical_instances[idx] == InstanceInfo::get_no_instance())
+        {
+          (*region_nodes)[regions[idx].handle.region]->unpack_physical_state(
+                      physical_ctx[idx],derez,HAS_WRITE(regions[idx]),*instance_infos);
+        }
+      }
+      // Unpack the physical state of the created regions
+      for (unsigned idx = 0; idx < created.size(); idx++)
+      {
+        (*region_nodes)[created[idx]]->unpack_physical_state(
+                      outermost,derez,true/*write*/,*instance_infos);
+      }
+      // Now we can go through and notify all our map dependent tasks that the information has been propagated back
+      // into the physical region trees
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        if (physical_instances[idx] == InstanceInfo::get_no_instance())
+        {
+          for (std::set<GeneralizedContext*>::const_iterator it = map_dependent_tasks[idx].begin();
+                it != map_dependent_tasks[idx].end(); it++)
+          {
+            (*it)->notify();
+          }
+        }
+      }
+      // If we had any unmapped children indicate that we are now mapped
+      if (unmapped > 0)
+      {
+        mapped = true;
+        map_event.trigger();
+      }
     }
 
     //--------------------------------------------------------------------------------------------
     void TaskContext::remote_finish(const char *args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
-
+      log_task(LEVEL_DEBUG,"Processing remote finish for task %d with unique id %d",task_id,unique_id);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!remote);
+      assert(parent_ctx != NULL);
+#endif
+      Deserializer derez(args,arglen);
+      // First unpack the result information and set the future result
+      future.set_result(derez);
+      // Now unpack the updates to the region tree
+      {
+        std::vector<LogicalRegion> created;
+        ContextID outermost = get_outermost_physical_context();
+        unpack_tree_updates(derez,created,outermost);
+      }
+      // Trigger the event that indicates that this task is done
+      termination_event.trigger();
+      // We can also release our uses of the physical instances, but since we also did this
+      // on the remote runtime, we don't need to release any reference counts
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        if (physical_instances[idx] != InstanceInfo::get_no_instance())
+        {
+          physical_instances[idx]->remove_user(unique_id,false/*release*/);
+        }
+      }
+      // No need to deactivate ourselves, that will happen when our parent finishes
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3606,8 +3873,19 @@ namespace RegionRuntime {
       RegionNode *node = new RegionNode(handle, 0/*depth*/, NULL/*parent*/, true/*add*/,ctx_id);
       // Add it to the map of nodes
       (*region_nodes)[handle] = node;
+      // Also initialize the physical state in the outermost enclosing region
+      ContextID outermost;
+      {
+        TaskContext *ctx = this;
+        while (!ctx->remote)
+        {
+          ctx = ctx->parent_ctx;
+        }
+        outermost = ctx->ctx_id;
+      }
+      node->initialize_physical_context(outermost);
       // Update the list of newly created regions
-      created_regions.insert(handle);
+      created_regions.insert(std::pair<LogicalRegion,ContextID>(handle,outermost));
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3646,7 +3924,7 @@ namespace RegionRuntime {
         else
         {
           // We did add it, so it should be on this list
-          std::set<LogicalRegion>::iterator finder = created_regions.find(handle);
+          std::map<LogicalRegion,ContextID>::iterator finder = created_regions.find(handle);
 #ifdef DEBUG_HIGH_LEVEL
           assert(finder != created_regions.end());
 #endif
@@ -3874,7 +4152,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    ContextID TaskContext::get_enclosing_context(unsigned idx)
+    ContextID TaskContext::get_enclosing_physical_context(unsigned idx)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -3892,9 +4170,30 @@ namespace RegionRuntime {
           return parent_ctx->physical_ctx[parent_idx];
         }
       }
+      // Couldn't find it directly, check the created regions
+      for (std::map<LogicalRegion,ContextID>::const_iterator it = parent_ctx->created_regions.begin();
+            it != parent_ctx->created_regions.end(); it++)
+      {
+        if (regions[idx].parent == it->first)
+        {
+          return it->second;
+        }
+      }
       log_inst(LEVEL_ERROR,"Unable to find parent physical context!");
       exit(1);
       return 0;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    ContextID TaskContext::get_outermost_physical_context(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      TaskContext *ctx = this;
+      while (!ctx->remote && (ctx->parent_ctx != NULL))
+      {
+        ctx = ctx->parent_ctx;
+      }
+      return ctx->ctx_id;
     }
 
     //--------------------------------------------------------------------------------------------

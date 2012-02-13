@@ -425,7 +425,7 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////////////// 
      /**
      * A class which will be used for managing access to the lower-level
-     * runtime services.  We want to ensure a few global variants even
+     * runtime services.  We want to ensure a few global invariants even
      * in the presence of multiple mappers such as there is only ever one
      * handle for a given logical region.  To guarantee these properties
      * we have a singleton runtime object for each processor in the system
@@ -681,11 +681,6 @@ namespace RegionRuntime {
     //                                                                       //
     ///////////////////////////////////////////////////////////////////////////
     
-    struct Range {
-      Color lower;
-      Color upper;
-    };
-
     enum DependenceType {
       NO_DEPENDENCE = 0,
       TRUE_DEPENDENCE = 1,
@@ -714,6 +709,7 @@ namespace RegionRuntime {
       ~FutureImpl(void);
       void reset(Event set_e); // Event that will be set when task is finished
       void set_result(const void *res, size_t result_size);
+      void set_result(Deserializer &derez);
     public:
       template<typename T> inline T get_result(void);
       inline void get_void_result(void);
@@ -831,6 +827,10 @@ namespace RegionRuntime {
       void final_unpack_task(void);
       // Return true if this task still has index parts on this machine
       bool distribute_index_space(std::vector<Mapper::IndexSplit> &chunks, Mapper *m);
+      // Compute region tree updates
+      size_t compute_tree_update_size(std::vector<std::set<PartitionNode*> > &region_tree_updates);
+      void pack_tree_updates(Serializer &rez, const std::vector<std::set<PartitionNode*> > &region_tree_updates);
+      void unpack_tree_updates(Deserializer &derez, std::vector<LogicalRegion> &created, ContextID outermost);
     protected:
       // functions for updating a task's state
       void register_child_task(TaskContext *desc);
@@ -861,7 +861,8 @@ namespace RegionRuntime {
                       /*for error reporting*/unsigned task = false, unsigned idx = 0, unsigned unique = 0);
       void initialize_region_tree_contexts(void);
       InstanceInfo* resolve_unresolved_dependences(InstanceInfo *info, ContextID ctx, unsigned idx, bool war_opt);
-      ContextID get_enclosing_context(unsigned idx);
+      ContextID get_enclosing_physical_context(unsigned idx);
+      ContextID get_outermost_physical_context(void);
     protected:
       // functions for getting logical regions
       LogicalRegion get_subregion(PartitionID pid, Color c) const;
@@ -922,6 +923,7 @@ namespace RegionRuntime {
       // Remoteness information
       bool remote;
       Event remote_start_event; // Make sure the remote finish task executes after the remote start task
+      Event remote_children_event; // Event for when the remote children mapped task has run
     protected:
       // Result information
       FutureImpl future;
@@ -963,7 +965,7 @@ namespace RegionRuntime {
       std::map<InstanceID,InstanceInfo*>   *instance_infos;  // Can be aliased with other tasks map
     private:
       // Track updates to the region tree
-      std::set<LogicalRegion> created_regions; // new top-level created regions
+      std::map<LogicalRegion,ContextID> created_regions; // new top-level created regions
       std::set<LogicalRegion> deleted_regions; // top of deleted region trees only
       std::set<PartitionID>   deleted_partitions; // top of deleted trees only
     private:
@@ -1180,7 +1182,7 @@ namespace RegionRuntime {
       void pack_region_tree(Serializer &rez) const;
       static PartitionNode* unpack_region_tree(Deserializer &derez, RegionNode *parent,
                     ContextID ctx_id, std::map<LogicalRegion,RegionNode*> *region_nodes,
-                    std::map<PartitionID,PartitionNode*> *partitino_nodes, bool add);
+                    std::map<PartitionID,PartitionNode*> *partition_nodes, bool add);
       size_t compute_region_tree_update_size(std::set<PartitionNode*> &updates);
     protected:
       size_t compute_physical_state_size(ContextID ctx, std::set<InstanceInfo*> &needed);
