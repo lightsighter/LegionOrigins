@@ -215,6 +215,9 @@ namespace RegionRuntime {
       MappingTagID tag;
       Processor orig_proc;
       bool stolen;
+      bool is_index_space; // is this task an index space
+      bool must; // if index space, must tasks be run concurrently
+      // Any other index space parameters we need here?
     protected:
       // Only the high level runtime should be able to make these
       friend class HighLevelRuntime;
@@ -957,9 +960,7 @@ namespace RegionRuntime {
       // Mappable is true when remaining events==0
     protected:
       // Index Space meta data
-      bool is_index_space; // Track whether this task is an index space
       bool need_split; // Does this index space still need to be split
-      bool must; // Is this a must parallel index space
       std::vector<UnsizedConstraint> index_space;
       std::vector<UnsizedColorize> colorize_functions;
       bool enumerated; // Check to see if this space has been enumerated
