@@ -644,34 +644,83 @@ namespace RegionRuntime {
       Mapper(Machine *machine, HighLevelRuntime *runtime, Processor local);
       virtual ~Mapper() {}
     public:
-      virtual void rank_initial_region_locations(size_t elmt_size, size_t num_elmts,
-                                                MappingTagID tag, std::vector<Memory> &ranking);
-
-      virtual bool compact_partition(const Partition &partition, MappingTagID tag);
-
+      /**
+       * Return a boolean indicating whether or not the specified task
+       * can be run in parallel with the parent task
+       */
       virtual bool spawn_child_task(const Task *task);
 
+      /**
+       * Select a target processor for running this task.  Note this doesn't
+       * guarantee that the task will be run on the specified processor if the
+       * mapper allows stealing.
+       */
       virtual Processor select_initial_processor(const Task *task);
 
+      /**
+       * Select a processor from which to attempt a task steal.  The runtime
+       * provides a list of processors that have had previous attempted steals
+       * that failed and are blacklisted.  Any attempts to send a steal request
+       * to a blacklisted processor will not be performed.
+       */
       virtual Processor target_task_steal(const std::set<Processor> &blacklisted);
 
+      /**
+       * The processor specified by 'thief' is attempting a steal on this processor.
+       * Given the list of tasks managed by this mapper, specify which tasks are
+       * permitted to be stolen by adding them to the 'to_steal' list.
+       */
       virtual void permit_task_steal( Processor thief, const std::vector<const Task*> &tasks,
                                       std::set<const Task*> &to_steal);
 
+      /**
+       * Given a task to be run over an index space, specify whether the task should
+       * be devided into smaller chunks by adding constraints to the current index space.
+       */
       virtual void split_index_space(const Task *task, const std::vector<UnsizedConstraint> &index_space,
                                       std::vector<IndexSplit> &chunks);
 
+      /**
+       * The specified task is being mapped on the current processor.  For the given
+       * region requirement provide a ranking of memories in which to create a physical
+       * instance of the logical region.  The currently valid instances is also provided.
+       * Note that current instances may be empty if there is dirty data in a logical
+       * subregion.  Also specify whether the runtime is allowed to attempt the 
+       * Write-After-Read optimization of making an additional copy of the data.  The
+       * default value for enable_WAR_optimization is true.
+       */
       virtual void map_task_region(const Task *task, const RegionRequirement &req,
                                     const std::set<Memory> &current_instances,
                                     std::vector<Memory> &target_ranking,
                                     bool &enable_WAR_optimization);
 
+      /**
+       * A copy-up operation is occuring to write dirty data back to a parent physical
+       * instance.  To perform the copy-up, the compiler is asking for a target location to
+       * perform the copy-up operation.  Give a ranking for the memory locations to
+       * place the physical instance of the copy-up target.  The current valid target
+       * instances are also provided although maybe empty.
+       */
       virtual void rank_copy_targets(const Task *task, const RegionRequirement &req,
                                     const std::set<Memory> &current_instances,
                                     std::vector<Memory> &future_ranking);
 
+      /**
+       * A copy operation needs to be performed to move data to a physical instance
+       * located in the destination memory.  Chosen which of the physical current
+       * valid physical instances should be the source of the copy operation.  The
+       * current instances will never be empty and the chosen source memory must
+       * be one of the valid instances.
+       */
       virtual void select_copy_source(const std::set<Memory> &current_instances,
                                     const Memory &dst, Memory &chosen_src);
+
+      /**
+       * Determine whether or not a partition should be compacted.
+       * TODO: this operation still is undefined
+       */
+      virtual bool compact_partition(const Partition &partition, MappingTagID tag);
+
     protected:
       HighLevelRuntime *const runtime;
       const Processor local_proc;
