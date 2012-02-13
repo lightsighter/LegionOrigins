@@ -815,7 +815,7 @@ namespace RegionRuntime {
     protected:
       void initialize_task(TaskContext *parent, UniqueID unique_id, 
                             Processor::TaskFuncID task_id, void *args, size_t arglen,
-                            MapperID map_id, MappingTagID tag);
+                            MapperID map_id, MappingTagID tag, bool create_term_event);
       template<unsigned N>
       void set_index_space(const std::vector<Constraint<N> > &index_space, bool must);
       void set_regions(const std::vector<RegionRequirement> &regions);
@@ -877,7 +877,7 @@ namespace RegionRuntime {
       virtual void notify(void);
       virtual void add_source_physical_instance(ContextID ctx, InstanceInfo *src_info);
       virtual UniqueID get_unique_id(void) const { return unique_id; }
-      virtual Event get_termination_event(void) const { return termination_event; }
+      virtual Event get_termination_event(void) const;
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
       virtual const Task*const get_enclosing_task(void) const { return this; }
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const;

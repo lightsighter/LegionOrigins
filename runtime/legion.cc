@@ -842,7 +842,7 @@ namespace RegionRuntime {
         TaskContext *desc = get_available_context(true);
         UniqueID tid = get_unique_task_id();
         desc->initialize_task(NULL/*no parent*/,tid, TASK_ID_REGION_MAIN,malloc(sizeof(Context)),
-                              sizeof(Context), 0, 0);
+                              sizeof(Context), 0, 0, true/*create termination event*/);
         // Put this task in the ready queue
         ready_queue.push_back(desc);
 
@@ -1060,7 +1060,7 @@ namespace RegionRuntime {
       // Allocate more space for context
       void *args_prime = malloc(arglen+sizeof(Context));
       memcpy(((char*)args_prime)+sizeof(Context), args, arglen);
-      desc->initialize_task(ctx, unique_id, task_id, args_prime, arglen+sizeof(Context), id, tag);
+      desc->initialize_task(ctx, unique_id, task_id, args_prime, arglen+sizeof(Context), id, tag, true/*create term event*/);
       desc->set_regions(regions);
       // Check if we want to spawn this task 
       check_spawn_task(desc);
@@ -1109,7 +1109,7 @@ namespace RegionRuntime {
       // Allocate more space for the context when copying the args
       void *args_prime = malloc(arglen+sizeof(Context));
       memcpy(((char*)args_prime)+sizeof(Context), args, arglen);
-      desc->initialize_task(ctx, unique_id, task_id, args_prime, arglen+sizeof(Context), id, tag);
+      desc->initialize_task(ctx, unique_id, task_id, args_prime, arglen+sizeof(Context), id, tag, false/*create term event*/);
       desc->set_index_space<N>(index_space, must);
       desc->set_regions(regions, functions);
       // Check if we want to spawn this task
@@ -2272,7 +2272,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     void TaskContext::initialize_task(TaskContext *parent, UniqueID _unique_id, 
                                       Processor::TaskFuncID _task_id, void *_args, size_t _arglen,
-                                      MapperID _map_id, MappingTagID _tag)
+                                      MapperID _map_id, MappingTagID _tag, bool create_term_event)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -2297,7 +2297,10 @@ namespace RegionRuntime {
       parent_ctx = parent;
       orig_ctx = this;
       remote = false;
-      termination_event = UserEvent::create_user_event();
+      if (create_term_event)
+      {
+        termination_event = UserEvent::create_user_event();
+      }
       future.reset(termination_event);
       remaining_notifications = 0;
       sanitized = false;
@@ -3184,6 +3187,13 @@ namespace RegionRuntime {
         final_unpack_task();
       }
       std::set<Event> wait_on_events;
+      // Check to see if we are an index space that needs must parallelism, 
+      // if so mark that we've arrived at the barrier
+      if (is_index_space && must)
+      {
+        // Add that we have to wait on our barrier here
+        wait_on_events.insert(start_index_event);
+      }
       // After we make it here, we are just a single task (even if we're part of index space)
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
@@ -3385,6 +3395,9 @@ namespace RegionRuntime {
       // For each point in the index space get a new TaskContext, clone it from
       // this task context with correct region requirements, 
       // and then call map and launch on the task with the mapper
+      // 
+      // When we enumerate the space, if this is a must index space, register how
+      // many points have arrived at the barrier
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3646,8 +3659,9 @@ namespace RegionRuntime {
       {
 #ifdef DEBUG_HIGH_LEVEL
         assert((*it)->mapped);
-        assert((*it)->termination_event.exists());
+        assert((*it)->get_termination_event().exists());
 #endif
+        cleanup_events.insert((*it)->get_termination_event());
       }
 
       // Go through each of the mapped regions that we own and issue the necessary
@@ -3726,7 +3740,14 @@ namespace RegionRuntime {
         // Future result has already been set
 
         // Trigger the termination event
-        termination_event.trigger();
+        if (is_index_space)
+        {
+          finish_index_event.arrive();
+        }
+        else
+        {
+          termination_event.trigger();
+        }
       }
       // Release any references that we have to physical instances
       for (unsigned idx = 0; idx < regions.size(); idx++)
@@ -3912,7 +3933,14 @@ namespace RegionRuntime {
         unpack_tree_updates(derez,created,outermost);
       }
       // Trigger the event that indicates that this task is done
-      termination_event.trigger();
+      if (is_index_space)
+      {
+        finish_index_event.arrive();
+      }
+      else
+      {
+        termination_event.trigger();
+      }
       // We can also release our uses of the physical instances, but since we also did this
       // on the remote runtime, we don't need to release any reference counts
       for (unsigned idx = 0; idx < regions.size(); idx++)
@@ -4303,6 +4331,20 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       source_physical_instances.push_back(std::pair<InstanceInfo*,ContextID>(src_info,ctx));
+    }
+
+    //--------------------------------------------------------------------------------------------
+    Event TaskContext::get_termination_event(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      if (is_index_space)
+      {
+        return finish_index_event; 
+      }
+      else
+      {
+        return termination_event;
+      }
     }
 
     //--------------------------------------------------------------------------------------------
