@@ -664,6 +664,20 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    InstanceInfo* RegionMappingImpl::create_instance_info(LogicalRegion handle, Memory m)
+    //--------------------------------------------------------------------------
+    {
+      return parent_ctx->create_instance_info(handle, m);
+    }
+
+    //--------------------------------------------------------------------------
+    InstanceInfo* RegionMappingImpl::create_instance_info(LogicalRegion newer, InstanceInfo *old)
+    //--------------------------------------------------------------------------
+    {
+      return parent_ctx->create_instance_info(newer, old);
+    }
+
+    //--------------------------------------------------------------------------
     InstanceInfo* RegionMappingImpl::resolve_unresolved_dependences(InstanceInfo *info,
                                                                     bool war_opt)
     //--------------------------------------------------------------------------
@@ -800,6 +814,7 @@ namespace RegionRuntime {
       mapper_locks[0] = Lock::create_lock();
 
       // Initialize our locks
+      this->unique_lock = Lock::create_lock();
       this->mapping_lock = Lock::create_lock();
       this->queue_lock = Lock::create_lock();
       this->available_lock= Lock::create_lock();
@@ -825,8 +840,7 @@ namespace RegionRuntime {
       {
         log_task(LEVEL_SPEW,"Issuing region main task on processor %d",local_proc.id);
         TaskContext *desc = get_available_context(true);
-        UniqueID tid = this->next_task_id;
-        this->next_task_id += this->unique_stride;
+        UniqueID tid = get_unique_task_id();
         desc->initialize_task(NULL/*no parent*/,tid, TASK_ID_REGION_MAIN,malloc(sizeof(Context)),
                               sizeof(Context), 0, 0);
         // Put this task in the ready queue
@@ -1036,8 +1050,7 @@ namespace RegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_EXECUTE_TASK); 
       // Get a unique id for the task to use
-      UniqueID unique_id = next_task_id;
-      next_task_id += unique_stride;
+      UniqueID unique_id = get_unique_task_id();
       log_task(LEVEL_DEBUG,"Registering new single task with unique id %d and task id %d with high level runtime on processor %d\n",
                 unique_id, task_id, local_proc.id);
 #ifdef DEBUG_HIGH_LEVEl
@@ -1086,8 +1099,7 @@ namespace RegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_EXECUTE_TASK);
       // Get a unique id for the task to use
-      UniqueID unique_id = next_task_id;
-      next_task_id += unique_stride;
+      UniqueID unique_id = get_unique_task_id();
       log_task(LEVEL_DEBUG,"Registering new index space task with unique id %d and task id %d with high level runtime on processor %d\n",
                 unique_id, task_id, local_proc.id);
 #ifdef DEBUG_HIGH_LEVEL
@@ -1204,8 +1216,7 @@ namespace RegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_PARTITION);
 
-      PartitionID partition_id = this->next_partition_id;
-      this->next_partition_id += this->unique_stride;
+      PartitionID partition_id = get_unique_partition_id();
 
       std::vector<LogicalRegion> children(num_subregions);
       // Create all of the subregions
@@ -1233,8 +1244,7 @@ namespace RegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_PARTITION);
 
-      PartitionID partition_id = this->next_partition_id;
-      this->next_partition_id += this->unique_stride;
+      PartitionID partition_id = get_unique_partition_id();
 
       std::vector<LogicalRegion> children(coloring.size());
       for (unsigned idx = 0; idx < coloring.size(); idx++)
@@ -1270,8 +1280,7 @@ namespace RegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_PARTITION);
 
-      PartitionID partition_id = this->next_partition_id;
-      this->next_partition_id += this->unique_stride;
+      PartitionID partition_id = get_unique_partition_id();
 
       std::vector<LogicalRegion> children(ranges.size());
       for (unsigned idx = 0; idx < ranges.size(); idx++)
@@ -1526,8 +1535,29 @@ namespace RegionRuntime {
     InstanceID HighLevelRuntime::get_unique_instance_id(void)
     //--------------------------------------------------------------------------------------------
     {
+      AutoLock ulock(unique_lock);
       InstanceID result = next_instance_id;
       next_instance_id += unique_stride;
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    UniqueID HighLevelRuntime::get_unique_task_id(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      AutoLock ulock(unique_lock);
+      UniqueID result = next_task_id;
+      next_task_id += unique_stride;
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    PartitionID HighLevelRuntime::get_unique_partition_id(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      AutoLock ulock(unique_lock);
+      PartitionID result = next_partition_id;
+      next_task_id += unique_stride;
       return result;
     }
 
@@ -2201,6 +2231,18 @@ namespace RegionRuntime {
         {
           delete (*region_nodes)[it->handle.region];
         }
+        // Also delete the created region trees
+        for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
+              it != created_regions.end(); it++)
+        {
+          delete (*region_nodes)[it->first];
+        }
+        // We can also delete the instance infos
+        for (std::map<InstanceID,InstanceInfo*>::const_iterator it = instance_infos->begin();
+              it != instance_infos->end(); it++)
+        {
+          delete it->second;
+        }
         // We can also delete the maps that we created
         delete region_nodes;
         delete partition_nodes;
@@ -2743,9 +2785,9 @@ namespace RegionRuntime {
       {
         std::set<PartitionNode*> updates;
         result += sizeof(size_t); // number of updates
-        result += sizeof(LogicalRegion); // parent region
         result += (*region_nodes)[regions[idx].handle.region]->
                         compute_region_tree_update_size(updates); 
+        result += (updates.size() * sizeof(LogicalRegion)); // parent regions
         region_tree_updates.push_back(updates);
       }
       // Compute the size of the created region trees
@@ -2753,7 +2795,11 @@ namespace RegionRuntime {
       for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
             it != created_regions.end(); it++)
       {
-        result += (*region_nodes)[it->first]->compute_region_tree_size();
+        // Only do this for the trees that haven't been passed back already
+        if ((*region_nodes)[it->first]->added)
+        {
+          result += (*region_nodes)[it->first]->compute_region_tree_size();
+        }
       }
       // Now compute the size of the deleted region and partition information
       result += sizeof(size_t); // number of deleted regions
@@ -2783,7 +2829,10 @@ namespace RegionRuntime {
       for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
             it != created_regions.end(); it++)
       {
-        (*region_nodes)[it->first]->pack_region_tree(rez);
+        if ((*region_nodes)[it->first]->added)
+        {
+          (*region_nodes)[it->first]->pack_region_tree(rez);
+        }
       }
       // deleted regions
       rez.serialize<size_t>(deleted_regions.size());
@@ -3530,9 +3579,25 @@ namespace RegionRuntime {
         this->remote_children_event = utility.spawn(NOTIFY_MAPPED_ID,rez.get_buffer(),buffer_size,remote_start_event);
 
         // Note that we can clear the region tree updates since we've propagated them back to the parent
-        created_regions.clear();
+        // For the created regions we just mark that they are no longer added
+        for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
+              it != created_regions.end(); it++)
+        {
+          (*region_nodes)[it->first]->mark_tree_unadded();
+        }
         deleted_regions.clear();
         deleted_partitions.clear();
+        
+        // Also mark all the added partitions as unadded since we've propagated this
+        // information back to the parent context
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          for (std::set<PartitionNode*>::const_iterator it = region_tree_updates[idx].begin();
+                it != region_tree_updates[idx].end(); it++)
+          {
+            (*it)->mark_tree_unadded();
+          }
+        }
       }
       else // Not remote so propagate information back to our parent context
       {
@@ -3545,7 +3610,6 @@ namespace RegionRuntime {
           parent_ctx->deleted_partitions.insert(deleted_partitions.begin(),deleted_partitions.end());
         }
         // We can clear these out since we're done with them now
-        created_regions.clear();
         deleted_regions.clear();
         deleted_partitions.clear();
 
@@ -3655,7 +3719,6 @@ namespace RegionRuntime {
           parent_ctx->deleted_regions.insert(deleted_regions.begin(),deleted_regions.end());
           parent_ctx->deleted_partitions.insert(deleted_partitions.begin(),deleted_partitions.end());
           // We can clear these out since we're done with them now
-          created_regions.clear();
           deleted_regions.clear();
           deleted_partitions.clear();
         }
@@ -4337,6 +4400,42 @@ namespace RegionRuntime {
 #endif
       return (true_dependences[idx].find(uid) != true_dependences[idx].end());
     }
+
+    //--------------------------------------------------------------------------------------------
+    InstanceInfo* TaskContext::create_instance_info(LogicalRegion handle, Memory m)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Try to make the instance in the memory
+      RegionInstance inst = handle.create_instance_untyped(m);
+      if (!inst.exists())
+      {
+        return InstanceInfo::get_no_instance();
+      }
+      // We made it, make a new instance info
+      // Get a new info ID
+      InstanceID iid = runtime->get_unique_instance_id();
+      InstanceInfo *result_info = new InstanceInfo(iid, handle, m, inst, false/*remote*/);
+      // Put this in the set of instance infos
+#ifdef DEBUG_HIGH_LEVEL
+      assert(instance_infos->find(iid) == instance_infos->end());
+#endif
+      (*instance_infos)[iid] = result_info;
+      return result_info;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    InstanceInfo* TaskContext::create_instance_info(LogicalRegion newer, InstanceInfo *old)
+    //--------------------------------------------------------------------------------------------
+    {
+      // This instance already exists, create a new info for it
+      InstanceID iid = runtime->get_unique_instance_id();
+      InstanceInfo *result_info = new InstanceInfo(iid,newer,old->location,old->inst,false/*remote*/);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(instance_infos->find(iid) == instance_infos->end());
+#endif
+      (*instance_infos)[iid] = result_info;
+      return result_info;
+    }
     
     ///////////////////////////////////////////
     // Region Node 
@@ -4440,6 +4539,37 @@ namespace RegionRuntime {
       // Add this to the list of region nodes
       (*region_nodes)[handle] = result;
       return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    size_t RegionNode::compute_region_tree_update_size(std::set<PartitionNode*> &updates)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!added);
+#endif
+      size_t result = 0;
+      for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
+            it != partitions.end(); it++)
+      {
+        result += (it->second->compute_region_tree_update_size(updates));
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::mark_tree_unadded(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(added);
+#endif
+      added = false;
+      for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
+            it != partitions.end(); it++)
+      {
+        it->second->mark_tree_unadded();
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -5775,6 +5905,42 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    size_t PartitionNode::compute_region_tree_update_size(std::set<PartitionNode*> &updates)
+    //--------------------------------------------------------------------------------------------
+    {
+      size_t result = 0;
+      if (added)
+      {
+        result += compute_region_tree_size();
+        updates.insert(this);
+      }
+      else
+      {
+        for (std::map<LogicalRegion,RegionNode*>::const_iterator it = children.begin();
+              it != children.end(); it++)
+        {
+          result += (it->second->compute_region_tree_update_size(updates));
+        }
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void PartitionNode::mark_tree_unadded(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(added);
+#endif
+      added = false;
+      for (std::map<LogicalRegion,RegionNode*>::const_iterator it = children.begin();
+            it != children.end(); it++)
+      {
+        it->second->mark_tree_unadded();
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
     size_t PartitionNode::compute_physical_state_size(ContextID ctx, std::set<InstanceInfo*> &needed)
     //--------------------------------------------------------------------------------------------
     {
@@ -6878,6 +7044,129 @@ namespace RegionRuntime {
     {
       RegionInstance inst_copy = inst;
       inst_copy.release();
+    }
+    
+    //-------------------------------------------------------------------------
+    size_t InstanceInfo::compute_info_size(void) const
+    //-------------------------------------------------------------------------
+    {
+      size_t result = 0;
+      // Send everything
+      result += sizeof(InstanceID);
+      result += sizeof(LogicalRegion);
+      result += sizeof(Memory);
+      result += sizeof(RegionInstance);
+      result += sizeof(Event);
+      result += sizeof(Lock);
+      result += sizeof(size_t); // num users
+      result += sizeof(size_t); // num added users
+      result += ((users.size() + added_users.size()) * sizeof(UserTask));
+      return result;
+    }
+
+    //-------------------------------------------------------------------------
+    void InstanceInfo::pack_instance_info(Serializer &rez) const
+    //-------------------------------------------------------------------------
+    {
+      rez.serialize<InstanceID>(iid);
+      rez.serialize<LogicalRegion>(handle);
+      rez.serialize<Memory>(location);
+      rez.serialize<RegionInstance>(inst);
+      rez.serialize<Event>(valid_event);
+      rez.serialize<Lock>(inst_lock);
+      rez.serialize<size_t>(users.size());
+      for (std::map<UniqueID,UserTask>::const_iterator it = users.begin();
+            it != users.end(); it++)
+      {
+        rez.serialize<UniqueID>(it->first);
+        rez.serialize<UserTask>(it->second);
+      }
+      rez.serialize<size_t>(added_users.size());
+      for (std::map<UniqueID,UserTask>::const_iterator it = added_users.begin();
+            it != added_users.end(); it++)
+      {
+        rez.serialize<UniqueID>(it->first);
+        rez.serialize<UserTask>(it->second);
+      }
+    }
+
+    //-------------------------------------------------------------------------
+    /*static*/ InstanceInfo* InstanceInfo::unpack_instance_info(Deserializer &derez)
+    //-------------------------------------------------------------------------
+    {
+      InstanceID iid;
+      derez.deserialize<InstanceID>(iid);
+      LogicalRegion handle;
+      derez.deserialize<LogicalRegion>(handle);
+      Memory location;
+      derez.deserialize<Memory>(location);
+      RegionInstance inst;
+      derez.deserialize<RegionInstance>(inst);
+      InstanceInfo *result_info = new InstanceInfo(iid,handle,location,inst,true/*remote*/);
+
+      derez.deserialize<Event>(result_info->valid_event);
+      derez.deserialize<Lock>(result_info->inst_lock);
+
+      // Put all the users in the base users since this is remote
+      size_t user_size;
+      for (int i = 0; i<2; i++)
+      {
+        derez.deserialize<size_t>(user_size);
+        for (int idx = 0; idx < user_size; idx++)
+        {
+          std::pair<UniqueID,UserTask> user;
+          derez.deserialize<UniqueID>(user.first);
+          derez.deserialize<UserTask>(user.second);
+          result_info->users.insert(user);
+        }
+      }
+    }
+
+    //-------------------------------------------------------------------------
+    void InstanceInfo::merge_instance_info(Deserializer &derez)
+    //-------------------------------------------------------------------------
+    {
+      InstanceID iid_ghost;
+      derez.deserialize<InstanceID>(iid_ghost);
+      LogicalRegion handle_ghost;
+      derez.deserialize<LogicalRegion>(handle_ghost);
+      Memory location_ghost;
+      derez.deserialize<Memory>(location_ghost);
+      RegionInstance inst_ghost;
+      derez.deserialize<RegionInstance>(inst_ghost);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(iid == iid_ghost);
+      assert(handle_ghost == handle);
+      assert(location_ghost == location);
+      assert(inst_ghost == inst);
+#endif
+      derez.deserialize<Event>(valid_event); // Update the valid event
+      derez.deserialize<Lock>(inst_lock); // update the lock as well
+      // Only need to update added users
+      size_t num_old_users;
+      derez.deserialize<size_t>(num_old_users);
+      // Just ignore these
+      for (unsigned idx = 0; idx < num_old_users; idx++)
+      {
+        std::pair<UniqueID,UserTask> dumb;
+        derez.deserialize<UniqueID>(dumb.first);
+        derez.deserialize<UserTask>(dumb.second);
+      }
+      // These are the added users, update our list
+      size_t num_add_users;
+      derez.deserialize<size_t>(num_add_users);
+      for (unsigned idx = 0; idx < num_add_users; idx++)
+      {
+        std::pair<UniqueID,UserTask> add_user;
+        derez.deserialize<UniqueID>(add_user.first);
+        derez.deserialize<UserTask>(add_user.second);
+#ifdef DEBUG_HIGH_LEVEL
+        // Shouldn't be able to find this user anywhere
+        assert(users.find(add_user.first) == users.end());
+        assert(added_users.find(add_user.first) == added_users.end());
+#endif
+        added_users.insert(add_user);
+      }
     }
 
     ///////////////////////////////////////////

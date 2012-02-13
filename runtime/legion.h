@@ -563,7 +563,9 @@ namespace RegionRuntime {
       friend class RegionMappingImpl;
       void free_mapping(RegionMappingImpl *impl);
       // Get a new instance info id
-      InstanceID get_unique_instance_id(void);
+      InstanceID  get_unique_instance_id(void);
+      UniqueID    get_unique_task_id(void);
+      PartitionID get_unique_partition_id(void);
     private:
       // Operations invoked by static methods
       void process_tasks(const void * args, size_t arglen); 
@@ -608,6 +610,7 @@ namespace RegionRuntime {
       std::list<RegionMappingImpl*> waiting_maps;
       std::list<RegionMappingImpl*> available_maps;
       // Keep track of how to do partition numbering
+      Lock unique_lock; // Make sure all unique values are actually unique
       PartitionID next_partition_id; // The next partition id for this instance (unique)
       UniqueID next_task_id; // Give all tasks a unique id for debugging purposes
       InstanceID next_instance_id;
@@ -1100,6 +1103,7 @@ namespace RegionRuntime {
                 ContextID ctx_id, std::map<LogicalRegion,RegionNode*> *region_nodes,
                 std::map<PartitionID,PartitionNode*> *partition_nodes, bool add);
       size_t compute_region_tree_update_size(std::set<PartitionNode*> &updates);
+      void mark_tree_unadded(void);
     protected:
       size_t compute_physical_state_size(ContextID ctx, std::set<InstanceInfo*> &needed);
       void pack_physical_state(ContextID ctx, Serializer &rez);
@@ -1184,6 +1188,7 @@ namespace RegionRuntime {
                     ContextID ctx_id, std::map<LogicalRegion,RegionNode*> *region_nodes,
                     std::map<PartitionID,PartitionNode*> *partition_nodes, bool add);
       size_t compute_region_tree_update_size(std::set<PartitionNode*> &updates);
+      void mark_tree_unadded(void); // Mark the node as no longer being added
     protected:
       size_t compute_physical_state_size(ContextID ctx, std::set<InstanceInfo*> &needed);
       void pack_physical_state(ContextID ctx, Serializer &rez);
