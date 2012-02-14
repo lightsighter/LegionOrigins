@@ -12,7 +12,7 @@
 #include <vector>
 #include <algorithm>
 
-#include "highlevel.h"
+#include "legion.h"
 
 using namespace RegionRuntime::HighLevel;
 
@@ -41,6 +41,7 @@ enum {
 //#define CELLS_Y 8
 //#define CELLS_Z 8
 #define MAX_PARTICLES 64
+#define GEN_PARTICLES 16
 
 // Number of ghost cells needed for each block
 // 8 for 2D or 26 for 3D
@@ -205,9 +206,9 @@ public:
 };
 
 struct BufferRegions {
-  LogicalHandle base;  // contains owned cells
-  LogicalHandle edge_a[GHOST_CELLS]; // two sub-buffers for ghost cells allows
-  LogicalHandle edge_b[GHOST_CELLS]; //   bidirectional exchanges
+  LogicalRegion base;  // contains owned cells
+  LogicalRegion edge_a[GHOST_CELLS]; // two sub-buffers for ghost cells allows
+  LogicalRegion edge_b[GHOST_CELLS]; //   bidirectional exchanges
 };
 
 // two kinds of double-buffering going on here
@@ -222,8 +223,8 @@ struct BufferRegions {
 //  only once per simulation iteration, while the phase of the "edge" cells
 //  changes every task
 struct Block {
-  LogicalHandle base[2];
-  LogicalHandle edge[2][GHOST_CELLS];
+  LogicalRegion base[2];
+  LogicalRegion edge[2][GHOST_CELLS];
   BufferRegions regions[2];
   std::vector<std::vector<std::vector<ptr_t<Cell> > > > cells[2];
   int cb;  // which is the current buffer?
@@ -236,8 +237,8 @@ struct Block {
                     - sizeof(std::vector<std::vector<std::vector<ptr_t<Cell> > > > [2]))
 
 struct TopLevelRegions {
-  LogicalHandle real_cells[2];
-  LogicalHandle edge_cells;
+  LogicalRegion real_cells[2];
+  LogicalRegion edge_cells;
 };
 
 const float restParticlesPerMeter = 204.0f;
@@ -259,106 +260,42 @@ Vec3 delta;				// cell dimensions
 
 RegionRuntime::Logger::Category log_app("application");
 
-// Undef to skip validity checks on Serializer/Deserializer
-#define DEBUG_SERIALIZER 1
-
-class Serializer {
+class BlockSerializer : public Serializer {
 public:
-  Serializer(size_t buffer_size)
-    : buffer(malloc(buffer_size)), location((char*)buffer)
-#ifdef DEBUG_SERIALIZER
-    , remaining(buffer_size)
-#endif
-  {
-    assert(buffer);
-  }
-  ~Serializer(void)
-  {
-#ifdef DEBUG_SERIALIZER
-    assert(remaining == 0);
-#endif
-    free(buffer);
-  }
-public:
-  template<typename T>
-  inline void serialize(const T &element) {
-#ifdef DEBUG_SERIALIZER
-    assert(remaining >= sizeof(T));
-    remaining -= sizeof(T);
-#endif
-    *((T*)location) = element; 
-    location += sizeof(T);
-  }
   inline void serialize(const Block &block) {
     for (unsigned i = 0; i < 2; i++)
-      serialize(block.base[i]);
+      Serializer::serialize(block.base[i]);
     for (unsigned i = 0; i < 2; i++)
       for (unsigned j = 0; j < GHOST_CELLS; j++)
-        serialize(block.edge[i][j]);
+        Serializer::serialize(block.edge[i][j]);
     for (unsigned i = 0; i < 2; i++)
-      serialize(block.regions[i]);
+      Serializer::serialize(block.regions[i]);
     for (unsigned b = 0; b < 2; b++)
       for (unsigned cz = 0; cz < CELLS_Z+2; cz++)
         for (unsigned cy = 0; cy < CELLS_Y+2; cy++)
           for (unsigned cx = 0; cx < CELLS_X+2; cx++)
-            serialize(block.cells[b][cz][cy][cx]);
-    serialize(block.cb);
-    serialize(block.id);
+            Serializer::serialize(block.cells[b][cz][cy][cx]);
+    Serializer::serialize(block.cb);
+    Serializer::serialize(block.id);
   }
   inline void serialize(const std::string &str) {
     const char *c_str = str.c_str();
     size_t len = strlen(c_str);
-    serialize(len);
-#ifdef DEBUG_SERIALIZER
-    assert(remaining >= len);
-    remaining -= len;
-#endif
-    strncpy(location, c_str, len);
-    location += len;
+    Serializer::serialize(len);
+    Serializer::serialize(c_str, len);
   }
-  inline const void* get_buffer(void) const { return buffer; }
-private:
-  void *const buffer;
-  char *location;
-#ifdef DEBUG_SERIALIZER
-  size_t remaining;
-#endif
 };
 
-class Deserializer {
+class BlockDeserializer : public Deserializer {
 public:
-  Deserializer(const void *buffer, size_t buffer_size)
-    : location((const char*)buffer)
-#ifdef DEBUG_SERIALIZER
-    , remaining(buffer_size)
-#endif
-  {
-    assert(buffer);
-  }
-  ~Deserializer(void)
-  {
-#ifdef DEBUG_SERIALIZER
-    assert(remaining == 0);
-#endif
-  }
-public:
-  template<typename T>
-  inline void deserialize(T &element) {
-#ifdef DEBUG_SERIALIZER
-    assert(remaining >= sizeof(T));
-    remaining -= sizeof(T);
-#endif
-    element = *((const T*)location);
-    location += sizeof(T);
-  }
   inline void deserialize(Block &block) {
     for (unsigned i = 0; i < 2; i++)
-      deserialize(block.base[i]);
+      Deserializer::deserialize(block.base[i]);
     for (unsigned i = 0; i < 2; i++)
       for (unsigned j = 0; j < GHOST_CELLS; j++)
-        deserialize(block.edge[i][j]);
+        Deserializer::deserialize(block.edge[i][j]);
     for (unsigned i = 0; i < 2; i++)
-      deserialize(block.regions[i]);
+      Deserializer::deserialize(block.regions[i]);
     for (unsigned b = 0; b < 2; b++) {
       block.cells[b].resize(CELLS_Z+2);
       for (unsigned cz = 0; cz < CELLS_Z+2; cz++) {
@@ -366,33 +303,27 @@ public:
         for (unsigned cy = 0; cy < CELLS_Y+2; cy++) {
           block.cells[b][cz][cy].resize(CELLS_X+2);
           for (unsigned cx = 0; cx < CELLS_X+2; cx++)
-            deserialize(block.cells[b][cz][cy][cx]);
+            Deserializer::deserialize(block.cells[b][cz][cy][cx]);
         }
       }
     }
-    deserialize(block.cb);
-    deserialize(block.id);
+    Deserializer::deserialize(block.cb);
+    Deserializer::deserialize(block.id);
   }
   inline void deserialize(std::string &str) {
     size_t len;
-    deserialize(len);
-#ifdef DEBUG_SERIALIZER
-    assert(remaining >= len);
-    remaining -= len;
-#endif
-    str = std::string(location, len);
-    location += len;
+    Deserializer::deserialize(len);
+    char *buffer = (char *)malloc(len);
+    assert(buffer);
+    Deserializer::deserialize(buffer, len);
+    str = std::string(buffer, len);
+    free(buffer);
   }
-private:
-  const char *location;
-#ifdef DEBUG_SERIALIZER
-  size_t remaining;
-#endif
 };
 
-void get_all_regions(LogicalHandle *ghosts, std::vector<RegionRequirement> &reqs,
-                            AccessMode access, AllocateMode mem, 
-                            CoherenceProperty prop, LogicalHandle parent)
+void get_all_regions(LogicalRegion *ghosts, std::vector<RegionRequirement> &reqs,
+                     PrivilegeMode access, AllocateMode mem, 
+                     CoherenceProperty prop, LogicalRegion parent)
 {
   for (unsigned g = 0; g < GHOST_CELLS; g++)
   {
@@ -427,8 +358,8 @@ void top_level_task(const void *args, size_t arglen,
 
   // first, do two passes of the "real" cells
   for(int b = 0; b < 2; b++) {
-    LogicalHandle real_cells =
-      runtime->create_logical_region<Cell>(ctx, (numBlocks*CELLS_X*CELLS_Y*CELLS_Z));
+    LogicalRegion real_cells =
+      runtime->create_logical_region(ctx, sizeof(Cell), (numBlocks*CELLS_X*CELLS_Y*CELLS_Z));
 
     std::vector<std::set<ptr_t<Cell> > > coloring;
     coloring.resize(numBlocks);
@@ -464,11 +395,11 @@ void top_level_task(const void *args, size_t arglen,
 
   // the edge cells work a bit different - we'll create one region, partition
   //  it once, and use each subregion in two places
-  LogicalHandle edge_cells =
-    runtime->create_logical_region<Cell>(ctx,
-                                         (numBlocks*
-                                          ((CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2) -
-                                           CELLS_X*CELLS_Y*CELLS_Z)));
+  LogicalRegion edge_cells =
+    runtime->create_logical_region(ctx, sizeof(Cell),
+                                   (numBlocks*
+                                    ((CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2) -
+                                     CELLS_X*CELLS_Y*CELLS_Z)));
 
   std::vector<std::set<ptr_t<Cell> > > coloring;
   coloring.resize(numBlocks * GHOST_CELLS);
@@ -605,7 +536,7 @@ void top_level_task(const void *args, size_t arglen,
 
         for(int dir = 0; dir < GHOST_CELLS; dir++) {
           unsigned id2 = (MOVE_Z(idz,dir)*nby + MOVE_Y(idy,dir))*nbx + MOVE_X(idx,dir);
-          LogicalHandle subr = runtime->get_subregion(ctx,edge_part,color+dir);
+          LogicalRegion subr = runtime->get_subregion(ctx,edge_part,color+dir);
           blocks[id].edge[0][dir] = color+dir;
           blocks[id2].edge[1][REVERSE(dir)] = color+dir;
         }
@@ -622,15 +553,15 @@ void top_level_task(const void *args, size_t arglen,
   // build regions for cells and then do all work in a subtask
   {
     TopLevelRegions tlr;
-    tlr.real_cells[0] = runtime->create_logical_region<Cell>(ctx,
-							     (numBlocks*CELLS_X*CELLS_Y*CELLS_Z));
-    tlr.real_cells[1] = runtime->create_logical_region<Cell>(ctx,
-							     (numBlocks*CELLS_X*CELLS_Y*CELLS_Z));
+    tlr.real_cells[0] = runtime->create_logical_region(ctx, sizeof(Cell),
+                                                       (numBlocks*CELLS_X*CELLS_Y*CELLS_Z));
+    tlr.real_cells[1] = runtime->create_logical_region(ctx, sizeof(Cell),
+                                                       (numBlocks*CELLS_X*CELLS_Y*CELLS_Z));
     tlr.edge_cells =
-      runtime->create_logical_region<Cell>(ctx,
-                                           (numBlocks*
-                                            ((CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2) -
-                                             CELLS_X*CELLS_Y*CELLS_Z)));
+      runtime->create_logical_region(ctx, sizeof(Cell),
+                                     (numBlocks*
+                                      ((CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2) -
+                                       CELLS_X*CELLS_Y*CELLS_Z)));
     
     std::vector<RegionRequirement> main_regions;
     main_regions.push_back(RegionRequirement(tlr.real_cells[0],
@@ -646,7 +577,7 @@ void top_level_task(const void *args, size_t arglen,
     Future f = runtime->execute_task(ctx, TASKID_MAIN_TASK,
 				     main_regions,
 				     &tlr, sizeof(tlr),
-				     false, 0, 0);
+				     0, 0);
     f.get_void_result();
   }
 }
@@ -680,7 +611,7 @@ void main_task(const void *args, size_t arglen,
 
   // first, do two passes of the "real" cells
   for(int b = 0; b < 2; b++) {
-    std::vector<std::set<ptr_t<Cell> > > coloring;
+    std::vector<std::set<utptr_t> > coloring;
     coloring.resize(numBlocks);
 
     // allocate cells, store pointers, set up colors
@@ -699,11 +630,10 @@ void main_task(const void *args, size_t arglen,
         }
     
     // Create the partitions
-    Partition<Cell> cell_part = runtime->create_partition<Cell>(ctx,
-								tlr->real_cells[b],
-								coloring,
-								//numBlocks,
-								true/*disjoint*/);
+    Partition cell_part = runtime->create_partition(ctx,
+                                                    tlr->real_cells[b],
+                                                    coloring,
+                                                    true/*disjoint*/);
 
     for (unsigned idz = 0; idz < nbz; idz++)
       for (unsigned idy = 0; idy < nby; idy++)
@@ -715,7 +645,7 @@ void main_task(const void *args, size_t arglen,
 
   // the edge cells work a bit different - we'll create one region, partition
   //  it once, and use each subregion in two places
-  std::vector<std::set<ptr_t<Cell> > > coloring;
+  std::vector<std::set<utptr_t> > coloring;
   coloring.resize(numBlocks * GHOST_CELLS);
 
   // allocate cells, set up coloring
@@ -843,10 +773,9 @@ void main_task(const void *args, size_t arglen,
       }
 
   // now partition the edge cells
-  Partition<Cell> edge_part = runtime->create_partition<Cell>(ctx, tlr->edge_cells,
-							      coloring,
-							      //numBlocks * 26,
-							      true/*disjoint*/);
+  Partition edge_part = runtime->create_partition(ctx, tlr->edge_cells,
+                                                  coloring,
+                                                  true/*disjoint*/);
 
   // now go back through and store subregion handles in the right places
   color = 0;
@@ -857,7 +786,7 @@ void main_task(const void *args, size_t arglen,
 
         for(int dir = 0; dir < GHOST_CELLS; dir++) {
           unsigned id2 = (MOVE_Z(idz,dir)*nby + MOVE_Y(idy,dir))*nbx + MOVE_X(idx,dir); \
-          LogicalHandle subr = runtime->get_subregion(ctx,edge_part,color+dir);
+          LogicalRegion subr = runtime->get_subregion(ctx,edge_part,color+dir);
           blocks[id].edge[0][dir] = subr;
           blocks[id2].edge[1][REVERSE(dir)] = subr;
         }
@@ -885,7 +814,7 @@ void main_task(const void *args, size_t arglen,
     Future f = runtime->execute_task(ctx, TASKID_INIT_SIMULATION,
                                      init_regions,
                                      ser.get_buffer(), bufsize,
-                                     false, 0, id);
+                                     0, id);
     f.get_void_result();
   }
 
@@ -897,7 +826,7 @@ void main_task(const void *args, size_t arglen,
                                                tlr->real_cells[1]));
     }
 
-    std::string fileName = "fluid3d_init.bin";
+    std::string fileName = "fluid3d_init.fluid";
 
     unsigned bufsize = BLOCK_SIZE*numBlocks + sizeof(size_t) + fileName.length();
     Serializer ser(bufsize);
@@ -909,7 +838,7 @@ void main_task(const void *args, size_t arglen,
     Future f = runtime->execute_task(ctx, TASKID_SAVE_FILE,
                                      init_regions,
                                      ser.get_buffer(), bufsize,
-                                     false, 0, 0);
+                                     0, 0);
     f.get_void_result();
   }
 
@@ -954,7 +883,7 @@ void main_task(const void *args, size_t arglen,
       Future f = runtime->execute_task(ctx, TASKID_INIT_CELLS,
                                        init_regions,
                                        ser.get_buffer(), bufsize,
-                                       true, 0, id);
+                                       0, id);
     }
 
     // Rebuild reduce (reduction)
@@ -984,7 +913,7 @@ void main_task(const void *args, size_t arglen,
       Future f = runtime->execute_task(ctx, TASKID_REBUILD_REDUCE,
 				       rebuild_regions,
                                        ser.get_buffer(), bufsize,
-				       true, 0, id);
+                                       0, id);
     }
 
     // init forces and scatter densities
@@ -1014,7 +943,7 @@ void main_task(const void *args, size_t arglen,
       Future f = runtime->execute_task(ctx, TASKID_SCATTER_DENSITIES,
 				       density_regions, 
                                        ser.get_buffer(), bufsize,
-				       true, 0, id);
+                                       0, id);
     }
     
     // Gather forces and advance
@@ -1046,7 +975,7 @@ void main_task(const void *args, size_t arglen,
       Future f = runtime->execute_task(ctx, TASKID_GATHER_FORCES,
                                        force_regions, 
                                        ser.get_buffer(), bufsize,
-                                       true, 0, id);
+                                       0, id);
 
       // remember the futures for the last pass so we can wait on them
       if(step == Config::num_steps - 1)
@@ -1078,7 +1007,7 @@ void main_task(const void *args, size_t arglen,
                                                tlr->real_cells[1]));
     }
 
-    std::string fileName = "fluid3d_output.bin";
+    std::string fileName = "fluid3d_output.fluid";
 
     unsigned bufsize = BLOCK_SIZE*numBlocks + sizeof(size_t) + fileName.length();
     Serializer ser(bufsize);
@@ -1090,7 +1019,7 @@ void main_task(const void *args, size_t arglen,
     Future f = runtime->execute_task(ctx, TASKID_SAVE_FILE,
                                      init_regions,
                                      ser.get_buffer(), bufsize,
-                                     false, 0, 0);
+                                     0, 0);
     f.get_void_result();
   }
 
@@ -1127,7 +1056,7 @@ void init_simulation(const void *args, size_t arglen,
         next.x = idx;
         next.y = idy;
         next.z = idz;
-        next.num_particles = (rand() % MAX_PARTICLES);
+        next.num_particles = (rand() % GEN_PARTICLES);
         for (unsigned p = 0; p < next.num_particles; p++) {
           // These are the only three fields we need to initialize
           next.p[p] = Vec3(get_rand_float(),get_rand_float(),get_rand_float());
@@ -1147,18 +1076,16 @@ void init_simulation(const void *args, size_t arglen,
 #define GET_REGION(idz, idy, idx, base, edge)                           \
   (GET_DIR(idz, idy, idx) == CENTER ? (edge)[GET_DIR(idz, idy, idx)] : (base))
 
-#define READ_CELL(cz, cy, cx, base, edge, cell) do {  \
-    int dir = GET_DIR(cz, cy,cx);                     \
+#define READ_CELL(cz, cy, cx, base, edge, cell) do {                    \
+    int dir = GET_DIR(cz, cy,cx);                                       \
     if(dir == CENTER) {                                                 \
       (cell) = (base).read(b.cells[cb][cz][cy][cx]);                    \
-      if(0) printf("RC: (%d,%d,%d) %d %d %p+%d (%d)\n", cx, cy, cz, cb, eb, base.instance.internal_data, b.cells[cb][cz][cy][cx].value, (cell).num_particles); \
     } else {								\
       (cell) = (edge)[dir].read(b.cells[eb][cz][cy][cx]);               \
-      if(0) printf("RC: (%d,%d,%d) %d %d %p+%d (%d)\n", cx, cy, cz, cb, eb, edge[dir].instance.internal_data, b.cells[eb][cz][cy][cx].value, (cell).num_particles); \
     } } while(0)
 
-#define WRITE_CELL(cz, cy, cx, base, edge, cell) do {    \
-    int dir = GET_DIR(cz, cy,cx);                        \
+#define WRITE_CELL(cz, cy, cx, base, edge, cell) do {           \
+    int dir = GET_DIR(cz, cy,cx);                               \
     if(dir == CENTER)                                           \
       (base).write(b.cells[cb][cz][cy][cx], (cell));            \
     else                                                        \
@@ -1774,31 +1701,9 @@ public:
     log_mapper.info("global memory = %x (%d)\n", global_memory.id, best_count);
   }
 
-  virtual void rank_initial_region_locations(size_t elmt_size,
-                                             size_t num_elmts,
-                                             MappingTagID tag,
-                                             std::vector<Memory> &ranking)
+  virtual bool spawn_child_task(const Task *task)
   {
-    // put things in the global memory
-    ranking.push_back(global_memory);
-  }
-
-  virtual void rank_initial_partition_locations(size_t elmt_size,
-                                                unsigned int num_subregions,
-                                                MappingTagID tag,
-                                                std::vector<std::vector<Memory> > &rankings)
-  {
-    // put things in the global memory
-    rankings.resize(num_subregions);
-    for (unsigned i = 0; i < num_subregions; i++)
-    {
-      rankings[i].push_back(global_memory);
-    }
-  }
-
-  virtual bool compact_partition(const UntypedPartition &partition,
-                                 MappingTagID tag)
-  {
+    // TODO: Elliott: Can we allow this to be true?
     return false;
   }
 
@@ -1836,7 +1741,7 @@ public:
     return Processor::NO_PROC;
   }
 
-  virtual Processor target_task_steal(void)
+  virtual Processor target_task_steal(const std::set<Processor> &blacklisted)
   {
     return Processor::NO_PROC;
   }
@@ -1848,33 +1753,24 @@ public:
     return;
   }
 
-  virtual void map_task_region(const Task *task, const RegionRequirement *req,
-                               const std::vector<Memory> &valid_src_instances,
-                               const std::vector<Memory> &valid_dst_instances,
-                               Memory &chosen_src,
-                               std::vector<Memory> &dst_ranking)
+  virtual void split_index_space(const Task *task,
+                                 const std::vector<UnsizedConstraint> &index_space,
+                                 std::vector<IndexSplit> &chunks)
   {
-    log_mapper.info("mapper: mapping region for task (%p,%p) region=%x/%x", task, req, req->handle.id, req->parent.id);
+    return;
+  }
+
+  virtual void map_task_region(const Task *task, const RegionRequirement &req,
+                               const std::set<Memory> &current_instances,
+                               std::vector<Memory> &target_ranking,
+                               bool &enable_WAR_optimization)
+  {
+    log_mapper.info("mapper: mapping region for task (%p,%p) region=%x", task, &req, req.parent.id);
     int idx = -1;
     for(unsigned i = 0; i < task->regions.size(); i++)
-      if(req == &(task->regions[i]))
+      if(&req == &(task->regions[i]))
 	idx = i;
     log_mapper.info("func_id=%d map_tag=%d region_index=%d", task->task_id, task->tag, idx);
-#if 0
-    printf("taskid=%d tag=%d idx=%d srcs=[", task->task_id, task->tag, idx);
-    for(unsigned i = 0; i < valid_src_instances.size(); i++) {
-      if(i) printf(", ");
-      printf("%x", valid_src_instances[i].id);
-    }
-    printf("]  ");
-    printf("dsts=[");
-    for(unsigned i = 0; i < valid_dst_instances.size(); i++) {
-      if(i) printf(", ");
-      printf("%x", valid_dst_instances[i].id);
-    }
-    printf("]\n");
-    fflush(stdout);
-#endif
     std::vector< std::pair<Processor, Memory> >& loc_procs = cpu_mem_pairs[Processor::LOC_PROC];
     std::pair<Processor, Memory> cmp = loc_procs[task->tag % loc_procs.size()];
 
@@ -1885,8 +1781,7 @@ public:
     case TASKID_SAVE_FILE:
       {
         // Don't care, put it in global memory
-        chosen_src = global_memory;
-        dst_ranking.push_back(global_memory);
+        target_ranking.push_back(global_memory);
       }
       break;
     case TASKID_INIT_CELLS:
@@ -1896,15 +1791,13 @@ public:
         case 1:
           {
             // These should go in the local memory
-            chosen_src = safe_prioritized_pick(valid_src_instances, cmp.second, global_memory);
-            dst_ranking.push_back(cmp.second);
+            target_ranking.push_back(cmp.second);
           }
           break;
         default:
           {
             // These are the ghost cells, write them out to global memory 
-            chosen_src = safe_prioritized_pick(valid_src_instances, cmp.second, global_memory);
-            dst_ranking.push_back(global_memory);
+            target_ranking.push_back(global_memory);
           }
         }
       }
@@ -1916,14 +1809,12 @@ public:
         case 0:
           {
             // Put the owned cells in the local memory
-            chosen_src = safe_prioritized_pick(valid_src_instances, cmp.second, global_memory);
-            dst_ranking.push_back(cmp.second);
+            target_ranking.push_back(cmp.second);
           }
         default:
           {
             // These are the ghose cells, write them out to global memory
-            chosen_src = safe_prioritized_pick(valid_src_instances, cmp.second, global_memory);
-            dst_ranking.push_back(global_memory);
+            target_ranking.push_back(global_memory);
           }
         }
       }
@@ -1936,15 +1827,12 @@ public:
         case 0:
           {
             // These are the owned cells, keep them in local memory
-            chosen_src = safe_prioritized_pick(valid_src_instances, cmp.second, global_memory);
-            dst_ranking.push_back(cmp.second);
+            target_ranking.push_back(cmp.second);
           }
         default:
           {
             // These are the neighbor cells, try reading them into local memory, otherwise keep them in global
-            chosen_src = safe_prioritized_pick(valid_src_instances, cmp.second, global_memory);
-            //dst_ranking.push_back(cmp.second);
-            dst_ranking.push_back(global_memory);
+            target_ranking.push_back(global_memory);
           }
         }
       }
@@ -1954,37 +1842,42 @@ public:
     }
     
     char buffer[256];
-    sprintf(buffer, "mapper: chose src=%x dst=[", chosen_src.id);
-    for(unsigned i = 0; i < dst_ranking.size(); i++) {
+    sprintf(buffer, "mapper: chose dst=[");
+    for(unsigned i = 0; i < target_ranking.size(); i++) {
       if(i) strcat(buffer, ", ");
-      sprintf(buffer+strlen(buffer), "%x", dst_ranking[i].id);
+      sprintf(buffer+strlen(buffer), "%x", target_ranking[i].id);
     }
     strcat(buffer, "]");
     log_mapper.info("%s", buffer);
   }
 
-  virtual void rank_copy_targets(const Task *task,
-                                 const std::vector<Memory> &current_instances,
-                                 std::vector<std::vector<Memory> > &future_ranking)
+  virtual void rank_copy_targets(const Task *task, const RegionRequirement &req,
+                                 const std::set<Memory> &current_instances,
+                                 std::vector<Memory> &future_ranking)
   {
     log_mapper.info("mapper: ranking copy targets (%p)\n", task);
-    Mapper::rank_copy_targets(task, current_instances, future_ranking);
+    Mapper::rank_copy_targets(task, req, current_instances, future_ranking);
   }
 
-  virtual void select_copy_source(const Task *task,
-                                  const std::vector<Memory> &current_instances,
+  virtual void select_copy_source(const std::set<Memory> &current_instances,
                                   const Memory &dst, Memory &chosen_src)
   {
     if(current_instances.size() == 1) {
       chosen_src = *(current_instances.begin());
       return;
     }
-    log_mapper.info("mapper: selecting copy source (%p)\n", task);
-    for(std::vector<Memory>::const_iterator it = current_instances.begin();
+    log_mapper.info("mapper: selecting copy source\n");
+    for(std::set<Memory>::const_iterator it = current_instances.begin();
 	it != current_instances.end();
 	it++)
       log_mapper.info("  choice = %x", (*it).id);
-    Mapper::select_copy_source(task, current_instances, dst, chosen_src);
+    Mapper::select_copy_source(current_instances, dst, chosen_src);
+  }
+
+  virtual bool compact_partition(const Partition &partition,
+                                 MappingTagID tag)
+  {
+    return false;
   }
 };
 
