@@ -533,7 +533,7 @@ namespace RegionRuntime {
       Partition create_partition(Context ctx, LogicalRegion parent,
                                  unsigned int num_subregions); // must be disjoint
       Partition create_partition(Context ctx, LogicalRegion parent,
-                                 const std::vector<std::set<unsigned> > &coloring,
+                                 const std::vector<std::set<utptr_t> > &coloring,
                                  bool disjoint = true);
       Partition create_partition(Context ctx, LogicalRegion parent,
                                  const std::vector<std::set<std::pair<unsigned, unsigned> > > &ranges,
