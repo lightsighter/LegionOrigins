@@ -4,9 +4,28 @@ $(error LG_RT_DIR variable is not defined, aborting build)
 endif
 
 #Flags for directing the runtime makefile what to include
-DEBUG=1
-SHARED_LOWLEVEL=1
-OUTPUT_LEVEL=LEVEL_NONE
+DEBUG=1                   # Include debugging symbols
+OUTPUT_LEVEL=LEVEL_DEBUG  # Compile time print level
+SHARED_LOWLEVEL=1	  # Use the shared low level
+
+# Put the binary file name here
+OUTFILE		:= tree_test
+# List all the application source files here
+GEN_SRC		:= tree_test.cc
+GEN_GPU_SRC	:=
+
+# You can modify these variables, some will be appended to by the runtime makefile
+INC_FLAGS	:=
+CC_FLAGS	:=
+NVCC_FLAGS	:=
+GASNET_FLAGS	:=
+LD_FLAGS	:=
+
+###########################################################################
+#
+#   Don't change anything below here
+#   
+###########################################################################
 
 # General shell commands
 SHELL	:= /bin/sh
@@ -33,19 +52,6 @@ common_all : all
 
 .PHONY	: common_all
 
-# Put the output file name here
-OUTFILE		:= tree_test
-# List all the application source files here
-GEN_SRC		:= tree_test.cc
-GEN_GPU_SRC	:=
-
-# You can modify these variables, some will be appended to by the runtime makefile
-INC_FLAGS	:=
-CC_FLAGS	:=
-NVCC_FLAGS	:=
-GASNET_FLAGS	:=
-LD_FLAGS	:=
-
 # All these variables will be filled in by the runtime makefile
 LOW_RUNTIME_SRC	:=
 HIGH_RUNTIME_SRC:=
@@ -61,9 +67,7 @@ GPU_RUNTIME_OBJS:=$(GPU_RUNTIME_SRC:.cu=.o)
 
 ALL_OBJS	:= $(GEN_OBJS) $(GEN_GPU_OBJS) $(LOW_RUNTIME_OBJS) $(HIGH_RUNTIME_OBJS) $(GPU_RUNTIME_OBJS)
 
-all: tree
-
-tree:
+all:
 	$(MAKE) $(OUTFILE)
 
 $(OUTFILE) : $(ALL_OBJS)
