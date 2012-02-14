@@ -172,6 +172,13 @@ namespace RegionRuntime {
 #endif
         return data[x];
       }
+
+      bool operator<(const Vector<N>& other) const {
+	for (unsigned i = 0; i < N; i++)
+	  if (data[i] < other.data[i])
+	    return true;
+	return false;
+      }
     };
 
     /////////////////////////////////////////////////////////////
@@ -317,8 +324,8 @@ namespace RegionRuntime {
     template<unsigned N>
     class ColorizeFunction {
     public:
-      const ColoringType func_type; // how to interpret unions
-      union ColorizeFunction_t {
+      ColoringType func_type; // how to interpret unions
+      struct ColorizeFunction_t {
         ColorizeID colorize;
         std::map<Vector<N>,Color> mapping; // An explicit mapping
       } func;
@@ -329,6 +336,14 @@ namespace RegionRuntime {
         : func_type(EXECUTABLE_FUNC) { func.colorize = f; }
       ColorizeFunction(std::map<Vector<N>,Color> map)
         : func_type(MAPPED_FUNC) { func.mapping = map; }
+      ColorizeFunction(const ColorizeFunction<N>& other)
+        : func_type(other.func_type) { func = other.func; }
+      
+      ColorizeFunction<N> operator=(const ColorizeFunction<N>& other) {
+        this->func_type = other.func_type;
+        this->func = other.func;
+        return *this;
+      }
     };
 
     /////////////////////////////////////////////////////////////

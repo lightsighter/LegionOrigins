@@ -130,11 +130,18 @@ void main_task(const void *args, size_t arglen,
   // Colorize function for all regions
   std::map<Vector<1>, Color> color_map;
   for (unsigned i = 0; i < Config::num_blocks; i++) {
-    Vector<1> index;
-    index[0] = i;
+    Vector<1> index; index[0] = i;
     color_map[index] = i;
   }
   ColorizeFunction<1> color_fn(color_map);
+
+  // Argument mapping function
+  std::map<Vector<1>, TaskArgument> arg_map;
+  for (unsigned i = 0; i < Config::num_blocks; i++) {
+    Vector<1> index; index[0] = i;
+    arg_map[index] = TaskArgument(&(blocks[i]), sizeof(Block));
+  }
+  TaskArguments args(arg_map);
 
   // Regions for init task
   std::vector<RegionRequirement> init_regions;
@@ -149,7 +156,7 @@ void main_task(const void *args, size_t arglen,
   // Launch init task
   Future init_f =
     runtime->execute_index_space(ctx, TASKID_INIT_VECTORS, index_space,
-				 init_regions, init_color_fns, NULL, 0, 0, 0);
+				 init_regions, init_color_fns, args, 0, 0);
   init_f.get_void_result();
 
   printf("STARTING MAIN SIMULATION LOOP\n");
@@ -172,13 +179,13 @@ void main_task(const void *args, size_t arglen,
   // Launch add task
   Future add_f = 
     runtime->execute_index_space(ctx, TASKID_ADD_VECTORS, index_space,
-				 add_regions, add_color_fns, NULL, 0, 0, 0);
+                                 add_regions, add_color_fns, args, 0, 0);
   add_f.get_void_result();
 
   // Print results
   clock_gettime(CLOCK_MONOTONIC, &ts_end);
   double sim_time = ((1.0 * (ts_end.tv_sec - ts_start.tv_sec)) +
-		     (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
+                     (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
   printf("ELAPSED TIME = %7.3f s\n", sim_time);
   RegionRuntime::DetailedTimer::report_timers();
 
@@ -187,8 +194,8 @@ void main_task(const void *args, size_t arglen,
 
 template<AccessorType AT>
 void init_vectors_task(const void *args, size_t arglen,
-		       const std::vector<PhysicalRegion<AT> > &regions,
-		       Context ctx, HighLevelRuntime *runtime) {
+                       const std::vector<PhysicalRegion<AT> > &regions,
+                       Context ctx, HighLevelRuntime *runtime) {
   Block *block = (Block *)args;
   PhysicalRegion<AT> r_x = regions[0];
   PhysicalRegion<AT> r_y = regions[1];
@@ -206,8 +213,8 @@ void init_vectors_task(const void *args, size_t arglen,
 
 template<AccessorType AT>
 void add_vectors_task(const void *args, size_t arglen,
-		      const std::vector<PhysicalRegion<AT> > &regions,
-		      Context ctx, HighLevelRuntime *runtime) {
+                      const std::vector<PhysicalRegion<AT> > &regions,
+                      Context ctx, HighLevelRuntime *runtime) {
   Block *block = (Block *)args;
   PhysicalRegion<AT> r_x = regions[0];
   PhysicalRegion<AT> r_y = regions[1];
@@ -224,7 +231,7 @@ void add_vectors_task(const void *args, size_t arglen,
 }
 
 static bool sort_by_proc_id(const std::pair<Processor, Memory> &a,
-			    const std::pair<Processor, Memory> &b) {
+                            const std::pair<Processor, Memory> &b) {
   return a.first.id < b.first.id;
 }
 
@@ -253,17 +260,17 @@ public:
   }
 
   virtual void rank_initial_region_locations(size_t elmt_size,
-					     size_t num_elmts,
-					     MappingTagID tag,
-					     std::vector<Memory> &ranking) {
+                                             size_t num_elmts,
+                                             MappingTagID tag,
+                                             std::vector<Memory> &ranking) {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     ranking.push_back(global_memory);
   }
 
   virtual void rank_initial_partition_locations(size_t elmt_size,
-						unsigned num_subregions,
-						MappingTagID tag,
-						std::vector<std::vector<Memory> > &rankings) {
+                                                unsigned num_subregions,
+                                                MappingTagID tag,
+                                                std::vector<std::vector<Memory> > &rankings) {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     rankings.resize(num_subregions);
     for (unsigned i = 0; i < num_subregions; i++)
@@ -308,20 +315,20 @@ public:
   }
 
   virtual void permit_task_steal(Processor thief,
-				 const std::vector<const Task*> &tasks,
-				 std::set<const Task*> &to_steal) {
+                                 const std::vector<const Task*> &tasks,
+                                 std::set<const Task*> &to_steal) {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
 #ifdef TEST_STEALING
     for (unsigned i = 0; i < tasks.size(); i++) {
       to_steal.insert(tasks[i]);
       if (to_steal.size() >= 8)
-	break;
+        break;
     }
 #endif
   }
 
   virtual void map_task_region(const Task *task, const RegionRequirement *req,
-			       const std::vector<Memory> &valid_src_instances,
+                               const std::vector<Memory> &valid_src_instances,
                                const std::vector<Memory> &valid_dst_instances,
                                Memory &chosen_src,
                                std::vector<Memory> &dst_ranking) {
@@ -345,8 +352,8 @@ public:
   }
 
   virtual void rank_copy_targets(const Task *task,
-				 const RegionRequirement &req,
-				 const std::set<Memory> &current_instances,
+                                 const RegionRequirement &req,
+                                 const std::set<Memory> &current_instances,
                                  std::vector<Memory> &future_ranking) {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     Mapper::rank_copy_targets(task, req, current_instances, future_ranking);
@@ -373,23 +380,23 @@ public:
   SaxpyMapper(Machine *m, HighLevelRuntime *r, Processor p) : Mapper(m, r, p) {
     const std::set<Processor> &all_procs = m->get_all_processors();
     for (std::set<Processor>::const_iterator it = all_procs.begin();
-	 it != all_procs.end(); ++it) {
+         it != all_procs.end(); ++it) {
       Processor proc = *it;
       Memory best_mem;
       unsigned best_bw = 0;
       std::vector<Machine::ProcessorMemoryAffinity> pmas;
       m->get_proc_mem_affinity(pmas, proc);
       for (unsigned i = 0; i < pmas.size(); i++) {
-	if (pmas[i].bandwidth > best_bw) {
-	  best_bw = pmas[i].bandwidth;
-	  best_mem = pmas[i].m;
-	}
+        if (pmas[i].bandwidth > best_bw) {
+          best_bw = pmas[i].bandwidth;
+          best_mem = pmas[i].m;
+        }
       }
       Processor::Kind kind = m->get_processor_kind(proc);
       cpu_mem_pairs[kind].push_back(std::make_pair(proc, best_mem));
 
       if (proc == local_proc)
-	local_memory = best_mem;
+        local_memory = best_mem;
     }
 
     for (std::map<Processor::Kind, std::vector<std::pair<Processor, Memory> > >::iterator it = cpu_mem_pairs.begin(); it != cpu_mem_pairs.end(); ++it)
@@ -399,12 +406,12 @@ public:
     unsigned best_count = 0;
     const std::set<Memory> &all_mems = m->get_all_memories();
     for (std::set<Memory>::const_iterator it = all_mems.begin();
-	 it != all_mems.end(); ++it) {
+         it != all_mems.end(); ++it) {
       Memory memory = *it;
       unsigned count = m->get_shared_processors(memory).size();
       if (count > best_count) {
-	best_count = count;
-	best_global = memory;
+        best_count = count;
+        best_global = memory;
       }
     }
     global_memory = best_global;
@@ -472,7 +479,7 @@ public:
     for (unsigned i = 0; i < tasks.size(); i++) {
       to_steal.insert(tasks[i]);
       if (to_steal.size() >= 8)
-	break;
+        break;
     }
 #endif
   }
@@ -501,7 +508,7 @@ public:
 
   virtual void rank_copy_targets(const Task *task,
                                  const RegionRequirement &req,
-				 const std::set<Memory> &current_instances,
+                                 const std::set<Memory> &current_instances,
                                  std::vector<Memory> &future_ranking) {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     Mapper::rank_copy_targets(task, req, current_instances, future_ranking);
@@ -520,7 +527,7 @@ public:
 };
 
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
-		    Processor local) {
+                    Processor local) {
 #ifdef USE_SAXPY_SHARED
   runtime->replace_default_mapper(new SharedMapper(machine, runtime, local));
 #else
