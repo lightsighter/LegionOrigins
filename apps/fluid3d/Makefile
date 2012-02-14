@@ -9,9 +9,9 @@ OUTPUT_LEVEL=LEVEL_DEBUG  # Compile time print level
 #SHARED_LOWLEVEL=1	  # Use the shared low level
 
 # Put the binary file name here
-OUTFILE		:= 
+OUTFILE		:= fluid3d
 # List all the application source files here
-GEN_SRC		:= 		# .cc files
+GEN_SRC		:= fluid3d.cc	# .cc files
 GEN_GPU_SRC	:=		# .cu files
 
 # You can modify these variables, some will be appended to by the runtime makefile
