@@ -358,6 +358,7 @@ namespace RegionRuntime {
       allocator = RegionAllocator::NO_ALLOC;
       region_nodes = parent_ctx->region_nodes;
       partition_nodes = parent_ctx->partition_nodes;
+      context_lock = parent_ctx->current_lock;
       active = true;
       // Compute the parent's physical context for this region
       {
@@ -2291,6 +2292,15 @@ namespace RegionRuntime {
       {
         termination_event = UserEvent::create_user_event();
       }
+      // If parent task is not null, share its context lock, otherwise use our own
+      if (parent != NULL)
+      {
+        current_lock = parent->current_lock;
+      }
+      else
+      {
+        current_lock = context_lock;
+      }
       future.reset(termination_event);
       remaining_notifications = 0;
       sanitized = false;
@@ -2689,7 +2699,9 @@ namespace RegionRuntime {
       remote_start_event = Event::NO_EVENT;
       remote_children_event = Event::NO_EVENT;
       derez.deserialize<UserEvent>(termination_event);
-
+      // Make the current lock the given context lock
+      current_lock = context_lock;
+      
       // Mark that we're only doing a partial unpack
       partially_unpacked = true;
       // Copy the remaining buffer
@@ -2946,13 +2958,14 @@ namespace RegionRuntime {
     {
       log_task(LEVEL_DEBUG,"Registering child task %d with parent task %d",
                 child->unique_id, this->unique_id);
+      // Need the current context lock in exclusive mode to do this
+      AutoLock ctx_lock(current_lock);
 
       child_tasks.push_back(child);
       // Use the same maps as the parent task
       child->region_nodes = region_nodes;
       child->partition_nodes = partition_nodes;
-      // Use the same context lock as the parent
-      child->current_lock = context_lock;
+      child->instance_infos = instance_infos;
 
       // Now register each of the child task's region dependences
       for (unsigned idx = 0; idx < child->regions.size(); idx++)
@@ -3137,6 +3150,8 @@ namespace RegionRuntime {
     void TaskContext::register_mapping(RegionMappingImpl *impl)
     //--------------------------------------------------------------------------------------------
     {
+      // Need the current context lock in exclusive mode to do this
+      AutoLock ctx_lock(current_lock);
       // Check to see if we can find the parent region in the list
       // of parent task region requirements
       bool found = false;
@@ -3185,6 +3200,9 @@ namespace RegionRuntime {
       {
         final_unpack_task();
       }
+      // Need the current context lock in exclusive mode to do this
+      AutoLock ctx_lock(current_lock);
+
       std::set<Event> wait_on_events;
       // Check to see if we are an index space that needs must parallelism, 
       // if so mark that we've arrived at the barrier
@@ -3526,6 +3544,9 @@ namespace RegionRuntime {
       log_task(LEVEL_DEBUG,"All children mapped for task %d with unique id %d on processor %d",
                 task_id,unique_id,local_proc.id);
 
+      // Need the context lock in exclusive mode to do this
+      AutoLock ctx_lock(current_lock);
+
       if (remote)
       {
         // Send back the information about the mappings to the original processor
@@ -3692,6 +3713,9 @@ namespace RegionRuntime {
       log_task(LEVEL_DEBUG,"Finishing task %d with unique id %d on processor %d",
                 task_id, unique_id, local_proc.id);
 
+      // Need the current lock in exclusive mode to perform this
+      AutoLock ctx_lock(current_lock);
+
       if (remote)
       {
         // Send information about the updated logical regions to the parent context 
@@ -3770,6 +3794,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     { 
       log_task(LEVEL_DEBUG,"Processing remote start for task %d with unique id %d",task_id,unique_id);
+      // We need the current context lock in exclusive mode to do this
+      AutoLock ctx_lock(current_lock);
 #ifdef DEBUG_HIGH_LEVEL
       assert(active);
       assert(physical_instances.empty());
@@ -3827,6 +3853,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       log_task(LEVEL_DEBUG,"Processing remote children mapped for task %d with unique id %d",task_id,unique_id);
+      // We need the current context lock in exclusive mode to do this
+      AutoLock ctx_lock(current_lock);
 #ifdef DEBUG_HIGH_LEVEL
       assert(!remote);
       assert(parent_ctx != NULL);
@@ -3918,6 +3946,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       log_task(LEVEL_DEBUG,"Processing remote finish for task %d with unique id %d",task_id,unique_id);
+      // Need the current context lock in exclusive lock to do this
+      AutoLock ctx_lock(current_lock);
 #ifdef DEBUG_HIGH_LEVEL
       assert(!remote);
       assert(parent_ctx != NULL);
@@ -3956,6 +3986,8 @@ namespace RegionRuntime {
     void TaskContext::create_region(LogicalRegion handle)
     //--------------------------------------------------------------------------------------------
     {
+      // Need the current context lock in exclusive mode to do this
+      AutoLock ctx_lock(current_lock);
 #ifdef DEBUG_HIGH_LEVEL
       assert(region_nodes->find(handle) == region_nodes->end());
 #endif
@@ -3983,6 +4015,13 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       std::map<LogicalRegion,RegionNode*>::iterator find_it = region_nodes->find(handle);
+      // We need the current context lock in exclusive mode
+      if (!recursive)
+      {
+        // Only need lock at entry point call
+        Event lock_event = current_lock.lock(0,true/*exclusive*/);
+        lock_event.wait();
+      }
 #ifdef DEBUG_HIGH_LEVEL
       assert(find_it != region_nodes->end());
 #endif
@@ -4024,6 +4063,11 @@ namespace RegionRuntime {
         delete find_it->second;
       }
       region_nodes->erase(find_it);
+      // If we're leaving this operation, release lock
+      if (!recursive)
+      {
+        current_lock.unlock();
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4032,6 +4076,8 @@ namespace RegionRuntime {
     {
       // Compute the common ancestor of all the regions in the smash and map the logical      
       assert(false);
+      // We need the current context lock to do this
+      AutoLock ctx_lock(current_lock);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4039,6 +4085,8 @@ namespace RegionRuntime {
                                         bool disjoint, std::vector<LogicalRegion> &children)
     //--------------------------------------------------------------------------------------------
     {
+      // Need the current context lock in exclusive mode to do this
+      AutoLock ctx_lock(current_lock);
 #ifdef DEBUG_HIGH_LEVEL
       assert(partition_nodes->find(pid) == partition_nodes->end());
       assert(region_nodes->find(parent) != region_nodes->end());
@@ -4065,6 +4113,12 @@ namespace RegionRuntime {
     void TaskContext::remove_partition(PartitionID pid, LogicalRegion parent, bool recursive, bool reclaim_resources)
     //--------------------------------------------------------------------------------------------
     {
+      // If this is the entrypoint call we need the current context lock in exclusive mode
+      if (!recursive)
+      {
+        Event lock_event = current_lock.lock(0,true/*exclusive*/);
+        lock_event.wait();
+      }
       std::map<PartitionID,PartitionNode*>::iterator find_it = partition_nodes->find(pid);
 #ifdef DEBUG_HIGH_LEVEL
       assert(find_it != partition_nodes->end());
@@ -4089,6 +4143,11 @@ namespace RegionRuntime {
         }
       }
       partition_nodes->erase(find_it);
+      // if leaving the operation release the lock
+      if (!recursive)
+      {
+        current_lock.unlock();
+      }
     }
     
     //--------------------------------------------------------------------------------------------

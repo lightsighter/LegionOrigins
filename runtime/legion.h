@@ -902,25 +902,25 @@ namespace RegionRuntime {
       void unpack_tree_updates(Deserializer &derez, std::vector<LogicalRegion> &created, ContextID outermost);
     protected:
       // functions for updating a task's state
-      void register_child_task(TaskContext *desc);
-      void register_mapping(RegionMappingImpl *impl);
-      void map_and_launch(Mapper *mapper);
+      void register_child_task(TaskContext *desc); // (thread-safe)
+      void register_mapping(RegionMappingImpl *impl); // (thread-safe)
+      void map_and_launch(Mapper *mapper); // (thread_safe)
       void enumerate_index_space(Mapper *mapper);
       void start_task(std::vector<PhysicalRegion<AccessorGeneric> > &physical_regions);
       void complete_task(const void *result, size_t result_size,
             std::vector<PhysicalRegion<AccessorGeneric> > &physical_regions); // task completed running
-      void children_mapped(void); // all children have been mapped
-      void finish_task(void); // task and all children finished
-      void remote_start(const char *args, size_t arglen);
-      void remote_children_mapped(const char *args, size_t arglen);
-      void remote_finish(const char *args, size_t arglen);
+      void children_mapped(void); // all children have been mapped (thread-safe)
+      void finish_task(void); // task and all children finished (thread-safe)
+      void remote_start(const char *args, size_t arglen); // (thread-safe)
+      void remote_children_mapped(const char *args, size_t arglen); // (thread-safe)
+      void remote_finish(const char *args, size_t arglen); // (thread-safe)
     protected:
       // functions for updating logical region trees
-      void create_region(LogicalRegion handle);
-      void remove_region(LogicalRegion handle, bool recursive = false, bool reclaim_resources = false);
-      void smash_region(LogicalRegion smashed, const std::vector<LogicalRegion> &regions);
-      void create_partition(PartitionID pid, LogicalRegion parent, bool disjoint, std::vector<LogicalRegion> &children);
-      void remove_partition(PartitionID pid, LogicalRegion parent, bool recursive = false, bool reclaim_resources = false);
+      void create_region(LogicalRegion handle); // (thread-safe)
+      void remove_region(LogicalRegion handle, bool recursive = false, bool reclaim_resources = false); // (thread-safe)
+      void smash_region(LogicalRegion smashed, const std::vector<LogicalRegion> &regions); // (thread-safe)
+      void create_partition(PartitionID pid, LogicalRegion parent, bool disjoint, std::vector<LogicalRegion> &children); // (thread-safe)
+      void remove_partition(PartitionID pid, LogicalRegion parent, bool recursive = false, bool reclaim_resources = false); // (thread-safe)
     private:
       // Utility functions
       void compute_region_trace(std::vector<unsigned> &trace, LogicalRegion parent, LogicalRegion child);
@@ -1066,6 +1066,7 @@ namespace RegionRuntime {
       Event ready_event;
       UserEvent unmapped_event;
       UniqueID unique_id;
+      Lock context_lock;
     private:
       InstanceInfo *chosen_info;
       RegionAllocator allocator; 
@@ -1094,7 +1095,7 @@ namespace RegionRuntime {
       virtual bool is_context(void) const { return false; }
       virtual bool is_ready(void) const; // Ready to be mapped
       virtual void notify(void);
-      void perform_mapping(Mapper *m);
+      void perform_mapping(Mapper *m); // (thread-safe)
       virtual void add_source_physical_instance(ContextID ctx, InstanceInfo *info);
       virtual UniqueID get_unique_id(void) const { return unique_id; }
       virtual Event get_termination_event(void) const; 
