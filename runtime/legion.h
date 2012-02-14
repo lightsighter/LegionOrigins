@@ -123,6 +123,7 @@ namespace RegionRuntime {
     typedef TaskContext* Context;
     typedef void (*MapperCallbackFnptr)(Machine *machine, HighLevelRuntime *rt, Processor local);
     typedef Color (*ColorizeFnptr)(const std::vector<int> &solution);
+    typedef std::vector<int> IndexPoint;
 
     ///////////////////////////////////////////////////////////////////////////
     //                                                                       //
@@ -295,18 +296,35 @@ namespace RegionRuntime {
       CoherenceProperty prop;
       LogicalRegion     parent;
       bool verified; // has this been verified already
+      ColoringType      func_type; // how to interpret the handle
+      ColorizeID        colorize; // coloring function if this is a partition
+      std::map<IndexPoint,Color> color_map;
     public:
       RegionRequirement(void) { }
+      // Create a requirement for a single region
       RegionRequirement(LogicalRegion _handle, PrivilegeMode _priv,
                         AllocateMode _alloc, CoherenceProperty _prop,
                         LogicalRegion _parent, bool _verified = false)
         : privilege(_priv), alloc(_alloc), prop(_prop), parent(_parent),
-          verified(_verified) { handle.region = _handle; }
-      RegionRequirement(PartitionID pid, PrivilegeMode _priv,
+          verified(_verified), func_type(SINGULAR_FUNC)
+          { handle.region = _handle; }
+      // Create a requirement for a partition with the colorize
+      // function describing how to map points in the index space
+      // to colors for logical subregions in the partition
+      RegionRequirement(PartitionID pid, ColorizeID colorize,
+                        PrivilegeMode _priv,
                         AllocateMode _alloc, CoherenceProperty _prop,
                         LogicalRegion _parent, bool _verified = false)
         : privilege(_priv), alloc(_alloc), prop(_prop), parent(_parent),
-          verified(_verified) { handle.partition = pid; }
+          verified(_verified), func_type(EXECUTABLE_FUNC),
+          colorize(_colorize) { handle.partition = pid; }
+      RegionRequirement(PartitionID pid, std::map<IndexPoint,Color> map,
+                        PrivilegeMode _priv, AllocateMode _alloc,
+                        CoherenceProperty _prop, LogicalRegion _parent,
+                        bool _verified = false)
+        : privilege(_priv), allo(_alloc), prop(_prop), parent(_parent),
+          verified(_verified), func_type(MAPPED_FUNC), color_map(map)
+          { handle.partition = pid; }
     };
 
     /////////////////////////////////////////////////////////////

@@ -63,7 +63,7 @@ namespace RegionRuntime {
         : lock(l)
       {
         Event lock_event = l.lock(mode,exclusive,wait_on);
-        lock_event.wait();
+        lock_event.wait(true/*block*/);
       }
       ~AutoLock()
       {
@@ -1716,13 +1716,28 @@ namespace RegionRuntime {
       // We've now got our tasks to steal
       if (!stolen.empty())
       {
+        // Get all the locks up front
+        std::set<MapperID> held_map_locks;
+        AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
+        for (std::set<TaskContext*>::const_iterator it = stolen.begin();
+              it != stolen.end(); it++)
+        {
+          if (held_map_locks.find((*it)->map_id) == held_map_locks.end())
+          {
+            Event lock_event = mapper_locks[(*it)->map_id].lock(0,true/*exclusive*/);
+            held_map_locks.insert((*it)->map_id);
+            lock_event.wait();
+          }
+          // Also get the context lock
+          Event lock_event = (*it)->current_lock.lock(0,true/*exclusive*/);
+          lock_event.wait();
+        }
+
         size_t total_buffer_size = 2*sizeof(Processor) + sizeof(int);
         // Count up the size of elements to steal
         for (std::set<TaskContext*>::iterator it = stolen.begin();
                 it != stolen.end(); it++)
         {
-          AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
-          AutoLock mapper_lock(mapper_locks[(*it)->map_id]);
           total_buffer_size += (*it)->compute_task_size(mapper_objects[(*it)->map_id]);
         }
         Serializer rez(total_buffer_size);
@@ -1739,6 +1754,18 @@ namespace RegionRuntime {
         Processor utility = thief.get_utility_processor();
         // Invoke the task on the right processor to send tasks back
         utility.spawn(ENQUEUE_TASK_ID, rez.get_buffer(), total_buffer_size);
+
+        // Release all the locks we no longer need
+        for (std::set<MapperID>::const_iterator it = held_map_locks.begin();
+              it != held_map_locks.end(); it++)
+        {
+          mapper_locks[*it].unlock();
+        }
+        for (std::set<TaskContext*>::const_iterator it = stolen.begin();
+              it != stolen.end(); it++)
+        {
+          (*it)->current_lock.unlock();
+        }
 
         // Delete any remote tasks that we will no longer have a reference to
         for (std::set<TaskContext*>::iterator it = stolen.begin();
@@ -1858,8 +1885,6 @@ namespace RegionRuntime {
     void HighLevelRuntime::process_schedule_request(void)
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_SPEW,"Running scheduler on processor %d with %ld tasks in ready queue",
-              local_proc.id, ready_queue.size());
       // Update the queue to make sure as many tasks are awake as possible
       update_queue();
       // Launch up to MAX_TASK_MAPS_PER_STEP tasks, either from the ready queue, or
@@ -1870,6 +1895,9 @@ namespace RegionRuntime {
       // Get the lock for the ready queue lock in exclusive mode
       Event lock_event = queue_lock.lock(0,true);
       lock_event.wait();
+      log_task(LEVEL_SPEW,"Running scheduler on processor %d with %ld tasks in ready queue",
+              local_proc.id, ready_queue.size());
+
       while (!ready_queue.empty() && (mapped_tasks<MAX_TASK_MAPS_PER_STEP))
       {
 	DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_SCHEDULER);
@@ -1896,7 +1924,7 @@ namespace RegionRuntime {
         }
         // Need to acquire the lock for the next time we go around the loop
         lock_event = queue_lock.lock(0,true/*exclusive*/);
-        lock_event.wait();
+        lock_event.wait(true/*block*/);
       }
       // Check to see if have any remaining work in our queues, 
       // if not, then disable the idle task
@@ -2004,7 +2032,8 @@ namespace RegionRuntime {
             // We need to send the task to its remote target
             // First get the utility processor for the target
             Processor utility = target.get_utility_processor();
-
+            // We need to hold the task's context lock to package it up
+            AutoLock ctx_lock(task->current_lock);
             // Package up the task and send it
             size_t buffer_size = 2*sizeof(Processor)+sizeof(int)+task->compute_task_size(mapper_objects[task->map_id]);
             Serializer rez(buffer_size);
@@ -2919,6 +2948,8 @@ namespace RegionRuntime {
       {
         if (it->p != local_proc)
         {
+          // Need to hold the tasks context lock to do this
+          AutoLock ctx_lock(current_lock);
           // set need_split
           this->need_split = it->recurse;
           this->index_space = it->constraints;
@@ -4020,7 +4051,7 @@ namespace RegionRuntime {
       {
         // Only need lock at entry point call
         Event lock_event = current_lock.lock(0,true/*exclusive*/);
-        lock_event.wait();
+        lock_event.wait(true/*block*/);
       }
 #ifdef DEBUG_HIGH_LEVEL
       assert(find_it != region_nodes->end());
@@ -4117,7 +4148,7 @@ namespace RegionRuntime {
       if (!recursive)
       {
         Event lock_event = current_lock.lock(0,true/*exclusive*/);
-        lock_event.wait();
+        lock_event.wait(true/*block*/);
       }
       std::map<PartitionID,PartitionNode*>::iterator find_it = partition_nodes->find(pid);
 #ifdef DEBUG_HIGH_LEVEL
