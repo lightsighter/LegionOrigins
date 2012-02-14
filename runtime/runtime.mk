@@ -13,7 +13,7 @@ INC_FLAGS 	+= -I$(GASNET)/include -I$(GASNET)/include/ibv-conduit
 INC_FLAGS	+= -I$(CUDA)/include
 CC_FLAGS	+= -DGASNET_CONDUIT_IBV
 LD_FLAGS	+= -L$(GASNET)/lib -lgasnet-ibv-par -libverbs
-LD_LFAGS	+= -L$(CUDA)/lib64 -lcudart -lcuda -Wl,-rpath=$(CUDA)/lib64
+LD_FLAGS	+= -L$(CUDA)/lib64 -lcudart -lcuda -Wl,-rpath=$(CUDA)/lib64
 NVCC_FLAGS	+= -arch=sm_20
 ifdef DEBUG
 NVCC_FLAGS	+= -g -G
@@ -25,8 +25,12 @@ endif
 ifdef DEBUG
 CC_FLAGS	+= -DDEBUG_LOW_LEVEL -DDEBUG_HIGH_LEVEL -ggdb -Wall
 else
-CC_FLAGS	+= -O3 -DCOMPILER_TIME_MIN_LEVEL=$(OUTPUT_LEVEL)
+CC_FLAGS	+= -O3 
 endif
+
+# Manage the output setting
+CC_FLAGS	+= -DCOMPILE_TIME_MIN_LEVEL=$(OUTPUT_LEVEL)
+
 
 # Set the source files
 ifndef SHARED_LOWLEVEL
