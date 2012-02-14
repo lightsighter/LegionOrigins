@@ -21,10 +21,9 @@ namespace RegionRuntime {
 
     // Enumerations
     enum {
-      // To see where the +9,10,11 come from, see the top of legion.cc
-      TASK_ID_INIT_MAPPERS = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+9,
-      TASK_ID_REGION_MAIN = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+10,
-      TASK_ID_AVAILABLE = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+11,
+      // To see where the +9,10 come from, see the top of legion.cc
+      TASK_ID_REGION_MAIN = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+9,
+      TASK_ID_AVAILABLE = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+10,
     };
 
     // Timing events
@@ -1633,15 +1632,6 @@ namespace RegionRuntime {
 
       // Send the return value back
       runtime->end_task(ctx, NULL, 0, regions);
-    }
-
-    // A wrapper task for allowing the application to initialize the set of mappers
-    template<void (*TASK_PTR)(Machine*,HighLevelRuntime*,Processor)>
-    void init_mapper_wrapper(const void * args, size_t arglen, Processor p)
-    {
-      HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
-      Machine *machine = Machine::get_machine();
-      (*TASK_PTR)(machine,runtime,p);
     }
 
     ////////////////////////////////////////////////////////////////////////////////

@@ -879,18 +879,13 @@ namespace RegionRuntime {
       available_maps.clear();
     }
 
-    void dummy_init(Machine *machine, HighLevelRuntime *runtime, Processor p)
-    {
-      // Intentionally do nothing
-    }
-
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::register_runtime_tasks(Processor::TaskIDTable &table)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       // Check to make sure that nobody has registered any tasks here
-      for (unsigned idx = 0; idx < TASK_ID_INIT_MAPPERS; idx++)
+      for (unsigned idx = 0; idx < TASK_ID_REGION_MAIN; idx++)
         assert(table.find(idx) == table.end());
 #endif
       table[INIT_FUNC_ID]       = HighLevelRuntime::initialize_runtime;
@@ -905,12 +900,6 @@ namespace RegionRuntime {
       table[NOTIFY_FINISH_ID]   = HighLevelRuntime::notify_finish;
       table[ADVERTISEMENT_ID]   = HighLevelRuntime::advertise_work;
       table[TERMINATION_ID]     = HighLevelRuntime::detect_termination;
-      // Check to see if an init mappers has been declared, if not, give a dummy version
-      // The application can write over it if it wants
-      if (table.find(TASK_ID_INIT_MAPPERS) == table.end())
-      {
-        table[TASK_ID_INIT_MAPPERS] = init_mapper_wrapper<dummy_init>;
-      }
     }
 
     /*static*/ MapperCallbackFnptr HighLevelRuntime::mapper_callback = 0;
@@ -1372,9 +1361,9 @@ namespace RegionRuntime {
       assert(id < mapper_objects.size());
       assert(mapper_objects[id] == NULL);
 #endif
+      mapper_locks[id] = Lock::create_lock();
       AutoLock mapper_lock(mapper_locks[id]);
       mapper_objects[id] = m;
-      mapper_locks[id] = Lock::create_lock();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2286,6 +2275,7 @@ namespace RegionRuntime {
       arglen = _arglen;
       map_id = _map_id;
       tag = _tag;
+      orig_proc = local_proc;
       stealable = false;
       stolen = false;
       chosen = false;
@@ -2508,7 +2498,6 @@ namespace RegionRuntime {
           }
         }
         // Compute the information for moving the physical region trees that we need
-        result += sizeof(size_t);
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
           // Check to see if this is an index space, if so pack from the parent region
@@ -2592,6 +2581,9 @@ namespace RegionRuntime {
         }
         
         // pack true dependences
+#ifdef DEBUG_HIGH_LEVEL
+        assert(true_dependences.size() == regions.size());
+#endif
         for (unsigned idx = 0; idx < true_dependences.size(); idx++)
         {
           rez.serialize<size_t>(true_dependences[idx].size());
@@ -2631,7 +2623,7 @@ namespace RegionRuntime {
         {
           if (is_index_space)
           {
-            (*partition_nodes)[regions[idx].handle.partition]->pack_physical_state(get_enclosing_physical_context(idx),rez);
+            (*partition_nodes)[regions[idx].handle.partition]->parent->pack_physical_state(get_enclosing_physical_context(idx),rez);
           }
           else
           {
@@ -2767,8 +2759,15 @@ namespace RegionRuntime {
       // unpack the physical state for each of the trees
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        // Contexts get initialized when nodes are made during unpacking
-        (*region_nodes)[regions[idx].handle.region]->unpack_physical_state(ctx_id,derez,false/*write*/,*instance_infos);
+        if (is_index_space)
+        {
+          (*partition_nodes)[regions[idx].handle.partition]->parent->unpack_physical_state(ctx_id,derez,false/*write*/,*instance_infos);
+        }
+        else
+        {
+          // Contexts get initialized when nodes are made during unpacking
+          (*region_nodes)[regions[idx].handle.region]->unpack_physical_state(ctx_id,derez,false/*write*/,*instance_infos);
+        }
       }
 
       // Delete our buffer
