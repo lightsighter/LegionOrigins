@@ -17,8 +17,6 @@ struct utptr_t
 public:
   unsigned value; 
 public: 
-  //utptr_t() { }
-  //template<typename T> utptr_t(const ptr_t<T>ptr) : value(ptr.value) { }
   bool operator==(const utptr_t &ptr) const { return (ptr.value == this->value); }
   bool operator!=(const utptr_t &ptr) const { return (ptr.value != this->value); }
   bool operator< (const utptr_t &ptr) const { return (ptr.value <  this->value); }
