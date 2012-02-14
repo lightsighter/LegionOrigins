@@ -29,7 +29,7 @@ void top_level_task(const void *args, size_t arglen, const std::vector<PhysicalR
     unsigned mapper = 0;
     if ((rand() % 100) == 0)
       mapper = 1;
-    futures.push_back(runtime->execute_task(ctx,LAUNCH_TASK_ID,needed_regions,buffer,2*sizeof(unsigned),true,mapper));
+    futures.push_back(runtime->execute_task(ctx,LAUNCH_TASK_ID,needed_regions,buffer,2*sizeof(unsigned),mapper));
   }
   free(buffer);
 
@@ -74,7 +74,7 @@ unsigned launch_tasks(const void *args, size_t arglen, const std::vector<Physica
       unsigned mapper = 0;
       if ((rand() % 100) == 0)
         mapper = 1;
-      futures.push_back(runtime->execute_task(ctx,LAUNCH_TASK_ID,needed_regions,buffer,2*sizeof(unsigned),true,mapper));
+      futures.push_back(runtime->execute_task(ctx,LAUNCH_TASK_ID,needed_regions,buffer,2*sizeof(unsigned),mapper));
     }
     // Clean up the buffer
     free(buffer);
@@ -119,12 +119,12 @@ void create_mappers(Machine *machine, HighLevelRuntime *runtime, Processor local
 int main(int argc, char **argv)
 {
   Processor::TaskIDTable task_table;  
-  task_table[TASK_ID_INIT_MAPPERS] = init_mapper_wrapper<create_mappers>;
   task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
   task_table[LAUNCH_TASK_ID] = high_level_task_wrapper<unsigned,launch_tasks<AccessorGeneric> >;
   //task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric>,top_level_task<AccessorArray> >;
   //task_table[LAUNCH_TASK_ID] = high_level_task_wrapper<unsigned,launch_tasks<AccessorGeneric>,launch_tasks<AccessorArray> >;
   HighLevelRuntime::register_runtime_tasks(task_table);
+  HighLevelRuntime::set_mapper_init_callback(create_mappers);
 
   // Initialize the machine
   Machine m(&argc, &argv, task_table, false);
