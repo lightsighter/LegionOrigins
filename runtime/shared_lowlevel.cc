@@ -290,7 +290,7 @@ namespace RegionRuntime {
     class Triggerable {
     public:
         typedef unsigned TriggerHandle;
-	virtual void trigger(TriggerHandle = 0) = 0;
+	virtual void trigger(unsigned count = 1, TriggerHandle = 0) = 0;
 	// make the warnings go away
 	virtual ~Triggerable() { }
     };
@@ -333,8 +333,8 @@ namespace RegionRuntime {
 	// create an event that won't trigger until all input events have
 	Event merge_events(const std::map<EventImpl*,Event> &wait_for);
 	// Trigger the event
-	void trigger(TriggerHandle handle = 0);
-	// Check to see if the lock is active, if not activate it (return true), otherwise false
+	void trigger(unsigned count = 1, TriggerHandle handle = 0);
+	// Check to see if the event is active, if not activate it (return true), otherwise false
 	bool activate(void);	
 	// Register a dependent event, return true if event had not been triggered and was registered
 	bool register_dependent(Triggerable *target, EventGeneration needed_gen, TriggerHandle handle = 0);
@@ -342,9 +342,13 @@ namespace RegionRuntime {
 	Event get_event();
         // Return a user event for this EventImplementation
         UserEvent get_user_event();
+        // Return a barrier for this EventImplementation
+        Barrier get_barrier(unsigned expected_arrivals);
+        // Alter the arrival count for the barrier
+        void alter_arrival_count(int delta);
     private: 
 	bool in_use;
-	int sources;
+	unsigned sources;
 	const EventIndex index;
 	EventGeneration generation;
 	// The version of the event to hand out (i.e. with generation+1)
@@ -376,7 +380,7 @@ namespace RegionRuntime {
 	Event spawn(Processor::TaskFuncID func_id, const void * args,
 				size_t arglen, Event wait_on);
 	void run(void);
-	void trigger(TriggerHandle handle = 0);
+	void trigger(unsigned count = 1, TriggerHandle handle = 0);
 	static void* start(void *proc);
 	void preempt(EventImpl *event, EventImpl::EventGeneration needed);
     private:
@@ -522,15 +526,15 @@ namespace RegionRuntime {
 	return ret;
     } 
 
-    void EventImpl::trigger(TriggerHandle handle)
+    void EventImpl::trigger(unsigned count, TriggerHandle handle)
     {
 	// Update the generation
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
 #ifdef DEBUG_LOW_LEVEL
         assert(in_use);
-	assert(sources > 0);
+	assert(sources >= count);
 #endif
-	sources--;
+	sources -= count;
         bool finished = false;
 	if (sources == 0)
 	{
@@ -551,7 +555,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_LOW_LEVEL
                         assert(triggerables.size() == trigger_handles.size());
 #endif
-			triggerables.back()->trigger(trigger_handles.back());
+			triggerables.back()->trigger(1, trigger_handles.back());
 			triggerables.pop_back();
                         trigger_handles.pop_back();
 		}
@@ -642,6 +646,35 @@ namespace RegionRuntime {
       return result;
     }
 
+    Barrier EventImpl::get_barrier(unsigned expected_arrivals)
+    {
+#ifdef DEBUG_LOW_LEVEL
+      assert(in_use);
+#endif
+      PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+      Barrier result;
+      result.id = current.id;
+      result.gen = current.gen;
+      // Set the number of expected arrivals
+      sources = expected_arrivals;
+      PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+      return result;
+    }
+
+    void EventImpl::alter_arrival_count(int delta)
+    {
+#ifdef DEBUG_LOW_LEVEL
+      assert(in_use);
+#endif
+      PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+#ifdef DEBUG_LOW_LEVEL
+      if (delta < 0) // If we're deleting, make sure nothing weird happens
+        assert(int(sources) > (-delta));
+#endif
+      sources += delta;
+      PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+    }
+
     ////////////////////////////////////////////////////////
     // User Events (just use base event impl) 
     ////////////////////////////////////////////////////////
@@ -662,8 +695,37 @@ namespace RegionRuntime {
     }
 
     ////////////////////////////////////////////////////////
+    // Barrier Events (have to use same base impl)
+    ////////////////////////////////////////////////////////
+    
+    Barrier Barrier::create_barrier(unsigned expected_arrivals)
+    {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+      EventImpl *impl = Runtime::get_runtime()->get_free_event();
+      return impl->get_barrier(expected_arrivals);
+    }
+
+    void Barrier::alter_arrival_count(int delta) const
+    {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+      if (!id) return;
+      EventImpl *impl = Runtime::get_runtime()->get_event_impl(*this);
+      impl->alter_arrival_count(delta);
+    }
+
+    void Barrier::arrive(unsigned count /*=1*/) const
+    {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+      if (!id) return;
+      EventImpl *impl = Runtime::get_runtime()->get_event_impl(*this);
+      impl->trigger(count);
+    }
+
+    ////////////////////////////////////////////////////////
     // Lock 
     ////////////////////////////////////////////////////////
+
+    /*static*/ const Lock Lock::NO_LOCK = Lock();
 
     class LockImpl : public Triggerable {
     public:
@@ -679,7 +741,7 @@ namespace RegionRuntime {
 
 	Event lock(unsigned mode, bool exclusive, Event wait_on);
 	void unlock(Event wait_on);
-	void trigger(TriggerHandle handle);
+	void trigger(unsigned count = 1, TriggerHandle handle = 0);
 
 	bool activate(void);
 	void deactivate(void);
@@ -844,7 +906,7 @@ namespace RegionRuntime {
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
     }
 
-    void LockImpl::trigger(TriggerHandle handle)
+    void LockImpl::trigger(unsigned count, TriggerHandle handle)
     {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
         // If the trigger handle is 0 then unlock the lock, 
@@ -1216,7 +1278,7 @@ namespace RegionRuntime {
 	}
     }
 
-    void ProcessorImpl::trigger(TriggerHandle handle)
+    void ProcessorImpl::trigger(unsigned count, TriggerHandle handle)
     {
 	// We're not sure which task is ready, but at least one of them is
 	// so wake up the processor thread if it is waiting
@@ -1568,6 +1630,8 @@ namespace RegionRuntime {
     // Region Allocator 
     ////////////////////////////////////////////////////////
 
+    /*static*/ const RegionAllocatorUntyped RegionAllocatorUntyped::NO_ALLOC = RegionAllocatorUntyped();
+
     class RegionAllocatorImpl {
     public:
 	RegionAllocatorImpl(int idx, unsigned s, unsigned e, bool activate = false) 
@@ -1719,7 +1783,7 @@ namespace RegionRuntime {
 	void deactivate(void);
 	Event copy_to(RegionInstanceUntyped target, Event wait_on);
 	RegionInstanceUntyped get_instance(void) const;
-	void trigger(TriggerHandle handle);
+	void trigger(unsigned count, TriggerHandle handle);
 	Lock get_lock(void);
     private:
         class CopyOperation {
@@ -1870,7 +1934,7 @@ namespace RegionRuntime {
 	}
     }
 
-    void RegionInstanceImpl::trigger(TriggerHandle handle)
+    void RegionInstanceImpl::trigger(unsigned count, TriggerHandle handle)
     {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
         // Find the copy operation in the set

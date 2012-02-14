@@ -84,7 +84,7 @@ namespace RegionRuntime {
 
       void alter_arrival_count(int delta) const;
 
-      void arrive(int count = 1) const;
+      void arrive(unsigned count = 1) const;
     };
 
     class Lock {
@@ -270,6 +270,9 @@ namespace RegionRuntime {
 
       bool exists(void) const { return id != 0; }
 
+      void acquire(void) {}
+      void release(void) {}
+
     protected:
       unsigned alloc_untyped(unsigned count = 1) const;
       void free_untyped(unsigned ptr, unsigned count = 1) const;
@@ -411,6 +414,9 @@ namespace RegionRuntime {
       static const RegionInstanceUntyped NO_INST;
 
       bool exists(void) const { return id != 0; }
+
+      void acquire(void) {}
+      void release(void) {}
 
       RegionInstanceAccessorUntyped<AccessorGeneric> get_accessor_untyped(void) const;
 

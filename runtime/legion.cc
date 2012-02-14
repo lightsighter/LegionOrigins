@@ -879,18 +879,13 @@ namespace RegionRuntime {
       available_maps.clear();
     }
 
-    void dummy_init(Machine *machine, HighLevelRuntime *runtime, Processor p)
-    {
-      // Intentionally do nothing
-    }
-
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::register_runtime_tasks(Processor::TaskIDTable &table)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       // Check to make sure that nobody has registered any tasks here
-      for (unsigned idx = 0; idx < TASK_ID_INIT_MAPPERS; idx++)
+      for (unsigned idx = 0; idx < TASK_ID_REGION_MAIN; idx++)
         assert(table.find(idx) == table.end());
 #endif
       table[INIT_FUNC_ID]       = HighLevelRuntime::initialize_runtime;
@@ -905,12 +900,6 @@ namespace RegionRuntime {
       table[NOTIFY_FINISH_ID]   = HighLevelRuntime::notify_finish;
       table[ADVERTISEMENT_ID]   = HighLevelRuntime::advertise_work;
       table[TERMINATION_ID]     = HighLevelRuntime::detect_termination;
-      // Check to see if an init mappers has been declared, if not, give a dummy version
-      // The application can write over it if it wants
-      if (table.find(TASK_ID_INIT_MAPPERS) == table.end())
-      {
-        table[TASK_ID_INIT_MAPPERS] = init_mapper_wrapper<dummy_init>;
-      }
     }
 
     /*static*/ MapperCallbackFnptr HighLevelRuntime::mapper_callback = 0;
@@ -1177,7 +1166,7 @@ namespace RegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_SMASH_REGION);
       // Find the parent region of all the regions
-      LogicalRegion parent = ctx->find_parent_region(regions);
+      LogicalRegion parent = ctx->find_ancestor_region(regions);
 
       LowLevel::ElementMask smash_mask(parent.get_valid_mask().get_num_elmts());
       // Create a new mask for the region based on the set of all parent task
@@ -1372,9 +1361,9 @@ namespace RegionRuntime {
       assert(id < mapper_objects.size());
       assert(mapper_objects[id] == NULL);
 #endif
+      mapper_locks[id] = Lock::create_lock();
       AutoLock mapper_lock(mapper_locks[id]);
       mapper_objects[id] = m;
-      mapper_locks[id] = Lock::create_lock();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2286,6 +2275,7 @@ namespace RegionRuntime {
       arglen = _arglen;
       map_id = _map_id;
       tag = _tag;
+      orig_proc = local_proc;
       stealable = false;
       stolen = false;
       chosen = false;
@@ -2508,7 +2498,6 @@ namespace RegionRuntime {
           }
         }
         // Compute the information for moving the physical region trees that we need
-        result += sizeof(size_t);
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
           // Check to see if this is an index space, if so pack from the parent region
@@ -2592,6 +2581,9 @@ namespace RegionRuntime {
         }
         
         // pack true dependences
+#ifdef DEBUG_HIGH_LEVEL
+        assert(true_dependences.size() == regions.size());
+#endif
         for (unsigned idx = 0; idx < true_dependences.size(); idx++)
         {
           rez.serialize<size_t>(true_dependences[idx].size());
@@ -2631,7 +2623,7 @@ namespace RegionRuntime {
         {
           if (is_index_space)
           {
-            (*partition_nodes)[regions[idx].handle.partition]->pack_physical_state(get_enclosing_physical_context(idx),rez);
+            (*partition_nodes)[regions[idx].handle.partition]->parent->pack_physical_state(get_enclosing_physical_context(idx),rez);
           }
           else
           {
@@ -2767,8 +2759,15 @@ namespace RegionRuntime {
       // unpack the physical state for each of the trees
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        // Contexts get initialized when nodes are made during unpacking
-        (*region_nodes)[regions[idx].handle.region]->unpack_physical_state(ctx_id,derez,false/*write*/,*instance_infos);
+        if (is_index_space)
+        {
+          (*partition_nodes)[regions[idx].handle.partition]->parent->unpack_physical_state(ctx_id,derez,false/*write*/,*instance_infos);
+        }
+        else
+        {
+          // Contexts get initialized when nodes are made during unpacking
+          (*region_nodes)[regions[idx].handle.region]->unpack_physical_state(ctx_id,derez,false/*write*/,*instance_infos);
+        }
       }
 
       // Delete our buffer
@@ -4188,7 +4187,6 @@ namespace RegionRuntime {
         if (has_war_dependence)
         {
           // Try making a new instance in the same memory, otherwise add the dependences
-          RegionNode *node = (*region_nodes)[info->handle];
           InstanceInfo *new_inst = create_instance_info(info->handle,info->location);
           if (new_inst == InstanceInfo::get_no_instance())
           {
@@ -4285,6 +4283,66 @@ namespace RegionRuntime {
         ctx = ctx->parent_ctx;
       }
       return ctx->ctx_id;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    LogicalRegion TaskContext::get_subregion(PartitionID pid, Color c) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(partition_nodes->find(pid) != partition_nodes->end());
+#endif
+      return (*partition_nodes)[pid]->get_subregion(c); 
+    }
+
+    //--------------------------------------------------------------------------------------------
+    LogicalRegion TaskContext::find_ancestor_region(const std::vector<LogicalRegion> &children) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!children.empty());
+#endif
+      RegionNode *parent = (*region_nodes)[children.front()];
+      for (unsigned idx = 1; idx < children.size(); idx++)
+      {
+        RegionNode *child = (*region_nodes)[children[idx]];
+        if (child->depth < parent->depth)
+        {
+          // Walk the parent up until it's at the same depth as the child
+          while (child->depth < parent->depth)
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            assert(parent->parent != NULL); // If the partition is there, its parent region is there too
+#endif
+            parent = parent->parent->parent;
+          }
+        }
+        else if (parent->depth < child->depth)
+        {
+          // Walk the child up until it's at the same depth as the parent
+          while (parent->depth < child->depth)
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            assert(child->parent != NULL);
+#endif
+            child = child->parent->parent;
+          }
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        assert(parent->depth == child->depth);
+#endif
+        // Otherwise walk them both up until they are the same region
+        while (parent != child)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(parent->parent != NULL);
+          assert(child->parent != NULL);
+#endif
+          parent = parent->parent->parent;
+          child = child->parent->parent;
+        }
+      }
+      return parent->handle;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -6884,6 +6942,17 @@ namespace RegionRuntime {
       return Event::merge_events(wait_on_events);
     }
 
+    //--------------------------------------------------------------------------------------------
+    LogicalRegion PartitionNode::get_subregion(Color c) const
+    //--------------------------------------------------------------------------------------------
+    {
+      std::map<Color,LogicalRegion>::const_iterator finder = color_map.find(c);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(finder != color_map.end());
+#endif
+      return finder->second;
+    }
+
     ///////////////////////////////////////////
     // Instance Info 
     ///////////////////////////////////////////
@@ -7154,7 +7223,7 @@ namespace RegionRuntime {
       for (int i = 0; i<2; i++)
       {
         derez.deserialize<size_t>(user_size);
-        for (int idx = 0; idx < user_size; idx++)
+        for (unsigned idx = 0; idx < user_size; idx++)
         {
           std::pair<UniqueID,UserTask> user;
           derez.deserialize<UniqueID>(user.first);
@@ -7162,6 +7231,7 @@ namespace RegionRuntime {
           result_info->users.insert(user);
         }
       }
+      return result_info;
     }
 
     //-------------------------------------------------------------------------

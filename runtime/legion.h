@@ -21,10 +21,9 @@ namespace RegionRuntime {
 
     // Enumerations
     enum {
-      // To see where the +9,10,11 come from, see the top of legion.cc
-      TASK_ID_INIT_MAPPERS = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+9,
-      TASK_ID_REGION_MAIN = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+10,
-      TASK_ID_AVAILABLE = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+11,
+      // To see where the +9,10 come from, see the top of legion.cc
+      TASK_ID_REGION_MAIN = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+9,
+      TASK_ID_AVAILABLE = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+10,
     };
 
     // Timing events
@@ -240,7 +239,7 @@ namespace RegionRuntime {
      */
     class Future {
     private:
-      FutureImpl *const impl; // The actual implementation of this future
+      FutureImpl *impl; // The actual implementation of this future
     protected:
       friend class HighLevelRuntime;
       Future();
@@ -936,7 +935,7 @@ namespace RegionRuntime {
     protected:
       // functions for getting logical regions
       LogicalRegion get_subregion(PartitionID pid, Color c) const;
-      LogicalRegion find_parent_region(const std::vector<LogicalRegion> &regions) const;
+      LogicalRegion find_ancestor_region(const std::vector<LogicalRegion> &regions) const;
     protected:
       // functions for checking the state of the task for scheduling
       virtual bool is_context(void) const { return true; }
@@ -1280,6 +1279,8 @@ namespace RegionRuntime {
       // returning the event when the close operation is complete
       Event close_physical_tree(ContextID ctx, InstanceInfo *target, 
                                 Event precondition, GeneralizedContext *enclosing);
+    protected:
+      LogicalRegion get_subregion(Color c) const;
     private:
       const PartitionID pid;
       const unsigned depth;
@@ -1426,7 +1427,13 @@ namespace RegionRuntime {
     class Serializer {
     public:
       Serializer(size_t buffer_size);
-      ~Serializer(void);
+      ~Serializer(void) 
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(remaining_bytes == 0); // We should have used the whole buffer
+#endif
+        free(buffer);
+      }
     public:
       template<typename T>
       inline void serialize(const T &element);
@@ -1448,7 +1455,12 @@ namespace RegionRuntime {
       friend class HighLevelRuntime;
       friend class TaskContext;
       Deserializer(const void *buffer, size_t buffer_size);
-      ~Deserializer(void);
+      ~Deserializer(void)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(remaining_bytes == 0); // should have used the whole buffer
+#endif
+      }
     public:
       template<typename T>
       inline void deserialize(T &element);
@@ -1637,15 +1649,6 @@ namespace RegionRuntime {
       runtime->end_task(ctx, NULL, 0, regions);
     }
 
-    // A wrapper task for allowing the application to initialize the set of mappers
-    template<void (*TASK_PTR)(Machine*,HighLevelRuntime*,Processor)>
-    void init_mapper_wrapper(const void * args, size_t arglen, Processor p)
-    {
-      HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
-      Machine *machine = Machine::get_machine();
-      (*TASK_PTR)(machine,runtime,p);
-    }
-
     ////////////////////////////////////////////////////////////////////////////////
     //  Implementations of some templated functions to avoid linking problems     //
     ////////////////////////////////////////////////////////////////////////////////
@@ -1825,16 +1828,6 @@ namespace RegionRuntime {
 #endif
     }
 
-    //--------------------------------------------------------------------------
-    Serializer::~Serializer(void)
-    //--------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(remaining_bytes == 0); // We should have used the whole buffer
-#endif
-      free(buffer);
-    }
-
     //-------------------------------------------------------------------------- 
     template<typename T>
     inline void Deserializer::deserialize(T &element)
@@ -1860,14 +1853,6 @@ namespace RegionRuntime {
       remaining_bytes -= bytes;
     }
 
-    //--------------------------------------------------------------------------
-    Deserializer::~Deserializer(void)
-    //--------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(remaining_bytes == 0); // Should have read the whole buffer
-#endif
-    }
   };
 };
 
