@@ -233,7 +233,7 @@ namespace RegionRuntime {
      */
     class Future {
     private:
-      FutureImpl *const impl; // The actual implementation of this future
+      FutureImpl *impl; // The actual implementation of this future
     protected:
       friend class HighLevelRuntime;
       Future();
@@ -921,7 +921,7 @@ namespace RegionRuntime {
     protected:
       // functions for getting logical regions
       LogicalRegion get_subregion(PartitionID pid, Color c) const;
-      LogicalRegion find_parent_region(const std::vector<LogicalRegion> &regions) const;
+      LogicalRegion find_ancestor_region(const std::vector<LogicalRegion> &regions) const;
     protected:
       // functions for checking the state of the task for scheduling
       virtual bool is_context(void) const { return true; }
@@ -1265,6 +1265,8 @@ namespace RegionRuntime {
       // returning the event when the close operation is complete
       Event close_physical_tree(ContextID ctx, InstanceInfo *target, 
                                 Event precondition, GeneralizedContext *enclosing);
+    protected:
+      LogicalRegion get_subregion(Color c) const;
     private:
       const PartitionID pid;
       const unsigned depth;
@@ -1411,7 +1413,13 @@ namespace RegionRuntime {
     class Serializer {
     public:
       Serializer(size_t buffer_size);
-      ~Serializer(void);
+      ~Serializer(void) 
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(remaining_bytes == 0); // We should have used the whole buffer
+#endif
+        free(buffer);
+      }
     public:
       template<typename T>
       inline void serialize(const T &element);
@@ -1433,7 +1441,12 @@ namespace RegionRuntime {
       friend class HighLevelRuntime;
       friend class TaskContext;
       Deserializer(const void *buffer, size_t buffer_size);
-      ~Deserializer(void);
+      ~Deserializer(void)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(remaining_bytes == 0); // should have used the whole buffer
+#endif
+      }
     public:
       template<typename T>
       inline void deserialize(T &element);
@@ -1810,16 +1823,6 @@ namespace RegionRuntime {
 #endif
     }
 
-    //--------------------------------------------------------------------------
-    Serializer::~Serializer(void)
-    //--------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(remaining_bytes == 0); // We should have used the whole buffer
-#endif
-      free(buffer);
-    }
-
     //-------------------------------------------------------------------------- 
     template<typename T>
     inline void Deserializer::deserialize(T &element)
@@ -1845,14 +1848,6 @@ namespace RegionRuntime {
       remaining_bytes -= bytes;
     }
 
-    //--------------------------------------------------------------------------
-    Deserializer::~Deserializer(void)
-    //--------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(remaining_bytes == 0); // Should have read the whole buffer
-#endif
-    }
   };
 };
 
