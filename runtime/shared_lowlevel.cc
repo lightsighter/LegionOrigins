@@ -26,6 +26,7 @@
 
 // The number of threads for this version
 #define NUM_PROCS	4
+#define NUM_UTILITY_PROCS 0
 // Maximum memory in global
 #define GLOBAL_MEM      512 // (MB)	
 #define LOCAL_MEM       32  // (KB)
@@ -367,9 +368,10 @@ namespace RegionRuntime {
 
     class ProcessorImpl : public Triggerable {
     public:
-	ProcessorImpl(Processor::TaskIDTable table, Processor p) :
-		task_table(table), proc(p), 
-                has_scheduler(table.find(Processor::TASK_ID_PROCESSOR_IDLE) != table.end())
+	ProcessorImpl(Processor::TaskIDTable table, Processor p, bool is_utility, Processor u) :
+		task_table(table), proc(p), utility_proc(u),
+                has_scheduler(table.find(Processor::TASK_ID_PROCESSOR_IDLE) != table.end()),
+                is_utility_proc(is_utility)
 	{
 		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
 		PTHREAD_SAFE_CALL(pthread_cond_init(&wait_cond,NULL));
@@ -379,6 +381,7 @@ namespace RegionRuntime {
     public:
 	Event spawn(Processor::TaskFuncID func_id, const void * args,
 				size_t arglen, Event wait_on);
+        Processor get_utility_processor(void) const;
 	void run(void);
 	void trigger(unsigned count = 1, TriggerHandle handle = 0);
 	static void* start(void *proc);
@@ -397,6 +400,7 @@ namespace RegionRuntime {
     private:
 	Processor::TaskIDTable task_table;
 	Processor proc;
+        Processor utility_proc;
 	std::list<TaskDesc> ready_queue;
 	std::list<TaskDesc> waiting_queue;
 	pthread_mutex_t mutex;
@@ -405,6 +409,7 @@ namespace RegionRuntime {
 	bool shutdown;
 	EventImpl *shutdown_trigger;
         bool has_scheduler;
+        bool is_utility_proc;
     };
 
     
@@ -1108,6 +1113,13 @@ namespace RegionRuntime {
 	return p->spawn(func_id, args, arglen, wait_on);
     }
 
+    Processor Processor::get_utility_processor(void) const
+    {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+        ProcessorImpl *p = Runtime::get_runtime()->get_processor_impl(*this);
+        return p->get_utility_processor();
+    }
+
     Event ProcessorImpl::spawn(Processor::TaskFuncID func_id, const void * args,
 				size_t arglen, Event wait_on)
     {
@@ -1159,10 +1171,18 @@ namespace RegionRuntime {
 	return result;
     }
 
+    Processor ProcessorImpl::get_utility_processor(void) const
+    {
+#ifdef DEBUG_LOW_LEVEL
+        assert(!is_utility_proc);
+#endif
+        return utility_proc;
+    }
+
     void ProcessorImpl::run(void)
     {
         // Check to see if there is an initialization task
-        if (task_table.find(Processor::TASK_ID_PROCESSOR_INIT) != task_table.end())
+        if (!is_utility_proc && (task_table.find(Processor::TASK_ID_PROCESSOR_INIT) != task_table.end()))
         {
           Processor::TaskFuncPtr func = task_table[Processor::TASK_ID_PROCESSOR_INIT];
           func(NULL, 0, proc);
@@ -1238,11 +1258,16 @@ namespace RegionRuntime {
                         PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 
                         // Check to see if there is a shutdown method
-                        if (task_table.find(Processor::TASK_ID_PROCESSOR_SHUTDOWN) != task_table.end())
+                        if (!is_utility_proc && (task_table.find(Processor::TASK_ID_PROCESSOR_SHUTDOWN) != task_table.end()))
                         {
                           // If there is, call the shutdown method before triggering
                           Processor::TaskFuncPtr func = task_table[Processor::TASK_ID_PROCESSOR_SHUTDOWN];
                           func(NULL, 0, proc);
+                        }
+                        // Also send the kill pill to the utility processor if we have one
+                        if (!is_utility_proc && (utility_proc != proc))
+                        {
+                          utility_proc.spawn(0,NULL,0,Event::NO_EVENT);
                         }
                         pthread_exit(NULL);	
 		}
@@ -2263,6 +2288,7 @@ namespace RegionRuntime {
 	}
 
         unsigned num_cpus = NUM_PROCS;
+        unsigned num_utility_cpus = NUM_UTILITY_PROCS;
         size_t cpu_mem_size_in_mb = GLOBAL_MEM;
         size_t cpu_l1_size_in_kb = LOCAL_MEM;
 
@@ -2281,6 +2307,7 @@ namespace RegionRuntime {
           INT_ARG("-ll:csize", cpu_mem_size_in_mb);
           INT_ARG("-ll:l1size", cpu_l1_size_in_kb);
           INT_ARG("-ll:cpu", num_cpus);
+          INT_ARG("-ll:util",num_utility_cpus);
 #undef INT_ARG
         }
 	
@@ -2298,9 +2325,28 @@ namespace RegionRuntime {
 		Processor p;
 		p.id = id;
 		procs.insert(p);
-		ProcessorImpl *impl = new ProcessorImpl(task_table, p);
+                // Compute its utility processor (if any)
+                Processor utility;
+                if (num_utility_cpus > 0)
+                {
+                  utility.id = num_cpus + 1 + (id % num_utility_cpus);
+                }
+                else
+                {
+                  utility.id = id; // No utility proc, so a processor is its own utility
+                }
+		ProcessorImpl *impl = new ProcessorImpl(task_table, p, false/*utility*/, utility);
 		Runtime::runtime->processors.push_back(impl);
 	}	
+        // Also create the utility processors
+        for (unsigned id=1; id<=num_utility_cpus; id++)
+        {
+                Processor p;
+                p.id = num_cpus + id;
+                // This processor is a utility processor so it is be default its own utility
+                ProcessorImpl *impl = new ProcessorImpl(task_table, p, true/*utility*/, p);
+                Runtime::runtime->processors.push_back(impl);
+        }
 	{
                 // Make the first memory null
                 Runtime::runtime->memories.push_back(NULL);
@@ -2388,6 +2434,13 @@ namespace RegionRuntime {
 		pthread_t thread;
 		PTHREAD_SAFE_CALL(pthread_create(&thread, NULL, ProcessorImpl::start, (void*)impl));
 	}
+        // If there were any utility processors start them too
+        for (unsigned id=1; id<=num_utility_cpus; id++)
+        {
+                ProcessorImpl *impl = Runtime::runtime->processors[num_cpus+id];
+                pthread_t thread;
+                PTHREAD_SAFE_CALL(pthread_create(&thread, NULL, ProcessorImpl::start, (void*)impl));
+        }
 	
 	// If we're doing CPS style set up the inital task and run the scheduler
 	if (cps_style)

@@ -129,7 +129,7 @@ namespace RegionRuntime {
 
       bool exists(void) const { return id != 0; }
 
-      Processor get_utility_processor(void) const { return *this; }
+      Processor get_utility_processor(void) const;
 
       void enable_idle_task(void) { }
       void disable_idle_task(void) { }
