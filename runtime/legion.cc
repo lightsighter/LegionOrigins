@@ -1242,8 +1242,8 @@ namespace RegionRuntime {
         // Get an element mask that is the same size as the parent's
         LowLevel::ElementMask sub_mask(parent.get_valid_mask().get_num_elmts());
         // mark each of the elements in the set of pointers as being valid
-        const std::set<unsigned> &pointers = coloring[idx].value;
-        for (std::set<unsigned>::const_iterator pit = pointers.begin();
+        const std::set<utptr_t> &pointers = coloring[idx];
+        for (std::set<utptr_t>::const_iterator pit = pointers.begin();
               pit != pointers.end(); pit++)
         {
           sub_mask.enable(*pit);
