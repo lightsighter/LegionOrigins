@@ -56,7 +56,7 @@ namespace RegionRuntime {
       bool has_triggered(void) const;
 
       // causes calling thread to block until event has occurred
-      void wait(void) const;
+      void wait(bool block = false) const;
 
       // creates an event that won't trigger until all input events have
       static Event merge_events(const std::set<Event>& wait_for);
