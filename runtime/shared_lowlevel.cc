@@ -330,7 +330,7 @@ namespace RegionRuntime {
 	// test whether an event has triggered without waiting
 	bool has_triggered(EventGeneration needed_gen);
 	// block until event has triggered
-	void wait(EventGeneration needed_gen);
+	void wait(EventGeneration needed_gen, bool block);
 	// create an event that won't trigger until all input events have
 	Event merge_events(const std::map<EventImpl*,Event> &wait_for);
 	// Trigger the event
@@ -368,21 +368,36 @@ namespace RegionRuntime {
 
     class ProcessorImpl : public Triggerable {
     public:
-	ProcessorImpl(Processor::TaskIDTable table, Processor p, bool is_utility, Processor u) :
-		task_table(table), proc(p), utility_proc(u),
-                has_scheduler(table.find(Processor::TASK_ID_PROCESSOR_IDLE) != table.end()),
-                is_utility_proc(is_utility)
+	ProcessorImpl(Processor::TaskIDTable table, Processor p, bool is_utility = false, unsigned num_owners = 0) :
+		task_table(table), proc(p), utility_proc(p),
+                has_scheduler(!is_utility && (table.find(Processor::TASK_ID_PROCESSOR_IDLE) != table.end())),
+                is_utility_proc(is_utility), remaining_starts(num_owners), 
+                remaining_stops(num_owners), scheduler_invoked(false)
 	{
 		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
 		PTHREAD_SAFE_CALL(pthread_cond_init(&wait_cond,NULL));
 		shutdown = false;
 		shutdown_trigger = NULL;
-	};
+	}
+        ProcessorImpl(Processor::TaskIDTable table, Processor p, Processor utility) :
+                task_table(table), proc(p), utility_proc(utility),
+                has_scheduler(table.find(Processor::TASK_ID_PROCESSOR_IDLE) != table.end()),
+                is_utility_proc(false), remaining_starts(0), 
+                remaining_stops(0), scheduler_invoked(false)
+        {
+                PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
+		PTHREAD_SAFE_CALL(pthread_cond_init(&wait_cond,NULL));
+		shutdown = false;
+		shutdown_trigger = NULL;
+        }
+    public:
+        // Operations for utility processors
+        void utility_start(void);
+        Processor get_utility_processor(void) const;
     public:
 	Event spawn(Processor::TaskFuncID func_id, const void * args,
 				size_t arglen, Event wait_on);
-        Processor get_utility_processor(void) const;
-	void run(void);
+        void run(void);
 	void trigger(unsigned count = 1, TriggerHandle handle = 0);
 	static void* start(void *proc);
 	void preempt(EventImpl *event, EventImpl::EventGeneration needed);
@@ -408,8 +423,11 @@ namespace RegionRuntime {
 	// Used for detecting the shutdown condition
 	bool shutdown;
 	EventImpl *shutdown_trigger;
-        bool has_scheduler;
-        bool is_utility_proc;
+        const bool has_scheduler;
+        const bool is_utility_proc;
+        volatile unsigned remaining_starts; // for utility processor knowing when to start
+        unsigned remaining_stops; // for utility processor knowing when to stop
+        bool scheduler_invoked;   // for traking if we've invoked the scheduler
     };
 
     
@@ -427,12 +445,12 @@ namespace RegionRuntime {
 	return e->has_triggered(gen);
     }
 
-    void Event::wait(void) const
+    void Event::wait(bool block) const
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL); 
 	if (!id) return;
 	EventImpl *e = Runtime::get_runtime()->get_event_impl(*this);
-	e->wait(gen);
+	e->wait(gen,block);
     }
 
     Event Event::merge_events(const std::set<Event>& wait_for)
@@ -466,24 +484,27 @@ namespace RegionRuntime {
 	return result;
     }
 
-    void EventImpl::wait(EventGeneration needed_gen)
+    void EventImpl::wait(EventGeneration needed_gen, bool block)
     {
-#if 0 // This version blocks the processor
-	// First check to see if the event has triggered
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));	
-	// Wait until the generation indicates that the event has occurred
-	while (needed_gen >= generation) 
-	{
-		PTHREAD_SAFE_CALL(pthread_cond_wait(&wait_cond,&mutex));
-	}
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
-#else // This version doesn't block the processor
-	// Try preempting the process
-	Processor local = { local_proc_id };
-	ProcessorImpl *impl = Runtime::get_runtime()->get_processor_impl(local);
-	// This call will only return once the event has triggered
-	impl->preempt(this,needed_gen);
-#endif
+        if (block)
+        {
+            // First check to see if the event has triggered
+            PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));	
+            // Wait until the generation indicates that the event has occurred
+            while (needed_gen >= generation) 
+            {
+                    PTHREAD_SAFE_CALL(pthread_cond_wait(&wait_cond,&mutex));
+            }
+            PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+        }
+        else
+        {
+            // Try preempting the process
+            Processor local = { local_proc_id };
+            ProcessorImpl *impl = Runtime::get_runtime()->get_processor_impl(local);
+            // This call will only return once the event has triggered
+            impl->preempt(this,needed_gen);
+        }
     }
 
     Event EventImpl::merge_events(const std::map<EventImpl*,Event> &wait_for)
@@ -569,8 +590,7 @@ namespace RegionRuntime {
 		in_use = false;
                 finished = true;
 		// Wake up any waiters
-                // don't need to do this if we use the preempt method in wait
-		//PTHREAD_SAFE_CALL(pthread_cond_broadcast(&wait_cond));
+		PTHREAD_SAFE_CALL(pthread_cond_broadcast(&wait_cond));
 	}
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));	
         // tell the runtime that we're free
@@ -1174,19 +1194,43 @@ namespace RegionRuntime {
     Processor ProcessorImpl::get_utility_processor(void) const
     {
 #ifdef DEBUG_LOW_LEVEL
-        assert(!is_utility_proc);
+        //assert(!is_utility_proc);
 #endif
         return utility_proc;
     }
 
     void ProcessorImpl::run(void)
     {
+        fprintf(stdout,"This is processor %d\n",proc.id);
+        fflush(stdout);
         // Check to see if there is an initialization task
         if (!is_utility_proc && (task_table.find(Processor::TASK_ID_PROCESSOR_INIT) != task_table.end()))
         {
           Processor::TaskFuncPtr func = task_table[Processor::TASK_ID_PROCESSOR_INIT];
           func(NULL, 0, proc);
         }
+        // If this is a utility processor, wait until we've seen all the wake-ups before starting
+        if (is_utility_proc)
+        {
+                PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+                if (remaining_starts > 0)
+                {
+                      PTHREAD_SAFE_CALL(pthread_cond_wait(&wait_cond,&mutex));
+                }
+                PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+        }
+        else 
+        {
+                // See if we have a utility processor
+                if (utility_proc != proc)
+                {
+                      // Now tell the utility processor we're ready for it to start
+                      ProcessorImpl *utility = Runtime::get_runtime()->get_processor_impl(utility_proc);
+                      utility->utility_start();
+                }
+        }
+        fprintf(stdout,"Processor %d is starting\n",proc.id);
+        fflush(stdout);
 	// Processors run forever and permit shutdowns
 	while (true)
 	{
@@ -1240,12 +1284,17 @@ namespace RegionRuntime {
 	// Check to see how many tasks there are
 	// If there are too few, invoke the scheduler
         // If we've been told to shutdown, never invoke the scheduler
-	if (has_scheduler && !shutdown && (ready_queue.size()/*+waiting_queue.size()*/) < MIN_SCHED_TASKS)
+        // Utility proc can't have an idle task
+	if (!is_utility_proc && has_scheduler && !scheduler_invoked && 
+            !shutdown && (ready_queue.size()/*+waiting_queue.size()*/) < MIN_SCHED_TASKS)
 	{
+                // Mark that we're invoking the scheduler
+                scheduler_invoked = true;
 		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
                 Processor::TaskFuncPtr scheduler = task_table[Processor::TASK_ID_PROCESSOR_IDLE];
                 scheduler(NULL, 0, proc);
 		// Return from the scheduler, so we can reevaluate status
+                scheduler_invoked = false;
 		return;
 	}
 	if (ready_queue.empty())
@@ -1276,6 +1325,12 @@ namespace RegionRuntime {
                 PTHREAD_SAFE_CALL(pthread_cond_wait(&wait_cond,&mutex));
 		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 	}
+        else if (scheduler_invoked)
+        {
+                // Don't allow other tasks to be run while running the idle task
+                PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+                return;
+        }
 	else
 	{
 		// Pop a task off the queue and run it
@@ -1285,8 +1340,32 @@ namespace RegionRuntime {
 		// Check for the shutdown function
 		if (task.func_id == 0)
 		{
-			shutdown = true;
-			shutdown_trigger = task.complete;
+                        // Check to see if this is a utility processor
+                        if (!is_utility_proc)
+                        {
+                              shutdown = true;
+                              shutdown_trigger = task.complete;
+                        }
+                        else
+                        {
+                              // This is a utility processor, so see how
+                              // many remaining stop orders we need to see
+                              // before we're done
+#ifdef DEBUG_LOW_LEVEL
+                              assert(remaining_stops > 0);
+#endif
+                              remaining_stops--;
+                              if (remaining_stops == 0)
+                              {
+                                    shutdown = true;
+                                    shutdown_trigger = task.complete;
+                              }
+                              else
+                              {
+                                    // Complete the task right here
+                                    task.complete->trigger();
+                              }
+                        }
 			// Continue going around until all tasks are run
 			return;
 		}
@@ -1321,6 +1400,22 @@ namespace RegionRuntime {
 	// Will never return from this call
 	proc->run();
 	pthread_exit(NULL);	
+    }
+
+    void ProcessorImpl::utility_start(void)
+    {
+        PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+#ifdef DEBUG_LOW_LEVEL
+        assert(is_utility_proc);
+        assert(remaining_starts > 0); 
+#endif
+        remaining_starts--;
+        if (remaining_starts == 0)
+        {
+            // Signal wake-up if all remaining starts seen
+            PTHREAD_SAFE_CALL(pthread_cond_signal(&wait_cond));
+        }
+        PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
     }
 
     ////////////////////////////////////////////////////////
@@ -2310,6 +2405,13 @@ namespace RegionRuntime {
           INT_ARG("-ll:util",num_utility_cpus);
 #undef INT_ARG
         }
+
+        if (num_utility_cpus > num_cpus)
+        {
+            fprintf(stderr,"The number of utility cpus (%d) cannot be greater than the number of cpus (%d)\n",num_utility_cpus,num_cpus);
+            fflush(stderr);
+            exit(1);
+        }
 	
 	// Create the runtime and initialize with this machine
 	Runtime::runtime = new Runtime(this);
@@ -2317,6 +2419,13 @@ namespace RegionRuntime {
         // Initialize the logger
         Logger::init(*argc, (const char**)*argv);
 	
+        // Keep track of the number of users of each utility cpu
+        std::vector<unsigned> utility_users(num_utility_cpus);
+        for (unsigned idx = 0; idx < num_utility_cpus; idx++)
+        {
+                utility_users[idx] = 0;
+        }
+
 	// Fill in the tables
         // find in proc 0 with NULL
         Runtime::runtime->processors.push_back(NULL);
@@ -2326,16 +2435,21 @@ namespace RegionRuntime {
 		p.id = id;
 		procs.insert(p);
                 // Compute its utility processor (if any)
-                Processor utility;
+		ProcessorImpl *impl;
                 if (num_utility_cpus > 0)
                 {
-                  utility.id = num_cpus + 1 + (id % num_utility_cpus);
+                  unsigned util = id % num_utility_cpus;
+                  Processor utility;
+                  utility.id = num_cpus + 1 + util;
+                  fprintf(stdout,"Processor %d has utility processor %d\n",id,utility.id);
+                  fflush(stdout);
+                  impl = new ProcessorImpl(task_table, p, utility);
+                  utility_users[util]++;
                 }
                 else
                 {
-                  utility.id = id; // No utility proc, so a processor is its own utility
+                  impl = new ProcessorImpl(task_table, p);
                 }
-		ProcessorImpl *impl = new ProcessorImpl(task_table, p, false/*utility*/, utility);
 		Runtime::runtime->processors.push_back(impl);
 	}	
         // Also create the utility processors
@@ -2343,8 +2457,13 @@ namespace RegionRuntime {
         {
                 Processor p;
                 p.id = num_cpus + id;
+#ifdef DEBUG_LOW_LEVEL
+                assert(utility_users[id-1] > 0);
+#endif
+                fprintf(stdout,"Utility processor %d has %d users\n",p.id,utility_users[id-1]);
+                fflush(stdout);
                 // This processor is a utility processor so it is be default its own utility
-                ProcessorImpl *impl = new ProcessorImpl(task_table, p, true/*utility*/, p);
+                ProcessorImpl *impl = new ProcessorImpl(task_table, p, true/*utility*/, utility_users[id-1]);
                 Runtime::runtime->processors.push_back(impl);
         }
 	{
@@ -2434,10 +2553,12 @@ namespace RegionRuntime {
 		pthread_t thread;
 		PTHREAD_SAFE_CALL(pthread_create(&thread, NULL, ProcessorImpl::start, (void*)impl));
 	}
-        // If there were any utility processors start them too
+        // Also start the utility processors
         for (unsigned id=1; id<=num_utility_cpus; id++)
         {
                 ProcessorImpl *impl = Runtime::runtime->processors[num_cpus+id];
+                fprintf(stdout,"Starting utility processor %d\n",impl->get_utility_processor().id);
+                fflush(stdout);
                 pthread_t thread;
                 PTHREAD_SAFE_CALL(pthread_create(&thread, NULL, ProcessorImpl::start, (void*)impl));
         }
