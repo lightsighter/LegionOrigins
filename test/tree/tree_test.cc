@@ -29,7 +29,7 @@ void top_level_task(const void *args, size_t arglen, const std::vector<PhysicalR
     unsigned mapper = 0;
     if ((rand() % 100) == 0)
       mapper = 1;
-    futures.push_back(runtime->execute_task(ctx,LAUNCH_TASK_ID,needed_regions,buffer,2*sizeof(unsigned),mapper));
+    futures.push_back(runtime->execute_task(ctx,LAUNCH_TASK_ID,needed_regions,TaskArgument(buffer,2*sizeof(unsigned)),mapper));
   }
   free(buffer);
 
@@ -74,7 +74,7 @@ unsigned launch_tasks(const void *args, size_t arglen, const std::vector<Physica
       unsigned mapper = 0;
       if ((rand() % 100) == 0)
         mapper = 1;
-      futures.push_back(runtime->execute_task(ctx,LAUNCH_TASK_ID,needed_regions,buffer,2*sizeof(unsigned),mapper));
+      futures.push_back(runtime->execute_task(ctx,LAUNCH_TASK_ID,needed_regions,TaskArgument(buffer,2*sizeof(unsigned)),mapper));
     }
     // Clean up the buffer
     free(buffer);
