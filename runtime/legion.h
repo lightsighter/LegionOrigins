@@ -80,15 +80,19 @@ namespace RegionRuntime {
     // Forward declarations for user level objects
     class Task;
     class Future;
+    class FutureMap;
     class RegionMapping;
     class RegionRequirement;
-    class PartitionRequirement;
+    class TaskArgument;
+    class ArgumentMap;
+    class FutureMap;
     template<AccessorType AT> class PhysicalRegion;
     class HighLevelRuntime;
     class Mapper;
 
     // Forward declarations for runtime level objects
     class FutureImpl;
+    class FutureMapImpl;
     class RegionMappingImpl;
     class TaskContext;
     class RegionNode;
@@ -96,8 +100,6 @@ namespace RegionRuntime {
     class InstanceInfo;
     class Serializer;
     class Deserializer;
-    class UnsizedConstraint;
-    class UnsizedColorize;
     class DependenceDetector;
     class RegionRenamer;
 
@@ -121,9 +123,10 @@ namespace RegionRuntime {
     typedef unsigned int ContextID;
     typedef unsigned int InstanceID;
     typedef TaskContext* Context;
+    typedef std::vector<int> IndexPoint;
     typedef void (*MapperCallbackFnptr)(Machine *machine, HighLevelRuntime *rt, Processor local);
     typedef Color (*ColorizeFnptr)(const std::vector<int> &solution);
-    typedef std::vector<int> IndexPoint;
+    typedef void (*ReductionFnptr)(void *&current, size_t &cur_size, const IndexPoint&, const void *argument, size_t arg_size);
 
     ///////////////////////////////////////////////////////////////////////////
     //                                                                       //
@@ -191,6 +194,7 @@ namespace RegionRuntime {
      * x is a vector of variables,
      * and offset is a constant
      */
+#if 0 // templated version of constraint, commented out for now
     template<unsigned N>
     struct Constraint {
     public:
@@ -202,8 +206,44 @@ namespace RegionRuntime {
         return weights[x];
       }
     };
-
-    
+#else
+    struct Constraint {
+    public:
+      Constraint() { }
+      Constraint(const std::vector<int> &w, int off)
+        : weights(w), offset(off) { }
+    public:
+      std::vector<int> weights;
+      int offset;
+    public:
+      inline const int& operator[](unsigned x)
+      {
+        return weights[x];
+      }
+    protected:
+      friend class TaskContext;
+      size_t compute_size(void) const;
+      void pack_constraint(Serializer &rez) const;
+      void unpack_constraint(Deserializer &derez);
+    };
+#endif
+    // Range: a faster version of constraints
+    struct Range {
+    public:
+      Range() { }
+      Range(int _start, int _stop, int _stride = 1)
+        : start(_start), stop(_stop), stride(_stride) { }
+    public:
+      int start;
+      int stop;
+      int stride;
+    protected:
+      friend class TaskContext;
+      size_t compute_size(void) const;
+      void pack_range(Serializer &rez) const;
+      void unpack_range(Deserializer &derez);
+    };
+  
     /////////////////////////////////////////////////////////////
     // Task 
     ///////////////////////////////////////////////////////////// 
@@ -232,6 +272,50 @@ namespace RegionRuntime {
     };
 
     /////////////////////////////////////////////////////////////
+    // TaskArgument 
+    /////////////////////////////////////////////////////////////
+    /**
+     * Store the arguments for a task
+     */
+    class TaskArgument {
+    public:
+      TaskArgument(void) : args(NULL), arglen(0) { }
+      TaskArgument(void *arg, size_t argsize)
+        : args(arg), arglen(argsize) { }
+    public:
+      inline size_t get_size(void) const { return arglen; }
+      inline void*  get_ptr(void) const { return args; }
+    private:
+      void *args;
+      size_t arglen;
+    };
+
+    /////////////////////////////////////////////////////////////
+    // ArgumentMap 
+    /////////////////////////////////////////////////////////////
+    /**
+     * A map for storing arguments to index space tasks
+     */
+    class ArgumentMap {
+    public:
+      ArgumentMap(void) { } // empty argument map
+      ArgumentMap(std::map<IndexPoint,TaskArgument> &_map)
+        : arg_map(_map) { }
+    public:
+      inline TaskArgument& operator[](const IndexPoint& point) { return arg_map[point]; }
+    protected:
+      friend class HighLevelRuntime;
+      friend class TaskContext;
+      ArgumentMap& operator=(const ArgumentMap &map);
+      size_t compute_size(void) const;
+      void pack_argument_map(Serializer &rez) const;
+      void unpack_argument_map(Deserializer &derez);
+      void reset(void);
+    private:
+      std::map<IndexPoint,TaskArgument> arg_map;
+    };
+
+    /////////////////////////////////////////////////////////////
     // Future
     ///////////////////////////////////////////////////////////// 
     /**
@@ -251,6 +335,28 @@ namespace RegionRuntime {
     public:
       template<typename T> inline T get_result(void);
       inline void get_void_result(void);
+    };
+
+    /////////////////////////////////////////////////////////////
+    // Future Map 
+    /////////////////////////////////////////////////////////////
+    /**
+     * A map for holding many future values
+     */
+    class FutureMap {
+    private:
+      FutureMapImpl *impl;
+    protected:
+      friend class HighLevelRuntime;
+      FutureMap();
+      FutureMap(FutureMapImpl *impl);
+    public:
+      FutureMap(const FutureMap &f);
+      ~FutureMap(void);
+    public:
+      template<typename T> inline T get_result(const IndexPoint &p);
+      inline void get_void_result(const IndexPoint &p);
+      inline void wait_all_results(void);
     };
 
     /////////////////////////////////////////////////////////////
@@ -311,7 +417,7 @@ namespace RegionRuntime {
       // Create a requirement for a partition with the colorize
       // function describing how to map points in the index space
       // to colors for logical subregions in the partition
-      RegionRequirement(PartitionID pid, ColorizeID colorize,
+      RegionRequirement(PartitionID pid, ColorizeID _colorize,
                         PrivilegeMode _priv,
                         AllocateMode _alloc, CoherenceProperty _prop,
                         LogicalRegion _parent, bool _verified = false)
@@ -322,45 +428,14 @@ namespace RegionRuntime {
                         PrivilegeMode _priv, AllocateMode _alloc,
                         CoherenceProperty _prop, LogicalRegion _parent,
                         bool _verified = false)
-        : privilege(_priv), allo(_alloc), prop(_prop), parent(_parent),
+        : privilege(_priv), alloc(_alloc), prop(_prop), parent(_parent),
           verified(_verified), func_type(MAPPED_FUNC), color_map(map)
           { handle.partition = pid; }
-    };
-
-    /////////////////////////////////////////////////////////////
-    // Colorize Function 
-    ///////////////////////////////////////////////////////////// 
-    /**
-     * A colorize function for launching tasks over index spaces.
-     * Allows for different kinds of colorize functions.  Singular
-     * functions simply interpret the region requirement as all
-     * tasks needing the same region.  An executable function
-     * passes a function pointer to the runtime.  A mapped function
-     * passes an STL map as an already evaluated function.
-     */
-    template<unsigned N>
-    class ColorizeFunction {
-    public:
-      ColoringType func_type; // how to interpret unions
-      struct ColorizeFunction_t {
-        ColorizeID colorize;
-        std::map<Vector<N>,Color> mapping; // An explicit mapping
-      } func;
-    public:
-      ColorizeFunction()
-        : func_type(SINGULAR_FUNC) { }
-      ColorizeFunction(ColorizeID f)
-        : func_type(EXECUTABLE_FUNC) { func.colorize = f; }
-      ColorizeFunction(std::map<Vector<N>,Color> map)
-        : func_type(MAPPED_FUNC) { func.mapping = map; }
-      ColorizeFunction(const ColorizeFunction<N>& other)
-        : func_type(other.func_type) { func = other.func; }
-      
-      ColorizeFunction<N> operator=(const ColorizeFunction<N>& other) {
-        this->func_type = other.func_type;
-        this->func = other.func;
-        return *this;
-      }
+    protected:
+      friend class TaskContext;
+      size_t compute_size(void) const;
+      void pack_requirement(Serializer &rez) const;
+      void unpack_requirement(Deserializer &derez);
     };
 
     /////////////////////////////////////////////////////////////
@@ -506,38 +581,61 @@ namespace RegionRuntime {
        * ctx - the context in which this task is being launched
        * task_id - the id of the task to launch
        * regions - set of regions this task will use
-       * args - the arguments to pass to the task
-       * arglen - the size in bytes of the arguments
-       * spawn - whether the task can be run in parallel with parent task
+       * arg - the arguments to be passed to the task
        * id - the id of the mapper to use for mapping the task
        * tag - the mapping tag id to pass to the mapper
        */
-      Future execute_task(Context ctx, Processor::TaskFuncID task_id,
+      Future execute_task(Context ctx, 
+                          Processor::TaskFuncID task_id,
                           const std::vector<RegionRequirement> &regions,
-                          const void *args, size_t arglen, 
-                          MapperID id = 0, MappingTagID tag = 0);
+                          const TaskArgument &arg, 
+                          MapperID id = 0, 
+                          MappingTagID tag = 0);
 
       /**
        * Launch an index space of tasks
        *
        * ctx - the context in which this task is being launched
        * task_id - the id of the task to launch
-       * space - the index space of tasks to create
+       * space - the index space of tasks to create (CT type can be either Constraints or Ranges)
        * regions - the partitions that will be used to pull regions for each task
-       * args - the arguments to pass to the task
-       * arglen - the size in bytes of the arguments
+       * global_arg - the argument to be passed to all tasks in the index space
+       * arg_map - the map of arguments to be passed to each point in the index space
        * spawn - whether the index space can be run in parallel with the parent task
        * must - whether the index space of tasks must be run simultaneously or not
        * id - the id of the mapper to use for mapping the index space
        * tag - the mapping tag id to pass to the mapper
+       *
+       * returns a future map of results for all points in the future
        */
-      template<unsigned N>
-      Future execute_index_space(Context ctx, Processor::TaskFuncID task_id,
-                                const std::vector<Constraint<N> > &index_space,
+      template<typename CT>
+      FutureMap execute_index_space(Context ctx, 
+                                Processor::TaskFuncID task_id,
+                                const std::vector<CT> &index_space,
                                 const std::vector<RegionRequirement> &regions,
-                                const std::vector<ColorizeFunction<N> > &functions,
-                                const void *args, size_t arglen, 
-                                bool must, MapperID id = 0, MappingTagID tag = 0);
+                                const TaskArgument &global_arg, 
+                                const ArgumentMap &arg_map,
+                                bool must, 
+                                MapperID id = 0, 
+                                MappingTagID tag = 0);
+
+      /**
+       * Launch an index space of tasks, but also specify a reduction function
+       * and an initial value of for the reduction so you only get back a
+       * single future value.
+       */
+      template<typename CT>
+      Future execute_index_space(Context ctx, 
+                                Processor::TaskFuncID task_id,
+                                const std::vector<CT> &index_space,
+                                const std::vector<RegionRequirement> &regions,
+                                const TaskArgument &global_arg, 
+                                const ArgumentMap &arg_map,
+                                ReductionFnptr reduction, 
+                                const TaskArgument &initial_value,
+                                bool must, 
+                                MapperID id = 0, 
+                                MappingTagID tag = 0);
 
     public:
       // Functions for creating and destroying logical regions
@@ -670,8 +768,13 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////////////// 
     class Mapper {
     public:
-      struct IndexSplit {
-        std::vector<UnsizedConstraint> constraints;
+      struct ConstraintSplit {
+        std::vector<Constraint> constraints;
+        Processor p;
+        bool recurse;
+      };
+      struct RangeSplit {
+        std::vector<Range> ranges;
         Processor p;
         bool recurse;
       };
@@ -712,8 +815,14 @@ namespace RegionRuntime {
        * Given a task to be run over an index space, specify whether the task should
        * be devided into smaller chunks by adding constraints to the current index space.
        */
-      virtual void split_index_space(const Task *task, const std::vector<UnsizedConstraint> &index_space,
-                                      std::vector<IndexSplit> &chunks);
+      virtual void split_index_space(const Task *task, const std::vector<Constraint> &index_space,
+                                      std::vector<ConstraintSplit> &chunks);
+
+      /**
+       * Same function as above, but for ranges instead of constraints
+       */
+      virtual void split_index_space(const Task *task, const std::vector<Range> &index_space,
+                                      std::vector<RangeSplit> &chunks);
 
       /**
        * The specified task is being mapped on the current processor.  For the given
@@ -802,7 +911,31 @@ namespace RegionRuntime {
       inline void get_void_result(void);
     };
 
+    /**
+     * An implementation of the future result for a future map
+     * that supports querying the result of many points
+     */
+    class FutureMapImpl {
+    private:
+      Event all_set_event;
+      Lock  map_lock;
+      std::map<IndexPoint,UserEvent> outstanding_waits;
+      std::map<IndexPoint,void*>     valid_results;
+    protected:
+      friend class HighLevelRuntime;
+      friend class TaskContext;
+      FutureMapImpl(Event set_e = Event::NO_EVENT);
+      ~FutureMapImpl(void);
+      void reset(Event set_e); // event when index space is finished
+      void set_result(const IndexPoint &point, const void *res, size_t result_size);
+      void set_result(size_t point_size, Deserializer &derez);
+    public:
+      template<typename T> inline T get_result(const IndexPoint &point);
+      inline void get_void_result(const IndexPoint &point);
+      inline void wait_all_results(void);
+    };
     
+#if 0 // In case we ever go back to templated constraints
     /**
      * An untyped constraint for use in runtime internals
      * and calls to the mapper interface because we can't
@@ -829,27 +962,7 @@ namespace RegionRuntime {
       void pack_constraint(Serializer &rez) const;
       void unpack_constraint(Deserializer &derez);
     };
-
-    /**
-     * An unsized coloring function/mapping for being able to pass
-     * the map independent of the number of dimensions.
-     */
-    class UnsizedColorize {
-    public:
-      ColoringType func_type;
-      ColorizeID colorize;
-      std::map<std::vector<int>,Color> mapping;
-    public:
-      UnsizedColorize() { }
-      UnsizedColorize(ColoringType t)
-        : func_type(t) { }
-      UnsizedColorize(ColoringType t, ColorizeID ize)
-        : func_type(t), colorize(ize) { }
-    public:
-      size_t compute_size(void) const;
-      void pack_colorize(Serializer &rez) const;
-      void unpack_colorize(Deserializer &derez);
-    };
+#endif
 
     /////////////////////////////////////////////////////////////
     // Generalized Context 
@@ -900,12 +1013,11 @@ namespace RegionRuntime {
       void initialize_task(TaskContext *parent, UniqueID unique_id, 
                             Processor::TaskFuncID task_id, void *args, size_t arglen,
                             MapperID map_id, MappingTagID tag, bool create_term_event);
-      template<unsigned N>
-      void set_index_space(const std::vector<Constraint<N> > &index_space, bool must);
-      void set_regions(const std::vector<RegionRequirement> &regions);
-      template<unsigned N>
-      void set_regions(const std::vector<RegionRequirement> &regions,
-                       const std::vector<ColorizeFunction<N> > &functions);
+      template<typename CT>
+      void set_index_space(const std::vector<CT> &index_space, const ArgumentMap &_map, bool must);
+      void set_regions(const std::vector<RegionRequirement> &regions, bool all_same);
+      void set_reduction(ReductionFnptr reduct, const TaskArgument &init);
+      void set_future_map(void);
     protected:
       // functions for packing and unpacking tasks
       size_t compute_task_size(Mapper *m);
@@ -913,7 +1025,8 @@ namespace RegionRuntime {
       void unpack_task(Deserializer &derez);
       void final_unpack_task(void);
       // Return true if this task still has index parts on this machine
-      bool distribute_index_space(std::vector<Mapper::IndexSplit> &chunks, Mapper *m);
+      bool distribute_index_space(std::vector<Mapper::ConstraintSplit> &chunks, Mapper *m);
+      bool distribute_index_space(std::vector<Mapper::RangeSplit> &chunks, Mapper *m);
       // Compute region tree updates
       size_t compute_tree_update_size(std::vector<std::set<PartitionNode*> > &region_tree_updates);
       void pack_tree_updates(Serializer &rez, const std::vector<std::set<PartitionNode*> > &region_tree_updates);
@@ -932,6 +1045,8 @@ namespace RegionRuntime {
       void remote_start(const char *args, size_t arglen); // (thread-safe)
       void remote_children_mapped(const char *args, size_t arglen); // (thread-safe)
       void remote_finish(const char *args, size_t arglen); // (thread-safe)
+      // special function for reducing when two nodes are local, owns buffer when finished
+      void local_finish(const IndexPoint &point, void *result, size_t result_size);
     protected:
       // functions for updating logical region trees
       void create_region(LogicalRegion handle); // (thread-safe)
@@ -993,13 +1108,22 @@ namespace RegionRuntime {
     protected:
       // Index Space meta data
       bool need_split; // Does this index space still need to be split
-      std::vector<UnsizedConstraint> index_space;
-      std::vector<UnsizedColorize> colorize_functions;
+      bool is_constraint_space; // Is this a constraint space
+      std::vector<Constraint> constraint_space;
+      std::vector<Range> range_space;
       bool enumerated; // Check to see if this space has been enumerated
-      std::vector<int> index_point; // The point after it has been enumerated 
+      IndexPoint index_point; // The point after it has been enumerated 
       // Barrier event for when all the tasks are ready to run for must parallelism
       Barrier start_index_event; 
       Barrier finish_index_event; 
+      // Result for the index space
+      FutureMapImpl future_map;
+      // Argument map
+      ArgumentMap index_arg_map;
+      // bool reduction information
+      ReductionFnptr reduction; 
+      void *reduction_value;
+      size_t reduction_size;
     protected:
       TaskContext *parent_ctx; // The parent task on the originating processor
       Context orig_ctx; // Context on the original processor if remote
@@ -1718,6 +1842,98 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    template<typename T>
+    inline T FutureMap::get_result(const IndexPoint &point)
+    //--------------------------------------------------------------------------
+    {
+      return impl->get_result<T>(point);
+    }
+
+    //--------------------------------------------------------------------------
+    inline void FutureMap::get_void_result(const IndexPoint &point)
+    //--------------------------------------------------------------------------
+    {
+      impl->get_void_result(point);
+    }
+
+    //--------------------------------------------------------------------------
+    inline void FutureMap::wait_all_results(void)
+    //--------------------------------------------------------------------------
+    {
+      impl->wait_all_results();
+    }
+
+    //--------------------------------------------------------------------------
+    template<typename T>
+    inline T FutureMapImpl::get_result(const IndexPoint &point)
+    //--------------------------------------------------------------------------
+    {
+      Event wait_lock = map_lock.lock(0,true/*exclusive*/);
+      wait_lock.wait(true/*block*/);
+      // Check to see if the result exists yet
+      if (valid_results.find(point) != valid_results.end())
+      {
+        T result = (*((const T*)valid_results[point]));
+        // Release the lock
+        map_lock.unlock();
+        return result;
+      }
+      // otherwise put ourselves on the waiting list
+      UserEvent wait_event = UserEvent::create_user_event();
+      outstanding_waits.insert(std::pair<IndexPoint,UserEvent>(point, wait_event));
+      // Release the lock and wait
+      map_lock.unlock(); 
+      wait_event.wait();
+      // Once we wake up the value should be there
+      wait_lock = map_lock.lock(0,true/*exclusive*/); // Need the lock
+      wait_lock.wait(true/*block*/);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(valid_results.find(point) != valid_results.end());  
+#endif
+      T result = (*((const T*)valid_results[point]));
+      map_lock.unlock();
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    inline void FutureMapImpl::get_void_result(const IndexPoint &point)
+    //--------------------------------------------------------------------------
+    {
+      Event wait_lock = map_lock.lock(0,true/*exclusive*/);
+      wait_lock.wait(true/*block*/);
+      if (valid_results.find(point) != valid_results.end())
+      {
+        // Release the lock and return
+        map_lock.unlock();
+        return;
+      }
+      // Otherwise put ourselves on the waiting list
+      UserEvent wait_event = UserEvent::create_user_event();
+      outstanding_waits.insert(std::pair<IndexPoint,UserEvent>(point, wait_event));
+      // Release the lock and wait
+      map_lock.unlock(); 
+      wait_event.wait();
+      // Once we wake up the value should be there
+#ifdef DEBUG_HIGH_LEVEL
+      wait_lock = map_lock.lock(0,true/*exclusive*/); // Need the lock to check this
+      wait_lock.wait(true/*block*/);
+      assert(valid_results.find(point) != valid_results.end());  
+      map_lock.unlock();
+#endif
+    }
+
+    //--------------------------------------------------------------------------
+    inline void FutureMapImpl::wait_all_results(void)
+    //--------------------------------------------------------------------------
+    {
+      // Just check for the all set event
+      if (!all_set_event.has_triggered())
+      {
+        all_set_event.wait();
+      }
+    }
+
+    //--------------------------------------------------------------------------
     template<AccessorType AT>
     inline PhysicalRegion<AT> RegionMapping::get_physical_region(void)
     //--------------------------------------------------------------------------
@@ -1818,6 +2034,111 @@ namespace RegionRuntime {
       }
     }
 
+    //--------------------------------------------------------------------------
+    template<typename CT>
+    FutureMap HighLevelRuntime::execute_index_space(Context ctx, Processor::TaskFuncID task_id,
+                                  const std::vector<CT> &index_space,
+                                  const std::vector<RegionRequirement> &regions,
+                                  const TaskArgument &global_arg, 
+                                  const ArgumentMap &arg_map, bool must,
+                                  MapperID id, MappingTagID tag)
+    //--------------------------------------------------------------------------
+    {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_EXECUTE_TASK);
+      // Get a unique id for the task to use
+      UniqueID unique_id = get_unique_task_id();
+      //log_task(LEVEL_DEBUG,"Registering new index space task with unique id %d and task id %d with high level runtime on processor %d\n",
+      //          unique_id, task_id, local_proc.id);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(id < mapper_objects.size());
+#endif
+      TaskContext *desc = get_available_context(false/*new tree*/);
+      // Allocate more space for the context when copying the args
+      void *args_prime = malloc(global_arg.get_size()+sizeof(Context));
+      memcpy(((char*)args_prime)+sizeof(Context), global_arg.get_ptr(), global_arg.get_size());
+      desc->initialize_task(ctx, unique_id, task_id, args_prime, global_arg.get_size()+sizeof(Context), id, tag, false/*create term event*/);
+      desc->set_index_space<CT>(index_space, arg_map, must);
+      desc->set_regions(regions, false/*all same*/);
+      desc->set_future_map();
+      // Check if we want to spawn this task
+      check_spawn_task(desc);
+      // Don't free memory as the task becomes the owner
+
+      // Register the task with the parent (performs dependence analysis)
+      ctx->register_child_task(desc);
+
+      // Figure out where to put this task
+      if (desc->is_ready())
+      {
+        // Figure out where to place this task
+        // If local put it in the ready queue (otherwise it's already been sent away)
+        if (target_task(desc))
+        {
+          add_to_ready_queue(desc); 
+        }
+      }
+      else
+      {
+        add_to_waiting_queue(desc);
+      }
+      // Return the future map that wraps the future map implementation 
+      return FutureMap(&desc->future_map);
+    }
+
+    //--------------------------------------------------------------------------
+    template<typename CT>
+    Future HighLevelRuntime::execute_index_space(Context ctx, Processor::TaskFuncID task_id,
+                               const std::vector<CT> &index_space,
+                               const std::vector<RegionRequirement> &regions,
+                               const TaskArgument &global_arg,
+                               const ArgumentMap &arg_map,
+                               ReductionFnptr reduction,
+                               const TaskArgument &initial_value,
+                               bool must,
+                               MapperID id, MappingTagID tag)
+    //--------------------------------------------------------------------------
+    {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_EXECUTE_TASK);
+      // Get a unique id for the task to use
+      UniqueID unique_id = get_unique_task_id();
+      //log_task(LEVEL_DEBUG,"Registering new index space task with unique id %d and task id %d with high level runtime on processor %d\n",
+      //          unique_id, task_id, local_proc.id);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(id < mapper_objects.size());
+#endif
+      TaskContext *desc = get_available_context(false/*new tree*/);
+      // Allocate more space for the context when copying the args
+      void *args_prime = malloc(global_arg.get_size()+sizeof(Context));
+      memcpy(((char*)args_prime)+sizeof(Context), global_arg.get_ptr(), global_arg.get_size());
+      desc->initialize_task(ctx, unique_id, task_id, args_prime, global_arg.get_size()+sizeof(Context), id, tag, false/*create term event*/);
+      desc->set_index_space<CT>(index_space, arg_map, must);
+      desc->set_regions(regions, false/*check same*/);
+      desc->set_reduction(reduction, initial_value);
+      // Check if we want to spawn this task
+      check_spawn_task(desc);
+      // Don't free memory as the task becomes the owner
+
+      // Register the task with the parent (performs dependence analysis)
+      ctx->register_child_task(desc);
+
+      // Figure out where to put this task
+      if (desc->is_ready())
+      {
+        // Figure out where to place this task
+        // If local put it in the ready queue (otherwise it's already been sent away)
+        if (target_task(desc))
+        {
+          add_to_ready_queue(desc); 
+        }
+      }
+      else
+      {
+        add_to_waiting_queue(desc);
+      }
+      // Return the future where the return value will be set
+      return Future(&desc->future);
+    }
+    
     //--------------------------------------------------------------------------
     template<typename T>
     inline void Serializer::serialize(const T &element)

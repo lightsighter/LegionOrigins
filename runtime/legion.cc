@@ -192,6 +192,208 @@ namespace RegionRuntime {
     }
 
     /////////////////////////////////////////////////////////////
+    // Constraint 
+    ///////////////////////////////////////////////////////////// 
+
+    //--------------------------------------------------------------------------
+    size_t Constraint::compute_size(void) const
+    //--------------------------------------------------------------------------
+    {
+      return ((weights.size() * sizeof(int)) + sizeof(int) + sizeof(size_t));
+    }
+
+    //--------------------------------------------------------------------------
+    void Constraint::pack_constraint(Serializer &rez) const
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize<size_t>(weights.size()); 
+      for (unsigned idx = 0; idx < weights.size(); idx++)
+      {
+        rez.serialize<int>(weights[idx]);
+      }
+      rez.serialize<int>(offset);
+    }
+
+    //--------------------------------------------------------------------------
+    void Constraint::unpack_constraint(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      size_t num_dims;
+      derez.deserialize<size_t>(num_dims);
+      weights.resize(num_dims);
+      for (unsigned idx = 0; idx < num_dims; idx++)
+      {
+        derez.deserialize<int>(weights[idx]);
+      }
+      derez.deserialize<int>(offset);
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Range 
+    ///////////////////////////////////////////////////////////// 
+
+    //--------------------------------------------------------------------------
+    size_t Range::compute_size(void) const
+    //--------------------------------------------------------------------------
+    {
+      return (3 * sizeof(int));
+    }
+
+    //--------------------------------------------------------------------------
+    void Range::pack_range(Serializer &rez) const
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize<int>(start);
+      rez.serialize<int>(stop);
+      rez.serialize<int>(stride);
+    }
+
+    //--------------------------------------------------------------------------
+    void Range::unpack_range(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      derez.deserialize<int>(start);
+      derez.deserialize<int>(stop);
+      derez.deserialize<int>(stride);
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Region Requirement 
+    ///////////////////////////////////////////////////////////// 
+
+    //-------------------------------------------------------------------------- 
+    size_t RegionRequirement::compute_size(void) const
+    //--------------------------------------------------------------------------
+    {
+      size_t result = 0;
+      result += sizeof(Handle_t);
+      result += sizeof(PrivilegeMode);
+      result += sizeof(AllocateMode);
+      result += sizeof(CoherenceProperty);
+      result += sizeof(LogicalRegion);
+      result += sizeof(bool);
+      result += sizeof(ColoringType);
+      switch (func_type)
+      {
+        case SINGULAR_FUNC:
+          {
+            // Do nothing
+            break;
+          }
+        case EXECUTABLE_FUNC:
+          {
+            result += sizeof(ColorizeID);
+            break;
+          }
+        case MAPPED_FUNC:
+          {
+            result += sizeof(size_t); // num entries
+#ifdef DEBUG_HIGH_LEVEL
+            assert(!color_map.empty()); // hoping this isn't emtpy
+#endif
+            result += sizeof(size_t); // number of dimensions
+            size_t num_dims = (color_map.begin())->first.size();
+            result += (color_map.size() * (num_dims * sizeof(int) + sizeof(Color)));
+            break;
+          }
+        default:
+          assert(false);
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionRequirement::pack_requirement(Serializer &rez) const
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize<Handle_t>(handle);
+      rez.serialize<PrivilegeMode>(privilege);
+      rez.serialize<AllocateMode>(alloc);
+      rez.serialize<CoherenceProperty>(prop);
+      rez.serialize<LogicalRegion>(parent);
+      rez.serialize<bool>(verified);
+      rez.serialize<ColoringType>(func_type);
+      switch (func_type)
+      {
+        case SINGULAR_FUNC:
+          {
+            // Do nothing
+            break;
+          }
+        case EXECUTABLE_FUNC:
+          {
+            rez.serialize<ColorizeID>(colorize);
+            break;
+          }
+        case MAPPED_FUNC:
+          {
+            rez.serialize<size_t>(color_map.size());
+            size_t num_dims = (color_map.begin())->first.size();
+            rez.serialize<size_t>(num_dims);
+            for (std::map<IndexPoint,Color>::const_iterator it = color_map.begin();
+                  it != color_map.end(); it++)
+            {
+              for (unsigned idx = 0; idx < it->first.size(); idx++)
+              {
+                rez.serialize<int>(it->first[idx]);
+              }
+              rez.serialize<Color>(it->second);
+            }
+            break;
+          }
+        default:
+          assert(false);
+      }
+    }
+    
+    //--------------------------------------------------------------------------
+    void RegionRequirement::unpack_requirement(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      derez.deserialize<Handle_t>(handle);
+      derez.deserialize<PrivilegeMode>(privilege);
+      derez.deserialize<AllocateMode>(alloc);
+      derez.deserialize<CoherenceProperty>(prop);
+      derez.deserialize<LogicalRegion>(parent);
+      derez.deserialize<bool>(verified);
+      derez.deserialize<ColoringType>(func_type);
+      switch (func_type)
+      {
+        case SINGULAR_FUNC:
+          {
+            // Do nothing
+            break;
+          }
+        case EXECUTABLE_FUNC:
+          {
+            derez.deserialize<ColorizeID>(colorize);
+            break;
+          }
+        case MAPPED_FUNC:
+          {
+            size_t num_entries;
+            derez.deserialize<size_t>(num_entries);
+            size_t num_dims;
+            derez.deserialize<size_t>(num_dims);
+            for (unsigned i = 0; i < num_entries; i++)
+            {
+              std::vector<int> point(num_dims);
+              for (unsigned idx = 0; idx < num_dims; idx++)
+              {
+                derez.deserialize<int>(point[idx]);
+              }
+              Color c;
+              derez.deserialize<Color>(c);
+              color_map.insert(std::pair<IndexPoint,Color>(point,c));
+            }
+            break;
+          }
+        default:
+          assert(false);
+      }
+    }
+
+    /////////////////////////////////////////////////////////////
     // Future 
     ///////////////////////////////////////////////////////////// 
 
@@ -260,6 +462,11 @@ namespace RegionRuntime {
     void FutureImpl::set_result(const void *res, size_t result_size)
     //--------------------------------------------------------------------------
     {
+      // If there is a stale result, free it
+      if (result != NULL)
+      {
+        free(result);
+      }
       result = malloc(result_size); 
 #ifdef DEBUG_HIGH_LEVEL
       assert(!set_event.has_triggered());
@@ -289,6 +496,218 @@ namespace RegionRuntime {
       }
 #endif
       derez.deserialize(result,result_size);
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Future Map 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    FutureMap::FutureMap(void)
+      : impl(NULL)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    FutureMap::FutureMap(const FutureMap &f)
+      : impl(f.impl)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    FutureMap::FutureMap(FutureMapImpl *i)
+      : impl(i)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    FutureMap::~FutureMap()
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Future Map Implementation
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    FutureMapImpl::FutureMapImpl(Event set_e)
+      : all_set_event(set_e), map_lock(Lock::create_lock())
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    FutureMapImpl::~FutureMapImpl(void)
+    //--------------------------------------------------------------------------
+    {
+    
+    }
+
+    //--------------------------------------------------------------------------
+    void FutureMapImpl::reset(Event set_e)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(outstanding_waits.empty()); // We should have seen all of these by now
+#endif
+      for (std::map<IndexPoint,void*>::const_iterator it = valid_results.begin();
+            it != valid_results.end(); it++)
+      {
+        free(it->second);
+      }
+      valid_results.clear();
+      all_set_event = set_e;
+    }
+
+    //--------------------------------------------------------------------------
+    void FutureMapImpl::set_result(const IndexPoint &point, const void *res, size_t result_size)
+    //--------------------------------------------------------------------------
+    {
+      void *result = malloc(result_size);
+      memcpy(result, res, result_size);
+      // Get the lock for all the data
+      AutoLock mapping_lock(map_lock);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(valid_results.find(point) == valid_results.end()); // shouldn't exist yet
+#endif
+      valid_results[point] = result;
+      // Check to see if there was a prior event, if so trigger it
+      if (outstanding_waits.find(point) != outstanding_waits.end())
+      {
+        outstanding_waits[point].trigger();
+        outstanding_waits.erase(point);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void FutureMapImpl::set_result(size_t point_size, Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      std::vector<int> point(point_size);
+      for (unsigned idx = 0; idx < point_size; idx++)
+      {
+        derez.deserialize<int>(point[idx]);
+      }
+      size_t result_size;
+      derez.deserialize<size_t>(result_size);
+      void *result = malloc(result_size);
+      derez.deserialize(result,result_size);
+      // Get the lock for all the data in the map
+      AutoLock mapping_lock(map_lock);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(valid_results.find(point) == valid_results.end()); // shouldn't exist yet
+#endif
+      valid_results[point] = result;
+      // Check to see if there was a prior event, if so trigger it
+      if (outstanding_waits.find(point) != outstanding_waits.end())
+      {
+        outstanding_waits[point].trigger();
+        outstanding_waits.erase(point);
+      }
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Argument Map 
+    /////////////////////////////////////////////////////////////
+    
+    //--------------------------------------------------------------------------
+    ArgumentMap& ArgumentMap::operator=(const ArgumentMap &map)
+    //--------------------------------------------------------------------------
+    {
+      // Make a deep copy of all the data
+      for (std::map<IndexPoint,TaskArgument>::const_iterator it = map.arg_map.begin();
+            it != map.arg_map.end(); it++)
+      {
+        void *new_value = malloc(it->second.get_size());
+        memcpy(new_value,it->second.get_ptr(),it->second.get_size());
+        arg_map.insert(std::pair<IndexPoint,TaskArgument>(it->first,
+              TaskArgument(new_value,it->second.get_size())));
+      }
+      return *this;
+    }
+
+    //--------------------------------------------------------------------------
+    size_t ArgumentMap::compute_size(void) const
+    //--------------------------------------------------------------------------
+    {
+      size_t result = 0;
+      result += sizeof(size_t); // Number of entries
+      if (!arg_map.empty())
+      {
+        result += sizeof(size_t); // Number of dimensions
+        for (std::map<IndexPoint,TaskArgument>::const_iterator it = arg_map.begin();
+              it != arg_map.end(); it++)
+        {
+          result += (it->first.size() * sizeof(int)); // point size
+          result += sizeof(size_t); // data size
+          result += it->second.get_size();
+        }
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void ArgumentMap::pack_argument_map(Serializer &rez) const
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize<size_t>(arg_map.size());
+      if (!arg_map.empty())
+      {
+        rez.serialize<size_t>((arg_map.begin())->first.size());
+        for (std::map<IndexPoint,TaskArgument>::const_iterator it = arg_map.begin();
+              it != arg_map.end(); it++)
+        {
+          for (unsigned idx = 0; idx < it->first.size(); idx++)
+          {
+            rez.serialize<int>(it->first[idx]);
+          }
+          rez.serialize<size_t>(it->second.get_size());
+          rez.serialize(it->second.get_ptr(),it->second.get_size());
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void ArgumentMap::unpack_argument_map(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      size_t num_entries;
+      derez.deserialize<size_t>(num_entries);
+      if (num_entries > 0)
+      {
+        size_t num_dims;
+        derez.deserialize<size_t>(num_dims);
+        for (unsigned i = 0; i < num_entries; i++)
+        {
+          std::vector<int> point(num_dims); 
+          for (unsigned idx = 0; idx < num_dims; idx++)
+          {
+            derez.deserialize<int>(point[idx]);
+          }
+          size_t argsize;
+          derez.deserialize<size_t>(argsize);
+          void *arg = malloc(argsize);
+          derez.deserialize(arg,argsize);
+          arg_map.insert(std::pair<IndexPoint,TaskArgument>(point,TaskArgument(arg,argsize)));
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void ArgumentMap::reset(void)
+    //--------------------------------------------------------------------------
+    {
+      // Deep clean
+      for (std::map<IndexPoint,TaskArgument>::const_iterator it = arg_map.begin();
+            it != arg_map.end(); it++)
+      {
+        free(it->second.get_ptr());
+      }
+      arg_map.clear();
     }
 
     /////////////////////////////////////////////////////////////
@@ -1034,7 +1453,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     Future HighLevelRuntime::execute_task(Context ctx, Processor::TaskFuncID task_id,
                                           const std::vector<RegionRequirement> &regions,
-                                          const void *args, size_t arglen,
+                                          const TaskArgument &arg,
                                           MapperID id, MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
@@ -1048,10 +1467,10 @@ namespace RegionRuntime {
 #endif
       TaskContext *desc = get_available_context(false/*new tree*/);
       // Allocate more space for context
-      void *args_prime = malloc(arglen+sizeof(Context));
-      memcpy(((char*)args_prime)+sizeof(Context), args, arglen);
-      desc->initialize_task(ctx, unique_id, task_id, args_prime, arglen+sizeof(Context), id, tag, true/*create term event*/);
-      desc->set_regions(regions);
+      void *args_prime = malloc(arg.get_size()+sizeof(Context));
+      memcpy(((char*)args_prime)+sizeof(Context), arg.get_ptr(), arg.get_size());
+      desc->initialize_task(ctx, unique_id, task_id, args_prime, arg.get_size()+sizeof(Context), id, tag, true/*create term event*/);
+      desc->set_regions(regions, true/*check same*/);
       // Check if we want to spawn this task 
       check_spawn_task(desc);
       // Don't free memory as the task becomes the owner
@@ -1067,56 +1486,6 @@ namespace RegionRuntime {
         if (target_task(desc))
         {
           add_to_ready_queue(desc);
-        }
-      }
-      else
-      {
-        add_to_waiting_queue(desc);
-      }
-
-      return Future(&desc->future);
-    }
-
-    //--------------------------------------------------------------------------------------------
-    template<unsigned N>
-    Future HighLevelRuntime::execute_index_space(Context ctx, Processor::TaskFuncID task_id,
-                                          const std::vector<Constraint<N> > &index_space,
-                                          const std::vector<RegionRequirement> &regions,
-                                          const std::vector<ColorizeFunction<N> > &functions,
-                                          const void *args, size_t arglen,
-                                          bool must, MapperID id, MappingTagID tag)
-    //--------------------------------------------------------------------------------------------
-    {
-      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_EXECUTE_TASK);
-      // Get a unique id for the task to use
-      UniqueID unique_id = get_unique_task_id();
-      log_task(LEVEL_DEBUG,"Registering new index space task with unique id %d and task id %d with high level runtime on processor %d\n",
-                unique_id, task_id, local_proc.id);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(id < mapper_objects.size());
-#endif
-      TaskContext *desc = get_available_context(false/*new tree*/);
-      // Allocate more space for the context when copying the args
-      void *args_prime = malloc(arglen+sizeof(Context));
-      memcpy(((char*)args_prime)+sizeof(Context), args, arglen);
-      desc->initialize_task(ctx, unique_id, task_id, args_prime, arglen+sizeof(Context), id, tag, false/*create term event*/);
-      desc->set_index_space<N>(index_space, must);
-      desc->set_regions(regions, functions);
-      // Check if we want to spawn this task
-      check_spawn_task(desc);
-      // Don't free memory as the task becomes the owner
-
-      // Register the task with the parent (performs dependence analysis)
-      ctx->register_child_task(desc);
-
-      // Figure out where to put this task
-      if (desc->is_ready())
-      {
-        // Figure out where to place this task
-        // If local put it in the ready queue (otherwise it's already been sent away)
-        if (target_task(desc))
-        {
-          add_to_ready_queue(desc); 
         }
       }
       else
@@ -2067,13 +2436,27 @@ namespace RegionRuntime {
       bool still_local = true;
       while (still_local && ctx->need_split)
       {
-        std::vector<Mapper::IndexSplit> chunks;
+        if (ctx->is_constraint_space)
         {
-          // Ask the mapper to perform the division
-          AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
-          AutoLock mapper_lock(mapper_locks[ctx->map_id]);
-          mapper_objects[ctx->map_id]->split_index_space(ctx, ctx->index_space, chunks);
-          still_local = ctx->distribute_index_space(chunks, mapper_objects[ctx->map_id]);
+          std::vector<Mapper::ConstraintSplit> chunks;
+          {
+            // Ask the mapper to perform the division
+            AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
+            AutoLock mapper_lock(mapper_locks[ctx->map_id]);
+            mapper_objects[ctx->map_id]->split_index_space(ctx, ctx->constraint_space, chunks);
+            still_local = ctx->distribute_index_space(chunks, mapper_objects[ctx->map_id]);
+          }
+        }
+        else
+        {
+          std::vector<Mapper::RangeSplit> chunks;
+          {
+            // Ask the mapper to perform the division
+            AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
+            AutoLock mapper_lock(mapper_locks[ctx->map_id]);
+            mapper_objects[ctx->map_id]->split_index_space(ctx, ctx->range_space, chunks);
+            still_local = ctx->distribute_index_space(chunks, mapper_objects[ctx->map_id]);
+          }
         }
       }
       return still_local;
@@ -2178,8 +2561,9 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     TaskContext::TaskContext(Processor p, HighLevelRuntime *r, ContextID id)
-      : runtime(r), active(false), ctx_id(id), local_proc(p), result(NULL), 
-        result_size(0), context_lock(Lock::create_lock())
+      : runtime(r), active(false), ctx_id(id),  
+        reduction(NULL), reduction_value(NULL), reduction_size(0), 
+        local_proc(p), result(NULL), result_size(0), context_lock(Lock::create_lock())
     //--------------------------------------------------------------------------------------------
     {
       this->args = NULL;
@@ -2242,6 +2626,12 @@ namespace RegionRuntime {
         cached_size = 0;
         partially_unpacked = false;
       }
+      if (reduction_value != NULL)
+      {
+        free(reduction_value);
+        reduction_value = NULL;
+        reduction_size = 0;
+      }
       if (remote)
       {
         // We can delete the region trees
@@ -2268,9 +2658,9 @@ namespace RegionRuntime {
         delete instance_infos;
       }
       regions.clear();
-      index_space.clear();
+      constraint_space.clear();
+      range_space.clear();
       index_point.clear();
-      colorize_functions.clear();
       true_dependences.clear();
       unresolved_dependences.clear();
       unresolved_choices.clear();
@@ -2285,6 +2675,8 @@ namespace RegionRuntime {
       deleted_regions.clear();
       deleted_partitions.clear();
       needed_instances.clear();
+      index_arg_map.reset();
+      reduction = NULL;
       active = false;
     }
 
@@ -2313,6 +2705,7 @@ namespace RegionRuntime {
       unmapped = 0;
       map_event = UserEvent::create_user_event();
       is_index_space = false; // Not unless someone tells us it is later
+      is_constraint_space = false;
       need_split = false;
       parent_ctx = parent;
       orig_ctx = this;
@@ -2320,6 +2713,8 @@ namespace RegionRuntime {
       if (create_term_event)
       {
         termination_event = UserEvent::create_user_event();
+        future.reset(termination_event);
+        future_map.reset(termination_event);
       }
       // If parent task is not null, share its context lock, otherwise use our own
       if (parent != NULL)
@@ -2330,11 +2725,46 @@ namespace RegionRuntime {
       {
         current_lock = context_lock;
       }
-      future.reset(termination_event);
       remaining_notifications = 0;
       sanitized = false;
     }
 
+    //--------------------------------------------------------------------------------------------
+    template<>
+    void TaskContext::set_index_space<Constraint>(const std::vector<Constraint> &index_space, const ArgumentMap &_map, bool _must)
+    //--------------------------------------------------------------------------------------------
+    {
+      is_constraint_space = true;
+      constraint_space = index_space;
+      index_arg_map = _map;
+      must = _must;
+      if (must)
+      {
+        start_index_event = Barrier::create_barrier(1);
+      }
+      finish_index_event = Barrier::create_barrier(1);
+      orig_ctx = this;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    template<>
+    void TaskContext::set_index_space<Range>(const std::vector<Range> &index_space, const ArgumentMap &_map, bool _must)
+    //--------------------------------------------------------------------------------------------
+    {
+      is_constraint_space = false;
+      range_space = index_space;
+      index_arg_map = _map;
+      must = _must;
+      if (must)
+      {
+        start_index_event = Barrier::create_barrier(1);
+      }
+      finish_index_event = Barrier::create_barrier(1);
+      orig_ctx = this;
+    }
+
+
+#if 0 // In case we ever go back to having templated constraints
     //--------------------------------------------------------------------------------------------
     template<unsigned N>
     void TaskContext::set_index_space(const std::vector<Constraint<N> > &index_space, bool _must)
@@ -2360,11 +2790,26 @@ namespace RegionRuntime {
         index_space.push_back(constraint);
       }
     }
+#endif
 
     //--------------------------------------------------------------------------------------------
-    void TaskContext::set_regions(const std::vector<RegionRequirement> &_regions)
+    void TaskContext::set_regions(const std::vector<RegionRequirement> &_regions, bool all_same)
     //--------------------------------------------------------------------------------------------
     {
+      if (all_same)
+      {
+        // Check to make sure that all the region arguments are single regions
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          if (regions[idx].func_type != SINGULAR_FUNC)
+          {
+            log_task(LEVEL_ERROR,"All arguments to a single task launch must be single regions. "
+                "Region %d of task %d with unique id %d is not a singular region.",idx,task_id,
+                unique_id);
+            exit(1);
+          }
+        }
+      }
       // No need to check whether there are two aliased regions that conflict for this task
       // We'll catch it when we do the dependence analysis
       regions = _regions;
@@ -2374,6 +2819,26 @@ namespace RegionRuntime {
       map_dependent_tasks.resize(regions.size());
     }
 
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::set_reduction(ReductionFnptr reduc, const TaskArgument &init)
+    //--------------------------------------------------------------------------------------------
+    {
+      reduction = reduc;
+      reduction_value = malloc(init.get_size());
+      memcpy(reduction_value,init.get_ptr(),init.get_size());
+      reduction_size = init.get_size();
+      // Set the future to the termination event
+      future.reset(finish_index_event);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::set_future_map(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      future_map.reset(finish_index_event);
+    }
+
+#if 0 // In case we ever go back to templated constraints
     //--------------------------------------------------------------------------------------------
     template<unsigned N>
     void TaskContext::set_regions(const std::vector<RegionRequirement> &_regions,
@@ -2421,6 +2886,7 @@ namespace RegionRuntime {
         }
       }
     }
+#endif
 
     //--------------------------------------------------------------------------------------------
     size_t TaskContext::compute_task_size(Mapper *mapper)
@@ -2430,7 +2896,10 @@ namespace RegionRuntime {
       result += sizeof(UniqueID);
       result += sizeof(Processor::TaskFuncID);
       result += sizeof(size_t); // Num regions
-      result += (regions.size() * sizeof(RegionRequirement));
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        result += regions[idx].compute_size();
+      }
       result += sizeof(size_t); // arglen
       result += arglen;
       result += sizeof(MapperID);
@@ -2444,18 +2913,27 @@ namespace RegionRuntime {
       result += sizeof(bool); // is_index_space
       if (is_index_space)
       {
-        result += sizeof(bool); 
-        result += sizeof(bool);
-        result += sizeof(size_t); // num constraints
-        for (unsigned idx = 0; idx < index_space.size(); idx++)
+        result += sizeof(bool);  // need_split 
+        result += sizeof(bool);  //  must
+        result += sizeof(bool);  // is_constraint_space
+        if (is_constraint_space)
         {
-          result += index_space[idx].compute_size();
+          result += sizeof(size_t); // num constraints
+          for (unsigned idx = 0; idx < constraint_space.size(); idx++)
+          {
+            result += constraint_space[idx].compute_size();
+          }
         }
-        result += sizeof(size_t); // num colorize functions
-        for (unsigned idx = 0; idx < colorize_functions.size(); idx++)
+        else
         {
-          result += index_space[idx].compute_size();
+          result += sizeof(size_t); // num ranges
+          for (unsigned idx = 0; idx < range_space.size(); idx++)
+          {
+            result += range_space[idx].compute_size();
+          }
         }
+        // Pack the argument map
+        result += index_arg_map.compute_size();
         // Don't send enumerated or index_point
         result += sizeof(Barrier);
         result += sizeof(Barrier);
@@ -2570,10 +3048,9 @@ namespace RegionRuntime {
       rez.serialize<UniqueID>(unique_id);
       rez.serialize<Processor::TaskFuncID>(task_id);
       rez.serialize<size_t>(regions.size());
-      for (std::vector<RegionRequirement>::const_iterator it = regions.begin();
-            it != regions.end(); it++)
+      for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        rez.serialize<RegionRequirement>(*it);
+        regions[idx].pack_requirement(rez);
       }
       rez.serialize<size_t>(arglen);
       rez.serialize(args,arglen);
@@ -2589,16 +3066,24 @@ namespace RegionRuntime {
       {
         rez.serialize<bool>(need_split);
         rez.serialize<bool>(must);
-        rez.serialize<size_t>(index_space.size());
-        for (unsigned idx = 0; idx < index_space.size(); idx++)
+        rez.serialize<bool>(is_constraint_space);
+        if (is_constraint_space)
         {
-          index_space[idx].pack_constraint(rez);
+          rez.serialize<size_t>(constraint_space.size());
+          for (unsigned idx = 0; idx < constraint_space.size(); idx++)
+          {
+            constraint_space[idx].pack_constraint(rez);
+          }
         }
-        rez.serialize<size_t>(colorize_functions.size());
-        for (unsigned idx = 0; idx < colorize_functions.size(); idx++)
+        else
         {
-          colorize_functions[idx].pack_colorize(rez);
+          rez.serialize<size_t>(range_space.size());
+          for (unsigned idx = 0; idx < range_space.size(); idx++)
+          {
+            range_space[idx].pack_range(rez);
+          }
         }
+        index_arg_map.pack_argument_map(rez); 
         rez.serialize<Barrier>(start_index_event);
         rez.serialize<Barrier>(finish_index_event);
       }
@@ -2684,7 +3169,7 @@ namespace RegionRuntime {
         regions.resize(num_regions);
         for (unsigned idx = 0; idx < num_regions; idx++)
         {
-          derez.deserialize<RegionRequirement>(regions[idx]); 
+          regions[idx].unpack_requirement(derez);
         }
       }
       derez.deserialize<size_t>(arglen);
@@ -2703,20 +3188,28 @@ namespace RegionRuntime {
       {
         derez.deserialize<bool>(need_split);
         derez.deserialize<bool>(must);
-        size_t num_constraints;
-        derez.deserialize<size_t>(num_constraints);
-        index_space.resize(num_constraints);
-        for (unsigned idx = 0; idx < num_constraints; idx++)
+        derez.deserialize<bool>(is_constraint_space);
+        if (is_constraint_space)
         {
-          index_space[idx].unpack_constraint(derez);
+          size_t num_constraints;
+          derez.deserialize<size_t>(num_constraints);
+          constraint_space.resize(num_constraints);
+          for (unsigned idx = 0; idx < num_constraints; idx++)
+          {
+            constraint_space[idx].unpack_constraint(derez);
+          }
         }
-        size_t num_colorize;
-        derez.deserialize<size_t>(num_colorize);
-        colorize_functions.resize(num_colorize);
-        for (unsigned idx = 0; idx < num_colorize; idx++)
+        else
         {
-          colorize_functions[idx].unpack_colorize(derez);
+          size_t num_ranges;
+          derez.deserialize<size_t>(num_ranges);
+          range_space.resize(num_ranges);
+          for (unsigned idx = 0; idx < num_ranges; idx++)
+          {
+            range_space[idx].unpack_range(derez);
+          }
         }
+        index_arg_map.unpack_argument_map(derez);
         derez.deserialize<Barrier>(start_index_event);
         derez.deserialize<Barrier>(finish_index_event);
         enumerated = false;
@@ -2935,15 +3428,15 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    bool TaskContext::distribute_index_space(std::vector<Mapper::IndexSplit> &chunks, Mapper *mapper)
+    bool TaskContext::distribute_index_space(std::vector<Mapper::ConstraintSplit> &chunks, Mapper *mapper)
     //--------------------------------------------------------------------------------------------
     {
       bool has_local = false;
-      std::vector<UnsizedConstraint> local_space;
+      std::vector<Constraint> local_space;
       bool split = false;
       // Iterate over all the chunks, if they're remote processors
       // then make this task look like the remote one and send it off
-      for (std::vector<Mapper::IndexSplit>::iterator it = chunks.begin();
+      for (std::vector<Mapper::ConstraintSplit>::iterator it = chunks.begin();
             it != chunks.end(); it++)
       {
         if (it->p != local_proc)
@@ -2952,7 +3445,7 @@ namespace RegionRuntime {
           AutoLock ctx_lock(current_lock);
           // set need_split
           this->need_split = it->recurse;
-          this->index_space = it->constraints;
+          this->constraint_space = it->constraints;
           // Package it up and send it
           size_t buffer_size = compute_task_size(mapper);
           Serializer rez(buffer_size);
@@ -2978,7 +3471,56 @@ namespace RegionRuntime {
       if (has_local)
       {
         this->need_split = split;
-        this->index_space = local_space;
+        this->constraint_space = local_space;
+      }
+      return has_local;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool TaskContext::distribute_index_space(std::vector<Mapper::RangeSplit> &chunks, Mapper *mapper)
+    //--------------------------------------------------------------------------------------------
+    {
+      bool has_local = false;
+      std::vector<Range> local_space;
+      bool split = false;
+      // Iterate over all the chunks, if they're remote processors
+      // then make this task look like the remote one and send it off
+      for (std::vector<Mapper::RangeSplit>::iterator it = chunks.begin();
+            it != chunks.end(); it++)
+      {
+        if (it->p != local_proc)
+        {
+          // Need to hold the tasks context lock to do this
+          AutoLock ctx_lock(current_lock);
+          // set need_split
+          this->need_split = it->recurse;
+          this->range_space = it->ranges;
+          // Package it up and send it
+          size_t buffer_size = compute_task_size(mapper);
+          Serializer rez(buffer_size);
+          rez.serialize<Processor>(it->p); // Actual target processor
+          rez.serialize<Processor>(local_proc); // local processor 
+          rez.serialize<int>(1); // number of processors
+          pack_task(rez);
+          // Send the task to the utility processor
+          Processor utility = it->p.get_utility_processor();
+          utility.spawn(ENQUEUE_TASK_ID,rez.get_buffer(),buffer_size);
+        }
+        else
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(!has_local); // Make sure we don't alias local information
+#endif
+          has_local = true;
+          local_space = it->ranges; 
+          split = it->recurse;
+        }
+      }
+      // If there is still a local component, save it
+      if (has_local)
+      {
+        this->need_split = split;
+        this->range_space = local_space;
       }
       return has_local;
     }
@@ -3027,7 +3569,7 @@ namespace RegionRuntime {
           {
             if (child->is_index_space)
             {
-              switch (child->colorize_functions[idx].func_type)
+              switch (child->regions[idx].func_type)
               {
                 case SINGULAR_FUNC:
                   {
@@ -3079,7 +3621,7 @@ namespace RegionRuntime {
         if (ctx->is_index_space)
         {
           // Check to see what we're looking for
-          switch (ctx->colorize_functions[child_idx].func_type)
+          switch (ctx->regions[child_idx].func_type)
           {
             case SINGULAR_FUNC:
               {
@@ -3308,7 +3850,7 @@ namespace RegionRuntime {
               // Acquire the lock before doing anything for this region
               precondition = info->lock_instance(precondition);
               // Also issue the unlock operation when the task is done, tee hee :)
-              info->unlock_instance(termination_event);
+              info->unlock_instance(get_termination_event());
             }
             wait_on_events.insert(precondition);
             found = true;
@@ -3496,8 +4038,20 @@ namespace RegionRuntime {
       }
       else
       {
-        // We can set the future result directly
-        future.set_result(res,res_size);
+        // Check to see if we are index space or a value
+        if (is_index_space)
+        {
+          // Invoke the local update on the owner context (this might even be us)
+          // Buffer will be owned by call so clone it
+          void *result = malloc(res_size);
+          memcpy(result, res, res_size);
+          orig_ctx->local_finish(index_point, result, res_size);
+        }
+        else
+        {
+          // We can set the future result directly
+          future.set_result(res,res_size);
+        }
       }
 
       // Check to see if there are any child tasks
@@ -3752,6 +4306,11 @@ namespace RegionRuntime {
         // Send information about the updated logical regions to the parent context 
         size_t buffer_size = sizeof(Processor) + sizeof(Context);
 
+        // If this is an index space we need to send the point back too
+        if (is_index_space)
+        {
+          buffer_size += (index_point.size() * sizeof(int));
+        }
         // the result information
         buffer_size += sizeof(size_t);
         buffer_size += result_size;
@@ -3764,6 +4323,13 @@ namespace RegionRuntime {
         rez.serialize<Processor>(orig_proc);
         rez.serialize<Context>(orig_ctx);
 
+        if (is_index_space)
+        {
+          for (unsigned idx = 0; idx < index_point.size(); idx++)
+          {
+            rez.serialize<int>(index_point[idx]);
+          }
+        }
         // pack the result information
         rez.serialize<size_t>(result_size);
         rez.serialize(result,result_size);
@@ -3985,7 +4551,25 @@ namespace RegionRuntime {
 #endif
       Deserializer derez(args,arglen);
       // First unpack the result information and set the future result
-      future.set_result(derez);
+      if (is_index_space)
+      {
+        IndexPoint remote_point(index_point.size());
+        for (unsigned idx = 0; idx < index_point.size(); idx++)
+        {
+          derez.deserialize<int>(remote_point[idx]);
+        }
+        size_t result_size;
+        derez.deserialize<size_t>(result_size);
+        void *result = malloc(result_size);
+        derez.deserialize(result,result_size);
+        // Call the local finish function in this context
+        // Buffer will be freed if necessary in call
+        local_finish(remote_point, result, result_size);
+      }
+      else
+      {
+        future.set_result(derez);
+      }
       // Now unpack the updates to the region tree
       {
         std::vector<LogicalRegion> created;
@@ -4011,6 +4595,28 @@ namespace RegionRuntime {
         }
       }
       // No need to deactivate ourselves, that will happen when our parent finishes
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::local_finish(const IndexPoint &point, void *result, size_t result_size)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(is_index_space);
+#endif
+      if (reduction == NULL)
+      {
+        index_arg_map[point] = TaskArgument(result,result_size);
+        // No need to free buffer, now owned by map
+      }
+      else
+      {
+        (*reduction)(reduction_value,reduction_size,point,result,result_size);
+        // TODO: fix having separate future implementations
+        // update the future so when we're done the value will already be there
+        future.set_result(reduction_value,reduction_size);
+        free(result);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -7403,6 +8009,7 @@ namespace RegionRuntime {
     // Unsized Constraint 
     ///////////////////////////////////////////
 
+#if 0 // In case we need these in the future
     //-------------------------------------------------------------------------
     size_t UnsizedConstraint::compute_size(void) const
     //-------------------------------------------------------------------------
@@ -7435,62 +8042,8 @@ namespace RegionRuntime {
       }
       derez.deserialize<int>(offset);
     }
+#endif
 
-    ///////////////////////////////////////////
-    // Unsized Colorize
-    ///////////////////////////////////////////
-
-    //-------------------------------------------------------------------------
-    size_t UnsizedColorize::compute_size(void) const
-    //-------------------------------------------------------------------------
-    {
-      size_t result = sizeof(ColoringType) + sizeof(ColorizeID) + 2*sizeof(size_t);
-      size_t dim_size = (mapping.begin())->first.size();
-      result += (mapping.size() * (dim_size*sizeof(int) + sizeof(Color)));
-      return result;
-    }
-
-    //-------------------------------------------------------------------------
-    void UnsizedColorize::pack_colorize(Serializer &rez) const
-    //-------------------------------------------------------------------------
-    {
-      rez.serialize<ColoringType>(func_type);
-      rez.serialize<ColorizeID>(colorize);
-      rez.serialize<size_t>(mapping.size());
-      size_t dim_size = (mapping.begin())->first.size();
-      rez.serialize<size_t>(dim_size);
-      for (std::map<std::vector<int>,Color>::const_iterator it = mapping.begin();
-            it != mapping.end(); it++)
-      {
-        for (unsigned idx = 0; idx < dim_size; idx++)
-        {
-          rez.serialize<int>(it->first[idx]);
-        }
-        rez.serialize<Color>(it->second);
-      }
-    }
-
-    //-------------------------------------------------------------------------
-    void UnsizedColorize::unpack_colorize(Deserializer &derez)
-    //-------------------------------------------------------------------------
-    {
-      derez.deserialize<ColoringType>(func_type);
-      derez.deserialize<ColorizeID>(colorize);
-      size_t num_elmts, dim_size;
-      derez.deserialize<size_t>(num_elmts);
-      derez.deserialize<size_t>(dim_size);
-      for (unsigned i = 0; i < num_elmts; i++)
-      {
-        std::vector<int> element(dim_size);
-        for (unsigned idx = 0; idx < dim_size; idx++)
-        {
-          derez.deserialize<int>(element[idx]);
-        }
-        Color c;
-        derez.deserialize<Color>(c);
-        mapping.insert(std::pair<std::vector<int>,Color>(element,c));
-      }
-    }
   };
 };
 
