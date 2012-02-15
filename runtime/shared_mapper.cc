@@ -79,12 +79,23 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::split_index_space(const Task *task, const std::vector<UnsizedConstraint> &index_space,
-                                                      std::vector<IndexSplit> &chunks)
+    void Mapper::split_index_space(const Task *task, const std::vector<Constraint> &index_space,
+                                                      std::vector<ConstraintSplit> &chunks)
     //--------------------------------------------------------------------------------------------
     {
       // TODO: figure out how to do this easily
+      assert(false);
     }
+
+    //--------------------------------------------------------------------------------------------
+    void Mapper::split_index_space(const Task *task, const std::vector<Range> &index_space,
+                                                      std::vector<RangeSplit> &chunks)
+    //--------------------------------------------------------------------------------------------
+    {
+      // TODO: figure out how to do this easily
+      assert(false);
+    }
+
 
     //--------------------------------------------------------------------------------------------
     void Mapper::map_task_region(const Task *task, const RegionRequirement &req,
