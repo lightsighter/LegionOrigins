@@ -3139,7 +3139,7 @@ namespace RegionRuntime {
       Event finish_event;
     };
 
-    void Event::wait(void) const
+    void Event::wait(bool block) const
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       if(!id) return;  // special case: never wait for NO_EVENT

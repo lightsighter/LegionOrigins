@@ -6,7 +6,7 @@ endif
 #Flags for directing the runtime makefile what to include
 DEBUG=1                   # Include debugging symbols
 OUTPUT_LEVEL=LEVEL_DEBUG  # Compile time print level
-#SHARED_LOWLEVEL=1	  # Use the shared low level
+SHARED_LOWLEVEL=1	  # Use the shared low level
 
 # Put the binary file name here
 OUTFILE		:= fluid3d
