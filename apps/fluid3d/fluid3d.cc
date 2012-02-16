@@ -262,6 +262,7 @@ RegionRuntime::Logger::Category log_app("application");
 
 class BlockSerializer : public Serializer {
 public:
+  BlockSerializer(size_t buffer_size) : Serializer(buffer_size) { }
   inline void serialize(const Block &block) {
     for (unsigned i = 0; i < 2; i++)
       Serializer::serialize(block.base[i]);
@@ -288,6 +289,8 @@ public:
 
 class BlockDeserializer : public Deserializer {
 public:
+  BlockDeserializer(const void *buffer, size_t buffer_size)
+    : Deserializer(buffer, buffer_size) { }
   inline void deserialize(Block &block) {
     for (unsigned i = 0; i < 2; i++)
       Deserializer::deserialize(block.base[i]);
@@ -809,7 +812,7 @@ void main_task(const void *args, size_t arglen,
 #endif
 
     unsigned bufsize = BLOCK_SIZE;
-    Serializer ser(bufsize);
+    BlockSerializer ser(bufsize);
     ser.serialize(blocks[id]);
     const TaskArgument buffer(ser.get_buffer(), bufsize);
 
@@ -831,7 +834,7 @@ void main_task(const void *args, size_t arglen,
     std::string fileName = "fluid3d_init.fluid";
 
     unsigned bufsize = BLOCK_SIZE*numBlocks + sizeof(size_t) + fileName.length();
-    Serializer ser(bufsize);
+    BlockSerializer ser(bufsize);
     for (unsigned id = 0; id < numBlocks; id++) {
       ser.serialize(blocks[id]);
     }
@@ -880,7 +883,7 @@ void main_task(const void *args, size_t arglen,
 		      tlr->edge_cells);
 
       unsigned bufsize = BLOCK_SIZE;
-      Serializer ser(bufsize);
+      BlockSerializer ser(bufsize);
       ser.serialize(blocks[id]);
       TaskArgument buffer(ser.get_buffer(), bufsize);
 
@@ -911,7 +914,7 @@ void main_task(const void *args, size_t arglen,
 		      tlr->edge_cells);
 
       unsigned bufsize = BLOCK_SIZE;
-      Serializer ser(bufsize);
+      BlockSerializer ser(bufsize);
       ser.serialize(blocks[id]);
       TaskArgument buffer(ser.get_buffer(), bufsize);
 
@@ -942,7 +945,7 @@ void main_task(const void *args, size_t arglen,
 		      tlr->edge_cells);
 
       unsigned bufsize = BLOCK_SIZE;
-      Serializer ser(bufsize);
+      BlockSerializer ser(bufsize);
       ser.serialize(blocks[id]);
       TaskArgument buffer(ser.get_buffer(), bufsize);
 
@@ -975,7 +978,7 @@ void main_task(const void *args, size_t arglen,
 		      tlr->edge_cells);
 
       unsigned bufsize = BLOCK_SIZE;
-      Serializer ser(bufsize);
+      BlockSerializer ser(bufsize);
       ser.serialize(blocks[id]);
       TaskArgument buffer(ser.get_buffer(), bufsize);
 
@@ -1017,7 +1020,7 @@ void main_task(const void *args, size_t arglen,
     std::string fileName = "fluid3d_output.fluid";
 
     unsigned bufsize = BLOCK_SIZE*numBlocks + sizeof(size_t) + fileName.length();
-    Serializer ser(bufsize);
+    BlockSerializer ser(bufsize);
     for (unsigned id = 0; id < numBlocks; id++) {
       ser.serialize(blocks[id]);
     }
@@ -1050,7 +1053,7 @@ void init_simulation(const void *args, size_t arglen,
 {
   Block b;
   {
-    Deserializer deser(args, arglen);
+    BlockDeserializer deser(args, arglen);
     deser.deserialize(b);
   }
 
@@ -1107,7 +1110,7 @@ void init_and_rebuild(const void *args, size_t arglen,
 {
   Block b;
   {
-    Deserializer deser(args, arglen);
+    BlockDeserializer deser(args, arglen);
     deser.deserialize(b);
   }
   int cb = b.cb; // current buffer
@@ -1182,7 +1185,7 @@ void rebuild_reduce(const void *args, size_t arglen,
 {
   Block b;
   {
-    Deserializer deser(args, arglen);
+    BlockDeserializer deser(args, arglen);
     deser.deserialize(b);
   }
   int cb = b.cb; // current buffer
@@ -1245,7 +1248,7 @@ void scatter_densities(const void *args, size_t arglen,
 {
   Block b;
   {
-    Deserializer deser(args, arglen);
+    BlockDeserializer deser(args, arglen);
     deser.deserialize(b);
   }
   int cb = b.cb; // current buffer
@@ -1378,7 +1381,7 @@ void gather_forces_and_advance(const void *args, size_t arglen,
 {
   Block b;
   {
-    Deserializer deser(args, arglen);
+    BlockDeserializer deser(args, arglen);
     deser.deserialize(b);
   }
   int cb = b.cb; // current buffer
@@ -1505,7 +1508,7 @@ void save_file(const void *args, size_t arglen,
   std::string fileName;
   blocks.resize(numBlocks);
   {
-    Deserializer deser(args, arglen);
+    BlockDeserializer deser(args, arglen);
     for (unsigned i = 0; i < numBlocks; i++) {
       deser.deserialize(blocks[i]);
     }
