@@ -562,7 +562,8 @@ void top_level_task(const void *args, size_t arglen,
                                      (numBlocks*
                                       ((CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2) -
                                        CELLS_X*CELLS_Y*CELLS_Z)));
-    
+    TaskArgument tlr_arg(&tlr, sizeof(tlr));
+
     std::vector<RegionRequirement> main_regions;
     main_regions.push_back(RegionRequirement(tlr.real_cells[0],
 					     READ_WRITE, ALLOCABLE, EXCLUSIVE,
@@ -576,7 +577,7 @@ void top_level_task(const void *args, size_t arglen,
 
     Future f = runtime->execute_task(ctx, TASKID_MAIN_TASK,
 				     main_regions,
-				     &tlr, sizeof(tlr),
+                                     tlr_arg,
 				     0, 0);
     f.get_void_result();
   }
@@ -810,10 +811,11 @@ void main_task(const void *args, size_t arglen,
     unsigned bufsize = BLOCK_SIZE;
     Serializer ser(bufsize);
     ser.serialize(blocks[id]);
+    const TaskArgument buffer(ser.get_buffer(), bufsize);
 
     Future f = runtime->execute_task(ctx, TASKID_INIT_SIMULATION,
                                      init_regions,
-                                     ser.get_buffer(), bufsize,
+                                     buffer,
                                      0, id);
     f.get_void_result();
   }
@@ -834,10 +836,11 @@ void main_task(const void *args, size_t arglen,
       ser.serialize(blocks[id]);
     }
     ser.serialize(fileName);
+    TaskArgument buffer(ser.get_buffer(), bufsize);
 
     Future f = runtime->execute_task(ctx, TASKID_SAVE_FILE,
                                      init_regions,
-                                     ser.get_buffer(), bufsize,
+                                     buffer,
                                      0, 0);
     f.get_void_result();
   }
@@ -879,10 +882,11 @@ void main_task(const void *args, size_t arglen,
       unsigned bufsize = BLOCK_SIZE;
       Serializer ser(bufsize);
       ser.serialize(blocks[id]);
+      TaskArgument buffer(ser.get_buffer(), bufsize);
 
       Future f = runtime->execute_task(ctx, TASKID_INIT_CELLS,
                                        init_regions,
-                                       ser.get_buffer(), bufsize,
+                                       buffer,
                                        0, id);
     }
 
@@ -909,10 +913,11 @@ void main_task(const void *args, size_t arglen,
       unsigned bufsize = BLOCK_SIZE;
       Serializer ser(bufsize);
       ser.serialize(blocks[id]);
+      TaskArgument buffer(ser.get_buffer(), bufsize);
 
       Future f = runtime->execute_task(ctx, TASKID_REBUILD_REDUCE,
 				       rebuild_regions,
-                                       ser.get_buffer(), bufsize,
+                                       buffer,
                                        0, id);
     }
 
@@ -939,10 +944,11 @@ void main_task(const void *args, size_t arglen,
       unsigned bufsize = BLOCK_SIZE;
       Serializer ser(bufsize);
       ser.serialize(blocks[id]);
+      TaskArgument buffer(ser.get_buffer(), bufsize);
 
       Future f = runtime->execute_task(ctx, TASKID_SCATTER_DENSITIES,
 				       density_regions, 
-                                       ser.get_buffer(), bufsize,
+                                       buffer,
                                        0, id);
     }
     
@@ -971,10 +977,11 @@ void main_task(const void *args, size_t arglen,
       unsigned bufsize = BLOCK_SIZE;
       Serializer ser(bufsize);
       ser.serialize(blocks[id]);
+      TaskArgument buffer(ser.get_buffer(), bufsize);
 
       Future f = runtime->execute_task(ctx, TASKID_GATHER_FORCES,
                                        force_regions, 
-                                       ser.get_buffer(), bufsize,
+                                       buffer,
                                        0, id);
 
       // remember the futures for the last pass so we can wait on them
@@ -1015,10 +1022,11 @@ void main_task(const void *args, size_t arglen,
       ser.serialize(blocks[id]);
     }
     ser.serialize(fileName);
+    TaskArgument buffer(ser.get_buffer(), bufsize);
 
     Future f = runtime->execute_task(ctx, TASKID_SAVE_FILE,
                                      init_regions,
-                                     ser.get_buffer(), bufsize,
+                                     buffer,
                                      0, 0);
     f.get_void_result();
   }
@@ -1703,8 +1711,7 @@ public:
 
   virtual bool spawn_child_task(const Task *task)
   {
-    // TODO: Elliott: Can we allow this to be true?
-    return false;
+    return true;
   }
 
   virtual Processor select_initial_processor(const Task *task)
@@ -1753,9 +1760,8 @@ public:
     return;
   }
 
-  virtual void split_index_space(const Task *task,
-                                 const std::vector<UnsizedConstraint> &index_space,
-                                 std::vector<IndexSplit> &chunks)
+  virtual void split_index_space(const Task *task, const std::vector<Constraint> &index_space,
+                                 std::vector<ConstraintSplit> &chunks)
   {
     return;
   }
