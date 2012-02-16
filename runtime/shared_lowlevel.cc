@@ -3017,8 +3017,8 @@ namespace RegionRuntime {
   /*static*/ void Logger::logvprintf(LogLevel level, int category, const char *fmt, va_list args)
   {
     char buffer[200];
-    sprintf(buffer, "[%d - %lx] {%d}{%s}: ",
-            0, /*pthread_self()*/long(local_proc_id), level, Logger::get_categories_by_id()[category].c_str());
+    sprintf(buffer, "[%d - %lx] {%s}{%s}: ",
+            0, /*pthread_self()*/long(local_proc_id), Logger::stringify(level), Logger::get_categories_by_id()[category].c_str());
     int len = strlen(buffer);
     vsnprintf(buffer+len, 199-len, fmt, args);
     strcat(buffer, "\n");

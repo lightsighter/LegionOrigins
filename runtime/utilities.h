@@ -258,6 +258,27 @@ namespace RegionRuntime {
       static std::vector<std::string> categories_by_id;
       return categories_by_id;
     }
+    // Conversion from a log level to a string representation
+    static const char* stringify(LogLevel level)
+    {
+      switch (level)
+      {
+        case LEVEL_SPEW:
+          return "SPEW";
+        case LEVEL_DEBUG:
+          return "DEBUG";
+        case LEVEL_INFO:
+          return "INFO";
+        case LEVEL_WARNING:
+          return "WARNING";
+        case LEVEL_ERROR:
+          return "ERROR";
+        case LEVEL_NONE:
+          return "NONE";
+      }
+      assert(false);
+      return NULL;
+    }
   };
 
   /**
