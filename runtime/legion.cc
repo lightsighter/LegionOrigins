@@ -3806,11 +3806,11 @@ namespace RegionRuntime {
           {
             InstanceInfo *info = handle->find_physical_instance(parent_physical_ctx,*it);
             bool needs_initializing = false;
-            if (info != InstanceInfo::get_no_instance())
+            if (info == InstanceInfo::get_no_instance())
             {
               // We couldn't find a pre-existing instance, try to make one
               info = create_instance_info(regions[idx].handle.region, *it);
-              if (info != InstanceInfo::get_no_instance())
+              if (info == InstanceInfo::get_no_instance())
               {
                 // Couldn't make it, try the next location
                 continue;
@@ -4012,7 +4012,13 @@ namespace RegionRuntime {
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
         PhysicalRegion<AccessorGeneric> reg;
-        reg.set_instance(physical_instances[idx]->inst.get_accessor_untyped());
+
+        // check to see if they asked for a physical instance
+        if (physical_instances[idx] != InstanceInfo::get_no_instance())
+        {
+          reg.set_instance(physical_instances[idx]->inst.get_accessor_untyped());
+        }
+        // Check to see if they asked for an allocator
         if (regions[idx].alloc != NO_MEMORY)
         {
           reg.set_allocator(physical_instances[idx]->handle.create_allocator_untyped(
@@ -4633,15 +4639,7 @@ namespace RegionRuntime {
       // Add it to the map of nodes
       (*region_nodes)[handle] = node;
       // Also initialize the physical state in the outermost enclosing region
-      ContextID outermost;
-      {
-        TaskContext *ctx = this;
-        while (!ctx->remote)
-        {
-          ctx = ctx->parent_ctx;
-        }
-        outermost = ctx->ctx_id;
-      }
+      ContextID outermost = get_outermost_physical_context();
       node->initialize_physical_context(outermost);
       // Update the list of newly created regions
       created_regions.insert(std::pair<LogicalRegion,ContextID>(handle,outermost));
@@ -5201,6 +5199,10 @@ namespace RegionRuntime {
     InstanceInfo* TaskContext::create_instance_info(LogicalRegion handle, Memory m)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(handle.exists());
+      assert(m.exists());
+#endif
       // Try to make the instance in the memory
       RegionInstance inst = handle.create_instance_untyped(m);
       if (!inst.exists())
@@ -5223,6 +5225,10 @@ namespace RegionRuntime {
     InstanceInfo* TaskContext::create_instance_info(LogicalRegion newer, InstanceInfo *old)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(newer.exists());
+      assert(old != InstanceInfo::get_no_instance());
+#endif
       // This instance already exists, create a new info for it
       InstanceID iid = runtime->get_unique_instance_id();
       InstanceInfo *result_info = new InstanceInfo(iid,newer,old->location,old->inst,false/*remote*/);

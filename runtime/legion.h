@@ -280,8 +280,8 @@ namespace RegionRuntime {
     class TaskArgument {
     public:
       TaskArgument(void) : args(NULL), arglen(0) { }
-      TaskArgument(void *arg, size_t argsize)
-        : args(arg), arglen(argsize) { }
+      TaskArgument(const void *arg, size_t argsize)
+        : args(const_cast<void*>(arg)), arglen(argsize) { }
     public:
       inline size_t get_size(void) const { return arglen; }
       inline void*  get_ptr(void) const { return args; }
@@ -460,12 +460,12 @@ namespace RegionRuntime {
       friend class TaskContext;
       friend class RegionMappingImpl;
       friend class PhysicalRegion<AccessorGeneric>;
-      PhysicalRegion(void) 
-        : instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorArray>(NULL)) { }
       void set_allocator(LowLevel::RegionAllocatorUntyped alloc) { allocator = alloc; }
       void set_instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorArray> inst) 
       { instance = inst; }
     public:
+      PhysicalRegion(void) 
+        : instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorArray>(NULL)) { }
       // Provide implementations here to avoid template instantiation problem
       template<typename T> inline ptr_t<T> alloc(void)
       { return static_cast<LowLevel::RegionAllocator<T> >(allocator).alloc(); }
@@ -490,14 +490,14 @@ namespace RegionRuntime {
       friend class HighLevelRuntime;
       friend class TaskContext;
       friend class RegionMappingImpl;
-      PhysicalRegion(void) :
-        valid_allocator(false), valid_instance(false), 
-        instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric>(NULL)) { }
       void set_allocator(LowLevel::RegionAllocatorUntyped alloc) 
       { valid_allocator = true; allocator = alloc; }
       void set_instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric> inst) 
       { valid_instance = true; instance = inst; }
     public:
+      PhysicalRegion(void) :
+        valid_allocator(false), valid_instance(false), 
+        instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric>(NULL)) { }
       // Provide implementations here to avoid template instantiation problem
       template<typename T> inline ptr_t<T> alloc(void)
       { return static_cast<LowLevel::RegionAllocator<T> >(allocator).alloc(); }
