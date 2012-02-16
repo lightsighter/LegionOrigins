@@ -116,7 +116,7 @@ namespace RegionRuntime {
       RegionMetaDataImpl*  get_free_metadata(size_t num_elmts, size_t elmt_size);
       RegionMetaDataImpl*  get_free_metadata(RegionMetaDataImpl *par, const ElementMask &mask);
       RegionAllocatorImpl* get_free_allocator(unsigned start, unsigned end);
-      RegionInstanceImpl*  get_free_instance(RegionMetaDataUntyped r, Memory m, size_t num_elmts, size_t elmt_size);
+      RegionInstanceImpl*  get_free_instance(RegionMetaDataUntyped r, Memory m, size_t num_elmts, size_t elmt_size, char *ptr);
 
       // Return events that are free
       void free_event(EventImpl *event);
@@ -1878,7 +1878,8 @@ namespace RegionRuntime {
 
     class RegionInstanceImpl : public Triggerable { 
     public:
-        RegionInstanceImpl(int idx, RegionMetaDataUntyped r, Memory m, size_t num, size_t elem_size, bool activate = false)
+        RegionInstanceImpl(int idx, RegionMetaDataUntyped r, Memory m, size_t num, size_t elem_size, 
+                            bool activate = false, char *base = NULL)
 	        : elmt_size(elem_size), num_elmts(num), index(idx), next_handle(1)
 	{
 		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
@@ -1888,8 +1889,8 @@ namespace RegionRuntime {
 		        region = r;
 			memory = m;
 			// Use the memory to allocate the space, fail if there is none
-			MemoryImpl *mem = Runtime::get_runtime()->get_memory_impl(m);
-			base_ptr = (char*)mem->allocate_space(num_elmts*elem_size);	
+			//MemoryImpl *mem = Runtime::get_runtime()->get_memory_impl(m);
+			base_ptr = base; //(char*)mem->allocate_space(num_elmts*elem_size);	
 #ifdef DEBUG_LOW_LEVEL
 			assert(base_ptr != NULL);
 #endif
@@ -1899,7 +1900,7 @@ namespace RegionRuntime {
     public:
 	const void* read(unsigned ptr);
 	void write(unsigned ptr, const void* newval);	
-        bool activate(RegionMetaDataUntyped r, Memory m, size_t num_elmts, size_t elem_size);
+        bool activate(RegionMetaDataUntyped r, Memory m, size_t num_elmts, size_t elem_size, char *base);
 	void deactivate(void);
 	Event copy_to(RegionInstanceUntyped target, Event wait_on);
 	RegionInstanceUntyped get_instance(void) const;
@@ -1969,7 +1970,7 @@ namespace RegionRuntime {
       memcpy((base_ptr + ptr),newval,elmt_size);
     }
 
-    bool RegionInstanceImpl::activate(RegionMetaDataUntyped r, Memory m, size_t num, size_t elem_size)
+    bool RegionInstanceImpl::activate(RegionMetaDataUntyped r, Memory m, size_t num, size_t elem_size, char *base)
     {
 	bool result = false;
         int trythis = pthread_mutex_trylock(&mutex);
@@ -1984,8 +1985,8 @@ namespace RegionRuntime {
 		memory = m;
 		num_elmts = num;
 		elmt_size = elem_size;
-		MemoryImpl *mem = Runtime::get_runtime()->get_memory_impl(m);
-		base_ptr = (char*)mem->allocate_space(num_elmts*elmt_size);
+		//MemoryImpl *mem = Runtime::get_runtime()->get_memory_impl(m);
+		base_ptr = base; //(char*)mem->allocate_space(num_elmts*elmt_size);
 #ifdef DEBUG_LOW_LEVEL
 		assert(base_ptr != NULL);
 #endif
@@ -2333,9 +2334,21 @@ namespace RegionRuntime {
 
     RegionInstanceUntyped RegionMetaDataImpl::create_instance(Memory m)
     {
+        if (!m.exists())
+        {
+          return RegionInstanceUntyped::NO_INST;
+        }
+        // First try to create the location in the memory, if there is no space
+        // don't bother trying to make the data
+        MemoryImpl *mem = Runtime::get_runtime()->get_memory_impl(m);
+        char *ptr = (char*)mem->allocate_space(num_elmts*elmt_size);
+        if (ptr == NULL)
+        {
+          return RegionInstanceUntyped::NO_INST;
+        }
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
-	RegionMetaDataUntyped r = { index };
-	RegionInstanceImpl* impl = Runtime::get_runtime()->get_free_instance(r,m,num_elmts, elmt_size);
+        RegionMetaDataUntyped r = { index };
+	RegionInstanceImpl* impl = Runtime::get_runtime()->get_free_instance(r,m,num_elmts, elmt_size, ptr);
 	RegionInstanceUntyped inst = impl->get_instance();
 	instances.insert(inst);
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
@@ -2971,12 +2984,12 @@ namespace RegionRuntime {
 	return result;
     }
 
-    RegionInstanceImpl* Runtime::get_free_instance(RegionMetaDataUntyped r, Memory m, size_t num_elmts, size_t elmt_size)
+    RegionInstanceImpl* Runtime::get_free_instance(RegionMetaDataUntyped r, Memory m, size_t num_elmts, size_t elmt_size, char *ptr)
     {
 	PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&instance_lock));
 	for (unsigned int i=1; i<instances.size(); i++)
 	{
-	    if (instances[i]->activate(r, m, num_elmts,elmt_size))
+	    if (instances[i]->activate(r, m, num_elmts,elmt_size, ptr))
 		{
 			RegionInstanceImpl *result = instances[i];
 			PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&instance_lock));
@@ -2987,7 +3000,7 @@ namespace RegionRuntime {
 	// Nothing free so make a new one
 	PTHREAD_SAFE_CALL(pthread_rwlock_wrlock(&instance_lock));
 	unsigned int index = instances.size();
-	instances.push_back(new RegionInstanceImpl(index,r,m,num_elmts,elmt_size,true));
+	instances.push_back(new RegionInstanceImpl(index,r,m,num_elmts,elmt_size,true,ptr));
 	RegionInstanceImpl *result = instances[index];
         // Create a whole bunch of other instances while we're here
         for (unsigned idx=1; idx < BASE_INSTANCES; idx++)
