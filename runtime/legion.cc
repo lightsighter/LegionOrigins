@@ -1240,6 +1240,10 @@ namespace RegionRuntime {
       this->available_lock= Lock::create_lock();
       this->stealing_lock = Lock::create_lock();
       this->thieving_lock = Lock::create_lock();
+#ifdef DEBUG_HIGH_LEVEL
+      assert(unique_lock.exists() && mapping_lock.exists() && queue_lock.exists() &&
+              available_lock.exists() && stealing_lock.exists() && thieving_lock.exists());
+#endif
 
       // Create some tasks contexts 
       total_contexts = DEFAULT_CONTEXTS;
@@ -1322,7 +1326,7 @@ namespace RegionRuntime {
       table[TERMINATION_ID]     = HighLevelRuntime::detect_termination;
     }
 
-    /*static*/ MapperCallbackFnptr HighLevelRuntime::mapper_callback = 0;
+    /*static*/ volatile MapperCallbackFnptr HighLevelRuntime::mapper_callback = 0;
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::set_mapper_init_callback(MapperCallbackFnptr callback)
@@ -1335,7 +1339,25 @@ namespace RegionRuntime {
     HighLevelRuntime* HighLevelRuntime::get_runtime(Processor p)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(p.id < MAX_NUM_PROCS);
+#endif
+#if 0
+      static std::map<Processor,HighLevelRuntime*> runtime_map;
+      if (runtime_map.find(p) != runtime_map.end())
+      {
+        return runtime_map[p];
+      }
+      else if (p.id <= (Machine::get_machine()->get_all_processors().size()))
+      {
+        runtime_map[p] = new HighLevelRuntime(Machine::get_machine(), p);
+        return runtime_map[p];
+      }
+      assert(false);
+      return NULL;
+#else
       return (runtime_map+(p.id & 0xffff)); // SJT: this ok?  just local procs?
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1343,7 +1365,12 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       // do the initialization in the pre-allocated memory, tee-hee! 
+#if 0
+      get_runtime(p);
+
+#else
       new(get_runtime(p)) HighLevelRuntime(Machine::get_machine(), p);
+#endif
 
       // Now initialize any mappers
       // Issue a task to initialize the mappers
@@ -1709,6 +1736,8 @@ namespace RegionRuntime {
     void HighLevelRuntime::add_mapper(MapperID id, Mapper *m)
     //--------------------------------------------------------------------------------------------
     {
+      fprintf(stdout,"Adding mapper %d on processor %d\n",id,local_proc.id);
+      fflush(stdout);
       // Take an exclusive lock on the mapper data structure
       AutoLock map_lock(mapping_lock);
 #ifdef DEBUG_HIGH_LEVEL
@@ -1730,6 +1759,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(id < mapper_objects.size());
       assert(mapper_objects[id] == NULL);
+      assert(!mapper_locks[id].exists());
 #endif
       mapper_locks[id] = Lock::create_lock();
       AutoLock mapper_lock(mapper_locks[id]);

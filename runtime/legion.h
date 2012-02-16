@@ -721,7 +721,7 @@ namespace RegionRuntime {
     private:
       // Static variables
       static HighLevelRuntime *runtime_map;
-      static MapperCallbackFnptr mapper_callback;
+      static volatile MapperCallbackFnptr mapper_callback;
     private:
       // Member variables
       const Processor local_proc;
