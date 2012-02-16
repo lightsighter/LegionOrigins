@@ -379,8 +379,8 @@ namespace RegionRuntime {
 	ProcessorImpl(pthread_barrier_t *init, Processor::TaskIDTable table, Processor p, bool is_utility = false, unsigned num_owners = 0) :
 		init_bar(init), task_table(table), proc(p), utility_proc(p),
                 has_scheduler(!is_utility && (table.find(Processor::TASK_ID_PROCESSOR_IDLE) != table.end())),
-                is_utility_proc(is_utility),  
-                remaining_stops(num_owners), scheduler_invoked(false)
+                is_utility_proc(is_utility), remaining_stops(num_owners), 
+                scheduler_invoked(false), util_shutdown(is_utility) /*utility processors have no utility to shut down*/
 	{
 		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
 		PTHREAD_SAFE_CALL(pthread_cond_init(&wait_cond,NULL));
@@ -390,8 +390,8 @@ namespace RegionRuntime {
         ProcessorImpl(pthread_barrier_t *init, Processor::TaskIDTable table, Processor p, Processor utility) :
                 init_bar(init), task_table(table), proc(p), utility_proc(utility),
                 has_scheduler(table.find(Processor::TASK_ID_PROCESSOR_IDLE) != table.end()),
-                is_utility_proc(false),  
-                remaining_stops(0), scheduler_invoked(false)
+                is_utility_proc(false), remaining_stops(0), 
+                scheduler_invoked(false), util_shutdown(false) /*might have utility processor to shutdown*/
         {
                 PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
 		PTHREAD_SAFE_CALL(pthread_cond_init(&wait_cond,NULL));
@@ -401,6 +401,8 @@ namespace RegionRuntime {
     public:
         // Operations for utility processors
         Processor get_utility_processor(void) const;
+        void release_user(Processor owner);
+        void utility_finish(void);
     public:
 	Event spawn(Processor::TaskFuncID func_id, const void * args,
 				size_t arglen, Event wait_on);
@@ -435,6 +437,8 @@ namespace RegionRuntime {
         const bool is_utility_proc;
         unsigned remaining_stops; // for utility processor knowing when to stop
         bool scheduler_invoked;   // for traking if we've invoked the scheduler
+        bool util_shutdown;       // for knowing when our utility processor is done
+        std::set<Processor> util_users;// Users of the utility processor to know when it's safe to finish
     };
     
     ////////////////////////////////////////////////////////
@@ -1205,9 +1209,42 @@ namespace RegionRuntime {
     Processor ProcessorImpl::get_utility_processor(void) const
     {
 #ifdef DEBUG_LOW_LEVEL
-        //assert(!is_utility_proc);
+        assert(!is_utility_proc);
 #endif
         return utility_proc;
+    }
+
+    void ProcessorImpl::release_user(Processor owner)
+    {
+      PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+#ifdef DEBUG_LOW_LEVEL
+      assert(remaining_stops > 0);
+      assert(util_users.find(owner) == util_users.end());
+#endif
+      remaining_stops--;
+      util_users.insert(owner); 
+      // If we've had all our users released, we can shutdown
+      if (remaining_stops == 0)
+      {
+        shutdown = true;
+      }
+      // Signal in case the utility processor is waiting on work
+      PTHREAD_SAFE_CALL(pthread_cond_signal(&wait_cond));
+      PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+    }
+
+    void ProcessorImpl::utility_finish(void)
+    {
+      PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+#ifdef DEBUG_LOW_LEVEL
+      assert(!is_utility_proc);
+      assert(!util_shutdown);
+#endif
+      // Set util shutdown to true
+      util_shutdown = true;
+      // send a signal in case the processor was waiting
+      PTHREAD_SAFE_CALL(pthread_cond_signal(&wait_cond));
+      PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
     }
 
     void ProcessorImpl::run(void)
@@ -1307,11 +1344,15 @@ namespace RegionRuntime {
 	{	
 		if (shutdown && permit_shutdown && waiting_queue.empty())
 		{
-			shutdown_trigger->trigger();
+                        // Check to see if we have to wait for our utility processor to finish
+                        if (!util_shutdown)
+                        {
+                          // Wait for our utility processor to indicate that its done
+                          PTHREAD_SAFE_CALL(pthread_cond_wait(&wait_cond,&mutex));
+                        }
                         // unlock the lock, just in case someone else decides they want to tell us something
                         // to do even though we've already exited
                         PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
-
                         // Check to see if there is a shutdown method
                         if (!is_utility_proc && (task_table.find(Processor::TASK_ID_PROCESSOR_SHUTDOWN) != task_table.end()))
                         {
@@ -1319,16 +1360,28 @@ namespace RegionRuntime {
                           Processor::TaskFuncPtr func = task_table[Processor::TASK_ID_PROCESSOR_SHUTDOWN];
                           func(NULL, 0, proc);
                         }
-                        // Also send the kill pill to the utility processor if we have one
-                        if (!is_utility_proc && (utility_proc != proc))
+                        if (!is_utility_proc)
                         {
-                          utility_proc.spawn(0,NULL,0,Event::NO_EVENT);
+                          shutdown_trigger->trigger();
+                        }
+                        else
+                        {
+                          // Send shutdown messages to all our users
+                          for (std::set<Processor>::const_iterator it = util_users.begin();
+                                it != util_users.end(); it++)
+                          {
+                            ProcessorImpl *orig = Runtime::get_runtime()->get_processor_impl(*it);
+                            orig->utility_finish();
+                          }
                         }
                         pthread_exit(NULL);	
 		}
 		
-		// Wait until someone tells us there is work to do
-                PTHREAD_SAFE_CALL(pthread_cond_wait(&wait_cond,&mutex));
+		// Wait until someone tells us there is work to do unless we've been told to shutdown
+                if (!shutdown)
+                {
+                  PTHREAD_SAFE_CALL(pthread_cond_wait(&wait_cond,&mutex));
+                }
 		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 	}
         else if (scheduler_invoked)
@@ -1346,31 +1399,25 @@ namespace RegionRuntime {
 		// Check for the shutdown function
 		if (task.func_id == 0)
 		{
-                        // Check to see if this is a utility processor
-                        if (!is_utility_proc)
+#ifdef DEBUG_LOW_LEVEL
+                        assert(!is_utility_proc); // utility processors should never get a kill pill
+#endif
+                        shutdown = true;
+                        shutdown_trigger = task.complete;
+                        // Check to see if we have a utility processor, if so mark that we're done
+                        // and then set the flag to indicate when the utility processor has drained
+                        // its tasks
+                        if (!is_utility_proc && (utility_proc != proc))
                         {
-                              shutdown = true;
-                              shutdown_trigger = task.complete;
+                          util_shutdown = false;
+                          // Tell our utility processor to tell us when it's done
+                          ProcessorImpl *util = Runtime::get_runtime()->get_processor_impl(utility_proc);
+                          util->release_user(proc);
                         }
                         else
                         {
-                              // This is a utility processor, so see how
-                              // many remaining stop orders we need to see
-                              // before we're done
-#ifdef DEBUG_LOW_LEVEL
-                              assert(remaining_stops > 0);
-#endif
-                              remaining_stops--;
-                              if (remaining_stops == 0)
-                              {
-                                    shutdown = true;
-                                    shutdown_trigger = task.complete;
-                              }
-                              else
-                              {
-                                    // Complete the task right here
-                                    task.complete->trigger();
-                              }
+                          // We didn't have a utility processor to shutdown
+                          util_shutdown = true;
                         }
 			// Continue going around until all tasks are run
 			return;
