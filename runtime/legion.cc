@@ -1623,7 +1623,7 @@ namespace RegionRuntime {
           LowLevel::RegionMetaDataUntyped::create_region_untyped(parent,sub_mask);
         log_region(LEVEL_DEBUG,"Creating subregion %d of region %d in task %d\n",
                     child_region.id, parent.id, ctx->unique_id);
-        children.push_back(child_region);
+        children[idx] = child_region;
       }
 
       ctx->create_partition(partition_id, parent, disjoint, children);
@@ -1657,7 +1657,7 @@ namespace RegionRuntime {
           LowLevel::RegionMetaDataUntyped::create_region_untyped(parent,sub_mask);
         log_region(LEVEL_DEBUG,"Creating subregion %d of region %d in task %d\n",
                     child_region.id, parent.id, ctx->unique_id);
-        children.push_back(child_region);
+        children[idx] = child_region;
       }
 
       ctx->create_partition(partition_id, parent, disjoint, children);
@@ -1916,7 +1916,7 @@ namespace RegionRuntime {
     {
       AutoLock ulock(unique_lock);
       PartitionID result = next_partition_id;
-      next_task_id += unique_stride;
+      next_partition_id += unique_stride;
       return result;
     }
 
@@ -5933,14 +5933,12 @@ namespace RegionRuntime {
         // If it's write only then we don't have to make one
         if (ren.needs_initializing)
         {
-          if (!IS_WRITE_ONLY(ren.get_req()))
+          // Get the list of valid instances and ask the mapper which one to copy from
+          std::set<Memory> locations;
+          get_physical_locations(ren.ctx_id, locations, true/*allow up*/); // allow going up since we're doing a copy up
+          // Check to see if we are the first user, or if we are a write-only instance
+          if (!IS_WRITE_ONLY(ren.get_req()) && !locations.empty())
           {
-            // Get the list of valid instances and ask the mapper which one to copy from
-            std::set<Memory> locations;
-            get_physical_locations(ren.ctx_id, locations, true/*allow up*/); // allow going up since we're doing a copy up
-#ifdef DEBUG_HIGH_LEVEL
-            assert(!locations.empty());
-#endif
             InstanceInfo *src_info = InstanceInfo::get_no_instance();
             if (locations.size() == 1)
             {
