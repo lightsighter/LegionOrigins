@@ -67,7 +67,7 @@ void top_level_task(const void *args, size_t arglen,
   main_regions.push_back(RegionRequirement(vr.r_z, READ_WRITE, ALLOCABLE, EXCLUSIVE, vr.r_z));
 
   Future f = runtime->execute_task(ctx, TASKID_MAIN, main_regions,
-				   &vr, sizeof(VectorRegions), 0, 0);
+				   TaskArgument(&vr, sizeof(VectorRegions)));
   f.get_void_result();
 }
 
@@ -85,24 +85,24 @@ void main_task(const void *args, size_t arglen,
 
   // Allocating space in the regions
   std::vector<Block> blocks(Config::num_blocks);
-  std::vector<std::set<unsigned> > color_x(Config::num_blocks);
-  std::vector<std::set<unsigned> > color_y(Config::num_blocks);
-  std::vector<std::set<unsigned> > color_z(Config::num_blocks);
+  std::vector<std::set<utptr_t> > color_x(Config::num_blocks);
+  std::vector<std::set<utptr_t> > color_y(Config::num_blocks);
+  std::vector<std::set<utptr_t> > color_z(Config::num_blocks);
   for (unsigned i = 0; i < Config::num_blocks; i++) {
     blocks[i].alpha = vr->alpha;
     blocks[i].id = i;
     for (unsigned j = 0; j < BLOCK_SIZE; j++) {
       ptr_t<Entry> entry_x = r_x.template alloc<Entry>();
       blocks[i].entry_x[j] = entry_x;
-      color_x[i].insert(entry_x.value);
+      color_x[i].insert(entry_x);
       
       ptr_t<Entry> entry_y = r_y.template alloc<Entry>();
       blocks[i].entry_y[j] = entry_y;
-      color_y[i].insert(entry_y.value);
+      color_y[i].insert(entry_y);
 
       ptr_t<Entry> entry_z = r_z.template alloc<Entry>();
       blocks[i].entry_z[j] = entry_z;
-      color_z[i].insert(entry_z.value);
+      color_z[i].insert(entry_z);
     }
   }
 
@@ -117,47 +117,36 @@ void main_task(const void *args, size_t arglen,
   }
 
   // Constructing index space
-  std::vector<Constraint<1> > index_space;
-  Constraint<1> low_constraint;
-  low_constraint[0] = -1;
-  low_constraint.offset = 0;
-  index_space.push_back(low_constraint);
-  Constraint<1> high_constraint;
-  high_constraint[0] = 1;
-  high_constraint.offset = Config::num_blocks - 1;
-  index_space.push_back(high_constraint);
+  std::vector<Range> index_space;
+  index_space.push_back(Range(0, Config::num_blocks-1));
 
-  // Colorize function for all regions
-  std::map<Vector<1>, Color> color_map;
+  // Argument map
+  ArgumentMap arg_map;
   for (unsigned i = 0; i < Config::num_blocks; i++) {
-    Vector<1> index; index[0] = i;
-    color_map[index] = i;
-  }
-  ColorizeFunction<1> color_fn(color_map);
-
-  // Argument mapping function
-  std::map<Vector<1>, TaskArgument> arg_map;
-  for (unsigned i = 0; i < Config::num_blocks; i++) {
-    Vector<1> index; index[0] = i;
+    IndexPoint index; index.push_back(i);
     arg_map[index] = TaskArgument(&(blocks[i]), sizeof(Block));
   }
-  TaskArguments args(arg_map);
+
+  // Color map
+  std::map<IndexPoint, Color> color_map;
+  for (unsigned i = 0; i < Config::num_blocks; i++) {
+    IndexPoint index; index.push_back(i);
+    color_map[index] = i;
+  }
+
+  // Empty global argument
+  TaskArgument global(NULL, 0);
 
   // Regions for init task
   std::vector<RegionRequirement> init_regions;
-  init_regions.push_back(RegionRequirement(p_x.id, WRITE_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_x));
-  init_regions.push_back(RegionRequirement(p_y.id, WRITE_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_y));
-
-  // Colorize functions for init task
-  std::vector<ColorizeFunction<1> > init_color_fns;
-  init_color_fns.push_back(color_fn);
-  init_color_fns.push_back(color_fn);
+  init_regions.push_back(RegionRequirement(p_x.id, color_map, WRITE_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_x));
+  init_regions.push_back(RegionRequirement(p_y.id, color_map, WRITE_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_y));
 
   // Launch init task
-  Future init_f =
+  FutureMap init_f =
     runtime->execute_index_space(ctx, TASKID_INIT_VECTORS, index_space,
-				 init_regions, init_color_fns, args, 0, 0);
-  init_f.get_void_result();
+				 init_regions, global, arg_map, false);
+  init_f.wait_all_results();
 
   printf("STARTING MAIN SIMULATION LOOP\n");
   struct timespec ts_start, ts_end;
@@ -166,21 +155,15 @@ void main_task(const void *args, size_t arglen,
 
   // Regions for add task
   std::vector<RegionRequirement> add_regions;
-  add_regions.push_back(RegionRequirement(p_x.id, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_x));
-  add_regions.push_back(RegionRequirement(p_y.id, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_y));
-  add_regions.push_back(RegionRequirement(p_z.id, WRITE_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_z));
-
-  // Colorize functions for add task
-  std::vector<ColorizeFunction<1> > add_color_fns;
-  add_color_fns.push_back(color_fn);
-  add_color_fns.push_back(color_fn);
-  add_color_fns.push_back(color_fn);
+  add_regions.push_back(RegionRequirement(p_x.id, color_map, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_x));
+  add_regions.push_back(RegionRequirement(p_y.id, color_map, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_y));
+  add_regions.push_back(RegionRequirement(p_z.id, color_map, WRITE_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_z));
 
   // Launch add task
-  Future add_f = 
+  FutureMap add_f =
     runtime->execute_index_space(ctx, TASKID_ADD_VECTORS, index_space,
-                                 add_regions, add_color_fns, args, 0, 0);
-  add_f.get_void_result();
+                                 add_regions, global, arg_map, false);
+  add_f.wait_all_results();
 
   // Print results
   clock_gettime(CLOCK_MONOTONIC, &ts_end);
