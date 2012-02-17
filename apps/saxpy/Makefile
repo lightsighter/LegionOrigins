@@ -21,6 +21,10 @@ NVCC_FLAGS	:=
 GASNET_FLAGS	:=
 LD_FLAGS	:=
 
+ifdef SHARED_LOWLEVEL
+	CC_FLAGS += -DUSE_SAXPY_SHARED
+endif
+
 ###########################################################################
 #
 #   Don't change anything below here
