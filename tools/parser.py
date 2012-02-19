@@ -8,9 +8,17 @@ def parse_log_file(file_name):
     
     result = Log()
 
-    task_dep_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Context (?P<context>[0-9]+) Task (?P<first_tid>[0-9]+) Region (?P<first_rid>[0-9]+) Task (?P<sec_tid>[0-9]+) Region (?P<sec_rid>[0-9]+)")
+    top_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Top Task (?P<uid>[0-9]+) (?P<tid>[0-9]+)")
 
-    map_dep_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Context (?P<context>[0-9]+) Map (?P<map_id>[0-9]+) Task (?P<task_id>[0-9]+) Region (?P<region_id>[0-9]+)")
+    task_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Task (?P<unique>[0-9]+) Task ID (?P<id>[0-9]+) Parent Context (?P<parent>[0-9]+)")
+
+    map_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Map (?P<unique>[0-9]+) Parent (?P<parent>[0-9]+)")
+
+    region_usage_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Context (?P<context>[0-9]+) Task (?P<unique>[0-9]+) Region (?P<idx>[0-9]+) Handle (?P<handle>[0-9]+) Parent (?P<parent>[0-9]+)")
+
+    partition_usage_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Context (?P<context>[0-9]+) Task (?P<unique>[0-9]+) Partition (?P<idx>[0-9]+) Handle (?P<handle>[0-9]+) Parent (?P<parent>[0-9]+)")
+
+    dependence_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Dependence (?P<context>[0-9]+) (?P<uid_one>[0-9]+) (?P<idx_one>[0-9]+) (?P<uid_two>[0-9]+) (?P<idx_two>[0-9]+) (?P<type>[0-9]+)")
 
     region_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Region (?P<handle>[0-9]+)")
 
@@ -19,15 +27,47 @@ def parse_log_file(file_name):
     subregion_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Region (?P<handle>[0-9]+) Parent (?P<parent>[0-9]+)")
 
     for line in log:
-        m = task_dep_pat.match(line)
+        m = top_pat.match(line)
         if m <> None:
-            ctx = int(m.group('context')) 
-            result[ctx].add_dependence(Dependence(int(m.group('first_tid')),int(m.group('first_rid')),int(m.group('sec_tid')),int(m.group('sec_rid'))))
+            task = Task(int(m.group('uid')),int(m.group('tid')))
+            # No need to add it to a context since it isn't in one
+            # Create a new context for this task
+            result.create_context(task)
             continue
-        m = map_dep_pat.match(line)
+        m = task_pat.match(line)
         if m <> None:
-            ctx = int(m.group('context'))
-            result[ctx].add_dependence(Dependence(int(m.group('map_id')),0,int(m.group('task_id')),int(m.group('region_id'))))
+            task = Task(int(m.group('unique')),int(m.group('id')))
+            # Add the task to its enclosing context
+            result.get_context(int(m.group('parent'))).add_task(task)
+            # Create a new context for this task
+            result.create_context(task)
+            continue
+        m = map_pat.match(line)
+        if m <> None:
+            task = Task(int(m.group('unique')),0)
+            result.get_context(int(m.group('parent'))).add_task(task)
+            # No need to create a context since this is a map
+            continue
+        m = region_usage_pat.match(line)
+        if m <> None:
+            task = result.get_context(int(m.group('context'))).get_task(int(m.group('unique')))  
+            idx = int(m.group('idx'))
+            usage = Usage(True,int(m.group('handle')),int(m.group('parent')))
+            task.add_usage(idx,usage)
+            continue
+        m = partition_usage_pat.match(line)
+        if m <> None:
+            task = result.get_context(int(m.group('context'))).get_task(int(m.group('unique')))
+            idx = int(m.group('idx'))
+            usage = Usage(False,int(m.group('handle')),int(m.group('parent')))
+            task.add_usage(idx,usage)
+            continue
+        m = dependence_pat.match(line)
+        if m <> None:
+            dependence = Dependence(int(m.group('uid_one')),int(m.group('idx_one')),
+                                    int(m.group('uid_two')),int(m.group('idx_two')),
+                                    int(m.group('type')))
+            result.get_context(int(m.group('context'))).add_dependence(dependence)
             continue
         m = subregion_pat.match(line)
         if m <> None:
