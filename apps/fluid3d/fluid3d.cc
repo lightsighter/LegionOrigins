@@ -220,19 +220,21 @@ struct BufferRegions {
 //  only once per simulation iteration, while the phase of the "edge" cells
 //  changes every task
 struct Block {
-  unsigned CELLS_X, CELLS_Y, CELLS_Z;
   LogicalRegion base[2];
   LogicalRegion edge[2][GHOST_CELLS];
   BufferRegions regions[2];
   std::vector<std::vector<std::vector<ptr_t<Cell> > > > cells[2];
   int cb;  // which is the current buffer?
   int id;
+  unsigned CELLS_X, CELLS_Y, CELLS_Z;
 };
 
 // the size of a block for serialization purposes
-#define BLOCK_SIZE(b) (sizeof(Block)                                    \
-                       + sizeof(ptr_t<Cell>)*2*((b).CELLS_X+2)*((b).CELLS_Y+2)*((b).CELLS_Z+2) \
-                       - sizeof(std::vector<std::vector<std::vector<ptr_t<Cell> > > > [2]))
+#define BLOCK_SIZE(b)                                                   \
+  (sizeof(LogicalRegion)*(2 + 2*GHOST_CELLS)                            \
+   + sizeof(BufferRegions)*2                                            \
+   + sizeof(ptr_t<Cell>)*2*((b).CELLS_X+2)*((b).CELLS_Y+2)*((b).CELLS_Z+2) \
+   + sizeof(int)*2 + sizeof(unsigned)*3)
 
 struct TopLevelRegions {
   LogicalRegion real_cells[2];
@@ -1797,7 +1799,8 @@ int main(int argc, char **argv)
     }
   }
   numBlocks = nbx * nby * nbz;
-  printf("fluid: grid size = %d x %d x %d\n", nbx, nby, nbz);
+  printf("fluid: grid size = %d x %d x %d\n", nx, ny, nz);
+  printf("fluid: partition = %d x %d x %d\n", nbx, nby, nbz);
   Config::args_read = true;
 
   m.run();
