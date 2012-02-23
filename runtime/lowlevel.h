@@ -291,6 +291,13 @@ namespace RegionRuntime {
       RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorGeneric> &old)
       { internal_data = old.internal_data; }
 
+      bool operator<(const RegionInstanceAccessorUntyped<AccessorGeneric> &rhs) const
+      { return internal_data < rhs.internal_data; }
+      bool operator==(const RegionInstanceAccessorUntyped<AccessorGeneric> &rhs) const
+      { return internal_data == rhs.internal_data; }
+      bool operator!=(const RegionInstanceAccessorUntyped<AccessorGeneric> &rhs) const
+      { return internal_data != rhs.internal_data; }
+
       void *internal_data;
 
       void get_untyped(unsigned ptr_value, void *dst, size_t size) const;
@@ -326,6 +333,13 @@ namespace RegionRuntime {
       // Need copy constructors so we can move things around
       RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorArray> &old)
       { array_base = old.array_base; }
+
+      bool operator<(const RegionInstanceAccessorUntyped<AccessorArray> &rhs) const
+      { return array_base < rhs.array_base; }
+      bool operator==(const RegionInstanceAccessorUntyped<AccessorArray> &rhs) const
+      { return array_base == rhs.array_base; }
+      bool operator!=(const RegionInstanceAccessorUntyped<AccessorArray> &rhs) const
+      { return array_base != rhs.array_base; }
 
       void *array_base;
 
