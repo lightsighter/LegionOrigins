@@ -37,8 +37,8 @@ enum {
   TASKID_SAVE_FILE,
 };
 
-#define MAX_PARTICLES 64
-#define GEN_PARTICLES 16
+#define MAX_PARTICLES 16
+#define GEN_PARTICLES 2
 
 // Number of ghost cells needed for each block
 // 8 for 2D or 26 for 3D
@@ -1128,8 +1128,13 @@ void scatter_densities(const void *args, size_t arglen,
             for(int dx = cx - 1; dx <= cx + 1; dx++) {
               // did we already get updated by this neighbor's bidirectional update?
               // FIXME: ummmmmmmmmm.... ?????
-              if((dy > 0) && (dx > 0) && (dx < (int)b.CELLS_X+1) && 
-                 ((dy < cy) || ((dy == cy) && (dx < cx))))
+              //if((dy > 0) && (dx > 0) && (dx < (int)b.CELLS_X+1) && 
+              //   ((dy < cy) || ((dy == cy) && (dx < cx))))
+              if ((dz > 0) && (dy > 0) && (dx > 0) &&
+                  (dz < (int)b.CELLS_Z+1) &&
+                  (dy < (int)b.CELLS_Y+1) &&
+                  (dx < (int)b.CELLS_X+1) &&
+                  (dz < cz))
                 continue;
 
               Cell c2;
@@ -1139,8 +1144,13 @@ void scatter_densities(const void *args, size_t arglen,
               // do bidirectional update if other cell is a real cell and it is
               //  either below or to the right (but not up-right) of us
               // FIXME: ummmmmmmmmm.... ?????
-              bool update_other = ((dy < (int)b.CELLS_Y+1) && (dx > 0) && (dx < (int)b.CELLS_X+1) &&
-                                   ((dy > cy) || ((dy == cy) && (dx > cx))));
+              //bool update_other = ((dy < (int)b.CELLS_Y+1) && (dx > 0) && (dx < (int)b.CELLS_X+1) &&
+              //                     ((dy > cy) || ((dy == cy) && (dx > cx))));
+              bool update_other = ((dz > 0) && (dy > 0) && (dx > 0) &&
+                                   (dz < (int)b.CELLS_Z+1) &&
+                                   (dy < (int)b.CELLS_Y+1) &&
+                                   (dx < (int)b.CELLS_X+1) &&
+                                   (dz > cz) && ((dy != cy) || (dx != cx)));
 	  
               // pairwise across particles - watch out for identical particle case!
               for(unsigned p = 0; p < cell.num_particles; p++)
@@ -1245,8 +1255,13 @@ void gather_forces_and_advance(const void *args, size_t arglen,
             for(int dx = cx - 1; dx <= cx + 1; dx++) {
               // did we already get updated by this neighbor's bidirectional update?
               // FIXME: ummmmmmm... ????
-              if((dy > 0) && (dx > 0) && (dx < (int)b.CELLS_X+1) && 
-                 ((dy < cy) || ((dy == cy) && (dx < cx))))
+              //if((dy > 0) && (dx > 0) && (dx < (int)b.CELLS_X+1) && 
+              //   ((dy < cy) || ((dy == cy) && (dx < cx))))
+              if ((dz > 0) && (dy > 0) && (dx > 0) &&
+                  (dz < (int)b.CELLS_Z+1) &&
+                  (dy < (int)b.CELLS_Y+1) &&
+                  (dx < (int)b.CELLS_X+1) &&
+                  (dz < cz))
                 continue;
 
               Cell c2;
@@ -1256,9 +1271,14 @@ void gather_forces_and_advance(const void *args, size_t arglen,
               // do bidirectional update if other cell is a real cell and it is
               //  either below or to the right (but not up-right) of us
               // FIXME: ummmmmmm... ????
-              bool update_other = ((dy < (int)b.CELLS_Y+1) && (dx > 0) && (dx < (int)b.CELLS_X+1) &&
-                                   ((dy > cy) || ((dy == cy) && (dx > cx))));
-	  
+              //bool update_other = ((dy < (int)b.CELLS_Y+1) && (dx > 0) && (dx < (int)b.CELLS_X+1) &&
+              //                     ((dy > cy) || ((dy == cy) && (dx > cx))));
+              bool update_other = ((dz > 0) && (dy > 0) && (dx > 0) &&
+                                   (dz < (int)b.CELLS_Z+1) &&
+                                   (dy < (int)b.CELLS_Y+1) &&
+                                   (dx < (int)b.CELLS_X+1) &&
+                                   (dz > cz) && ((dy != cy) || (dx != cx)));
+
               // pairwise across particles - watch out for identical particle case!
               for(unsigned p = 0; p < cell.num_particles; p++)
                 for(unsigned p2 = 0; p2 < c2.num_particles; p2++) {
@@ -1799,8 +1819,8 @@ int main(int argc, char **argv)
     }
   }
   numBlocks = nbx * nby * nbz;
-  printf("fluid: grid size = %d x %d x %d\n", nx, ny, nz);
-  printf("fluid: partition = %d x %d x %d\n", nbx, nby, nbz);
+  printf("fluid: cells     = %d (%d x %d x %d)\n", nx*ny*nz, nx, ny, nz);
+  printf("fluid: divisions = %d x %d x %d\n", nbx, nby, nbz);
   Config::args_read = true;
 
   m.run();
