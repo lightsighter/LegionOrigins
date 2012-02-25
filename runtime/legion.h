@@ -102,6 +102,8 @@ namespace RegionRuntime {
     class Deserializer;
     class DependenceDetector;
     class RegionRenamer;
+    class EscapedUser;
+    class EscapedCopier;
 
     // Some typedefs
     typedef LowLevel::Machine Machine;
@@ -156,6 +158,8 @@ namespace RegionRuntime {
     protected:
       bool operator==(const Partition &part) const 
         { return (id == part.id); }
+      bool operator<(const Partition &part) const
+        { return (id < part.id); }
     };
 
     /**
@@ -237,6 +241,11 @@ namespace RegionRuntime {
       int start;
       int stop;
       int stride;
+    public:
+      bool operator==(const Range &range) const
+        { return ((start == range.start) && (stop == range.stop) && (stride == range.stride)); }
+      bool operator<(const Range &range) const
+        { return ((start < range.start) || (stop < range.stop) || (stride < range.stride)); }
     protected:
       friend class TaskContext;
       size_t compute_size(void) const;
@@ -265,6 +274,11 @@ namespace RegionRuntime {
       bool is_index_space; // is this task an index space
       bool must; // if index space, must tasks be run concurrently
       // Any other index space parameters we need here?
+    public:
+      bool operator==(const Task &task) const
+        { return unique_id == task.unique_id; }
+      bool operator<(const Task &task) const
+        { return unique_id < task.unique_id; }
     protected:
       // Only the high level runtime should be able to make these
       friend class HighLevelRuntime;
@@ -285,6 +299,11 @@ namespace RegionRuntime {
     public:
       inline size_t get_size(void) const { return arglen; }
       inline void*  get_ptr(void) const { return args; }
+    public:
+      bool operator==(const TaskArgument &arg) const
+        { return args == arg.args; }
+      bool operator<(const TaskArgument &arg) const
+        { return args < arg.args; }
     private:
       void *args;
       size_t arglen;
@@ -303,6 +322,10 @@ namespace RegionRuntime {
         : arg_map(_map) { }
     public:
       inline TaskArgument& operator[](const IndexPoint& point) { return arg_map[point]; }
+      bool operator==(const ArgumentMap &arg) const
+        { return arg_map == arg.arg_map; }
+      bool operator<(const ArgumentMap &arg) const
+        { return arg_map < arg.arg_map; }
     protected:
       friend class HighLevelRuntime;
       friend class TaskContext;
@@ -311,6 +334,7 @@ namespace RegionRuntime {
       void pack_argument_map(Serializer &rez) const;
       void unpack_argument_map(Deserializer &derez);
       void reset(void);
+      TaskArgument remove_argument(const IndexPoint &point);
     private:
       std::map<IndexPoint,TaskArgument> arg_map;
     };
@@ -327,11 +351,16 @@ namespace RegionRuntime {
       FutureImpl *impl; // The actual implementation of this future
     protected:
       friend class HighLevelRuntime;
-      Future();
       Future(FutureImpl *impl); 
     public:
+      Future();
       Future(const Future& f);
       ~Future(void);
+    public:
+      bool operator==(const Future &f) const
+        { return impl == f.impl; }
+      bool operator<(const Future &f) const
+        { return impl < f.impl; }
     public:
       template<typename T> inline T get_result(void);
       inline void get_void_result(void);
@@ -369,13 +398,18 @@ namespace RegionRuntime {
     class RegionMapping {
     protected:
       friend class HighLevelRuntime;
-      RegionMappingImpl *const impl;
+      RegionMappingImpl *impl;
     protected:
-      RegionMapping();
       RegionMapping(RegionMappingImpl *impl);
     public:
+      RegionMapping(void);
       RegionMapping(const RegionMapping& rm);
       ~RegionMapping(void);
+    public:
+      bool operator==(const RegionMapping &mapping) const
+        { return impl == mapping.impl; }
+      bool operator<(const RegionMapping &mapping) const
+        { return impl < mapping.impl; }
     public:
       template<AccessorType AT>
       inline PhysicalRegion<AT> get_physical_region(void);
@@ -431,6 +465,15 @@ namespace RegionRuntime {
         : privilege(_priv), alloc(_alloc), prop(_prop), parent(_parent),
           verified(_verified), func_type(MAPPED_FUNC), color_map(map)
           { handle.partition = pid; }
+    public:
+      bool operator==(const RegionRequirement &req) const
+        { return (handle.partition == req.handle.partition) && (privilege == req.privilege)
+                && (alloc == req.alloc) && (prop == req.prop) &&
+                   (parent == req.parent) && (func_type == req.func_type); }
+      bool operator<(const RegionRequirement &req) const
+        { return (handle.partition < req.handle.partition) || (privilege < req.privilege)
+                || (alloc < req.alloc) || (prop < req.prop) ||
+                   (parent < req.parent) || (func_type < req.func_type); }
     protected:
       friend class TaskContext;
       size_t compute_size(void) const;
@@ -477,6 +520,11 @@ namespace RegionRuntime {
       { static_cast<LowLevel::RegionInstanceAccessor<T,LowLevel::AccessorArray> >(instance).write(ptr,newval); }
       template<typename T, typename REDOP, typename RHS> inline void reduce(ptr_t<T> ptr, RHS newval)
       { static_cast<LowLevel::RegionInstanceAccessor<T,LowLevel::AccessorArray> >(instance).reduce<REDOP>(ptr,newval); }
+    public:
+      bool operator==(const PhysicalRegion<AccessorArray> &accessor) const
+      { return (allocator == accessor.allocator) && (instance == accessor.instance); }
+      bool operator<(const PhysicalRegion<AccessorArray> &accessor) const
+      { return (allocator < accessor.allocator) || (instance < accessor.instance); }
     };
 
     template<>
@@ -528,6 +576,11 @@ namespace RegionRuntime {
           result.set_instance(instance.convert<LowLevel::AccessorArray>());
         return result;
       }
+    public:
+      bool operator==(const PhysicalRegion<AccessorGeneric> &accessor) const
+      { return (allocator == accessor.allocator) && (instance == accessor.instance); }
+      bool operator<(const PhysicalRegion<AccessorGeneric> &accessor) const
+      { return (allocator < accessor.allocator) || (instance < accessor.instance); }
     };
 
     /////////////////////////////////////////////////////////////
@@ -677,11 +730,13 @@ namespace RegionRuntime {
       void replace_default_mapper(Mapper *m);
       // Functions for registering colorize function
       ColorizeID register_colorize_function(ColorizeFnptr f);
+      ColorizeFnptr retrieve_colorize_function(ColorizeID cid);
     public:
       // Methods for the wrapper functions to notify the runtime
       void begin_task(Context ctx, std::vector<PhysicalRegion<AccessorGeneric> > &physical_regions);
       void end_task(Context ctx, const void *result, size_t result_size,
                     std::vector<PhysicalRegion<AccessorGeneric> > &physical_regions);
+      const void* get_local_args(Context ctx, IndexPoint &point, size_t &local_size);
     private:
       RegionMappingImpl* get_available_mapping(TaskContext *ctx, const RegionRequirement &req);
     private:
@@ -715,7 +770,7 @@ namespace RegionRuntime {
       void update_queue(void); 
       void check_spawn_task(TaskContext *ctx); // set the spawn parameter
       bool target_task(TaskContext *ctx); // Select a target processor, return true if local 
-      bool split_task(TaskContext *ctx); // Return true if still local
+      bool split_task(TaskContext *ctx, bool reentrant = false); // Return true if still local
       void issue_steal_requests(void);
       void advertise(MapperID map_id); // Advertise work when we have it for a given mapper
     private:
@@ -920,7 +975,7 @@ namespace RegionRuntime {
       Event all_set_event;
       Lock  map_lock;
       std::map<IndexPoint,UserEvent> outstanding_waits;
-      std::map<IndexPoint,void*>     valid_results;
+      std::map<IndexPoint,TaskArgument>  valid_results;
     protected:
       friend class HighLevelRuntime;
       friend class TaskContext;
@@ -929,6 +984,10 @@ namespace RegionRuntime {
       void reset(Event set_e); // event when index space is finished
       void set_result(const IndexPoint &point, const void *res, size_t result_size);
       void set_result(size_t point_size, Deserializer &derez);
+    protected:
+      size_t compute_future_map_size(void) const;
+      void pack_future_map(Serializer &rez) const;
+      void unpack_future_map(Deserializer &derez);
     public:
       template<typename T> inline T get_result(const IndexPoint &point);
       inline void get_void_result(const IndexPoint &point);
@@ -977,17 +1036,15 @@ namespace RegionRuntime {
       virtual bool is_ready(void) const = 0;
       virtual UniqueID get_unique_id(void) const = 0;
       virtual Event get_termination_event(void) const = 0;
-      virtual void add_source_physical_instance(ContextID ctx, InstanceInfo *info) = 0;
+      virtual void add_source_physical_instance(InstanceInfo *info) = 0;
       virtual const RegionRequirement& get_requirement(unsigned idx) const = 0;
       virtual const Task*const get_enclosing_task(void) const = 0;
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const = 0;
       virtual void notify(void) = 0;
-      virtual void add_mapping_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx) = 0;
-      virtual void add_true_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx) = 0;
-      virtual void add_true_dependence(unsigned idx, UniqueID uid) = 0;
-      virtual void add_unresolved_dependence(unsigned idx, DependenceType type, GeneralizedContext *ctx, unsigned dep_idx) = 0;
+      virtual void add_mapping_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx, const DependenceType &dtype) = 0;
       virtual bool add_waiting_dependence(GeneralizedContext *ctx, unsigned idx/*local*/) = 0;
-      virtual bool has_true_dependence(unsigned idx, UniqueID uid) = 0;
+      virtual void add_unresolved_dependence(unsigned idx, GeneralizedContext *ctx, DependenceType dtype) = 0;
+      virtual const std::map<UniqueID,Event>& get_unresolved_dependences(unsigned idx) = 0;
       virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m) = 0;
       virtual InstanceInfo* create_instance_info(LogicalRegion newer, InstanceInfo *old) = 0;
     };
@@ -1012,7 +1069,7 @@ namespace RegionRuntime {
     protected:
       void initialize_task(TaskContext *parent, UniqueID unique_id, 
                             Processor::TaskFuncID task_id, void *args, size_t arglen,
-                            MapperID map_id, MappingTagID tag, bool create_term_event);
+                            MapperID map_id, MappingTagID tag);
       template<typename CT>
       void set_index_space(const std::vector<CT> &index_space, const ArgumentMap &_map, bool must);
       void set_regions(const std::vector<RegionRequirement> &regions, bool all_same);
@@ -1028,8 +1085,9 @@ namespace RegionRuntime {
       bool distribute_index_space(std::vector<Mapper::ConstraintSplit> &chunks, Mapper *m);
       bool distribute_index_space(std::vector<Mapper::RangeSplit> &chunks, Mapper *m);
       // Compute region tree updates
-      size_t compute_tree_update_size(std::vector<std::set<PartitionNode*> > &region_tree_updates);
-      void pack_tree_updates(Serializer &rez, const std::vector<std::set<PartitionNode*> > &region_tree_updates);
+      size_t compute_tree_update_size(const std::map<LogicalRegion,unsigned/*idx*/> &to_check, 
+                                      std::map<PartitionNode*,unsigned/*idx*/> &region_tree_updates);
+      void pack_tree_updates(Serializer &rez, const std::map<PartitionNode*,unsigned/*idx*/> &region_tree_updates);
       void unpack_tree_updates(Deserializer &derez, std::vector<LogicalRegion> &created, ContextID outermost);
     protected:
       // functions for updating a task's state
@@ -1037,16 +1095,26 @@ namespace RegionRuntime {
       void register_mapping(RegionMappingImpl *impl); // (thread-safe)
       void map_and_launch(Mapper *mapper); // (thread_safe)
       void enumerate_index_space(Mapper *mapper);
+      void enumerate_range_space(std::vector<int> &current, unsigned dim, bool last, Mapper *mapper);
       void start_task(std::vector<PhysicalRegion<AccessorGeneric> > &physical_regions);
       void complete_task(const void *result, size_t result_size,
             std::vector<PhysicalRegion<AccessorGeneric> > &physical_regions); // task completed running
+      const void* get_local_args(IndexPoint &point, size_t &local_size); // get local args for an index space point
       void children_mapped(void); // all children have been mapped (thread-safe)
-      void finish_task(void); // task and all children finished (thread-safe)
+      void finish_task(bool acquire_lock = true); // task and all children finished (thread-safe)
       void remote_start(const char *args, size_t arglen); // (thread-safe)
       void remote_children_mapped(const char *args, size_t arglen); // (thread-safe)
       void remote_finish(const char *args, size_t arglen); // (thread-safe)
-      // special function for reducing when two nodes are local, owns buffer when finished
+      // Index Space functions for notifying the owner context on one node when one of its siblings is finished with something
+      // No need for local_start since we know the owner is always mapped last
+      void local_all_mapped(void);
       void local_finish(const IndexPoint &point, void *result, size_t result_size);
+      void clone_index_space_task(TaskContext *clone, bool slice);
+      // index space functions for the owner context of the index space
+      void index_space_start(unsigned remote_denominator, unsigned num_remote_points, 
+                              const std::vector<unsigned> &mapped_counts, bool update); 
+      void index_space_mapped(unsigned num_remote_points, const std::vector<unsigned> &mapped_counts);
+      void index_space_finished(unsigned num_remote_points);
     protected:
       // functions for updating logical region trees
       void create_region(LogicalRegion handle); // (thread-safe)
@@ -1062,7 +1130,6 @@ namespace RegionRuntime {
       void verify_privilege(const RegionRequirement &par_req, const RegionRequirement &child_req,
                       /*for error reporting*/unsigned task = false, unsigned idx = 0, unsigned unique = 0);
       void initialize_region_tree_contexts(void);
-      InstanceInfo* resolve_unresolved_dependences(InstanceInfo *info, ContextID ctx, unsigned idx, bool war_opt);
       ContextID get_enclosing_physical_context(unsigned idx);
       ContextID get_outermost_physical_context(void);
     protected:
@@ -1074,18 +1141,16 @@ namespace RegionRuntime {
       virtual bool is_context(void) const { return true; }
       virtual bool is_ready(void) const;
       virtual void notify(void);
-      virtual void add_source_physical_instance(ContextID ctx, InstanceInfo *src_info);
+      virtual void add_source_physical_instance(InstanceInfo *src_info);
       virtual UniqueID get_unique_id(void) const { return unique_id; }
       virtual Event get_termination_event(void) const;
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
       virtual const Task*const get_enclosing_task(void) const { return this; }
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const;
-      virtual void add_mapping_dependence(unsigned idx, GeneralizedContext *c, unsigned dep_idx);
-      virtual void add_true_dependence(unsigned idx, GeneralizedContext *c, unsigned dep_idx);
-      virtual void add_true_dependence(unsigned idx, UniqueID uid);
-      virtual void add_unresolved_dependence(unsigned idx, DependenceType t, GeneralizedContext *c, unsigned dep_idx);
+      virtual void add_mapping_dependence(unsigned idx, GeneralizedContext *c, unsigned dep_idx, const DependenceType &dtype);
+      virtual void add_unresolved_dependence(unsigned idx, GeneralizedContext *c, DependenceType dtype);
       virtual bool add_waiting_dependence(GeneralizedContext *ctx, unsigned idx);
-      virtual bool has_true_dependence(unsigned idx, UniqueID uid);
+      virtual const std::map<UniqueID,Event>& get_unresolved_dependences(unsigned idx);
       virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m);
       virtual InstanceInfo* create_instance_info(LogicalRegion newer, InstanceInfo *old);
     private:
@@ -1113,9 +1178,24 @@ namespace RegionRuntime {
       std::vector<Range> range_space;
       bool enumerated; // Check to see if this space has been enumerated
       IndexPoint index_point; // The point after it has been enumerated 
+      void  *local_arg;
+      size_t local_arg_size;
+      // Information about enumerated index space
+      bool index_owner; // original context on the original processor (only one of these)
+      bool slice_owner; // owner of a slice of the index space (as many as there are slices)
+      unsigned num_local_points;
+      unsigned num_local_unmapped;
+      unsigned num_local_unfinished;
+      // Keep track of what fraction of the work we own (1/denominator)
+      unsigned denominator;  
+      // for the index owner only
+      std::pair<unsigned,unsigned> frac_index_space; // determine when we've seen all the index space
+      unsigned num_total_points;
+      unsigned num_unmapped_points;
+      unsigned num_unfinished_points;
+      std::vector<unsigned> mapped_physical_instances; // count of the number of mapped physical instances
       // Barrier event for when all the tasks are ready to run for must parallelism
       Barrier start_index_event; 
-      Barrier finish_index_event; 
       // Result for the index space
       FutureMapImpl future_map;
       // Argument map
@@ -1124,6 +1204,8 @@ namespace RegionRuntime {
       ReductionFnptr reduction; 
       void *reduction_value;
       size_t reduction_size;
+      // Track our sibling tasks on the same node so we can know when to deactivate them
+      std::vector<TaskContext*> sibling_tasks;
     protected:
       TaskContext *parent_ctx; // The parent task on the originating processor
       Context orig_ctx; // Context on the original processor if remote
@@ -1141,13 +1223,9 @@ namespace RegionRuntime {
       UserEvent termination_event;
     private:
       // Dependence information
-      // For each of our regions keep track of the tasks on which we have a true dependence
-      std::vector<std::set<UniqueID> > true_dependences;
-      // For each of our regions keep track of unresolved dependences on prior tasks.  Remember which task
-      // there was a dependence on as well as the index for that region and the dependence type
-      std::vector<std::map<GeneralizedContext*,std::pair<unsigned,DependenceType> > > unresolved_dependences;
-      // Keep track of the choices for each of the unresolved dependences, this allows us to do remote mapping
-      std::vector<std::map<UniqueID,std::pair<InstanceInfo*,DependenceType> > > unresolved_choices;
+      // Unresolved dependences (i.e. atomic and simultaneous that rely on knowing specifically which
+      // instance is being used by both tasks)
+      std::vector<std::map<UniqueID,Event/*term*/> > unresolved_dependences;
       // The set of tasks waiting on us to notify them when we each region they need is mapped
       std::vector<std::set<GeneralizedContext*> > map_dependent_tasks; 
       // Keep track of the number of notifications we need to see before the task is mappable
@@ -1158,15 +1236,18 @@ namespace RegionRuntime {
       // Information for figuring out which regions to use
       // Mappings for the logical regions at call-time (can be no-instance == covered)
       std::vector<InstanceInfo*> physical_instances;
-      // If a region is not covered use the same physical ctx as the parent task's context,
-      // otherwise use 'ctx_id'
-      // If this is remote, everything is the same and things will get placed back in the right
-      // context when it is sent back
-      std::vector<ContextID> physical_ctx;
+      // The enclosing physical contexts from our parent context
+      std::vector<ContextID> enclosing_ctx;
+      // The physical contexts we use for all our child task mappings
+      std::vector<ContextID> chosen_ctx;
       // Keep track of source physical instances that we are copying from when creating our physical
       // instances.  We add references to these physical instances when performing a copy from them
       // so we know when they can be deleted
-      std::vector<std::pair<InstanceInfo*,ContextID> > source_physical_instances;
+      std::vector<InstanceInfo*> source_copy_instances;
+      // Leaked users of physical instances by this task that we need to keep track of
+      // to release when the task is completed in its origin context
+      std::vector<EscapedUser> escaped_users;
+      std::vector<EscapedCopier> escaped_copies;
     private:
       // Pointers to the maps for logical regions
       std::map<LogicalRegion,RegionNode*>  *region_nodes; // Can be aliased with other tasks map
@@ -1179,7 +1260,8 @@ namespace RegionRuntime {
       std::set<PartitionID>   deleted_partitions; // top of deleted trees only
     private:
       // Helper information for serializing task context
-      std::set<InstanceInfo*> needed_instances;
+      std::vector<InstanceInfo*> needed_instances;
+      unsigned num_needed_instances; // number of unique needed instances
       bool sanitized;
     private:
       // This is the lock for this context.  It will be shared with all contexts of sub-tasks that
@@ -1214,12 +1296,12 @@ namespace RegionRuntime {
       RegionAllocator allocator; 
       PhysicalRegion<AccessorGeneric> result;
       bool active;
+      bool mapped;
     private:
-      std::set<UniqueID> true_dependences;
-      std::map<GeneralizedContext*,std::pair<unsigned,DependenceType> > unresolved_dependences;
       std::set<GeneralizedContext*> map_dependent_tasks; 
+      std::map<UniqueID,Event> unresolved_dependences;
       int remaining_notifications;
-      std::vector<std::pair<InstanceInfo*,ContextID> > source_physical_instances;
+      std::vector<InstanceInfo*> source_copy_instances;
     private:
       std::map<LogicalRegion,RegionNode*> *region_nodes;
       std::map<PartitionID,PartitionNode*> *partition_nodes;
@@ -1238,22 +1320,19 @@ namespace RegionRuntime {
       virtual bool is_ready(void) const; // Ready to be mapped
       virtual void notify(void);
       void perform_mapping(Mapper *m); // (thread-safe)
-      virtual void add_source_physical_instance(ContextID ctx, InstanceInfo *info);
+      virtual void add_source_physical_instance(InstanceInfo *info);
       virtual UniqueID get_unique_id(void) const { return unique_id; }
       virtual Event get_termination_event(void) const; 
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
       virtual const Task*const get_enclosing_task(void) const { return parent_ctx; }
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const;
-      virtual void add_mapping_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx);
-      virtual void add_true_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx);
-      virtual void add_true_dependence(unsigned idx, UniqueID uid);
-      virtual void add_unresolved_dependence(unsigned idx, DependenceType t, GeneralizedContext *ctx, unsigned dep_idx);
+      virtual void add_mapping_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx, const DependenceType &dtype);
+      virtual void add_unresolved_dependence(unsigned idx, GeneralizedContext *ctx, DependenceType dtype);
       virtual bool add_waiting_dependence(GeneralizedContext *ctx, unsigned idx);
-      virtual bool has_true_dependence(unsigned idx, UniqueID uid);
+      virtual const std::map<UniqueID,Event>& get_unresolved_dependences(unsigned idx);
       virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m);
       virtual InstanceInfo* create_instance_info(LogicalRegion newer, InstanceInfo *old);
     private:
-      InstanceInfo* resolve_unresolved_dependences(InstanceInfo *info, bool war_optimization);
       void compute_region_trace(std::vector<unsigned> &trace, LogicalRegion parent, LogicalRegion child);
     public:
       template<AccessorType AT>
@@ -1312,9 +1391,10 @@ namespace RegionRuntime {
       size_t compute_region_tree_update_size(std::set<PartitionNode*> &updates);
       void mark_tree_unadded(void);
     protected:
-      size_t compute_physical_state_size(ContextID ctx, std::set<InstanceInfo*> &needed);
+      size_t compute_physical_state_size(ContextID ctx, std::vector<InstanceInfo*> &needed);
       void pack_physical_state(ContextID ctx, Serializer &rez);
-      void unpack_physical_state(ContextID ctx, Deserializer &derez, bool write, std::map<InstanceID,InstanceInfo*> &inst_map);
+      void unpack_physical_state(ContextID ctx, Deserializer &derez, bool write, 
+              std::map<InstanceID,InstanceInfo*> &inst_map, bool check_overwrite = false, UniqueID uid = 0);
     protected:
       // Initialize the logical context
       void initialize_logical_context(ContextID ctx);
@@ -1345,7 +1425,8 @@ namespace RegionRuntime {
       // whether the info is being read or written.  Note that this can invalidate other
       // instances in the intermediate levels of the tree as it goes back up to the
       // physical instance's logical region
-      void update_valid_instances(ContextID ctx_id, InstanceInfo *info, bool writer);
+      void update_valid_instances(ContextID ctx_id, InstanceInfo *info, bool writer,
+                                  bool check_overwrite = false, UniqueID uid = 0);
     private:
       const LogicalRegion handle;
       const unsigned depth;
@@ -1397,9 +1478,10 @@ namespace RegionRuntime {
       size_t compute_region_tree_update_size(std::set<PartitionNode*> &updates);
       void mark_tree_unadded(void); // Mark the node as no longer being added
     protected:
-      size_t compute_physical_state_size(ContextID ctx, std::set<InstanceInfo*> &needed);
+      size_t compute_physical_state_size(ContextID ctx, std::vector<InstanceInfo*> &needed);
       void pack_physical_state(ContextID ctx, Serializer &rez);
-      void unpack_physical_state(ContextID ctx, Deserializer &derez, bool write, std::map<InstanceID,InstanceInfo*> &inst_map);
+      void unpack_physical_state(ContextID ctx, Deserializer &derez, bool write, 
+              std::map<InstanceID,InstanceInfo*> &inst_map, bool check_overwite = false, UniqueID uid = 0);
     protected:
       // Logical operations on partitions 
       void initialize_logical_context(ContextID ctx);
@@ -1443,7 +1525,21 @@ namespace RegionRuntime {
       struct UserTask {
       public:
         RegionRequirement req;
+        unsigned references;
         Event term_event;
+      public:
+        UserTask() { }
+        UserTask(RegionRequirement r, unsigned ref, Event t)
+          : req(r), references(ref), term_event(t) { }
+      };
+      struct CopyUser {
+      public:
+        unsigned references;
+        Event term_event;
+      public:
+        CopyUser() { }
+        CopyUser(unsigned r, Event t)
+          : references(r), term_event(t) { }
       };
     public:
       const InstanceID iid;
@@ -1451,19 +1547,9 @@ namespace RegionRuntime {
       const Memory location;
       const RegionInstance inst;
     public:
-      InstanceInfo(void)
-        : iid(0), handle(LogicalRegion::NO_REGION),
-          location(Memory::NO_MEMORY),
-          inst(RegionInstance::NO_INST),
-          valid_event(Event::NO_EVENT),
-          inst_lock(Lock::NO_LOCK),
-          remote(false) { }
+      InstanceInfo(void);
       InstanceInfo(InstanceID id, LogicalRegion r, Memory m,
-          RegionInstance i, bool rem) 
-        : iid(id), handle(r), location(m), inst(i), 
-          valid_event(Event::NO_EVENT),
-          inst_lock(Lock::NO_LOCK), remote(rem) 
-          { }
+          RegionInstance i, bool rem, InstanceInfo *par);
       ~InstanceInfo(void);
     protected:
       friend class TaskContext;
@@ -1479,27 +1565,59 @@ namespace RegionRuntime {
     protected:
       // Add a user of this instance info and return the event
       // when it can be used
-      Event add_user(GeneralizedContext *ctx, unsigned idx, Event precondition, bool first = false);
-      void  remove_user(UniqueID uid, bool release);
+      Event add_user(GeneralizedContext *ctx, unsigned idx, Event precondition);
+      void  remove_user(UniqueID uid, unsigned ref = 1);
       // Compute the precondition on performing copies
-      Event add_copy_user(Event precondition, bool writer, bool first = false);
-      void  remove_copy_user(void);
+      Event get_copy_precondition(Event precondition, bool writer);
+      // For copy readers only
+      void  add_copy_user(UniqueID uid, Event copy_term);
+      void  remove_copy_user(UniqueID uid, unsigned ref = 1);
+      // For copy writers, have them update the valid event
+      void  update_valid_event(Event new_valid);
       // Allow for locking and unlocking of the instance
       Event lock_instance(Event precondition);
       void unlock_instance(Event precondition);
-      // Set the valid event
-      void set_valid_event(Event valid) { valid_event = valid; }
+      // Check for Write-After-Read dependences 
+      bool has_war_dependence(GeneralizedContext *ctx, unsigned idx) const;
+      // Mark that the instance is no longer valid
+      void mark_invalid(void);
     protected:
+      // Get the set of InstanceInfos needed, this instance and all parent instances
+      void get_needed_instances(std::vector<InstanceInfo*> &needed_instances); 
+      // Operations for packing return information for instance infos
       size_t compute_info_size(void) const;
       void pack_instance_info(Serializer &rez) const;
-      static InstanceInfo* unpack_instance_info(Deserializer &derez);
+      static void unpack_instance_info(Deserializer &derez, std::map<InstanceID,InstanceInfo*> *infos);
+      // Operations for packing return information for instance infos
+      size_t compute_return_info_size() const;
+      size_t compute_return_info_size(std::vector<EscapedUser> &escaped_users,
+                                      std::vector<EscapedCopier> &escaped_copies) const;
+      void pack_return_info(Serializer &rez);
+      static InstanceInfo* unpack_return_instance_info(Deserializer &derez, std::map<InstanceID,InstanceInfo*> *infos);
       void merge_instance_info(Deserializer &derez); // for merging information into a pre-existing instance
+    protected:
+      // For going back up the instance tree looking for dependences
+      void find_user_dependences(std::set<Event> &wait_on_events, const RegionRequirement &req) const;
+      void find_user_dependences(std::set<Event> &wait_on_events, bool writer) const; // Same as previous except for copies
+      void find_copy_dependences(std::set<Event> &wait_on_events) const;
+      // Has user for checking on unresolved dependences
+      bool has_user(UniqueID uid) const;
+      // Add and remove child users
+      void add_child(void);
+      void remove_child(void);
+      // Check to see if we can garbage collect this instance
+      void garbage_collect(void);
     private:
-      Event valid_event;
+      bool valid; // Currently a valid instance in the physical region tree
+      bool remote;
+      unsigned children;
+      InstanceInfo *parent; // parent instance info
+      Event valid_event; // most recent copy-write event
       Lock inst_lock; // For atomic access if necessary
-      bool remote; 
       std::map<UniqueID,UserTask> users;
-      std::map<UniqueID,UserTask> added_users; // for the remote case to know who to send back
+      std::map<UniqueID,UserTask> added_users;
+      std::map<UniqueID,CopyUser> copy_users;
+      std::map<UniqueID,CopyUser> added_copy_users;
     };
 
     /////////////////////////////////////////////////////////////
@@ -1562,6 +1680,52 @@ namespace RegionRuntime {
           mapper(m), needs_initializing(false), sanitizing(true) { }
     protected:
       const RegionRequirement& get_req(void) const { return ctx->get_requirement(idx); }
+    };
+
+    /////////////////////////////////////////////////////////////
+    // Escaped User 
+    /////////////////////////////////////////////////////////////
+    class EscapedUser {
+    protected:
+      friend class GeneralizedContext;
+      friend class TaskContext;
+      friend class InstanceInfo;
+    protected:
+      EscapedUser(void) : iid(0), user(0) { }
+      EscapedUser(InstanceID id, UniqueID u, unsigned r)
+        : iid(id), user(u), references(r) { }
+    protected:
+      size_t compute_escaped_user_size(void) const;
+      void pack_escaped_user(Serializer &rez) const;
+      static void unpack_escaped_user(
+          Deserializer &derez, EscapedUser &target);
+    protected:
+      InstanceID iid;
+      UniqueID user;
+      unsigned references;
+    };
+
+    /////////////////////////////////////////////////////////////
+    // Escaped Copier 
+    /////////////////////////////////////////////////////////////
+    class EscapedCopier {
+    protected:
+      friend class GeneralizedContext;
+      friend class TaskContext;
+      friend class InstanceInfo;
+    protected:
+      EscapedCopier(void) : iid(0), copier(0), references(0) { }
+      EscapedCopier(InstanceID id, UniqueID c, unsigned r)
+        : iid(id), copier(c), references(r) { }
+    protected:
+      size_t compute_escaped_copier_size(void) const;
+      void pack_escaped_copier(Serializer &rez) const;
+      static void unpack_escaped_copier(
+          Deserializer &derez, EscapedCopier &target);
+    protected:
+      InstanceID iid;
+      UniqueID copier;
+      unsigned references;
     };
 
     /////////////////////////////////////////////////////////////
@@ -1792,6 +1956,193 @@ namespace RegionRuntime {
       runtime->end_task(ctx, NULL, 0, regions);
     }
 
+    // Wrapper functions for tasks that are launched as index spaces
+    template<typename T,
+    T (*TASK_PTR)(const void*,size_t/*global*/,const void*,size_t/*local*/,const IndexPoint&,
+                  const std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
+    void high_level_index_task_wrapper(const void * args, size_t arglen, Processor p)
+    {
+      // Get the high level runtime
+      HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
+
+      // Read the context out of the buffer
+      Context ctx = *((const Context*)args);
+      // Get the arguments associated with the context
+      std::vector<PhysicalRegion<AccessorGeneric> > regions;
+      runtime->begin_task(ctx,regions);
+      
+      // Get the point and the local argument
+      IndexPoint point;
+      size_t local_size;
+      const void* local_args = runtime->get_local_args(ctx,point,local_size);
+
+      // Update the pointer and arglen
+      const char* arg_ptr = ((const char*)args)+sizeof(Context);
+      arglen -= sizeof(Context);
+      
+      // Invoke the task with the given context
+      T return_value;
+      {
+	DetailedTimer::ScopedPush sp(TIME_KERNEL);
+	return_value = (*TASK_PTR)((const void*)arg_ptr, arglen, local_args, local_size, point, regions, ctx, runtime);
+      }
+
+      // Send the return value back
+      runtime->end_task(ctx, (void*)(&return_value), sizeof(T), regions);
+    }
+
+    template<
+    void (*TASK_PTR)(const void*,size_t/*global*/,const void*,size_t/*local*/,const IndexPoint&,
+                      const std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
+    void high_level_index_task_wrapper(const void *args, size_t arglen, Processor p)
+    {
+      // Get the high level runtime
+      HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
+
+      // Read the context out of the buffer
+      Context ctx = *((const Context*)args);
+      // Get the arguments associated with the context
+      std::vector<PhysicalRegion<AccessorGeneric> > regions; 
+      runtime->begin_task(ctx, regions);
+
+      // Get the point and the local argument
+      IndexPoint point;
+      size_t local_size;
+      const void* local_args = runtime->get_local_args(ctx,point,local_size);
+
+      // Update the pointer and arglen
+      const char* arg_ptr = ((const char*)args)+sizeof(Context);
+      arglen -= sizeof(Context);
+      
+      // Invoke the task with the given context
+      {
+	DetailedTimer::ScopedPush sp(TIME_KERNEL);
+	(*TASK_PTR)((const void*)arg_ptr, arglen, local_args, local_size, point, regions, ctx, runtime);
+      }
+
+      // Send an empty return value back
+      runtime->end_task(ctx, NULL, 0, regions); 
+    }
+
+    template<typename T,
+    T (*SLOW_TASK_PTR)(const void*,size_t/*global*/,const void*,size_t/*local*/,const IndexPoint&,
+                        const std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
+    T (*FAST_TASK_PTR)(const void*,size_t/*global*/,const void*,size_t/*local*/,const IndexPoint&,
+                        const std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
+    void high_level_index_task_wrapper(const void *args, size_t arglen, Processor p)
+    {
+      // Get the high level runtime
+      HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
+
+      // Read the context out of the buffer
+      Context ctx = *((const Context*)args);
+      // Get the arguments associated with the context
+      std::vector<PhysicalRegion<AccessorGeneric> > regions;
+      runtime->begin_task(ctx,regions);
+
+      IndexPoint point;
+      size_t local_size;
+      const void* local_args = runtime->get_local_args(ctx,point,local_size);
+
+      // Update the pointer and the arglen
+      const char* arg_ptr = ((const char*)args)+sizeof(Context);
+      arglen -= sizeof(Context);
+
+      // Check to see if we can specialize all the region instances
+      bool specialize = true;
+      for (std::vector<PhysicalRegion<AccessorGeneric> >::const_iterator it = regions.begin();
+            it != regions.end(); it++)
+      {
+        if (!it->can_convert())
+        {
+          specialize = false;
+          break;
+        }
+      }
+      T return_value;
+      if (specialize)
+      {
+        std::vector<PhysicalRegion<AccessorArray> > fast_regions;
+        for (std::vector<PhysicalRegion<AccessorGeneric> >::const_iterator it = regions.begin();
+              it != regions.end(); it++)
+        {
+          fast_regions.push_back(it->convert());
+        }
+	{
+	  DetailedTimer::ScopedPush sp(TIME_KERNEL);
+	  return_value = (*FAST_TASK_PTR)((const void*)arg_ptr, arglen, local_args, local_size, point, fast_regions, ctx, runtime);
+	}
+      }
+      else
+      {
+	{
+	  DetailedTimer::ScopedPush sp(TIME_KERNEL);
+	  return_value = (*SLOW_TASK_PTR)((const void *)arg_ptr, arglen, local_args, local_size, point, regions, ctx, runtime);
+	}
+      }
+
+      // Send the return value back
+      runtime->end_task(ctx, (void*)&return_value, sizeof(T),regions);
+    }
+
+    template<
+    void (*SLOW_TASK_PTR)(const void*,size_t/*global*/,const void*,size_t/*local*/,const IndexPoint&,
+                          const std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
+    void (*FAST_TASK_PTR)(const void*,size_t/*global*/,const void*,size_t/*local*/,const IndexPoint&,
+                          const std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
+    void high_level_index_task_wrapper(const void *args, size_t arglen, Processor p)
+    {
+      // Get the high level runtime
+      HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
+
+      // Read the context out of the buffer
+      Context ctx = *((const Context*)args);
+      // Get the arguments associated with the context
+      std::vector<PhysicalRegion<AccessorGeneric> > regions;
+      runtime->begin_task(ctx,regions);
+
+      IndexPoint point;
+      size_t local_size;
+      const void* local_args = runtime->get_local_args(ctx,point,local_size);
+
+      // Update the pointer and the arglen
+      const char* arg_ptr = ((const char*)args)+sizeof(Context);
+      arglen -= sizeof(Context);
+
+      // Check to see if we can specialize all the region instances
+      bool specialize = true;
+      for (std::vector<PhysicalRegion<AccessorGeneric> >::const_iterator it = regions.begin();
+            it != regions.end(); it++)
+      {
+        if (!it->can_convert())
+        {
+          specialize = false;
+          break;
+        }
+      }
+      if (specialize)
+      {
+        std::vector<PhysicalRegion<AccessorArray> > fast_regions;
+        for (std::vector<PhysicalRegion<AccessorGeneric> >::const_iterator it = regions.begin();
+              it != regions.end(); it++)
+        {
+          fast_regions.push_back(it->convert());
+        }
+	{
+	  DetailedTimer::ScopedPush sp(TIME_KERNEL);
+	  (*FAST_TASK_PTR)((const void*)arg_ptr, arglen, local_args, local_size, point, fast_regions, ctx, runtime);
+	}
+      }
+      else
+      {
+	DetailedTimer::ScopedPush sp(TIME_KERNEL);
+        (*SLOW_TASK_PTR)((const void *)arg_ptr, arglen, local_args, local_size, point, regions, ctx, runtime);
+      }
+
+      // Send the return value back
+      runtime->end_task(ctx, NULL, 0, regions);
+    }
+
     ////////////////////////////////////////////////////////////////////////////////
     //  Implementations of some templated functions to avoid linking problems     //
     ////////////////////////////////////////////////////////////////////////////////
@@ -1873,7 +2224,7 @@ namespace RegionRuntime {
       // Check to see if the result exists yet
       if (valid_results.find(point) != valid_results.end())
       {
-        T result = (*((const T*)valid_results[point]));
+        T result = (*((const T*)valid_results[point].get_ptr()));
         // Release the lock
         map_lock.unlock();
         return result;
@@ -2056,7 +2407,7 @@ namespace RegionRuntime {
       // Allocate more space for the context when copying the args
       void *args_prime = malloc(global_arg.get_size()+sizeof(Context));
       memcpy(((char*)args_prime)+sizeof(Context), global_arg.get_ptr(), global_arg.get_size());
-      desc->initialize_task(ctx, unique_id, task_id, args_prime, global_arg.get_size()+sizeof(Context), id, tag, false/*create term event*/);
+      desc->initialize_task(ctx, unique_id, task_id, args_prime, global_arg.get_size()+sizeof(Context), id, tag);
       desc->set_index_space<CT>(index_space, arg_map, must);
       desc->set_regions(regions, false/*all same*/);
       desc->set_future_map();
@@ -2110,7 +2461,7 @@ namespace RegionRuntime {
       // Allocate more space for the context when copying the args
       void *args_prime = malloc(global_arg.get_size()+sizeof(Context));
       memcpy(((char*)args_prime)+sizeof(Context), global_arg.get_ptr(), global_arg.get_size());
-      desc->initialize_task(ctx, unique_id, task_id, args_prime, global_arg.get_size()+sizeof(Context), id, tag, false/*create term event*/);
+      desc->initialize_task(ctx, unique_id, task_id, args_prime, global_arg.get_size()+sizeof(Context), id, tag);
       desc->set_index_space<CT>(index_space, arg_map, must);
       desc->set_regions(regions, false/*check same*/);
       desc->set_reduction(reduction, initial_value);
