@@ -63,6 +63,8 @@ namespace RegionRuntime {
                                                     std::set<const Task*> &to_steal)
     //--------------------------------------------------------------------------------------------
     {
+      return;
+#if 0
       unsigned total_stolen = 0;
       for (std::vector<const Task*>::const_iterator it = tasks.begin();
             it != tasks.end(); it++)
@@ -76,6 +78,7 @@ namespace RegionRuntime {
             break;
         }
       }
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
