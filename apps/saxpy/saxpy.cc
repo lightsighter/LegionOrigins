@@ -13,10 +13,11 @@ using namespace RegionRuntime::HighLevel;
 
 // #define TEST_STEALING
 
-namespace Config {
-  unsigned num_blocks = 64;
-  bool args_read = false;
-};
+static unsigned* get_num_blocks(void)
+{
+  static unsigned num_blocks = 64;
+  return &num_blocks;
+}
 
 enum {
   TASKID_MAIN = TASK_ID_AVAILABLE,
@@ -52,14 +53,14 @@ template<AccessorType AT>
 void top_level_task(const void *args, size_t arglen,
 		    const std::vector<PhysicalRegion<AT> > &regions,
 		    Context ctx, HighLevelRuntime *runtime) {
-  while (!Config::args_read)
-    usleep(1000);
+  //while (!Config::args_read)
+  //  usleep(1000);
 
   VectorRegions vr;
-  vr.num_elems = Config::num_blocks * BLOCK_SIZE;
-  vr.r_x = runtime->create_logical_region(ctx, vr.num_elems);
-  vr.r_y = runtime->create_logical_region(ctx, vr.num_elems);
-  vr.r_z = runtime->create_logical_region(ctx, vr.num_elems);
+  vr.num_elems = *get_num_blocks() * BLOCK_SIZE;
+  vr.r_x = runtime->create_logical_region(ctx, sizeof(float), vr.num_elems);
+  vr.r_y = runtime->create_logical_region(ctx, sizeof(float), vr.num_elems);
+  vr.r_z = runtime->create_logical_region(ctx, sizeof(float), vr.num_elems);
 
   std::vector<RegionRequirement> main_regions;
   main_regions.push_back(RegionRequirement(vr.r_x, READ_WRITE, ALLOCABLE, EXCLUSIVE, vr.r_x));
@@ -84,11 +85,11 @@ void main_task(const void *args, size_t arglen,
   printf("alpha: %f\n", vr->alpha);
 
   // Allocating space in the regions
-  std::vector<Block> blocks(Config::num_blocks);
-  std::vector<std::set<utptr_t> > color_x(Config::num_blocks);
-  std::vector<std::set<utptr_t> > color_y(Config::num_blocks);
-  std::vector<std::set<utptr_t> > color_z(Config::num_blocks);
-  for (unsigned i = 0; i < Config::num_blocks; i++) {
+  std::vector<Block> blocks(*get_num_blocks());
+  std::vector<std::set<utptr_t> > color_x(*get_num_blocks());
+  std::vector<std::set<utptr_t> > color_y(*get_num_blocks());
+  std::vector<std::set<utptr_t> > color_z(*get_num_blocks());
+  for (unsigned i = 0; i < *get_num_blocks(); i++) {
     blocks[i].alpha = vr->alpha;
     blocks[i].id = i;
     for (unsigned j = 0; j < BLOCK_SIZE; j++) {
@@ -110,7 +111,7 @@ void main_task(const void *args, size_t arglen,
   Partition p_x = runtime->create_partition(ctx, vr->r_x, color_x, true);
   Partition p_y = runtime->create_partition(ctx, vr->r_y, color_y, true);
   Partition p_z = runtime->create_partition(ctx, vr->r_z, color_z, true);
-  for (unsigned i = 0; i < Config::num_blocks; i++) {
+  for (unsigned i = 0; i < *get_num_blocks(); i++) {
     blocks[i].r_x = runtime->get_subregion(ctx, p_x, i);
     blocks[i].r_y = runtime->get_subregion(ctx, p_y, i);
     blocks[i].r_z = runtime->get_subregion(ctx, p_z, i);
@@ -118,18 +119,18 @@ void main_task(const void *args, size_t arglen,
 
   // Constructing index space
   std::vector<Range> index_space;
-  index_space.push_back(Range(0, Config::num_blocks-1));
+  index_space.push_back(Range(0, *get_num_blocks()-1));
 
   // Argument map
   ArgumentMap arg_map;
-  for (unsigned i = 0; i < Config::num_blocks; i++) {
+  for (unsigned i = 0; i < *get_num_blocks(); i++) {
     IndexPoint index; index.push_back(i);
     arg_map[index] = TaskArgument(&(blocks[i]), sizeof(Block));
   }
 
   // Color map
   std::map<IndexPoint, Color> color_map;
-  for (unsigned i = 0; i < Config::num_blocks; i++) {
+  for (unsigned i = 0; i < *get_num_blocks(); i++) {
     IndexPoint index; index.push_back(i);
     color_map[index] = i;
   }
@@ -534,7 +535,7 @@ int main(int argc, char **argv) {
 
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "-blocks")) {
-      Config::num_blocks = atoi(argv[++i]);
+      *(get_num_blocks()) = atoi(argv[++i]);
       continue;
     }
   }
@@ -543,8 +544,7 @@ int main(int argc, char **argv) {
   printf("USING SHARED LOW-LEVEL RUNTIME\n");
 #endif
 
-  printf("saxpy: num elems = %d\n", Config::num_blocks * BLOCK_SIZE);
-  Config::args_read = true;
+  printf("saxpy: num elems = %d\n", *get_num_blocks() * BLOCK_SIZE);
 
   m.run();
 
