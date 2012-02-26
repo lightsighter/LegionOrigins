@@ -2330,6 +2330,7 @@ namespace RegionRuntime {
         if (task->chosen || target_task(task))
         {
           mapped_tasks++;
+          //  Check to see if this is an index space and it needs to be split
           // Now map the task and then launch it on the processor
           {
             // Need the mapper locks to give the task its mapper to use
@@ -4418,7 +4419,8 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(!range_space.empty());
 #endif
-        std::vector<int> point(range_space.size());
+        std::vector<int> point;
+        point.reserve(range_space.size());
         enumerate_range_space(point,0/*idx*/,true/*last*/,mapper);
       }
       this->num_local_unmapped = num_local_points;
@@ -4428,6 +4430,13 @@ namespace RegionRuntime {
         // Record that this slice has been mapped
         start_index_event.arrive();
       }
+      // Pull the local argument values out of the arg map for this part of the index space
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!index_point.empty());
+#endif
+      TaskArgument arg = index_arg_map.remove_argument(index_point);
+      local_arg = arg.get_ptr();
+      local_arg_size = arg.get_size();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4620,10 +4629,22 @@ namespace RegionRuntime {
       {
         clone->enumerated = true;
         {
+          // Find the argument for this task
           TaskArgument local_arg = this->index_arg_map.remove_argument(clone->index_point);
           clone->local_arg = local_arg.get_ptr();
           clone->local_arg_size = local_arg.get_size();
         }
+      }
+      else
+      {
+        // Need to update the mapped physical instances
+        mapped_physical_instances.resize(this->mapped_physical_instances.size());
+        for (unsigned idx = 0; idx < mapped_physical_instances.size(); idx++)
+        {
+          mapped_physical_instances[idx] = 0;
+        }
+        // Get the arg map from the original
+        clone->index_arg_map = this->index_arg_map;
       }
       clone->index_owner = false;
       clone->slice_owner = slice;
@@ -4635,6 +4656,13 @@ namespace RegionRuntime {
       clone->remote = this->remote;
       clone->remote_start_event = Event::NO_EVENT;
       clone->remote_children_event = Event::NO_EVENT;
+      if (!this->remote)
+      {
+        // Also copy over the enclosing physical instances, if
+        // we are remote we'll just end up using the parent version
+        clone->enclosing_ctx = this->enclosing_ctx;
+      }
+      clone->unresolved_dependences = this->unresolved_dependences;
       // don't need to set any future items or termination event
       clone->region_nodes = this->region_nodes;
       clone->partition_nodes = this->partition_nodes;
@@ -7275,7 +7303,12 @@ namespace RegionRuntime {
             precondition = ren.info->add_user(ren.ctx, ren.idx, precondition);
           }
         }
-
+        else if (!ren.sanitizing)
+        {
+          // Just register that we're using the instance
+          precondition = ren.info->add_user(ren.ctx, ren.idx, precondition);
+        }
+        
         // If we're santizing we have to do some operations to get this region ready to move,
         // otherwise check to see if we need to do anything for our mapped instance
         if (ren.sanitizing)
@@ -9433,9 +9466,6 @@ namespace RegionRuntime {
     void InstanceInfo::update_valid_event(Event new_valid_event)
     //-------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(valid_event.exists());
-#endif
       valid_event = new_valid_event; 
     }
 

@@ -2408,8 +2408,8 @@ namespace RegionRuntime {
       void *args_prime = malloc(global_arg.get_size()+sizeof(Context));
       memcpy(((char*)args_prime)+sizeof(Context), global_arg.get_ptr(), global_arg.get_size());
       desc->initialize_task(ctx, unique_id, task_id, args_prime, global_arg.get_size()+sizeof(Context), id, tag);
-      desc->set_index_space<CT>(index_space, arg_map, must);
       desc->set_regions(regions, false/*all same*/);
+      desc->set_index_space<CT>(index_space, arg_map, must);
       desc->set_future_map();
       // Check if we want to spawn this task
       check_spawn_task(desc);
@@ -2462,8 +2462,8 @@ namespace RegionRuntime {
       void *args_prime = malloc(global_arg.get_size()+sizeof(Context));
       memcpy(((char*)args_prime)+sizeof(Context), global_arg.get_ptr(), global_arg.get_size());
       desc->initialize_task(ctx, unique_id, task_id, args_prime, global_arg.get_size()+sizeof(Context), id, tag);
-      desc->set_index_space<CT>(index_space, arg_map, must);
       desc->set_regions(regions, false/*check same*/);
+      desc->set_index_space<CT>(index_space, arg_map, must);
       desc->set_reduction(reduction, initial_value);
       // Check if we want to spawn this task
       check_spawn_task(desc);
