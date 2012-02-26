@@ -95,8 +95,13 @@ namespace RegionRuntime {
                                                       std::vector<RangeSplit> &chunks)
     //--------------------------------------------------------------------------------------------
     {
-      // TODO: figure out how to do this easily
-      assert(false);
+      // For the moment don't split anything
+      RangeSplit result;
+      result.ranges = index_space;
+      result.p = local_proc;
+      result.recurse = false;
+
+      chunks.push_back(result);
     }
 
 
