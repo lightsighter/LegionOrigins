@@ -468,21 +468,43 @@ namespace RegionRuntime {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
         size_t wait_for_size = wait_for.size();
         // Ignore any no-events
+        // Fast-outs for cases where there is 0 or 1 existing events
         if (wait_for.find(Event::NO_EVENT) != wait_for.end())
         {
           // Ignore the no event
           wait_for_size--;
+          if (wait_for_size == 1)
+          {
+            Event result = Event::NO_EVENT;
+            // Find the actual event
+            for (std::set<Event>::const_iterator it = wait_for.begin();
+                  it != wait_for.end(); it++)
+            {
+              result = *it;
+              if (result.exists())
+              {
+                break;
+              }
+            }
+#ifdef DEBUG_HIGH_LEVEL
+            assert(result.exists());
+#endif
+            return result;
+          }
         }
-        // Check to see if there are any events to actually wait for
-        if (wait_for_size == 0)
-          return Event::NO_EVENT;
-        if (wait_for_size == 1)
+        else if (wait_for_size == 1)
         {
-          Event result = *(wait_for.end());
-#ifdef DEBUG_LOW_LEVEL
+          // wait for size is 1, which means there is only one event
+          Event result = *(wait_for.begin());
+#ifdef DEBUG_HIGH_LEVEL
           assert(result.exists());
 #endif
           return result;
+        }
+        // Check to make sure we have valid events
+        if (wait_for_size == 0)
+        {
+          return Event::NO_EVENT;
         }
         // Get a new event
 	EventImpl *e = Runtime::get_runtime()->get_free_event();
