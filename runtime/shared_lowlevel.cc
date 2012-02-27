@@ -466,9 +466,24 @@ namespace RegionRuntime {
     Event Event::merge_events(const std::set<Event>& wait_for)
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+        size_t wait_for_size = wait_for.size();
+        // Ignore any no-events
+        if (wait_for.find(Event::NO_EVENT) != wait_for.end())
+        {
+          // Ignore the no event
+          wait_for_size--;
+        }
         // Check to see if there are any events to actually wait for
-        if (wait_for.size() == 0)
+        if (wait_for_size == 0)
           return Event::NO_EVENT;
+        if (wait_for_size == 1)
+        {
+          Event result = *(wait_for.end());
+#ifdef DEBUG_LOW_LEVEL
+          assert(result.exists());
+#endif
+          return result;
+        }
         // Get a new event
 	EventImpl *e = Runtime::get_runtime()->get_free_event();
         // Get the implementations for all the wait_for events
