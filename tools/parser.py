@@ -18,13 +18,21 @@ def parse_log_file(file_name):
 
     partition_usage_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Context (?P<context>[0-9]+) Task (?P<unique>[0-9]+) Partition (?P<idx>[0-9]+) Handle (?P<handle>[0-9]+) Parent (?P<parent>[0-9]+)")
 
-    dependence_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Dependence (?P<context>[0-9]+) (?P<uid_one>[0-9]+) (?P<idx_one>[0-9]+) (?P<uid_two>[0-9]+) (?P<idx_two>[0-9]+) (?P<type>[0-9]+)")
+    dependence_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Mapping Dependence (?P<context>[0-9]+) (?P<uid_one>[0-9]+) (?P<idx_one>[0-9]+) (?P<uid_two>[0-9]+) (?P<idx_two>[0-9]+) (?P<type>[0-9]+)")
 
     region_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Region (?P<handle>[0-9]+)")
 
     part_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Partition (?P<pid>[0-9]+) Parent (?P<parent>[0-9]+) Disjoint (?P<disjoint>[0-1])")
 
     subregion_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Region (?P<handle>[0-9]+) Parent (?P<parent>[0-9]+)")
+
+    event_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Event Event (?P<src_id>[0-9]+) (?P<src_gen>[0-9]+) (?P<dst_id>[0-9]+) (?P<dst_gen>[0-9]+)");
+
+    copy_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Event Copy Event (?P<src_id>[0-9]+) (?P<src_gen>[0-9]+) (?P<src_inst>[0-9]+) (?P<src_handle>[0-9]+) (?P<src_loc>[0-9]+) (?P<dst_inst>[0-9]+) (?P<dst_handle>[0-9]+) (?P<dst_loc>[0-9]+) (?P<dst_id>[0-9]+) (?P<dst_gen>[0-9]+)") 
+
+    task_launch_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Task Launch (?P<tid>[0-9]+) (?P<uid>[0-9]+) (?P<start_id>[0-9]+) (?P<start_gen>[0-9]+) (?P<term_id>[0-9]+) (?P<term_gen>[0-9]+)")
+
+    index_launch_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Index Task Launch (?P<tid>[0-9]+) (?P<uid>[0-9]+) (?P<start_id>[0-9]+) (?P<start_gen>[0-9]+) (?P<term_id>[0-9]+) (?P<term_gen>[0-9]+) (?P<point_size>[0-9]+) (?P<points>[0-9 ]+)")
 
     for line in log:
         m = top_pat.match(line)
@@ -94,6 +102,43 @@ def parse_log_file(file_name):
             par = int(m.group('parent'))
             parent = result.get_region(par)
             parent.add_partition(part) 
+            continue
+        m = event_pat.match(line)
+        if m <> None:
+            src = result.event_graph.get_event_node(int(m.group('src_id')),int(m.group('src_gen')))
+            dst = result.event_graph.get_event_node(int(m.group('dst_id')),int(m.group('dst_gen')))
+            result.event_graph.add_edge(src,dst)
+            continue
+        m = copy_pat.match(line)
+        if m <> None:
+            src = result.event_graph.get_event_node(int(m.group('src_id')),int(m.group('src_gen')))
+            copy = result.event_graph.get_copy_node(int(m.group('src_inst')),int(m.group('src_handle')),int(m.group('src_loc')),
+                                                    int(m.group('dst_inst')),int(m.group('dst_handle')),int(m.group('dst_loc')))
+            dst = result.event_graph.get_event_node(int(m.group('dst_id')),int(m.group('dst_gen')))
+            result.event_graph.add_edge(src,copy)
+            result.event_graph.add_edge(copy,dst)
+            continue
+        m = task_launch_pat.match(line)
+        if m <> None:
+            src = result.event_graph.get_event_node(int(m.group('start_id')),int(m.group('start_gen')))
+            task = result.event_graph.get_task_node(int(m.group('tid')),int(m.group('uid')))
+            dst = result.event_graph.get_event_node(int(m.group('term_id')),int(m.group('term_gen')))
+            result.event_graph.add_edge(src,task)
+            result.event_graph.add_edge(task,dst)
+            continue
+        m = index_launch_pat.match(line)
+        if m <> None:
+            space = result.event_graph.get_index_space(int(m.group('tid')),int(m.group('uid'))) 
+            # Parse the point 
+            index_points = m.group('points').rsplit()
+            point = list()
+            for i in range(int(m.group('point_size'))):
+                point.append(int(index_points[i]))
+            point_node = result.event_graph.get_index_point(space,point)
+            src = result.event_graph.get_event_node(int(m.group('start_id')),int(m.group('start_gen')))
+            dst = result.event_graph.get_event_node(int(m.group('term_id')),int(m.group('term_id')))
+            result.event_graph.add_edge(src,point_node)
+            result.event_graph.add_edge(point_node,dst)
             continue
     return result
 

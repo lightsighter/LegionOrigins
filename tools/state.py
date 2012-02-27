@@ -32,7 +32,7 @@ class TreePrinter(object):
     def print_region(self,region):
         name = 'reg_'+str(region.handle)
         self.println(name+' [label="'+str(region.handle)+
-                '",style=filled,fillcolor=lightblue,fontsize=24,fontcolor=black,shape=box,penwidth=2];')
+                '",style=filled,fillcolor=lightskyblue,fontsize=24,fontcolor=black,shape=box,penwidth=2];')
         return name
 
     def print_partition(self,partition):
@@ -48,7 +48,7 @@ class TreePrinter(object):
     def print_multi_region(self,min_id,max_id):
         name = 'reg_'+str(min_id)+'_'+str(max_id)
         self.println(name+' [label="'+str(min_id)+' - '+str(max_id)+
-                  '",style=filled,fillcolor=lightblue,fontsize=24,fontcolor=black,shape=box,penwidth=2];')
+                  '",style=filled,fillcolor=lightskyblue,fontsize=24,fontcolor=black,shape=box,penwidth=2];')
         return name
 
     def print_edge(self,one,two):
@@ -107,7 +107,7 @@ class ContextPrinter(object):
         name = 'task_'+str(task.uid)  
         label = 'Task ID '+str(task.uid)+'\\nFunction ID '+str(task.tid)
         self.println(name+' [label="'+label+
-            '",style=filled,color=lightblue,fontsize=24,fontcolor=black,shape=box,penwidth=2];')
+            '",style=filled,color=lightskyblue,fontsize=24,fontcolor=black,shape=box,penwidth=2];')
 
     def print_dependence(self,dep,t1,t2):
         name1 = 'task_'+str(t1.uid)
@@ -150,6 +150,7 @@ class Log(object):
         self.trees = set()
         self.regions = dict()
         self.partitions = dict()
+        self.event_graph = EventGraph()
 
     def add_region(self,reg):
         assert(reg not in self.regions)
@@ -209,6 +210,15 @@ class Log(object):
             ctx_images[ctx_id] = jpeg_file
         return ctx_images
 
+    def print_event_graph(self,path):
+        graph = 'event_graph'
+        dot_file = self.event_graph.print_event_graph(path,graph)
+        ps_file = str(path)+graph+'.ps'
+        jpeg_file = str(path)+graph+'.jpg'
+        subprocess.call(['dot -Tps2 -o '+ps_file+' '+dot_file],shell=True)
+        subprocess.call(['convert '+ps_file+' '+jpeg_file],shell=True)
+        return jpeg_file
+
 
 class Context(object):
     def __init__(self, ctx):
@@ -234,8 +244,8 @@ class Context(object):
             printer.print_task(task)
         # Then print the dependences as edges
         for dep in self.deps:
-            t1 = self.tasks[dep.fuid]
-            t2 = self.tasks[dep.suid]
+            t2 = self.tasks[dep.fuid]
+            t1 = self.tasks[dep.suid]
             printer.print_dependence(dep,t1,t2)
 
 class Usage(object):
@@ -332,6 +342,186 @@ class Partition(object):
             printer.stop_subgraph()
             printer.print_same_rank(same_rank)
         return part_id
+
+class EventNode(object):
+    def __init__(self,name,idx,gen):
+        self.name = name
+        self.idx = idx
+        self.gen = gen
+
+    def print_node(self,printer):
+        printer.println(self.name+' [style=filled,label="Event\ ID:\ '+str(self.idx)+'\\nEvent\ Gen:\ '+str(self.gen)+
+                '",fillcolor=darkgoldenrod1,fontsize=16,fontcolor=black,shape=record,penwidth=2];') 
+
+class CopyNode(object):
+    def __init__(self,name,src_inst,src_handle,src_loc,dst_inst,dst_handle,dst_loc):
+        self.name = name
+        self.src_inst = src_inst
+        self.src_handle = src_handle
+        self.src_loc = src_loc
+        self.dst_inst = dst_inst
+        self.dst_handle = dst_handle
+        self.dst_lock = dst_loc
+
+    def print_node(self,printer):
+        printer.println(self.name+' [style=filled,label="Src\ Inst:\ '+str(self.src_inst)+'\\nSrc\ Handle:\ '+str(self.src_handle)+
+            '\\nDst Inst:\ '+str(self.dst_inst)+'\\nDst\ Handle:\ '+str(self.dst_handle)+
+            '",fillcolor=mediumseagreen,fontsize=16,fontcolor=black,shape=record,penwidth=2];')
+
+class IndexPoint(object):
+    def __init__(self,name,point):
+        self.name = name
+        self.point = point
+
+    def print_node(self,printer):
+        point_str = '('
+        for i in range(len(self.point)-1):
+            point_str = point_str + str(self.point[i]) +','
+        point_str = point_str + str(self.point[len(self.point)-1]) + ')'
+        printer.println(self.name+' [style=filled,label="Point: '+point_str+
+            '",fillcolor=lightskyblue,fontsize=16,fontcolor=black,shape=record,penwidth=2];')
+
+class IndexSpaceNode(object):
+    def __init__(self,name,task_id,unique_id):
+        self.name = name
+        self.task_id = task_id
+        self.unique_id = unique_id
+        self.points = set()
+
+    def add_point(self,point):
+        self.points.add(point)
+
+    def print_node(self,printer):
+        printer.println('subgraph '+self.name+' {');
+        printer.down()
+        rank_string = 'subgraph '+str(self.name)+'_rank {rank=same;'
+        for p in self.points:
+            p.print_node(printer)
+            rank_string = rank_string + ' ' + p.name +';'
+        printer.println(rank_string + '}')
+        printer.println('style = filled;')
+        printer.println('fontsize=16;')
+        printer.println('fillcolor = grey90;')
+        printer.println('label = "Index Space Task '+str(self.task_id)+' --- Unique ID '+str(self.unique_id)+'";')
+        printer.up()
+        printer.println('}')
+
+class TaskNode(object):
+    def __init__(self,name,task_id,unique_id):
+        self.name = name
+        self.task_id = task_id
+        self.unique_id = unique_id
+
+    def print_node(self,printer):
+        printer.println(self.name+' [style=filled,label="Task\ '+str(self.task_id)+'\\nUnique\ ID\ '+str(self.unique_id)+
+            '",fillcolor=lightskyblue,fontsize=16,fontcolor=black,shape=record,penwidth=2];')
+
+class EventGraphPrinter(object):
+    def __init__(self,path,name):
+        self.filename = path+name+'.dot'
+        self.out = open(self.filename,'w')
+        self.depth = 0
+        self.println('digraph '+name)
+        self.println('{')
+        self.down()
+
+    def close(self):
+        self.up()
+        self.println('}')
+        self.out.close()
+        return self.filename
+
+    def up(self):
+        assert self.depth > 0
+        self.depth = self.depth-1
+
+    def down(self):
+        self.depth = self.depth+1
+
+    def println(self,string):
+        for i in range(self.depth):
+            self.out.write('  ')
+        self.out.write(string)
+        self.out.write('\n')
+
+
+class EventGraph(object):
+    def __init__(self):
+        self.task_nodes = set()
+        self.index_nodes = dict()
+        self.copy_nodes = set()
+        self.event_nodes = dict()
+        self.edges = set()
+        self.next_node = 1
+
+    def get_next_node(self):
+        result = self.next_node
+        self.next_node = self.next_node + 1
+        return result
+
+    def get_event_node(self,idx,gen):
+        key = idx,gen
+        if key in self.event_nodes:
+            return self.event_nodes[key]
+        node_name = "event_node_"+str(self.get_next_node())
+        result = EventNode(node_name,idx,gen)
+        self.event_nodes[key] = result
+        return result
+
+    def get_copy_node(self,src_inst,src_handle,src_loc,dst_inst,dst_handle,dst_loc):
+        copy_name = "copy_node_"+str(self.get_next_node())
+        result = CopyNode(copy_name,src_inst,src_handle,src_loc,dst_inst,dst_handle,dst_loc)
+        self.copy_nodes.add(result)
+        return result
+
+    def get_index_space(self,tid,uid):
+        if uid in self.index_nodes:
+            return self.index_nodes[uid]
+        index_name = "cluster_index_space_node_"+str(self.get_next_node())
+        result = IndexSpaceNode(index_name,tid,uid)
+        self.index_nodes[uid] = result
+        return result
+
+    def get_index_point(self,space,point):
+        point_name = "index_point_node_"+str(self.get_next_node())
+        result = IndexPoint(point_name,point)
+        space.add_point(result)
+        return result
+
+    def get_task_node(self,tid,uid):
+        task_name = "task_node_"+str(self.get_next_node())
+        result = TaskNode(task_name,tid,uid)
+        self.task_nodes.add(result)
+        return result
+
+    def add_edge(self,src,dst):
+        edge = src,dst
+        self.edges.add(edge)
+
+    def print_event_graph(self,path,name):
+        printer = EventGraphPrinter(path,name)
+        printer.println("/* TaskNodes */")
+        for task in self.task_nodes:
+            task.print_node(printer)
+        printer.println("")
+        printer.println("/* Index Nodes */")
+        for index,node in self.index_nodes.iteritems():
+            node.print_node(printer)
+        printer.println("")
+        printer.println("/* Copy Nodes */")
+        for copy in self.copy_nodes:
+            copy.print_node(printer)
+        printer.println("")
+        printer.println("/* Event Nodes */")
+        for event,node in self.event_nodes.iteritems():
+            node.print_node(printer)
+        printer.println("")
+
+        printer.println("/* Edges */")
+        for edge in self.edges:
+            printer.println(edge[0].name + " -> " + edge[1].name+';')
+        printer.println("")
+        return printer.close()
 
 # EOF
 
