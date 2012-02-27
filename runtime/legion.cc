@@ -189,7 +189,23 @@ namespace RegionRuntime {
       // For right now just issue this copy to the low level runtime
       // TODO: put some intelligence in here to detect when we can't make this copy directly
       RegionInstance src_copy = src->inst;
-      return src_copy.copy_to_untyped(dst->inst, precondition);
+      Event ret_event = src_copy.copy_to_untyped(dst->inst, precondition);
+      log_spy(LEVEL_INFO,"Event Copy Event %d %d %d %d %d %d %d %d %d %d",
+          precondition.id,precondition.gen,src->inst.id,src->handle.id,src->location.id,
+          dst->inst.id,dst->handle.id,dst->location.id,ret_event.id,ret_event.gen);
+      return ret_event;
+    }
+
+    static void log_event_merge(const std::set<Event> &wait_on_events, Event result)
+    {
+      for (std::set<Event>::const_iterator it = wait_on_events.begin();
+            it != wait_on_events.end(); it++)
+      {
+        if (it->exists() && (*it != result))
+        {
+          log_spy(LEVEL_INFO,"Event Event %d %d %d %d",it->id,it->gen,result.id,result.gen);
+        }
+      }
     }
 
     /////////////////////////////////////////////////////////////
@@ -1117,7 +1133,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(idx == 0);
 #endif
-      log_spy(LEVEL_INFO,"Dependence %d %d %d %d %d %d",parent_ctx->unique_id,unique_id,idx,ctx->get_unique_id(),dep_idx,dtype);
+      log_spy(LEVEL_INFO,"Mapping Dependence %d %d %d %d %d %d",parent_ctx->unique_id,unique_id,idx,ctx->get_unique_id(),dep_idx,dtype);
       if (ctx->add_waiting_dependence(this, dep_idx))
       {
         remaining_notifications++;
@@ -4136,8 +4152,32 @@ namespace RegionRuntime {
 
       // Initialize region tree contexts
       initialize_region_tree_contexts();
+      Event start_cond = Event::merge_events(wait_on_events);
+#ifdef DEBUG_HIGH_LEVEL
+      {
+        // Debug printing for legion spy
+        log_event_merge(wait_on_events,start_cond);
+        Event term = get_termination_event();
+        if (is_index_space)
+        {
+          int index = 0;
+          char point_buffer[100]; 
+          for (unsigned idx = 0; idx < index_point.size(); idx++)
+          {
+            index = sprintf(&point_buffer[index],"%d ",index_point[idx]);
+          }
+          log_spy(LEVEL_INFO,"Index Task Launch %d %d %d %d %d %d %ld %s",
+              task_id,unique_id,start_cond.id,start_cond.gen,term.id,term.gen,index_point.size(),point_buffer);
+        }
+        else
+        {
+          log_spy(LEVEL_INFO,"Task Launch %d %d %d %d %d %d",
+              task_id,unique_id,start_cond.id,start_cond.gen,term.id,term.gen);
+        }
+      }
+#endif
       // Now launch the task itself (finally!)
-      local_proc.spawn(this->task_id, this->args, this->arglen, Event::merge_events(wait_on_events));
+      local_proc.spawn(this->task_id, this->args, this->arglen, start_cond);
 
 #ifdef DEBUG_HIGH_LEVEL
       assert(physical_instances.size() == regions.size());
@@ -4623,6 +4663,7 @@ namespace RegionRuntime {
       clone->mapped = false;
       clone->unmapped = 0;
       clone->map_event = this->map_event;
+      clone->termination_event = this->termination_event;
       clone->is_constraint_space = this->is_constraint_space; // false
       // shouldn't need to clone spaces 
       if (!slice)
@@ -6457,7 +6498,8 @@ namespace RegionRuntime {
         exit(1);
       }
 #endif
-      log_spy(LEVEL_INFO,"Dependence %d %d %d %d %d %d",parent_ctx->unique_id,unique_id,idx,ctx->get_unique_id(),dep_idx,dtype);
+      log_spy(LEVEL_INFO,"Mapping Dependence %d %d %d %d %d %d",
+                          parent_ctx->unique_id,unique_id,idx,ctx->get_unique_id(),dep_idx,dtype);
       bool new_dep = ctx->add_waiting_dependence(this,dep_idx);
       if (new_dep)
       {
@@ -7380,6 +7422,9 @@ namespace RegionRuntime {
                 }
                 // update the precondition
                 precondition = Event::merge_events(wait_on_events);
+#ifdef DEBUG_HIGH_LEVEL
+                log_event_merge(wait_on_events,precondition);
+#endif
                 // Mark that the partitions are closed
                 region_states[ren.ctx_id].open_physical.clear();
                 region_states[ren.ctx_id].open_state = PART_NOT_OPEN;
@@ -7607,15 +7652,19 @@ namespace RegionRuntime {
                 region_states[ren.ctx_id].open_physical.clear();
                 region_states[ren.ctx_id].open_physical.insert(pid);
                 region_states[ren.ctx_id].open_state = PART_EXCLUSIVE;
+                Event ret_event = Event::merge_events(wait_on_events);
+#ifdef DEBUG_HIGH_LEVEL
+                log_event_merge(wait_on_events,ret_event);
+#endif
                 if (already_open)
                 {
                   // Continue the traversal
-                  return partitions[pid]->register_physical_instance(ren, Event::merge_events(wait_on_events));
+                  return partitions[pid]->register_physical_instance(ren, ret_event);
                 }
                 else
                 {
                   // Open it and return the result
-                  return partitions[pid]->open_physical_tree(ren, Event::merge_events(wait_on_events));
+                  return partitions[pid]->open_physical_tree(ren, ret_event);
                 }
               }
               break;
@@ -7781,6 +7830,9 @@ namespace RegionRuntime {
         }
         // All these copies need to finish before we can do anything else
         precondition = Event::merge_events(wait_on_events);
+#ifdef DEBUG_HIGH_LEVEL
+        log_event_merge(wait_on_events,precondition);
+#endif
       }
       // Now check to see if we have any open partitions
       switch (region_states[ctx].open_state)
@@ -9003,7 +9055,11 @@ namespace RegionRuntime {
       // Mark everything closed
       partition_states[ctx].open_physical.clear();
       partition_states[ctx].physical_state = REG_NOT_OPEN;
-      return Event::merge_events(wait_on_events);
+      Event ret_event = Event::merge_events(wait_on_events);
+#ifdef DEBUG_HIGH_LEVEL
+      log_event_merge(wait_on_events,ret_event);
+#endif
+      return ret_event;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -9180,7 +9236,11 @@ namespace RegionRuntime {
           added_users.erase(uid);
         }
       }
-      return Event::merge_events(wait_on_events);
+      Event ret_event = Event::merge_events(wait_on_events);
+#ifdef DEBUG_HIGH_LEVEL
+      log_event_merge(wait_on_events,ret_event);
+#endif
+      return ret_event;
     }
 
     //-------------------------------------------------------------------------
@@ -9379,7 +9439,11 @@ namespace RegionRuntime {
         find_copy_dependences(wait_on_events);
       }
       // Return the set of events to wait on
-      return Event::merge_events(wait_on_events);
+      Event ret_event = Event::merge_events(wait_on_events);
+#ifdef DEBUG_HIGH_LEVEL
+      log_event_merge(wait_on_events,ret_event);
+#endif
+      return ret_event;
     }
 
     //-------------------------------------------------------------------------
