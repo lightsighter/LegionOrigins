@@ -275,6 +275,54 @@ namespace RegionRuntime {
     }
 
     /////////////////////////////////////////////////////////////
+    // Physical Region 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    void PhysicalRegion<AccessorArray>::wait_until_valid(void)
+    //--------------------------------------------------------------------------
+    {
+      if (inline_mapped)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!valid);
+#endif
+        const PhysicalRegion<AccessorArray> &result = impl->get_physical_region<AccessorArray>();
+        valid = true;
+        set_instance(result.instance);
+        set_allocator(result.allocator);
+      }
+      else
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(valid); // if this wasn't inline mapped, it should already be valid
+#endif
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void PhysicalRegion<AccessorGeneric>::wait_until_valid(void)
+    //--------------------------------------------------------------------------
+    {
+      if (inline_mapped)
+      {
+#ifdef DEBUG_HIGH_LEVEL 
+        assert(!valid);
+#endif
+        const PhysicalRegion<AccessorGeneric> &ref = impl->get_physical_region<AccessorGeneric>();
+        valid = true;
+        set_instance(ref.instance);
+        set_allocator(ref.allocator);
+      }
+      else
+      {
+#ifdef DEBUG_HIGH_LEVEL 
+        assert(valid); // if this wasn't inline mapped, it should already be valid
+#endif
+      }
+    }
+
+    /////////////////////////////////////////////////////////////
     // Region Requirement 
     ///////////////////////////////////////////////////////////// 
 
@@ -804,37 +852,6 @@ namespace RegionRuntime {
     }
 
     /////////////////////////////////////////////////////////////
-    // Region Mapping 
-    /////////////////////////////////////////////////////////////
-    
-    //--------------------------------------------------------------------------
-    RegionMapping::RegionMapping(void)
-      : impl(NULL)
-    //--------------------------------------------------------------------------
-    {
-    }
-
-    //--------------------------------------------------------------------------
-    RegionMapping::RegionMapping(RegionMappingImpl *i)
-      : impl(i)
-    //--------------------------------------------------------------------------
-    {
-    }
-
-    //--------------------------------------------------------------------------
-    RegionMapping::RegionMapping(const RegionMapping &rm)
-      : impl(rm.impl)
-    //--------------------------------------------------------------------------
-    {
-    }
-
-    //--------------------------------------------------------------------------
-    RegionMapping::~RegionMapping(void)
-    //--------------------------------------------------------------------------
-    {
-    }
-
-    /////////////////////////////////////////////////////////////
     // Region Mapping Implementation
     /////////////////////////////////////////////////////////////
 
@@ -867,6 +884,7 @@ namespace RegionRuntime {
       mapped_event = UserEvent::create_user_event();
       unmapped_event = UserEvent::create_user_event();
       result = PhysicalRegion<AccessorGeneric>();
+      fast_result = PhysicalRegion<AccessorArray>();
       remaining_notifications = 0;
       allocator = RegionAllocator::NO_ALLOC;
       region_nodes = parent_ctx->region_nodes;
@@ -980,6 +998,8 @@ namespace RegionRuntime {
     void RegionMappingImpl::perform_mapping(Mapper *mapper)
     //--------------------------------------------------------------------------
     {
+      // Mark that the result will be valid when we're done
+      result.valid = true;
       std::set<Memory> sources; 
       RegionNode *handle = (*region_nodes)[req.handle.region];
       handle->get_physical_locations(parent_physical_ctx,sources);
@@ -1216,7 +1236,6 @@ namespace RegionRuntime {
         child_node = child_node->parent->parent;
       }
     }
-
 
     /////////////////////////////////////////////////////////////
     // High Level Runtime 
@@ -1728,7 +1747,33 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    RegionMapping HighLevelRuntime::map_region(Context ctx, RegionRequirement req)
+    template<>
+    PhysicalRegion<AccessorArray> HighLevelRuntime::map_region(Context ctx, RegionRequirement req)
+    //--------------------------------------------------------------------------------------------
+    {
+      RegionMappingImpl *impl = get_available_mapping(ctx, req); 
+
+      log_region(LEVEL_DEBUG,"Registering a map operation for region %d in task %d\n",
+                  req.handle.region.id, ctx->unique_id);
+      ctx->register_mapping(impl); 
+      
+      // Check to see if it is ready to map, if so do it, otherwise add it to the list
+      // of waiting map operations
+      if (impl->is_ready())
+      {
+        perform_region_mapping(impl);
+      }
+      else
+      {
+        waiting_maps.push_back(impl);
+      }
+
+      return PhysicalRegion<AccessorArray>(impl);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    template<>
+    PhysicalRegion<AccessorGeneric> HighLevelRuntime::map_region(Context ctx, RegionRequirement req)
     //--------------------------------------------------------------------------------------------
     {
       RegionMappingImpl *impl = get_available_mapping(ctx, req); 
@@ -1737,17 +1782,60 @@ namespace RegionRuntime {
                   req.handle.region.id, ctx->unique_id);
       ctx->register_mapping(impl); 
 
-      return RegionMapping(impl);
+      // Check to see if it is ready to map, if so do it, otherwise add it to the list
+      // of waiting map operations
+      if (impl->is_ready())
+      {
+        perform_region_mapping(impl);
+      }
+      else
+      {
+        waiting_maps.push_back(impl);
+      }
+
+      return PhysicalRegion<AccessorGeneric>(impl);
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::unmap_region(Context ctx, RegionMapping mapping) 
+    template<>
+    void HighLevelRuntime::unmap_region(Context ctx, PhysicalRegion<AccessorArray> &region)
     //--------------------------------------------------------------------------------------------
     {
-      log_region(LEVEL_DEBUG,"Unmapping region %d in task %d\n",
-                  mapping.impl->req.handle.region.id, ctx->unique_id);
+      #ifdef DEBUG_HIGH_LEVEL
+      assert(region.valid);
+#endif
+      if (region.inline_mapped)
+      {
+        log_region(LEVEL_DEBUG,"Unmapping region %d in task %d\n",
+                  region.impl->req.handle.region.id, ctx->unique_id);
+        region.impl->deactivate();
+      }
+      else
+      {
+        ctx->unmap_region(region.idx, region.allocator);
+      }
+      region.valid = false;
+    }
 
-      mapping.impl->deactivate();
+    //--------------------------------------------------------------------------------------------
+    template<>
+    void HighLevelRuntime::unmap_region(Context ctx, PhysicalRegion<AccessorGeneric> &region)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(region.valid);
+#endif
+      if (region.inline_mapped)
+      {
+        log_region(LEVEL_DEBUG,"Unmapping region %d in task %d\n",
+                  region.impl->req.handle.region.id, ctx->unique_id);   
+        region.impl->deactivate();
+      }
+      else
+      {
+        ctx->unmap_region(region.idx, region.allocator);
+      }
+      region.valid = false;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1895,7 +1983,7 @@ namespace RegionRuntime {
     void HighLevelRuntime::add_to_ready_queue(TaskContext *ctx, bool acquire_lock)
     //--------------------------------------------------------------------------------------------
     {
-      if (!acquire_lock)
+      if (acquire_lock)
       {
         AutoLock q_lock(queue_lock);
         // Put it on the ready_queue
@@ -2160,11 +2248,11 @@ namespace RegionRuntime {
           {
             Event lock_event = mapper_locks[(*it)->map_id].lock(0,true/*exclusive*/);
             held_map_locks.insert((*it)->map_id);
-            lock_event.wait();
+            lock_event.wait(true/*block*/);
           }
           // Also get the context lock
           Event lock_event = (*it)->current_lock.lock(0,true/*exclusive*/);
-          lock_event.wait();
+          lock_event.wait(true/*block*/);
         }
 
         size_t total_buffer_size = 2*sizeof(Processor) + sizeof(int);
@@ -2328,7 +2416,7 @@ namespace RegionRuntime {
 
       // Get the lock for the ready queue lock in exclusive mode
       Event lock_event = queue_lock.lock(0,true);
-      lock_event.wait();
+      lock_event.wait(true/*block*/);
       log_task(LEVEL_SPEW,"Running scheduler on processor %d with %ld tasks in ready queue",
               local_proc.id, ready_queue.size());
 
@@ -2414,12 +2502,7 @@ namespace RegionRuntime {
         {
           RegionMappingImpl *mapping = *map_it;
           // All of the dependences on this mapping have been satisfied, map it
-          {
-            // Get the necessary locks on the mapper for this mapping implementation
-            AutoLock map_lock(mapping_lock,1,false/*exclusive*/); 
-            AutoLock mapper_lock(mapper_locks[mapping->parent_ctx->map_id]);
-            mapping->perform_mapping(mapper_objects[mapping->parent_ctx->map_id]);
-          }
+          perform_region_mapping(mapping);
           map_it = waiting_maps.erase(map_it);
         }
         else
@@ -2427,6 +2510,19 @@ namespace RegionRuntime {
           map_it++;
         }
       }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::perform_region_mapping(RegionMappingImpl *impl)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(impl->is_ready());
+#endif
+      // Get the necessary locks on the mapper for this mapping implementation
+      AutoLock map_lock(mapping_lock,1,false/*exclusive*/); 
+      AutoLock mapper_lock(mapper_locks[impl->parent_ctx->map_id]);
+      impl->perform_mapping(mapper_objects[impl->parent_ctx->map_id]);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4912,7 +5008,9 @@ namespace RegionRuntime {
       // Get the set of physical regions for the task
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        PhysicalRegion<AccessorGeneric> reg;
+        // Create the new physical region and mark which index
+        // it is in case we have to unmap it later
+        PhysicalRegion<AccessorGeneric> reg(idx);
 
         // check to see if they asked for a physical instance
         if (physical_instances[idx] != InstanceInfo::get_no_instance())
@@ -6374,6 +6472,30 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    void TaskContext::unmap_region(unsigned idx, RegionAllocator allocator)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx < regions.size());
+      assert(regions.size() == physical_instances.size());
+#endif
+      // Destroy the allocator if there was one
+      if (regions[idx].alloc != NO_MEMORY)
+      {
+        regions[idx].handle.region.destroy_allocator_untyped(allocator);
+      }
+      // Check to see if there was an instance, if not, we're done
+      if (physical_instances[idx] == InstanceInfo::get_no_instance())
+      {
+        return;
+      }
+      // Release our reference to the physical instance
+      physical_instances[idx]->remove_user(this->unique_id);
+      // Set it to the no instance since we're no longer using it
+      physical_instances[idx] = InstanceInfo::get_no_instance();
+    }
+
+    //--------------------------------------------------------------------------------------------
     LogicalRegion TaskContext::get_subregion(PartitionID pid, Color c) const
     //--------------------------------------------------------------------------------------------
     {
@@ -7314,7 +7436,7 @@ namespace RegionRuntime {
             if (locations.size() == 1)
             {
               // No point in invoking the mapper
-              src_info = find_physical_instance(ren.ctx_id, *(locations.begin()));  
+              src_info = find_physical_instance(ren.ctx_id, *(locations.begin()), true/*allow up*/);  
             }
             else
             {
@@ -7323,7 +7445,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
               assert(chosen_src.exists());
 #endif
-              src_info = find_physical_instance(ren.ctx_id, chosen_src);
+              src_info = find_physical_instance(ren.ctx_id, chosen_src, true/*allow up*/);
             }
 #ifdef DEBUG_HIGH_LEVEL
             assert(src_info != InstanceInfo::get_no_instance());
@@ -7365,7 +7487,7 @@ namespace RegionRuntime {
           for (std::set<Memory>::const_iterator it = locations.begin();
                 it != locations.end(); it++)
           {
-            InstanceInfo *info = find_physical_instance(ren.ctx_id, *it);
+            InstanceInfo *info = find_physical_instance(ren.ctx_id, *it, true/*allow up*/);
             if (info->handle != handle)
             {
               InstanceInfo *new_info = ren.ctx->create_instance_info(handle,info);
@@ -7520,7 +7642,7 @@ namespace RegionRuntime {
                     for (std::vector<Memory>::const_iterator mem_it = ranking.begin();
                           mem_it != ranking.end(); mem_it++)
                     {
-                      target = find_physical_instance(ren.ctx_id,*mem_it); 
+                      target = find_physical_instance(ren.ctx_id,*mem_it,true/*allow up*/); 
                       if (target != InstanceInfo::get_no_instance())
                       {
                         // Check to see if this is an instance info of the right logical region
@@ -7545,7 +7667,7 @@ namespace RegionRuntime {
                             InstanceInfo *src_info; 
                             if (locations.size() == 1)
                             {
-                              src_info = find_physical_instance(ren.ctx_id,*(locations.begin()));
+                              src_info = find_physical_instance(ren.ctx_id,*(locations.begin()),true/*allow up*/);
                             }
                             else
                             {
@@ -7555,7 +7677,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
                               assert(src_mem.exists());
 #endif
-                              src_info = find_physical_instance(ren.ctx_id,src_mem);
+                              src_info = find_physical_instance(ren.ctx_id,src_mem,true/*allow up*/);
                             }
                             // Record that we're using the physical instance as a source
                             precondition = src_info->get_copy_precondition(precondition,false/*writer*/);
@@ -7764,7 +7886,7 @@ namespace RegionRuntime {
           }
           else
           {
-            ren.info->add_user(ren.ctx, ren.idx, precondition);
+            precondition = ren.info->add_user(ren.ctx, ren.idx, precondition);
           }
           // Update the valid instances
           update_valid_instances(ren.ctx_id, ren.info, HAS_WRITE(ren.get_req()));
