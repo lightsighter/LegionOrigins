@@ -63,8 +63,6 @@ namespace RegionRuntime {
                                                     std::set<const Task*> &to_steal)
     //--------------------------------------------------------------------------------------------
     {
-      return;
-#if 0
       unsigned total_stolen = 0;
       for (std::vector<const Task*>::const_iterator it = tasks.begin();
             it != tasks.end(); it++)
@@ -78,7 +76,6 @@ namespace RegionRuntime {
             break;
         }
       }
-#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -112,9 +109,9 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       // Try putting it in the local memory, if that doesn't work, try the global memory
-      //Memory local = { local_proc.id + 1 };
+      Memory local = { local_proc.id + 1 };
       Memory global = { 1 };
-      //target_ranking.push_back(local);
+      target_ranking.push_back(local);
       target_ranking.push_back(global);
       enable_WAR_optimization = false;
     }
