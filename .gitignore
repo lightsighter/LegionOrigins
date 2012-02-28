@@ -3,3 +3,7 @@
 core
 *.fluid
 *.pyc
+*.swp
+*.log
+*.bbl
+*.blg
