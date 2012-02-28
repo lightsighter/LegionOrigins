@@ -112,11 +112,11 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       // Try putting it in the local memory, if that doesn't work, try the global memory
-      Memory local = { local_proc.id + 1 };
+      //Memory local = { local_proc.id + 1 };
       Memory global = { 1 };
-      target_ranking.push_back(local);
+      //target_ranking.push_back(local);
       target_ranking.push_back(global);
-      enable_WAR_optimization = true;
+      enable_WAR_optimization = false;
     }
 
     //--------------------------------------------------------------------------------------------
