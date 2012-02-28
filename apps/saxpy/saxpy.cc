@@ -192,6 +192,7 @@ void main_task(const void *args, size_t arglen,
     reg_y.wait_until_valid();
     reg_z.wait_until_valid();
 
+    bool success = true;
     for (unsigned i = 0; i < *get_num_blocks(); i++) {
       for (unsigned j = 0; j < BLOCK_SIZE; j++) {
         ptr_t<Entry> entry_x = blocks[i].entry_x[j];
@@ -199,17 +200,22 @@ void main_task(const void *args, size_t arglen,
         ptr_t<Entry> entry_z = blocks[i].entry_z[j];
 
         Entry x_val = reg_x.read(entry_x);
-        Entry y_val = reg_x.read(entry_y);
+        Entry y_val = reg_y.read(entry_y);
         Entry z_val = reg_z.read(entry_z);
         float compute = vr->alpha * x_val.v + y_val.v;
         if (z_val.v != compute)
         {
           printf("Failure at %d of block %d.  Expected %f but received %f\n",
               j, i, z_val.v, compute);
+          success = false;
           break;
         }
       }
     }
+    if (success)
+      printf("SUCCESS!\n");
+    else
+      printf("FAILURE!\n");
   }
 }
 
