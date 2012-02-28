@@ -2190,6 +2190,14 @@ namespace RegionRuntime {
     template <>
     RegionInstanceAccessorUntyped<AccessorGeneric> RegionInstanceAccessorUntyped<AccessorGeneric>::convert<AccessorGeneric>(void) const
     { return *this; }
+
+    template<>
+    bool RegionInstanceAccessorUntyped<AccessorGeneric>::can_convert<AccessorArray>(void) const
+    { return true; }
+
+    template<>
+    RegionInstanceAccessorUntyped<AccessorArray> RegionInstanceAccessorUntyped<AccessorGeneric>::convert<AccessorArray>(void) const
+    { return RegionInstanceAccessorUntyped<AccessorArray>(this->internal_data); }
     
     ////////////////////////////////////////////////////////
     // RegionMetaDataUntyped 
