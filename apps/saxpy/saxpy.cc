@@ -143,11 +143,15 @@ void main_task(const void *args, size_t arglen,
   init_regions.push_back(RegionRequirement(p_x.id, color_map, WRITE_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_x));
   init_regions.push_back(RegionRequirement(p_y.id, color_map, WRITE_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_y));
 
+  // unmap the parent regions that we might use
+  runtime->unmap_region(ctx, r_x);
+  runtime->unmap_region(ctx, r_y);
+
   // Launch init task
   FutureMap init_f =
     runtime->execute_index_space(ctx, TASKID_INIT_VECTORS, index_space,
 				 init_regions, global, arg_map, false);
-  init_f.wait_all_results();
+  //init_f.wait_all_results();
 
   printf("STARTING MAIN SIMULATION LOOP\n");
   struct timespec ts_start, ts_end;
@@ -160,11 +164,14 @@ void main_task(const void *args, size_t arglen,
   add_regions.push_back(RegionRequirement(p_y.id, color_map, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_y));
   add_regions.push_back(RegionRequirement(p_z.id, color_map, WRITE_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_z));
 
+  // Unmap the regions that haven't already been unmapped
+  runtime->unmap_region(ctx, r_z);
+
   // Launch add task
   FutureMap add_f =
     runtime->execute_index_space(ctx, TASKID_ADD_VECTORS, index_space,
                                  add_regions, global, arg_map, false);
-  add_f.wait_all_results();
+  //add_f.wait_all_results();
 
   // Print results
   clock_gettime(CLOCK_MONOTONIC, &ts_end);
@@ -173,14 +180,46 @@ void main_task(const void *args, size_t arglen,
   printf("ELAPSED TIME = %7.3f s\n", sim_time);
   RegionRuntime::DetailedTimer::report_timers();
 
-  exit(0);
+  // Validate the results
+  {
+    PhysicalRegion<AccessorGeneric> reg_x =
+      runtime->map_region<AccessorGeneric>(ctx, RegionRequirement(vr->r_x,READ_ONLY,NO_MEMORY,EXCLUSIVE,vr->r_x));
+    PhysicalRegion<AccessorGeneric> reg_y =
+      runtime->map_region<AccessorGeneric>(ctx, RegionRequirement(vr->r_y,READ_ONLY,NO_MEMORY,EXCLUSIVE,vr->r_y));
+    PhysicalRegion<AccessorGeneric> reg_z = 
+      runtime->map_region<AccessorGeneric>(ctx, RegionRequirement(vr->r_z,READ_ONLY,NO_MEMORY,EXCLUSIVE,vr->r_z));
+    reg_x.wait_until_valid();
+    reg_y.wait_until_valid();
+    reg_z.wait_until_valid();
+
+    for (unsigned i = 0; i < *get_num_blocks(); i++) {
+      for (unsigned j = 0; j < BLOCK_SIZE; j++) {
+        ptr_t<Entry> entry_x = blocks[i].entry_x[j];
+        ptr_t<Entry> entry_y = blocks[i].entry_y[j];
+        ptr_t<Entry> entry_z = blocks[i].entry_z[j];
+
+        Entry x_val = reg_x.read(entry_x);
+        Entry y_val = reg_x.read(entry_y);
+        Entry z_val = reg_z.read(entry_z);
+        float compute = vr->alpha * x_val.v + y_val.v;
+        if (z_val.v != compute)
+        {
+          printf("Failure at %d of block %d.  Expected %f but received %f\n",
+              j, i, z_val.v, compute);
+          break;
+        }
+      }
+    }
+  }
 }
 
 template<AccessorType AT>
-void init_vectors_task(const void *args, size_t arglen,
+void init_vectors_task(const void *global_args, size_t global_arglen,
+                       const void *local_args, size_t local_arglen,
+                       const IndexPoint &point,
                        const std::vector<PhysicalRegion<AT> > &regions,
                        Context ctx, HighLevelRuntime *runtime) {
-  Block *block = (Block *)args;
+  Block *block = (Block *)local_args;
   PhysicalRegion<AT> r_x = regions[0];
   PhysicalRegion<AT> r_y = regions[1];
 
@@ -196,10 +235,12 @@ void init_vectors_task(const void *args, size_t arglen,
 }
 
 template<AccessorType AT>
-void add_vectors_task(const void *args, size_t arglen,
+void add_vectors_task(const void *global_args, size_t global_arglen,
+                      const void *local_args, size_t local_arglen,
+                      const IndexPoint &point,
                       const std::vector<PhysicalRegion<AT> > &regions,
                       Context ctx, HighLevelRuntime *runtime) {
-  Block *block = (Block *)args;
+  Block *block = (Block *)local_args;
   PhysicalRegion<AT> r_x = regions[0];
   PhysicalRegion<AT> r_y = regions[1];
   PhysicalRegion<AT> r_z = regions[2];
@@ -525,8 +566,10 @@ int main(int argc, char **argv) {
   Processor::TaskIDTable task_table;
   task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
   task_table[TASKID_MAIN] = high_level_task_wrapper<main_task<AccessorGeneric> >;
-  task_table[TASKID_INIT_VECTORS] = high_level_task_wrapper<init_vectors_task<AccessorGeneric> >;
-  task_table[TASKID_ADD_VECTORS] = high_level_task_wrapper<add_vectors_task<AccessorGeneric> >;
+  //task_table[TASKID_INIT_VECTORS] = high_level_task_wrapper<init_vectors_task<AccessorGeneric> >;
+  //task_table[TASKID_ADD_VECTORS] = high_level_task_wrapper<add_vectors_task<AccessorGeneric> >;
+  task_table[TASKID_INIT_VECTORS] = high_level_index_task_wrapper<init_vectors_task<AccessorGeneric> >;
+  task_table[TASKID_ADD_VECTORS] = high_level_index_task_wrapper<add_vectors_task<AccessorGeneric> >;
 
   HighLevelRuntime::register_runtime_tasks(task_table);
   HighLevelRuntime::set_mapper_init_callback(create_mappers);
