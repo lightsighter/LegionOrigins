@@ -189,11 +189,14 @@ class Log(object):
             dot_file = printer.close()
             ps_file = str(path)+prefix+str(t.handle)+'.ps'
             jpeg_file = str(path)+prefix+str(t.handle)+'.jpg'
+            png_file = str(path)+prefix+str(t.handle)+'.png'
             # Convert the dotfile to ps
-            subprocess.call(['dot -Tps2 -o '+ps_file+' '+dot_file],shell=True)
+            #subprocess.call(['dot -Tps2 -o '+ps_file+' '+dot_file],shell=True)
             # Convert the ps file jpeg
-            subprocess.call(['convert '+ps_file+' '+jpeg_file],shell=True)
-            tree_images.add(jpeg_file)
+            #subprocess.call(['convert '+ps_file+' '+jpeg_file],shell=True)
+            #tree_images.add(jpeg_file)
+            subprocess.call(['dot -Tpng -o '+png_file+' '+dot_file],shell=True)
+            tree_images.add(png_file)
         return tree_images
 
     def print_contexts(self,path):
@@ -205,9 +208,12 @@ class Log(object):
             dot_file = printer.close()
             ps_file = str(path)+prefix+str(ctx_id)+'.ps'
             jpeg_file = str(path)+prefix+str(ctx_id)+'.jpg'
-            subprocess.call(['dot -Tps2 -o '+ps_file+' '+dot_file],shell=True)
-            subprocess.call(['convert '+ps_file+' '+jpeg_file],shell=True)
-            ctx_images[ctx_id] = jpeg_file
+            png_file = str(path)+prefix+str(ctx_id)+'.png'
+            #subprocess.call(['dot -Tps2 -o '+ps_file+' '+dot_file],shell=True)
+            #subprocess.call(['convert '+ps_file+' '+jpeg_file],shell=True)
+            #ctx_images[ctx_id] = jpeg_file
+            subprocess.call(['dot -Tpng -o '+png_file+' '+dot_file],shell=True)
+            ctx_images[ctx_id] = png_file
         return ctx_images
 
     def print_event_graph(self,path):
@@ -215,9 +221,12 @@ class Log(object):
         dot_file = self.event_graph.print_event_graph(path,graph)
         ps_file = str(path)+graph+'.ps'
         jpeg_file = str(path)+graph+'.jpg'
-        subprocess.call(['dot -Tps2 -o '+ps_file+' '+dot_file],shell=True)
-        subprocess.call(['convert '+ps_file+' '+jpeg_file],shell=True)
-        return jpeg_file
+        png_file = str(path)+graph+'.png'
+        #subprocess.call(['dot -Tps2 -o '+ps_file+' '+dot_file],shell=True)
+        #subprocess.call(['convert '+ps_file+' '+jpeg_file],shell=True)
+        #return jpeg_file
+        subprocess.call(['dot -Tpng -o '+png_file+' '+dot_file],shell=True)
+        return png_file
 
 
 class Context(object):
@@ -246,7 +255,7 @@ class Context(object):
         for dep in self.deps:
             t2 = self.tasks[dep.fuid]
             t1 = self.tasks[dep.suid]
-            printer.print_dependence(dep,t1,t2)
+            printer.print_dependence(dep,t2,t1)
 
 class Usage(object):
     def __init__(self,is_region,handle,parent):
@@ -348,10 +357,15 @@ class EventNode(object):
         self.name = name
         self.idx = idx
         self.gen = gen
+        if idx == 0:
+            assert gen == 0
 
     def print_node(self,printer):
         printer.println(self.name+' [style=filled,label="Event\ ID:\ '+str(self.idx)+'\\nEvent\ Gen:\ '+str(self.gen)+
                 '",fillcolor=darkgoldenrod1,fontsize=16,fontcolor=black,shape=record,penwidth=2];') 
+
+    def is_no_event(self):
+        return (self.idx == 0)
 
 class CopyNode(object):
     def __init__(self,name,src_inst,src_handle,src_loc,dst_inst,dst_handle,dst_loc):
@@ -361,11 +375,13 @@ class CopyNode(object):
         self.src_loc = src_loc
         self.dst_inst = dst_inst
         self.dst_handle = dst_handle
-        self.dst_lock = dst_loc
+        self.dst_loc = dst_loc
 
     def print_node(self,printer):
         printer.println(self.name+' [style=filled,label="Src\ Inst:\ '+str(self.src_inst)+'\\nSrc\ Handle:\ '+str(self.src_handle)+
-            '\\nDst Inst:\ '+str(self.dst_inst)+'\\nDst\ Handle:\ '+str(self.dst_handle)+
+            '\\nSrc\ Loc:\ '+str(self.src_loc)+
+            '\\nDst\ Inst:\ '+str(self.dst_inst)+'\\nDst\ Handle:\ '+str(self.dst_handle)+
+            '\\nDst\ Loc:\ '+str(self.dst_loc)+
             '",fillcolor=mediumseagreen,fontsize=16,fontcolor=black,shape=record,penwidth=2];')
 
 class IndexPoint(object):
@@ -386,25 +402,102 @@ class IndexSpaceNode(object):
         self.name = name
         self.task_id = task_id
         self.unique_id = unique_id
-        self.points = set()
+        self.points = list()
+        self.dst_edges = dict() # incoming
+        self.src_edges = dict() # outgoing
 
     def add_point(self,point):
-        self.points.add(point)
+        self.points.append(point)
+        point.parent = self
+
+    def add_dst_edge(self,src,point):
+        assert point not in self.dst_edges
+        self.dst_edges[point] = src
+
+    def add_src_edge(self,point,dst):
+        assert point not in self.src_edges
+        self.src_edges[point] = dst
+
+    def print_edges(self,printer):
+        if len(self.dst_edges) > 0:
+            all_same = True
+            random = self.dst_edges[self.points[0]]
+            for p,src in self.dst_edges.iteritems():
+                if src <> random:
+                    all_same = False
+                    break
+            if all_same:
+                printer.println(random.name + ' -> ' + self.points[0].name + ' [lhead='+self.name+'];')
+            else:
+                for p,src in self.dst_edges.iteritems():
+                    printer.println(src.name + ' -> ' + p.name + ' [lhead='+self.name+'];')
+        if len(self.src_edges) > 0:
+            all_same = True
+            random = self.src_edges[self.points[0]] 
+            for p,s in self.src_edges.iteritems():
+                if s <> random:
+                    all_same = False
+                    break
+            # See if they're all the same
+            if all_same:
+                printer.println(self.points[0].name + ' -> ' + random.name + ' [ltail='+self.name+'];') 
+            else:
+                for p,dst in self.src_edges.iteritems():
+                    printer.println(p.name + ' -> ' + dst.name + ' [ltail='+self.name+'];')
 
     def print_node(self,printer):
+        printer.println(self.name+' [style=filled,label="Index Space Task '+str(self.task_id)+
+                                  '\\nUnique ID '+str(self.unique_id)+'",fillcolor=lightskyblue,'+
+                                  'fontsize=16,fontcolor=black,shape=record,penwidth=2];')
+        '''
+        self.points = sorted(self.points)
         printer.println('subgraph '+self.name+' {');
         printer.down()
-        rank_string = 'subgraph '+str(self.name)+'_rank {rank=same;'
+
+        # Print rank guide nodes
+        step_width = 8
+        for i in range(0,len(self.points)+step_width,step_width):
+            printer.println('r'+str(i)+'_'+str(self.name)+' [style=invis,shape=circle,width=.01,heigh=.01,label=""];')
+        src = 'r0_'+str(self.name)
+        for i in range(step_width,len(self.points)+step_width,step_width):
+            dst = 'r'+str(i)+'_'+str(self.name) 
+            printer.println(src + ' -> ' + dst+' [style=invis,weight=100000000,maxlen=.01];')
+            src = dst
+
         for p in self.points:
             p.print_node(printer)
-            rank_string = rank_string + ' ' + p.name +';'
-        printer.println(rank_string + '}')
+
+        # Print an invisible edge between every pair of nodes in the graph
+        for p1 in self.points:
+            for p2 in self.points:
+                if p1 == p2:
+                    continue
+                printer.println(p1.name + ' -> ' + p2.name + ' [style=invis,weight=100000]; ')
+ 
+        # Print the subgraph in ranks
+        step_size = 8
+        for i in range(0,len(self.points),step_size):
+            index = i
+            rank_string = 'subgraph '+str(self.name)+'_rank_'+str(index)+' {rank=same; rankdir=LR; label=""; r'+str(i)+'_'+str(self.name)+'; '
+            while index < len(self.points) and index < (i+step_size):
+                rank_string = rank_string + ' ' + self.points[index].name + ';'
+                index = index + 1
+            src = 'r'+str(i)+'_'+str(self.name)
+            index = i
+            while index < len(self.points) and index < (i+step_size):
+                dst = self.points[index].name
+                rank_string = rank_string + ' ' + src + ' -> ' + dst + ' [style=invis,weight=100000];'
+                src = dst
+                index = index + 1
+            printer.println(rank_string + '}') 
+            
         printer.println('style = filled;')
         printer.println('fontsize=16;')
         printer.println('fillcolor = grey90;')
         printer.println('label = "Index Space Task '+str(self.task_id)+' --- Unique ID '+str(self.unique_id)+'";')
         printer.up()
         printer.println('}')
+        '''
 
 class TaskNode(object):
     def __init__(self,name,task_id,unique_id):
@@ -424,6 +517,10 @@ class EventGraphPrinter(object):
         self.println('digraph '+name)
         self.println('{')
         self.down()
+        #self.println('aspect = ".00001,100";')
+        #self.println('ratio = 1;')
+        #self.println('size = "10,10";')
+        self.println('compound = true;')
 
     def close(self):
         self.up()
@@ -498,6 +595,12 @@ class EventGraph(object):
         edge = src,dst
         self.edges.add(edge)
 
+    def add_index_dst_edge(self,space,src,point):
+        space.add_dst_edge(src,point)
+
+    def add_index_src_edge(self,space,point,dst):
+        space.add_src_edge(point,dst)
+
     def print_event_graph(self,path,name):
         printer = EventGraphPrinter(path,name)
         printer.println("/* TaskNodes */")
@@ -514,12 +617,27 @@ class EventGraph(object):
         printer.println("")
         printer.println("/* Event Nodes */")
         for event,node in self.event_nodes.iteritems():
-            node.print_node(printer)
+            if not node.is_no_event():
+                node.print_node(printer)
         printer.println("")
 
         printer.println("/* Edges */")
         for edge in self.edges:
-            printer.println(edge[0].name + " -> " + edge[1].name+';')
+            if hasattr(edge[0],'parent'):
+                if hasattr(edge[1],'parent'):
+                    printer.println(edge[0].name + " -> " + edge[1].name+' [ltail='+edge[0].parent.name+', lhead='+edge[1].parent.name+'];')
+                else:
+                    printer.println(edge[0].name + " -> " + edge[1].name+' [ltail='+edge[0].parent.name+'];')
+            else:
+                if hasattr(edge[1],'parent'):
+                    printer.println(edge[0].name + " -> " + edge[1].name+' [lhead='+edge[1].parent.name+'];')
+                else:
+                    printer.println(edge[0].name + " -> " + edge[1].name+';')
+        printer.println("")
+        # Print the source and destination edges separately
+        printer.println("/* Index Space Edges */")
+        for index,node in self.index_nodes.iteritems():
+            node.print_edges(printer)
         printer.println("")
         return printer.close()
 

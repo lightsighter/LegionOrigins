@@ -107,7 +107,8 @@ def parse_log_file(file_name):
         if m <> None:
             src = result.event_graph.get_event_node(int(m.group('src_id')),int(m.group('src_gen')))
             dst = result.event_graph.get_event_node(int(m.group('dst_id')),int(m.group('dst_gen')))
-            result.event_graph.add_edge(src,dst)
+            if (not src.is_no_event()) and (not dst.is_no_event()): 
+                result.event_graph.add_edge(src,dst)
             continue
         m = copy_pat.match(line)
         if m <> None:
@@ -115,16 +116,20 @@ def parse_log_file(file_name):
             copy = result.event_graph.get_copy_node(int(m.group('src_inst')),int(m.group('src_handle')),int(m.group('src_loc')),
                                                     int(m.group('dst_inst')),int(m.group('dst_handle')),int(m.group('dst_loc')))
             dst = result.event_graph.get_event_node(int(m.group('dst_id')),int(m.group('dst_gen')))
-            result.event_graph.add_edge(src,copy)
-            result.event_graph.add_edge(copy,dst)
+            if not src.is_no_event():
+                result.event_graph.add_edge(src,copy)
+            if not dst.is_no_event():
+                result.event_graph.add_edge(copy,dst)
             continue
         m = task_launch_pat.match(line)
         if m <> None:
             src = result.event_graph.get_event_node(int(m.group('start_id')),int(m.group('start_gen')))
             task = result.event_graph.get_task_node(int(m.group('tid')),int(m.group('uid')))
             dst = result.event_graph.get_event_node(int(m.group('term_id')),int(m.group('term_gen')))
-            result.event_graph.add_edge(src,task)
-            result.event_graph.add_edge(task,dst)
+            if not src.is_no_event():
+                result.event_graph.add_edge(src,task)
+            if not dst.is_no_event():
+                result.event_graph.add_edge(task,dst)
             continue
         m = index_launch_pat.match(line)
         if m <> None:
@@ -134,11 +139,15 @@ def parse_log_file(file_name):
             point = list()
             for i in range(int(m.group('point_size'))):
                 point.append(int(index_points[i]))
-            point_node = result.event_graph.get_index_point(space,point)
+            #point_node = result.event_graph.get_index_point(space,point)
             src = result.event_graph.get_event_node(int(m.group('start_id')),int(m.group('start_gen')))
-            dst = result.event_graph.get_event_node(int(m.group('term_id')),int(m.group('term_id')))
-            result.event_graph.add_edge(src,point_node)
-            result.event_graph.add_edge(point_node,dst)
+            dst = result.event_graph.get_event_node(int(m.group('term_id')),int(m.group('term_gen')))
+            if not src.is_no_event():
+                #result.event_graph.add_index_dst_edge(space,src,point_node)
+                result.event_graph.add_edge(src,space)
+            if not dst.is_no_event():
+                #result.event_graph.add_index_src_edge(space,point_node,dst)
+                result.event_graph.add_edge(space,dst)
             continue
     return result
 
