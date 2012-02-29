@@ -1338,6 +1338,7 @@ namespace RegionRuntime {
       // Information for figuring out which regions to use
       // Mappings for the logical regions at call-time (can be no-instance == covered)
       std::vector<InstanceInfo*> physical_instances;
+      std::vector<bool> valid_allocators;
       // The enclosing physical contexts from our parent context
       std::vector<ContextID> enclosing_ctx;
       // The physical contexts we use for all our child task mappings

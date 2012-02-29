@@ -1053,6 +1053,9 @@ namespace RegionRuntime {
               needs_initializing = true;
             }
           }
+          log_region(LEVEL_INFO,"Mapping inline region %d of task %d (unique id %d) to "
+              "physical instance %d of logical region %d in memory %d",req.handle.region.id,
+              parent_ctx->task_id,parent_ctx->unique_id,chosen_info->iid,chosen_info->handle.id,chosen_info->location.id);
 #ifdef DEBUG_HIGH_LEVEL
           assert(chosen_info != InstanceInfo::get_no_instance());
 #endif
@@ -1566,7 +1569,7 @@ namespace RegionRuntime {
       // Create the logical region by invoking the low-level runtime
       LogicalRegion region = 
         (LogicalRegion)LowLevel::RegionMetaDataUntyped::create_region_untyped(num_elmts,elmt_size);
-      log_region(LEVEL_DEBUG,"Creating logical region %d in task %d\n",
+      log_region(LEVEL_DEBUG,"Creating logical region %d in task %d",
                   region.id,ctx->unique_id);
       log_spy(LEVEL_INFO,"Region %d",region.id);
 
@@ -1582,7 +1585,7 @@ namespace RegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_DESTROY_REGION);
       LowLevel::RegionMetaDataUntyped low_region = (LowLevel::RegionMetaDataUntyped)handle;
-      log_region(LEVEL_DEBUG,"Destroying logical region %d in task %d\n",
+      log_region(LEVEL_DEBUG,"Destroying logical region %d in task %d",
                   low_region.id, ctx->unique_id);
 
       // Notify the context that we destroyed the logical region
@@ -1621,7 +1624,7 @@ namespace RegionRuntime {
       LogicalRegion smash_region = 
         LowLevel::RegionMetaDataUntyped::create_region_untyped(parent,smash_mask);
 
-      log_region(LEVEL_DEBUG,"Creating smashed logical region %d in task %d\n",
+      log_region(LEVEL_DEBUG,"Creating smashed logical region %d in task %d",
                   smash_region.id, ctx->unique_id);
 
       // Tell the context about the new smash region
@@ -1734,7 +1737,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_DESTROY_PARTITION);
-      log_region(LEVEL_DEBUG,"Destroying partition %d in task %d\n",
+      log_region(LEVEL_DEBUG,"Destroying partition %d in task %d",
                   part.id, ctx->unique_id);
       ctx->remove_partition(part.id, part.parent, false/*recursive*/, true/*reclaim resources*/);
     }
@@ -1753,7 +1756,7 @@ namespace RegionRuntime {
     {
       RegionMappingImpl *impl = get_available_mapping(ctx, req); 
 
-      log_region(LEVEL_DEBUG,"Registering a map operation for region %d in task %d\n",
+      log_region(LEVEL_DEBUG,"Registering a map operation for region %d in task %d",
                   req.handle.region.id, ctx->unique_id);
       ctx->register_mapping(impl); 
       
@@ -1778,7 +1781,7 @@ namespace RegionRuntime {
     {
       RegionMappingImpl *impl = get_available_mapping(ctx, req); 
 
-      log_region(LEVEL_DEBUG,"Registering a map operation for region %d in task %d\n",
+      log_region(LEVEL_DEBUG,"Registering a map operation for region %d in task %d",
                   req.handle.region.id, ctx->unique_id);
       ctx->register_mapping(impl); 
 
@@ -1806,7 +1809,7 @@ namespace RegionRuntime {
 #endif
       if (region.inline_mapped)
       {
-        log_region(LEVEL_DEBUG,"Unmapping region %d in task %d\n",
+        log_region(LEVEL_DEBUG,"Unmapping region %d in task %d",
                   region.impl->req.handle.region.id, ctx->unique_id);
         region.impl->deactivate();
       }
@@ -1827,7 +1830,7 @@ namespace RegionRuntime {
 #endif
       if (region.inline_mapped)
       {
-        log_region(LEVEL_DEBUG,"Unmapping region %d in task %d\n",
+        log_region(LEVEL_DEBUG,"Unmapping region %d in task %d",
                   region.impl->req.handle.region.id, ctx->unique_id);   
         region.impl->deactivate();
       }
@@ -1842,8 +1845,7 @@ namespace RegionRuntime {
     void HighLevelRuntime::add_mapper(MapperID id, Mapper *m)
     //--------------------------------------------------------------------------------------------
     {
-      fprintf(stdout,"Adding mapper %d on processor %d\n",id,local_proc.id);
-      fflush(stdout);
+      log_task(LEVEL_INFO,"Adding mapper %d on processor %d",id,local_proc.id);
       // Take an exclusive lock on the mapper data structure
       AutoLock map_lock(mapping_lock);
 #ifdef DEBUG_HIGH_LEVEL
@@ -2855,6 +2857,7 @@ namespace RegionRuntime {
       child_tasks.clear();
       sibling_tasks.clear();
       physical_instances.clear();
+      valid_allocators.clear();
       enclosing_ctx.clear();
       chosen_ctx.clear();
       source_copy_instances.clear();
@@ -4186,6 +4189,9 @@ namespace RegionRuntime {
                 needs_initializing = true;
               }
             }
+            log_region(LEVEL_INFO,"Mapping region %d (idx %d) of task %d (unique id %d) to physical "
+                "instance %d of logical region %d in memory %d",regions[idx].handle.region.id,idx,task_id,
+                unique_id,info->iid,info->handle.id,info->location.id);
             physical_instances.push_back(info);
             RegionRenamer namer(parent_physical_ctx,idx,this,info,mapper,needs_initializing);
             // Compute the region trace to the logical region we want
@@ -5022,6 +5028,11 @@ namespace RegionRuntime {
         {
           reg.set_allocator(physical_instances[idx]->handle.create_allocator_untyped(
                             physical_instances[idx]->location));
+          valid_allocators.push_back(true);
+        }
+        else
+        {
+          valid_allocators.push_back(false);
         }
         result_regions.push_back(reg);
       }
@@ -5079,7 +5090,9 @@ namespace RegionRuntime {
       // Reclaim the allocators that we used for this task
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        if (regions[idx].alloc != NO_MEMORY)
+        // Make sure that they are still valid!
+        // Don't double free allocators
+        if (valid_allocators[idx])
         {
 #ifdef DEBUG_HIGH_LEVEL
           assert(physical_regions[idx].valid_allocator);
@@ -6480,9 +6493,10 @@ namespace RegionRuntime {
       assert(regions.size() == physical_instances.size());
 #endif
       // Destroy the allocator if there was one
-      if (regions[idx].alloc != NO_MEMORY)
+      if (valid_allocators[idx])
       {
         regions[idx].handle.region.destroy_allocator_untyped(allocator);
+        valid_allocators[idx] = false;
       }
       // Check to see if there was an instance, if not, we're done
       if (physical_instances[idx] == InstanceInfo::get_no_instance())
@@ -6708,6 +6722,8 @@ namespace RegionRuntime {
       assert(instance_infos->find(iid) == instance_infos->end());
 #endif
       (*instance_infos)[iid] = result_info;
+      log_inst(LEVEL_INFO,"Creating physical instance %d of logical region %d in memory %d",
+          inst.id, handle.id, m.id);
       return result_info;
     }
 
@@ -6726,6 +6742,8 @@ namespace RegionRuntime {
       assert(instance_infos->find(iid) == instance_infos->end());
 #endif
       (*instance_infos)[iid] = result_info;
+      log_inst(LEVEL_INFO,"Duplicating physical instance %d of logical region %d in memory %d "
+          "for subregion %d", old->inst.id, old->handle.id, old->location.id, newer.id);
       return result_info;
     }
     
