@@ -197,6 +197,8 @@ namespace RegionRuntime {
       int first_enabled(void) const;
       int last_enabled(void) const;
 
+      ElementMask& operator=(const ElementMask &rhs);
+
       class Enumerator {
       public:
 	Enumerator(const ElementMask& _mask, int _start, int _polarity);
