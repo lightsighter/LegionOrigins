@@ -11,18 +11,21 @@
 namespace RegionRuntime {
   namespace HighLevel {
 
+    Logger::Category log_mapper("default-mapper");
+
     //--------------------------------------------------------------------------------------------
     Mapper::Mapper(Machine *m, HighLevelRuntime *rt, Processor local) 
       : runtime(rt), local_proc(local), machine(m)
     //--------------------------------------------------------------------------------------------
     {
-
+      log_mapper(LEVEL_SPEW,"Initializing the default shared memory mapper");
     }
 
     //--------------------------------------------------------------------------------------------
     bool Mapper::spawn_child_task(const Task *task)
     //--------------------------------------------------------------------------------------------
     {
+      log_mapper(LEVEL_SPEW,"Spawn child task %d in default shared memory mapper",task->task_id);
       return false;
     }
 
@@ -30,6 +33,8 @@ namespace RegionRuntime {
     Processor Mapper::select_initial_processor(const Task *task)
     //--------------------------------------------------------------------------------------------
     {
+      log_mapper(LEVEL_SPEW,"Select initial processor for task %d (unique %d) in shared memory mapper",
+          task->task_id, task->unique_id);
       return local_proc;
     }
 
@@ -37,6 +42,7 @@ namespace RegionRuntime {
     Processor Mapper::target_task_steal(const std::set<Processor> &blacklist)
     //--------------------------------------------------------------------------------------------
     {
+      log_mapper(LEVEL_SPEW,"Target task steal in shared memory mapper");
       // Chose a random processor not on the blacklist
       const std::set<Processor> &all_procs = machine->get_all_processors();
       std::set<Processor> diff_procs; 
@@ -63,6 +69,7 @@ namespace RegionRuntime {
                                                     std::set<const Task*> &to_steal)
     //--------------------------------------------------------------------------------------------
     {
+      log_mapper(LEVEL_SPEW,"Permit task steal in shared memory mapper");
       unsigned total_stolen = 0;
       for (std::vector<const Task*>::const_iterator it = tasks.begin();
             it != tasks.end(); it++)
@@ -92,6 +99,7 @@ namespace RegionRuntime {
                                                       std::vector<RangeSplit> &chunks)
     //--------------------------------------------------------------------------------------------
     {
+      log_mapper(LEVEL_SPEW,"Split index space for range space in shared memory mapper");
       // For the moment don't split anything
       RangeSplit result;
       result.ranges = index_space;
@@ -108,6 +116,7 @@ namespace RegionRuntime {
                                   std::vector<Memory> &target_ranking, bool &enable_WAR_optimization)
     //--------------------------------------------------------------------------------------------
     {
+      log_mapper(LEVEL_SPEW,"Map task region in shared memory mapper");
       // Try putting it in the local memory, if that doesn't work, try the global memory
       Memory local = { local_proc.id + 1 };
       Memory global = { 1 };
@@ -122,6 +131,7 @@ namespace RegionRuntime {
                                     std::vector<Memory> &future_ranking)
     //--------------------------------------------------------------------------------------------
     {
+      log_mapper(LEVEL_SPEW,"Rank copy targets in shared memory mapper");
       // If this is a copy up, put it in the global memory
       Memory global = { 1 };
       future_ranking.push_back(global);
@@ -132,6 +142,7 @@ namespace RegionRuntime {
                                     const Memory &dst, Memory &chosen_src)
     //--------------------------------------------------------------------------------------------
     {
+      log_mapper(LEVEL_SPEW,"Select copy source in shared memory mapper");
       Memory local = { local_proc.id + 1 };
       if (current_instances.find(local) != current_instances.end())
       {
