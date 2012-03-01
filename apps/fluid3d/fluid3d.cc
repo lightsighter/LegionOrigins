@@ -341,212 +341,7 @@ void top_level_task(const void *args, size_t arglen,
                     const std::vector<PhysicalRegion<AT> > &regions,
                     Context ctx, HighLevelRuntime *runtime)
 {
-#if 0
-  int num_subregions = numBlocks + numBlocks*GHOST_CELLS; // 27 = 1 block + 26 ghost regions 
-
-  std::vector<Block> blocks;
-  blocks.resize(numBlocks);
-  for(unsigned i = 0; i < numBlocks; i++) {
-    blocks[i].id = i;
-    for (unsigned b = 0; b < 2; b++) {
-      blocks[i].cells[b].resize(CELLS_Z+2);
-      for(unsigned cz = 0; cz < CELLS_Z+2; cz++) {
-        blocks[i].cells[b][cz].resize(CELLS_Y+2);
-        for(unsigned cy = 0; cy < CELLS_Y+2; cy++) {
-          blocks[i].cells[b][cz][cy].resize(CELLS_X+2);
-        }
-      }
-    }
-  }
-
-  // first, do two passes of the "real" cells
-  for(int b = 0; b < 2; b++) {
-    LogicalRegion real_cells =
-      runtime->create_logical_region(ctx, sizeof(Cell), (numBlocks*CELLS_X*CELLS_Y*CELLS_Z));
-
-    std::vector<std::set<ptr_t<Cell> > > coloring;
-    coloring.resize(numBlocks);
-
-    // allocate cells, store pointers, set up colors
-    for (unsigned idz = 0; idz < nbz; idz++)
-      for (unsigned idy = 0; idy < nby; idy++)
-        for (unsigned idx = 0; idx < nbx; idx++) {
-          unsigned id = (idz*nby+idy)*nbx+idx;
-
-          for(unsigned cz = 0; cz < CELLS_Z; cz++)
-            for(unsigned cy = 0; cy < CELLS_Y; cy++)
-              for(unsigned cx = 0; cx < CELLS_X; cx++) {
-                ptr_t<Cell> cell = real_cells.alloc();
-                coloring[id].insert(cell);
-                blocks[id].cells[b][cz+1][cy+1][cx+1] = cell;
-              }
-        }
-    
-    // Create the partitions
-    Partition<Cell> cell_part = runtime->create_partition<Cell>(ctx,all_cells,
-								coloring,
-								//numBlocks,
-								true/*disjoint*/);
-
-    for (unsigned idz = 0; idz < nbz; idz++)
-      for (unsigned idy = 0; idy < nby; idy++)
-        for (unsigned idx = 0; idx < nbx; idx++) {
-          unsigned id = (idz*nby+idy)*nbx+idx;
-          blocks[id].base[b] = runtime->get_subregion(ctx, cell_part, id);
-        }
-  }
-
-  // the edge cells work a bit different - we'll create one region, partition
-  //  it once, and use each subregion in two places
-  LogicalRegion edge_cells =
-    runtime->create_logical_region(ctx, sizeof(Cell),
-                                   (numBlocks*
-                                    ((CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2) -
-                                     CELLS_X*CELLS_Y*CELLS_Z)));
-
-  std::vector<std::set<ptr_t<Cell> > > coloring;
-  coloring.resize(numBlocks * GHOST_CELLS);
-
-  // allocate cells, set up coloring
-  int color = 0;
-  for (unsigned idz = 0; idz < nbz; idz++)
-    for (unsigned idy = 0; idy < nby; idy++)
-      for (unsigned idx = 0; idx < nbx; idx++) {
-        unsigned id = (idz*nby+idy)*nbx+idx;
-
-        // eight corners
-#define CORNER(dir,cx,cy,cz) do {                                         \
-          ptr_t<Cell> cell = edge_cells.alloc();                          \
-          coloring[color + dir].insert(cell);                             \
-          blocks[id].cells[0][cz][cy][cx] = cell;			  \
-          blocks[id].cells[1][CELLS_Z + 1 - cz][CELLS_Y + 1 - cy][CELLS_X + 1 - cx] = cell; \
-        } while(0)
-        CORNER(TOP_FRONT_LEFT, 0, 0, CELLS_Z + 1);
-        CORNER(TOP_FRONT_RIGHT, CELLS_X + 1, 0, CELLS_Z + 1);
-        CORNER(TOP_BACK_LEFT, 0, CELLS_Y + 1, CELLS_Z + 1);
-        CORNER(TOP_BACK_RIGHT, CELLS_X + 1, CELLS_Y + 1, CELLS_Z + 1);
-        CORNER(BOTTOM_FRONT_LEFT, 0, 0, 0);
-        CORNER(BOTTOM_FRONT_RIGHT, CELLS_X + 1, 0, 0);
-        CORNER(BOTTOM_BACK_LEFT, 0, CELLS_Y + 1, 0);
-        CORNER(BOTTOM_BACK_RIGHT, CELLS_X + 1, CELLS_Y + 1, 0);
-#undef CORNER
-
-        // x-axis edges
-#define XAXIS(dir,cy,cz) do {                                           \
-          for(unsigned cx = 1; cx <= CELLS_X; cx++) {                   \
-            ptr_t<Cell> cell = edge_cells.alloc();                      \
-            coloring[color + dir].insert(cell);                         \
-            blocks[id].cells[0][cz][cy][cx] = cell;                     \
-            blocks[id].cells[1][CELLS_Z + 1 - cz][CELLS_Y + 1 - cy][cx] = cell; \
-          }                                                             \
-        } while(0)
-        XAXIS(TOP_FRONT, 0, CELLS_Z + 1);
-        XAXIS(TOP_BACK, CELLS_Y + 1, CELLS_Z + 1);
-        XAXIS(BOTTOM_FRONT, 0, 0);
-        XAXIS(BOTTOM_BACK, CELLS_Y + 1, 0);
-#undef XAXIS
-
-        // y-axis edges
-#define YAXIS(dir,cx,cz) do {                                           \
-          for(unsigned cy = 1; cy <= CELLS_Y; cy++) {                   \
-            ptr_t<Cell> cell = edge_cells.alloc();                      \
-            coloring[color + dir].insert(cell);                         \
-            blocks[id].cells[0][cz][cy][cx] = cell;                     \
-            blocks[id].cells[1][CELLS_Z + 1 - cz][cy][CELLS_X + 1 - cx] = cell; \
-          }                                                             \
-        } while(0)
-        YAXIS(TOP_LEFT, 0, CELLS_Z + 1);
-        YAXIS(TOP_RIGHT, CELLS_X + 1, CELLS_Z + 1);
-        YAXIS(BOTTOM_LEFT, 0, 0);
-        YAXIS(BOTTOM_RIGHT, CELLS_X + 1, 0);
-#undef YAXIS
-
-        // z-axis edges
-#define ZAXIS(dir,cx,cy) do {                                           \
-          for(unsigned cz = 1; cz <= CELLS_Z; cz++) {                   \
-            ptr_t<Cell> cell = edge_cells.alloc();                      \
-            coloring[color + dir].insert(cell);                         \
-            blocks[id].cells[0][cz][cy][cx] = cell;                     \
-            blocks[id].cells[1][cz][CELLS_Y + 1 - cy][CELLS_X + 1 - cx] = cell; \
-          }                                                             \
-        } while(0)
-        ZAXIS(FRONT_LEFT, 0, 0);
-        ZAXIS(FRONT_RIGHT, CELLS_X + 1, 0);
-        ZAXIS(BACK_LEFT, 0, CELLS_Y + 1);
-        ZAXIS(BACK_RIGHT, CELLS_X + 1, CELLS_Y + 1);
-#undef ZAXIS
-
-        // xy-plane edges
-#define XYPLANE(dir,cz) do {                                            \
-          for(unsigned cy = 1; cy <= CELLS_Y; cy++) {                   \
-            for(unsigned cx = 1; cx <= CELLS_X; cx++) {                 \
-              ptr_t<Cell> cell = edge_cells.alloc();                    \
-              coloring[color + dir].insert(cell);                       \
-              blocks[id].cells[0][cz][cy][cx] = cell;                   \
-              blocks[id].cells[1][CELLS_Z + 1 - cz][cy][cx] = cell;     \
-            }                                                           \
-          }                                                             \
-        } while(0)
-        XYPLANE(TOP, CELLS_Z + 1);
-        XYPLANE(BOTTOM, 0);
-#undef XYPLANE
-
-        // xz-plane edges
-#define XZPLANE(dir,cy) do {                                            \
-          for(unsigned cz = 1; cz <= CELLS_Z; cz++) {                   \
-            for(unsigned cx = 1; cx <= CELLS_X; cx++) {                 \
-              ptr_t<Cell> cell = edge_cells.alloc();                    \
-              coloring[color + dir].insert(cell);                       \
-              blocks[id].cells[0][cz][cy][cx] = cell;                   \
-              blocks[id].cells[1][cz][CELLS_Y + 1 - cy][cx] = cell;     \
-            }                                                           \
-          }                                                             \
-        } while(0)
-        XZPLANE(FRONT, 0);
-        XZPLANE(BACK, CELLS_Y + 1);
-#undef XZPLANE
-
-        // yz-plane edges
-#define YZPLANE(dir,cx) do {                                            \
-          for(unsigned cz = 1; cz <= CELLS_Z; cz++) {                   \
-            for(unsigned cy = 1; cy <= CELLS_Y; cy++) {                 \
-              ptr_t<Cell> cell = edge_cells.alloc();                    \
-              coloring[color + dir].insert(cell);                       \
-              blocks[id].cells[0][cz][cy][cx] = cell;                   \
-              blocks[id].cells[1][cz][cy][CELLS_X + 1 - cx] = cell;     \
-            }                                                           \
-          }                                                             \
-        } while(0)
-        YZPLANE(LEFT, 0);
-        YZPLANE(RIGHT, CELLS_X + 1);
-#undef YZPLANE
-
-      color += GHOST_CELLS;
-    }
-
-  // now partition the edge cells
-  Partition<Cell> edge_part = runtime->create_partition<Cell>(ctx, edge_cells,
-							      coloring,
-							      //numBlocks * 26,
-							      true/*disjoint*/);
-
-  // now go back through and store subregion handles in the right places
-  color = 0;
-  for (unsigned idz = 0; idz < nbz; idz++)
-    for (unsigned idy = 0; idy < nby; idy++)
-      for (unsigned idx = 0; idx < nbx; idx++) {
-        unsigned id = (idz*nby+idy)*nbx+idx;
-
-        for(int dir = 0; dir < GHOST_CELLS; dir++) {
-          unsigned id2 = (MOVE_Z(idz,dir)*nby + MOVE_Y(idy,dir))*nbx + MOVE_X(idx,dir);
-          LogicalRegion subr = runtime->get_subregion(ctx,edge_part,color+dir);
-          blocks[id].edge[0][dir] = color+dir;
-          blocks[id2].edge[1][REVERSE(dir)] = color+dir;
-        }
-
-        color += GHOST_CELLS;
-      }
-#endif
+  log_app.info("In top_level_task...");
 
   // don't do anything until all the command-line args have been ready
   while(!Config::args_read)
@@ -591,6 +386,8 @@ void main_task(const void *args, size_t arglen,
 	       const std::vector<PhysicalRegion<AT> > &regions,
 	       Context ctx, HighLevelRuntime *runtime)
 {
+  log_app.info("In main_task...");
+
   PhysicalRegion<AT> real_cells[2];
   real_cells[0] = regions[0];
   real_cells[1] = regions[1];
@@ -798,6 +595,8 @@ void main_task(const void *args, size_t arglen,
         color += GHOST_CELLS;
       }
 
+  log_app.info("main_task is about to spawn init_sim");
+
   // Initialize the simulation in buffer 1
   for (unsigned id = 0; id < numBlocks; id++)
   {
@@ -822,6 +621,8 @@ void main_task(const void *args, size_t arglen,
                                      0, id);
     f.get_void_result();
   }
+
+  log_app.info("main_task finished spawning init_sim");
 
   {
     std::vector<RegionRequirement> init_regions;
