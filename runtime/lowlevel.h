@@ -477,12 +477,12 @@ namespace RegionRuntime {
       explicit RegionAllocator(const RegionAllocatorUntyped& copy_from)
 	: RegionAllocatorUntyped(copy_from) {}
       
-      ptr_t<T> alloc(void) 
+      ptr_t<T> alloc(unsigned count = 1) 
       { 
-	ptr_t<T> ptr = { alloc_untyped(1) };
+	ptr_t<T> ptr = { alloc_untyped(count) };
 	return ptr; 
       }
-      void free(ptr_t<T> ptr) { free_untyped(ptr.value); }
+      void free(ptr_t<T> ptr, unsigned count = 1) { free_untyped(ptr.value,count); }
     };
 
     template <class T>
