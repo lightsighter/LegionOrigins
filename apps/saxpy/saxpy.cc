@@ -11,7 +11,7 @@ using namespace RegionRuntime::HighLevel;
 
 #define TOP_LEVEL_TASK_ID TASK_ID_REGION_MAIN
 
-// #define TEST_STEALING
+#define TEST_STEALING
 
 static unsigned* get_num_blocks(void)
 {
@@ -151,7 +151,7 @@ void main_task(const void *args, size_t arglen,
   FutureMap init_f =
     runtime->execute_index_space(ctx, TASKID_INIT_VECTORS, index_space,
 				 init_regions, global, arg_map, false);
-  //init_f.wait_all_results();
+  init_f.wait_all_results();
 
   printf("STARTING MAIN SIMULATION LOOP\n");
   struct timespec ts_start, ts_end;
@@ -171,7 +171,7 @@ void main_task(const void *args, size_t arglen,
   FutureMap add_f =
     runtime->execute_index_space(ctx, TASKID_ADD_VECTORS, index_space,
                                  add_regions, global, arg_map, false);
-  //add_f.wait_all_results();
+  add_f.wait_all_results();
 
   // Print results
   clock_gettime(CLOCK_MONOTONIC, &ts_end);
@@ -192,6 +192,20 @@ void main_task(const void *args, size_t arglen,
     reg_y.wait_until_valid();
     reg_z.wait_until_valid();
 
+#if 0
+    printf("z values: ");
+    for (unsigned i = 0; i < *get_num_blocks(); i++)
+    {
+      for (unsigned j = 0; j < BLOCK_SIZE; j++)
+      {
+        ptr_t<Entry> entry_z = blocks[i].entry_z[j];
+        Entry z_val = reg_z.read(entry_z);
+        printf("%f ",z_val.v);
+      }
+    }
+    printf("\n");
+#endif
+
     bool success = true;
     for (unsigned i = 0; i < *get_num_blocks(); i++) {
       for (unsigned j = 0; j < BLOCK_SIZE; j++) {
@@ -206,7 +220,7 @@ void main_task(const void *args, size_t arglen,
         if (z_val.v != compute)
         {
           printf("Failure at %d of block %d.  Expected %f but received %f\n",
-              j, i, z_val.v, compute);
+              j, i, compute, z_val.v);
           success = false;
           break;
         }
@@ -279,6 +293,7 @@ T safe_prioritized_pick(const std::vector<T> &vec, T choice1, T choice2) {
   return garbage;
 }
 
+#ifdef USE_SAXPY_SHARED
 class SharedMapper : public Mapper {
 public:
   Memory global_memory;
@@ -286,30 +301,26 @@ public:
 
   SharedMapper(Machine *m, HighLevelRuntime *r, Processor p)
     : Mapper(m, r, p) {
+    
     global_memory.id = 1;
     num_procs = m->get_all_processors().size();
   }
 
-  virtual void rank_initial_region_locations(size_t elmt_size,
-                                             size_t num_elmts,
-                                             MappingTagID tag,
-                                             std::vector<Memory> &ranking) {
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
-    ranking.push_back(global_memory);
-  }
-
-  virtual void rank_initial_partition_locations(size_t elmt_size,
-                                                unsigned num_subregions,
-                                                MappingTagID tag,
-                                                std::vector<std::vector<Memory> > &rankings) {
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
-    rankings.resize(num_subregions);
-    for (unsigned i = 0; i < num_subregions; i++)
-      rankings[i].push_back(global_memory);
-  }
-
   virtual bool compact_partition(const Partition &partition, MappingTagID tag) {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    return false;
+  }
+
+  virtual bool spawn_child_task(const Task* task)
+  {
+    switch(task->task_id) {
+    case TOP_LEVEL_TASK_ID:
+    case TASKID_MAIN:
+      return false;
+    case TASKID_INIT_VECTORS:
+    case TASKID_ADD_VECTORS:
+      return true;
+    }
     return false;
   }
 
@@ -336,10 +347,10 @@ public:
     return Processor::NO_PROC;
   }
 
-  virtual Processor target_task_steal() {
+  virtual Processor target_task_steal(const std::set<Processor> &blacklist) {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
 #ifdef TEST_STEALING
-    return Mapper::target_task_steal();
+    return Mapper::target_task_steal(blacklist);
 #else
     return Processor::NO_PROC;
 #endif
@@ -358,11 +369,9 @@ public:
 #endif
   }
 
-  virtual void map_task_region(const Task *task, const RegionRequirement *req,
-                               const std::vector<Memory> &valid_src_instances,
-                               const std::vector<Memory> &valid_dst_instances,
-                               Memory &chosen_src,
-                               std::vector<Memory> &dst_ranking) {
+  virtual void map_task_region(const Task *task, const RegionRequirement &req,
+                               const std::set<Memory> &current_instances,
+                               std::vector<Memory> &target_ranking, bool &enable_WAR_optimization) {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     Memory loc_mem;
     loc_mem.id = local_proc.id + 1;
@@ -370,12 +379,10 @@ public:
     case TOP_LEVEL_TASK_ID:
     case TASKID_MAIN:
     case TASKID_INIT_VECTORS:
-      chosen_src = global_memory;
-      dst_ranking.push_back(global_memory);
+      target_ranking.push_back(global_memory);
       break;
     case TASKID_ADD_VECTORS:
-      chosen_src = global_memory;
-      dst_ranking.push_back(loc_mem);
+      target_ranking.push_back(loc_mem);
       break;
     default:
       assert(false);
@@ -400,7 +407,35 @@ public:
 
     Mapper::select_copy_source(current_instances, dst, chosen_src);
   }
+
+  virtual void split_index_space(const Task *task, const std::vector<Range> &index_space,
+                                  std::vector<RangeSplit> &chunks)
+  {
+    // Split things into pieces of 8
+    unsigned chunk_size = 8; // points
+    assert(index_space.size() == 1);
+    unsigned cur_proc = local_proc.id;
+    for (int idx = index_space[0].start; idx < index_space[0].stop; idx += 8*index_space[0].stride)
+    {
+      std::vector<Range> chunk(1);
+      chunk[0].start = idx;
+      chunk[0].stop =  idx + (chunk_size-1)*index_space[0].stride;
+      chunk[0].stride = index_space[0].stride;
+      RangeSplit result;
+      result.ranges = chunk;
+      Processor p = { cur_proc };
+      result.p = p;
+      result.recurse = false;
+      chunks.push_back(result);
+      // update the processor
+      if ((cur_proc % num_procs) == 0)
+        cur_proc = 1;
+      else
+        cur_proc++;
+    }
+  }
 };
+#endif
 
 class SaxpyMapper : public Mapper {
 public:
@@ -448,24 +483,6 @@ public:
     global_memory = best_global;
   }
 
-  virtual void rank_initial_region_locations(size_t elmt_size,
-                                             size_t num_elmts,
-                                             MappingTagID tag,
-                                             std::vector<Memory> &ranking) {
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
-    ranking.push_back(global_memory);
-  }
-
-  virtual void rank_initial_partition_locations(size_t elmt_size,
-                                                unsigned num_subregions,
-                                                MappingTagID tag,
-                                                std::vector<std::vector<Memory> > &rankings) {
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
-    rankings.resize(num_subregions);
-    for (unsigned i = 0; i < num_subregions; i++)
-      rankings[i].push_back(global_memory);
-  }
-
   virtual bool compact_partition(const Partition &partition, MappingTagID tag) {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     return false;
@@ -493,10 +510,10 @@ public:
     return Processor::NO_PROC;
   }
 
-  virtual Processor target_task_steal() {
+  virtual Processor target_task_steal(const std::set<Processor> &blacklist) {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
 #ifdef TEST_STEALING
-    return Mapper::target_task_steal();
+    return Mapper::target_task_steal(blacklist);
 #else
     return Processor::NO_PROC;
 #endif
@@ -572,8 +589,6 @@ int main(int argc, char **argv) {
   Processor::TaskIDTable task_table;
   task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
   task_table[TASKID_MAIN] = high_level_task_wrapper<main_task<AccessorGeneric> >;
-  //task_table[TASKID_INIT_VECTORS] = high_level_task_wrapper<init_vectors_task<AccessorGeneric> >;
-  //task_table[TASKID_ADD_VECTORS] = high_level_task_wrapper<add_vectors_task<AccessorGeneric> >;
   task_table[TASKID_INIT_VECTORS] = high_level_index_task_wrapper<init_vectors_task<AccessorGeneric> >;
   task_table[TASKID_ADD_VECTORS] = high_level_index_task_wrapper<add_vectors_task<AccessorGeneric> >;
 
