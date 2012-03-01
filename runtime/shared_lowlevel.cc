@@ -1704,7 +1704,7 @@ namespace RegionRuntime {
       if(raw_data != 0) {
 	ElementMaskImpl *impl = (ElementMaskImpl *)raw_data;
 	//printf("FIND_ENABLED %p %d %d %x\n", raw_data, first_element, count, impl->bits[0]);
-	for(int pos = 0; pos <= num_elements - count; pos++) {
+	for(int pos = first_enabled_elmt; pos <= num_elements - count; pos++) {
 	  int run = 0;
 	  while(1) {
 	    unsigned bit = ((impl->bits[pos >> 5] >> (pos & 0x1f))) & 1;
@@ -2184,7 +2184,7 @@ namespace RegionRuntime {
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 	RegionInstanceImpl *target_impl = Runtime::get_runtime()->get_instance_impl(target);
-	log_copy(LEVEL_INFO, "copy %x/%p/%x -> %x/%p/%x", index, this, region.id, target.id, target_impl, target_impl->region.id);
+	//log_copy(LEVEL_INFO, "copy %x/%p/%x -> %x/%p/%x", index, this, region.id, target.id, target_impl, target_impl->region.id);
 #ifdef DEBUG_LOW_LEVEL
 	assert(target_impl->num_elmts == num_elmts);
 	assert(target_impl->elmt_size == elmt_size);
@@ -2475,44 +2475,33 @@ namespace RegionRuntime {
 
     unsigned RegionMetaDataImpl::allocate_space(unsigned count)
     {
-        unsigned result = 0;
+        int result = 0;
         PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
         if (parent == NULL)
         {
             // Do the allocation ourselves
-          ElementMask::Enumerator *enumerator = mask.enumerate_disabled();
-          int position,length;
-          bool allocated = false;
-          while (enumerator->get_next(position,length))
-          {
-              if (int(count) <= length)
-              {
-                 // We found something
-                 result = position;
-                 allocated = true;
-                 break;
-              }
-          }
-          // Free the enumerator
-          delete enumerator;
-          if (!allocated)
+          result = mask.find_disabled(count);
+          if (result == -1)
           {
               // Allocation failure, didn't work
               fprintf(stderr,"Alloction failure in shared low level runtime. "
-                  "No available space for %d elements in region %d.  Perhaps we "
-                  "need better allocation algorithms.", count, index);
+                  "No available space for %d elements in region %d.\n",count, index);
               exit(1);
           }
+          //printf("Allocating element %d in region %d\n",result,index);
         }
         else
         {
             // Make the parent do it and intercept the returning value
             result = parent->allocate_space(count);
         }
+#ifdef DEBUG_LOW_LEVEL
+        assert(result >= 0);
+#endif
         // Update the mask to reflect the allocation
         mask.enable(result,count);
         PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
-        return result;
+        return unsigned(result);
     }
 
     void RegionMetaDataImpl::free_space(unsigned ptr, unsigned count)
@@ -3259,7 +3248,7 @@ namespace RegionRuntime {
           free_instances.push_back(instances.back());
         }
 	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&instance_lock));
-        PTHREAD_SAFE_CALL(pthread_mutex_unlock(&free_alloc_lock));
+        PTHREAD_SAFE_CALL(pthread_mutex_unlock(&free_inst_lock));
 	return result;
     }
 
