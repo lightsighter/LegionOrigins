@@ -450,6 +450,11 @@ namespace RegionRuntime {
       size_t compute_size(void) const;
       void pack_requirement(Serializer &rez) const;
       void unpack_requirement(Deserializer &derez);
+    protected:
+      friend class InstanceInfo;
+      static size_t compute_simple_size(void);
+      void pack_simple(Serializer &rez) const;
+      void unpack_simple(Deserializer &derez);
     };
 
     /////////////////////////////////////////////////////////////
@@ -499,20 +504,20 @@ namespace RegionRuntime {
         valid(false) { }
       // including definitions here so templates are instantiated and inlined
       template<typename T> 
-      inline ptr_t<T> alloc(void)
+      inline ptr_t<T> alloc(unsigned count = 1)
       {
 #ifdef DEBUG_HIGH_LEVEL
         assert(valid);
 #endif
-        return static_cast<LowLevel::RegionAllocator<T> >(allocator).alloc(); 
+        return static_cast<LowLevel::RegionAllocator<T> >(allocator).alloc(count); 
       }
       template<typename T> 
-      inline void free(ptr_t<T> ptr)
+      inline void free(ptr_t<T> ptr, unsigned count = 1)
       {
 #ifdef DEBUG_HIGH_LEVEL
         assert(valid);
 #endif
-        static_cast<LowLevel::RegionAllocator<T> >(allocator).free(ptr); 
+        static_cast<LowLevel::RegionAllocator<T> >(allocator).free(ptr,count); 
       }
       template<typename T> 
       inline T read(ptr_t<T> ptr)
@@ -597,20 +602,20 @@ namespace RegionRuntime {
           instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric>(NULL)) { }
       // including definitions here so templates are instantiated and inlined
       template<typename T> 
-      inline ptr_t<T> alloc(void)
+      inline ptr_t<T> alloc(unsigned count = 1)
       {
 #ifdef DEBUG_HIGH_LEVEL
         assert(valid);
 #endif
-        return static_cast<LowLevel::RegionAllocator<T> >(allocator).alloc(); 
+        return static_cast<LowLevel::RegionAllocator<T> >(allocator).alloc(count); 
       }
       template<typename T> 
-      inline void free(ptr_t<T> ptr)
+      inline void free(ptr_t<T> ptr,unsigned count = 1)
       {
 #ifdef DEBUG_HIGH_LEVEL
         assert(valid);
 #endif
-        static_cast<LowLevel::RegionAllocator<T> >(allocator).free(ptr); 
+        static_cast<LowLevel::RegionAllocator<T> >(allocator).free(ptr,count); 
       }
       template<typename T> 
       inline T read(ptr_t<T> ptr)
@@ -803,7 +808,7 @@ namespace RegionRuntime {
                                  const std::vector<std::set<utptr_t> > &coloring,
                                  bool disjoint = true);
       Partition create_partition(Context ctx, LogicalRegion parent,
-                                 const std::vector<std::set<std::pair<unsigned, unsigned> > > &ranges,
+                                 const std::vector<std::set<std::pair<utptr_t, utptr_t> > > &ranges,
                                  bool disjoint = true);
       void destroy_partition(Context ctx, Partition partition);
       // Get a subregion
@@ -1701,6 +1706,10 @@ namespace RegionRuntime {
       void pack_return_info(Serializer &rez);
       static InstanceInfo* unpack_return_instance_info(Deserializer &derez, std::map<InstanceID,InstanceInfo*> *infos);
       void merge_instance_info(Deserializer &derez); // for merging information into a pre-existing instance
+    protected:
+      size_t compute_user_task_size(void) const;
+      void   pack_user_task(Serializer &rez, const UserTask &task) const;
+      void   unpack_user_task(Deserializer &derez, UserTask &task) const;
     protected:
       // For going back up the instance tree looking for dependences
       void find_user_dependences(std::set<Event> &wait_on_events, const RegionRequirement &req) const;
