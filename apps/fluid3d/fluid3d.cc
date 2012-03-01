@@ -595,7 +595,10 @@ void main_task(const void *args, size_t arglen,
         color += GHOST_CELLS;
       }
 
-  log_app.info("main_task is about to spawn init_sim");
+  // Unmap the physical region we intend to pass to children
+  runtime->unmap_region(ctx, real_cells[0]);
+  runtime->unmap_region(ctx, real_cells[1]);
+  runtime->unmap_region(ctx, edge_cells);
 
   // Initialize the simulation in buffer 1
   for (unsigned id = 0; id < numBlocks; id++)
@@ -604,11 +607,6 @@ void main_task(const void *args, size_t arglen,
     init_regions.push_back(RegionRequirement(blocks[id].base[1],
 					     READ_WRITE, ALLOCABLE, EXCLUSIVE,
 					     tlr->real_cells[1]));
-#if 0
-    get_all_regions(blocks[id].ghosts1,init_regions,
-                                  READ_WRITE, ALLOCABLE, EXCLUSIVE,
-                                  all_cells_1);
-#endif
 
     unsigned bufsize = BLOCK_SIZE;
     BlockSerializer ser(bufsize);
@@ -621,8 +619,6 @@ void main_task(const void *args, size_t arglen,
                                      0, id);
     f.get_void_result();
   }
-
-  log_app.info("main_task finished spawning init_sim");
 
   {
     std::vector<RegionRequirement> init_regions;
