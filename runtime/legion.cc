@@ -6805,7 +6805,7 @@ namespace RegionRuntime {
       else
       {
         // If this is not an index space, see if there is a valid physical instances
-        if (idx <= physical_instances.size() &&
+        if (idx < physical_instances.size() &&
             (physical_instances[idx] != InstanceInfo::get_no_instance()))
         {
           return false; // no need to wait since it's already been mapped 
