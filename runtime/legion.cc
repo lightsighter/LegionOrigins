@@ -1794,20 +1794,7 @@ namespace RegionRuntime {
     {
       RegionMappingImpl *impl = get_available_mapping(ctx, req); 
 
-      log_region(LEVEL_DEBUG,"Registering a map operation for region %d in task %d",
-                  req.handle.region.id, ctx->unique_id);
-      ctx->register_mapping(impl); 
-      
-      // Check to see if it is ready to map, if so do it, otherwise add it to the list
-      // of waiting map operations
-      if (impl->is_ready())
-      {
-        perform_region_mapping(impl);
-      }
-      else
-      {
-        waiting_maps.push_back(impl);
-      }
+      internal_map_region(ctx, impl);
 
       return PhysicalRegion<AccessorArray>(impl);
     }
@@ -1819,8 +1806,63 @@ namespace RegionRuntime {
     {
       RegionMappingImpl *impl = get_available_mapping(ctx, req); 
 
+      internal_map_region(ctx, impl);
+      
+      return PhysicalRegion<AccessorGeneric>(impl);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    template<>
+    PhysicalRegion<AccessorArray> HighLevelRuntime::map_region(Context ctx, unsigned idx)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx < ctx->regions.size());
+      assert(idx < ctx->physical_instances.size());
+      assert(idx < ctx->allocators.size());
+#endif
+      if (ctx->physical_instances[idx] != InstanceInfo::get_no_instance())
+      {
+        // We already have a valid instance, just make it and return
+        PhysicalRegion<AccessorGeneric> result(idx);
+        result.set_instance(ctx->physical_instances[idx]->inst.get_accessor_untyped());
+        result.set_allocator(ctx->allocators[idx]);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(result.can_convert());
+#endif
+        return result.convert();
+      }
+      // Otherwise, this was unmapped so we have to map it
+      return map_region<AccessorArray>(ctx, ctx->regions[idx]); 
+    }
+
+    //--------------------------------------------------------------------------------------------
+    template<>
+    PhysicalRegion<AccessorGeneric> HighLevelRuntime::map_region(Context ctx, unsigned idx)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx < ctx->regions.size());
+      assert(idx < ctx->physical_instances.size());
+      assert(idx < ctx->allocators.size());
+#endif
+      if (ctx->physical_instances[idx] != InstanceInfo::get_no_instance())
+      {
+        // We already have a valid instance, just make it and return 
+        PhysicalRegion<AccessorGeneric> result(idx);
+        result.set_instance(ctx->physical_instances[idx]->inst.get_accessor_untyped());
+        result.set_allocator(ctx->allocators[idx]);
+        return result;
+      }
+      return map_region<AccessorGeneric>(ctx, ctx->regions[idx]);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::internal_map_region(TaskContext *ctx, RegionMappingImpl *impl)
+    //--------------------------------------------------------------------------------------------
+    {
       log_region(LEVEL_DEBUG,"Registering a map operation for region %d in task %d",
-                  req.handle.region.id, ctx->unique_id);
+                  impl->req.handle.region.id, ctx->unique_id);
       ctx->register_mapping(impl); 
 
       // Check to see if it is ready to map, if so do it, otherwise add it to the list
@@ -1833,8 +1875,6 @@ namespace RegionRuntime {
       {
         waiting_maps.push_back(impl);
       }
-
-      return PhysicalRegion<AccessorGeneric>(impl);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2900,7 +2940,7 @@ namespace RegionRuntime {
       child_tasks.clear();
       sibling_tasks.clear();
       physical_instances.clear();
-      valid_allocators.clear();
+      allocators.clear();
       enclosing_ctx.clear();
       chosen_ctx.clear();
       source_copy_instances.clear();
@@ -5121,13 +5161,13 @@ namespace RegionRuntime {
         // Check to see if they asked for an allocator
         if (regions[idx].alloc != NO_MEMORY)
         {
-          reg.set_allocator(physical_instances[idx]->handle.create_allocator_untyped(
-                            physical_instances[idx]->location));
-          valid_allocators.push_back(true);
+          allocators.push_back(regions[idx].handle.region.create_allocator_untyped(
+                                physical_instances[idx]->location));
+          reg.set_allocator(allocators.back());
         }
         else
         {
-          valid_allocators.push_back(false);
+          allocators.push_back(RegionAllocator::NO_ALLOC);
         }
         result_regions.push_back(reg);
       }
@@ -5187,12 +5227,12 @@ namespace RegionRuntime {
       {
         // Make sure that they are still valid!
         // Don't double free allocators
-        if (valid_allocators[idx])
+        if (allocators[idx].exists())
         {
 #ifdef DEBUG_HIGH_LEVEL
           assert(physical_regions[idx].valid_allocator);
 #endif
-          regions[idx].handle.region.destroy_allocator_untyped(physical_regions[idx].allocator);
+          regions[idx].handle.region.destroy_allocator_untyped(allocators[idx]);
         }
       }
     }
@@ -6627,12 +6667,13 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(idx < regions.size());
       assert(regions.size() == physical_instances.size());
+      assert(regions.size() == allocators.size());
 #endif
       // Destroy the allocator if there was one
-      if (valid_allocators[idx])
+      if (allocators[idx].exists())
       {
-        regions[idx].handle.region.destroy_allocator_untyped(allocator);
-        valid_allocators[idx] = false;
+        regions[idx].handle.region.destroy_allocator_untyped(allocators[idx]);
+        allocators[idx] = RegionAllocator::NO_ALLOC;
       }
       // Check to see if there was an instance, if not, we're done
       if (physical_instances[idx] == InstanceInfo::get_no_instance())

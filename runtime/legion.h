@@ -823,9 +823,15 @@ namespace RegionRuntime {
        * Given a logical region to map, return a future that will contain
        * an unspecialized physical instance.  The logical region must be
        * a subregion of one of the regions for which the task has a privilege.
+       * If idx is in the range of task arguments, the runtime will first check to
+       * see if the RegionRequirement for that index has already been mapped.
        */
       template<AccessorType AT>
       PhysicalRegion<AT> map_region(Context ctx, RegionRequirement req);
+      // A shortcut for remapping regions which were arguments to the task
+      // by only having to specify the index for the RegionRequirement
+      template<AccessorType AT>
+      PhysicalRegion<AT> map_region(Context ctx, unsigned idx);
 
       template<AccessorType AT>
       void unmap_region(Context ctx, PhysicalRegion<AT> &region);
@@ -859,6 +865,8 @@ namespace RegionRuntime {
       InstanceID  get_unique_instance_id(void);
       UniqueID    get_unique_task_id(void);
       PartitionID get_unique_partition_id(void);
+    private:
+      void internal_map_region(TaskContext *ctx, RegionMappingImpl *impl);
     private:
       // Operations invoked by static methods
       void process_tasks(const void * args, size_t arglen); 
@@ -1343,7 +1351,7 @@ namespace RegionRuntime {
       // Information for figuring out which regions to use
       // Mappings for the logical regions at call-time (can be no-instance == covered)
       std::vector<InstanceInfo*> physical_instances;
-      std::vector<bool> valid_allocators;
+      std::vector<RegionAllocator> allocators;
       // The enclosing physical contexts from our parent context
       std::vector<ContextID> enclosing_ctx;
       // The physical contexts we use for all our child task mappings
@@ -1728,7 +1736,7 @@ namespace RegionRuntime {
       unsigned children;
       InstanceInfo *parent; // parent instance info
       Event valid_event; // most recent copy-write event
-      Lock inst_lock; // For atomic access if necessary
+      Lock inst_lock;
       std::map<UniqueID,UserTask> users;
       std::map<UniqueID,UserTask> added_users;
       std::map<UniqueID,CopyUser> copy_users;
