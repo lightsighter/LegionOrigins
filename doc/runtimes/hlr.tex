@@ -1,0 +1,245 @@
+\section{Context Initialization}
+When a task is first registered with the runtime we create a new {\em context} for the task.  
+A context stores all information about that task.  The context for a task will always 
+live on the processor in which the task was created even if copies of the task's context 
+are made wherever the task is moved.  We call the context on the home processor of the 
+task the {\em original} context.  The context for a task also knows the context of the parent 
+task that created it.  This parent-child context relationship is fundamental to the propagation 
+of information through the runtime.
+
+After we've set up a context and stored all the information from the task launch, we make 
+our first mapper call.  We ask the mapper to tell us whether or not this task should be spawned.  
+If a task is spawned we will later ask the mapper if it would like to move the task to a remote 
+processor.  Spawned tasks are also eligible to be stolen.  If a task is not spawned then it 
+is required to be run on the processor on which it was created (cannot be sent anywhere and 
+cannot be stolen).
+
+\section{Dependence Analysis}
+After the task's context has been initialized, we perform a dependence analysis.  This first 
+dependence analysis does NOT determine any actual dependences between tasks.  This first dependence 
+analysis determines {\em mapping dependences} between tasks.  A mapping dependence only implies that two 
+tasks must be mapped in a specific order.  This may or may not result in them having an actual 
+dependence later.  One task has a mapping dependence on a prior task if the later task uses a logical 
+region which may alias with a logical region being used by the prior task and at least one of the two 
+tasks is using their logical region in a write mode.  Note at this point we can almost completely 
+ignore coherence properties.  If two tasks both want a region in simultaneous mode with at least 
+one of them requesting a write, they will have a mapping dependence even if they ultimately don't 
+have a dependence because they choose to use the same physical instance.  The one exception to this 
+rule is with relaxed coherence.  Relaxed coherence will allow two tasks using aliased logical regions 
+with at least one write to be mapped in any order.   
+
+To find a task's mapping dependences, we must determine which other tasks are using logical regions 
+that alias with logical regions for the task we are currently registering.  This is where the type 
+system makes it possible for us to only have to perform this analysis on other tasks that share 
+the same parent context.  To find the tasks on which we have a mapping dependence, we will use the 
+{\em logical state} of the region trees in the parent's context.  For each of the region trees for which 
+the parent task has a privilege (any privilege), the parent task maintains two pieces of logical 
+state information for each node in the region tree: which tasks in the parent's context are using 
+the node and whether which children of the node are open.   A child node is {\em open} if it has users 
+in the logical state of the region sub-tree.  Regions are only permitted to have one partition open 
+at a time.  Aliased partitions are only permitted to have one child region open at a time.  Disjoint 
+partitions are allowed to have any number of child regions open at a time.  Note also that both 
+regions and partitions can have users.  Partitions can only be used by index space tasks.
+
+To find mapping dependences, for each logical region that a task needs we first find the 
+corresponding region for which the parent has privileges.  This can be either a region that the 
+parent was passed as an argument or a region which the parent created.  We call these regions the 
+{\em top-most regions} in the parent's context.  For each region that a task requires, we walk from the 
+parent's top-most region down to the logical region required by the child task.  At each node we 
+examine the users in the logical state of the node.  If there are any dependences between the 
+tasks, we register them as mapping dependences.  As we traverse down the tree we open up nodes 
+as necessary to arrive at our destination.  Once we arrive at our destination node we mark that 
+we are using the current node.
+
+If it at any point we find a path open that we don't intend to traverse, we must first {\em close}
+the open subtree, since it's possible that we might use aliased logical regions from that sub-tree.  
+This only occurs for regions and aliased partitions.  To close a logical sub-tree, we record all 
+users of the logical subtree and move them all to be users of node in our current location.  
+This is a valid operation since all these users were really using sub-pieces of the current logical 
+region.  We must keep the users of the closed subtree because later tasks will also need to record 
+mapping dependences on them.  We record any dependences on the tasks in the closed logical subtree 
+and then continue our traversal.  Once we arrive at our destination, we also must close up all 
+logical subtrees below as well to record mapping dependences on any tasks using sub-logical regions 
+of our intended region.
+
+One optimization that we perform is to replace all the users of a logical region with a single user 
+as long as the single user is said to {\em dominate} all the prior users.  A task dominates all the prior 
+users of a logical region if it has a mapping dependence on all prior users and all users in any 
+open sub-tree.  We only check for a task being a dominator when it reaches its target node since 
+it is unlikely that a task dominates all tasks in any open subtree (assuming that most partitions 
+in the tree are disjoint).
+
+After we have have found all the mapping dependences for a task, we are ready to place it on one of 
+the runtime's scheduling queues.  If a task has mapping dependences we place it on the runtime's 
+waiting queue of tasks that are not ready to be mapped yet.  If the task has no mapping dependences 
+we place it on the runtime's ready queue of tasks that are ready to map.  As an optimization, for 
+tasks that have been spawned and have no mapping dependences, we eagerly query the mapper 
+for the target processor of the task.  This allows us to move tasks as soon as possible to their 
+target processor.  If the target processor is not the current processor, the task along with a copy 
+of its context are relocated to the target processor and then enqueued on the ready queue.
+
+\section{Scheduling and Mapping}
+When the application is started the high level runtime registers an {\em idle task} with the low-level 
+runtime as a callback for whenever the low-level runtime has little or no-work to perform.  The 
+high-level runtime's idle task will choose to perform one of two operations whenever it is invoked.  
+If it has any tasks on its ready queue, it will map some of those tasks and launch them on the current 
+processor.  If the runtime has little no ready tasks it will ask each of its mappers whether or 
+not they want to attempt a task steal.  Task stealing will be discussed in more detail in a 
+later section.
+
+Tasks are currently scheduled in a very simple manner.  The oldest task on the ready queue 
+will always be the next one mapped.  Changing the scheduling algorithm is easy, but may require 
+coordination between mappers over how to weight tasks which is not something we've thought about 
+deeply.  Scheduling at the high-level has less of an impact because the order in which tasks are 
+mapped isn't necessarily the order in which they are run.  The high-level runtime simply passes 
+tasks down to the low-level runtime with their corresponding event dependences.  The low-level 
+runtime is the one that ultimately decides the order in which tasks run based primarily on when 
+the event dependences are satisfied.
+
+Once a task has been selected to be mapped, we first check to see if it has been spawned and if 
+so whether the mapper has already selected its target processor.  If the mapper hasn't had an 
+opportunity to a direct a spawned task yet, we ask it where to send the task and move it to the 
+target processor.  I'll describe how remote mapping happens later in this section.
+
+\subsection{Mapping}
+To map a task, we first ask the mapper to select a location for a physical instance of each of 
+the logical regions that the task needs to execute.  The mapper has the option of specifying 
+a list of memories in which to try getting a physical instance or specify no memories.  If the 
+mapper provides a list memories, the runtime will attempt to create or find a physical instance 
+in one memory and only move onto the next if it fails to create or find a physical instance in 
+the current one.  If the runtime can't create a physical instance in any of the memories it 
+will fail.  If the mapper doesn't specify any memories, the runtime uses this as a signal that 
+the task does not want a physical instance for the task.
+
+To aid in the mapper's decision, the runtime provides a list of memories were physical instances with 
+{\em valid} data currently reside in the memory hierarchy. A physical instance is said to be valid if
+is a the physical instance or a copy the physical instance of the last task to write to the logical
+region which the physical instance is representing.  
+
+\subsection{Physical Region Tree Traversal}
+To be capable of providing this information and finding actual data dependences,
+each context also maintains a {\em physical} state of the its topmost regions and their 
+corresponding region trees.  The physical state of a node in the region tree is different for 
+partitions and regions.  For regions, the physical state includes the state and set of open partitions, 
+the set of valid physical instances of the particular logical region, and whether or not the physical 
+instances for the region are dirty.  Regions can have multiple partitions open in a read-only state 
+and only a single partition open in a write state.  Regions physical instances are marked dirty as 
+soon as they have a task that performs a write.  Having dirty physical instance indicates that a 
+copy will need to be made back to a parent physical instance at a later point in time.  The physical 
+state of a partition node is somewhat simpler.  Partitions only keep track of their open child 
+regions.  Aliased partitions can have multiple children in read-only mode or a single child open in 
+write mode.  Disjoint partitions can have an arbitrary number of regions open in either read-only 
+or write mode.
+
+Similar to the algorithm for dependence analysis on the logical state, for each region that the 
+mapper has requested a physical instance we walk the physical region tree from the parent context's 
+top-most region down to our target region.  The steps that we perform along the way however are 
+different.  Unlike before we don't need to check for any dependences explicitly on regions.  Instead 
+we will discover these dependences implicitly as we build up a chain of events that will be required 
+to occur before our task can be executed.  As we traverse the tree, we keep a monad corresponding to 
+the last event in the chain of dependences that must occur before our task can be launched.  We call
+this monad the precondition since it will ultimately define a precondition for launching the task.
+
+As we traverse the tree, we must perform open and close operations analogous to the operations 
+performed on the logical region tree.  Open operations just denote opening the physical state 
+of the node.  Close operations are slightly more complicated.  To perform a close operation we must 
+copy all dirty data back from the physical instances for each of the open subtrees into a physical 
+instance of the current region node.  To do this we invoke the help of the mapper.  We first ask the mapper 
+to provide a list of memories in which to try to create a physical instance of the current region.  We 
+then go through this list of memories until we find or make a physical instance of the current region which
+becomes the {\em target} physical instance.  It is an error to fail to make a target instance.
+
+Once we have made a target instance we traverse down the subtree to be closed with the precondition monad
+initialized to a null event.  At each node we issue a copy from one of the valid physical instances back
+to the target instance conditioned on the precondition monad as well as the termination events of all prior
+users of the physical instance.  To select the source physical instance for the copy operation we invoke
+the mapper.  The event corresponding to the finish of the copy operation becomes the new state of the
+precondition monad and we continue our traversal down the tree.  Once we have traversed the entire tree,
+we merge the preconditions for all different subtrees back into our precondition monad and make the corresponding
+event the new precondition as we continue traversing the tree.
+
+When we arrive at our target node, we first check to see if the physical instance is a newly created.  If
+it has been newly created we must copy valid data from one of the currently valid physical instances.  If the
+state of our region is dirty, then we can only use valid instances from our node.  If the state of our instance
+is clean, then we can traverse back up the region tree to find physical instances of parent regions that can
+also be used as valid sources for our physical instance.  We must also check to see if there are any open sub-trees.  
+If there are, then we must issue close operations to them as well.  If there is dirty data in the subtrees this
+will result in copies back to the instance we are creating as well which will update the precondition monad.
+
+The last step is to find the set of other tasks which are using the same physical instance as us on which we have
+a dependence.  This is necessary because we didn't record any actual dependences in the original mapping dependence
+analysis.  The mapping dependence analysis is an over-approximation of the actual dependences we might have since its
+possible for tasks on which we have a mapping analysis to complete before we are even mapped.
+
+To track the set of users of a physical instance, the runtime wraps a physical instance in an object called an
+{\em InstanceInfo} (need a better name).  InstanceInfos track all the users of a physical instance including both
+task users and copys users.  In the case of tasks, InstanceInfos track both the mode and coherence in which the
+task is using a physical instance.  In the case of copies, InstanceInfos track whether the copy is a copy that
+is reading or writing from the instance.  For all of these users, the InstanceInfo tracks the event corresponding
+to when the user will be finished using the InstanceInfo.  Therefore whenever a new user is registered with an
+InstanceInfo, the InstanceInfo returns an event that will be bound to the precondition monad indicating the event
+that will trigger when all other users on which the new user has a dependence will be finished.
+
+One complication to this is that a physical instance of a logical region can also be used as a physical instance
+of any logical subregion.  To handle this case, we can have multiple InstanceInfos for the same physical
+instance in the physical state of different regions in the region tree.  Each of these InstanceInfos keeps track
+of the users of a physical instance for a specific logical region.  When checking for a dependences on a previous
+users of a physical instance it is necessary to find dependences on users using the instance for a logical
+region farther up in the region tree.  To handle this case, InstanceInfos also know about all the InstanceInfos
+for the same physical instance in logical regions about them in the region tree.  When dependences are checked
+on a given InstanceInfo they are also checked in all InstanceInfos farther up the tree.  This is how we are
+able to avoid checking dependences when traversing down the physical state of the region tree.
+
+Once the physical region tree state traversal is complete, the resulting event in the precondition monad
+becomes a precondition for the task to be executed.  This is repeated for all the regions that the mapper
+requested that the task map and the resulting events are merged to create one event that is passed as the
+precondition event to the low-level runtime as the task is launched on the low-level processor.
+
+Once the task has been mapped and launched, it notifies all other tasks which had mapping dependences on it.
+If these tasks have had all their mapping dependences satisfied then they are moved to the ready queue to
+be mapped.  It is important to note that a task can only perform this step if the mapper requested a physical
+instance for all of the logical regions of the task.  If the mapper didn't ask for a physical instance for any
+of the logical regions, then the task will not be considered mapped until all of its child tasks have been mapped.
+
+\subsection{Remote Mapping}
+Tasks can also be mapped remotely from their original context.  In order for this to be possible the region trees
+as well as the physical state in the parent task's context must be moved to the region trees.  Before they can be
+moved however we first must perform a {\em sanitizing} operation.  If a task is moved remotely it can be mapped
+in parallel with other tasks in the same context that don't have any mapping dependence.  However, it is possible
+that two or more tasks may rely on the same close operation in traversing to their needed region.  In this case
+we don't want both tasks issuing the same close operation on different processors as this can lead to an
+inconsistent state of the physical region tree.  Therefore before a task can be sent remotely it traverses the
+physical region trees to each of its needed regions and performs any necessary close operations.  In the process
+if it opens any regions it will also create valid physical instances at its needed regions using preexisting physical
+instances from parent regions.  This way when the task is sent remotely, we only need to send the region trees
+and physical state corresponding to the child's top-most regions instead of the parent's top-most regions.
+
+Mapping a task remotely follows the same procedure already described, but the physical state of the region tree
+only needs to be traversed from the child's top-most regions since we've already sanitized the region tree
+prior to moving it.  After the mapping is complete, the child packages back up the state of all region trees
+in which a physical instance was requested by the mapper.  The state is then sent back to the child's original
+context which propagates the information back to the parent context on the original processor.  Note that performing
+mappings remotely is a safe operation because the dependence analysis on logical regions ensures that no other
+tasks in the same context could possibly map on the original processor at the same time if they touched any
+of the same logical regions in the set of the child's top-most regions.
+
+\section{Execution}
+
+\section{Children Mapped}
+
+\section{Restoring Copies}
+
+\section{Termination}
+
+\section{Garbage Collection}
+
+\section{Region Tree Updates}
+
+\section{Task Stealing}
+
+\section{Utility Processors and Thread Safety}
+
+\section{TODO}
+
+
+
