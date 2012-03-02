@@ -820,7 +820,7 @@ void main_task(const void *args, size_t arglen,
         for (unsigned id = 0; id < numBlocks; id++) {
           bufsize += BLOCK_SIZE(blocks[id]);
         }
-        Serializer ser(bufsize);
+        BlockSerializer ser(bufsize);
         for (unsigned id = 0; id < numBlocks; id++) {
           ser.serialize(blocks[id]);
         }
