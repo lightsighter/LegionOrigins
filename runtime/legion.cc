@@ -3846,16 +3846,43 @@ namespace RegionRuntime {
                 // Get a new context for the result
                 TaskContext *clone = runtime->get_available_context(false/*new tree*/);
                 clone_index_space_task(clone,true/*slice*/);
+                clone->constraint_space = this->constraint_space;
                 // Put it in the ready queue
                 runtime->add_to_ready_queue(clone,true/*need lock*/);
               }
             }
+            else
+            {
+              this->constraint_space = it->constraints;
+              this->need_split = false;
+              // Clone it and put it in the ready queue
+              TaskContext *clone = runtime->get_available_context(false/*new tree*/);
+              clone_index_space_task(clone,true/*slice*/);
+              clone->constraint_space = this->constraint_space;
+              // Put it in the ready queue
+              runtime->add_to_ready_queue(clone,true/*need lock*/);
+            }
           }
           else
           {
-            has_local = true;
-            local_space = it->constraints; 
-            split = it->recurse;
+            // Need to continue splitting
+            if (it->recurse)
+            {
+              this->constraint_space = it->constraints;
+              bool still_local = runtime->split_task(this,true/*reentrant*/);
+              if (still_local)
+              {
+                has_local = true;
+                local_space = this->constraint_space;
+                split = false;
+              }
+            }
+            else
+            {
+              has_local = true;
+              local_space = it->constraints; 
+              split = it->recurse;
+            }
           }
         }
       }
@@ -3865,6 +3892,10 @@ namespace RegionRuntime {
         this->need_split = split;
         this->constraint_space = local_space;
         this->slice_owner = true;
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!this->need_split);
+        assert(!local_space.empty());
+#endif
       }
       else
       {
@@ -3920,16 +3951,43 @@ namespace RegionRuntime {
                 // Get a new context for the result
                 TaskContext *clone = runtime->get_available_context(false/*new tree*/);
                 clone_index_space_task(clone,true/*slice*/);
+                clone->range_space = this->range_space;
                 // Put it in the ready queue
                 runtime->add_to_ready_queue(clone,true/*need lock*/);
               }
             }
+            else
+            {
+              this->range_space = it->ranges;
+              this->need_split = false;
+              // Clone it and put it in the ready queue
+              TaskContext *clone = runtime->get_available_context(false/*new tree*/);
+              clone_index_space_task(clone,true/*slice*/);
+              clone->range_space = this->range_space;
+              // Put it in the ready queue
+              runtime->add_to_ready_queue(clone,true/*need lock*/);
+            }
           }
           else
           {
-            has_local = true;
-            local_space = it->ranges; 
-            split = it->recurse;
+            // Need to continue splitting
+            if (it->recurse)
+            {
+              this->range_space = it->ranges;
+              bool still_local = runtime->split_task(this,true/*reentrant*/);
+              if (still_local)
+              {
+                has_local = true;
+                local_space = this->range_space;
+                split = false;
+              }
+            }
+            else
+            {
+              has_local = true;
+              local_space = it->ranges; 
+              split = it->recurse;
+            }
           }
         }
       }
@@ -3939,6 +3997,9 @@ namespace RegionRuntime {
         this->need_split = split;
         this->range_space = local_space;
         this->slice_owner = true;
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!this->need_split);
+#endif
       }
       else
       {
@@ -4631,6 +4692,15 @@ namespace RegionRuntime {
         }
         else // not remote, should be index space
         {
+          if (!index_owner)
+          {
+            // Initialize mapped physical instances vector, otherwise it should already have been done
+            mapped_physical_instances.resize(regions.size());
+            for (unsigned idx = 0; idx < regions.size(); idx++)
+            {
+              mapped_physical_instances[idx] = 0;
+            }
+          }
           // For each of sibling tasks, update the total count for physical instances
           for (std::vector<TaskContext*>::const_iterator it = sibling_tasks.begin();
                 it != sibling_tasks.end(); it++)
@@ -4655,7 +4725,7 @@ namespace RegionRuntime {
             }
           }
           // Now call the start index space function to notify ourselves that we've started
-          orig_ctx->index_space_start(denominator, num_local_points, mapped_physical_instances, false/*update*/);
+          orig_ctx->index_space_start(denominator, num_local_points, mapped_physical_instances, !index_owner/*update*/);
           if (unmapped == 0)
           {
             this->mapped = true;
@@ -4911,6 +4981,7 @@ namespace RegionRuntime {
           clone->local_arg = local_arg.get_ptr();
           clone->local_arg_size = local_arg.get_size();
         }
+        clone->denominator = 0; // doesn't own anything
       }
       else
       {
@@ -4922,10 +4993,10 @@ namespace RegionRuntime {
         }
         // Get the arg map from the original
         clone->index_arg_map = this->index_arg_map;
+        clone->denominator = this->denominator;
       }
       clone->index_owner = false;
       clone->slice_owner = slice;
-      clone->denominator = 0; // doesn't own anything
       clone->start_index_event = this->start_index_event;
       // No need to copy futures or aguments or reductions 
       clone->parent_ctx = parent_ctx;
