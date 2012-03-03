@@ -2177,6 +2177,8 @@ namespace RegionRuntime {
           // Check to see if this index space still needs to be split
           if (ctx->need_split)
           {
+            // Need to hold the queue lock before calling split task
+            AutoLock ready_queue_lock(queue_lock); 
             bool still_local = split_task(ctx);
             // If it's still local add it to the ready queue
             if (still_local)
@@ -2211,7 +2213,8 @@ namespace RegionRuntime {
             ctx->local_proc.id,ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
         }
         // check to see if this is a steal result coming back
-        if (ctx->stolen)
+        // this is only a guess a task could have been stolen earlier
+        if (ctx->steal_count > 0)
         {
           AutoLock steal_lock(stealing_lock);
           // Check to see if we've already cleared our outstanding steal request
@@ -2293,7 +2296,7 @@ namespace RegionRuntime {
             {
               // Mark the task as stolen
               Task *t = const_cast<Task*>(*it);
-              t->stolen = true;
+              t->steal_count++;
               stolen.insert(static_cast<TaskContext*>(t));
             }
           }
@@ -2322,6 +2325,7 @@ namespace RegionRuntime {
       {
         // Get all the locks up front
         std::set<MapperID> held_map_locks;
+        std::set<Lock>     held_ctx_locks;
         AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
         for (std::set<TaskContext*>::const_iterator it = stolen.begin();
               it != stolen.end(); it++)
@@ -2333,8 +2337,12 @@ namespace RegionRuntime {
             lock_event.wait(true/*block*/);
           }
           // Also get the context lock
-          Event lock_event = (*it)->current_lock.lock(0,true/*exclusive*/);
-          lock_event.wait(true/*block*/);
+          if (held_ctx_locks.find((*it)->current_lock) == held_ctx_locks.end())
+          {
+            Event lock_event = (*it)->current_lock.lock(0,true/*exclusive*/);
+            held_ctx_locks.insert((*it)->current_lock);
+            lock_event.wait(true/*block*/);
+          }
         }
 
         size_t total_buffer_size = 2*sizeof(Processor) + sizeof(size_t);
@@ -2365,10 +2373,10 @@ namespace RegionRuntime {
         {
           mapper_locks[*it].unlock();
         }
-        for (std::set<TaskContext*>::const_iterator it = stolen.begin();
-              it != stolen.end(); it++)
+        for (std::set<Lock>::const_iterator it = held_ctx_locks.begin();
+              it != held_ctx_locks.end(); it++)
         {
-          (*it)->current_lock.unlock();
+          (*it).unlock();
         }
 
         // Delete any remote tasks that we will no longer have a reference to
@@ -2668,6 +2676,9 @@ namespace RegionRuntime {
       }
       else // This is an index space of tasks
       {
+        // Need to hold the queue lock before calling split task
+        // to maintain partial order on lock acquires
+        AutoLock ready_queue_lock(queue_lock);
         return split_task(task);
       }
     }
@@ -2974,7 +2985,7 @@ namespace RegionRuntime {
       tag = _tag;
       orig_proc = local_proc;
       stealable = false;
-      stolen = false;
+      steal_count = 0;
       chosen = false;
       mapped = false;
       unmapped = 0;
@@ -3267,7 +3278,7 @@ namespace RegionRuntime {
       result += sizeof(MapperID);
       result += sizeof(MappingTagID);
       result += sizeof(Processor);
-      result += sizeof(bool);
+      result += sizeof(unsigned);
       // Finished task
       result += sizeof(bool);
       result += sizeof(bool);
@@ -3306,6 +3317,8 @@ namespace RegionRuntime {
       }
       result += sizeof(Context); // orig_ctx
       result += sizeof(UserEvent); // termination event
+      result += sizeof(size_t); // remaining size
+      size_t temp_size = result;
       // Everything after here doesn't need to be unpacked until we map
       if (partially_unpacked)
       {
@@ -3406,8 +3419,9 @@ namespace RegionRuntime {
             num_needed_instances++;
           }
         }
+        // Save the cached size for when we go to save the task
+        cached_size = result - temp_size;
       }
-
       return result;
     }
 
@@ -3427,7 +3441,7 @@ namespace RegionRuntime {
       rez.serialize<MapperID>(map_id);
       rez.serialize<MappingTagID>(tag);
       rez.serialize<Processor>(orig_proc);
-      rez.serialize<bool>(stolen);
+      rez.serialize<unsigned>(steal_count);
       // Finished task
       rez.serialize<bool>(chosen);
       rez.serialize<bool>(stealable);
@@ -3459,6 +3473,7 @@ namespace RegionRuntime {
       }
       rez.serialize<Context>(orig_ctx);
       rez.serialize<UserEvent>(termination_event);
+      rez.serialize<size_t>(cached_size);
       if (partially_unpacked)
       {
         rez.serialize(cached_buffer,cached_size);
@@ -3544,7 +3559,7 @@ namespace RegionRuntime {
       derez.deserialize<MapperID>(map_id);
       derez.deserialize<MappingTagID>(tag);
       derez.deserialize<Processor>(orig_proc);
-      derez.deserialize<bool>(stolen);
+      derez.deserialize<unsigned>(steal_count);
       // Finished task
       derez.deserialize<bool>(chosen);
       derez.deserialize<bool>(stealable);
@@ -3596,7 +3611,7 @@ namespace RegionRuntime {
       // Mark that we're only doing a partial unpack
       partially_unpacked = true;
       // Copy the remaining buffer
-      cached_size = derez.get_remaining_bytes();
+      derez.deserialize<size_t>(cached_size);
       cached_buffer = malloc(cached_size);
       derez.deserialize(cached_buffer,cached_size);
     }
@@ -3848,7 +3863,9 @@ namespace RegionRuntime {
                 clone_index_space_task(clone,true/*slice*/);
                 clone->constraint_space = this->constraint_space;
                 // Put it in the ready queue
-                runtime->add_to_ready_queue(clone,true/*need lock*/);
+                // Needed to own queue lock before calling split_task
+                // which is the only task that calls distribute index space
+                runtime->add_to_ready_queue(clone,false/*need lock*/);
               }
             }
             else
@@ -3860,7 +3877,7 @@ namespace RegionRuntime {
               clone_index_space_task(clone,true/*slice*/);
               clone->constraint_space = this->constraint_space;
               // Put it in the ready queue
-              runtime->add_to_ready_queue(clone,true/*need lock*/);
+              runtime->add_to_ready_queue(clone,false/*need lock*/);
             }
           }
           else
@@ -3953,7 +3970,9 @@ namespace RegionRuntime {
                 clone_index_space_task(clone,true/*slice*/);
                 clone->range_space = this->range_space;
                 // Put it in the ready queue
-                runtime->add_to_ready_queue(clone,true/*need lock*/);
+                // Needed to own queue lock before calling split_task which
+                // is the only task that calls this task
+                runtime->add_to_ready_queue(clone,false/*need lock*/);
               }
             }
             else
@@ -3965,7 +3984,7 @@ namespace RegionRuntime {
               clone_index_space_task(clone,true/*slice*/);
               clone->range_space = this->range_space;
               // Put it in the ready queue
-              runtime->add_to_ready_queue(clone,true/*need lock*/);
+              runtime->add_to_ready_queue(clone,false/*need lock*/);
             }
           }
           else
@@ -4547,7 +4566,7 @@ namespace RegionRuntime {
           }
         }
       }
-      else if (slice_owner) // index space and slice owner
+      else if (slice_owner) // slice owner
       {
 #ifdef DEBUG_HIGH_LEVEL
         assert(is_index_space);
@@ -4958,7 +4977,7 @@ namespace RegionRuntime {
       clone->map_id = this->map_id;
       clone->tag = this->tag;
       clone->orig_proc = this->orig_proc;
-      clone->stolen = this->stolen;
+      clone->steal_count = this->steal_count;
       clone->is_index_space = this->is_index_space;
       clone->must = this->must;
 #ifdef DEBUG_HIGH_LEVEL
@@ -5093,6 +5112,7 @@ namespace RegionRuntime {
             {
               (*it)->notify();
             }
+            map_dependent_tasks[idx].clear();
           }
           else
           {
@@ -5129,29 +5149,33 @@ namespace RegionRuntime {
           if (mapped_counts[idx] > 0)
           {
             mapped_physical_instances[idx] += mapped_counts[idx];
-            // If we're now done with this region, notify the tasks waiting on it
-            if (mapped_physical_instances[idx] == num_total_points)
-            {
-              // Notify all our waiters
-              for (std::set<GeneralizedContext*>::const_iterator it = map_dependent_tasks[idx].begin();
-                    it != map_dependent_tasks[idx].end(); it++)
-              {
-                (*it)->notify();
-              }
-              map_dependent_tasks[idx].clear();
+          }
+          // If we're now done with this region, notify the tasks waiting on it
+          if ((mapped_physical_instances[idx] == num_total_points) &&
+              !map_dependent_tasks[idx].empty())
+          {
 #ifdef DEBUG_HIGH_LEVEL
-              assert(this->unmapped > 0);
+            assert(this->unmapped > 0);
 #endif
-              this->unmapped--;
+            // Notify all our waiters
+            for (std::set<GeneralizedContext*>::const_iterator it = map_dependent_tasks[idx].begin();
+                  it != map_dependent_tasks[idx].end(); it++)
+            {
+              (*it)->notify();
             }
+            map_dependent_tasks[idx].clear();
+            this->unmapped--;
           }
 #ifdef DEBUG_HIGH_LEVEL
           assert(mapped_physical_instances[idx] <= num_total_points);
 #endif
         }
         // Are we done with mapping all the regions?
-        if (!this->mapped && (this->unmapped == 0))
+        if (!this->mapped)
         {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(this->unmapped == 0); // We better be done mapping at this point
+#endif
           this->mapped = true;
           this->map_event.trigger();
         }

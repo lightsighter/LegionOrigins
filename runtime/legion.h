@@ -269,7 +269,7 @@ namespace RegionRuntime {
       MapperID map_id;
       MappingTagID tag;
       Processor orig_proc;
-      bool stolen;
+      unsigned steal_count;
       bool is_index_space; // is this task an index space
       bool must; // if index space, must tasks be run concurrently
       // Any other index space parameters we need here?
@@ -884,6 +884,7 @@ namespace RegionRuntime {
       void perform_region_mapping(RegionMappingImpl *impl);
       void check_spawn_task(TaskContext *ctx); // set the spawn parameter
       bool target_task(TaskContext *ctx); // Select a target processor, return true if local 
+      // Need to hold queue lock prior to calling split task
       bool split_task(TaskContext *ctx, bool reentrant = false); // Return true if still local
       void issue_steal_requests(void);
       void advertise(MapperID map_id); // Advertise work when we have it for a given mapper
