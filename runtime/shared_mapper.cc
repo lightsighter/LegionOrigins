@@ -69,13 +69,13 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::permit_task_steal(Processor thief, const std::set<const Task*> &tasks,
+    void Mapper::permit_task_steal(Processor thief, const std::vector<const Task*> &tasks,
                                                     std::set<const Task*> &to_steal)
     //--------------------------------------------------------------------------------------------
     {
       log_mapper(LEVEL_SPEW,"Permit task steal in shared memory mapper");
       unsigned total_stolen = 0;
-      for (std::set<const Task*>::const_iterator it = tasks.begin();
+      for (std::vector<const Task*>::const_iterator it = tasks.begin();
             it != tasks.end(); it++)
       {
         // Only allow tasks to be stolen one time

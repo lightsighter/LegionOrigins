@@ -36,7 +36,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::permit_task_steal(Processor thief, const std::set<const Task*> &tasks,
+    void Mapper::permit_task_steal(Processor thief, const std::vector<const Task*> &tasks,
                                                     std::set<const Task*> &to_steal)
     //--------------------------------------------------------------------------------------------
     {

@@ -2265,13 +2265,13 @@ namespace RegionRuntime {
           // that this mapper has access to
           // Iterate in reverse order so the latest tasks put in the
           // ready queue appear first
-          std::set<const Task*> mapper_tasks;
+          std::vector<const Task*> mapper_tasks;
           for (std::list<TaskContext*>::reverse_iterator it = ready_queue.rbegin();
                 it != ready_queue.rend(); it++)
           {
             // The tasks also must be stealable
             if ((*it)->stealable && ((*it)->map_id == stealer))
-              mapper_tasks.insert(*it);
+              mapper_tasks.push_back(*it);
           }
           // Now call the mapper and get back the results
           std::set<const Task*> to_steal; 
