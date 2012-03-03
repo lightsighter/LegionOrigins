@@ -4711,15 +4711,6 @@ namespace RegionRuntime {
         }
         else // not remote, should be index space
         {
-          if (!index_owner)
-          {
-            // Initialize mapped physical instances vector, otherwise it should already have been done
-            mapped_physical_instances.resize(regions.size());
-            for (unsigned idx = 0; idx < regions.size(); idx++)
-            {
-              mapped_physical_instances[idx] = 0;
-            }
-          }
           // For each of sibling tasks, update the total count for physical instances
           for (std::vector<TaskContext*>::const_iterator it = sibling_tasks.begin();
                 it != sibling_tasks.end(); it++)
@@ -4743,6 +4734,9 @@ namespace RegionRuntime {
               mapped_physical_instances[idx]++;
             }
           }
+#ifdef DEBUG_HIGH_LEVEL
+          assert(orig_ctx->current_lock == this->current_lock);
+#endif
           // Now call the start index space function to notify ourselves that we've started
           orig_ctx->index_space_start(denominator, num_local_points, mapped_physical_instances, !index_owner/*update*/);
           if (unmapped == 0)
@@ -5005,10 +4999,10 @@ namespace RegionRuntime {
       else
       {
         // Need to update the mapped physical instances
-        mapped_physical_instances.resize(this->mapped_physical_instances.size());
-        for (unsigned idx = 0; idx < mapped_physical_instances.size(); idx++)
+        clone->mapped_physical_instances.resize(this->mapped_physical_instances.size());
+        for (unsigned idx = 0; idx < clone->mapped_physical_instances.size(); idx++)
         {
-          mapped_physical_instances[idx] = 0;
+          clone->mapped_physical_instances[idx] = 0;
         }
         // Get the arg map from the original
         clone->index_arg_map = this->index_arg_map;
