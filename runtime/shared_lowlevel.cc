@@ -164,13 +164,19 @@ namespace RegionRuntime {
       PerThreadTimerData(void)
       {
         thread = local_proc_id; 
-        PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
+        mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
+        PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
+      }
+      ~PerThreadTimerData(void)
+      {
+        PTHREAD_SAFE_CALL(pthread_mutex_destroy(mutex));
+        free(mutex);
       }
 
       unsigned thread;
       std::list<TimerStackEntry> timer_stack;
       std::map<int, double> timer_accum;
-      pthread_mutex_t mutex;
+      pthread_mutex_t *mutex;
     };
 
     pthread_mutex_t global_timer_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -185,9 +191,9 @@ namespace RegionRuntime {
             it != timer_data.end(); it++)
       {
         // Take each thread's data lock as well
-        PTHREAD_SAFE_CALL(pthread_mutex_lock(&((*it)->mutex)));
+        PTHREAD_SAFE_CALL(pthread_mutex_lock(((*it)->mutex)));
         (*it)->timer_accum.clear();
-        PTHREAD_SAFE_CALL(pthread_mutex_unlock(&((*it)->mutex)));
+        PTHREAD_SAFE_CALL(pthread_mutex_unlock(((*it)->mutex)));
       }
       PTHREAD_SAFE_CALL(pthread_mutex_unlock(&global_timer_mutex));
     }
@@ -238,7 +244,7 @@ namespace RegionRuntime {
       // We do need a lock to touch the accumulator
       if (old_top.timer_kind > 0)
       {
-        PTHREAD_SAFE_CALL(pthread_mutex_lock(&thread_timer_data->mutex));
+        PTHREAD_SAFE_CALL(pthread_mutex_lock(thread_timer_data->mutex));
         
         std::map<int,double>::iterator it = thread_timer_data->timer_accum.find(old_top.timer_kind);
         if (it != thread_timer_data->timer_accum.end())
@@ -246,7 +252,7 @@ namespace RegionRuntime {
         else
           thread_timer_data->timer_accum.insert(std::make_pair<int,double>(old_top.timer_kind,elapsed));
 
-        PTHREAD_SAFE_CALL(pthread_mutex_unlock(&thread_timer_data->mutex));
+        PTHREAD_SAFE_CALL(pthread_mutex_unlock(thread_timer_data->mutex));
       }
     }
 
@@ -258,7 +264,7 @@ namespace RegionRuntime {
             it != timer_data.end(); it++)
       {
         // Take the local lock for each thread's data too
-        PTHREAD_SAFE_CALL(pthread_mutex_lock(&((*it)->mutex)));
+        PTHREAD_SAFE_CALL(pthread_mutex_lock(((*it)->mutex)));
 
         for (std::map<int,double>::iterator it2 = (*it)->timer_accum.begin();
               it2 != (*it)->timer_accum.end(); it2++)
@@ -270,7 +276,7 @@ namespace RegionRuntime {
             timers.insert(*it2);
         }
 
-        PTHREAD_SAFE_CALL(pthread_mutex_unlock(&((*it)->mutex)));
+        PTHREAD_SAFE_CALL(pthread_mutex_unlock(((*it)->mutex)));
       }
 
       PTHREAD_SAFE_CALL(pthread_mutex_unlock(&global_timer_mutex));
@@ -319,8 +325,10 @@ namespace RegionRuntime {
 	  in_use = activate;
 	  generation = 0;
 	  sources = 0;
-	  PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
-	  PTHREAD_SAFE_CALL(pthread_cond_init(&wait_cond,NULL));
+          mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
+          wait_cond = (pthread_cond_t*)malloc(sizeof(pthread_cond_t));
+	  PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
+	  PTHREAD_SAFE_CALL(pthread_cond_init(wait_cond,NULL));
 	  if (in_use)
 	  {
 	    // Always initialize the current event to hand out to
@@ -334,6 +342,13 @@ namespace RegionRuntime {
 #endif
           }
 	}
+        ~EventImpl(void)
+        {
+          PTHREAD_SAFE_CALL(pthread_mutex_destroy(mutex));
+          PTHREAD_SAFE_CALL(pthread_cond_destroy(wait_cond));
+          free(mutex);
+          free(wait_cond);
+        }
 	
 	// test whether an event has triggered without waiting
 	bool has_triggered(EventGeneration needed_gen);
@@ -364,8 +379,8 @@ namespace RegionRuntime {
 	// so we can detect when the event has triggered with testing
 	// generational equality
 	Event current; 
-	pthread_mutex_t mutex;
-	pthread_cond_t wait_cond;
+	pthread_mutex_t *mutex;
+	pthread_cond_t *wait_cond;
 	std::vector<Triggerable*> triggerables;
         std::vector<TriggerHandle> trigger_handles;
     }; 
@@ -382,8 +397,10 @@ namespace RegionRuntime {
                 is_utility_proc(is_utility), remaining_stops(num_owners), 
                 scheduler_invoked(false), util_shutdown(is_utility) /*utility processors have no utility to shut down*/
 	{
-		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
-		PTHREAD_SAFE_CALL(pthread_cond_init(&wait_cond,NULL));
+                mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
+                wait_cond = (pthread_cond_t*)malloc(sizeof(pthread_cond_t));
+		PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
+		PTHREAD_SAFE_CALL(pthread_cond_init(wait_cond,NULL));
 		shutdown = false;
 		shutdown_trigger = NULL;
 	}
@@ -393,10 +410,19 @@ namespace RegionRuntime {
                 is_utility_proc(false), remaining_stops(0), 
                 scheduler_invoked(false), util_shutdown(false) /*might have utility processor to shutdown*/
         {
-                PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
-		PTHREAD_SAFE_CALL(pthread_cond_init(&wait_cond,NULL));
+                mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
+                wait_cond = (pthread_cond_t*)malloc(sizeof(pthread_cond_t));
+                PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
+		PTHREAD_SAFE_CALL(pthread_cond_init(wait_cond,NULL));
 		shutdown = false;
 		shutdown_trigger = NULL;
+        }
+        ~ProcessorImpl(void)
+        {
+                PTHREAD_SAFE_CALL(pthread_mutex_destroy(mutex));
+                PTHREAD_SAFE_CALL(pthread_cond_destroy(wait_cond));
+                free(mutex);
+                free(wait_cond);
         }
     public:
         // Operations for utility processors
@@ -428,8 +454,8 @@ namespace RegionRuntime {
         Processor utility_proc;
 	std::list<TaskDesc> ready_queue;
 	std::list<TaskDesc> waiting_queue;
-	pthread_mutex_t mutex;
-	pthread_cond_t wait_cond;
+	pthread_mutex_t *mutex;
+	pthread_cond_t *wait_cond;
 	// Used for detecting the shutdown condition
 	bool shutdown;
 	EventImpl *shutdown_trigger;
@@ -525,9 +551,9 @@ namespace RegionRuntime {
     bool EventImpl::has_triggered(EventGeneration needed_gen)
     {
 	bool result = false;
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	result = (needed_gen <= generation);
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
 	return result;
     }
 
@@ -536,13 +562,13 @@ namespace RegionRuntime {
         if (block)
         {
             // First check to see if the event has triggered
-            PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));	
+            PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));	
             // Wait until the generation indicates that the event has occurred
             while (needed_gen > generation) 
             {
-                    PTHREAD_SAFE_CALL(pthread_cond_wait(&wait_cond,&mutex));
+                    PTHREAD_SAFE_CALL(pthread_cond_wait(wait_cond,mutex));
             }
-            PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+            PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
         }
         else
         {
@@ -558,7 +584,7 @@ namespace RegionRuntime {
     {
 	// We need the lock here so that events we've already registered
 	// can't trigger this event before sources is set
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 #ifdef DEBUG_PRINT
 	//DPRINT2("Mering events into event %u generation %u\n",index,generation);
 #endif
@@ -592,7 +618,7 @@ namespace RegionRuntime {
           // return no event since all the preceding events have already triggered
           ret = Event::NO_EVENT;
         }
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
         // If ret does not exist, put this back on the list of free events
         if (!ret.exists())
           Runtime::get_runtime()->free_event(this);
@@ -602,7 +628,7 @@ namespace RegionRuntime {
     void EventImpl::trigger(unsigned count, TriggerHandle handle)
     {
 	// Update the generation
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 #ifdef DEBUG_LOW_LEVEL
         assert(in_use);
 	assert(sources >= count);
@@ -621,7 +647,7 @@ namespace RegionRuntime {
 		assert(generation == current.gen);
 #endif
 		// Can't be holding the lock when triggering other triggerables
-		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+		PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
 		// Trigger any dependent events
 		while (!triggerables.empty())
 		{
@@ -633,13 +659,13 @@ namespace RegionRuntime {
                         trigger_handles.pop_back();
 		}
 		// Reacquire the lock and mark that in_use is false
-		PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+		PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 		in_use = false;
                 finished = true;
 		// Wake up any waiters
-		PTHREAD_SAFE_CALL(pthread_cond_broadcast(&wait_cond));
+		PTHREAD_SAFE_CALL(pthread_cond_broadcast(wait_cond));
 	}
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));	
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));	
         // tell the runtime that we're free
         if (finished)
           Runtime::get_runtime()->free_event(this);
@@ -656,7 +682,7 @@ namespace RegionRuntime {
         // Also check for other error codes
 	PTHREAD_SAFE_CALL(trythis);
 #else
-        PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+        PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 #endif
 	if (!in_use)
 	{
@@ -671,14 +697,14 @@ namespace RegionRuntime {
 		assert(current.exists());
 #endif
 	}	
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
 	return result;
     }
 
     bool EventImpl::register_dependent(Triggerable *target, EventGeneration gen, TriggerHandle handle)
     {
 	bool result = false;
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	// Make sure they're asking for the right generation, otherwise it's already triggered
 	if (gen > generation)
 	{
@@ -690,7 +716,7 @@ namespace RegionRuntime {
                 assert(triggerables.size() == trigger_handles.size());
 #endif
 	}
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));	
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));	
 	return result;
     }
 
@@ -699,9 +725,9 @@ namespace RegionRuntime {
 #ifdef DEBUG_LOW_LEVEL
         assert(in_use);
 #endif
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	Event result = current;
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
 	return result;
     }
 
@@ -710,11 +736,11 @@ namespace RegionRuntime {
 #ifdef DEBUG_LOW_LEVEL
       assert(in_use);
 #endif
-      PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+      PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
       UserEvent result; 
       result.id = current.id;
       result.gen = current.gen;
-      PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+      PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
       return result;
     }
 
@@ -723,13 +749,13 @@ namespace RegionRuntime {
 #ifdef DEBUG_LOW_LEVEL
       assert(in_use);
 #endif
-      PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+      PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
       Barrier result;
       result.id = current.id;
       result.gen = current.gen;
       // Set the number of expected arrivals
       sources = expected_arrivals;
-      PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+      PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
       return result;
     }
 
@@ -738,13 +764,13 @@ namespace RegionRuntime {
 #ifdef DEBUG_LOW_LEVEL
       assert(in_use);
 #endif
-      PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+      PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 #ifdef DEBUG_LOW_LEVEL
       if (delta < 0) // If we're deleting, make sure nothing weird happens
         assert(int(sources) > (-delta));
 #endif
       sources += delta;
-      PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+      PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
     ////////////////////////////////////////////////////////
@@ -808,8 +834,14 @@ namespace RegionRuntime {
 		holders = 0;
 		waiters = false;
                 next_handle = 1;
-		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
-	};	
+                mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
+		PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
+	}	
+        ~LockImpl(void)
+        {
+                PTHREAD_SAFE_CALL(pthread_mutex_destroy(mutex));
+                free(mutex);
+        }
 
 	Event lock(unsigned mode, bool exclusive, Event wait_on);
 	void unlock(Event wait_on);
@@ -841,7 +873,7 @@ namespace RegionRuntime {
 	unsigned holders;
         TriggerHandle next_handle; // all numbers >0 are lock requests, 0 is unlock trigger handle
 	std::list<LockRecord> requests;
-	pthread_mutex_t mutex;
+	pthread_mutex_t *mutex;
     };
 
     Event Lock::lock(unsigned mode, bool exclusive, Event wait_on) const
@@ -874,7 +906,7 @@ namespace RegionRuntime {
     Event LockImpl::lock(unsigned m, bool exc, Event wait_on)
     {
 	Event result = Event::NO_EVENT;
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
         // check to see if we have to wait on event first
         bool must_wait = false;
         if (wait_on.exists())
@@ -929,7 +961,7 @@ namespace RegionRuntime {
 #endif
           }
         }
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
 	return result;
     }
 
@@ -957,7 +989,7 @@ namespace RegionRuntime {
 
     void LockImpl::unlock(Event wait_on)
     {
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	if (wait_on.exists())
 	{
 		// Register this lock to be unlocked when the even triggers	
@@ -975,12 +1007,12 @@ namespace RegionRuntime {
 		// No need to wait to perform the unlock
 		perform_unlock();		
 	}
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
     void LockImpl::trigger(unsigned count, TriggerHandle handle)
     {
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
         // If the trigger handle is 0 then unlock the lock, 
         // otherwise find the lock request to wake up
         if (handle == 0)
@@ -1042,7 +1074,7 @@ namespace RegionRuntime {
           assert(found);
 #endif
         }
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
     // Always called while holding the lock's mutex
@@ -1142,22 +1174,22 @@ namespace RegionRuntime {
           return result;
 	PTHREAD_SAFE_CALL(trythis);
 #endif
-        PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+        PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	if (!active)
 	{
 		active = true;
 		result = true;
 		waiters = false;
 	}
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
 	return result;
     }
 
     void LockImpl::deactivate(void)
     {
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	active = false;	
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
     Lock LockImpl::get_lock(void) const
@@ -1204,7 +1236,7 @@ namespace RegionRuntime {
 	task.complete = Runtime::get_runtime()->get_free_event();
 	Event result = task.complete->get_event();
 
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	if (wait_on.exists())
 	{
 		// Try registering this processor with the event
@@ -1218,7 +1250,7 @@ namespace RegionRuntime {
 			ready_queue.push_back(task);
 			// If it wasn't registered, then the event triggered
 			// Notify the processor thread in case it is waiting
-			PTHREAD_SAFE_CALL(pthread_cond_signal(&wait_cond));
+			PTHREAD_SAFE_CALL(pthread_cond_signal(wait_cond));
 		}	
 		else
 		{
@@ -1237,9 +1269,9 @@ namespace RegionRuntime {
 		// Put it on the ready queue
 		ready_queue.push_back(task);
 		// Signal the thread there is a task to run in case it is waiting
-		PTHREAD_SAFE_CALL(pthread_cond_signal(&wait_cond));
+		PTHREAD_SAFE_CALL(pthread_cond_signal(wait_cond));
 	}
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
 	return result;
     }
 
@@ -1253,7 +1285,7 @@ namespace RegionRuntime {
 
     void ProcessorImpl::release_user(Processor owner)
     {
-      PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+      PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 #ifdef DEBUG_LOW_LEVEL
       assert(remaining_stops > 0);
       assert(util_users.find(owner) == util_users.end());
@@ -1266,13 +1298,13 @@ namespace RegionRuntime {
         shutdown = true;
       }
       // Signal in case the utility processor is waiting on work
-      PTHREAD_SAFE_CALL(pthread_cond_signal(&wait_cond));
-      PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+      PTHREAD_SAFE_CALL(pthread_cond_signal(wait_cond));
+      PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
     void ProcessorImpl::utility_finish(void)
     {
-      PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+      PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 #ifdef DEBUG_LOW_LEVEL
       assert(!is_utility_proc);
       assert(!util_shutdown);
@@ -1280,8 +1312,8 @@ namespace RegionRuntime {
       // Set util shutdown to true
       util_shutdown = true;
       // send a signal in case the processor was waiting
-      PTHREAD_SAFE_CALL(pthread_cond_signal(&wait_cond));
-      PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+      PTHREAD_SAFE_CALL(pthread_cond_signal(wait_cond));
+      PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
     void ProcessorImpl::run(void)
@@ -1315,7 +1347,7 @@ namespace RegionRuntime {
 	while (true)
 	{
 		// Make sure we're holding the lock
-		PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+		PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 		// This task will perform the unlock
 		execute_task(true);
 	}
@@ -1324,11 +1356,11 @@ namespace RegionRuntime {
     void ProcessorImpl::preempt(EventImpl *event, EventImpl::EventGeneration needed)
     {
 	// Try registering this processor with the event in case it goes to sleep
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	if (!(event->register_dependent(this, needed)))
 	{
 		// The even triggered, release the lock and return
-		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+		PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
 		return;
 	}
 	
@@ -1338,11 +1370,11 @@ namespace RegionRuntime {
 		// Don't permit shutdowns since there is still a task waiting
 		execute_task(false);
 		// Relock the task for our next attempt
-		PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+		PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	}
 
 	// Unlock and return
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
     // Must always be holding the lock when calling this task
@@ -1370,7 +1402,7 @@ namespace RegionRuntime {
 	{
                 // Mark that we're invoking the scheduler
                 scheduler_invoked = true;
-		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+		PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
                 Processor::TaskFuncPtr scheduler = task_table[Processor::TASK_ID_PROCESSOR_IDLE];
                 scheduler(NULL, 0, proc);
 		// Return from the scheduler, so we can reevaluate status
@@ -1385,11 +1417,11 @@ namespace RegionRuntime {
                         if (!util_shutdown)
                         {
                           // Wait for our utility processor to indicate that its done
-                          PTHREAD_SAFE_CALL(pthread_cond_wait(&wait_cond,&mutex));
+                          PTHREAD_SAFE_CALL(pthread_cond_wait(wait_cond,mutex));
                         }
                         // unlock the lock, just in case someone else decides they want to tell us something
                         // to do even though we've already exited
-                        PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+                        PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
                         // Check to see if there is a shutdown method
                         if (!is_utility_proc && (task_table.find(Processor::TASK_ID_PROCESSOR_SHUTDOWN) != task_table.end()))
                         {
@@ -1417,14 +1449,14 @@ namespace RegionRuntime {
 		// Wait until someone tells us there is work to do unless we've been told to shutdown
                 if (!shutdown)
                 {
-                  PTHREAD_SAFE_CALL(pthread_cond_wait(&wait_cond,&mutex));
+                  PTHREAD_SAFE_CALL(pthread_cond_wait(wait_cond,mutex));
                 }
-		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+		PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
 	}
         else if (scheduler_invoked)
         {
                 // Don't allow other tasks to be run while running the idle task
-                PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+                PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
                 return;
         }
 	else
@@ -1432,7 +1464,7 @@ namespace RegionRuntime {
 		// Pop a task off the queue and run it
 		TaskDesc task = ready_queue.front();
 		ready_queue.pop_front();
-		PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));	
+		PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));	
 		// Check for the shutdown function
 		if (task.func_id == 0)
 		{
@@ -1476,9 +1508,9 @@ namespace RegionRuntime {
     {
 	// We're not sure which task is ready, but at least one of them is
 	// so wake up the processor thread if it is waiting
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
-	PTHREAD_SAFE_CALL(pthread_cond_signal(&wait_cond));
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
+	PTHREAD_SAFE_CALL(pthread_cond_signal(wait_cond));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
     // The static method used to start the processor running
@@ -1503,8 +1535,14 @@ namespace RegionRuntime {
 	MemoryImpl(size_t max) 
 		: max_size(max), remaining(max)
 	{
-		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
+                mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
+		PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
 	}
+        ~MemoryImpl(void)
+        {
+                PTHREAD_SAFE_CALL(pthread_mutex_destroy(mutex));
+                free(mutex);
+        }
     public:
 	size_t remaining_bytes(void);
 	void* allocate_space(size_t size);
@@ -1513,20 +1551,20 @@ namespace RegionRuntime {
     private:
 	const size_t max_size;
 	size_t remaining;
-	pthread_mutex_t mutex;
+	pthread_mutex_t *mutex;
     };
 
     size_t MemoryImpl::remaining_bytes(void) 
     {
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	size_t result = remaining;
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
 	return result;
     }
 
     void* MemoryImpl::allocate_space(size_t size)
     {
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	void *ptr = NULL;
 	if (size < remaining)
 	{
@@ -1536,19 +1574,19 @@ namespace RegionRuntime {
 		assert(ptr != NULL);
 #endif
 	}
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
 	return ptr;
     }
 
     void MemoryImpl::free_space(void *ptr, size_t size)
     {
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 #ifdef DEBUG_LOW_LEVEL
 	assert(ptr != NULL);
 #endif
 	remaining += size;
 	free(ptr);
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
     size_t MemoryImpl::total_space(void) const
@@ -1869,7 +1907,8 @@ namespace RegionRuntime {
     class RegionMetaDataImpl {
     public:
 	RegionMetaDataImpl(int idx, size_t num, size_t elem_size, bool activate = false) {
-		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
+                mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
+		PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
 		active = activate;
 		index = idx;
 		if (activate)
@@ -1882,7 +1921,8 @@ namespace RegionRuntime {
 		}
 	}
         RegionMetaDataImpl(int idx, RegionMetaDataImpl *par, const ElementMask &m, bool activate = false) {
-                PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
+                mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
+                PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
 		active = activate;
 		index = idx;
 		if (activate)
@@ -1894,6 +1934,11 @@ namespace RegionRuntime {
                         mask = m;
                         parent = par;
 		}
+        }
+        ~RegionMetaDataImpl(void)
+        {
+                PTHREAD_SAFE_CALL(pthread_mutex_destroy(mutex));
+                free(mutex);
         }
     public:
 	bool activate(size_t num_elmts, size_t elmt_size);
@@ -1919,7 +1964,7 @@ namespace RegionRuntime {
 	//std::set<RegionAllocatorUntyped> allocators;
 	std::set<RegionInstanceUntyped> instances;
 	LockImpl *lock;
-	pthread_mutex_t mutex;
+	pthread_mutex_t *mutex;
 	bool active;
 	int index;
 	size_t num_elmts;
@@ -1940,13 +1985,19 @@ namespace RegionRuntime {
 	RegionAllocatorImpl(int idx, bool activate = false, RegionMetaDataImpl *o = NULL) 
 		: owner(o), index(idx)
 	{
-		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
+                mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
+		PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
 		active = activate;
 		if (active)
 		{
 			lock = Runtime::get_runtime()->get_free_lock();
 		}
 	}
+        ~RegionAllocatorImpl(void)
+        {
+                PTHREAD_SAFE_CALL(pthread_mutex_destroy(mutex));
+                free(mutex);
+        }
     public:
 	unsigned alloc_elmt(size_t num_elmts = 1);
         void free_elmt(unsigned ptr, unsigned count);
@@ -1956,7 +2007,7 @@ namespace RegionRuntime {
 	Lock get_lock(void);
     private:
         RegionMetaDataImpl *owner;
-	pthread_mutex_t mutex;
+	pthread_mutex_t *mutex;
 	bool active;
 	LockImpl *lock;
 	const int index;
@@ -1995,7 +2046,7 @@ namespace RegionRuntime {
           return result;
 	PTHREAD_SAFE_CALL(trythis);
 #endif
-        PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+        PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	if (!active)
 	{
                 result = true;
@@ -2003,13 +2054,13 @@ namespace RegionRuntime {
                 owner = own;
 		lock = Runtime::get_runtime()->get_free_lock();
 	}
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
 	return result;
     }
 
     void RegionAllocatorImpl::deactivate(void)
     {
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 #ifdef DEBUG_LOW_LEVEL
         assert(active);
 #endif
@@ -2017,7 +2068,7 @@ namespace RegionRuntime {
 	lock->deactivate();
 	lock = NULL;
         owner = NULL;
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
     RegionAllocatorUntyped RegionAllocatorImpl::get_allocator(void) const
@@ -2046,7 +2097,8 @@ namespace RegionRuntime {
                             bool activate = false, char *base = NULL)
 	        : elmt_size(elem_size), num_elmts(num), index(idx), next_handle(1)
 	{
-		PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
+                mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
+		PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
 		active = activate;
 		if (active)
 		{
@@ -2061,6 +2113,11 @@ namespace RegionRuntime {
 			lock = Runtime::get_runtime()->get_free_lock();
 		}
 	}
+        ~RegionInstanceImpl(void)
+        {
+                PTHREAD_SAFE_CALL(pthread_mutex_destroy(mutex));
+                free(mutex);
+        }
     public:
 	const void* read(unsigned ptr);
 	void write(unsigned ptr, const void* newval);	
@@ -2084,7 +2141,7 @@ namespace RegionRuntime {
 	size_t elmt_size;
 	size_t num_elmts;
 	Memory memory;
-	pthread_mutex_t mutex;
+	pthread_mutex_t *mutex;
 	bool active;
 	const int index;
 	// Fields for the copy operation
@@ -2144,7 +2201,7 @@ namespace RegionRuntime {
           return result;
 	PTHREAD_SAFE_CALL(trythis);
 #endif
-        PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+        PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	if (!active)
 	{
 		active = true;
@@ -2160,13 +2217,13 @@ namespace RegionRuntime {
 #endif
 		lock = Runtime::get_runtime()->get_free_lock();
 	}
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
 	return result;
     }
 
     void RegionInstanceImpl::deactivate(void)
     {
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	active = false;
 	MemoryImpl *mem = Runtime::get_runtime()->get_memory_impl(memory);
 	mem->free_space(base_ptr,num_elmts*elmt_size);
@@ -2175,7 +2232,7 @@ namespace RegionRuntime {
 	base_ptr = NULL;	
 	lock->deactivate();
 	lock = NULL;
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
     Logger::Category log_copy("copy");
@@ -2194,7 +2251,7 @@ namespace RegionRuntime {
 	{
 		// Try registering this as a triggerable with the event	
 		EventImpl *event_impl = Runtime::get_runtime()->get_event_impl(wait_on);
-		PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+		PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 		if (event_impl->register_dependent(this,wait_on.gen,next_handle))
 		{
                         CopyOperation op;
@@ -2204,12 +2261,12 @@ namespace RegionRuntime {
                         // Put it in the list of copy operations
                         pending_copies.push_back(op);
                         next_handle++;
-			PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+			PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
 			return op.complete->get_event();
 		}
 		else
 		{
-			PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+			PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
                         // Nothing to wait for
                         // Fall through and perform the copy
 		}
@@ -2220,7 +2277,7 @@ namespace RegionRuntime {
 
     void RegionInstanceImpl::trigger(unsigned count, TriggerHandle handle)
     {
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
         // Find the copy operation in the set
         bool found = false;
         for (std::list<CopyOperation>::iterator it = pending_copies.begin();
@@ -2239,7 +2296,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_LOW_LEVEL
         assert(found);
 #endif
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
     void RegionInstanceImpl::perform_copy_operation(RegionInstanceImpl *target)
@@ -2416,7 +2473,7 @@ namespace RegionRuntime {
           return result;
 	PTHREAD_SAFE_CALL(trythis);
 #endif
-        PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+        PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	if (!active)
 	{ 
 		active = true;
@@ -2427,7 +2484,7 @@ namespace RegionRuntime {
                 mask = ElementMask(num_elmts);
                 parent = NULL;
 	}
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
 	return result;
     }
 
@@ -2440,7 +2497,7 @@ namespace RegionRuntime {
         return result;
       PTHREAD_SAFE_CALL(trythis);
 #endif
-      PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+      PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
       if (!active)
       {
         active = true;
@@ -2451,13 +2508,13 @@ namespace RegionRuntime {
         mask = m;
         parent = par;
       }
-      PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+      PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
       return result;
     }
 
     void RegionMetaDataImpl::deactivate(void)
     {
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	active = false;
 	num_elmts = 0;
 	elmt_size = 0;
@@ -2470,13 +2527,13 @@ namespace RegionRuntime {
 	instances.clear();
 	lock->deactivate();
 	lock = NULL;
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
     unsigned RegionMetaDataImpl::allocate_space(unsigned count)
     {
         int result = 0;
-        PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+        PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
         if (parent == NULL)
         {
             // Do the allocation ourselves
@@ -2500,13 +2557,13 @@ namespace RegionRuntime {
 #endif
         // Update the mask to reflect the allocation
         mask.enable(result,count);
-        PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+        PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
         return unsigned(result);
     }
 
     void RegionMetaDataImpl::free_space(unsigned ptr, unsigned count)
     {
-        PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+        PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 #ifdef DEBUG_LOW_LEVEL
         // Some sanity checks
         assert(int(ptr) < mask.get_num_elmts());
@@ -2524,7 +2581,7 @@ namespace RegionRuntime {
         }
         // Update our mask no matter what
         mask.disable(ptr,count);
-        PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+        PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
     RegionMetaDataUntyped RegionMetaDataImpl::get_metadata(void)
@@ -2559,12 +2616,12 @@ namespace RegionRuntime {
         {
           return RegionInstanceUntyped::NO_INST;
         }
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
         RegionMetaDataUntyped r = { index };
 	RegionInstanceImpl* impl = Runtime::get_runtime()->get_free_instance(r,m,num_elmts, elmt_size, ptr);
 	RegionInstanceUntyped inst = impl->get_instance();
 	instances.insert(inst);
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
 	return inst;
     }
 
@@ -2576,7 +2633,7 @@ namespace RegionRuntime {
 
     void RegionMetaDataImpl::destroy_instance(RegionInstanceUntyped inst)
     {
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	std::set<RegionInstanceUntyped>::iterator it = instances.find(inst);
 #ifdef DEBUG_LOW_LEVEL
 	assert(it != instances.end());
@@ -2584,7 +2641,7 @@ namespace RegionRuntime {
 	instances.erase(it);
 	RegionInstanceImpl *impl = Runtime::get_runtime()->get_instance_impl(inst);
 	impl->deactivate();
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
     Lock RegionMetaDataImpl::get_lock(void)
