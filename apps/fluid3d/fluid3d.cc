@@ -37,11 +37,8 @@ enum {
   TASKID_SAVE_FILE,
 };
 
-//#define CELLS_X 8
-//#define CELLS_Y 8
-//#define CELLS_Z 8
-#define MAX_PARTICLES 64
-#define GEN_PARTICLES 16
+#define MAX_PARTICLES 16
+#define GEN_PARTICLES 2
 
 // Number of ghost cells needed for each block
 // 8 for 2D or 26 for 3D
@@ -229,12 +226,15 @@ struct Block {
   std::vector<std::vector<std::vector<ptr_t<Cell> > > > cells[2];
   int cb;  // which is the current buffer?
   int id;
+  unsigned CELLS_X, CELLS_Y, CELLS_Z;
 };
 
 // the size of a block for serialization purposes
-#define BLOCK_SIZE (sizeof(Block) \
-                    + sizeof(ptr_t<Cell>)*2*(CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2) \
-                    - sizeof(std::vector<std::vector<std::vector<ptr_t<Cell> > > > [2]))
+#define BLOCK_SIZE(b)                                                   \
+  (sizeof(LogicalRegion)*(2 + 2*GHOST_CELLS)                            \
+   + sizeof(BufferRegions)*2                                            \
+   + sizeof(ptr_t<Cell>)*2*((b).CELLS_X+2)*((b).CELLS_Y+2)*((b).CELLS_Z+2) \
+   + sizeof(int)*2 + sizeof(unsigned)*3)
 
 struct TopLevelRegions {
   LogicalRegion real_cells[2];
@@ -255,7 +255,6 @@ float h, hSq;
 float densityCoeff, pressureCoeff, viscosityCoeff;
 unsigned nx, ny, nz, numCells;
 unsigned nbx, nby, nbz, numBlocks;
-unsigned CELLS_X, CELLS_Y, CELLS_Z;
 Vec3 delta;				// cell dimensions
 
 RegionRuntime::Logger::Category log_app("application");
@@ -264,6 +263,9 @@ class BlockSerializer : public Serializer {
 public:
   BlockSerializer(size_t buffer_size) : Serializer(buffer_size) { }
   inline void serialize(const Block &block) {
+    Serializer::serialize(block.CELLS_X);
+    Serializer::serialize(block.CELLS_Y);
+    Serializer::serialize(block.CELLS_Z);
     for (unsigned i = 0; i < 2; i++)
       Serializer::serialize(block.base[i]);
     for (unsigned i = 0; i < 2; i++)
@@ -272,9 +274,9 @@ public:
     for (unsigned i = 0; i < 2; i++)
       Serializer::serialize(block.regions[i]);
     for (unsigned b = 0; b < 2; b++)
-      for (unsigned cz = 0; cz < CELLS_Z+2; cz++)
-        for (unsigned cy = 0; cy < CELLS_Y+2; cy++)
-          for (unsigned cx = 0; cx < CELLS_X+2; cx++)
+      for (unsigned cz = 0; cz < block.CELLS_Z+2; cz++)
+        for (unsigned cy = 0; cy < block.CELLS_Y+2; cy++)
+          for (unsigned cx = 0; cx < block.CELLS_X+2; cx++)
             Serializer::serialize(block.cells[b][cz][cy][cx]);
     Serializer::serialize(block.cb);
     Serializer::serialize(block.id);
@@ -292,6 +294,9 @@ public:
   BlockDeserializer(const void *buffer, size_t buffer_size)
     : Deserializer(buffer, buffer_size) { }
   inline void deserialize(Block &block) {
+    Deserializer::deserialize(block.CELLS_X);
+    Deserializer::deserialize(block.CELLS_Y);
+    Deserializer::deserialize(block.CELLS_Z);
     for (unsigned i = 0; i < 2; i++)
       Deserializer::deserialize(block.base[i]);
     for (unsigned i = 0; i < 2; i++)
@@ -300,12 +305,12 @@ public:
     for (unsigned i = 0; i < 2; i++)
       Deserializer::deserialize(block.regions[i]);
     for (unsigned b = 0; b < 2; b++) {
-      block.cells[b].resize(CELLS_Z+2);
-      for (unsigned cz = 0; cz < CELLS_Z+2; cz++) {
-        block.cells[b][cz].resize(CELLS_Y+2);
-        for (unsigned cy = 0; cy < CELLS_Y+2; cy++) {
-          block.cells[b][cz][cy].resize(CELLS_X+2);
-          for (unsigned cx = 0; cx < CELLS_X+2; cx++)
+      block.cells[b].resize(block.CELLS_Z+2);
+      for (unsigned cz = 0; cz < block.CELLS_Z+2; cz++) {
+        block.cells[b][cz].resize(block.CELLS_Y+2);
+        for (unsigned cy = 0; cy < block.CELLS_Y+2; cy++) {
+          block.cells[b][cz][cy].resize(block.CELLS_X+2);
+          for (unsigned cx = 0; cx < block.CELLS_X+2; cx++)
             Deserializer::deserialize(block.cells[b][cz][cy][cx]);
         }
       }
@@ -352,14 +357,15 @@ void top_level_task(const void *args, size_t arglen,
   {
     TopLevelRegions tlr;
     tlr.real_cells[0] = runtime->create_logical_region(ctx, sizeof(Cell),
-                                                       (numBlocks*CELLS_X*CELLS_Y*CELLS_Z));
+                                                       nx*ny*nz);
     tlr.real_cells[1] = runtime->create_logical_region(ctx, sizeof(Cell),
-                                                       (numBlocks*CELLS_X*CELLS_Y*CELLS_Z));
+                                                       nx*ny*nz);
+    unsigned rnx = nx + 2*nbx, rny = ny + 2*nby, rnz = nz + 2*nbz;
     tlr.edge_cells =
       runtime->create_logical_region(ctx, sizeof(Cell),
-                                     (numBlocks*
-                                      ((CELLS_X+2)*(CELLS_Y+2)*(CELLS_Z+2) -
-                                       CELLS_X*CELLS_Y*CELLS_Z)));
+                                           2*nbx*rny*rnz + 2*nby*rnx*rnz + 2*nbz*rnx*rny
+                                           - 4*nbx*nby*rnz - 4*nbx*nbz*rny - 4*nby*nbz*rnx
+                                           + 8*nbx*nby*nbz);
     TaskArgument tlr_arg(&tlr, sizeof(tlr));
 
     std::vector<RegionRequirement> main_regions;
@@ -397,18 +403,25 @@ void main_task(const void *args, size_t arglen,
 
   std::vector<Block> blocks;
   blocks.resize(numBlocks);
-  for(unsigned i = 0; i < numBlocks; i++) {
-    blocks[i].id = i;
-    for (unsigned b = 0; b < 2; b++) {
-      blocks[i].cells[b].resize(CELLS_Z+2);
-      for(unsigned cz = 0; cz < CELLS_Z+2; cz++) {
-        blocks[i].cells[b][cz].resize(CELLS_Y+2);
-        for(unsigned cy = 0; cy < CELLS_Y+2; cy++) {
-          blocks[i].cells[b][cz][cy].resize(CELLS_X+2);
+  for (unsigned idz = 0; idz < nbz; idz++)
+    for (unsigned idy = 0; idy < nby; idy++)
+      for (unsigned idx = 0; idx < nbx; idx++) {
+        unsigned id = (idz*nby+idy)*nbx+idx;
+
+        blocks[id].id = id;
+        blocks[id].CELLS_X = (nx/nbx) + (nx%nbx > idx ? 1 : 0);
+        blocks[id].CELLS_Y = (ny/nby) + (ny%nby > idy ? 1 : 0);
+        blocks[id].CELLS_Z = (nz/nbz) + (nz%nbz > idz ? 1 : 0);
+        for (unsigned b = 0; b < 2; b++) {
+          blocks[id].cells[b].resize(blocks[id].CELLS_Z+2);
+          for(unsigned cz = 0; cz < blocks[id].CELLS_Z+2; cz++) {
+            blocks[id].cells[b][cz].resize(blocks[id].CELLS_Y+2);
+            for(unsigned cy = 0; cy < blocks[id].CELLS_Y+2; cy++) {
+              blocks[id].cells[b][cz][cy].resize(blocks[id].CELLS_X+2);
+            }
+          }
         }
       }
-    }
-  }
 
   // first, do two passes of the "real" cells
   for(int b = 0; b < 2; b++) {
@@ -421,9 +434,9 @@ void main_task(const void *args, size_t arglen,
         for (unsigned idx = 0; idx < nbx; idx++) {
           unsigned id = (idz*nby+idy)*nbx+idx;
 
-          for(unsigned cz = 0; cz < CELLS_Z; cz++)
-            for(unsigned cy = 0; cy < CELLS_Y; cy++)
-              for(unsigned cx = 0; cx < CELLS_X; cx++) {
+          for(unsigned cz = 0; cz < blocks[id].CELLS_Z; cz++)
+            for(unsigned cy = 0; cy < blocks[id].CELLS_Y; cy++)
+              for(unsigned cx = 0; cx < blocks[id].CELLS_X; cx++) {
                 ptr_t<Cell> cell = real_cells[b].template alloc<Cell>();
                 coloring[id].insert(cell);
                 blocks[id].cells[b][cz+1][cy+1][cx+1] = cell;
@@ -462,112 +475,112 @@ void main_task(const void *args, size_t arglen,
           ptr_t<Cell> cell = edge_cells.template alloc<Cell>();         \
           coloring[color + dir].insert(cell);                           \
           blocks[id].cells[0][cz][cy][cx] = cell;                       \
-          blocks[id2].cells[1][CELLS_Z + 1 - cz][CELLS_Y + 1 - cy][CELLS_X + 1 - cx] = cell; \
+          blocks[id2].cells[1][blocks[id2].CELLS_Z + 1 - cz][blocks[id2].CELLS_Y + 1 - cy][blocks[id2].CELLS_X + 1 - cx] = cell; \
         } while(0)
-        CORNER(TOP_FRONT_LEFT, 0, 0, CELLS_Z + 1);
-        CORNER(TOP_FRONT_RIGHT, CELLS_X + 1, 0, CELLS_Z + 1);
-        CORNER(TOP_BACK_LEFT, 0, CELLS_Y + 1, CELLS_Z + 1);
-        CORNER(TOP_BACK_RIGHT, CELLS_X + 1, CELLS_Y + 1, CELLS_Z + 1);
+        CORNER(TOP_FRONT_LEFT, 0, 0, blocks[id].CELLS_Z + 1);
+        CORNER(TOP_FRONT_RIGHT, blocks[id].CELLS_X + 1, 0, blocks[id].CELLS_Z + 1);
+        CORNER(TOP_BACK_LEFT, 0, blocks[id].CELLS_Y + 1, blocks[id].CELLS_Z + 1);
+        CORNER(TOP_BACK_RIGHT, blocks[id].CELLS_X + 1, blocks[id].CELLS_Y + 1, blocks[id].CELLS_Z + 1);
         CORNER(BOTTOM_FRONT_LEFT, 0, 0, 0);
-        CORNER(BOTTOM_FRONT_RIGHT, CELLS_X + 1, 0, 0);
-        CORNER(BOTTOM_BACK_LEFT, 0, CELLS_Y + 1, 0);
-        CORNER(BOTTOM_BACK_RIGHT, CELLS_X + 1, CELLS_Y + 1, 0);
+        CORNER(BOTTOM_FRONT_RIGHT, blocks[id].CELLS_X + 1, 0, 0);
+        CORNER(BOTTOM_BACK_LEFT, 0, blocks[id].CELLS_Y + 1, 0);
+        CORNER(BOTTOM_BACK_RIGHT, blocks[id].CELLS_X + 1, blocks[id].CELLS_Y + 1, 0);
 #undef CORNER
 
         // x-axis edges
 #define XAXIS(dir,cy,cz) do {                                           \
           unsigned id2 = (MOVE_Z(idz,dir)*nby + MOVE_Y(idy,dir))*nbx + idx; \
-          for(unsigned cx = 1; cx <= CELLS_X; cx++) {                   \
+          for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {                   \
             ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
             coloring[color + dir].insert(cell);                         \
             blocks[id].cells[0][cz][cy][cx] = cell;                     \
-            blocks[id2].cells[1][CELLS_Z + 1 - cz][CELLS_Y + 1 - cy][cx] = cell; \
+            blocks[id2].cells[1][blocks[id2].CELLS_Z + 1 - cz][blocks[id2].CELLS_Y + 1 - cy][cx] = cell; \
           }                                                             \
         } while(0)
-        XAXIS(TOP_FRONT, 0, CELLS_Z + 1);
-        XAXIS(TOP_BACK, CELLS_Y + 1, CELLS_Z + 1);
+        XAXIS(TOP_FRONT, 0, blocks[id].CELLS_Z + 1);
+        XAXIS(TOP_BACK, blocks[id].CELLS_Y + 1, blocks[id].CELLS_Z + 1);
         XAXIS(BOTTOM_FRONT, 0, 0);
-        XAXIS(BOTTOM_BACK, CELLS_Y + 1, 0);
+        XAXIS(BOTTOM_BACK, blocks[id].CELLS_Y + 1, 0);
 #undef XAXIS
 
         // y-axis edges
 #define YAXIS(dir,cx,cz) do {                                           \
           unsigned id2 = (MOVE_Z(idz,dir)*nby + idy)*nbx + MOVE_X(idx,dir); \
-          for(unsigned cy = 1; cy <= CELLS_Y; cy++) {                   \
+          for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {                   \
             ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
             coloring[color + dir].insert(cell);                         \
             blocks[id].cells[0][cz][cy][cx] = cell;                     \
-            blocks[id2].cells[1][CELLS_Z + 1 - cz][cy][CELLS_X + 1 - cx] = cell; \
+            blocks[id2].cells[1][blocks[id2].CELLS_Z + 1 - cz][cy][blocks[id2].CELLS_X + 1 - cx] = cell; \
           }                                                             \
         } while(0)
-        YAXIS(TOP_LEFT, 0, CELLS_Z + 1);
-        YAXIS(TOP_RIGHT, CELLS_X + 1, CELLS_Z + 1);
+        YAXIS(TOP_LEFT, 0, blocks[id].CELLS_Z + 1);
+        YAXIS(TOP_RIGHT, blocks[id].CELLS_X + 1, blocks[id].CELLS_Z + 1);
         YAXIS(BOTTOM_LEFT, 0, 0);
-        YAXIS(BOTTOM_RIGHT, CELLS_X + 1, 0);
+        YAXIS(BOTTOM_RIGHT, blocks[id].CELLS_X + 1, 0);
 #undef YAXIS
 
         // z-axis edges
 #define ZAXIS(dir,cx,cy) do {                                           \
           unsigned id2 = (idz*nby + MOVE_Y(idy,dir))*nbx + MOVE_X(idx,dir); \
-          for(unsigned cz = 1; cz <= CELLS_Z; cz++) {                   \
+          for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {                   \
             ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
             coloring[color + dir].insert(cell);                         \
             blocks[id].cells[0][cz][cy][cx] = cell;                     \
-            blocks[id2].cells[1][cz][CELLS_Y + 1 - cy][CELLS_X + 1 - cx] = cell; \
+            blocks[id2].cells[1][cz][blocks[id2].CELLS_Y + 1 - cy][blocks[id2].CELLS_X + 1 - cx] = cell; \
           }                                                             \
         } while(0)
         ZAXIS(FRONT_LEFT, 0, 0);
-        ZAXIS(FRONT_RIGHT, CELLS_X + 1, 0);
-        ZAXIS(BACK_LEFT, 0, CELLS_Y + 1);
-        ZAXIS(BACK_RIGHT, CELLS_X + 1, CELLS_Y + 1);
+        ZAXIS(FRONT_RIGHT, blocks[id].CELLS_X + 1, 0);
+        ZAXIS(BACK_LEFT, 0, blocks[id].CELLS_Y + 1);
+        ZAXIS(BACK_RIGHT, blocks[id].CELLS_X + 1, blocks[id].CELLS_Y + 1);
 #undef ZAXIS
 
         // xy-plane edges
 #define XYPLANE(dir,cz) do {                                            \
           unsigned id2 = (MOVE_Z(idz,dir)*nby + idy)*nbx + idx;         \
-          for(unsigned cy = 1; cy <= CELLS_Y; cy++) {                   \
-            for(unsigned cx = 1; cx <= CELLS_X; cx++) {                 \
+          for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {                   \
+            for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {                 \
               ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
               coloring[color + dir].insert(cell);                       \
               blocks[id].cells[0][cz][cy][cx] = cell;                   \
-              blocks[id2].cells[1][CELLS_Z + 1 - cz][cy][cx] = cell;    \
+              blocks[id2].cells[1][blocks[id2].CELLS_Z + 1 - cz][cy][cx] = cell;    \
             }                                                           \
           }                                                             \
         } while(0)
-        XYPLANE(TOP, CELLS_Z + 1);
+        XYPLANE(TOP, blocks[id].CELLS_Z + 1);
         XYPLANE(BOTTOM, 0);
 #undef XYPLANE
 
         // xz-plane edges
 #define XZPLANE(dir,cy) do {                                            \
           unsigned id2 = (idz*nby + MOVE_Y(idy,dir))*nbx + idx;         \
-          for(unsigned cz = 1; cz <= CELLS_Z; cz++) {                   \
-            for(unsigned cx = 1; cx <= CELLS_X; cx++) {                 \
+          for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {                   \
+            for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {                 \
               ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
               coloring[color + dir].insert(cell);                       \
               blocks[id].cells[0][cz][cy][cx] = cell;                   \
-              blocks[id2].cells[1][cz][CELLS_Y + 1 - cy][cx] = cell;    \
+              blocks[id2].cells[1][cz][blocks[id2].CELLS_Y + 1 - cy][cx] = cell;    \
             }                                                           \
           }                                                             \
         } while(0)
         XZPLANE(FRONT, 0);
-        XZPLANE(BACK, CELLS_Y + 1);
+        XZPLANE(BACK, blocks[id].CELLS_Y + 1);
 #undef XZPLANE
 
         // yz-plane edges
 #define YZPLANE(dir,cx) do {                                            \
           unsigned id2 = (idz*nby + idy)*nbx + MOVE_X(idx,dir);         \
-          for(unsigned cz = 1; cz <= CELLS_Z; cz++) {                   \
-            for(unsigned cy = 1; cy <= CELLS_Y; cy++) {                 \
+          for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {                   \
+            for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {                 \
               ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
               coloring[color + dir].insert(cell);                       \
               blocks[id].cells[0][cz][cy][cx] = cell;                   \
-              blocks[id2].cells[1][cz][cy][CELLS_X + 1 - cx] = cell;    \
+              blocks[id2].cells[1][cz][cy][blocks[id2].CELLS_X + 1 - cx] = cell;    \
             }                                                           \
           }                                                             \
         } while(0)
         YZPLANE(LEFT, 0);
-        YZPLANE(RIGHT, CELLS_X + 1);
+        YZPLANE(RIGHT, blocks[id].CELLS_X + 1);
 #undef YZPLANE
 
         color += GHOST_CELLS;
@@ -608,7 +621,7 @@ void main_task(const void *args, size_t arglen,
 					     READ_WRITE, ALLOCABLE, EXCLUSIVE,
 					     tlr->real_cells[1]));
 
-    unsigned bufsize = BLOCK_SIZE;
+    unsigned bufsize = BLOCK_SIZE(blocks[id]);
     BlockSerializer ser(bufsize);
     ser.serialize(blocks[id]);
     const TaskArgument buffer(ser.get_buffer(), bufsize);
@@ -630,7 +643,10 @@ void main_task(const void *args, size_t arglen,
 
     std::string fileName = "fluid3d_init.fluid";
 
-    unsigned bufsize = BLOCK_SIZE*numBlocks + sizeof(size_t) + fileName.length();
+    unsigned bufsize = sizeof(size_t) + fileName.length();
+    for (unsigned id = 0; id < numBlocks; id++) {
+      bufsize += BLOCK_SIZE(blocks[id]);
+    }
     BlockSerializer ser(bufsize);
     for (unsigned id = 0; id < numBlocks; id++) {
       ser.serialize(blocks[id]);
@@ -679,7 +695,7 @@ void main_task(const void *args, size_t arglen,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 		      tlr->edge_cells);
 
-      unsigned bufsize = BLOCK_SIZE;
+      unsigned bufsize = BLOCK_SIZE(blocks[id]);
       BlockSerializer ser(bufsize);
       ser.serialize(blocks[id]);
       TaskArgument buffer(ser.get_buffer(), bufsize);
@@ -710,7 +726,7 @@ void main_task(const void *args, size_t arglen,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 		      tlr->edge_cells);
 
-      unsigned bufsize = BLOCK_SIZE;
+      unsigned bufsize = BLOCK_SIZE(blocks[id]);
       BlockSerializer ser(bufsize);
       ser.serialize(blocks[id]);
       TaskArgument buffer(ser.get_buffer(), bufsize);
@@ -741,7 +757,7 @@ void main_task(const void *args, size_t arglen,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 		      tlr->edge_cells);
 
-      unsigned bufsize = BLOCK_SIZE;
+      unsigned bufsize = BLOCK_SIZE(blocks[id]);
       BlockSerializer ser(bufsize);
       ser.serialize(blocks[id]);
       TaskArgument buffer(ser.get_buffer(), bufsize);
@@ -774,7 +790,7 @@ void main_task(const void *args, size_t arglen,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 		      tlr->edge_cells);
 
-      unsigned bufsize = BLOCK_SIZE;
+      unsigned bufsize = BLOCK_SIZE(blocks[id]);
       BlockSerializer ser(bufsize);
       ser.serialize(blocks[id]);
       TaskArgument buffer(ser.get_buffer(), bufsize);
@@ -787,6 +803,36 @@ void main_task(const void *args, size_t arglen,
       // remember the futures for the last pass so we can wait on them
       if(step == Config::num_steps - 1)
 	futures.push_back(f);
+    }
+
+    if (step == 0) { 
+      {
+        std::vector<RegionRequirement> init_regions;
+        for (unsigned id = 0; id < numBlocks; id++) {
+          init_regions.push_back(RegionRequirement(blocks[id].base[1],
+                                                   READ_ONLY, NO_MEMORY, EXCLUSIVE,
+                                                   tlr->real_cells[1]));
+        }
+
+        std::string fileName = "fluid3d_step0.fluid";
+
+        unsigned bufsize = sizeof(size_t) + fileName.length();
+        for (unsigned id = 0; id < numBlocks; id++) {
+          bufsize += BLOCK_SIZE(blocks[id]);
+        }
+        BlockSerializer ser(bufsize);
+        for (unsigned id = 0; id < numBlocks; id++) {
+          ser.serialize(blocks[id]);
+        }
+        ser.serialize(fileName);
+        TaskArgument buffer(ser.get_buffer(), bufsize);
+
+        Future f = runtime->execute_task(ctx, TASKID_SAVE_FILE,
+                                         init_regions,
+                                         buffer,
+                                         0, 0);
+        f.get_void_result();
+      }
     }
 
     // flip the phase
@@ -816,7 +862,10 @@ void main_task(const void *args, size_t arglen,
 
     std::string fileName = "fluid3d_output.fluid";
 
-    unsigned bufsize = BLOCK_SIZE*numBlocks + sizeof(size_t) + fileName.length();
+    unsigned bufsize = sizeof(size_t) + fileName.length();
+    for (unsigned id = 0; id < numBlocks; id++) {
+      bufsize += BLOCK_SIZE(blocks[id]);
+    }
     BlockSerializer ser(bufsize);
     for (unsigned id = 0; id < numBlocks; id++) {
       ser.serialize(blocks[id]);
@@ -857,9 +906,9 @@ void init_simulation(const void *args, size_t arglen,
   // only region we need is real1
   PhysicalRegion<AT> real_cells = regions[0];
 
-  for (unsigned idz = 0; idz < CELLS_Z; idz++) {
-    for (unsigned idy = 0; idy < CELLS_Y; idy++) {
-      for (unsigned idx = 0; idx < CELLS_X; idx++) {
+  for (unsigned idz = 0; idz < b.CELLS_Z; idz++) {
+    for (unsigned idy = 0; idy < b.CELLS_Y; idy++) {
+      for (unsigned idx = 0; idx < b.CELLS_X; idx++) {
         Cell next;
         next.x = idx;
         next.y = idy;
@@ -878,26 +927,23 @@ void init_simulation(const void *args, size_t arglen,
   }
 }
 
-#define GET_DIR(idz, idy, idx)                                          \
-  LOOKUP_DIR(((idx) == 0 ? -1 : ((idx == (int)CELLS_X+1) ? 1 : 0)), ((idy) == 0 ? -1 : ((idy == (int)CELLS_Y+1) ? 1 : 0)), ((idz) == 0 ? -1 : ((idz == (int)CELLS_Z+1) ? 1 : 0)))
+#define GET_DIR(b, idz, idy, idx)                                        \
+  LOOKUP_DIR(((idx) == 0 ? -1 : ((idx == (int)((b).CELLS_X+1)) ? 1 : 0)), ((idy) == 0 ? -1 : ((idy == (int)((b).CELLS_Y+1)) ? 1 : 0)), ((idz) == 0 ? -1 : ((idz == (int)((b).CELLS_Z+1)) ? 1 : 0)))
 
-#define GET_REGION(idz, idy, idx, base, edge)                           \
-  (GET_DIR(idz, idy, idx) == CENTER ? (edge)[GET_DIR(idz, idy, idx)] : (base))
-
-#define READ_CELL(cz, cy, cx, base, edge, cell) do {                    \
-    int dir = GET_DIR(cz, cy,cx);                                       \
+#define READ_CELL(b, cz, cy, cx, base, edge, cell) do {                 \
+    int dir = GET_DIR(b, cz, cy,cx);                                    \
     if(dir == CENTER) {                                                 \
-      (cell) = (base).read(b.cells[cb][cz][cy][cx]);                    \
+      (cell) = (base).read((b).cells[cb][cz][cy][cx]);                  \
     } else {								\
-      (cell) = (edge)[dir].read(b.cells[eb][cz][cy][cx]);               \
+      (cell) = (edge)[dir].read((b).cells[eb][cz][cy][cx]);             \
     } } while(0)
 
-#define WRITE_CELL(cz, cy, cx, base, edge, cell) do {           \
-    int dir = GET_DIR(cz, cy,cx);                               \
-    if(dir == CENTER)                                           \
-      (base).write(b.cells[cb][cz][cy][cx], (cell));            \
-    else                                                        \
-      (edge)[dir].write(b.cells[eb][cz][cy][cx], (cell));       \
+#define WRITE_CELL(b, cz, cy, cx, base, edge, cell) do {         \
+    int dir = GET_DIR(b, cz, cy,cx);                             \
+    if(dir == CENTER)                                            \
+      (base).write((b).cells[cb][cz][cy][cx], (cell));           \
+    else                                                         \
+      (edge)[dir].write((b).cells[eb][cz][cy][cx], (cell));      \
   } while(0)
 
 template<AccessorType AT>
@@ -924,25 +970,17 @@ void init_and_rebuild(const void *args, size_t arglen,
   {
     Cell blank;
     blank.num_particles = 0;
-    for(int cz = 0; cz <= (int)CELLS_Z + 1; cz++)
-      for(int cy = 0; cy <= (int)CELLS_Y + 1; cy++)
-        for(int cx = 0; cx <= (int)CELLS_X + 1; cx++)
-          WRITE_CELL(cz, cy, cx, dst_block, edge_blocks, blank);
-#if 0
-	int dir = GET_DIR(cy,dx);
-	if(dir == CENTER)
-	  dst_block.write(b.cells[cb][cy][cx], blank);
-	else
-	  edge_blocks[dir].write(b.cells[eb][cy][cx], blank);
-      }
-#endif
+    for(int cz = 0; cz <= (int)b.CELLS_Z + 1; cz++)
+      for(int cy = 0; cy <= (int)b.CELLS_Y + 1; cy++)
+        for(int cx = 0; cx <= (int)b.CELLS_X + 1; cx++)
+          WRITE_CELL(b, cz, cy, cx, dst_block, edge_blocks, blank);
   }
 
   // now go through each source cell and move particles that have wandered too
   //  far
-  for(int cz = 1; cz < (int)CELLS_Z + 1; cz++)
-    for(int cy = 1; cy < (int)CELLS_Y + 1; cy++)
-      for(int cx = 1; cx < (int)CELLS_X + 1; cx++) {
+  for(int cz = 1; cz < (int)b.CELLS_Z + 1; cz++)
+    for(int cy = 1; cy < (int)b.CELLS_Y + 1; cy++)
+      for(int cx = 1; cx < (int)b.CELLS_X + 1; cx++) {
         // don't need to macro-ize this because it's known to be a real cell
         Cell c_src = src_block.read(b.cells[1-cb][cz][cy][cx]);
         for(unsigned p = 0; p < c_src.num_particles; p++) {
@@ -958,7 +996,7 @@ void init_and_rebuild(const void *args, size_t arglen,
           if(pos.z >= delta.z) { pos.z -= delta.z; dz++; }
 
           Cell c_dst;
-          READ_CELL(dz, dy, dx, dst_block, edge_blocks, c_dst);
+          READ_CELL(b, dz, dy, dx, dst_block, edge_blocks, c_dst);
           if(c_dst.num_particles < MAX_PARTICLES) {
             int dp = c_dst.num_particles++;
 
@@ -967,7 +1005,7 @@ void init_and_rebuild(const void *args, size_t arglen,
             c_dst.hv[dp] = c_src.hv[p];
             c_dst.v[dp] = c_src.v[p];
 
-            WRITE_CELL(cz, dy, dx, dst_block, edge_blocks, c_dst);
+            WRITE_CELL(b, cz, dy, dx, dst_block, edge_blocks, c_dst);
           }
         }
       }
@@ -995,17 +1033,17 @@ void rebuild_reduce(const void *args, size_t arglen,
   log_app.info("In rebuild_reduce() for block %d", b.id);
 
   // for each edge cell, copy inward
-  for(int cz = 0; cz <= (int)CELLS_Z+1; cz++)
-    for(int cy = 0; cy <= (int)CELLS_Y+1; cy++)
-      for(int cx = 0; cx <= (int)CELLS_X+1; cx++) {
-        int dir = GET_DIR(cz, cy, cx);
+  for(int cz = 0; cz <= (int)b.CELLS_Z+1; cz++)
+    for(int cy = 0; cy <= (int)b.CELLS_Y+1; cy++)
+      for(int cx = 0; cx <= (int)b.CELLS_X+1; cx++) {
+        int dir = GET_DIR(b, cz, cy, cx);
         if(dir == CENTER) continue;
         int dz = MOVE_Z(cz, REVERSE(dir));
         int dy = MOVE_Y(cy, REVERSE(dir));
         int dx = MOVE_X(cx, REVERSE(dir));
 
         Cell c_src;
-        READ_CELL(cz, cy, cx, base_block, edge_blocks, c_src);
+        READ_CELL(b, cz, cy, cx, base_block, edge_blocks, c_src);
         Cell c_dst = base_block.read(b.cells[cb][dz][dy][dx]);
 
         for(unsigned p = 0; p < c_src.num_particles; p++) {
@@ -1022,17 +1060,17 @@ void rebuild_reduce(const void *args, size_t arglen,
 
   // now turn around and have each edge grab a copy of the boundary real cell
   //  to share for the next step
-  for(int cz = 0; cz <= (int)CELLS_Z+1; cz++)
-    for(int cy = 0; cy <= (int)CELLS_Y+1; cy++)
-      for(int cx = 0; cx <= (int)CELLS_X+1; cx++) {
-        int dir = GET_DIR(cz, cy, cx);
+  for(int cz = 0; cz <= (int)b.CELLS_Z+1; cz++)
+    for(int cy = 0; cy <= (int)b.CELLS_Y+1; cy++)
+      for(int cx = 0; cx <= (int)b.CELLS_X+1; cx++) {
+        int dir = GET_DIR(b, cz, cy, cx);
         if(dir == CENTER) continue;
         int dz = MOVE_Z(cz, REVERSE(dir));
         int dy = MOVE_Y(cy, REVERSE(dir));
         int dx = MOVE_X(cx, REVERSE(dir));
 
         Cell cell = base_block.read(b.cells[cb][dz][dy][dx]);
-        WRITE_CELL(cz, cy, cx, base_block, edge_blocks, cell);
+        WRITE_CELL(b, cz, cy, cx, base_block, edge_blocks, cell);
       }
 
   log_app.info("Done with rebuild_reduce() for block %d", b.id);
@@ -1058,10 +1096,10 @@ void scatter_densities(const void *args, size_t arglen,
   log_app.info("In scatter_densities() for block %d", b.id);
 
   // first, clear our density (and acceleration, while we're at it) values
-  for(int cz = 1; cz < (int)CELLS_Z+1; cz++)
-    for(int cy = 1; cy < (int)CELLS_Y+1; cy++)
-      for(int cx = 1; cx < (int)CELLS_X+1; cx++) {
-        int dir = GET_DIR(cz, cy, cx);
+  for(int cz = 1; cz < (int)b.CELLS_Z+1; cz++)
+    for(int cy = 1; cy < (int)b.CELLS_Y+1; cy++)
+      for(int cx = 1; cx < (int)b.CELLS_X+1; cx++) {
+        int dir = GET_DIR(b, cz, cy, cx);
         if(dir == CENTER) continue;
         int dz = MOVE_Z(cz, REVERSE(dir));
         int dy = MOVE_Y(cy, REVERSE(dir));
@@ -1079,9 +1117,9 @@ void scatter_densities(const void *args, size_t arglen,
   // two things to watch out for:
   //  position vectors have to be augmented by relative block positions
   //  for pairs of real cells, we can do the calculation once instead of twice
-  for(int cz = 1; cz < (int)CELLS_Z+1; cz++)
-    for(int cy = 1; cy < (int)CELLS_Y+1; cy++)
-      for(int cx = 1; cx < (int)CELLS_X+1; cx++) {
+  for(int cz = 1; cz < (int)b.CELLS_Z+1; cz++)
+    for(int cy = 1; cy < (int)b.CELLS_Y+1; cy++)
+      for(int cx = 1; cx < (int)b.CELLS_X+1; cx++) {
         Cell cell = base_block.read(b.cells[cb][cz][cy][cx]);
         assert(cell.num_particles <= MAX_PARTICLES);
 
@@ -1090,19 +1128,29 @@ void scatter_densities(const void *args, size_t arglen,
             for(int dx = cx - 1; dx <= cx + 1; dx++) {
               // did we already get updated by this neighbor's bidirectional update?
               // FIXME: ummmmmmmmmm.... ?????
-              if((dy > 0) && (dx > 0) && (dx < (int)CELLS_X+1) && 
-                 ((dy < cy) || ((dy == cy) && (dx < cx))))
+              //if((dy > 0) && (dx > 0) && (dx < (int)b.CELLS_X+1) && 
+              //   ((dy < cy) || ((dy == cy) && (dx < cx))))
+              if ((dz > 0) && (dy > 0) && (dx > 0) &&
+                  (dz < (int)b.CELLS_Z+1) &&
+                  (dy < (int)b.CELLS_Y+1) &&
+                  (dx < (int)b.CELLS_X+1) &&
+                  (dz < cz))
                 continue;
 
               Cell c2;
-              READ_CELL(dz, dy, dx, base_block, edge_blocks, c2);
+              READ_CELL(b, dz, dy, dx, base_block, edge_blocks, c2);
               assert(c2.num_particles <= MAX_PARTICLES);
 
               // do bidirectional update if other cell is a real cell and it is
               //  either below or to the right (but not up-right) of us
               // FIXME: ummmmmmmmmm.... ?????
-              bool update_other = ((dy < (int)CELLS_Y+1) && (dx > 0) && (dx < (int)CELLS_X+1) &&
-                                   ((dy > cy) || ((dy == cy) && (dx > cx))));
+              //bool update_other = ((dy < (int)b.CELLS_Y+1) && (dx > 0) && (dx < (int)b.CELLS_X+1) &&
+              //                     ((dy > cy) || ((dy == cy) && (dx > cx))));
+              bool update_other = ((dz > 0) && (dy > 0) && (dx > 0) &&
+                                   (dz < (int)b.CELLS_Z+1) &&
+                                   (dy < (int)b.CELLS_Y+1) &&
+                                   (dx < (int)b.CELLS_X+1) &&
+                                   (dz > cz) && ((dy != cy) || (dx != cx)));
 	  
               // pairwise across particles - watch out for identical particle case!
               for(unsigned p = 0; p < cell.num_particles; p++)
@@ -1125,7 +1173,7 @@ void scatter_densities(const void *args, size_t arglen,
                 }
 
               if(update_other)
-                WRITE_CELL(dz, dy, dx, base_block, edge_blocks, c2);
+                WRITE_CELL(b, dz, dy, dx, base_block, edge_blocks, c2);
             }
 
         // a little offset for every particle once we're done
@@ -1140,17 +1188,17 @@ void scatter_densities(const void *args, size_t arglen,
 
   // now turn around and have each edge grab a copy of the boundary real cell
   //  to share for the next step
-  for(int cz = 0; cz <= (int)CELLS_Z+1; cz++)
-    for(int cy = 0; cy <= (int)CELLS_Y+1; cy++)
-      for(int cx = 0; cx <= (int)CELLS_X+1; cx++) {
-        int dir = GET_DIR(cz, cy, cx);
+  for(int cz = 0; cz <= (int)b.CELLS_Z+1; cz++)
+    for(int cy = 0; cy <= (int)b.CELLS_Y+1; cy++)
+      for(int cx = 0; cx <= (int)b.CELLS_X+1; cx++) {
+        int dir = GET_DIR(b, cz, cy, cx);
         if(dir == CENTER) continue;
         int dz = MOVE_Z(cz, REVERSE(dir));
         int dy = MOVE_Y(cy, REVERSE(dir));
         int dx = MOVE_X(cx, REVERSE(dir));
 
         Cell cell = base_block.read(b.cells[cb][dz][dy][dx]);
-        WRITE_CELL(cz, cy, cx, base_block, edge_blocks, cell);
+        WRITE_CELL(b, cz, cy, cx, base_block, edge_blocks, cell);
       }
 
   log_app.info("Done with scatter_densities() for block %d", b.id);
@@ -1196,9 +1244,9 @@ void gather_forces_and_advance(const void *args, size_t arglen,
   // two things to watch out for:
   //  position vectors have to be augmented by relative block positions
   //  for pairs of real cells, we can do the calculation once instead of twice
-  for(int cz = 1; cz < (int)CELLS_Z+1; cz++)
-    for(int cy = 1; cy < (int)CELLS_Y+1; cy++)
-      for(int cx = 1; cx < (int)CELLS_X+1; cx++) {
+  for(int cz = 1; cz < (int)b.CELLS_Z+1; cz++)
+    for(int cy = 1; cy < (int)b.CELLS_Y+1; cy++)
+      for(int cx = 1; cx < (int)b.CELLS_X+1; cx++) {
         Cell cell = base_block.read(b.cells[cb][cz][cy][cx]);
         assert(cell.num_particles <= MAX_PARTICLES);
 
@@ -1207,20 +1255,30 @@ void gather_forces_and_advance(const void *args, size_t arglen,
             for(int dx = cx - 1; dx <= cx + 1; dx++) {
               // did we already get updated by this neighbor's bidirectional update?
               // FIXME: ummmmmmm... ????
-              if((dy > 0) && (dx > 0) && (dx < (int)CELLS_X+1) && 
-                 ((dy < cy) || ((dy == cy) && (dx < cx))))
+              //if((dy > 0) && (dx > 0) && (dx < (int)b.CELLS_X+1) && 
+              //   ((dy < cy) || ((dy == cy) && (dx < cx))))
+              if ((dz > 0) && (dy > 0) && (dx > 0) &&
+                  (dz < (int)b.CELLS_Z+1) &&
+                  (dy < (int)b.CELLS_Y+1) &&
+                  (dx < (int)b.CELLS_X+1) &&
+                  (dz < cz))
                 continue;
 
               Cell c2;
-              READ_CELL(dz, dy, dx, base_block, edge_blocks, c2);
+              READ_CELL(b, dz, dy, dx, base_block, edge_blocks, c2);
               assert(c2.num_particles <= MAX_PARTICLES);
 
               // do bidirectional update if other cell is a real cell and it is
               //  either below or to the right (but not up-right) of us
               // FIXME: ummmmmmm... ????
-              bool update_other = ((dy < (int)CELLS_Y+1) && (dx > 0) && (dx < (int)CELLS_X+1) &&
-                                   ((dy > cy) || ((dy == cy) && (dx > cx))));
-	  
+              //bool update_other = ((dy < (int)b.CELLS_Y+1) && (dx > 0) && (dx < (int)b.CELLS_X+1) &&
+              //                     ((dy > cy) || ((dy == cy) && (dx > cx))));
+              bool update_other = ((dz > 0) && (dy > 0) && (dx > 0) &&
+                                   (dz < (int)b.CELLS_Z+1) &&
+                                   (dy < (int)b.CELLS_Y+1) &&
+                                   (dx < (int)b.CELLS_X+1) &&
+                                   (dz > cz) && ((dy != cy) || (dx != cx)));
+
               // pairwise across particles - watch out for identical particle case!
               for(unsigned p = 0; p < cell.num_particles; p++)
                 for(unsigned p2 = 0; p2 < c2.num_particles; p2++) {
@@ -1247,7 +1305,7 @@ void gather_forces_and_advance(const void *args, size_t arglen,
                 }
 
               if(update_other)
-                WRITE_CELL(dz, dy, dx, base_block, edge_blocks, c2);
+                WRITE_CELL(b, dz, dy, dx, base_block, edge_blocks, c2);
             }
 
         // we have everything we need to go ahead and update positions, so
@@ -1327,9 +1385,9 @@ void save_file(const void *args, size_t arglen,
       for (unsigned idx = 0; idx < nbx; idx++) {
         unsigned id = (idz*nby+idy)*nbx+idx;
 
-        for(unsigned cz = 0; cz < CELLS_Z; cz++)
-          for(unsigned cy = 0; cy < CELLS_Y; cy++)
-            for(unsigned cx = 0; cx < CELLS_X; cx++) {
+        for(unsigned cz = 0; cz < blocks[id].CELLS_Z; cz++)
+          for(unsigned cy = 0; cy < blocks[id].CELLS_Y; cy++)
+            for(unsigned cx = 0; cx < blocks[id].CELLS_X; cx++) {
               Cell cell = real_cells.read(blocks[id].cells[b][cz+1][cy+1][cx+1]);
               count += cell.num_particles;
             }
@@ -1355,9 +1413,9 @@ void save_file(const void *args, size_t arglen,
       for (unsigned idx = 0; idx < nbx; idx++) {
         unsigned id = (idz*nby+idy)*nbx+idx;
 
-        for(unsigned cz = 0; cz < CELLS_Z; cz++)
-          for(unsigned cy = 0; cy < CELLS_Y; cy++)
-            for(unsigned cx = 0; cx < CELLS_X; cx++) {
+        for(unsigned cz = 0; cz < blocks[id].CELLS_Z; cz++)
+          for(unsigned cy = 0; cy < blocks[id].CELLS_Y; cy++)
+            for(unsigned cx = 0; cx < blocks[id].CELLS_X; cx++) {
               Cell cell = real_cells.read(blocks[id].cells[b][cz+1][cy+1][cx+1]);
 
               unsigned np = cell.num_particles;
@@ -1735,9 +1793,6 @@ int main(int argc, char **argv)
   nbx = 8;
   nby = 8;
   nbz = 8;
-  CELLS_X = 8;
-  CELLS_Y = 8;
-  CELLS_Z = 8;
 
   // Initialize the machine
   Machine m(&argc, &argv, task_table, false);
@@ -1764,7 +1819,8 @@ int main(int argc, char **argv)
     }
   }
   numBlocks = nbx * nby * nbz;
-  printf("fluid: grid size = %d x %d x %d\n", nbx, nby, nbz);
+  printf("fluid: cells     = %d (%d x %d x %d)\n", nx*ny*nz, nx, ny, nz);
+  printf("fluid: divisions = %d x %d x %d\n", nbx, nby, nbz);
   Config::args_read = true;
 
   m.run();
