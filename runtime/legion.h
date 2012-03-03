@@ -977,7 +977,7 @@ namespace RegionRuntime {
        * Given the list of tasks managed by this mapper, specify which tasks are
        * permitted to be stolen by adding them to the 'to_steal' list.
        */
-      virtual void permit_task_steal( Processor thief, const std::vector<const Task*> &tasks,
+      virtual void permit_task_steal( Processor thief, const std::set<const Task*> &tasks,
                                       std::set<const Task*> &to_steal);
 
       /**

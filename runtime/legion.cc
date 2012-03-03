@@ -2162,10 +2162,10 @@ namespace RegionRuntime {
       Processor source;
       derez.deserialize<Processor>(source);
       // Then get the number of tasks to process
-      int num_tasks; 
-      derez.deserialize<int>(num_tasks);
+      size_t num_tasks; 
+      derez.deserialize<size_t>(num_tasks);
       // Unpack each of the tasks
-      for (int i=0; i<num_tasks; i++)
+      for (size_t i=0; i<num_tasks; i++)
       {
         // Add the task description to the task queue
         TaskContext *ctx= get_available_context(true/*new tree*/);
@@ -2265,13 +2265,13 @@ namespace RegionRuntime {
           // that this mapper has access to
           // Iterate in reverse order so the latest tasks put in the
           // ready queue appear first
-          std::vector<const Task*> mapper_tasks;
+          std::set<const Task*> mapper_tasks;
           for (std::list<TaskContext*>::reverse_iterator it = ready_queue.rbegin();
                 it != ready_queue.rend(); it++)
           {
             // The tasks also must be stealable
             if ((*it)->stealable && ((*it)->map_id == stealer))
-              mapper_tasks.push_back(*it);
+              mapper_tasks.insert(*it);
           }
           // Now call the mapper and get back the results
           std::set<const Task*> to_steal; 
@@ -2337,7 +2337,7 @@ namespace RegionRuntime {
           lock_event.wait(true/*block*/);
         }
 
-        size_t total_buffer_size = 2*sizeof(Processor) + sizeof(int);
+        size_t total_buffer_size = 2*sizeof(Processor) + sizeof(size_t);
         // Count up the size of elements to steal
         for (std::set<TaskContext*>::iterator it = stolen.begin();
                 it != stolen.end(); it++)
@@ -2347,7 +2347,7 @@ namespace RegionRuntime {
         Serializer rez(total_buffer_size);
         rez.serialize<Processor>(thief); // actual thief processor
         rez.serialize<Processor>(local_proc); // this processor
-        rez.serialize<int>(stolen.size());
+        rez.serialize<size_t>(stolen.size());
         // Write the task descriptions into memory
         for (std::set<TaskContext*>::iterator it = stolen.begin();
                 it != stolen.end(); it++)
@@ -2648,11 +2648,11 @@ namespace RegionRuntime {
             // We need to hold the task's context lock to package it up
             AutoLock ctx_lock(task->current_lock);
             // Package up the task and send it
-            size_t buffer_size = 2*sizeof(Processor)+sizeof(int)+task->compute_task_size(mapper_objects[task->map_id]);
+            size_t buffer_size = 2*sizeof(Processor)+sizeof(size_t)+task->compute_task_size(mapper_objects[task->map_id]);
             Serializer rez(buffer_size);
             rez.serialize<Processor>(target); // The actual target processor
             rez.serialize<Processor>(local_proc); // The origin processor
-            rez.serialize<int>(1); // We're only sending one task
+            rez.serialize<size_t>(1); // We're only sending one task
             task->pack_task(rez);
             // Send the task to the utility processor
             utility.spawn(ENQUEUE_TASK_ID,rez.get_buffer(),buffer_size);
@@ -3822,11 +3822,11 @@ namespace RegionRuntime {
           this->need_split = it->recurse;
           this->constraint_space = it->constraints;
           // Package it up and send it
-          size_t buffer_size = compute_task_size(mapper);
+          size_t buffer_size = 2*sizeof(Processor) + sizeof(size_t) + compute_task_size(mapper);
           Serializer rez(buffer_size);
           rez.serialize<Processor>(it->p); // Actual target processor
           rez.serialize<Processor>(local_proc); // local processor 
-          rez.serialize<int>(1); // number of processors
+          rez.serialize<size_t>(1); // number of processors
           pack_task(rez);
           // Send the task to the utility processor
           Processor utility = it->p.get_utility_processor();
@@ -3896,11 +3896,11 @@ namespace RegionRuntime {
           this->need_split = it->recurse;
           this->range_space = it->ranges;
           // Package it up and send it
-          size_t buffer_size = sizeof(Processor) + sizeof(Processor) + sizeof(int) + compute_task_size(mapper);
+          size_t buffer_size = 2*sizeof(Processor) + sizeof(size_t) + compute_task_size(mapper);
           Serializer rez(buffer_size);
           rez.serialize<Processor>(it->p); // Actual target processor
           rez.serialize<Processor>(local_proc); // local processor 
-          rez.serialize<int>(1); // number of processors
+          rez.serialize<size_t>(1); // number of processors
           pack_task(rez);
           // Send the task to the utility processor
           Processor utility = it->p.get_utility_processor();

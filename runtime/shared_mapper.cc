@@ -12,6 +12,7 @@ namespace RegionRuntime {
   namespace HighLevel {
 
     Logger::Category log_mapper("default-mapper");
+    Logger::Category log_steal("default-stealing");
 
     //--------------------------------------------------------------------------------------------
     Mapper::Mapper(Machine *m, HighLevelRuntime *rt, Processor local) 
@@ -26,7 +27,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       log_mapper(LEVEL_SPEW,"Spawn child task %d in default shared memory mapper",task->task_id);
-      return false;
+      return true;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -57,7 +58,10 @@ namespace RegionRuntime {
             it != all_procs.end(); it++)
       {
         if (!index--)
+        {
+          log_steal(LEVEL_SPEW,"Attempting a steal from processor %d on processor %d",local_proc.id,it->id);
           return *it;
+        }
       }
       // Should never make it here
       assert(false);
@@ -65,18 +69,20 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::permit_task_steal(Processor thief, const std::vector<const Task*> &tasks,
+    void Mapper::permit_task_steal(Processor thief, const std::set<const Task*> &tasks,
                                                     std::set<const Task*> &to_steal)
     //--------------------------------------------------------------------------------------------
     {
       log_mapper(LEVEL_SPEW,"Permit task steal in shared memory mapper");
       unsigned total_stolen = 0;
-      for (std::vector<const Task*>::const_iterator it = tasks.begin();
+      for (std::set<const Task*>::const_iterator it = tasks.begin();
             it != tasks.end(); it++)
       {
         // Only allow tasks to be stolen one time
         if (!(*it)->stolen)
         {
+          log_steal(LEVEL_INFO,"Task %d (unique id %d) stolen from processor %d by processor %d",
+              (*it)->task_id, (*it)->unique_id, local_proc.id, thief.id);
           to_steal.insert(*it);
           total_stolen++;
           if (total_stolen == MAX_STEALS_PERMITTED)
