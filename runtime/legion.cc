@@ -3323,7 +3323,7 @@ namespace RegionRuntime {
             // Sanitize the region tree
             RegionRenamer renamer(get_enclosing_physical_context(idx),idx,this,mapper);
             // Compute the trace to the right region
-            if (is_index_space)
+            if (is_index_space && (regions[idx].func_type != SINGULAR_FUNC))
             {
               // Play the trace for each of the child regions of the partition 
               PartitionNode *part_node = (*partition_nodes)[regions[idx].handle.partition];
@@ -3335,6 +3335,9 @@ namespace RegionRuntime {
                 compute_region_trace(renamer.trace,regions[idx].parent,it->first);
                 top->register_physical_instance(renamer,Event::NO_EVENT);
               }
+              // Now that we've sanitized the region, update the region requirement
+              // so the parent region points at the parent region of the partition
+              regions[idx].parent = part_node->parent->handle;
             }
             else
             {
@@ -3342,6 +3345,9 @@ namespace RegionRuntime {
               // Inject this in at the parent context
               RegionNode *top = (*region_nodes)[regions[idx].parent];
               top->register_physical_instance(renamer,Event::NO_EVENT);
+              // Now that we've sanitized the region, update the region requirement
+              // so the parent region points at the current region
+              regions[idx].parent = regions[idx].handle.region;
             }
           }
           sanitized = true;
@@ -6899,7 +6905,7 @@ namespace RegionRuntime {
       assert(instance_infos->find(iid) == instance_infos->end());
 #endif
       (*instance_infos)[iid] = result_info;
-      log_inst(LEVEL_INFO,"Creating physical instance %d of logical region %d in memory %d",
+      log_inst(LEVEL_DEBUG,"Creating physical instance %d of logical region %d in memory %d",
           inst.id, handle.id, m.id);
       return result_info;
     }
@@ -6919,7 +6925,7 @@ namespace RegionRuntime {
       assert(instance_infos->find(iid) == instance_infos->end());
 #endif
       (*instance_infos)[iid] = result_info;
-      log_inst(LEVEL_INFO,"Duplicating physical instance %d of logical region %d in memory %d "
+      log_inst(LEVEL_DEBUG,"Duplicating physical instance %d of logical region %d in memory %d "
           "for subregion %d", old->inst.id, old->handle.id, old->location.id, newer.id);
       return result_info;
     }
