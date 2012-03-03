@@ -646,6 +646,8 @@ namespace RegionRuntime {
 #ifdef DEBUG_LOW_LEVEL
 		assert(generation == current.gen);
 #endif
+                // Wake up any waiters
+		PTHREAD_SAFE_CALL(pthread_cond_broadcast(wait_cond));
 		// Can't be holding the lock when triggering other triggerables
 		PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
 		// Trigger any dependent events
@@ -662,9 +664,7 @@ namespace RegionRuntime {
 		PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 		in_use = false;
                 finished = true;
-		// Wake up any waiters
-		PTHREAD_SAFE_CALL(pthread_cond_broadcast(wait_cond));
-	}
+        }
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));	
         // tell the runtime that we're free
         if (finished)
