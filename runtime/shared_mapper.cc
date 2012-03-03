@@ -79,7 +79,7 @@ namespace RegionRuntime {
             it != tasks.end(); it++)
       {
         // Only allow tasks to be stolen one time
-        if (!(*it)->stolen)
+        if ((*it)->steal_count == 0)
         {
           log_steal(LEVEL_INFO,"Task %d (unique id %d) stolen from processor %d by processor %d",
               (*it)->task_id, (*it)->unique_id, local_proc.id, thief.id);
