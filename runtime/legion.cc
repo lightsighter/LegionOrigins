@@ -2183,7 +2183,7 @@ namespace RegionRuntime {
             // If it's still local add it to the ready queue
             if (still_local)
             {
-              add_to_ready_queue(ctx);
+              add_to_ready_queue(ctx,false/*already have lock*/);
               log_task(LEVEL_DEBUG,"HLR on processor %d adding index space"
                                     " task %d with unique id %d from orig %d",
                 ctx->local_proc.id,ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
