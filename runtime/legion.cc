@@ -2955,6 +2955,7 @@ namespace RegionRuntime {
       enclosing_ctx.clear();
       chosen_ctx.clear();
       source_copy_instances.clear();
+      remote_copy_instances.clear();
       region_nodes = NULL;
       partition_nodes = NULL;
       created_regions.clear();
@@ -5128,6 +5129,7 @@ namespace RegionRuntime {
     {
       // Update the number of outstanding unmapped points
 #ifdef DEBUG_HIGH_LEVEL
+      assert(is_index_space && index_owner);
       assert(num_unmapped_points >= num_remote_points);
 #endif
       num_unmapped_points -= num_remote_points;
@@ -5173,13 +5175,13 @@ namespace RegionRuntime {
           this->mapped = true;
           this->map_event.trigger();
         }
-        // We can also free all the source copy instances since all the tasks of the index
+        // We can also free all the remote copy instances since all the tasks of the index
         // space have been run
         for (unsigned idx = 0; idx < source_copy_instances.size(); idx++)
         {
-          source_copy_instances[idx]->remove_copy_user(unique_id);
+          remote_copy_instances[idx]->remove_copy_user(unique_id);
         }
-        source_copy_instances.clear();
+        remote_copy_instances.clear();
       }
       else
       {
@@ -5199,6 +5201,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
+      assert(is_index_space && index_owner);
       assert(num_unfinished_points >= num_remote_points);
 #endif
       num_unfinished_points -= num_remote_points;
@@ -5832,7 +5835,7 @@ namespace RegionRuntime {
           assert(instance_infos->find(iid) != instance_infos->end());
 #endif
           InstanceInfo *src_info = (*instance_infos)[iid];
-          source_copy_instances.push_back(src_info);
+          remote_copy_instances.push_back(src_info);
         }
         // Now call the start function for this index space
         index_space_start(remote_denominator, num_remote_points, mapping_counts, true/*perform update*/);

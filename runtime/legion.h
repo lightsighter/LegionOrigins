@@ -1310,6 +1310,8 @@ namespace RegionRuntime {
       unsigned num_unmapped_points;
       unsigned num_unfinished_points;
       std::vector<unsigned> mapped_physical_instances; // count of the number of mapped physical instances
+      // A list of remote physical copy instances that need to be freed
+      std::vector<InstanceInfo*> remote_copy_instances;
       // Barrier event for when all the tasks are ready to run for must parallelism
       Barrier start_index_event; 
       // Result for the index space
