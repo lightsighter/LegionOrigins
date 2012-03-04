@@ -53,6 +53,7 @@ namespace RegionRuntime {
     Logger::Category log_region("regions");
     Logger::Category log_inst("instances");
     Logger::Category log_spy("legion_spy");
+    Logger::Category log_garbage("gc");
 
     // An auto locking class for taking a lock and releasing it when
     // the object goes out of scope
@@ -9985,7 +9986,7 @@ namespace RegionRuntime {
         // If parent is NULL we are the owner
         if (parent == NULL)
         {
-          log_inst(LEVEL_DEBUG,"Garbage collecting instance %d of logical region %d in memory %d",
+          log_garbage(LEVEL_INFO,"Garbage collecting instance %d of logical region %d in memory %d",
               inst.id, handle.id, location.id);
           // If all that is true, we can delete the instance
           handle.destroy_instance_untyped(inst);
