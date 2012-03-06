@@ -622,7 +622,7 @@ void main_task(const void *args, size_t arglen,
                                                tlr->real_cells[1]));
     }
 
-    std::string fileName = "fluid3d_init.fluid";
+    std::string fileName = "init.fluid";
 
     unsigned bufsize = sizeof(size_t) + fileName.length();
     for (unsigned id = 0; id < numBlocks; id++) {
@@ -812,7 +812,7 @@ void main_task(const void *args, size_t arglen,
                                                tlr->real_cells[target_buffer]));
     }
 
-    std::string fileName = "fluid3d_output.fluid";
+    std::string fileName = "output.fluid";
 
     unsigned bufsize = sizeof(int)*2 + sizeof(size_t) + fileName.length();
     for (unsigned id = 0; id < numBlocks; id++) {
