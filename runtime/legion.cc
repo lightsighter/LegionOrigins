@@ -306,6 +306,43 @@ namespace RegionRuntime {
     // Region Requirement 
     ///////////////////////////////////////////////////////////// 
 
+    //--------------------------------------------------------------------------
+    RegionRequirement& RegionRequirement::operator=(const RegionRequirement &rhs)
+    //--------------------------------------------------------------------------
+    {
+      if (rhs.func_type == SINGULAR_FUNC)
+        handle.region = rhs.handle.region;
+      else
+        handle.partition = rhs.handle.partition;
+      privilege = rhs.privilege;
+      alloc = rhs.alloc;
+      prop = rhs.prop;
+      parent = rhs.parent;
+      verified = rhs.verified;
+      func_type = rhs.func_type;
+      switch (func_type)
+      {
+        case SINGULAR_FUNC:
+          {
+            // Do nothing
+            break;
+          }
+        case EXECUTABLE_FUNC:
+          {
+            colorize = rhs.colorize;
+            break;
+          }
+        case MAPPED_FUNC:
+          {
+            color_map = rhs.color_map;
+            break;
+          }
+        default:
+          assert(false);
+      }
+      return *this;
+    }
+
     //-------------------------------------------------------------------------- 
     size_t RegionRequirement::compute_size(void) const
     //--------------------------------------------------------------------------
@@ -5628,11 +5665,7 @@ namespace RegionRuntime {
       }
       else
       {
-        if (slice_owner)
-        {
-          local_finish(index_point, result, result_size);
-        }
-        else
+        if (!slice_owner)
         {
           // Propagate our information back to the slice owner
           orig_ctx->created_regions.insert(created_regions.begin(),created_regions.end());
@@ -5641,9 +5674,9 @@ namespace RegionRuntime {
           // We can now delete these
           deleted_regions.clear();
           deleted_partitions.clear();
-          // Tell the slice owner that we're done
-          orig_ctx->local_finish(index_point, result, result_size);
         }
+        // Wait to tell the slice owner until we're done with everything otherwise
+        // we might deactivate ourselves before we've finished all our operations
       }
 
       // Release any references that we have on our instances
@@ -5654,6 +5687,12 @@ namespace RegionRuntime {
           physical_instances[idx]->remove_user(unique_id);
         }
       }
+      // Also release any references we have to source physical instances
+      for (unsigned idx = 0; idx < source_copy_instances.size(); idx++)
+      {
+        source_copy_instances[idx]->remove_copy_user(this->unique_id);
+      }
+      source_copy_instances.clear();
 
       // We can now release the lock
       if (acquire_lock)
@@ -5661,7 +5700,7 @@ namespace RegionRuntime {
         current_lock.unlock();
       }
 
-      // Deactivate any child or sibling tasks
+      // Deactivate any child 
       for (std::vector<TaskContext*>::const_iterator it = child_tasks.begin();
             it != child_tasks.end(); it++)
       {
@@ -5673,7 +5712,21 @@ namespace RegionRuntime {
         this->deactivate();
         return;
       }
-      // Index space tasks get reclaimed at the end of 'local_finish'
+      // Index space tasks get reclaimed at the end of 'local_finish' which is why we wait until
+      // the end to do the local index space to avoid deactivating ourselves before doing
+      // everything previous
+      if (is_index_space)
+      {
+        // Tell the slice owner that we're done
+        if (slice_owner)
+        {
+          local_finish(index_point, result, result_size);
+        }
+        else
+        {
+          orig_ctx->local_finish(index_point, result, result_size);
+        }
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -8104,6 +8157,14 @@ namespace RegionRuntime {
           assert(false); // Should never make it here
       }
       // Clear out our valid instances and mark that we are done
+      for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
+            it != region_states[ctx].valid_instances.end(); it++)
+      {
+        if (it->second)
+        {
+          it->first->mark_invalid();
+        }
+      }
       region_states[ctx].valid_instances.clear();
       region_states[ctx].data_state = DATA_CLEAN;
       return precondition;
@@ -8273,7 +8334,7 @@ namespace RegionRuntime {
           }
         }
         // Mark any instance infos that we own to be invalid
-#if 0
+#if 1
         for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
               it != region_states[ctx].valid_instances.end(); it++)
         {

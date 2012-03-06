@@ -445,6 +445,7 @@ namespace RegionRuntime {
         { return (handle.partition < req.handle.partition) || (privilege < req.privilege)
                 || (alloc < req.alloc) || (prop < req.prop) ||
                    (parent < req.parent) || (func_type < req.func_type); }
+      RegionRequirement& operator=(const RegionRequirement &rhs);
     protected:
       friend class TaskContext;
       size_t compute_size(void) const;
