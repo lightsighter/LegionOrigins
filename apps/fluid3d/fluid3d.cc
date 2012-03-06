@@ -38,7 +38,6 @@ enum {
 };
 
 #define MAX_PARTICLES 16
-#define GEN_PARTICLES 2
 
 // Number of ghost cells needed for each block
 // 8 for 2D or 26 for 3D
@@ -197,9 +196,9 @@ public:
   float density[MAX_PARTICLES];
   unsigned num_particles;
   //ptr_t<Cell> neigh_ptrs[8];
-  unsigned x;
-  unsigned y;
-  unsigned z;
+  //unsigned x;
+  //unsigned y;
+  //unsigned z;
 };
 
 struct BufferRegions {
@@ -442,7 +441,7 @@ void main_task(const void *args, size_t arglen,
                 blocks[id].cells[b][cz+1][cy+1][cx+1] = cell;
               }
         }
-    
+
     // Create the partitions
     Partition cell_part = runtime->create_partition(ctx,
                                                     tlr->real_cells[b],
@@ -475,7 +474,7 @@ void main_task(const void *args, size_t arglen,
           ptr_t<Cell> cell = edge_cells.template alloc<Cell>();         \
           coloring[color + dir].insert(cell);                           \
           blocks[id].cells[0][cz][cy][cx] = cell;                       \
-          blocks[id2].cells[1][blocks[id2].CELLS_Z + 1 - cz][blocks[id2].CELLS_Y + 1 - cy][blocks[id2].CELLS_X + 1 - cx] = cell; \
+          blocks[id2].cells[1][(cz) == 0 ? blocks[id2].CELLS_Z + 1 : 0][(cy) == 0 ? blocks[id2].CELLS_Y + 1 : 0][(cx) == 0 ? blocks[id2].CELLS_X + 1 : 0] = cell; \
         } while(0)
         CORNER(TOP_FRONT_LEFT, 0, 0, blocks[id].CELLS_Z + 1);
         CORNER(TOP_FRONT_RIGHT, blocks[id].CELLS_X + 1, 0, blocks[id].CELLS_Z + 1);
@@ -490,11 +489,11 @@ void main_task(const void *args, size_t arglen,
         // x-axis edges
 #define XAXIS(dir,cy,cz) do {                                           \
           unsigned id2 = (MOVE_Z(idz,dir)*nby + MOVE_Y(idy,dir))*nbx + idx; \
-          for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {                   \
+          for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {        \
             ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
             coloring[color + dir].insert(cell);                         \
             blocks[id].cells[0][cz][cy][cx] = cell;                     \
-            blocks[id2].cells[1][blocks[id2].CELLS_Z + 1 - cz][blocks[id2].CELLS_Y + 1 - cy][cx] = cell; \
+            blocks[id2].cells[1][(cz) == 0 ? blocks[id2].CELLS_Z + 1 : 0][(cy) == 0 ? blocks[id2].CELLS_Y + 1 : 0][cx] = cell; \
           }                                                             \
         } while(0)
         XAXIS(TOP_FRONT, 0, blocks[id].CELLS_Z + 1);
@@ -506,11 +505,11 @@ void main_task(const void *args, size_t arglen,
         // y-axis edges
 #define YAXIS(dir,cx,cz) do {                                           \
           unsigned id2 = (MOVE_Z(idz,dir)*nby + idy)*nbx + MOVE_X(idx,dir); \
-          for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {                   \
+          for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {        \
             ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
             coloring[color + dir].insert(cell);                         \
             blocks[id].cells[0][cz][cy][cx] = cell;                     \
-            blocks[id2].cells[1][blocks[id2].CELLS_Z + 1 - cz][cy][blocks[id2].CELLS_X + 1 - cx] = cell; \
+            blocks[id2].cells[1][(cz) == 0 ? blocks[id2].CELLS_Z + 1 : 0][cy][(cx) == 0 ? blocks[id2].CELLS_X + 1 : 0] = cell; \
           }                                                             \
         } while(0)
         YAXIS(TOP_LEFT, 0, blocks[id].CELLS_Z + 1);
@@ -522,11 +521,11 @@ void main_task(const void *args, size_t arglen,
         // z-axis edges
 #define ZAXIS(dir,cx,cy) do {                                           \
           unsigned id2 = (idz*nby + MOVE_Y(idy,dir))*nbx + MOVE_X(idx,dir); \
-          for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {                   \
+          for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
             ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
             coloring[color + dir].insert(cell);                         \
             blocks[id].cells[0][cz][cy][cx] = cell;                     \
-            blocks[id2].cells[1][cz][blocks[id2].CELLS_Y + 1 - cy][blocks[id2].CELLS_X + 1 - cx] = cell; \
+            blocks[id2].cells[1][cz][(cy) == 0 ? blocks[id2].CELLS_Y + 1 : 0][(cx) == 0 ? blocks[id2].CELLS_X + 1 : 0] = cell; \
           }                                                             \
         } while(0)
         ZAXIS(FRONT_LEFT, 0, 0);
@@ -538,12 +537,12 @@ void main_task(const void *args, size_t arglen,
         // xy-plane edges
 #define XYPLANE(dir,cz) do {                                            \
           unsigned id2 = (MOVE_Z(idz,dir)*nby + idy)*nbx + idx;         \
-          for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {                   \
-            for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {                 \
+          for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {        \
+            for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {      \
               ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
               coloring[color + dir].insert(cell);                       \
               blocks[id].cells[0][cz][cy][cx] = cell;                   \
-              blocks[id2].cells[1][blocks[id2].CELLS_Z + 1 - cz][cy][cx] = cell;    \
+              blocks[id2].cells[1][(cz) == 0 ? blocks[id2].CELLS_Z + 1 : 0][cy][cx] = cell; \
             }                                                           \
           }                                                             \
         } while(0)
@@ -554,12 +553,12 @@ void main_task(const void *args, size_t arglen,
         // xz-plane edges
 #define XZPLANE(dir,cy) do {                                            \
           unsigned id2 = (idz*nby + MOVE_Y(idy,dir))*nbx + idx;         \
-          for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {                   \
-            for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {                 \
+          for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
+            for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {      \
               ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
               coloring[color + dir].insert(cell);                       \
               blocks[id].cells[0][cz][cy][cx] = cell;                   \
-              blocks[id2].cells[1][cz][blocks[id2].CELLS_Y + 1 - cy][cx] = cell;    \
+              blocks[id2].cells[1][cz][(cy) == 0 ? blocks[id2].CELLS_Y + 1 : 0][cx] = cell; \
             }                                                           \
           }                                                             \
         } while(0)
@@ -570,12 +569,12 @@ void main_task(const void *args, size_t arglen,
         // yz-plane edges
 #define YZPLANE(dir,cx) do {                                            \
           unsigned id2 = (idz*nby + idy)*nbx + MOVE_X(idx,dir);         \
-          for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {                   \
-            for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {                 \
+          for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
+            for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {      \
               ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
               coloring[color + dir].insert(cell);                       \
               blocks[id].cells[0][cz][cy][cx] = cell;                   \
-              blocks[id2].cells[1][cz][cy][blocks[id2].CELLS_X + 1 - cx] = cell;    \
+              blocks[id2].cells[1][cz][cy][(cx) == 0 ? blocks[id2].CELLS_X + 1 : 0] = cell; \
             }                                                           \
           }                                                             \
         } while(0)
@@ -1288,6 +1287,23 @@ int load_file(const void *args, size_t arglen,
 
   log_app.info("Loading file \"%s\"...", fileName.c_str());
 
+  const int b = 1;
+
+  // Clear all cells
+  for (unsigned idz = 0; idz < nbz; idz++)
+    for (unsigned idy = 0; idy < nby; idy++)
+      for (unsigned idx = 0; idx < nbx; idx++) {
+        unsigned id = (idz*nby+idy)*nbx+idx;
+
+        for(unsigned cz = 0; cz < blocks[id].CELLS_Z; cz++)
+          for(unsigned cy = 0; cy < blocks[id].CELLS_Y; cy++)
+            for(unsigned cx = 0; cx < blocks[id].CELLS_X; cx++) {
+              Cell cell = real_cells.read(blocks[id].cells[b][cz+1][cy+1][cx+1]);
+              cell.num_particles = 0;
+              real_cells.write(blocks[id].cells[b][cz+1][cy+1][cx+1], cell);
+            }
+      }
+
   std::ifstream file(fileName.c_str(), std::ios::binary);
   assert(file);
 
@@ -1298,7 +1314,7 @@ int load_file(const void *args, size_t arglen,
   file.read((char *)&origNumParticles, 4);
   if(!isLittleEndian()) {
     tempRestParticlesPerMeter = bswap_float(tempRestParticlesPerMeter);
-    origNumParticles      = bswap_int32(origNumParticles);
+    origNumParticles          = bswap_int32(origNumParticles);
   }
   numParticles = origNumParticles;
 
@@ -1312,7 +1328,6 @@ int load_file(const void *args, size_t arglen,
   int ovby = ny % nby;
   int ovbz = nz % nbz;
 
-  const int b = 1;
   float px, py, pz, hvx, hvy, hvz, vx, vy, vz;
   for(int i = 0; i < origNumParticles; ++i) {
     file.read((char *)&px, 4);
@@ -1341,9 +1356,9 @@ int load_file(const void *args, size_t arglen,
     int cj = (int)((py - domainMin.y) / delta.y);
     int ck = (int)((pz - domainMin.z) / delta.z);
 
-    if(ci < 0) ci = 0; else if(ci > ((int)nx-1)) ci = nx-1;
-    if(cj < 0) cj = 0; else if(cj > ((int)ny-1)) cj = ny-1;
-    if(ck < 0) ck = 0; else if(ck > ((int)nz-1)) ck = nz-1;
+    if(ci < 0) ci = 0; else if(ci > (int)(nx-1)) ci = nx-1;
+    if(cj < 0) cj = 0; else if(cj > (int)(ny-1)) cj = ny-1;
+    if(ck < 0) ck = 0; else if(ck > (int)(nz-1)) ck = nz-1;
 
     // Block coordinates and id
     int midx = ci / mbsx;
@@ -1385,7 +1400,8 @@ int load_file(const void *args, size_t arglen,
 
   }
 
-  log_app.info("Number of particles: %d (%d skipped)", numParticles, origNumParticles);
+  log_app.info("Number of particles: %d (%d skipped)",
+               numParticles, origNumParticles - numParticles);
 
   log_app.info("Done loading file.");
 
