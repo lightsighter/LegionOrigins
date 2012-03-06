@@ -885,7 +885,7 @@ namespace RegionRuntime {
       void check_spawn_task(TaskContext *ctx); // set the spawn parameter
       bool target_task(TaskContext *ctx); // Select a target processor, return true if local 
       // Need to hold queue lock prior to calling split task
-      bool split_task(TaskContext *ctx, bool reentrant = false); // Return true if still local
+      bool split_task(TaskContext *ctx); // Return true if still local
       void issue_steal_requests(void);
       void advertise(MapperID map_id); // Advertise work when we have it for a given mapper
     private:
@@ -1184,7 +1184,7 @@ namespace RegionRuntime {
     protected:
       void initialize_task(TaskContext *parent, UniqueID unique_id, 
                             Processor::TaskFuncID task_id, void *args, size_t arglen,
-                            MapperID map_id, MappingTagID tag);
+                            MapperID map_id, MappingTagID tag, Mapper *mapper, Lock map_lock);
       template<typename CT>
       void set_index_space(const std::vector<CT> &index_space, const ArgumentMap &_map, bool must);
       void set_regions(const std::vector<RegionRequirement> &regions, bool all_same);
@@ -1192,13 +1192,13 @@ namespace RegionRuntime {
       void set_future_map(void);
     protected:
       // functions for packing and unpacking tasks
-      size_t compute_task_size(Mapper *m);
+      size_t compute_task_size(void);
       void pack_task(Serializer &rez);
       void unpack_task(Deserializer &derez);
       void final_unpack_task(void);
       // Return true if this task still has index parts on this machine
-      bool distribute_index_space(std::vector<Mapper::ConstraintSplit> &chunks, Mapper *m);
-      bool distribute_index_space(std::vector<Mapper::RangeSplit> &chunks, Mapper *m);
+      bool distribute_index_space(std::vector<Mapper::ConstraintSplit> &chunks);
+      bool distribute_index_space(std::vector<Mapper::RangeSplit> &chunks);
       // Compute region tree updates
       size_t compute_tree_update_size(const std::map<LogicalRegion,unsigned/*idx*/> &to_check, 
                                       std::map<PartitionNode*,unsigned/*idx*/> &region_tree_updates);
@@ -1208,9 +1208,9 @@ namespace RegionRuntime {
       // functions for updating a task's state
       void register_child_task(TaskContext *desc); // (thread-safe)
       void register_mapping(RegionMappingImpl *impl); // (thread-safe)
-      void map_and_launch(Mapper *mapper); // (thread_safe)
-      void enumerate_index_space(Mapper *mapper);
-      void enumerate_range_space(std::vector<int> &current, unsigned dim, bool last, Mapper *mapper);
+      void map_and_launch(void); // (thread_safe)
+      void enumerate_index_space(void);
+      void enumerate_range_space(std::vector<int> &current, unsigned dim, bool last);
       void start_task(std::vector<PhysicalRegion<AccessorGeneric> > &physical_regions);
       void complete_task(const void *result, size_t result_size,
             std::vector<PhysicalRegion<AccessorGeneric> > &physical_regions); // task completed running
@@ -1278,6 +1278,9 @@ namespace RegionRuntime {
       bool partially_unpacked;
       void *cached_buffer;
       size_t cached_size;
+    protected:
+      Mapper *mapper;
+      Lock mapper_lock;
     protected:
       // Status information
       bool chosen; // Mapper been invoked
@@ -1486,7 +1489,7 @@ namespace RegionRuntime {
         // Physical State
         std::set<PartitionID> open_physical; 
         // All these instances obey info->handle == this->handle
-        std::set<InstanceInfo*> valid_instances; //valid instances
+        std::map<InstanceInfo*,bool/*owned*/> valid_instances; //valid instances
         // State of the open partitions
         PartState open_state;
         // TODO: handle the case of different types of reductions
@@ -1539,14 +1542,23 @@ namespace RegionRuntime {
       Event open_physical_tree(RegionRenamer &ren, Event precondition);
       // Close up a physical region tree into the given InstanceInfo
       // returning the event when the close operation is complete
-      Event close_physical_tree(ContextID ctx, InstanceInfo *target, 
-                                Event precondition, GeneralizedContext *enclosing);
+      Event close_physical_tree(ContextID ctx, InstanceInfo *target, Event precondition, 
+                                GeneralizedContext *enclosing, Mapper *mapper);
       // Update the valid instances with the new physical instance, it's ready event, and
       // whether the info is being read or written.  Note that this can invalidate other
       // instances in the intermediate levels of the tree as it goes back up to the
       // physical instance's logical region
       void update_valid_instances(ContextID ctx_id, InstanceInfo *info, bool writer,
-                                  bool check_overwrite = false, UniqueID uid = 0);
+                                  bool check_overwrite = false, UniqueID uid = 0, bool owner = true);
+      // Initialize a physical instance
+      void initialize_instance(RegionRenamer &ren, const std::set<Memory> &locations);
+      // Select a target region for a close operation
+      InstanceInfo* select_target_instance(RegionRenamer &ren);
+      // Select s source region for a copy operation
+      InstanceInfo* select_source_instance(ContextID ctx, Mapper *mapper, const std::set<Memory> &locations, 
+                                            Memory target_location, bool allow_up);
+      // Perform a copy operation
+      Event perform_copy_operation(InstanceInfo *src, InstanceInfo *dst, Event precondition, GeneralizedContext *ctx);
     private:
       const LogicalRegion handle;
       const unsigned depth;
@@ -1622,8 +1634,8 @@ namespace RegionRuntime {
       Event open_physical_tree(RegionRenamer &ren, Event precondition);
       // Close up a physical region tree into the given InstanceInfo
       // returning the event when the close operation is complete
-      Event close_physical_tree(ContextID ctx, InstanceInfo *target, 
-                                Event precondition, GeneralizedContext *enclosing);
+      Event close_physical_tree(ContextID ctx, InstanceInfo *target, Event precondition, 
+                                GeneralizedContext *enclosing, Mapper *mapper);
     protected:
       LogicalRegion get_subregion(Color c) const;
     private:
@@ -2512,14 +2524,20 @@ namespace RegionRuntime {
       UniqueID unique_id = get_unique_task_id();
       //log_task(LEVEL_DEBUG,"Registering new index space task with unique id %d and task id %d with high level runtime on processor %d\n",
       //          unique_id, task_id, local_proc.id);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(id < mapper_objects.size());
-#endif
       TaskContext *desc = get_available_context(false/*new tree*/);
       // Allocate more space for the context when copying the args
       void *args_prime = malloc(global_arg.get_size()+sizeof(Context));
       memcpy(((char*)args_prime)+sizeof(Context), global_arg.get_ptr(), global_arg.get_size());
-      desc->initialize_task(ctx, unique_id, task_id, args_prime, global_arg.get_size()+sizeof(Context), id, tag);
+      {
+        Event lock_event = mapping_lock.lock(0,true/*exclusive*/);
+        lock_event.wait(true/*block*/);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(id < mapper_objects.size());
+#endif
+        desc->initialize_task(ctx, unique_id, task_id, args_prime, global_arg.get_size()+sizeof(Context), 
+                              id, tag, mapper_objects[id], mapper_locks[id]);
+        mapping_lock.unlock();
+      }
       desc->set_regions(regions, false/*all same*/);
       desc->set_index_space<CT>(index_space, arg_map, must);
       desc->set_future_map();
@@ -2566,14 +2584,20 @@ namespace RegionRuntime {
       UniqueID unique_id = get_unique_task_id();
       //log_task(LEVEL_DEBUG,"Registering new index space task with unique id %d and task id %d with high level runtime on processor %d\n",
       //          unique_id, task_id, local_proc.id);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(id < mapper_objects.size());
-#endif
       TaskContext *desc = get_available_context(false/*new tree*/);
       // Allocate more space for the context when copying the args
       void *args_prime = malloc(global_arg.get_size()+sizeof(Context));
       memcpy(((char*)args_prime)+sizeof(Context), global_arg.get_ptr(), global_arg.get_size());
-      desc->initialize_task(ctx, unique_id, task_id, args_prime, global_arg.get_size()+sizeof(Context), id, tag);
+      {
+        Event lock_event = mapping_lock.lock(0,true/*exclusive*/);
+        lock_event.wait(true/*block*/);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(id < mapper_objects.size());
+#endif
+        desc->initialize_task(ctx, unique_id, task_id, args_prime, global_arg.get_size()+sizeof(Context), 
+                              id, tag, mapper_objects[id], mapper_locks[id]);
+        mapping_lock.unlock();
+      }
       desc->set_regions(regions, false/*check same*/);
       desc->set_index_space<CT>(index_space, arg_map, must);
       desc->set_reduction(reduction, initial_value);
