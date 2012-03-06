@@ -805,20 +805,22 @@ void main_task(const void *args, size_t arglen,
   RegionRuntime::DetailedTimer::report_timers();
 
   {
+    int target_buffer = 1 - cur_buffer;
     std::vector<RegionRequirement> init_regions;
     for (unsigned id = 0; id < numBlocks; id++) {
-      init_regions.push_back(RegionRequirement(blocks[id].base[1],
+      init_regions.push_back(RegionRequirement(blocks[id].base[target_buffer],
                                                READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                               tlr->real_cells[1]));
+                                               tlr->real_cells[target_buffer]));
     }
 
     std::string fileName = "fluid3d_output.fluid";
 
-    unsigned bufsize = sizeof(int) + sizeof(size_t) + fileName.length();
+    unsigned bufsize = sizeof(int)*2 + sizeof(size_t) + fileName.length();
     for (unsigned id = 0; id < numBlocks; id++) {
       bufsize += BLOCK_SIZE(blocks[id]);
     }
     BlockSerializer ser(bufsize);
+    ser.Serializer::serialize(target_buffer);
     ser.Serializer::serialize(origNumParticles);
     for (unsigned id = 0; id < numBlocks; id++) {
       ser.serialize(blocks[id]);
@@ -1400,10 +1402,12 @@ void save_file(const void *args, size_t arglen,
 {
   std::vector<Block> blocks;
   std::string fileName;
+  int b;
   int origNumParticles;
   blocks.resize(numBlocks);
   {
     BlockDeserializer deser(args, arglen);
+    deser.Deserializer::deserialize(b);
     deser.Deserializer::deserialize(origNumParticles);
     for (unsigned i = 0; i < numBlocks; i++) {
       deser.deserialize(blocks[i]);
@@ -1441,7 +1445,6 @@ void save_file(const void *args, size_t arglen,
   int ovby = ny % nby;
   int ovbz = nz % nbz;
 
-  const int b = 1;
   int numParticles = 0;
   for(int ck = 0; ck < (int)nz; ck++)
     for(int cj = 0; cj < (int)ny; cj++)
