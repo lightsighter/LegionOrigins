@@ -1923,7 +1923,7 @@ namespace RegionRuntime {
     
     // Template wrapper for high level tasks to encapsulate return values
     template<typename T, 
-    T (*TASK_PTR)(const void*,size_t,const std::vector<PhysicalRegion<AccessorGeneric> >&,
+    T (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,
                     Context,HighLevelRuntime*)>
     void high_level_task_wrapper(const void * args, size_t arglen, Processor p)
     {
@@ -1953,7 +1953,7 @@ namespace RegionRuntime {
 
     // Overloaded version of the task wrapper for when return type is void
     template<void (*TASK_PTR)(const void*,size_t,
-          const std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
+          std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
     void high_level_task_wrapper(const void * args, size_t arglen, Processor p)
     {
       // Get the high level runtime
@@ -1983,9 +1983,9 @@ namespace RegionRuntime {
     // runtime figure out if it can specialize a task into one that uses
     // the AccessorArray instances as an optimization
     template<typename T,
-    T (*SLOW_TASK_PTR)(const void*,size_t,const std::vector<PhysicalRegion<AccessorGeneric> >&,
+    T (*SLOW_TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,
                         Context ctx,HighLevelRuntime*),
-    T (*FAST_TASK_PTR)(const void*,size_t,const std::vector<PhysicalRegion<AccessorArray> >&,
+    T (*FAST_TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorArray> >&,
                         Context ctx,HighLevelRuntime*)>
     void high_level_task_wrapper(const void * args, size_t arglen, Processor p)
     {
@@ -2042,9 +2042,9 @@ namespace RegionRuntime {
     // Overloaded version of the task wrapper for when you want fast instances with a
     // a void return type
     template<
-    void (*SLOW_TASK_PTR)(const void*,size_t,const std::vector<PhysicalRegion<AccessorGeneric> >&,
+    void (*SLOW_TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,
                           Context ctx,HighLevelRuntime*),
-    void (*FAST_TASK_PTR)(const void*,size_t,const std::vector<PhysicalRegion<AccessorArray> >&,
+    void (*FAST_TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorArray> >&,
                           Context ctx,HighLevelRuntime*)>
     void high_level_task_wrapper(const void * args, size_t arglen, Processor p)
     {
@@ -2098,7 +2098,7 @@ namespace RegionRuntime {
     // Wrapper functions for tasks that are launched as index spaces
     template<typename T,
     T (*TASK_PTR)(const void*,size_t/*global*/,const void*,size_t/*local*/,const IndexPoint&,
-                  const std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
+                  std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
     void high_level_index_task_wrapper(const void * args, size_t arglen, Processor p)
     {
       // Get the high level runtime
@@ -2132,7 +2132,7 @@ namespace RegionRuntime {
 
     template<
     void (*TASK_PTR)(const void*,size_t/*global*/,const void*,size_t/*local*/,const IndexPoint&,
-                      const std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
+                      std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
     void high_level_index_task_wrapper(const void *args, size_t arglen, Processor p)
     {
       // Get the high level runtime
@@ -2165,9 +2165,9 @@ namespace RegionRuntime {
 
     template<typename T,
     T (*SLOW_TASK_PTR)(const void*,size_t/*global*/,const void*,size_t/*local*/,const IndexPoint&,
-                        const std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
+                        std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
     T (*FAST_TASK_PTR)(const void*,size_t/*global*/,const void*,size_t/*local*/,const IndexPoint&,
-                        const std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
+                        std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
     void high_level_index_task_wrapper(const void *args, size_t arglen, Processor p)
     {
       // Get the high level runtime
@@ -2226,9 +2226,9 @@ namespace RegionRuntime {
 
     template<
     void (*SLOW_TASK_PTR)(const void*,size_t/*global*/,const void*,size_t/*local*/,const IndexPoint&,
-                          const std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
+                          std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
     void (*FAST_TASK_PTR)(const void*,size_t/*global*/,const void*,size_t/*local*/,const IndexPoint&,
-                          const std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
+                          std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
     void high_level_index_task_wrapper(const void *args, size_t arglen, Processor p)
     {
       // Get the high level runtime
