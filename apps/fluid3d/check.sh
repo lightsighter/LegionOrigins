@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 parsec_dir=$HOME/parsec-2.1
 fluid3d_dir=$(dirname $(readlink -f $BASH_SOURCE))
 
