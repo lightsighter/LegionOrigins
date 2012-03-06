@@ -144,14 +144,14 @@ namespace RegionRuntime {
      */
     class Partition {
     public:
-      const PartitionID id;
-      const LogicalRegion parent;
-      const bool disjoint;
+      PartitionID id;
+      LogicalRegion parent;
+      bool disjoint;
+      Partition(void) : id(0), parent(LogicalRegion::NO_REGION),
+                               disjoint(false) { }
     protected:
       // Only the runtime should be allowed to make these
       friend class HighLevelRuntime;
-      Partition(void) : id(0), parent(LogicalRegion::NO_REGION),
-                               disjoint(false) { }
       Partition(PartitionID pid, LogicalRegion par, bool dis)
         : id(pid), parent(par), disjoint(dis) { }
     protected:
