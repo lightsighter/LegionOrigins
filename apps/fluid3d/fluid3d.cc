@@ -26,14 +26,14 @@ namespace Config {
 };
 
 enum {
-  TASKID_INIT_SIMULATION = TASK_ID_AVAILABLE,
-  TASKID_INIT_CELLS,
+  TASKID_INIT_CELLS = TASK_ID_AVAILABLE,
   TASKID_REBUILD_REDUCE,
   TASKID_SCATTER_DENSITIES,
   TASKID_GATHER_DENSITIES,
   TASKID_SCATTER_FORCES,
   TASKID_GATHER_FORCES,
   TASKID_MAIN_TASK,
+  TASKID_LOAD_FILE,
   TASKID_SAVE_FILE,
 };
 
@@ -614,30 +614,12 @@ void main_task(const void *args, size_t arglen,
   runtime->unmap_region(ctx, edge_cells);
 
   // Initialize the simulation in buffer 1
-  for (unsigned id = 0; id < numBlocks; id++)
-  {
-    std::vector<RegionRequirement> init_regions;
-    init_regions.push_back(RegionRequirement(blocks[id].base[1],
-					     READ_WRITE, ALLOCABLE, EXCLUSIVE,
-					     tlr->real_cells[1]));
-
-    unsigned bufsize = BLOCK_SIZE(blocks[id]);
-    BlockSerializer ser(bufsize);
-    ser.serialize(blocks[id]);
-    const TaskArgument buffer(ser.get_buffer(), bufsize);
-
-    Future f = runtime->execute_task(ctx, TASKID_INIT_SIMULATION,
-                                     init_regions,
-                                     buffer,
-                                     0, id);
-    f.get_void_result();
-  }
-
+  int origNumParticles;
   {
     std::vector<RegionRequirement> init_regions;
     for (unsigned id = 0; id < numBlocks; id++) {
       init_regions.push_back(RegionRequirement(blocks[id].base[1],
-                                               READ_ONLY, NO_MEMORY, EXCLUSIVE,
+                                               READ_WRITE, ALLOCABLE, EXCLUSIVE,
                                                tlr->real_cells[1]));
     }
 
@@ -654,11 +636,11 @@ void main_task(const void *args, size_t arglen,
     ser.serialize(fileName);
     TaskArgument buffer(ser.get_buffer(), bufsize);
 
-    Future f = runtime->execute_task(ctx, TASKID_SAVE_FILE,
+    Future f = runtime->execute_task(ctx, TASKID_LOAD_FILE,
                                      init_regions,
                                      buffer,
                                      0, 0);
-    f.get_void_result();
+    origNumParticles = f.get_result<int>();
   }
 
   printf("STARTING MAIN SIMULATION LOOP\n");
@@ -805,36 +787,6 @@ void main_task(const void *args, size_t arglen,
 	futures.push_back(f);
     }
 
-    if (step == 0) { 
-      {
-        std::vector<RegionRequirement> init_regions;
-        for (unsigned id = 0; id < numBlocks; id++) {
-          init_regions.push_back(RegionRequirement(blocks[id].base[1],
-                                                   READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                                   tlr->real_cells[1]));
-        }
-
-        std::string fileName = "fluid3d_step0.fluid";
-
-        unsigned bufsize = sizeof(size_t) + fileName.length();
-        for (unsigned id = 0; id < numBlocks; id++) {
-          bufsize += BLOCK_SIZE(blocks[id]);
-        }
-        BlockSerializer ser(bufsize);
-        for (unsigned id = 0; id < numBlocks; id++) {
-          ser.serialize(blocks[id]);
-        }
-        ser.serialize(fileName);
-        TaskArgument buffer(ser.get_buffer(), bufsize);
-
-        Future f = runtime->execute_task(ctx, TASKID_SAVE_FILE,
-                                         init_regions,
-                                         buffer,
-                                         0, 0);
-        f.get_void_result();
-      }
-    }
-
     // flip the phase
     cur_buffer = 1 - cur_buffer;
   }
@@ -862,11 +814,12 @@ void main_task(const void *args, size_t arglen,
 
     std::string fileName = "fluid3d_output.fluid";
 
-    unsigned bufsize = sizeof(size_t) + fileName.length();
+    unsigned bufsize = sizeof(int) + sizeof(size_t) + fileName.length();
     for (unsigned id = 0; id < numBlocks; id++) {
       bufsize += BLOCK_SIZE(blocks[id]);
     }
     BlockSerializer ser(bufsize);
+    ser.Serializer::serialize(origNumParticles);
     for (unsigned id = 0; id < numBlocks; id++) {
       ser.serialize(blocks[id]);
     }
@@ -884,47 +837,6 @@ void main_task(const void *args, size_t arglen,
 
   // SJT: mapper is exploding on exit from this task...
   exit(0);
-}
-
-static float get_rand_float(void)
-{
-  // Return a random float between 0 and 0.1
-  return ((((float)rand())/((float)RAND_MAX))/10.0f);
-}
-
-template<AccessorType AT>
-void init_simulation(const void *args, size_t arglen,
-                const std::vector<PhysicalRegion<AT> > &regions,
-                Context ctx, HighLevelRuntime *runtime)
-{
-  Block b;
-  {
-    BlockDeserializer deser(args, arglen);
-    deser.deserialize(b);
-  }
-
-  // only region we need is real1
-  PhysicalRegion<AT> real_cells = regions[0];
-
-  for (unsigned idz = 0; idz < b.CELLS_Z; idz++) {
-    for (unsigned idy = 0; idy < b.CELLS_Y; idy++) {
-      for (unsigned idx = 0; idx < b.CELLS_X; idx++) {
-        Cell next;
-        next.x = idx;
-        next.y = idy;
-        next.z = idz;
-        next.num_particles = (rand() % GEN_PARTICLES);
-        for (unsigned p = 0; p < next.num_particles; p++) {
-          // These are the only three fields we need to initialize
-          next.p[p] = Vec3(get_rand_float(),get_rand_float(),get_rand_float());
-          next.hv[p] = Vec3(get_rand_float(),get_rand_float(),get_rand_float());
-          next.v[p] = Vec3(get_rand_float(),get_rand_float(),get_rand_float());
-        }
-
-        real_cells.write(b.cells[1][idz+1][idy+1][idx+1], next);
-      }
-    }
-  }
 }
 
 #define GET_DIR(b, idz, idy, idx)                                        \
@@ -1355,15 +1267,144 @@ static inline int bswap_int32(int x) {
 }
 
 template<AccessorType AT>
-void save_file(const void *args, size_t arglen,
-	       const std::vector<PhysicalRegion<AT> > &regions,
-	       Context ctx, HighLevelRuntime *runtime)
+int load_file(const void *args, size_t arglen,
+              const std::vector<PhysicalRegion<AT> > &regions,
+              Context ctx, HighLevelRuntime *runtime)
 {
   std::vector<Block> blocks;
   std::string fileName;
   blocks.resize(numBlocks);
   {
     BlockDeserializer deser(args, arglen);
+    for (unsigned i = 0; i < numBlocks; i++) {
+      deser.deserialize(blocks[i]);
+    }
+    deser.deserialize(fileName);
+  }
+
+  PhysicalRegion<AT> real_cells = regions[0];
+
+  log_app.info("Loading file \"%s\"...", fileName.c_str());
+
+  std::ifstream file(fileName.c_str(), std::ios::binary);
+  assert(file);
+
+  float tempRestParticlesPerMeter = restParticlesPerMeter;
+  int origNumParticles = 0, numParticles = 0;
+
+  file.read((char *)&tempRestParticlesPerMeter, 4);
+  file.read((char *)&origNumParticles, 4);
+  if(!isLittleEndian()) {
+    tempRestParticlesPerMeter = bswap_float(tempRestParticlesPerMeter);
+    origNumParticles      = bswap_int32(origNumParticles);
+  }
+  numParticles = origNumParticles;
+
+  // Minimum block sizes
+  int mbsx = nx / nbx;
+  int mbsy = ny / nby;
+  int mbsz = nz / nbz;
+
+  // Number of oversized blocks
+  int ovbx = nx % nbx;
+  int ovby = ny % nby;
+  int ovbz = nz % nbz;
+
+  const int b = 1;
+  float px, py, pz, hvx, hvy, hvz, vx, vy, vz;
+  for(int i = 0; i < origNumParticles; ++i) {
+    file.read((char *)&px, 4);
+    file.read((char *)&py, 4);
+    file.read((char *)&pz, 4);
+    file.read((char *)&hvx, 4);
+    file.read((char *)&hvy, 4);
+    file.read((char *)&hvz, 4);
+    file.read((char *)&vx, 4);
+    file.read((char *)&vy, 4);
+    file.read((char *)&vz, 4);
+    if(!isLittleEndian()) {
+      px  = bswap_float(px);
+      py  = bswap_float(py);
+      pz  = bswap_float(pz);
+      hvx = bswap_float(hvx);
+      hvy = bswap_float(hvy);
+      hvz = bswap_float(hvz);
+      vx  = bswap_float(vx);
+      vy  = bswap_float(vy);
+      vz  = bswap_float(vz);
+    }
+
+    // Global cell coordinates
+    int ci = (int)((px - domainMin.x) / delta.x);
+    int cj = (int)((py - domainMin.y) / delta.y);
+    int ck = (int)((pz - domainMin.z) / delta.z);
+
+    if(ci < 0) ci = 0; else if(ci > ((int)nx-1)) ci = nx-1;
+    if(cj < 0) cj = 0; else if(cj > ((int)ny-1)) cj = ny-1;
+    if(ck < 0) ck = 0; else if(ck > ((int)nz-1)) ck = nz-1;
+
+    // Block coordinates and id
+    int midx = ci / mbsx;
+    int ovx = ci % mbsx;
+    int idx = midx + (midx > ovx ? -1 : 0);
+    int midy = cj / mbsy;
+    int ovy = cj % mbsy;
+    int idy = midy + (midy > ovy ? -1 : 0);
+    int midz = ck / mbsz;
+    int ovz = ck % mbsz;
+    int idz = midz + (midz > ovz ? -1 : 0);
+
+    int id = (idz*nby+idy)*nbx+idx;
+
+    // Local cell coordinates
+    int cx = ci - (idx*mbsx + (idx < ovbx ? idx : ovbx));
+    int cy = cj - (idy*mbsy + (idy < ovby ? idy : ovby));
+    int cz = ck - (idz*mbsz + (idz < ovbz ? idz : ovbz));
+
+    Cell cell = real_cells.read(blocks[id].cells[b][cz+1][cy+1][cx+1]);
+
+    int np = cell.num_particles;
+    if(np < MAX_PARTICLES) {
+      cell.p[np].x = px;
+      cell.p[np].y = py;
+      cell.p[np].z = pz;
+      cell.hv[np].x = hvx;
+      cell.hv[np].y = hvy;
+      cell.hv[np].z = hvz;
+      cell.v[np].x = vx;
+      cell.v[np].y = vy;
+      cell.v[np].z = vz;
+      ++cell.num_particles;
+
+      real_cells.write(blocks[id].cells[b][cz+1][cy+1][cx+1], cell);
+    } else {
+      --numParticles;
+    }
+
+  }
+
+  log_app.info("Number of particles: %d (%d skipped)", numParticles, origNumParticles);
+
+  log_app.info("Done loading file.");
+
+  // TODO: Also return tempRestParticlesPerMeter...
+  assert(fabs(tempRestParticlesPerMeter - restParticlesPerMeter) < 0.00001);
+
+  return origNumParticles;
+}
+
+template<AccessorType AT>
+void save_file(const void *args, size_t arglen,
+	       const std::vector<PhysicalRegion<AT> > &regions,
+	       Context ctx, HighLevelRuntime *runtime)
+{
+  std::vector<Block> blocks;
+  std::string fileName;
+  int origNumParticles;
+  blocks.resize(numBlocks);
+  {
+    BlockDeserializer deser(args, arglen);
+    deser.Deserializer::deserialize(origNumParticles);
     for (unsigned i = 0; i < numBlocks; i++) {
       deser.deserialize(blocks[i]);
     }
@@ -1379,21 +1420,6 @@ void save_file(const void *args, size_t arglen,
 
   const int b = 1;
 
-  int count = 0;
-  for (unsigned idz = 0; idz < nbz; idz++)
-    for (unsigned idy = 0; idy < nby; idy++)
-      for (unsigned idx = 0; idx < nbx; idx++) {
-        unsigned id = (idz*nby+idy)*nbx+idx;
-
-        for(unsigned cz = 0; cz < blocks[id].CELLS_Z; cz++)
-          for(unsigned cy = 0; cy < blocks[id].CELLS_Y; cy++)
-            for(unsigned cx = 0; cx < blocks[id].CELLS_X; cx++) {
-              Cell cell = real_cells.read(blocks[id].cells[b][cz+1][cy+1][cx+1]);
-              count += cell.num_particles;
-            }
-      }
-  int origNumParticles = count, numParticles = count;
-
   if(!isLittleEndian()) {
     float restParticlesPerMeter_le;
     int   origNumParticles_le;
@@ -1407,7 +1433,7 @@ void save_file(const void *args, size_t arglen,
     file.write((char *)&origNumParticles,      4);
   }
 
-  count = 0;
+  int numParticles = 0;
   for (unsigned idz = 0; idz < nbz; idz++)
     for (unsigned idy = 0; idy < nby; idy++)
       for (unsigned idx = 0; idx < nbx; idx++) {
@@ -1453,11 +1479,10 @@ void save_file(const void *args, size_t arglen,
                   file.write((char *)&cell.v[p].y,  4);
                   file.write((char *)&cell.v[p].z,  4);
                 }
-                ++count;
+                ++numParticles;
               }
             }
       }
-  assert(count == numParticles);
 
   int numSkipped = origNumParticles - numParticles;
   float zero = 0.f;
@@ -1578,8 +1603,8 @@ public:
 
     switch (task->task_id) {
     case TOP_LEVEL_TASK_ID:
-    case TASKID_INIT_SIMULATION:
     case TASKID_MAIN_TASK:
+    case TASKID_LOAD_FILE:
     case TASKID_SAVE_FILE:
       {
         // Put this on the first processor
@@ -1640,8 +1665,8 @@ public:
 
     switch (task->task_id) {
     case TOP_LEVEL_TASK_ID:
-    case TASKID_INIT_SIMULATION:
     case TASKID_MAIN_TASK:
+    case TASKID_LOAD_FILE:
     case TASKID_SAVE_FILE:
       {
         // Don't care, put it in global memory
@@ -1756,13 +1781,13 @@ int main(int argc, char **argv)
 
   task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
   task_table[TASKID_MAIN_TASK] = high_level_task_wrapper<main_task<AccessorGeneric> >;
-  task_table[TASKID_INIT_SIMULATION] = high_level_task_wrapper<init_simulation<AccessorGeneric> >;
   task_table[TASKID_INIT_CELLS] = high_level_task_wrapper<init_and_rebuild<AccessorGeneric> >;
   task_table[TASKID_REBUILD_REDUCE] = high_level_task_wrapper<rebuild_reduce<AccessorGeneric> >;
   task_table[TASKID_SCATTER_DENSITIES] = high_level_task_wrapper<scatter_densities<AccessorGeneric> >;
   task_table[TASKID_GATHER_DENSITIES] = high_level_task_wrapper<gather_densities<AccessorGeneric> >;
   task_table[TASKID_SCATTER_FORCES] = high_level_task_wrapper<scatter_forces<AccessorGeneric> >;
   task_table[TASKID_GATHER_FORCES] = high_level_task_wrapper<gather_forces_and_advance<AccessorGeneric> >;
+  task_table[TASKID_LOAD_FILE] = high_level_task_wrapper<int, load_file<AccessorGeneric> >;
   task_table[TASKID_SAVE_FILE] = high_level_task_wrapper<save_file<AccessorGeneric> >;
 
   HighLevelRuntime::register_runtime_tasks(task_table);
