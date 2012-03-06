@@ -1418,8 +1418,6 @@ void save_file(const void *args, size_t arglen,
   std::ofstream file(fileName.c_str(), std::ios::binary);
   assert(file);
 
-  const int b = 1;
-
   if(!isLittleEndian()) {
     float restParticlesPerMeter_le;
     int   origNumParticles_le;
@@ -1433,55 +1431,79 @@ void save_file(const void *args, size_t arglen,
     file.write((char *)&origNumParticles,      4);
   }
 
+  // Minimum block sizes
+  int mbsx = nx / nbx;
+  int mbsy = ny / nby;
+  int mbsz = nz / nbz;
+
+  // Number of oversized blocks
+  int ovbx = nx % nbx;
+  int ovby = ny % nby;
+  int ovbz = nz % nbz;
+
+  const int b = 1;
   int numParticles = 0;
-  for (unsigned idz = 0; idz < nbz; idz++)
-    for (unsigned idy = 0; idy < nby; idy++)
-      for (unsigned idx = 0; idx < nbx; idx++) {
-        unsigned id = (idz*nby+idy)*nbx+idx;
+  for(int ck = 0; ck < (int)nz; ck++)
+    for(int cj = 0; cj < (int)ny; cj++)
+      for(int ci = 0; ci < (int)nx; ci++) {
 
-        for(unsigned cz = 0; cz < blocks[id].CELLS_Z; cz++)
-          for(unsigned cy = 0; cy < blocks[id].CELLS_Y; cy++)
-            for(unsigned cx = 0; cx < blocks[id].CELLS_X; cx++) {
-              Cell cell = real_cells.read(blocks[id].cells[b][cz+1][cy+1][cx+1]);
+        // Block coordinates and id
+        int midx = ci / mbsx;
+        int ovx = ci % mbsx;
+        int idx = midx + (midx > ovx ? -1 : 0);
+        int midy = cj / mbsy;
+        int ovy = cj % mbsy;
+        int idy = midy + (midy > ovy ? -1 : 0);
+        int midz = ck / mbsz;
+        int ovz = ck % mbsz;
+        int idz = midz + (midz > ovz ? -1 : 0);
 
-              unsigned np = cell.num_particles;
-              for(unsigned p = 0; p < np; ++p) {
-                if(!isLittleEndian()) {
-                  float px, py, pz, hvx, hvy, hvz, vx,vy, vz;
+        int id = (idz*nby+idy)*nbx+idx;
 
-                  px  = bswap_float(cell.p[p].x);
-                  py  = bswap_float(cell.p[p].y);
-                  pz  = bswap_float(cell.p[p].z);
-                  hvx = bswap_float(cell.hv[p].x);
-                  hvy = bswap_float(cell.hv[p].y);
-                  hvz = bswap_float(cell.hv[p].z);
-                  vx  = bswap_float(cell.v[p].x);
-                  vy  = bswap_float(cell.v[p].y);
-                  vz  = bswap_float(cell.v[p].z);
+        // Local cell coordinates
+        int cx = ci - (idx*mbsx + (idx < ovbx ? idx : ovbx));
+        int cy = cj - (idy*mbsy + (idy < ovby ? idy : ovby));
+        int cz = ck - (idz*mbsz + (idz < ovbz ? idz : ovbz));
 
-                  file.write((char *)&px,  4);
-                  file.write((char *)&py,  4);
-                  file.write((char *)&pz,  4);
-                  file.write((char *)&hvx, 4);
-                  file.write((char *)&hvy, 4);
-                  file.write((char *)&hvz, 4);
-                  file.write((char *)&vx,  4);
-                  file.write((char *)&vy,  4);
-                  file.write((char *)&vz,  4);
-                } else {
-                  file.write((char *)&cell.p[p].x,  4);
-                  file.write((char *)&cell.p[p].y,  4);
-                  file.write((char *)&cell.p[p].z,  4);
-                  file.write((char *)&cell.hv[p].x, 4);
-                  file.write((char *)&cell.hv[p].y, 4);
-                  file.write((char *)&cell.hv[p].z, 4);
-                  file.write((char *)&cell.v[p].x,  4);
-                  file.write((char *)&cell.v[p].y,  4);
-                  file.write((char *)&cell.v[p].z,  4);
-                }
-                ++numParticles;
-              }
-            }
+        Cell cell = real_cells.read(blocks[id].cells[b][cz+1][cy+1][cx+1]);
+
+        unsigned np = cell.num_particles;
+        for(unsigned p = 0; p < np; ++p) {
+          if(!isLittleEndian()) {
+            float px, py, pz, hvx, hvy, hvz, vx,vy, vz;
+
+            px  = bswap_float(cell.p[p].x);
+            py  = bswap_float(cell.p[p].y);
+            pz  = bswap_float(cell.p[p].z);
+            hvx = bswap_float(cell.hv[p].x);
+            hvy = bswap_float(cell.hv[p].y);
+            hvz = bswap_float(cell.hv[p].z);
+            vx  = bswap_float(cell.v[p].x);
+            vy  = bswap_float(cell.v[p].y);
+            vz  = bswap_float(cell.v[p].z);
+
+            file.write((char *)&px,  4);
+            file.write((char *)&py,  4);
+            file.write((char *)&pz,  4);
+            file.write((char *)&hvx, 4);
+            file.write((char *)&hvy, 4);
+            file.write((char *)&hvz, 4);
+            file.write((char *)&vx,  4);
+            file.write((char *)&vy,  4);
+            file.write((char *)&vz,  4);
+          } else {
+            file.write((char *)&cell.p[p].x,  4);
+            file.write((char *)&cell.p[p].y,  4);
+            file.write((char *)&cell.p[p].z,  4);
+            file.write((char *)&cell.hv[p].x, 4);
+            file.write((char *)&cell.hv[p].y, 4);
+            file.write((char *)&cell.hv[p].z, 4);
+            file.write((char *)&cell.v[p].x,  4);
+            file.write((char *)&cell.v[p].y,  4);
+            file.write((char *)&cell.v[p].z,  4);
+          }
+          ++numParticles;
+        }
       }
 
   int numSkipped = origNumParticles - numParticles;
