@@ -7766,10 +7766,6 @@ namespace RegionRuntime {
               update_valid_instances(ren.ctx_id,new_info,false/*writer*/);
             }
           }
-          // There should be at least one valid instance here
-#ifdef DEBUG_HIGH_LEVEL
-          assert(!region_states[ren.ctx_id].valid_instances.empty());
-#endif
           // If we're sanitizing we're done at this point
           return precondition;
         }
