@@ -149,6 +149,14 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       log_mapper(LEVEL_SPEW,"Select copy source in shared memory mapper");
+      // First check to see if there is a current instance in the same memory as the destination,
+      // if so choose it since this will make the copy fast
+      if (current_instances.find(dst) != current_instances.end())
+      {
+        chosen_src = dst;
+        return;
+      }
+      // TODO: something slightly more intelligent here
       Memory local = { local_proc.id + 1 };
       if (current_instances.find(local) != current_instances.end())
       {
