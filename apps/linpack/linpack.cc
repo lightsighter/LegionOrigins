@@ -180,7 +180,7 @@ void factor_panel(Context ctx, HighLevelRuntime *runtime,
   printf("factor_panel: k=%d\n", k);
 }
 
-static ColorizeID colorize_identity;
+static ColorizeID colorize_identity = 1;
 
 static Color colorize_identity_fn(const std::vector<int> &solution)
 {
@@ -587,7 +587,7 @@ void add_vectors_task(const void *global_args, size_t global_arglen,
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
                     Processor local)
 {
-  colorize_identity = runtime->register_colorize_function(colorize_identity_fn);
+  runtime->add_colorize_function(colorize_identity,colorize_identity_fn);
 }
 
 int main(int argc, char **argv) {
@@ -604,7 +604,7 @@ int main(int argc, char **argv) {
   //task_table[TASKID_ADD_VECTORS] = high_level_index_task_wrapper<add_vectors_task<AccessorGeneric> >;
 
   HighLevelRuntime::register_runtime_tasks(task_table);
-  HighLevelRuntime::set_mapper_init_callback(create_mappers);
+  HighLevelRuntime::set_registration_callback(create_mappers);
 
   Machine m(&argc, &argv, task_table, false);
 
