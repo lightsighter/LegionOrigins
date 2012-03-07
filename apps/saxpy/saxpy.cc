@@ -72,6 +72,11 @@ void top_level_task(const void *args, size_t arglen,
   Future f = runtime->execute_task(ctx, TASKID_MAIN, main_regions,
 				   TaskArgument(&vr, sizeof(VectorRegions)));
   f.get_void_result();
+
+  // Destroy our logical regions clean up the region trees
+  //runtime->destroy_logical_region(ctx, vr.r_x);
+  //runtime->destroy_logical_region(ctx, vr.r_y);
+  //runtime->destroy_logical_region(ctx, vr.r_z);
 }
 
 template<AccessorType AT>
@@ -608,7 +613,7 @@ int main(int argc, char **argv) {
   task_table[TASKID_ADD_VECTORS] = high_level_index_task_wrapper<add_vectors_task<AccessorGeneric> >;
 
   HighLevelRuntime::register_runtime_tasks(task_table);
-  HighLevelRuntime::set_mapper_init_callback(create_mappers);
+  HighLevelRuntime::set_registration_callback(create_mappers);
 
   Machine m(&argc, &argv, task_table, false);
 

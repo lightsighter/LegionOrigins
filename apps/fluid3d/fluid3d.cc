@@ -1832,7 +1832,7 @@ int main(int argc, char **argv)
   task_table[TASKID_SAVE_FILE] = high_level_task_wrapper<save_file<AccessorGeneric> >;
 
   HighLevelRuntime::register_runtime_tasks(task_table);
-  HighLevelRuntime::set_mapper_init_callback(create_mappers);
+  HighLevelRuntime::set_registration_callback(create_mappers);
 
   // Initialize the simulation
   h = kernelRadiusMultiplier / restParticlesPerMeter;
