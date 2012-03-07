@@ -1357,7 +1357,8 @@ namespace RegionRuntime {
     private:
       // Information for figuring out which regions to use
       // Mappings for the logical regions at call-time (can be no-instance == covered)
-      std::vector<InstanceInfo*> physical_instances;
+      std::vector<bool>            physical_mapped; // is this instance still mapped, can be unmapped by inline unmap
+      std::vector<InstanceInfo*>   physical_instances;
       std::vector<RegionAllocator> allocators;
       // The enclosing physical contexts from our parent context
       std::vector<ContextID> enclosing_ctx;
@@ -1415,6 +1416,7 @@ namespace RegionRuntime {
       UniqueID unique_id;
       Lock context_lock;
     private:
+      bool already_chosen;
       InstanceInfo *chosen_info;
       RegionAllocator allocator; 
       PhysicalRegion<AccessorGeneric> result;
@@ -1440,6 +1442,7 @@ namespace RegionRuntime {
       ~RegionMappingImpl();
       void activate(TaskContext *ctx, const RegionRequirement &req);
       void deactivate(void);
+      void set_target_instance(InstanceInfo *target);
       virtual bool is_context(void) const { return false; }
       virtual bool is_ready(void) const; // Ready to be mapped
       virtual void notify(void);
@@ -1884,7 +1887,13 @@ namespace RegionRuntime {
       template<typename T>
       inline void serialize(const T &element);
       inline void serialize(const void *src, size_t bytes);
-      inline const void* get_buffer(void) const { return buffer; }
+      inline const void* get_buffer(void) const 
+      { 
+#ifdef DEBUG_HIGH_LEVEL
+        assert(remaining_bytes==0);
+#endif
+        return buffer; 
+      }
     private:
       void *const buffer;
       char *location;
