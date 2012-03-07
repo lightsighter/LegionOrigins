@@ -708,7 +708,7 @@ namespace RegionRuntime {
     public:
       // Call visible to the user to set up the task map
       static void register_runtime_tasks(Processor::TaskIDTable &table);
-      // Call visible to the user to give a task to call to initialize mappers
+      // Call visible to the user to give a task to call to initialize mappers, colorize functions, etc.
       static void set_registration_callback(RegistrationCallbackFnptr callback);
     protected:
       friend class LowLevel::Processor;
@@ -1240,8 +1240,8 @@ namespace RegionRuntime {
       void remove_partition(PartitionID pid, LogicalRegion parent, bool recursive = false, bool reclaim_resources = false); // (thread-safe)
     private:
       // Utility functions
-      void compute_region_trace(std::vector<unsigned> &trace, LogicalRegion parent, LogicalRegion child);
-      void compute_partition_trace(std::vector<unsigned> &trace, LogicalRegion parent, PartitionID part);
+      bool compute_region_trace(std::vector<unsigned> &trace, LogicalRegion parent, LogicalRegion child);
+      bool compute_partition_trace(std::vector<unsigned> &trace, LogicalRegion parent, PartitionID part);
       void register_region_dependence(LogicalRegion parent, GeneralizedContext *child, unsigned child_idx);
       void verify_privilege(const RegionRequirement &par_req, const RegionRequirement &child_req,
                       /*for error reporting*/unsigned task = false, unsigned idx = 0, unsigned unique = 0);
@@ -1463,7 +1463,7 @@ namespace RegionRuntime {
       virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m);
       virtual InstanceInfo* create_instance_info(LogicalRegion newer, InstanceInfo *old);
     private:
-      void compute_region_trace(std::vector<unsigned> &trace, LogicalRegion parent, LogicalRegion child);
+      bool compute_region_trace(std::vector<unsigned> &trace, LogicalRegion parent, LogicalRegion child);
     public:
       template<AccessorType AT>
       inline const PhysicalRegion<AT>& get_physical_region(void);

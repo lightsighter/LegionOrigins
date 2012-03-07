@@ -1172,7 +1172,17 @@ namespace RegionRuntime {
       // Set the instance
       result.set_instance(chosen_info->inst.get_accessor_untyped());
       RegionRenamer namer(parent_physical_ctx,this,chosen_info,mapper,needs_initializing);
+#ifdef DEBUG_HIGH_LEVEL
+      bool trace_result = 
+#endif
       compute_region_trace(namer.trace,req.parent,chosen_info->handle);
+#ifdef DEBUG_HIGH_LEVEL
+      if (!trace_result)
+      {
+        log_task(LEVEL_ERROR,"Failure in computing region trace for inline mapping operation");
+        exit(1);
+      }
+#endif
 
       // Inject the request to register this physical instance
       // starting from the parent region's logical node
@@ -1298,12 +1308,12 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void RegionMappingImpl::compute_region_trace(std::vector<unsigned> &trace,
+    bool RegionMappingImpl::compute_region_trace(std::vector<unsigned> &trace,
                                   LogicalRegion parent, LogicalRegion child)
     //--------------------------------------------------------------------------
     {
       trace.push_back(child.id);
-      if (parent == child) return; // Early out
+      if (parent == child) return true; // Early out
 #ifdef DEBUG_HIGH_LEVEL
       assert(region_nodes->find(parent) != region_nodes->end());
       assert(region_nodes->find(child)  != region_nodes->end());
@@ -1312,14 +1322,19 @@ namespace RegionRuntime {
       RegionNode *child_node  = (*region_nodes)[child];
       while (parent_node != child_node)
       {
-#ifdef DEBUG_HIGH_LEVEL
-        assert(parent_node->depth < child_node->depth); // Parent better be shallower than child
-        assert(child_node->parent != NULL);
-#endif
+        if (parent_node->depth >= child_node->depth)
+        {
+          return false;
+        }
+        if (child_node->parent == NULL)
+        {
+          return false;
+        }
         trace.push_back(child_node->parent->pid); // Push the partition id onto the trace
         trace.push_back(child_node->parent->parent->handle.id); // Push the next child node onto the trace
         child_node = child_node->parent->parent;
       }
+      return true;
     }
 
     /////////////////////////////////////////////////////////////
@@ -3075,6 +3090,17 @@ namespace RegionRuntime {
 #endif
       mapper = _mapper;
       mapper_lock = _map_lock;
+      if (parent != NULL)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(region_nodes == NULL);
+        assert(partition_nodes == NULL);
+        assert(instance_infos == NULL);
+#endif
+        region_nodes = parent->region_nodes;
+        partition_nodes = parent->partition_nodes;
+        instance_infos = parent->instance_infos;
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3187,34 +3213,40 @@ namespace RegionRuntime {
           }
         }
       }
+      regions = _regions;
 #ifdef DEBUG_HIGH_LEVEL
       // A debugging check to make sure that all the regions are subregions of
       // their declared parent region
       {
         AutoLock ctx_lock(current_lock);
-#ifdef DEBUG_HIGH_LEVEL
         current_taken = true;
-#endif
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
           std::vector<unsigned> trace;
           if (regions[idx].func_type == SINGULAR_FUNC)
           {
-            compute_region_trace(trace, regions[idx].parent, regions[idx].handle.region);
+            bool trace_result = compute_region_trace(trace, regions[idx].parent, regions[idx].handle.region);
+            if (!trace_result)
+            {
+              log_task(LEVEL_ERROR,"Region %d is not an ancestor of region %d (idx %d) for task %d (unique id %d)",
+                  regions[idx].parent.id,regions[idx].handle.region.id,idx,task_id,unique_id);
+              exit(1);
+            }
           }
           else
           {
-            compute_partition_trace(trace, regions[idx].parent, regions[idx].handle.partition);
+            bool trace_result = compute_partition_trace(trace, regions[idx].parent, regions[idx].handle.partition);
+            if (!trace_result)
+            {
+              log_task(LEVEL_ERROR,"Region %d is not an ancestor of partition %d (idx %d) for task %d (unique id %d)",
+                  regions[idx].parent.id,regions[idx].handle.partition,idx,task_id,unique_id);
+              exit(1);
+            }
           }
         }
-#ifdef DEBUG_HIGH_LEVEL
         current_taken = false;
-#endif
       }
 #endif
-      // No need to check whether there are two aliased regions that conflict for this task
-      // We'll catch it when we do the dependence analysis
-      regions = _regions;
       map_dependent_tasks.resize(regions.size());
       unresolved_dependences.resize(regions.size());
 
@@ -3441,7 +3473,13 @@ namespace RegionRuntime {
                     it != part_node->children.end(); it++)
               {
                 renamer.trace.clear();
+#ifdef DEBUG_HIGH_LEVEL
+                bool trace_result =
+#endif
                 compute_region_trace(renamer.trace,regions[idx].parent,it->first);
+#ifdef DEBUG_HIGH_LEVEL
+                assert(trace_result);
+#endif
                 top->register_physical_instance(renamer,Event::NO_EVENT);
               }
               // Now that we've sanitized the region, update the region requirement
@@ -3450,7 +3488,13 @@ namespace RegionRuntime {
             }
             else
             {
+#ifdef DEBUG_HIGH_LEVEL
+              bool trace_result = 
+#endif
               compute_region_trace(renamer.trace,regions[idx].parent,regions[idx].handle.region);
+#ifdef DEBUG_HIGH_LEVEL
+              assert(trace_result);
+#endif
               // Inject this in at the parent context
               RegionNode *top = (*region_nodes)[regions[idx].parent];
               top->register_physical_instance(renamer,Event::NO_EVENT);
@@ -4167,10 +4211,6 @@ namespace RegionRuntime {
       current_taken = true;
 #endif
       child_tasks.push_back(child);
-      // Use the same maps as the parent task
-      child->region_nodes = region_nodes;
-      child->partition_nodes = partition_nodes;
-      child->instance_infos = instance_infos;
 
       // Now register each of the child task's region dependences
       for (unsigned idx = 0; idx < child->regions.size(); idx++)
@@ -4262,7 +4302,13 @@ namespace RegionRuntime {
               {
                 log_region(LEVEL_DEBUG,"registering region dependence for region %d "
                   "with parent %d in task %d",req.handle.region.id,parent.id,unique_id);
+#ifdef DEBUG_HIGH_LEVEL
+                bool trace_result =
+#endif
                 compute_region_trace(dep.trace, parent, req.handle.region);
+#ifdef DEBUG_HIGH_LEVEL
+                assert(trace_result);
+#endif
                 break;
               }
             case EXECUTABLE_FUNC:
@@ -4293,7 +4339,13 @@ namespace RegionRuntime {
           // We're looking for a logical region
           log_region(LEVEL_DEBUG,"registering region dependence for region %d "
             "with parent %d in task %d",req.handle.region.id, parent.id,unique_id);
+#ifdef DEBUG_HIGH_LEVEL
+          bool trace_result = 
+#endif
           compute_region_trace(dep.trace, parent, req.handle.region);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(trace_result);
+#endif
         }
       }
       else
@@ -4301,7 +4353,13 @@ namespace RegionRuntime {
         // This is a region mapping so we're looking for a logical mapping
         log_region(LEVEL_DEBUG,"registering region dependence for mapping of region %d "
             "with parent %d in task %d", req.handle.region.id,parent.id,unique_id);
+#ifdef DEBUG_HIGH_LEVEL
+        bool trace_result = 
+#endif
         compute_region_trace(dep.trace, parent, req.handle.region);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(trace_result);
+#endif
       }
 #ifdef DEBUG_HIGH_LEVEL
       assert(current_taken);
@@ -4411,6 +4469,9 @@ namespace RegionRuntime {
       current_taken = false;
 #endif
     }
+
+    //--------------------------------------------------------------------------------------------
+    //--------------------------------------------------------------------------------------------
 
     //--------------------------------------------------------------------------------------------
     void TaskContext::map_and_launch(void)
@@ -4527,7 +4588,13 @@ namespace RegionRuntime {
             physical_mapped.push_back(true/*mapped*/);
             RegionRenamer namer(parent_physical_ctx,idx,this,info,mapper,needs_initializing);
             // Compute the region trace to the logical region we want
+#ifdef DEBUG_HIGH_LEVEL
+            bool trace_result = 
+#endif
             compute_region_trace(namer.trace,regions[idx].parent,regions[idx].handle.region);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(trace_result);
+#endif
             log_region(LEVEL_DEBUG,"Physical tree traversal for region %d (index %d) in context %d",
                 info->handle.id, idx, parent_physical_ctx);
             // Inject the request to register this physical instance
@@ -6956,7 +7023,7 @@ namespace RegionRuntime {
     }
     
     //--------------------------------------------------------------------------------------------
-    void TaskContext::compute_region_trace(std::vector<unsigned> &trace,
+    bool TaskContext::compute_region_trace(std::vector<unsigned> &trace,
                                             LogicalRegion parent, LogicalRegion child)
     //-------------------------------------------------------------------------------------------- 
     {
@@ -6964,7 +7031,7 @@ namespace RegionRuntime {
       assert(current_taken);
 #endif
       trace.push_back(child.id);
-      if (parent == child) return; // Early out
+      if (parent == child) return true; // Early out
 #ifdef DEBUG_HIGH_LEVEL
       assert(region_nodes->find(parent) != region_nodes->end());
       assert(region_nodes->find(child)  != region_nodes->end());
@@ -6973,18 +7040,23 @@ namespace RegionRuntime {
       RegionNode *child_node  = (*region_nodes)[child];
       while (parent_node != child_node)
       {
-#ifdef DEBUG_HIGH_LEVEL
-        assert(parent_node->depth < child_node->depth); // Parent better be shallower than child
-        assert(child_node->parent != NULL);
-#endif
+        if (parent_node->depth >= child_node->depth)
+        {
+          return false;
+        }
+        if (child_node->parent == NULL)
+        {
+          return false;
+        }
         trace.push_back(child_node->parent->pid); // Push the partition id onto the trace
         trace.push_back(child_node->parent->parent->handle.id); // Push the next child node onto the trace
         child_node = child_node->parent->parent;
       }
+      return true;
     }
 
     //--------------------------------------------------------------------------------------------
-    void TaskContext::compute_partition_trace(std::vector<unsigned> &trace,
+    bool TaskContext::compute_partition_trace(std::vector<unsigned> &trace,
                                               LogicalRegion parent, PartitionID part)
     //--------------------------------------------------------------------------------------------
     {
@@ -7001,7 +7073,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(node->parent != NULL);
 #endif
-      compute_region_trace(trace,parent,node->parent->handle);
+      return compute_region_trace(trace,parent,node->parent->handle);
     }
 
     //--------------------------------------------------------------------------------------------
