@@ -43,6 +43,13 @@ struct MatrixBlock {
   double data[NB][NB];  // runtime args say whether this is row-/column-major
 };
 
+template <int NB>
+struct IndexBlock {
+  int block_num;
+
+  int ind[NB];
+};
+
 const int MAX_BLOCKS = 16;
 const int MAX_COLPARTS = 8;
 const int MAX_ROWPARTS = 8;
@@ -58,6 +65,11 @@ struct BlockedMatrix {
   int num_row_parts, num_col_parts;
   Partition col_part;
   Partition row_parts[MAX_BLOCKS];
+
+  ptr_t<IndexBlock<NB> > index_blocks[MAX_BLOCKS];
+
+  LogicalRegion index_region;
+  Partition index_part;
 };
 
 template <AccessorType AT, int NB>
@@ -86,6 +98,14 @@ void create_blocked_matrix(Context ctx, HighLevelRuntime *runtime,
 									   matrix.col_part,
 									   j),
 						    Q);
+
+  matrix.index_region = runtime->create_logical_region(ctx,
+						       sizeof(IndexBlock<NB>),
+						       matrix.block_rows);
+
+  matrix.index_part = runtime->create_partition(ctx,
+						matrix.index_region,
+						matrix.block_rows);
 }
 
 template <AccessorType AT, int NB>
@@ -113,6 +133,18 @@ void alloc_blocked_matrix(Context ctx, HighLevelRuntime *runtime,
 
       //runtime->unmap_region<AT>(ctx, reg);
     }
+  }
+
+  for(int rb = 0; rb < matrix.block_rows; rb++) {
+    LogicalRegion ip = runtime->get_subregion(ctx, matrix.index_part, rb);
+    PhysicalRegion<AT> reg = runtime->map_region<AT>(ctx,
+						     RegionRequirement(ip,
+								       NO_ACCESS,
+								       ALLOCABLE,
+								       EXCLUSIVE,
+								       matrix.index_region));
+    matrix.index_blocks[rb] = reg.template alloc<IndexBlock<NB> >();
+    runtime->unmap_region(ctx, reg);
   }
 }
 
@@ -188,10 +220,13 @@ static Color colorize_identity_fn(const std::vector<int> &solution)
 }
 
 template<AccessorType AT, int NB>
-void rowswap_gather_task(const void *args, size_t arglen,
+void rowswap_gather_task(const void *global_args, size_t global_arglen,
+			 const void *local_args, size_t local_arglen,
+			 const IndexPoint &point,
 			 std::vector<PhysicalRegion<AT> > &regions,
 			 Context ctx, HighLevelRuntime *runtime)
 {
+  printf("rowswap_gather: pt=%d\n", point[0]);
 }
 
 template <AccessorType AT, int NB>
@@ -292,8 +327,8 @@ void linpack_main(const void *args, size_t arglen,
   BlockedMatrix<NB> &matrix = *(BlockedMatrix<NB> *)args;
 
   alloc_blocked_matrix<AT,NB>(ctx, runtime, matrix, regions[0]);
-  PhysicalRegion<AT> r = regions[0];
-  runtime->unmap_region<AT>(ctx, r);
+  //PhysicalRegion<AT> r = regions[0];
+  runtime->unmap_region<AT>(ctx, regions[0]);
 
   randomize_matrix<AT,NB>(ctx, runtime, matrix, regions[0]);
 
@@ -316,6 +351,9 @@ void do_linpack(Context ctx, HighLevelRuntime *runtime)
   main_regions.push_back(RegionRequirement(matrix.block_region,
 					   READ_WRITE, ALLOCABLE, EXCLUSIVE,
 					   matrix.block_region));
+  main_regions.push_back(RegionRequirement(matrix.block_region,
+					   READ_WRITE, ALLOCABLE, EXCLUSIVE,
+					   matrix.index_region));
   Future f = runtime->execute_task(ctx, TASKID_LINPACK_MAIN, main_regions,
 				   TaskArgument(&matrix, sizeof(matrix)));
   f.get_void_result();
@@ -597,7 +635,7 @@ int main(int argc, char **argv) {
   task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
   task_table[TASKID_LINPACK_MAIN] = high_level_task_wrapper<linpack_main<AccessorGeneric,1> >;
   task_table[TASKID_RAND_MATRIX] = high_level_task_wrapper<rand_matrix_task<AccessorGeneric,1> >;
-  task_table[TASKID_ROWSWAP_GATHER] = high_level_task_wrapper<rowswap_gather_task<AccessorGeneric,1> >;
+  task_table[TASKID_ROWSWAP_GATHER] = high_level_index_task_wrapper<rowswap_gather_task<AccessorGeneric,1> >;
   //task_table[TASKID_INIT_VECTORS] = high_level_task_wrapper<init_vectors_task<AccessorGeneric> >;
   //task_table[TASKID_ADD_VECTORS] = high_level_task_wrapper<add_vectors_task<AccessorGeneric> >;
   //task_table[TASKID_INIT_VECTORS] = high_level_index_task_wrapper<init_vectors_task<AccessorGeneric> >;
