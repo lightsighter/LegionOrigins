@@ -1067,6 +1067,8 @@ namespace RegionRuntime {
     void RegionMappingImpl::perform_mapping(Mapper *mapper)
     //--------------------------------------------------------------------------
     {
+      // Need to hold the context lock to do this mapping
+      AutoLock ctx_lock(context_lock);
       // Mark that the result will be valid when we're done
       result.valid = true;
       bool needs_initializing = false;
@@ -1674,8 +1676,6 @@ namespace RegionRuntime {
 
       // Notify the context that we destroyed the logical region
       ctx->remove_region(handle, false/*recursive*/, true/*reclaim resources*/);
-
-      low_region.destroy_region_untyped();
     }
     
     //--------------------------------------------------------------------------------------------
@@ -2714,7 +2714,6 @@ namespace RegionRuntime {
             task->pack_task(rez);
             // Send the task to the utility processor
             utility.spawn(ENQUEUE_TASK_ID,rez.get_buffer(),buffer_size);
-
             return false;
           }
           else
@@ -2999,6 +2998,7 @@ namespace RegionRuntime {
       reduction = NULL;
       mapper = NULL;
       mapper_lock = Lock::NO_LOCK;
+      current_lock = context_lock;
       active = false;
     }
 
@@ -3027,6 +3027,7 @@ namespace RegionRuntime {
       unmapped = 0;
       map_event = UserEvent::create_user_event();
       is_index_space = false; // Not unless someone tells us it is later
+      enumerated = false;
       parent_ctx = parent;
       orig_ctx = this;
       remote = false;
@@ -3162,6 +3163,25 @@ namespace RegionRuntime {
           }
         }
       }
+#ifdef DEBUG_HIGH_LEVEL
+      // A debugging check to make sure that all the regions are subregions of
+      // their declared parent region
+      {
+        AutoLock ctx_lock(current_lock);
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          std::vector<unsigned> trace;
+          if (regions[idx].func_type == SINGULAR_FUNC)
+          {
+            compute_region_trace(trace, regions[idx].parent, regions[idx].handle.region);
+          }
+          else
+          {
+            compute_partition_trace(trace, regions[idx].parent, regions[idx].handle.partition);
+          }
+        }
+      }
+#endif
       // No need to check whether there are two aliased regions that conflict for this task
       // We'll catch it when we do the dependence analysis
       regions = _regions;
@@ -4079,7 +4099,6 @@ namespace RegionRuntime {
                 child->unique_id, this->unique_id);
       // Need the current context lock in exclusive mode to do this
       AutoLock ctx_lock(current_lock);
-
       child_tasks.push_back(child);
       // Use the same maps as the parent task
       child->region_nodes = region_nodes;
@@ -4214,7 +4233,6 @@ namespace RegionRuntime {
             "with parent %d in task %d", req.handle.region.id,parent.id,unique_id);
         compute_region_trace(dep.trace, parent, req.handle.region);
       }
-
       RegionNode *top = (*region_nodes)[parent];
       top->register_logical_region(dep);
     }
@@ -4324,6 +4342,8 @@ namespace RegionRuntime {
       // Check to see if this task is only partially unpacked, if so now do the final unpack
       if (partially_unpacked)
       {
+        // Need the context lock to perform the final unpack
+        AutoLock ctx_lock(current_lock);
         final_unpack_task();
       }
       // Check to see if this is an index space and it hasn't been enumerated
@@ -4858,6 +4878,8 @@ namespace RegionRuntime {
         this->num_local_points++;
         if (last)
         {
+          // Need to hold the context lock to read from the partition_nodes map
+          AutoLock ctx_lock(current_lock);
           // Just set the point and evaluate the region arguments
           this->index_point = point;
           this->enumerated = true;
@@ -4951,6 +4973,8 @@ namespace RegionRuntime {
     void TaskContext::clone_index_space_task(TaskContext *clone, bool slice)
     //--------------------------------------------------------------------------------------------
     {
+      // Need to hold the context lock to clone the context 
+      AutoLock ctx_lock(current_lock);
       // Use the same task ID, this is just a different point
       clone->unique_id = this->unique_id;
       clone->task_id = this->task_id;
@@ -5405,7 +5429,6 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       AutoLock ctx_lock(current_lock);
-
       // Check to see if this is an index space or not
       if (!is_index_space)
       {
@@ -6390,6 +6413,9 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(is_index_space && slice_owner);
 #endif
+      // Need the context lock here since we release it prior to calling
+      // this task in finish_task
+      AutoLock ctx_lock(current_lock);
       // If not remote, we can actually put our result where it needs to go
       if (!remote)
       {
@@ -6588,7 +6614,6 @@ namespace RegionRuntime {
     void TaskContext::remove_region(LogicalRegion handle, bool recursive, bool reclaim_resources)
     //--------------------------------------------------------------------------------------------
     {
-      std::map<LogicalRegion,RegionNode*>::iterator find_it = region_nodes->find(handle);
       // We need the current context lock in exclusive mode
       if (!recursive)
       {
@@ -6596,6 +6621,7 @@ namespace RegionRuntime {
         Event lock_event = current_lock.lock(0,true/*exclusive*/);
         lock_event.wait(true/*block*/);
       }
+      std::map<LogicalRegion,RegionNode*>::iterator find_it = region_nodes->find(handle);
 #ifdef DEBUG_HIGH_LEVEL
       assert(find_it != region_nodes->end());
 #endif
@@ -6885,6 +6911,7 @@ namespace RegionRuntime {
     LogicalRegion TaskContext::get_subregion(PartitionID pid, Color c) const
     //--------------------------------------------------------------------------------------------
     {
+      AutoLock ctx_lock(current_lock);
 #ifdef DEBUG_HIGH_LEVEL
       assert(partition_nodes->find(pid) != partition_nodes->end());
 #endif
@@ -8364,6 +8391,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
+      assert(info != InstanceInfo::get_no_instance());
       // This should always hold, if not something is wrong somewhere else
       assert(info->handle == handle); 
       assert(info->valid);
