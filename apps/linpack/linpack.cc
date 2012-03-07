@@ -50,11 +50,12 @@ struct BlockedMatrix {
   int rows, cols;
   int block_rows, block_cols;
   ptr_t<MatrixBlock<NB> > blocks[MAX_BLOCKS][MAX_BLOCKS];
+  ptr_t<MatrixBlock<NB> > top_blocks[MAX_BLOCKS];
 
   LogicalRegion block_region;
   int num_row_parts, num_col_parts;
   Partition col_part;
-  Partition row_parts[MAX_COLPARTS];
+  Partition row_parts[MAX_BLOCKS];
 };
 
 template <AccessorType AT, int NB>
@@ -178,21 +179,27 @@ void factor_panel(Context ctx, HighLevelRuntime *runtime,
 
 template <AccessorType AT, int NB>
 void transpose_rows(Context ctx, HighLevelRuntime *runtime,
-		    BlockedMatrix<NB>& matrix, int k, int j)
+		    BlockedMatrix<NB>& matrix, int k, int j,
+		    LogicalRegion topblk_region,
+		    ptr_t<MatrixBlock<NB> > topblk_ptr)
 {
   printf("transpose_rows: k=%d, j=%d\n", k, j);
 }
 
 template <AccessorType AT, int NB>
 void solve_top_block(Context ctx, HighLevelRuntime *runtime,
-		    BlockedMatrix<NB>& matrix, int k, int j)
+		     BlockedMatrix<NB>& matrix, int k, int j,
+		     LogicalRegion topblk_region,
+		     ptr_t<MatrixBlock<NB> > topblk_ptr)
 {
   printf("solve_top_block: k=%d, j=%d\n", k, j);
 }
 
 template <AccessorType AT, int NB>
 void update_panel(Context ctx, HighLevelRuntime *runtime,
-		    BlockedMatrix<NB>& matrix, int k, int j)
+		  BlockedMatrix<NB>& matrix, int k, int j,
+		  LogicalRegion topblk_region,
+		  ptr_t<MatrixBlock<NB> > topblk_ptr)
 {
   printf("update_panel: k=%d, j=%d\n", k, j);
 }
@@ -207,11 +214,26 @@ void factor_matrix(Context ctx, HighLevelRuntime *runtime,
     factor_panel<AT,NB>(ctx, runtime, matrix, k);
 
     for(int j = k+1; j < matrix.block_cols; j++) {
-      transpose_rows<AT,NB>(ctx, runtime, matrix, k, j);
+      LogicalRegion temp_region = runtime->create_logical_region(ctx,
+								 sizeof(MatrixBlock<NB>),
+								 1);
+      PhysicalRegion<AT> temp_phys = runtime->map_region<AT>(ctx,
+							     RegionRequirement(temp_region,
+									       NO_ACCESS,
+									       ALLOCABLE,
+									       EXCLUSIVE,
+									       temp_region));
 
-      solve_top_block<AT,NB>(ctx, runtime, matrix, k, j);
+      ptr_t<MatrixBlock<NB> > temp_ptr = temp_phys.template alloc<MatrixBlock<NB> >();
+      runtime->unmap_region(ctx, temp_phys);
+								       
+      transpose_rows<AT,NB>(ctx, runtime, matrix, k, j, temp_region, temp_ptr);
 
-      update_panel<AT,NB>(ctx, runtime, matrix, k, j);
+      solve_top_block<AT,NB>(ctx, runtime, matrix, k, j, temp_region, temp_ptr);
+
+      update_panel<AT,NB>(ctx, runtime, matrix, k, j, temp_region, temp_ptr);
+
+      runtime->destroy_logical_region(ctx, temp_region);
     }
   }
 }
