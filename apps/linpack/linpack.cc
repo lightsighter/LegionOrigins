@@ -169,6 +169,53 @@ void rand_matrix_task(const void *args, size_t arglen,
   printf("in rand_matrix(%d,%d)\n", rm_args->i, rm_args->j);
 }
 
+template <AccessorType AT, int NB>
+void factor_panel(Context ctx, HighLevelRuntime *runtime,
+		  BlockedMatrix<NB>& matrix, int k)
+{
+  printf("factor_panel: k=%d\n", k);
+}
+
+template <AccessorType AT, int NB>
+void transpose_rows(Context ctx, HighLevelRuntime *runtime,
+		    BlockedMatrix<NB>& matrix, int k, int j)
+{
+  printf("transpose_rows: k=%d, j=%d\n", k, j);
+}
+
+template <AccessorType AT, int NB>
+void solve_top_block(Context ctx, HighLevelRuntime *runtime,
+		    BlockedMatrix<NB>& matrix, int k, int j)
+{
+  printf("solve_top_block: k=%d, j=%d\n", k, j);
+}
+
+template <AccessorType AT, int NB>
+void update_panel(Context ctx, HighLevelRuntime *runtime,
+		    BlockedMatrix<NB>& matrix, int k, int j)
+{
+  printf("update_panel: k=%d, j=%d\n", k, j);
+}
+
+template <AccessorType AT, int NB>
+void factor_matrix(Context ctx, HighLevelRuntime *runtime,
+		   BlockedMatrix<NB>& matrix, PhysicalRegion<AT> reg)
+{
+  // factor matrix by repeatedly factoring a panel and updating the
+  //   trailing submatrix
+  for(int k = 0; k < matrix.block_rows; k++) {
+    factor_panel<AT,NB>(ctx, runtime, matrix, k);
+
+    for(int j = k+1; j < matrix.block_cols; j++) {
+      transpose_rows<AT,NB>(ctx, runtime, matrix, k, j);
+
+      solve_top_block<AT,NB>(ctx, runtime, matrix, k, j);
+
+      update_panel<AT,NB>(ctx, runtime, matrix, k, j);
+    }
+  }
+}
+
 template<AccessorType AT, int NB>
 void linpack_main(const void *args, size_t arglen,
 		  const std::vector<PhysicalRegion<AT> > &regions,
@@ -181,6 +228,8 @@ void linpack_main(const void *args, size_t arglen,
   runtime->unmap_region<AT>(ctx, r);
 
   randomize_matrix<AT,NB>(ctx, runtime, matrix, regions[0]);
+
+  factor_matrix<AT,NB>(ctx, runtime, matrix, regions[0]);
 }
 
 // just a wrapper that lets us capture the NB template parameter
