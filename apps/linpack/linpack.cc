@@ -224,6 +224,8 @@ void transpose_rows(Context ctx, HighLevelRuntime *runtime,
 					      TaskArgument(permutes, NB*sizeof(int)),
 					      arg_map,
 					      false);
+
+  fm.wait_all_results();
 }
 
 template <AccessorType AT, int NB>
@@ -288,8 +290,6 @@ void linpack_main(const void *args, size_t arglen,
 		  Context ctx, HighLevelRuntime *runtime)
 {
   BlockedMatrix<NB> &matrix = *(BlockedMatrix<NB> *)args;
-
-  colorize_identity = runtime->register_colorize_function(colorize_identity_fn);
 
   alloc_blocked_matrix<AT,NB>(ctx, runtime, matrix, regions[0]);
   PhysicalRegion<AT> r = regions[0];
@@ -584,6 +584,12 @@ void add_vectors_task(const void *global_args, size_t global_arglen,
 }
 #endif
 
+void create_mappers(Machine *machine, HighLevelRuntime *runtime,
+                    Processor local)
+{
+  colorize_identity = runtime->register_colorize_function(colorize_identity_fn);
+}
+
 int main(int argc, char **argv) {
   srand(time(NULL));
 
@@ -598,7 +604,7 @@ int main(int argc, char **argv) {
   //task_table[TASKID_ADD_VECTORS] = high_level_index_task_wrapper<add_vectors_task<AccessorGeneric> >;
 
   HighLevelRuntime::register_runtime_tasks(task_table);
-  //HighLevelRuntime::set_mapper_init_callback(create_mappers);
+  HighLevelRuntime::set_mapper_init_callback(create_mappers);
 
   Machine m(&argc, &argv, task_table, false);
 
