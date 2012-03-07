@@ -1069,6 +1069,9 @@ namespace RegionRuntime {
     {
       // Need to hold the context lock to do this mapping
       AutoLock ctx_lock(context_lock);
+#ifdef DEBUG_HIGH_LEVEL
+      parent_ctx->current_taken = true;
+#endif
       // Mark that the result will be valid when we're done
       result.valid = true;
       bool needs_initializing = false;
@@ -1194,6 +1197,9 @@ namespace RegionRuntime {
       {
         (*it)->notify();
       }
+#ifdef DEBUG_HIGH_LEVEL
+      parent_ctx->current_taken = false;
+#endif
     }
 
     //--------------------------------------------------------------------------
