@@ -3622,7 +3622,7 @@ namespace RegionRuntime {
         // pack the physical states
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
-          if (is_index_space)
+          if (is_index_space && (regions[idx].func_type != SINGULAR_FUNC))
           {
             (*partition_nodes)[regions[idx].handle.partition]->parent->pack_physical_state(get_enclosing_physical_context(idx),rez);
           }
@@ -5706,7 +5706,13 @@ namespace RegionRuntime {
           deleted_regions.clear();
           deleted_partitions.clear();
           // Tell the slice owner that we're done
+#ifdef DEBUG_HIGH_LEVEL
+          orig_ctx->current_taken = true;
+#endif
           orig_ctx->local_all_mapped();
+#ifdef DEBUG_HIGH_LEVEL
+          orig_ctx->current_taken = false;
+#endif
         }
       }
 
@@ -6773,6 +6779,9 @@ namespace RegionRuntime {
       {
         find_it->second->delete_handle = true;
       }
+      // Go through all our contexts and if we own any references to instance infos
+      // then mark that they are no longer valid
+
       // Recursively remove the partitions from the tree
       for (std::map<PartitionID,PartitionNode*>::const_iterator par_it =
             find_it->second->partitions.begin(); par_it != find_it->second->partitions.end(); par_it++)
