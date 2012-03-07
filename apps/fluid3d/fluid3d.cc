@@ -343,7 +343,7 @@ void get_all_regions(LogicalRegion *ghosts, std::vector<RegionRequirement> &reqs
 
 template<AccessorType AT>
 void top_level_task(const void *args, size_t arglen,
-                    const std::vector<PhysicalRegion<AT> > &regions,
+                    std::vector<PhysicalRegion<AT> > &regions,
                     Context ctx, HighLevelRuntime *runtime)
 {
   log_app.info("In top_level_task...");
@@ -389,7 +389,7 @@ void top_level_task(const void *args, size_t arglen,
 
 template<AccessorType AT>
 void main_task(const void *args, size_t arglen,
-	       const std::vector<PhysicalRegion<AT> > &regions,
+	       std::vector<PhysicalRegion<AT> > &regions,
 	       Context ctx, HighLevelRuntime *runtime)
 {
   log_app.info("In main_task...");
@@ -862,7 +862,7 @@ void main_task(const void *args, size_t arglen,
 
 template<AccessorType AT>
 void init_and_rebuild(const void *args, size_t arglen,
-                const std::vector<PhysicalRegion<AT> > &regions,
+                std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
   Block b;
@@ -929,7 +929,7 @@ void init_and_rebuild(const void *args, size_t arglen,
 
 template<AccessorType AT>
 void rebuild_reduce(const void *args, size_t arglen,
-                const std::vector<PhysicalRegion<AT> > &regions,
+                std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
   Block b;
@@ -992,7 +992,7 @@ void rebuild_reduce(const void *args, size_t arglen,
 
 template<AccessorType AT>
 void scatter_densities(const void *args, size_t arglen,
-                const std::vector<PhysicalRegion<AT> > &regions,
+                std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
   Block b;
@@ -1120,7 +1120,7 @@ void scatter_densities(const void *args, size_t arglen,
 
 template<AccessorType AT>
 void gather_densities(const void *args, size_t arglen,
-                const std::vector<PhysicalRegion<AT> > &regions,
+                std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
 
@@ -1128,14 +1128,14 @@ void gather_densities(const void *args, size_t arglen,
 
 template<AccessorType AT>
 void scatter_forces(const void *args, size_t arglen,
-                const std::vector<PhysicalRegion<AT> > &regions,
+                std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
 }
 
 template<AccessorType AT>
 void gather_forces_and_advance(const void *args, size_t arglen,
-                const std::vector<PhysicalRegion<AT> > &regions,
+                std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
   Block b;
@@ -1270,7 +1270,7 @@ static inline int bswap_int32(int x) {
 
 template<AccessorType AT>
 int load_file(const void *args, size_t arglen,
-              const std::vector<PhysicalRegion<AT> > &regions,
+              std::vector<PhysicalRegion<AT> > &regions,
               Context ctx, HighLevelRuntime *runtime)
 {
   std::vector<Block> blocks;
@@ -1397,7 +1397,7 @@ int load_file(const void *args, size_t arglen,
 
 template<AccessorType AT>
 void save_file(const void *args, size_t arglen,
-	       const std::vector<PhysicalRegion<AT> > &regions,
+	       std::vector<PhysicalRegion<AT> > &regions,
 	       Context ctx, HighLevelRuntime *runtime)
 {
   std::vector<Block> blocks;
