@@ -1395,6 +1395,9 @@ namespace RegionRuntime {
       // remote node in which case, it will get its own lock (separate copy of the region tree).
       const Lock context_lock;
       Lock       current_lock;
+#ifdef DEBUG_HIGH_LEVEL
+      bool       current_taken; //used for checking if the current lock is held at a given point
+#endif
     };
 
     /////////////////////////////////////////////////////////////
