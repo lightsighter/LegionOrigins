@@ -125,7 +125,7 @@ namespace RegionRuntime {
     typedef unsigned int InstanceID;
     typedef TaskContext* Context;
     typedef std::vector<int> IndexPoint;
-    typedef void (*MapperCallbackFnptr)(Machine *machine, HighLevelRuntime *rt, Processor local);
+    typedef void (*RegistrationCallbackFnptr)(Machine *machine, HighLevelRuntime *rt, Processor local);
     typedef Color (*ColorizeFnptr)(const std::vector<int> &solution);
     typedef void (*ReductionFnptr)(void *&current, size_t &cur_size, const IndexPoint&, const void *argument, size_t arg_size);
 
@@ -709,7 +709,7 @@ namespace RegionRuntime {
       // Call visible to the user to set up the task map
       static void register_runtime_tasks(Processor::TaskIDTable &table);
       // Call visible to the user to give a task to call to initialize mappers
-      static void set_mapper_init_callback(MapperCallbackFnptr callback);
+      static void set_registration_callback(RegistrationCallbackFnptr callback);
     protected:
       friend class LowLevel::Processor;
       // Static methods for calls from the processor to the high level runtime
@@ -841,7 +841,7 @@ namespace RegionRuntime {
       void add_mapper(MapperID id, Mapper *m);
       void replace_default_mapper(Mapper *m);
       // Functions for registering colorize function
-      ColorizeID register_colorize_function(ColorizeFnptr f);
+      void add_colorize_function(ColorizeID cid, ColorizeFnptr f);
       ColorizeFnptr retrieve_colorize_function(ColorizeID cid);
     public:
       // Methods for the wrapper functions to notify the runtime
@@ -892,7 +892,7 @@ namespace RegionRuntime {
     private:
       // Static variables
       static HighLevelRuntime *runtime_map;
-      static volatile MapperCallbackFnptr mapper_callback;
+      static volatile RegistrationCallbackFnptr registration_callback;
     private:
       // Member variables
       const Processor local_proc;

@@ -1377,8 +1377,8 @@ namespace RegionRuntime {
       }
 
       // Now initialize any mappers
-      if(mapper_callback != 0)
-	(*mapper_callback)(Machine::get_machine(), this, local_proc);
+      if(registration_callback != 0)
+	(*registration_callback)(Machine::get_machine(), this, local_proc);
 
       // If this is the first processor, launch the legion main task on this processor
       const std::set<Processor> &all_procs = machine->get_all_processors();
@@ -1456,13 +1456,13 @@ namespace RegionRuntime {
       table[TERMINATION_ID]     = HighLevelRuntime::detect_termination;
     }
 
-    /*static*/ volatile MapperCallbackFnptr HighLevelRuntime::mapper_callback = 0;
+    /*static*/ volatile RegistrationCallbackFnptr HighLevelRuntime::registration_callback = 0;
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::set_mapper_init_callback(MapperCallbackFnptr callback)
+    void HighLevelRuntime::set_registration_callback(RegistrationCallbackFnptr callback)
     //--------------------------------------------------------------------------------------------
     {
-      mapper_callback = callback;
+      registration_callback = callback;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2020,12 +2020,17 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    ColorizeID HighLevelRuntime::register_colorize_function(ColorizeFnptr f)
+    void HighLevelRuntime::add_colorize_function(ColorizeID cid, ColorizeFnptr f)
     //--------------------------------------------------------------------------------------------
     {
-      ColorizeID result = colorize_functions.size();
-      colorize_functions.push_back(f);
-      return result;
+#ifdef DEBUG_HIGH_LEVEL
+      assert(cid != 0); // Can't overwrite the identity function
+#endif
+      if (cid >= colorize_functions.size())
+      {
+        colorize_functions.resize(cid+1);
+      }
+      colorize_functions[cid] = f;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2033,6 +2038,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
+      assert(cid != 0);
       assert(cid < colorize_functions.size());
 #endif
       return colorize_functions[cid];
@@ -4987,8 +4993,20 @@ namespace RegionRuntime {
                 }
               case EXECUTABLE_FUNC:
                 {
-                  ColorizeFnptr fnptr = runtime->retrieve_colorize_function(regions[idx].colorize);
-                  Color needed_color = (*fnptr)(point);
+                  Color needed_color;
+                  if (regions[idx].colorize != 0)
+                  {
+                    ColorizeFnptr fnptr = runtime->retrieve_colorize_function(regions[idx].colorize);
+                    needed_color = (*fnptr)(point);
+                  }
+                  else
+                  {
+                    // Using the identity colorize function
+#ifdef DEBUG_HIGH_LEVEL
+                    assert(point.size() == 1); // better only be one dimension to use the identity colorize function
+#endif
+                    needed_color = point[0];
+                  }
                   // Get the logical handle
                   PartitionNode *part_node = (*partition_nodes)[regions[idx].handle.partition];
                   LogicalRegion handle = part_node->get_subregion(needed_color);
@@ -5097,8 +5115,19 @@ namespace RegionRuntime {
               }
             case EXECUTABLE_FUNC:
               {
-                ColorizeFnptr fnptr = runtime->retrieve_colorize_function(regions[idx].colorize);
-                Color needed_color = (*fnptr)(clone->index_point);   
+                Color needed_color;
+                if (regions[idx].colorize != 0)
+                {
+                  ColorizeFnptr fnptr = runtime->retrieve_colorize_function(regions[idx].colorize);
+                  needed_color = (*fnptr)(clone->index_point);   
+                }
+                else
+                {
+#ifdef DEBUG_HIGH_LEVEL
+                  assert(clone->index_point.size() == 1); // better only be one dimension to use the identity function
+#endif
+                  needed_color = clone->index_point[0];
+                }
                 // Get the logical handle
                 PartitionNode *part_node = (*partition_nodes)[regions[idx].handle.partition];
                 LogicalRegion handle = part_node->get_subregion(needed_color);
