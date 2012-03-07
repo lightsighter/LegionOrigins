@@ -9711,12 +9711,12 @@ namespace RegionRuntime {
       // If this is the owner we should have deleted the instance by now
       if (!remote && (parent == NULL))
       {
-        assert(!valid);
-        assert(children == 0);
-        assert(users.empty());
-        assert(added_users.empty());
-        assert(copy_users.empty());
-        assert(added_copy_users.empty());
+        //assert(!valid);
+        //assert(children == 0);
+        //assert(users.empty());
+        //assert(added_users.empty());
+        //assert(copy_users.empty());
+        //assert(added_copy_users.empty());
       }
 #endif
     }
