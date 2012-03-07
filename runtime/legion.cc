@@ -9512,7 +9512,6 @@ namespace RegionRuntime {
         assert(added_users.empty());
         assert(copy_users.empty());
         assert(added_copy_users.empty());
-        assert(inst == RegionInstance::NO_INST); // was deleted
       }
 #endif
     }
