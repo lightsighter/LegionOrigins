@@ -161,7 +161,7 @@ void randomize_matrix(Context ctx, HighLevelRuntime *runtime,
 
 template<AccessorType AT, int NB>
 void rand_matrix_task(const void *args, size_t arglen,
-		      const std::vector<PhysicalRegion<AT> > &regions,
+		      std::vector<PhysicalRegion<AT> > &regions,
 		      Context ctx, HighLevelRuntime *runtime)
 {
   RandMatrixArgs<NB> *rm_args = (RandMatrixArgs<NB> *)args;
@@ -218,7 +218,7 @@ void factor_matrix(Context ctx, HighLevelRuntime *runtime,
 
 template<AccessorType AT, int NB>
 void linpack_main(const void *args, size_t arglen,
-		  const std::vector<PhysicalRegion<AT> > &regions,
+		  std::vector<PhysicalRegion<AT> > &regions,
 		  Context ctx, HighLevelRuntime *runtime)
 {
   BlockedMatrix<NB> &matrix = *(BlockedMatrix<NB> *)args;
@@ -253,7 +253,7 @@ void do_linpack(Context ctx, HighLevelRuntime *runtime)
 
 template<AccessorType AT>
 void top_level_task(const void *args, size_t arglen,
-		    const std::vector<PhysicalRegion<AT> > &regions,
+		    std::vector<PhysicalRegion<AT> > &regions,
 		    Context ctx, HighLevelRuntime *runtime) {
 
   while (!Config::args_read)

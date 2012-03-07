@@ -11,7 +11,9 @@ using namespace RegionRuntime::HighLevel;
 
 #define TOP_LEVEL_TASK_ID TASK_ID_REGION_MAIN
 
-#define TEST_STEALING
+//#define TEST_STEALING
+
+#define MAX_STEAL_COUNT 4
 
 static unsigned* get_num_blocks(void)
 {
@@ -51,7 +53,7 @@ float get_rand_float() {
 
 template<AccessorType AT>
 void top_level_task(const void *args, size_t arglen,
-		    const std::vector<PhysicalRegion<AT> > &regions,
+		    std::vector<PhysicalRegion<AT> > &regions,
 		    Context ctx, HighLevelRuntime *runtime) {
   //while (!Config::args_read)
   //  usleep(1000);
@@ -74,7 +76,7 @@ void top_level_task(const void *args, size_t arglen,
 
 template<AccessorType AT>
 void main_task(const void *args, size_t arglen,
-	       const std::vector<PhysicalRegion<AT> > &regions,
+	       std::vector<PhysicalRegion<AT> > &regions,
 	       Context ctx, HighLevelRuntime *runtime) {
   VectorRegions *vr = (VectorRegions *)args;
   PhysicalRegion<AT> r_x = regions[0];
@@ -230,6 +232,11 @@ void main_task(const void *args, size_t arglen,
       printf("SUCCESS!\n");
     else
       printf("FAILURE!\n");
+
+    // Unmap the regions now that we're done with them
+    runtime->unmap_region(ctx, reg_x);
+    runtime->unmap_region(ctx, reg_y);
+    runtime->unmap_region(ctx, reg_z);
   }
 }
 
@@ -237,7 +244,7 @@ template<AccessorType AT>
 void init_vectors_task(const void *global_args, size_t global_arglen,
                        const void *local_args, size_t local_arglen,
                        const IndexPoint &point,
-                       const std::vector<PhysicalRegion<AT> > &regions,
+                       std::vector<PhysicalRegion<AT> > &regions,
                        Context ctx, HighLevelRuntime *runtime) {
   Block *block = (Block *)local_args;
   PhysicalRegion<AT> r_x = regions[0];
@@ -258,7 +265,7 @@ template<AccessorType AT>
 void add_vectors_task(const void *global_args, size_t global_arglen,
                       const void *local_args, size_t local_arglen,
                       const IndexPoint &point,
-                      const std::vector<PhysicalRegion<AT> > &regions,
+                      std::vector<PhysicalRegion<AT> > &regions,
                       Context ctx, HighLevelRuntime *runtime) {
   Block *block = (Block *)local_args;
   PhysicalRegion<AT> r_x = regions[0];
@@ -362,7 +369,12 @@ public:
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
 #ifdef TEST_STEALING
     for (unsigned i = 0; i < tasks.size(); i++) {
-      to_steal.insert(tasks[i]);
+      if (tasks[i]->steal_count < MAX_STEAL_COUNT)
+      {
+        fprintf(stdout,"Stealing task %d (unique id %d) from processor %d by processor %d\n",
+            tasks[i]->task_id, tasks[i]->unique_id, local_proc.id, thief.id);
+        to_steal.insert(tasks[i]);
+      }
       if (to_steal.size() >= 8)
         break;
     }
@@ -412,10 +424,10 @@ public:
                                   std::vector<RangeSplit> &chunks)
   {
     // Split things into pieces of 8
-    unsigned chunk_size = 8; // points
+    unsigned chunk_size = 1; // points
     assert(index_space.size() == 1);
     unsigned cur_proc = local_proc.id;
-    for (int idx = index_space[0].start; idx < index_space[0].stop; idx += 8*index_space[0].stride)
+    for (int idx = index_space[0].start; idx <= index_space[0].stop; idx += chunk_size*index_space[0].stride)
     {
       std::vector<Range> chunk(1);
       chunk[0].start = idx;
@@ -525,7 +537,10 @@ public:
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
 #ifdef TEST_STEALING
     for (unsigned i = 0; i < tasks.size(); i++) {
-      to_steal.insert(tasks[i]);
+      if (tasks[i]->steal_count < MAX_STEAL_COUNT)
+      {
+        to_steal.insert(tasks[i]);
+      }
       if (to_steal.size() >= 8)
         break;
     }

@@ -945,6 +945,8 @@ namespace RegionRuntime {
       region_nodes = parent_ctx->region_nodes;
       partition_nodes = parent_ctx->partition_nodes;
       context_lock = parent_ctx->current_lock;
+      already_chosen = false;
+      chosen_info = NULL;
       active = true;
       mapped = false;
       // Compute the parent's physical context for this region
@@ -1021,6 +1023,18 @@ namespace RegionRuntime {
       // Put this back on this list of free mapping implementations for the runtime
       runtime->free_mapping(this);
     }
+
+    //--------------------------------------------------------------------------
+    void RegionMappingImpl::set_target_instance(InstanceInfo *target)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!already_chosen);
+      assert(target != InstanceInfo::get_no_instance());
+#endif
+      already_chosen = true;
+      chosen_info = target;
+    }
     
     //--------------------------------------------------------------------------
     Event RegionMappingImpl::get_termination_event(void) const
@@ -1053,117 +1067,124 @@ namespace RegionRuntime {
     void RegionMappingImpl::perform_mapping(Mapper *mapper)
     //--------------------------------------------------------------------------
     {
+      // Need to hold the context lock to do this mapping
+      AutoLock ctx_lock(context_lock);
       // Mark that the result will be valid when we're done
       result.valid = true;
-      std::set<Memory> sources; 
-      RegionNode *handle = (*region_nodes)[req.handle.region];
-      handle->get_physical_locations(parent_physical_ctx,sources);
-      std::vector<Memory> locations;
-      bool war_optimization = true;
-      mapper->map_task_region(parent_ctx, req, sources, locations, war_optimization);
-      if (!locations.empty())
+      bool needs_initializing = false;
+      // Check to see if we already have an instance to use
+      if (!already_chosen)
       {
-        // We're making our own
-        bool found = false;
-        for (std::vector<Memory>::const_iterator it = locations.begin();
-              it != locations.end(); it++)
+        std::set<Memory> sources; 
+        RegionNode *handle = (*region_nodes)[req.handle.region];
+        handle->get_physical_locations(parent_physical_ctx,sources);
+        std::vector<Memory> locations;
+        bool war_optimization = true;
+        mapper->map_task_region(parent_ctx, req, sources, locations, war_optimization);
+        if (!locations.empty())
         {
-          chosen_info = handle->find_physical_instance(parent_physical_ctx, *it);
-          bool needs_initializing = false;
-          if (chosen_info == InstanceInfo::get_no_instance())
+          // We're making our own
+          bool found = false;
+          for (std::vector<Memory>::const_iterator it = locations.begin();
+                it != locations.end(); it++)
           {
-            // We couldn't find a pre-existing instance, try to make one
-            chosen_info = parent_ctx->create_instance_info(req.handle.region,*it);
+            chosen_info = handle->find_physical_instance(parent_physical_ctx, *it);
             if (chosen_info == InstanceInfo::get_no_instance())
             {
-              continue;
+              // We couldn't find a pre-existing instance, try to make one
+              chosen_info = parent_ctx->create_instance_info(req.handle.region,*it);
+              if (chosen_info == InstanceInfo::get_no_instance())
+              {
+                continue;
+              }
+              else
+              {
+                // We made it but it needs to be initialized
+                needs_initializing = true;
+              }
             }
             else
             {
-              // We made it but it needs to be initialized
-              needs_initializing = true;
+              // Check to make see if they use the same logical region, if not
+              // make a new instance info 
+              if (chosen_info->handle != req.handle.region)
+              {
+                // Make a clone version of the instance info 
+                chosen_info = parent_ctx->create_instance_info(req.handle.region,chosen_info);
+              }
             }
-          }
-          else
-          {
-            // Check to make see if they use the same logical region, if not
-            // make a new instance info 
-            if (chosen_info->handle != req.handle.region)
+            // Check for any write-after-read dependences
+            if (war_optimization && chosen_info->has_war_dependence(this, 0))
             {
-              // Make a clone version of the instance info 
-              chosen_info = parent_ctx->create_instance_info(req.handle.region,chosen_info);
-            }
-          }
-          // Check for any write-after-read dependences
-          if (war_optimization && chosen_info->has_war_dependence(this, 0))
-          {
 #ifdef DEBUG_HIGH_LEVEL
-            assert(!needs_initializing);
+              assert(!needs_initializing);
 #endif
-            // Try creating a new physical instance in the same location as the previous
-            InstanceInfo *new_info = create_instance_info(req.handle.region, chosen_info->location);
-            if (new_info != InstanceInfo::get_no_instance())
-            {
-              chosen_info = new_info;
-              needs_initializing = true;
+              // Try creating a new physical instance in the same location as the previous
+              InstanceInfo *new_info = create_instance_info(req.handle.region, chosen_info->location);
+              if (new_info != InstanceInfo::get_no_instance())
+              {
+                chosen_info = new_info;
+                needs_initializing = true;
+              }
             }
+            found = true;
+            break;
           }
-          log_region(LEVEL_INFO,"Mapping inline region %d of task %d (unique id %d) to "
-              "physical instance %d of logical region %d in memory %d",req.handle.region.id,
-              parent_ctx->task_id,parent_ctx->unique_id,chosen_info->iid,chosen_info->handle.id,chosen_info->location.id);
-#ifdef DEBUG_HIGH_LEVEL
-          assert(chosen_info != InstanceInfo::get_no_instance());
-#endif
-          // Check to see if we need to make an allocator too
-          if (req.alloc != NO_MEMORY)
+          if (!found)
           {
-            // We need to make an allocator for this region
-            allocator = req.handle.region.create_allocator_untyped(*it);
-            if (!allocator.exists())
-            {
-              log_inst(LEVEL_ERROR,"Unable to make allocator for instance %d of region %d "
-                " in memory %d for region mapping", chosen_info->inst.id, chosen_info->handle.id,
-                chosen_info->location.id);
-              exit(1);
-            }
-            result.set_allocator(allocator);
+            log_inst(LEVEL_ERROR,"Unable to find or create physical instance for mapping "
+                "region %d of task %d with unique id %d",req.handle.region.id,parent_ctx->task_id,
+                parent_ctx->unique_id);
+            exit(1);
           }
-          // Set the instance
-          result.set_instance(chosen_info->inst.get_accessor_untyped());
-          RegionRenamer namer(parent_physical_ctx,this,chosen_info,mapper,needs_initializing);
-          compute_region_trace(namer.trace,req.parent,chosen_info->handle);
-
-          // Inject the request to register this physical instance
-          // starting from the parent region's logical node
-          RegionNode *top = (*region_nodes)[req.parent];
-          Event precondition = top->register_physical_instance(namer,Event::NO_EVENT);
-          // Check to see if we need this region in atomic mode
-          if (IS_ATOMIC(req))
-          {
-            precondition = chosen_info->lock_instance(precondition);
-            // Also issue the unlock now contingent on the unmap event
-            chosen_info->unlock_instance(unmapped_event);
-          }
-          // Set the ready event to be the resulting precondition
-          ready_event = precondition;
-          found = true;
-          break;
         }
-        if (!found)
-        {
-          log_inst(LEVEL_ERROR,"Unable to find or create physical instance for mapping "
-              "region %d of task %d with unique id %d",req.handle.region.id,parent_ctx->task_id,
-              parent_ctx->unique_id);
+        else
+        { 
+          log_inst(LEVEL_ERROR,"No specified memory locations for mapping physical instance "
+              "for region (%d) for task %d with unique id %d",req.handle.region.id,
+              parent_ctx->task_id, parent_ctx->unique_id);
           exit(1);
         }
       }
-      else
-      { 
-        log_inst(LEVEL_ERROR,"No specified memory locations for mapping physical instance "
-            "for region (%d) for task %d with unique id %d",req.handle.region.id,
-            parent_ctx->task_id, parent_ctx->unique_id);
-        exit(1);
+      log_region(LEVEL_INFO,"Mapping inline region %d of task %d (unique id %d) to "
+              "physical instance %d of logical region %d in memory %d",req.handle.region.id,
+              parent_ctx->task_id,parent_ctx->unique_id,chosen_info->iid,chosen_info->handle.id,chosen_info->location.id);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(chosen_info != InstanceInfo::get_no_instance());
+#endif
+      // Check to see if we need to make an allocator too
+      if (req.alloc != NO_MEMORY)
+      {
+        // We need to make an allocator for this region
+        allocator = req.handle.region.create_allocator_untyped(chosen_info->location);
+        if (!allocator.exists())
+        {
+          log_inst(LEVEL_ERROR,"Unable to make allocator for instance %d of region %d "
+            " in memory %d for region mapping", chosen_info->inst.id, chosen_info->handle.id,
+            chosen_info->location.id);
+          exit(1);
+        }
+        result.set_allocator(allocator);
       }
+      // Set the instance
+      result.set_instance(chosen_info->inst.get_accessor_untyped());
+      RegionRenamer namer(parent_physical_ctx,this,chosen_info,mapper,needs_initializing);
+      compute_region_trace(namer.trace,req.parent,chosen_info->handle);
+
+      // Inject the request to register this physical instance
+      // starting from the parent region's logical node
+      RegionNode *top = (*region_nodes)[req.parent];
+      Event precondition = top->register_physical_instance(namer,Event::NO_EVENT);
+      // Check to see if we need this region in atomic mode
+      if (IS_ATOMIC(req))
+      {
+        precondition = chosen_info->lock_instance(precondition);
+        // Also issue the unlock now contingent on the unmap event
+        chosen_info->unlock_instance(unmapped_event);
+      }
+      // Set the ready event to be the resulting precondition
+      ready_event = precondition;
+
       mapped = true;
       // We're done mapping, so trigger the mapping event
       mapped_event.trigger();
@@ -1655,8 +1676,6 @@ namespace RegionRuntime {
 
       // Notify the context that we destroyed the logical region
       ctx->remove_region(handle, false/*recursive*/, true/*reclaim resources*/);
-
-      low_region.destroy_region_untyped();
     }
     
     //--------------------------------------------------------------------------------------------
@@ -1848,7 +1867,8 @@ namespace RegionRuntime {
       assert(idx < ctx->physical_instances.size());
       assert(idx < ctx->allocators.size());
 #endif
-      if (ctx->physical_instances[idx] != InstanceInfo::get_no_instance())
+      if (ctx->physical_mapped[idx] &&
+          (ctx->physical_instances[idx] != InstanceInfo::get_no_instance()))
       {
         // We already have a valid instance, just make it and return
         PhysicalRegion<AccessorGeneric> result(idx);
@@ -1860,7 +1880,13 @@ namespace RegionRuntime {
         return result.convert();
       }
       // Otherwise, this was unmapped so we have to map it
-      return map_region<AccessorArray>(ctx, ctx->regions[idx]); 
+      RegionMappingImpl *impl = get_available_mapping(ctx, ctx->regions[idx]);
+      if (ctx->physical_instances[idx] != InstanceInfo::get_no_instance())
+      {
+        impl->set_target_instance(ctx->physical_instances[idx]);
+      }
+      internal_map_region(ctx, impl);
+      return PhysicalRegion<AccessorArray>(impl);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1873,7 +1899,8 @@ namespace RegionRuntime {
       assert(idx < ctx->physical_instances.size());
       assert(idx < ctx->allocators.size());
 #endif
-      if (ctx->physical_instances[idx] != InstanceInfo::get_no_instance())
+      if (ctx->physical_mapped[idx] && 
+          (ctx->physical_instances[idx] != InstanceInfo::get_no_instance()))
       {
         // We already have a valid instance, just make it and return 
         PhysicalRegion<AccessorGeneric> result(idx);
@@ -1881,7 +1908,14 @@ namespace RegionRuntime {
         result.set_allocator(ctx->allocators[idx]);
         return result;
       }
-      return map_region<AccessorGeneric>(ctx, ctx->regions[idx]);
+      // Otherwise this was unmapped so we have to map it
+      RegionMappingImpl *impl = get_available_mapping(ctx, ctx->regions[idx]);
+      if (ctx->physical_instances[idx] != InstanceInfo::get_no_instance())
+      {
+        impl->set_target_instance(ctx->physical_instances[idx]);
+      }
+      internal_map_region(ctx, impl);
+      return PhysicalRegion<AccessorGeneric>(impl);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2366,6 +2400,9 @@ namespace RegionRuntime {
           {
             Event lock_event = (*it)->current_lock.lock(0,true/*exclusive*/);
             held_ctx_locks.insert((*it)->current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+            (*it)->current_taken = true;
+#endif
             lock_event.wait(true/*block*/);
           }
         }
@@ -2671,6 +2708,9 @@ namespace RegionRuntime {
             Processor utility = target.get_utility_processor();
             // We need to hold the task's context lock to package it up
             AutoLock ctx_lock(task->current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+            task->current_taken = true;
+#endif
             // Package up the task and send it
             size_t buffer_size = 2*sizeof(Processor)+sizeof(size_t)+task->compute_task_size();
             Serializer rez(buffer_size);
@@ -2680,7 +2720,9 @@ namespace RegionRuntime {
             task->pack_task(rez);
             // Send the task to the utility processor
             utility.spawn(ENQUEUE_TASK_ID,rez.get_buffer(),buffer_size);
-
+#ifdef DEBUG_HIGH_LEVEL
+            task->current_taken = false;
+#endif
             return false;
           }
           else
@@ -2948,6 +2990,7 @@ namespace RegionRuntime {
       unresolved_dependences.clear();
       child_tasks.clear();
       sibling_tasks.clear();
+      physical_mapped.clear();
       physical_instances.clear();
       allocators.clear();
       enclosing_ctx.clear();
@@ -2964,6 +3007,7 @@ namespace RegionRuntime {
       reduction = NULL;
       mapper = NULL;
       mapper_lock = Lock::NO_LOCK;
+      current_lock = context_lock;
       active = false;
     }
 
@@ -2992,6 +3036,7 @@ namespace RegionRuntime {
       unmapped = 0;
       map_event = UserEvent::create_user_event();
       is_index_space = false; // Not unless someone tells us it is later
+      enumerated = false;
       parent_ctx = parent;
       orig_ctx = this;
       remote = false;
@@ -3007,6 +3052,9 @@ namespace RegionRuntime {
       {
         current_lock = context_lock;
       }
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
       remaining_notifications = 0;
       sanitized = false;
 #ifdef DEBUG_HIGH_LEVEL
@@ -3127,6 +3175,31 @@ namespace RegionRuntime {
           }
         }
       }
+#ifdef DEBUG_HIGH_LEVEL
+      // A debugging check to make sure that all the regions are subregions of
+      // their declared parent region
+      {
+        AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = true;
+#endif
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          std::vector<unsigned> trace;
+          if (regions[idx].func_type == SINGULAR_FUNC)
+          {
+            compute_region_trace(trace, regions[idx].parent, regions[idx].handle.region);
+          }
+          else
+          {
+            compute_partition_trace(trace, regions[idx].parent, regions[idx].handle.partition);
+          }
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = false;
+#endif
+      }
+#endif
       // No need to check whether there are two aliased regions that conflict for this task
       // We'll catch it when we do the dependence analysis
       regions = _regions;
@@ -3336,6 +3409,9 @@ namespace RegionRuntime {
         // Check to see if the region trees have been sanitized
         if (!sanitized)
         {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(current_taken);
+#endif
           AutoLock mapping_lock(mapper_lock);
           // If they haven't been santized, we can't move the task, sanitize
           // them so we can the size of states later
@@ -3385,6 +3461,9 @@ namespace RegionRuntime {
           result += sizeof(size_t);
           result += (unresolved_dependences[idx].size() * (sizeof(UniqueID) + sizeof(Event)));
         }
+#ifdef DEBUG_HIGH_LEVEL
+        assert(current_taken);
+#endif
         // Now we need to pack the region trees
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
@@ -3519,6 +3598,9 @@ namespace RegionRuntime {
             rez.serialize<Event>(it->second);
           }
         }
+#ifdef DEBUG_HIGH_LEVEL
+        assert(current_taken);
+#endif
         // pack the region trees
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
@@ -3615,6 +3697,9 @@ namespace RegionRuntime {
       derez.deserialize<UserEvent>(termination_event);
       // Make the current lock the given context lock
       current_lock = context_lock;
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
       
       // Mark that we're only doing a partial unpack
       partially_unpacked = true;
@@ -3630,6 +3715,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(partially_unpacked);
+      assert(current_taken);
 #endif
       Deserializer derez(cached_buffer,cached_size);
       // Do the deserialization of all the remaining data structures
@@ -3690,6 +3776,9 @@ namespace RegionRuntime {
                                                   std::map<PartitionNode*,unsigned> &region_tree_updates)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+#endif
       size_t result = 0;
       result += sizeof(size_t); // num updated regions
       // First get the size of the updates
@@ -3728,6 +3817,9 @@ namespace RegionRuntime {
     void TaskContext::pack_tree_updates(Serializer &rez, const std::map<PartitionNode*,unsigned> &region_tree_updates)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+#endif
       rez.serialize<size_t>(region_tree_updates.size());
       for (std::map<PartitionNode*,unsigned>::const_iterator it = region_tree_updates.begin();
             it != region_tree_updates.end(); it++)
@@ -3767,6 +3859,9 @@ namespace RegionRuntime {
                                           std::vector<LogicalRegion> &created, ContextID outermost)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+#endif
       size_t num_updates;
       derez.deserialize<size_t>(num_updates);
       for (unsigned idx = 0; idx < num_updates; idx++)
@@ -3841,6 +3936,9 @@ namespace RegionRuntime {
         {
           // Need to hold the tasks context lock to do this
           AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+          current_taken = true;
+#endif
           // set need_split
           this->need_split = it->recurse;
           this->constraint_space = it->constraints;
@@ -3854,6 +3952,9 @@ namespace RegionRuntime {
           // Send the task to the utility processor
           Processor utility = it->p.get_utility_processor();
           utility.spawn(ENQUEUE_TASK_ID,rez.get_buffer(),buffer_size);
+#ifdef DEBUG_HIGH_LEVEL
+          current_taken = false;
+#endif
         }
         else // local processor
         {
@@ -3948,6 +4049,9 @@ namespace RegionRuntime {
         {
           // Need to hold the tasks context lock to do this
           AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+          current_taken = true;
+#endif
           // set need_split
           this->need_split = it->recurse;
           this->range_space = it->ranges;
@@ -3961,6 +4065,9 @@ namespace RegionRuntime {
           // Send the task to the utility processor
           Processor utility = it->p.get_utility_processor();
           utility.spawn(ENQUEUE_TASK_ID,rez.get_buffer(),buffer_size);
+#ifdef DEBUG_HIGH_LEVEL
+          current_taken = false;
+#endif
         }
         else
         {
@@ -4044,7 +4151,9 @@ namespace RegionRuntime {
                 child->unique_id, this->unique_id);
       // Need the current context lock in exclusive mode to do this
       AutoLock ctx_lock(current_lock);
-
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
+#endif
       child_tasks.push_back(child);
       // Use the same maps as the parent task
       child->region_nodes = region_nodes;
@@ -4113,6 +4222,9 @@ namespace RegionRuntime {
           }
         }
       }
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4179,7 +4291,9 @@ namespace RegionRuntime {
             "with parent %d in task %d", req.handle.region.id,parent.id,unique_id);
         compute_region_trace(dep.trace, parent, req.handle.region);
       }
-
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+#endif
       RegionNode *top = (*region_nodes)[parent];
       top->register_logical_region(dep);
     }
@@ -4247,6 +4361,9 @@ namespace RegionRuntime {
     {
       // Need the current context lock in exclusive mode to do this
       AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
+#endif
       // Check to see if we can find the parent region in the list
       // of parent task region requirements
       bool found = false;
@@ -4278,6 +4395,9 @@ namespace RegionRuntime {
           exit(1);
         }
       }
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4289,16 +4409,30 @@ namespace RegionRuntime {
       // Check to see if this task is only partially unpacked, if so now do the final unpack
       if (partially_unpacked)
       {
+        // Need the context lock to perform the final unpack
+        AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = true;
+#endif
         final_unpack_task();
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = false;
+#endif
       }
       // Check to see if this is an index space and it hasn't been enumerated
       if (is_index_space && !enumerated)
       {
         // enumerate this task
         enumerate_index_space();
+#ifdef DEBUG_HIGH_LEVEL
+        assert(enumerated);
+#endif
       }
       // Need the current context lock in exclusive mode to do this
       AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
+#endif
       // Also need our mapper lock
       AutoLock mapping_lock(mapper_lock);
 
@@ -4378,6 +4512,7 @@ namespace RegionRuntime {
                 "instance %d of logical region %d in memory %d",regions[idx].handle.region.id,idx,task_id,
                 unique_id,info->iid,info->handle.id,info->location.id);
             physical_instances.push_back(info);
+            physical_mapped.push_back(true/*mapped*/);
             RegionRenamer namer(parent_physical_ctx,idx,this,info,mapper,needs_initializing);
             // Compute the region trace to the logical region we want
             compute_region_trace(namer.trace,regions[idx].parent,regions[idx].handle.region);
@@ -4415,6 +4550,7 @@ namespace RegionRuntime {
               this->task_id,this->unique_id);
           // Push back a no-instance for this physical instance
           physical_instances.push_back(InstanceInfo::get_no_instance());
+          physical_mapped.push_back(false/*mapped*/);
           // Find the parent region of this region, and use the same context
           if (remote)
           {
@@ -4762,6 +4898,9 @@ namespace RegionRuntime {
           this->mapped = true;
         }
       }
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4802,6 +4941,7 @@ namespace RegionRuntime {
       // Pull the local argument values out of the arg map for this part of the index space
 #ifdef DEBUG_HIGH_LEVEL
       assert(!index_point.empty());
+      assert(enumerated);
 #endif
       TaskArgument arg = index_arg_map.remove_argument(index_point);
       local_arg = arg.get_ptr();
@@ -4821,6 +4961,11 @@ namespace RegionRuntime {
         this->num_local_points++;
         if (last)
         {
+          // Need to hold the context lock to read from the partition_nodes map
+          AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+          current_taken = true;
+#endif
           // Just set the point and evaluate the region arguments
           this->index_point = point;
           this->enumerated = true;
@@ -4864,6 +5009,9 @@ namespace RegionRuntime {
                 assert(false);
             }
           }
+#ifdef DEBUG_HIGH_LEVEL
+          current_taken = false;
+#endif
         }
         else
         {
@@ -4914,6 +5062,11 @@ namespace RegionRuntime {
     void TaskContext::clone_index_space_task(TaskContext *clone, bool slice)
     //--------------------------------------------------------------------------------------------
     {
+      // Need to hold the context lock to clone the context 
+      AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
+#endif
       // Use the same task ID, this is just a different point
       clone->unique_id = this->unique_id;
       clone->task_id = this->task_id;
@@ -5008,6 +5161,7 @@ namespace RegionRuntime {
       }
       else
       {
+        clone->enumerated = false;
         // Need to update the mapped physical instances
         clone->mapped_physical_instances.resize(this->mapped_physical_instances.size());
         for (unsigned idx = 0; idx < clone->mapped_physical_instances.size(); idx++)
@@ -5041,6 +5195,9 @@ namespace RegionRuntime {
       clone->current_lock = this->current_lock;
       clone->mapper = this->mapper;
       clone->mapper_lock = this->mapper_lock;
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -5243,6 +5400,7 @@ namespace RegionRuntime {
       log_task(LEVEL_DEBUG,"Task %d with unique id %d starting on processor %d",task_id,unique_id,local_proc.id);
 #ifdef DEBUG_HIGH_LEVEL
       assert(physical_instances.size() == regions.size());
+      assert(physical_instances.size() == physical_mapped.size());
 #endif
 
       // Release all our copy references
@@ -5265,6 +5423,9 @@ namespace RegionRuntime {
         // check to see if they asked for a physical instance
         if (physical_instances[idx] != InstanceInfo::get_no_instance())
         {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(physical_mapped[idx]);
+#endif
           reg.set_instance(physical_instances[idx]->inst.get_accessor_untyped());
         }
         // Check to see if they asked for an allocator
@@ -5364,13 +5525,31 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       AutoLock ctx_lock(current_lock);
-
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
+#endif
       // Check to see if this is an index space or not
       if (!is_index_space)
       {
         log_task(LEVEL_DEBUG,"All children mapped for task %d with unique id %d on processor %d",
                 task_id,unique_id,local_proc.id);
 
+        // We can now go through and mark that all of our no-map operations are complete
+#ifdef DEBUG_HIGH_LEVEL
+        assert(physical_instances.size() == regions.size());
+        assert(physical_instances.size() == physical_mapped.size());
+#endif
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          if (physical_instances[idx] == InstanceInfo::get_no_instance())
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            assert(!physical_mapped[idx]);
+#endif
+            // Mark that we can now consider this region mapped
+            physical_mapped[idx] = true;
+          }
+        }
         if (remote)
         {
           size_t buffer_size = sizeof(Processor) + sizeof(Context) + sizeof(bool);
@@ -5570,6 +5749,9 @@ namespace RegionRuntime {
         Processor utility = local_proc.get_utility_processor();
         utility.spawn(FINISH_ID,rez.get_buffer(),buffer_size,Event::merge_events(cleanup_events));
       }
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -5582,6 +5764,9 @@ namespace RegionRuntime {
       {
         Event lock_event = current_lock.lock(0,true/*exclusive*/,Event::NO_EVENT);
         lock_event.wait(true/*block*/);
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = true;
+#endif
       }
 
       if (!is_index_space)
@@ -5682,7 +5867,8 @@ namespace RegionRuntime {
       // Release any references that we have on our instances
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        if (physical_instances[idx] != InstanceInfo::get_no_instance())
+        if (physical_instances[idx] != InstanceInfo::get_no_instance() &&
+            physical_mapped[idx])
         {
           physical_instances[idx]->remove_user(unique_id);
         }
@@ -5698,6 +5884,9 @@ namespace RegionRuntime {
       if (acquire_lock)
       {
         current_lock.unlock();
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = false;
+#endif
       }
 
       // Deactivate any child 
@@ -5737,6 +5926,7 @@ namespace RegionRuntime {
       // We need the current context lock in exclusive mode to do this
       AutoLock ctx_lock(current_lock);
 #ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
       assert(active);
 #endif
       unmapped = 0;
@@ -5768,6 +5958,7 @@ namespace RegionRuntime {
             // See if we can find the ID
             InstanceInfo *info = (*instance_infos)[iid];
             physical_instances.push_back(info);
+            physical_mapped.push_back(true/*mapped*/);
             // Update the valid instances of this region
             ContextID enclosing_ctx = get_enclosing_physical_context(idx);
             (*region_nodes)[info->handle]->update_valid_instances(enclosing_ctx,info,HAS_WRITE(regions[idx]));
@@ -5782,6 +5973,7 @@ namespace RegionRuntime {
           {
             unmapped++;
             physical_instances.push_back(InstanceInfo::get_no_instance()); 
+            physical_mapped.push_back(false/*mapped*/);
           }
         }
         // Also need to unpack the source copy instances
@@ -5802,6 +5994,7 @@ namespace RegionRuntime {
         }
 #ifdef DEBUG_HIGH_LEVEL
         assert(physical_instances.size() == regions.size());
+        assert(physical_instances.size() == physical_mapped.size());
 #endif
         if (unmapped == 0)
         {
@@ -5869,6 +6062,9 @@ namespace RegionRuntime {
         // Now call the start function for this index space
         index_space_start(remote_denominator, num_remote_points, mapping_counts, true/*perform update*/);
       }
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -5879,6 +6075,7 @@ namespace RegionRuntime {
       // We need the current context lock in exclusive mode to do this
       AutoLock ctx_lock(current_lock);
 #ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
       assert(!remote);
       assert(parent_ctx != NULL);
 #endif
@@ -6000,6 +6197,9 @@ namespace RegionRuntime {
         // Check whether we're done with mapping this index space
         index_space_mapped(num_remote_points, mapped_counts);
       }
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -6010,6 +6210,7 @@ namespace RegionRuntime {
       // Need the current context lock in exclusive lock to do this
       AutoLock ctx_lock(current_lock);
 #ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
       assert(!remote);
       assert(parent_ctx != NULL);
 #endif
@@ -6103,6 +6304,9 @@ namespace RegionRuntime {
         derez.deserialize<unsigned>(num_remote_points);
         index_space_finished(num_remote_points);
       }
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -6110,6 +6314,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
       assert(slice_owner);
       assert(num_local_unmapped > 0);
 #endif
@@ -6329,6 +6534,12 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(is_index_space && slice_owner);
 #endif
+      // Need the context lock here since we release it prior to calling
+      // this task in finish_task
+      AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
+#endif
       // If not remote, we can actually put our result where it needs to go
       if (!remote)
       {
@@ -6501,6 +6712,9 @@ namespace RegionRuntime {
           this->deactivate();
         }
       }
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -6510,6 +6724,7 @@ namespace RegionRuntime {
       // Need the current context lock in exclusive mode to do this
       AutoLock ctx_lock(current_lock);
 #ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
       assert(region_nodes->find(handle) == region_nodes->end());
 #endif
       // Create a new RegionNode for the logical region
@@ -6521,20 +6736,29 @@ namespace RegionRuntime {
       node->initialize_physical_context(outermost);
       // Update the list of newly created regions
       created_regions.insert(std::pair<LogicalRegion,ContextID>(handle,outermost));
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
     void TaskContext::remove_region(LogicalRegion handle, bool recursive, bool reclaim_resources)
     //--------------------------------------------------------------------------------------------
     {
-      std::map<LogicalRegion,RegionNode*>::iterator find_it = region_nodes->find(handle);
       // We need the current context lock in exclusive mode
       if (!recursive)
       {
         // Only need lock at entry point call
         Event lock_event = current_lock.lock(0,true/*exclusive*/);
         lock_event.wait(true/*block*/);
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = true;
+#endif
       }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+#endif
+      std::map<LogicalRegion,RegionNode*>::iterator find_it = region_nodes->find(handle);
 #ifdef DEBUG_HIGH_LEVEL
       assert(find_it != region_nodes->end());
 #endif
@@ -6580,6 +6804,9 @@ namespace RegionRuntime {
       if (!recursive)
       {
         current_lock.unlock();
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = false;
+#endif
       }
     }
 
@@ -6600,6 +6827,9 @@ namespace RegionRuntime {
     {
       // Need the current context lock in exclusive mode to do this
       AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
+#endif
 #ifdef DEBUG_HIGH_LEVEL
       assert(partition_nodes->find(pid) == partition_nodes->end());
       assert(region_nodes->find(parent) != region_nodes->end());
@@ -6629,6 +6859,9 @@ namespace RegionRuntime {
         part_node->initialize_logical_context(ctx);
         part_node->initialize_physical_context(ctx);
       }
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
     }
     
     //--------------------------------------------------------------------------------------------
@@ -6640,6 +6873,9 @@ namespace RegionRuntime {
       {
         Event lock_event = current_lock.lock(0,true/*exclusive*/);
         lock_event.wait(true/*block*/);
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = true;
+#endif
       }
       std::map<PartitionID,PartitionNode*>::iterator find_it = partition_nodes->find(pid);
 #ifdef DEBUG_HIGH_LEVEL
@@ -6669,6 +6905,9 @@ namespace RegionRuntime {
       if (!recursive)
       {
         current_lock.unlock();
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = false;
+#endif
       }
     }
     
@@ -6677,6 +6916,9 @@ namespace RegionRuntime {
                                             LogicalRegion parent, LogicalRegion child)
     //-------------------------------------------------------------------------------------------- 
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+#endif
       trace.push_back(child.id);
       if (parent == child) return; // Early out
 #ifdef DEBUG_HIGH_LEVEL
@@ -6703,6 +6945,9 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+#endif
+#ifdef DEBUG_HIGH_LEVEL
       assert(partition_nodes->find(part) != partition_nodes->end());
 #endif
       // Push the partition's id onto the trace and then call compute trace
@@ -6720,6 +6965,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
       assert(regions.size() == chosen_ctx.size());
       assert(regions.size() == physical_instances.size());
 #endif
@@ -6806,21 +7052,25 @@ namespace RegionRuntime {
         regions[idx].handle.region.destroy_allocator_untyped(allocators[idx]);
         allocators[idx] = RegionAllocator::NO_ALLOC;
       }
-      // Check to see if there was an instance, if not, we're done
-      if (physical_instances[idx] == InstanceInfo::get_no_instance())
+      // Check to see if it was mapped
+      if (!physical_mapped[idx])
       {
         return;
       }
       // Release our reference to the physical instance
       physical_instances[idx]->remove_user(this->unique_id);
-      // Set it to the no instance since we're no longer using it
-      physical_instances[idx] = InstanceInfo::get_no_instance();
+      // I think this instance is still safe from the garbage collector because either
+      // it is still a valid instance somewhere, or some other task has decided to use
+      // it in which case that task has a reference to it.
+      // Mark that this region is no longer mapped
+      physical_mapped[idx] = false; 
     }
 
     //--------------------------------------------------------------------------------------------
     LogicalRegion TaskContext::get_subregion(PartitionID pid, Color c) const
     //--------------------------------------------------------------------------------------------
     {
+      AutoLock ctx_lock(current_lock);
 #ifdef DEBUG_HIGH_LEVEL
       assert(partition_nodes->find(pid) != partition_nodes->end());
 #endif
@@ -6832,6 +7082,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
       assert(!children.empty());
 #endif
       RegionNode *parent = (*region_nodes)[children.front()];
@@ -6977,8 +7228,7 @@ namespace RegionRuntime {
       else
       {
         // If this is not an index space, see if there is a valid physical instances
-        if (idx < physical_instances.size() &&
-            (physical_instances[idx] != InstanceInfo::get_no_instance()))
+        if ((idx < physical_instances.size()) && physical_mapped[idx])
         {
           return false; // no need to wait since it's already been mapped 
         }
@@ -7014,6 +7264,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(handle.exists());
       assert(m.exists());
+      assert(current_taken);
 #endif
       // Try to make the instance in the memory
       RegionInstance inst = handle.create_instance_untyped(m);
@@ -7042,6 +7293,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(newer.exists());
       assert(old != InstanceInfo::get_no_instance());
+      assert(current_taken);
 #endif
       // This instance already exists, create a new info for it
       InstanceID iid = runtime->get_unique_instance_id();
@@ -7702,19 +7954,19 @@ namespace RegionRuntime {
     void RegionNode::get_physical_locations(ContextID ctx, std::set<Memory> &locations, bool recurse)
     //--------------------------------------------------------------------------------------------
     {
-      // Check to see if we have any exclusive open partitions if we do,
-      // then there are no valid instances.  This is only true for the
-      // initial region we check.
-      if (!recurse && region_states[ctx].open_state == PART_EXCLUSIVE)
-      {
-        return;
-      }
       // Add any physical instances that we have to the list of locations
       for (std::map<InstanceInfo*,bool>::const_iterator it = 
             region_states[ctx].valid_instances.begin(); it !=
             region_states[ctx].valid_instances.end(); it++)
       {
         locations.insert(it->first->location);
+      }
+      // Check to see if we have any exclusive open partitions if we do,
+      // then there are no valid instances.  This is only true for the
+      // initial region we check.
+      if (!recurse && region_states[ctx].open_state == PART_EXCLUSIVE)
+      {
+        return;
       }
       // If we are still clean we can see valid physical instances above us too!
       // Go up the tree looking for any valid physical instances until we get to the top
@@ -8301,8 +8553,10 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
+      assert(info != InstanceInfo::get_no_instance());
       // This should always hold, if not something is wrong somewhere else
       assert(info->handle == handle); 
+      assert(info->valid);
 #endif
       // If it's a writer we invalidate everything and make this the new instance 
       if (writer)
@@ -8355,10 +8609,6 @@ namespace RegionRuntime {
     InstanceInfo* RegionNode::find_physical_instance(ContextID ctx, Memory m, bool recurse)
     //--------------------------------------------------------------------------------------------
     {
-      if (!recurse && (region_states[ctx].open_state == PART_EXCLUSIVE))
-      {
-        return InstanceInfo::get_no_instance();
-      }
       // Check to see if we have any valid physical instances that we can use 
       for (std::map<InstanceInfo*,bool>::const_iterator it = 
             region_states[ctx].valid_instances.begin(); it !=
@@ -8366,6 +8616,11 @@ namespace RegionRuntime {
       {
         if (it->first->location == m)
           return it->first;
+      }
+      // Check to see if we are allowed to continue up the tree
+      if (!recurse && (region_states[ctx].open_state == PART_EXCLUSIVE))
+      {
+        return InstanceInfo::get_no_instance();
       }
       // We can only go up the tree if we are clean
       // If we didn't find anything, go up the tree
@@ -9399,6 +9654,11 @@ namespace RegionRuntime {
       children(0), parent(par)
     //-------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(handle.exists());
+      assert(location.exists());
+      assert(inst.exists());
+#endif
       if (parent != NULL)
       {
         // Tell the parent it has children
@@ -9442,7 +9702,6 @@ namespace RegionRuntime {
         assert(added_users.empty());
         assert(copy_users.empty());
         assert(added_copy_users.empty());
-        assert(inst == RegionInstance::NO_INST); // was deleted
       }
 #endif
     }
@@ -10037,6 +10296,9 @@ namespace RegionRuntime {
       derez.deserialize<Event>(result_info->valid_event);
       derez.deserialize<Lock>(result_info->inst_lock);
       derez.deserialize<bool>(result_info->valid);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(result_info->valid); // should always be valid coming this way
+#endif
 
       // Put all the users in the base users since this is remote
       size_t num_users;
@@ -10074,7 +10336,6 @@ namespace RegionRuntime {
       result += sizeof(bool); // remote returning or escaping
       if (remote)
       {
-        result += sizeof(bool); // valid
         result += sizeof(Event); // valid event
         // only need to return the added users
         result += sizeof(size_t); // num added users
@@ -10089,7 +10350,6 @@ namespace RegionRuntime {
         result += sizeof(Memory);
         result += sizeof(RegionInstance);
         result += sizeof(InstanceID); // parent iid
-        result += sizeof(bool); // valid
         result += sizeof(Event); // valid event
         result += sizeof(Lock);
         result += sizeof(size_t); // num users + num added users
@@ -10155,7 +10415,6 @@ namespace RegionRuntime {
       rez.serialize<bool>(remote);
       if (remote)
       {
-        rez.serialize<bool>(valid);
         rez.serialize<Event>(valid_event);
         rez.serialize<size_t>(added_users.size());
         for (std::map<UniqueID,UserTask>::const_iterator it = added_users.begin();
@@ -10185,7 +10444,6 @@ namespace RegionRuntime {
         {
           rez.serialize<InstanceID>(0);
         }
-        rez.serialize<bool>(valid);
         rez.serialize<Event>(valid_event);
         rez.serialize<Lock>(inst_lock);
         rez.serialize<size_t>((users.size() + added_users.size()));
@@ -10261,7 +10519,6 @@ namespace RegionRuntime {
 #endif
           result_info = new InstanceInfo(iid, handle, location, inst, false/*remote*/,(*infos)[parent_iid]);
         }
-        derez.deserialize<bool>(result_info->valid);
         derez.deserialize<Event>(result_info->valid_event);
         derez.deserialize<Lock>(result_info->inst_lock);
         size_t num_users;
@@ -10301,7 +10558,6 @@ namespace RegionRuntime {
     void InstanceInfo::merge_instance_info(Deserializer &derez)
     //-------------------------------------------------------------------------
     {
-      derez.deserialize<bool>(valid);
       derez.deserialize<Event>(valid_event);
       size_t num_added_users;
       derez.deserialize<size_t>(num_added_users);
