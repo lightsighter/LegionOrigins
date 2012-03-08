@@ -1534,7 +1534,7 @@ namespace RegionRuntime {
       void open_logical_tree(DependenceDetector &dep);
       // Close up a logical region tree
       void close_logical_tree(DependenceDetector &dep, bool register_dependences,
-                              std::list<std::pair<GeneralizedContext*,unsigned> > &closed);
+                              std::list<std::pair<GeneralizedContext*,unsigned> > &closed, bool closing_part);
     protected:
       // Initialize the physical context
       void initialize_physical_context(ContextID ctx);
@@ -1630,7 +1630,7 @@ namespace RegionRuntime {
       void open_logical_tree(DependenceDetector &dep);
       // Close up a logical region tree
       void close_logical_tree(DependenceDetector &dep, bool register_dependences,
-                              std::list<std::pair<GeneralizedContext*,unsigned> > &closed);
+                              std::list<std::pair<GeneralizedContext*,unsigned> > &closed, bool closing_part);
     protected:
       // Physical operations on partitions
       void initialize_physical_context(ContextID ctx);
