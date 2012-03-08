@@ -93,7 +93,9 @@ namespace RegionRuntime {
     class FutureImpl;
     class FutureMapImpl;
     class RegionMappingImpl;
+    class GeneralizedContext;
     class TaskContext;
+    class DeletionOp;
     class RegionNode;
     class PartitionNode;
     class InstanceInfo;
@@ -851,6 +853,8 @@ namespace RegionRuntime {
       const void* get_local_args(Context ctx, IndexPoint &point, size_t &local_size);
     private:
       RegionMappingImpl* get_available_mapping(TaskContext *ctx, const RegionRequirement &req);
+      DeletionOp*        get_available_deletion(TaskContext *ctx, LogicalRegion handle);
+      DeletionOp*        get_available_deletion(TaskContext *ctx, PartitionID pid);
     private:
       void add_to_ready_queue(TaskContext *ctx, bool acquire_lock = true);
       void add_to_waiting_queue(TaskContext *ctx);
@@ -862,6 +866,8 @@ namespace RegionRuntime {
       void free_context(TaskContext *ctx);
       friend class RegionMappingImpl;
       void free_mapping(RegionMappingImpl *impl);
+      friend class DeletionOp;
+      void free_deletion(DeletionOp *op);
       // Get a new instance info id
       InstanceID  get_unique_instance_id(void);
       UniqueID    get_unique_task_id(void);
@@ -910,9 +916,12 @@ namespace RegionRuntime {
       unsigned total_contexts;
       std::list<TaskContext*> available_contexts; // open task descriptions
       Lock available_lock; // Protect available contexts
-      // Region Mappings
+      // Region Mappings 
       std::list<RegionMappingImpl*> waiting_maps;
       std::list<RegionMappingImpl*> available_maps;
+      // Region Deletions
+      std::list<DeletionOp*> waiting_deletions;
+      std::list<DeletionOp*> available_deletions;
       // Keep track of how to do partition numbering
       Lock unique_lock; // Make sure all unique values are actually unique
       PartitionID next_partition_id; // The next partition id for this instance (unique)
@@ -1174,6 +1183,7 @@ namespace RegionRuntime {
       friend class RegionNode;
       friend class PartitionNode;
       friend class RegionMappingImpl;
+      friend class DeletionOp;
       friend class DependenceDetector;
       friend class RegionRenamer;
       TaskContext(Processor p, HighLevelRuntime *r, ContextID id);
@@ -1209,6 +1219,7 @@ namespace RegionRuntime {
       // functions for updating a task's state
       void register_child_task(TaskContext *desc); // (thread-safe)
       void register_mapping(RegionMappingImpl *impl); // (thread-safe)
+      void register_deletion(DeletionOp *op); // (thread-safe)
       void map_and_launch(void); // (thread_safe)
       void enumerate_index_space(void);
       void enumerate_range_space(std::vector<int> &current, unsigned dim, bool last);
@@ -1353,7 +1364,7 @@ namespace RegionRuntime {
       // Keep track of the number of notifications we need to see before the task is mappable
       int remaining_notifications;
     private:
-      std::vector<TaskContext*> child_tasks;
+      std::vector<TaskContext*>       child_tasks;
     private:
       // Information for figuring out which regions to use
       // Mappings for the logical regions at call-time (can be no-instance == covered)
@@ -1416,8 +1427,8 @@ namespace RegionRuntime {
       UserEvent mapped_event;
       Event ready_event;
       UserEvent unmapped_event;
-      UniqueID unique_id;
       Lock context_lock;
+      UniqueID unique_id;
     private:
       bool already_chosen;
       InstanceInfo *chosen_info;
@@ -1437,12 +1448,13 @@ namespace RegionRuntime {
     protected:
       friend class HighLevelRuntime;
       friend class TaskContext;
+      friend class DeletionOp;
       friend class RegionNode;
       friend class PartitionNode;
       friend class DependenceDetector;
       friend class RegionRenamer;
       RegionMappingImpl(HighLevelRuntime *rt); 
-      ~RegionMappingImpl();
+      ~RegionMappingImpl(void);
       void activate(TaskContext *ctx, const RegionRequirement &req);
       void deactivate(void);
       void set_target_instance(InstanceInfo *target);
@@ -1468,6 +1480,50 @@ namespace RegionRuntime {
       template<AccessorType AT>
       inline const PhysicalRegion<AT>& get_physical_region(void);
       inline bool can_convert(void);
+    };
+
+    /////////////////////////////////////////////////////////////
+    // Region Deletion Operation 
+    /////////////////////////////////////////////////////////////
+    class DeletionOp : protected GeneralizedContext {
+    private:
+      HighLevelRuntime *const runtime;
+      TaskContext *parent_ctx;
+      bool is_region;
+      LogicalRegion handle;
+      PartitionID pid;
+      unsigned remaining_notifications;
+      UniqueID unique_id;
+      Lock current_lock;
+      bool active;
+    protected:
+      friend class HighLevelRuntime;
+      friend class RegionNode;
+      friend class PartitionNode;
+      friend class DependenceDetector;
+      friend class RegionRenamer;
+      DeletionOp(HighLevelRuntime *rt); 
+      ~DeletionOp(void);
+    protected:
+      void activate(TaskContext *parent, LogicalRegion handle);
+      void activate(TaskContext *parent, PartitionID pid);
+      void deactivate(void);
+      void perform_deletion(void);
+      virtual bool is_context(void) const { return false; }
+      virtual bool is_ready(void) const;
+      virtual void notify(void);
+      virtual void add_source_physical_instance(InstanceInfo *info);
+      virtual UniqueID get_unique_id(void) const;
+      virtual Event get_termination_event(void) const;
+      virtual const RegionRequirement& get_requirement(unsigned idx) const;
+      virtual const Task*const get_enclosing_task(void) const { return parent_ctx; }
+      virtual InstanceInfo* get_chosen_instance(unsigned idx) const;
+      virtual void add_mapping_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx, const DependenceType &dtype);
+      virtual void add_unresolved_dependence(unsigned idx, GeneralizedContext *ctx, DependenceType dtype);
+      virtual bool add_waiting_dependence(GeneralizedContext *ctx, unsigned idx);
+      virtual const std::map<UniqueID,Event>& get_unresolved_dependences(unsigned idx);
+      virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m);
+      virtual InstanceInfo* create_instance_info(LogicalRegion newer, InstanceInfo *old);
     };
 
     /////////////////////////////////////////////////////////////
@@ -1505,6 +1561,7 @@ namespace RegionRuntime {
     protected:
       friend class TaskContext;
       friend class RegionMappingImpl;
+      friend class DeletionOp;
       friend class PartitionNode;
       RegionNode(LogicalRegion handle, unsigned dep, PartitionNode *parent,
                   bool add, ContextID ctx);
@@ -1535,6 +1592,8 @@ namespace RegionRuntime {
       // Close up a logical region tree
       void close_logical_tree(DependenceDetector &dep, bool register_dependences,
                               std::list<std::pair<GeneralizedContext*,unsigned> > &closed, bool closing_part);
+      // Register a deletion on the logical region tree
+      void register_deletion(ContextID ctx, DeletionOp *op);
     protected:
       // Initialize the physical context
       void initialize_physical_context(ContextID ctx);
@@ -1601,6 +1660,7 @@ namespace RegionRuntime {
     protected:
       friend class TaskContext;
       friend class RegionMappingImpl;
+      friend class DeletionOp;
       friend class RegionNode;
       PartitionNode(PartitionID pid, unsigned dep, RegionNode *par,
                     bool dis, bool add, ContextID ctx);
@@ -1631,6 +1691,8 @@ namespace RegionRuntime {
       // Close up a logical region tree
       void close_logical_tree(DependenceDetector &dep, bool register_dependences,
                               std::list<std::pair<GeneralizedContext*,unsigned> > &closed, bool closing_part);
+      // Register a deletion on the tree
+      void register_deletion(ContextID ctx, DeletionOp *op);
     protected:
       // Physical operations on partitions
       void initialize_physical_context(ContextID ctx);

@@ -1338,6 +1338,189 @@ namespace RegionRuntime {
     }
 
     /////////////////////////////////////////////////////////////
+    // Deletion Operation 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    DeletionOp::DeletionOp(HighLevelRuntime *rt)
+      : runtime(rt), active(false)
+    //--------------------------------------------------------------------------
+    {
+    }
+    
+    //--------------------------------------------------------------------------
+    DeletionOp::~DeletionOp(void)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    void DeletionOp::activate(TaskContext *parent, LogicalRegion h)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!active);
+      assert(parent != NULL);
+#endif
+      handle = h;
+      is_region = true;
+      parent_ctx = parent;
+      remaining_notifications = 0;
+      unique_id = runtime->get_unique_task_id();
+      current_lock = parent->current_lock;
+      active = true;
+    }
+
+    //--------------------------------------------------------------------------
+    void DeletionOp::activate(TaskContext *parent, PartitionID p)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!active);
+      assert(parent != NULL);
+#endif
+      pid = p;
+      is_region = false;
+      parent_ctx = parent;
+      remaining_notifications = 0;
+      unique_id = runtime->get_unique_task_id();
+      current_lock = parent->current_lock;
+      active = true;
+    }
+    
+    //--------------------------------------------------------------------------
+    void DeletionOp::deactivate(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      handle = LogicalRegion::NO_REGION;
+      parent_ctx = NULL;
+      active = false;
+      runtime->free_deletion(this);
+    }
+
+    //--------------------------------------------------------------------------
+    void DeletionOp::perform_deletion(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+      assert(is_ready());
+#endif
+    }
+
+    //--------------------------------------------------------------------------
+    bool DeletionOp::is_ready(void) const
+    //--------------------------------------------------------------------------
+    {
+      return (remaining_notifications==0);
+    }
+    
+    //--------------------------------------------------------------------------
+    void DeletionOp::notify(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(remaining_notifications > 0);
+#endif
+      remaining_notifications--;
+    }
+
+    //--------------------------------------------------------------------------
+    void DeletionOp::add_source_physical_instance(InstanceInfo *info)
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+    }
+    
+    //--------------------------------------------------------------------------
+    UniqueID DeletionOp::get_unique_id(void) const
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+      return 0;
+    }
+
+    //--------------------------------------------------------------------------
+    Event DeletionOp::get_termination_event(void) const
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+      return Event::NO_EVENT;
+    }
+    
+    //--------------------------------------------------------------------------
+    const RegionRequirement& DeletionOp::get_requirement(unsigned idx) const
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+      return *(new RegionRequirement());
+    }
+
+    //--------------------------------------------------------------------------
+    InstanceInfo* DeletionOp::get_chosen_instance(unsigned idx) const
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+      return InstanceInfo::get_no_instance();
+    }
+    
+    //--------------------------------------------------------------------------
+    void DeletionOp::add_mapping_dependence(unsigned idx, GeneralizedContext *ctx,
+                                            unsigned dep_idx, const DependenceType &dtype)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx == 0);
+#endif
+      if (ctx->add_waiting_dependence(this, dep_idx))
+      {
+        remaining_notifications++;
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void DeletionOp::add_unresolved_dependence(unsigned idx, GeneralizedContext *ctx,
+                                                DependenceType dtype)
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+    }
+    
+    //--------------------------------------------------------------------------
+    bool DeletionOp::add_waiting_dependence(GeneralizedContext *ctx, unsigned idx)
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------
+    const std::map<UniqueID,Event>& DeletionOp::get_unresolved_dependences(unsigned idx)
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+      return *(new std::map<UniqueID,Event>());
+    }
+    
+    //--------------------------------------------------------------------------
+    InstanceInfo* DeletionOp::create_instance_info(LogicalRegion handle, Memory m)
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+      return InstanceInfo::get_no_instance();
+    }
+
+    //--------------------------------------------------------------------------
+    InstanceInfo* DeletionOp::create_instance_info(LogicalRegion newer, InstanceInfo *old)
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+      return InstanceInfo::get_no_instance();
+    }
+
+    /////////////////////////////////////////////////////////////
     // High Level Runtime 
     ///////////////////////////////////////////////////////////// 
 
@@ -1658,6 +1841,7 @@ namespace RegionRuntime {
         {
           add_to_ready_queue(desc);
         }
+        // No need to reclaim the context, the parent context has a pointer to reclaim later
       }
       else
       {
@@ -1692,11 +1876,24 @@ namespace RegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_DESTROY_REGION);
       LowLevel::RegionMetaDataUntyped low_region = (LowLevel::RegionMetaDataUntyped)handle;
-      log_region(LEVEL_DEBUG,"Destroying logical region %d in task %d",
+      log_region(LEVEL_DEBUG,"Registering destroying logical region %d in task %d",
                   low_region.id, ctx->unique_id);
 
+      // Get a deletion operation
+      DeletionOp *op = get_available_deletion(ctx, handle);
+      // Register the deletion in the parent task
+      ctx->register_deletion(op);
+      if (op->is_ready())
+      {
+        op->perform_deletion();
+        op->deactivate();
+      }
+      else
+      {
+        waiting_deletions.push_back(op);
+      }
       // Notify the context that we destroyed the logical region
-      ctx->remove_region(handle, false/*recursive*/, true/*reclaim resources*/);
+      //ctx->remove_region(handle, false/*recursive*/, true/*reclaim resources*/);
     }
     
     //--------------------------------------------------------------------------------------------
@@ -1844,7 +2041,21 @@ namespace RegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_DESTROY_PARTITION);
       log_region(LEVEL_DEBUG,"Destroying partition %d in task %d",
                   part.id, ctx->unique_id);
-      ctx->remove_partition(part.id, part.parent, false/*recursive*/, true/*reclaim resources*/);
+      // Get a deletion operation
+      DeletionOp *op = get_available_deletion(ctx, part.id);
+      // Register the deletion with the context
+      ctx->register_deletion(op);
+      // Check to see if it's ready or whether we should add it to the waiting queue
+      if (op->is_ready())
+      {
+        op->perform_deletion();
+        op->deactivate();
+      }
+      else
+      {
+        waiting_deletions.push_back(op);
+      }
+      //ctx->remove_partition(part.id, part.parent, false/*recursive*/, true/*reclaim resources*/);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2148,6 +2359,44 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    DeletionOp* HighLevelRuntime::get_available_deletion(TaskContext *ctx, LogicalRegion handle)
+    //--------------------------------------------------------------------------------------------
+    {
+      DeletionOp *result;
+      if (!available_deletions.empty())
+      {
+        result = available_deletions.front();
+        available_deletions.pop_front();
+      }
+      else
+      {
+        result = new DeletionOp(this);
+      }
+      result->activate(ctx, handle);
+
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    DeletionOp* HighLevelRuntime::get_available_deletion(TaskContext *ctx, PartitionID pid)
+    //--------------------------------------------------------------------------------------------
+    {
+      DeletionOp *result;
+      if (!available_deletions.empty())
+      {
+        result = available_deletions.front();
+        available_deletions.pop_front();
+      }
+      else
+      {
+        result = new DeletionOp(this);
+      }
+      result->activate(ctx, pid);
+
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::add_to_ready_queue(TaskContext *ctx, bool acquire_lock)
     //--------------------------------------------------------------------------------------------
     {
@@ -2209,6 +2458,13 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       available_maps.push_back(impl);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::free_deletion(DeletionOp *op)
+    //--------------------------------------------------------------------------------------------
+    {
+      available_deletions.push_back(op);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2664,19 +2920,41 @@ namespace RegionRuntime {
       }
       // Also check any of the mapping operations that we need to perform to
       // see if they are ready to be performed.  If so we can just perform them here
-      std::list<RegionMappingImpl*>::iterator map_it = waiting_maps.begin();
-      while (map_it != waiting_maps.end())
       {
-        if ((*map_it)->is_ready())
+        std::list<RegionMappingImpl*>::iterator map_it = waiting_maps.begin();
+        while (map_it != waiting_maps.end())
         {
-          RegionMappingImpl *mapping = *map_it;
-          // All of the dependences on this mapping have been satisfied, map it
-          perform_region_mapping(mapping);
-          map_it = waiting_maps.erase(map_it);
+          if ((*map_it)->is_ready())
+          {
+            RegionMappingImpl *mapping = *map_it;
+            // All of the dependences on this mapping have been satisfied, map it
+            perform_region_mapping(mapping);
+            map_it = waiting_maps.erase(map_it);
+          }
+          else
+          {
+            map_it++;
+          }
         }
-        else
+      }
+      // Finally check the list of region deletion operations to be performed to
+      // see if any of them are ready to be performed
+      {
+        std::list<DeletionOp*>::iterator del_it = waiting_deletions.begin();
+        while (del_it != waiting_deletions.end())
         {
-          map_it++;
+          if ((*del_it)->is_ready())
+          {
+            DeletionOp *op = *del_it;
+            op->perform_deletion();
+            del_it = waiting_deletions.erase(del_it);
+            // We can also deactivate the deletion now that we know its done
+            op->deactivate();
+          }
+          else
+          {
+            del_it++;
+          }
         }
       }
     }
@@ -4471,7 +4749,19 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    void TaskContext::register_deletion(DeletionOp *op)
     //--------------------------------------------------------------------------------------------
+    {
+      // Need the current context lock in exclusive mode to do this
+      AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
+#endif
+
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
+    }
 
     //--------------------------------------------------------------------------------------------
     void TaskContext::map_and_launch(void)
@@ -5997,12 +6287,13 @@ namespace RegionRuntime {
 #endif
       }
 
-      // Deactivate any child 
+      // Deactivate any child operations we had when executing
       for (std::vector<TaskContext*>::const_iterator it = child_tasks.begin();
             it != child_tasks.end(); it++)
       {
         (*it)->deactivate();
       }  
+
       // If we're remote and not an index space deactivate ourselves
       if (remote && !is_index_space)
       {
@@ -8052,6 +8343,31 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    void RegionNode::register_deletion(ContextID ctx, DeletionOp *op)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Register dependences on all the users
+      for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it =
+            region_states[ctx].active_users.begin(); it !=
+            region_states[ctx].active_users.end(); it++)
+      {
+        op->add_mapping_dependence(0/*idx*/, it->first, it->second, TRUE_DEPENDENCE);
+      }
+      for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it =
+            region_states[ctx].closed_users.begin(); it !=
+            region_states[ctx].closed_users.end(); it++)
+      {
+        op->add_mapping_dependence(0/*idx*/, it->first, it->second, TRUE_DEPENDENCE);
+      }
+      // Traverse any open partitions 
+      for (std::set<PartitionID>::const_iterator it = region_states[ctx].open_logical.begin();
+            it != region_states[ctx].open_logical.end(); it++)
+      {
+        partitions[*it]->register_deletion(ctx, op);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
     void RegionNode::initialize_physical_context(ContextID ctx)
     //--------------------------------------------------------------------------------------------
     {
@@ -9509,6 +9825,31 @@ namespace RegionRuntime {
       // about recording dependences on the closed users, because all the active tasks
       // have dependences on them
       partition_states[dep.ctx_id].closed_users.clear();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void PartitionNode::register_deletion(ContextID ctx, DeletionOp *op)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Register dependences on any users
+      for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it =
+            partition_states[ctx].active_users.begin(); it !=
+            partition_states[ctx].active_users.end(); it++)
+      {
+        op->add_mapping_dependence(0/*idx*/, it->first, it->second, TRUE_DEPENDENCE);
+      }
+      for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it = 
+            partition_states[ctx].closed_users.begin(); it !=
+            partition_states[ctx].closed_users.end(); it++)
+      {
+        op->add_mapping_dependence(0/*idx*/, it->first, it->second, TRUE_DEPENDENCE);
+      }
+      // Continue the traversal on any open regions
+      for (std::set<LogicalRegion>::const_iterator it = partition_states[ctx].open_logical.begin();
+            it != partition_states[ctx].open_logical.end(); it++)
+      {
+        children[*it]->register_deletion(ctx, op);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
