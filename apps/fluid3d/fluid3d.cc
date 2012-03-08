@@ -783,7 +783,7 @@ void main_task(const void *args, size_t arglen,
 
       // remember the futures for the last pass so we can wait on them
       if(step == Config::num_steps - 1)
-	futures.push_back(f);
+        futures.push_back(f);
     }
 
     // flip the phase
@@ -1012,18 +1012,19 @@ void scatter_densities(const void *args, size_t arglen,
   for(int cz = 1; cz < (int)b.CELLS_Z+1; cz++)
     for(int cy = 1; cy < (int)b.CELLS_Y+1; cy++)
       for(int cx = 1; cx < (int)b.CELLS_X+1; cx++) {
-        int dir = GET_DIR(b, cz, cy, cx);
-        if(dir == CENTER) continue;
-        int dz = MOVE_Z(cz, REVERSE(dir));
-        int dy = MOVE_Y(cy, REVERSE(dir));
-        int dx = MOVE_X(cx, REVERSE(dir));
+        // Elliott: FIXME: This code doesn't make a bit of sense.
+        //int dir = GET_DIR(b, cz, cy, cx);
+        //if(dir == CENTER) continue;
+        //int dz = MOVE_Z(cz, REVERSE(dir));
+        //int dy = MOVE_Y(cy, REVERSE(dir));
+        //int dx = MOVE_X(cx, REVERSE(dir));
 
-        Cell cell = base_block.read(b.cells[cb][dz][dy][dx]);
+        Cell cell = base_block.read(b.cells[cb][cz][cy][cx]);
         for(unsigned p = 0; p < cell.num_particles; p++) {
           cell.density[p] = 0;
           cell.a[p] = externalAcceleration;
         }
-        base_block.write(b.cells[cb][dz][dy][dx], cell);
+        base_block.write(b.cells[cb][cz][cy][cx], cell);
       }
 
   // now for each cell, look at neighbors and calculate density contributions

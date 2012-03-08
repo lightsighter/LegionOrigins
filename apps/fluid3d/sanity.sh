@@ -5,12 +5,10 @@
 
 set -e
 
-parsec_dir=$HOME/parsec-2.1
 fluid3d_dir=$(dirname $(readlink -f $BASH_SOURCE))
 
 cd $fluid3d_dir
 make
-tar xf $parsec_dir/pkgs/apps/fluidanimate/inputs/input_test.tar
 cp in_5K.fluid init.fluid
 
 cp init.fluid sanity0.fluid
