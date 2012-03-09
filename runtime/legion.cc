@@ -54,6 +54,7 @@ namespace RegionRuntime {
     Logger::Category log_inst("instances");
     Logger::Category log_spy("legion_spy");
     Logger::Category log_garbage("gc");
+    Logger::Category log_leak("leaks");
 
     // An auto locking class for taking a lock and releasing it when
     // the object goes out of scope
@@ -3286,17 +3287,16 @@ namespace RegionRuntime {
       {
         if (!is_index_space || slice_owner)
         {
-          // We can delete the region trees
-          for (std::vector<RegionRequirement>::const_iterator it = regions.begin();
-                it != regions.end(); it++)
+          // We can delete the region trees nodes
+          for (std::map<LogicalRegion,RegionNode*>::const_iterator it = region_nodes->begin();
+                it != region_nodes->end(); it++)
           {
-            delete (*region_nodes)[it->handle.region];
+            delete it->second;
           }
-          // Also delete the created region trees
-          for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
-                it != created_regions.end(); it++)
+          for (std::map<PartitionID,PartitionNode*>::const_iterator it = partition_nodes->begin();
+                it != partition_nodes->end(); it++)
           {
-            delete (*region_nodes)[it->first];
+            delete it->second;
           }
           // We can also delete the instance infos
           for (std::map<InstanceID,InstanceInfo*>::const_iterator it = instance_infos->begin();
@@ -4159,6 +4159,9 @@ namespace RegionRuntime {
       for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
             it != created_regions.end(); it++)
       {
+#ifdef DEBUG_HIGH_LEVEL
+        assert((*region_nodes)[it->first]->added); // all created regions should be added
+#endif
         // Only do this for the trees that haven't been passed back already
         if ((*region_nodes)[it->first]->added)
         {
@@ -4237,16 +4240,17 @@ namespace RegionRuntime {
         PartitionNode::unpack_region_tree(derez, (*region_nodes)[parent], get_enclosing_physical_context(part_index), 
                                           region_nodes, partition_nodes, true/*add*/);
       }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(parent_ctx != NULL);
+      parent_ctx->current_taken = true;
+#endif
       size_t num_created;
       derez.deserialize<size_t>(num_created);
       for (unsigned idx = 0; idx < num_created; idx++)
       {
         RegionNode *new_node = RegionNode::unpack_region_tree(derez,NULL,outermost,
                                             region_nodes, partition_nodes, true/*add*/);
-        // Also initialize logical context
-        new_node->initialize_logical_context(parent_ctx->ctx_id);
-        // Add it to the list of created regions
-        parent_ctx->created_regions.insert(std::pair<LogicalRegion,ContextID>(new_node->handle,outermost));
+        parent_ctx->update_created_regions(new_node->handle, new_node, outermost);
         // Save this for when we unpack the states
         created.push_back(new_node->handle);
       }
@@ -4258,7 +4262,11 @@ namespace RegionRuntime {
         // Delete the regions, add them to the deleted list
         LogicalRegion del_region;
         derez.deserialize<LogicalRegion>(del_region);
-        parent_ctx->remove_region(del_region); // This will also add it to the list of deleted regions
+        // Add it to the list of deleted regions 
+#ifdef DEBUG_HIGH_LEVEL
+        assert(deleted_regions.find(del_region) == deleted_regions.end());
+#endif
+        parent_ctx->update_deleted_regions(del_region);
       }
       // unpack the deleted partitions
       size_t num_del_parts;
@@ -4268,9 +4276,14 @@ namespace RegionRuntime {
         // Delete the partitions
         PartitionID del_part;
         derez.deserialize<PartitionID>(del_part);
-        PartitionNode *part = (*partition_nodes)[del_part];
-        parent_ctx->remove_partition(del_part,part->parent->handle);
+        // Unpack it and send it back to the parent context
+        parent_ctx->update_deleted_partitions(del_part);
+        //PartitionNode *part = (*partition_nodes)[del_part];
+        //parent_ctx->remove_partition(del_part,part->parent->handle);
       }
+#ifdef DEBUG_HIGH_LEVEL
+      parent_ctx->current_taken = false;
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4789,7 +4802,6 @@ namespace RegionRuntime {
       // this will traverse down the tree in the current context and record all mapping dependences
       // We don't need to register a mapping dependence on any other regions since we won't
       // actually be using them.  We only need the target regions/partition and all of its subtree
-      RegionNode *current = NULL;
       if (op->is_region)
       {
 #ifdef DEBUG_HIGH_LEVEL
@@ -4797,7 +4809,7 @@ namespace RegionRuntime {
 #endif
         RegionNode *target = (*region_nodes)[op->handle];
         target->register_deletion(this->ctx_id, op);
-        current = target;
+        op->physical_ctx = remove_region(op->handle);
       }
       else
       {
@@ -4806,76 +4818,7 @@ namespace RegionRuntime {
 #endif
         PartitionNode *target = (*partition_nodes)[op->pid];
         target->register_deletion(this->ctx_id, op);
-        current = target->parent;
-      }
-#ifdef DEBUG_HIGH_LEVEL
-      assert(current != NULL);
-#endif
-      // Now we need to find the physical context to perform the deletion in.  Traverse up
-      // the logical region tree until we find a region which is either one of the parent task's
-      // regions or is one of the created regions
-      {
-        bool found = false;
-        while (!found && (current != NULL))
-        {
-          // Check to see if we found it in the parent task's regions
-          for (unsigned idx = 0; idx < regions.size(); idx++)
-          {
-            if (current->handle == regions[idx].handle.region)
-            {
-              found = true;
-              op->physical_ctx = chosen_ctx[idx];
-              // Add it to the list of deletion regions
-              if (op->is_region)
-              {
-                deleted_regions.insert(op->handle);
-              }
-              else
-              {
-                deleted_partitions.insert(op->pid);
-              }
-              break;
-            }
-          }
-          // Also check the created regions if we're deleting a region
-          if (op->is_region)
-          {
-            for (std::map<LogicalRegion,ContextID>::iterator it = created_regions.begin();
-                  !found && (it != created_regions.end()); it++)
-            {
-              if (current->handle == it->first)
-              {
-                found = true;
-                op->physical_ctx = it->second;
-                break;
-              }
-            }
-          }
-          // If we didn't find it traverse up the tree
-          if (current->parent != NULL)
-          {
-            current = current->parent->parent;
-          }
-          else
-          {
-            current = NULL;
-          }
-        }
-        if (!found)
-        {
-          log_task(LEVEL_ERROR,"Attempted to delete region %d which is not contained in any of the "
-              "regions for which task %d (unique id %d) has permissions",op->handle.id,task_id,unique_id);
-          exit(1);
-        }
-      }
-      // Finally check to see if this is a top-level region that we created
-      if (op->is_region && (created_regions.find(op->handle) != created_regions.end()))
-      {
-        // This is when we finally delete the whole region tree, invalidate the tree, also
-        // mark that we're reclaiming all the region handles (resources) as well
-        RegionNode *target = (*region_nodes)[op->handle];
-        target->mark_tree_unadded(true/*reclaim resources*/);
-        created_regions.erase(op->handle);
+        op->physical_ctx = remove_partition(op->pid);
       }
 #ifdef DEBUG_HIGH_LEVEL
       current_taken = false;
@@ -5890,9 +5833,7 @@ namespace RegionRuntime {
         // Push our updated created and deleted regions back to our parent task
         if (parent_ctx != NULL)
         {
-          parent_ctx->created_regions.insert(created_regions.begin(),created_regions.end());
-          parent_ctx->deleted_regions.insert(deleted_regions.begin(),deleted_regions.end());
-          parent_ctx->deleted_partitions.insert(deleted_partitions.begin(),deleted_partitions.end());
+          update_parent_task();
         }
         // Check to see if we have a reduction to push into the future value 
         if (reduction != NULL)
@@ -6158,6 +6099,7 @@ namespace RegionRuntime {
           {
             (*region_nodes)[it->first]->mark_tree_unadded(false/*reclaim resources*/);
           }
+          created_regions.clear(); // We sent them back so we don't own them anymore
           deleted_regions.clear();
           deleted_partitions.clear();
           
@@ -6351,12 +6293,7 @@ namespace RegionRuntime {
           if (parent_ctx != NULL)
           {
             // Propagate information back to the parent task context
-            parent_ctx->created_regions.insert(created_regions.begin(),created_regions.end());
-            parent_ctx->deleted_regions.insert(deleted_regions.begin(),deleted_regions.end());
-            parent_ctx->deleted_partitions.insert(deleted_partitions.begin(),deleted_partitions.end());
-            // We can clear these out since we're done with them now
-            deleted_regions.clear();
-            deleted_partitions.clear();
+            update_parent_task();
           }
 
           // Future result has already been set
@@ -6374,6 +6311,7 @@ namespace RegionRuntime {
           orig_ctx->deleted_regions.insert(deleted_regions.begin(),deleted_regions.end());
           orig_ctx->deleted_partitions.insert(deleted_partitions.begin(),deleted_partitions.end());
           // We can now delete these
+          created_regions.clear();
           deleted_regions.clear();
           deleted_partitions.clear();
         }
@@ -6771,10 +6709,8 @@ namespace RegionRuntime {
         // Single task 
         // Set the future result
         future.set_result(derez);
-        // Propagate information about created and deleted regions back to the parent task
-        parent_ctx->created_regions.insert(created_regions.begin(),created_regions.end());
-        parent_ctx->deleted_regions.insert(deleted_regions.begin(),deleted_regions.end());
-        parent_ctx->deleted_partitions.insert(deleted_partitions.begin(),deleted_partitions.end());
+        // No need to propagate information back to the parent, it was done in 
+        // unpack_tree_updates
         // We're done now so we can trigger our termination event
         termination_event.trigger();
         // Free any references that we had to regions
@@ -6992,6 +6928,7 @@ namespace RegionRuntime {
           {
             (*region_nodes)[it->first]->mark_tree_unadded(false/*reclaim resources*/);
           }
+          created_regions.clear();
           deleted_regions.clear();
           deleted_partitions.clear();
           
@@ -7214,6 +7151,7 @@ namespace RegionRuntime {
           orig_ctx->index_space_finished(num_local_points);
           if (!index_owner)
           {
+            created_regions.clear();
             deleted_regions.clear();
             deleted_partitions.clear();
           }
@@ -7260,75 +7198,79 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void TaskContext::remove_region(LogicalRegion handle, bool recursive, bool reclaim_resources)
+    ContextID TaskContext::remove_region(LogicalRegion handle)
     //--------------------------------------------------------------------------------------------
     {
-      // We need the current context lock in exclusive mode
-      if (!recursive)
-      {
-        // Only need lock at entry point call
-        Event lock_event = current_lock.lock(0,true/*exclusive*/);
-        lock_event.wait(true/*block*/);
-#ifdef DEBUG_HIGH_LEVEL
-        current_taken = true;
-#endif
-      }
 #ifdef DEBUG_HIGH_LEVEL
       assert(current_taken);
 #endif
-      std::map<LogicalRegion,RegionNode*>::iterator find_it = region_nodes->find(handle);
+      // Now we need to find the physical context to perform the deletion in.  Traverse up
+      // the logical region tree until we find a region which is either one of the parent task's
+      // regions or is one of the created regions
+      ContextID result = 0;
+      {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(find_it != region_nodes->end());
+        assert(region_nodes->find(handle) != region_nodes->end());
 #endif
-      // Mark that we're going to delete this node's region meta data
-      if (reclaim_resources)
-      {
-        find_it->second->delete_handle = true;
-      }
-      // Go through all our contexts and if we own any references to instance infos
-      // then mark that they are no longer valid
-
-      // Recursively remove the partitions from the tree
-      for (std::map<PartitionID,PartitionNode*>::const_iterator par_it =
-            find_it->second->partitions.begin(); par_it != find_it->second->partitions.end(); par_it++)
-      {
-        remove_partition(par_it->first, handle, true/*recursive*/, reclaim_resources);
-      }
-      // If not recursive, delete all the sub nodes
-      // Otherwise deletion will come when parent node is deleted
-      if (!recursive)
-      {
-        // Check to see if this node has a parent partition
-        if (find_it->second->parent != NULL)
+        RegionNode *current = (*region_nodes)[handle];
+        bool found = false;
+        while (!found && (current != NULL))
         {
-          find_it->second->parent->remove_region(find_it->first);
+          // Check to see if we found it in the parent task's regions
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            if (current->handle == regions[idx].handle.region)
+            {
+              found = true;
+              result = chosen_ctx[idx];
+              // Add it to the list of deletion regions
+              deleted_regions.insert(handle);
+              break;
+            }
+          }
+          if (!found)
+          {
+            for (std::map<LogicalRegion,ContextID>::iterator it = created_regions.begin();
+                  !found && (it != created_regions.end()); it++)
+            {
+              if (current->handle == it->first)
+              {
+                found = true;
+                result = it->second;
+                deleted_regions.insert(handle);
+                break;
+              }
+            }
+          }
+          // If we didn't find it traverse up the tree
+          if (current->parent != NULL)
+          {
+            current = current->parent->parent;
+          }
+          else
+          {
+            current = NULL;
+          }
         }
-        // If this is not also a node we made, add it to the list of deleted regions 
-        if (!find_it->second->added)
+        if (!found)
         {
-          deleted_regions.insert(find_it->second->handle);
+          log_task(LEVEL_ERROR,"Attempted to delete region %d which is not contained in any of the "
+              "regions for which task %d (unique id %d) has permissions",handle.id,task_id,unique_id);
+          exit(1);
         }
-        else
-        {
-          // We did add it, so it should be on this list
-          std::map<LogicalRegion,ContextID>::iterator finder = created_regions.find(handle);
-#ifdef DEBUG_HIGH_LEVEL
-          assert(finder != created_regions.end());
-#endif
-          created_regions.erase(finder);
-        }
-        // Delete the node, this will trigger the deletion of all its children
-        delete find_it->second;
       }
-      region_nodes->erase(find_it);
-      // If we're leaving this operation, release lock
-      if (!recursive)
+      // Finally check to see if this is a top-level region that we created
+      if (created_regions.find(handle) != created_regions.end())
       {
-        current_lock.unlock();
-#ifdef DEBUG_HIGH_LEVEL
-        current_taken = false;
-#endif
+        // This is when we finally delete the whole region tree, invalidate the tree, also
+        // mark that we're reclaiming all the region handles (resources) as well
+        RegionNode *target = (*region_nodes)[handle];
+        target->mark_tree_unadded(true/*reclaim resources*/);
+        created_regions.erase(handle);
+        // We can also delete it from the list of deleted regions
+        deleted_regions.erase(handle);
       }
+      return result;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -7384,52 +7326,147 @@ namespace RegionRuntime {
       current_taken = false;
 #endif
     }
-    
+
     //--------------------------------------------------------------------------------------------
-    void TaskContext::remove_partition(PartitionID pid, LogicalRegion parent, bool recursive, bool reclaim_resources)
+    ContextID TaskContext::remove_partition(PartitionID pid)
     //--------------------------------------------------------------------------------------------
     {
-      // If this is the entrypoint call we need the current context lock in exclusive mode
-      if (!recursive)
-      {
-        Event lock_event = current_lock.lock(0,true/*exclusive*/);
-        lock_event.wait(true/*block*/);
 #ifdef DEBUG_HIGH_LEVEL
-        current_taken = true;
+      assert(current_taken);
 #endif
-      }
-      std::map<PartitionID,PartitionNode*>::iterator find_it = partition_nodes->find(pid);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(find_it != partition_nodes->end());
-#endif
-      // Recursively remove the child nodes
-      for (std::map<LogicalRegion,RegionNode*>::const_iterator it = find_it->second->children.begin();
-            it != find_it->second->children.end(); it++)
-      {
-        remove_region(it->first, true/*recursive*/, reclaim_resources);
-      }
-
-      if (!recursive)
+      // Now we need to find the physical context to perform the deletion in.  Traverse up
+      // the logical region tree until we find a region which is either one of the parent task's
+      // regions or is one of the created regions
+      ContextID result = 0;
       {
 #ifdef DEBUG_HIGH_LEVEL
-        assert(find_it->second->parent != NULL);
+        assert(partition_nodes->find(pid) != partition_nodes->end());
 #endif
-        find_it->second->parent->remove_partition(pid);
-        // If this wasn't a partition we added, add it to the list of deleted partitions
-        if (!find_it->second->added)
+        RegionNode *current = (*partition_nodes)[pid]->parent;
+        bool found = false;
+        while (!found && (current != NULL))
         {
-          deleted_partitions.insert(pid);
+          // Check to see if we found it in the parent task's regions
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            if (current->handle == regions[idx].handle.region)
+            {
+              found = true;
+              result = chosen_ctx[idx];
+              // Add it to the list of deletion partitions 
+              deleted_partitions.insert(pid);
+              break;
+            }
+          }
+          if (!found)
+          {
+            for (std::map<LogicalRegion,ContextID>::iterator it = created_regions.begin();
+                  !found && (it != created_regions.end()); it++)
+            {
+              if (current->handle == it->first)
+              {
+                found = true;
+                result = it->second;
+                deleted_partitions.insert(pid);
+                break;
+              }
+            }
+          }
+          // If we didn't find it traverse up the tree
+          if (current->parent != NULL)
+          {
+            current = current->parent->parent;
+          }
+          else
+          {
+            current = NULL;
+          }
+        }
+        if (!found)
+        {
+          log_task(LEVEL_ERROR,"Attempted to delete partition %d which is not contained in any of the "
+              "partitions for which task %d (unique id %d) has permissions",pid,task_id,unique_id);
+          exit(1);
         }
       }
-      partition_nodes->erase(find_it);
-      // if leaving the operation release the lock
-      if (!recursive)
-      {
-        current_lock.unlock();
+      return result;
+    }
+    
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::update_created_regions(LogicalRegion handle, RegionNode *node, ContextID outermost)
+    //--------------------------------------------------------------------------------------------
+    {
 #ifdef DEBUG_HIGH_LEVEL
-        current_taken = false;
+      assert(current_taken);
 #endif
+      // Also initialize logical context
+      node->initialize_logical_context(ctx_id);
+      // Add it to the list of created regions
+      created_regions.insert(std::pair<LogicalRegion,ContextID>(handle,outermost));
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::update_deleted_regions(LogicalRegion handle)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+      assert(region_nodes->find(handle) != region_nodes->end());
+#endif
+      RegionNode *node = (*region_nodes)[handle];
+      // Delete this region and get the physical context to invalidate
+      ContextID ctx = remove_region(handle);
+      // Now we can invalidate all the physical instances in this context
+      // No need to wait here since this is a deletion returning from a child
+      node->invalidate_physical_tree(ctx);
+    }
+    
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::update_deleted_partitions(PartitionID pid)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+      assert(partition_nodes->find(pid) != partition_nodes->end());
+#endif
+      PartitionNode *node = (*partition_nodes)[pid];
+      // Delete this partition and get the physical context to invalidate
+      ContextID ctx = remove_partition(pid);
+      // Now we can invalidate all the physical instances in this context
+      // No need to wait here since this is a deletion returning from a child
+      node->invalidate_physical_tree(ctx);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::update_parent_task(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+      assert(parent_ctx != NULL);
+      parent_ctx->current_taken = true;
+#endif
+      for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
+            it != created_regions.end(); it++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(region_nodes->find(it->first) != region_nodes->end());
+#endif
+        parent_ctx->update_created_regions(it->first, (*region_nodes)[it->first], it->second);
       }
+      for (std::set<LogicalRegion>::const_iterator it = deleted_regions.begin();
+            it != deleted_regions.end(); it++)
+      {
+        parent_ctx->update_deleted_regions(*it);
+      }
+      for (std::set<PartitionID>::const_iterator it = deleted_partitions.begin();
+            it != deleted_partitions.end(); it++)
+      {
+        parent_ctx->update_deleted_partitions(*it);
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      parent_ctx->current_taken = false;
+#endif
     }
     
     //--------------------------------------------------------------------------------------------
@@ -7850,11 +7887,9 @@ namespace RegionRuntime {
     RegionNode::~RegionNode(void)
     //--------------------------------------------------------------------------------------------
     {
-      // Also delete any child partitions 
-      for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
-            it != partitions.end(); it++)
+      if (added)
       {
-        delete it->second;
+        log_leak(LEVEL_WARNING,"Logical Regiong %d is being leaked",handle.id);
       }
       // If delete handle, then tell the low-level runtime that it can reclaim the 
       if (delete_handle)
@@ -9268,11 +9303,9 @@ namespace RegionRuntime {
     PartitionNode::~PartitionNode(void)
     //--------------------------------------------------------------------------------------------
     {
-      // Delete all the children as well
-      for (std::map<LogicalRegion,RegionNode*>::const_iterator it = children.begin();
-            it != children.end(); it++)
+      if (added)
       {
-        delete it->second;
+        log_leak(LEVEL_WARNING,"Partition %d is being leaked",pid);
       }
     }
 

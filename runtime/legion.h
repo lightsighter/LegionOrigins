@@ -1245,10 +1245,14 @@ namespace RegionRuntime {
     protected:
       // functions for updating logical region trees
       void create_region(LogicalRegion handle); // (thread-safe)
-      void remove_region(LogicalRegion handle, bool recursive = false, bool reclaim_resources = false); // (thread-safe)
       void smash_region(LogicalRegion smashed, const std::vector<LogicalRegion> &regions); // (thread-safe)
       void create_partition(PartitionID pid, LogicalRegion parent, bool disjoint, std::vector<LogicalRegion> &children); // (thread-safe)
-      void remove_partition(PartitionID pid, LogicalRegion parent, bool recursive = false, bool reclaim_resources = false); // (thread-safe)
+      ContextID remove_region(LogicalRegion handle);
+      ContextID remove_partition(PartitionID pid);
+      void update_created_regions(LogicalRegion handle, RegionNode *node, ContextID outermost);
+      void update_deleted_regions(LogicalRegion handle);
+      void update_deleted_partitions(PartitionID pid);
+      void update_parent_task(void);
     private:
       // Utility functions
       bool compute_region_trace(std::vector<unsigned> &trace, LogicalRegion parent, LogicalRegion child);
