@@ -1492,12 +1492,14 @@ namespace RegionRuntime {
       bool is_region;
       LogicalRegion handle;
       PartitionID pid;
+      ContextID physical_ctx;
       unsigned remaining_notifications;
       UniqueID unique_id;
       Lock current_lock;
       bool active;
     protected:
       friend class HighLevelRuntime;
+      friend class TaskContext;
       friend class RegionNode;
       friend class PartitionNode;
       friend class DependenceDetector;
@@ -1576,7 +1578,7 @@ namespace RegionRuntime {
                 ContextID ctx_id, std::map<LogicalRegion,RegionNode*> *region_nodes,
                 std::map<PartitionID,PartitionNode*> *partition_nodes, bool add);
       size_t compute_region_tree_update_size(std::set<PartitionNode*> &updates);
-      void mark_tree_unadded(void);
+      void mark_tree_unadded(bool release_resources);
     protected:
       size_t compute_physical_state_size(ContextID ctx, std::vector<InstanceInfo*> &needed);
       void pack_physical_state(ContextID ctx, Serializer &rez);
@@ -1610,6 +1612,8 @@ namespace RegionRuntime {
       // returning the event when the close operation is complete
       Event close_physical_tree(ContextID ctx, InstanceInfo *target, Event precondition, 
                                 GeneralizedContext *enclosing, Mapper *mapper);
+      // Invalidate physical region tree's valid instances, for tree deletion
+      void invalidate_physical_tree(ContextID ctx);
       // Update the valid instances with the new physical instance, it's ready event, and
       // whether the info is being read or written.  Note that this can invalidate other
       // instances in the intermediate levels of the tree as it goes back up to the
@@ -1675,7 +1679,7 @@ namespace RegionRuntime {
                     ContextID ctx_id, std::map<LogicalRegion,RegionNode*> *region_nodes,
                     std::map<PartitionID,PartitionNode*> *partition_nodes, bool add);
       size_t compute_region_tree_update_size(std::set<PartitionNode*> &updates);
-      void mark_tree_unadded(void); // Mark the node as no longer being added
+      void mark_tree_unadded(bool reclaim_resources); // Mark the node as no longer being added
     protected:
       size_t compute_physical_state_size(ContextID ctx, std::vector<InstanceInfo*> &needed);
       void pack_physical_state(ContextID ctx, Serializer &rez);
@@ -1705,6 +1709,8 @@ namespace RegionRuntime {
       // returning the event when the close operation is complete
       Event close_physical_tree(ContextID ctx, InstanceInfo *target, Event precondition, 
                                 GeneralizedContext *enclosing, Mapper *mapper);
+      // Invalidate a physical region tree
+      void invalidate_physical_tree(ContextID ctx);
     protected:
       LogicalRegion get_subregion(Color c) const;
     private:

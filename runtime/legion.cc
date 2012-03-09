@@ -1409,6 +1409,24 @@ namespace RegionRuntime {
       assert(active);
       assert(is_ready());
 #endif
+      // Once the deletion is ready to be performed, go down the physical
+      // region tree and mark all the physical instances that we own as being invalid
+      if (is_region)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(parent_ctx->region_nodes->find(handle) != parent_ctx->region_nodes->end());
+#endif
+        RegionNode *target = (*(parent_ctx->region_nodes))[handle];
+        target->invalidate_physical_tree(physical_ctx);
+      }
+      else
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(parent_ctx->partition_nodes->find(pid) != parent_ctx->partition_nodes->end());
+#endif
+        PartitionNode *target = (*(parent_ctx->partition_nodes))[pid];
+        target->invalidate_physical_tree(physical_ctx);
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -2683,11 +2701,11 @@ namespace RegionRuntime {
           {
             Event lock_event = (*it)->current_lock.lock(0,true/*exclusive*/);
             held_ctx_locks.insert((*it)->current_lock);
-#ifdef DEBUG_HIGH_LEVEL
-            (*it)->current_taken = true;
-#endif
             lock_event.wait(true/*block*/);
           }
+#ifdef DEBUG_HIGH_LEVEL
+          (*it)->current_taken = true;
+#endif
         }
 
         size_t total_buffer_size = 2*sizeof(Processor) + sizeof(size_t);
@@ -2723,6 +2741,9 @@ namespace RegionRuntime {
         for (std::set<TaskContext*>::iterator it = stolen.begin();
               it != stolen.end(); it++)
         {
+#ifdef DEBUG_HIGH_LEVEL
+          (*it)->current_taken = false;
+#endif
           log_task(LEVEL_DEBUG,"task %d with unique id %d stolen from processor %d",
                                 (*it)->task_id,(*it)->unique_id,(*it)->local_proc.id);
           // If they are remote, deactivate the instance
@@ -3180,7 +3201,9 @@ namespace RegionRuntime {
     TaskContext::TaskContext(Processor p, HighLevelRuntime *r, ContextID id)
       : runtime(r), active(false), ctx_id(id),  
         reduction(NULL), reduction_value(NULL), reduction_size(0), 
-        local_proc(p), result(NULL), result_size(0), context_lock(Lock::create_lock())
+        local_proc(p), result(NULL), result_size(0), 
+        region_nodes(NULL), partition_nodes(NULL), instance_infos(NULL),
+        context_lock(Lock::create_lock())
     //--------------------------------------------------------------------------------------------
     {
       this->args = NULL;
@@ -3285,6 +3308,9 @@ namespace RegionRuntime {
           delete region_nodes;
           delete partition_nodes;
           delete instance_infos;
+          region_nodes = NULL;
+          partition_nodes = NULL;
+          instance_infos = NULL;
         }
       }
       regions.clear();
@@ -4301,6 +4327,7 @@ namespace RegionRuntime {
               bool still_local = runtime->split_task(this);
               if (still_local)
               {
+                this->need_split = false;
                 // Get a new context for the result
                 TaskContext *clone = runtime->get_available_context(false/*new tree*/);
                 clone_index_space_task(clone,true/*slice*/);
@@ -4414,6 +4441,7 @@ namespace RegionRuntime {
               bool still_local = runtime->split_task(this);
               if (still_local)
               {
+                this->need_split = false;
                 // Get a new context for the result
                 TaskContext *clone = runtime->get_available_context(false/*new tree*/);
                 clone_index_space_task(clone,true/*slice*/);
@@ -4757,7 +4785,98 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       current_taken = true;
 #endif
-
+      // Find the node for this deletion, then issue the register deletion on that node, 
+      // this will traverse down the tree in the current context and record all mapping dependences
+      // We don't need to register a mapping dependence on any other regions since we won't
+      // actually be using them.  We only need the target regions/partition and all of its subtree
+      RegionNode *current = NULL;
+      if (op->is_region)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(region_nodes->find(op->handle) != region_nodes->end());
+#endif
+        RegionNode *target = (*region_nodes)[op->handle];
+        target->register_deletion(this->ctx_id, op);
+        current = target;
+      }
+      else
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(partition_nodes->find(op->pid) != partition_nodes->end());
+#endif
+        PartitionNode *target = (*partition_nodes)[op->pid];
+        target->register_deletion(this->ctx_id, op);
+        current = target->parent;
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current != NULL);
+#endif
+      // Now we need to find the physical context to perform the deletion in.  Traverse up
+      // the logical region tree until we find a region which is either one of the parent task's
+      // regions or is one of the created regions
+      {
+        bool found = false;
+        while (!found && (current != NULL))
+        {
+          // Check to see if we found it in the parent task's regions
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            if (current->handle == regions[idx].handle.region)
+            {
+              found = true;
+              op->physical_ctx = chosen_ctx[idx];
+              // Add it to the list of deletion regions
+              if (op->is_region)
+              {
+                deleted_regions.insert(op->handle);
+              }
+              else
+              {
+                deleted_partitions.insert(op->pid);
+              }
+              break;
+            }
+          }
+          // Also check the created regions if we're deleting a region
+          if (op->is_region)
+          {
+            for (std::map<LogicalRegion,ContextID>::iterator it = created_regions.begin();
+                  !found && (it != created_regions.end()); it++)
+            {
+              if (current->handle == it->first)
+              {
+                found = true;
+                op->physical_ctx = it->second;
+                break;
+              }
+            }
+          }
+          // If we didn't find it traverse up the tree
+          if (current->parent != NULL)
+          {
+            current = current->parent->parent;
+          }
+          else
+          {
+            current = NULL;
+          }
+        }
+        if (!found)
+        {
+          log_task(LEVEL_ERROR,"Attempted to delete region %d which is not contained in any of the "
+              "regions for which task %d (unique id %d) has permissions",op->handle.id,task_id,unique_id);
+          exit(1);
+        }
+      }
+      // Finally check to see if this is a top-level region that we created
+      if (op->is_region && (created_regions.find(op->handle) != created_regions.end()))
+      {
+        // This is when we finally delete the whole region tree, invalidate the tree, also
+        // mark that we're reclaiming all the region handles (resources) as well
+        RegionNode *target = (*region_nodes)[op->handle];
+        target->mark_tree_unadded(true/*reclaim resources*/);
+        created_regions.erase(op->handle);
+      }
 #ifdef DEBUG_HIGH_LEVEL
       current_taken = false;
 #endif
@@ -6037,7 +6156,7 @@ namespace RegionRuntime {
           for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
                 it != created_regions.end(); it++)
           {
-            (*region_nodes)[it->first]->mark_tree_unadded();
+            (*region_nodes)[it->first]->mark_tree_unadded(false/*reclaim resources*/);
           }
           deleted_regions.clear();
           deleted_partitions.clear();
@@ -6047,7 +6166,7 @@ namespace RegionRuntime {
           for (std::map<PartitionNode*,unsigned>::const_iterator it = region_tree_updates.begin();
                 it != region_tree_updates.end(); it++)
           {
-            it->first->mark_tree_unadded();
+            it->first->mark_tree_unadded(false/*reclaim resources*/);
           }
         }
         else
@@ -6871,7 +6990,7 @@ namespace RegionRuntime {
           for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
                 it != created_regions.end(); it++)
           {
-            (*region_nodes)[it->first]->mark_tree_unadded();
+            (*region_nodes)[it->first]->mark_tree_unadded(false/*reclaim resources*/);
           }
           deleted_regions.clear();
           deleted_partitions.clear();
@@ -6881,7 +7000,7 @@ namespace RegionRuntime {
           for (std::map<PartitionNode*,unsigned>::const_iterator it = region_tree_updates.begin();
                 it != region_tree_updates.end(); it++)
           {
-            it->first->mark_tree_unadded();
+            it->first->mark_tree_unadded(false/*reclaim resources*/);
           }
         }
         else
@@ -7835,7 +7954,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void RegionNode::mark_tree_unadded(void)
+    void RegionNode::mark_tree_unadded(bool reclaim_resources)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -7845,7 +7964,12 @@ namespace RegionRuntime {
       for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
             it != partitions.end(); it++)
       {
-        it->second->mark_tree_unadded();
+        it->second->mark_tree_unadded(reclaim_resources);
+      }
+      // If we're reclaiming resources, set the flag that we can return the region meta data
+      if (reclaim_resources)
+      {
+        delete_handle = true;
       }
     }
 
@@ -8843,6 +8967,7 @@ namespace RegionRuntime {
           assert(false); // Should never make it here
       }
       // Clear out our valid instances and mark that we are done
+#ifndef DISABLE_GC
       for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
             it != region_states[ctx].valid_instances.end(); it++)
       {
@@ -8851,9 +8976,64 @@ namespace RegionRuntime {
           it->first->mark_invalid();
         }
       }
+#endif
       region_states[ctx].valid_instances.clear();
       region_states[ctx].data_state = DATA_CLEAN;
       return precondition;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::invalidate_physical_tree(ContextID ctx)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Do this reverse up, invalidate children first and then invalidate ourselves.  This
+      // way the garbage collector will have the best chance at reclaiming the physical instances
+      switch (region_states[ctx].open_state)
+      {
+        case PART_NOT_OPEN:
+          {
+            // Don't need to do anything
+            break;
+          }
+        case PART_EXCLUSIVE:
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            assert(region_states[ctx].open_physical.size() == 1);
+#endif
+            // Close up the open partition
+            PartitionID pid = *(region_states[ctx].open_physical.begin());
+            partitions[pid]->invalidate_physical_tree(ctx);
+            region_states[ctx].open_physical.clear();
+            region_states[ctx].open_state = PART_NOT_OPEN;
+            break;
+          }
+        case PART_READ_ONLY:
+          {
+            for (std::set<PartitionID>::const_iterator it = region_states[ctx].open_physical.begin();
+                  it != region_states[ctx].open_physical.end(); it++)
+            {
+              partitions[*it]->invalidate_physical_tree(ctx);
+            }
+            region_states[ctx].open_physical.clear();
+            region_states[ctx].open_state = PART_NOT_OPEN;
+            break;
+          }
+        default:
+          assert(false);
+      }
+#ifdef DISABLE_GC
+      // Now we can invalidate our own instances
+      for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
+            it != region_states[ctx].valid_instances.end(); it++)
+      {
+        if (it->second)
+        {
+          it->first->mark_invalid();
+        }
+      }
+#endif
+      region_states[ctx].valid_instances.clear();
+      region_states[ctx].data_state = DATA_CLEAN;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -9022,7 +9202,7 @@ namespace RegionRuntime {
           }
         }
         // Mark any instance infos that we own to be invalid
-#if 1
+#ifndef DISABLE_GC 
         for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
               it != region_states[ctx].valid_instances.end(); it++)
         {
@@ -9211,7 +9391,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void PartitionNode::mark_tree_unadded(void)
+    void PartitionNode::mark_tree_unadded(bool reclaim_resources)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -9221,7 +9401,7 @@ namespace RegionRuntime {
       for (std::map<LogicalRegion,RegionNode*>::const_iterator it = children.begin();
             it != children.end(); it++)
       {
-        it->second->mark_tree_unadded();
+        it->second->mark_tree_unadded(reclaim_resources);
       }
     }
 
@@ -10096,6 +10276,20 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    void PartitionNode::invalidate_physical_tree(ContextID ctx)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Invalidate all the open regions
+      for (std::set<LogicalRegion>::const_iterator it = partition_states[ctx].open_physical.begin();
+            it != partition_states[ctx].open_physical.end(); it++)
+      {
+        children[*it]->invalidate_physical_tree(ctx);
+      }
+      partition_states[ctx].open_physical.clear();
+      partition_states[ctx].physical_state = REG_NOT_OPEN;
+    }
+
+    //--------------------------------------------------------------------------------------------
     LogicalRegion PartitionNode::get_subregion(Color c) const
     //--------------------------------------------------------------------------------------------
     {
@@ -10204,9 +10398,6 @@ namespace RegionRuntime {
                                   Event precondition)
     //-------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(valid);
-#endif
       // Go through all the current users and see if there are any
       // true dependences between the current users and the new user
       std::set<Event> wait_on_events;
@@ -10491,9 +10682,6 @@ namespace RegionRuntime {
     void InstanceInfo::add_copy_user(UniqueID uid, Event copy_term)
     //-------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(valid);
-#endif
       if (remote)
       {
         // See if it already exists
@@ -10769,9 +10957,6 @@ namespace RegionRuntime {
       derez.deserialize<Event>(result_info->valid_event);
       derez.deserialize<Lock>(result_info->inst_lock);
       derez.deserialize<bool>(result_info->valid);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(result_info->valid); // should always be valid coming this way
-#endif
 
       // Put all the users in the base users since this is remote
       size_t num_users;
