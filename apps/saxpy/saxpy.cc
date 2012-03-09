@@ -11,7 +11,7 @@ using namespace RegionRuntime::HighLevel;
 
 #define TOP_LEVEL_TASK_ID TASK_ID_REGION_MAIN
 
-//#define TEST_STEALING
+#define TEST_STEALING
 
 #define MAX_STEAL_COUNT 4
 
@@ -71,12 +71,12 @@ void top_level_task(const void *args, size_t arglen,
 
   Future f = runtime->execute_task(ctx, TASKID_MAIN, main_regions,
 				   TaskArgument(&vr, sizeof(VectorRegions)));
-  f.get_void_result();
+  //f.get_void_result();
 
   // Destroy our logical regions clean up the region trees
-  //runtime->destroy_logical_region(ctx, vr.r_x);
-  //runtime->destroy_logical_region(ctx, vr.r_y);
-  //runtime->destroy_logical_region(ctx, vr.r_z);
+  runtime->destroy_logical_region(ctx, vr.r_x);
+  runtime->destroy_logical_region(ctx, vr.r_y);
+  runtime->destroy_logical_region(ctx, vr.r_z);
 }
 
 template<AccessorType AT>
@@ -158,7 +158,7 @@ void main_task(const void *args, size_t arglen,
   FutureMap init_f =
     runtime->execute_index_space(ctx, TASKID_INIT_VECTORS, index_space,
 				 init_regions, global, arg_map, false);
-  init_f.wait_all_results();
+  //init_f.wait_all_results();
 
   printf("STARTING MAIN SIMULATION LOOP\n");
   struct timespec ts_start, ts_end;
@@ -178,7 +178,7 @@ void main_task(const void *args, size_t arglen,
   FutureMap add_f =
     runtime->execute_index_space(ctx, TASKID_ADD_VECTORS, index_space,
                                  add_regions, global, arg_map, false);
-  add_f.wait_all_results();
+  //add_f.wait_all_results();
 
   // Print results
   clock_gettime(CLOCK_MONOTONIC, &ts_end);
