@@ -225,6 +225,7 @@ struct Block {
   std::vector<std::vector<std::vector<ptr_t<Cell> > > > cells[2];
   int cb;  // which is the current buffer?
   int id;
+  unsigned x, y, z; // position in block grid
   unsigned CELLS_X, CELLS_Y, CELLS_Z;
 };
 
@@ -233,7 +234,7 @@ struct Block {
   (sizeof(LogicalRegion)*(2 + 2*GHOST_CELLS)                            \
    + sizeof(BufferRegions)*2                                            \
    + sizeof(ptr_t<Cell>)*2*((b).CELLS_X+2)*((b).CELLS_Y+2)*((b).CELLS_Z+2) \
-   + sizeof(int)*2 + sizeof(unsigned)*3)
+   + sizeof(int)*2 + sizeof(unsigned)*6)
 
 struct TopLevelRegions {
   LogicalRegion real_cells[2];
@@ -279,6 +280,9 @@ public:
             Serializer::serialize(block.cells[b][cz][cy][cx]);
     Serializer::serialize(block.cb);
     Serializer::serialize(block.id);
+    Serializer::serialize(block.x);
+    Serializer::serialize(block.y);
+    Serializer::serialize(block.z);
   }
   inline void serialize(const std::string &str) {
     const char *c_str = str.c_str();
@@ -316,6 +320,9 @@ public:
     }
     Deserializer::deserialize(block.cb);
     Deserializer::deserialize(block.id);
+    Deserializer::deserialize(block.x);
+    Deserializer::deserialize(block.y);
+    Deserializer::deserialize(block.z);
   }
   inline void deserialize(std::string &str) {
     size_t len;
@@ -408,6 +415,9 @@ void main_task(const void *args, size_t arglen,
         unsigned id = (idz*nby+idy)*nbx+idx;
 
         blocks[id].id = id;
+        blocks[id].x = idx;
+        blocks[id].y = idy;
+        blocks[id].z = idz;
         blocks[id].CELLS_X = (nx/nbx) + (nx%nbx > idx ? 1 : 0);
         blocks[id].CELLS_Y = (ny/nby) + (ny%nby > idy ? 1 : 0);
         blocks[id].CELLS_Z = (nz/nbz) + (nz%nbz > idz ? 1 : 0);
@@ -889,6 +899,16 @@ void init_and_rebuild(const void *args, size_t arglen,
           WRITE_CELL(b, cz, cy, cx, dst_block, edge_blocks, blank);
   }
 
+  // Minimum block sizes
+  unsigned mbsx = nx / nbx;
+  unsigned mbsy = ny / nby;
+  unsigned mbsz = nz / nbz;
+
+  // Number of oversized blocks
+  unsigned ovbx = nx % nbx;
+  unsigned ovby = ny % nby;
+  unsigned ovbz = nz % nbz;
+
   // now go through each source cell and move particles that have wandered too
   //  far
   for(int cz = 1; cz < (int)b.CELLS_Z + 1; cz++)
@@ -897,16 +917,29 @@ void init_and_rebuild(const void *args, size_t arglen,
         // don't need to macro-ize this because it's known to be a real cell
         Cell c_src = src_block.read(b.cells[1-cb][cz][cy][cx]);
         for(unsigned p = 0; p < c_src.num_particles; p++) {
-          int dz = cz;
-          int dy = cy;
-          int dx = cx;
           Vec3 pos = c_src.p[p];
-          if(pos.x < 0) { pos.x += delta.x; dx--; }
-          if(pos.x >= delta.x) { pos.x -= delta.x; dx++; }
-          if(pos.y < 0) { pos.y += delta.y; dy--; }
-          if(pos.y >= delta.y) { pos.y -= delta.y; dy++; }
-          if(pos.z < 0) { pos.z += delta.z; dz--; }
-          if(pos.z >= delta.z) { pos.z -= delta.z; dz++; }
+
+          // Global dst coordinates
+          int di = (int)((pos.x - domainMin.x) / delta.x);
+          int dj = (int)((pos.y - domainMin.y) / delta.y);
+          int dk = (int)((pos.z - domainMin.z) / delta.z);
+
+          if(di < 0) di = 0; else if(di > (int)(nx-1)) di = nx-1;
+          if(dj < 0) dj = 0; else if(dj > (int)(ny-1)) dj = ny-1;
+          if(dk < 0) dk = 0; else if(dk > (int)(nz-1)) dk = nz-1;
+
+          // Global src coordinates
+          int ci = cx + (b.x*mbsx + (b.x < ovbx ? b.x : ovbx)) - 1;
+          int cj = cy + (b.y*mbsy + (b.y < ovby ? b.y : ovby)) - 1;
+          int ck = cz + (b.z*mbsz + (b.z < ovbz ? b.z : ovbz)) - 1;
+
+          // Assume particles move no more than one block per timestep
+          assert(-1 <= di - ci && di - ci <= 1);
+          assert(-1 <= dj - cj && dj - cj <= 1);
+          assert(-1 <= dk - ck && dk - ck <= 1);
+          int dx = cx + (di - ci);
+          int dy = cy + (dj - cj);
+          int dz = cz + (dk - ck);
 
           Cell c_dst;
           READ_CELL(b, dz, dy, dx, dst_block, edge_blocks, c_dst);
@@ -1012,13 +1045,6 @@ void scatter_densities(const void *args, size_t arglen,
   for(int cz = 1; cz < (int)b.CELLS_Z+1; cz++)
     for(int cy = 1; cy < (int)b.CELLS_Y+1; cy++)
       for(int cx = 1; cx < (int)b.CELLS_X+1; cx++) {
-        // Elliott: FIXME: This code doesn't make a bit of sense.
-        //int dir = GET_DIR(b, cz, cy, cx);
-        //if(dir == CENTER) continue;
-        //int dz = MOVE_Z(cz, REVERSE(dir));
-        //int dy = MOVE_Y(cy, REVERSE(dir));
-        //int dx = MOVE_X(cx, REVERSE(dir));
-
         Cell cell = base_block.read(b.cells[cb][cz][cy][cx]);
         for(unsigned p = 0; p < cell.num_particles; p++) {
           cell.density[p] = 0;
@@ -1028,9 +1054,8 @@ void scatter_densities(const void *args, size_t arglen,
       }
 
   // now for each cell, look at neighbors and calculate density contributions
-  // two things to watch out for:
-  //  position vectors have to be augmented by relative block positions
-  //  for pairs of real cells, we can do the calculation once instead of twice
+  // one thing to watch out for:
+  //  * for pairs of real cells, we can do the calculation once instead of twice
   for(int cz = 1; cz < (int)b.CELLS_Z+1; cz++)
     for(int cy = 1; cy < (int)b.CELLS_Y+1; cy++)
       for(int cx = 1; cx < (int)b.CELLS_X+1; cx++) {
@@ -1041,14 +1066,11 @@ void scatter_densities(const void *args, size_t arglen,
           for(int dy = cy - 1; dy <= cy + 1; dy++)
             for(int dx = cx - 1; dx <= cx + 1; dx++) {
               // did we already get updated by this neighbor's bidirectional update?
-              // FIXME: ummmmmmmmmm.... ?????
-              //if((dy > 0) && (dx > 0) && (dx < (int)b.CELLS_X+1) && 
-              //   ((dy < cy) || ((dy == cy) && (dx < cx))))
-              if ((dz > 0) && (dy > 0) && (dx > 0) &&
-                  (dz < (int)b.CELLS_Z+1) &&
-                  (dy < (int)b.CELLS_Y+1) &&
-                  (dx < (int)b.CELLS_X+1) &&
-                  (dz < cz))
+              if (dz < 1 || dy < 1 || dx < 1 ||
+                  dz >= (int)b.CELLS_Z+1 ||
+                  dy >= (int)b.CELLS_Y+1 ||
+                  dx >= (int)b.CELLS_X+1 ||
+                  (dz < cz || (dz == cz && (dy < cy || (dy == cy && dx < cx)))))
                 continue;
 
               Cell c2;
@@ -1057,24 +1079,14 @@ void scatter_densities(const void *args, size_t arglen,
 
               // do bidirectional update if other cell is a real cell and it is
               //  either below or to the right (but not up-right) of us
-              // FIXME: ummmmmmmmmm.... ?????
-              //bool update_other = ((dy < (int)b.CELLS_Y+1) && (dx > 0) && (dx < (int)b.CELLS_X+1) &&
-              //                     ((dy > cy) || ((dy == cy) && (dx > cx))));
-              bool update_other = ((dz > 0) && (dy > 0) && (dx > 0) &&
-                                   (dz < (int)b.CELLS_Z+1) &&
-                                   (dy < (int)b.CELLS_Y+1) &&
-                                   (dx < (int)b.CELLS_X+1) &&
-                                   (dz > cz) && ((dy != cy) || (dx != cx)));
-	  
+              const bool update_other = true;
+
               // pairwise across particles - watch out for identical particle case!
               for(unsigned p = 0; p < cell.num_particles; p++)
                 for(unsigned p2 = 0; p2 < c2.num_particles; p2++) {
                   if((dx == cx) && (dy == cy) && (dz == cz) && (p == p2)) continue;
 
                   Vec3 pdiff = cell.p[p] - c2.p[p2];
-                  pdiff.x += (cx - dx) * delta.x;
-                  pdiff.y += (cy - dy) * delta.y;
-                  pdiff.z += (cz - dz) * delta.z;
                   float distSq = pdiff.GetLengthSq();
                   if(distSq >= hSq) continue;
 
@@ -1155,9 +1167,8 @@ void gather_forces_and_advance(const void *args, size_t arglen,
   // acceleration was cleared out for us in the previous step
 
   // now for each cell, look at neighbors and calculate acceleration
-  // two things to watch out for:
-  //  position vectors have to be augmented by relative block positions
-  //  for pairs of real cells, we can do the calculation once instead of twice
+  // one thing to watch out for:
+  //  * for pairs of real cells, we can do the calculation once instead of twice
   for(int cz = 1; cz < (int)b.CELLS_Z+1; cz++)
     for(int cy = 1; cy < (int)b.CELLS_Y+1; cy++)
       for(int cx = 1; cx < (int)b.CELLS_X+1; cx++) {
@@ -1168,14 +1179,11 @@ void gather_forces_and_advance(const void *args, size_t arglen,
           for(int dy = cy - 1; dy <= cy + 1; dy++)
             for(int dx = cx - 1; dx <= cx + 1; dx++) {
               // did we already get updated by this neighbor's bidirectional update?
-              // FIXME: ummmmmmm... ????
-              //if((dy > 0) && (dx > 0) && (dx < (int)b.CELLS_X+1) && 
-              //   ((dy < cy) || ((dy == cy) && (dx < cx))))
-              if ((dz > 0) && (dy > 0) && (dx > 0) &&
-                  (dz < (int)b.CELLS_Z+1) &&
-                  (dy < (int)b.CELLS_Y+1) &&
-                  (dx < (int)b.CELLS_X+1) &&
-                  (dz < cz))
+              if (dz < 1 || dy < 1 || dx < 1 ||
+                  dz >= (int)b.CELLS_Z+1 ||
+                  dy >= (int)b.CELLS_Y+1 ||
+                  dx >= (int)b.CELLS_X+1 ||
+                  (dz < cz || (dz == cz && (dy < cy || (dy == cy && dx < cx)))))
                 continue;
 
               Cell c2;
@@ -1184,14 +1192,7 @@ void gather_forces_and_advance(const void *args, size_t arglen,
 
               // do bidirectional update if other cell is a real cell and it is
               //  either below or to the right (but not up-right) of us
-              // FIXME: ummmmmmm... ????
-              //bool update_other = ((dy < (int)b.CELLS_Y+1) && (dx > 0) && (dx < (int)b.CELLS_X+1) &&
-              //                     ((dy > cy) || ((dy == cy) && (dx > cx))));
-              bool update_other = ((dz > 0) && (dy > 0) && (dx > 0) &&
-                                   (dz < (int)b.CELLS_Z+1) &&
-                                   (dy < (int)b.CELLS_Y+1) &&
-                                   (dx < (int)b.CELLS_X+1) &&
-                                   (dz > cz) && ((dy != cy) || (dx != cx)));
+              const bool update_other = true;
 
               // pairwise across particles - watch out for identical particle case!
               for(unsigned p = 0; p < cell.num_particles; p++)
@@ -1199,9 +1200,6 @@ void gather_forces_and_advance(const void *args, size_t arglen,
                   if((dx == cx) && (dy == cy) && (dz == cz) && (p == p2)) continue;
 
                   Vec3 disp = cell.p[p] - c2.p[p2];
-                  disp.x += (cx - dx) * delta.x;
-                  disp.y += (cy - dy) * delta.y;
-                  disp.z += (cz - dz) * delta.z;
                   float distSq = disp.GetLengthSq();
                   if(distSq >= hSq) continue;
 
@@ -1221,6 +1219,38 @@ void gather_forces_and_advance(const void *args, size_t arglen,
               if(update_other)
                 WRITE_CELL(b, dz, dy, dx, base_block, edge_blocks, c2);
             }
+
+        // compute collisions for particles near edge of box
+        const float parSize = 0.0002f;
+        const float epsilon = 1e-10f;
+        const float stiffness = 30000.f;
+        const float damping = 128.f;
+        for(unsigned p = 0; p < cell.num_particles; p++) {
+          Vec3 pos = cell.p[p] + cell.hv[p] * timeStep;
+          float diff = parSize - (pos.x - domainMin.x);
+          if(diff > epsilon)
+            cell.a[p].x += stiffness*diff - damping*cell.v[p].x;
+
+          diff = parSize - (domainMax.x - pos.x);
+          if(diff > epsilon)
+            cell.a[p].x -= stiffness*diff + damping*cell.v[p].x;
+
+          diff = parSize - (pos.y - domainMin.y);
+          if(diff > epsilon)
+            cell.a[p].y += stiffness*diff - damping*cell.v[p].y;
+
+          diff = parSize - (domainMax.y - pos.y);
+          if(diff > epsilon)
+            cell.a[p].y -= stiffness*diff + damping*cell.v[p].y;
+
+          diff = parSize - (pos.z - domainMin.z);
+          if(diff > epsilon)
+            cell.a[p].z += stiffness*diff - damping*cell.v[p].z;
+
+          diff = parSize - (domainMax.z - pos.z);
+          if(diff > epsilon)
+            cell.a[p].z -= stiffness*diff + damping*cell.v[p].z;
+        }
 
         // we have everything we need to go ahead and update positions, so
         //  do that here instead of in a different task
