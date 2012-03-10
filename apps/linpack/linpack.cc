@@ -23,7 +23,11 @@ enum {
   TASKID_RAND_MATRIX,
   TASKID_ROWSWAP_GATHER,
   TASKID_ROWSWAP_SCATTER,
-  TASKID_ADD_VECTORS,
+  TASKID_UPDATE_PANEL,
+};
+
+enum {
+  COLORID_IDENTITY = 1,
 };
 
 // #define TEST_STEALING
@@ -117,8 +121,9 @@ void alloc_blocked_matrix(Context ctx, HighLevelRuntime *runtime,
 
     for(int i = 0; i < matrix.num_row_parts; i++) {
       LogicalRegion rp = runtime->get_subregion(ctx, matrix.row_parts[j], i);
-      //PhysicalRegion<AT> reg = runtime->map_region<AT>(ctx,
-      //					       RegionRequirement(rp, NO_ACCESS, ALLOCABLE, EXCLUSIVE, matrix.block_region));
+      PhysicalRegion<AT> reg = runtime->map_region<AT>(ctx,
+						       RegionRequirement(rp, NO_ACCESS, ALLOCABLE, EXCLUSIVE, matrix.block_region));
+      reg.wait_until_valid();
 
       for(int rb = i; rb < matrix.block_rows; rb += matrix.num_row_parts) {
 	ptr_t<MatrixBlock<NB> > bptr = reg.template alloc<MatrixBlock<NB> >();
@@ -131,7 +136,7 @@ void alloc_blocked_matrix(Context ctx, HighLevelRuntime *runtime,
 	reg.write(bptr, bdata);
       }
 
-      //runtime->unmap_region<AT>(ctx, reg);
+      runtime->unmap_region(ctx, reg);
     }
   }
 
@@ -143,6 +148,8 @@ void alloc_blocked_matrix(Context ctx, HighLevelRuntime *runtime,
 								       ALLOCABLE,
 								       EXCLUSIVE,
 								       matrix.index_region));
+    reg.wait_until_valid();
+
     matrix.index_blocks[rb] = reg.template alloc<IndexBlock<NB> >();
     runtime->unmap_region(ctx, reg);
   }
@@ -206,13 +213,10 @@ void rand_matrix_task(const void *args, size_t arglen,
 
 template <AccessorType AT, int NB>
 void factor_panel(Context ctx, HighLevelRuntime *runtime,
-		  BlockedMatrix<NB>& matrix, int k,
-		  int *permutes)
+		  BlockedMatrix<NB>& matrix, int k)
 {
   printf("factor_panel: k=%d\n", k);
 }
-
-static ColorizeID colorize_identity = 1;
 
 static Color colorize_identity_fn(const std::vector<int> &solution)
 {
@@ -243,7 +247,7 @@ void transpose_rows(Context ctx, HighLevelRuntime *runtime,
 
   std::vector<RegionRequirement> reqs;
   reqs.push_back(RegionRequirement(matrix.row_parts[j].id,
-				   colorize_identity,
+				   COLORID_IDENTITY,
 				   READ_ONLY, NO_MEMORY, EXCLUSIVE,
 				   matrix.block_region));
   reqs.push_back(RegionRequirement(topblk_region,
@@ -273,24 +277,70 @@ void solve_top_block(Context ctx, HighLevelRuntime *runtime,
 }
 
 template <AccessorType AT, int NB>
-void update_panel(Context ctx, HighLevelRuntime *runtime,
+void update_submatrix(Context ctx, HighLevelRuntime *runtime,
 		  BlockedMatrix<NB>& matrix, int k, int j,
 		  LogicalRegion topblk_region,
 		  ptr_t<MatrixBlock<NB> > topblk_ptr)
 {
+  printf("update_submatrix: k=%d, j=%d\n", k, j);
+}
+
+template<AccessorType AT, int NB>
+void update_panel_task(const void *global_args, size_t global_arglen,
+		       const void *local_args, size_t local_arglen,
+		       const IndexPoint &point,
+		       std::vector<PhysicalRegion<AT> > &regions,
+		       Context ctx, HighLevelRuntime *runtime)
+{
+  int k = *(int *)global_args;
+  int j = point[0];
+
   printf("update_panel: k=%d, j=%d\n", k, j);
 }
 
 template <AccessorType AT, int NB>
 void factor_matrix(Context ctx, HighLevelRuntime *runtime,
-		   BlockedMatrix<NB>& matrix, PhysicalRegion<AT> reg,
-		   int *permutes)
+		   BlockedMatrix<NB>& matrix)
 {
   // factor matrix by repeatedly factoring a panel and updating the
   //   trailing submatrix
   for(int k = 0; k < matrix.block_rows; k++) {
-    factor_panel<AT,NB>(ctx, runtime, matrix, k, permutes);
+    LogicalRegion panel_subregion = runtime->get_subregion(ctx,
+							   matrix.col_part,
+							   k);
+    LogicalRegion index_subregion = runtime->get_subregion(ctx,
+							   matrix.index_part,
+							   k);
+    factor_panel<AT,NB>(ctx, runtime, matrix, k);
 
+    // updates of trailing panels launched as index space
+    std::vector<Range> index_space;
+    index_space.push_back(Range(k + 1, matrix.block_cols - 1));
+
+    std::vector<RegionRequirement> update_regions;
+    update_regions.push_back(RegionRequirement(matrix.col_part.id,
+					       COLORID_IDENTITY,
+					       READ_WRITE, NO_MEMORY, EXCLUSIVE,
+					       matrix.block_region));
+    update_regions.push_back(RegionRequirement(panel_subregion,
+					       READ_ONLY, NO_MEMORY, EXCLUSIVE,
+					       matrix.block_region));
+    update_regions.push_back(RegionRequirement(index_subregion,
+					       READ_ONLY, NO_MEMORY, EXCLUSIVE,
+					       matrix.index_region));
+
+    ArgumentMap arg_map;
+
+    FutureMap fm = runtime->execute_index_space(ctx,
+						TASKID_UPDATE_PANEL,
+						index_space,
+						update_regions,
+						TaskArgument(&k, sizeof(int)),
+						arg_map,
+						false);
+
+    fm.wait_all_results();
+#if 0
     for(int j = k+1; j < matrix.block_cols; j++) {
       LogicalRegion temp_region = runtime->create_logical_region(ctx,
 								 sizeof(MatrixBlock<NB>),
@@ -316,6 +366,7 @@ void factor_matrix(Context ctx, HighLevelRuntime *runtime,
     }
 
     permutes += NB;
+#endif
   }
 }
 
@@ -326,15 +377,15 @@ void linpack_main(const void *args, size_t arglen,
 {
   BlockedMatrix<NB> &matrix = *(BlockedMatrix<NB> *)args;
 
+  runtime->unmap_region<AT>(ctx, regions[0]);
+  runtime->unmap_region<AT>(ctx, regions[1]);
+
   alloc_blocked_matrix<AT,NB>(ctx, runtime, matrix, regions[0]);
   //PhysicalRegion<AT> r = regions[0];
-  runtime->unmap_region<AT>(ctx, regions[0]);
 
   randomize_matrix<AT,NB>(ctx, runtime, matrix, regions[0]);
 
-  int *permutes = new int[matrix.rows];
-
-  factor_matrix<AT,NB>(ctx, runtime, matrix, regions[0], permutes);
+  factor_matrix<AT,NB>(ctx, runtime, matrix);
 }
 
 // just a wrapper that lets us capture the NB template parameter
@@ -351,7 +402,7 @@ void do_linpack(Context ctx, HighLevelRuntime *runtime)
   main_regions.push_back(RegionRequirement(matrix.block_region,
 					   READ_WRITE, ALLOCABLE, EXCLUSIVE,
 					   matrix.block_region));
-  main_regions.push_back(RegionRequirement(matrix.block_region,
+  main_regions.push_back(RegionRequirement(matrix.index_region,
 					   READ_WRITE, ALLOCABLE, EXCLUSIVE,
 					   matrix.index_region));
   Future f = runtime->execute_task(ctx, TASKID_LINPACK_MAIN, main_regions,
@@ -625,26 +676,34 @@ void add_vectors_task(const void *global_args, size_t global_arglen,
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
                     Processor local)
 {
-  runtime->add_colorize_function(colorize_identity,colorize_identity_fn);
+  runtime->add_colorize_function(COLORID_IDENTITY, colorize_identity_fn);
 }
 
 int main(int argc, char **argv) {
   srand(time(NULL));
 
-  Processor::TaskIDTable task_table;
-  task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
-  task_table[TASKID_LINPACK_MAIN] = high_level_task_wrapper<linpack_main<AccessorGeneric,1> >;
-  task_table[TASKID_RAND_MATRIX] = high_level_task_wrapper<rand_matrix_task<AccessorGeneric,1> >;
-  task_table[TASKID_ROWSWAP_GATHER] = high_level_index_task_wrapper<rowswap_gather_task<AccessorGeneric,1> >;
+  //Processor::TaskIDTable task_table;
+  //task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
+  //task_table[TASKID_LINPACK_MAIN] = high_level_task_wrapper<linpack_main<AccessorGeneric,1> >;
+  //task_table[TASKID_RAND_MATRIX] = high_level_task_wrapper<rand_matrix_task<AccessorGeneric,1> >;
+  //task_table[TASKID_ROWSWAP_GATHER] = high_level_index_task_wrapper<rowswap_gather_task<AccessorGeneric,1> >;
+  //task_table[TASKID_UPDATE_PANEL] = high_level_index_task_wrapper<update_panel_task<AccessorGeneric,1> >;
   //task_table[TASKID_INIT_VECTORS] = high_level_task_wrapper<init_vectors_task<AccessorGeneric> >;
   //task_table[TASKID_ADD_VECTORS] = high_level_task_wrapper<add_vectors_task<AccessorGeneric> >;
   //task_table[TASKID_INIT_VECTORS] = high_level_index_task_wrapper<init_vectors_task<AccessorGeneric> >;
   //task_table[TASKID_ADD_VECTORS] = high_level_index_task_wrapper<add_vectors_task<AccessorGeneric> >;
+  HighLevelRuntime::register_single_task<top_level_task<AccessorGeneric> >(TOP_LEVEL_TASK_ID,"top_level_task");
+  HighLevelRuntime::register_single_task<linpack_main<AccessorGeneric,1> >(TASKID_LINPACK_MAIN,"linpack_main");
+  HighLevelRuntime::register_single_task<rand_matrix_task<AccessorGeneric,1> >(TASKID_RAND_MATRIX,"rand_matrix");
+  HighLevelRuntime::register_index_task<rowswap_gather_task<AccessorGeneric,1> >(TASKID_ROWSWAP_GATHER,"rowswap_gather");
+  HighLevelRuntime::register_index_task<update_panel_task<AccessorGeneric,1> >(TASKID_UPDATE_PANEL,"update_panel");
+  //HighLevelRuntime::register_index_task<init_vectors_task<AccessorGeneric> >(TASKID_INIT_VECTORS,"init_vectors");
+  //HighLevelRuntime::register_index_task<add_vectors_task<AccessorGeneric> >(TASKID_ADD_VECTORS,"add_vectors");
 
-  HighLevelRuntime::register_runtime_tasks(task_table);
+  //HighLevelRuntime::register_runtime_tasks(task_table);
   HighLevelRuntime::set_registration_callback(create_mappers);
 
-  Machine m(&argc, &argv, task_table, false);
+  Machine m(&argc, &argv, HighLevelRuntime::get_task_table(), false);
 
   for (int i = 1; i < argc; i++) {
     if(!strcmp(argv[i], "-N")) {
