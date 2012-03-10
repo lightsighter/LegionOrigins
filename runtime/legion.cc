@@ -1137,23 +1137,24 @@ namespace RegionRuntime {
           if (!found)
           {
             log_inst(LEVEL_ERROR,"Unable to find or create physical instance for mapping "
-                "region %d of task %d with unique id %d",req.handle.region.id,parent_ctx->task_id,
-                parent_ctx->unique_id);
+                "region %d of task %s (ID %d) with unique id %d",req.handle.region.id,
+                HighLevelRuntime::get_task_name_table()[parent_ctx->task_id],parent_ctx->task_id,parent_ctx->unique_id);
             exit(1);
           }
         }
         else
         { 
           log_inst(LEVEL_ERROR,"No specified memory locations for mapping physical instance "
-              "for region (%d) for task %d with unique id %d",req.handle.region.id,
-              parent_ctx->task_id, parent_ctx->unique_id);
+              "for region (%d) for task %s (ID %d) with unique id %d",req.handle.region.id,
+              HighLevelRuntime::get_task_name_table()[parent_ctx->task_id],parent_ctx->task_id, parent_ctx->unique_id);
           exit(1);
         }
       }
-      log_region(LEVEL_INFO,"Mapping inline region %d of task %d (unique id %d) to "
-              "physical instance %d of logical region %d in memory %d",req.handle.region.id,
-              parent_ctx->task_id,parent_ctx->unique_id,chosen_info->iid,chosen_info->handle.id,chosen_info->location.id);
 #ifdef DEBUG_HIGH_LEVEL
+      log_region(LEVEL_DEBUG,"Mapping inline region %d of task %s (ID %d) (unique id %d) to "
+              "physical instance %d of logical region %d in memory %d",req.handle.region.id,
+              HighLevelRuntime::get_task_name_table()[parent_ctx->task_id], parent_ctx->task_id,parent_ctx->unique_id,
+              chosen_info->iid,chosen_info->handle.id,chosen_info->location.id);
       assert(chosen_info != InstanceInfo::get_no_instance());
 #endif
       // Check to see if we need to make an allocator too
@@ -1878,10 +1879,21 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_EXECUTE_TASK); 
+#ifdef DEBUG_HIGH_LEVEL
+      assert(HighLevelRuntime::get_task_type_table().find(task_id) != HighLevelRuntime::get_task_type_table().end());
+      if (HighLevelRuntime::get_task_type_table()[task_id])
+      {
+        log_task(LEVEL_ERROR,"Index space task %s (ID %d) was launched as single task",
+            HighLevelRuntime::get_task_name_table()[task_id], task_id);
+        exit(1);
+      }
+#endif
       // Get a unique id for the task to use
       UniqueID unique_id = get_unique_task_id();
-      log_task(LEVEL_DEBUG,"Registering new single task with unique id %d and task id %d with high level runtime on processor %d\n",
-                unique_id, task_id, local_proc.id);
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Registering new single task with unique id %d and task %s (ID %d) with high level runtime on processor %d\n",
+                unique_id, HighLevelRuntime::get_task_name_table()[task_id], task_id, local_proc.id);
+#endif
       TaskContext *desc = get_available_context(false/*new tree*/);
       // Allocate more space for context
       void *args_prime = malloc(arg.get_size()+sizeof(Context));
@@ -2354,8 +2366,10 @@ namespace RegionRuntime {
                                       std::vector<PhysicalRegion<AccessorGeneric> > &physical_regions)
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_DEBUG,"Beginning task %d with unique id %d on processor %x",
-                            ctx->task_id,ctx->unique_id,ctx->local_proc.id);
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Beginning task %s (ID %d) with unique id %d on processor %x",
+        HighLevelRuntime::get_task_name_table()[ctx->task_id],ctx->task_id,ctx->unique_id,ctx->local_proc.id);
+#endif
       ctx->start_task(physical_regions);
     }
 
@@ -2364,8 +2378,10 @@ namespace RegionRuntime {
                                     std::vector<PhysicalRegion<AccessorGeneric> > &physical_regions)
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_DEBUG,"Ending task %d with unique id %d on processor %x",
-                            ctx->task_id,ctx->unique_id,ctx->local_proc.id);
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Ending task %s (ID %d) with unique id %d on processor %x",
+        HighLevelRuntime::get_task_name_table()[ctx->task_id], ctx->task_id,ctx->unique_id,ctx->local_proc.id);
+#endif
       ctx->complete_task(arg,arglen,physical_regions); 
     }
 
@@ -2601,9 +2617,12 @@ namespace RegionRuntime {
             if (still_local)
             {
               add_to_ready_queue(ctx,false/*already have lock*/);
+#ifdef DEBUG_HIGH_LEVEL
               log_task(LEVEL_DEBUG,"HLR on processor %d adding index space"
-                                    " task %d with unique id %d from orig %d",
-                ctx->local_proc.id,ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
+                                    " task %s (ID %d) with unique id %d from orig %d",
+                ctx->local_proc.id,HighLevelRuntime::get_task_name_table()[ctx->task_id],
+                ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
+#endif
             }
             else
             {
@@ -2616,18 +2635,24 @@ namespace RegionRuntime {
           {
             // This context doesn't need any splitting, add to ready queue 
             add_to_ready_queue(ctx);
+#ifdef DEBUG_HIGH_LEVEL
             log_task(LEVEL_DEBUG,"HLR on processor %d adding index space"
-                                  " task %d with unique id %d from orig %d",
-              ctx->local_proc.id,ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
+                                  " task %s (ID %d) with unique id %d from orig %d",
+              ctx->local_proc.id, HighLevelRuntime::get_task_name_table()[ctx->task_id],
+              ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
+#endif
           }
         }
         else // not an index space
         {
           // Single task, put it on the ready queue
           add_to_ready_queue(ctx);
-          log_task(LEVEL_DEBUG,"HLR on processor %d adding task %d "
+#ifdef DEBUG_HIGH_LEVEL
+          log_task(LEVEL_DEBUG,"HLR on processor %d adding task %s (ID %d) "
                                 "with unique id %d from orig %d",
-            ctx->local_proc.id,ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
+            ctx->local_proc.id, HighLevelRuntime::get_task_name_table()[ctx->task_id],
+            ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
+#endif
         }
         // check to see if this is a steal result coming back
         // this is only a guess a task could have been stolen earlier
@@ -2792,9 +2817,10 @@ namespace RegionRuntime {
         {
 #ifdef DEBUG_HIGH_LEVEL
           (*it)->current_taken = false;
-#endif
-          log_task(LEVEL_DEBUG,"task %d with unique id %d stolen from processor %d",
+          log_task(LEVEL_DEBUG,"task %s (ID %d) with unique id %d stolen from processor %d",
+                                HighLevelRuntime::get_task_name_table()[(*it)->task_id],
                                 (*it)->task_id,(*it)->unique_id,(*it)->local_proc.id);
+#endif
           // If they are remote, deactivate the instance
           // If it's not remote, its parent will deactivate it
           if ((*it)->remote)
@@ -2808,9 +2834,10 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       Context ctx = *((const Context*)args);
-      log_task(LEVEL_DEBUG,"All child tasks mapped for task %d with unique id %d on processor %d",
-              ctx->task_id,ctx->unique_id,ctx->local_proc.id);
-
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"All child tasks mapped for task %s (ID %d) with unique id %d on processor %d",
+        HighLevelRuntime::get_task_name_table()[ctx->task_id],ctx->task_id,ctx->unique_id,ctx->local_proc.id);
+#endif
       ctx->children_mapped();
     }
 
@@ -2820,9 +2847,10 @@ namespace RegionRuntime {
     {
       // Unpack the context from the arguments
       Context ctx = *((const Context*)args);
-      log_task(LEVEL_DEBUG,"Task %d with unique id %d finished on processor %d", 
-                ctx->task_id, ctx->unique_id, ctx->local_proc.id);
-
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Task %s (ID %d) with unique id %d finished on processor %d", 
+        HighLevelRuntime::get_task_name_table()[ctx->task_id],ctx->task_id, ctx->unique_id, ctx->local_proc.id);
+#endif
       ctx->finish_task();
     }
 
@@ -3560,7 +3588,8 @@ namespace RegionRuntime {
           if (regions[idx].func_type != SINGULAR_FUNC)
           {
             log_task(LEVEL_ERROR,"All arguments to a single task launch must be single regions. "
-                "Region %d of task %d with unique id %d is not a singular region.",idx,task_id,
+                "Region %d of task %s (ID %d) with unique id %d is not a singular region.",idx,
+                HighLevelRuntime::get_task_name_table()[task_id], task_id,
                 unique_id);
             exit(1);
           }
@@ -3581,8 +3610,9 @@ namespace RegionRuntime {
             bool trace_result = compute_region_trace(trace, regions[idx].parent, regions[idx].handle.region);
             if (!trace_result)
             {
-              log_task(LEVEL_ERROR,"Region %d is not an ancestor of region %d (idx %d) for task %d (unique id %d)",
-                  regions[idx].parent.id,regions[idx].handle.region.id,idx,task_id,unique_id);
+              log_task(LEVEL_ERROR,"Region %d is not an ancestor of region %d (idx %d) for task %s (ID %d) (unique id %d)",
+                  regions[idx].parent.id,regions[idx].handle.region.id,idx,
+                  HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id);
               exit(1);
             }
           }
@@ -3591,8 +3621,9 @@ namespace RegionRuntime {
             bool trace_result = compute_partition_trace(trace, regions[idx].parent, regions[idx].handle.partition);
             if (!trace_result)
             {
-              log_task(LEVEL_ERROR,"Region %d is not an ancestor of partition %d (idx %d) for task %d (unique id %d)",
-                  regions[idx].parent.id,regions[idx].handle.partition,idx,task_id,unique_id);
+              log_task(LEVEL_ERROR,"Region %d is not an ancestor of partition %d (idx %d) for task %s (ID %d) (unique id %d)",
+                  regions[idx].parent.id,regions[idx].handle.partition,idx,
+                  HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id);
               exit(1);
             }
           }
@@ -3637,8 +3668,9 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         if (!found)
         {
-          log_inst(LEVEL_ERROR,"Unable to find parent physical context for region %d (index %d) of task %d (unique id %d)!",
-              regions[idx].handle.region.id, idx, task_id, unique_id);
+          log_inst(LEVEL_ERROR,"Unable to find parent physical context for region %d (index %d) of task %s (ID %d) (unique id %d)!",
+              regions[idx].handle.region.id, idx, 
+              HighLevelRuntime::get_task_name_table()[task_id], task_id, unique_id);
           exit(1);
         }
 #endif
@@ -4614,18 +4646,20 @@ namespace RegionRuntime {
                 case SINGULAR_FUNC:
                   {
                     log_region(LEVEL_ERROR,"Unable to find parent region %d for logical "
-                                            "region %d (index %d) for task %d with unique id %d",
+                                            "region %d (index %d) for task %s (ID %d) with unique id %d",
                                             child->regions[idx].parent.id, child->regions[idx].handle.region.id,
-                                            idx,child->task_id,child->unique_id);
+                                            idx,HighLevelRuntime::get_task_name_table()[child->task_id],
+                                            child->task_id,child->unique_id);
                     break;
                   }
                 case EXECUTABLE_FUNC:
                 case MAPPED_FUNC:
                   {
                     log_region(LEVEL_ERROR,"Unable to find parent region %d for partition "
-                                            "%d (index %d) for task %d with unique id %d",
+                                            "%d (index %d) for task %s (ID %d) with unique id %d",
                                             child->regions[idx].parent.id, child->regions[idx].handle.partition,
-                                            idx,child->task_id,child->unique_id);
+                                            idx,HighLevelRuntime::get_task_name_table()[child->task_id],
+                                            child->task_id,child->unique_id);
                     break;
                   }
                 default:
@@ -4635,8 +4669,9 @@ namespace RegionRuntime {
             else
             {
               log_region(LEVEL_ERROR,"Unable to find parent region %d for logical region %d (index %d)"
-                                      " for task %d with unique id %d",child->regions[idx].parent.id,
-                                child->regions[idx].handle.region.id,idx,child->task_id,child->unique_id);
+                                      " for task %s (ID %d) with unique id %d",child->regions[idx].parent.id,
+                                child->regions[idx].handle.region.id,idx,
+                                HighLevelRuntime::get_task_name_table()[child->task_id],child->task_id,child->unique_id);
             }
             exit(1);
           }
@@ -4687,9 +4722,10 @@ namespace RegionRuntime {
                 PartitionNode *part_node = (*partition_nodes)[req.handle.partition];
                 if ((!part_node->disjoint) && HAS_WRITE(req))
                 {
-                  log_task(LEVEL_ERROR,"Index space for task %d (unique id %d) "
+                  log_task(LEVEL_ERROR,"Index space for task %s (ID %d) (unique id %d) "
                       "requested aliased partition %d in write mode (index %d)."
                       " Partition requirements for index spaces must be disjoint or read-only",
+                      HighLevelRuntime::get_task_name_table()[ctx->task_id],
                       ctx->task_id, ctx->unique_id, part_node->pid, child_idx);
                   exit(1);
                 }
@@ -4828,8 +4864,8 @@ namespace RegionRuntime {
         else // error condition
         {
           log_region(LEVEL_ERROR,"Unable to find parent region %d for mapping region %d "
-              "in task %d with unique id %d",impl->req.parent.id,impl->req.handle.region.id,
-              this->task_id,this->unique_id);
+              "in task %s (ID %d) with unique id %d",impl->req.parent.id,impl->req.handle.region.id,
+              HighLevelRuntime::get_task_name_table()[this->task_id],this->task_id,this->unique_id);
           exit(1);
         }
       }
@@ -4880,8 +4916,10 @@ namespace RegionRuntime {
     void TaskContext::map_and_launch(void)
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_DEBUG,"Mapping and launching task %d with unique id %d on processor %d",
-          task_id, unique_id, local_proc.id);
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Mapping and launching task %s (ID %d) with unique id %d on processor %d",
+          HighLevelRuntime::get_task_name_table()[task_id], task_id, unique_id, local_proc.id);
+#endif
       // Check to see if this task is only partially unpacked, if so now do the final unpack
       if (partially_unpacked)
       {
@@ -4984,9 +5022,12 @@ namespace RegionRuntime {
                 needs_initializing = true;
               }
             }
-            log_region(LEVEL_INFO,"Mapping region %d (idx %d) of task %d (unique id %d) to physical "
-                "instance %d of logical region %d in memory %d",regions[idx].handle.region.id,idx,task_id,
+#ifdef DEBUG_HIGH_LEVEL
+            log_region(LEVEL_DEBUG,"Mapping region %d (idx %d) of task %s (ID %d) (unique id %d) to physical "
+                "instance %d of logical region %d in memory %d",regions[idx].handle.region.id,idx,
+                HighLevelRuntime::get_task_name_table()[task_id], task_id,
                 unique_id,info->iid,info->handle.id,info->location.id);
+#endif
             physical_instances.push_back(info);
             physical_mapped.push_back(true/*mapped*/);
             RegionRenamer namer(parent_physical_ctx,idx,this,info,mapper,needs_initializing);
@@ -5020,16 +5061,16 @@ namespace RegionRuntime {
           if (!found)
           {
             log_inst(LEVEL_ERROR,"Unable to find or create physical instance for region %d"
-                " (index %d) of task %d with unique id %d",regions[idx].handle.region.id,
-                idx,this->task_id,this->unique_id);
+                " (index %d) of task %s (ID %d) with unique id %d",regions[idx].handle.region.id,
+                idx,HighLevelRuntime::get_task_name_table()[this->task_id],this->task_id,this->unique_id);
             exit(1);
           }
         }
         else
         {
           log_inst(LEVEL_DEBUG,"Not creating physical instance for region %d (index %d) "
-              "for task %d with unique id %d",regions[idx].handle.region.id,idx,
-              this->task_id,this->unique_id);
+              "for task %s (ID %d) with unique id %d",regions[idx].handle.region.id,idx,
+              HighLevelRuntime::get_task_name_table()[this->task_id],this->task_id,this->unique_id);
           // Push back a no-instance for this physical instance
           physical_instances.push_back(InstanceInfo::get_no_instance());
           physical_mapped.push_back(false/*mapped*/);
@@ -5900,8 +5941,9 @@ namespace RegionRuntime {
     void TaskContext::start_task(std::vector<PhysicalRegion<AccessorGeneric> > &result_regions)
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_DEBUG,"Task %d with unique id %d starting on processor %d",task_id,unique_id,local_proc.id);
 #ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Task %s (ID %d) with unique id %d starting on processor %d",
+          HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id,local_proc.id);
       assert(physical_instances.size() == regions.size());
       assert(physical_instances.size() == physical_mapped.size());
 #endif
@@ -5951,8 +5993,10 @@ namespace RegionRuntime {
                                     std::vector<PhysicalRegion<AccessorGeneric> > &physical_regions)
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_DEBUG,"Task %d with unique id %d has completed on processor %d",
-                task_id,unique_id,local_proc.id);
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Task %s (ID %d) with unique id %d has completed on processor %d",
+                HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id,local_proc.id);
+#endif
       if (remote || is_index_space)
       {
         // Save the result to be sent back 
@@ -6050,11 +6094,10 @@ namespace RegionRuntime {
       // Check to see if this is an index space or not
       if (!is_index_space)
       {
-        log_task(LEVEL_DEBUG,"All children mapped for task %d with unique id %d on processor %d",
-                task_id,unique_id,local_proc.id);
-
-        // We can now go through and mark that all of our no-map operations are complete
 #ifdef DEBUG_HIGH_LEVEL
+        log_task(LEVEL_DEBUG,"All children mapped for task %s (ID %d) with unique id %d on processor %d",
+                HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id,local_proc.id);
+        // We can now go through and mark that all of our no-map operations are complete
         assert(physical_instances.size() == regions.size());
         assert(physical_instances.size() == physical_mapped.size());
 #endif
@@ -6284,8 +6327,10 @@ namespace RegionRuntime {
     void TaskContext::finish_task(bool acquire_lock /*=true*/)
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_DEBUG,"Finishing task %d with unique id %d on processor %d",
-                task_id, unique_id, local_proc.id);
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Finishing task %s (ID %d) with unique id %d on processor %d",
+                HighLevelRuntime::get_task_name_table()[task_id], task_id, unique_id, local_proc.id);
+#endif
       if (acquire_lock)
       {
         Event lock_event = current_lock.lock(0,true/*exclusive*/,Event::NO_EVENT);
@@ -6445,7 +6490,10 @@ namespace RegionRuntime {
     void TaskContext::remote_start(const char *args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     { 
-      log_task(LEVEL_DEBUG,"Processing remote start for task %d with unique id %d",task_id,unique_id);
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Processing remote start for task %s (ID %d) with unique id %d",
+          HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id);
+#endif
       // We need the current context lock in exclusive mode to do this
       AutoLock ctx_lock(current_lock);
 #ifdef DEBUG_HIGH_LEVEL
@@ -6594,7 +6642,10 @@ namespace RegionRuntime {
     void TaskContext::remote_children_mapped(const char *args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_DEBUG,"Processing remote children mapped for task %d with unique id %d",task_id,unique_id);
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Processing remote children mapped for task %s (ID %d) with unique id %d",
+          HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id);
+#endif
       // We need the current context lock in exclusive mode to do this
       AutoLock ctx_lock(current_lock);
 #ifdef DEBUG_HIGH_LEVEL
@@ -6729,7 +6780,10 @@ namespace RegionRuntime {
     void TaskContext::remote_finish(const char *args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_DEBUG,"Processing remote finish for task %d with unique id %d",task_id,unique_id);
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Processing remote finish for task %s (ID %d) with unique id %d",
+          HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id);
+#endif
       // Need the current context lock in exclusive lock to do this
       AutoLock ctx_lock(current_lock);
 #ifdef DEBUG_HIGH_LEVEL
@@ -7322,7 +7376,8 @@ namespace RegionRuntime {
         if (!found)
         {
           log_task(LEVEL_ERROR,"Attempted to delete region %d which is not contained in any of the "
-              "regions for which task %d (unique id %d) has permissions",handle.id,task_id,unique_id);
+              "regions for which task %s (ID %d) (unique id %d) has permissions",handle.id,
+              HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id);
           exit(1);
         }
       }
@@ -7452,7 +7507,8 @@ namespace RegionRuntime {
         if (!found)
         {
           log_task(LEVEL_ERROR,"Attempted to delete partition %d which is not contained in any of the "
-              "partitions for which task %d (unique id %d) has permissions",pid,task_id,unique_id);
+              "partitions for which task %s (ID %d) (unique id %d) has permissions",pid,
+              HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id);
           exit(1);
         }
       }
@@ -7818,8 +7874,9 @@ namespace RegionRuntime {
       if (this == ctx)
       {
         log_region(LEVEL_ERROR,"Illegal dependence between two regions %d and %d (with index %d and %d) "
-                                "in task %d with unique id %d",this->regions[idx].handle.region.id,
-                                this->regions[dep_idx].handle.region.id,idx,dep_idx,task_id,unique_id);
+                                "in task %s (ID %d) with unique id %d",this->regions[idx].handle.region.id,
+                                this->regions[dep_idx].handle.region.id,idx,dep_idx,
+                                HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id);
         exit(1);
       }
 #endif

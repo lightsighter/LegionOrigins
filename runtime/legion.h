@@ -2873,6 +2873,15 @@ namespace RegionRuntime {
                                   MapperID id, MappingTagID tag)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(HighLevelRuntime::get_task_type_table().find(task_id) != HighLevelRuntime::get_task_type_table().end()); 
+      if (!HighLevelRuntime::get_task_type_table()[task_id])
+      {
+        fprintf(stderr,"ERROR: Single task %s (ID %d) was launched as an index space\n",
+            HighLevelRuntime::get_task_name_table()[task_id], task_id);
+        exit(1);
+      }
+#endif
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_EXECUTE_TASK);
       // Get a unique id for the task to use
       UniqueID unique_id = get_unique_task_id();
@@ -2933,6 +2942,15 @@ namespace RegionRuntime {
                                MapperID id, MappingTagID tag)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(HighLevelRuntime::get_task_type_table().find(task_id) != HighLevelRuntime::get_task_type_table().end());
+      if (!HighLevelRuntime::get_task_type_table()[task_id])
+      {
+        fprintf(stderr,"ERROR: Single task %s (ID %d) was launched as an index space\n",
+            HighLevelRuntime::get_task_name_table()[task_id], task_id);
+        exit(1);
+      }
+#endif
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_EXECUTE_TASK);
       // Get a unique id for the task to use
       UniqueID unique_id = get_unique_task_id();
