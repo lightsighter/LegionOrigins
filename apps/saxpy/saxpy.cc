@@ -606,16 +606,13 @@ void create_mappers(Machine *machine, HighLevelRuntime *runtime,
 int main(int argc, char **argv) {
   srand(time(NULL));
 
-  Processor::TaskIDTable task_table;
-  task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
-  task_table[TASKID_MAIN] = high_level_task_wrapper<main_task<AccessorGeneric> >;
-  task_table[TASKID_INIT_VECTORS] = high_level_index_task_wrapper<init_vectors_task<AccessorGeneric> >;
-  task_table[TASKID_ADD_VECTORS] = high_level_index_task_wrapper<add_vectors_task<AccessorGeneric> >;
-
-  HighLevelRuntime::register_runtime_tasks(task_table);
   HighLevelRuntime::set_registration_callback(create_mappers);
+  HighLevelRuntime::register_single_task<top_level_task<AccessorGeneric> >(TOP_LEVEL_TASK_ID,"top_level_task");
+  HighLevelRuntime::register_single_task<main_task<AccessorGeneric> >(TASKID_MAIN,"main_task");
+  HighLevelRuntime::register_index_task<init_vectors_task<AccessorGeneric> >(TASKID_INIT_VECTORS,"init_vectors");
+  HighLevelRuntime::register_index_task<add_vectors_task<AccessorGeneric> >(TASKID_ADD_VECTORS,"add_vectors");
 
-  Machine m(&argc, &argv, task_table, false);
+  Machine m(&argc, &argv, HighLevelRuntime::get_task_table(), false);
 
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "-blocks")) {
