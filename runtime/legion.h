@@ -1368,7 +1368,8 @@ namespace RegionRuntime {
       // Keep track of the number of notifications we need to see before the task is mappable
       int remaining_notifications;
     private:
-      std::vector<TaskContext*>       child_tasks;
+      std::vector<TaskContext*> child_tasks;
+      std::set<DeletionOp*>     child_deletions;
     private:
       // Information for figuring out which regions to use
       // Mappings for the logical regions at call-time (can be no-instance == covered)
@@ -1501,6 +1502,7 @@ namespace RegionRuntime {
       UniqueID unique_id;
       Lock current_lock;
       bool active;
+      bool performed; // to avoid race conditions, its possible this can be played twice
     protected:
       friend class HighLevelRuntime;
       friend class TaskContext;
@@ -1514,7 +1516,7 @@ namespace RegionRuntime {
       void activate(TaskContext *parent, LogicalRegion handle);
       void activate(TaskContext *parent, PartitionID pid);
       void deactivate(void);
-      void perform_deletion(void);
+      void perform_deletion(bool acquire_lock);
       virtual bool is_context(void) const { return false; }
       virtual bool is_ready(void) const;
       virtual void notify(void);

@@ -1370,6 +1370,7 @@ namespace RegionRuntime {
       unique_id = runtime->get_unique_task_id();
       current_lock = parent->current_lock;
       active = true;
+      performed = false;
     }
 
     //--------------------------------------------------------------------------
@@ -1387,6 +1388,7 @@ namespace RegionRuntime {
       unique_id = runtime->get_unique_task_id();
       current_lock = parent->current_lock;
       active = true;
+      performed = false;
     }
     
     //--------------------------------------------------------------------------
@@ -1399,34 +1401,55 @@ namespace RegionRuntime {
       handle = LogicalRegion::NO_REGION;
       parent_ctx = NULL;
       active = false;
+      current_lock = Lock::NO_LOCK;
       runtime->free_deletion(this);
     }
 
     //--------------------------------------------------------------------------
-    void DeletionOp::perform_deletion(void)
+    void DeletionOp::perform_deletion(bool acquire_lock)
     //--------------------------------------------------------------------------
     {
+      if (acquire_lock)
+      {
+        Event lock_event = current_lock.lock(0,true/*exclusive*/);
+        lock_event.wait(true/*block*/);
+      }
 #ifdef DEBUG_HIGH_LEVEL
       assert(active);
       assert(is_ready());
 #endif
-      // Once the deletion is ready to be performed, go down the physical
-      // region tree and mark all the physical instances that we own as being invalid
-      if (is_region)
+      if (!performed)
       {
+        // Once the deletion is ready to be performed, go down the physical
+        // region tree and mark all the physical instances that we own as being invalid
+        if (is_region)
+        {
 #ifdef DEBUG_HIGH_LEVEL
-        assert(parent_ctx->region_nodes->find(handle) != parent_ctx->region_nodes->end());
+          assert(parent_ctx->region_nodes->find(handle) != parent_ctx->region_nodes->end());
 #endif
-        RegionNode *target = (*(parent_ctx->region_nodes))[handle];
-        target->invalidate_physical_tree(physical_ctx);
+          RegionNode *target = (*(parent_ctx->region_nodes))[handle];
+          target->invalidate_physical_tree(physical_ctx);
+        }
+        else
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(parent_ctx->partition_nodes->find(pid) != parent_ctx->partition_nodes->end());
+#endif
+          PartitionNode *target = (*(parent_ctx->partition_nodes))[pid];
+          target->invalidate_physical_tree(physical_ctx);
+        }
+        // Mark that we've been performed so we don't get performed twice
+        performed = true;
       }
-      else
+      if (acquire_lock)
       {
-#ifdef DEBUG_HIGH_LEVEL
-        assert(parent_ctx->partition_nodes->find(pid) != parent_ctx->partition_nodes->end());
-#endif
-        PartitionNode *target = (*(parent_ctx->partition_nodes))[pid];
-        target->invalidate_physical_tree(physical_ctx);
+        // Probably not so good, but I'm using the fact that we acquired the lock as evidence
+        // that we're calling this function from anywhere except children_mapped, which means
+        // we need to remove it from the list of deletions to be performed by the parent task
+        // Note that this safe even if done twice as it will just remove something that isn't there
+        parent_ctx->child_deletions.erase(this);
+        // Now we can unlock the lock
+        current_lock.unlock();
       }
     }
 
@@ -1904,15 +1927,13 @@ namespace RegionRuntime {
       ctx->register_deletion(op);
       if (op->is_ready())
       {
-        op->perform_deletion();
+        op->perform_deletion(true/*need lock*/);
         op->deactivate();
       }
       else
       {
         waiting_deletions.push_back(op);
       }
-      // Notify the context that we destroyed the logical region
-      //ctx->remove_region(handle, false/*recursive*/, true/*reclaim resources*/);
     }
     
     //--------------------------------------------------------------------------------------------
@@ -2067,14 +2088,13 @@ namespace RegionRuntime {
       // Check to see if it's ready or whether we should add it to the waiting queue
       if (op->is_ready())
       {
-        op->perform_deletion();
+        op->perform_deletion(true/*need lock*/);
         op->deactivate();
       }
       else
       {
         waiting_deletions.push_back(op);
       }
-      //ctx->remove_partition(part.id, part.parent, false/*recursive*/, true/*reclaim resources*/);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2968,7 +2988,7 @@ namespace RegionRuntime {
           if ((*del_it)->is_ready())
           {
             DeletionOp *op = *del_it;
-            op->perform_deletion();
+            op->perform_deletion(true/*need lock*/);
             del_it = waiting_deletions.erase(del_it);
             // We can also deactivate the deletion now that we know its done
             op->deactivate();
@@ -3320,6 +3340,7 @@ namespace RegionRuntime {
       map_dependent_tasks.clear();
       unresolved_dependences.clear();
       child_tasks.clear();
+      child_deletions.clear();
       sibling_tasks.clear();
       physical_mapped.clear();
       physical_instances.clear();
@@ -4820,6 +4841,8 @@ namespace RegionRuntime {
         target->register_deletion(this->ctx_id, op);
         op->physical_ctx = remove_partition(op->pid);
       }
+      // Add it to the list of deletions that need to be performed
+      child_deletions.insert(op);
 #ifdef DEBUG_HIGH_LEVEL
       current_taken = false;
 #endif
@@ -5980,6 +6003,22 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       current_taken = true;
 #endif
+      // Perform any deletions that haven't already been performed
+      // Do this early to get the garbage collector going and to
+      // remove things that don't need to be sent back
+      for (std::set<DeletionOp*>::const_iterator it = child_deletions.begin();
+            it != child_deletions.end(); it++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert((*it)->is_ready());
+#endif
+        // No need to acquire the lock since we already hold it
+        (*it)->perform_deletion(false/*need lock*/); 
+      }
+      // We can clear these here, they will be deactivated when the
+      // runtime performs them
+      child_deletions.clear();
+      
       // Check to see if this is an index space or not
       if (!is_index_space)
       {
