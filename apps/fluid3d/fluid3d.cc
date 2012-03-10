@@ -1849,21 +1849,31 @@ void create_mappers(Machine *machine, HighLevelRuntime *runtime, Processor local
 
 int main(int argc, char **argv)
 {
-  Processor::TaskIDTable task_table;
+  //Processor::TaskIDTable task_table;
 
-  task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
-  task_table[TASKID_MAIN_TASK] = high_level_task_wrapper<main_task<AccessorGeneric> >;
-  task_table[TASKID_INIT_CELLS] = high_level_task_wrapper<init_and_rebuild<AccessorGeneric> >;
-  task_table[TASKID_REBUILD_REDUCE] = high_level_task_wrapper<rebuild_reduce<AccessorGeneric> >;
-  task_table[TASKID_SCATTER_DENSITIES] = high_level_task_wrapper<scatter_densities<AccessorGeneric> >;
-  task_table[TASKID_GATHER_DENSITIES] = high_level_task_wrapper<gather_densities<AccessorGeneric> >;
-  task_table[TASKID_SCATTER_FORCES] = high_level_task_wrapper<scatter_forces<AccessorGeneric> >;
-  task_table[TASKID_GATHER_FORCES] = high_level_task_wrapper<gather_forces_and_advance<AccessorGeneric> >;
-  task_table[TASKID_LOAD_FILE] = high_level_task_wrapper<int, load_file<AccessorGeneric> >;
-  task_table[TASKID_SAVE_FILE] = high_level_task_wrapper<save_file<AccessorGeneric> >;
+  //task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
+  //task_table[TASKID_MAIN_TASK] = high_level_task_wrapper<main_task<AccessorGeneric> >;
+  //task_table[TASKID_INIT_CELLS] = high_level_task_wrapper<init_and_rebuild<AccessorGeneric> >;
+  //task_table[TASKID_REBUILD_REDUCE] = high_level_task_wrapper<rebuild_reduce<AccessorGeneric> >;
+  //task_table[TASKID_SCATTER_DENSITIES] = high_level_task_wrapper<scatter_densities<AccessorGeneric> >;
+  //task_table[TASKID_GATHER_DENSITIES] = high_level_task_wrapper<gather_densities<AccessorGeneric> >;
+  //task_table[TASKID_SCATTER_FORCES] = high_level_task_wrapper<scatter_forces<AccessorGeneric> >;
+  //task_table[TASKID_GATHER_FORCES] = high_level_task_wrapper<gather_forces_and_advance<AccessorGeneric> >;
+  //task_table[TASKID_LOAD_FILE] = high_level_task_wrapper<int, load_file<AccessorGeneric> >;
+  //task_table[TASKID_SAVE_FILE] = high_level_task_wrapper<save_file<AccessorGeneric> >;
 
-  HighLevelRuntime::register_runtime_tasks(task_table);
+  //HighLevelRuntime::register_runtime_tasks(task_table);
   HighLevelRuntime::set_registration_callback(create_mappers);
+  HighLevelRuntime::register_single_task<top_level_task<AccessorGeneric> >(TOP_LEVEL_TASK_ID,"top_level_task");
+  HighLevelRuntime::register_single_task<main_task<AccessorGeneric> >(TASKID_MAIN_TASK,"main_task");
+  HighLevelRuntime::register_single_task<init_and_rebuild<AccessorGeneric> >(TASKID_INIT_CELLS,"init_cells");
+  HighLevelRuntime::register_single_task<rebuild_reduce<AccessorGeneric> >(TASKID_REBUILD_REDUCE,"rebuild_reduce");
+  HighLevelRuntime::register_single_task<scatter_densities<AccessorGeneric> >(TASKID_SCATTER_DENSITIES,"scatter_densities");
+  HighLevelRuntime::register_single_task<gather_densities<AccessorGeneric> >(TASKID_GATHER_DENSITIES,"gather_densities");
+  HighLevelRuntime::register_single_task<scatter_forces<AccessorGeneric> >(TASKID_SCATTER_FORCES,"scatter_forces");
+  HighLevelRuntime::register_single_task<gather_forces_and_advance<AccessorGeneric> >(TASKID_GATHER_FORCES,"gather_forces");
+  HighLevelRuntime::register_single_task<int, load_file<AccessorGeneric> >(TASKID_LOAD_FILE,"load_file");
+  HighLevelRuntime::register_single_task<save_file<AccessorGeneric> >(TASKID_SAVE_FILE,"save_file");
 
   // Initialize the simulation
   h = kernelRadiusMultiplier / restParticlesPerMeter;
@@ -1892,7 +1902,7 @@ int main(int argc, char **argv)
   nbz = 8;
 
   // Initialize the machine
-  Machine m(&argc, &argv, task_table, false);
+  Machine m(&argc, &argv, HighLevelRuntime::get_task_table(), false);
 
   for(int i = 1; i < argc; i++) {
     if(!strcmp(argv[i], "-s")) {
