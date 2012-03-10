@@ -1674,6 +1674,34 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    Processor::TaskIDTable& HighLevelRuntime::get_task_table(bool add_runtime_tasks /*=true*/)
+    //--------------------------------------------------------------------------------------------
+    {
+      static Processor::TaskIDTable table;
+      if (add_runtime_tasks)
+      {
+        HighLevelRuntime::register_runtime_tasks(table);
+      }
+      return table;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    std::map<Processor::TaskFuncID,const char*>& HighLevelRuntime::get_task_name_table(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      static std::map<Processor::TaskFuncID,const char*> name_table;
+      return name_table;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    std::map<Processor::TaskFuncID,bool>& HighLevelRuntime::get_task_type_table(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      static std::map<Processor::TaskFuncID,bool> type_table;
+      return type_table;
+    }
+
+    //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::register_runtime_tasks(Processor::TaskIDTable &table)
     //--------------------------------------------------------------------------------------------
     {

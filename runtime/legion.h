@@ -708,10 +708,48 @@ namespace RegionRuntime {
     public:
       static HighLevelRuntime* get_runtime(Processor p);
     public:
+      // Get the task table from the runtime
+      static Processor::TaskIDTable& get_task_table(bool add_runtime_tasks = true);
       // Call visible to the user to set up the task map
       static void register_runtime_tasks(Processor::TaskIDTable &table);
       // Call visible to the user to give a task to call to initialize mappers, colorize functions, etc.
       static void set_registration_callback(RegistrationCallbackFnptr callback);
+      // Register a task for a single task
+      template<typename T,
+        T (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
+      static void register_single_task(Processor::TaskFuncID id, const char *name = NULL);
+      template<
+        void (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
+      static void register_single_task(Processor::TaskFuncID id, const char *name = NULL);
+      template<typename T,
+        T (*SLOW_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
+        T (*FAST_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
+      static void register_single_task(Processor::TaskFuncID id, const char *name = NULL);
+      template<
+        void (*SLOW_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
+        void (*FAST_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
+      static void register_single_task(Processor::TaskFuncID id, const char *name = NULL);
+      // Register a task for an index space
+      template<typename T,
+        T (*TASK_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
+                      std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
+      static void register_index_task(Processor::TaskFuncID id, const char *name = NULL);
+      template<
+        void (*TASK_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
+                      std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
+      static void register_index_task(Processor::TaskFuncID id, const char *name = NULL);
+      template<typename T,
+        T (*SLOW_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
+                      std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
+        T (*FAST_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
+                      std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
+      static void register_index_task(Processor::TaskFuncID id, const char *name = NULL);
+      template<
+        void (*SLOW_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
+                      std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
+        void (*FAST_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
+                      std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
+      static void register_index_task(Processor::TaskFuncID id, const char *name = NULL);
     protected:
       friend class LowLevel::Processor;
       // Static methods for calls from the processor to the high level runtime
@@ -728,6 +766,9 @@ namespace RegionRuntime {
       static void advertise_work(const void * args, size_t arglen, Processor p);     // utility
       // Shutdown methods (one task to detect the termination, another to process it)
       static void detect_termination(const void * args, size_t arglen, Processor p); // application
+    private:
+      static std::map<Processor::TaskFuncID,const char*>& get_task_name_table(void);
+      static std::map<Processor::TaskFuncID,bool>& get_task_type_table(void);
     protected:
       HighLevelRuntime(Machine *m, Processor local);
       ~HighLevelRuntime();
@@ -2008,10 +2049,12 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////////////////////////
     
     // Template wrapper for high level tasks to encapsulate return values
+    //--------------------------------------------------------------------------
     template<typename T, 
     T (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,
                     Context,HighLevelRuntime*)>
     void high_level_task_wrapper(const void * args, size_t arglen, Processor p)
+    //--------------------------------------------------------------------------
     {
       // Get the high level runtime
       HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
@@ -2038,9 +2081,11 @@ namespace RegionRuntime {
     }
 
     // Overloaded version of the task wrapper for when return type is void
+    //--------------------------------------------------------------------------
     template<void (*TASK_PTR)(const void*,size_t,
           std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
     void high_level_task_wrapper(const void * args, size_t arglen, Processor p)
+    //--------------------------------------------------------------------------
     {
       // Get the high level runtime
       HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
@@ -2068,12 +2113,14 @@ namespace RegionRuntime {
     // Overloaded versions of the task wrapper for when you might want to have the
     // runtime figure out if it can specialize a task into one that uses
     // the AccessorArray instances as an optimization
+    //--------------------------------------------------------------------------
     template<typename T,
     T (*SLOW_TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,
                         Context ctx,HighLevelRuntime*),
     T (*FAST_TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorArray> >&,
                         Context ctx,HighLevelRuntime*)>
     void high_level_task_wrapper(const void * args, size_t arglen, Processor p)
+    //--------------------------------------------------------------------------
     {
       // Get the high level runtime
       HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
@@ -2127,12 +2174,14 @@ namespace RegionRuntime {
 
     // Overloaded version of the task wrapper for when you want fast instances with a
     // a void return type
+    //--------------------------------------------------------------------------
     template<
     void (*SLOW_TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,
                           Context ctx,HighLevelRuntime*),
     void (*FAST_TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorArray> >&,
                           Context ctx,HighLevelRuntime*)>
     void high_level_task_wrapper(const void * args, size_t arglen, Processor p)
+    //--------------------------------------------------------------------------
     {
       // Get the high level runtime
       HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
@@ -2182,10 +2231,12 @@ namespace RegionRuntime {
     }
 
     // Wrapper functions for tasks that are launched as index spaces
+    //--------------------------------------------------------------------------
     template<typename T,
     T (*TASK_PTR)(const void*,size_t/*global*/,const void*,size_t/*local*/,const IndexPoint&,
                   std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
     void high_level_index_task_wrapper(const void * args, size_t arglen, Processor p)
+    //--------------------------------------------------------------------------
     {
       // Get the high level runtime
       HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
@@ -2216,10 +2267,12 @@ namespace RegionRuntime {
       runtime->end_task(ctx, (void*)(&return_value), sizeof(T), regions);
     }
 
+    //--------------------------------------------------------------------------
     template<
     void (*TASK_PTR)(const void*,size_t/*global*/,const void*,size_t/*local*/,const IndexPoint&,
                       std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
     void high_level_index_task_wrapper(const void *args, size_t arglen, Processor p)
+    //--------------------------------------------------------------------------
     {
       // Get the high level runtime
       HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
@@ -2249,12 +2302,14 @@ namespace RegionRuntime {
       runtime->end_task(ctx, NULL, 0, regions); 
     }
 
+    //-------------------------------------------------------------------------- 
     template<typename T,
     T (*SLOW_TASK_PTR)(const void*,size_t/*global*/,const void*,size_t/*local*/,const IndexPoint&,
                         std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
     T (*FAST_TASK_PTR)(const void*,size_t/*global*/,const void*,size_t/*local*/,const IndexPoint&,
                         std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
     void high_level_index_task_wrapper(const void *args, size_t arglen, Processor p)
+    //--------------------------------------------------------------------------
     {
       // Get the high level runtime
       HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
@@ -2310,12 +2365,14 @@ namespace RegionRuntime {
       runtime->end_task(ctx, (void*)&return_value, sizeof(T),regions);
     }
 
+    //--------------------------------------------------------------------------
     template<
     void (*SLOW_TASK_PTR)(const void*,size_t/*global*/,const void*,size_t/*local*/,const IndexPoint&,
                           std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
     void (*FAST_TASK_PTR)(const void*,size_t/*global*/,const void*,size_t/*local*/,const IndexPoint&,
                           std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
     void high_level_index_task_wrapper(const void *args, size_t arglen, Processor p)
+    //--------------------------------------------------------------------------
     {
       // Get the high level runtime
       HighLevelRuntime *runtime = HighLevelRuntime::get_runtime(p);
@@ -2366,6 +2423,216 @@ namespace RegionRuntime {
 
       // Send the return value back
       runtime->end_task(ctx, NULL, 0, regions);
+    }
+
+    //--------------------------------------------------------------------------
+    template<typename T,
+        T (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
+    /*static*/ void HighLevelRuntime::register_single_task(Processor::TaskFuncID id, const char *name /*= NULL*/)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(id >= TASK_ID_REGION_MAIN); // make sure we're not stomping on any runtime tasks
+#endif
+      // Add the task to the table
+      HighLevelRuntime::get_task_table(false)[id] = high_level_task_wrapper<T,TASK_PTR>;
+      if (name == NULL)
+      {
+        // Has no name, so just call it by its number
+        char *buffer = (char*)malloc(20*sizeof(char));
+        sprintf(buffer,"%d",id);
+        HighLevelRuntime::get_task_name_table()[id] = buffer;
+      }
+      else
+      {
+        HighLevelRuntime::get_task_name_table()[id] = name;
+      }
+      HighLevelRuntime::get_task_type_table()[id] = false; // not an index space
+    }
+
+    //--------------------------------------------------------------------------
+    template<
+      void (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
+    /*static*/ void HighLevelRuntime::register_single_task(Processor::TaskFuncID id, const char *name /*= NULL*/)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(id >= TASK_ID_REGION_MAIN); // make sure we're not stomping on any runtime tasks
+#endif
+      // Add the task to the table
+      HighLevelRuntime::get_task_table(false)[id] = high_level_task_wrapper<TASK_PTR>;
+      if (name == NULL)
+      {
+        // Has no name, so just call it by its number
+        char *buffer = (char*)malloc(20*sizeof(char));
+        sprintf(buffer,"%d",id);
+        HighLevelRuntime::get_task_name_table()[id] = buffer;
+      }
+      else
+      {
+        HighLevelRuntime::get_task_name_table()[id] = name;
+      }
+      HighLevelRuntime::get_task_type_table()[id] = false; // not an index space
+    }
+
+    //--------------------------------------------------------------------------
+    template<typename T,
+      T (*SLOW_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
+      T (*FAST_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
+    /*static*/ void HighLevelRuntime::register_single_task(Processor::TaskFuncID id, const char *name /*= NULL*/)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(id >= TASK_ID_REGION_MAIN); // make sure we're not stomping on any runtime tasks
+#endif
+      // Add the task to the table
+      HighLevelRuntime::get_task_table(false)[id] = high_level_task_wrapper<T,SLOW_PTR,FAST_PTR>;
+      if (name == NULL)
+      {
+        // Has no name, so just call it by its number
+        char *buffer = (char*)malloc(20*sizeof(char));
+        sprintf(buffer,"%d",id);
+        HighLevelRuntime::get_task_name_table()[id] = buffer;
+      }
+      else
+      {
+        HighLevelRuntime::get_task_name_table()[id] = name;
+      }
+      HighLevelRuntime::get_task_type_table()[id] = false; // not an index space
+    }
+
+    //--------------------------------------------------------------------------
+    template<
+      void (*SLOW_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
+      void (*FAST_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
+    /*static*/ void HighLevelRuntime::register_single_task(Processor::TaskFuncID id, const char *name /*= NULL*/)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(id >= TASK_ID_REGION_MAIN); // make sure we're not stomping on any runtime tasks
+#endif
+      // Add the task to the table
+      HighLevelRuntime::get_task_table(false)[id] = high_level_task_wrapper<SLOW_PTR,FAST_PTR>;
+      if (name == NULL)
+      {
+        // Has no name, so just call it by its number
+        char *buffer = (char*)malloc(20*sizeof(char));
+        sprintf(buffer,"%d",id);
+        HighLevelRuntime::get_task_name_table()[id] = buffer;
+      }
+      else
+      {
+        HighLevelRuntime::get_task_name_table()[id] = name;
+      }
+      HighLevelRuntime::get_task_type_table()[id] = false; // not an index space
+    }
+
+    //--------------------------------------------------------------------------
+    template<typename T,
+      T (*TASK_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
+                    std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
+    /*static*/ void HighLevelRuntime::register_index_task(Processor::TaskFuncID id, const char *name /*= NULL*/)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(id >= TASK_ID_REGION_MAIN); // make sure we're not stomping on any runtime tasks
+#endif
+      // Add the task to the table
+      HighLevelRuntime::get_task_table(false)[id] = high_level_index_task_wrapper<T,TASK_PTR>;
+      if (name == NULL)
+      {
+        // Has no name, so just call it by its number
+        char *buffer = (char*)malloc(20*sizeof(char));
+        sprintf(buffer,"%d",id);
+        HighLevelRuntime::get_task_name_table()[id] = buffer;
+      }
+      else
+      {
+        HighLevelRuntime::get_task_name_table()[id] = name;
+      }
+      HighLevelRuntime::get_task_type_table()[id] = true; // is an index space
+    }
+
+    //--------------------------------------------------------------------------
+    template<
+      void (*TASK_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
+                    std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
+    /*static*/ void HighLevelRuntime::register_index_task(Processor::TaskFuncID id, const char *name /*= NULL*/)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(id >= TASK_ID_REGION_MAIN); // make sure we're not stomping on any runtime tasks
+#endif
+      // Add the task to the table
+      HighLevelRuntime::get_task_table(false)[id] = high_level_index_task_wrapper<TASK_PTR>;
+      if (name == NULL)
+      {
+        // Has no name, so just call it by its number
+        char *buffer = (char*)malloc(20*sizeof(char));
+        sprintf(buffer,"%d",id);
+        HighLevelRuntime::get_task_name_table()[id] = buffer;
+      }
+      else
+      {
+        HighLevelRuntime::get_task_name_table()[id] = name;
+      }
+      HighLevelRuntime::get_task_type_table()[id] = true; // is an index space
+    }
+
+    //--------------------------------------------------------------------------
+    template<typename T,
+      T (*SLOW_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
+                    std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
+      T (*FAST_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
+                    std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
+    /*static*/ void HighLevelRuntime::register_index_task(Processor::TaskFuncID id, const char *name /*= NULL*/)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(id >= TASK_ID_REGION_MAIN); // make sure we're not stomping on any runtime tasks
+#endif
+      // Add the task to the table
+      HighLevelRuntime::get_task_table(false)[id] = high_level_index_task_wrapper<T,SLOW_PTR,FAST_PTR>;
+      if (name == NULL)
+      {
+        // Has no name, so just call it by its number
+        char *buffer = (char*)malloc(20*sizeof(char));
+        sprintf(buffer,"%d",id);
+        HighLevelRuntime::get_task_name_table()[id] = buffer;
+      }
+      else
+      {
+        HighLevelRuntime::get_task_name_table()[id] = name;
+      }
+      HighLevelRuntime::get_task_type_table()[id] = true; // is an index space
+    }
+
+    //--------------------------------------------------------------------------
+    template<
+      void (*SLOW_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
+                    std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
+      void (*FAST_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
+                    std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
+    /*static*/ void HighLevelRuntime::register_index_task(Processor::TaskFuncID id, const char *name /*= NULL*/)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(id >= TASK_ID_REGION_MAIN); // make sure we're not stomping on any runtime tasks
+#endif
+      // Add the task to the table
+      HighLevelRuntime::get_task_table(false)[id] = high_level_index_task_wrapper<SLOW_PTR,FAST_PTR>;
+      if (name == NULL)
+      {
+        // Has no name, so just call it by its number
+        char *buffer = (char*)malloc(20*sizeof(char));
+        sprintf(buffer,"%d",id);
+        HighLevelRuntime::get_task_name_table()[id] = buffer;
+      }
+      else
+      {
+        HighLevelRuntime::get_task_name_table()[id] = name;
+      }
+      HighLevelRuntime::get_task_type_table()[id] = true; // is an index space
     }
 
     ////////////////////////////////////////////////////////////////////////////////
