@@ -899,6 +899,8 @@ namespace RegionRuntime {
     private:
       void add_to_ready_queue(TaskContext *ctx, bool acquire_lock = true);
       void add_to_waiting_queue(TaskContext *ctx);
+      void add_to_waiting_queue(RegionMappingImpl *impl);
+      void add_to_waiting_queue(DeletionOp *op);
     protected:
       // Make it so TaskContext and RegionMappingImpl can put themselves
       // back on the free list

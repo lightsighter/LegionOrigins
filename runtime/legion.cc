@@ -1972,7 +1972,7 @@ namespace RegionRuntime {
       }
       else
       {
-        waiting_deletions.push_back(op);
+        add_to_waiting_queue(op);
       }
     }
     
@@ -2133,7 +2133,7 @@ namespace RegionRuntime {
       }
       else
       {
-        waiting_deletions.push_back(op);
+        add_to_waiting_queue(op);
       }
     }
 
@@ -2245,7 +2245,7 @@ namespace RegionRuntime {
       }
       else
       {
-        waiting_maps.push_back(impl);
+        add_to_waiting_queue(impl);
       }
     }
 
@@ -2493,6 +2493,7 @@ namespace RegionRuntime {
         {
           Processor copy = local_proc;
           copy.enable_idle_task();
+          idle_task_enabled = true;
         }
         // advertise the task to any people looking for it
         advertise(ctx->map_id);
@@ -2506,6 +2507,7 @@ namespace RegionRuntime {
         {
           Processor copy = local_proc;
           copy.enable_idle_task();
+          idle_task_enabled = true;
         }
         // advertise the task to any people looking for it
         advertise(ctx->map_id);
@@ -2524,8 +2526,41 @@ namespace RegionRuntime {
       {
         Processor copy = local_proc;
         copy.enable_idle_task();
+        idle_task_enabled = true;
       }
       // No need to advertise this yet since it can't be stolen
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::add_to_waiting_queue(RegionMappingImpl *impl)
+    //--------------------------------------------------------------------------------------------
+    {
+      AutoLock q_lock(queue_lock);
+      // Put it on the map waiting queue
+      waiting_maps.push_back(impl);
+      // enable the idle task so it will get run
+      if (!idle_task_enabled)
+      {
+        Processor copy = local_proc;
+        copy.enable_idle_task();
+        idle_task_enabled = true;
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::add_to_waiting_queue(DeletionOp *op)
+    //--------------------------------------------------------------------------------------------
+    {
+      AutoLock q_lock(queue_lock);
+      // Put it on the deletion waiting queue
+      waiting_deletions.push_back(op);
+      // enable the idle task so that this will get run
+      if (!idle_task_enabled)
+      {
+        Processor copy = local_proc;
+        copy.enable_idle_task();
+        idle_task_enabled = true;
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2919,16 +2954,28 @@ namespace RegionRuntime {
       derez.deserialize<Processor>(advertiser);
       MapperID map_id;
       derez.deserialize<MapperID>(map_id);
-      // Need exclusive access to the list steal data structures
-      AutoLock steal_lock(stealing_lock);
+      {
+        // Need exclusive access to the list steal data structures
+        AutoLock steal_lock(stealing_lock);
 #ifdef DEBUG_HIGH_LEVEL
-      assert(outstanding_steals.find(map_id) != outstanding_steals.end());
+        assert(outstanding_steals.find(map_id) != outstanding_steals.end());
 #endif
-      std::set<Processor> &procs = outstanding_steals[map_id];
+        std::set<Processor> &procs = outstanding_steals[map_id];
 #ifdef DEBUG_HIGH_LEVEL
-      assert(procs.find(advertiser) != procs.end()); // This should be in our outstanding list
+        assert(procs.find(advertiser) != procs.end()); // This should be in our outstanding list
 #endif
-      procs.erase(advertiser);
+        procs.erase(advertiser);
+      }
+      {
+        // Enable the idle task since some mappers might make new decisions
+        AutoLock ready_queue_lock(queue_lock);
+        if (!this->idle_task_enabled)
+        {
+          idle_task_enabled = true;
+          Processor copy = local_proc;
+          copy.enable_idle_task();
+        }
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2974,7 +3021,8 @@ namespace RegionRuntime {
       }
       // Check to see if have any remaining work in our queues, 
       // if not, then disable the idle task
-      if (ready_queue.empty() && waiting_queue.empty())
+      if (ready_queue.empty() && waiting_queue.empty()
+          && waiting_maps.empty() && waiting_deletions.empty())
       {
         idle_task_enabled = false;
         Processor copy = local_proc;
@@ -2995,28 +3043,9 @@ namespace RegionRuntime {
     void HighLevelRuntime::update_queue(void)
     //--------------------------------------------------------------------------------------------
     {
-      {
-        // Need the queue lock in exclusive mode
-        AutoLock ready_queue_lock(queue_lock);
-        // Iterate over the waiting queue looking for tasks that are now mappable
-        std::list<TaskContext*>::iterator task_it = waiting_queue.begin();
-        while (task_it != waiting_queue.end())
-        {
-          if ((*task_it)->is_ready())
-          {
-            TaskContext *desc = *task_it;
-            // Push it onto the ready queue
-            add_to_ready_queue(desc, false/*already hold lock*/);
-            // Remove it from the waiting queue
-            task_it = waiting_queue.erase(task_it);
-          }
-          else
-          {
-            task_it++;
-          }
-        }
-      }
-      // Also check any of the mapping operations that we need to perform to
+      // Need the queue lock in exclusive mode
+      AutoLock q_lock(queue_lock);
+      // Check any of the mapping operations that we need to perform to
       // see if they are ready to be performed.  If so we can just perform them here
       {
         std::list<RegionMappingImpl*>::iterator map_it = waiting_maps.begin();
@@ -3032,6 +3061,26 @@ namespace RegionRuntime {
           else
           {
             map_it++;
+          }
+        }
+      }
+      // Then check any tasks that might have been woken up because mappings are ready
+      {
+        // Iterate over the waiting queue looking for tasks that are now mappable
+        std::list<TaskContext*>::iterator task_it = waiting_queue.begin();
+        while (task_it != waiting_queue.end())
+        {
+          if ((*task_it)->is_ready())
+          {
+            TaskContext *desc = *task_it;
+            // Push it onto the ready queue
+            add_to_ready_queue(desc, false/*already hold lock*/);
+            // Remove it from the waiting queue
+            task_it = waiting_queue.erase(task_it);
+          }
+          else
+          {
+            task_it++;
           }
         }
       }
@@ -10520,12 +10569,12 @@ namespace RegionRuntime {
       // If this is the owner we should have deleted the instance by now
       if (!remote && (parent == NULL))
       {
-        //assert(!valid);
-        //assert(children == 0);
-        //assert(users.empty());
-        //assert(added_users.empty());
-        //assert(copy_users.empty());
-        //assert(added_copy_users.empty());
+        assert(!valid);
+        assert(children == 0);
+        assert(users.empty());
+        assert(added_users.empty());
+        assert(copy_users.empty());
+        assert(added_copy_users.empty());
       }
 #endif
     }
