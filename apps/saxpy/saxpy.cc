@@ -606,6 +606,7 @@ void create_mappers(Machine *machine, HighLevelRuntime *runtime,
 int main(int argc, char **argv) {
   srand(time(NULL));
 
+  HighLevelRuntime::set_input_args(argc, argv);
   HighLevelRuntime::set_registration_callback(create_mappers);
   HighLevelRuntime::register_single_task<top_level_task<AccessorGeneric> >(TOP_LEVEL_TASK_ID,"top_level_task");
   HighLevelRuntime::register_single_task<main_task<AccessorGeneric> >(TASKID_MAIN,"main_task");
