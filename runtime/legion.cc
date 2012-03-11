@@ -1725,13 +1725,23 @@ namespace RegionRuntime {
       table[TERMINATION_ID]     = HighLevelRuntime::detect_termination;
     }
 
-    /*static*/ volatile RegistrationCallbackFnptr HighLevelRuntime::registration_callback = 0;
+    /*static*/ volatile RegistrationCallbackFnptr HighLevelRuntime::registration_callback = NULL;
+    /*static*/ int HighLevelRuntime::hlr_argc = 0;
+    /*static*/ char** HighLevelRuntime::hlr_argv = NULL;
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::set_registration_callback(RegistrationCallbackFnptr callback)
     //--------------------------------------------------------------------------------------------
     {
       registration_callback = callback;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::set_input_args(int argc, char** argv)
+    //--------------------------------------------------------------------------------------------
+    {
+      hlr_argc = argc;
+      hlr_argv = argv;
     }
 
     //--------------------------------------------------------------------------------------------

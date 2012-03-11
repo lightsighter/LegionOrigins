@@ -708,6 +708,8 @@ namespace RegionRuntime {
     public:
       static HighLevelRuntime* get_runtime(Processor p);
     public:
+      // Set the input arguments for the high-level runtime
+      static void set_input_args(int argc, char **argv);
       // Get the task table from the runtime
       static Processor::TaskIDTable& get_task_table(bool add_runtime_tasks = true);
       // Call visible to the user to set up the task map
@@ -942,6 +944,11 @@ namespace RegionRuntime {
       // Static variables
       static HighLevelRuntime *runtime_map;
       static volatile RegistrationCallbackFnptr registration_callback;
+    public:
+      // member variables for getting the default arguments
+      // Note that these are available to the mapper through the pointer to the runtime
+      static int hlr_argc;
+      static char** hlr_argv;
     private:
       // Member variables
       const Processor local_proc;
