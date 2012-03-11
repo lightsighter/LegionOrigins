@@ -701,6 +701,7 @@ int main(int argc, char **argv) {
   //HighLevelRuntime::register_index_task<add_vectors_task<AccessorGeneric> >(TASKID_ADD_VECTORS,"add_vectors");
 
   //HighLevelRuntime::register_runtime_tasks(task_table);
+  HighLevelRuntime::set_input_args(argc,argv);
   HighLevelRuntime::set_registration_callback(create_mappers);
 
   Machine m(&argc, &argv, HighLevelRuntime::get_task_table(), false);
