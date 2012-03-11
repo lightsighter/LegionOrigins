@@ -1863,6 +1863,7 @@ int main(int argc, char **argv)
   //task_table[TASKID_SAVE_FILE] = high_level_task_wrapper<save_file<AccessorGeneric> >;
 
   //HighLevelRuntime::register_runtime_tasks(task_table);
+  HighLevelRuntime::set_input_args(argc,argv);
   HighLevelRuntime::set_registration_callback(create_mappers);
   HighLevelRuntime::register_single_task<top_level_task<AccessorGeneric> >(TOP_LEVEL_TASK_ID,"top_level_task");
   HighLevelRuntime::register_single_task<main_task<AccessorGeneric> >(TASKID_MAIN_TASK,"main_task");
