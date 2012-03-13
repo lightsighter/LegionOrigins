@@ -131,8 +131,8 @@ namespace RegionRuntime {
 
       Processor get_utility_processor(void) const;
 
-      void enable_idle_task(void) { }
-      void disable_idle_task(void) { }
+      void enable_idle_task(void);
+      void disable_idle_task(void);
 
       typedef unsigned TaskFuncID;
       typedef void (*TaskFuncPtr)(const void *args, size_t arglen, Processor proc);

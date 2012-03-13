@@ -47,6 +47,7 @@ namespace RegionRuntime {
       NOTIFY_FINISH_ID   = (Processor::TASK_ID_FIRST_AVAILABLE+6),
       ADVERTISEMENT_ID   = (Processor::TASK_ID_FIRST_AVAILABLE+7),
       TERMINATION_ID     = (Processor::TASK_ID_FIRST_AVAILABLE+8),
+      TASK_ID_AVAILABLE  = (Processor::TASK_ID_FIRST_AVAILABLE+9),
     };
 
     Logger::Category log_task("tasks");
@@ -54,6 +55,8 @@ namespace RegionRuntime {
     Logger::Category log_inst("instances");
     Logger::Category log_spy("legion_spy");
     Logger::Category log_garbage("gc");
+    Logger::Category log_leak("leaks");
+    Logger::Category log_variant("variants");
 
     // An auto locking class for taking a lock and releasing it when
     // the object goes out of scope
@@ -186,6 +189,55 @@ namespace RegionRuntime {
           log_spy(LEVEL_INFO,"Event Event %d %d %d %d",it->id,it->gen,result.id,result.gen);
         }
       }
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Task Collection 
+    ///////////////////////////////////////////////////////////// 
+
+    //--------------------------------------------------------------------------
+    bool TaskCollection::has_variant(Processor::Kind kind, bool index_space)
+    //--------------------------------------------------------------------------
+    {
+      bool result = false;
+      for (std::vector<Variant>::const_iterator it = variants.begin();
+            it != variants.end(); it++)
+      {
+        if ((it->proc_kind == kind) && (it->index_space == index_space))
+        {
+          result = true;
+          break;
+        }
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void TaskCollection::add_variant(Processor::TaskFuncID low_id, Processor::Kind kind, bool index)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!has_variant(kind, index));
+#endif
+      variants.push_back(Variant(low_id, kind, index));
+    }
+
+    //--------------------------------------------------------------------------
+    Processor::TaskFuncID TaskCollection::select_variant(bool index, Processor::Kind kind)
+    //--------------------------------------------------------------------------
+    {
+      for (std::vector<Variant>::const_iterator it = variants.begin();
+            it != variants.end(); it++)
+      {
+        if ((it->proc_kind == kind) && (it->index_space == index))
+        {
+          return it->low_id;
+        }
+      }
+      log_variant(LEVEL_ERROR,"User task %s (ID %d) has no registered variants for "
+          "processors of kind %d and index space %d",name, user_id, kind, index);
+      exit(1);
+      return 0;
     }
 
     /////////////////////////////////////////////////////////////
@@ -1136,23 +1188,24 @@ namespace RegionRuntime {
           if (!found)
           {
             log_inst(LEVEL_ERROR,"Unable to find or create physical instance for mapping "
-                "region %d of task %d with unique id %d",req.handle.region.id,parent_ctx->task_id,
-                parent_ctx->unique_id);
+                "region %d of task %s (ID %d) with unique id %d",req.handle.region.id,
+                parent_ctx->variants->name,parent_ctx->task_id,parent_ctx->unique_id);
             exit(1);
           }
         }
         else
         { 
           log_inst(LEVEL_ERROR,"No specified memory locations for mapping physical instance "
-              "for region (%d) for task %d with unique id %d",req.handle.region.id,
-              parent_ctx->task_id, parent_ctx->unique_id);
+              "for region (%d) for task %s (ID %d) with unique id %d",req.handle.region.id,
+              parent_ctx->variants->name,parent_ctx->task_id, parent_ctx->unique_id);
           exit(1);
         }
       }
-      log_region(LEVEL_INFO,"Mapping inline region %d of task %d (unique id %d) to "
-              "physical instance %d of logical region %d in memory %d",req.handle.region.id,
-              parent_ctx->task_id,parent_ctx->unique_id,chosen_info->iid,chosen_info->handle.id,chosen_info->location.id);
 #ifdef DEBUG_HIGH_LEVEL
+      log_region(LEVEL_DEBUG,"Mapping inline region %d of task %s (ID %d) (unique id %d) to "
+              "physical instance %d of logical region %d in memory %d",req.handle.region.id,
+              parent_ctx->variants->name, parent_ctx->task_id,parent_ctx->unique_id,
+              chosen_info->iid,chosen_info->handle.id,chosen_info->location.id);
       assert(chosen_info != InstanceInfo::get_no_instance());
 #endif
       // Check to see if we need to make an allocator too
@@ -1338,6 +1391,230 @@ namespace RegionRuntime {
     }
 
     /////////////////////////////////////////////////////////////
+    // Deletion Operation 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    DeletionOp::DeletionOp(HighLevelRuntime *rt)
+      : runtime(rt), active(false)
+    //--------------------------------------------------------------------------
+    {
+    }
+    
+    //--------------------------------------------------------------------------
+    DeletionOp::~DeletionOp(void)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    void DeletionOp::activate(TaskContext *parent, LogicalRegion h)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!active);
+      assert(parent != NULL);
+#endif
+      handle = h;
+      is_region = true;
+      parent_ctx = parent;
+      remaining_notifications = 0;
+      unique_id = runtime->get_unique_task_id();
+      current_lock = parent->current_lock;
+      active = true;
+      performed = false;
+    }
+
+    //--------------------------------------------------------------------------
+    void DeletionOp::activate(TaskContext *parent, PartitionID p)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!active);
+      assert(parent != NULL);
+#endif
+      pid = p;
+      is_region = false;
+      parent_ctx = parent;
+      remaining_notifications = 0;
+      unique_id = runtime->get_unique_task_id();
+      current_lock = parent->current_lock;
+      active = true;
+      performed = false;
+    }
+    
+    //--------------------------------------------------------------------------
+    void DeletionOp::deactivate(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      handle = LogicalRegion::NO_REGION;
+      parent_ctx = NULL;
+      active = false;
+      current_lock = Lock::NO_LOCK;
+      runtime->free_deletion(this);
+    }
+
+    //--------------------------------------------------------------------------
+    void DeletionOp::perform_deletion(bool acquire_lock)
+    //--------------------------------------------------------------------------
+    {
+      if (acquire_lock)
+      {
+        Event lock_event = current_lock.lock(0,true/*exclusive*/);
+        lock_event.wait(true/*block*/);
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+      assert(is_ready());
+#endif
+      if (!performed)
+      {
+        // Once the deletion is ready to be performed, go down the physical
+        // region tree and mark all the physical instances that we own as being invalid
+        if (is_region)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(parent_ctx->region_nodes->find(handle) != parent_ctx->region_nodes->end());
+#endif
+          RegionNode *target = (*(parent_ctx->region_nodes))[handle];
+          target->invalidate_physical_tree(physical_ctx);
+        }
+        else
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(parent_ctx->partition_nodes->find(pid) != parent_ctx->partition_nodes->end());
+#endif
+          PartitionNode *target = (*(parent_ctx->partition_nodes))[pid];
+          target->invalidate_physical_tree(physical_ctx);
+        }
+        // Mark that we've been performed so we don't get performed twice
+        performed = true;
+      }
+      if (acquire_lock)
+      {
+        // Probably not so good, but I'm using the fact that we acquired the lock as evidence
+        // that we're calling this function from anywhere except children_mapped, which means
+        // we need to remove it from the list of deletions to be performed by the parent task
+        // Note that this safe even if done twice as it will just remove something that isn't there
+        parent_ctx->child_deletions.erase(this);
+        // Now we can unlock the lock
+        current_lock.unlock();
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    bool DeletionOp::is_ready(void) const
+    //--------------------------------------------------------------------------
+    {
+      return (remaining_notifications==0);
+    }
+    
+    //--------------------------------------------------------------------------
+    void DeletionOp::notify(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(remaining_notifications > 0);
+#endif
+      remaining_notifications--;
+    }
+
+    //--------------------------------------------------------------------------
+    void DeletionOp::add_source_physical_instance(InstanceInfo *info)
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+    }
+    
+    //--------------------------------------------------------------------------
+    UniqueID DeletionOp::get_unique_id(void) const
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+      return 0;
+    }
+
+    //--------------------------------------------------------------------------
+    Event DeletionOp::get_termination_event(void) const
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+      return Event::NO_EVENT;
+    }
+    
+    //--------------------------------------------------------------------------
+    const RegionRequirement& DeletionOp::get_requirement(unsigned idx) const
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+      return *(new RegionRequirement());
+    }
+
+    //--------------------------------------------------------------------------
+    InstanceInfo* DeletionOp::get_chosen_instance(unsigned idx) const
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+      return InstanceInfo::get_no_instance();
+    }
+    
+    //--------------------------------------------------------------------------
+    void DeletionOp::add_mapping_dependence(unsigned idx, GeneralizedContext *ctx,
+                                            unsigned dep_idx, const DependenceType &dtype)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx == 0);
+#endif
+      if (ctx->add_waiting_dependence(this, dep_idx))
+      {
+        remaining_notifications++;
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void DeletionOp::add_unresolved_dependence(unsigned idx, GeneralizedContext *ctx,
+                                                DependenceType dtype)
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+    }
+    
+    //--------------------------------------------------------------------------
+    bool DeletionOp::add_waiting_dependence(GeneralizedContext *ctx, unsigned idx)
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------
+    const std::map<UniqueID,Event>& DeletionOp::get_unresolved_dependences(unsigned idx)
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+      return *(new std::map<UniqueID,Event>());
+    }
+    
+    //--------------------------------------------------------------------------
+    InstanceInfo* DeletionOp::create_instance_info(LogicalRegion handle, Memory m)
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+      return InstanceInfo::get_no_instance();
+    }
+
+    //--------------------------------------------------------------------------
+    InstanceInfo* DeletionOp::create_instance_info(LogicalRegion newer, InstanceInfo *old)
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+      return InstanceInfo::get_no_instance();
+    }
+
+    /////////////////////////////////////////////////////////////
     // High Level Runtime 
     ///////////////////////////////////////////////////////////// 
 
@@ -1347,7 +1624,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     HighLevelRuntime::HighLevelRuntime(LowLevel::Machine *m, Processor local)
-      : local_proc(local), machine(m),
+      : local_proc(local), proc_kind (m->get_processor_kind(local)), machine(m),
       mapper_objects(std::vector<Mapper*>(DEFAULT_MAPPER_SLOTS)), 
       mapper_locks(std::vector<Lock>(DEFAULT_MAPPER_SLOTS)),
       next_partition_id(local_proc.id), next_task_id(local_proc.id),
@@ -1408,10 +1685,10 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           assert(!mapper_objects.empty());
 #endif
-          desc->initialize_task(NULL/*no parent*/,tid, TASK_ID_REGION_MAIN,malloc(sizeof(Context)),
+          desc->initialize_task(NULL/*no parent*/,tid, HighLevelRuntime::legion_main_id,malloc(sizeof(Context)),
                                 sizeof(Context), 0, 0, mapper_objects[0], mapper_locks[0]);
         }
-        log_spy(LEVEL_INFO,"Top Task %d %d",desc->unique_id,TASK_ID_REGION_MAIN);
+        log_spy(LEVEL_INFO,"Top Task %d %d",desc->unique_id,HighLevelRuntime::legion_main_id);
         // Put this task in the ready queue
         ready_queue.push_back(desc);
 
@@ -1449,12 +1726,68 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    /*static*/ Processor::TaskIDTable& HighLevelRuntime::get_task_table(bool add_runtime_tasks /*=true*/)
+    //--------------------------------------------------------------------------------------------
+    {
+      static Processor::TaskIDTable table;
+      if (add_runtime_tasks)
+      {
+        HighLevelRuntime::register_runtime_tasks(table);
+      }
+      return table;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    /*static*/ std::map<Processor::TaskFuncID,TaskCollection*>& HighLevelRuntime::get_collection_table(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      static std::map<Processor::TaskFuncID,TaskCollection*> collection_table;
+      return collection_table;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    /*static*/ Processor::TaskFuncID HighLevelRuntime::get_next_available_id(void) 
+    //--------------------------------------------------------------------------------------------
+    {
+      static Processor::TaskFuncID available = TASK_ID_AVAILABLE;
+      return available++;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    /*static*/ void HighLevelRuntime::update_collection_table(void (*low_level_ptr)(const void*,size_t,Processor),
+                                                    Processor::TaskFuncID uid, const char *name, bool index_space,
+                                                    Processor::Kind proc_kind)
+    //--------------------------------------------------------------------------------------------
+    {
+      // First update the low-level task table
+      Processor::TaskFuncID low_id = HighLevelRuntime::get_next_available_id();
+      // Add it to the low level table
+      HighLevelRuntime::get_task_table(false)[low_id] = low_level_ptr;
+      // Now see if an entry already exists in the attribute table for this uid
+      std::map<Processor::TaskFuncID,TaskCollection*>& table = HighLevelRuntime::get_collection_table();
+      if (table.find(uid) == table.end())
+      {
+        TaskCollection *collec = new TaskCollection(uid, name);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(collec != NULL);
+#endif
+        table[uid] = collec;
+        collec->add_variant(low_id, proc_kind, index_space);
+      }
+      else
+      {
+        // Update the variants for the attribute
+        table[uid]->add_variant(low_id, proc_kind, index_space);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::register_runtime_tasks(Processor::TaskIDTable &table)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       // Check to make sure that nobody has registered any tasks here
-      for (unsigned idx = 0; idx < TASK_ID_REGION_MAIN; idx++)
+      for (unsigned idx = 0; idx < TASK_ID_AVAILABLE; idx++)
         assert(table.find(idx) == table.end());
 #endif
       table[INIT_FUNC_ID]       = HighLevelRuntime::initialize_runtime;
@@ -1471,13 +1804,31 @@ namespace RegionRuntime {
       table[TERMINATION_ID]     = HighLevelRuntime::detect_termination;
     }
 
-    /*static*/ volatile RegistrationCallbackFnptr HighLevelRuntime::registration_callback = 0;
+    /*static*/ volatile RegistrationCallbackFnptr HighLevelRuntime::registration_callback = NULL;
+    /*static*/ Processor::TaskFuncID HighLevelRuntime::legion_main_id = 0;
+    /*static*/ int HighLevelRuntime::hlr_argc = 0;
+    /*static*/ char** HighLevelRuntime::hlr_argv = NULL;
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::set_registration_callback(RegistrationCallbackFnptr callback)
+    /*static*/ void HighLevelRuntime::set_registration_callback(RegistrationCallbackFnptr callback)
     //--------------------------------------------------------------------------------------------
     {
       registration_callback = callback;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    /*static*/ void HighLevelRuntime::set_input_args(int argc, char** argv)
+    //--------------------------------------------------------------------------------------------
+    {
+      hlr_argc = argc;
+      hlr_argv = argv;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    /*static*/ void HighLevelRuntime::set_top_level_task_id(Processor::TaskFuncID top_id)
+    //--------------------------------------------------------------------------------------------
+    {
+      legion_main_id = top_id;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1627,8 +1978,6 @@ namespace RegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_EXECUTE_TASK); 
       // Get a unique id for the task to use
       UniqueID unique_id = get_unique_task_id();
-      log_task(LEVEL_DEBUG,"Registering new single task with unique id %d and task id %d with high level runtime on processor %d\n",
-                unique_id, task_id, local_proc.id);
       TaskContext *desc = get_available_context(false/*new tree*/);
       // Allocate more space for context
       void *args_prime = malloc(arg.get_size()+sizeof(Context));
@@ -1641,6 +1990,10 @@ namespace RegionRuntime {
         desc->initialize_task(ctx, unique_id, task_id, args_prime, arg.get_size()+sizeof(Context), 
                               id, tag, mapper_objects[id], mapper_locks[id]);
       }
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Registering new single task with unique id %d and task %s (ID %d) with high level runtime on processor %d\n",
+                unique_id, desc->variants->name, task_id, local_proc.id);
+#endif
       desc->set_regions(regions, true/*check same*/);
       // Check if we want to spawn this task 
       check_spawn_task(desc);
@@ -1658,6 +2011,7 @@ namespace RegionRuntime {
         {
           add_to_ready_queue(desc);
         }
+        // No need to reclaim the context, the parent context has a pointer to reclaim later
       }
       else
       {
@@ -1692,11 +2046,22 @@ namespace RegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_DESTROY_REGION);
       LowLevel::RegionMetaDataUntyped low_region = (LowLevel::RegionMetaDataUntyped)handle;
-      log_region(LEVEL_DEBUG,"Destroying logical region %d in task %d",
+      log_region(LEVEL_DEBUG,"Registering destroying logical region %d in task %d",
                   low_region.id, ctx->unique_id);
 
-      // Notify the context that we destroyed the logical region
-      ctx->remove_region(handle, false/*recursive*/, true/*reclaim resources*/);
+      // Get a deletion operation
+      DeletionOp *op = get_available_deletion(ctx, handle);
+      // Register the deletion in the parent task
+      ctx->register_deletion(op);
+      if (op->is_ready())
+      {
+        op->perform_deletion(true/*need lock*/);
+        op->deactivate();
+      }
+      else
+      {
+        add_to_waiting_queue(op);
+      }
     }
     
     //--------------------------------------------------------------------------------------------
@@ -1844,7 +2209,20 @@ namespace RegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_DESTROY_PARTITION);
       log_region(LEVEL_DEBUG,"Destroying partition %d in task %d",
                   part.id, ctx->unique_id);
-      ctx->remove_partition(part.id, part.parent, false/*recursive*/, true/*reclaim resources*/);
+      // Get a deletion operation
+      DeletionOp *op = get_available_deletion(ctx, part.id);
+      // Register the deletion with the context
+      ctx->register_deletion(op);
+      // Check to see if it's ready or whether we should add it to the waiting queue
+      if (op->is_ready())
+      {
+        op->perform_deletion(true/*need lock*/);
+        op->deactivate();
+      }
+      else
+      {
+        add_to_waiting_queue(op);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1955,7 +2333,7 @@ namespace RegionRuntime {
       }
       else
       {
-        waiting_maps.push_back(impl);
+        add_to_waiting_queue(impl);
       }
     }
 
@@ -2076,8 +2454,10 @@ namespace RegionRuntime {
                                       std::vector<PhysicalRegion<AccessorGeneric> > &physical_regions)
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_DEBUG,"Beginning task %d with unique id %d on processor %x",
-                            ctx->task_id,ctx->unique_id,ctx->local_proc.id);
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Beginning task %s (ID %d) with unique id %d on processor %x",
+        ctx->variants->name,ctx->task_id,ctx->unique_id,ctx->local_proc.id);
+#endif
       ctx->start_task(physical_regions);
     }
 
@@ -2086,8 +2466,10 @@ namespace RegionRuntime {
                                     std::vector<PhysicalRegion<AccessorGeneric> > &physical_regions)
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_DEBUG,"Ending task %d with unique id %d on processor %x",
-                            ctx->task_id,ctx->unique_id,ctx->local_proc.id);
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Ending task %s (ID %d) with unique id %d on processor %x",
+        ctx->variants->name, ctx->task_id,ctx->unique_id,ctx->local_proc.id);
+#endif
       ctx->complete_task(arg,arglen,physical_regions); 
     }
 
@@ -2148,6 +2530,44 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    DeletionOp* HighLevelRuntime::get_available_deletion(TaskContext *ctx, LogicalRegion handle)
+    //--------------------------------------------------------------------------------------------
+    {
+      DeletionOp *result;
+      if (!available_deletions.empty())
+      {
+        result = available_deletions.front();
+        available_deletions.pop_front();
+      }
+      else
+      {
+        result = new DeletionOp(this);
+      }
+      result->activate(ctx, handle);
+
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    DeletionOp* HighLevelRuntime::get_available_deletion(TaskContext *ctx, PartitionID pid)
+    //--------------------------------------------------------------------------------------------
+    {
+      DeletionOp *result;
+      if (!available_deletions.empty())
+      {
+        result = available_deletions.front();
+        available_deletions.pop_front();
+      }
+      else
+      {
+        result = new DeletionOp(this);
+      }
+      result->activate(ctx, pid);
+
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::add_to_ready_queue(TaskContext *ctx, bool acquire_lock)
     //--------------------------------------------------------------------------------------------
     {
@@ -2161,6 +2581,7 @@ namespace RegionRuntime {
         {
           Processor copy = local_proc;
           copy.enable_idle_task();
+          idle_task_enabled = true;
         }
         // advertise the task to any people looking for it
         advertise(ctx->map_id);
@@ -2174,6 +2595,7 @@ namespace RegionRuntime {
         {
           Processor copy = local_proc;
           copy.enable_idle_task();
+          idle_task_enabled = true;
         }
         // advertise the task to any people looking for it
         advertise(ctx->map_id);
@@ -2192,8 +2614,41 @@ namespace RegionRuntime {
       {
         Processor copy = local_proc;
         copy.enable_idle_task();
+        idle_task_enabled = true;
       }
       // No need to advertise this yet since it can't be stolen
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::add_to_waiting_queue(RegionMappingImpl *impl)
+    //--------------------------------------------------------------------------------------------
+    {
+      AutoLock q_lock(queue_lock);
+      // Put it on the map waiting queue
+      waiting_maps.push_back(impl);
+      // enable the idle task so it will get run
+      if (!idle_task_enabled)
+      {
+        Processor copy = local_proc;
+        copy.enable_idle_task();
+        idle_task_enabled = true;
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::add_to_waiting_queue(DeletionOp *op)
+    //--------------------------------------------------------------------------------------------
+    {
+      AutoLock q_lock(queue_lock);
+      // Put it on the deletion waiting queue
+      waiting_deletions.push_back(op);
+      // enable the idle task so that this will get run
+      if (!idle_task_enabled)
+      {
+        Processor copy = local_proc;
+        copy.enable_idle_task();
+        idle_task_enabled = true;
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2209,6 +2664,13 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       available_maps.push_back(impl);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::free_deletion(DeletionOp *op)
+    //--------------------------------------------------------------------------------------------
+    {
+      available_deletions.push_back(op);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2278,9 +2740,12 @@ namespace RegionRuntime {
             if (still_local)
             {
               add_to_ready_queue(ctx,false/*already have lock*/);
+#ifdef DEBUG_HIGH_LEVEL
               log_task(LEVEL_DEBUG,"HLR on processor %d adding index space"
-                                    " task %d with unique id %d from orig %d",
-                ctx->local_proc.id,ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
+                                    " task %s (ID %d) with unique id %d from orig %d",
+                ctx->local_proc.id,ctx->variants->name,
+                ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
+#endif
             }
             else
             {
@@ -2293,18 +2758,24 @@ namespace RegionRuntime {
           {
             // This context doesn't need any splitting, add to ready queue 
             add_to_ready_queue(ctx);
+#ifdef DEBUG_HIGH_LEVEL
             log_task(LEVEL_DEBUG,"HLR on processor %d adding index space"
-                                  " task %d with unique id %d from orig %d",
-              ctx->local_proc.id,ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
+                                  " task %s (ID %d) with unique id %d from orig %d",
+              ctx->local_proc.id, ctx->variants->name,
+              ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
+#endif
           }
         }
         else // not an index space
         {
           // Single task, put it on the ready queue
           add_to_ready_queue(ctx);
-          log_task(LEVEL_DEBUG,"HLR on processor %d adding task %d "
+#ifdef DEBUG_HIGH_LEVEL
+          log_task(LEVEL_DEBUG,"HLR on processor %d adding task %s (ID %d) "
                                 "with unique id %d from orig %d",
-            ctx->local_proc.id,ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
+            ctx->local_proc.id, ctx->variants->name,
+            ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
+#endif
         }
         // check to see if this is a steal result coming back
         // this is only a guess a task could have been stolen earlier
@@ -2427,11 +2898,11 @@ namespace RegionRuntime {
           {
             Event lock_event = (*it)->current_lock.lock(0,true/*exclusive*/);
             held_ctx_locks.insert((*it)->current_lock);
-#ifdef DEBUG_HIGH_LEVEL
-            (*it)->current_taken = true;
-#endif
             lock_event.wait(true/*block*/);
           }
+#ifdef DEBUG_HIGH_LEVEL
+          (*it)->current_taken = true;
+#endif
         }
 
         size_t total_buffer_size = 2*sizeof(Processor) + sizeof(size_t);
@@ -2467,8 +2938,12 @@ namespace RegionRuntime {
         for (std::set<TaskContext*>::iterator it = stolen.begin();
               it != stolen.end(); it++)
         {
-          log_task(LEVEL_DEBUG,"task %d with unique id %d stolen from processor %d",
+#ifdef DEBUG_HIGH_LEVEL
+          (*it)->current_taken = false;
+          log_task(LEVEL_DEBUG,"task %s (ID %d) with unique id %d stolen from processor %d",
+                                (*it)->variants->name,
                                 (*it)->task_id,(*it)->unique_id,(*it)->local_proc.id);
+#endif
           // If they are remote, deactivate the instance
           // If it's not remote, its parent will deactivate it
           if ((*it)->remote)
@@ -2482,9 +2957,10 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       Context ctx = *((const Context*)args);
-      log_task(LEVEL_DEBUG,"All child tasks mapped for task %d with unique id %d on processor %d",
-              ctx->task_id,ctx->unique_id,ctx->local_proc.id);
-
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"All child tasks mapped for task %s (ID %d) with unique id %d on processor %d",
+        ctx->variants->name,ctx->task_id,ctx->unique_id,ctx->local_proc.id);
+#endif
       ctx->children_mapped();
     }
 
@@ -2494,9 +2970,10 @@ namespace RegionRuntime {
     {
       // Unpack the context from the arguments
       Context ctx = *((const Context*)args);
-      log_task(LEVEL_DEBUG,"Task %d with unique id %d finished on processor %d", 
-                ctx->task_id, ctx->unique_id, ctx->local_proc.id);
-
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Task %s (ID %d) with unique id %d finished on processor %d", 
+        ctx->variants->name,ctx->task_id, ctx->unique_id, ctx->local_proc.id);
+#endif
       ctx->finish_task();
     }
 
@@ -2565,16 +3042,28 @@ namespace RegionRuntime {
       derez.deserialize<Processor>(advertiser);
       MapperID map_id;
       derez.deserialize<MapperID>(map_id);
-      // Need exclusive access to the list steal data structures
-      AutoLock steal_lock(stealing_lock);
+      {
+        // Need exclusive access to the list steal data structures
+        AutoLock steal_lock(stealing_lock);
 #ifdef DEBUG_HIGH_LEVEL
-      assert(outstanding_steals.find(map_id) != outstanding_steals.end());
+        assert(outstanding_steals.find(map_id) != outstanding_steals.end());
 #endif
-      std::set<Processor> &procs = outstanding_steals[map_id];
+        std::set<Processor> &procs = outstanding_steals[map_id];
 #ifdef DEBUG_HIGH_LEVEL
-      assert(procs.find(advertiser) != procs.end()); // This should be in our outstanding list
+        assert(procs.find(advertiser) != procs.end()); // This should be in our outstanding list
 #endif
-      procs.erase(advertiser);
+        procs.erase(advertiser);
+      }
+      {
+        // Enable the idle task since some mappers might make new decisions
+        AutoLock ready_queue_lock(queue_lock);
+        if (!this->idle_task_enabled)
+        {
+          idle_task_enabled = true;
+          Processor copy = local_proc;
+          copy.enable_idle_task();
+        }
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2620,7 +3109,8 @@ namespace RegionRuntime {
       }
       // Check to see if have any remaining work in our queues, 
       // if not, then disable the idle task
-      if (ready_queue.empty() && waiting_queue.empty())
+      if (ready_queue.empty() && waiting_queue.empty()
+          && waiting_maps.empty() && waiting_deletions.empty())
       {
         idle_task_enabled = false;
         Processor copy = local_proc;
@@ -2641,9 +3131,29 @@ namespace RegionRuntime {
     void HighLevelRuntime::update_queue(void)
     //--------------------------------------------------------------------------------------------
     {
+      // Need the queue lock in exclusive mode
+      AutoLock q_lock(queue_lock);
+      // Check any of the mapping operations that we need to perform to
+      // see if they are ready to be performed.  If so we can just perform them here
       {
-        // Need the queue lock in exclusive mode
-        AutoLock ready_queue_lock(queue_lock);
+        std::list<RegionMappingImpl*>::iterator map_it = waiting_maps.begin();
+        while (map_it != waiting_maps.end())
+        {
+          if ((*map_it)->is_ready())
+          {
+            RegionMappingImpl *mapping = *map_it;
+            // All of the dependences on this mapping have been satisfied, map it
+            perform_region_mapping(mapping);
+            map_it = waiting_maps.erase(map_it);
+          }
+          else
+          {
+            map_it++;
+          }
+        }
+      }
+      // Then check any tasks that might have been woken up because mappings are ready
+      {
         // Iterate over the waiting queue looking for tasks that are now mappable
         std::list<TaskContext*>::iterator task_it = waiting_queue.begin();
         while (task_it != waiting_queue.end())
@@ -2662,21 +3172,24 @@ namespace RegionRuntime {
           }
         }
       }
-      // Also check any of the mapping operations that we need to perform to
-      // see if they are ready to be performed.  If so we can just perform them here
-      std::list<RegionMappingImpl*>::iterator map_it = waiting_maps.begin();
-      while (map_it != waiting_maps.end())
+      // Finally check the list of region deletion operations to be performed to
+      // see if any of them are ready to be performed
       {
-        if ((*map_it)->is_ready())
+        std::list<DeletionOp*>::iterator del_it = waiting_deletions.begin();
+        while (del_it != waiting_deletions.end())
         {
-          RegionMappingImpl *mapping = *map_it;
-          // All of the dependences on this mapping have been satisfied, map it
-          perform_region_mapping(mapping);
-          map_it = waiting_maps.erase(map_it);
-        }
-        else
-        {
-          map_it++;
+          if ((*del_it)->is_ready())
+          {
+            DeletionOp *op = *del_it;
+            op->perform_deletion(true/*need lock*/);
+            del_it = waiting_deletions.erase(del_it);
+            // We can also deactivate the deletion now that we know its done
+            op->deactivate();
+          }
+          else
+          {
+            del_it++;
+          }
         }
       }
     }
@@ -2902,7 +3415,9 @@ namespace RegionRuntime {
     TaskContext::TaskContext(Processor p, HighLevelRuntime *r, ContextID id)
       : runtime(r), active(false), ctx_id(id),  
         reduction(NULL), reduction_value(NULL), reduction_size(0), 
-        local_proc(p), result(NULL), result_size(0), context_lock(Lock::create_lock())
+        local_proc(p), result(NULL), result_size(0), 
+        region_nodes(NULL), partition_nodes(NULL), instance_infos(NULL),
+        context_lock(Lock::create_lock())
     //--------------------------------------------------------------------------------------------
     {
       this->args = NULL;
@@ -2985,17 +3500,16 @@ namespace RegionRuntime {
       {
         if (!is_index_space || slice_owner)
         {
-          // We can delete the region trees
-          for (std::vector<RegionRequirement>::const_iterator it = regions.begin();
-                it != regions.end(); it++)
+          // We can delete the region trees nodes
+          for (std::map<LogicalRegion,RegionNode*>::const_iterator it = region_nodes->begin();
+                it != region_nodes->end(); it++)
           {
-            delete (*region_nodes)[it->handle.region];
+            delete it->second;
           }
-          // Also delete the created region trees
-          for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
-                it != created_regions.end(); it++)
+          for (std::map<PartitionID,PartitionNode*>::const_iterator it = partition_nodes->begin();
+                it != partition_nodes->end(); it++)
           {
-            delete (*region_nodes)[it->first];
+            delete it->second;
           }
           // We can also delete the instance infos
           for (std::map<InstanceID,InstanceInfo*>::const_iterator it = instance_infos->begin();
@@ -3007,6 +3521,9 @@ namespace RegionRuntime {
           delete region_nodes;
           delete partition_nodes;
           delete instance_infos;
+          region_nodes = NULL;
+          partition_nodes = NULL;
+          instance_infos = NULL;
         }
       }
       regions.clear();
@@ -3016,6 +3533,7 @@ namespace RegionRuntime {
       map_dependent_tasks.clear();
       unresolved_dependences.clear();
       child_tasks.clear();
+      child_deletions.clear();
       sibling_tasks.clear();
       physical_mapped.clear();
       physical_instances.clear();
@@ -3033,6 +3551,7 @@ namespace RegionRuntime {
       index_arg_map.reset();
       reduction = NULL;
       mapper = NULL;
+      variants = NULL;
       mapper_lock = Lock::NO_LOCK;
       current_lock = context_lock;
       active = false;
@@ -3049,6 +3568,17 @@ namespace RegionRuntime {
 #endif
       unique_id = _unique_id;
       task_id = _task_id;
+#ifdef DEBUG_HIGH_LEVEL
+      if (HighLevelRuntime::get_collection_table().find(task_id) == HighLevelRuntime::get_collection_table().end())
+      {
+        log_variant(LEVEL_ERROR,"User task ID %d has no registered variants", task_id);
+        exit(1);
+      }
+#endif
+      variants = HighLevelRuntime::get_collection_table()[task_id];
+#ifdef DEBUG_HIGH_LEVEL
+      assert(variants != NULL);
+#endif
       // Need our own copy of these
       args = malloc(_arglen);
       memcpy(args,_args,_arglen);
@@ -3207,7 +3737,8 @@ namespace RegionRuntime {
           if (regions[idx].func_type != SINGULAR_FUNC)
           {
             log_task(LEVEL_ERROR,"All arguments to a single task launch must be single regions. "
-                "Region %d of task %d with unique id %d is not a singular region.",idx,task_id,
+                "Region %d of task %s (ID %d) with unique id %d is not a singular region.",idx,
+                variants->name, task_id,
                 unique_id);
             exit(1);
           }
@@ -3228,8 +3759,9 @@ namespace RegionRuntime {
             bool trace_result = compute_region_trace(trace, regions[idx].parent, regions[idx].handle.region);
             if (!trace_result)
             {
-              log_task(LEVEL_ERROR,"Region %d is not an ancestor of region %d (idx %d) for task %d (unique id %d)",
-                  regions[idx].parent.id,regions[idx].handle.region.id,idx,task_id,unique_id);
+              log_task(LEVEL_ERROR,"Region %d is not an ancestor of region %d (idx %d) for task %s (ID %d) (unique id %d)",
+                  regions[idx].parent.id,regions[idx].handle.region.id,idx,
+                  variants->name,task_id,unique_id);
               exit(1);
             }
           }
@@ -3238,8 +3770,9 @@ namespace RegionRuntime {
             bool trace_result = compute_partition_trace(trace, regions[idx].parent, regions[idx].handle.partition);
             if (!trace_result)
             {
-              log_task(LEVEL_ERROR,"Region %d is not an ancestor of partition %d (idx %d) for task %d (unique id %d)",
-                  regions[idx].parent.id,regions[idx].handle.partition,idx,task_id,unique_id);
+              log_task(LEVEL_ERROR,"Region %d is not an ancestor of partition %d (idx %d) for task %s (ID %d) (unique id %d)",
+                  regions[idx].parent.id,regions[idx].handle.partition,idx,
+                  variants->name,task_id,unique_id);
               exit(1);
             }
           }
@@ -3284,8 +3817,9 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         if (!found)
         {
-          log_inst(LEVEL_ERROR,"Unable to find parent physical context for region %d (index %d) of task %d (unique id %d)!",
-              regions[idx].handle.region.id, idx, task_id, unique_id);
+          log_inst(LEVEL_ERROR,"Unable to find parent physical context for region %d (index %d) of task %s (ID %d) (unique id %d)!",
+              regions[idx].handle.region.id, idx, 
+              variants->name, task_id, unique_id);
           exit(1);
         }
 #endif
@@ -3690,6 +4224,13 @@ namespace RegionRuntime {
     {
       derez.deserialize<UniqueID>(unique_id);
       derez.deserialize<Processor::TaskFuncID>(task_id);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(HighLevelRuntime::get_collection_table().find(task_id) != HighLevelRuntime::get_collection_table().end());
+#endif
+      variants = HighLevelRuntime::get_collection_table()[task_id];
+#ifdef DEBUG_HIGH_LEVEL
+      assert(variants != NULL);
+#endif
       {
         size_t num_regions;
         derez.deserialize<size_t>(num_regions);
@@ -3855,6 +4396,9 @@ namespace RegionRuntime {
       for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
             it != created_regions.end(); it++)
       {
+#ifdef DEBUG_HIGH_LEVEL
+        assert((*region_nodes)[it->first]->added); // all created regions should be added
+#endif
         // Only do this for the trees that haven't been passed back already
         if ((*region_nodes)[it->first]->added)
         {
@@ -3933,16 +4477,17 @@ namespace RegionRuntime {
         PartitionNode::unpack_region_tree(derez, (*region_nodes)[parent], get_enclosing_physical_context(part_index), 
                                           region_nodes, partition_nodes, true/*add*/);
       }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(parent_ctx != NULL);
+      parent_ctx->current_taken = true;
+#endif
       size_t num_created;
       derez.deserialize<size_t>(num_created);
       for (unsigned idx = 0; idx < num_created; idx++)
       {
         RegionNode *new_node = RegionNode::unpack_region_tree(derez,NULL,outermost,
                                             region_nodes, partition_nodes, true/*add*/);
-        // Also initialize logical context
-        new_node->initialize_logical_context(parent_ctx->ctx_id);
-        // Add it to the list of created regions
-        parent_ctx->created_regions.insert(std::pair<LogicalRegion,ContextID>(new_node->handle,outermost));
+        parent_ctx->update_created_regions(new_node->handle, new_node, outermost);
         // Save this for when we unpack the states
         created.push_back(new_node->handle);
       }
@@ -3954,7 +4499,11 @@ namespace RegionRuntime {
         // Delete the regions, add them to the deleted list
         LogicalRegion del_region;
         derez.deserialize<LogicalRegion>(del_region);
-        parent_ctx->remove_region(del_region); // This will also add it to the list of deleted regions
+        // Add it to the list of deleted regions 
+#ifdef DEBUG_HIGH_LEVEL
+        assert(deleted_regions.find(del_region) == deleted_regions.end());
+#endif
+        parent_ctx->update_deleted_regions(del_region);
       }
       // unpack the deleted partitions
       size_t num_del_parts;
@@ -3964,9 +4513,14 @@ namespace RegionRuntime {
         // Delete the partitions
         PartitionID del_part;
         derez.deserialize<PartitionID>(del_part);
-        PartitionNode *part = (*partition_nodes)[del_part];
-        parent_ctx->remove_partition(del_part,part->parent->handle);
+        // Unpack it and send it back to the parent context
+        parent_ctx->update_deleted_partitions(del_part);
+        //PartitionNode *part = (*partition_nodes)[del_part];
+        //parent_ctx->remove_partition(del_part,part->parent->handle);
       }
+#ifdef DEBUG_HIGH_LEVEL
+      parent_ctx->current_taken = false;
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4023,6 +4577,7 @@ namespace RegionRuntime {
               bool still_local = runtime->split_task(this);
               if (still_local)
               {
+                this->need_split = false;
                 // Get a new context for the result
                 TaskContext *clone = runtime->get_available_context(false/*new tree*/);
                 clone_index_space_task(clone,true/*slice*/);
@@ -4136,6 +4691,7 @@ namespace RegionRuntime {
               bool still_local = runtime->split_task(this);
               if (still_local)
               {
+                this->need_split = false;
                 // Get a new context for the result
                 TaskContext *clone = runtime->get_available_context(false/*new tree*/);
                 clone_index_space_task(clone,true/*slice*/);
@@ -4246,18 +4802,20 @@ namespace RegionRuntime {
                 case SINGULAR_FUNC:
                   {
                     log_region(LEVEL_ERROR,"Unable to find parent region %d for logical "
-                                            "region %d (index %d) for task %d with unique id %d",
+                                            "region %d (index %d) for task %s (ID %d) with unique id %d",
                                             child->regions[idx].parent.id, child->regions[idx].handle.region.id,
-                                            idx,child->task_id,child->unique_id);
+                                            idx,child->variants->name,
+                                            child->task_id,child->unique_id);
                     break;
                   }
                 case EXECUTABLE_FUNC:
                 case MAPPED_FUNC:
                   {
                     log_region(LEVEL_ERROR,"Unable to find parent region %d for partition "
-                                            "%d (index %d) for task %d with unique id %d",
+                                            "%d (index %d) for task %s (ID %d) with unique id %d",
                                             child->regions[idx].parent.id, child->regions[idx].handle.partition,
-                                            idx,child->task_id,child->unique_id);
+                                            idx,child->variants->name,
+                                            child->task_id,child->unique_id);
                     break;
                   }
                 default:
@@ -4267,8 +4825,9 @@ namespace RegionRuntime {
             else
             {
               log_region(LEVEL_ERROR,"Unable to find parent region %d for logical region %d (index %d)"
-                                      " for task %d with unique id %d",child->regions[idx].parent.id,
-                                child->regions[idx].handle.region.id,idx,child->task_id,child->unique_id);
+                                      " for task %s (ID %d) with unique id %d",child->regions[idx].parent.id,
+                                child->regions[idx].handle.region.id,idx,
+                                child->variants->name,child->task_id,child->unique_id);
             }
             exit(1);
           }
@@ -4319,9 +4878,10 @@ namespace RegionRuntime {
                 PartitionNode *part_node = (*partition_nodes)[req.handle.partition];
                 if ((!part_node->disjoint) && HAS_WRITE(req))
                 {
-                  log_task(LEVEL_ERROR,"Index space for task %d (unique id %d) "
+                  log_task(LEVEL_ERROR,"Index space for task %s (ID %d) (unique id %d) "
                       "requested aliased partition %d in write mode (index %d)."
                       " Partition requirements for index spaces must be disjoint or read-only",
+                      ctx->variants->name,
                       ctx->task_id, ctx->unique_id, part_node->pid, child_idx);
                   exit(1);
                 }
@@ -4460,8 +5020,8 @@ namespace RegionRuntime {
         else // error condition
         {
           log_region(LEVEL_ERROR,"Unable to find parent region %d for mapping region %d "
-              "in task %d with unique id %d",impl->req.parent.id,impl->req.handle.region.id,
-              this->task_id,this->unique_id);
+              "in task %s (ID %d) with unique id %d",impl->req.parent.id,impl->req.handle.region.id,
+              this->variants->name,this->task_id,this->unique_id);
           exit(1);
         }
       }
@@ -4471,14 +5031,51 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    void TaskContext::register_deletion(DeletionOp *op)
     //--------------------------------------------------------------------------------------------
+    {
+      // Need the current context lock in exclusive mode to do this
+      AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
+#endif
+      // Find the node for this deletion, then issue the register deletion on that node, 
+      // this will traverse down the tree in the current context and record all mapping dependences
+      // We don't need to register a mapping dependence on any other regions since we won't
+      // actually be using them.  We only need the target regions/partition and all of its subtree
+      if (op->is_region)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(region_nodes->find(op->handle) != region_nodes->end());
+#endif
+        RegionNode *target = (*region_nodes)[op->handle];
+        target->register_deletion(this->ctx_id, op);
+        op->physical_ctx = remove_region(op->handle);
+      }
+      else
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(partition_nodes->find(op->pid) != partition_nodes->end());
+#endif
+        PartitionNode *target = (*partition_nodes)[op->pid];
+        target->register_deletion(this->ctx_id, op);
+        op->physical_ctx = remove_partition(op->pid);
+      }
+      // Add it to the list of deletions that need to be performed
+      child_deletions.insert(op);
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
+    }
 
     //--------------------------------------------------------------------------------------------
     void TaskContext::map_and_launch(void)
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_DEBUG,"Mapping and launching task %d with unique id %d on processor %d",
-          task_id, unique_id, local_proc.id);
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Mapping and launching task %s (ID %d) with unique id %d on processor %d",
+          variants->name, task_id, unique_id, local_proc.id);
+#endif
       // Check to see if this task is only partially unpacked, if so now do the final unpack
       if (partially_unpacked)
       {
@@ -4581,9 +5178,12 @@ namespace RegionRuntime {
                 needs_initializing = true;
               }
             }
-            log_region(LEVEL_INFO,"Mapping region %d (idx %d) of task %d (unique id %d) to physical "
-                "instance %d of logical region %d in memory %d",regions[idx].handle.region.id,idx,task_id,
+#ifdef DEBUG_HIGH_LEVEL
+            log_region(LEVEL_DEBUG,"Mapping region %d (idx %d) of task %s (ID %d) (unique id %d) to physical "
+                "instance %d of logical region %d in memory %d",regions[idx].handle.region.id,idx,
+                variants->name, task_id,
                 unique_id,info->iid,info->handle.id,info->location.id);
+#endif
             physical_instances.push_back(info);
             physical_mapped.push_back(true/*mapped*/);
             RegionRenamer namer(parent_physical_ctx,idx,this,info,mapper,needs_initializing);
@@ -4617,16 +5217,16 @@ namespace RegionRuntime {
           if (!found)
           {
             log_inst(LEVEL_ERROR,"Unable to find or create physical instance for region %d"
-                " (index %d) of task %d with unique id %d",regions[idx].handle.region.id,
-                idx,this->task_id,this->unique_id);
+                " (index %d) of task %s (ID %d) with unique id %d",regions[idx].handle.region.id,
+                idx,this->variants->name,this->task_id,this->unique_id);
             exit(1);
           }
         }
         else
         {
           log_inst(LEVEL_DEBUG,"Not creating physical instance for region %d (index %d) "
-              "for task %d with unique id %d",regions[idx].handle.region.id,idx,
-              this->task_id,this->unique_id);
+              "for task %s (ID %d) with unique id %d",regions[idx].handle.region.id,idx,
+              this->variants->name,this->task_id,this->unique_id);
           // Push back a no-instance for this physical instance
           physical_instances.push_back(InstanceInfo::get_no_instance());
           physical_mapped.push_back(false/*mapped*/);
@@ -4679,7 +5279,11 @@ namespace RegionRuntime {
       }
 #endif
       // Now launch the task itself (finally!)
-      local_proc.spawn(this->task_id, this->args, this->arglen, start_cond);
+      {
+        // Get the correct variant, this will trigger an error if no such variant exists
+        Processor::TaskFuncID low_id = this->variants->select_variant(this->is_index_space, runtime->proc_kind);
+        local_proc.spawn(low_id, this->args, this->arglen, start_cond);
+      }
 
 #ifdef DEBUG_HIGH_LEVEL
       assert(physical_instances.size() == regions.size());
@@ -5161,6 +5765,7 @@ namespace RegionRuntime {
       // Use the same task ID, this is just a different point
       clone->unique_id = this->unique_id;
       clone->task_id = this->task_id;
+      clone->variants = this->variants;
       // Evaluate the regions
       clone->regions.resize(regions.size());
       if (!slice)
@@ -5481,9 +6086,7 @@ namespace RegionRuntime {
         // Push our updated created and deleted regions back to our parent task
         if (parent_ctx != NULL)
         {
-          parent_ctx->created_regions.insert(created_regions.begin(),created_regions.end());
-          parent_ctx->deleted_regions.insert(deleted_regions.begin(),deleted_regions.end());
-          parent_ctx->deleted_partitions.insert(deleted_partitions.begin(),deleted_partitions.end());
+          update_parent_task();
         }
         // Check to see if we have a reduction to push into the future value 
         if (reduction != NULL)
@@ -5499,8 +6102,9 @@ namespace RegionRuntime {
     void TaskContext::start_task(std::vector<PhysicalRegion<AccessorGeneric> > &result_regions)
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_DEBUG,"Task %d with unique id %d starting on processor %d",task_id,unique_id,local_proc.id);
 #ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Task %s (ID %d) with unique id %d starting on processor %d",
+          variants->name,task_id,unique_id,local_proc.id);
       assert(physical_instances.size() == regions.size());
       assert(physical_instances.size() == physical_mapped.size());
 #endif
@@ -5550,8 +6154,10 @@ namespace RegionRuntime {
                                     std::vector<PhysicalRegion<AccessorGeneric> > &physical_regions)
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_DEBUG,"Task %d with unique id %d has completed on processor %d",
-                task_id,unique_id,local_proc.id);
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Task %s (ID %d) with unique id %d has completed on processor %d",
+                variants->name,task_id,unique_id,local_proc.id);
+#endif
       if (remote || is_index_space)
       {
         // Save the result to be sent back 
@@ -5630,14 +6236,29 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       current_taken = true;
 #endif
+      // Perform any deletions that haven't already been performed
+      // Do this early to get the garbage collector going and to
+      // remove things that don't need to be sent back
+      for (std::set<DeletionOp*>::const_iterator it = child_deletions.begin();
+            it != child_deletions.end(); it++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert((*it)->is_ready());
+#endif
+        // No need to acquire the lock since we already hold it
+        (*it)->perform_deletion(false/*need lock*/); 
+      }
+      // We can clear these here, they will be deactivated when the
+      // runtime performs them
+      child_deletions.clear();
+      
       // Check to see if this is an index space or not
       if (!is_index_space)
       {
-        log_task(LEVEL_DEBUG,"All children mapped for task %d with unique id %d on processor %d",
-                task_id,unique_id,local_proc.id);
-
-        // We can now go through and mark that all of our no-map operations are complete
 #ifdef DEBUG_HIGH_LEVEL
+        log_task(LEVEL_DEBUG,"All children mapped for task %s (ID %d) with unique id %d on processor %d",
+                variants->name,task_id,unique_id,local_proc.id);
+        // We can now go through and mark that all of our no-map operations are complete
         assert(physical_instances.size() == regions.size());
         assert(physical_instances.size() == physical_mapped.size());
 #endif
@@ -5747,8 +6368,9 @@ namespace RegionRuntime {
           for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
                 it != created_regions.end(); it++)
           {
-            (*region_nodes)[it->first]->mark_tree_unadded();
+            (*region_nodes)[it->first]->mark_tree_unadded(false/*reclaim resources*/);
           }
+          created_regions.clear(); // We sent them back so we don't own them anymore
           deleted_regions.clear();
           deleted_partitions.clear();
           
@@ -5757,7 +6379,7 @@ namespace RegionRuntime {
           for (std::map<PartitionNode*,unsigned>::const_iterator it = region_tree_updates.begin();
                 it != region_tree_updates.end(); it++)
           {
-            it->first->mark_tree_unadded();
+            it->first->mark_tree_unadded(false/*reclaim resources*/);
           }
         }
         else
@@ -5866,8 +6488,10 @@ namespace RegionRuntime {
     void TaskContext::finish_task(bool acquire_lock /*=true*/)
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_DEBUG,"Finishing task %d with unique id %d on processor %d",
-                task_id, unique_id, local_proc.id);
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Finishing task %s (ID %d) with unique id %d on processor %d",
+                variants->name, task_id, unique_id, local_proc.id);
+#endif
       if (acquire_lock)
       {
         Event lock_event = current_lock.lock(0,true/*exclusive*/,Event::NO_EVENT);
@@ -5942,12 +6566,7 @@ namespace RegionRuntime {
           if (parent_ctx != NULL)
           {
             // Propagate information back to the parent task context
-            parent_ctx->created_regions.insert(created_regions.begin(),created_regions.end());
-            parent_ctx->deleted_regions.insert(deleted_regions.begin(),deleted_regions.end());
-            parent_ctx->deleted_partitions.insert(deleted_partitions.begin(),deleted_partitions.end());
-            // We can clear these out since we're done with them now
-            deleted_regions.clear();
-            deleted_partitions.clear();
+            update_parent_task();
           }
 
           // Future result has already been set
@@ -5965,6 +6584,7 @@ namespace RegionRuntime {
           orig_ctx->deleted_regions.insert(deleted_regions.begin(),deleted_regions.end());
           orig_ctx->deleted_partitions.insert(deleted_partitions.begin(),deleted_partitions.end());
           // We can now delete these
+          created_regions.clear();
           deleted_regions.clear();
           deleted_partitions.clear();
         }
@@ -5997,12 +6617,13 @@ namespace RegionRuntime {
 #endif
       }
 
-      // Deactivate any child 
+      // Deactivate any child operations we had when executing
       for (std::vector<TaskContext*>::const_iterator it = child_tasks.begin();
             it != child_tasks.end(); it++)
       {
         (*it)->deactivate();
       }  
+
       // If we're remote and not an index space deactivate ourselves
       if (remote && !is_index_space)
       {
@@ -6030,7 +6651,10 @@ namespace RegionRuntime {
     void TaskContext::remote_start(const char *args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     { 
-      log_task(LEVEL_DEBUG,"Processing remote start for task %d with unique id %d",task_id,unique_id);
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Processing remote start for task %s (ID %d) with unique id %d",
+          variants->name,task_id,unique_id);
+#endif
       // We need the current context lock in exclusive mode to do this
       AutoLock ctx_lock(current_lock);
 #ifdef DEBUG_HIGH_LEVEL
@@ -6179,7 +6803,10 @@ namespace RegionRuntime {
     void TaskContext::remote_children_mapped(const char *args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_DEBUG,"Processing remote children mapped for task %d with unique id %d",task_id,unique_id);
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Processing remote children mapped for task %s (ID %d) with unique id %d",
+          variants->name,task_id,unique_id);
+#endif
       // We need the current context lock in exclusive mode to do this
       AutoLock ctx_lock(current_lock);
 #ifdef DEBUG_HIGH_LEVEL
@@ -6314,7 +6941,10 @@ namespace RegionRuntime {
     void TaskContext::remote_finish(const char *args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_DEBUG,"Processing remote finish for task %d with unique id %d",task_id,unique_id);
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Processing remote finish for task %s (ID %d) with unique id %d",
+          variants->name,task_id,unique_id);
+#endif
       // Need the current context lock in exclusive lock to do this
       AutoLock ctx_lock(current_lock);
 #ifdef DEBUG_HIGH_LEVEL
@@ -6361,10 +6991,8 @@ namespace RegionRuntime {
         // Single task 
         // Set the future result
         future.set_result(derez);
-        // Propagate information about created and deleted regions back to the parent task
-        parent_ctx->created_regions.insert(created_regions.begin(),created_regions.end());
-        parent_ctx->deleted_regions.insert(deleted_regions.begin(),deleted_regions.end());
-        parent_ctx->deleted_partitions.insert(deleted_partitions.begin(),deleted_partitions.end());
+        // No need to propagate information back to the parent, it was done in 
+        // unpack_tree_updates
         // We're done now so we can trigger our termination event
         termination_event.trigger();
         // Free any references that we had to regions
@@ -6580,8 +7208,9 @@ namespace RegionRuntime {
           for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
                 it != created_regions.end(); it++)
           {
-            (*region_nodes)[it->first]->mark_tree_unadded();
+            (*region_nodes)[it->first]->mark_tree_unadded(false/*reclaim resources*/);
           }
+          created_regions.clear();
           deleted_regions.clear();
           deleted_partitions.clear();
           
@@ -6590,7 +7219,7 @@ namespace RegionRuntime {
           for (std::map<PartitionNode*,unsigned>::const_iterator it = region_tree_updates.begin();
                 it != region_tree_updates.end(); it++)
           {
-            it->first->mark_tree_unadded();
+            it->first->mark_tree_unadded(false/*reclaim resources*/);
           }
         }
         else
@@ -6804,6 +7433,7 @@ namespace RegionRuntime {
           orig_ctx->index_space_finished(num_local_points);
           if (!index_owner)
           {
+            created_regions.clear();
             deleted_regions.clear();
             deleted_partitions.clear();
           }
@@ -6850,75 +7480,80 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void TaskContext::remove_region(LogicalRegion handle, bool recursive, bool reclaim_resources)
+    ContextID TaskContext::remove_region(LogicalRegion handle)
     //--------------------------------------------------------------------------------------------
     {
-      // We need the current context lock in exclusive mode
-      if (!recursive)
-      {
-        // Only need lock at entry point call
-        Event lock_event = current_lock.lock(0,true/*exclusive*/);
-        lock_event.wait(true/*block*/);
-#ifdef DEBUG_HIGH_LEVEL
-        current_taken = true;
-#endif
-      }
 #ifdef DEBUG_HIGH_LEVEL
       assert(current_taken);
 #endif
-      std::map<LogicalRegion,RegionNode*>::iterator find_it = region_nodes->find(handle);
+      // Now we need to find the physical context to perform the deletion in.  Traverse up
+      // the logical region tree until we find a region which is either one of the parent task's
+      // regions or is one of the created regions
+      ContextID result = 0;
+      {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(find_it != region_nodes->end());
+        assert(region_nodes->find(handle) != region_nodes->end());
 #endif
-      // Mark that we're going to delete this node's region meta data
-      if (reclaim_resources)
-      {
-        find_it->second->delete_handle = true;
-      }
-      // Go through all our contexts and if we own any references to instance infos
-      // then mark that they are no longer valid
-
-      // Recursively remove the partitions from the tree
-      for (std::map<PartitionID,PartitionNode*>::const_iterator par_it =
-            find_it->second->partitions.begin(); par_it != find_it->second->partitions.end(); par_it++)
-      {
-        remove_partition(par_it->first, handle, true/*recursive*/, reclaim_resources);
-      }
-      // If not recursive, delete all the sub nodes
-      // Otherwise deletion will come when parent node is deleted
-      if (!recursive)
-      {
-        // Check to see if this node has a parent partition
-        if (find_it->second->parent != NULL)
+        RegionNode *current = (*region_nodes)[handle];
+        bool found = false;
+        while (!found && (current != NULL))
         {
-          find_it->second->parent->remove_region(find_it->first);
+          // Check to see if we found it in the parent task's regions
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            if (current->handle == regions[idx].handle.region)
+            {
+              found = true;
+              result = chosen_ctx[idx];
+              // Add it to the list of deletion regions
+              deleted_regions.insert(handle);
+              break;
+            }
+          }
+          if (!found)
+          {
+            for (std::map<LogicalRegion,ContextID>::iterator it = created_regions.begin();
+                  !found && (it != created_regions.end()); it++)
+            {
+              if (current->handle == it->first)
+              {
+                found = true;
+                result = it->second;
+                deleted_regions.insert(handle);
+                break;
+              }
+            }
+          }
+          // If we didn't find it traverse up the tree
+          if (current->parent != NULL)
+          {
+            current = current->parent->parent;
+          }
+          else
+          {
+            current = NULL;
+          }
         }
-        // If this is not also a node we made, add it to the list of deleted regions 
-        if (!find_it->second->added)
+        if (!found)
         {
-          deleted_regions.insert(find_it->second->handle);
+          log_task(LEVEL_ERROR,"Attempted to delete region %d which is not contained in any of the "
+              "regions for which task %s (ID %d) (unique id %d) has permissions",handle.id,
+              variants->name,task_id,unique_id);
+          exit(1);
         }
-        else
-        {
-          // We did add it, so it should be on this list
-          std::map<LogicalRegion,ContextID>::iterator finder = created_regions.find(handle);
-#ifdef DEBUG_HIGH_LEVEL
-          assert(finder != created_regions.end());
-#endif
-          created_regions.erase(finder);
-        }
-        // Delete the node, this will trigger the deletion of all its children
-        delete find_it->second;
       }
-      region_nodes->erase(find_it);
-      // If we're leaving this operation, release lock
-      if (!recursive)
+      // Finally check to see if this is a top-level region that we created
+      if (created_regions.find(handle) != created_regions.end())
       {
-        current_lock.unlock();
-#ifdef DEBUG_HIGH_LEVEL
-        current_taken = false;
-#endif
+        // This is when we finally delete the whole region tree, invalidate the tree, also
+        // mark that we're reclaiming all the region handles (resources) as well
+        RegionNode *target = (*region_nodes)[handle];
+        target->mark_tree_unadded(true/*reclaim resources*/);
+        created_regions.erase(handle);
+        // We can also delete it from the list of deleted regions
+        deleted_regions.erase(handle);
       }
+      return result;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -6974,52 +7609,148 @@ namespace RegionRuntime {
       current_taken = false;
 #endif
     }
-    
+
     //--------------------------------------------------------------------------------------------
-    void TaskContext::remove_partition(PartitionID pid, LogicalRegion parent, bool recursive, bool reclaim_resources)
+    ContextID TaskContext::remove_partition(PartitionID pid)
     //--------------------------------------------------------------------------------------------
     {
-      // If this is the entrypoint call we need the current context lock in exclusive mode
-      if (!recursive)
-      {
-        Event lock_event = current_lock.lock(0,true/*exclusive*/);
-        lock_event.wait(true/*block*/);
 #ifdef DEBUG_HIGH_LEVEL
-        current_taken = true;
+      assert(current_taken);
 #endif
-      }
-      std::map<PartitionID,PartitionNode*>::iterator find_it = partition_nodes->find(pid);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(find_it != partition_nodes->end());
-#endif
-      // Recursively remove the child nodes
-      for (std::map<LogicalRegion,RegionNode*>::const_iterator it = find_it->second->children.begin();
-            it != find_it->second->children.end(); it++)
-      {
-        remove_region(it->first, true/*recursive*/, reclaim_resources);
-      }
-
-      if (!recursive)
+      // Now we need to find the physical context to perform the deletion in.  Traverse up
+      // the logical region tree until we find a region which is either one of the parent task's
+      // regions or is one of the created regions
+      ContextID result = 0;
       {
 #ifdef DEBUG_HIGH_LEVEL
-        assert(find_it->second->parent != NULL);
+        assert(partition_nodes->find(pid) != partition_nodes->end());
 #endif
-        find_it->second->parent->remove_partition(pid);
-        // If this wasn't a partition we added, add it to the list of deleted partitions
-        if (!find_it->second->added)
+        RegionNode *current = (*partition_nodes)[pid]->parent;
+        bool found = false;
+        while (!found && (current != NULL))
         {
-          deleted_partitions.insert(pid);
+          // Check to see if we found it in the parent task's regions
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            if (current->handle == regions[idx].handle.region)
+            {
+              found = true;
+              result = chosen_ctx[idx];
+              // Add it to the list of deletion partitions 
+              deleted_partitions.insert(pid);
+              break;
+            }
+          }
+          if (!found)
+          {
+            for (std::map<LogicalRegion,ContextID>::iterator it = created_regions.begin();
+                  !found && (it != created_regions.end()); it++)
+            {
+              if (current->handle == it->first)
+              {
+                found = true;
+                result = it->second;
+                deleted_partitions.insert(pid);
+                break;
+              }
+            }
+          }
+          // If we didn't find it traverse up the tree
+          if (current->parent != NULL)
+          {
+            current = current->parent->parent;
+          }
+          else
+          {
+            current = NULL;
+          }
+        }
+        if (!found)
+        {
+          log_task(LEVEL_ERROR,"Attempted to delete partition %d which is not contained in any of the "
+              "partitions for which task %s (ID %d) (unique id %d) has permissions",pid,
+              variants->name,task_id,unique_id);
+          exit(1);
         }
       }
-      partition_nodes->erase(find_it);
-      // if leaving the operation release the lock
-      if (!recursive)
-      {
-        current_lock.unlock();
+      return result;
+    }
+    
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::update_created_regions(LogicalRegion handle, RegionNode *node, ContextID outermost)
+    //--------------------------------------------------------------------------------------------
+    {
 #ifdef DEBUG_HIGH_LEVEL
-        current_taken = false;
+      assert(current_taken);
 #endif
+      // Also initialize logical context
+      node->initialize_logical_context(ctx_id);
+      // Add it to the list of created regions
+      created_regions.insert(std::pair<LogicalRegion,ContextID>(handle,outermost));
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::update_deleted_regions(LogicalRegion handle)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+      assert(region_nodes->find(handle) != region_nodes->end());
+#endif
+      RegionNode *node = (*region_nodes)[handle];
+      // Delete this region and get the physical context to invalidate
+      ContextID ctx = remove_region(handle);
+      // Now we can invalidate all the physical instances in this context
+      // No need to wait here since this is a deletion returning from a child
+      node->invalidate_physical_tree(ctx);
+    }
+    
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::update_deleted_partitions(PartitionID pid)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+      assert(partition_nodes->find(pid) != partition_nodes->end());
+#endif
+      PartitionNode *node = (*partition_nodes)[pid];
+      // Delete this partition and get the physical context to invalidate
+      ContextID ctx = remove_partition(pid);
+      // Now we can invalidate all the physical instances in this context
+      // No need to wait here since this is a deletion returning from a child
+      node->invalidate_physical_tree(ctx);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::update_parent_task(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+      assert(parent_ctx != NULL);
+      parent_ctx->current_taken = true;
+#endif
+      for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
+            it != created_regions.end(); it++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(region_nodes->find(it->first) != region_nodes->end());
+#endif
+        parent_ctx->update_created_regions(it->first, (*region_nodes)[it->first], it->second);
       }
+      for (std::set<LogicalRegion>::const_iterator it = deleted_regions.begin();
+            it != deleted_regions.end(); it++)
+      {
+        parent_ctx->update_deleted_regions(*it);
+      }
+      for (std::set<PartitionID>::const_iterator it = deleted_partitions.begin();
+            it != deleted_partitions.end(); it++)
+      {
+        parent_ctx->update_deleted_partitions(*it);
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      parent_ctx->current_taken = false;
+#endif
     }
     
     //--------------------------------------------------------------------------------------------
@@ -7304,8 +8035,9 @@ namespace RegionRuntime {
       if (this == ctx)
       {
         log_region(LEVEL_ERROR,"Illegal dependence between two regions %d and %d (with index %d and %d) "
-                                "in task %d with unique id %d",this->regions[idx].handle.region.id,
-                                this->regions[dep_idx].handle.region.id,idx,dep_idx,task_id,unique_id);
+                                "in task %s (ID %d) with unique id %d",this->regions[idx].handle.region.id,
+                                this->regions[dep_idx].handle.region.id,idx,dep_idx,
+                                variants->name,task_id,unique_id);
         exit(1);
       }
 #endif
@@ -7440,11 +8172,9 @@ namespace RegionRuntime {
     RegionNode::~RegionNode(void)
     //--------------------------------------------------------------------------------------------
     {
-      // Also delete any child partitions 
-      for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
-            it != partitions.end(); it++)
+      if (added)
       {
-        delete it->second;
+        log_leak(LEVEL_WARNING,"Logical Regiong %d is being leaked",handle.id);
       }
       // If delete handle, then tell the low-level runtime that it can reclaim the 
       if (delete_handle)
@@ -7544,7 +8274,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void RegionNode::mark_tree_unadded(void)
+    void RegionNode::mark_tree_unadded(bool reclaim_resources)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -7554,7 +8284,12 @@ namespace RegionRuntime {
       for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
             it != partitions.end(); it++)
       {
-        it->second->mark_tree_unadded();
+        it->second->mark_tree_unadded(reclaim_resources);
+      }
+      // If we're reclaiming resources, set the flag that we can return the region meta data
+      if (reclaim_resources)
+      {
+        delete_handle = true;
       }
     }
 
@@ -7771,7 +8506,7 @@ namespace RegionRuntime {
 #endif
               partitions[*(region_states[dep.ctx_id].open_logical.begin())]
                 ->close_logical_tree(dep,true/*register dependences*/,
-                                      region_states[dep.ctx_id].closed_users);
+                                      region_states[dep.ctx_id].closed_users, false/*closing part*/);
               region_states[dep.ctx_id].open_logical.clear();
               region_states[dep.ctx_id].logical_state = PART_NOT_OPEN;
               break;
@@ -7782,7 +8517,7 @@ namespace RegionRuntime {
                     it != region_states[dep.ctx_id].open_logical.end(); it++)
               {
                 partitions[*it]->close_logical_tree(dep,false/*register dependence*/,
-                                                    region_states[dep.ctx_id].closed_users);
+                                                    region_states[dep.ctx_id].closed_users, false/*closing part*/);
               }
               region_states[dep.ctx_id].open_logical.clear();
               region_states[dep.ctx_id].logical_state = PART_NOT_OPEN;
@@ -7870,7 +8605,7 @@ namespace RegionRuntime {
                 // This is a partition than we want, close it up and open the one we want
                 PartitionID other = *(region_states[dep.ctx_id].open_logical.begin());
                 partitions[other]->close_logical_tree(dep,true/*register dependences*/,
-                                                      region_states[dep.ctx_id].closed_users);
+                                                      region_states[dep.ctx_id].closed_users,false/*closing part*/);
                 partitions[pid]->open_logical_tree(dep);
                 // Update our state to match
                 region_states[dep.ctx_id].open_logical.clear();
@@ -7918,7 +8653,7 @@ namespace RegionRuntime {
                   {
                     // close this partition (no need to register dependences since read only)
                     partitions[*it]->close_logical_tree(dep,false/*register dependences*/,
-                                                        region_states[dep.ctx_id].closed_users);
+                                                        region_states[dep.ctx_id].closed_users,false/*closing part*/);
                   }
                 }
                 // Update our state and then continue the traversal
@@ -7981,7 +8716,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     void RegionNode::close_logical_tree(DependenceDetector &dep, bool register_dependences,
-                                        std::list<std::pair<GeneralizedContext*,unsigned> > &closed)
+                                        std::list<std::pair<GeneralizedContext*,unsigned> > &closed, bool closing_part)
     //--------------------------------------------------------------------------------------------
     {
       // First check to see if we have any open partitions to close
@@ -8001,7 +8736,7 @@ namespace RegionRuntime {
             for (std::set<PartitionID>::const_iterator it = region_states[dep.ctx_id].open_logical.begin();
                   it != region_states[dep.ctx_id].open_logical.end(); it++)
             {
-              partitions[*it]->close_logical_tree(dep,false/*register dependences*/,closed);
+              partitions[*it]->close_logical_tree(dep,false/*register dependences*/,closed, closing_part);
             }
             region_states[dep.ctx_id].open_logical.clear();
             region_states[dep.ctx_id].logical_state = PART_NOT_OPEN;
@@ -8015,7 +8750,7 @@ namespace RegionRuntime {
             // Note: that the converse is not true
 #endif
             partitions[*(region_states[dep.ctx_id].open_logical.begin())]
-              ->close_logical_tree(dep,true/*register dependences*/,closed);
+              ->close_logical_tree(dep,true/*register dependences*/,closed, closing_part);
             region_states[dep.ctx_id].open_logical.clear();
             region_states[dep.ctx_id].logical_state = PART_NOT_OPEN;
             break;
@@ -8032,6 +8767,12 @@ namespace RegionRuntime {
             region_states[dep.ctx_id].active_users.begin(); it !=
             region_states[dep.ctx_id].active_users.end(); it++)
         {
+          // Special case for when closing a partition, if we are already a user then we
+          // can ignore it because have over-approximated our set of regions by saying we're using a partition
+          if (closing_part && (dep.ctx == it->first))
+          {
+            continue;
+          }
           dep.ctx->add_mapping_dependence(dep.idx, it->first, it->second, TRUE_DEPENDENCE);
           // Also put them onto the closed list
           closed.push_back(*it);
@@ -8043,6 +8784,31 @@ namespace RegionRuntime {
       // about recording dependences on the closed users, because all the active tasks
       // have dependences on them
       region_states[dep.ctx_id].closed_users.clear();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::register_deletion(ContextID ctx, DeletionOp *op)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Register dependences on all the users
+      for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it =
+            region_states[ctx].active_users.begin(); it !=
+            region_states[ctx].active_users.end(); it++)
+      {
+        op->add_mapping_dependence(0/*idx*/, it->first, it->second, TRUE_DEPENDENCE);
+      }
+      for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it =
+            region_states[ctx].closed_users.begin(); it !=
+            region_states[ctx].closed_users.end(); it++)
+      {
+        op->add_mapping_dependence(0/*idx*/, it->first, it->second, TRUE_DEPENDENCE);
+      }
+      // Traverse any open partitions 
+      for (std::set<PartitionID>::const_iterator it = region_states[ctx].open_logical.begin();
+            it != region_states[ctx].open_logical.end(); it++)
+      {
+        partitions[*it]->register_deletion(ctx, op);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -8521,6 +9287,7 @@ namespace RegionRuntime {
           assert(false); // Should never make it here
       }
       // Clear out our valid instances and mark that we are done
+#ifndef DISABLE_GC
       for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
             it != region_states[ctx].valid_instances.end(); it++)
       {
@@ -8529,9 +9296,64 @@ namespace RegionRuntime {
           it->first->mark_invalid();
         }
       }
+#endif
       region_states[ctx].valid_instances.clear();
       region_states[ctx].data_state = DATA_CLEAN;
       return precondition;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void RegionNode::invalidate_physical_tree(ContextID ctx)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Do this reverse up, invalidate children first and then invalidate ourselves.  This
+      // way the garbage collector will have the best chance at reclaiming the physical instances
+      switch (region_states[ctx].open_state)
+      {
+        case PART_NOT_OPEN:
+          {
+            // Don't need to do anything
+            break;
+          }
+        case PART_EXCLUSIVE:
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            assert(region_states[ctx].open_physical.size() == 1);
+#endif
+            // Close up the open partition
+            PartitionID pid = *(region_states[ctx].open_physical.begin());
+            partitions[pid]->invalidate_physical_tree(ctx);
+            region_states[ctx].open_physical.clear();
+            region_states[ctx].open_state = PART_NOT_OPEN;
+            break;
+          }
+        case PART_READ_ONLY:
+          {
+            for (std::set<PartitionID>::const_iterator it = region_states[ctx].open_physical.begin();
+                  it != region_states[ctx].open_physical.end(); it++)
+            {
+              partitions[*it]->invalidate_physical_tree(ctx);
+            }
+            region_states[ctx].open_physical.clear();
+            region_states[ctx].open_state = PART_NOT_OPEN;
+            break;
+          }
+        default:
+          assert(false);
+      }
+#ifdef DISABLE_GC
+      // Now we can invalidate our own instances
+      for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
+            it != region_states[ctx].valid_instances.end(); it++)
+      {
+        if (it->second)
+        {
+          it->first->mark_invalid();
+        }
+      }
+#endif
+      region_states[ctx].valid_instances.clear();
+      region_states[ctx].data_state = DATA_CLEAN;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -8700,7 +9522,7 @@ namespace RegionRuntime {
           }
         }
         // Mark any instance infos that we own to be invalid
-#if 1
+#ifndef DISABLE_GC 
         for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
               it != region_states[ctx].valid_instances.end(); it++)
         {
@@ -8766,11 +9588,9 @@ namespace RegionRuntime {
     PartitionNode::~PartitionNode(void)
     //--------------------------------------------------------------------------------------------
     {
-      // Delete all the children as well
-      for (std::map<LogicalRegion,RegionNode*>::const_iterator it = children.begin();
-            it != children.end(); it++)
+      if (added)
       {
-        delete it->second;
+        log_leak(LEVEL_WARNING,"Partition %d is being leaked",pid);
       }
     }
 
@@ -8889,7 +9709,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void PartitionNode::mark_tree_unadded(void)
+    void PartitionNode::mark_tree_unadded(bool reclaim_resources)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -8899,7 +9719,7 @@ namespace RegionRuntime {
       for (std::map<LogicalRegion,RegionNode*>::const_iterator it = children.begin();
             it != children.end(); it++)
       {
-        it->second->mark_tree_unadded();
+        it->second->mark_tree_unadded(reclaim_resources);
       }
     }
 
@@ -9069,14 +9889,14 @@ namespace RegionRuntime {
               case REG_OPEN_READ_ONLY:
                 {
                   children[*it]->close_logical_tree(dep,false/*register dependences*/,
-                                                    partition_states[dep.ctx_id].closed_users);
+                                                    partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
                   partition_states[dep.ctx_id].logical_states[*it] = REG_NOT_OPEN;
                   break;
                 }
               case REG_OPEN_EXCLUSIVE:
                 {
                   children[*it]->close_logical_tree(dep,true/*register dependences*/,
-                                                    partition_states[dep.ctx_id].closed_users);
+                                                    partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
                   partition_states[dep.ctx_id].logical_states[*it] = REG_NOT_OPEN;
                   break;
                 }
@@ -9107,7 +9927,7 @@ namespace RegionRuntime {
                       it != partition_states[dep.ctx_id].open_logical.end(); it++)
                 {
                   children[*it]->close_logical_tree(dep,false/*register dependences*/,
-                                                    partition_states[dep.ctx_id].closed_users);
+                                                    partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
                 }
                 partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
                 break;
@@ -9119,7 +9939,7 @@ namespace RegionRuntime {
 #endif
                 LogicalRegion handle = *(partition_states[dep.ctx_id].open_logical.begin());
                 children[handle]->close_logical_tree(dep,true/*register dependences*/,
-                                                      partition_states[dep.ctx_id].closed_users);
+                                                      partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
                 partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
                 break;
               }
@@ -9140,6 +9960,16 @@ namespace RegionRuntime {
               partition_states[dep.ctx_id].active_users.begin(); it !=
               partition_states[dep.ctx_id].active_users.end(); it++)
         {
+          // Special case for partitions only, check to see if the task we are a part of is already
+          // an active user of this partition, if so there is no need to continue the travesal as
+          // anyone else that tries to use this partition will already detect us as a mapping dependence.
+          // This is only valid for partitions on index spaces because it is an over-approximation of the
+          // set of logical regions that we are using.
+          if (it->first == dep.ctx)
+          {
+            continue;
+          }
+
           DependenceType dtype = check_dependence_type(it->first->get_requirement(it->second),dep.get_req()); 
           switch (dtype)
           {
@@ -9274,7 +10104,7 @@ namespace RegionRuntime {
                     {
                       // Close it up
                       children[*it]->close_logical_tree(dep, false/*register dependences*/,
-                                                        partition_states[dep.ctx_id].closed_users);
+                                                        partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
                     }
                   }
                   partition_states[dep.ctx_id].open_logical.clear();
@@ -9325,7 +10155,7 @@ namespace RegionRuntime {
                   // Different, close up the open one and open the one that we want
                   LogicalRegion other = *(partition_states[dep.ctx_id].open_logical.begin());
                   children[other]->close_logical_tree(dep,true/*register dependences*/,
-                                                      partition_states[dep.ctx_id].closed_users);
+                                                      partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
                   partition_states[dep.ctx_id].open_logical.clear();
                   partition_states[dep.ctx_id].open_logical.insert(log);
                   // If the new region is read-only change our state
@@ -9403,7 +10233,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     void PartitionNode::close_logical_tree(DependenceDetector &dep, bool register_dependences,
-                                           std::list<std::pair<GeneralizedContext*,unsigned> > &closed)
+                                           std::list<std::pair<GeneralizedContext*,unsigned> > &closed, bool closing_part)
     //--------------------------------------------------------------------------------------------
     {
       // First check to see if we have any open partitions to close
@@ -9417,7 +10247,7 @@ namespace RegionRuntime {
           {
             case REG_OPEN_READ_ONLY:
               {
-                children[*it]->close_logical_tree(dep,false/*register dependences*/,closed);
+                children[*it]->close_logical_tree(dep,false/*register dependences*/,closed, closing_part);
                 break;
               }
             case REG_OPEN_EXCLUSIVE:
@@ -9425,7 +10255,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
                 assert(register_dependences); // better be registering dependences here
 #endif
-                children[*it]->close_logical_tree(dep,true/*register dependences*/,closed);
+                children[*it]->close_logical_tree(dep,true/*register dependences*/,closed, closing_part);
                 break;
               }
             default:
@@ -9453,7 +10283,7 @@ namespace RegionRuntime {
               for (std::set<LogicalRegion>::const_iterator it = partition_states[dep.ctx_id].open_logical.begin();
                     it != partition_states[dep.ctx_id].open_logical.end(); it++)
               {
-                children[*it]->close_logical_tree(dep,false/*register dependences*/,closed);
+                children[*it]->close_logical_tree(dep,false/*register dependences*/,closed, closing_part);
               }
               partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
               break;
@@ -9464,7 +10294,7 @@ namespace RegionRuntime {
               assert(partition_states[dep.ctx_id].open_logical.size() == 1);
 #endif
               LogicalRegion handle = *(partition_states[dep.ctx_id].open_logical.begin());
-              children[handle]->close_logical_tree(dep,true/*register dependences*/,closed);
+              children[handle]->close_logical_tree(dep,true/*register dependences*/,closed, closing_part);
               break;
             }
           default:
@@ -9493,6 +10323,31 @@ namespace RegionRuntime {
       // about recording dependences on the closed users, because all the active tasks
       // have dependences on them
       partition_states[dep.ctx_id].closed_users.clear();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void PartitionNode::register_deletion(ContextID ctx, DeletionOp *op)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Register dependences on any users
+      for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it =
+            partition_states[ctx].active_users.begin(); it !=
+            partition_states[ctx].active_users.end(); it++)
+      {
+        op->add_mapping_dependence(0/*idx*/, it->first, it->second, TRUE_DEPENDENCE);
+      }
+      for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it = 
+            partition_states[ctx].closed_users.begin(); it !=
+            partition_states[ctx].closed_users.end(); it++)
+      {
+        op->add_mapping_dependence(0/*idx*/, it->first, it->second, TRUE_DEPENDENCE);
+      }
+      // Continue the traversal on any open regions
+      for (std::set<LogicalRegion>::const_iterator it = partition_states[ctx].open_logical.begin();
+            it != partition_states[ctx].open_logical.end(); it++)
+      {
+        children[*it]->register_deletion(ctx, op);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -9739,6 +10594,20 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    void PartitionNode::invalidate_physical_tree(ContextID ctx)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Invalidate all the open regions
+      for (std::set<LogicalRegion>::const_iterator it = partition_states[ctx].open_physical.begin();
+            it != partition_states[ctx].open_physical.end(); it++)
+      {
+        children[*it]->invalidate_physical_tree(ctx);
+      }
+      partition_states[ctx].open_physical.clear();
+      partition_states[ctx].physical_state = REG_NOT_OPEN;
+    }
+
+    //--------------------------------------------------------------------------------------------
     LogicalRegion PartitionNode::get_subregion(Color c) const
     //--------------------------------------------------------------------------------------------
     {
@@ -9812,12 +10681,12 @@ namespace RegionRuntime {
       // If this is the owner we should have deleted the instance by now
       if (!remote && (parent == NULL))
       {
-        //assert(!valid);
-        //assert(children == 0);
-        //assert(users.empty());
-        //assert(added_users.empty());
-        //assert(copy_users.empty());
-        //assert(added_copy_users.empty());
+        assert(!valid);
+        assert(children == 0);
+        assert(users.empty());
+        assert(added_users.empty());
+        assert(copy_users.empty());
+        assert(added_copy_users.empty());
       }
 #endif
     }
@@ -9847,9 +10716,6 @@ namespace RegionRuntime {
                                   Event precondition)
     //-------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(valid);
-#endif
       // Go through all the current users and see if there are any
       // true dependences between the current users and the new user
       std::set<Event> wait_on_events;
@@ -10134,9 +11000,6 @@ namespace RegionRuntime {
     void InstanceInfo::add_copy_user(UniqueID uid, Event copy_term)
     //-------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(valid);
-#endif
       if (remote)
       {
         // See if it already exists
@@ -10412,9 +11275,6 @@ namespace RegionRuntime {
       derez.deserialize<Event>(result_info->valid_event);
       derez.deserialize<Lock>(result_info->inst_lock);
       derez.deserialize<bool>(result_info->valid);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(result_info->valid); // should always be valid coming this way
-#endif
 
       // Put all the users in the base users since this is remote
       size_t num_users;

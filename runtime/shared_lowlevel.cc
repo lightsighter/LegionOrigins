@@ -403,6 +403,7 @@ namespace RegionRuntime {
 		PTHREAD_SAFE_CALL(pthread_cond_init(wait_cond,NULL));
 		shutdown = false;
 		shutdown_trigger = NULL;
+                idle_task_enabled = true;
 	}
         ProcessorImpl(pthread_barrier_t *init, Processor::TaskIDTable table, Processor p, Processor utility) :
                 init_bar(init), task_table(table), proc(p), utility_proc(utility),
@@ -416,6 +417,7 @@ namespace RegionRuntime {
 		PTHREAD_SAFE_CALL(pthread_cond_init(wait_cond,NULL));
 		shutdown = false;
 		shutdown_trigger = NULL;
+                idle_task_enabled = true;
         }
         ~ProcessorImpl(void)
         {
@@ -436,6 +438,9 @@ namespace RegionRuntime {
 	void trigger(unsigned count = 1, TriggerHandle handle = 0);
 	static void* start(void *proc);
 	void preempt(EventImpl *event, EventImpl::EventGeneration needed);
+    public:
+        void enable_idle_task(void);
+        void disable_idle_task(void);
     private:
 	void execute_task(bool permit_shutdown);
     private:
@@ -458,6 +463,7 @@ namespace RegionRuntime {
 	pthread_cond_t *wait_cond;
 	// Used for detecting the shutdown condition
 	bool shutdown;
+        bool idle_task_enabled;
 	EventImpl *shutdown_trigger;
         const bool has_scheduler;
         const bool is_utility_proc;
@@ -1224,6 +1230,20 @@ namespace RegionRuntime {
         return p->get_utility_processor();
     }
 
+    void Processor::enable_idle_task(void)
+    {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+        ProcessorImpl *p = Runtime::get_runtime()->get_processor_impl(*this);
+        p->enable_idle_task();
+    }
+
+    void Processor::disable_idle_task(void)
+    {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+        ProcessorImpl *p = Runtime::get_runtime()->get_processor_impl(*this);
+        p->disable_idle_task();
+    }
+
     Event ProcessorImpl::spawn(Processor::TaskFuncID func_id, const void * args,
 				size_t arglen, Event wait_on)
     {
@@ -1316,6 +1336,22 @@ namespace RegionRuntime {
       PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
+    void ProcessorImpl::enable_idle_task(void)
+    {
+        PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
+        idle_task_enabled = true;
+        // Wake up thread so it can run the idle task
+        PTHREAD_SAFE_CALL(pthread_cond_signal(wait_cond));
+        PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
+    }
+
+    void ProcessorImpl::disable_idle_task(void)
+    {
+        PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
+        idle_task_enabled = false;    
+        PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
+    }
+
     void ProcessorImpl::run(void)
     {
         //fprintf(stdout,"This is processor %d\n",proc.id);
@@ -1397,7 +1433,7 @@ namespace RegionRuntime {
 	// If there are too few, invoke the scheduler
         // If we've been told to shutdown, never invoke the scheduler
         // Utility proc can't have an idle task
-	if (!is_utility_proc && has_scheduler && !scheduler_invoked && 
+	if (!is_utility_proc && has_scheduler && idle_task_enabled && !scheduler_invoked && 
             !shutdown && (ready_queue.size()/*+waiting_queue.size()*/) < MIN_SCHED_TASKS)
 	{
                 // Mark that we're invoking the scheduler

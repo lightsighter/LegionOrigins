@@ -9,9 +9,8 @@
 
 using namespace RegionRuntime::HighLevel;
 
-#define TOP_LEVEL_TASK_ID TASK_ID_REGION_MAIN
 
-//#define TEST_STEALING
+#define TEST_STEALING
 
 #define MAX_STEAL_COUNT 4
 
@@ -22,7 +21,8 @@ static unsigned* get_num_blocks(void)
 }
 
 enum {
-  TASKID_MAIN = TASK_ID_AVAILABLE,
+  TOP_LEVEL_TASK_ID,
+  TASKID_MAIN,
   TASKID_INIT_VECTORS,
   TASKID_ADD_VECTORS,
 };
@@ -71,12 +71,12 @@ void top_level_task(const void *args, size_t arglen,
 
   Future f = runtime->execute_task(ctx, TASKID_MAIN, main_regions,
 				   TaskArgument(&vr, sizeof(VectorRegions)));
-  f.get_void_result();
+  //f.get_void_result();
 
   // Destroy our logical regions clean up the region trees
-  //runtime->destroy_logical_region(ctx, vr.r_x);
-  //runtime->destroy_logical_region(ctx, vr.r_y);
-  //runtime->destroy_logical_region(ctx, vr.r_z);
+  runtime->destroy_logical_region(ctx, vr.r_x);
+  runtime->destroy_logical_region(ctx, vr.r_y);
+  runtime->destroy_logical_region(ctx, vr.r_z);
 }
 
 template<AccessorType AT>
@@ -158,7 +158,7 @@ void main_task(const void *args, size_t arglen,
   FutureMap init_f =
     runtime->execute_index_space(ctx, TASKID_INIT_VECTORS, index_space,
 				 init_regions, global, arg_map, false);
-  init_f.wait_all_results();
+  //init_f.wait_all_results();
 
   printf("STARTING MAIN SIMULATION LOOP\n");
   struct timespec ts_start, ts_end;
@@ -178,7 +178,7 @@ void main_task(const void *args, size_t arglen,
   FutureMap add_f =
     runtime->execute_index_space(ctx, TASKID_ADD_VECTORS, index_space,
                                  add_regions, global, arg_map, false);
-  add_f.wait_all_results();
+  //add_f.wait_all_results();
 
   // Print results
   clock_gettime(CLOCK_MONOTONIC, &ts_end);
@@ -438,12 +438,8 @@ public:
       chunk[0].start = idx;
       chunk[0].stop =  idx + (chunk_size-1)*index_space[0].stride;
       chunk[0].stride = index_space[0].stride;
-      RangeSplit result;
-      result.ranges = chunk;
       Processor p = { cur_proc };
-      result.p = p;
-      result.recurse = false;
-      chunks.push_back(result);
+      chunks.push_back(RangeSplit(chunk, p, false));
       // update the processor
       if ((cur_proc % num_procs) == 0)
         cur_proc = 1;
@@ -606,16 +602,15 @@ void create_mappers(Machine *machine, HighLevelRuntime *runtime,
 int main(int argc, char **argv) {
   srand(time(NULL));
 
-  Processor::TaskIDTable task_table;
-  task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
-  task_table[TASKID_MAIN] = high_level_task_wrapper<main_task<AccessorGeneric> >;
-  task_table[TASKID_INIT_VECTORS] = high_level_index_task_wrapper<init_vectors_task<AccessorGeneric> >;
-  task_table[TASKID_ADD_VECTORS] = high_level_index_task_wrapper<add_vectors_task<AccessorGeneric> >;
-
-  HighLevelRuntime::register_runtime_tasks(task_table);
+  HighLevelRuntime::set_input_args(argc, argv);
   HighLevelRuntime::set_registration_callback(create_mappers);
+  HighLevelRuntime::set_top_level_task_id(TOP_LEVEL_TASK_ID);
+  HighLevelRuntime::register_single_task<top_level_task<AccessorGeneric> >(TOP_LEVEL_TASK_ID, Processor::LOC_PROC, "top_level_task");
+  HighLevelRuntime::register_single_task<main_task<AccessorGeneric> >(TASKID_MAIN, Processor::LOC_PROC, "main_task");
+  HighLevelRuntime::register_index_task<init_vectors_task<AccessorGeneric> >(TASKID_INIT_VECTORS, Processor::LOC_PROC, "init_vectors");
+  HighLevelRuntime::register_index_task<add_vectors_task<AccessorGeneric> >(TASKID_ADD_VECTORS, Processor::LOC_PROC, "add_vectors");
 
-  Machine m(&argc, &argv, task_table, false);
+  Machine m(&argc, &argv, HighLevelRuntime::get_task_table(), false);
 
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "-blocks")) {
