@@ -9,7 +9,6 @@
 
 using namespace RegionRuntime::HighLevel;
 
-#define TOP_LEVEL_TASK_ID TASK_ID_REGION_MAIN
 
 #define TEST_STEALING
 
@@ -22,7 +21,8 @@ static unsigned* get_num_blocks(void)
 }
 
 enum {
-  TASKID_MAIN = TASK_ID_AVAILABLE,
+  TOP_LEVEL_TASK_ID,
+  TASKID_MAIN,
   TASKID_INIT_VECTORS,
   TASKID_ADD_VECTORS,
 };
@@ -438,12 +438,8 @@ public:
       chunk[0].start = idx;
       chunk[0].stop =  idx + (chunk_size-1)*index_space[0].stride;
       chunk[0].stride = index_space[0].stride;
-      RangeSplit result;
-      result.ranges = chunk;
       Processor p = { cur_proc };
-      result.p = p;
-      result.recurse = false;
-      chunks.push_back(result);
+      chunks.push_back(RangeSplit(chunk, p, false));
       // update the processor
       if ((cur_proc % num_procs) == 0)
         cur_proc = 1;
@@ -608,10 +604,11 @@ int main(int argc, char **argv) {
 
   HighLevelRuntime::set_input_args(argc, argv);
   HighLevelRuntime::set_registration_callback(create_mappers);
-  HighLevelRuntime::register_single_task<top_level_task<AccessorGeneric> >(TOP_LEVEL_TASK_ID,"top_level_task");
-  HighLevelRuntime::register_single_task<main_task<AccessorGeneric> >(TASKID_MAIN,"main_task");
-  HighLevelRuntime::register_index_task<init_vectors_task<AccessorGeneric> >(TASKID_INIT_VECTORS,"init_vectors");
-  HighLevelRuntime::register_index_task<add_vectors_task<AccessorGeneric> >(TASKID_ADD_VECTORS,"add_vectors");
+  HighLevelRuntime::set_top_level_task_id(TOP_LEVEL_TASK_ID);
+  HighLevelRuntime::register_single_task<top_level_task<AccessorGeneric> >(TOP_LEVEL_TASK_ID, Processor::LOC_PROC, "top_level_task");
+  HighLevelRuntime::register_single_task<main_task<AccessorGeneric> >(TASKID_MAIN, Processor::LOC_PROC, "main_task");
+  HighLevelRuntime::register_index_task<init_vectors_task<AccessorGeneric> >(TASKID_INIT_VECTORS, Processor::LOC_PROC, "init_vectors");
+  HighLevelRuntime::register_index_task<add_vectors_task<AccessorGeneric> >(TASKID_ADD_VECTORS, Processor::LOC_PROC, "add_vectors");
 
   Machine m(&argc, &argv, HighLevelRuntime::get_task_table(), false);
 
