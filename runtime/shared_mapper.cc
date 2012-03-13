@@ -107,12 +107,7 @@ namespace RegionRuntime {
     {
       log_mapper(LEVEL_SPEW,"Split index space for range space in shared memory mapper");
       // For the moment don't split anything
-      RangeSplit result;
-      result.ranges = index_space;
-      result.p = local_proc;
-      result.recurse = false;
-
-      chunks.push_back(result);
+      chunks.push_back(RangeSplit(index_space, local_proc, false));
     }
 
 
