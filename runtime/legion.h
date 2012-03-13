@@ -20,11 +20,11 @@ namespace RegionRuntime {
   namespace HighLevel {
 
     // Enumerations
-    enum {
+    //enum {
       // To see where the +9,10 come from, see the top of legion.cc
-      TASK_ID_REGION_MAIN = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+9,
-      TASK_ID_AVAILABLE = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+10,
-    };
+    //  TASK_ID_REGION_MAIN = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+9,
+    //  TASK_ID_AVAILABLE = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+10,
+    //};
 
     // Timing events
     enum {
@@ -79,6 +79,7 @@ namespace RegionRuntime {
 
     // Forward declarations for user level objects
     class Task;
+    class TaskCollection;
     class Future;
     class FutureMap;
     class RegionRequirement;
@@ -276,6 +277,9 @@ namespace RegionRuntime {
       bool must; // if index space, must tasks be run concurrently
       // Any other index space parameters we need here?
     public:
+      // The Task Collection of low-level tasks for this user level task
+      TaskCollection *variants;
+    public:
       bool operator==(const Task &task) const
         { return unique_id == task.unique_id; }
       bool operator<(const Task &task) const
@@ -284,6 +288,37 @@ namespace RegionRuntime {
       // Only the high level runtime should be able to make these
       friend class HighLevelRuntime;
       Task() { }
+    };
+
+    /////////////////////////////////////////////////////////////
+    // TaskCollection
+    /////////////////////////////////////////////////////////////
+    class TaskCollection {
+    public:
+      class Variant {
+      public:
+        Processor::TaskFuncID low_id;
+        Processor::Kind proc_kind;
+        bool index_space;
+      public:
+        Variant(Processor::TaskFuncID id, Processor::Kind k, bool index)
+          : low_id(id), proc_kind(k), index_space(index) { }
+      };
+    public:
+      TaskCollection(Processor::TaskFuncID uid, const char *n)
+        : user_id(uid), name(n) { }
+    public:
+      bool has_variant(Processor::Kind kind, bool index_space);
+    protected:
+      friend class HighLevelRuntime;
+      friend class TaskContext;
+      void add_variant(Processor::TaskFuncID low_id, Processor::Kind kind, bool index);
+      Processor::TaskFuncID select_variant(bool index, Processor::Kind kind);
+    public:
+      const Processor::TaskFuncID user_id;
+      const char *name;
+    private:
+      std::vector<Variant> variants;
     };
 
     /////////////////////////////////////////////////////////////
@@ -710,48 +745,50 @@ namespace RegionRuntime {
     public:
       // Set the input arguments for the high-level runtime
       static void set_input_args(int argc, char **argv);
+      // Set the ID of the top-level task, if not set it defaults to 0
+      static void set_top_level_task_id(Processor::TaskFuncID top_id);
       // Get the task table from the runtime
       static Processor::TaskIDTable& get_task_table(bool add_runtime_tasks = true);
       // Call visible to the user to set up the task map
       static void register_runtime_tasks(Processor::TaskIDTable &table);
       // Call visible to the user to give a task to call to initialize mappers, colorize functions, etc.
       static void set_registration_callback(RegistrationCallbackFnptr callback);
-      // Register a task for a single task
+      // Register a task for a single task (the first one of these will be the top level task)
       template<typename T,
         T (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
-      static void register_single_task(Processor::TaskFuncID id, const char *name = NULL);
+      static void register_single_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name = NULL);
       template<
         void (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
-      static void register_single_task(Processor::TaskFuncID id, const char *name = NULL);
+      static void register_single_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name = NULL);
       template<typename T,
         T (*SLOW_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
         T (*FAST_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
-      static void register_single_task(Processor::TaskFuncID id, const char *name = NULL);
+      static void register_single_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name = NULL);
       template<
         void (*SLOW_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
         void (*FAST_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
-      static void register_single_task(Processor::TaskFuncID id, const char *name = NULL);
+      static void register_single_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name = NULL);
       // Register a task for an index space
       template<typename T,
         T (*TASK_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
                       std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
-      static void register_index_task(Processor::TaskFuncID id, const char *name = NULL);
+      static void register_index_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name = NULL);
       template<
         void (*TASK_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
                       std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
-      static void register_index_task(Processor::TaskFuncID id, const char *name = NULL);
+      static void register_index_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name = NULL);
       template<typename T,
         T (*SLOW_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
                       std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
         T (*FAST_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
                       std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
-      static void register_index_task(Processor::TaskFuncID id, const char *name = NULL);
+      static void register_index_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name = NULL);
       template<
         void (*SLOW_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
                       std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
         void (*FAST_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
                       std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
-      static void register_index_task(Processor::TaskFuncID id, const char *name = NULL);
+      static void register_index_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name = NULL);
     protected:
       friend class LowLevel::Processor;
       // Static methods for calls from the processor to the high level runtime
@@ -769,8 +806,13 @@ namespace RegionRuntime {
       // Shutdown methods (one task to detect the termination, another to process it)
       static void detect_termination(const void * args, size_t arglen, Processor p); // application
     private:
-      static std::map<Processor::TaskFuncID,const char*>& get_task_name_table(void);
-      static std::map<Processor::TaskFuncID,bool>& get_task_type_table(void);
+      static std::map<Processor::TaskFuncID,TaskCollection*>& get_collection_table(void);
+      static void update_collection_table(void (*low_level_ptr)(const void *,size_t,Processor),
+                                          Processor::TaskFuncID uid, const char *name, bool index_space,
+                                          Processor::Kind proc_kind);
+    private:
+      // Get the next low-level task id that is available
+      static Processor::TaskFuncID get_next_available_id(void);
     protected:
       HighLevelRuntime(Machine *m, Processor local);
       ~HighLevelRuntime();
@@ -944,6 +986,7 @@ namespace RegionRuntime {
       // Static variables
       static HighLevelRuntime *runtime_map;
       static volatile RegistrationCallbackFnptr registration_callback;
+      static Processor::TaskFuncID legion_main_id;
     public:
       // member variables for getting the default arguments
       // Note that these are available to the mapper through the pointer to the runtime
@@ -952,6 +995,7 @@ namespace RegionRuntime {
     private:
       // Member variables
       const Processor local_proc;
+      const Processor::Kind proc_kind;
       Machine *const machine;
       std::vector<Mapper*> mapper_objects;
       std::vector<Lock> mapper_locks;
@@ -999,11 +1043,21 @@ namespace RegionRuntime {
     class Mapper {
     public:
       struct ConstraintSplit {
+      public:
+        ConstraintSplit(const std::vector<Constraint> &cons,
+                        Processor proc, bool rec)
+          : constraints(cons), p(proc), recurse(rec) { }
+      public:
         std::vector<Constraint> constraints;
         Processor p;
         bool recurse;
       };
       struct RangeSplit {
+      public:
+        RangeSplit(const std::vector<Range> &r,
+                    Processor proc, bool rec)
+          : ranges(r), p(proc), recurse(rec) { }
+      public:
         std::vector<Range> ranges;
         Processor p;
         bool recurse;
@@ -1096,9 +1150,38 @@ namespace RegionRuntime {
       virtual bool compact_partition(const Partition &partition, MappingTagID tag);
 
     protected:
+      // Helper functions for the default version of the mapper
+      void decompose_range_space(unsigned cur_depth, unsigned max_depth,
+          const std::vector<Range> &index_space, std::vector<Range> &chunk,
+          std::vector<RangeSplit> &chunks, unsigned &proc_index);
+    protected:
       HighLevelRuntime *const runtime;
       const Processor local_proc;
       Machine *const machine;
+      // The kind of processor being controlled by this mapper
+      Processor::Kind proc_kind;
+      // The maximum number of tasks a mapper will allow to be stolen at a time
+      // Controlled by -dm:thefts
+      unsigned max_steals_per_theft;
+      // The maximum number of times that a single task is allowed to be stolen
+      // Controlled by -dm:count
+      unsigned max_steal_count;
+      // The splitting factor for breaking index spaces across the machine
+      // Mapper will try to break the space into split_factor * num_procs
+      // difference pieces
+      // Controlled by -dm:split
+      unsigned splitting_factor;
+      // Whether or not copies can be made to avoid Write-After-Read dependences
+      // Controlled by -dm:war
+      bool war_enabled;
+      // The memory stack for this mapper
+      // Ranked from the best memories in front the worst at the back
+      std::vector<Memory> memory_stack;
+      // The group of processors that this mapper can send tasks to
+      std::vector<Processor> proc_group;
+      // The map of target processors for tasks that need a processor
+      // different from the kind of processor that we are
+      std::map<Processor::Kind,Processor> alt_proc_map;
     };
 
     ///////////////////////////////////////////////////////////////////////////
@@ -2437,155 +2520,101 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     template<typename T,
         T (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
-    /*static*/ void HighLevelRuntime::register_single_task(Processor::TaskFuncID id, const char *name /*= NULL*/)
+    /*static*/ void HighLevelRuntime::register_single_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(id >= TASK_ID_REGION_MAIN); // make sure we're not stomping on any runtime tasks
-#endif
-      // Add the task to the table
-      HighLevelRuntime::get_task_table(false)[id] = high_level_task_wrapper<T,TASK_PTR>;
       if (name == NULL)
       {
         // Has no name, so just call it by its number
         char *buffer = (char*)malloc(20*sizeof(char));
         sprintf(buffer,"%d",id);
-        HighLevelRuntime::get_task_name_table()[id] = buffer;
+        name = buffer;
       }
-      else
-      {
-        HighLevelRuntime::get_task_name_table()[id] = name;
-      }
-      HighLevelRuntime::get_task_type_table()[id] = false; // not an index space
+      HighLevelRuntime::update_collection_table(high_level_task_wrapper<T,TASK_PTR>, id, name, false/*index_space*/, proc_kind);
     }
 
     //--------------------------------------------------------------------------
     template<
       void (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
-    /*static*/ void HighLevelRuntime::register_single_task(Processor::TaskFuncID id, const char *name /*= NULL*/)
+    /*static*/ void HighLevelRuntime::register_single_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(id >= TASK_ID_REGION_MAIN); // make sure we're not stomping on any runtime tasks
-#endif
-      // Add the task to the table
-      HighLevelRuntime::get_task_table(false)[id] = high_level_task_wrapper<TASK_PTR>;
       if (name == NULL)
       {
         // Has no name, so just call it by its number
         char *buffer = (char*)malloc(20*sizeof(char));
         sprintf(buffer,"%d",id);
-        HighLevelRuntime::get_task_name_table()[id] = buffer;
+        name = buffer;
       }
-      else
-      {
-        HighLevelRuntime::get_task_name_table()[id] = name;
-      }
-      HighLevelRuntime::get_task_type_table()[id] = false; // not an index space
+      HighLevelRuntime::update_collection_table(high_level_task_wrapper<TASK_PTR>, id, name, false/*index_space*/, proc_kind);
     }
 
     //--------------------------------------------------------------------------
     template<typename T,
       T (*SLOW_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
       T (*FAST_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
-    /*static*/ void HighLevelRuntime::register_single_task(Processor::TaskFuncID id, const char *name /*= NULL*/)
+    /*static*/ void HighLevelRuntime::register_single_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(id >= TASK_ID_REGION_MAIN); // make sure we're not stomping on any runtime tasks
-#endif
-      // Add the task to the table
-      HighLevelRuntime::get_task_table(false)[id] = high_level_task_wrapper<T,SLOW_PTR,FAST_PTR>;
       if (name == NULL)
       {
         // Has no name, so just call it by its number
         char *buffer = (char*)malloc(20*sizeof(char));
         sprintf(buffer,"%d",id);
-        HighLevelRuntime::get_task_name_table()[id] = buffer;
+        name = buffer;
       }
-      else
-      {
-        HighLevelRuntime::get_task_name_table()[id] = name;
-      }
-      HighLevelRuntime::get_task_type_table()[id] = false; // not an index space
+      HighLevelRuntime::update_collection_table(high_level_task_wrapper<T,SLOW_PTR,FAST_PTR>, id, name, false/*index_space*/, proc_kind);
     }
 
     //--------------------------------------------------------------------------
     template<
       void (*SLOW_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
       void (*FAST_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
-    /*static*/ void HighLevelRuntime::register_single_task(Processor::TaskFuncID id, const char *name /*= NULL*/)
+    /*static*/ void HighLevelRuntime::register_single_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(id >= TASK_ID_REGION_MAIN); // make sure we're not stomping on any runtime tasks
-#endif
-      // Add the task to the table
-      HighLevelRuntime::get_task_table(false)[id] = high_level_task_wrapper<SLOW_PTR,FAST_PTR>;
       if (name == NULL)
       {
         // Has no name, so just call it by its number
         char *buffer = (char*)malloc(20*sizeof(char));
         sprintf(buffer,"%d",id);
-        HighLevelRuntime::get_task_name_table()[id] = buffer;
+        name = buffer;
       }
-      else
-      {
-        HighLevelRuntime::get_task_name_table()[id] = name;
-      }
-      HighLevelRuntime::get_task_type_table()[id] = false; // not an index space
+      HighLevelRuntime::update_collection_table(high_level_task_wrapper<SLOW_PTR,FAST_PTR>, id, name, false/*index_space*/, proc_kind);
     }
 
     //--------------------------------------------------------------------------
     template<typename T,
       T (*TASK_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
                     std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
-    /*static*/ void HighLevelRuntime::register_index_task(Processor::TaskFuncID id, const char *name /*= NULL*/)
+    /*static*/ void HighLevelRuntime::register_index_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(id >= TASK_ID_REGION_MAIN); // make sure we're not stomping on any runtime tasks
-#endif
-      // Add the task to the table
-      HighLevelRuntime::get_task_table(false)[id] = high_level_index_task_wrapper<T,TASK_PTR>;
       if (name == NULL)
       {
         // Has no name, so just call it by its number
         char *buffer = (char*)malloc(20*sizeof(char));
         sprintf(buffer,"%d",id);
-        HighLevelRuntime::get_task_name_table()[id] = buffer;
+        name = buffer;
       }
-      else
-      {
-        HighLevelRuntime::get_task_name_table()[id] = name;
-      }
-      HighLevelRuntime::get_task_type_table()[id] = true; // is an index space
+      HighLevelRuntime::update_collection_table(high_level_index_task_wrapper<T,TASK_PTR>, id, name, true/*index_space*/, proc_kind);
     }
 
     //--------------------------------------------------------------------------
     template<
       void (*TASK_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
                     std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
-    /*static*/ void HighLevelRuntime::register_index_task(Processor::TaskFuncID id, const char *name /*= NULL*/)
+    /*static*/ void HighLevelRuntime::register_index_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(id >= TASK_ID_REGION_MAIN); // make sure we're not stomping on any runtime tasks
-#endif
-      // Add the task to the table
-      HighLevelRuntime::get_task_table(false)[id] = high_level_index_task_wrapper<TASK_PTR>;
       if (name == NULL)
       {
         // Has no name, so just call it by its number
         char *buffer = (char*)malloc(20*sizeof(char));
         sprintf(buffer,"%d",id);
-        HighLevelRuntime::get_task_name_table()[id] = buffer;
+        name = buffer;
       }
-      else
-      {
-        HighLevelRuntime::get_task_name_table()[id] = name;
-      }
-      HighLevelRuntime::get_task_type_table()[id] = true; // is an index space
+      HighLevelRuntime::update_collection_table(high_level_index_task_wrapper<TASK_PTR>, id, name, true/*index_space*/, proc_kind);
     }
 
     //--------------------------------------------------------------------------
@@ -2594,26 +2623,17 @@ namespace RegionRuntime {
                     std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
       T (*FAST_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
                     std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
-    /*static*/ void HighLevelRuntime::register_index_task(Processor::TaskFuncID id, const char *name /*= NULL*/)
+    /*static*/ void HighLevelRuntime::register_index_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(id >= TASK_ID_REGION_MAIN); // make sure we're not stomping on any runtime tasks
-#endif
-      // Add the task to the table
-      HighLevelRuntime::get_task_table(false)[id] = high_level_index_task_wrapper<T,SLOW_PTR,FAST_PTR>;
       if (name == NULL)
       {
         // Has no name, so just call it by its number
         char *buffer = (char*)malloc(20*sizeof(char));
         sprintf(buffer,"%d",id);
-        HighLevelRuntime::get_task_name_table()[id] = buffer;
+        name = buffer;
       }
-      else
-      {
-        HighLevelRuntime::get_task_name_table()[id] = name;
-      }
-      HighLevelRuntime::get_task_type_table()[id] = true; // is an index space
+      HighLevelRuntime::update_collection_table(high_level_index_task_wrapper<T,SLOW_PTR,FAST_PTR>, id, name, true/*index_space*/, proc_kind);
     }
 
     //--------------------------------------------------------------------------
@@ -2622,26 +2642,17 @@ namespace RegionRuntime {
                     std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
       void (*FAST_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
                     std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
-    /*static*/ void HighLevelRuntime::register_index_task(Processor::TaskFuncID id, const char *name /*= NULL*/)
+    /*static*/ void HighLevelRuntime::register_index_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(id >= TASK_ID_REGION_MAIN); // make sure we're not stomping on any runtime tasks
-#endif
-      // Add the task to the table
-      HighLevelRuntime::get_task_table(false)[id] = high_level_index_task_wrapper<SLOW_PTR,FAST_PTR>;
       if (name == NULL)
       {
         // Has no name, so just call it by its number
         char *buffer = (char*)malloc(20*sizeof(char));
         sprintf(buffer,"%d",id);
-        HighLevelRuntime::get_task_name_table()[id] = buffer;
+        name = buffer;
       }
-      else
-      {
-        HighLevelRuntime::get_task_name_table()[id] = name;
-      }
-      HighLevelRuntime::get_task_type_table()[id] = true; // is an index space
+      HighLevelRuntime::update_collection_table(high_level_index_task_wrapper<SLOW_PTR,FAST_PTR>, id, name, true/*index_space*/, proc_kind);
     }
 
     ////////////////////////////////////////////////////////////////////////////////
@@ -2882,15 +2893,6 @@ namespace RegionRuntime {
                                   MapperID id, MappingTagID tag)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(HighLevelRuntime::get_task_type_table().find(task_id) != HighLevelRuntime::get_task_type_table().end()); 
-      if (!HighLevelRuntime::get_task_type_table()[task_id])
-      {
-        fprintf(stderr,"ERROR: Single task %s (ID %d) was launched as an index space\n",
-            HighLevelRuntime::get_task_name_table()[task_id], task_id);
-        exit(1);
-      }
-#endif
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_EXECUTE_TASK);
       // Get a unique id for the task to use
       UniqueID unique_id = get_unique_task_id();
@@ -2951,15 +2953,6 @@ namespace RegionRuntime {
                                MapperID id, MappingTagID tag)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(HighLevelRuntime::get_task_type_table().find(task_id) != HighLevelRuntime::get_task_type_table().end());
-      if (!HighLevelRuntime::get_task_type_table()[task_id])
-      {
-        fprintf(stderr,"ERROR: Single task %s (ID %d) was launched as an index space\n",
-            HighLevelRuntime::get_task_name_table()[task_id], task_id);
-        exit(1);
-      }
-#endif
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_EXECUTE_TASK);
       // Get a unique id for the task to use
       UniqueID unique_id = get_unique_task_id();

@@ -47,6 +47,7 @@ namespace RegionRuntime {
       NOTIFY_FINISH_ID   = (Processor::TASK_ID_FIRST_AVAILABLE+6),
       ADVERTISEMENT_ID   = (Processor::TASK_ID_FIRST_AVAILABLE+7),
       TERMINATION_ID     = (Processor::TASK_ID_FIRST_AVAILABLE+8),
+      TASK_ID_AVAILABLE  = (Processor::TASK_ID_FIRST_AVAILABLE+9),
     };
 
     Logger::Category log_task("tasks");
@@ -55,6 +56,7 @@ namespace RegionRuntime {
     Logger::Category log_spy("legion_spy");
     Logger::Category log_garbage("gc");
     Logger::Category log_leak("leaks");
+    Logger::Category log_variant("variants");
 
     // An auto locking class for taking a lock and releasing it when
     // the object goes out of scope
@@ -187,6 +189,55 @@ namespace RegionRuntime {
           log_spy(LEVEL_INFO,"Event Event %d %d %d %d",it->id,it->gen,result.id,result.gen);
         }
       }
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Task Collection 
+    ///////////////////////////////////////////////////////////// 
+
+    //--------------------------------------------------------------------------
+    bool TaskCollection::has_variant(Processor::Kind kind, bool index_space)
+    //--------------------------------------------------------------------------
+    {
+      bool result = false;
+      for (std::vector<Variant>::const_iterator it = variants.begin();
+            it != variants.end(); it++)
+      {
+        if ((it->proc_kind == kind) && (it->index_space == index_space))
+        {
+          result = true;
+          break;
+        }
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void TaskCollection::add_variant(Processor::TaskFuncID low_id, Processor::Kind kind, bool index)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!has_variant(kind, index));
+#endif
+      variants.push_back(Variant(low_id, kind, index));
+    }
+
+    //--------------------------------------------------------------------------
+    Processor::TaskFuncID TaskCollection::select_variant(bool index, Processor::Kind kind)
+    //--------------------------------------------------------------------------
+    {
+      for (std::vector<Variant>::const_iterator it = variants.begin();
+            it != variants.end(); it++)
+      {
+        if ((it->proc_kind == kind) && (it->index_space == index))
+        {
+          return it->low_id;
+        }
+      }
+      log_variant(LEVEL_ERROR,"User task %s (ID %d) has no registered variants for "
+          "processors of kind %d and index space %d",name, user_id, kind, index);
+      exit(1);
+      return 0;
     }
 
     /////////////////////////////////////////////////////////////
@@ -1138,7 +1189,7 @@ namespace RegionRuntime {
           {
             log_inst(LEVEL_ERROR,"Unable to find or create physical instance for mapping "
                 "region %d of task %s (ID %d) with unique id %d",req.handle.region.id,
-                HighLevelRuntime::get_task_name_table()[parent_ctx->task_id],parent_ctx->task_id,parent_ctx->unique_id);
+                parent_ctx->variants->name,parent_ctx->task_id,parent_ctx->unique_id);
             exit(1);
           }
         }
@@ -1146,14 +1197,14 @@ namespace RegionRuntime {
         { 
           log_inst(LEVEL_ERROR,"No specified memory locations for mapping physical instance "
               "for region (%d) for task %s (ID %d) with unique id %d",req.handle.region.id,
-              HighLevelRuntime::get_task_name_table()[parent_ctx->task_id],parent_ctx->task_id, parent_ctx->unique_id);
+              parent_ctx->variants->name,parent_ctx->task_id, parent_ctx->unique_id);
           exit(1);
         }
       }
 #ifdef DEBUG_HIGH_LEVEL
       log_region(LEVEL_DEBUG,"Mapping inline region %d of task %s (ID %d) (unique id %d) to "
               "physical instance %d of logical region %d in memory %d",req.handle.region.id,
-              HighLevelRuntime::get_task_name_table()[parent_ctx->task_id], parent_ctx->task_id,parent_ctx->unique_id,
+              parent_ctx->variants->name, parent_ctx->task_id,parent_ctx->unique_id,
               chosen_info->iid,chosen_info->handle.id,chosen_info->location.id);
       assert(chosen_info != InstanceInfo::get_no_instance());
 #endif
@@ -1573,7 +1624,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     HighLevelRuntime::HighLevelRuntime(LowLevel::Machine *m, Processor local)
-      : local_proc(local), machine(m),
+      : local_proc(local), proc_kind (m->get_processor_kind(local)), machine(m),
       mapper_objects(std::vector<Mapper*>(DEFAULT_MAPPER_SLOTS)), 
       mapper_locks(std::vector<Lock>(DEFAULT_MAPPER_SLOTS)),
       next_partition_id(local_proc.id), next_task_id(local_proc.id),
@@ -1634,10 +1685,10 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           assert(!mapper_objects.empty());
 #endif
-          desc->initialize_task(NULL/*no parent*/,tid, TASK_ID_REGION_MAIN,malloc(sizeof(Context)),
+          desc->initialize_task(NULL/*no parent*/,tid, HighLevelRuntime::legion_main_id,malloc(sizeof(Context)),
                                 sizeof(Context), 0, 0, mapper_objects[0], mapper_locks[0]);
         }
-        log_spy(LEVEL_INFO,"Top Task %d %d",desc->unique_id,TASK_ID_REGION_MAIN);
+        log_spy(LEVEL_INFO,"Top Task %d %d",desc->unique_id,HighLevelRuntime::legion_main_id);
         // Put this task in the ready queue
         ready_queue.push_back(desc);
 
@@ -1675,7 +1726,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    Processor::TaskIDTable& HighLevelRuntime::get_task_table(bool add_runtime_tasks /*=true*/)
+    /*static*/ Processor::TaskIDTable& HighLevelRuntime::get_task_table(bool add_runtime_tasks /*=true*/)
     //--------------------------------------------------------------------------------------------
     {
       static Processor::TaskIDTable table;
@@ -1687,19 +1738,47 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    std::map<Processor::TaskFuncID,const char*>& HighLevelRuntime::get_task_name_table(void)
+    /*static*/ std::map<Processor::TaskFuncID,TaskCollection*>& HighLevelRuntime::get_collection_table(void)
     //--------------------------------------------------------------------------------------------
     {
-      static std::map<Processor::TaskFuncID,const char*> name_table;
-      return name_table;
+      static std::map<Processor::TaskFuncID,TaskCollection*> collection_table;
+      return collection_table;
     }
 
     //--------------------------------------------------------------------------------------------
-    std::map<Processor::TaskFuncID,bool>& HighLevelRuntime::get_task_type_table(void)
+    /*static*/ Processor::TaskFuncID HighLevelRuntime::get_next_available_id(void) 
     //--------------------------------------------------------------------------------------------
     {
-      static std::map<Processor::TaskFuncID,bool> type_table;
-      return type_table;
+      static Processor::TaskFuncID available = TASK_ID_AVAILABLE;
+      return available++;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    /*static*/ void HighLevelRuntime::update_collection_table(void (*low_level_ptr)(const void*,size_t,Processor),
+                                                    Processor::TaskFuncID uid, const char *name, bool index_space,
+                                                    Processor::Kind proc_kind)
+    //--------------------------------------------------------------------------------------------
+    {
+      // First update the low-level task table
+      Processor::TaskFuncID low_id = HighLevelRuntime::get_next_available_id();
+      // Add it to the low level table
+      HighLevelRuntime::get_task_table(false)[low_id] = low_level_ptr;
+      // Now see if an entry already exists in the attribute table for this uid
+      std::map<Processor::TaskFuncID,TaskCollection*>& table = HighLevelRuntime::get_collection_table();
+      if (table.find(uid) == table.end())
+      {
+        TaskCollection *collec = new TaskCollection(uid, name);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(collec != NULL);
+#endif
+        table[uid] = collec;
+        collec->add_variant(low_id, proc_kind, index_space);
+      }
+      else
+      {
+        // Update the variants for the attribute
+        table[uid]->add_variant(low_id, proc_kind, index_space);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1708,7 +1787,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       // Check to make sure that nobody has registered any tasks here
-      for (unsigned idx = 0; idx < TASK_ID_REGION_MAIN; idx++)
+      for (unsigned idx = 0; idx < TASK_ID_AVAILABLE; idx++)
         assert(table.find(idx) == table.end());
 #endif
       table[INIT_FUNC_ID]       = HighLevelRuntime::initialize_runtime;
@@ -1726,22 +1805,30 @@ namespace RegionRuntime {
     }
 
     /*static*/ volatile RegistrationCallbackFnptr HighLevelRuntime::registration_callback = NULL;
+    /*static*/ Processor::TaskFuncID HighLevelRuntime::legion_main_id = 0;
     /*static*/ int HighLevelRuntime::hlr_argc = 0;
     /*static*/ char** HighLevelRuntime::hlr_argv = NULL;
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::set_registration_callback(RegistrationCallbackFnptr callback)
+    /*static*/ void HighLevelRuntime::set_registration_callback(RegistrationCallbackFnptr callback)
     //--------------------------------------------------------------------------------------------
     {
       registration_callback = callback;
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::set_input_args(int argc, char** argv)
+    /*static*/ void HighLevelRuntime::set_input_args(int argc, char** argv)
     //--------------------------------------------------------------------------------------------
     {
       hlr_argc = argc;
       hlr_argv = argv;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    /*static*/ void HighLevelRuntime::set_top_level_task_id(Processor::TaskFuncID top_id)
+    //--------------------------------------------------------------------------------------------
+    {
+      legion_main_id = top_id;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -1889,21 +1976,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_EXECUTE_TASK); 
-#ifdef DEBUG_HIGH_LEVEL
-      assert(HighLevelRuntime::get_task_type_table().find(task_id) != HighLevelRuntime::get_task_type_table().end());
-      if (HighLevelRuntime::get_task_type_table()[task_id])
-      {
-        log_task(LEVEL_ERROR,"Index space task %s (ID %d) was launched as single task",
-            HighLevelRuntime::get_task_name_table()[task_id], task_id);
-        exit(1);
-      }
-#endif
       // Get a unique id for the task to use
       UniqueID unique_id = get_unique_task_id();
-#ifdef DEBUG_HIGH_LEVEL
-      log_task(LEVEL_DEBUG,"Registering new single task with unique id %d and task %s (ID %d) with high level runtime on processor %d\n",
-                unique_id, HighLevelRuntime::get_task_name_table()[task_id], task_id, local_proc.id);
-#endif
       TaskContext *desc = get_available_context(false/*new tree*/);
       // Allocate more space for context
       void *args_prime = malloc(arg.get_size()+sizeof(Context));
@@ -1916,6 +1990,10 @@ namespace RegionRuntime {
         desc->initialize_task(ctx, unique_id, task_id, args_prime, arg.get_size()+sizeof(Context), 
                               id, tag, mapper_objects[id], mapper_locks[id]);
       }
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Registering new single task with unique id %d and task %s (ID %d) with high level runtime on processor %d\n",
+                unique_id, desc->variants->name, task_id, local_proc.id);
+#endif
       desc->set_regions(regions, true/*check same*/);
       // Check if we want to spawn this task 
       check_spawn_task(desc);
@@ -2378,7 +2456,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Beginning task %s (ID %d) with unique id %d on processor %x",
-        HighLevelRuntime::get_task_name_table()[ctx->task_id],ctx->task_id,ctx->unique_id,ctx->local_proc.id);
+        ctx->variants->name,ctx->task_id,ctx->unique_id,ctx->local_proc.id);
 #endif
       ctx->start_task(physical_regions);
     }
@@ -2390,7 +2468,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Ending task %s (ID %d) with unique id %d on processor %x",
-        HighLevelRuntime::get_task_name_table()[ctx->task_id], ctx->task_id,ctx->unique_id,ctx->local_proc.id);
+        ctx->variants->name, ctx->task_id,ctx->unique_id,ctx->local_proc.id);
 #endif
       ctx->complete_task(arg,arglen,physical_regions); 
     }
@@ -2665,7 +2743,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
               log_task(LEVEL_DEBUG,"HLR on processor %d adding index space"
                                     " task %s (ID %d) with unique id %d from orig %d",
-                ctx->local_proc.id,HighLevelRuntime::get_task_name_table()[ctx->task_id],
+                ctx->local_proc.id,ctx->variants->name,
                 ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
 #endif
             }
@@ -2683,7 +2761,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
             log_task(LEVEL_DEBUG,"HLR on processor %d adding index space"
                                   " task %s (ID %d) with unique id %d from orig %d",
-              ctx->local_proc.id, HighLevelRuntime::get_task_name_table()[ctx->task_id],
+              ctx->local_proc.id, ctx->variants->name,
               ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
 #endif
           }
@@ -2695,7 +2773,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           log_task(LEVEL_DEBUG,"HLR on processor %d adding task %s (ID %d) "
                                 "with unique id %d from orig %d",
-            ctx->local_proc.id, HighLevelRuntime::get_task_name_table()[ctx->task_id],
+            ctx->local_proc.id, ctx->variants->name,
             ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
 #endif
         }
@@ -2863,7 +2941,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           (*it)->current_taken = false;
           log_task(LEVEL_DEBUG,"task %s (ID %d) with unique id %d stolen from processor %d",
-                                HighLevelRuntime::get_task_name_table()[(*it)->task_id],
+                                (*it)->variants->name,
                                 (*it)->task_id,(*it)->unique_id,(*it)->local_proc.id);
 #endif
           // If they are remote, deactivate the instance
@@ -2881,7 +2959,7 @@ namespace RegionRuntime {
       Context ctx = *((const Context*)args);
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"All child tasks mapped for task %s (ID %d) with unique id %d on processor %d",
-        HighLevelRuntime::get_task_name_table()[ctx->task_id],ctx->task_id,ctx->unique_id,ctx->local_proc.id);
+        ctx->variants->name,ctx->task_id,ctx->unique_id,ctx->local_proc.id);
 #endif
       ctx->children_mapped();
     }
@@ -2894,7 +2972,7 @@ namespace RegionRuntime {
       Context ctx = *((const Context*)args);
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Task %s (ID %d) with unique id %d finished on processor %d", 
-        HighLevelRuntime::get_task_name_table()[ctx->task_id],ctx->task_id, ctx->unique_id, ctx->local_proc.id);
+        ctx->variants->name,ctx->task_id, ctx->unique_id, ctx->local_proc.id);
 #endif
       ctx->finish_task();
     }
@@ -3473,6 +3551,7 @@ namespace RegionRuntime {
       index_arg_map.reset();
       reduction = NULL;
       mapper = NULL;
+      variants = NULL;
       mapper_lock = Lock::NO_LOCK;
       current_lock = context_lock;
       active = false;
@@ -3489,6 +3568,17 @@ namespace RegionRuntime {
 #endif
       unique_id = _unique_id;
       task_id = _task_id;
+#ifdef DEBUG_HIGH_LEVEL
+      if (HighLevelRuntime::get_collection_table().find(task_id) == HighLevelRuntime::get_collection_table().end())
+      {
+        log_variant(LEVEL_ERROR,"User task ID %d has no registered variants", task_id);
+        exit(1);
+      }
+#endif
+      variants = HighLevelRuntime::get_collection_table()[task_id];
+#ifdef DEBUG_HIGH_LEVEL
+      assert(variants != NULL);
+#endif
       // Need our own copy of these
       args = malloc(_arglen);
       memcpy(args,_args,_arglen);
@@ -3648,7 +3738,7 @@ namespace RegionRuntime {
           {
             log_task(LEVEL_ERROR,"All arguments to a single task launch must be single regions. "
                 "Region %d of task %s (ID %d) with unique id %d is not a singular region.",idx,
-                HighLevelRuntime::get_task_name_table()[task_id], task_id,
+                variants->name, task_id,
                 unique_id);
             exit(1);
           }
@@ -3671,7 +3761,7 @@ namespace RegionRuntime {
             {
               log_task(LEVEL_ERROR,"Region %d is not an ancestor of region %d (idx %d) for task %s (ID %d) (unique id %d)",
                   regions[idx].parent.id,regions[idx].handle.region.id,idx,
-                  HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id);
+                  variants->name,task_id,unique_id);
               exit(1);
             }
           }
@@ -3682,7 +3772,7 @@ namespace RegionRuntime {
             {
               log_task(LEVEL_ERROR,"Region %d is not an ancestor of partition %d (idx %d) for task %s (ID %d) (unique id %d)",
                   regions[idx].parent.id,regions[idx].handle.partition,idx,
-                  HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id);
+                  variants->name,task_id,unique_id);
               exit(1);
             }
           }
@@ -3729,7 +3819,7 @@ namespace RegionRuntime {
         {
           log_inst(LEVEL_ERROR,"Unable to find parent physical context for region %d (index %d) of task %s (ID %d) (unique id %d)!",
               regions[idx].handle.region.id, idx, 
-              HighLevelRuntime::get_task_name_table()[task_id], task_id, unique_id);
+              variants->name, task_id, unique_id);
           exit(1);
         }
 #endif
@@ -4134,6 +4224,13 @@ namespace RegionRuntime {
     {
       derez.deserialize<UniqueID>(unique_id);
       derez.deserialize<Processor::TaskFuncID>(task_id);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(HighLevelRuntime::get_collection_table().find(task_id) != HighLevelRuntime::get_collection_table().end());
+#endif
+      variants = HighLevelRuntime::get_collection_table()[task_id];
+#ifdef DEBUG_HIGH_LEVEL
+      assert(variants != NULL);
+#endif
       {
         size_t num_regions;
         derez.deserialize<size_t>(num_regions);
@@ -4707,7 +4804,7 @@ namespace RegionRuntime {
                     log_region(LEVEL_ERROR,"Unable to find parent region %d for logical "
                                             "region %d (index %d) for task %s (ID %d) with unique id %d",
                                             child->regions[idx].parent.id, child->regions[idx].handle.region.id,
-                                            idx,HighLevelRuntime::get_task_name_table()[child->task_id],
+                                            idx,child->variants->name,
                                             child->task_id,child->unique_id);
                     break;
                   }
@@ -4717,7 +4814,7 @@ namespace RegionRuntime {
                     log_region(LEVEL_ERROR,"Unable to find parent region %d for partition "
                                             "%d (index %d) for task %s (ID %d) with unique id %d",
                                             child->regions[idx].parent.id, child->regions[idx].handle.partition,
-                                            idx,HighLevelRuntime::get_task_name_table()[child->task_id],
+                                            idx,child->variants->name,
                                             child->task_id,child->unique_id);
                     break;
                   }
@@ -4730,7 +4827,7 @@ namespace RegionRuntime {
               log_region(LEVEL_ERROR,"Unable to find parent region %d for logical region %d (index %d)"
                                       " for task %s (ID %d) with unique id %d",child->regions[idx].parent.id,
                                 child->regions[idx].handle.region.id,idx,
-                                HighLevelRuntime::get_task_name_table()[child->task_id],child->task_id,child->unique_id);
+                                child->variants->name,child->task_id,child->unique_id);
             }
             exit(1);
           }
@@ -4784,7 +4881,7 @@ namespace RegionRuntime {
                   log_task(LEVEL_ERROR,"Index space for task %s (ID %d) (unique id %d) "
                       "requested aliased partition %d in write mode (index %d)."
                       " Partition requirements for index spaces must be disjoint or read-only",
-                      HighLevelRuntime::get_task_name_table()[ctx->task_id],
+                      ctx->variants->name,
                       ctx->task_id, ctx->unique_id, part_node->pid, child_idx);
                   exit(1);
                 }
@@ -4924,7 +5021,7 @@ namespace RegionRuntime {
         {
           log_region(LEVEL_ERROR,"Unable to find parent region %d for mapping region %d "
               "in task %s (ID %d) with unique id %d",impl->req.parent.id,impl->req.handle.region.id,
-              HighLevelRuntime::get_task_name_table()[this->task_id],this->task_id,this->unique_id);
+              this->variants->name,this->task_id,this->unique_id);
           exit(1);
         }
       }
@@ -4977,7 +5074,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Mapping and launching task %s (ID %d) with unique id %d on processor %d",
-          HighLevelRuntime::get_task_name_table()[task_id], task_id, unique_id, local_proc.id);
+          variants->name, task_id, unique_id, local_proc.id);
 #endif
       // Check to see if this task is only partially unpacked, if so now do the final unpack
       if (partially_unpacked)
@@ -5084,7 +5181,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
             log_region(LEVEL_DEBUG,"Mapping region %d (idx %d) of task %s (ID %d) (unique id %d) to physical "
                 "instance %d of logical region %d in memory %d",regions[idx].handle.region.id,idx,
-                HighLevelRuntime::get_task_name_table()[task_id], task_id,
+                variants->name, task_id,
                 unique_id,info->iid,info->handle.id,info->location.id);
 #endif
             physical_instances.push_back(info);
@@ -5121,7 +5218,7 @@ namespace RegionRuntime {
           {
             log_inst(LEVEL_ERROR,"Unable to find or create physical instance for region %d"
                 " (index %d) of task %s (ID %d) with unique id %d",regions[idx].handle.region.id,
-                idx,HighLevelRuntime::get_task_name_table()[this->task_id],this->task_id,this->unique_id);
+                idx,this->variants->name,this->task_id,this->unique_id);
             exit(1);
           }
         }
@@ -5129,7 +5226,7 @@ namespace RegionRuntime {
         {
           log_inst(LEVEL_DEBUG,"Not creating physical instance for region %d (index %d) "
               "for task %s (ID %d) with unique id %d",regions[idx].handle.region.id,idx,
-              HighLevelRuntime::get_task_name_table()[this->task_id],this->task_id,this->unique_id);
+              this->variants->name,this->task_id,this->unique_id);
           // Push back a no-instance for this physical instance
           physical_instances.push_back(InstanceInfo::get_no_instance());
           physical_mapped.push_back(false/*mapped*/);
@@ -5182,7 +5279,11 @@ namespace RegionRuntime {
       }
 #endif
       // Now launch the task itself (finally!)
-      local_proc.spawn(this->task_id, this->args, this->arglen, start_cond);
+      {
+        // Get the correct variant, this will trigger an error if no such variant exists
+        Processor::TaskFuncID low_id = this->variants->select_variant(this->is_index_space, runtime->proc_kind);
+        local_proc.spawn(low_id, this->args, this->arglen, start_cond);
+      }
 
 #ifdef DEBUG_HIGH_LEVEL
       assert(physical_instances.size() == regions.size());
@@ -5664,6 +5765,7 @@ namespace RegionRuntime {
       // Use the same task ID, this is just a different point
       clone->unique_id = this->unique_id;
       clone->task_id = this->task_id;
+      clone->variants = this->variants;
       // Evaluate the regions
       clone->regions.resize(regions.size());
       if (!slice)
@@ -6002,7 +6104,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Task %s (ID %d) with unique id %d starting on processor %d",
-          HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id,local_proc.id);
+          variants->name,task_id,unique_id,local_proc.id);
       assert(physical_instances.size() == regions.size());
       assert(physical_instances.size() == physical_mapped.size());
 #endif
@@ -6054,7 +6156,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Task %s (ID %d) with unique id %d has completed on processor %d",
-                HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id,local_proc.id);
+                variants->name,task_id,unique_id,local_proc.id);
 #endif
       if (remote || is_index_space)
       {
@@ -6155,7 +6257,7 @@ namespace RegionRuntime {
       {
 #ifdef DEBUG_HIGH_LEVEL
         log_task(LEVEL_DEBUG,"All children mapped for task %s (ID %d) with unique id %d on processor %d",
-                HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id,local_proc.id);
+                variants->name,task_id,unique_id,local_proc.id);
         // We can now go through and mark that all of our no-map operations are complete
         assert(physical_instances.size() == regions.size());
         assert(physical_instances.size() == physical_mapped.size());
@@ -6388,7 +6490,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Finishing task %s (ID %d) with unique id %d on processor %d",
-                HighLevelRuntime::get_task_name_table()[task_id], task_id, unique_id, local_proc.id);
+                variants->name, task_id, unique_id, local_proc.id);
 #endif
       if (acquire_lock)
       {
@@ -6551,7 +6653,7 @@ namespace RegionRuntime {
     { 
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Processing remote start for task %s (ID %d) with unique id %d",
-          HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id);
+          variants->name,task_id,unique_id);
 #endif
       // We need the current context lock in exclusive mode to do this
       AutoLock ctx_lock(current_lock);
@@ -6703,7 +6805,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Processing remote children mapped for task %s (ID %d) with unique id %d",
-          HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id);
+          variants->name,task_id,unique_id);
 #endif
       // We need the current context lock in exclusive mode to do this
       AutoLock ctx_lock(current_lock);
@@ -6841,7 +6943,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Processing remote finish for task %s (ID %d) with unique id %d",
-          HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id);
+          variants->name,task_id,unique_id);
 #endif
       // Need the current context lock in exclusive lock to do this
       AutoLock ctx_lock(current_lock);
@@ -7436,7 +7538,7 @@ namespace RegionRuntime {
         {
           log_task(LEVEL_ERROR,"Attempted to delete region %d which is not contained in any of the "
               "regions for which task %s (ID %d) (unique id %d) has permissions",handle.id,
-              HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id);
+              variants->name,task_id,unique_id);
           exit(1);
         }
       }
@@ -7567,7 +7669,7 @@ namespace RegionRuntime {
         {
           log_task(LEVEL_ERROR,"Attempted to delete partition %d which is not contained in any of the "
               "partitions for which task %s (ID %d) (unique id %d) has permissions",pid,
-              HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id);
+              variants->name,task_id,unique_id);
           exit(1);
         }
       }
@@ -7935,7 +8037,7 @@ namespace RegionRuntime {
         log_region(LEVEL_ERROR,"Illegal dependence between two regions %d and %d (with index %d and %d) "
                                 "in task %s (ID %d) with unique id %d",this->regions[idx].handle.region.id,
                                 this->regions[dep_idx].handle.region.id,idx,dep_idx,
-                                HighLevelRuntime::get_task_name_table()[task_id],task_id,unique_id);
+                                variants->name,task_id,unique_id);
         exit(1);
       }
 #endif
