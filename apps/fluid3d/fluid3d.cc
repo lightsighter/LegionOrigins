@@ -16,7 +16,7 @@
 
 using namespace RegionRuntime::HighLevel;
 
-#define TOP_LEVEL_TASK_ID   TASK_ID_REGION_MAIN
+//#define TOP_LEVEL_TASK_ID   TASK_ID_REGION_MAIN
 
 RegionRuntime::Logger::Category log_mapper("mapper");
 
@@ -26,7 +26,8 @@ namespace Config {
 };
 
 enum {
-  TASKID_INIT_CELLS = TASK_ID_AVAILABLE,
+  TOP_LEVEL_TASK_ID,
+  TASKID_INIT_CELLS, // = TASK_ID_AVAILABLE,
   TASKID_REBUILD_REDUCE,
   TASKID_SCATTER_DENSITIES,
   TASKID_GATHER_DENSITIES,
@@ -1863,18 +1864,19 @@ int main(int argc, char **argv)
   //task_table[TASKID_SAVE_FILE] = high_level_task_wrapper<save_file<AccessorGeneric> >;
 
   //HighLevelRuntime::register_runtime_tasks(task_table);
+  HighLevelRuntime::set_top_level_task_id(TOP_LEVEL_TASK_ID);
   HighLevelRuntime::set_input_args(argc,argv);
   HighLevelRuntime::set_registration_callback(create_mappers);
-  HighLevelRuntime::register_single_task<top_level_task<AccessorGeneric> >(TOP_LEVEL_TASK_ID,"top_level_task");
-  HighLevelRuntime::register_single_task<main_task<AccessorGeneric> >(TASKID_MAIN_TASK,"main_task");
-  HighLevelRuntime::register_single_task<init_and_rebuild<AccessorGeneric> >(TASKID_INIT_CELLS,"init_cells");
-  HighLevelRuntime::register_single_task<rebuild_reduce<AccessorGeneric> >(TASKID_REBUILD_REDUCE,"rebuild_reduce");
-  HighLevelRuntime::register_single_task<scatter_densities<AccessorGeneric> >(TASKID_SCATTER_DENSITIES,"scatter_densities");
-  HighLevelRuntime::register_single_task<gather_densities<AccessorGeneric> >(TASKID_GATHER_DENSITIES,"gather_densities");
-  HighLevelRuntime::register_single_task<scatter_forces<AccessorGeneric> >(TASKID_SCATTER_FORCES,"scatter_forces");
-  HighLevelRuntime::register_single_task<gather_forces_and_advance<AccessorGeneric> >(TASKID_GATHER_FORCES,"gather_forces");
-  HighLevelRuntime::register_single_task<int, load_file<AccessorGeneric> >(TASKID_LOAD_FILE,"load_file");
-  HighLevelRuntime::register_single_task<save_file<AccessorGeneric> >(TASKID_SAVE_FILE,"save_file");
+  HighLevelRuntime::register_single_task<top_level_task<AccessorGeneric> >(TOP_LEVEL_TASK_ID,Processor::LOC_PROC,"top_level_task");
+  HighLevelRuntime::register_single_task<main_task<AccessorGeneric> >(TASKID_MAIN_TASK,Processor::LOC_PROC,"main_task");
+  HighLevelRuntime::register_single_task<init_and_rebuild<AccessorGeneric> >(TASKID_INIT_CELLS,Processor::LOC_PROC,"init_cells");
+  HighLevelRuntime::register_single_task<rebuild_reduce<AccessorGeneric> >(TASKID_REBUILD_REDUCE,Processor::LOC_PROC,"rebuild_reduce");
+  HighLevelRuntime::register_single_task<scatter_densities<AccessorGeneric> >(TASKID_SCATTER_DENSITIES,Processor::LOC_PROC,"scatter_densities");
+  HighLevelRuntime::register_single_task<gather_densities<AccessorGeneric> >(TASKID_GATHER_DENSITIES,Processor::LOC_PROC,"gather_densities");
+  HighLevelRuntime::register_single_task<scatter_forces<AccessorGeneric> >(TASKID_SCATTER_FORCES,Processor::LOC_PROC,"scatter_forces");
+  HighLevelRuntime::register_single_task<gather_forces_and_advance<AccessorGeneric> >(TASKID_GATHER_FORCES,Processor::LOC_PROC,"gather_forces");
+  HighLevelRuntime::register_single_task<int, load_file<AccessorGeneric> >(TASKID_LOAD_FILE,Processor::LOC_PROC,"load_file");
+  HighLevelRuntime::register_single_task<save_file<AccessorGeneric> >(TASKID_SAVE_FILE,Processor::LOC_PROC,"save_file");
 
   // Initialize the simulation
   h = kernelRadiusMultiplier / restParticlesPerMeter;
