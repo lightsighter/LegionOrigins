@@ -6239,18 +6239,16 @@ namespace RegionRuntime {
       // Perform any deletions that haven't already been performed
       // Do this early to get the garbage collector going and to
       // remove things that don't need to be sent back
-      for (std::set<DeletionOp*>::const_iterator it = child_deletions.begin();
-            it != child_deletions.end(); it++)
+      while (!child_deletions.empty())
       {
+        std::set<DeletionOp*>::const_iterator it = child_deletions.begin();
 #ifdef DEBUG_HIGH_LEVEL
         assert((*it)->is_ready());
 #endif
         // No need to acquire the lock since we already hold it
         (*it)->perform_deletion(false/*need lock*/); 
+        // Performing the deletion removes the deletion from the set 
       }
-      // We can clear these here, they will be deactivated when the
-      // runtime performs them
-      child_deletions.clear();
       
       // Check to see if this is an index space or not
       if (!is_index_space)
@@ -9341,7 +9339,7 @@ namespace RegionRuntime {
         default:
           assert(false);
       }
-#ifdef DISABLE_GC
+#ifndef DISABLE_GC
       // Now we can invalidate our own instances
       for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
             it != region_states[ctx].valid_instances.end(); it++)
@@ -10677,7 +10675,7 @@ namespace RegionRuntime {
       {
         inst_lock.destroy_lock();
       }
-#ifdef DEBUG_HIGH_LEVEL
+#ifndef DISABLE_GC 
       // If this is the owner we should have deleted the instance by now
       if (!remote && (parent == NULL))
       {
