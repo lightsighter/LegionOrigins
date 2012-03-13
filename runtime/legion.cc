@@ -1754,17 +1754,30 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    /*static*/ void HighLevelRuntime::update_collection_table(void (*low_level_ptr)(const void*,size_t,Processor),
-                                                    Processor::TaskFuncID uid, const char *name, bool index_space,
+    /*static*/ TaskID HighLevelRuntime::update_collection_table(void (*low_level_ptr)(const void*,size_t,Processor),
+                                                    TaskID uid, const char *name, bool index_space,
                                                     Processor::Kind proc_kind)
     //--------------------------------------------------------------------------------------------
     {
+      std::map<Processor::TaskFuncID,TaskCollection*>& table = HighLevelRuntime::get_collection_table();
+      // See if the user wants us to find a new ID
+      if (uid == AUTO_GENERATE_ID)
+      {
+        
+        for (unsigned idx = 0; idx < uid; idx++)
+        {
+          if (table.find(idx) == table.end())
+          {
+            uid = idx;
+            break;
+          }
+        }
+      }
       // First update the low-level task table
       Processor::TaskFuncID low_id = HighLevelRuntime::get_next_available_id();
       // Add it to the low level table
       HighLevelRuntime::get_task_table(false)[low_id] = low_level_ptr;
       // Now see if an entry already exists in the attribute table for this uid
-      std::map<Processor::TaskFuncID,TaskCollection*>& table = HighLevelRuntime::get_collection_table();
       if (table.find(uid) == table.end())
       {
         TaskCollection *collec = new TaskCollection(uid, name);
@@ -1779,6 +1792,7 @@ namespace RegionRuntime {
         // Update the variants for the attribute
         table[uid]->add_variant(low_id, proc_kind, index_space);
       }
+      return uid;
     }
 
     //--------------------------------------------------------------------------------------------
