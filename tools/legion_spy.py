@@ -1,3 +1,4 @@
+#! /usr/bin/python
 
 import subprocess
 import pygame, sys, os, shutil
