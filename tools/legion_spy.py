@@ -240,6 +240,6 @@ if __name__ == "__main__":
         shutil.rmtree(temp_dir)
     except:
         # Remove the directory we created
-        #shutil.rmtree(temp_dir)
+        shutil.rmtree(temp_dir)
         raise
 
