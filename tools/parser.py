@@ -1,3 +1,4 @@
+#!/usr/bin/python
 
 from state import *
 import sys, re
