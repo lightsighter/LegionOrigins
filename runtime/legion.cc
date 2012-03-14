@@ -2138,6 +2138,7 @@ namespace RegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_PARTITION);
 
       PartitionID partition_id = get_unique_partition_id();
+      log_spy(LEVEL_INFO,"Partition %d Parent %d Disjoint %d",partition_id,parent.id,true);
 
       std::vector<LogicalRegion> children(num_subregions);
       // Create all of the subregions
@@ -2150,6 +2151,7 @@ namespace RegionRuntime {
         //log_region(LEVEL_DEBUG,"Creating subregion %d of region %d in task %d\n",
         //            child_region.id, parent.id, ctx->unique_id);
         children[idx] = child_region;
+        log_spy(LEVEL_INFO,"Region %d Parent %d",child_region.id,partition_id);
       }
 
       ctx->create_partition(partition_id, parent, true/*disjoint*/, children);
@@ -2204,6 +2206,7 @@ namespace RegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_PARTITION);
 
       PartitionID partition_id = get_unique_partition_id();
+      log_spy(LEVEL_INFO,"Partition %d Parent %d Disjoint %d",partition_id,parent.id,disjoint);
 
       std::vector<LogicalRegion> children(ranges.size());
       for (unsigned idx = 0; idx < ranges.size(); idx++)
@@ -2222,6 +2225,7 @@ namespace RegionRuntime {
         //log_region(LEVEL_DEBUG,"Creating subregion %d of region %d in task %d\n",
         //            child_region.id, parent.id, ctx->unique_id);
         children[idx] = child_region;
+        log_spy(LEVEL_INFO,"Region %d Parent %d",child_region.id,partition_id);
       }
 
       ctx->create_partition(partition_id, parent, disjoint, children);
