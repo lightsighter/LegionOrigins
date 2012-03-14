@@ -1763,15 +1763,23 @@ namespace RegionRuntime {
       // See if the user wants us to find a new ID
       if (uid == AUTO_GENERATE_ID)
       {
-        
+#ifdef DEBUG_HIGH_LEVEL
+        bool found = false; 
+#endif
         for (unsigned idx = 0; idx < uid; idx++)
         {
           if (table.find(idx) == table.end())
           {
             uid = idx;
+#ifdef DEBUG_HIGH_LEVEL
+            found = true;
+#endif
             break;
           }
         }
+#ifdef DEBUG_HIGH_LEVEL
+        assert(found); // If not we ran out of task ID's 2^32 tasks!
+#endif
       }
       // First update the low-level task table
       Processor::TaskFuncID low_id = HighLevelRuntime::get_next_available_id();
