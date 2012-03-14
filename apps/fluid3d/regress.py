@@ -13,15 +13,13 @@ def newer (filename1, filename2):
     return os.path.getmtime(filename1) > os.path.getmtime(filename2)
 
 def fresh_file(filename):
-    if not os.path.exists(filename): return filename
     for i in xrange(10000):
         check = '%s.%s' % (filename, i)
         if not os.path.exists(check): return check
 
 def call_silently(command, filename):
     with open(filename, 'wb') as f:
-        proc = sp.Popen(command, stdout = f, stderr = sp.STDOUT)
-        return proc.wait()
+        return sp.call(command, stdout = f, stderr = sp.STDOUT)
 
 _parsec_dir = _parsec_mgmt = _parsec_fluid = None
 def prep_parsec():
@@ -42,6 +40,7 @@ def prep_parsec():
         sp.check_call([_parsec_mgmt, '-a', 'fullclean'])
         sp.check_call([_parsec_mgmt, '-a', 'fulluninstall'])
         sp.check_call([_parsec_mgmt, '-a', 'build', '-p', 'fluidanimate'])
+        print
 
 def parsec(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None, output = None,
            **_ignored):
@@ -56,7 +55,9 @@ _legion_fluid = None
 def prep_legion():
     global _legion_fluid
     _legion_fluid = os.path.join(_root_dir, 'fluid3d')
-    sp.check_call(['make'], cwd=_root_dir)
+    if sp.call(['make', '--question', '--silent'], cwd=_root_dir) != 0:
+        sp.check_call(['make'], cwd=_root_dir)
+        print
 
 def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None, output = None,
            legion_logging = 4,
@@ -129,7 +130,6 @@ def regress(**params):
 
 if __name__ == '__main__':
     for thunk in prep: thunk()
-    print
     regress(nbx = 1, nby = 1, nbz = 1, steps = 1)
     regress(nbx = 1, nby = 1, nbz = 1, steps = 2)
     regress(nbx = 2, nby = 1, nbz = 1, steps = 1)
