@@ -74,7 +74,7 @@ namespace RegionRuntime {
             for (std::list<std::pair<Memory,unsigned> >::iterator stack_it = temp_stack.begin();
                   stack_it != temp_stack.end(); stack_it++)
             {
-              if (local_affin[0].bandwidth < stack_it->second)
+              if (local_affin[0].bandwidth > stack_it->second)
               {
                 inserted = true;
                 temp_stack.insert(stack_it,std::pair<Memory,unsigned>(*it,local_affin[0].latency));
