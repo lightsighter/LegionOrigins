@@ -9,6 +9,8 @@
 #include <cassert>
 #include <cstring>
 
+#include "limits.h"
+
 #include <map>
 #include <set>
 #include <list>
@@ -16,15 +18,10 @@
 
 #include "common.h"
 
+#define AUTO_GENERATE_ID  UINT_MAX
+
 namespace RegionRuntime {
   namespace HighLevel {
-
-    // Enumerations
-    //enum {
-      // To see where the +9,10 come from, see the top of legion.cc
-    //  TASK_ID_REGION_MAIN = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+9,
-    //  TASK_ID_AVAILABLE = LowLevel::Processor::TASK_ID_FIRST_AVAILABLE+10,
-    //};
 
     // Timing events
     enum {
@@ -126,6 +123,7 @@ namespace RegionRuntime {
     typedef unsigned int ColorizeID;
     typedef unsigned int ContextID;
     typedef unsigned int InstanceID;
+    typedef Processor::TaskFuncID TaskID;
     typedef TaskContext* Context;
     typedef std::vector<int> IndexPoint;
     typedef void (*RegistrationCallbackFnptr)(Machine *machine, HighLevelRuntime *rt, Processor local);
@@ -756,39 +754,39 @@ namespace RegionRuntime {
       // Register a task for a single task (the first one of these will be the top level task)
       template<typename T,
         T (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
-      static void register_single_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name = NULL);
+      static TaskID register_single_task(TaskID id, Processor::Kind proc_kind, const char *name = NULL);
       template<
         void (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
-      static void register_single_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name = NULL);
+      static TaskID register_single_task(TaskID id, Processor::Kind proc_kind, const char *name = NULL);
       template<typename T,
         T (*SLOW_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
         T (*FAST_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
-      static void register_single_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name = NULL);
+      static TaskID register_single_task(TaskID id, Processor::Kind proc_kind, const char *name = NULL);
       template<
         void (*SLOW_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
         void (*FAST_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
-      static void register_single_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name = NULL);
+      static TaskID register_single_task(TaskID id, Processor::Kind proc_kind, const char *name = NULL);
       // Register a task for an index space
       template<typename T,
         T (*TASK_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
                       std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
-      static void register_index_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name = NULL);
+      static TaskID register_index_task(TaskID id, Processor::Kind proc_kind, const char *name = NULL);
       template<
         void (*TASK_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
                       std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
-      static void register_index_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name = NULL);
+      static TaskID register_index_task(TaskID id, Processor::Kind proc_kind, const char *name = NULL);
       template<typename T,
         T (*SLOW_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
                       std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
         T (*FAST_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
                       std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
-      static void register_index_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name = NULL);
+      static TaskID register_index_task(TaskID id, Processor::Kind proc_kind, const char *name = NULL);
       template<
         void (*SLOW_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
                       std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
         void (*FAST_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
                       std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
-      static void register_index_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name = NULL);
+      static TaskID register_index_task(TaskID id, Processor::Kind proc_kind, const char *name = NULL);
     protected:
       friend class LowLevel::Processor;
       // Static methods for calls from the processor to the high level runtime
@@ -807,8 +805,8 @@ namespace RegionRuntime {
       static void detect_termination(const void * args, size_t arglen, Processor p); // application
     private:
       static std::map<Processor::TaskFuncID,TaskCollection*>& get_collection_table(void);
-      static void update_collection_table(void (*low_level_ptr)(const void *,size_t,Processor),
-                                          Processor::TaskFuncID uid, const char *name, bool index_space,
+      static TaskID update_collection_table(void (*low_level_ptr)(const void *,size_t,Processor),
+                                          TaskID uid, const char *name, bool index_space,
                                           Processor::Kind proc_kind);
     private:
       // Get the next low-level task id that is available
@@ -1507,6 +1505,7 @@ namespace RegionRuntime {
       // Information for figuring out which regions to use
       // Mappings for the logical regions at call-time (can be no-instance == covered)
       std::vector<bool>            physical_mapped; // is this instance still mapped, can be unmapped by inline unmap
+      std::vector<bool>            physical_owned; // does our context own this physical instance
       std::vector<InstanceInfo*>   physical_instances;
       std::vector<RegionAllocator> allocators;
       // The enclosing physical contexts from our parent context
@@ -1741,7 +1740,7 @@ namespace RegionRuntime {
       // Operations on the physical part of the region tree
       void get_physical_locations(ContextID ctx_id, std::set<Memory> &locations, bool recurse = false);
       // Try to find a valid physical instance in the memory m
-      InstanceInfo* find_physical_instance(ContextID ctx_id, Memory m, bool recurse = false);
+      std::pair<InstanceInfo*,bool> find_physical_instance(ContextID ctx_id, Memory m, bool recurse = false);
       // Register a physical instance with the region tree
       Event register_physical_instance(RegionRenamer &ren, Event precondition); 
       // Open up a physical region tree returning the event corresponding
@@ -1757,8 +1756,8 @@ namespace RegionRuntime {
       // whether the info is being read or written.  Note that this can invalidate other
       // instances in the intermediate levels of the tree as it goes back up to the
       // physical instance's logical region
-      void update_valid_instances(ContextID ctx_id, InstanceInfo *info, bool writer,
-                                  bool check_overwrite = false, UniqueID uid = 0, bool owner = true);
+      void update_valid_instances(ContextID ctx_id, InstanceInfo *info, bool writer, bool owner,
+                                  bool check_overwrite = false, UniqueID uid = 0);
       // Initialize a physical instance
       void initialize_instance(RegionRenamer &ren, const std::set<Memory> &locations);
       // Select a target region for a close operation
@@ -1927,6 +1926,9 @@ namespace RegionRuntime {
       bool has_war_dependence(GeneralizedContext *ctx, unsigned idx) const;
       // Mark that the instance is no longer valid
       void mark_invalid(void);
+      // For tasks that unmap an instance, but still need to keep a reference to it
+      void add_local_reference(void);
+      void remove_local_reference(void);
     protected:
       // Get the set of InstanceInfos needed, this instance and all parent instances
       void get_needed_instances(std::vector<InstanceInfo*> &needed_instances); 
@@ -1963,6 +1965,7 @@ namespace RegionRuntime {
       bool valid; // Currently a valid instance in the physical region tree
       bool remote;
       unsigned children;
+      unsigned local_references; // Don't move anywhere (used for tasks that are using the info even if they have been unmapped)
       InstanceInfo *parent; // parent instance info
       Event valid_event; // most recent copy-write event
       Lock inst_lock;
@@ -2013,23 +2016,24 @@ namespace RegionRuntime {
       std::vector<unsigned> trace;
       const bool needs_initializing;
       const bool sanitizing;
+      const bool owned;
     protected:
       // A region renamer for task contexts
       RegionRenamer(ContextID id, unsigned index, TaskContext *c, 
-          InstanceInfo *i, Mapper *m, bool init)
+          InstanceInfo *i, Mapper *m, bool init, bool own)
         : ctx_id(id), idx(index), ctx(c), info(i), mapper(m),
-          needs_initializing(init), sanitizing(false) { }
+          needs_initializing(init), sanitizing(false), owned(own) { }
       // A region renamer for mapping implementations
       RegionRenamer(ContextID id, RegionMappingImpl *c,
-          InstanceInfo *i, Mapper *m, bool init)
+          InstanceInfo *i, Mapper *m, bool init, bool own)
         : ctx_id(id), idx(0), ctx(c), info(i), mapper(m),
-          needs_initializing(init), sanitizing(false) { }
+          needs_initializing(init), sanitizing(false), owned(own) { }
       // A region renamer for sanitizing a physical region tree
       // so that there are no remote close operations
       RegionRenamer(ContextID id, unsigned index,
           TaskContext *c, Mapper *m)
         : ctx_id(id), idx(index), ctx(c), info(NULL),
-          mapper(m), needs_initializing(false), sanitizing(true) { }
+          mapper(m), needs_initializing(false), sanitizing(true), owned(true) { }
     protected:
       const RegionRequirement& get_req(void) const { return ctx->get_requirement(idx); }
     };
@@ -2520,7 +2524,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     template<typename T,
         T (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
-    /*static*/ void HighLevelRuntime::register_single_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
+    /*static*/ TaskID HighLevelRuntime::register_single_task(TaskID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
     //--------------------------------------------------------------------------
     {
       if (name == NULL)
@@ -2530,13 +2534,13 @@ namespace RegionRuntime {
         sprintf(buffer,"%d",id);
         name = buffer;
       }
-      HighLevelRuntime::update_collection_table(high_level_task_wrapper<T,TASK_PTR>, id, name, false/*index_space*/, proc_kind);
+      return HighLevelRuntime::update_collection_table(high_level_task_wrapper<T,TASK_PTR>, id, name, false/*index_space*/, proc_kind);
     }
 
     //--------------------------------------------------------------------------
     template<
       void (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
-    /*static*/ void HighLevelRuntime::register_single_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
+    /*static*/ TaskID HighLevelRuntime::register_single_task(TaskID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
     //--------------------------------------------------------------------------
     {
       if (name == NULL)
@@ -2546,14 +2550,14 @@ namespace RegionRuntime {
         sprintf(buffer,"%d",id);
         name = buffer;
       }
-      HighLevelRuntime::update_collection_table(high_level_task_wrapper<TASK_PTR>, id, name, false/*index_space*/, proc_kind);
+      return HighLevelRuntime::update_collection_table(high_level_task_wrapper<TASK_PTR>, id, name, false/*index_space*/, proc_kind);
     }
 
     //--------------------------------------------------------------------------
     template<typename T,
       T (*SLOW_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
       T (*FAST_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
-    /*static*/ void HighLevelRuntime::register_single_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
+    /*static*/ TaskID HighLevelRuntime::register_single_task(TaskID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
     //--------------------------------------------------------------------------
     {
       if (name == NULL)
@@ -2563,14 +2567,14 @@ namespace RegionRuntime {
         sprintf(buffer,"%d",id);
         name = buffer;
       }
-      HighLevelRuntime::update_collection_table(high_level_task_wrapper<T,SLOW_PTR,FAST_PTR>, id, name, false/*index_space*/, proc_kind);
+      return HighLevelRuntime::update_collection_table(high_level_task_wrapper<T,SLOW_PTR,FAST_PTR>, id, name, false/*index_space*/, proc_kind);
     }
 
     //--------------------------------------------------------------------------
     template<
       void (*SLOW_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
       void (*FAST_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
-    /*static*/ void HighLevelRuntime::register_single_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
+    /*static*/ TaskID HighLevelRuntime::register_single_task(TaskID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
     //--------------------------------------------------------------------------
     {
       if (name == NULL)
@@ -2580,14 +2584,14 @@ namespace RegionRuntime {
         sprintf(buffer,"%d",id);
         name = buffer;
       }
-      HighLevelRuntime::update_collection_table(high_level_task_wrapper<SLOW_PTR,FAST_PTR>, id, name, false/*index_space*/, proc_kind);
+      return HighLevelRuntime::update_collection_table(high_level_task_wrapper<SLOW_PTR,FAST_PTR>, id, name, false/*index_space*/, proc_kind);
     }
 
     //--------------------------------------------------------------------------
     template<typename T,
       T (*TASK_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
                     std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
-    /*static*/ void HighLevelRuntime::register_index_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
+    /*static*/ TaskID HighLevelRuntime::register_index_task(TaskID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
     //--------------------------------------------------------------------------
     {
       if (name == NULL)
@@ -2597,14 +2601,14 @@ namespace RegionRuntime {
         sprintf(buffer,"%d",id);
         name = buffer;
       }
-      HighLevelRuntime::update_collection_table(high_level_index_task_wrapper<T,TASK_PTR>, id, name, true/*index_space*/, proc_kind);
+      return HighLevelRuntime::update_collection_table(high_level_index_task_wrapper<T,TASK_PTR>, id, name, true/*index_space*/, proc_kind);
     }
 
     //--------------------------------------------------------------------------
     template<
       void (*TASK_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
                     std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
-    /*static*/ void HighLevelRuntime::register_index_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
+    /*static*/ TaskID HighLevelRuntime::register_index_task(TaskID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
     //--------------------------------------------------------------------------
     {
       if (name == NULL)
@@ -2614,7 +2618,7 @@ namespace RegionRuntime {
         sprintf(buffer,"%d",id);
         name = buffer;
       }
-      HighLevelRuntime::update_collection_table(high_level_index_task_wrapper<TASK_PTR>, id, name, true/*index_space*/, proc_kind);
+      return HighLevelRuntime::update_collection_table(high_level_index_task_wrapper<TASK_PTR>, id, name, true/*index_space*/, proc_kind);
     }
 
     //--------------------------------------------------------------------------
@@ -2623,7 +2627,7 @@ namespace RegionRuntime {
                     std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
       T (*FAST_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
                     std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
-    /*static*/ void HighLevelRuntime::register_index_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
+    /*static*/ TaskID HighLevelRuntime::register_index_task(TaskID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
     //--------------------------------------------------------------------------
     {
       if (name == NULL)
@@ -2633,7 +2637,7 @@ namespace RegionRuntime {
         sprintf(buffer,"%d",id);
         name = buffer;
       }
-      HighLevelRuntime::update_collection_table(high_level_index_task_wrapper<T,SLOW_PTR,FAST_PTR>, id, name, true/*index_space*/, proc_kind);
+      return HighLevelRuntime::update_collection_table(high_level_index_task_wrapper<T,SLOW_PTR,FAST_PTR>, id, name, true/*index_space*/, proc_kind);
     }
 
     //--------------------------------------------------------------------------
@@ -2642,7 +2646,7 @@ namespace RegionRuntime {
                     std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*),
       void (*FAST_PTR)(const void*,size_t,const void*,size_t,const IndexPoint&,
                     std::vector<PhysicalRegion<AccessorArray> >&,Context,HighLevelRuntime*)>
-    /*static*/ void HighLevelRuntime::register_index_task(Processor::TaskFuncID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
+    /*static*/ TaskID HighLevelRuntime::register_index_task(TaskID id, Processor::Kind proc_kind, const char *name /*= NULL*/)
     //--------------------------------------------------------------------------
     {
       if (name == NULL)
@@ -2652,7 +2656,7 @@ namespace RegionRuntime {
         sprintf(buffer,"%d",id);
         name = buffer;
       }
-      HighLevelRuntime::update_collection_table(high_level_index_task_wrapper<SLOW_PTR,FAST_PTR>, id, name, true/*index_space*/, proc_kind);
+      return HighLevelRuntime::update_collection_table(high_level_index_task_wrapper<SLOW_PTR,FAST_PTR>, id, name, true/*index_space*/, proc_kind);
     }
 
     ////////////////////////////////////////////////////////////////////////////////

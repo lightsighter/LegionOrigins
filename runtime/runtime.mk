@@ -40,4 +40,4 @@ else
 LOW_RUNTIME_SRC	+= $(LG_RT_DIR)/shared_lowlevel.cc $(LG_RT_DIR)/shared_mapper.cc
 endif
 
-HIGH_RUNTIME_SRC += $(LG_RT_DIR)/legion.cc
+HIGH_RUNTIME_SRC += $(LG_RT_DIR)/legion.cc #$(LG_RT_DIR)/default_mapper.cc
