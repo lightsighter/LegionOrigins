@@ -3560,7 +3560,6 @@ namespace RegionRuntime {
           {
             delete it->second;
           }
-          // We can also delete the instance infos
           for (std::map<InstanceID,InstanceInfo*>::const_iterator it = instance_infos->begin();
                 it != instance_infos->end(); it++)
           {
@@ -10768,17 +10767,19 @@ namespace RegionRuntime {
       {
         inst_lock.destroy_lock();
       }
+#ifdef DEBUG_HIGH_LEVEL
 #ifndef DISABLE_GC 
       // If this is the owner we should have deleted the instance by now
       if (!remote && (parent == NULL))
       {
-        assert(!valid);
-        assert(children == 0);
-        assert(users.empty());
-        assert(added_users.empty());
-        assert(copy_users.empty());
-        assert(added_copy_users.empty());
+        if (valid || (children > 0) || !users.empty() ||
+            !added_users.empty() || !copy_users.empty() || !added_copy_users.empty())
+        {
+          log_leak(LEVEL_INFO,"Physical instance %d of logical region %d in memory %d is being leaked",
+              inst.id, handle.id, location.id);
+        }
       }
+#endif
 #endif
     }
 
