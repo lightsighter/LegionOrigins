@@ -145,29 +145,40 @@ const unsigned char SIDES2DIR[] = {
   TOP_BACK_RIGHT,
 };
 
-unsigned nbx, nby, nbz, numBlocks;
+static inline int CLAMP(int x, int min, int max)
+{
+  return x < min ? min : (x > max ? max : x);
+}
 
-static inline int MOVE_TOP(int z)    { return z == (int)(nbz-1) ? 0 : z+1; }
-static inline int MOVE_BOTTOM(int z) { return z == 0 ? nbz-1 : z-1; }
-static inline int MOVE_LEFT(int x)   { return x == 0 ? nbx-1 : x-1; }
-static inline int MOVE_RIGHT(int x)  { return x == (int)(nbx-1) ? 0 : x+1; }
-static inline int MOVE_FRONT(int y)  { return y == 0 ? nby-1 : y-1; }
-static inline int MOVE_BACK(int y)   { return y == (int)(nby-1) ? 0 : y+1; }
+static inline int MOVE_TOP(int z)    { return z+1; }
+static inline int MOVE_BOTTOM(int z) { return z-1; }
+static inline int MOVE_LEFT(int x)   { return x-1; }
+static inline int MOVE_RIGHT(int x)  { return x+1; }
+static inline int MOVE_FRONT(int y)  { return y-1; }
+static inline int MOVE_BACK(int y)   { return y+1; }
+
+static inline int MOVE_X(int x, int dir, int min, int max)
+{
+  return CLAMP((DIR2SIDES[dir] & SIDE_RIGHT) ? MOVE_RIGHT(x) :
+               ((DIR2SIDES[dir] & SIDE_LEFT) ? MOVE_LEFT(x) : x),
+               min, max);
+}
+
+static inline int MOVE_Y(int y, int dir, int min, int max)
+{
+  return CLAMP((DIR2SIDES[dir] & SIDE_BACK) ? MOVE_BACK(y) :
+               ((DIR2SIDES[dir] & SIDE_FRONT) ? MOVE_FRONT(y) : y),
+               min, max);
+}
+
+static inline int MOVE_Z(int z, int dir, int min, int max)
+{
+  return CLAMP((DIR2SIDES[dir] & SIDE_TOP) ? MOVE_TOP(z) :
+               ((DIR2SIDES[dir] & SIDE_BOTTOM) ? MOVE_BOTTOM(z) : z),
+               min, max);
+}
 
 static inline int REVERSE(int dir) { return 25 - dir; }
-
-static inline int MOVE_X(int x, int dir) {
-  return (DIR2SIDES[dir] & SIDE_RIGHT) ? MOVE_RIGHT(x) :
-    ((DIR2SIDES[dir] & SIDE_LEFT) ? MOVE_LEFT(x) : x);
-}
-static inline int MOVE_Y(int y, int dir) {
-  return (DIR2SIDES[dir] & SIDE_BACK) ? MOVE_BACK(y) :
-    ((DIR2SIDES[dir] & SIDE_FRONT) ? MOVE_FRONT(y) : y);
-}
-static inline int MOVE_Z(int z, int dir) {
-  return (DIR2SIDES[dir] & SIDE_TOP) ? MOVE_TOP(z) :
-    ((DIR2SIDES[dir] & SIDE_BOTTOM) ? MOVE_BOTTOM(z) : z);
-}
 
 // maps {-1, 0, 1}^3 to directions
 static inline int LOOKUP_DIR(int x, int y, int z) {
@@ -270,7 +281,21 @@ const Vec3 domainMax(0.065f, 0.1f, 0.065f);
 float h, hSq;
 float densityCoeff, pressureCoeff, viscosityCoeff;
 unsigned nx, ny, nz, numCells;
+unsigned nbx, nby, nbz, numBlocks;
 Vec3 delta;				// cell dimensions
+
+static inline int MOVE_BX(int x, int dir) { return MOVE_X(x, dir, 0, nbx-1); }
+static inline int MOVE_BY(int y, int dir) { return MOVE_Y(y, dir, 0, nby-1); }
+static inline int MOVE_BZ(int z, int dir) { return MOVE_Z(z, dir, 0, nbz-1); }
+static inline int MOVE_CX(const Block &b, int x, int dir) {
+return MOVE_X(x, dir, 0, b.CELLS_X+1);
+}
+static inline int MOVE_CY(const Block &b, int y, int dir) {
+return MOVE_Y(y, dir, 0, b.CELLS_Y+1);
+}
+static inline int MOVE_CZ(const Block &b, int z, int dir) {
+return MOVE_Z(z, dir, 0, b.CELLS_Z+1);
+}
 
 RegionRuntime::Logger::Category log_app("application");
 
@@ -408,6 +433,33 @@ void top_level_task(const void *args, size_t arglen,
   }
 }
 
+static inline int NEIGH_X(const Block &b2, int idx, int dir, int cx)
+{
+  if (MOVE_BX(idx, dir) == idx) {
+    return cx == 0 ? 0 : b2.CELLS_X+1;
+  } else {
+    return cx == 0 ? b2.CELLS_X+1 : 0;
+  }
+}
+
+static inline int NEIGH_Y(const Block &b2, int idy, int dir, int cy)
+{
+  if (MOVE_BY(idy, dir) == idy) {
+    return cy == 0 ? 0 : b2.CELLS_Y+1;
+  } else {
+    return cy == 0 ? b2.CELLS_Y+1 : 0;
+  }
+}
+
+static inline int NEIGH_Z(const Block &b2, int idz, int dir, int cz)
+{
+  if (MOVE_BZ(idz, dir) == idz) {
+    return cz == 0 ? 0 : b2.CELLS_Z+1;
+  } else {
+    return cz == 0 ? b2.CELLS_Z+1 : 0;
+  }
+}
+
 template<AccessorType AT>
 void main_task(const void *args, size_t arglen,
 	       std::vector<PhysicalRegion<AT> > &regions,
@@ -495,11 +547,11 @@ void main_task(const void *args, size_t arglen,
 
         // eight corners
 #define CORNER(dir,cx,cy,cz) do {                                       \
-          unsigned id2 = (MOVE_Z(idz,dir)*nby + MOVE_Y(idy,dir))*nbx + MOVE_X(idx,dir); \
+          unsigned id2 = (MOVE_BZ(idz,dir)*nby + MOVE_BY(idy,dir))*nbx + MOVE_BX(idx,dir); \
           ptr_t<Cell> cell = edge_cells.template alloc<Cell>();         \
           coloring[color + dir].insert(cell);                           \
           blocks[id].cells[0][cz][cy][cx] = cell;                       \
-          blocks[id2].cells[1][(cz) == 0 ? blocks[id2].CELLS_Z + 1 : 0][(cy) == 0 ? blocks[id2].CELLS_Y + 1 : 0][(cx) == 0 ? blocks[id2].CELLS_X + 1 : 0] = cell; \
+          blocks[id2].cells[1][NEIGH_Z(blocks[id2], idz, dir, cz)][NEIGH_Y(blocks[id2], idy, dir, cy)][NEIGH_X(blocks[id2], idx, dir, cx)] = cell; \
         } while(0)
         CORNER(TOP_FRONT_LEFT, 0, 0, blocks[id].CELLS_Z + 1);
         CORNER(TOP_FRONT_RIGHT, blocks[id].CELLS_X + 1, 0, blocks[id].CELLS_Z + 1);
@@ -513,12 +565,12 @@ void main_task(const void *args, size_t arglen,
 
         // x-axis edges
 #define XAXIS(dir,cy,cz) do {                                           \
-          unsigned id2 = (MOVE_Z(idz,dir)*nby + MOVE_Y(idy,dir))*nbx + idx; \
+          unsigned id2 = (MOVE_BZ(idz,dir)*nby + MOVE_BY(idy,dir))*nbx + idx; \
           for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {        \
             ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
             coloring[color + dir].insert(cell);                         \
             blocks[id].cells[0][cz][cy][cx] = cell;                     \
-            blocks[id2].cells[1][(cz) == 0 ? blocks[id2].CELLS_Z + 1 : 0][(cy) == 0 ? blocks[id2].CELLS_Y + 1 : 0][cx] = cell; \
+            blocks[id2].cells[1][NEIGH_Z(blocks[id2], idz, dir, cz)][NEIGH_Y(blocks[id2], idy, dir, cy)][cx] = cell; \
           }                                                             \
         } while(0)
         XAXIS(TOP_FRONT, 0, blocks[id].CELLS_Z + 1);
@@ -529,12 +581,12 @@ void main_task(const void *args, size_t arglen,
 
         // y-axis edges
 #define YAXIS(dir,cx,cz) do {                                           \
-          unsigned id2 = (MOVE_Z(idz,dir)*nby + idy)*nbx + MOVE_X(idx,dir); \
+          unsigned id2 = (MOVE_BZ(idz,dir)*nby + idy)*nbx + MOVE_BX(idx,dir); \
           for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {        \
             ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
             coloring[color + dir].insert(cell);                         \
             blocks[id].cells[0][cz][cy][cx] = cell;                     \
-            blocks[id2].cells[1][(cz) == 0 ? blocks[id2].CELLS_Z + 1 : 0][cy][(cx) == 0 ? blocks[id2].CELLS_X + 1 : 0] = cell; \
+            blocks[id2].cells[1][NEIGH_Z(blocks[id2], idz, dir, cz)][cy][NEIGH_X(blocks[id2], idx, dir, cx)] = cell; \
           }                                                             \
         } while(0)
         YAXIS(TOP_LEFT, 0, blocks[id].CELLS_Z + 1);
@@ -545,12 +597,12 @@ void main_task(const void *args, size_t arglen,
 
         // z-axis edges
 #define ZAXIS(dir,cx,cy) do {                                           \
-          unsigned id2 = (idz*nby + MOVE_Y(idy,dir))*nbx + MOVE_X(idx,dir); \
+          unsigned id2 = (idz*nby + MOVE_BY(idy,dir))*nbx + MOVE_BX(idx,dir); \
           for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
             ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
             coloring[color + dir].insert(cell);                         \
             blocks[id].cells[0][cz][cy][cx] = cell;                     \
-            blocks[id2].cells[1][cz][(cy) == 0 ? blocks[id2].CELLS_Y + 1 : 0][(cx) == 0 ? blocks[id2].CELLS_X + 1 : 0] = cell; \
+            blocks[id2].cells[1][cz][NEIGH_Y(blocks[id2], idy, dir, cy)][NEIGH_X(blocks[id2], idx, dir, cx)] = cell; \
           }                                                             \
         } while(0)
         ZAXIS(FRONT_LEFT, 0, 0);
@@ -561,13 +613,13 @@ void main_task(const void *args, size_t arglen,
 
         // xy-plane edges
 #define XYPLANE(dir,cz) do {                                            \
-          unsigned id2 = (MOVE_Z(idz,dir)*nby + idy)*nbx + idx;         \
+          unsigned id2 = (MOVE_BZ(idz,dir)*nby + idy)*nbx + idx;         \
           for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {        \
             for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {      \
               ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
               coloring[color + dir].insert(cell);                       \
               blocks[id].cells[0][cz][cy][cx] = cell;                   \
-              blocks[id2].cells[1][(cz) == 0 ? blocks[id2].CELLS_Z + 1 : 0][cy][cx] = cell; \
+              blocks[id2].cells[1][NEIGH_Z(blocks[id2], idz, dir, cz)][cy][cx] = cell; \
             }                                                           \
           }                                                             \
         } while(0)
@@ -577,13 +629,13 @@ void main_task(const void *args, size_t arglen,
 
         // xz-plane edges
 #define XZPLANE(dir,cy) do {                                            \
-          unsigned id2 = (idz*nby + MOVE_Y(idy,dir))*nbx + idx;         \
+          unsigned id2 = (idz*nby + MOVE_BY(idy,dir))*nbx + idx;         \
           for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
             for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {      \
               ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
               coloring[color + dir].insert(cell);                       \
               blocks[id].cells[0][cz][cy][cx] = cell;                   \
-              blocks[id2].cells[1][cz][(cy) == 0 ? blocks[id2].CELLS_Y + 1 : 0][cx] = cell; \
+              blocks[id2].cells[1][cz][NEIGH_Y(blocks[id2], idy, dir, cy)][cx] = cell; \
             }                                                           \
           }                                                             \
         } while(0)
@@ -593,13 +645,13 @@ void main_task(const void *args, size_t arglen,
 
         // yz-plane edges
 #define YZPLANE(dir,cx) do {                                            \
-          unsigned id2 = (idz*nby + idy)*nbx + MOVE_X(idx,dir);         \
+          unsigned id2 = (idz*nby + idy)*nbx + MOVE_BX(idx,dir);         \
           for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
             for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {      \
               ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
               coloring[color + dir].insert(cell);                       \
               blocks[id].cells[0][cz][cy][cx] = cell;                   \
-              blocks[id2].cells[1][cz][cy][(cx) == 0 ? blocks[id2].CELLS_X + 1 : 0] = cell; \
+              blocks[id2].cells[1][cz][cy][NEIGH_X(blocks[id2], idx, dir, cx)] = cell; \
             }                                                           \
           }                                                             \
         } while(0)
@@ -623,7 +675,7 @@ void main_task(const void *args, size_t arglen,
         unsigned id = (idz*nby+idy)*nbx+idx;
 
         for(unsigned dir = 0; dir < GHOST_CELLS; dir++) {
-          unsigned id2 = (MOVE_Z(idz,dir)*nby + MOVE_Y(idy,dir))*nbx + MOVE_X(idx,dir); \
+          unsigned id2 = (MOVE_BZ(idz,dir)*nby + MOVE_BY(idy,dir))*nbx + MOVE_BX(idx,dir); \
           LogicalRegion subr = runtime->get_subregion(ctx,edge_part,color+dir);
           blocks[id].edge[0][dir] = subr;
           blocks[id2].edge[1][REVERSE(dir)] = subr;
@@ -1013,9 +1065,9 @@ void rebuild_reduce(const void *args, size_t arglen,
       for(int cx = 0; cx <= (int)b.CELLS_X+1; cx++) {
         int dir = GET_DIR(b, cz, cy, cx);
         if(dir == CENTER) continue;
-        int dz = MOVE_Z(cz, REVERSE(dir));
-        int dy = MOVE_Y(cy, REVERSE(dir));
-        int dx = MOVE_X(cx, REVERSE(dir));
+        int dz = MOVE_CZ(b, cz, REVERSE(dir));
+        int dy = MOVE_CY(b, cy, REVERSE(dir));
+        int dx = MOVE_CX(b, cx, REVERSE(dir));
 
         Cell c_src;
         READ_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, c_src);
@@ -1040,9 +1092,12 @@ void rebuild_reduce(const void *args, size_t arglen,
       for(int cx = 0; cx <= (int)b.CELLS_X+1; cx++) {
         int dir = GET_DIR(b, cz, cy, cx);
         if(dir == CENTER) continue;
-        int dz = MOVE_Z(cz, REVERSE(dir));
-        int dy = MOVE_Y(cy, REVERSE(dir));
-        int dx = MOVE_X(cx, REVERSE(dir));
+        int dz = MOVE_CZ(b, cz, REVERSE(dir));
+        int dy = MOVE_CY(b, cy, REVERSE(dir));
+        int dx = MOVE_CX(b, cx, REVERSE(dir));
+
+        printf("Copying %2d %2d %2d <== %2d %2d %2d    (dir %2d)\n",
+               cx, cy, cz, dx, dy, dz, dir);
 
         Cell cell = base_block.read(b.cells[cb][dz][dy][dx]);
         WRITE_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);
@@ -1148,9 +1203,9 @@ void scatter_densities(const void *args, size_t arglen,
       for(int cx = 0; cx <= (int)b.CELLS_X+1; cx++) {
         int dir = GET_DIR(b, cz, cy, cx);
         if(dir == CENTER) continue;
-        int dz = MOVE_Z(cz, REVERSE(dir));
-        int dy = MOVE_Y(cy, REVERSE(dir));
-        int dx = MOVE_X(cx, REVERSE(dir));
+        int dz = MOVE_CZ(b, cz, REVERSE(dir));
+        int dy = MOVE_CY(b, cy, REVERSE(dir));
+        int dx = MOVE_CX(b, cx, REVERSE(dir));
 
         Cell cell = base_block.read(b.cells[cb][dz][dy][dx]);
         WRITE_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);

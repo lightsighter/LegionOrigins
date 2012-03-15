@@ -15,7 +15,7 @@ if [[ $rebuild -ne 0 ]]; then
     make
 fi
 cp in_5K.fluid init.fluid
-./fluid3d -ll:csize 16384 -ll:gsize 2000 -ll:l1size 16384 -level 4 -ll:cpu 1 -s 1 -nbx 2 -nby 1 -nbz 1 2>&1 | tee fluid3d.out
+./fluid3d -ll:csize 16384 -ll:gsize 2000 -ll:l1size 16384 -level 1 -ll:cpu 1 -s 1 -nbx 2 -nby 1 -nbz 1 2>&1 | tee legion.out
 if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
     exit
 fi
