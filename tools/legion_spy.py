@@ -284,9 +284,9 @@ if __name__ == "__main__":
         assert pygame.image.get_extended()
         os.mkdir(temp_dir)
         main()
-        #shutil.rmtree(temp_dir)
+        shutil.rmtree(temp_dir)
     except:
         # Remove the directory we created
-        #shutil.rmtree(temp_dir)
+        shutil.rmtree(temp_dir)
         raise
 
