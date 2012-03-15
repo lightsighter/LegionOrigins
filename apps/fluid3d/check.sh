@@ -10,9 +10,12 @@ fluid3d_dir=$(dirname $(readlink -f $BASH_SOURCE))
 # build and run legion
 
 cd $fluid3d_dir
-make
+rebuild=$(make --question --silent >&/dev/null; echo $?)
+if [[ $rebuild -ne 0 ]]; then
+    make
+fi
 cp in_5K.fluid init.fluid
-./fluid3d -ll:csize 16384 -ll:gsize 2000 -ll:l1size 16384 -level 4 -ll:cpu 1 -s 1 -nbx 1 -nby 1 -nbz 1 2>&1 | tee fluid3d.output
+./fluid3d -ll:csize 16384 -ll:gsize 2000 -ll:l1size 16384 -level 4 -ll:cpu 1 -s 1 -nbx 2 -nby 1 -nbz 1 2>&1 | tee fluid3d.out
 if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
     exit
 fi
@@ -35,7 +38,7 @@ fi
 # run parsec
 cd $fluid3d_dir
 # <threadnum> <framenum> <.fluid input file> [.fluid output file]
-$parsec_exe 1 1 init.fluid parsec.fluid 2>&1 | tee parsec.output
+$parsec_exe 1 1 init.fluid parsec.fluid 2>&1 | tee parsec.out
 if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
     exit
 fi
