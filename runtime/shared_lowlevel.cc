@@ -2160,16 +2160,23 @@ namespace RegionRuntime {
         bool activate(RegionMetaDataUntyped r, Memory m, size_t num_elmts, size_t elem_size, char *base);
 	void deactivate(void);
 	Event copy_to(RegionInstanceUntyped target, Event wait_on);
+        Event copy_to(RegionInstanceUntyped target, const ElementMask &mask, Event wait_on);
 	RegionInstanceUntyped get_instance(void) const;
 	void trigger(unsigned count, TriggerHandle handle);
 	Lock get_lock(void);
-        void perform_copy_operation(RegionInstanceImpl *target);
+        void perform_copy_operation(RegionInstanceImpl *target, const ElementMask &src_mask, const ElementMask &dst_mask);
     private:
         class CopyOperation {
         public:
           RegionInstanceImpl *target;
           EventImpl *complete;
           TriggerHandle id;
+          const ElementMask &src_mask;
+          const ElementMask &dst_mask;
+        public:
+          CopyOperation(RegionInstanceImpl *t, EventImpl *c, TriggerHandle i, 
+                        const ElementMask &s, const ElementMask &d)
+            : target(t), complete(c), id(i), src_mask(s), dst_mask(d) { }
         };
     private:
         RegionMetaDataUntyped region;
@@ -2213,7 +2220,7 @@ namespace RegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       // TODO: Update this to take the mask into account
-      return Runtime::get_runtime()->get_instance_impl(*this)->copy_to(target,wait_on);
+      return Runtime::get_runtime()->get_instance_impl(*this)->copy_to(target,mask,wait_on);
     }
 
     const void* RegionInstanceImpl::read(unsigned ptr)
@@ -2275,8 +2282,14 @@ namespace RegionRuntime {
 
     Event RegionInstanceImpl::copy_to(RegionInstanceUntyped target, Event wait_on)
     {
-        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+      const ElementMask &mask = region.get_valid_mask();
+      return copy_to(target,mask,wait_on);
+    }
+
+    Event RegionInstanceImpl::copy_to(RegionInstanceUntyped target, const ElementMask &mask, Event wait_on)
+    {
 	RegionInstanceImpl *target_impl = Runtime::get_runtime()->get_instance_impl(target);
+        const ElementMask &target_mask = target_impl->region.get_valid_mask();
 	//log_copy(LEVEL_INFO, "copy %x/%p/%x -> %x/%p/%x", index, this, region.id, target.id, target_impl, target_impl->region.id);
 #ifdef DEBUG_LOW_LEVEL
 	assert(target_impl->num_elmts == num_elmts);
@@ -2290,10 +2303,8 @@ namespace RegionRuntime {
 		PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 		if (event_impl->register_dependent(this,wait_on.gen,next_handle))
 		{
-                        CopyOperation op;
-                        op.target = target_impl;
-                        op.complete = Runtime::get_runtime()->get_free_event();
-                        op.id = next_handle;
+                        CopyOperation op(target_impl,Runtime::get_runtime()->get_free_event(),
+                                          next_handle,mask,target_mask);
                         // Put it in the list of copy operations
                         pending_copies.push_back(op);
                         next_handle++;
@@ -2307,7 +2318,7 @@ namespace RegionRuntime {
                         // Fall through and perform the copy
 		}
 	}
-        perform_copy_operation(target_impl);
+        perform_copy_operation(target_impl,mask,target_mask);
         return Event::NO_EVENT;
     }
 
@@ -2322,7 +2333,7 @@ namespace RegionRuntime {
           if (it->id == handle)
           {
             found = true;
-            perform_copy_operation(it->target);
+            perform_copy_operation(it->target,it->src_mask,it->dst_mask);
             it->complete->trigger();
             // Remove it from the list
             pending_copies.erase(it);
@@ -2335,10 +2346,10 @@ namespace RegionRuntime {
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
-    void RegionInstanceImpl::perform_copy_operation(RegionInstanceImpl *target)
+    void RegionInstanceImpl::perform_copy_operation(RegionInstanceImpl *target, const ElementMask &src_mask, const ElementMask &dst_mask)
     {
-        ElementMask::Enumerator *src_ranges = region.get_valid_mask().enumerate_enabled();
-        ElementMask::Enumerator *tgt_ranges = target->region.get_valid_mask().enumerate_enabled();
+        ElementMask::Enumerator *src_ranges = src_mask.enumerate_enabled();
+        ElementMask::Enumerator *tgt_ranges = dst_mask.enumerate_enabled();
 
         const void *src_ptr = base_ptr;
         const void *tgt_ptr = target->base_ptr;
