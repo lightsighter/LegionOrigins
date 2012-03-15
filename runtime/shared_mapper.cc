@@ -118,6 +118,14 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       log_mapper(LEVEL_SPEW,"Map task region in shared memory mapper");
+
+      if(task->tag == MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION) {
+	log_mapper(LEVEL_INFO, "Mapping tag requests no mapping for tasks regions");
+	target_ranking.push_back(Memory::NO_MEMORY);
+	enable_WAR_optimization = false;
+	return;
+      }
+
       // Try putting it in the local memory, if that doesn't work, try the global memory
       Memory local = { local_proc.id + 1 };
       Memory global = { 1 };

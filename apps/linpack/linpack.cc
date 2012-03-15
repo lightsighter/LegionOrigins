@@ -679,7 +679,7 @@ public:
 							    k)));
 
     reqs.push_back(RegionRequirement(topblk_region,
-				     READ_WRITE, NO_MEMORY, SIMULTANEOUS,
+				     READ_WRITE, NO_MEMORY, EXCLUSIVE,
 				     topblk_region));
     
     Future f = runtime->execute_task(ctx, TASK_ID, reqs,
@@ -883,7 +883,9 @@ void factor_matrix(Context ctx, HighLevelRuntime *runtime,
 						UpdatePanelArgs<NB>(matrix, k),
 						//TaskArgument(&k, sizeof(int)),
 						arg_map,
-						false);
+						false,
+						0, // defaul mapper,
+						Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION);
 
     fm.wait_all_results();
 #if 0

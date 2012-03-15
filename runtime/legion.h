@@ -1040,6 +1040,17 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////////////// 
     class Mapper {
     public:
+      // a handful of bit-packed hints that should be respected by a default
+      //  mapper (but not necessarily custom mappers)
+      enum {
+	MAPTAG_DEFAULT_MAPPER_NOMAP_REGION_0 = (1U << 0),
+	MAPTAG_DEFAULT_MAPPER_NOMAP_REGION_1 = (1U << 1),
+	MAPTAG_DEFAULT_MAPPER_NOMAP_REGION_2 = (1U << 2),
+	MAPTAG_DEFAULT_MAPPER_NOMAP_REGION_3 = (1U << 3),
+	MAPTAG_DEFAULT_MAPPER_NOMAP_REGION_4 = (1U << 4),
+	MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION = (1U << 5) - 1
+      };
+
       struct ConstraintSplit {
       public:
         ConstraintSplit(const std::vector<Constraint> &cons,
