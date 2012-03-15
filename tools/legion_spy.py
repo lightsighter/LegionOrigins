@@ -159,41 +159,32 @@ def main():
     movingUp = False
         
     while True:
-        justSet = False
-        unSet = False
         # Handle all the events
         for event in pygame.event.get():
             if event.type == QUIT:
                 pygame.quit()
                 sys.exit()
             elif event.type == KEYUP:
-                if not justSet:
-                    if event.key == K_h:
-                        movingLeft = False
-                    elif event.key == K_j:
-                        movingDown = False
-                    elif event.key == K_k:
-                        movingUp = False
-                    elif event.key == K_l:
-                        movingRight = False
-                else:
-                    unSet = True
+                if event.key == K_h:
+                    movingRight = False
+                elif event.key == K_j:
+                    movingUp = False
+                elif event.key == K_k:
+                    movingDown = False
+                elif event.key == K_l:
+                    movingLeft = False
             elif event.type == KEYDOWN:
                 if event.key == K_q:
                     pygame.quit()
                     sys.exit()
                 elif event.key == K_h: # move right 
                     movingRight = True
-                    justSet = True
                 elif event.key == K_j: # move up 
                     movingUp = True    
-                    justSet = True
                 elif event.key == K_k: # move down 
                     movingDown = True 
-                    justSet = True
                 elif event.key == K_l: # move left 
                     movingLeft = True
-                    justSet = True
                 elif event.key == K_i: # zoom in
                     currentImage = currentImage.zoom_in()
                     if showMode == 0:
@@ -264,12 +255,6 @@ def main():
             currentImage.move_up(delta)
         if movingRight:
             currentImage.move_right(delta)
-
-        if unSet:
-            movingLeft = False
-            movingDown = False
-            movingUp = False
-            movingRight = False
 
         # Render the scene
         surface.fill(whiteColor)
