@@ -302,21 +302,21 @@ class Context(object):
         # Then print the dependences as edges
         for dep in self.deps:
             if dep.fuid in self.tasks:
-                t2 = self.tasks[dep.fuid]
+                t1 = self.tasks[dep.fuid]
                 if dep.suid in self.tasks:
-                    t1 = self.tasks[dep.suid]
-                    printer.print_dependence(dep,t2,t1)
+                    t2 = self.tasks[dep.suid]
+                    printer.print_dependence(dep,t1,t2)
                 else:
-                    t1 = self.maps[dep.suid]
-                    printer.print_dependence(dep,t2,t1)
+                    t2 = self.maps[dep.suid]
+                    printer.print_dependence(dep,t1,t2)
             else:
-                t2 = self.maps[dep.fuid]
+                t1 = self.maps[dep.fuid]
                 if dep.suid in self.tasks:
-                    t1 = self.tasks[dep.suid]
-                    printer.print_dependences(dep,t2,t1)
+                    t2 = self.tasks[dep.suid]
+                    printer.print_dependence(dep,t1,t2)
                 else:
-                    t1 = self.maps[dep.suid]
-                    printer.print_dependences(dep,t2,t1)
+                    t2 = self.maps[dep.suid]
+                    printer.print_dependence(dep,t1,t2)
 
 class Usage(object):
     def __init__(self,is_region,handle,parent,privilege,coherence):
