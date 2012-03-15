@@ -8130,7 +8130,7 @@ namespace RegionRuntime {
       }
 #endif
       log_spy(LEVEL_INFO,"Mapping Dependence %d %d %d %d %d %d",
-                          parent_ctx->unique_id,unique_id,idx,ctx->get_unique_id(),dep_idx,dtype);
+                          parent_ctx->unique_id,ctx->get_unique_id(),dep_idx,unique_id,idx,dtype);
       bool new_dep = ctx->add_waiting_dependence(this,dep_idx);
       if (new_dep)
       {
