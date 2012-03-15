@@ -8,6 +8,8 @@
 
 using namespace RegionRuntime::HighLevel;
 
+RegionRuntime::Logger::Category log_app("application");
+
 namespace Config {
   int N = 4;
   int NB = 1;
@@ -212,12 +214,14 @@ void rand_matrix_task(const void *args, size_t arglen,
   printf("in rand_matrix(%d,%d)\n", rm_args->i, rm_args->j);
 }
 
+#if 0
 template <AccessorType AT, int NB>
 void factor_panel(Context ctx, HighLevelRuntime *runtime,
 		  BlockedMatrix<NB>& matrix, int k)
 {
   printf("factor_panel: k=%d\n", k);
 }
+#endif
 
 static Color colorize_identity_fn(const std::vector<int> &solution)
 {
@@ -843,6 +847,94 @@ void update_panel_task(const void *global_args, size_t global_arglen,
   runtime->destroy_logical_region(ctx, temp_region);
 }
 
+template <int NB>
+class FactorPanelTask : public SingleTask {
+protected:
+
+  static TaskID task_id;
+
+  struct TaskArgs {
+    BlockedMatrix<NB> matrix;
+    int k;
+
+    TaskArgs(BlockedMatrix<NB>& _matrix, int _k)
+      : matrix(_matrix), k(_k) {}
+    operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
+  };
+
+  enum {
+    REGION_PANEL, // RWE
+    REGION_INDEX, // RWE
+    NUM_REGIONS
+  };
+
+  const TaskArgs *args;
+
+  FactorPanelTask(Context _ctx, HighLevelRuntime *_runtime,
+		    const TaskArgs *_args)
+    : SingleTask(_ctx, _runtime), args(_args) {}
+
+public:
+  template <AccessorType AT>
+  static void task_entry(const void *args, size_t arglen,
+			 std::vector<PhysicalRegion<AT> > &regions,
+			 Context ctx, HighLevelRuntime *runtime)
+  {
+    FactorPanelTask t(ctx, runtime, (const TaskArgs *)args);
+    t.run<AT>(regions);
+  }
+  
+protected:
+  template <AccessorType AT>
+  void run(std::vector<PhysicalRegion<AT> > &regions) const
+  {
+    printf("factor_panel(yay): k=%d\n", args->k);
+
+    PhysicalRegion<AT> r_panel = regions[REGION_PANEL];
+    PhysicalRegion<AT> r_index = regions[REGION_INDEX];
+  }
+
+public:
+  static void register_task(void)
+  {
+    task_id = HighLevelRuntime::register_single_task
+      <FactorPanelTask::task_entry<AccessorGeneric> >(AUTO_GENERATE_ID,
+						      Processor::LOC_PROC,
+						      "factor_panel");
+    log_app.info("factor_panel task assigned id = %d\n", task_id);
+  }
+
+  static Future spawn(Context ctx, HighLevelRuntime *runtime,
+		      BlockedMatrix<NB>& matrix, int k)
+  {
+    std::vector<RegionRequirement> reqs;
+    reqs.resize(NUM_REGIONS);
+
+    LogicalRegion panel_subregion = runtime->get_subregion(ctx,
+							   matrix.col_part,
+							   k);
+    LogicalRegion index_subregion = runtime->get_subregion(ctx,
+							   matrix.index_part,
+							   k);
+
+    reqs[REGION_PANEL] = RegionRequirement(panel_subregion,
+					   READ_WRITE, NO_MEMORY, EXCLUSIVE,
+					   matrix.block_region);
+
+    reqs[REGION_INDEX] = RegionRequirement(index_subregion,
+					   READ_WRITE, NO_MEMORY, EXCLUSIVE,
+					   matrix.index_region);
+    
+    // double-check that we were registered properly
+    assert(task_id != 0);
+    Future f = runtime->execute_task(ctx, task_id, reqs,
+				     TaskArgs(matrix, k));
+    return f;
+  }
+};
+
+template <int NB> TaskID FactorPanelTask<NB>::task_id;
+
 template <AccessorType AT, int NB>
 void factor_matrix(Context ctx, HighLevelRuntime *runtime,
 		   BlockedMatrix<NB>& matrix)
@@ -850,17 +942,19 @@ void factor_matrix(Context ctx, HighLevelRuntime *runtime,
   // factor matrix by repeatedly factoring a panel and updating the
   //   trailing submatrix
   for(int k = 0; k < matrix.block_rows; k++) {
+    Future f = FactorPanelTask<NB>::spawn(ctx, runtime,
+					  matrix, k);
+
+    // updates of trailing panels launched as index space
+    std::vector<Range> index_space;
+    index_space.push_back(Range(k + 1, matrix.block_cols - 1));
+
     LogicalRegion panel_subregion = runtime->get_subregion(ctx,
 							   matrix.col_part,
 							   k);
     LogicalRegion index_subregion = runtime->get_subregion(ctx,
 							   matrix.index_part,
 							   k);
-    factor_panel<AT,NB>(ctx, runtime, matrix, k);
-
-    // updates of trailing panels launched as index space
-    std::vector<Range> index_space;
-    index_space.push_back(Range(k + 1, matrix.block_cols - 1));
 
     std::vector<RegionRequirement> update_regions;
     update_regions.push_back(RegionRequirement(matrix.col_part.id,
@@ -884,8 +978,8 @@ void factor_matrix(Context ctx, HighLevelRuntime *runtime,
 						//TaskArgument(&k, sizeof(int)),
 						arg_map,
 						false,
-						0, // defaul mapper,
-						Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION);
+						0, // default mapper,
+						0 && Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION);
 
     fm.wait_all_results();
 #if 0
@@ -1250,6 +1344,7 @@ int main(int argc, char **argv) {
   SolveTopBlockTask<TASKID_SOLVE_TOP_BLOCK,1>::register_task();
   TransposeRowsTask<TASKID_TRANSPOSE_ROWS,1>::register_task();
   UpdateSubmatrixTask<TASKID_UPDATE_SUBMATRIX,1>::register_task();
+  FactorPanelTask<1>::register_task();
 #if 0
   HighLevelRuntime::register_single_task
     <fill_top_block_task<AccessorGeneric,1> >(TASKID_FILL_TOP_BLOCK,
