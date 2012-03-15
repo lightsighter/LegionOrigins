@@ -1306,7 +1306,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(idx == 0);
 #endif
-      log_spy(LEVEL_INFO,"Mapping Dependence %d %d %d %d %d %d",parent_ctx->unique_id,unique_id,idx,ctx->get_unique_id(),dep_idx,dtype);
+      log_spy(LEVEL_INFO,"Mapping Dependence %d %d %d %d %d %d",parent_ctx->unique_id,ctx->get_unique_id(),dep_idx,unique_id,idx,dtype);
       if (ctx->add_waiting_dependence(this, dep_idx))
       {
         remaining_notifications++;
