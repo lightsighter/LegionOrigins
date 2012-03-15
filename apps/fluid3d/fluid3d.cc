@@ -38,27 +38,11 @@ enum {
   TASKID_SAVE_FILE,
 };
 
-#define MAX_PARTICLES 16
+const unsigned MAX_PARTICLES = 16;
 
 // Number of ghost cells needed for each block
 // 8 for 2D or 26 for 3D
-#define GHOST_CELLS 26
-
-#define MOVE_TOP(z)    (((int)(z)==(int)(nbz-1)) ? 0 : ((z)+1))
-#define MOVE_BOTTOM(z) (((z)==0) ? (nbz-1) : ((z)-1))
-#define MOVE_LEFT(x)   (((x)==0) ? (nbx-1) : ((x)-1))
-#define MOVE_RIGHT(x)  (((int)(x)==(int)(nbx-1)) ? 0 : ((x)+1))
-#define MOVE_FRONT(y)  (((y)==0) ? (nby-1) : ((y)-1))
-#define MOVE_BACK(y)   (((int)(y)==(int)(nby-1)) ? 0 : ((y)+1))
-
-#define REVERSE(dir) (25 - (dir))
-
-#define MOVE_X(x,dir) ((DIR2SIDES[dir] & SIDE_RIGHT) ? MOVE_RIGHT(x) : ((DIR2SIDES[dir] & SIDE_LEFT) ? MOVE_LEFT(x) : (x)))
-#define MOVE_Y(y,dir) ((DIR2SIDES[dir] & SIDE_BACK) ? MOVE_BACK(y) : ((DIR2SIDES[dir] & SIDE_FRONT) ? MOVE_FRONT(y) : (y)))
-#define MOVE_Z(z,dir) ((DIR2SIDES[dir] & SIDE_TOP) ? MOVE_TOP(z) : ((DIR2SIDES[dir] & SIDE_BOTTOM) ? MOVE_BOTTOM(z) : (z)))
-
-// maps {-1, 0, 1}^3 to directions
-#define LOOKUP_DIR(x,y,z) (SIDES2DIR[(((z)+1)*3 + (y)+1)*3 + (x)+1])
+const unsigned GHOST_CELLS = 26;
 
 enum { // don't change the order of these!  needs to be symmetric
   TOP_FRONT_LEFT = 0,
@@ -161,6 +145,35 @@ const unsigned char SIDES2DIR[] = {
   TOP_BACK_RIGHT,
 };
 
+unsigned nbx, nby, nbz, numBlocks;
+
+static inline int MOVE_TOP(int z)    { return z == (int)(nbz-1) ? 0 : z+1; }
+static inline int MOVE_BOTTOM(int z) { return z == 0 ? nbz-1 : z-1; }
+static inline int MOVE_LEFT(int x)   { return x == 0 ? nbx-1 : x-1; }
+static inline int MOVE_RIGHT(int x)  { return x == (int)(nbx-1) ? 0 : x+1; }
+static inline int MOVE_FRONT(int y)  { return y == 0 ? nby-1 : y-1; }
+static inline int MOVE_BACK(int y)   { return y == (int)(nby-1) ? 0 : y+1; }
+
+static inline int REVERSE(int dir) { return 25 - dir; }
+
+static inline int MOVE_X(int x, int dir) {
+  return (DIR2SIDES[dir] & SIDE_RIGHT) ? MOVE_RIGHT(x) :
+    ((DIR2SIDES[dir] & SIDE_LEFT) ? MOVE_LEFT(x) : x);
+}
+static inline int MOVE_Y(int y, int dir) {
+  return (DIR2SIDES[dir] & SIDE_BACK) ? MOVE_BACK(y) :
+    ((DIR2SIDES[dir] & SIDE_FRONT) ? MOVE_FRONT(y) : y);
+}
+static inline int MOVE_Z(int z, int dir) {
+  return (DIR2SIDES[dir] & SIDE_TOP) ? MOVE_TOP(z) :
+    ((DIR2SIDES[dir] & SIDE_BOTTOM) ? MOVE_BOTTOM(z) : z);
+}
+
+// maps {-1, 0, 1}^3 to directions
+static inline int LOOKUP_DIR(int x, int y, int z) {
+  return SIDES2DIR[((z+1)*3 + y+1)*3 + x+1];
+}
+
 class Vec3
 {
 public:
@@ -231,11 +244,13 @@ struct Block {
 };
 
 // the size of a block for serialization purposes
-#define BLOCK_SIZE(b)                                                   \
-  (sizeof(LogicalRegion)*(2 + 2*GHOST_CELLS)                            \
-   + sizeof(BufferRegions)*2                                            \
-   + sizeof(ptr_t<Cell>)*2*((b).CELLS_X+2)*((b).CELLS_Y+2)*((b).CELLS_Z+2) \
-   + sizeof(int)*2 + sizeof(unsigned)*6)
+static inline size_t BLOCK_SIZE(const Block &b)
+{
+  return sizeof(LogicalRegion)*(2 + 2*GHOST_CELLS)
+    + sizeof(BufferRegions)*2
+    + sizeof(ptr_t<Cell>)*2*(b.CELLS_X+2)*(b.CELLS_Y+2)*(b.CELLS_Z+2)
+    + sizeof(int)*2 + sizeof(unsigned)*6;
+}
 
 struct TopLevelRegions {
   LogicalRegion real_cells[2];
@@ -255,7 +270,6 @@ const Vec3 domainMax(0.065f, 0.1f, 0.065f);
 float h, hSq;
 float densityCoeff, pressureCoeff, viscosityCoeff;
 unsigned nx, ny, nz, numCells;
-unsigned nbx, nby, nbz, numBlocks;
 Vec3 delta;				// cell dimensions
 
 RegionRuntime::Logger::Category log_app("application");
@@ -608,7 +622,7 @@ void main_task(const void *args, size_t arglen,
       for (unsigned idx = 0; idx < nbx; idx++) {
         unsigned id = (idz*nby+idy)*nbx+idx;
 
-        for(int dir = 0; dir < GHOST_CELLS; dir++) {
+        for(unsigned dir = 0; dir < GHOST_CELLS; dir++) {
           unsigned id2 = (MOVE_Z(idz,dir)*nby + MOVE_Y(idy,dir))*nbx + MOVE_X(idx,dir); \
           LogicalRegion subr = runtime->get_subregion(ctx,edge_part,color+dir);
           blocks[id].edge[0][dir] = subr;
@@ -851,24 +865,38 @@ void main_task(const void *args, size_t arglen,
   exit(0);
 }
 
-#define GET_DIR(b, idz, idy, idx)                                        \
-  LOOKUP_DIR(((idx) == 0 ? -1 : ((idx == (int)((b).CELLS_X+1)) ? 1 : 0)), ((idy) == 0 ? -1 : ((idy == (int)((b).CELLS_Y+1)) ? 1 : 0)), ((idz) == 0 ? -1 : ((idz == (int)((b).CELLS_Z+1)) ? 1 : 0)))
+static inline int GET_DIR(Block &b, int idz, int idy, int idx)
+{
+  return LOOKUP_DIR(idx == 0 ? -1 : (idx == (int)(b.CELLS_X+1) ? 1 : 0),
+                    idy == 0 ? -1 : (idy == (int)(b.CELLS_Y+1) ? 1 : 0),
+                    idz == 0 ? -1 : (idz == (int)(b.CELLS_Z+1) ? 1 : 0));
+}
 
-#define READ_CELL(b, cz, cy, cx, base, edge, cell) do {                 \
-    int dir = GET_DIR(b, cz, cy,cx);                                    \
-    if(dir == CENTER) {                                                 \
-      (cell) = (base).read((b).cells[cb][cz][cy][cx]);                  \
-    } else {								\
-      (cell) = (edge)[dir].read((b).cells[eb][cz][cy][cx]);             \
-    } } while(0)
+template<AccessorType AT>
+static inline void READ_CELL(Block &b, int cb, int eb, int cz, int cy, int cx,
+                             PhysicalRegion<AT> &base,
+                             PhysicalRegion<AT> (&edge)[GHOST_CELLS], Cell &cell)
+{
+  int dir = GET_DIR(b, cz, cy,cx);
+  if(dir == CENTER) {
+    (cell) = (base).read((b).cells[cb][cz][cy][cx]);
+  } else {
+    (cell) = (edge)[dir].read((b).cells[eb][cz][cy][cx]);
+  }
+}
 
-#define WRITE_CELL(b, cz, cy, cx, base, edge, cell) do {         \
-    int dir = GET_DIR(b, cz, cy,cx);                             \
-    if(dir == CENTER)                                            \
-      (base).write((b).cells[cb][cz][cy][cx], (cell));           \
-    else                                                         \
-      (edge)[dir].write((b).cells[eb][cz][cy][cx], (cell));      \
-  } while(0)
+template<AccessorType AT>
+static inline void WRITE_CELL(Block &b, int cb, int eb, int cz, int cy, int cx,
+                              PhysicalRegion<AT> &base,
+                              PhysicalRegion<AT> (&edge)[GHOST_CELLS], Cell &cell)
+{
+  int dir = GET_DIR(b, cz, cy,cx);
+  if(dir == CENTER) {
+    (base).write((b).cells[cb][cz][cy][cx], (cell));
+  } else {
+    (edge)[dir].write((b).cells[eb][cz][cy][cx], (cell));
+  }
+}
 
 template<AccessorType AT>
 void init_and_rebuild(const void *args, size_t arglen,
@@ -886,7 +914,7 @@ void init_and_rebuild(const void *args, size_t arglen,
   PhysicalRegion<AT> src_block = regions[0];
   PhysicalRegion<AT> dst_block = regions[1];
   PhysicalRegion<AT> edge_blocks[GHOST_CELLS];
-  for(int i = 0; i < GHOST_CELLS; i++) edge_blocks[i] = regions[i + 2];
+  for(unsigned i = 0; i < GHOST_CELLS; i++) edge_blocks[i] = regions[i + 2];
 
   log_app.info("In init_and_rebuild() for block %d", b.id);
 
@@ -897,7 +925,7 @@ void init_and_rebuild(const void *args, size_t arglen,
     for(int cz = 0; cz <= (int)b.CELLS_Z + 1; cz++)
       for(int cy = 0; cy <= (int)b.CELLS_Y + 1; cy++)
         for(int cx = 0; cx <= (int)b.CELLS_X + 1; cx++)
-          WRITE_CELL(b, cz, cy, cx, dst_block, edge_blocks, blank);
+          WRITE_CELL(b, cb, eb, cz, cy, cx, dst_block, edge_blocks, blank);
   }
 
   // Minimum block sizes
@@ -943,7 +971,7 @@ void init_and_rebuild(const void *args, size_t arglen,
           int dz = cz + (dk - ck);
 
           Cell c_dst;
-          READ_CELL(b, dz, dy, dx, dst_block, edge_blocks, c_dst);
+          READ_CELL(b, cb, eb, dz, dy, dx, dst_block, edge_blocks, c_dst);
           if(c_dst.num_particles < MAX_PARTICLES) {
             int dp = c_dst.num_particles++;
 
@@ -952,7 +980,7 @@ void init_and_rebuild(const void *args, size_t arglen,
             c_dst.hv[dp] = c_src.hv[p];
             c_dst.v[dp] = c_src.v[p];
 
-            WRITE_CELL(b, cz, dy, dx, dst_block, edge_blocks, c_dst);
+            WRITE_CELL(b, cb, eb, cz, dy, dx, dst_block, edge_blocks, c_dst);
           }
         }
       }
@@ -975,7 +1003,7 @@ void rebuild_reduce(const void *args, size_t arglen,
   // Initialize all the cells and update all our cells
   PhysicalRegion<AT> base_block = regions[0];
   PhysicalRegion<AT> edge_blocks[GHOST_CELLS];
-  for(int i = 0; i < GHOST_CELLS; i++) edge_blocks[i] = regions[i + 1];
+  for(unsigned i = 0; i < GHOST_CELLS; i++) edge_blocks[i] = regions[i + 1];
 
   log_app.info("In rebuild_reduce() for block %d", b.id);
 
@@ -990,7 +1018,7 @@ void rebuild_reduce(const void *args, size_t arglen,
         int dx = MOVE_X(cx, REVERSE(dir));
 
         Cell c_src;
-        READ_CELL(b, cz, cy, cx, base_block, edge_blocks, c_src);
+        READ_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, c_src);
         Cell c_dst = base_block.read(b.cells[cb][dz][dy][dx]);
 
         for(unsigned p = 0; p < c_src.num_particles; p++) {
@@ -1017,7 +1045,7 @@ void rebuild_reduce(const void *args, size_t arglen,
         int dx = MOVE_X(cx, REVERSE(dir));
 
         Cell cell = base_block.read(b.cells[cb][dz][dy][dx]);
-        WRITE_CELL(b, cz, cy, cx, base_block, edge_blocks, cell);
+        WRITE_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);
       }
 
   log_app.info("Done with rebuild_reduce() for block %d", b.id);
@@ -1038,7 +1066,7 @@ void scatter_densities(const void *args, size_t arglen,
   // Initialize all the cells and update all our cells
   PhysicalRegion<AT> base_block = regions[0];
   PhysicalRegion<AT> edge_blocks[GHOST_CELLS];
-  for(int i = 0; i < GHOST_CELLS; i++) edge_blocks[i] = regions[i + 1];
+  for(unsigned i = 0; i < GHOST_CELLS; i++) edge_blocks[i] = regions[i + 1];
 
   log_app.info("In scatter_densities() for block %d", b.id);
 
@@ -1075,7 +1103,7 @@ void scatter_densities(const void *args, size_t arglen,
                 continue;
 
               Cell c2;
-              READ_CELL(b, dz, dy, dx, base_block, edge_blocks, c2);
+              READ_CELL(b, cb, eb, dz, dy, dx, base_block, edge_blocks, c2);
               assert(c2.num_particles <= MAX_PARTICLES);
 
               // do bidirectional update if other cell is a real cell and it is
@@ -1100,7 +1128,7 @@ void scatter_densities(const void *args, size_t arglen,
                 }
 
               if(update_other)
-                WRITE_CELL(b, dz, dy, dx, base_block, edge_blocks, c2);
+                WRITE_CELL(b, cb, eb, dz, dy, dx, base_block, edge_blocks, c2);
             }
 
         // a little offset for every particle once we're done
@@ -1125,7 +1153,7 @@ void scatter_densities(const void *args, size_t arglen,
         int dx = MOVE_X(cx, REVERSE(dir));
 
         Cell cell = base_block.read(b.cells[cb][dz][dy][dx]);
-        WRITE_CELL(b, cz, cy, cx, base_block, edge_blocks, cell);
+        WRITE_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);
       }
 
   log_app.info("Done with scatter_densities() for block %d", b.id);
@@ -1161,7 +1189,7 @@ void gather_forces_and_advance(const void *args, size_t arglen,
   // Initialize all the cells and update all our cells
   PhysicalRegion<AT> base_block = regions[0];
   PhysicalRegion<AT> edge_blocks[GHOST_CELLS];
-  for(int i = 0; i < GHOST_CELLS; i++) edge_blocks[i] = regions[i + 1];
+  for(unsigned i = 0; i < GHOST_CELLS; i++) edge_blocks[i] = regions[i + 1];
 
   log_app.info("In gather_forces_and_advance() for block %d", b.id);
 
@@ -1188,7 +1216,7 @@ void gather_forces_and_advance(const void *args, size_t arglen,
                 continue;
 
               Cell c2;
-              READ_CELL(b, dz, dy, dx, base_block, edge_blocks, c2);
+              READ_CELL(b, cb, eb, dz, dy, dx, base_block, edge_blocks, c2);
               assert(c2.num_particles <= MAX_PARTICLES);
 
               // do bidirectional update if other cell is a real cell and it is
@@ -1218,7 +1246,7 @@ void gather_forces_and_advance(const void *args, size_t arglen,
                 }
 
               if(update_other)
-                WRITE_CELL(b, dz, dy, dx, base_block, edge_blocks, c2);
+                WRITE_CELL(b, cb, eb, dz, dy, dx, base_block, edge_blocks, c2);
             }
 
         // compute collisions for particles near edge of box
@@ -1412,7 +1440,7 @@ int load_file(const void *args, size_t arglen,
 
     Cell cell = real_cells.read(blocks[id].cells[b][cz+1][cy+1][cx+1]);
 
-    int np = cell.num_particles;
+    unsigned np = cell.num_particles;
     if(np < MAX_PARTICLES) {
       cell.p[np].x = px;
       cell.p[np].y = py;
