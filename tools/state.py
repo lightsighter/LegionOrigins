@@ -7,6 +7,7 @@ class TreePrinter(object):
         self.filename = path+name+'.dot'
         self.out = open(self.filename,'w')
         self.depth = 0
+        self.fontsize = "14"
         self.println('graph '+name)
         self.println('{')
         self.down()
@@ -33,23 +34,23 @@ class TreePrinter(object):
     def print_region(self,region):
         name = 'reg_'+str(region.handle)
         self.println(name+' [label="'+str(region.handle)+
-                '",style=filled,fillcolor=lightskyblue,fontsize=24,fontcolor=black,shape=box,penwidth=2];')
+                '",style=filled,fillcolor=lightskyblue,fontsize='+self.fontsize+',fontcolor=black,shape=box,penwidth=2];')
         return name
 
     def print_partition(self,partition):
         name = 'part_'+str(partition.handle)        
         if partition.disjoint:
             self.println(name+' [label="'+str(partition.handle)+
-                  '",style=filled,fillcolor=mediumseagreen,fontsize=24,fontcolor=black,shape=trapezium,penwidth=2];')
+                  '",style=filled,fillcolor=mediumseagreen,fontsize='+self.fontsize+',fontcolor=black,shape=trapezium,penwidth=2];')
         else:
             self.println(name+' [label="'+str(partition.handle)+
-                  '",style=filled,fillcolor=crimson,fontsize=24,fontcolor=black,shape=trapezium,penwidth=2];')
+                  '",style=filled,fillcolor=crimson,fontsize='+self.fontsize+',fontcolor=black,shape=trapezium,penwidth=2];')
         return name
 
     def print_multi_region(self,min_id,max_id):
         name = 'reg_'+str(min_id)+'_'+str(max_id)
         self.println(name+' [label="'+str(min_id)+' - '+str(max_id)+
-                  '",style=filled,fillcolor=lightskyblue,fontsize=24,fontcolor=black,shape=box,penwidth=2];')
+                  '",style=filled,fillcolor=lightskyblue,fontsize='+self.fontsize+',fontcolor=black,shape=box,penwidth=2];')
         return name
 
     def print_edge(self,one,two):
@@ -80,6 +81,7 @@ class ContextPrinter(object):
         self.filename = path+name+'.dot'
         self.out = open(self.filename,'w')
         self.depth = 0
+        self.fontsize = "12"
         self.println('digraph '+name)
         self.println('{')
         self.down()
@@ -106,9 +108,18 @@ class ContextPrinter(object):
 
     def print_task(self,task):
         name = 'task_'+str(task.uid)  
-        label = 'Task ID '+str(task.uid)+'\\nFunction ID '+str(task.tid)
+        label = 'Task: '+task.name+'\\nUnique ID '+str(task.uid)
+        for idx,use in sorted(task.regions.iteritems()):
+            label = label + '\\nArg '+str(idx)+': '+use.to_string()    
         self.println(name+' [label="'+label+
-            '",style=filled,color=lightskyblue,fontsize=24,fontcolor=black,shape=box,penwidth=2];')
+            '",style=filled,color=lightskyblue,fontsize='+self.fontsize+',fontcolor=black,shape=box,penwidth=2];')
+
+    def print_map(self,mmap):
+        name = 'task_'+str(mmap.uid)
+        assert len(mmap.regions) == 1
+        label = 'Inline Map ID '+str(mmap.uid)+'\\nArg 0: '+mmap.regions[0].to_string()
+        self.println(name+' [label="'+label+
+            '",style=filled,color=mediumspringgreen,fontsize='+self.fontsize+',fontcolor=black,shape=box,penwidth=2];')
 
     def print_dependence(self,dep,t1,t2):
         name1 = 'task_'+str(t1.uid)
@@ -128,19 +139,19 @@ class ContextPrinter(object):
         if dep.dtype == 1:
             # True dependence
             self.println(name1+' -> '+name2+' [label="'+label+
-                '",sytle=solid,color=black,fontsize=24,fontcolor=black,penwidth=2];')
+                '",sytle=solid,color=black,fontsize='+self.fontsize+',fontcolor=black,penwidth=2];')
         elif dep.dtype == 2:
             # Anti-dependence
             self.println(name1+' -> '+name2+' [label="'+label+
-                '",style=solid,color=blue,fontsize=24,fontcolor=black,penwidth=2];')
+                '",style=solid,color=blue,fontsize='+self.fontsize+',fontcolor=black,penwidth=2];')
         elif dep.dtype == 3:
             # Atomic dependence
             self.println(name1+' -> '+name2+' [label="'+label+
-                '",style=dashed,color=red,fontsize=24,fontcolor=black,penwidth=2];')
+                '",style=dashed,color=red,fontsize='+self.fontsize+',fontcolor=black,penwidth=2,arrowtail=open];')
         elif dep.dtype == 4:
             # Simultaneous dependence
             self.println(name1+' -> '+name2+' [label="'+label+
-                '",style=dashed,color=yellow,fontsize=24,fontcolor=black,penwidth=2];')
+                '",style=dashed,color=orange,fontsize='+self.fontsize+',fontcolor=black,penwidth=2,arrowtail=open];')
         else:
             assert False
 
@@ -152,6 +163,13 @@ class Log(object):
         self.regions = dict()
         self.partitions = dict()
         self.event_graph = EventGraph()
+        self.name_map = dict()
+
+    def add_name(self,tid,name):
+        if tid in self.name_map:
+            assert self.name_map[tid] == name
+        else:
+            self.name_map[tid] = name
 
     def add_region(self,reg):
         assert(reg not in self.regions)
@@ -182,7 +200,7 @@ class Log(object):
         return self.contexts[ctx_id]
 
     def print_trees(self,path):
-        tree_images = set()
+        tree_images = dict()
         prefix = 'tree_'
         for t in self.trees:
             printer = TreePrinter(path,prefix+str(t.handle))
@@ -197,24 +215,25 @@ class Log(object):
             #subprocess.call(['convert '+ps_file+' '+jpeg_file],shell=True)
             #tree_images.add(jpeg_file)
             subprocess.call(['dot -Tpng -o '+png_file+' '+dot_file],shell=True)
-            tree_images.add(png_file)
+            tree_images[t.handle] = (png_file,'Region Tree '+str(t.handle))
         return tree_images
 
     def print_contexts(self,path):
         ctx_images = dict()
         prefix = 'ctx_'
         for ctx_id,ctx in self.contexts.iteritems():
-            printer = ContextPrinter(path,prefix+str(ctx_id),self)
-            ctx.print_graph(printer)
-            dot_file = printer.close()
-            ps_file = str(path)+prefix+str(ctx_id)+'.ps'
-            jpeg_file = str(path)+prefix+str(ctx_id)+'.jpg'
-            png_file = str(path)+prefix+str(ctx_id)+'.png'
-            #subprocess.call(['dot -Tps2 -o '+ps_file+' '+dot_file],shell=True)
-            #subprocess.call(['convert '+ps_file+' '+jpeg_file],shell=True)
-            #ctx_images[ctx_id] = jpeg_file
-            subprocess.call(['dot -Tpng -o '+png_file+' '+dot_file],shell=True)
-            ctx_images[ctx_id] = png_file
+            if not ctx.is_empty():
+                printer = ContextPrinter(path,prefix+str(ctx_id),self)
+                ctx.print_graph(printer)
+                dot_file = printer.close()
+                ps_file = str(path)+prefix+str(ctx_id)+'.ps'
+                jpeg_file = str(path)+prefix+str(ctx_id)+'.jpg'
+                png_file = str(path)+prefix+str(ctx_id)+'.png'
+                #subprocess.call(['dot -Tps2 -o '+ps_file+' '+dot_file],shell=True)
+                #subprocess.call(['convert '+ps_file+' '+jpeg_file],shell=True)
+                #ctx_images[ctx_id] = jpeg_file
+                subprocess.call(['dot -Tpng -o '+png_file+' '+dot_file],shell=True)
+                ctx_images[ctx_id] = (png_file,'Context '+str(ctx_id)+': '+ctx.ctx.name)
         return ctx_images
 
     def print_event_graph(self,path):
@@ -234,6 +253,7 @@ class Context(object):
     def __init__(self, ctx):
         self.ctx = ctx 
         self.tasks = dict()
+        self.maps = dict()
         self.deps = set()
 
     def add_task(self, task):
@@ -241,32 +261,109 @@ class Context(object):
         self.tasks[task.uid] = task
 
     def get_task(self, uid):
-        assert(uid in self.tasks)
-        return self.tasks[uid]
+        assert (uid in self.tasks) or (uid in self.maps)
+        if uid in self.tasks:
+            return self.tasks[uid]
+        else:
+            return self.maps[uid]
+
+    def add_map(self, mmap):
+        assert(mmap.uid not in self.maps)
+        self.maps[mmap.uid] = mmap
+
+    def get_map(self, uid):
+        assert(uid in self.maps)
+        return self.maps[uid]
 
     def add_dependence(self,dep):
         assert(dep not in self.deps)
         self.deps.add(dep) 
 
+    def is_empty(self):
+        return (len(self.tasks) == 0) and (len(self.maps) == 0)
+
     def print_graph(self,printer):
         # First print the nodes for the tasks 
         for uid,task in self.tasks.iteritems():
             printer.print_task(task)
+        for uid,mmap in self.maps.iteritems():
+            printer.print_map(mmap)
         # Then print the dependences as edges
         for dep in self.deps:
-            t2 = self.tasks[dep.fuid]
-            t1 = self.tasks[dep.suid]
-            printer.print_dependence(dep,t2,t1)
+            if dep.fuid in self.tasks:
+                t2 = self.tasks[dep.fuid]
+                if dep.suid in self.tasks:
+                    t1 = self.tasks[dep.suid]
+                    printer.print_dependence(dep,t2,t1)
+                else:
+                    t1 = self.maps[dep.suid]
+                    printer.print_dependence(dep,t2,t1)
+            else:
+                t2 = self.maps[dep.fuid]
+                if dep.suid in self.tasks:
+                    t1 = self.tasks[dep.suid]
+                    printer.print_dependences(dep,t2,t1)
+                else:
+                    t1 = self.maps[dep.suid]
+                    printer.print_dependences(dep,t2,t1)
 
 class Usage(object):
-    def __init__(self,is_region,handle,parent):
+    def __init__(self,is_region,handle,parent,privilege,coherence):
         self.is_region = is_region
         self.handle = handle
         self.parent = parent
+        self.privilege = privilege
+        self.coherence = coherence
+
+    def to_string(self):
+        result = ''
+        if self.privilege == 0:
+            result = result + 'NA'
+        elif self.privilege == 1:
+            result = result + 'RO'
+        elif self.privilege == 2:
+            result = result + 'RW' 
+        elif self.privilege == 3:
+            result = result + 'WO'
+        elif self.privilege == 4:
+            result = result + 'Rd'
+        else:
+            assert False
+        if self.coherence == 0:
+            result = result + 'E '
+        elif self.coherence == 1:
+            result = result + 'A '
+        elif self.coherence == 2:
+            result = result + 'S '
+        elif self.coherence == 3:
+            result = result + 'R '
+        else:
+            assert False
+        if self.is_region:
+            result = result + 'Region: '+str(self.handle)
+        else:
+            result = result + 'Partition: '+str(self.handle)
+        result = result + ' Parent: '+str(self.parent)
+        return result
+
+class Map(object):
+    def __init__(self, uid):
+        self.uid = uid
+        self.regions = dict()
+
+    def add_usage(self,idx,usage):
+        assert(idx not in self.regions)
+        assert(idx == 0)
+        self.regions[idx] = usage
+    
+    def get_usage(self,idx):
+        assert(idx in self.regions)
+        return self.regions[idx]
 
 class Task(object):
-    def __init__(self, uid, tid):
+    def __init__(self, uid, name, tid):
         self.uid = uid # Unique id
+        self.name = name
         self.tid = tid # task id
         self.regions = dict() 
 
@@ -363,7 +460,7 @@ class EventNode(object):
 
     def print_node(self,printer):
         printer.println(self.name+' [style=filled,label="Event\ ID:\ '+str(self.idx)+'\\nEvent\ Gen:\ '+str(self.gen)+
-                '",fillcolor=darkgoldenrod1,fontsize=16,fontcolor=black,shape=record,penwidth=2];') 
+                '",fillcolor=darkgoldenrod1,fontsize=14,fontcolor=black,shape=record,penwidth=2];') 
 
     def is_no_event(self):
         return (self.idx == 0)
@@ -383,7 +480,7 @@ class CopyNode(object):
             '\\nSrc\ Loc:\ '+str(self.src_loc)+
             '\\nDst\ Inst:\ '+str(self.dst_inst)+'\\nDst\ Handle:\ '+str(self.dst_handle)+
             '\\nDst\ Loc:\ '+str(self.dst_loc)+
-            '",fillcolor=mediumseagreen,fontsize=16,fontcolor=black,shape=record,penwidth=2];')
+            '",fillcolor=mediumseagreen,fontsize=14,fontcolor=black,shape=record,penwidth=2];')
 
 class IndexPoint(object):
     def __init__(self,name,point):
@@ -396,7 +493,7 @@ class IndexPoint(object):
             point_str = point_str + str(self.point[i]) +','
         point_str = point_str + str(self.point[len(self.point)-1]) + ')'
         printer.println(self.name+' [style=filled,label="Point: '+point_str+
-            '",fillcolor=lightskyblue,fontsize=16,fontcolor=black,shape=record,penwidth=2];')
+            '",fillcolor=lightskyblue,fontsize=14,fontcolor=black,shape=record,penwidth=2];')
 
 class IndexSpaceNode(object):
     def __init__(self,name,task_id,unique_id):
@@ -449,7 +546,7 @@ class IndexSpaceNode(object):
     def print_node(self,printer):
         printer.println(self.name+' [style=filled,label="Index Space Task '+str(self.task_id)+
                                   '\\nUnique ID '+str(self.unique_id)+'",fillcolor=lightskyblue,'+
-                                  'fontsize=16,fontcolor=black,shape=record,penwidth=2];')
+                                  'fontsize=14,fontcolor=black,shape=record,penwidth=2];')
         '''
         self.points = sorted(self.points)
         printer.println('subgraph '+self.name+' {');
@@ -508,7 +605,7 @@ class TaskNode(object):
 
     def print_node(self,printer):
         printer.println(self.name+' [style=filled,label="Task\ '+str(self.task_id)+'\\nUnique\ ID\ '+str(self.unique_id)+
-            '",fillcolor=lightskyblue,fontsize=16,fontcolor=black,shape=record,penwidth=2];')
+            '",fillcolor=lightskyblue,fontsize=14,fontcolor=black,shape=record,penwidth=2];')
 
 class EventGraphPrinter(object):
     def __init__(self,path,name):
