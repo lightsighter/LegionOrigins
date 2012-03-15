@@ -48,24 +48,24 @@ namespace RegionRuntime {
     };
 
     enum PrivilegeMode {
-      NO_ACCESS,
-      READ_ONLY,
-      READ_WRITE,
-      WRITE_ONLY,
-      REDUCE,
+      NO_ACCESS  = 0,
+      READ_ONLY  = 1,
+      READ_WRITE = 2,
+      WRITE_ONLY = 3,
+      REDUCE     = 4,
     };
 
     enum AllocateMode {
-      NO_MEMORY,
-      ALLOCABLE,
-      FREEABLE,
+      NO_MEMORY = 0,
+      ALLOCABLE = 1,
+      FREEABLE  = 2,
     };
 
     enum CoherenceProperty {
-      EXCLUSIVE,
-      ATOMIC,
-      SIMULTANEOUS,
-      RELAXED,
+      EXCLUSIVE    = 0,
+      ATOMIC       = 1,
+      SIMULTANEOUS = 2,
+      RELAXED      = 3,
     };
 
     enum ColoringType {

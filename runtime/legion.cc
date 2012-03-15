@@ -1040,8 +1040,8 @@ namespace RegionRuntime {
 #endif
       }
       log_spy(LEVEL_INFO,"Map %d Parent %d",unique_id,c->get_unique_id());
-      log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle %d Parent %d",
-          parent_ctx->unique_id,unique_id,0,r.handle.region.id,r.parent.id);
+      log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle %d Parent %d Privilege %d Coherence %d",
+          parent_ctx->unique_id,unique_id,0,r.handle.region.id,r.parent.id,r.privilege,r.prop);
     }
 
     //--------------------------------------------------------------------------
@@ -2018,7 +2018,7 @@ namespace RegionRuntime {
                               id, tag, mapper_objects[id], mapper_locks[id]);
       }
 #ifdef DEBUG_HIGH_LEVEL
-      log_task(LEVEL_DEBUG,"Registering new single task with unique id %d and task %s (ID %d) with high level runtime on processor %d\n",
+      log_task(LEVEL_DEBUG,"Registering new single task with unique id %d and task %s (ID %d) with high level runtime on processor %d",
                 unique_id, desc->variants->name, task_id, local_proc.id);
 #endif
       desc->set_regions(regions, true/*check same*/);
@@ -3879,22 +3879,24 @@ namespace RegionRuntime {
       }
 
       // All debugging printing below here
-      log_spy(LEVEL_INFO,"Task %d Task ID %d Parent Context %d",unique_id,task_id,parent_ctx->unique_id);
+      log_spy(LEVEL_INFO,"Task %d %s Task ID %d Parent Context %d",unique_id,variants->name,task_id,parent_ctx->unique_id);
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
         switch (regions[idx].func_type)
         {
           case SINGULAR_FUNC:
             {
-              log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle %d Parent %d",
-                  parent_ctx->unique_id,unique_id,idx,regions[idx].handle.region.id,regions[idx].parent.id);
+              log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle %d Parent %d Privilege %d Coherence %d",
+                  parent_ctx->unique_id,unique_id,idx,regions[idx].handle.region.id,regions[idx].parent.id,
+                  regions[idx].privilege, regions[idx].prop);
               break;
             }
           case EXECUTABLE_FUNC:
           case MAPPED_FUNC:
             {
-              log_spy(LEVEL_INFO,"Context %d Task %d Partition %d Handle %d Parent %d",
-                  parent_ctx->unique_id,unique_id,idx,regions[idx].handle.partition,regions[idx].parent.id);
+              log_spy(LEVEL_INFO,"Context %d Task %d Partition %d Handle %d Parent %d Privilege %d Coherence %d",
+                  parent_ctx->unique_id,unique_id,idx,regions[idx].handle.partition,regions[idx].parent.id,
+                  regions[idx].privilege, regions[idx].prop);
               break;
             }
           default:
@@ -6031,6 +6033,7 @@ namespace RegionRuntime {
       // Check to see if we've seen responses from all of the index space
       if (frac_index_space.first == frac_index_space.second)
       { 
+        log_spy(LEVEL_INFO,"Index Space %d Context %d Size %d",unique_id,parent_ctx->unique_id,num_total_points);
         // Check to see if we mapped all the regions for this index space, if so notify our dependences
 #ifdef DEBUG_HIGH_LEVEL
         assert(map_dependent_tasks.size() == regions.size());
