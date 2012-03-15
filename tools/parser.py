@@ -37,6 +37,8 @@ def parse_log_file(file_name):
 
     index_launch_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Index Task Launch (?P<tid>[0-9]+) (?P<uid>[0-9]+) (?P<start_id>[0-9]+) (?P<start_gen>[0-9]+) (?P<term_id>[0-9]+) (?P<term_gen>[0-9]+) (?P<point_size>[0-9]+) (?P<points>[0-9 ]+)")
 
+    index_space_size_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Index Space (?P<unique>[0-9]+) Context (?P<context>[0-9]+) Size (?P<size>[0-9]+)")
+
     for line in log:
         m = name_pat.match(line)
         if m <> None:
@@ -155,6 +157,11 @@ def parse_log_file(file_name):
             if not dst.is_no_event():
                 #result.event_graph.add_index_src_edge(space,point_node,dst)
                 result.event_graph.add_edge(space,dst)
+            continue
+        m = index_space_size_pat.match(line)
+        if m <> None:
+            task = result.get_context(int(m.group('context'))).get_task(int(m.group('unique')))  
+            task.set_index_space_size(int(m.group('size')))
             continue
     return result
 

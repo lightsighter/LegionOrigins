@@ -1,6 +1,7 @@
 #!/usr/bin/python
 
 import subprocess
+import string
 
 class TreePrinter(object):
     def __init__(self,path,name):
@@ -108,11 +109,21 @@ class ContextPrinter(object):
 
     def print_task(self,task):
         name = 'task_'+str(task.uid)  
-        label = 'Task: '+task.name+'\\nUnique ID '+str(task.uid)
+        label = ''
+        if not task.index_space:
+            label = 'Task: '+task.name+'\\nUnique ID '+str(task.uid)
+        else:
+            label = 'Index Space Task: '+task.name+'\\nUnique ID '+str(task.uid)+'\\nTotal Points: '+str(task.space_size) 
         for idx,use in sorted(task.regions.iteritems()):
             label = label + '\\nArg '+str(idx)+': '+use.to_string()    
-        self.println(name+' [label="'+label+
-            '",style=filled,color=lightskyblue,fontsize='+self.fontsize+',fontcolor=black,shape=box,penwidth=2];')
+        if not task.index_space:
+            self.println(name+' [label="'+label+
+                '",style=filled,color=lightskyblue,fontsize='+self.fontsize+',fontcolor=black,shape=box,penwidth=2];')
+        else:
+            self.println(name+' [label="'+label+
+                '",style=filled,color=darkgoldenrod1,fontsize='+self.fontsize+',fontcolor=black,shape=box,penwidth=2];')
+            
+
 
     def print_map(self,mmap):
         name = 'task_'+str(mmap.uid)
@@ -151,7 +162,7 @@ class ContextPrinter(object):
         elif dep.dtype == 4:
             # Simultaneous dependence
             self.println(name1+' -> '+name2+' [label="'+label+
-                '",style=dashed,color=orange,fontsize='+self.fontsize+',fontcolor=black,penwidth=2,arrowtail=open];')
+                '",style=dashed,color=orangered,fontsize='+self.fontsize+',fontcolor=black,penwidth=2,arrowtail=open];')
         else:
             assert False
 
@@ -220,15 +231,15 @@ class Log(object):
 
     def print_contexts(self,path):
         ctx_images = dict()
-        prefix = 'ctx_'
         for ctx_id,ctx in self.contexts.iteritems():
             if not ctx.is_empty():
-                printer = ContextPrinter(path,prefix+str(ctx_id),self)
+                prefix = (ctx.ctx.name.replace(' ',''))+'_ctx_'+str(ctx_id)
+                printer = ContextPrinter(path,prefix,self)
                 ctx.print_graph(printer)
                 dot_file = printer.close()
-                ps_file = str(path)+prefix+str(ctx_id)+'.ps'
-                jpeg_file = str(path)+prefix+str(ctx_id)+'.jpg'
-                png_file = str(path)+prefix+str(ctx_id)+'.png'
+                ps_file = str(path)+prefix+'.ps'
+                jpeg_file = str(path)+prefix+'.jpg'
+                png_file = str(path)+prefix+'.png'
                 #subprocess.call(['dot -Tps2 -o '+ps_file+' '+dot_file],shell=True)
                 #subprocess.call(['convert '+ps_file+' '+jpeg_file],shell=True)
                 #ctx_images[ctx_id] = jpeg_file
@@ -366,6 +377,8 @@ class Task(object):
         self.name = name
         self.tid = tid # task id
         self.regions = dict() 
+        self.index_space = False
+        self.space_size = 1
 
     def add_usage(self,idx,usage):
         assert(idx not in self.regions)
@@ -374,6 +387,11 @@ class Task(object):
     def get_usage(self,idx):
         assert(idx in self.regions)
         return self.regions[idx]
+
+    def set_index_space_size(self,size):
+        assert not self.index_space
+        self.index_space = True
+        self.space_size = size
 
 class Dependence(object):
     def __init__(self, fuid, fidx, suid, sidx, dtype):

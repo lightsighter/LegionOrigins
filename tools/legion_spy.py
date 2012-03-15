@@ -11,7 +11,7 @@ from parser import parse_log_file
 temp_dir = ".spy/"
 
 class ImageWrapper(object):
-    def __init__(self,name,file_name,fontObj=None,blackColor=None):
+    def __init__(self,name,file_name,fontObj=None,blackColor=None,scale=10):
         self.name = name
         self.surface = pygame.image.load(file_name) 
         if fontObj <> None:
@@ -23,7 +23,7 @@ class ImageWrapper(object):
             self.larger = None
             self.smaller = None
             self.zoom = 100 # 100 percent
-            self.scale = 10 # Scale by 10% each time
+            self.scale = scale # Scale by 10% each time
 
     def move_left(self,delta):
         self.origin = (self.origin[0]+delta,self.origin[1])
@@ -50,6 +50,7 @@ class ImageWrapper(object):
     def zoom_in(self):
         # Check to see if we already have a zoomed in version
         if (self.larger <> None):
+            self.larger.origin = self.origin
             return self.larger
         zoom_image_name = self.prefix + '_' + str(self.zoom+self.scale) + '.png'
         # Do the conversion
@@ -68,6 +69,7 @@ class ImageWrapper(object):
 
     def zoom_out(self):
         if (self.smaller <> None):
+            self.smaller.origin = self.origin
             return self.smaller
         # Dont' zoom past 10%
         if (self.zoom == self.scale):
@@ -89,14 +91,14 @@ class ImageWrapper(object):
         
 
 def usage():
-    print "Usage: "+ sys.argv[0] +" [-h (height in pixels)] [-w (width in pixels)] [-d (delta move size in pixels)] file_name"
+    print "Usage: "+ sys.argv[0] +" [-h (height in pixels)] [-w (width in pixels)] [-d (delta move size in pixels)] [-z (zoom percentage)] file_name"
     sys.exit(1)
 
 def main():
     if len(sys.argv) < 2:
         usage()
 
-    opts, args = getopt(sys.argv[1:],'d:h:w:')
+    opts, args = getopt(sys.argv[1:],'d:h:w:z:')
     opts = dict(opts)
     if len(args) <> 1: 
         usage()
@@ -104,6 +106,7 @@ def main():
     height = int(opts.get('-h',750))
     width = int(opts.get('-w',1500))
     delta = int(opts.get('-d',10))
+    scale = int(opts.get('-z',10))
 
     file_name = args[0]
     print 'Loading log file '+file_name+'...'
@@ -130,15 +133,15 @@ def main():
     tree_files = log.print_trees(temp_dir)
     tree_images = list()
     for t,pair in sorted(tree_files.iteritems()):
-        tree_images.append(ImageWrapper(pair[1],pair[0],fontObj,blackColor))
+        tree_images.append(ImageWrapper(pair[1],pair[0],fontObj,blackColor,scale))
 
     ctx_files = log.print_contexts(temp_dir)
     ctx_images = list()
     for ctx_id,pair in sorted(ctx_files.iteritems()):
-        ctx_images.append(ImageWrapper(pair[1],pair[0],fontObj,blackColor)) 
+        ctx_images.append(ImageWrapper(pair[1],pair[0],fontObj,blackColor,scale)) 
 
     event_file = log.print_event_graph(temp_dir)
-    event_image = ImageWrapper('Event Image',event_file,fontObj,blackColor)
+    event_image = ImageWrapper('Event Image',event_file,fontObj,blackColor,scale)
 
     currentImage = tree_images[0]
     currentTree = 0
@@ -175,17 +178,17 @@ def main():
                 if event.key == K_q:
                     pygame.quit()
                     sys.exit()
-                elif event.key == K_h: # move left
-                    movingLeft = True
-                    justSet = True
-                elif event.key == K_j: # move down
-                    movingDown = True    
-                    justSet = True
-                elif event.key == K_k: # move up
-                    movingUp = True 
-                    justSet = True
-                elif event.key == K_l: # move right
+                elif event.key == K_h: # move right 
                     movingRight = True
+                    justSet = True
+                elif event.key == K_j: # move up 
+                    movingUp = True    
+                    justSet = True
+                elif event.key == K_k: # move down 
+                    movingDown = True 
+                    justSet = True
+                elif event.key == K_l: # move left 
+                    movingLeft = True
                     justSet = True
                 elif event.key == K_i: # zoom in
                     currentImage = currentImage.zoom_in()
