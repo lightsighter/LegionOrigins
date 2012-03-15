@@ -229,7 +229,7 @@ class Log(object):
                 subprocess.check_call(['dot -Tpng -o '+png_file+' '+dot_file],shell=True)
             except subprocess.CalledProcessError:
                 print "WARNING: DOT failure, image for tree "+str(t.handle)+" not generated"
-                subprocess.call(['rm -f '+png_file],shell=True)
+                subprocess.call(['rm -f core '+png_file],shell=True)
             tree_images[t.handle] = (png_file,'Region Tree '+str(t.handle))
         return tree_images
 
@@ -251,7 +251,7 @@ class Log(object):
                     subprocess.check_call(['dot -Tpng -o '+png_file+' '+dot_file],shell=True)
                 except:
                     print "WARNING: DOT failure, image for context "+str(ctx_id)+" not generated"
-                    subprocess.call(['rm -f '+png_file],shell=True)
+                    subprocess.call(['rm -f core '+png_file],shell=True)
                 ctx_images[ctx_id] = (png_file,'Context '+str(ctx_id)+': '+ctx.ctx.name)
         return ctx_images
 
@@ -268,7 +268,7 @@ class Log(object):
             subprocess.check_call(['dot -Tpng -o '+png_file+' '+dot_file],shell=True)
         except subprocess.CalledProcessError:
             print "WARNING: DOT failure, event image not generated"
-            subprocess.call(['rm -f '+png_file],shell=True)
+            subprocess.call(['rm -f core '+png_file],shell=True)
         return png_file
 
 
