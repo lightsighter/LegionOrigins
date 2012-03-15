@@ -13,7 +13,10 @@ temp_dir = ".spy/"
 class ImageWrapper(object):
     def __init__(self,name,file_name,fontObj=None,blackColor=None,scale=10):
         self.name = name
-        self.surface = pygame.image.load(file_name) 
+        if os.path.isfile(file_name):
+            self.surface = pygame.image.load(file_name) 
+        else:
+            self.surface = None
         if fontObj <> None:
             self.origin = (0,0)
             self.file_name = file_name
@@ -44,7 +47,8 @@ class ImageWrapper(object):
         subprocess.call(['cp '+self.file_name+' .'],shell=True)
 
     def display(self,target):
-        target.blit(self.surface, (self.origin[0],self.origin[1]+self.msgRect.height))
+        if self.surface <> None:
+            target.blit(self.surface, (self.origin[0],self.origin[1]+self.msgRect.height))
         target.blit(self.msgSurface,(0,0))
 
     def zoom_in(self):
@@ -280,9 +284,9 @@ if __name__ == "__main__":
         assert pygame.image.get_extended()
         os.mkdir(temp_dir)
         main()
-        shutil.rmtree(temp_dir)
+        #shutil.rmtree(temp_dir)
     except:
         # Remove the directory we created
-        shutil.rmtree(temp_dir)
+        #shutil.rmtree(temp_dir)
         raise
 

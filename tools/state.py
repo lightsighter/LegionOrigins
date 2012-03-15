@@ -225,7 +225,11 @@ class Log(object):
             # Convert the ps file jpeg
             #subprocess.call(['convert '+ps_file+' '+jpeg_file],shell=True)
             #tree_images.add(jpeg_file)
-            subprocess.call(['dot -Tpng -o '+png_file+' '+dot_file],shell=True)
+            try:
+                subprocess.check_call(['dot -Tpng -o '+png_file+' '+dot_file],shell=True)
+            except subprocess.CalledProcessError:
+                print "WARNING: DOT failure, image for tree "+str(t.handle)+" not generated"
+                subprocess.call(['rm -f '+png_file],shell=True)
             tree_images[t.handle] = (png_file,'Region Tree '+str(t.handle))
         return tree_images
 
@@ -243,7 +247,11 @@ class Log(object):
                 #subprocess.call(['dot -Tps2 -o '+ps_file+' '+dot_file],shell=True)
                 #subprocess.call(['convert '+ps_file+' '+jpeg_file],shell=True)
                 #ctx_images[ctx_id] = jpeg_file
-                subprocess.call(['dot -Tpng -o '+png_file+' '+dot_file],shell=True)
+                try:
+                    subprocess.check_call(['dot -Tpng -o '+png_file+' '+dot_file],shell=True)
+                except:
+                    print "WARNING: DOT failure, image for context "+str(ctx_id)+" not generated"
+                    subprocess.call(['rm -f '+png_file],shell=True)
                 ctx_images[ctx_id] = (png_file,'Context '+str(ctx_id)+': '+ctx.ctx.name)
         return ctx_images
 
@@ -256,7 +264,11 @@ class Log(object):
         #subprocess.call(['dot -Tps2 -o '+ps_file+' '+dot_file],shell=True)
         #subprocess.call(['convert '+ps_file+' '+jpeg_file],shell=True)
         #return jpeg_file
-        subprocess.call(['dot -Tpng -o '+png_file+' '+dot_file],shell=True)
+        try:
+            subprocess.check_call(['dot -Tpng -o '+png_file+' '+dot_file],shell=True)
+        except subprocess.CalledProcessError:
+            print "WARNING: DOT failure, event image not generated"
+            subprocess.call(['rm -f '+png_file],shell=True)
         return png_file
 
 
