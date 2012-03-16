@@ -889,8 +889,9 @@ void main_task(const void *args, size_t arglen,
     }
 
     // flip the phase
-    // don't actually do this because PARSEC's fluidanimate doesn't
-    //cur_buffer = 1 - cur_buffer;
+    // WARNING: PARSEC's fluidanimate doesn't actually do this (a "feature")
+    // Elliott kept it in because it might have a performance impact
+    cur_buffer = 1 - cur_buffer;
   }
 
   log_app.info("waiting for all simulation tasks to complete");
@@ -907,7 +908,7 @@ void main_task(const void *args, size_t arglen,
   RegionRuntime::DetailedTimer::report_timers();
 
   {
-    int target_buffer = cur_buffer;
+    int target_buffer = 1 - cur_buffer;
     std::vector<RegionRequirement> init_regions;
     for (unsigned id = 0; id < numBlocks; id++) {
       init_regions.push_back(RegionRequirement(blocks[id].base[target_buffer],

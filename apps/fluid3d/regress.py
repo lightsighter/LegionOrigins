@@ -131,5 +131,4 @@ def regress(**params):
 if __name__ == '__main__':
     for thunk in prep: thunk()
     regress(nbx = 1, nby = 1, nbz = 1, steps = 1)
-    regress(nbx = 1, nby = 1, nbz = 1, steps = 2)
     regress(nbx = 2, nby = 1, nbz = 1, steps = 1)
