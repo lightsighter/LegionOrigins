@@ -44,6 +44,11 @@ const unsigned MAX_PARTICLES = 16;
 // 8 for 2D or 26 for 3D
 const unsigned GHOST_CELLS = 26;
 
+// PARSEC does not double buffer. That is, PARSEC performs the first
+// step of the computation over and over. However, double buffering
+// has a potential performance impact, so we need both.
+#define ENABLE_DOUBLE_BUFFERING 1
+
 enum { // don't change the order of these!  needs to be symmetric
   TOP_FRONT_LEFT = 0,
   TOP_FRONT,
@@ -889,9 +894,9 @@ void main_task(const void *args, size_t arglen,
     }
 
     // flip the phase
-    // WARNING: PARSEC's fluidanimate doesn't actually do this (a "feature")
-    // Elliott kept it in because it might have a performance impact
+#if ENABLE_DOUBLE_BUFFERING
     cur_buffer = 1 - cur_buffer;
+#endif
   }
 
   log_app.info("waiting for all simulation tasks to complete");
@@ -908,7 +913,11 @@ void main_task(const void *args, size_t arglen,
   RegionRuntime::DetailedTimer::report_timers();
 
   {
+#if ENABLE_DOUBLE_BUFFERING
     int target_buffer = 1 - cur_buffer;
+#else
+    int target_buffer = cur_buffer;
+#endif
     std::vector<RegionRequirement> init_regions;
     for (unsigned id = 0; id < numBlocks; id++) {
       init_regions.push_back(RegionRequirement(blocks[id].base[target_buffer],
