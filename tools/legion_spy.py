@@ -13,6 +13,7 @@ temp_dir = ".spy/"
 class ImageWrapper(object):
     def __init__(self,name,file_name,fontObj=None,blackColor=None,scale=10):
         self.name = name
+        self.file_name = file_name
         if os.path.isfile(file_name):
             self.surface = pygame.image.load(file_name) 
         else:
