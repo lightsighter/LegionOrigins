@@ -8472,7 +8472,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(inst_map.find(iid) != inst_map.end());
 #endif
-        update_valid_instances(ctx, inst_map[iid], write, check_overwrite, uid, owner);
+        update_valid_instances(ctx, inst_map[iid], write, owner, check_overwrite, uid);
       }
       derez.deserialize<PartState>(region_states[ctx].open_state);
       derez.deserialize<DataState>(region_states[ctx].data_state);
@@ -9566,7 +9566,9 @@ namespace RegionRuntime {
       // For right now just issue this copy to the low level runtime
       // TODO: put some intelligence in here to detect when we can't make this copy directly
       RegionInstance src_copy = src->inst;
-      Event ret_event = src_copy.copy_to_untyped(dst->inst, precondition);
+      LogicalRegion hand_copy = src->handle;
+      // Always give the element mask when making the copy operation just for correctness
+      Event ret_event = src_copy.copy_to_untyped(dst->inst, hand_copy.get_valid_mask(), precondition);
       // Mark the user of the source instance and save it in the generalized context
       src->add_copy_user(ctx->get_unique_id(), ret_event);
       ctx->add_source_physical_instance(src);
