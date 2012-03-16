@@ -44,6 +44,11 @@ const unsigned MAX_PARTICLES = 16;
 // 8 for 2D or 26 for 3D
 const unsigned GHOST_CELLS = 26;
 
+// PARSEC does not double buffer. That is, PARSEC performs the first
+// step of the computation over and over. However, double buffering
+// has a potential performance impact, so we need both.
+#define ENABLE_DOUBLE_BUFFERING 1
+
 enum { // don't change the order of these!  needs to be symmetric
   TOP_FRONT_LEFT = 0,
   TOP_FRONT,
@@ -181,8 +186,23 @@ static inline int MOVE_Z(int z, int dir, int min, int max)
 static inline int REVERSE(int dir) { return 25 - dir; }
 
 // maps {-1, 0, 1}^3 to directions
-static inline int LOOKUP_DIR(int x, int y, int z) {
+static inline int LOOKUP_DIR(int x, int y, int z)
+{
   return SIDES2DIR[((z+1)*3 + y+1)*3 + x+1];
+}
+
+static inline int REVERSE_SIDES(int dir, int flipx, int flipy, int flipz)
+{
+  int dirx = (DIR2SIDES[dir] & SIDE_RIGHT) ? -1 :
+    ((DIR2SIDES[dir] & SIDE_LEFT) ? 1 : 0);
+  int diry = (DIR2SIDES[dir] & SIDE_BACK) ? -1 :
+    ((DIR2SIDES[dir] & SIDE_FRONT) ? 1 : 0);
+  int dirz = (DIR2SIDES[dir] & SIDE_TOP) ? -1 :
+    ((DIR2SIDES[dir] & SIDE_BOTTOM) ? 1 : 0);
+  if (flipx) dirx = -dirx;
+  if (flipy) diry = -diry;
+  if (flipz) dirz = -dirz;
+  return LOOKUP_DIR(dirx, diry, dirz);
 }
 
 class Vec3
@@ -433,31 +453,27 @@ void top_level_task(const void *args, size_t arglen,
   }
 }
 
-static inline int NEIGH_X(const Block &b2, int idx, int dir, int cx)
+static inline int NEIGH_X(int idx, int dir, int cx)
 {
-  if (MOVE_BX(idx, dir) == idx) {
-    return cx == 0 ? 0 : b2.CELLS_X+1;
-  } else {
-    return cx == 0 ? b2.CELLS_X+1 : 0;
-  }
+  return MOVE_BX(idx, dir) == idx ? cx : 1-cx;
 }
 
-static inline int NEIGH_Y(const Block &b2, int idy, int dir, int cy)
+static inline int NEIGH_Y(int idy, int dir, int cy)
 {
-  if (MOVE_BY(idy, dir) == idy) {
-    return cy == 0 ? 0 : b2.CELLS_Y+1;
-  } else {
-    return cy == 0 ? b2.CELLS_Y+1 : 0;
-  }
+  return MOVE_BY(idy, dir) == idy ? cy : 1-cy;
 }
 
-static inline int NEIGH_Z(const Block &b2, int idz, int dir, int cz)
+static inline int NEIGH_Z(int idz, int dir, int cz)
 {
-  if (MOVE_BZ(idz, dir) == idz) {
-    return cz == 0 ? 0 : b2.CELLS_Z+1;
-  } else {
-    return cz == 0 ? b2.CELLS_Z+1 : 0;
-  }
+  return MOVE_BZ(idz, dir) == idz ? cz : 1-cz;
+}
+
+static inline int OPPOSITE_DIR(int idz, int idy, int idx, int dir)
+{
+  int flipx = MOVE_BX(idx, dir) == idx;
+  int flipy = MOVE_BY(idy, dir) == idy;
+  int flipz = MOVE_BZ(idz, dir) == idz;
+  return REVERSE_SIDES(dir, flipx, flipy, flipz);
 }
 
 template<AccessorType AT>
@@ -545,119 +561,133 @@ void main_task(const void *args, size_t arglen,
       for (unsigned idx = 0; idx < nbx; idx++) {
         unsigned id = (idz*nby+idy)*nbx+idx;
 
+#define CX (blocks[id].CELLS_X+1)
+#define CY (blocks[id].CELLS_Y+1)
+#define CZ (blocks[id].CELLS_Z+1)
+#define C2X (blocks[id2].CELLS_X+1)
+#define C2Y (blocks[id2].CELLS_Y+1)
+#define C2Z (blocks[id2].CELLS_Z+1)
+
         // eight corners
-#define CORNER(dir,cx,cy,cz) do {                                       \
+#define CORNER(dir,ix,iy,iz) do {                                       \
           unsigned id2 = (MOVE_BZ(idz,dir)*nby + MOVE_BY(idy,dir))*nbx + MOVE_BX(idx,dir); \
           ptr_t<Cell> cell = edge_cells.template alloc<Cell>();         \
           coloring[color + dir].insert(cell);                           \
-          blocks[id].cells[0][cz][cy][cx] = cell;                       \
-          blocks[id2].cells[1][NEIGH_Z(blocks[id2], idz, dir, cz)][NEIGH_Y(blocks[id2], idy, dir, cy)][NEIGH_X(blocks[id2], idx, dir, cx)] = cell; \
+          blocks[id].cells[0][iz*CZ][iy*CY][ix*CX] = cell;              \
+          blocks[id2].cells[1][NEIGH_Z(idz, dir, iz)*C2Z][NEIGH_Y(idy, dir, iy)*C2Y][NEIGH_X(idx, dir, ix)*C2X] = cell; \
         } while(0)
-        CORNER(TOP_FRONT_LEFT, 0, 0, blocks[id].CELLS_Z + 1);
-        CORNER(TOP_FRONT_RIGHT, blocks[id].CELLS_X + 1, 0, blocks[id].CELLS_Z + 1);
-        CORNER(TOP_BACK_LEFT, 0, blocks[id].CELLS_Y + 1, blocks[id].CELLS_Z + 1);
-        CORNER(TOP_BACK_RIGHT, blocks[id].CELLS_X + 1, blocks[id].CELLS_Y + 1, blocks[id].CELLS_Z + 1);
-        CORNER(BOTTOM_FRONT_LEFT, 0, 0, 0);
-        CORNER(BOTTOM_FRONT_RIGHT, blocks[id].CELLS_X + 1, 0, 0);
-        CORNER(BOTTOM_BACK_LEFT, 0, blocks[id].CELLS_Y + 1, 0);
-        CORNER(BOTTOM_BACK_RIGHT, blocks[id].CELLS_X + 1, blocks[id].CELLS_Y + 1, 0);
+        CORNER(TOP_FRONT_LEFT,     0, 0, 1);
+        CORNER(TOP_FRONT_RIGHT,    1, 0, 1);
+        CORNER(TOP_BACK_LEFT,      0, 1, 1);
+        CORNER(TOP_BACK_RIGHT,     1, 1, 1);
+        CORNER(BOTTOM_FRONT_LEFT,  0, 0, 0);
+        CORNER(BOTTOM_FRONT_RIGHT, 1, 0, 0);
+        CORNER(BOTTOM_BACK_LEFT,   0, 1, 0);
+        CORNER(BOTTOM_BACK_RIGHT,  1, 1, 0);
 #undef CORNER
 
         // x-axis edges
-#define XAXIS(dir,cy,cz) do {                                           \
+#define XAXIS(dir,iy,iz) do {                                           \
           unsigned id2 = (MOVE_BZ(idz,dir)*nby + MOVE_BY(idy,dir))*nbx + idx; \
           for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {        \
             ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
             coloring[color + dir].insert(cell);                         \
-            blocks[id].cells[0][cz][cy][cx] = cell;                     \
-            blocks[id2].cells[1][NEIGH_Z(blocks[id2], idz, dir, cz)][NEIGH_Y(blocks[id2], idy, dir, cy)][cx] = cell; \
+            blocks[id].cells[0][iz*CZ][iy*CY][cx] = cell;               \
+            blocks[id2].cells[1][NEIGH_Z(idz, dir, iz)*C2Z][NEIGH_Y(idy, dir, iy)*C2Y][cx] = cell; \
           }                                                             \
         } while(0)
-        XAXIS(TOP_FRONT, 0, blocks[id].CELLS_Z + 1);
-        XAXIS(TOP_BACK, blocks[id].CELLS_Y + 1, blocks[id].CELLS_Z + 1);
+        XAXIS(TOP_FRONT,    0, 1);
+        XAXIS(TOP_BACK,     1, 1);
         XAXIS(BOTTOM_FRONT, 0, 0);
-        XAXIS(BOTTOM_BACK, blocks[id].CELLS_Y + 1, 0);
+        XAXIS(BOTTOM_BACK,  1, 0);
 #undef XAXIS
 
         // y-axis edges
-#define YAXIS(dir,cx,cz) do {                                           \
+#define YAXIS(dir,ix,iz) do {                                           \
           unsigned id2 = (MOVE_BZ(idz,dir)*nby + idy)*nbx + MOVE_BX(idx,dir); \
           for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {        \
             ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
             coloring[color + dir].insert(cell);                         \
-            blocks[id].cells[0][cz][cy][cx] = cell;                     \
-            blocks[id2].cells[1][NEIGH_Z(blocks[id2], idz, dir, cz)][cy][NEIGH_X(blocks[id2], idx, dir, cx)] = cell; \
+            blocks[id].cells[0][iz*CZ][cy][ix*CX] = cell;                     \
+            blocks[id2].cells[1][NEIGH_Z(idz, dir, iz)*C2Z][cy][NEIGH_X(idx, dir, ix)*C2X] = cell; \
           }                                                             \
         } while(0)
-        YAXIS(TOP_LEFT, 0, blocks[id].CELLS_Z + 1);
-        YAXIS(TOP_RIGHT, blocks[id].CELLS_X + 1, blocks[id].CELLS_Z + 1);
-        YAXIS(BOTTOM_LEFT, 0, 0);
-        YAXIS(BOTTOM_RIGHT, blocks[id].CELLS_X + 1, 0);
+        YAXIS(TOP_LEFT,     0, 1);
+        YAXIS(TOP_RIGHT,    1, 1);
+        YAXIS(BOTTOM_LEFT,  0, 0);
+        YAXIS(BOTTOM_RIGHT, 1, 0);
 #undef YAXIS
 
         // z-axis edges
-#define ZAXIS(dir,cx,cy) do {                                           \
+#define ZAXIS(dir,ix,iy) do {                                           \
           unsigned id2 = (idz*nby + MOVE_BY(idy,dir))*nbx + MOVE_BX(idx,dir); \
           for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
             ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
             coloring[color + dir].insert(cell);                         \
-            blocks[id].cells[0][cz][cy][cx] = cell;                     \
-            blocks[id2].cells[1][cz][NEIGH_Y(blocks[id2], idy, dir, cy)][NEIGH_X(blocks[id2], idx, dir, cx)] = cell; \
+            blocks[id].cells[0][cz][iy*CY][ix*CX] = cell;                     \
+            blocks[id2].cells[1][cz][NEIGH_Y(idy, dir, iy)*C2Y][NEIGH_X(idx, dir, ix)*C2X] = cell; \
           }                                                             \
         } while(0)
-        ZAXIS(FRONT_LEFT, 0, 0);
-        ZAXIS(FRONT_RIGHT, blocks[id].CELLS_X + 1, 0);
-        ZAXIS(BACK_LEFT, 0, blocks[id].CELLS_Y + 1);
-        ZAXIS(BACK_RIGHT, blocks[id].CELLS_X + 1, blocks[id].CELLS_Y + 1);
+        ZAXIS(FRONT_LEFT,  0, 0);
+        ZAXIS(FRONT_RIGHT, 1, 0);
+        ZAXIS(BACK_LEFT,   0, 1);
+        ZAXIS(BACK_RIGHT,  1, 1);
 #undef ZAXIS
 
         // xy-plane edges
-#define XYPLANE(dir,cz) do {                                            \
-          unsigned id2 = (MOVE_BZ(idz,dir)*nby + idy)*nbx + idx;         \
+#define XYPLANE(dir,iz) do {                                            \
+          unsigned id2 = (MOVE_BZ(idz,dir)*nby + idy)*nbx + idx;        \
           for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {        \
             for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {      \
               ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
               coloring[color + dir].insert(cell);                       \
-              blocks[id].cells[0][cz][cy][cx] = cell;                   \
-              blocks[id2].cells[1][NEIGH_Z(blocks[id2], idz, dir, cz)][cy][cx] = cell; \
+              blocks[id].cells[0][iz*CZ][cy][cx] = cell;                \
+              blocks[id2].cells[1][NEIGH_Z(idz, dir, iz)*C2Z][cy][cx] = cell; \
             }                                                           \
           }                                                             \
         } while(0)
-        XYPLANE(TOP, blocks[id].CELLS_Z + 1);
+        XYPLANE(TOP,    1);
         XYPLANE(BOTTOM, 0);
 #undef XYPLANE
 
         // xz-plane edges
-#define XZPLANE(dir,cy) do {                                            \
-          unsigned id2 = (idz*nby + MOVE_BY(idy,dir))*nbx + idx;         \
+#define XZPLANE(dir,iy) do {                                            \
+          unsigned id2 = (idz*nby + MOVE_BY(idy,dir))*nbx + idx;        \
           for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
             for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {      \
               ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
               coloring[color + dir].insert(cell);                       \
-              blocks[id].cells[0][cz][cy][cx] = cell;                   \
-              blocks[id2].cells[1][cz][NEIGH_Y(blocks[id2], idy, dir, cy)][cx] = cell; \
+              blocks[id].cells[0][cz][iy*CY][cx] = cell;                \
+              blocks[id2].cells[1][cz][NEIGH_Y(idy, dir, iy)*C2Y][cx] = cell; \
             }                                                           \
           }                                                             \
         } while(0)
         XZPLANE(FRONT, 0);
-        XZPLANE(BACK, blocks[id].CELLS_Y + 1);
+        XZPLANE(BACK,  1);
 #undef XZPLANE
 
         // yz-plane edges
-#define YZPLANE(dir,cx) do {                                            \
-          unsigned id2 = (idz*nby + idy)*nbx + MOVE_BX(idx,dir);         \
+#define YZPLANE(dir,ix) do {                                            \
+          unsigned id2 = (idz*nby + idy)*nbx + MOVE_BX(idx,dir);        \
           for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
             for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {      \
               ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
               coloring[color + dir].insert(cell);                       \
-              blocks[id].cells[0][cz][cy][cx] = cell;                   \
-              blocks[id2].cells[1][cz][cy][NEIGH_X(blocks[id2], idx, dir, cx)] = cell; \
+              blocks[id].cells[0][cz][cy][ix*CX] = cell;                \
+              blocks[id2].cells[1][cz][cy][NEIGH_X(idx, dir, ix)*C2X] = cell; \
             }                                                           \
           }                                                             \
         } while(0)
-        YZPLANE(LEFT, 0);
-        YZPLANE(RIGHT, blocks[id].CELLS_X + 1);
+        YZPLANE(LEFT,  0);
+        YZPLANE(RIGHT, 1);
 #undef YZPLANE
+
+#undef CX
+#undef CY
+#undef CZ
+#undef C2X
+#undef C2Y
+#undef C2Z
 
         color += GHOST_CELLS;
       }
@@ -678,7 +708,7 @@ void main_task(const void *args, size_t arglen,
           unsigned id2 = (MOVE_BZ(idz,dir)*nby + MOVE_BY(idy,dir))*nbx + MOVE_BX(idx,dir); \
           LogicalRegion subr = runtime->get_subregion(ctx,edge_part,color+dir);
           blocks[id].edge[0][dir] = subr;
-          blocks[id2].edge[1][REVERSE(dir)] = subr;
+          blocks[id2].edge[1][OPPOSITE_DIR(idz, idy, idx, dir)] = subr;
         }
 
         color += GHOST_CELLS;
@@ -864,7 +894,9 @@ void main_task(const void *args, size_t arglen,
     }
 
     // flip the phase
+#if ENABLE_DOUBLE_BUFFERING
     cur_buffer = 1 - cur_buffer;
+#endif
   }
 
   log_app.info("waiting for all simulation tasks to complete");
@@ -881,7 +913,11 @@ void main_task(const void *args, size_t arglen,
   RegionRuntime::DetailedTimer::report_timers();
 
   {
+#if ENABLE_DOUBLE_BUFFERING
     int target_buffer = 1 - cur_buffer;
+#else
+    int target_buffer = cur_buffer;
+#endif
     std::vector<RegionRequirement> init_regions;
     for (unsigned id = 0; id < numBlocks; id++) {
       init_regions.push_back(RegionRequirement(blocks[id].base[target_buffer],
@@ -1095,9 +1131,6 @@ void rebuild_reduce(const void *args, size_t arglen,
         int dz = MOVE_CZ(b, cz, REVERSE(dir));
         int dy = MOVE_CY(b, cy, REVERSE(dir));
         int dx = MOVE_CX(b, cx, REVERSE(dir));
-
-        printf("Copying %2d %2d %2d <== %2d %2d %2d    (dir %2d)\n",
-               cx, cy, cz, dx, dy, dz, dir);
 
         Cell cell = base_block.read(b.cells[cb][dz][dy][dx]);
         WRITE_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);

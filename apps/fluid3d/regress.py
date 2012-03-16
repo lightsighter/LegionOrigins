@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-import os, shutil, subprocess as sp, sys
+import os, re, shutil, subprocess as sp, sys
 _root_dir = os.path.abspath(os.path.dirname(__file__))
 sys.path.append(_root_dir)
 from compare import read_file, compare
@@ -12,9 +12,9 @@ def newer (filename1, filename2):
         return True
     return os.path.getmtime(filename1) > os.path.getmtime(filename2)
 
-def fresh_file(filename):
+def fresh_file(filepath, ext):
     for i in xrange(10000):
-        check = '%s.%s' % (filename, i)
+        check = '%s.%s.%s' % (filepath, i, ext)
         if not os.path.exists(check): return check
 
 def call_silently(command, filename):
@@ -44,7 +44,7 @@ def prep_parsec():
 
 def parsec(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None, output = None,
            **_ignored):
-    cmd_out = fresh_file('parsec.out')
+    cmd_out = fresh_file('parsec', 'log')
     retcode = call_silently(
         [_parsec_fluid, str(nbx*nby*nbz), str(steps),
          str(input), str(output)],
@@ -60,9 +60,9 @@ def prep_legion():
         print
 
 def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None, output = None,
-           legion_logging = 4,
+           legion_logging = 1,
            **_ignored):
-    cmd_out = fresh_file('legion.out')
+    cmd_out = fresh_file('legion', 'log')
     retcode = call_silently(
         [_legion_fluid,
          '-ll:csize', '16384', '-ll:gsize', '2000',
@@ -85,7 +85,14 @@ def prep_input():
 def get_input():
     return _input_filename
 
-prep = [prep_parsec, prep_legion, prep_input]
+_output_re = re.compile(r'.*\.log')
+def cleanup_output():
+    for path in os.listdir(_root_dir):
+        if (os.path.isfile(path) and
+            re.match(_output_re, os.path.basename(path)) is not None):
+            os.remove(path)
+
+prep = [prep_parsec, prep_legion, prep_input, cleanup_output]
 programs = [legion, parsec]
 
 def read_result(ps):
@@ -131,5 +138,6 @@ def regress(**params):
 if __name__ == '__main__':
     for thunk in prep: thunk()
     regress(nbx = 1, nby = 1, nbz = 1, steps = 1)
-    regress(nbx = 1, nby = 1, nbz = 1, steps = 2)
     regress(nbx = 2, nby = 1, nbz = 1, steps = 1)
+    regress(nbx = 1, nby = 2, nbz = 1, steps = 1)
+    regress(nbx = 1, nby = 1, nbz = 2, steps = 1)

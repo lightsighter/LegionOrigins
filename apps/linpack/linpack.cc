@@ -22,11 +22,11 @@ enum {
   TOP_LEVEL_TASK_ID,
   TASKID_LINPACK_MAIN,
   TASKID_RAND_MATRIX,
-  TASKID_UPDATE_PANEL,
-  TASKID_FILL_TOP_BLOCK,
-  TASKID_SOLVE_TOP_BLOCK,
-  TASKID_TRANSPOSE_ROWS,
-  TASKID_UPDATE_SUBMATRIX,
+  //TASKID_UPDATE_PANEL,
+  //TASKID_FILL_TOP_BLOCK,
+  //TASKID_SOLVE_TOP_BLOCK,
+  //TASKID_TRANSPOSE_ROWS,
+  //TASKID_UPDATE_SUBMATRIX,
 };
 
 enum {
@@ -244,7 +244,7 @@ struct FillTopBlockArgs {
   int k;
   int j;
 
-  FillTopBlockArgs(BlockedMatrix<NB>& _matrix, int _k, int _j)
+  FillTopBlockArgs(const BlockedMatrix<NB>& _matrix, int _k, int _j)
     : matrix(_matrix), k(_k), j(_j) {}
 
   operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
@@ -277,7 +277,7 @@ protected:
     : SingleTask(_ctx, _runtime), idx(_idx) {}
 };
 
-template <int TASK_ID, int NB>
+template <int NB>
 class FillTopBlockTask : public SingleTask {
 protected:
 
@@ -287,7 +287,7 @@ protected:
     BlockedMatrix<NB> matrix;
     int k, j;
 
-    TaskArgs(BlockedMatrix<NB>& _matrix, int _k, int _j)
+    TaskArgs(const BlockedMatrix<NB>& _matrix, int _k, int _j)
       : matrix(_matrix), k(_k), j(_j) {}
     operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
   };
@@ -325,16 +325,16 @@ protected:
   }
 
 public:
-  static void register_task(void)
+  static void register_task(TaskID desired_task_id = AUTO_GENERATE_ID)
   {
     task_id = HighLevelRuntime::register_single_task
-      <FillTopBlockTask::task_entry<AccessorGeneric> >(TASK_ID,
+      <FillTopBlockTask::task_entry<AccessorGeneric> >(desired_task_id,
 						       Processor::LOC_PROC,
 						       "fill_top_block");
   }
 
   static Future spawn(Context ctx, HighLevelRuntime *runtime,
-		      BlockedMatrix<NB>& matrix, int k, int j,
+		      const BlockedMatrix<NB>& matrix, int k, int j,
 		      LogicalRegion topblk_region,
 		      ptr_t<MatrixBlock<NB> > topblk_ptr)
   {
@@ -356,24 +356,27 @@ public:
 					    READ_WRITE, NO_MEMORY, EXCLUSIVE,
 					    topblk_region);
     
-    Future f = runtime->execute_task(ctx, TASK_ID, reqs,
+    // double-check that we were registered properly
+    assert(task_id != 0);
+    Future f = runtime->execute_task(ctx, task_id, reqs,
 				     TaskArgs(matrix, k, j));
     return f;
   }
 };
 
-template <int TASK_ID, int NB>
-TaskID FillTopBlockTask<TASK_ID,NB>::task_id;
+template <int NB> TaskID FillTopBlockTask<NB>::task_id;
 
-template <int TASK_ID, int NB>
+template <int NB>
 class TransposeRowsTask : public Index1DTask {
 protected:
+
+  static TaskID task_id;
 
   struct TaskArgs {
     BlockedMatrix<NB> matrix;
     int k, j;
 
-    TaskArgs(BlockedMatrix<NB>& _matrix, int _k, int _j)
+    TaskArgs(const BlockedMatrix<NB>& _matrix, int _k, int _j)
       : matrix(_matrix), k(_k), j(_j) {}
     operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
   };
@@ -415,17 +418,17 @@ protected:
   }
 
 public:
-  static void register_task(void)
+  static void register_task(TaskID desired_task_id = AUTO_GENERATE_ID)
   {
-    HighLevelRuntime::register_index_task
-      <TransposeRowsTask::task_entry<AccessorGeneric> >(TASK_ID,
+    task_id = HighLevelRuntime::register_index_task
+      <TransposeRowsTask::task_entry<AccessorGeneric> >(desired_task_id,
 							Processor::LOC_PROC,
 							"transpose_rows");
   }
 
   static FutureMap spawn(Context ctx, HighLevelRuntime *runtime,
 			 const Range &range,
-			 BlockedMatrix<NB>& matrix, int k, int j,
+			 const BlockedMatrix<NB>& matrix, int k, int j,
 			 LogicalRegion topblk_region,
 			 ptr_t<MatrixBlock<NB> > topblk_ptr)
   {
@@ -456,8 +459,10 @@ public:
 
     ArgumentMap arg_map;
 
+    // double-check that we were registered properly
+    assert(task_id != 0);
     FutureMap fm = runtime->execute_index_space(ctx, 
-						TASK_ID,
+						task_id,
 						index_space,
 						reqs,
 						TaskArgs(matrix, k, j),
@@ -467,15 +472,19 @@ public:
   }
 };
 
-template <int TASK_ID, int NB>
+template <int NB> TaskID TransposeRowsTask<NB>::task_id;
+
+template <int NB>
 class UpdateSubmatrixTask : public Index1DTask {
 protected:
+
+  static TaskID task_id;
 
   struct TaskArgs {
     BlockedMatrix<NB> matrix;
     int k, j;
 
-    TaskArgs(BlockedMatrix<NB>& _matrix, int _k, int _j)
+    TaskArgs(const BlockedMatrix<NB>& _matrix, int _k, int _j)
       : matrix(_matrix), k(_k), j(_j) {}
     operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
   };
@@ -517,17 +526,17 @@ protected:
   }
 
 public:
-  static void register_task(void)
+  static void register_task(TaskID desired_task_id = AUTO_GENERATE_ID)
   {
-    HighLevelRuntime::register_index_task
-      <UpdateSubmatrixTask::task_entry<AccessorGeneric> >(TASK_ID,
-							Processor::LOC_PROC,
-							"update_submatrix");
+    task_id = HighLevelRuntime::register_index_task
+      <UpdateSubmatrixTask::task_entry<AccessorGeneric> >(desired_task_id,
+							  Processor::LOC_PROC,
+							  "update_submatrix");
   }
 
   static FutureMap spawn(Context ctx, HighLevelRuntime *runtime,
 			 const Range &range,
-			 BlockedMatrix<NB>& matrix, int k, int j,
+			 const BlockedMatrix<NB>& matrix, int k, int j,
 			 LogicalRegion topblk_region,
 			 ptr_t<MatrixBlock<NB> > topblk_ptr)
   {
@@ -556,8 +565,10 @@ public:
 								   matrix.col_part,
 								   k));
 
+    // double-check that we were registered properly
+    assert(task_id != 0);
     FutureMap fm = runtime->execute_index_space(ctx, 
-						TASK_ID,
+						task_id,
 						index_space,
 						reqs,
 						TaskArgs(matrix, k, j),
@@ -566,6 +577,8 @@ public:
     return fm;
   }
 };
+
+template <int NB> TaskID UpdateSubmatrixTask<NB>::task_id;
 
 #if 0
 template <AccessorType AT, int NB>
@@ -607,6 +620,8 @@ void transpose_rows(Context ctx, HighLevelRuntime *runtime,
 
   ArgumentMap arg_map;
 
+  // double-check that we were registered properly
+  assert(task_id != 0);
   FutureMap fm = runtime->execute_index_space(ctx, 
 					      TASKID_ROWSWAP_GATHER,
 					      index_space,
@@ -619,15 +634,17 @@ void transpose_rows(Context ctx, HighLevelRuntime *runtime,
 }
 #endif
 
-template <int TASK_ID, int NB>
+template <int NB>
 class SolveTopBlockTask : public SingleTask {
 protected:
+
+  static TaskID task_id;
 
   struct TaskArgs {
     BlockedMatrix<NB> matrix;
     int k, j;
 
-    TaskArgs(BlockedMatrix<NB>& _matrix, int _k, int _j)
+    TaskArgs(const BlockedMatrix<NB>& _matrix, int _k, int _j)
       : matrix(_matrix), k(_k), j(_j) {}
     operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
   };
@@ -656,16 +673,16 @@ protected:
   }
 
 public:
-  static void register_task(void)
+  static void register_task(TaskID desired_task_id = AUTO_GENERATE_ID)
   {
-    HighLevelRuntime::register_single_task
-      <SolveTopBlockTask::task_entry<AccessorGeneric> >(TASK_ID,
-				     Processor::LOC_PROC,
-				     "solve_top_block");
+    task_id = HighLevelRuntime::register_single_task
+      <SolveTopBlockTask::task_entry<AccessorGeneric> >(desired_task_id,
+							Processor::LOC_PROC,
+							"solve_top_block");
   }
 
   static Future spawn(Context ctx, HighLevelRuntime *runtime,
-		      BlockedMatrix<NB>& matrix, int k, int j,
+		      const BlockedMatrix<NB>& matrix, int k, int j,
 		      LogicalRegion topblk_region,
 		      ptr_t<MatrixBlock<NB> > topblk_ptr)
   {
@@ -686,11 +703,15 @@ public:
 				     READ_WRITE, NO_MEMORY, EXCLUSIVE,
 				     topblk_region));
     
-    Future f = runtime->execute_task(ctx, TASK_ID, reqs,
+    // double-check that we were registered properly
+    assert(task_id != 0);
+    Future f = runtime->execute_task(ctx, task_id, reqs,
 				     TaskArgs(matrix, k, j));
     return f;
   }
 };
+
+template <int NB> TaskID SolveTopBlockTask<NB>::task_id;
 
 #if 0
 template <AccessorType AT, int NB>
@@ -729,7 +750,7 @@ void solve_top_block(Context ctx, HighLevelRuntime *runtime,
 #if 0
 template <AccessorType AT, int NB>
 void update_submatrix(Context ctx, HighLevelRuntime *runtime,
-		  BlockedMatrix<NB>& matrix, int k, int j,
+		  const BlockedMatrix<NB>& matrix, int k, int j,
 		  LogicalRegion topblk_region,
 		  ptr_t<MatrixBlock<NB> > topblk_ptr)
 {
@@ -778,16 +799,154 @@ void update_submatrix(Context ctx, HighLevelRuntime *runtime,
 #endif
 
 template <int NB>
-struct UpdatePanelArgs {
-  BlockedMatrix<NB> matrix;
-  int k;
+class UpdatePanelTask : public Index1DTask {
+protected:
 
-  UpdatePanelArgs(BlockedMatrix<NB>& _matrix, int _k)
-    : matrix(_matrix), k(_k) {}
+  static TaskID task_id;
 
-  operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
+  struct TaskArgs {
+    BlockedMatrix<NB> matrix;
+    int k;
+
+    TaskArgs(const BlockedMatrix<NB>& _matrix, int _k)
+      : matrix(_matrix), k(_k) {}
+    operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
+  };
+
+  enum {
+    REGION_PANEL,  // RWE
+    REGION_LPANEL, // ROE
+    REGION_INDEX,  // ROE
+    NUM_REGIONS
+  };
+
+  const TaskArgs *args;
+
+  UpdatePanelTask(Context _ctx, HighLevelRuntime *_runtime, int _idx,
+		  const TaskArgs *_args)
+    : Index1DTask(_ctx, _runtime, _idx), args(_args) {}
+
+public:
+  template <AccessorType AT>
+  static void task_entry(const void *global_args, size_t global_arglen,
+			 const void *local_args, size_t local_arglen,
+			 const IndexPoint &point,
+			 std::vector<PhysicalRegion<AT> > &regions,
+			 Context ctx, HighLevelRuntime *runtime)
+  {
+    UpdatePanelTask t(ctx, runtime, point[0], (const TaskArgs *)global_args);
+    t.run<AT>(regions);
+  }
+  
+protected:
+  template <AccessorType AT>
+  void run(std::vector<PhysicalRegion<AT> > &regions) const
+  {
+    int j = idx;
+
+    printf("update_panel(yay): k=%d, j=%d, idx=%d\n", args->k, j, idx);
+
+    // we don't use the regions ourselves
+    runtime->unmap_region(ctx, regions[REGION_PANEL]);
+    runtime->unmap_region(ctx, regions[REGION_LPANEL]);
+    runtime->unmap_region(ctx, regions[REGION_INDEX]);
+
+    LogicalRegion temp_region = runtime->create_logical_region(ctx,
+							       sizeof(MatrixBlock<NB>),
+							       1);
+    PhysicalRegion<AT> temp_phys = runtime->map_region<AT>(ctx,
+							   RegionRequirement(temp_region,
+									     NO_ACCESS,
+									     ALLOCABLE,
+									     EXCLUSIVE,
+									     temp_region));
+    temp_phys.wait_until_valid();
+
+    ptr_t<MatrixBlock<NB> > temp_ptr = temp_phys.template alloc<MatrixBlock<NB> >();
+    runtime->unmap_region(ctx, temp_phys);
+
+    Future f2 = FillTopBlockTask<NB>::spawn(ctx, runtime,
+					    args->matrix, args->k, j,
+					    temp_region, temp_ptr);
+    f2.get_void_result();
+    //fill_top_block<AT,NB>(ctx, runtime, args->matrix, args->k, j, temp_region, temp_ptr);
+
+    FutureMap fm = TransposeRowsTask<NB>::spawn(ctx, runtime,
+						Range(0, args->matrix.num_row_parts - 1),
+						args->matrix, args->k, j, 
+						temp_region, temp_ptr);
+    fm.wait_all_results();
+  
+    Future f = SolveTopBlockTask<NB>::spawn(ctx, runtime,
+					    args->matrix, args->k, j,
+					    temp_region, temp_ptr);
+    f.get_void_result();
+    //solve_top_block<AT,NB>(ctx, runtime, args->matrix, args->k, j, temp_region, temp_ptr);
+
+    FutureMap fm2 = UpdateSubmatrixTask<NB>::spawn(ctx, runtime,
+						   Range(0, args->matrix.num_row_parts - 1),
+						   args->matrix, args->k, j,
+						   temp_region, temp_ptr);
+    //update_submatrix<AT,NB>(ctx, runtime, args->matrix, args->k, j, temp_region, temp_ptr);
+    
+    runtime->destroy_logical_region(ctx, temp_region);
+  }
+
+public:
+  static void register_task(TaskID desired_task_id = AUTO_GENERATE_ID)
+  {
+    task_id = HighLevelRuntime::register_index_task
+      <UpdatePanelTask::task_entry<AccessorGeneric> >(desired_task_id,
+						      Processor::LOC_PROC,
+						      "update_panel");
+  }
+
+  static FutureMap spawn(Context ctx, HighLevelRuntime *runtime,
+			 const Range &range,
+			 const BlockedMatrix<NB>& matrix, int k)
+  {
+    std::vector<Range> index_space;
+    index_space.push_back(range);
+
+    std::vector<RegionRequirement> reqs;
+    reqs.resize(NUM_REGIONS);
+
+    reqs[REGION_PANEL] = RegionRequirement(matrix.col_part.id,
+					   COLORID_IDENTITY,
+					   READ_WRITE, NO_MEMORY, EXCLUSIVE,
+					   matrix.block_region);
+
+    LogicalRegion panel_subregion = runtime->get_subregion(ctx,
+							   matrix.col_part,
+							   k);
+    reqs[REGION_LPANEL] = RegionRequirement(panel_subregion,
+					    READ_ONLY, NO_MEMORY, EXCLUSIVE,
+					    matrix.block_region);
+
+    LogicalRegion index_subregion = runtime->get_subregion(ctx,
+							   matrix.index_part,
+							   k);
+
+    reqs[REGION_INDEX] = RegionRequirement(index_subregion,
+					   READ_ONLY, NO_MEMORY, EXCLUSIVE,
+					   matrix.index_region);
+
+    // double-check that we were registered properly
+    assert(task_id != 0);
+    FutureMap fm = runtime->execute_index_space(ctx, 
+						task_id,
+						index_space,
+						reqs,
+						TaskArgs(matrix, k),
+						ArgumentMap(),
+						false);
+    return fm;
+  }
 };
 
+template <int NB> TaskID UpdatePanelTask<NB>::task_id;
+
+#if 0
 template<AccessorType AT, int NB>
 void update_panel_task(const void *global_args, size_t global_arglen,
 		       const void *local_args, size_t local_arglen,
@@ -795,57 +954,8 @@ void update_panel_task(const void *global_args, size_t global_arglen,
 		       std::vector<PhysicalRegion<AT> > &regions,
 		       Context ctx, HighLevelRuntime *runtime)
 {
-  UpdatePanelArgs<NB> *args = (UpdatePanelArgs<NB> *)global_args;
-  int j = point[0];
-
-  runtime->unmap_region(ctx, regions[0]);
-  runtime->unmap_region(ctx, regions[1]);
-  runtime->unmap_region(ctx, regions[2]);
-
-  printf("update_panel: k=%d, j=%d\n", args->k, j);
-
-  LogicalRegion temp_region = runtime->create_logical_region(ctx,
-							     sizeof(MatrixBlock<NB>),
-							     1);
-  PhysicalRegion<AT> temp_phys = runtime->map_region<AT>(ctx,
-							 RegionRequirement(temp_region,
-									   NO_ACCESS,
-									   ALLOCABLE,
-									   EXCLUSIVE,
-									   temp_region));
-  temp_phys.wait_until_valid();
-
-  ptr_t<MatrixBlock<NB> > temp_ptr = temp_phys.template alloc<MatrixBlock<NB> >();
-  runtime->unmap_region(ctx, temp_phys);
-
-  Future f2 = FillTopBlockTask<TASKID_FILL_TOP_BLOCK,NB>::spawn(ctx, runtime,
-					  args->matrix, args->k, j,
-					  temp_region, temp_ptr);
-  f2.get_void_result();
-  //fill_top_block<AT,NB>(ctx, runtime, args->matrix, args->k, j, temp_region, temp_ptr);
-
-  FutureMap fm = TransposeRowsTask
-    <TASKID_TRANSPOSE_ROWS,NB>::spawn(ctx, runtime,
-				      Range(0, args->matrix.num_row_parts - 1),
-				      args->matrix, args->k, j, 
-				      temp_region, temp_ptr);
-  fm.wait_all_results();
-
-  Future f = SolveTopBlockTask<TASKID_SOLVE_TOP_BLOCK,NB>::spawn(ctx, runtime,
-					  args->matrix, args->k, j,
-					  temp_region, temp_ptr);
-  f.get_void_result();
-  //solve_top_block<AT,NB>(ctx, runtime, args->matrix, args->k, j, temp_region, temp_ptr);
-
-  FutureMap fm2 = UpdateSubmatrixTask
-    <TASKID_UPDATE_SUBMATRIX,NB>::spawn(ctx, runtime,
-					Range(0, args->matrix.num_row_parts - 1),
-					args->matrix, args->k, j,
-					temp_region, temp_ptr);
-  //update_submatrix<AT,NB>(ctx, runtime, args->matrix, args->k, j, temp_region, temp_ptr);
-
-  runtime->destroy_logical_region(ctx, temp_region);
 }
+#endif
 
 template <int NB>
 class FactorPanelTask : public SingleTask {
@@ -857,7 +967,7 @@ protected:
     BlockedMatrix<NB> matrix;
     int k;
 
-    TaskArgs(BlockedMatrix<NB>& _matrix, int _k)
+    TaskArgs(const BlockedMatrix<NB>& _matrix, int _k)
       : matrix(_matrix), k(_k) {}
     operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
   };
@@ -895,17 +1005,17 @@ protected:
   }
 
 public:
-  static void register_task(void)
+  static void register_task(TaskID desired_task_id = AUTO_GENERATE_ID)
   {
     task_id = HighLevelRuntime::register_single_task
-      <FactorPanelTask::task_entry<AccessorGeneric> >(AUTO_GENERATE_ID,
+      <FactorPanelTask::task_entry<AccessorGeneric> >(desired_task_id,
 						      Processor::LOC_PROC,
 						      "factor_panel");
     log_app.info("factor_panel task assigned id = %d\n", task_id);
   }
 
   static Future spawn(Context ctx, HighLevelRuntime *runtime,
-		      BlockedMatrix<NB>& matrix, int k)
+		      const BlockedMatrix<NB>& matrix, int k)
   {
     std::vector<RegionRequirement> reqs;
     reqs.resize(NUM_REGIONS);
@@ -937,7 +1047,7 @@ template <int NB> TaskID FactorPanelTask<NB>::task_id;
 
 template <AccessorType AT, int NB>
 void factor_matrix(Context ctx, HighLevelRuntime *runtime,
-		   BlockedMatrix<NB>& matrix)
+		   const BlockedMatrix<NB>& matrix)
 {
   // factor matrix by repeatedly factoring a panel and updating the
   //   trailing submatrix
@@ -946,6 +1056,10 @@ void factor_matrix(Context ctx, HighLevelRuntime *runtime,
 					  matrix, k);
 
     // updates of trailing panels launched as index space
+    FutureMap fm = UpdatePanelTask<NB>::spawn(ctx, runtime,
+					      Range(k + 1, matrix.block_cols - 1),
+					      matrix, k);
+#if 0
     std::vector<Range> index_space;
     index_space.push_back(Range(k + 1, matrix.block_cols - 1));
 
@@ -980,7 +1094,7 @@ void factor_matrix(Context ctx, HighLevelRuntime *runtime,
 						false,
 						0, // default mapper,
 						0 && Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION);
-
+#endif
     fm.wait_all_results();
 #if 0
     for(int j = k+1; j < matrix.block_cols; j++) {
@@ -1338,13 +1452,14 @@ int main(int argc, char **argv) {
   HighLevelRuntime::register_single_task<linpack_main<AccessorGeneric,1> >(TASKID_LINPACK_MAIN,Processor::LOC_PROC,"linpack_main");
   HighLevelRuntime::register_single_task<rand_matrix_task<AccessorGeneric,1> >(TASKID_RAND_MATRIX,Processor::LOC_PROC,"rand_matrix");
   //HighLevelRuntime::register_index_task<rowswap_gather_task<AccessorGeneric,1> >(TASKID_ROWSWAP_GATHER,Processor::LOC_PROC,"rowswap_gather");
-  HighLevelRuntime::register_index_task<update_panel_task<AccessorGeneric,1> >(TASKID_UPDATE_PANEL,Processor::LOC_PROC,"update_panel");
+  //HighLevelRuntime::register_index_task<update_panel_task<AccessorGeneric,1> >(TASKID_UPDATE_PANEL,Processor::LOC_PROC,"update_panel");
 
-  FillTopBlockTask<TASKID_FILL_TOP_BLOCK,1>::register_task();
-  SolveTopBlockTask<TASKID_SOLVE_TOP_BLOCK,1>::register_task();
-  TransposeRowsTask<TASKID_TRANSPOSE_ROWS,1>::register_task();
-  UpdateSubmatrixTask<TASKID_UPDATE_SUBMATRIX,1>::register_task();
+  FillTopBlockTask<1>::register_task();
+  SolveTopBlockTask<1>::register_task();
+  TransposeRowsTask<1>::register_task();
+  UpdateSubmatrixTask<1>::register_task();
   FactorPanelTask<1>::register_task();
+  UpdatePanelTask<1>::register_task();
 #if 0
   HighLevelRuntime::register_single_task
     <fill_top_block_task<AccessorGeneric,1> >(TASKID_FILL_TOP_BLOCK,
