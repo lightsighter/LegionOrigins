@@ -104,10 +104,16 @@ _max_epsilon = 1.0e-5
 def validate(epsilons):
     return all(map(lambda e: e < _max_epsilon, epsilons.itervalues()))
 
+def summarize_params(nbx = 1, nby = 1, nbz = 1, steps = 1, **others):
+    return '%sx%sx%s (%ss)%s' % (
+        nbx, nby, nbz, steps,
+        ', '.join(['%s %s' % kv for kv in others.iteritems()]))
+
 def summarize(params, epsilons):
     return '%s ==> %s' % (
-        ', '.join(['%s %s' % kv for kv in params.iteritems()]),
-        ', '.join(['%s %.1e' % kv for kv in epsilons.iteritems()]),
+        summarize_params(**params),
+        (', '.join(['%s %.1e' % kv for kv in epsilons.iteritems()])
+         if epsilons is not None else 'Crashed'),
         )
 
 _red="\033[1;31m"
@@ -126,12 +132,12 @@ def regress(**params):
         for i2, s2, r2 in zip(range(len(results)), statuses, results):
             if i1 < i2:
                 es = compare(r1, r2)
+                summary = summarize(params, es)
                 if es is None:
-                    print '%s (see %s %s)' % (_fail, s1[1], s2[1])
+                    print '%s %s (see %s %s)' % (_fail, summary, s1[1], s2[1])
                 else:
                     passes = validate(es)
                     pass_str = _pass if passes else _fail
-                    summary = summarize(params, es)
                     see = '' if passes else ' (see %s %s)' % (s1[1], s2[1])
                     print '%s %s%s' % (pass_str, summary, see)
 
@@ -141,3 +147,7 @@ if __name__ == '__main__':
     regress(nbx = 2, nby = 1, nbz = 1, steps = 1)
     regress(nbx = 1, nby = 2, nbz = 1, steps = 1)
     regress(nbx = 1, nby = 1, nbz = 2, steps = 1)
+    regress(nbx = 4, nby = 1, nbz = 1, steps = 1)
+    regress(nbx = 1, nby = 4, nbz = 1, steps = 1)
+    regress(nbx = 1, nby = 1, nbz = 4, steps = 1)
+    regress(nbx = 1, nby = 2, nbz = 4, steps = 1)
