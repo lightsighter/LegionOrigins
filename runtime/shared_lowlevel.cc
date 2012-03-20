@@ -28,8 +28,8 @@
 #define NUM_PROCS	4
 #define NUM_UTILITY_PROCS 0
 // Maximum memory in global
-#define GLOBAL_MEM      512 // (MB)	
-#define LOCAL_MEM       32  // (KB)
+#define GLOBAL_MEM      4096   // (MB)	
+#define LOCAL_MEM       16384  // (KB)
 
 #ifdef DEBUG_LOW_LEVEL
 #define PTHREAD_SAFE_CALL(cmd)			\
