@@ -7,6 +7,7 @@ endif
 DEBUG=1                   # Include debugging symbols
 OUTPUT_LEVEL=LEVEL_DEBUG  # Compile time print level
 SHARED_LOWLEVEL=1	  # Use the shared low level
+ALT_MAPPERS=1		  # Include the alternative mappers
 
 # Put the binary file name here
 OUTFILE		:= saxpy
@@ -16,7 +17,7 @@ GEN_GPU_SRC	:=		# .cu files
 
 # You can modify these variables, some will be appended to by the runtime makefile
 INC_FLAGS	:=
-CC_FLAGS	:=
+CC_FLAGS	:= #-DTRACE_CAPTURE
 NVCC_FLAGS	:=
 GASNET_FLAGS	:=
 LD_FLAGS	:=
@@ -60,6 +61,7 @@ common_all : all
 LOW_RUNTIME_SRC	:=
 HIGH_RUNTIME_SRC:=
 GPU_RUNTIME_SRC	:=
+MAPPER_SRC	:=
 
 include $(LG_RT_DIR)/runtime.mk
 
@@ -68,8 +70,9 @@ GEN_GPU_OBJS	:= $(GEN_GPU_SRC:.cu=.o)
 LOW_RUNTIME_OBJS:= $(LOW_RUNTIME_SRC:.cc=.o)
 HIGH_RUNTIME_OBJS:=$(HIGH_RUNTIME_SRC:.cc=.o)
 GPU_RUNTIME_OBJS:=$(GPU_RUNTIME_SRC:.cu=.o)
+MAPPER_OBJS	:= $(MAPPER_SRC:.cc=.o)
 
-ALL_OBJS	:= $(GEN_OBJS) $(GEN_GPU_OBJS) $(LOW_RUNTIME_OBJS) $(HIGH_RUNTIME_OBJS) $(GPU_RUNTIME_OBJS)
+ALL_OBJS	:= $(GEN_OBJS) $(GEN_GPU_OBJS) $(LOW_RUNTIME_OBJS) $(HIGH_RUNTIME_OBJS) $(GPU_RUNTIME_OBJS) $(MAPPER_OBJS)
 
 all:
 	$(MAKE) $(OUTFILE)
@@ -85,6 +88,9 @@ $(LOW_RUNTIME_OBJS) : %.o : %.cc
 	$(GCC) -o $@ -c $< $(INC_FLAGS) $(CC_FLAGS)
 
 $(HIGH_RUNTIME_OBJS) : %.o : %.cc
+	$(GCC) -o $@ -c $< $(INC_FLAGS) $(CC_FLAGS)
+
+$(MAPPER_OBJS)	: %.o : %.cc
 	$(GCC) -o $@ -c $< $(INC_FLAGS) $(CC_FLAGS)
 
 $(GEN_GPU_OBJS) : %.o : %.cu
