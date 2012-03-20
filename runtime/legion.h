@@ -1515,10 +1515,16 @@ namespace RegionRuntime {
     private:
       // Information for figuring out which regions to use
       // Mappings for the logical regions at call-time (can be no-instance == covered)
-      std::vector<bool>            physical_mapped; // is this instance still mapped, can be unmapped by inline unmap
+      std::vector<bool>            physical_mapped;
       std::vector<bool>            physical_owned; // does our context own this physical instance
       std::vector<InstanceInfo*>   physical_instances;
       std::vector<RegionAllocator> allocators;
+      // If we mapped the regions when the task started, we clone the InstanceInfo to avoid interference from
+      // the outside world.  Everything is safe from garbage collection, because we keep our references to the
+      // original InstanceInfo in physical_instances.  It can't be garbage collected while we still hold a
+      // reference to it.
+      std::vector<InstanceInfo*>  local_instances; // local copy of our InstanceInfos
+      std::vector<bool>           local_mapped; // whether or not this is still mapped locally
       // The enclosing physical contexts from our parent context
       std::vector<ContextID> enclosing_ctx;
       // The physical contexts we use for all our child task mappings
@@ -1759,7 +1765,7 @@ namespace RegionRuntime {
       Event open_physical_tree(RegionRenamer &ren, Event precondition);
       // Close up a physical region tree into the given InstanceInfo
       // returning the event when the close operation is complete
-      Event close_physical_tree(ContextID ctx, InstanceInfo *target, Event precondition, 
+      void close_physical_tree(ContextID ctx, InstanceInfo *target, 
                                 GeneralizedContext *enclosing, Mapper *mapper);
       // Invalidate physical region tree's valid instances, for tree deletion
       void invalidate_physical_tree(ContextID ctx);
@@ -1856,7 +1862,7 @@ namespace RegionRuntime {
       Event open_physical_tree(RegionRenamer &ren, Event precondition);
       // Close up a physical region tree into the given InstanceInfo
       // returning the event when the close operation is complete
-      Event close_physical_tree(ContextID ctx, InstanceInfo *target, Event precondition, 
+      void close_physical_tree(ContextID ctx, InstanceInfo *target, 
                                 GeneralizedContext *enclosing, Mapper *mapper);
       // Invalidate a physical region tree
       void invalidate_physical_tree(ContextID ctx);
@@ -1876,6 +1882,7 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
     // InstanceInfo 
     ///////////////////////////////////////////////////////////// 
+#ifdef OLD_INFO
     class InstanceInfo {
     private:
       struct UserTask {
@@ -1985,6 +1992,144 @@ namespace RegionRuntime {
       std::map<UniqueID,CopyUser> copy_users;
       std::map<UniqueID,CopyUser> added_copy_users;
     };
+#else
+    class InstanceInfo {
+    private:
+      struct UserTask {
+      public:
+        RegionRequirement req;
+        unsigned references;
+        Event term_event;
+      public:
+        UserTask() { }
+        UserTask(RegionRequirement r, unsigned ref, Event t)
+          : req(r), references(ref), term_event(t) { }
+      };
+      struct CopyUser {
+      public:
+        unsigned references;
+        Event term_event;
+      public:
+        CopyUser() { }
+        CopyUser(unsigned r, Event t)
+          : references(r), term_event(t) { }
+      };
+    public:
+      const InstanceID iid;
+      const LogicalRegion handle;
+      const Memory location;
+      const RegionInstance inst;
+    public:
+      InstanceInfo(void);
+      InstanceInfo(InstanceID id, LogicalRegion r, Memory m,
+            RegionInstance i, bool rem, InstanceInfo *par, bool open, bool clone = false);
+      ~InstanceInfo(void);
+    protected:
+      friend class TaskContext;
+      friend class RegionMappingImpl;
+      friend class RegionNode;
+      friend class PartitionNode;
+    public:
+      static inline InstanceInfo* get_no_instance(void)
+      {
+        static InstanceInfo no_info;
+        return &no_info;
+      }
+    protected:
+      Event add_user(GeneralizedContext *ctx, unsigned idx, Event precondition);
+      void  remove_user(UniqueID uid, unsigned ref = 1);
+      // Perform a copy operation from the source info to this info
+      void copy_from(InstanceInfo *src_info, GeneralizedContext *ctx);
+      void add_copy_user(UniqueID uid, Event copy_finish);
+      void remove_copy_user(UniqueID uid, unsigned ref = 1);
+      // Allow for locking and unlocking of the instance
+      Event lock_instance(Event precondition);
+      void unlock_instance(Event precondition);
+      // Check for Write-After-Read dependences 
+      bool has_war_dependence(GeneralizedContext *ctx, unsigned idx);
+      // Check for a user
+      bool has_user(UniqueID uid) const;
+      // Mark that the instance is no longer valid
+      void mark_invalid(void);
+      // Check to see if there is an open subregion with the given handle
+      InstanceInfo* get_open_subregion(LogicalRegion handle) const;
+      // Get the event corresponding to when this logical version of the physical instance is ready
+      // Similar to a add_copy_user with a write except without the added reference
+      Event force_closed(void);
+    protected:
+      // Get the set of InstanceInfos needed, this instance and all parent instances
+      void get_needed_instances(std::vector<InstanceInfo*> &needed_instances); 
+      // Operations for packing return information for instance infos
+      size_t compute_info_size(void) const;
+      void pack_instance_info(Serializer &rez);
+      static void unpack_instance_info(Deserializer &derez, std::map<InstanceID,InstanceInfo*> *infos);
+      // Operations for packing return information for instance infos
+      // Note for packing return infos we have to return all the added references even if they aren't in the context
+      // we're using so we don't accidentally reclaim the instance too early
+      size_t compute_return_info_size(void) const;
+      size_t compute_return_info_size(std::vector<EscapedUser> &escaped_users,
+                                      std::vector<EscapedCopier> &escaped_copies) const;
+      void pack_return_info(Serializer &rez);
+      static InstanceInfo* unpack_return_instance_info(Deserializer &derez, std::map<InstanceID,InstanceInfo*> *infos);
+      void merge_instance_info(Deserializer &derez); // for merging information into a pre-existing instance
+    protected:
+      size_t compute_user_task_size(void) const;
+      void   pack_user_task(Serializer &rez, const UserTask &task) const;
+      void   unpack_user_task(Deserializer &derez, UserTask &task) const;
+    protected:
+      // For going up the tree looking for dependences
+      void find_dependences_above(std::set<Event> &wait_on_events, const RegionRequirement &req, bool skip_local);
+      void find_dependences_above(std::set<Event> &wait_on_events, bool writer, bool skip_local); // for copies
+      // Find dependences below (return whether or not the child is still open)
+      bool find_dependences_below(std::set<Event> &wait_on_events, const RegionRequirement &req, bool first);
+      bool find_dependences_below(std::set<Event> &wait_on_events, bool writer, bool first); // for copies
+      // Local find dependences operation (return true if all dominated)
+      bool find_local_dependences(std::set<Event> &wait_on_events, const RegionRequirement &req);
+      bool find_local_dependences(std::set<Event> &wait_on_events, bool writer); // for copies
+      // Check for war dependences above and below
+      bool has_war_above(const RegionRequirement &req);
+      bool has_war_below(const RegionRequirement &req, bool skip_local);
+      bool local_has_war(const RegionRequirement &req);
+      // Get needed instances above and below
+      void get_needed_above(std::vector<InstanceInfo*> &needed_instances);
+      void get_needed_below(std::vector<InstanceInfo*> &needed_instances, bool skip_local);
+      // Get the precondition for reading the instance
+      void get_copy_precondition(std::set<Event> &wait_on_events);
+      // Has user for checking on unresolved dependences
+      bool has_user_above(UniqueID uid) const;
+      bool has_user_below(UniqueID uid, bool skip_local) const;
+      // Add and remove children
+      void add_child(InstanceInfo *child, bool open);
+      void close_child(void);
+      void remove_child(void);
+      // Start a new epoch
+      void start_new_epoch(std::set<Event> &wait_on_events);
+      // Check to see if we can garbage collect this instance
+      void garbage_collect(void);
+    private:
+      bool valid; // Currently a valid instance in the physical region tree
+      bool remote;
+      bool open_child; // is this an open child of it's parent
+      const bool clone; // is this a clone, in which case no garbage collection
+      unsigned children;
+      InstanceInfo *parent;
+      Event valid_event;
+      Lock inst_lock;
+      std::map<UniqueID,UserTask> users;
+      std::map<UniqueID,UserTask> added_users;
+      std::map<UniqueID,CopyUser> copy_users;
+      std::map<UniqueID,CopyUser> added_copy_users;
+      // Track the users that are in the current epoch
+      std::set<UniqueID> epoch_users;
+      std::set<UniqueID> epoch_copy_users;
+      // Track which of our children are open and need to be traversed
+      std::list<InstanceInfo*> open_children;
+#ifdef TRACE_CAPTURE
+      std::map<UniqueID,UserTask> removed_users;
+      std::map<UniqueID,CopyUser> removed_copy_users;
+#endif
+    };
+#endif
 
     /////////////////////////////////////////////////////////////
     // Dependence Detector 
@@ -1996,6 +2141,7 @@ namespace RegionRuntime {
       friend class RegionMappingImpl;
       friend class RegionNode;
       friend class PartitionNode;
+    public:
       const ContextID ctx_id;
       const unsigned idx;
       GeneralizedContext *const ctx;
@@ -2005,7 +2151,7 @@ namespace RegionRuntime {
       DependenceDetector(ContextID id, unsigned i,
           GeneralizedContext *c, TaskContext *p) 
         : ctx_id(id), idx(i), ctx(c), parent(p) { }
-    protected:
+    public:
       const RegionRequirement& get_req(void) const { return ctx->get_requirement(idx); }
     };
 
