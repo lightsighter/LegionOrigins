@@ -12726,8 +12726,8 @@ namespace RegionRuntime {
     void InstanceInfo::find_dependences_above(std::set<Event> &wait_on_events, bool writer, bool skip_local)
     //-------------------------------------------------------------------------
     {
-      // Don't need valid events on the way up, we'll get the valid events
-      // that matter on the way down
+      // Don't need valid events on the way up, an open child valid event is always
+      // at or farther ahead in the future than its parent's valid event
       if (!skip_local)
       {
         find_local_dependences(wait_on_events,writer);
@@ -12862,6 +12862,10 @@ namespace RegionRuntime {
       }
       else
       {
+        if (valid_event.exists())
+        {
+          wait_on_events.insert(valid_event);
+        }
         // We're not the first, so the trying to create a new epoch doesn't matter, but
         // we do want to know when we can be closed
         bool all_dominated = find_local_dependences(wait_on_events,writer);
