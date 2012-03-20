@@ -886,36 +886,6 @@ void main_task(const void *args, size_t arglen,
                                        0, id);
     }
 
-    // Elliott: debug
-    {
-      int target_buffer = cur_buffer;
-
-      std::vector<RegionRequirement> init_regions;
-      for (unsigned id = 0; id < numBlocks; id++) {
-        init_regions.push_back(RegionRequirement(blocks[id].base[target_buffer],
-                                                 READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                                 tlr->real_cells[target_buffer]));
-      }
-
-      unsigned bufsize = sizeof(int);
-      for (unsigned id = 0; id < numBlocks; id++) {
-        bufsize += BLOCK_SIZE(blocks[id]);
-      }
-      BlockSerializer ser(bufsize);
-      ser.Serializer::serialize(target_buffer);
-      for (unsigned id = 0; id < numBlocks; id++) {
-        ser.serialize(blocks[id]);
-      }
-      TaskArgument buffer(ser.get_buffer(), bufsize);
-
-      Future f = runtime->execute_task(ctx, TASKID_INSPECT,
-                                       init_regions,
-                                       buffer,
-                                       0, 0);
-      f.get_void_result();
-    }
-
-
     // init forces and scatter densities
     for (unsigned id = 0; id < numBlocks; id++)
     {
@@ -947,6 +917,35 @@ void main_task(const void *args, size_t arglen,
                                        0, id);
     }
     
+    // Elliott: debug inspect
+    {
+      int target_buffer = cur_buffer;
+
+      std::vector<RegionRequirement> init_regions;
+      for (unsigned id = 0; id < numBlocks; id++) {
+        init_regions.push_back(RegionRequirement(blocks[id].base[target_buffer],
+                                                 READ_ONLY, NO_MEMORY, EXCLUSIVE,
+                                                 tlr->real_cells[target_buffer]));
+      }
+
+      unsigned bufsize = sizeof(int);
+      for (unsigned id = 0; id < numBlocks; id++) {
+        bufsize += BLOCK_SIZE(blocks[id]);
+      }
+      BlockSerializer ser(bufsize);
+      ser.Serializer::serialize(target_buffer);
+      for (unsigned id = 0; id < numBlocks; id++) {
+        ser.serialize(blocks[id]);
+      }
+      TaskArgument buffer(ser.get_buffer(), bufsize);
+
+      Future f = runtime->execute_task(ctx, TASKID_INSPECT,
+                                       init_regions,
+                                       buffer,
+                                       0, 0);
+      f.get_void_result();
+    }
+
     // Gather forces and advance
     for (unsigned id = 0; id < numBlocks; id++)
     {
@@ -1255,16 +1254,36 @@ void scatter_densities(const void *args, size_t arglen,
   log_app.info("In scatter_densities() for block %d", b.id);
 
   // first, clear our density (and acceleration, while we're at it) values
-  for(int cz = 1; cz < (int)b.CELLS_Z+1; cz++)
-    for(int cy = 1; cy < (int)b.CELLS_Y+1; cy++)
-      for(int cx = 1; cx < (int)b.CELLS_X+1; cx++) {
-        Cell cell = base_block.read(b.cells[cb][cz][cy][cx]);
+  // Elliott: debug: clear edge cells too, even though they shouldn't matter
+  for(int cz = 0; cz <= (int)b.CELLS_Z+1; cz++)
+    for(int cy = 0; cy <= (int)b.CELLS_Y+1; cy++)
+      for(int cx = 0; cx <= (int)b.CELLS_X+1; cx++) {
+        //Cell cell = base_block.read(b.cells[cb][cz][cy][cx]);
+        Cell cell;
+        READ_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);
         for(unsigned p = 0; p < cell.num_particles; p++) {
           cell.density[p] = 0;
           cell.a[p] = externalAcceleration;
         }
-        base_block.write(b.cells[cb][cz][cy][cx], cell);
+        //base_block.write(b.cells[cb][cz][cy][cx], cell);
+        WRITE_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);
       }
+
+  // Elliott: debug: print edge cells
+  // Note: edge cells matched
+  /*
+  int ex = b.x == 0 ? b.CELLS_X+1 : 0;
+  int offx = b.x == 0 ? -1 : 7;
+  for(int cz = 1; cz < (int)b.CELLS_Z+1; cz++)
+    for(int cy = 1; cy < (int)b.CELLS_Y+1; cy++) {
+      int cx = ex;
+      Cell cell;
+      READ_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);
+      for(unsigned p = 0; p < cell.num_particles; p++) {
+        //printf("c %2d %2d %2d p %e %e %e d %e\n", cx+offx, cy-1, cz-1, cell.p[p].x, cell.p[p].y, cell.p[p].z, cell.density[p]);
+      }
+    }
+  */
 
   // now for each cell, look at neighbors and calculate density contributions
   // two things to watch out for:
@@ -1276,21 +1295,23 @@ void scatter_densities(const void *args, size_t arglen,
   int maxx = b.x == nbx-1 ? b.CELLS_X : b.CELLS_X+1;
   int maxy = b.y == nby-1 ? b.CELLS_Y : b.CELLS_Y+1;
   int maxz = b.z == nbz-1 ? b.CELLS_Z : b.CELLS_Z+1;
-  for(int cz = minz; cz < (int)b.CELLS_Z+1; cz++)
-    for(int cy = miny; cy < (int)b.CELLS_Y+1; cy++)
-      for(int cx = minx; cx < (int)b.CELLS_X+1; cx++) {
+  for(int cz = minz; cz <= maxz; cz++)
+    for(int cy = miny; cy <= maxy; cy++)
+      for(int cx = minx; cx <= maxx; cx++) {
         Cell cell;
         READ_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);
         assert(cell.num_particles <= MAX_PARTICLES);
 
         // Elliott: debug
-        //log_app.info("The cell %2d %2d %2d (block %d %d %d) updated:", cx, cy, cz, b.x, b.y, b.z);
+        //log_app.info("The cell %2d %2d %2d (edge %d) (block %d %d %d) updated:",
+        //             cx, cy, cz, (cx == 0 || cy == 0 || cz == 0 || cx == (int)b.CELLS_X+1 || cy == (int)b.CELLS_Y+1 || cz == (int)b.CELLS_Z+1), b.x, b.y, b.z);
 
         for(int dz = cz - 1; dz <= cz + 1; dz++)
           for(int dy = cy - 1; dy <= cy + 1; dy++)
             for(int dx = cx - 1; dx <= cx + 1; dx++) {
               // did we already get updated by this neighbor's bidirectional update?
-              if (dz < 1 || dy < 1 || dx < 1 ||
+              if (//dz < 1 || dy < 1 || dx < 1 ||
+                  dz < minz || dy < miny || dx < minx ||
                   dz > maxz || dy > maxy || dx > maxx ||
                   (dz < cz || (dz == cz && (dy < cy || (dy == cy && dx < cx)))))
                 continue;
@@ -1302,10 +1323,11 @@ void scatter_densities(const void *args, size_t arglen,
               // do bidirectional update if other cell is a real cell and it is
               //  either below or to the right (but not up-right) of us
               bool update_other =
-                dz < (int)b.CELLS_Z+1 && dy < (int)b.CELLS_Y+1 && dx < (int)b.CELLS_X+1;
+                true;//dz < (int)b.CELLS_Z+1 && dy < (int)b.CELLS_Y+1 && dx < (int)b.CELLS_X+1;
 
               // Elliott: debug
-              //log_app.info("    %2d %2d %2d (with update_other %d)", dx, dy, dz, update_other);
+              //log_app.info("    %2d %2d %2d (edge %d) (with update_other %d)",
+              //             dx, dy, dz, (dx == 0 || dy == 0 || dz == 0 || dx == (int)b.CELLS_X+1 || dy == (int)b.CELLS_Y+1 || dz == (int)b.CELLS_Z+1), update_other);
 
               // pairwise across particles - watch out for identical particle case!
               for(unsigned p = 0; p < cell.num_particles; p++)
@@ -1336,9 +1358,10 @@ void scatter_densities(const void *args, size_t arglen,
         }
 
         // Elliott: This isn't necessarily in the base block any more:
-        if (cz >= 1 && cy >= 1 && cx >= 1) {
-          base_block.write(b.cells[cb][cz][cy][cx], cell);
-        }
+        WRITE_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);
+        //if (cz >= 1 && cy >= 1 && cx >= 1) {
+        //  base_block.write(b.cells[cb][cz][cy][cx], cell);
+        //}
       }
 
   // now turn around and have each edge grab a copy of the boundary real cell
@@ -1404,9 +1427,9 @@ void gather_forces_and_advance(const void *args, size_t arglen,
   int maxx = b.x == nbx-1 ? b.CELLS_X : b.CELLS_X+1;
   int maxy = b.y == nby-1 ? b.CELLS_Y : b.CELLS_Y+1;
   int maxz = b.z == nbz-1 ? b.CELLS_Z : b.CELLS_Z+1;
-  for(int cz = minz; cz < (int)b.CELLS_Z+1; cz++)
-    for(int cy = miny; cy < (int)b.CELLS_Y+1; cy++)
-      for(int cx = minx; cx < (int)b.CELLS_X+1; cx++) {
+  for(int cz = minz; cz <= maxz; cz++)
+    for(int cy = miny; cy <= maxy; cy++)
+      for(int cx = minx; cx <= maxx; cx++) {
         Cell cell;
         READ_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);
         assert(cell.num_particles <= MAX_PARTICLES);
@@ -1415,7 +1438,8 @@ void gather_forces_and_advance(const void *args, size_t arglen,
           for(int dy = cy - 1; dy <= cy + 1; dy++)
             for(int dx = cx - 1; dx <= cx + 1; dx++) {
               // did we already get updated by this neighbor's bidirectional update?
-              if (dz < 1 || dy < 1 || dx < 1 ||
+              if (//dz < 1 || dy < 1 || dx < 1 ||
+                  dz < minz || dy < miny || dx < minx ||
                   dz > maxz || dy > maxy || dx > maxx ||
                   (dz < cz || (dz == cz && (dy < cy || (dy == cy && dx < cx)))))
                 continue;
@@ -1427,7 +1451,7 @@ void gather_forces_and_advance(const void *args, size_t arglen,
               // do bidirectional update if other cell is a real cell and it is
               //  either below or to the right (but not up-right) of us
               bool update_other =
-                dz < (int)b.CELLS_Z+1 && dy < (int)b.CELLS_Y+1 && dx < (int)b.CELLS_X+1;
+                true;//dz < (int)b.CELLS_Z+1 && dy < (int)b.CELLS_Y+1 && dx < (int)b.CELLS_X+1;
 
               // pairwise across particles - watch out for identical particle case!
               for(unsigned p = 0; p < cell.num_particles; p++)
@@ -1498,9 +1522,10 @@ void gather_forces_and_advance(const void *args, size_t arglen,
         }
 
         // Elliott: This isn't necessarily in the base block any more:
-        if (cz >= 1 && cy >= 1 && cx >= 1) {
-          base_block.write(b.cells[cb][cz][cy][cx], cell);
-        }
+        WRITE_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);
+        //if (cz >= 1 && cy >= 1 && cx >= 1) {
+        //  base_block.write(b.cells[cb][cz][cy][cx], cell);
+        //}
       }
 
   log_app.info("Done with gather_forces_and_advance() for block %d", b.id);
@@ -1870,7 +1895,7 @@ void inspect(const void *args, size_t arglen,
 
         unsigned np = cell.num_particles;
         for(unsigned p = 0; p < np; ++p) {
-          printf("c %2d %2d %2d p %e %e %e\n", cx, cy, cz, cell.p[p].x, cell.p[p].y, cell.p[p].z);
+          printf("c %2d %2d %2d p %e %e %e d %e\n", ci, cj, ck, cell.p[p].x, cell.p[p].y, cell.p[p].z, cell.density[p]);
         }
       }
 }
