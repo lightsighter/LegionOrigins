@@ -34,10 +34,18 @@ CC_FLAGS	+= -DCOMPILE_TIME_MIN_LEVEL=$(OUTPUT_LEVEL)
 
 # Set the source files
 ifndef SHARED_LOWLEVEL
-LOW_RUNTIME_SRC	+= $(LG_RT_DIR)/lowlevel.cc $(LG_RT_DIR)/lowlevel_gpu.cc $(LG_RT_DIR)/default_mapper.cc
+LOW_RUNTIME_SRC	+= $(LG_RT_DIR)/lowlevel.cc $(LG_RT_DIR)/lowlevel_gpu.cc 
 GPU_RUNTIME_SRC += 
 else
-LOW_RUNTIME_SRC	+= $(LG_RT_DIR)/shared_lowlevel.cc $(LG_RT_DIR)/shared_mapper.cc
+LOW_RUNTIME_SRC	+= $(LG_RT_DIR)/shared_lowlevel.cc 
 endif
 
-HIGH_RUNTIME_SRC += $(LG_RT_DIR)/legion.cc #$(LG_RT_DIR)/default_mapper.cc
+# If you want to go back to using the shared mapper, comment out the next line
+# and uncomment the one after that
+MAPPER_SRC	+= $(LG_RT_DIR)/default_mapper.cc
+#MAPPER_SRC	+= $(LG_RT_DIR)/shared_mapper.cc
+ifdef ALT_MAPPERS
+MAPPER_SRC	+= $(LG_RT_DIR)/alt_mappers.cc
+endif
+
+HIGH_RUNTIME_SRC += $(LG_RT_DIR)/legion.cc 
