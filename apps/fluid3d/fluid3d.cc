@@ -16,8 +16,6 @@
 
 using namespace RegionRuntime::HighLevel;
 
-//#define TOP_LEVEL_TASK_ID   TASK_ID_REGION_MAIN
-
 RegionRuntime::Logger::Category log_mapper("mapper");
 
 namespace Config {
@@ -27,7 +25,7 @@ namespace Config {
 
 enum {
   TOP_LEVEL_TASK_ID,
-  TASKID_INIT_CELLS, // = TASK_ID_AVAILABLE,
+  TASKID_INIT_CELLS,
   TASKID_REBUILD_REDUCE,
   TASKID_SCATTER_DENSITIES,
   TASKID_GATHER_DENSITIES,
@@ -41,7 +39,6 @@ enum {
 const unsigned MAX_PARTICLES = 16;
 
 // Number of ghost cells needed for each block
-// 8 for 2D or 26 for 3D
 const unsigned GHOST_CELLS = 26;
 
 // PARSEC does not double buffer. That is, PARSEC performs the first
@@ -240,10 +237,6 @@ public:
   Vec3 a[MAX_PARTICLES];
   float density[MAX_PARTICLES];
   unsigned num_particles;
-  //ptr_t<Cell> neigh_ptrs[8];
-  //unsigned x;
-  //unsigned y;
-  //unsigned z;
 };
 
 struct BufferRegions {
@@ -948,9 +941,6 @@ void main_task(const void *args, size_t arglen,
   }
 
   log_app.info("all done!");
-
-  // SJT: mapper is exploding on exit from this task...
-  exit(0);
 }
 
 static inline int GET_DIR(Block &b, int idz, int idy, int idx)
@@ -1234,11 +1224,7 @@ void scatter_densities(const void *args, size_t arglen,
           cell.density[p] *= densityCoeff;
         }
 
-        // Elliott: This isn't necessarily in the base block any more:
         WRITE_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);
-        //if (cz >= 1 && cy >= 1 && cx >= 1) {
-        //  base_block.write(b.cells[cb][cz][cy][cx], cell);
-        //}
       }
 
   // now turn around and have each edge grab a copy of the boundary real cell
@@ -1398,11 +1384,7 @@ void gather_forces_and_advance(const void *args, size_t arglen,
           cell.hv[p] = v_half;
         }
 
-        // Elliott: This isn't necessarily in the base block any more:
         WRITE_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);
-        //if (cz >= 1 && cy >= 1 && cx >= 1) {
-        //  base_block.write(b.cells[cb][cz][cy][cx], cell);
-        //}
       }
 
   log_app.info("Done with gather_forces_and_advance() for block %d", b.id);
@@ -1992,20 +1974,6 @@ void create_mappers(Machine *machine, HighLevelRuntime *runtime, Processor local
 
 int main(int argc, char **argv)
 {
-  //Processor::TaskIDTable task_table;
-
-  //task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
-  //task_table[TASKID_MAIN_TASK] = high_level_task_wrapper<main_task<AccessorGeneric> >;
-  //task_table[TASKID_INIT_CELLS] = high_level_task_wrapper<init_and_rebuild<AccessorGeneric> >;
-  //task_table[TASKID_REBUILD_REDUCE] = high_level_task_wrapper<rebuild_reduce<AccessorGeneric> >;
-  //task_table[TASKID_SCATTER_DENSITIES] = high_level_task_wrapper<scatter_densities<AccessorGeneric> >;
-  //task_table[TASKID_GATHER_DENSITIES] = high_level_task_wrapper<gather_densities<AccessorGeneric> >;
-  //task_table[TASKID_SCATTER_FORCES] = high_level_task_wrapper<scatter_forces<AccessorGeneric> >;
-  //task_table[TASKID_GATHER_FORCES] = high_level_task_wrapper<gather_forces_and_advance<AccessorGeneric> >;
-  //task_table[TASKID_LOAD_FILE] = high_level_task_wrapper<int, load_file<AccessorGeneric> >;
-  //task_table[TASKID_SAVE_FILE] = high_level_task_wrapper<save_file<AccessorGeneric> >;
-
-  //HighLevelRuntime::register_runtime_tasks(task_table);
   HighLevelRuntime::set_top_level_task_id(TOP_LEVEL_TASK_ID);
   HighLevelRuntime::set_input_args(argc,argv);
   HighLevelRuntime::set_registration_callback(create_mappers);
