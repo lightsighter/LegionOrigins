@@ -1524,6 +1524,29 @@ namespace RegionRuntime {
     }
 
     ///////////////////////////////////////////////////
+    // Barrier 
+
+    /*static*/ Barrier Barrier::create_barrier(unsigned expected_arrivals)
+    {
+      // TODO: Implement this
+      assert(false);
+      Barrier result;
+      return result;
+    }
+
+    void Barrier::alter_arrival_count(int delta) const
+    {
+      // TODO: Implement this
+      assert(false);
+    }
+
+    void Barrier::arrive(unsigned count /*= 1*/) const
+    {
+      // TODO: Implement this
+      assert(false);
+    }
+
+    ///////////////////////////////////////////////////
     // Locks
 
     /*static*/ const Lock Lock::NO_LOCK = { 0 };
@@ -3235,6 +3258,22 @@ namespace RegionRuntime {
       return finish_event;
     }
 
+    Processor Processor::get_utility_processor(void) const
+    {
+      // TODO: Implement this
+      return *this;
+    }
+
+    void Processor::enable_idle_task(void)
+    {
+      // TODO: Implement this
+    }
+
+    void Processor::disable_idle_task(void)
+    {
+      // TODO: Implement this
+    }
+
     ///////////////////////////////////////////////////
     // Runtime
 
@@ -4536,6 +4575,21 @@ namespace RegionRuntime {
     template <>
     RegionInstanceAccessorUntyped<AccessorGeneric> RegionInstanceAccessorUntyped<AccessorGeneric>::convert<AccessorGeneric>(void) const
     { return *this; }
+
+    template<>
+    bool RegionInstanceAccessorUntyped<AccessorGeneric>::can_convert<AccessorArray>(void) const
+    {
+      // TODO: Actually implement this
+      return false;
+    }
+
+    template<>
+    RegionInstanceAccessorUntyped<AccessorArray> RegionInstanceAccessorUntyped<AccessorGeneric>::convert<AccessorArray>(void) const
+    {
+      // TODO: Actually Implement this
+      assert(false);
+      return RegionInstanceAccessorUntyped<AccessorArray>(this->internal_data);
+    }
     
     ///////////////////////////////////////////////////
     // 
