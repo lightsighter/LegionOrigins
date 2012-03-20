@@ -137,7 +137,7 @@ namespace RegionRuntime {
     Processor Mapper::select_initial_processor(const Task *task)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Spawn child task %s (ID %d) in default mapper on processor %d",
+      log_mapper(LEVEL_SPEW,"Select initial processor for task %s (ID %d) in default mapper on processor %d",
             task->variants->name, task->task_id, local_proc.id);
       // For the default mapper place it on our local processor, we'll let the load 
       // balancing figure out how to move things around
@@ -265,7 +265,7 @@ namespace RegionRuntime {
                                                       std::vector<ConstraintSplit> &chunks)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Split constraint space for task %s (ID %d) (unique id %d) on "
+      log_mapper(LEVEL_SPEW,"Split constraint space in default mapper for task %s (ID %d) (unique id %d) on "
           "processor %d", task->variants->name, task->task_id,
           task->unique_id, local_proc.id);
       assert(false);
@@ -277,7 +277,7 @@ namespace RegionRuntime {
                                     std::vector<RangeSplit> &chunks)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Split range space for task %s (ID %d) (unique id %d) on "
+      log_mapper(LEVEL_SPEW,"Split range space in default mapper for task %s (ID %d) (unique id %d) on "
           "processor %d", task->variants->name, task->task_id,
           task->unique_id, local_proc.id);
       // We'll try to split the range space into some factor of the number of processors
@@ -309,8 +309,8 @@ namespace RegionRuntime {
                                   bool &enable_WAR_optimization)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Map task region for region %d of task %s (ID %d) (unique id %d) on "
-          "processor %d",req.handle.region.id, task->variants->name, 
+      log_mapper(LEVEL_SPEW,"Map task region in default mapper for region %d of task %s (ID %d) "
+          "(unique id %d) on processor %d",req.handle.region.id, task->variants->name, 
           task->task_id, task->unique_id, local_proc.id);
       // Just give our processor stack
       target_ranking = memory_stack;
@@ -323,9 +323,8 @@ namespace RegionRuntime {
                                     std::vector<Memory> &future_ranking)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Rank copy targets for task %s (ID %d) (unique id %d) on processor %d",
-          task->variants->name, task->task_id, task->unique_id,
-          local_proc.id);
+      log_mapper(LEVEL_SPEW,"Rank copy targets in default mapper for task %s (ID %d) (unique id %d) "
+          "on processor %d", task->variants->name, task->task_id, task->unique_id,local_proc.id);
       future_ranking = memory_stack;
     }
 
@@ -334,7 +333,7 @@ namespace RegionRuntime {
                                     const Memory &dst, Memory &chosen_src)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Select copy source on processor %d", local_proc.id);
+      log_mapper(LEVEL_SPEW,"Select copy source in default mapper on processor %d", local_proc.id);
       // Handle the simple case of having the destination memory in the set of instances 
       if (current_instances.find(dst) != current_instances.end())
       {
