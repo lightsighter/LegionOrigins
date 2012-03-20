@@ -7960,7 +7960,7 @@ namespace RegionRuntime {
           InstanceInfo *original = physical_instances[idx];
           InstanceID clone_iid = runtime->get_unique_instance_id();
           InstanceInfo *clone_inst = new InstanceInfo(clone_iid,original->handle,original->location,
-                                                      original->inst, false/*remote*/, NULL/*parent*/,false/*open*/);
+                                                      original->inst, false/*remote*/, NULL/*parent*/,false/*open*/,true/*clone*/);
           // Put it in the table, so we reclaim it later
 #ifdef DEBUG_HIGH_LEVEL
           assert(instance_infos->find(clone_iid) == instance_infos->end());
@@ -7984,7 +7984,7 @@ namespace RegionRuntime {
 
           // When we insert the valid instance mark that it is not the owner so it is coming
           // from the parent task's context
-          reg->update_valid_instances(chosen_ctx[idx], clone_inst, true/*writer*/, false/*owner*/,
+          reg->update_valid_instances(chosen_ctx[idx], clone_inst, true/*writer*/, true/*owner*/,
                                       false/*check overwrite*/,0/*uid*/);
         }
         else
@@ -8337,7 +8337,7 @@ namespace RegionRuntime {
           assert(instance_infos->find(iid) == instance_infos->end());
 #endif
           (*instance_infos)[iid] = next;
-          log_inst(LEVEL_DEBUG,"Duplicating physical instance %d of logical region %d in memory %d "
+          log_inst(LEVEL_DEBUG,"Duplicating meta data for instance %d of logical region %d in memory %d "
               "for subregion %d", current->inst.id, current->handle.id, current->location.id, next_handle.id);
 
         }
@@ -12788,6 +12788,10 @@ namespace RegionRuntime {
       }
       else
       {
+        if (valid_event.exists())
+        {
+          wait_on_events.insert(valid_event);
+        }
         // We're not the first, so the trying to create a new epoch doesn't matter, but
         // we do want to know when we can be closed
         bool all_dominated = find_local_dependences(wait_on_events,req);
