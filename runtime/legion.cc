@@ -1750,7 +1750,7 @@ namespace RegionRuntime {
         UniqueID tid = get_unique_task_id();
         {
           // Hold the mapping lock when reading the mapper information
-          AutoLock map_lock(mapping_lock);
+          AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
 #ifdef DEBUG_HIGH_LEVEL
           assert(!mapper_objects.empty());
 #endif
