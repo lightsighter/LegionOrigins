@@ -2002,6 +2002,7 @@ namespace RegionRuntime {
       locks.resize(index + 1);
       Lock l = ID(ID::ID_LOCK, gasnet_mynode(), index).convert<Lock>();
       locks[index].init(l, gasnet_mynode());
+      locks[index].in_use = true;
       Runtime::runtime->nodes[gasnet_mynode()].num_locks = index + 1;
       return l;
     }

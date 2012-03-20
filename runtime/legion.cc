@@ -2077,7 +2077,7 @@ namespace RegionRuntime {
       void *args_prime = malloc(arg.get_size()+sizeof(Context));
       memcpy(((char*)args_prime)+sizeof(Context), arg.get_ptr(), arg.get_size());
       {
-        AutoLock map_lock(mapping_lock);
+        AutoLock map_lock(mapping_lock,1,false);
 #ifdef DEBUG_HIGH_LEVEl
         assert(id < mapper_objects.size());
 #endif
