@@ -1178,6 +1178,12 @@ namespace RegionRuntime {
           for (std::vector<Memory>::const_iterator it = locations.begin();
                 it != locations.end(); it++)
           {
+            if (!(*it).exists())
+            {
+              log_region(LEVEL_ERROR,"Illegal NO_MEMORY memory specified for inline mapping operation for "
+                  "logical region %d of inline mapping %d of task %s", req.handle.region.id, unique_id, parent_ctx->variants->name);
+              exit(1);
+            }
             std::pair<InstanceInfo*,bool> result = handle->find_physical_instance(parent_physical_ctx, *it);
             chosen_info = result.first;
             if (chosen_info == InstanceInfo::get_no_instance())
@@ -5217,8 +5223,23 @@ namespace RegionRuntime {
         std::vector<Memory> locations;
         bool war_optimization = true;
         mapper->map_task_region(this, regions[idx],sources,locations,war_optimization);
+        // Check to make sure there is at least one instance
+        bool no_mapping = false;
+        if (locations.empty())
+        {
+          log_region(LEVEL_ERROR,"No memory locations specified by mapper for region %d (idx %d) of task %s",
+              regions[idx].handle.region.id, idx, variants->name);
+        }
+        else
+        {
+          Memory first = locations.front();
+          if (!first.exists())
+          {
+            no_mapping = true;
+          }
+        }
         // Check to see if the user actually wants an instance
-        if (!locations.empty())
+        if (!no_mapping)
         {
           bool instance_owned = false;
           // We're making our own
