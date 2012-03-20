@@ -29,6 +29,8 @@
 #define IS_ATOMIC(req) (req.prop == ATOMIC)
 #define IS_SIMULT(req) (req.prop == SIMULTANEOUS)
 #define IS_RELAXED(req) (req.prop == RELAXED)
+
+#define LOCAL_ID(proc) (((proc).id) & (0xffff))
  
 
 namespace RegionRuntime {
@@ -1674,13 +1676,13 @@ namespace RegionRuntime {
       : local_proc(local), proc_kind (m->get_processor_kind(local)), machine(m),
       mapper_objects(std::vector<Mapper*>(DEFAULT_MAPPER_SLOTS)), 
       mapper_locks(std::vector<Lock>(DEFAULT_MAPPER_SLOTS)),
-      next_partition_id(local_proc.id), next_task_id(local_proc.id),
-      next_instance_id(local_proc.id),
+      next_partition_id(LOCAL_ID(local_proc)), next_task_id(LOCAL_ID(local_proc)),
+      next_instance_id(LOCAL_ID(local_proc)),
       unique_stride(m->get_all_processors().size()),
       max_outstanding_steals (m->get_all_processors().size()-1)
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_SPEW,"Initializing high level runtime on processor %d",local_proc.id);
+      log_task(LEVEL_SPEW,"Initializing high level runtime on processor %d",LOCAL_ID(local_proc));
       for (unsigned int i=0; i<mapper_objects.size(); i++)
       {
         mapper_objects[i] = NULL;
@@ -1723,7 +1725,7 @@ namespace RegionRuntime {
       const std::set<Processor> &all_procs = machine->get_all_processors();
       if (local_proc == (*(all_procs.begin())))
       {
-        log_task(LEVEL_SPEW,"Issuing region main task on processor %d",local_proc.id);
+        log_task(LEVEL_SPEW,"Issuing region main task on processor %d",LOCAL_ID(local_proc));
         TaskContext *desc = get_available_context(true);
         UniqueID tid = get_unique_task_id();
         {
@@ -1752,7 +1754,7 @@ namespace RegionRuntime {
     HighLevelRuntime::~HighLevelRuntime()
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_SPEW,"Shutting down high level runtime on processor %d", local_proc.id);
+      log_task(LEVEL_SPEW,"Shutting down high level runtime on processor %d", LOCAL_ID(local_proc));
       // Go through and delete all the mapper objects
       for (unsigned int i=0; i<mapper_objects.size(); i++)
         if (mapper_objects[i] != NULL) delete mapper_objects[i];
@@ -1905,7 +1907,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(p.id < MAX_NUM_PROCS);
+      assert(LOCAL_ID(p) < MAX_NUM_PROCS);
 #endif
 #if 0
       static std::map<Processor,HighLevelRuntime*> runtime_map;
@@ -1921,7 +1923,7 @@ namespace RegionRuntime {
       assert(false);
       return NULL;
 #else
-      return (runtime_map+(p.id & 0xffff)); // SJT: this ok?  just local procs?
+      return (runtime_map+(LOCAL_ID(p))); // SJT: this ok?  just local procs?
 #endif
     }
 
@@ -2061,7 +2063,7 @@ namespace RegionRuntime {
       }
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Registering new single task with unique id %d and task %s (ID %d) with high level runtime on processor %d",
-                unique_id, desc->variants->name, task_id, local_proc.id);
+                unique_id, desc->variants->name, task_id, LOCAL_ID(local_proc));
 #endif
       desc->set_regions(regions, true/*check same*/);
       // Check if we want to spawn this task 
@@ -2456,7 +2458,7 @@ namespace RegionRuntime {
     void HighLevelRuntime::add_mapper(MapperID id, Mapper *m)
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_INFO,"Adding mapper %d on processor %d",id,local_proc.id);
+      log_task(LEVEL_INFO,"Adding mapper %d on processor %d",id,LOCAL_ID(local_proc));
       // Take an exclusive lock on the mapper data structure
       AutoLock map_lock(mapping_lock);
 #ifdef DEBUG_HIGH_LEVEL
@@ -2529,7 +2531,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Beginning task %s (ID %d) with unique id %d on processor %x",
-        ctx->variants->name,ctx->task_id,ctx->unique_id,ctx->local_proc.id);
+        ctx->variants->name,ctx->task_id,ctx->unique_id,LOCAL_ID(ctx->local_proc));
 #endif
       ctx->start_task(physical_regions);
     }
@@ -2541,7 +2543,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Ending task %s (ID %d) with unique id %d on processor %x",
-        ctx->variants->name, ctx->task_id,ctx->unique_id,ctx->local_proc.id);
+        ctx->variants->name, ctx->task_id,ctx->unique_id,LOCAL_ID(ctx->local_proc));
 #endif
       ctx->complete_task(arg,arglen,physical_regions); 
     }
@@ -2816,7 +2818,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
               log_task(LEVEL_DEBUG,"HLR on processor %d adding index space"
                                     " task %s (ID %d) with unique id %d from orig %d",
-                ctx->local_proc.id,ctx->variants->name,
+                LOCAL_ID(ctx->local_proc),ctx->variants->name,
                 ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
 #endif
             }
@@ -2834,7 +2836,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
             log_task(LEVEL_DEBUG,"HLR on processor %d adding index space"
                                   " task %s (ID %d) with unique id %d from orig %d",
-              ctx->local_proc.id, ctx->variants->name,
+              LOCAL_ID(ctx->local_proc), ctx->variants->name,
               ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
 #endif
           }
@@ -2846,7 +2848,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           log_task(LEVEL_DEBUG,"HLR on processor %d adding task %s (ID %d) "
                                 "with unique id %d from orig %d",
-            ctx->local_proc.id, ctx->variants->name,
+            LOCAL_ID(ctx->local_proc), ctx->variants->name,
             ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
 #endif
         }
@@ -2881,7 +2883,7 @@ namespace RegionRuntime {
       int num_stealers;
       derez.deserialize<int>(num_stealers);
       log_task(LEVEL_SPEW,"handling a steal request on processor %d from processor %d",
-              local_proc.id,thief.id);
+              LOCAL_ID(local_proc),thief.id);
 
       // Iterate over the task descriptions, asking the appropriate mapper
       // whether we can steal them
@@ -3021,7 +3023,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           log_task(LEVEL_DEBUG,"task %s (ID %d) with unique id %d stolen from processor %d",
                                 (*it)->variants->name,
-                                (*it)->task_id,(*it)->unique_id,(*it)->local_proc.id);
+                                (*it)->task_id,(*it)->unique_id,LOCAL_ID((*it)->local_proc));
 #endif
           // If they are remote, deactivate the instance
           // If it's not remote, its parent will deactivate it
@@ -3038,7 +3040,7 @@ namespace RegionRuntime {
       Context ctx = *((const Context*)args);
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"All child tasks mapped for task %s (ID %d) with unique id %d on processor %d",
-        ctx->variants->name,ctx->task_id,ctx->unique_id,ctx->local_proc.id);
+        ctx->variants->name,ctx->task_id,ctx->unique_id,LOCAL_ID(ctx->local_proc));
 #endif
       ctx->children_mapped();
     }
@@ -3051,7 +3053,7 @@ namespace RegionRuntime {
       Context ctx = *((const Context*)args);
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Task %s (ID %d) with unique id %d finished on processor %d", 
-        ctx->variants->name,ctx->task_id, ctx->unique_id, ctx->local_proc.id);
+        ctx->variants->name,ctx->task_id, ctx->unique_id, LOCAL_ID(ctx->local_proc));
 #endif
       ctx->finish_task();
     }
@@ -3160,7 +3162,7 @@ namespace RegionRuntime {
       Event lock_event = queue_lock.lock(0,true);
       lock_event.wait(true/*block*/);
       log_task(LEVEL_SPEW,"Running scheduler on processor %d with %ld tasks in ready queue",
-              local_proc.id, ready_queue.size());
+              LOCAL_ID(local_proc), ready_queue.size());
 
       while (!ready_queue.empty() && (mapped_tasks<MAX_TASK_MAPS_PER_STEP))
       {
@@ -3450,7 +3452,7 @@ namespace RegionRuntime {
         Processor target = it->first;
         int num_mappers = targets.count(target);
         log_task(LEVEL_SPEW,"Processor %d attempting steal on processor %d",
-                              local_proc.id,target.id);
+                              LOCAL_ID(local_proc),target.id);
         size_t buffer_size = 2*sizeof(Processor)+sizeof(int)+num_mappers*sizeof(MapperID);
         // Allocate a buffer for launching the steal task
         Serializer rez(buffer_size);
@@ -5173,7 +5175,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Mapping and launching task %s (ID %d) with unique id %d on processor %d",
-          variants->name, task_id, unique_id, local_proc.id);
+          variants->name, task_id, unique_id, LOCAL_ID(local_proc));
 #endif
       // Check to see if this task is only partially unpacked, if so now do the final unpack
       if (partially_unpacked)
@@ -6232,7 +6234,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Task %s (ID %d) with unique id %d starting on processor %d",
-          variants->name,task_id,unique_id,local_proc.id);
+          variants->name,task_id,unique_id,LOCAL_ID(local_proc));
       assert(physical_instances.size() == regions.size());
 #endif
 
@@ -6283,7 +6285,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Task %s (ID %d) with unique id %d has completed on processor %d",
-                variants->name,task_id,unique_id,local_proc.id);
+                variants->name,task_id,unique_id,LOCAL_ID(local_proc));
 #endif
       if (remote || is_index_space)
       {
@@ -6385,7 +6387,7 @@ namespace RegionRuntime {
         {
 #ifdef DEBUG_HIGH_LEVEL
           log_task(LEVEL_DEBUG,"All children mapped for task %s (ID %d) with unique id %d on processor %d",
-                  variants->name,task_id,unique_id,local_proc.id);
+                  variants->name,task_id,unique_id,LOCAL_ID(local_proc));
           // We can now go through and mark that all of our no-map operations are complete
           assert(physical_instances.size() == regions.size());
           assert(physical_instances.size() == physical_mapped.size());
@@ -6625,7 +6627,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Finishing task %s (ID %d) with unique id %d on processor %d",
-                variants->name, task_id, unique_id, local_proc.id);
+                variants->name, task_id, unique_id, LOCAL_ID(local_proc));
 #endif
       if (acquire_lock)
       {
