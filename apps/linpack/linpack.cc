@@ -939,7 +939,9 @@ public:
 						reqs,
 						TaskArgs(matrix, k),
 						ArgumentMap(),
-						false);
+						false,
+						0, // default mapper,
+						Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION);
     return fm;
   }
 };
@@ -1093,7 +1095,7 @@ void factor_matrix(Context ctx, HighLevelRuntime *runtime,
 						arg_map,
 						false,
 						0, // default mapper,
-						0 && Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION);
+						Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION);
 #endif
     fm.wait_all_results();
 #if 0

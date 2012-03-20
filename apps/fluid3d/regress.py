@@ -21,36 +21,6 @@ def call_silently(command, filename):
     with open(filename, 'wb') as f:
         return sp.call(command, stdout = f, stderr = sp.STDOUT)
 
-_parsec_dir = _parsec_mgmt = _parsec_fluid = None
-def prep_parsec():
-    global _parse_dir, _parsec_mgmt, _parsec_fluid
-    try:
-        _parsec_dir = os.path.abspath(os.environ['PARSEC_DIR'])
-    except KeyError:
-        print 'Please set the PARSEC_DIR environment variable.'
-        sys.exit(1)
-    _parsec_mgmt = os.path.join(_parsec_dir, 'bin', 'parsecmgmt')
-    _parsec_fluid_src = os.path.join(
-        _parsec_dir, 'pkgs', 'apps', 'fluidanimate',
-        'src', 'pthreads.cpp')
-    _parsec_fluid = os.path.join(
-        _parsec_dir, 'pkgs', 'apps', 'fluidanimate',
-        'inst', 'amd64-linux.gcc', 'bin', 'fluidanimate')
-    if (newer(_parsec_fluid_src, _parsec_fluid)):
-        sp.check_call([_parsec_mgmt, '-a', 'fullclean'])
-        sp.check_call([_parsec_mgmt, '-a', 'fulluninstall'])
-        sp.check_call([_parsec_mgmt, '-a', 'build', '-p', 'fluidanimate'])
-        print
-
-def parsec(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None, output = None,
-           **_ignored):
-    cmd_out = fresh_file('parsec', 'log')
-    retcode = call_silently(
-        [_parsec_fluid, str(nbx*nby*nbz), str(steps),
-         str(input), str(output)],
-        cmd_out)
-    return (retcode, cmd_out)
-
 _legion_fluid = None
 def prep_legion():
     global _legion_fluid
@@ -85,6 +55,17 @@ def prep_input():
 def get_input():
     return _input_filename
 
+_solution_filename = None
+def prep_solution():
+    global _solution_filename
+    _solution_filename = os.path.join(_root_dir, 'out_5K.fluid')
+
+def get_solution():
+    return _solution_filename
+
+def get_output_for_program(program):
+    return '%s.fluid' % program.__name__
+
 _output_re = re.compile(r'.*\.log')
 def cleanup_output():
     for path in os.listdir(_root_dir):
@@ -92,22 +73,66 @@ def cleanup_output():
             re.match(_output_re, os.path.basename(path)) is not None):
             os.remove(path)
 
-prep = [prep_parsec, prep_legion, prep_input, cleanup_output]
-programs = [legion, parsec]
+prep = [prep_legion, prep_input, prep_solution, cleanup_output]
+programs = [legion]
 
 def read_result(ps):
     program, status = ps
     if status[0] != 0: return None
-    return read_file('%s.fluid' % program.__name__)
+    return read_file(get_output_for_program(program))
 
 _max_epsilon = 1.0e-5
 def validate(epsilons):
     return all(map(lambda e: e < _max_epsilon, epsilons.itervalues()))
 
-def summarize(params, epsilons):
+def summarize_params(nbx = 1, nby = 1, nbz = 1, steps = 1, **others):
+    return '%sx%sx%s (%ss)%s' % (
+        nbx, nby, nbz, steps,
+        ', '.join(['%s %s' % kv for kv in others.iteritems()]))
+
+_status_table = [
+'SIGHUP',
+'SIGINT',
+'SIGQUIT',
+'SIGILL',
+'SIGTRAP',
+'SIGABRT',
+'SIGBUS',
+'SIGFPE',
+'SIGKILL',
+'SIGUSR1',
+'SIGSEGV',
+'SIGUSR2',
+'SIGPIPE',
+'SIGALRM',
+'SIGTERM',
+'SIGCHLD',
+'SIGCONT',
+'SIGSTOP',
+'SIGTSTP',
+'SIGTTIN',
+'SIGTTOU',
+'SIGURG',
+'SIGXCPU',
+'SIGXFSZ',
+'SIGVTALRM',
+'SIGPROF',
+'SIGPOLL',
+'SIGSYS',
+]
+def summarize_status(status):
+    if status > 0:
+        return 'Exited with status %s' % status
+    elif status < 0:
+        return 'Killed by signal %s' % _status_table[-status-1]
+    else:
+        return 'Exited normally'
+
+def summarize(params, epsilons, status):
     return '%s ==> %s' % (
-        ', '.join(['%s %s' % kv for kv in params.iteritems()]),
-        ', '.join(['%s %.1e' % kv for kv in epsilons.iteritems()]),
+        summarize_params(**params),
+        (', '.join(['%s %.1e' % kv for kv in epsilons.iteritems()])
+         if epsilons is not None else summarize_status(status)),
         )
 
 _red="\033[1;31m"
@@ -118,22 +143,21 @@ _fail="[ %sFAIL%s ]" % (_red, _clear)
 
 def regress(**params):
     statuses = [program(input = get_input(),
-                        output = '%s.fluid' % program.__name__,
+                        output = get_output_for_program(program),
                         **params)
                 for program in programs]
     results = map(read_result, zip(programs, statuses))
-    for i1, s1, r1 in zip(range(len(results)), statuses, results):
-        for i2, s2, r2 in zip(range(len(results)), statuses, results):
-            if i1 < i2:
-                es = compare(r1, r2)
-                if es is None:
-                    print '%s (see %s %s)' % (_fail, s1[1], s2[1])
-                else:
-                    passes = validate(es)
-                    pass_str = _pass if passes else _fail
-                    summary = summarize(params, es)
-                    see = '' if passes else ' (see %s %s)' % (s1[1], s2[1])
-                    print '%s %s%s' % (pass_str, summary, see)
+    solution = read_file(get_solution())
+    for status, result in zip(statuses, results):
+        es = compare(result, solution)
+        summary = summarize(params, es, status[0])
+        if es is None:
+            print '%s %s (see %s)' % (_fail, summary, status[1])
+        else:
+            passes = validate(es)
+            pass_str = _pass if passes else _fail
+            see = '' if passes else ' (see %s)' % status[1]
+            print '%s %s%s' % (pass_str, summary, see)
 
 if __name__ == '__main__':
     for thunk in prep: thunk()
@@ -141,3 +165,7 @@ if __name__ == '__main__':
     regress(nbx = 2, nby = 1, nbz = 1, steps = 1)
     regress(nbx = 1, nby = 2, nbz = 1, steps = 1)
     regress(nbx = 1, nby = 1, nbz = 2, steps = 1)
+    regress(nbx = 4, nby = 1, nbz = 1, steps = 1)
+    regress(nbx = 1, nby = 4, nbz = 1, steps = 1)
+    regress(nbx = 1, nby = 1, nbz = 4, steps = 1)
+    regress(nbx = 1, nby = 2, nbz = 4, steps = 1)
