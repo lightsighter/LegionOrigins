@@ -1726,7 +1726,7 @@ namespace RegionRuntime {
       if (local_proc == (*(all_procs.begin())))
       {
         log_task(LEVEL_SPEW,"Issuing region main task on processor %d",LOCAL_ID(local_proc));
-        TaskContext *desc = get_available_context(true);
+        TaskContext *desc = get_available_context(true/*new tree*/);
         UniqueID tid = get_unique_task_id();
         {
           // Hold the mapping lock when reading the mapper information
@@ -2819,7 +2819,7 @@ namespace RegionRuntime {
               log_task(LEVEL_DEBUG,"HLR on processor %d adding index space"
                                     " task %s (ID %d) with unique id %d from orig %d",
                 LOCAL_ID(ctx->local_proc),ctx->variants->name,
-                ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
+                ctx->task_id,ctx->unique_id,LOCAL_ID(ctx->orig_proc));
 #endif
             }
             else
@@ -2837,7 +2837,7 @@ namespace RegionRuntime {
             log_task(LEVEL_DEBUG,"HLR on processor %d adding index space"
                                   " task %s (ID %d) with unique id %d from orig %d",
               LOCAL_ID(ctx->local_proc), ctx->variants->name,
-              ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
+              ctx->task_id,ctx->unique_id,LOCAL_ID(ctx->orig_proc));
 #endif
           }
         }
@@ -2849,7 +2849,7 @@ namespace RegionRuntime {
           log_task(LEVEL_DEBUG,"HLR on processor %d adding task %s (ID %d) "
                                 "with unique id %d from orig %d",
             LOCAL_ID(ctx->local_proc), ctx->variants->name,
-            ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
+            ctx->task_id,ctx->unique_id,LOCAL_ID(ctx->orig_proc));
 #endif
         }
         // check to see if this is a steal result coming back
