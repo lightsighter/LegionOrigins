@@ -39,6 +39,8 @@ def parse_log_file(file_name):
 
     index_space_size_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Index Space (?P<unique>[0-9]+) Context (?P<context>[0-9]+) Size (?P<size>[0-9]+)")
 
+    map_launch_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Mapping Performed (?P<unique>[0-9]+) (?P<start_id>[0-9]+) (?P<start_gen>[0-9]+) (?P<term_id>[0-9]+) (?P<term_gen>[0-9]+)")
+
     for line in log:
         m = name_pat.match(line)
         if m <> None:
@@ -157,6 +159,16 @@ def parse_log_file(file_name):
             if not dst.is_no_event():
                 #result.event_graph.add_index_src_edge(space,point_node,dst)
                 result.event_graph.add_edge(space,dst)
+            continue
+        m = map_launch_pat.match(line)
+        if m <> None:
+            src = result.event_graph.get_event_node(int(m.group('start_id')),int(m.group('start_gen')))
+            mapping = result.event_graph.get_map_node(int(m.group('unique')))
+            dst = result.event_graph.get_event_node(int(m.group('term_id')),int(m.group('term_gen')))
+            if not src.is_no_event():
+                result.event_graph.add_edge(src,mapping)
+            if not dst.is_no_event():
+                result.event_graph.add_edge(mapping,dst)
             continue
         m = index_space_size_pat.match(line)
         if m <> None:

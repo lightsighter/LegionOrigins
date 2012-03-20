@@ -15,7 +15,13 @@ class ImageWrapper(object):
         self.name = name
         self.file_name = file_name
         if os.path.isfile(file_name):
-            self.surface = pygame.image.load(file_name) 
+            try:
+                self.surface = pygame.image.load(file_name) 
+            except pygame.error:
+                print pygame.error
+                print "Dumping image..."
+                self.dump_file()
+                self.surface = None
         else:
             self.surface = None
         if fontObj <> None:

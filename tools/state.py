@@ -637,6 +637,15 @@ class TaskNode(object):
         printer.println(self.name+' [style=filled,label="Task\ '+str(self.task_id)+'\\nUnique\ ID\ '+str(self.unique_id)+
             '",fillcolor=lightskyblue,fontsize=14,fontcolor=black,shape=record,penwidth=2];')
 
+class MappingNode(object):
+    def __init__(self,name,unique_id):
+        self.name = name
+        self.unique_id = unique_id
+
+    def print_node(self,printer):
+        printer.println(self.name+' [style=filled,label="Mapping\ '+str(self.unique_id)+
+            '",fillcolor=mediumseagreen,fontsize=14,fontcolor=black,shape=record,penwidth=2];')
+
 class EventGraphPrinter(object):
     def __init__(self,path,name):
         self.filename = path+name+'.dot'
@@ -672,6 +681,7 @@ class EventGraphPrinter(object):
 
 class EventGraph(object):
     def __init__(self):
+        self.map_nodes = set()
         self.task_nodes = set()
         self.index_nodes = dict()
         self.copy_nodes = set()
@@ -719,6 +729,12 @@ class EventGraph(object):
         self.task_nodes.add(result)
         return result
 
+    def get_map_node(self,uid):
+        map_name = "mapping_node_"+str(self.get_next_node())
+        result = MappingNode(map_name,uid)
+        self.map_nodes.add(result)
+        return result
+
     def add_edge(self,src,dst):
         edge = src,dst
         self.edges.add(edge)
@@ -747,6 +763,10 @@ class EventGraph(object):
         for event,node in self.event_nodes.iteritems():
             if not node.is_no_event():
                 node.print_node(printer)
+        printer.println("")
+        printer.println("/* Map Nodes */")
+        for mapping in self.map_nodes:
+            mapping.print_node(printer)
         printer.println("")
 
         printer.println("/* Edges */")
