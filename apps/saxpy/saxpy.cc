@@ -6,6 +6,7 @@
 #include <cmath>
 
 #include "legion.h"
+#include "alt_mappers.h"
 
 using namespace RegionRuntime::HighLevel;
 
@@ -96,6 +97,7 @@ void main_task(const void *args, size_t arglen,
   std::vector<std::set<utptr_t> > color_x(*get_num_blocks());
   std::vector<std::set<utptr_t> > color_y(*get_num_blocks());
   std::vector<std::set<utptr_t> > color_z(*get_num_blocks());
+  printf("Allocating...");
   for (unsigned i = 0; i < *get_num_blocks(); i++) {
     blocks[i].alpha = vr->alpha;
     blocks[i].id = i;
@@ -113,6 +115,7 @@ void main_task(const void *args, size_t arglen,
       color_z[i].insert(entry_z);
     }
   }
+  printf("Done\n");
 
   // Partitioning the regions
   Partition p_x = runtime->create_partition(ctx, vr->r_x, color_x, true);
@@ -213,6 +216,8 @@ void main_task(const void *args, size_t arglen,
     printf("\n");
 #endif
 
+    // Print the first four numbers
+    int count = 0;
     bool success = true;
     for (unsigned i = 0; i < *get_num_blocks(); i++) {
       for (unsigned j = 0; j < BLOCK_SIZE; j++) {
@@ -230,6 +235,13 @@ void main_task(const void *args, size_t arglen,
               j, i, compute, z_val.v);
           success = false;
           break;
+        }
+        else if (count < 4) // Print the first four elements to make sure they aren't all zero
+        {
+          printf("%f ",z_val.v);
+          count++;
+          if (count == 4)
+            printf("\n");
         }
       }
     }
@@ -593,10 +605,12 @@ public:
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
                     Processor local) {
 #ifdef USE_SAXPY_SHARED
-  runtime->replace_default_mapper(new SharedMapper(machine, runtime, local));
+  //runtime->replace_default_mapper(new SharedMapper(machine, runtime, local));
 #else
-  runtime->replace_default_mapper(new SaxpyMapper(machine, runtime, local));
+  //runtime->replace_default_mapper(new SaxpyMapper(machine, runtime, local));
 #endif
+  //runtime->replace_default_mapper(new DebugMapper(machine, runtime, local));
+  //runtime->replace_default_mapper(new SequoiaMapper(machine, runtime, local));
 }
 
 int main(int argc, char **argv) {
