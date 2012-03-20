@@ -103,8 +103,6 @@ namespace RegionRuntime {
         for (std::set<Processor>::const_iterator it = all_procs.begin();
               it != all_procs.end(); it++)
         {
-          if (local_proc == *it)
-            continue;
           Processor::Kind other_kind = machine->get_processor_kind(*it);
           if (other_kind == proc_kind)
           {
