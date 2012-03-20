@@ -3064,7 +3064,7 @@ namespace RegionRuntime {
       void *args_prime = malloc(global_arg.get_size()+sizeof(Context));
       memcpy(((char*)args_prime)+sizeof(Context), global_arg.get_ptr(), global_arg.get_size());
       {
-        Event lock_event = mapping_lock.lock(0,true/*exclusive*/);
+        Event lock_event = mapping_lock.lock(1,false/*exclusive*/);
         lock_event.wait(true/*block*/);
 #ifdef DEBUG_HIGH_LEVEL
         assert(id < mapper_objects.size());
@@ -3124,7 +3124,7 @@ namespace RegionRuntime {
       void *args_prime = malloc(global_arg.get_size()+sizeof(Context));
       memcpy(((char*)args_prime)+sizeof(Context), global_arg.get_ptr(), global_arg.get_size());
       {
-        Event lock_event = mapping_lock.lock(0,true/*exclusive*/);
+        Event lock_event = mapping_lock.lock(1,false/*exclusive*/);
         lock_event.wait(true/*block*/);
 #ifdef DEBUG_HIGH_LEVEL
       assert(id < mapper_objects.size());

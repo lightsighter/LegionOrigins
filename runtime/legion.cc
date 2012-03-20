@@ -776,7 +776,7 @@ namespace RegionRuntime {
       void *result = malloc(result_size);
       memcpy(result, res, result_size);
       // Get the lock for all the data
-      AutoLock mapping_lock(map_lock);
+      AutoLock m_lock(map_lock);
 #ifdef DEBUG_HIGH_LEVEL
       assert(valid_results.find(point) == valid_results.end()); // shouldn't exist yet
 #endif
@@ -803,7 +803,7 @@ namespace RegionRuntime {
       void *result = malloc(result_size);
       derez.deserialize(result,result_size);
       // Get the lock for all the data in the map
-      AutoLock mapping_lock(map_lock);
+      AutoLock m_lock(map_lock);
 #ifdef DEBUG_HIGH_LEVEL
       assert(valid_results.find(point) == valid_results.end()); // shouldn't exist yet
 #endif
@@ -1678,7 +1678,7 @@ namespace RegionRuntime {
       max_outstanding_steals (m->get_all_processors().size()-1)
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_SPEW,"Initializing high level runtime on processor %x",local_proc.id);
+      log_task(LEVEL_DEBUG,"Initializing high level runtime on processor %x",local_proc.id);
       {
         // Compute our location in the list of processors
         unsigned idx = 0;
@@ -1759,7 +1759,10 @@ namespace RegionRuntime {
         }
         log_spy(LEVEL_INFO,"Top Task %d %d",desc->unique_id,HighLevelRuntime::legion_main_id);
         // Put this task in the ready queue
-        ready_queue.push_back(desc);
+        {
+          AutoLock q_lock(queue_lock);
+          ready_queue.push_back(desc);
+        }
 
         Future fut(&desc->future);
         local_proc.spawn(TERMINATION_ID,&fut,sizeof(Future));
@@ -1774,7 +1777,7 @@ namespace RegionRuntime {
     HighLevelRuntime::~HighLevelRuntime()
     //--------------------------------------------------------------------------------------------
     {
-      log_task(LEVEL_SPEW,"Shutting down high level runtime on processor %x", local_proc.id);
+      log_task(LEVEL_DEBUG,"Shutting down high level runtime on processor %x", local_proc.id);
       // Go through and delete all the mapper objects
       for (unsigned int i=0; i<mapper_objects.size(); i++)
         if (mapper_objects[i] != NULL) delete mapper_objects[i];
@@ -2666,6 +2669,7 @@ namespace RegionRuntime {
     void HighLevelRuntime::add_to_ready_queue(TaskContext *ctx, bool acquire_lock)
     //--------------------------------------------------------------------------------------------
     {
+      log_task(LEVEL_DEBUG,"Adding task %s with unique id %d to the ready queue",ctx->variants->name,ctx->unique_id);
       if (acquire_lock)
       {
         AutoLock q_lock(queue_lock);
@@ -4111,7 +4115,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           assert(current_taken);
 #endif
-          AutoLock mapping_lock(mapper_lock);
+          AutoLock m_lock(mapper_lock);
           // If they haven't been santized, we can't move the task, sanitize
           // them so we can the size of states later
           for (unsigned idx = 0; idx < regions.size(); idx++)
@@ -5225,7 +5229,7 @@ namespace RegionRuntime {
       current_taken = true;
 #endif
       // Also need our mapper lock
-      AutoLock mapping_lock(mapper_lock);
+      AutoLock m_lock(mapper_lock);
 
       std::set<Event> wait_on_events;
       // Check to see if we are an index space that needs must parallelism, 
@@ -9697,7 +9701,7 @@ namespace RegionRuntime {
             if (it->first->has_user(uid))
             {
               log_task(LEVEL_ERROR,"Overwriting a prior physical instance for index space task "
-                  "with unique id %d.  Violoation of independent index space slices constraint. "
+                  "with unique id %d.  Violation of independent index space slices constraint. "
                   "See: groups.google.com/group/legiondevelopers/browse_thread/thread/39ad6b3b55ed9b8f", uid);
               exit(1);
             }
