@@ -2233,7 +2233,7 @@ namespace RegionRuntime {
         //log_region(LEVEL_DEBUG,"Creating subregion %d of region %d in task %d\n",
         //            child_region.id, parent.id, ctx->unique_id);
         children[idx] = child_region;
-        log_spy(LEVEL_INFO,"Region %x Parent %x",child_region.id,partition_id);
+        log_spy(LEVEL_INFO,"Region %x Parent %d",child_region.id,partition_id);
       }
 
       ctx->create_partition(partition_id, parent, true/*disjoint*/, children);
@@ -2271,7 +2271,7 @@ namespace RegionRuntime {
         //log_region(LEVEL_DEBUG,"Creating subregion %d of region %d in task %d\n",
         //            child_region.id, parent.id, ctx->unique_id);
         children[idx] = child_region;
-        log_spy(LEVEL_INFO,"Region %x Parent %x",child_region.id,partition_id);
+        log_spy(LEVEL_INFO,"Region %x Parent %d",child_region.id,partition_id);
       }
 
       ctx->create_partition(partition_id, parent, disjoint, children);
@@ -2307,7 +2307,7 @@ namespace RegionRuntime {
         //log_region(LEVEL_DEBUG,"Creating subregion %d of region %d in task %d\n",
         //            child_region.id, parent.id, ctx->unique_id);
         children[idx] = child_region;
-        log_spy(LEVEL_INFO,"Region %x Parent %x",child_region.id,partition_id);
+        log_spy(LEVEL_INFO,"Region %x Parent %d",child_region.id,partition_id);
       }
 
       ctx->create_partition(partition_id, parent, disjoint, children);
