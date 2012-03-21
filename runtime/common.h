@@ -12,11 +12,20 @@
 // so it can optimize for certain cases.
 typedef unsigned int MappingTagID;
 
+// Forware declaration
+template<typename T> struct ptr_t;
+
 struct utptr_t
 { 
 public:
+  //utptr_t(void) : value(0) { }
+  //utptr_t(const utptr_t &p) : value(p.value) { }
+public:
   unsigned value; 
 public: 
+  utptr_t& operator=(const utptr_t &ptr) { value = ptr.value; return *this; }
+  template<typename T>
+  utptr_t& operator=(const ptr_t<T> &ptr) { value = ptr.value; return *this; }
   bool operator==(const utptr_t &ptr) const { return (ptr.value == this->value); }
   bool operator!=(const utptr_t &ptr) const { return (ptr.value != this->value); }
   bool operator< (const utptr_t &ptr) const { return (ptr.value <  this->value); }
@@ -30,8 +39,14 @@ template<typename T>
 struct ptr_t 
 { 
 public:
+  //ptr_t(void) : value(0) { }
+  //ptr_t(const utptr_t &p) : value(p.value) { }
+  //ptr_t(const ptr_t<T> &p) : value(p.value) { }
+public:
   unsigned value; 
 public:
+  ptr_t<T>& operator=(const ptr_t<T> &ptr) { value = ptr.value; return *this; }
+  ptr_t<T>& operator=(const utptr_t &ptr)  { value = ptr.value; return *this; }
   bool operator==(const ptr_t<T> &ptr) const { return (ptr.value == this->value); }
   bool operator!=(const ptr_t<T> &ptr) const { return (ptr.value != this->value); }
   bool operator< (const ptr_t<T> &ptr) const { return (ptr.value <  this->value); }
