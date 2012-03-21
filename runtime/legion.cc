@@ -1770,13 +1770,12 @@ namespace RegionRuntime {
           assert(!mapper_objects.empty());
 #endif
           // Copy the argv into the default arguments
-          void *default_args = malloc(sizeof(Context) + hlr_argc*sizeof(char*));
-          size_t default_size = sizeof(Context) + hlr_argc*sizeof(char*);
-          if (hlr_argc > 0)
+          size_t default_size = sizeof(Context) + sizeof(InputArgs);
+          void *default_args = malloc(default_size);
           {
             char *ptr = (char*)default_args;
             ptr += sizeof(Context);
-            memcpy(ptr, hlr_argv, hlr_argc*sizeof(char*));
+            memcpy(ptr, &hlr_inputs, sizeof(InputArgs));
           }
           desc->initialize_task(NULL/*no parent*/,tid, HighLevelRuntime::legion_main_id,default_args,
                                 default_size, 0, 0, mapper_objects[0], mapper_locks[0]);
@@ -1924,8 +1923,7 @@ namespace RegionRuntime {
 
     /*static*/ volatile RegistrationCallbackFnptr HighLevelRuntime::registration_callback = NULL;
     /*static*/ Processor::TaskFuncID HighLevelRuntime::legion_main_id = 0;
-    /*static*/ int HighLevelRuntime::hlr_argc = 0;
-    /*static*/ char** HighLevelRuntime::hlr_argv = NULL;
+    /*static*/ InputArgs HighLevelRuntime::hlr_inputs = { NULL, 0 };
 
     //--------------------------------------------------------------------------------------------
     /*static*/ void HighLevelRuntime::set_registration_callback(RegistrationCallbackFnptr callback)
@@ -1938,8 +1936,8 @@ namespace RegionRuntime {
     /*static*/ void HighLevelRuntime::set_input_args(int argc, char** argv)
     //--------------------------------------------------------------------------------------------
     {
-      hlr_argc = argc;
-      hlr_argv = argv;
+      hlr_inputs.argv = argv;
+      hlr_inputs.argc = argc;
     }
 
     //--------------------------------------------------------------------------------------------

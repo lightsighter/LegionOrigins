@@ -137,6 +137,12 @@ namespace RegionRuntime {
     //                                                                       //
     ///////////////////////////////////////////////////////////////////////////
 
+    struct InputArgs {
+    public:
+      char **argv;
+      int argc;
+    };
+    
     /////////////////////////////////////////////////////////////
     // Partition 
     ///////////////////////////////////////////////////////////// 
@@ -1051,8 +1057,7 @@ namespace RegionRuntime {
     public:
       // member variables for getting the default arguments
       // Note that these are available to the mapper through the pointer to the runtime
-      static int hlr_argc;
-      static char** hlr_argv;
+      static InputArgs hlr_inputs;
     private:
       // Member variables
       const Processor local_proc;
