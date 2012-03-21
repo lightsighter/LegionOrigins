@@ -810,12 +810,10 @@ namespace RegionRuntime {
     public:
       static HighLevelRuntime* get_runtime(Processor p);
     public:
-      // Set the input arguments for the high-level runtime
-      static void set_input_args(int argc, char **argv);
+      // Start the high-level runtime, control will never return
+      static int start(int argc, char **argv);
       // Set the ID of the top-level task, if not set it defaults to 0
       static void set_top_level_task_id(Processor::TaskFuncID top_id);
-      // Get the task table from the runtime
-      static Processor::TaskIDTable& get_task_table(bool add_runtime_tasks = true);
       // Call visible to the user to set up the task map
       static void register_runtime_tasks(Processor::TaskIDTable &table);
       // Call visible to the user to give a task to call to initialize mappers, colorize functions, etc.
@@ -873,6 +871,9 @@ namespace RegionRuntime {
       // Shutdown methods (one task to detect the termination, another to process it)
       static void detect_termination(const void * args, size_t arglen, Processor p); // application
     private:
+      // Get the task table from the runtime
+      static Processor::TaskIDTable& get_task_table(bool add_runtime_tasks = true);
+      static LowLevel::ReductionOpTable& get_reduction_table(void); 
       static std::map<Processor::TaskFuncID,TaskCollection*>& get_collection_table(void);
       static TaskID update_collection_table(void (*low_level_ptr)(const void *,size_t,Processor),
                                           TaskID uid, const char *name, bool index_space,

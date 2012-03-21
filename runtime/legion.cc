@@ -1821,7 +1821,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    /*static*/ Processor::TaskIDTable& HighLevelRuntime::get_task_table(bool add_runtime_tasks /*=true*/)
+    /*static*/ Processor::TaskIDTable& HighLevelRuntime::get_task_table(bool add_runtime_tasks)
     //--------------------------------------------------------------------------------------------
     {
       static Processor::TaskIDTable table;
@@ -1829,6 +1829,14 @@ namespace RegionRuntime {
       {
         HighLevelRuntime::register_runtime_tasks(table);
       }
+      return table;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    /*static*/ LowLevel::ReductionOpTable& HighLevelRuntime::get_reduction_table(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      static LowLevel::ReductionOpTable table;
       return table;
     }
 
@@ -1933,11 +1941,20 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    /*static*/ void HighLevelRuntime::set_input_args(int argc, char** argv)
+    /*static*/ int HighLevelRuntime::start(int argc, char** argv)
     //--------------------------------------------------------------------------------------------
     {
+      // Need to pass argc and argv to low-level runtime before we can record their values
+      // as they might be changed by GASNet or MPI or whatever
+      Machine m(&argc, &argv, HighLevelRuntime::get_task_table(true/*add runtime tasks*/), 
+                HighLevelRuntime::get_reduction_table(), false/*cps style*/);
+      // Now we can set out input args
       hlr_inputs.argv = argv;
       hlr_inputs.argc = argc;
+      // Kick off the low-level machine (control never returns)
+      m.run();
+      // We should never make it here
+      return 0;
     }
 
     //--------------------------------------------------------------------------------------------
