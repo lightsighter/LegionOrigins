@@ -639,15 +639,12 @@ void create_mappers(Machine *machine, HighLevelRuntime *runtime,
 int main(int argc, char **argv) {
   srand(time(NULL));
 
-  HighLevelRuntime::set_input_args(argc, argv);
   HighLevelRuntime::set_registration_callback(create_mappers);
   HighLevelRuntime::set_top_level_task_id(TOP_LEVEL_TASK_ID);
   HighLevelRuntime::register_single_task<top_level_task<AccessorGeneric> >(TOP_LEVEL_TASK_ID, Processor::LOC_PROC, "top_level_task");
   HighLevelRuntime::register_single_task<main_task<AccessorGeneric> >(TASKID_MAIN, Processor::LOC_PROC, "main_task");
   HighLevelRuntime::register_index_task<init_vectors_task<AccessorGeneric> >(TASKID_INIT_VECTORS, Processor::LOC_PROC, "init_vectors");
   HighLevelRuntime::register_index_task<add_vectors_task<AccessorGeneric> >(TASKID_ADD_VECTORS, Processor::LOC_PROC, "add_vectors");
-
-  Machine m(&argc, &argv, HighLevelRuntime::get_task_table(), RegionRuntime::LowLevel::ReductionOpTable(), false);
 
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "-blocks")) {
@@ -662,8 +659,5 @@ int main(int argc, char **argv) {
 
   printf("saxpy: num elems = %d\n", *get_num_blocks() * BLOCK_SIZE);
 
-  m.run();
-
-  printf("Machine::run() finished!\n");
-  return 0;
+  return HighLevelRuntime::start(argc, argv);
 }
