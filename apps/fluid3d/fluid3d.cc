@@ -1514,15 +1514,15 @@ int load_file(const void *args, size_t arglen,
     if(ck < 0) ck = 0; else if(ck > (int)(nz-1)) ck = nz-1;
 
     // Block coordinates and id
-    int midx = ci / mbsx;
-    int ovx = ci % mbsx;
-    int idx = midx + (midx > ovx ? -1 : 0);
-    int midy = cj / mbsy;
-    int ovy = cj % mbsy;
-    int idy = midy + (midy > ovy ? -1 : 0);
-    int midz = ck / mbsz;
-    int ovz = ck % mbsz;
-    int idz = midz + (midz > ovz ? -1 : 0);
+    int midx = ci / (mbsx + 1) + 1;
+    int eci = ci + (midx > ovbx ? midx - ovbx : 0);
+    int idx = eci / (mbsx + 1);
+    int midy = cj / (mbsy + 1) + 1;
+    int ecj = cj + (midy > ovby ? midy - ovby : 0);
+    int idy = ecj / (mbsy + 1);
+    int midz = ck / (mbsz + 1) + 1;
+    int eck = ck + (midz > ovbz ? midz - ovbz : 0);
+    int idz = eck / (mbsz + 1);
 
     int id = (idz*nby+idy)*nbx+idx;
 
@@ -1620,15 +1620,15 @@ void save_file(const void *args, size_t arglen,
       for(int ci = 0; ci < (int)nx; ci++) {
 
         // Block coordinates and id
-        int midx = ci / mbsx;
-        int ovx = ci % mbsx;
-        int idx = midx + (midx > ovx ? -1 : 0);
-        int midy = cj / mbsy;
-        int ovy = cj % mbsy;
-        int idy = midy + (midy > ovy ? -1 : 0);
-        int midz = ck / mbsz;
-        int ovz = ck % mbsz;
-        int idz = midz + (midz > ovz ? -1 : 0);
+        int midx = ci / (mbsx + 1) + 1;
+        int eci = ci + (midx > ovbx ? midx - ovbx : 0);
+        int idx = eci / (mbsx + 1);
+        int midy = cj / (mbsy + 1) + 1;
+        int ecj = cj + (midy > ovby ? midy - ovby : 0);
+        int idy = ecj / (mbsy + 1);
+        int midz = ck / (mbsz + 1) + 1;
+        int eck = ck + (midz > ovbz ? midz - ovbz : 0);
+        int idz = eck / (mbsz + 1);
 
         int id = (idz*nby+idy)*nbx+idx;
 
