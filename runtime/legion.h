@@ -84,6 +84,7 @@ namespace RegionRuntime {
     class ArgumentMap;
     class FutureMap;
     template<AccessorType AT> class PhysicalRegion;
+    class PointerIterator;
     class HighLevelRuntime;
     class Mapper;
 
@@ -494,6 +495,51 @@ namespace RegionRuntime {
     };
 
     /////////////////////////////////////////////////////////////
+    // PointerIterator 
+    /////////////////////////////////////////////////////////////
+    /**
+     * A class for iterating over the pointers that are valid
+     * for a given physical instance
+     */
+    class PointerIterator {
+    public:
+      bool has_next(void) const { return !finished; }
+      template<typename T>
+      ptr_t<T> next(void)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!finished);
+#endif
+        ptr_t<T> result = { unsigned(current_pointer) };
+        remaining_elmts--;
+        if (remaining_elmts > 0)
+        {
+          current_pointer++;
+        }
+        else
+        {
+          finished = !(enumerator->get_next(current_pointer,remaining_elmts));
+        }
+        return result;
+      }
+    private:
+      friend class PhysicalRegion<AccessorGeneric>;
+      friend class PhysicalRegion<AccessorArray>;
+      PointerIterator(LowLevel::ElementMask::Enumerator *e)
+        : enumerator(e)
+      {
+        finished = !(enumerator->get_next(current_pointer,remaining_elmts));
+      }
+    public:
+      ~PointerIterator(void) { delete enumerator; }
+    private:
+      LowLevel::ElementMask::Enumerator *enumerator;
+      bool finished;
+      int  current_pointer;
+      int  remaining_elmts;
+    };
+
+    /////////////////////////////////////////////////////////////
     // Physical Region 
     ///////////////////////////////////////////////////////////// 
       /**
@@ -515,12 +561,12 @@ namespace RegionRuntime {
       friend class TaskContext;
       friend class RegionMappingImpl;
       friend class PhysicalRegion<AccessorGeneric>;
-      PhysicalRegion(RegionMappingImpl *im)
+      PhysicalRegion(RegionMappingImpl *im, LogicalRegion h)
         : instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorArray>(NULL)),
-          valid(false), inline_mapped(true), impl(im) { }
-      PhysicalRegion(unsigned id)
+          valid(false), inline_mapped(true), impl(im), handle(h) { }
+      PhysicalRegion(unsigned id, LogicalRegion h)
         : instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorArray>(NULL)),
-          valid(true), inline_mapped(false), idx(id) { }
+          valid(true), inline_mapped(false), idx(id), handle(h) { }
       void set_allocator(LowLevel::RegionAllocatorUntyped alloc)
       {
 #ifdef DEBUG_HIGH_LEVEL
@@ -536,8 +582,9 @@ namespace RegionRuntime {
         instance = inst;
       }
     public:
-      PhysicalRegion(void) : instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorArray>(NULL)),
-        valid(false) { }
+      PhysicalRegion(LogicalRegion h = LogicalRegion::NO_REGION) 
+        : instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorArray>(NULL)),
+        valid(false), handle(h) { }
       // including definitions here so templates are instantiated and inlined
       template<typename T> 
       inline ptr_t<T> alloc(unsigned count = 1)
@@ -590,11 +637,18 @@ namespace RegionRuntime {
       {
         return (allocator < accessor.allocator) || (instance < accessor.instance); 
       }
+    public:
+      inline PointerIterator* iterator(void) const
+      {
+        LogicalRegion copy = handle;
+        return new PointerIterator(copy.get_valid_mask().enumerate_enabled());
+      }
     protected:
       bool valid;
       bool inline_mapped; // true if result of map region
       RegionMappingImpl *impl;
       unsigned idx; // if not inline mapped, tell us which parent region
+      LogicalRegion handle;
     };
 
     template<>
@@ -608,14 +662,14 @@ namespace RegionRuntime {
       friend class HighLevelRuntime;
       friend class TaskContext;
       friend class RegionMappingImpl;
-      PhysicalRegion(RegionMappingImpl *im)
+      PhysicalRegion(RegionMappingImpl *im, LogicalRegion h)
         : valid_allocator(false), valid_instance(false),
           instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric>(NULL)),
-          valid(false), inline_mapped(true), impl(im) { }
-      PhysicalRegion(unsigned id)
+          valid(false), inline_mapped(true), impl(im), handle(h) { }
+      PhysicalRegion(unsigned id, LogicalRegion h)
         : valid_allocator(false), valid_instance(false),
           instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric>(NULL)),
-          valid(true), inline_mapped(false), idx(id) { }
+          valid(true), inline_mapped(false), idx(id), handle(h) { }
       void set_allocator(LowLevel::RegionAllocatorUntyped alloc)
       {
 #ifdef DEBUG_HIGH_LEVEL
@@ -633,9 +687,10 @@ namespace RegionRuntime {
         instance = inst;
       }
     public:
-      PhysicalRegion(void)
+      PhysicalRegion(LogicalRegion h = LogicalRegion::NO_REGION)
         : valid_allocator(false), valid_instance(false),
-          instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric>(NULL)) { }
+          instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric>(NULL)),
+          handle(h) { }
       // including definitions here so templates are instantiated and inlined
       template<typename T> 
       inline ptr_t<T> alloc(unsigned count = 1)
@@ -715,13 +770,21 @@ namespace RegionRuntime {
       {
         return (allocator < accessor.allocator) || (instance < accessor.instance);  
       }
+    public:
+      inline PointerIterator* iterator(void) const 
+      { 
+        LogicalRegion copy = handle;
+        return new PointerIterator(copy.get_valid_mask().enumerate_enabled());
+      }
     protected:
       bool valid;
       bool inline_mapped;
       RegionMappingImpl *impl;
       unsigned idx;
+      LogicalRegion handle;
     };
 
+    
     /////////////////////////////////////////////////////////////
     // High Level Runtime 
     ///////////////////////////////////////////////////////////// 

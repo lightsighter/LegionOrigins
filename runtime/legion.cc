@@ -1039,8 +1039,8 @@ namespace RegionRuntime {
       unique_id = runtime->get_unique_task_id();
       mapped_event = UserEvent::create_user_event();
       unmapped_event = UserEvent::create_user_event();
-      result = PhysicalRegion<AccessorGeneric>();
-      fast_result = PhysicalRegion<AccessorArray>();
+      result = PhysicalRegion<AccessorGeneric>(r.handle.region);
+      fast_result = PhysicalRegion<AccessorArray>(r.handle.region);
       remaining_notifications = 0;
       allocator = RegionAllocator::NO_ALLOC;
       region_nodes = parent_ctx->region_nodes;
@@ -2354,7 +2354,7 @@ namespace RegionRuntime {
 
       internal_map_region(ctx, impl);
 
-      return PhysicalRegion<AccessorArray>(impl);
+      return PhysicalRegion<AccessorArray>(impl, req.handle.region);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2366,7 +2366,7 @@ namespace RegionRuntime {
 
       internal_map_region(ctx, impl);
       
-      return PhysicalRegion<AccessorGeneric>(impl);
+      return PhysicalRegion<AccessorGeneric>(impl, req.handle.region);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2383,7 +2383,7 @@ namespace RegionRuntime {
           (ctx->local_instances[idx] != InstanceInfo::get_no_instance()))
       {
         // We already have a valid instance, just make it and return
-        PhysicalRegion<AccessorGeneric> result(idx);
+        PhysicalRegion<AccessorGeneric> result(idx,ctx->regions[idx].handle.region);
         result.set_instance(ctx->local_instances[idx]->inst.get_accessor_untyped());
         result.set_allocator(ctx->allocators[idx]);
 #ifdef DEBUG_HIGH_LEVEL
@@ -2398,7 +2398,7 @@ namespace RegionRuntime {
         impl->set_target_instance(ctx->local_instances[idx]);
       }
       internal_map_region(ctx, impl);
-      return PhysicalRegion<AccessorArray>(impl);
+      return PhysicalRegion<AccessorArray>(impl, ctx->regions[idx].handle.region);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2415,7 +2415,7 @@ namespace RegionRuntime {
           (ctx->local_instances[idx] != InstanceInfo::get_no_instance()))
       {
         // We already have a valid instance, just make it and return 
-        PhysicalRegion<AccessorGeneric> result(idx);
+        PhysicalRegion<AccessorGeneric> result(idx, ctx->regions[idx].handle.region);
         result.set_instance(ctx->local_instances[idx]->inst.get_accessor_untyped());
         result.set_allocator(ctx->allocators[idx]);
         return result;
@@ -2427,7 +2427,7 @@ namespace RegionRuntime {
         impl->set_target_instance(ctx->local_instances[idx]);
       }
       internal_map_region(ctx, impl);
-      return PhysicalRegion<AccessorGeneric>(impl);
+      return PhysicalRegion<AccessorGeneric>(impl, ctx->regions[idx].handle.region);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -6287,7 +6287,7 @@ namespace RegionRuntime {
       {
         // Create the new physical region and mark which index
         // it is in case we have to unmap it later
-        PhysicalRegion<AccessorGeneric> reg(idx);
+        PhysicalRegion<AccessorGeneric> reg(idx, regions[idx].handle.region);
 
         // check to see if they asked for a physical instance
         if (physical_instances[idx] != InstanceInfo::get_no_instance())
@@ -7196,8 +7196,6 @@ namespace RegionRuntime {
           (*instance_infos)[iid]->remove_user(this->unique_id);
         }
         // Now unpack the future map
-        printf("Unpacking the future map for task %s (unique id %d) in context %d on processor %x\n",
-            variants->name, unique_id, ctx_id, local_proc.id);
         future_map.unpack_future_map(derez);
         // Check to see if this a reduction task, if so reduce all results, otherwise we're done
         if (reduction != NULL)
