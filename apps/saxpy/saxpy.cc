@@ -267,6 +267,7 @@ void init_vectors_task(const void *global_args, size_t global_arglen,
   PhysicalRegion<AT> r_x = regions[0];
   PhysicalRegion<AT> r_y = regions[1];
 
+#if 0
   for (unsigned i = 0; i < BLOCK_SIZE; i++) {
     Entry entry_x;
     entry_x.v = get_rand_float();
@@ -276,6 +277,28 @@ void init_vectors_task(const void *global_args, size_t global_arglen,
     entry_y.v = get_rand_float();
     r_y.write(block->entry_y[i], entry_y);
   }
+#else
+  {
+    PointerIterator *itr = r_x.iterator();
+    while (itr->has_next())
+    {
+      Entry entry_x;
+      entry_x.v = get_rand_float();
+      r_x.write(itr->next<Entry>(), entry_x);
+    }
+    delete itr;
+  }
+  {
+    PointerIterator *itr = r_y.iterator();
+    while (itr->has_next())
+    {
+      Entry entry_y;
+      entry_y.v = get_rand_float();
+      r_y.write(itr->next<Entry>(), entry_y);
+    }
+    delete itr;
+  }
+#endif
 }
 
 template<AccessorType AT>
