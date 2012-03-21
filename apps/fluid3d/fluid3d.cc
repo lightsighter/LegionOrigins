@@ -1975,7 +1975,6 @@ void create_mappers(Machine *machine, HighLevelRuntime *runtime, Processor local
 int main(int argc, char **argv)
 {
   HighLevelRuntime::set_top_level_task_id(TOP_LEVEL_TASK_ID);
-  HighLevelRuntime::set_input_args(argc,argv);
   HighLevelRuntime::set_registration_callback(create_mappers);
   HighLevelRuntime::register_single_task<top_level_task<AccessorGeneric> >(TOP_LEVEL_TASK_ID,Processor::LOC_PROC,"top_level_task");
   HighLevelRuntime::register_single_task<main_task<AccessorGeneric> >(TASKID_MAIN_TASK,Processor::LOC_PROC,"main_task");
@@ -2014,9 +2013,6 @@ int main(int argc, char **argv)
   nby = 8;
   nbz = 8;
 
-  // Initialize the machine
-  Machine m(&argc, &argv, HighLevelRuntime::get_task_table(), false);
-
   for(int i = 1; i < argc; i++) {
     if(!strcmp(argv[i], "-s")) {
       Config::num_steps = atoi(argv[++i]);
@@ -2043,11 +2039,7 @@ int main(int argc, char **argv)
   printf("fluid: divisions = %d x %d x %d\n", nbx, nby, nbz);
   Config::args_read = true;
 
-  m.run();
-
-  printf("Machine run finished!\n");
-
-  return 0;
+  return HighLevelRuntime::start(argc,argv);
 }
 
 // EOF
