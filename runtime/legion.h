@@ -1225,7 +1225,8 @@ namespace RegionRuntime {
       friend class TaskContext;
       FutureImpl(Event set_e = Event::NO_EVENT); 
       ~FutureImpl(void);
-      void reset(Event set_e); // Event that will be set when task is finished
+      void reset(void);
+      void set(Event set_e); // Event that will be set when task is finished
       void set_result(const void *res, size_t result_size);
       void set_result(Deserializer &derez);
     public:
@@ -1243,12 +1244,14 @@ namespace RegionRuntime {
       Lock  map_lock;
       std::map<IndexPoint,UserEvent> outstanding_waits;
       std::map<IndexPoint,TaskArgument>  valid_results;
+      bool active;
     protected:
       friend class HighLevelRuntime;
       friend class TaskContext;
       FutureMapImpl(Event set_e = Event::NO_EVENT);
       ~FutureMapImpl(void);
-      void reset(Event set_e); // event when index space is finished
+      void reset(void);
+      void set(Event set_e); // event when index space is finished
       void set_result(const IndexPoint &point, const void *res, size_t result_size);
       void set_result(size_t point_size, Deserializer &derez);
     protected:
@@ -1342,7 +1345,6 @@ namespace RegionRuntime {
       void set_index_space(const std::vector<CT> &index_space, const ArgumentMap &_map, bool must);
       void set_regions(const std::vector<RegionRequirement> &regions, bool all_same);
       void set_reduction(ReductionFnptr reduct, const TaskArgument &init);
-      void set_future_map(void);
     protected:
       // functions for packing and unpacking tasks
       size_t compute_task_size(void);
@@ -2944,6 +2946,9 @@ namespace RegionRuntime {
     {
       Event wait_lock = map_lock.lock(0,true/*exclusive*/);
       wait_lock.wait(true/*block*/);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
       // Check to see if the result exists yet
       if (valid_results.find(point) != valid_results.end())
       {
@@ -2975,6 +2980,9 @@ namespace RegionRuntime {
     {
       Event wait_lock = map_lock.lock(0,true/*exclusive*/);
       wait_lock.wait(true/*block*/);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
       if (valid_results.find(point) != valid_results.end())
       {
         // Release the lock and return
@@ -3075,7 +3083,6 @@ namespace RegionRuntime {
       }
       desc->set_regions(regions, false/*all same*/);
       desc->set_index_space<CT>(index_space, arg_map, must);
-      desc->set_future_map();
       // Check if we want to spawn this task
       check_spawn_task(desc);
       // Don't free memory as the task becomes the owner

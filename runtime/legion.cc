@@ -220,7 +220,7 @@ namespace RegionRuntime {
       {
         if (it->exists() && (*it != result))
         {
-          log_spy(LEVEL_INFO,"Event Event %d %d %d %d",it->id,it->gen,result.id,result.gen);
+          log_spy(LEVEL_INFO,"Event Event %x %d %x %d",it->id,it->gen,result.id,result.gen);
         }
       }
     }
@@ -652,7 +652,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void FutureImpl::reset(Event set_e) 
+    void FutureImpl::reset(void)
     //--------------------------------------------------------------------------
     {
       if (result != NULL)
@@ -660,6 +660,13 @@ namespace RegionRuntime {
         free(result);
         result = NULL;
       }
+      active = false; 
+    }
+
+    //--------------------------------------------------------------------------
+    void FutureImpl::set(Event set_e) 
+    //--------------------------------------------------------------------------
+    {
       active = true;
       set_event = set_e;
     }
@@ -741,7 +748,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     FutureMapImpl::FutureMapImpl(Event set_e)
-      : all_set_event(set_e), map_lock(Lock::create_lock())
+      : all_set_event(set_e), map_lock(Lock::create_lock()), active(false)
     //--------------------------------------------------------------------------
     {
     }
@@ -754,7 +761,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void FutureMapImpl::reset(Event set_e)
+    void FutureMapImpl::reset(void)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -766,7 +773,15 @@ namespace RegionRuntime {
         free(it->second.get_ptr());
       }
       valid_results.clear();
+      active = false;
+    }
+
+    //--------------------------------------------------------------------------
+    void FutureMapImpl::set(Event set_e)
+    //--------------------------------------------------------------------------
+    {
       all_set_event = set_e;
+      active = true;
     }
 
     //--------------------------------------------------------------------------
@@ -1074,7 +1089,7 @@ namespace RegionRuntime {
 #endif
       }
       log_spy(LEVEL_INFO,"Map %d Parent %d",unique_id,c->get_unique_id());
-      log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle %d Parent %d Privilege %d Coherence %d",
+      log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle %x Parent %x Privilege %d Coherence %d",
           parent_ctx->unique_id,unique_id,0,r.handle.region.id,r.parent.id,r.privilege,r.prop);
     }
 
@@ -1181,7 +1196,7 @@ namespace RegionRuntime {
             if (!(*it).exists())
             {
               log_region(LEVEL_ERROR,"Illegal NO_MEMORY memory specified for inline mapping operation for "
-                  "logical region %d of inline mapping %d of task %s", req.handle.region.id, unique_id, parent_ctx->variants->name);
+                  "logical region %x of inline mapping %d of task %s", req.handle.region.id, unique_id, parent_ctx->variants->name);
               exit(1);
             }
             std::pair<InstanceInfo*,bool> result = handle->find_physical_instance(parent_physical_ctx, *it);
@@ -1233,7 +1248,7 @@ namespace RegionRuntime {
           if (!found)
           {
             log_inst(LEVEL_ERROR,"Unable to find or create physical instance for mapping "
-                "region %d of task %s (ID %d) with unique id %d",req.handle.region.id,
+                "region %x of task %s (ID %d) with unique id %d",req.handle.region.id,
                 parent_ctx->variants->name,parent_ctx->task_id,parent_ctx->unique_id);
             exit(1);
           }
@@ -1241,14 +1256,14 @@ namespace RegionRuntime {
         else
         { 
           log_inst(LEVEL_ERROR,"No specified memory locations for mapping physical instance "
-              "for region (%d) for task %s (ID %d) with unique id %d",req.handle.region.id,
+              "for region (%x) for task %s (ID %d) with unique id %d",req.handle.region.id,
               parent_ctx->variants->name,parent_ctx->task_id, parent_ctx->unique_id);
           exit(1);
         }
       }
 #ifdef DEBUG_HIGH_LEVEL
-      log_region(LEVEL_DEBUG,"Mapping inline region %d of task %s (ID %d) (unique id %d) to "
-              "physical instance %d of logical region %d in memory %d",req.handle.region.id,
+      log_region(LEVEL_DEBUG,"Mapping inline region %x of task %s (ID %d) (unique id %d) to "
+              "physical instance %x of logical region %x in memory %x",req.handle.region.id,
               parent_ctx->variants->name, parent_ctx->task_id,parent_ctx->unique_id,
               chosen_info->iid,chosen_info->handle.id,chosen_info->location.id);
       assert(chosen_info != InstanceInfo::get_no_instance());
@@ -1260,8 +1275,8 @@ namespace RegionRuntime {
         allocator = req.handle.region.create_allocator_untyped(chosen_info->location);
         if (!allocator.exists())
         {
-          log_inst(LEVEL_ERROR,"Unable to make allocator for instance %d of region %d "
-            " in memory %d for region mapping", chosen_info->inst.id, chosen_info->handle.id,
+          log_inst(LEVEL_ERROR,"Unable to make allocator for instance %x of region %x "
+            " in memory %x for region mapping", chosen_info->inst.id, chosen_info->handle.id,
             chosen_info->location.id);
           exit(1);
         }
@@ -1296,7 +1311,7 @@ namespace RegionRuntime {
       // Set the ready event to be the resulting precondition
       ready_event = precondition;
 #ifdef DEBUG_HIGH_LEVEL
-      log_spy(LEVEL_INFO,"Mapping Performed %d %d %d %d %d",unique_id,ready_event.id,ready_event.gen,unmapped_event.id,unmapped_event.gen);
+      log_spy(LEVEL_INFO,"Mapping Performed %d %x %d %x %d",unique_id,ready_event.id,ready_event.gen,unmapped_event.id,unmapped_event.gen);
 #endif
       mapped = true;
       // We're done mapping, so trigger the mapping event
@@ -2124,9 +2139,9 @@ namespace RegionRuntime {
       // Create the logical region by invoking the low-level runtime
       LogicalRegion region = 
         (LogicalRegion)LowLevel::RegionMetaDataUntyped::create_region_untyped(num_elmts,elmt_size);
-      log_region(LEVEL_DEBUG,"Creating logical region %d in task %d",
-                  region.id,ctx->unique_id);
-      log_spy(LEVEL_INFO,"Region %d",region.id);
+      log_region(LEVEL_DEBUG,"Creating logical region %x in task %s (ID %d)",
+                  region.id,ctx->variants->name,ctx->unique_id);
+      log_spy(LEVEL_INFO,"Region %x",region.id);
 
       // Make the context aware of the logical region
       ctx->create_region(region);
@@ -2140,8 +2155,8 @@ namespace RegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_DESTROY_REGION);
       LowLevel::RegionMetaDataUntyped low_region = (LowLevel::RegionMetaDataUntyped)handle;
-      log_region(LEVEL_DEBUG,"Registering destroying logical region %d in task %d",
-                  low_region.id, ctx->unique_id);
+      log_region(LEVEL_DEBUG,"Registering destroy logical region %x in task %s (ID %d)",
+                  low_region.id, ctx->variants->name, ctx->unique_id);
 
       // Get a deletion operation
       DeletionOp *op = get_available_deletion(ctx, handle);
@@ -2188,8 +2203,8 @@ namespace RegionRuntime {
       LogicalRegion smash_region = 
         LowLevel::RegionMetaDataUntyped::create_region_untyped(parent,smash_mask);
 
-      log_region(LEVEL_DEBUG,"Creating smashed logical region %d in task %d",
-                  smash_region.id, ctx->unique_id);
+      log_region(LEVEL_DEBUG,"Creating smashed logical region %x in task %s (ID %d)",
+                  smash_region.id, ctx->variants->name, ctx->unique_id);
 
       // Tell the context about the new smash region
       ctx->smash_region(smash_region, regions);
@@ -2205,7 +2220,7 @@ namespace RegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_PARTITION);
 
       PartitionID partition_id = get_unique_partition_id();
-      log_spy(LEVEL_INFO,"Partition %d Parent %d Disjoint %d",partition_id,parent.id,true);
+      log_spy(LEVEL_INFO,"Partition %d Parent %x Disjoint %d",partition_id,parent.id,true);
 
       std::vector<LogicalRegion> children(num_subregions);
       // Create all of the subregions
@@ -2218,7 +2233,7 @@ namespace RegionRuntime {
         //log_region(LEVEL_DEBUG,"Creating subregion %d of region %d in task %d\n",
         //            child_region.id, parent.id, ctx->unique_id);
         children[idx] = child_region;
-        log_spy(LEVEL_INFO,"Region %d Parent %d",child_region.id,partition_id);
+        log_spy(LEVEL_INFO,"Region %x Parent %x",child_region.id,partition_id);
       }
 
       ctx->create_partition(partition_id, parent, true/*disjoint*/, children);
@@ -2235,7 +2250,7 @@ namespace RegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_PARTITION);
 
       PartitionID partition_id = get_unique_partition_id();
-      log_spy(LEVEL_INFO,"Partition %d Parent %d Disjoint %d",partition_id,parent.id,disjoint);
+      log_spy(LEVEL_INFO,"Partition %d Parent %x Disjoint %d",partition_id,parent.id,disjoint);
 
       std::vector<LogicalRegion> children(coloring.size());
       for (unsigned idx = 0; idx < coloring.size(); idx++)
@@ -2256,7 +2271,7 @@ namespace RegionRuntime {
         //log_region(LEVEL_DEBUG,"Creating subregion %d of region %d in task %d\n",
         //            child_region.id, parent.id, ctx->unique_id);
         children[idx] = child_region;
-        log_spy(LEVEL_INFO,"Region %d Parent %d",child_region.id,partition_id);
+        log_spy(LEVEL_INFO,"Region %x Parent %x",child_region.id,partition_id);
       }
 
       ctx->create_partition(partition_id, parent, disjoint, children);
@@ -2273,7 +2288,7 @@ namespace RegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_PARTITION);
 
       PartitionID partition_id = get_unique_partition_id();
-      log_spy(LEVEL_INFO,"Partition %d Parent %d Disjoint %d",partition_id,parent.id,disjoint);
+      log_spy(LEVEL_INFO,"Partition %d Parent %x Disjoint %d",partition_id,parent.id,disjoint);
 
       std::vector<LogicalRegion> children(ranges.size());
       for (unsigned idx = 0; idx < ranges.size(); idx++)
@@ -2292,7 +2307,7 @@ namespace RegionRuntime {
         //log_region(LEVEL_DEBUG,"Creating subregion %d of region %d in task %d\n",
         //            child_region.id, parent.id, ctx->unique_id);
         children[idx] = child_region;
-        log_spy(LEVEL_INFO,"Region %d Parent %d",child_region.id,partition_id);
+        log_spy(LEVEL_INFO,"Region %x Parent %x",child_region.id,partition_id);
       }
 
       ctx->create_partition(partition_id, parent, disjoint, children);
@@ -2305,8 +2320,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_DESTROY_PARTITION);
-      log_region(LEVEL_DEBUG,"Destroying partition %d in task %d",
-                  part.id, ctx->unique_id);
+      log_region(LEVEL_DEBUG,"Destroying partition %d in task %s (ID %d)",
+                  part.id, ctx->variants->name, ctx->unique_id);
       // Get a deletion operation
       DeletionOp *op = get_available_deletion(ctx, part.id);
       // Register the deletion with the context
@@ -2419,8 +2434,8 @@ namespace RegionRuntime {
     void HighLevelRuntime::internal_map_region(TaskContext *ctx, RegionMappingImpl *impl)
     //--------------------------------------------------------------------------------------------
     {
-      log_region(LEVEL_DEBUG,"Registering a map operation for region %d in task %d",
-                  impl->req.handle.region.id, ctx->unique_id);
+      log_region(LEVEL_DEBUG,"Registering a map operation for region %x in task %s (ID %d)",
+                  impl->req.handle.region.id, ctx->variants->name, ctx->unique_id);
       ctx->register_mapping(impl); 
 
       // Check to see if it is ready to map, if so do it, otherwise add it to the list
@@ -2445,8 +2460,8 @@ namespace RegionRuntime {
 #endif
       if (region.inline_mapped)
       {
-        log_region(LEVEL_DEBUG,"Unmapping region %d in task %d",
-                  region.impl->req.handle.region.id, ctx->unique_id);
+        log_region(LEVEL_DEBUG,"Unmapping region %x in task %s (ID %d)",
+                  region.impl->req.handle.region.id, ctx->variants->name, ctx->unique_id);
         region.impl->deactivate();
       }
       else
@@ -2466,8 +2481,8 @@ namespace RegionRuntime {
 #endif
       if (region.inline_mapped)
       {
-        log_region(LEVEL_DEBUG,"Unmapping region %d in task %d",
-                  region.impl->req.handle.region.id, ctx->unique_id);   
+        log_region(LEVEL_DEBUG,"Unmapping region %x in task %s (ID %d)",
+                  region.impl->req.handle.region.id, ctx->variants->name, ctx->unique_id);   
         region.impl->deactivate();
       }
       else
@@ -2850,7 +2865,7 @@ namespace RegionRuntime {
             {
               // No longer any versions of this task to keep locally
               // Return the context to the free list
-              free_context(ctx);
+              ctx->deactivate();
             }
           }
           else // doesn't need split
@@ -2906,7 +2921,7 @@ namespace RegionRuntime {
       // Get the number of mappers that requested this processor for stealing 
       int num_stealers;
       derez.deserialize<int>(num_stealers);
-      log_task(LEVEL_SPEW,"handling a steal request on processor %d from processor %d",
+      log_task(LEVEL_SPEW,"handling a steal request on processor %x from processor %x",
               local_proc.id,thief.id);
 
       // Iterate over the task descriptions, asking the appropriate mapper
@@ -3677,7 +3692,11 @@ namespace RegionRuntime {
       variants = NULL;
       mapper_lock = Lock::NO_LOCK;
       current_lock = context_lock;
+      future.reset();
+      future_map.reset();
       active = false;
+      // Tell the runtime this context is free again
+      runtime->free_context(this);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3721,8 +3740,8 @@ namespace RegionRuntime {
       orig_ctx = this;
       remote = false;
       termination_event = UserEvent::create_user_event();
-      future.reset(termination_event);
-      future_map.reset(termination_event);
+      future.set(termination_event);
+      future_map.set(termination_event);
       // If parent task is not null, share its context lock, otherwise use our own
       if (parent != NULL)
       {
@@ -3860,7 +3879,7 @@ namespace RegionRuntime {
           if (regions[idx].func_type != SINGULAR_FUNC)
           {
             log_task(LEVEL_ERROR,"All arguments to a single task launch must be single regions. "
-                "Region %d of task %s (ID %d) with unique id %d is not a singular region.",idx,
+                "Region at index %d of task %s (ID %d) with unique id %d is not a singular region.",idx,
                 variants->name, task_id,
                 unique_id);
             exit(1);
@@ -3882,7 +3901,7 @@ namespace RegionRuntime {
             bool trace_result = compute_region_trace(trace, regions[idx].parent, regions[idx].handle.region);
             if (!trace_result)
             {
-              log_task(LEVEL_ERROR,"Region %d is not an ancestor of region %d (idx %d) for task %s (ID %d) (unique id %d)",
+              log_task(LEVEL_ERROR,"Region %x is not an ancestor of region %x (idx %d) for task %s (ID %d) (unique id %d)",
                   regions[idx].parent.id,regions[idx].handle.region.id,idx,
                   variants->name,task_id,unique_id);
               exit(1);
@@ -3893,7 +3912,7 @@ namespace RegionRuntime {
             bool trace_result = compute_partition_trace(trace, regions[idx].parent, regions[idx].handle.partition);
             if (!trace_result)
             {
-              log_task(LEVEL_ERROR,"Region %d is not an ancestor of partition %d (idx %d) for task %s (ID %d) (unique id %d)",
+              log_task(LEVEL_ERROR,"Region %x is not an ancestor of partition %d (idx %d) for task %s (ID %d) (unique id %d)",
                   regions[idx].parent.id,regions[idx].handle.partition,idx,
                   variants->name,task_id,unique_id);
               exit(1);
@@ -3940,7 +3959,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         if (!found)
         {
-          log_inst(LEVEL_ERROR,"Unable to find parent physical context for region %d (index %d) of task %s (ID %d) (unique id %d)!",
+          log_inst(LEVEL_ERROR,"Unable to find parent physical context for region %x (index %d) of task %s (ID %d) (unique id %d)!",
               regions[idx].handle.region.id, idx, 
               variants->name, task_id, unique_id);
           exit(1);
@@ -3956,7 +3975,7 @@ namespace RegionRuntime {
         {
           case SINGULAR_FUNC:
             {
-              log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle %d Parent %d Privilege %d Coherence %d",
+              log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle %x Parent %x Privilege %d Coherence %d",
                   parent_ctx->unique_id,unique_id,idx,regions[idx].handle.region.id,regions[idx].parent.id,
                   regions[idx].privilege, regions[idx].prop);
               break;
@@ -3964,7 +3983,7 @@ namespace RegionRuntime {
           case EXECUTABLE_FUNC:
           case MAPPED_FUNC:
             {
-              log_spy(LEVEL_INFO,"Context %d Task %d Partition %d Handle %d Parent %d Privilege %d Coherence %d",
+              log_spy(LEVEL_INFO,"Context %d Task %d Partition %d Handle %d Parent %x Privilege %d Coherence %d",
                   parent_ctx->unique_id,unique_id,idx,regions[idx].handle.partition,regions[idx].parent.id,
                   regions[idx].privilege, regions[idx].prop);
               break;
@@ -3983,15 +4002,6 @@ namespace RegionRuntime {
       reduction_value = malloc(init.get_size());
       memcpy(reduction_value,init.get_ptr(),init.get_size());
       reduction_size = init.get_size();
-      // Set the future to the termination event
-      future.reset(get_termination_event());
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void TaskContext::set_future_map(void)
-    //--------------------------------------------------------------------------------------------
-    {
-      future_map.reset(get_termination_event());
     }
 
 #if 0 // In case we ever go back to templated constraints
@@ -4926,8 +4936,8 @@ namespace RegionRuntime {
               {
                 case SINGULAR_FUNC:
                   {
-                    log_region(LEVEL_ERROR,"Unable to find parent region %d for logical "
-                                            "region %d (index %d) for task %s (ID %d) with unique id %d",
+                    log_region(LEVEL_ERROR,"Unable to find parent region %x for logical "
+                                            "region %x (index %d) for task %s (ID %d) with unique id %d",
                                             child->regions[idx].parent.id, child->regions[idx].handle.region.id,
                                             idx,child->variants->name,
                                             child->task_id,child->unique_id);
@@ -4936,7 +4946,7 @@ namespace RegionRuntime {
                 case EXECUTABLE_FUNC:
                 case MAPPED_FUNC:
                   {
-                    log_region(LEVEL_ERROR,"Unable to find parent region %d for partition "
+                    log_region(LEVEL_ERROR,"Unable to find parent region %x for partition "
                                             "%d (index %d) for task %s (ID %d) with unique id %d",
                                             child->regions[idx].parent.id, child->regions[idx].handle.partition,
                                             idx,child->variants->name,
@@ -4949,7 +4959,7 @@ namespace RegionRuntime {
             }
             else
             {
-              log_region(LEVEL_ERROR,"Unable to find parent region %d for logical region %d (index %d)"
+              log_region(LEVEL_ERROR,"Unable to find parent region %x for logical region %x (index %d)"
                                       " for task %s (ID %d) with unique id %d",child->regions[idx].parent.id,
                                 child->regions[idx].handle.region.id,idx,
                                 child->variants->name,child->task_id,child->unique_id);
@@ -4984,8 +4994,8 @@ namespace RegionRuntime {
           {
             case SINGULAR_FUNC:
               {
-                log_region(LEVEL_DEBUG,"registering region dependence for region %d "
-                  "with parent %d in task %d",req.handle.region.id,parent.id,unique_id);
+                log_region(LEVEL_DEBUG,"registering region dependence for region %x "
+                  "with parent %x in task %d",req.handle.region.id,parent.id,unique_id);
 #ifdef DEBUG_HIGH_LEVEL
                 bool trace_result =
 #endif
@@ -5011,7 +5021,7 @@ namespace RegionRuntime {
                   exit(1);
                 }
                 log_region(LEVEL_DEBUG,"registering partition dependence for region %d "
-                  "with parent region %d in task %d",req.handle.partition,parent.id,unique_id);
+                  "with parent region %x in task %d",req.handle.partition,parent.id,unique_id);
                 compute_partition_trace(dep.trace, parent, req.handle.partition);
                 break;
               }
@@ -5022,8 +5032,8 @@ namespace RegionRuntime {
         else
         {
           // We're looking for a logical region
-          log_region(LEVEL_DEBUG,"registering region dependence for region %d "
-            "with parent %d in task %d",req.handle.region.id, parent.id,unique_id);
+          log_region(LEVEL_DEBUG,"registering region dependence for region %x "
+            "with parent %x in task %d",req.handle.region.id, parent.id,unique_id);
 #ifdef DEBUG_HIGH_LEVEL
           bool trace_result = 
 #endif
@@ -5036,8 +5046,8 @@ namespace RegionRuntime {
       else
       {
         // This is a region mapping so we're looking for a logical mapping
-        log_region(LEVEL_DEBUG,"registering region dependence for mapping of region %d "
-            "with parent %d in task %d", req.handle.region.id,parent.id,unique_id);
+        log_region(LEVEL_DEBUG,"registering region dependence for mapping of region %x "
+            "with parent %x in task %d", req.handle.region.id,parent.id,unique_id);
 #ifdef DEBUG_HIGH_LEVEL
         bool trace_result = 
 #endif
@@ -5094,15 +5104,15 @@ namespace RegionRuntime {
       {
         if (task)
         {
-          log_region(LEVEL_ERROR,"Child task %d with unique id %d requests region %d (index %d)"
-              " in mode %s but parent task only has parent region %d in mode %s", task,
+          log_region(LEVEL_ERROR,"Child task %d with unique id %d requests region %x (index %d)"
+              " in mode %s but parent task only has parent region %x in mode %s", task,
               unique, child_req.handle.region.id, idx, get_privilege(child_req.privilege),
               par_req.handle.region.id, get_privilege(par_req.privilege));
         }
         else
         {
-          log_region(LEVEL_ERROR,"Mapping request for region %d in mode %s but parent task only "
-              "has parent region %d in mode %s",child_req.handle.region.id,
+          log_region(LEVEL_ERROR,"Mapping request for region %x in mode %s but parent task only "
+              "has parent region %x in mode %s",child_req.handle.region.id,
               get_privilege(child_req.privilege),par_req.handle.region.id,
               get_privilege(par_req.privilege));
         }
@@ -5144,7 +5154,7 @@ namespace RegionRuntime {
         }
         else // error condition
         {
-          log_region(LEVEL_ERROR,"Unable to find parent region %d for mapping region %d "
+          log_region(LEVEL_ERROR,"Unable to find parent region %x for mapping region %x "
               "in task %s (ID %d) with unique id %d",impl->req.parent.id,impl->req.handle.region.id,
               this->variants->name,this->task_id,this->unique_id);
           exit(1);
@@ -5253,7 +5263,7 @@ namespace RegionRuntime {
         bool no_mapping = false;
         if (locations.empty())
         {
-          log_region(LEVEL_ERROR,"No memory locations specified by mapper for region %d (idx %d) of task %s",
+          log_region(LEVEL_ERROR,"No memory locations specified by mapper for region %x (idx %d) of task %s",
               regions[idx].handle.region.id, idx, variants->name);
         }
         else
@@ -5324,8 +5334,8 @@ namespace RegionRuntime {
               }
             }
 #ifdef DEBUG_HIGH_LEVEL
-            log_region(LEVEL_DEBUG,"Mapping region %d (idx %d) of task %s (ID %d) (unique id %d) to physical "
-                "instance %d of logical region %d in memory %d",regions[idx].handle.region.id,idx,
+            log_region(LEVEL_DEBUG,"Mapping region %x (idx %d) of task %s (ID %d) (unique id %d) to physical "
+                "instance %x of logical region %x in memory %x",regions[idx].handle.region.id,idx,
                 variants->name, task_id,
                 unique_id,info->iid,info->handle.id,info->location.id);
 #endif
@@ -5341,7 +5351,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
             assert(trace_result);
 #endif
-            log_region(LEVEL_DEBUG,"Physical tree traversal for region %d (index %d) in context %d",
+            log_region(LEVEL_DEBUG,"Physical tree traversal for region %x (index %d) in context %d",
                 info->handle.id, idx, parent_physical_ctx);
             // Inject the request to register this physical instance
             // starting from the parent region's logical node
@@ -5362,7 +5372,7 @@ namespace RegionRuntime {
           // Check to make sure that we found an instance
           if (!found)
           {
-            log_inst(LEVEL_ERROR,"Unable to find or create physical instance for region %d"
+            log_inst(LEVEL_ERROR,"Unable to find or create physical instance for region %x"
                 " (index %d) of task %s (ID %d) with unique id %d",regions[idx].handle.region.id,
                 idx,this->variants->name,this->task_id,this->unique_id);
             exit(1);
@@ -5370,7 +5380,7 @@ namespace RegionRuntime {
         }
         else
         {
-          log_inst(LEVEL_DEBUG,"Not creating physical instance for region %d (index %d) "
+          log_inst(LEVEL_DEBUG,"Not creating physical instance for region %x (index %d) "
               "for task %s (ID %d) with unique id %d",regions[idx].handle.region.id,idx,
               this->variants->name,this->task_id,this->unique_id);
           // Push back a no-instance for this physical instance
@@ -5415,12 +5425,12 @@ namespace RegionRuntime {
           {
             index = sprintf(&point_buffer[index],"%d ",index_point[idx]);
           }
-          log_spy(LEVEL_INFO,"Index Task Launch %d %d %d %d %d %d %ld %s",
+          log_spy(LEVEL_INFO,"Index Task Launch %d %d %x %d %x %d %ld %s",
               task_id,unique_id,start_cond.id,start_cond.gen,term.id,term.gen,index_point.size(),point_buffer);
         }
         else
         {
-          log_spy(LEVEL_INFO,"Task Launch %d %d %d %d %d %d",
+          log_spy(LEVEL_INFO,"Task Launch %d %d %x %d %x %d",
               task_id,unique_id,start_cond.id,start_cond.gen,term.id,term.gen);
         }
       }
@@ -7186,6 +7196,8 @@ namespace RegionRuntime {
           (*instance_infos)[iid]->remove_user(this->unique_id);
         }
         // Now unpack the future map
+        printf("Unpacking the future map for task %s (unique id %d) in context %d on processor %x\n",
+            variants->name, unique_id, ctx_id, local_proc.id);
         future_map.unpack_future_map(derez);
         // Check to see if this a reduction task, if so reduce all results, otherwise we're done
         if (reduction != NULL)
@@ -7596,7 +7608,13 @@ namespace RegionRuntime {
             // We already pushed our future map results back to the index owner
           }
           // Tell the index owner that we're done
+#ifdef DEBUG_HIGH_LEVEL
+          orig_ctx->current_taken = true;
+#endif
           orig_ctx->index_space_finished(num_local_points);
+#ifdef DEBUG_HIGH_LEVEL
+          orig_ctx->current_taken = false;
+#endif
           if (!index_owner)
           {
             created_regions.clear();
@@ -7702,7 +7720,7 @@ namespace RegionRuntime {
         }
         if (!found)
         {
-          log_task(LEVEL_ERROR,"Attempted to delete region %d which is not contained in any of the "
+          log_task(LEVEL_ERROR,"Attempted to delete region %x which is not contained in any of the "
               "regions for which task %s (ID %d) (unique id %d) has permissions",handle.id,
               variants->name,task_id,unique_id);
           exit(1);
@@ -8013,7 +8031,7 @@ namespace RegionRuntime {
           assert(instance_infos->find(clone_iid) == instance_infos->end());
 #endif
           (*instance_infos)[clone_iid] = clone_inst;
-          log_inst(LEVEL_DEBUG,"Creating clone physical instance %d of logical region %d in memory %d",
+          log_inst(LEVEL_DEBUG,"Creating clone physical instance %x of logical region %x in memory %x",
             clone_inst->inst.id, clone_inst->handle.id, clone_inst->location.id);
 
           // Update our local information
@@ -8245,7 +8263,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       if (this == ctx)
       {
-        log_region(LEVEL_ERROR,"Illegal dependence between two regions %d and %d (with index %d and %d) "
+        log_region(LEVEL_ERROR,"Illegal dependence between two regions %x and %x (with index %d and %d) "
                                 "in task %s (ID %d) with unique id %d",this->regions[idx].handle.region.id,
                                 this->regions[dep_idx].handle.region.id,idx,dep_idx,
                                 variants->name,task_id,unique_id);
@@ -8340,7 +8358,7 @@ namespace RegionRuntime {
       assert(instance_infos->find(iid) == instance_infos->end());
 #endif
       (*instance_infos)[iid] = result_info;
-      log_inst(LEVEL_DEBUG,"Creating physical instance %d of logical region %d in memory %d",
+      log_inst(LEVEL_DEBUG,"Creating physical instance %x of logical region %x in memory %x",
           inst.id, handle.id, m.id);
       return result_info;
     }
@@ -8384,8 +8402,8 @@ namespace RegionRuntime {
           assert(instance_infos->find(iid) == instance_infos->end());
 #endif
           (*instance_infos)[iid] = next;
-          log_inst(LEVEL_DEBUG,"Duplicating meta data for instance %d of logical region %d in memory %d "
-              "for subregion %d", current->inst.id, current->handle.id, current->location.id, next_handle.id);
+          log_inst(LEVEL_DEBUG,"Duplicating meta data for instance %x of logical region %x in memory %x "
+              "for subregion %x", current->inst.id, current->handle.id, current->location.id, next_handle.id);
 
         }
         current = next;
@@ -8415,7 +8433,7 @@ namespace RegionRuntime {
     {
       if (added)
       {
-        log_leak(LEVEL_WARNING,"Logical Regiong %d is being leaked",handle.id);
+        log_leak(LEVEL_WARNING,"Logical Region %x is being leaked",handle.id);
       }
       // If delete handle, then tell the low-level runtime that it can reclaim the 
       if (delete_handle)
@@ -9661,7 +9679,7 @@ namespace RegionRuntime {
       ctx->add_source_physical_instance(src);
       // We don't add destination user information here anticipating that the destination will be used elsewhere
       // We don't update the valid event here since many copies may be required to create the new event for a valid instance
-      log_spy(LEVEL_INFO,"Event Copy Event %d %d %d %d %d %d %d %d %d %d",
+      log_spy(LEVEL_INFO,"Event Copy Event %x %d %x %x %x %x %x %x %x %d",
           precondition.id,precondition.gen,src->inst.id,src->handle.id,src->location.id,
           dst->inst.id,dst->handle.id,dst->location.id,ret_event.id,ret_event.gen);
       return ret_event;
@@ -10808,7 +10826,7 @@ namespace RegionRuntime {
         if (valid || (children > 0) || !users.empty() ||
             !added_users.empty() || !copy_users.empty() || !added_copy_users.empty())
         {
-          log_leak(LEVEL_INFO,"Physical instance %d of logical region %d in memory %d is being leaked",
+          log_leak(LEVEL_INFO,"Physical instance %x of logical region %x in memory %x is being leaked",
               inst.id, handle.id, location.id);
         }
       }
@@ -11269,7 +11287,7 @@ namespace RegionRuntime {
         // If parent is NULL we are the owner
         if (parent == NULL)
         {
-          log_garbage(LEVEL_INFO,"Garbage collecting instance %d of logical region %d in memory %d",
+          log_garbage(LEVEL_INFO,"Garbage collecting instance %x of logical region %x in memory %x",
               inst.id, handle.id, location.id);
           // If all that is true, we can delete the instance
           handle.destroy_instance_untyped(inst);
@@ -11808,7 +11826,7 @@ namespace RegionRuntime {
         if (valid || (children > 0) || !users.empty() ||
             !added_users.empty() || !copy_users.empty() || !added_copy_users.empty())
         {
-          log_leak(LEVEL_INFO,"Physical instance %d of logical region %d in memory %d is being leaked",
+          log_leak(LEVEL_INFO,"Physical instance %x of logical region %x in memory %x is being leaked",
               inst.id, handle.id, location.id);
         }
       }
@@ -12010,7 +12028,7 @@ namespace RegionRuntime {
       src_info->add_copy_user(ctx->get_unique_id(),copy_event);
       ctx->add_source_physical_instance(src_info);
       // We don't add destination user information here anticipating that the destination will be used elsewhere
-      log_spy(LEVEL_INFO,"Event Copy Event %d %d %d %d %d %d %d %d %d %d",
+      log_spy(LEVEL_INFO,"Event Copy Event %x %d %x %x %x %x %x %x %x %d",
           copy_precondition.id,copy_precondition.gen,src_info->inst.id,src_info->handle.id,src_info->location.id,
           this->inst.id,this->handle.id,this->location.id,copy_event.id,copy_event.gen);
       // Since we just wrote to this whole instance, we can update the valid event
@@ -13382,7 +13400,7 @@ namespace RegionRuntime {
         // If parent is NULL we are the owner
         if (parent == NULL)
         {
-          log_garbage(LEVEL_INFO,"Garbage collecting instance %d of logical region %d in memory %d",
+          log_garbage(LEVEL_INFO,"Garbage collecting instance %x of logical region %x in memory %x",
               inst.id, handle.id, location.id);
           // If all that is true, we can delete the instance
           handle.destroy_instance_untyped(inst);
