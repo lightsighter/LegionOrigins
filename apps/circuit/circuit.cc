@@ -152,8 +152,8 @@ void region_main(const void *args, size_t arglen,
   // Create the top-level regions
   Circuit circuit;
   {
-    int num_circuit_nodes = num_pieces * nodes_per_piece + 1;
-    int num_circuit_wires = num_pieces * wires_per_piece + 1;
+    int num_circuit_nodes = num_pieces * nodes_per_piece;
+    int num_circuit_wires = num_pieces * wires_per_piece;
     circuit.all_nodes = runtime->create_logical_region(ctx,sizeof(CircuitNode), num_circuit_nodes);
     circuit.all_wires = runtime->create_logical_region(ctx,sizeof(CircuitWire), num_circuit_wires);
   }
