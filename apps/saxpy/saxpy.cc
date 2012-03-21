@@ -263,7 +263,7 @@ void init_vectors_task(const void *global_args, size_t global_arglen,
                        const IndexPoint &point,
                        std::vector<PhysicalRegion<AT> > &regions,
                        Context ctx, HighLevelRuntime *runtime) {
-  Block *block = (Block *)local_args;
+  //Block *block = (Block *)local_args;
   PhysicalRegion<AT> r_x = regions[0];
   PhysicalRegion<AT> r_y = regions[1];
 
