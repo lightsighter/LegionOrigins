@@ -30,10 +30,9 @@ namespace RegionRuntime {
       splitting_factor     = STATIC_SPLIT_FACTOR;
       war_enabled          = STATIC_WAR_ENABLED;
       // Check to see if there any input arguments to parse
-      if (HighLevelRuntime::hlr_argc > 0)
       {
-        int argc = HighLevelRuntime::hlr_argc;
-        char **argv = HighLevelRuntime::hlr_argv;
+        int argc = HighLevelRuntime::hlr_inputs.argc;
+        char **argv = HighLevelRuntime::hlr_inputs.argv;
         // Parse the input arguments looking for ones for the default mapper
         for (int i=1; i < argc; i++)
         {

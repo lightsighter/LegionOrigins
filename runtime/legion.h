@@ -84,6 +84,7 @@ namespace RegionRuntime {
     class ArgumentMap;
     class FutureMap;
     template<AccessorType AT> class PhysicalRegion;
+    class PointerIterator;
     class HighLevelRuntime;
     class Mapper;
 
@@ -136,6 +137,12 @@ namespace RegionRuntime {
     //                                                                       //
     ///////////////////////////////////////////////////////////////////////////
 
+    struct InputArgs {
+    public:
+      char **argv;
+      int argc;
+    };
+    
     /////////////////////////////////////////////////////////////
     // Partition 
     ///////////////////////////////////////////////////////////// 
@@ -494,6 +501,51 @@ namespace RegionRuntime {
     };
 
     /////////////////////////////////////////////////////////////
+    // PointerIterator 
+    /////////////////////////////////////////////////////////////
+    /**
+     * A class for iterating over the pointers that are valid
+     * for a given physical instance
+     */
+    class PointerIterator {
+    public:
+      bool has_next(void) const { return !finished; }
+      template<typename T>
+      ptr_t<T> next(void)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!finished);
+#endif
+        ptr_t<T> result = { unsigned(current_pointer) };
+        remaining_elmts--;
+        if (remaining_elmts > 0)
+        {
+          current_pointer++;
+        }
+        else
+        {
+          finished = !(enumerator->get_next(current_pointer,remaining_elmts));
+        }
+        return result;
+      }
+    private:
+      friend class PhysicalRegion<AccessorGeneric>;
+      friend class PhysicalRegion<AccessorArray>;
+      PointerIterator(LowLevel::ElementMask::Enumerator *e)
+        : enumerator(e)
+      {
+        finished = !(enumerator->get_next(current_pointer,remaining_elmts));
+      }
+    public:
+      ~PointerIterator(void) { delete enumerator; }
+    private:
+      LowLevel::ElementMask::Enumerator *enumerator;
+      bool finished;
+      int  current_pointer;
+      int  remaining_elmts;
+    };
+
+    /////////////////////////////////////////////////////////////
     // Physical Region 
     ///////////////////////////////////////////////////////////// 
       /**
@@ -515,12 +567,12 @@ namespace RegionRuntime {
       friend class TaskContext;
       friend class RegionMappingImpl;
       friend class PhysicalRegion<AccessorGeneric>;
-      PhysicalRegion(RegionMappingImpl *im)
+      PhysicalRegion(RegionMappingImpl *im, LogicalRegion h)
         : instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorArray>(NULL)),
-          valid(false), inline_mapped(true), impl(im) { }
-      PhysicalRegion(unsigned id)
+          valid(false), inline_mapped(true), impl(im), handle(h) { }
+      PhysicalRegion(unsigned id, LogicalRegion h)
         : instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorArray>(NULL)),
-          valid(true), inline_mapped(false), idx(id) { }
+          valid(true), inline_mapped(false), idx(id), handle(h) { }
       void set_allocator(LowLevel::RegionAllocatorUntyped alloc)
       {
 #ifdef DEBUG_HIGH_LEVEL
@@ -536,8 +588,9 @@ namespace RegionRuntime {
         instance = inst;
       }
     public:
-      PhysicalRegion(void) : instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorArray>(NULL)),
-        valid(false) { }
+      PhysicalRegion(LogicalRegion h = LogicalRegion::NO_REGION) 
+        : instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorArray>(NULL)),
+        valid(false), handle(h) { }
       // including definitions here so templates are instantiated and inlined
       template<typename T> 
       inline ptr_t<T> alloc(unsigned count = 1)
@@ -590,11 +643,18 @@ namespace RegionRuntime {
       {
         return (allocator < accessor.allocator) || (instance < accessor.instance); 
       }
+    public:
+      inline PointerIterator* iterator(void) const
+      {
+        LogicalRegion copy = handle;
+        return new PointerIterator(copy.get_valid_mask().enumerate_enabled());
+      }
     protected:
       bool valid;
       bool inline_mapped; // true if result of map region
       RegionMappingImpl *impl;
       unsigned idx; // if not inline mapped, tell us which parent region
+      LogicalRegion handle;
     };
 
     template<>
@@ -608,14 +668,14 @@ namespace RegionRuntime {
       friend class HighLevelRuntime;
       friend class TaskContext;
       friend class RegionMappingImpl;
-      PhysicalRegion(RegionMappingImpl *im)
+      PhysicalRegion(RegionMappingImpl *im, LogicalRegion h)
         : valid_allocator(false), valid_instance(false),
           instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric>(NULL)),
-          valid(false), inline_mapped(true), impl(im) { }
-      PhysicalRegion(unsigned id)
+          valid(false), inline_mapped(true), impl(im), handle(h) { }
+      PhysicalRegion(unsigned id, LogicalRegion h)
         : valid_allocator(false), valid_instance(false),
           instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric>(NULL)),
-          valid(true), inline_mapped(false), idx(id) { }
+          valid(true), inline_mapped(false), idx(id), handle(h) { }
       void set_allocator(LowLevel::RegionAllocatorUntyped alloc)
       {
 #ifdef DEBUG_HIGH_LEVEL
@@ -633,9 +693,10 @@ namespace RegionRuntime {
         instance = inst;
       }
     public:
-      PhysicalRegion(void)
+      PhysicalRegion(LogicalRegion h = LogicalRegion::NO_REGION)
         : valid_allocator(false), valid_instance(false),
-          instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric>(NULL)) { }
+          instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric>(NULL)),
+          handle(h) { }
       // including definitions here so templates are instantiated and inlined
       template<typename T> 
       inline ptr_t<T> alloc(unsigned count = 1)
@@ -715,13 +776,21 @@ namespace RegionRuntime {
       {
         return (allocator < accessor.allocator) || (instance < accessor.instance);  
       }
+    public:
+      inline PointerIterator* iterator(void) const 
+      { 
+        LogicalRegion copy = handle;
+        return new PointerIterator(copy.get_valid_mask().enumerate_enabled());
+      }
     protected:
       bool valid;
       bool inline_mapped;
       RegionMappingImpl *impl;
       unsigned idx;
+      LogicalRegion handle;
     };
 
+    
     /////////////////////////////////////////////////////////////
     // High Level Runtime 
     ///////////////////////////////////////////////////////////// 
@@ -988,8 +1057,7 @@ namespace RegionRuntime {
     public:
       // member variables for getting the default arguments
       // Note that these are available to the mapper through the pointer to the runtime
-      static int hlr_argc;
-      static char** hlr_argv;
+      static InputArgs hlr_inputs;
     private:
       // Member variables
       const Processor local_proc;
@@ -1225,7 +1293,8 @@ namespace RegionRuntime {
       friend class TaskContext;
       FutureImpl(Event set_e = Event::NO_EVENT); 
       ~FutureImpl(void);
-      void reset(Event set_e); // Event that will be set when task is finished
+      void reset(void);
+      void set(Event set_e); // Event that will be set when task is finished
       void set_result(const void *res, size_t result_size);
       void set_result(Deserializer &derez);
     public:
@@ -1243,12 +1312,14 @@ namespace RegionRuntime {
       Lock  map_lock;
       std::map<IndexPoint,UserEvent> outstanding_waits;
       std::map<IndexPoint,TaskArgument>  valid_results;
+      bool active;
     protected:
       friend class HighLevelRuntime;
       friend class TaskContext;
       FutureMapImpl(Event set_e = Event::NO_EVENT);
       ~FutureMapImpl(void);
-      void reset(Event set_e); // event when index space is finished
+      void reset(void);
+      void set(Event set_e); // event when index space is finished
       void set_result(const IndexPoint &point, const void *res, size_t result_size);
       void set_result(size_t point_size, Deserializer &derez);
     protected:
@@ -1342,7 +1413,6 @@ namespace RegionRuntime {
       void set_index_space(const std::vector<CT> &index_space, const ArgumentMap &_map, bool must);
       void set_regions(const std::vector<RegionRequirement> &regions, bool all_same);
       void set_reduction(ReductionFnptr reduct, const TaskArgument &init);
-      void set_future_map(void);
     protected:
       // functions for packing and unpacking tasks
       size_t compute_task_size(void);
@@ -2944,6 +3014,9 @@ namespace RegionRuntime {
     {
       Event wait_lock = map_lock.lock(0,true/*exclusive*/);
       wait_lock.wait(true/*block*/);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
       // Check to see if the result exists yet
       if (valid_results.find(point) != valid_results.end())
       {
@@ -2975,6 +3048,9 @@ namespace RegionRuntime {
     {
       Event wait_lock = map_lock.lock(0,true/*exclusive*/);
       wait_lock.wait(true/*block*/);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
       if (valid_results.find(point) != valid_results.end())
       {
         // Release the lock and return
@@ -3075,7 +3151,6 @@ namespace RegionRuntime {
       }
       desc->set_regions(regions, false/*all same*/);
       desc->set_index_space<CT>(index_space, arg_map, must);
-      desc->set_future_map();
       // Check if we want to spawn this task
       check_spawn_task(desc);
       // Don't free memory as the task becomes the owner

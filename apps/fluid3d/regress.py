@@ -161,11 +161,8 @@ def regress(**params):
 
 if __name__ == '__main__':
     for thunk in prep: thunk()
-    regress(nbx = 1, nby = 1, nbz = 1, steps = 1)
-    regress(nbx = 2, nby = 1, nbz = 1, steps = 1)
-    regress(nbx = 1, nby = 2, nbz = 1, steps = 1)
-    regress(nbx = 1, nby = 1, nbz = 2, steps = 1)
-    regress(nbx = 4, nby = 1, nbz = 1, steps = 1)
-    regress(nbx = 1, nby = 4, nbz = 1, steps = 1)
-    regress(nbx = 1, nby = 1, nbz = 4, steps = 1)
-    regress(nbx = 1, nby = 2, nbz = 4, steps = 1)
+    divs = (1, 2, 4)
+    for nbx in divs:
+        for nby in divs:
+            for nbz in divs:
+                regress(nbx = nbx, nby = nby, nbz = nbz, steps = 1)

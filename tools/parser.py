@@ -23,23 +23,23 @@ def parse_log_file(file_name):
 
     dependence_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Mapping Dependence (?P<context>[0-9]+) (?P<uid_one>[0-9]+) (?P<idx_one>[0-9]+) (?P<uid_two>[0-9]+) (?P<idx_two>[0-9]+) (?P<type>[0-9]+)")
 
-    region_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Region (?P<handle>[0-9]+)")
+    region_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Region (?P<handle>[0-9a-f]+)")
 
-    part_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Partition (?P<pid>[0-9]+) Parent (?P<parent>[0-9]+) Disjoint (?P<disjoint>[0-1])")
+    part_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Partition (?P<pid>[0-9]+) Parent (?P<parent>[0-9a-f]+) Disjoint (?P<disjoint>[0-1])")
 
-    subregion_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Region (?P<handle>[0-9]+) Parent (?P<parent>[0-9]+)")
+    subregion_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Region (?P<handle>[0-9a-f]+) Parent (?P<parent>[0-9a-f]+)")
 
-    event_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Event Event (?P<src_id>[0-9]+) (?P<src_gen>[0-9]+) (?P<dst_id>[0-9]+) (?P<dst_gen>[0-9]+)");
+    event_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Event Event (?P<src_id>[0-9a-f]+) (?P<src_gen>[0-9]+) (?P<dst_id>[0-9a-f]+) (?P<dst_gen>[0-9]+)");
 
-    copy_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Event Copy Event (?P<src_id>[0-9]+) (?P<src_gen>[0-9]+) (?P<src_inst>[0-9]+) (?P<src_handle>[0-9]+) (?P<src_loc>[0-9]+) (?P<dst_inst>[0-9]+) (?P<dst_handle>[0-9]+) (?P<dst_loc>[0-9]+) (?P<dst_id>[0-9]+) (?P<dst_gen>[0-9]+)") 
+    copy_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Event Copy Event (?P<src_id>[0-9a-f]+) (?P<src_gen>[0-9]+) (?P<src_inst>[0-9a-f]+) (?P<src_handle>[0-9a-f]+) (?P<src_loc>[0-9a-f]+) (?P<dst_inst>[0-9a-f]+) (?P<dst_handle>[0-9a-f]+) (?P<dst_loc>[0-9a-f]+) (?P<dst_id>[0-9a-f]+) (?P<dst_gen>[0-9]+)") 
 
-    task_launch_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Task Launch (?P<tid>[0-9]+) (?P<uid>[0-9]+) (?P<start_id>[0-9]+) (?P<start_gen>[0-9]+) (?P<term_id>[0-9]+) (?P<term_gen>[0-9]+)")
+    task_launch_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Task Launch (?P<tid>[0-9]+) (?P<uid>[0-9]+) (?P<start_id>[0-9a-f]+) (?P<start_gen>[0-9]+) (?P<term_id>[0-9a-f]+) (?P<term_gen>[0-9]+)")
 
-    index_launch_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Index Task Launch (?P<tid>[0-9]+) (?P<uid>[0-9]+) (?P<start_id>[0-9]+) (?P<start_gen>[0-9]+) (?P<term_id>[0-9]+) (?P<term_gen>[0-9]+) (?P<point_size>[0-9]+) (?P<points>[0-9 ]+)")
+    index_launch_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Index Task Launch (?P<tid>[0-9]+) (?P<uid>[0-9]+) (?P<start_id>[0-9a-f]+) (?P<start_gen>[0-9]+) (?P<term_id>[0-9a-f]+) (?P<term_gen>[0-9]+) (?P<point_size>[0-9]+) (?P<points>[0-9 ]+)")
 
     index_space_size_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Index Space (?P<unique>[0-9]+) Context (?P<context>[0-9]+) Size (?P<size>[0-9]+)")
 
-    map_launch_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Mapping Performed (?P<unique>[0-9]+) (?P<start_id>[0-9]+) (?P<start_gen>[0-9]+) (?P<term_id>[0-9]+) (?P<term_gen>[0-9]+)")
+    map_launch_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Mapping Performed (?P<unique>[0-9]+) (?P<start_id>[0-9a-f]+) (?P<start_gen>[0-9]+) (?P<term_id>[0-9a-f]+) (?P<term_gen>[0-9]+)")
 
     for line in log:
         m = name_pat.match(line)
@@ -71,14 +71,16 @@ def parse_log_file(file_name):
         if m <> None:
             task = result.get_context(int(m.group('context'))).get_task(int(m.group('unique')))  
             idx = int(m.group('idx'))
-            usage = Usage(True,int(m.group('handle')),int(m.group('parent')),int(m.group('privilege')),int(m.group('coherence')))
+            #usage = Usage(True,int(m.group('handle')),int(m.group('parent')),int(m.group('privilege')),int(m.group('coherence')))
+            usage = Usage(True,m.group('handle'),m.group('parent'),int(m.group('privilege')),int(m.group('coherence')))
             task.add_usage(idx,usage)
             continue
         m = partition_usage_pat.match(line)
         if m <> None:
             task = result.get_context(int(m.group('context'))).get_task(int(m.group('unique')))
             idx = int(m.group('idx'))
-            usage = Usage(False,int(m.group('handle')),int(m.group('parent')),int(m.group('privilege')),int(m.group('coherence')))
+            #usage = Usage(False,int(m.group('handle')),int(m.group('parent')),int(m.group('privilege')),int(m.group('coherence')))
+            usage = Usage(False,m.group('handle'),m.group('parent'),int(m.group('privilege')),int(m.group('coherence')))
             task.add_usage(idx,usage)
             continue
         m = dependence_pat.match(line)
@@ -90,43 +92,54 @@ def parse_log_file(file_name):
             continue
         m = subregion_pat.match(line)
         if m <> None:
-            handle = int(m.group('handle'))
+            #handle = int(m.group('handle'))
+            handle = m.group('handle')
             reg = Region(handle)
             result.add_region(reg)
-            par = int(m.group('parent'))
+            #par = int(m.group('parent'))
+            par = m.group('parent')
             parent = result.get_partition(par)
             parent.add_region(reg)
             continue
         m = region_pat.match(line)
         if m <> None:
-            handle = int(m.group('handle'))
+            #handle = int(m.group('handle'))
+            handle = m.group('handle')
             reg = Region(handle)
             result.add_region(reg)
             result.add_tree(reg)
             continue
         m = part_pat.match(line)
         if m <> None:
-            handle = int(m.group('pid'))
+            #handle = int(m.group('pid'))
+            handle = m.group('pid')
             disjoint = (int(m.group('disjoint')) == 1)
             part = Partition(handle,disjoint)
             result.add_partition(part)
-            par = int(m.group('parent'))
+            #par = int(m.group('parent'))
+            par = m.group('parent')
             parent = result.get_region(par)
             parent.add_partition(part) 
             continue
         m = event_pat.match(line)
         if m <> None:
-            src = result.event_graph.get_event_node(int(m.group('src_id')),int(m.group('src_gen')))
-            dst = result.event_graph.get_event_node(int(m.group('dst_id')),int(m.group('dst_gen')))
+            #src = result.event_graph.get_event_node(int(m.group('src_id')),int(m.group('src_gen')))
+            #dst = result.event_graph.get_event_node(int(m.group('dst_id')),int(m.group('dst_gen')))
+            src = result.event_graph.get_event_node((m.group('src_id')),int(m.group('src_gen')))
+            dst = result.event_graph.get_event_node((m.group('dst_id')),int(m.group('dst_gen')))
             if (not src.is_no_event()) and (not dst.is_no_event()): 
                 result.event_graph.add_edge(src,dst)
             continue
         m = copy_pat.match(line)
         if m <> None:
-            src = result.event_graph.get_event_node(int(m.group('src_id')),int(m.group('src_gen')))
-            copy = result.event_graph.get_copy_node(int(m.group('src_inst')),int(m.group('src_handle')),int(m.group('src_loc')),
-                                                    int(m.group('dst_inst')),int(m.group('dst_handle')),int(m.group('dst_loc')))
-            dst = result.event_graph.get_event_node(int(m.group('dst_id')),int(m.group('dst_gen')))
+            #src = result.event_graph.get_event_node(int(m.group('src_id')),int(m.group('src_gen')))
+            #copy = result.event_graph.get_copy_node(int(m.group('src_inst')),int(m.group('src_handle')),int(m.group('src_loc')),
+            #                                        int(m.group('dst_inst')),int(m.group('dst_handle')),int(m.group('dst_loc')))
+            #dst = result.event_graph.get_event_node(int(m.group('dst_id')),int(m.group('dst_gen')))
+            src = result.event_graph.get_event_node((m.group('src_id')),int(m.group('src_gen')))
+            copy = result.event_graph.get_copy_node((m.group('src_inst')),(m.group('src_handle')),(m.group('src_loc')),
+                                                    (m.group('dst_inst')),(m.group('dst_handle')),(m.group('dst_loc')))
+            dst = result.event_graph.get_event_node((m.group('dst_id')),int(m.group('dst_gen')))
             if not src.is_no_event():
                 result.event_graph.add_edge(src,copy)
             if not dst.is_no_event():
@@ -134,9 +147,11 @@ def parse_log_file(file_name):
             continue
         m = task_launch_pat.match(line)
         if m <> None:
-            src = result.event_graph.get_event_node(int(m.group('start_id')),int(m.group('start_gen')))
+            #src = result.event_graph.get_event_node(int(m.group('start_id')),int(m.group('start_gen')))
+            src = result.event_graph.get_event_node((m.group('start_id')),int(m.group('start_gen')))
             task = result.event_graph.get_task_node(int(m.group('tid')),int(m.group('uid')))
-            dst = result.event_graph.get_event_node(int(m.group('term_id')),int(m.group('term_gen')))
+            #dst = result.event_graph.get_event_node(int(m.group('term_id')),int(m.group('term_gen')))
+            dst = result.event_graph.get_event_node((m.group('term_id')),int(m.group('term_gen')))
             if not src.is_no_event():
                 result.event_graph.add_edge(src,task)
             if not dst.is_no_event():
@@ -151,8 +166,10 @@ def parse_log_file(file_name):
             for i in range(int(m.group('point_size'))):
                 point.append(int(index_points[i]))
             #point_node = result.event_graph.get_index_point(space,point)
-            src = result.event_graph.get_event_node(int(m.group('start_id')),int(m.group('start_gen')))
-            dst = result.event_graph.get_event_node(int(m.group('term_id')),int(m.group('term_gen')))
+            #src = result.event_graph.get_event_node(int(m.group('start_id')),int(m.group('start_gen')))
+            #dst = result.event_graph.get_event_node(int(m.group('term_id')),int(m.group('term_gen')))
+            src = result.event_graph.get_event_node((m.group('start_id')),int(m.group('start_gen')))
+            dst = result.event_graph.get_event_node((m.group('term_id')),int(m.group('term_gen')))
             if not src.is_no_event():
                 #result.event_graph.add_index_dst_edge(space,src,point_node)
                 result.event_graph.add_edge(src,space)
@@ -162,9 +179,11 @@ def parse_log_file(file_name):
             continue
         m = map_launch_pat.match(line)
         if m <> None:
-            src = result.event_graph.get_event_node(int(m.group('start_id')),int(m.group('start_gen')))
+            #src = result.event_graph.get_event_node(int(m.group('start_id')),int(m.group('start_gen')))
+            src = result.event_graph.get_event_node((m.group('start_id')),int(m.group('start_gen')))
             mapping = result.event_graph.get_map_node(int(m.group('unique')))
-            dst = result.event_graph.get_event_node(int(m.group('term_id')),int(m.group('term_gen')))
+            #dst = result.event_graph.get_event_node(int(m.group('term_id')),int(m.group('term_gen')))
+            dst = result.event_graph.get_event_node((m.group('term_id')),int(m.group('term_gen')))
             if not src.is_no_event():
                 result.event_graph.add_edge(src,mapping)
             if not dst.is_no_event():
