@@ -16,8 +16,6 @@
 
 using namespace RegionRuntime::HighLevel;
 
-//#define TOP_LEVEL_TASK_ID   TASK_ID_REGION_MAIN
-
 RegionRuntime::Logger::Category log_mapper("mapper");
 
 namespace Config {
@@ -27,7 +25,7 @@ namespace Config {
 
 enum {
   TOP_LEVEL_TASK_ID,
-  TASKID_INIT_CELLS, // = TASK_ID_AVAILABLE,
+  TASKID_INIT_CELLS,
   TASKID_REBUILD_REDUCE,
   TASKID_SCATTER_DENSITIES,
   TASKID_GATHER_DENSITIES,
@@ -36,13 +34,11 @@ enum {
   TASKID_MAIN_TASK,
   TASKID_LOAD_FILE,
   TASKID_SAVE_FILE,
-  TASKID_INSPECT,
 };
 
 const unsigned MAX_PARTICLES = 16;
 
 // Number of ghost cells needed for each block
-// 8 for 2D or 26 for 3D
 const unsigned GHOST_CELLS = 26;
 
 // PARSEC does not double buffer. That is, PARSEC performs the first
@@ -241,10 +237,6 @@ public:
   Vec3 a[MAX_PARTICLES];
   float density[MAX_PARTICLES];
   unsigned num_particles;
-  //ptr_t<Cell> neigh_ptrs[8];
-  //unsigned x;
-  //unsigned y;
-  //unsigned z;
 };
 
 struct BufferRegions {
@@ -511,26 +503,6 @@ void main_task(const void *args, size_t arglen,
             blocks[id].cells[b][cz].resize(blocks[id].CELLS_Y+2);
             for(unsigned cy = 0; cy < blocks[id].CELLS_Y+2; cy++) {
               blocks[id].cells[b][cz][cy].resize(blocks[id].CELLS_X+2);
-              // Elliott: Debug: Initialize pointers to (unsigned)-1
-              for(unsigned cx = 0; cx < blocks[id].CELLS_X+2; cx++) {
-                blocks[id].cells[b][cz][cy][cx].value = -1;
-              }
-            }
-          }
-        }
-      }
-
-  // Elliott: debug sanity check: all cells uninitialized
-  for (unsigned idz = 0; idz < nbz; idz++)
-    for (unsigned idy = 0; idy < nby; idy++)
-      for (unsigned idx = 0; idx < nbx; idx++) {
-        unsigned id = (idz*nby+idy)*nbx+idx;
-        for (unsigned b = 0; b < 2; b++) {
-          for(unsigned cz = 0; cz < blocks[id].CELLS_Z+2; cz++) {
-            for(unsigned cy = 0; cy < blocks[id].CELLS_Y+2; cy++) {
-              for(unsigned cx = 0; cx < blocks[id].CELLS_X+2; cx++) {
-                assert(!blocks[id].cells[b][cz][cy][cx]);
-              }
             }
           }
         }
@@ -594,9 +566,6 @@ void main_task(const void *args, size_t arglen,
           unsigned id2 = (MOVE_BZ(idz,dir)*nby + MOVE_BY(idy,dir))*nbx + MOVE_BX(idx,dir); \
           ptr_t<Cell> cell = edge_cells.template alloc<Cell>();         \
           coloring[color + dir].insert(cell);                           \
-          /* Elliott: Debug assertions*/                                \
-          assert(!blocks[id].cells[0][iz*CZ][iy*CY][ix*CX]);            \
-          assert(!blocks[id2].cells[1][NEIGH_Z(idz, dir, iz)*C2Z][NEIGH_Y(idy, dir, iy)*C2Y][NEIGH_X(idx, dir, ix)*C2X]); \
           blocks[id].cells[0][iz*CZ][iy*CY][ix*CX] = cell;              \
           blocks[id2].cells[1][NEIGH_Z(idz, dir, iz)*C2Z][NEIGH_Y(idy, dir, iy)*C2Y][NEIGH_X(idx, dir, ix)*C2X] = cell; \
         } while(0)
@@ -616,9 +585,6 @@ void main_task(const void *args, size_t arglen,
           for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {        \
             ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
             coloring[color + dir].insert(cell);                         \
-            /* Elliott: Debug assertions*/                              \
-            assert(!blocks[id].cells[0][iz*CZ][iy*CY][cx]);             \
-            assert(!blocks[id2].cells[1][NEIGH_Z(idz, dir, iz)*C2Z][NEIGH_Y(idy, dir, iy)*C2Y][cx]); \
             blocks[id].cells[0][iz*CZ][iy*CY][cx] = cell;               \
             blocks[id2].cells[1][NEIGH_Z(idz, dir, iz)*C2Z][NEIGH_Y(idy, dir, iy)*C2Y][cx] = cell; \
           }                                                             \
@@ -635,9 +601,6 @@ void main_task(const void *args, size_t arglen,
           for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {        \
             ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
             coloring[color + dir].insert(cell);                         \
-            /* Elliott: Debug assertions*/                              \
-            assert(!blocks[id].cells[0][iz*CZ][cy][ix*CX]);             \
-            assert(!blocks[id2].cells[1][NEIGH_Z(idz, dir, iz)*C2Z][cy][NEIGH_X(idx, dir, ix)*C2X]); \
             blocks[id].cells[0][iz*CZ][cy][ix*CX] = cell;               \
             blocks[id2].cells[1][NEIGH_Z(idz, dir, iz)*C2Z][cy][NEIGH_X(idx, dir, ix)*C2X] = cell; \
           }                                                             \
@@ -654,9 +617,6 @@ void main_task(const void *args, size_t arglen,
           for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
             ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
             coloring[color + dir].insert(cell);                         \
-            /* Elliott: Debug assertions*/                              \
-            assert(!blocks[id].cells[0][cz][iy*CY][ix*CX]);             \
-            assert(!blocks[id2].cells[1][cz][NEIGH_Y(idy, dir, iy)*C2Y][NEIGH_X(idx, dir, ix)*C2X]); \
             blocks[id].cells[0][cz][iy*CY][ix*CX] = cell;               \
             blocks[id2].cells[1][cz][NEIGH_Y(idy, dir, iy)*C2Y][NEIGH_X(idx, dir, ix)*C2X] = cell; \
           }                                                             \
@@ -674,9 +634,6 @@ void main_task(const void *args, size_t arglen,
             for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {      \
               ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
               coloring[color + dir].insert(cell);                       \
-              /* Elliott: Debug assertions*/                            \
-              assert(!blocks[id].cells[0][iz*CZ][cy][cx]);              \
-              assert(!blocks[id2].cells[1][NEIGH_Z(idz, dir, iz)*C2Z][cy][cx]); \
               blocks[id].cells[0][iz*CZ][cy][cx] = cell;                \
               blocks[id2].cells[1][NEIGH_Z(idz, dir, iz)*C2Z][cy][cx] = cell; \
             }                                                           \
@@ -693,9 +650,6 @@ void main_task(const void *args, size_t arglen,
             for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {      \
               ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
               coloring[color + dir].insert(cell);                       \
-              /* Elliott: Debug assertions*/                            \
-              assert(!blocks[id].cells[0][cz][iy*CY][cx]);              \
-              assert(!blocks[id2].cells[1][cz][NEIGH_Y(idy, dir, iy)*C2Y][cx]); \
               blocks[id].cells[0][cz][iy*CY][cx] = cell;                \
               blocks[id2].cells[1][cz][NEIGH_Y(idy, dir, iy)*C2Y][cx] = cell; \
             }                                                           \
@@ -712,9 +666,6 @@ void main_task(const void *args, size_t arglen,
             for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {      \
               ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
               coloring[color + dir].insert(cell);                       \
-              /* Elliott: Debug assertions*/                            \
-              assert(!blocks[id].cells[0][cz][cy][ix*CX]);              \
-              assert(!blocks[id2].cells[1][cz][cy][NEIGH_X(idx, dir, ix)*C2X]); \
               blocks[id].cells[0][cz][cy][ix*CX] = cell;                \
               blocks[id2].cells[1][cz][cy][NEIGH_X(idx, dir, ix)*C2X] = cell; \
             }                                                           \
@@ -751,28 +702,9 @@ void main_task(const void *args, size_t arglen,
           LogicalRegion subr = runtime->get_subregion(ctx,edge_part,color+dir);
           blocks[id].edge[0][dir] = subr;
           blocks[id2].edge[1][OPPOSITE_DIR(idz, idy, idx, dir)] = subr;
-          // Elliott: debug
-          //log_app.info("Linking edges blocks[%d].edge[0][%d] and blocks[%d].edge[1][%d]",
-          //             id, dir, id2, OPPOSITE_DIR(idz, idy, idx, dir));
         }
 
         color += GHOST_CELLS;
-      }
-
-  // Elliott: debug sanity check: all cells initialized
-  for (unsigned idz = 0; idz < nbz; idz++)
-    for (unsigned idy = 0; idy < nby; idy++)
-      for (unsigned idx = 0; idx < nbx; idx++) {
-        unsigned id = (idz*nby+idy)*nbx+idx;
-        for (unsigned b = 0; b < 2; b++) {
-          for(unsigned cz = 0; cz < blocks[id].CELLS_Z+2; cz++) {
-            for(unsigned cy = 0; cy < blocks[id].CELLS_Y+2; cy++) {
-              for(unsigned cx = 0; cx < blocks[id].CELLS_X+2; cx++) {
-                assert(!!blocks[id].cells[b][cz][cy][cx]);
-              }
-            }
-          }
-        }
       }
 
   // Unmap the physical region we intend to pass to children
@@ -886,36 +818,6 @@ void main_task(const void *args, size_t arglen,
                                        0, id);
     }
 
-    // Elliott: debug
-    {
-      int target_buffer = cur_buffer;
-
-      std::vector<RegionRequirement> init_regions;
-      for (unsigned id = 0; id < numBlocks; id++) {
-        init_regions.push_back(RegionRequirement(blocks[id].base[target_buffer],
-                                                 READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                                 tlr->real_cells[target_buffer]));
-      }
-
-      unsigned bufsize = sizeof(int);
-      for (unsigned id = 0; id < numBlocks; id++) {
-        bufsize += BLOCK_SIZE(blocks[id]);
-      }
-      BlockSerializer ser(bufsize);
-      ser.Serializer::serialize(target_buffer);
-      for (unsigned id = 0; id < numBlocks; id++) {
-        ser.serialize(blocks[id]);
-      }
-      TaskArgument buffer(ser.get_buffer(), bufsize);
-
-      Future f = runtime->execute_task(ctx, TASKID_INSPECT,
-                                       init_regions,
-                                       buffer,
-                                       0, 0);
-      f.get_void_result();
-    }
-
-
     // init forces and scatter densities
     for (unsigned id = 0; id < numBlocks; id++)
     {
@@ -946,7 +848,7 @@ void main_task(const void *args, size_t arglen,
                                        buffer,
                                        0, id);
     }
-    
+
     // Gather forces and advance
     for (unsigned id = 0; id < numBlocks; id++)
     {
@@ -1039,9 +941,6 @@ void main_task(const void *args, size_t arglen,
   }
 
   log_app.info("all done!");
-
-  // SJT: mapper is exploding on exit from this task...
-  exit(0);
 }
 
 static inline int GET_DIR(Block &b, int idz, int idy, int idx)
@@ -1149,9 +1048,6 @@ void init_and_rebuild(const void *args, size_t arglen,
           int dy = cy + (dj - cj);
           int dz = cz + (dk - ck);
 
-          // Elliott: debug (in this case we know nothing should move)
-          assert(di == ci && dj == cj && dk == ck);
-
           Cell c_dst;
           READ_CELL(b, cb, eb, dz, dy, dx, dst_block, edge_blocks, c_dst);
           if(c_dst.num_particles < MAX_PARTICLES) {
@@ -1204,8 +1100,6 @@ void rebuild_reduce(const void *args, size_t arglen,
         Cell c_dst = base_block.read(b.cells[cb][dz][dy][dx]);
 
         for(unsigned p = 0; p < c_src.num_particles; p++) {
-          // Elliott: debug (we know nothing should move)
-          assert(false);
           if(c_dst.num_particles == MAX_PARTICLES) break;
           int dp = c_dst.num_particles++;
           // just have to copy p, hv, v
@@ -1276,21 +1170,19 @@ void scatter_densities(const void *args, size_t arglen,
   int maxx = b.x == nbx-1 ? b.CELLS_X : b.CELLS_X+1;
   int maxy = b.y == nby-1 ? b.CELLS_Y : b.CELLS_Y+1;
   int maxz = b.z == nbz-1 ? b.CELLS_Z : b.CELLS_Z+1;
-  for(int cz = minz; cz < (int)b.CELLS_Z+1; cz++)
-    for(int cy = miny; cy < (int)b.CELLS_Y+1; cy++)
-      for(int cx = minx; cx < (int)b.CELLS_X+1; cx++) {
+  for(int cz = minz; cz <= maxz; cz++)
+    for(int cy = miny; cy <= maxy; cy++)
+      for(int cx = minx; cx <= maxx; cx++) {
         Cell cell;
         READ_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);
         assert(cell.num_particles <= MAX_PARTICLES);
-
-        // Elliott: debug
-        //log_app.info("The cell %2d %2d %2d (block %d %d %d) updated:", cx, cy, cz, b.x, b.y, b.z);
 
         for(int dz = cz - 1; dz <= cz + 1; dz++)
           for(int dy = cy - 1; dy <= cy + 1; dy++)
             for(int dx = cx - 1; dx <= cx + 1; dx++) {
               // did we already get updated by this neighbor's bidirectional update?
-              if (dz < 1 || dy < 1 || dx < 1 ||
+              if (//dz < 1 || dy < 1 || dx < 1 ||
+                  dz < minz || dy < miny || dx < minx ||
                   dz > maxz || dy > maxy || dx > maxx ||
                   (dz < cz || (dz == cz && (dy < cy || (dy == cy && dx < cx)))))
                 continue;
@@ -1302,10 +1194,7 @@ void scatter_densities(const void *args, size_t arglen,
               // do bidirectional update if other cell is a real cell and it is
               //  either below or to the right (but not up-right) of us
               bool update_other =
-                dz < (int)b.CELLS_Z+1 && dy < (int)b.CELLS_Y+1 && dx < (int)b.CELLS_X+1;
-
-              // Elliott: debug
-              //log_app.info("    %2d %2d %2d (with update_other %d)", dx, dy, dz, update_other);
+                true;//dz < (int)b.CELLS_Z+1 && dy < (int)b.CELLS_Y+1 && dx < (int)b.CELLS_X+1;
 
               // pairwise across particles - watch out for identical particle case!
               for(unsigned p = 0; p < cell.num_particles; p++)
@@ -1335,10 +1224,7 @@ void scatter_densities(const void *args, size_t arglen,
           cell.density[p] *= densityCoeff;
         }
 
-        // Elliott: This isn't necessarily in the base block any more:
-        if (cz >= 1 && cy >= 1 && cx >= 1) {
-          base_block.write(b.cells[cb][cz][cy][cx], cell);
-        }
+        WRITE_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);
       }
 
   // now turn around and have each edge grab a copy of the boundary real cell
@@ -1404,9 +1290,9 @@ void gather_forces_and_advance(const void *args, size_t arglen,
   int maxx = b.x == nbx-1 ? b.CELLS_X : b.CELLS_X+1;
   int maxy = b.y == nby-1 ? b.CELLS_Y : b.CELLS_Y+1;
   int maxz = b.z == nbz-1 ? b.CELLS_Z : b.CELLS_Z+1;
-  for(int cz = minz; cz < (int)b.CELLS_Z+1; cz++)
-    for(int cy = miny; cy < (int)b.CELLS_Y+1; cy++)
-      for(int cx = minx; cx < (int)b.CELLS_X+1; cx++) {
+  for(int cz = minz; cz <= maxz; cz++)
+    for(int cy = miny; cy <= maxy; cy++)
+      for(int cx = minx; cx <= maxx; cx++) {
         Cell cell;
         READ_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);
         assert(cell.num_particles <= MAX_PARTICLES);
@@ -1415,7 +1301,8 @@ void gather_forces_and_advance(const void *args, size_t arglen,
           for(int dy = cy - 1; dy <= cy + 1; dy++)
             for(int dx = cx - 1; dx <= cx + 1; dx++) {
               // did we already get updated by this neighbor's bidirectional update?
-              if (dz < 1 || dy < 1 || dx < 1 ||
+              if (//dz < 1 || dy < 1 || dx < 1 ||
+                  dz < minz || dy < miny || dx < minx ||
                   dz > maxz || dy > maxy || dx > maxx ||
                   (dz < cz || (dz == cz && (dy < cy || (dy == cy && dx < cx)))))
                 continue;
@@ -1427,7 +1314,7 @@ void gather_forces_and_advance(const void *args, size_t arglen,
               // do bidirectional update if other cell is a real cell and it is
               //  either below or to the right (but not up-right) of us
               bool update_other =
-                dz < (int)b.CELLS_Z+1 && dy < (int)b.CELLS_Y+1 && dx < (int)b.CELLS_X+1;
+                true;//dz < (int)b.CELLS_Z+1 && dy < (int)b.CELLS_Y+1 && dx < (int)b.CELLS_X+1;
 
               // pairwise across particles - watch out for identical particle case!
               for(unsigned p = 0; p < cell.num_particles; p++)
@@ -1497,10 +1384,7 @@ void gather_forces_and_advance(const void *args, size_t arglen,
           cell.hv[p] = v_half;
         }
 
-        // Elliott: This isn't necessarily in the base block any more:
-        if (cz >= 1 && cy >= 1 && cx >= 1) {
-          base_block.write(b.cells[cb][cz][cy][cx], cell);
-        }
+        WRITE_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);
       }
 
   log_app.info("Done with gather_forces_and_advance() for block %d", b.id);
@@ -1630,15 +1514,15 @@ int load_file(const void *args, size_t arglen,
     if(ck < 0) ck = 0; else if(ck > (int)(nz-1)) ck = nz-1;
 
     // Block coordinates and id
-    int midx = ci / mbsx;
-    int ovx = ci % mbsx;
-    int idx = midx + (midx > ovx ? -1 : 0);
-    int midy = cj / mbsy;
-    int ovy = cj % mbsy;
-    int idy = midy + (midy > ovy ? -1 : 0);
-    int midz = ck / mbsz;
-    int ovz = ck % mbsz;
-    int idz = midz + (midz > ovz ? -1 : 0);
+    int midx = ci / (mbsx + 1) + 1;
+    int eci = ci + (midx > ovbx ? midx - ovbx : 0);
+    int idx = eci / (mbsx + 1);
+    int midy = cj / (mbsy + 1) + 1;
+    int ecj = cj + (midy > ovby ? midy - ovby : 0);
+    int idy = ecj / (mbsy + 1);
+    int midz = ck / (mbsz + 1) + 1;
+    int eck = ck + (midz > ovbz ? midz - ovbz : 0);
+    int idz = eck / (mbsz + 1);
 
     int id = (idz*nby+idy)*nbx+idx;
 
@@ -1736,15 +1620,15 @@ void save_file(const void *args, size_t arglen,
       for(int ci = 0; ci < (int)nx; ci++) {
 
         // Block coordinates and id
-        int midx = ci / mbsx;
-        int ovx = ci % mbsx;
-        int idx = midx + (midx > ovx ? -1 : 0);
-        int midy = cj / mbsy;
-        int ovy = cj % mbsy;
-        int idy = midy + (midy > ovy ? -1 : 0);
-        int midz = ck / mbsz;
-        int ovz = ck % mbsz;
-        int idz = midz + (midz > ovz ? -1 : 0);
+        int midx = ci / (mbsx + 1) + 1;
+        int eci = ci + (midx > ovbx ? midx - ovbx : 0);
+        int idx = eci / (mbsx + 1);
+        int midy = cj / (mbsy + 1) + 1;
+        int ecj = cj + (midy > ovby ? midy - ovby : 0);
+        int idy = ecj / (mbsy + 1);
+        int midz = ck / (mbsz + 1) + 1;
+        int eck = ck + (midz > ovbz ? midz - ovbz : 0);
+        int idz = eck / (mbsz + 1);
 
         int id = (idz*nby+idy)*nbx+idx;
 
@@ -1813,66 +1697,6 @@ void save_file(const void *args, size_t arglen,
   }
 
   log_app.info("Done saving file.");
-}
-
-// Elliott: debug function prints cells
-template<AccessorType AT>
-void inspect(const void *args, size_t arglen,
-	       std::vector<PhysicalRegion<AT> > &regions,
-	       Context ctx, HighLevelRuntime *runtime)
-{
-  std::vector<Block> blocks;
-  int b;
-  blocks.resize(numBlocks);
-  {
-    BlockDeserializer deser(args, arglen);
-    deser.Deserializer::deserialize(b);
-    for (unsigned i = 0; i < numBlocks; i++) {
-      deser.deserialize(blocks[i]);
-    }
-  }
-
-  PhysicalRegion<AT> real_cells = regions[0];
-
-  // Minimum block sizes
-  int mbsx = nx / nbx;
-  int mbsy = ny / nby;
-  int mbsz = nz / nbz;
-
-  // Number of oversized blocks
-  int ovbx = nx % nbx;
-  int ovby = ny % nby;
-  int ovbz = nz % nbz;
-
-  for(int ck = 0; ck < (int)nz; ck++)
-    for(int cj = 0; cj < (int)ny; cj++)
-      for(int ci = 0; ci < (int)nx; ci++) {
-
-        // Block coordinates and id
-        int midx = ci / mbsx;
-        int ovx = ci % mbsx;
-        int idx = midx + (midx > ovx ? -1 : 0);
-        int midy = cj / mbsy;
-        int ovy = cj % mbsy;
-        int idy = midy + (midy > ovy ? -1 : 0);
-        int midz = ck / mbsz;
-        int ovz = ck % mbsz;
-        int idz = midz + (midz > ovz ? -1 : 0);
-
-        int id = (idz*nby+idy)*nbx+idx;
-
-        // Local cell coordinates
-        int cx = ci - (idx*mbsx + (idx < ovbx ? idx : ovbx));
-        int cy = cj - (idy*mbsy + (idy < ovby ? idy : ovby));
-        int cz = ck - (idz*mbsz + (idz < ovbz ? idz : ovbz));
-
-        Cell cell = real_cells.read(blocks[id].cells[b][cz+1][cy+1][cx+1]);
-
-        unsigned np = cell.num_particles;
-        for(unsigned p = 0; p < np; ++p) {
-          printf("c %2d %2d %2d p %e %e %e\n", cx, cy, cz, cell.p[p].x, cell.p[p].y, cell.p[p].z);
-        }
-      }
 }
 
 static bool sort_by_proc_id(const std::pair<Processor,Memory> &a,
@@ -1976,7 +1800,6 @@ public:
     case TASKID_MAIN_TASK:
     case TASKID_LOAD_FILE:
     case TASKID_SAVE_FILE:
-    case TASKID_INSPECT:
       {
         // Put this on the first processor
         return loc_procs[0].first;
@@ -2039,7 +1862,6 @@ public:
     case TASKID_MAIN_TASK:
     case TASKID_LOAD_FILE:
     case TASKID_SAVE_FILE:
-    case TASKID_INSPECT:
       {
         // Don't care, put it in global memory
         target_ranking.push_back(global_memory);
@@ -2152,20 +1974,6 @@ void create_mappers(Machine *machine, HighLevelRuntime *runtime, Processor local
 
 int main(int argc, char **argv)
 {
-  //Processor::TaskIDTable task_table;
-
-  //task_table[TOP_LEVEL_TASK_ID] = high_level_task_wrapper<top_level_task<AccessorGeneric> >;
-  //task_table[TASKID_MAIN_TASK] = high_level_task_wrapper<main_task<AccessorGeneric> >;
-  //task_table[TASKID_INIT_CELLS] = high_level_task_wrapper<init_and_rebuild<AccessorGeneric> >;
-  //task_table[TASKID_REBUILD_REDUCE] = high_level_task_wrapper<rebuild_reduce<AccessorGeneric> >;
-  //task_table[TASKID_SCATTER_DENSITIES] = high_level_task_wrapper<scatter_densities<AccessorGeneric> >;
-  //task_table[TASKID_GATHER_DENSITIES] = high_level_task_wrapper<gather_densities<AccessorGeneric> >;
-  //task_table[TASKID_SCATTER_FORCES] = high_level_task_wrapper<scatter_forces<AccessorGeneric> >;
-  //task_table[TASKID_GATHER_FORCES] = high_level_task_wrapper<gather_forces_and_advance<AccessorGeneric> >;
-  //task_table[TASKID_LOAD_FILE] = high_level_task_wrapper<int, load_file<AccessorGeneric> >;
-  //task_table[TASKID_SAVE_FILE] = high_level_task_wrapper<save_file<AccessorGeneric> >;
-
-  //HighLevelRuntime::register_runtime_tasks(task_table);
   HighLevelRuntime::set_top_level_task_id(TOP_LEVEL_TASK_ID);
   HighLevelRuntime::set_input_args(argc,argv);
   HighLevelRuntime::set_registration_callback(create_mappers);
@@ -2179,7 +1987,6 @@ int main(int argc, char **argv)
   HighLevelRuntime::register_single_task<gather_forces_and_advance<AccessorGeneric> >(TASKID_GATHER_FORCES,Processor::LOC_PROC,"gather_forces");
   HighLevelRuntime::register_single_task<int, load_file<AccessorGeneric> >(TASKID_LOAD_FILE,Processor::LOC_PROC,"load_file");
   HighLevelRuntime::register_single_task<save_file<AccessorGeneric> >(TASKID_SAVE_FILE,Processor::LOC_PROC,"save_file");
-  HighLevelRuntime::register_single_task<inspect<AccessorGeneric> >(TASKID_INSPECT,Processor::LOC_PROC,"inspect");
 
   // Initialize the simulation
   h = kernelRadiusMultiplier / restParticlesPerMeter;
