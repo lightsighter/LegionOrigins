@@ -624,7 +624,7 @@ int main(int argc, char **argv) {
   HighLevelRuntime::register_index_task<init_vectors_task<AccessorGeneric> >(TASKID_INIT_VECTORS, Processor::LOC_PROC, "init_vectors");
   HighLevelRuntime::register_index_task<add_vectors_task<AccessorGeneric> >(TASKID_ADD_VECTORS, Processor::LOC_PROC, "add_vectors");
 
-  Machine m(&argc, &argv, HighLevelRuntime::get_task_table(), false);
+  Machine m(&argc, &argv, HighLevelRuntime::get_task_table(), RegionRuntime::LowLevel::ReductionOpTable(), false);
 
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "-blocks")) {

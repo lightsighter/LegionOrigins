@@ -229,6 +229,28 @@ namespace RegionRuntime {
       int first_enabled_elmt, last_enabled_elmt;
     };
 
+    typedef unsigned ReductionOpID;
+    class ReductionOpUntyped {
+    public:
+      size_t sizeof_lhs(void) const;
+      size_t sizeof_rhs(void) const;
+      bool has_identity(void) const;
+      bool is_foldable(void) const;
+
+      template <class LHS, class RHS>
+      static ReductionOpUntyped *create_reduction_op(void (*apply_fn)(LHS& lhs, RHS rhs));
+
+      template <class LHS, class RHS>
+      static ReductionOpUntyped *create_reduction_op(void (*apply_fn)(LHS& lhs, RHS rhs),
+						     RHS identity);
+
+      template <class LHS, class RHS>
+      static ReductionOpUntyped *create_reduction_op(void (*apply_fn)(LHS& lhs, RHS rhs),
+						     RHS identity,
+						     RHS (*fold_fn)(RHS rhs1, RHS rhs2));
+    };
+    typedef std::map<ReductionOpID, const ReductionOpUntyped *> ReductionOpTable;
+
     class RegionMetaDataUntyped {
     public:
       typedef unsigned id_t;
@@ -249,6 +271,8 @@ namespace RegionRuntime {
 
       RegionAllocatorUntyped create_allocator_untyped(Memory memory) const;
       RegionInstanceUntyped create_instance_untyped(Memory memory) const;
+      RegionInstanceUntyped create_instance_untyped(Memory memory,
+						    ReductionOpID redopid) const;
 
       void destroy_region_untyped(void) const;
       void destroy_allocator_untyped(RegionAllocatorUntyped allocator) const;
@@ -511,6 +535,7 @@ namespace RegionRuntime {
     public:
       Machine(int *argc, char ***argv,
 	      const Processor::TaskIDTable &task_table,
+	      const ReductionOpTable &redop_table,
 	      bool cps_style = false, Processor::TaskFuncID init_id = 0);
       ~Machine(void);
 

@@ -4916,6 +4916,7 @@ namespace RegionRuntime {
 
     Machine::Machine(int *argc, char ***argv,
 		     const Processor::TaskIDTable &task_table,
+		     const ReductionOpTable &redop_table,
 		     bool cps_style /* = false */,
 		     Processor::TaskFuncID init_id /* = 0 */)
     {
