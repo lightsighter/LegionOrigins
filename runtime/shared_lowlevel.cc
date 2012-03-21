@@ -2703,6 +2703,7 @@ namespace RegionRuntime {
 
     Machine::Machine(int *argc, char ***argv,
 			const Processor::TaskIDTable &task_table,
+                        const ReductionOpTable &redop_table,
 			bool cps_style, Processor::TaskFuncID init_id)
     {
 	// Default nobody can use task id 0 since that is the shutdown id
