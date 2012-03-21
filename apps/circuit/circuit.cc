@@ -152,10 +152,10 @@ void region_main(const void *args, size_t arglen,
   // Create the top-level regions
   Circuit circuit;
   {
-    int num_circuit_nodes = num_pieces * nodes_per_piece;
-    int num_circuit_wires = num_pieces * wires_per_piece;
-    circuit.all_nodes = runtime->create_logical_region(ctx,num_circuit_nodes);
-    circuit.all_wires = runtime->create_logical_region(ctx,num_circuit_wires);
+    int num_circuit_nodes = num_pieces * nodes_per_piece + 1;
+    int num_circuit_wires = num_pieces * wires_per_piece + 1;
+    circuit.all_nodes = runtime->create_logical_region(ctx,sizeof(CircuitNode), num_circuit_nodes);
+    circuit.all_wires = runtime->create_logical_region(ctx,sizeof(CircuitWire), num_circuit_wires);
   }
 
   // Load the circuit
@@ -477,6 +477,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
                         HighLevelRuntime *runtime, int num_pieces, int nodes_per_piece,
                         int wires_per_piece, int pct_wire_in_piece, int random_seed)
 {
+  printf("Initializing circuit simulation...\n");
   // inline map physical instances for the nodes and wire regions
   PhysicalRegion<AccessorGeneric> wires = runtime->map_region<AccessorGeneric>(ctx, 
                                                                     RegionRequirement(ckt.all_wires,
@@ -564,6 +565,8 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
         }
         // Write the wire
         wires.write(wire_ptr, wire);
+
+        wire_owner_map[n].insert(wire_ptr);
       }
     }
     delete itr;
@@ -612,7 +615,32 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
   runtime->unmap_region(ctx, wires);
   runtime->unmap_region(ctx, nodes);
 
+  // Now we can create our partitions and update the circuit pieces
+
+  // first create the privacy partition that splits all the nodes into either shared or private
+  Partition privacy_part = runtime->create_partition(ctx, ckt.all_nodes, privacy_map);
+
+  LogicalRegion all_private = runtime->get_subregion(ctx, privacy_part, 0);
+  LogicalRegion all_shared  = runtime->get_subregion(ctx, privacy_part, 1);
+
+  // Now create partitions for each of the subregions
   Partitions result;
+  result.pvt_nodes = runtime->create_partition(ctx, all_private, private_node_map);
+  result.shr_nodes = runtime->create_partition(ctx, all_shared, shared_node_map);
+  result.ghost_nodes = runtime->create_partition(ctx, all_shared, ghost_node_map, false/*disjoint*/);
+
+  result.pvt_wires = runtime->create_partition(ctx, ckt.all_wires, wire_owner_map); 
+
+  // Build the pieces
+  for (int n = 0; n < num_pieces; n++)
+  {
+    pieces[n].pvt_nodes = runtime->get_subregion(ctx, result.pvt_nodes, n);
+    pieces[n].shr_nodes = runtime->get_subregion(ctx, result.shr_nodes, n);
+    pieces[n].ghost_nodes = runtime->get_subregion(ctx, result.ghost_nodes, n);
+    pieces[n].pvt_wires = runtime->get_subregion(ctx, result.pvt_wires, n);
+  }
+
+  printf("Finished initializing simulation...\n");
 
   return result;
 }
