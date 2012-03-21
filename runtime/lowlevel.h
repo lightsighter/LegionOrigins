@@ -232,10 +232,10 @@ namespace RegionRuntime {
     typedef unsigned ReductionOpID;
     class ReductionOpUntyped {
     public:
-      size_t sizeof_lhs(void) const;
-      size_t sizeof_rhs(void) const;
-      bool has_identity(void) const;
-      bool is_foldable(void) const;
+      size_t sizeof_lhs;
+      size_t sizeof_rhs;
+      bool has_identity;
+      bool is_foldable;
 
       template <class LHS, class RHS>
       static ReductionOpUntyped *create_reduction_op(void (*apply_fn)(LHS& lhs, RHS rhs));
@@ -248,6 +248,12 @@ namespace RegionRuntime {
       static ReductionOpUntyped *create_reduction_op(void (*apply_fn)(LHS& lhs, RHS rhs),
 						     RHS identity,
 						     RHS (*fold_fn)(RHS rhs1, RHS rhs2));
+
+    protected:
+      ReductionOpUntyped(size_t _sizeof_lhs, size_t _sizeof_rhs,
+			 bool _has_identity, bool _is_foldable)
+	: sizeof_lhs(_sizeof_lhs), sizeof_rhs(_sizeof_rhs),
+  	  has_identity(_has_identity), is_foldable(_is_foldable) {}
     };
     typedef std::map<ReductionOpID, const ReductionOpUntyped *> ReductionOpTable;
 
