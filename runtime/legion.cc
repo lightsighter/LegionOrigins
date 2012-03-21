@@ -1769,8 +1769,17 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           assert(!mapper_objects.empty());
 #endif
-          desc->initialize_task(NULL/*no parent*/,tid, HighLevelRuntime::legion_main_id,malloc(sizeof(Context)),
-                                sizeof(Context), 0, 0, mapper_objects[0], mapper_locks[0]);
+          // Copy the argv into the default arguments
+          void *default_args = malloc(sizeof(Context) + hlr_argc*sizeof(char*));
+          size_t default_size = sizeof(Context) + hlr_argc*sizeof(char*);
+          if (hlr_argc > 0)
+          {
+            char *ptr = (char*)default_args;
+            ptr += sizeof(Context);
+            memcpy(ptr, hlr_argv, hlr_argc*sizeof(char*));
+          }
+          desc->initialize_task(NULL/*no parent*/,tid, HighLevelRuntime::legion_main_id,default_args,
+                                default_size, 0, 0, mapper_objects[0], mapper_locks[0]);
         }
         log_spy(LEVEL_INFO,"Top Task %d %d",desc->unique_id,HighLevelRuntime::legion_main_id);
         // Put this task in the ready queue
