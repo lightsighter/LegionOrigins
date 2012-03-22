@@ -33,11 +33,16 @@ struct CircuitNode {
   float leakage;
 };
 
+#define WIRE_SEGMENTS 10
+
 struct CircuitWire {
   ptr_t<CircuitNode> in_ptr, out_ptr;
   PointerLocation in_loc, out_loc;
+  float inductance;
   float resistance;
-  float current;
+  float current[WIRE_SEGMENTS];
+  float capacitance;
+  float voltage[WIRE_SEGMENTS-1];
 };
 
 struct Circuit {
@@ -70,10 +75,6 @@ public:
 };
 
 // Utility functions
-float get_rand_float() {
-  return (((float)2*rand()-RAND_MAX)/((float)RAND_MAX));
-}
-
 void parse_input_args(char **argv, int argc, int &num_loops, int &num_pieces,
                       int &nodes_per_piece, int &wires_per_piece,
                       int &pct_wire_in_piece, int &random_seed);
@@ -137,8 +138,9 @@ void region_main(const void *args, size_t arglen,
   int pct_wire_in_piece = 95;
   int random_seed = 12345;
   {
-    char **argv = (char**)args;
-    int argc = arglen/sizeof(char*);
+    InputArgs *inputs = (InputArgs*)args;
+    char **argv = inputs->argv;
+    int argc = inputs->argc;
 
     parse_input_args(argv, argc, num_loops, num_pieces, nodes_per_piece, 
                       wires_per_piece, pct_wire_in_piece, random_seed);
@@ -152,8 +154,8 @@ void region_main(const void *args, size_t arglen,
   {
     int num_circuit_nodes = num_pieces * nodes_per_piece;
     int num_circuit_wires = num_pieces * wires_per_piece;
-    circuit.all_nodes = runtime->create_logical_region(ctx,num_circuit_nodes);
-    circuit.all_wires = runtime->create_logical_region(ctx,num_circuit_wires);
+    circuit.all_nodes = runtime->create_logical_region(ctx,sizeof(CircuitNode), num_circuit_nodes);
+    circuit.all_wires = runtime->create_logical_region(ctx,sizeof(CircuitWire), num_circuit_wires);
   }
 
   // Load the circuit
@@ -205,19 +207,21 @@ void region_main(const void *args, size_t arglen,
   TaskArgument global_arg;
   ArgumentMap local_args;
 
+#if 0
   // Run the main loop
   for (int i = 0; i < num_loops; i++)
   {
     // Calculate new currents
     runtime->execute_index_space(ctx, CALC_NEW_CURRENTS, index_space,
-                                  cnc_regions, global_arg, local_args, false);
+                                  cnc_regions, global_arg, local_args, false/*must*/);
     // Distribute charge
     runtime->execute_index_space(ctx, DISTRIBUTE_CHARGE, index_space,
-                                  dsc_regions, global_arg, local_args, false);
+                                  dsc_regions, global_arg, local_args, false/*must*/);
     // Update voltages
     runtime->execute_index_space(ctx, UPDATE_VOLTAGES, index_space,
-                                  upv_regions, global_arg, local_args, false);
+                                  upv_regions, global_arg, local_args, false/*must*/);
   }
+#endif
 
   // Now we can destroy the regions
   {
@@ -250,7 +254,41 @@ void calculate_currents_task(const void *global_args, size_t global_arglen,
     CircuitWire wire = pvt_wires.read(wire_ptr);
     CircuitNode in_node  = get_node(pvt_nodes, shr_nodes, ghost_nodes, wire.in_loc, wire.in_ptr);
     CircuitNode out_node = get_node(pvt_nodes, shr_nodes, ghost_nodes, wire.out_loc, wire.out_ptr);
-    wire.current = (out_node.voltage - in_node.voltage) / wire.resistance;
+
+    // Solve RLC model iteratively
+    float dt = 1e-6;
+    int steps = 10000;
+    float new_v[WIRE_SEGMENTS+1];
+    float new_i[WIRE_SEGMENTS];
+    for (int i = 0; i < WIRE_SEGMENTS; i++)
+      new_i[i] = wire.current[i];
+    for (int i = 0; i < WIRE_SEGMENTS-1; i++)
+      new_v[i] = wire.voltage[i];
+    new_v[WIRE_SEGMENTS] = out_node.voltage;
+
+    for (int j = 0; j < steps; j++)
+    {
+      // first, figure out the new current from the voltage differential
+      // and our inductance:
+      // dV = R*I + L*I' ==> I = (dV - L*I')/R
+      for (int i = 0; i < WIRE_SEGMENTS; i++)
+      {
+        new_i[i] = ((new_v[i+1] - new_v[i]) - 
+                    (wire.inductance*(new_i[i] - wire.current[i])/dt)) / wire.resistance;
+      }
+      // Now update the inter-node voltages
+      for (int i = 0; i < WIRE_SEGMENTS-1; i++)
+      {
+        new_v[i+1] = wire.voltage[i] + dt*(new_i[i] - new_i[i+1]) / wire.capacitance;
+      }
+    }
+
+    // Copy everything back
+    for (int i = 0; i < WIRE_SEGMENTS; i++)
+      wire.current[i] = new_i[i];
+    for (int i = 0; i < WIRE_SEGMENTS-1; i++)
+      wire.voltage[i] = new_v[i+1];
+
     pvt_wires.write(wire_ptr, wire);
   }
   delete itr;
@@ -275,10 +313,10 @@ void distribute_charge_task(const void *global_args, size_t global_arglen,
     ptr_t<CircuitWire> wire_ptr = itr->next<CircuitWire>();
     CircuitWire wire = pvt_wires.read(wire_ptr);
 
-    float delta_q = wire.current * 1e-6; // arbitrary time step of 1us
+    float dt = 1e-6;
 
-    reduce_node<AT,AccumulateCharge>(pvt_nodes,shr_nodes,ghost_nodes,wire.in_loc, wire.in_ptr, -delta_q);
-    reduce_node<AT,AccumulateCharge>(pvt_nodes,shr_nodes,ghost_nodes,wire.out_loc, wire.out_ptr, delta_q);
+    reduce_node<AT,AccumulateCharge>(pvt_nodes,shr_nodes,ghost_nodes,wire.in_loc, wire.in_ptr, -dt * wire.current[0]);
+    reduce_node<AT,AccumulateCharge>(pvt_nodes,shr_nodes,ghost_nodes,wire.out_loc, wire.out_ptr, dt * wire.current[WIRE_SEGMENTS-1]);
   }
   delete itr;
 }
@@ -340,8 +378,6 @@ void registration_func(Machine *machine, HighLevelRuntime *runtime, Processor lo
 
 int main(int argc, char **argv)
 {
-
-  HighLevelRuntime::set_input_args(argc, argv);
   HighLevelRuntime::set_registration_callback(registration_func);
   HighLevelRuntime::set_top_level_task_id(REGION_MAIN);
   // CPU versions
@@ -361,11 +397,7 @@ int main(int argc, char **argv)
   HighLevelRuntime::register_index_task<
           update_voltages_task_gpu<AccessorGeneric> >(UPDATE_VOLTAGES, Processor::TOC_PROC, "update_voltages");
 
-  Machine m(&argc, &argv, HighLevelRuntime::get_task_table(), false);
-
-  m.run();
-
-  return 0;
+  return HighLevelRuntime::start(argc, argv);
 }
 
 void parse_input_args(char **argv, int argc, int &num_loops, int &num_pieces,
@@ -412,11 +444,203 @@ void parse_input_args(char **argv, int argc, int &num_loops, int &num_pieces,
   }
 }
 
+template<typename T>
+static T random_element(const std::set<T> &set)
+{
+  int index = int(drand48() * set.size());
+  typename std::set<T>::const_iterator it = set.begin();
+  while (index-- > 0) it++;
+  return *it;
+}
+
+PointerLocation find_location(ptr_t<CircuitNode> ptr, const std::set<utptr_t> &private_nodes,
+                              const std::set<utptr_t> &shared_nodes, const std::set<utptr_t> &ghost_nodes)
+{
+  if (private_nodes.find(ptr) != private_nodes.end())
+  {
+    return PRIVATE_PTR;
+  }
+  else if (shared_nodes.find(ptr) != shared_nodes.end())
+  {
+    return SHARED_PTR;
+  }
+  else if (ghost_nodes.find(ptr) != ghost_nodes.end())
+  {
+    return GHOST_PTR;
+  }
+  // Should never make it here, if we do something bad happened
+  assert(false);
+  return PRIVATE_PTR;
+}
+
 Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context ctx,
                         HighLevelRuntime *runtime, int num_pieces, int nodes_per_piece,
                         int wires_per_piece, int pct_wire_in_piece, int random_seed)
 {
+  printf("Initializing circuit simulation...\n");
+  // inline map physical instances for the nodes and wire regions
+  PhysicalRegion<AccessorGeneric> wires = runtime->map_region<AccessorGeneric>(ctx, 
+                                                                    RegionRequirement(ckt.all_wires,
+                                                                    READ_WRITE, ALLOCABLE, EXCLUSIVE,
+                                                                    ckt.all_wires));
+  PhysicalRegion<AccessorGeneric> nodes = runtime->map_region<AccessorGeneric>(ctx, 
+                                                                    RegionRequirement(ckt.all_nodes,
+                                                                    READ_WRITE, ALLOCABLE, EXCLUSIVE,
+                                                                    ckt.all_nodes));
+
+  std::vector<std::set<utptr_t> > wire_owner_map(num_pieces);
+  std::vector<std::set<utptr_t> > private_node_map(num_pieces);
+  std::vector<std::set<utptr_t> > shared_node_map(num_pieces);
+  std::vector<std::set<utptr_t> > ghost_node_map(num_pieces);
+
+  std::vector<std::set<utptr_t> > privacy_map(2);
+
+  srand48(random_seed);
+
+  nodes.wait_until_valid();
+  // Allocate all the nodes
+  nodes.alloc<CircuitNode>(num_pieces*nodes_per_piece);
+  {
+    PointerIterator *itr = nodes.iterator();
+    for (int n = 0; n < num_pieces; n++)
+    {
+      for (int i = 0; i < nodes_per_piece; i++)
+      {
+        assert(itr->has_next());
+        ptr_t<CircuitNode> node_ptr = itr->next<CircuitNode>();
+        CircuitNode node;
+        node.charge = 0.f;
+        node.voltage = 2*drand48() - 1;
+        node.capacitance = drand48() + 1;
+        node.leakage = 0.1f * drand48();
+
+        nodes.write(node_ptr, node);
+
+        // Just put everything in everyones private map at the moment       
+        // We'll pull pointers out of here later as nodes get tied to 
+        // wires that are non-local
+        private_node_map[n].insert(node_ptr);
+        privacy_map[0].insert(node_ptr);
+      }
+    }
+    delete itr;
+  }
+
+  wires.wait_until_valid();
+  // Allocate all the wires
+  wires.alloc<CircuitWire>(num_pieces*wires_per_piece);
+  {
+    PointerIterator *itr = wires.iterator();
+    for (int n = 0; n < num_pieces; n++)
+    {
+      for (int i = 0; i < wires_per_piece; i++)
+      {
+        assert(itr->has_next());
+        ptr_t<CircuitWire> wire_ptr = itr->next<CircuitWire>();
+        CircuitWire wire;
+        for (int j = 0; j < WIRE_SEGMENTS; j++) wire.current[j] = 0.f;
+        for (int j = 0; j < WIRE_SEGMENTS-1; j++) wire.voltage[j] = 0.f;
+
+        wire.resistance = drand48() * 10 + 1;
+        wire.inductance = drand48() * 0.01 + 0.1;
+        wire.capacitance = drand48() * 0.1;
+
+        wire.in_ptr = random_element(private_node_map[n]);
+
+        if ((100 * drand48()) < pct_wire_in_piece)
+        {
+          wire.out_ptr = random_element(private_node_map[n]);
+        }
+        else
+        {
+          // pick a random other piece and a node from there
+          int nn = int(drand48() * (num_pieces - 1));
+          if(nn >= n) nn++;
+
+          wire.out_ptr = random_element(private_node_map[nn]); 
+          // This node is no longer private
+          privacy_map[0].erase(wire.out_ptr);
+          privacy_map[1].insert(wire.out_ptr);
+          ghost_node_map[n].insert(wire.out_ptr);
+        }
+        // Write the wire
+        wires.write(wire_ptr, wire);
+
+        wire_owner_map[n].insert(wire_ptr);
+      }
+    }
+    delete itr;
+  }
+  
+  // Second pass: first go through and see which of the private nodes are no longer private
+  {
+    PointerIterator *itr = nodes.iterator();
+    for (int n = 0; n < num_pieces; n++)
+    {
+      for (int i = 0; i < nodes_per_piece; i++)
+      {
+        assert(itr->has_next());
+        ptr_t<CircuitNode> node_ptr = itr->next<CircuitNode>();
+        if (privacy_map[0].find(node_ptr) == privacy_map[0].end())
+        {
+          private_node_map[n].erase(node_ptr);
+          // node is now shared
+          shared_node_map[n].insert(node_ptr);
+        }
+      }
+    }
+    delete itr;
+  }
+  // Second pass (part 2): go through the wires and update the locations
+  {
+    PointerIterator *itr = wires.iterator();
+    for (int n = 0; n < num_pieces; n++)
+    {
+      for (int i = 0; i < wires_per_piece; i++)
+      {
+        assert(itr->has_next());
+        ptr_t<CircuitWire> wire_ptr = itr->next<CircuitWire>();
+        CircuitWire wire = wires.read(wire_ptr);
+
+        wire.in_loc = find_location(wire.in_ptr, private_node_map[n], shared_node_map[n], ghost_node_map[n]);     
+        wire.out_loc = find_location(wire.out_ptr, private_node_map[n], shared_node_map[n], ghost_node_map[n]);
+
+        // Write the wire back
+        wires.write(wire_ptr, wire);
+      }
+    }
+  }
+
+  // Unmap our inline regions
+  runtime->unmap_region(ctx, wires);
+  runtime->unmap_region(ctx, nodes);
+
+  // Now we can create our partitions and update the circuit pieces
+
+  // first create the privacy partition that splits all the nodes into either shared or private
+  Partition privacy_part = runtime->create_partition(ctx, ckt.all_nodes, privacy_map);
+
+  LogicalRegion all_private = runtime->get_subregion(ctx, privacy_part, 0);
+  LogicalRegion all_shared  = runtime->get_subregion(ctx, privacy_part, 1);
+
+  // Now create partitions for each of the subregions
   Partitions result;
+  result.pvt_nodes = runtime->create_partition(ctx, all_private, private_node_map);
+  result.shr_nodes = runtime->create_partition(ctx, all_shared, shared_node_map);
+  result.ghost_nodes = runtime->create_partition(ctx, all_shared, ghost_node_map, false/*disjoint*/);
+
+  result.pvt_wires = runtime->create_partition(ctx, ckt.all_wires, wire_owner_map); 
+
+  // Build the pieces
+  for (int n = 0; n < num_pieces; n++)
+  {
+    pieces[n].pvt_nodes = runtime->get_subregion(ctx, result.pvt_nodes, n);
+    pieces[n].shr_nodes = runtime->get_subregion(ctx, result.shr_nodes, n);
+    pieces[n].ghost_nodes = runtime->get_subregion(ctx, result.ghost_nodes, n);
+    pieces[n].pvt_wires = runtime->get_subregion(ctx, result.pvt_wires, n);
+  }
+
+  printf("Finished initializing simulation...\n");
 
   return result;
 }
@@ -437,5 +661,6 @@ void update_region_voltages(PhysicalRegion<AT> &region)
 
     region.write(node_ptr, node);
   }
+  delete itr;
 }
 

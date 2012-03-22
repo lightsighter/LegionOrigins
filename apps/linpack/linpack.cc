@@ -1232,10 +1232,7 @@ int main(int argc, char **argv) {
 
   //HighLevelRuntime::register_runtime_tasks(task_table);
   HighLevelRuntime::set_top_level_task_id(TOP_LEVEL_TASK_ID);
-  HighLevelRuntime::set_input_args(argc,argv);
   HighLevelRuntime::set_registration_callback(create_mappers);
-
-  Machine m(&argc, &argv, HighLevelRuntime::get_task_table(), false);
 
   for (int i = 1; i < argc; i++) {
     if(!strcmp(argv[i], "-N")) {
@@ -1263,8 +1260,5 @@ int main(int argc, char **argv) {
   printf("linpack: N=%d NB=%d P=%d Q=%d\n", 
 	 Config::N, Config::NB, Config::P, Config::Q);
 
-  m.run();
-
-  printf("Machine::run() finished!\n");
-  return 0;
+  return HighLevelRuntime::start(argc, argv);
 }

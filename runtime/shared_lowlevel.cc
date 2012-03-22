@@ -2588,7 +2588,7 @@ namespace RegionRuntime {
           if (result == -1)
           {
               // Allocation failure, didn't work
-              fprintf(stderr,"Alloction failure in shared low level runtime. "
+              fprintf(stderr,"Allocation failure in shared low level runtime. "
                   "No available space for %d elements in region %d.\n",count, index);
               exit(1);
           }
@@ -2703,6 +2703,7 @@ namespace RegionRuntime {
 
     Machine::Machine(int *argc, char ***argv,
 			const Processor::TaskIDTable &task_table,
+                        const ReductionOpTable &redop_table,
 			bool cps_style, Processor::TaskFuncID init_id)
     {
 	// Default nobody can use task id 0 since that is the shutdown id
