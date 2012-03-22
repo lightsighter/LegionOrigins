@@ -2395,69 +2395,6 @@ namespace RegionRuntime {
       return PhysicalRegion<AccessorGeneric>(impl, req.handle.region);
     }
 
-#if 0
-    //--------------------------------------------------------------------------------------------
-    template<>
-    PhysicalRegion<AccessorArray> HighLevelRuntime::map_region(Context ctx, unsigned idx)
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(idx < ctx->regions.size());
-      assert(idx < ctx->physical_instances.size());
-      assert(idx < ctx->allocators.size());
-#endif
-      if (ctx->local_mapped[idx] &&
-          (ctx->local_instances[idx] != InstanceInfo::get_no_instance()))
-      {
-        // We already have a valid instance, just make it and return
-        PhysicalRegion<AccessorGeneric> result(idx,ctx->regions[idx].handle.region);
-        result.set_instance(ctx->local_instances[idx]->inst.get_accessor_untyped());
-        result.set_allocator(ctx->allocators[idx]);
-#ifdef DEBUG_HIGH_LEVEL
-        assert(result.can_convert());
-#endif
-        return result.convert();
-      }
-      // Otherwise, this was unmapped so we have to map it
-      RegionMappingImpl *impl = get_available_mapping(ctx, ctx->regions[idx]);
-      if (ctx->local_instances[idx] != InstanceInfo::get_no_instance())
-      {
-        impl->set_target_instance(ctx->local_instances[idx]);
-      }
-      internal_map_region(ctx, impl);
-      return PhysicalRegion<AccessorArray>(impl, ctx->regions[idx].handle.region);
-    }
-
-    //--------------------------------------------------------------------------------------------
-    template<>
-    PhysicalRegion<AccessorGeneric> HighLevelRuntime::map_region(Context ctx, unsigned idx)
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(idx < ctx->regions.size());
-      assert(idx < ctx->physical_instances.size());
-      assert(idx < ctx->allocators.size());
-#endif
-      if (ctx->local_mapped[idx] && 
-          (ctx->local_instances[idx] != InstanceInfo::get_no_instance()))
-      {
-        // We already have a valid instance, just make it and return 
-        PhysicalRegion<AccessorGeneric> result(idx, ctx->regions[idx].handle.region);
-        result.set_instance(ctx->local_instances[idx]->inst.get_accessor_untyped());
-        result.set_allocator(ctx->allocators[idx]);
-        return result;
-      }
-      // Otherwise this was unmapped so we have to map it
-      RegionMappingImpl *impl = get_available_mapping(ctx, ctx->regions[idx]);
-      if (ctx->local_instances[idx] != InstanceInfo::get_no_instance())
-      {
-        impl->set_target_instance(ctx->local_instances[idx]);
-      }
-      internal_map_region(ctx, impl);
-      return PhysicalRegion<AccessorGeneric>(impl, ctx->regions[idx].handle.region);
-    }
-#endif
-
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::internal_map_region(TaskContext *ctx, RegionMappingImpl *impl)
     //--------------------------------------------------------------------------------------------
