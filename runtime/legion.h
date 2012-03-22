@@ -1769,117 +1769,6 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
     // InstanceInfo 
     ///////////////////////////////////////////////////////////// 
-#ifdef OLD_INFO
-    class InstanceInfo {
-    private:
-      struct UserTask {
-      public:
-        RegionRequirement req;
-        unsigned references;
-        Event term_event;
-      public:
-        UserTask() { }
-        UserTask(RegionRequirement r, unsigned ref, Event t)
-          : req(r), references(ref), term_event(t) { }
-      };
-      struct CopyUser {
-      public:
-        unsigned references;
-        Event term_event;
-      public:
-        CopyUser() { }
-        CopyUser(unsigned r, Event t)
-          : references(r), term_event(t) { }
-      };
-    public:
-      const InstanceID iid;
-      const LogicalRegion handle;
-      const Memory location;
-      const RegionInstance inst;
-    public:
-      InstanceInfo(void);
-      InstanceInfo(InstanceID id, LogicalRegion r, Memory m,
-          RegionInstance i, bool rem, InstanceInfo *par);
-      ~InstanceInfo(void);
-    protected:
-      friend class TaskContext;
-      friend class RegionMappingImpl;
-      friend class RegionNode;
-      friend class PartitionNode;
-    public:
-      static inline InstanceInfo* get_no_instance(void)
-      {
-        static InstanceInfo no_info;
-        return &no_info;
-      }
-    protected:
-      // Add a user of this instance info and return the event
-      // when it can be used
-      Event add_user(GeneralizedContext *ctx, unsigned idx, Event precondition);
-      void  remove_user(UniqueID uid, unsigned ref = 1);
-      // Compute the precondition on performing copies
-      Event get_copy_precondition(Event precondition, bool writer);
-      // For copy readers only
-      void  add_copy_user(UniqueID uid, Event copy_term);
-      void  remove_copy_user(UniqueID uid, unsigned ref = 1);
-      // For copy writers, have them update the valid event
-      void  update_valid_event(Event new_valid);
-      // Allow for locking and unlocking of the instance
-      Event lock_instance(Event precondition);
-      void unlock_instance(Event precondition);
-      // Check for Write-After-Read dependences 
-      bool has_war_dependence(GeneralizedContext *ctx, unsigned idx) const;
-      // Mark that the instance is no longer valid
-      void mark_invalid(void);
-      // For tasks that unmap an instance, but still need to keep a reference to it
-      void add_local_reference(void);
-      void remove_local_reference(void);
-    protected:
-      // Get the set of InstanceInfos needed, this instance and all parent instances
-      void get_needed_instances(std::vector<InstanceInfo*> &needed_instances); 
-      // Operations for packing return information for instance infos
-      size_t compute_info_size(void) const;
-      void pack_instance_info(Serializer &rez) const;
-      static void unpack_instance_info(Deserializer &derez, std::map<InstanceID,InstanceInfo*> *infos);
-      // Operations for packing return information for instance infos
-      // Note for packing return infos we have to return all the added references even if they aren't in the context
-      // we're using so we don't accidentally reclaim the instance too early
-      size_t compute_return_info_size(void) const;
-      size_t compute_return_info_size(std::vector<EscapedUser> &escaped_users,
-                                      std::vector<EscapedCopier> &escaped_copies) const;
-      void pack_return_info(Serializer &rez);
-      static InstanceInfo* unpack_return_instance_info(Deserializer &derez, std::map<InstanceID,InstanceInfo*> *infos);
-      void merge_instance_info(Deserializer &derez); // for merging information into a pre-existing instance
-    protected:
-      size_t compute_user_task_size(void) const;
-      void   pack_user_task(Serializer &rez, const UserTask &task) const;
-      void   unpack_user_task(Deserializer &derez, UserTask &task) const;
-    protected:
-      // For going back up the instance tree looking for dependences
-      void find_user_dependences(std::set<Event> &wait_on_events, const RegionRequirement &req) const;
-      void find_user_dependences(std::set<Event> &wait_on_events, bool writer) const; // Same as previous except for copies
-      void find_copy_dependences(std::set<Event> &wait_on_events) const;
-      // Has user for checking on unresolved dependences
-      bool has_user(UniqueID uid) const;
-      // Add and remove child users
-      void add_child(void);
-      void remove_child(void);
-      // Check to see if we can garbage collect this instance
-      void garbage_collect(void);
-    private:
-      bool valid; // Currently a valid instance in the physical region tree
-      bool remote;
-      unsigned children;
-      unsigned local_references; // Don't move anywhere (used for tasks that are using the info even if they have been unmapped)
-      InstanceInfo *parent; // parent instance info
-      Event valid_event; // most recent copy-write event
-      Lock inst_lock;
-      std::map<UniqueID,UserTask> users;
-      std::map<UniqueID,UserTask> added_users;
-      std::map<UniqueID,CopyUser> copy_users;
-      std::map<UniqueID,CopyUser> added_copy_users;
-    };
-#else
     class InstanceInfo {
     private:
       struct UserTask {
@@ -2016,7 +1905,6 @@ namespace RegionRuntime {
       std::map<UniqueID,CopyUser> removed_copy_users;
 #endif
     };
-#endif
 
     /////////////////////////////////////////////////////////////
     // Dependence Detector 
