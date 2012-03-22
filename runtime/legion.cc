@@ -344,6 +344,7 @@ namespace RegionRuntime {
     // Physical Region 
     /////////////////////////////////////////////////////////////
 
+#if 0
     //--------------------------------------------------------------------------
     void PhysicalRegion<AccessorArray>::wait_until_valid(void)
     //--------------------------------------------------------------------------
@@ -387,6 +388,7 @@ namespace RegionRuntime {
 #endif
       }
     }
+#endif
 
     /////////////////////////////////////////////////////////////
     // Region Requirement 
@@ -2393,6 +2395,7 @@ namespace RegionRuntime {
       return PhysicalRegion<AccessorGeneric>(impl, req.handle.region);
     }
 
+#if 0
     //--------------------------------------------------------------------------------------------
     template<>
     PhysicalRegion<AccessorArray> HighLevelRuntime::map_region(Context ctx, unsigned idx)
@@ -2453,6 +2456,7 @@ namespace RegionRuntime {
       internal_map_region(ctx, impl);
       return PhysicalRegion<AccessorGeneric>(impl, ctx->regions[idx].handle.region);
     }
+#endif
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::internal_map_region(TaskContext *ctx, RegionMappingImpl *impl)

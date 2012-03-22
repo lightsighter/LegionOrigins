@@ -20,6 +20,9 @@
 
 #define AUTO_GENERATE_ID  UINT_MAX
 
+#define AT_CONV(at) ((at == AccessorGeneric) ? LowLevel::AccessorGeneric : \
+                    (at == AccessorArray) ? LowLevel::AccessorArray : LowLevel::AccessorGPU)
+
 namespace RegionRuntime {
   namespace HighLevel {
 
@@ -45,6 +48,7 @@ namespace RegionRuntime {
     enum AccessorType {
       AccessorGeneric = LowLevel::AccessorGeneric,
       AccessorArray   = LowLevel::AccessorArray,
+      AccessorGPU     = LowLevel::AccessorGPU,
     };
 
     enum PrivilegeMode {
@@ -557,6 +561,50 @@ namespace RegionRuntime {
      * Have two versions of a physical region to prevent the low level
      * runtime from showing through.
      */
+    template<AccessorType AT>
+    class PhysicalRegion {
+    protected:
+      friend class HighLevelRuntime;
+      friend class TaskContext;
+      friend class RegionMappingImpl;
+      friend class PhysicalRegion<AccessorGeneric>;
+      friend class PhysicalRegion<AccessorArray>;
+      friend class PhysicalRegion<AccessorGPU>;
+      PhysicalRegion(RegionMappingImpl *im, LogicalRegion h);
+      PhysicalRegion(unsigned id, LogicalRegion h);
+      void set_allocator(LowLevel::RegionAllocatorUntyped alloc);
+      void set_instance(LowLevel::RegionInstanceAccessorUntyped<AT_CONV(AT)> inst);
+    public:
+      PhysicalRegion(LogicalRegion h = LogicalRegion::NO_REGION);
+      // including definitions below so templates are instantiated and inlined
+      template<typename T> inline ptr_t<T> alloc(unsigned count = 1);
+      template<typename T> inline void     free(ptr_t<T> ptr,unsigned count = 1);
+      template<typename T> inline T        read(ptr_t<T> ptr);
+      template<typename T> inline void     write(ptr_t<T> ptr, T newval);
+      template<typename T, typename REDOP, typename RHS> inline void reduce(ptr_t<T> ptr, RHS newval);
+    public:
+      template<AccessorType AT2> bool can_convert(void) const;
+      template<AccessorType AT2> PhysicalRegion<AT2> convert(void) const;
+    public:
+      void wait_until_valid(void);
+    public:
+      bool operator==(const PhysicalRegion<AT> &accessor) const;
+      bool operator<(const PhysicalRegion<AT> &accessor) const;
+    public:
+      inline PointerIterator* iterator(void) const;
+    private:
+      bool valid_allocator;
+      bool valid_instance;
+      LowLevel::RegionAllocatorUntyped allocator;
+      LowLevel::RegionInstanceAccessorUntyped<AT_CONV(AT)> instance;
+    protected:
+      bool valid;
+      bool inline_mapped;
+      RegionMappingImpl *impl;
+      unsigned idx;
+      LogicalRegion handle;
+    };
+#if 0
     template<>
     class PhysicalRegion<AccessorArray> {
     private:
@@ -789,6 +837,7 @@ namespace RegionRuntime {
       unsigned idx;
       LogicalRegion handle;
     };
+#endif
 
     
     /////////////////////////////////////////////////////////////
@@ -952,7 +1001,7 @@ namespace RegionRuntime {
     public:
       // Functions for creating and destroying logical regions
       // Use the same mapper as the enclosing task
-      LogicalRegion create_logical_region(Context ctx, size_t elmt_size, size_t num_elmts = 0);
+      LogicalRegion create_logical_region(Context ctx, size_t elmt_size, size_t num_elmts);
       void destroy_logical_region(Context ctx, LogicalRegion handle);
       LogicalRegion smash_logical_regions(Context ctx, const std::vector<LogicalRegion> &regions);
     public:
@@ -2464,7 +2513,7 @@ namespace RegionRuntime {
       for (std::vector<PhysicalRegion<AccessorGeneric> >::const_iterator it = regions.begin();
             it != regions.end(); it++)
       {
-        if (!it->can_convert())
+        if (!it->can_convert<AccessorArray>())
         {
           specialize = false;
           break;
@@ -2477,7 +2526,7 @@ namespace RegionRuntime {
         for (std::vector<PhysicalRegion<AccessorGeneric> >::const_iterator it = regions.begin();
               it != regions.end(); it++)
         {
-          fast_regions.push_back(it->convert());
+          fast_regions.push_back(it->convert<AccessorArray>());
         }
 	{
 	  DetailedTimer::ScopedPush sp(TIME_KERNEL);
@@ -2525,7 +2574,7 @@ namespace RegionRuntime {
       for (std::vector<PhysicalRegion<AccessorGeneric> >::const_iterator it = regions.begin();
             it != regions.end(); it++)
       {
-        if (!it->can_convert())
+        if (!it->can_convert<AccessorArray>())
         {
           specialize = false;
           break;
@@ -2537,7 +2586,7 @@ namespace RegionRuntime {
         for (std::vector<PhysicalRegion<AccessorGeneric> >::const_iterator it = regions.begin();
               it != regions.end(); it++)
         {
-          fast_regions.push_back(it->convert());
+          fast_regions.push_back(it->convert<AccessorArray>());
         }
 	{
 	  DetailedTimer::ScopedPush sp(TIME_KERNEL);
@@ -2657,7 +2706,7 @@ namespace RegionRuntime {
       for (std::vector<PhysicalRegion<AccessorGeneric> >::const_iterator it = regions.begin();
             it != regions.end(); it++)
       {
-        if (!it->can_convert())
+        if (!it->can_convert<AccessorArray>())
         {
           specialize = false;
           break;
@@ -2670,7 +2719,7 @@ namespace RegionRuntime {
         for (std::vector<PhysicalRegion<AccessorGeneric> >::const_iterator it = regions.begin();
               it != regions.end(); it++)
         {
-          fast_regions.push_back(it->convert());
+          fast_regions.push_back(it->convert<AccessorArray>());
         }
 	{
 	  DetailedTimer::ScopedPush sp(TIME_KERNEL);
@@ -2720,7 +2769,7 @@ namespace RegionRuntime {
       for (std::vector<PhysicalRegion<AccessorGeneric> >::const_iterator it = regions.begin();
             it != regions.end(); it++)
       {
-        if (!it->can_convert())
+        if (!it->can_convert<AccessorArray>())
         {
           specialize = false;
           break;
@@ -2732,7 +2781,7 @@ namespace RegionRuntime {
         for (std::vector<PhysicalRegion<AccessorGeneric> >::const_iterator it = regions.begin();
               it != regions.end(); it++)
         {
-          fast_regions.push_back(it->convert());
+          fast_regions.push_back(it->convert<AccessorArray>());
         }
 	{
 	  DetailedTimer::ScopedPush sp(TIME_KERNEL);
@@ -2931,13 +2980,13 @@ namespace RegionRuntime {
         ready_event.wait();
       }
 #ifdef DEBUG_HIGH_LEVEL
-      if (!result.can_convert())
+      if (!result.can_convert<AccessorArray>())
       {
         // TODO: Add error reporting here
         assert(false);
       }
 #endif
-      fast_result = result.convert();
+      fast_result = result.convert<AccessorArray>();
       return fast_result;
     }
 
@@ -3097,7 +3146,7 @@ namespace RegionRuntime {
         mapped_event.wait();
       }
       // Now you can check the instance
-      return result.can_convert();
+      return result.can_convert<AccessorArray>();
     }
 
     //--------------------------------------------------------------------------
@@ -3235,6 +3284,230 @@ namespace RegionRuntime {
       }
       // Return the future where the return value will be set
       return Future(&desc->future);
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT>
+    PhysicalRegion<AT> HighLevelRuntime::map_region(Context ctx, unsigned idx)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx < ctx->regions.size());
+      assert(idx < ctx->physical_instances.size());
+      assert(idx < ctx->allocators.size());
+#endif
+      if (ctx->local_mapped[idx] &&
+          (ctx->local_instances[idx] != InstanceInfo::get_no_instance()))
+      {
+        // We already have a valid instance, just make it and return
+        PhysicalRegion<AccessorGeneric> result(idx,ctx->regions[idx].handle.region);
+        result.set_instance(ctx->local_instances[idx]->inst.get_accessor_untyped());
+        result.set_allocator(ctx->allocators[idx]);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(result.can_convert<AT>());
+#endif
+        return result.convert<AT>();
+      }
+      // Otherwise, this was unmapped so we have to map it
+      RegionMappingImpl *impl = get_available_mapping(ctx, ctx->regions[idx]);
+      if (ctx->local_instances[idx] != InstanceInfo::get_no_instance())
+      {
+        impl->set_target_instance(ctx->local_instances[idx]);
+      }
+      internal_map_region(ctx, impl);
+      return PhysicalRegion<AT>(impl, ctx->regions[idx].handle.region);
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT>
+    PhysicalRegion<AT>::PhysicalRegion(RegionMappingImpl *im, LogicalRegion h)
+      : valid_allocator(false), valid_instance(false),
+          instance(LowLevel::RegionInstanceAccessorUntyped<AT_CONV(AT)>(NULL)),
+          valid(false), inline_mapped(true), impl(im), handle(h)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT>
+    PhysicalRegion<AT>::PhysicalRegion(unsigned id, LogicalRegion h)
+      : valid_allocator(false), valid_instance(false),
+          instance(LowLevel::RegionInstanceAccessorUntyped<AT_CONV(AT)>(NULL)),
+          valid(true), inline_mapped(false), idx(id), handle(h) 
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT>
+    PhysicalRegion<AT>::PhysicalRegion(LogicalRegion h /*= LogicalRegion::NO_REGION*/)
+      : valid_allocator(false), valid_instance(false),
+          instance(LowLevel::RegionInstanceAccessorUntyped<AT_CONV(AT)>(NULL)),
+          handle(h) 
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT>
+    void PhysicalRegion<AT>::set_allocator(LowLevel::RegionAllocatorUntyped alloc)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(valid);
+#endif
+      valid_allocator = true;
+      allocator = alloc;
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT>
+    void PhysicalRegion<AT>::set_instance(LowLevel::RegionInstanceAccessorUntyped<AT_CONV(AT)> inst)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(valid);
+#endif
+      valid_instance = true;
+      instance = inst;
+    }
+
+    
+    //--------------------------------------------------------------------------
+    template<AccessorType AT> template<typename T>
+    inline ptr_t<T> PhysicalRegion<AT>::alloc(unsigned count)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(valid);
+#endif
+      return static_cast<LowLevel::RegionAllocator<T> >(allocator).alloc(count); 
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT> template<typename T>
+    inline void PhysicalRegion<AT>::free(ptr_t<T> ptr, unsigned count)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(valid);
+#endif
+      static_cast<LowLevel::RegionAllocator<T> >(allocator).free(ptr,count); 
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT> template<typename T>
+    inline T PhysicalRegion<AT>::read(ptr_t<T> ptr)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(valid);
+#endif
+      return static_cast<LowLevel::RegionInstanceAccessor<T,AT_CONV(AT)> >(instance).read(ptr); 
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT> template<typename T>
+    inline void PhysicalRegion<AT>::write(ptr_t<T> ptr, T newval)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(valid);
+#endif
+      static_cast<LowLevel::RegionInstanceAccessor<T,AT_CONV(AT)> >(instance).write(ptr,newval); 
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT> template<typename T, typename REDOP, typename RHS>
+    void PhysicalRegion<AT>::reduce(ptr_t<T> ptr, RHS newval)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(valid);
+#endif
+      static_cast<LowLevel::RegionInstanceAccessor<T,AT_CONV(AT)> >(instance).reduce<REDOP>(ptr,newval); 
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT> template<AccessorType AT2>
+    bool PhysicalRegion<AT>::can_convert(void) const
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(valid);
+#endif
+      if (valid_instance)
+          return instance.can_convert<AT_CONV(AT2)>();
+      return true;
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT> template<AccessorType AT2>
+    PhysicalRegion<AT2> PhysicalRegion<AT>::convert(void) const
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(can_convert<AT2>());
+      assert(valid);
+#endif
+      PhysicalRegion<AT2> result;
+      result.valid = valid;
+      result.inline_mapped = inline_mapped;
+      result.impl = impl;
+      result.idx = idx;
+      if (valid_allocator)
+        result.set_allocator(allocator);
+      if (valid_instance)
+        result.set_instance(instance.convert<AT_CONV(AT2)>());
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT>
+    void PhysicalRegion<AT>::wait_until_valid(void)
+    //--------------------------------------------------------------------------
+    {
+      if (inline_mapped)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!valid);
+#endif
+        const PhysicalRegion<AT> &result = impl->get_physical_region<AT>();
+        valid = true;
+        set_instance(result.instance);
+        set_allocator(result.allocator);
+      }
+      else
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(valid); // if this wasn't inline mapped, it should already be valid
+#endif
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT>
+    bool PhysicalRegion<AT>::operator==(const PhysicalRegion<AT> &accessor) const
+    //--------------------------------------------------------------------------
+    {
+      return (allocator == accessor.allocator) && (instance == accessor.instance); 
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT>
+    bool PhysicalRegion<AT>::operator<(const PhysicalRegion<AT> &accessor) const
+    //--------------------------------------------------------------------------
+    {
+      return (allocator < accessor.allocator) || (instance < accessor.instance);  
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT>
+    inline PointerIterator* PhysicalRegion<AT>::iterator(void) const
+    //--------------------------------------------------------------------------
+    {
+      LogicalRegion copy = handle;
+      return new PointerIterator(copy.get_valid_mask().enumerate_enabled());
     }
 
     //--------------------------------------------------------------------------
