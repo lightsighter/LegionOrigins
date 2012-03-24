@@ -466,8 +466,9 @@ class Partition(object):
                 base_part = False
                 break
         if base_part:
-            min_id = min(self.regions.iterkeys())
-            max_id = max(self.regions.iterkeys())
+            key_func = lambda a:int(a,16)
+            min_id = min(self.regions.iterkeys(),key=key_func)
+            max_id = max(self.regions.iterkeys(),key=key_func)
             node_id = printer.print_multi_region(min_id,max_id)
             printer.print_multi_edge(part_id,node_id)
         else:
@@ -493,7 +494,7 @@ class EventNode(object):
                 '",fillcolor=darkgoldenrod1,fontsize=14,fontcolor=black,shape=record,penwidth=2];') 
 
     def is_no_event(self):
-        return (self.idx == 0)
+        return (int(self.idx,16) == 0)
 
 class CopyNode(object):
     def __init__(self,name,src_inst,src_handle,src_loc,dst_inst,dst_handle,dst_loc):
@@ -771,6 +772,11 @@ class EventGraph(object):
 
         printer.println("/* Edges */")
         for edge in self.edges:
+            # Don't print any edges that point to the no_event
+            if hasattr(edge[0],'is_no_event') and edge[0].is_no_event():
+                continue
+            if hasattr(edge[1],'is_no_event') and edge[1].is_no_event():
+                continue
             if hasattr(edge[0],'parent'):
                 if hasattr(edge[1],'parent'):
                     printer.println(edge[0].name + " -> " + edge[1].name+' [ltail='+edge[0].parent.name+', lhead='+edge[1].parent.name+'];')
