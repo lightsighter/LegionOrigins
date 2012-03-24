@@ -61,6 +61,13 @@ namespace RegionRuntime {
 	return create_instance_local(r, bytes_needed);
       }
 
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed,
+						    ReductionOpID redopid)
+      {
+	return create_instance_local(r, bytes_needed, redopid);
+      }
+
       virtual off_t alloc_bytes(size_t size)
       {
 	return alloc_bytes_local(size);
@@ -109,6 +116,13 @@ namespace RegionRuntime {
 						    size_t bytes_needed)
       {
 	return create_instance_local(r, bytes_needed);
+      }
+
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed,
+						    ReductionOpID redopid)
+      {
+	return create_instance_local(r, bytes_needed, redopid);
       }
 
       virtual off_t alloc_bytes(size_t size)
