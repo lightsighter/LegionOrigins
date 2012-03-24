@@ -122,6 +122,7 @@ namespace RegionRuntime {
     typedef LowLevel::Lock Lock;
     typedef LowLevel::ElementMask Mask;
     typedef LowLevel::Barrier Barrier;
+    typedef LowLevel::ReductionOpID ReductionOpID;
     typedef unsigned int Color;
     typedef unsigned int MapperID;
     typedef unsigned int PartitionID;
@@ -453,6 +454,7 @@ namespace RegionRuntime {
       AllocateMode      alloc;
       CoherenceProperty prop;
       LogicalRegion     parent;
+      ReductionOpID     redop;
       bool verified; // has this been verified already
       ColoringType      func_type; // how to interpret the handle
       ColorizeID        colorize; // coloring function if this is a partition
@@ -462,35 +464,39 @@ namespace RegionRuntime {
       // Create a requirement for a single region
       RegionRequirement(LogicalRegion _handle, PrivilegeMode _priv,
                         AllocateMode _alloc, CoherenceProperty _prop,
-                        LogicalRegion _parent, bool _verified = false)
-        : privilege(_priv), alloc(_alloc), prop(_prop), parent(_parent),
-          verified(_verified), func_type(SINGULAR_FUNC)
-          { handle.region = _handle; }
+                        LogicalRegion _parent, bool _verified = false);
       // Create a requirement for a partition with the colorize
       // function describing how to map points in the index space
       // to colors for logical subregions in the partition
       RegionRequirement(PartitionID pid, ColorizeID _colorize,
                         PrivilegeMode _priv,
                         AllocateMode _alloc, CoherenceProperty _prop,
-                        LogicalRegion _parent, bool _verified = false)
-        : privilege(_priv), alloc(_alloc), prop(_prop), parent(_parent),
-          verified(_verified), func_type(EXECUTABLE_FUNC),
-          colorize(_colorize) { handle.partition = pid; }
-      RegionRequirement(PartitionID pid, std::map<IndexPoint,Color> map,
+                        LogicalRegion _parent, bool _verified = false);
+      
+      RegionRequirement(PartitionID pid, const std::map<IndexPoint,Color> &map,
                         PrivilegeMode _priv, AllocateMode _alloc,
                         CoherenceProperty _prop, LogicalRegion _parent,
-                        bool _verified = false)
-        : privilege(_priv), alloc(_alloc), prop(_prop), parent(_parent),
-          verified(_verified), func_type(MAPPED_FUNC), color_map(map)
-          { handle.partition = pid; }
+                        bool _verified = false);
+      
+      // Corresponding region requirements for reductions
+      // Notice you pass a ReductionOpID instead of a Privilege
+      RegionRequirement(LogicalRegion _handle, ReductionOpID op,
+                        AllocateMode _alloc, CoherenceProperty _prop,
+                        LogicalRegion _parent, bool _verified = false);
+      RegionRequirement(PartitionID pid, ColorizeID _colorize,
+                        ReductionOpID op, AllocateMode _alloc, CoherenceProperty _prop,
+                        LogicalRegion _parent, bool _verified = false);
+      RegionRequirement(PartitionID pid, const std::map<IndexPoint,Color> &map,
+                        ReductionOpID op, AllocateMode _alloc, CoherenceProperty _prop,
+                        LogicalRegion _parent, bool _verified = false);
     public:
       bool operator==(const RegionRequirement &req) const
         { return (handle.partition == req.handle.partition) && (privilege == req.privilege)
-                && (alloc == req.alloc) && (prop == req.prop) &&
+                && (alloc == req.alloc) && (prop == req.prop) && (redop == req.redop) &&
                    (parent == req.parent) && (func_type == req.func_type); }
       bool operator<(const RegionRequirement &req) const
         { return (handle.partition < req.handle.partition) || (privilege < req.privilege)
-                || (alloc < req.alloc) || (prop < req.prop) ||
+                || (alloc < req.alloc) || (prop < req.prop) || (redop < req.redop) || 
                    (parent < req.parent) || (func_type < req.func_type); }
       RegionRequirement& operator=(const RegionRequirement &rhs);
     protected:
@@ -1583,24 +1589,30 @@ namespace RegionRuntime {
         PART_NOT_OPEN,
         PART_EXCLUSIVE, // allows only a single open partition
         PART_READ_ONLY, // allows multiple open partitions
+        PART_REDUCE,    // allows multiple open partitions for reductions
       };
       struct RegionState {
       public:
         // Logical State
         PartState logical_state;
         std::set<PartitionID> open_logical;
+        ReductionOpID   logop; // logical reduction op
         std::list<std::pair<GeneralizedContext*,unsigned/*idx*/> > active_users;
         // This is for handling the case where we close up a subtree and then have two tasks 
         // that don't interfere and have to wait on the same close events
         std::list<std::pair<GeneralizedContext*,unsigned/*idx*/> > closed_users;
         // Physical State
         std::set<PartitionID> open_physical; 
+        PartitionID exclusive_part; // The one exclusive partition (if any)
         // All these instances obey info->handle == this->handle
         std::map<InstanceInfo*,bool/*owned*/> valid_instances; //valid instances
         // State of the open partitions
         PartState open_state;
-        // TODO: handle the case of different types of reductions
+        // State of the data 
         DataState data_state;
+        // Reduction Information 
+        ReductionOpID redop;
+        std::map<InstanceInfo*,bool/*owned*/> reduction_instances;
       };
     protected:
       friend class TaskContext;
@@ -1624,8 +1636,8 @@ namespace RegionRuntime {
     protected:
       size_t compute_physical_state_size(ContextID ctx, std::vector<InstanceInfo*> &needed);
       void pack_physical_state(ContextID ctx, Serializer &rez);
-      void unpack_physical_state(ContextID ctx, Deserializer &derez, bool write, 
-              std::map<InstanceID,InstanceInfo*> &inst_map, bool check_overwrite = false, UniqueID uid = 0);
+      void unpack_physical_state(ContextID ctx, Deserializer &derez,  
+          std::map<InstanceID,InstanceInfo*> &inst_map, bool returning, UniqueID uid = 0);
     protected:
       // Initialize the logical context
       void initialize_logical_context(ContextID ctx);
@@ -1635,7 +1647,7 @@ namespace RegionRuntime {
       void open_logical_tree(DependenceDetector &dep);
       // Close up a logical region tree
       void close_logical_tree(DependenceDetector &dep, bool register_dependences,
-                              std::list<std::pair<GeneralizedContext*,unsigned> > &closed, bool closing_part);
+                            std::list<std::pair<GeneralizedContext*,unsigned> > &closed, bool closing_part);
       // Register a deletion on the logical region tree
       void register_deletion(ContextID ctx, DeletionOp *op);
     protected:
@@ -1653,7 +1665,7 @@ namespace RegionRuntime {
       // Close up a physical region tree into the given InstanceInfo
       // returning the event when the close operation is complete
       void close_physical_tree(ContextID ctx, InstanceInfo *target, 
-                                GeneralizedContext *enclosing, Mapper *mapper);
+                                GeneralizedContext *enclosing, Mapper *mapper, bool leave_open);
       // Invalidate physical region tree's valid instances, for tree deletion
       void invalidate_physical_tree(ContextID ctx);
       // Update the valid instances with the new physical instance, it's ready event, and
@@ -1665,12 +1677,13 @@ namespace RegionRuntime {
       // Initialize a physical instance
       void initialize_instance(RegionRenamer &ren, const std::set<Memory> &locations);
       // Select a target region for a close operation
-      InstanceInfo* select_target_instance(RegionRenamer &ren);
-      // Select s source region for a copy operation
+      InstanceInfo* select_target_instance(RegionRenamer &ren, bool &owned);
+      // Select a source region for a copy operation
       InstanceInfo* select_source_instance(ContextID ctx, Mapper *mapper, const std::set<Memory> &locations, 
                                             Memory target_location, bool allow_up);
-      // Perform a copy operation
-      Event perform_copy_operation(InstanceInfo *src, InstanceInfo *dst, Event precondition, GeneralizedContext *ctx);
+      // A local helper method that does what close physical tree does without copying from
+      // any dirty instances locally
+      bool close_local_tree(ContextID, InstanceInfo *target, GeneralizedContext *enclosing, Mapper *mapper, bool leave_open);
     private:
       const LogicalRegion handle;
       const unsigned depth;
@@ -1690,18 +1703,23 @@ namespace RegionRuntime {
         REG_NOT_OPEN,
         REG_OPEN_READ_ONLY,
         REG_OPEN_EXCLUSIVE,
+        REG_OPEN_REDUCE, // multiple regions open for aliased partitions in reduce mode
       };
       struct PartitionState {
       public:
         // Logical state
         RegState logical_state; // For use with aliased partitions
+        ReductionOpID logop; // logical reduction operation (aliased only)
         std::map<LogicalRegion,RegState> logical_states; // For use with disjoint partitions
         std::list<std::pair<GeneralizedContext*,unsigned/*idx*/> > active_users;
         std::list<std::pair<GeneralizedContext*,unsigned/*idx*/> > closed_users;
         std::set<LogicalRegion> open_logical;
-        // Physical state
-        RegState physical_state;
+        // Physical state 
+        RegState physical_state; // (aliased only)
         std::set<LogicalRegion> open_physical;
+        LogicalRegion exclusive_reg; // (aliased only)
+        // Reduction mode (aliased only)
+        ReductionOpID redop;
       };
     protected:
       friend class TaskContext;
@@ -1725,8 +1743,8 @@ namespace RegionRuntime {
     protected:
       size_t compute_physical_state_size(ContextID ctx, std::vector<InstanceInfo*> &needed);
       void pack_physical_state(ContextID ctx, Serializer &rez);
-      void unpack_physical_state(ContextID ctx, Deserializer &derez, bool write, 
-              std::map<InstanceID,InstanceInfo*> &inst_map, bool check_overwite = false, UniqueID uid = 0);
+      void unpack_physical_state(ContextID ctx, Deserializer &derez,  
+              std::map<InstanceID,InstanceInfo*> &inst_map, bool returning, UniqueID uid = 0);
     protected:
       // Logical operations on partitions 
       void initialize_logical_context(ContextID ctx);
@@ -1750,7 +1768,7 @@ namespace RegionRuntime {
       // Close up a physical region tree into the given InstanceInfo
       // returning the event when the close operation is complete
       void close_physical_tree(ContextID ctx, InstanceInfo *target, 
-                                GeneralizedContext *enclosing, Mapper *mapper);
+                                GeneralizedContext *enclosing, Mapper *mapper, bool leave_open);
       // Invalidate a physical region tree
       void invalidate_physical_tree(ContextID ctx);
     protected:
@@ -1815,7 +1833,7 @@ namespace RegionRuntime {
       Event add_user(GeneralizedContext *ctx, unsigned idx, Event precondition);
       void  remove_user(UniqueID uid, unsigned ref = 1);
       // Perform a copy operation from the source info to this info
-      void copy_from(InstanceInfo *src_info, GeneralizedContext *ctx);
+      void copy_from(InstanceInfo *src_info, GeneralizedContext *ctx, bool reduction = false);
       void add_copy_user(UniqueID uid, Event copy_finish);
       void remove_copy_user(UniqueID uid, unsigned ref = 1);
       // Allow for locking and unlocking of the instance
@@ -3074,7 +3092,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     template<AccessorType AT> template<typename T, typename REDOP, typename RHS>
-    void PhysicalRegion<AT>::reduce(ptr_t<T> ptr, RHS newval)
+    inline void PhysicalRegion<AT>::reduce(ptr_t<T> ptr, RHS newval)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -3142,7 +3160,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     template<AccessorType AT>
-    bool PhysicalRegion<AT>::operator==(const PhysicalRegion<AT> &accessor) const
+    inline bool PhysicalRegion<AT>::operator==(const PhysicalRegion<AT> &accessor) const
     //--------------------------------------------------------------------------
     {
       return (allocator == accessor.allocator) && (instance == accessor.instance); 
@@ -3150,7 +3168,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     template<AccessorType AT>
-    bool PhysicalRegion<AT>::operator<(const PhysicalRegion<AT> &accessor) const
+    inline bool PhysicalRegion<AT>::operator<(const PhysicalRegion<AT> &accessor) const
     //--------------------------------------------------------------------------
     {
       return (allocator < accessor.allocator) || (instance < accessor.instance);  

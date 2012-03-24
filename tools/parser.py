@@ -127,8 +127,7 @@ def parse_log_file(file_name):
             #dst = result.event_graph.get_event_node(int(m.group('dst_id')),int(m.group('dst_gen')))
             src = result.event_graph.get_event_node((m.group('src_id')),int(m.group('src_gen')))
             dst = result.event_graph.get_event_node((m.group('dst_id')),int(m.group('dst_gen')))
-            if (not src.is_no_event()) and (not dst.is_no_event()): 
-                result.event_graph.add_edge(src,dst)
+            result.event_graph.add_edge(src,dst)
             continue
         m = copy_pat.match(line)
         if m <> None:
@@ -140,10 +139,8 @@ def parse_log_file(file_name):
             copy = result.event_graph.get_copy_node((m.group('src_inst')),(m.group('src_handle')),(m.group('src_loc')),
                                                     (m.group('dst_inst')),(m.group('dst_handle')),(m.group('dst_loc')))
             dst = result.event_graph.get_event_node((m.group('dst_id')),int(m.group('dst_gen')))
-            if not src.is_no_event():
-                result.event_graph.add_edge(src,copy)
-            if not dst.is_no_event():
-                result.event_graph.add_edge(copy,dst)
+            result.event_graph.add_edge(src,copy)
+            result.event_graph.add_edge(copy,dst)
             continue
         m = task_launch_pat.match(line)
         if m <> None:
@@ -152,10 +149,8 @@ def parse_log_file(file_name):
             task = result.event_graph.get_task_node(int(m.group('tid')),int(m.group('uid')))
             #dst = result.event_graph.get_event_node(int(m.group('term_id')),int(m.group('term_gen')))
             dst = result.event_graph.get_event_node((m.group('term_id')),int(m.group('term_gen')))
-            if not src.is_no_event():
-                result.event_graph.add_edge(src,task)
-            if not dst.is_no_event():
-                result.event_graph.add_edge(task,dst)
+            result.event_graph.add_edge(src,task)
+            result.event_graph.add_edge(task,dst)
             continue
         m = index_launch_pat.match(line)
         if m <> None:
@@ -170,12 +165,10 @@ def parse_log_file(file_name):
             #dst = result.event_graph.get_event_node(int(m.group('term_id')),int(m.group('term_gen')))
             src = result.event_graph.get_event_node((m.group('start_id')),int(m.group('start_gen')))
             dst = result.event_graph.get_event_node((m.group('term_id')),int(m.group('term_gen')))
-            if not src.is_no_event():
-                #result.event_graph.add_index_dst_edge(space,src,point_node)
-                result.event_graph.add_edge(src,space)
-            if not dst.is_no_event():
-                #result.event_graph.add_index_src_edge(space,point_node,dst)
-                result.event_graph.add_edge(space,dst)
+            #result.event_graph.add_index_dst_edge(space,src,point_node)
+            result.event_graph.add_edge(src,space)
+            #result.event_graph.add_index_src_edge(space,point_node,dst)
+            result.event_graph.add_edge(space,dst)
             continue
         m = map_launch_pat.match(line)
         if m <> None:
@@ -184,10 +177,8 @@ def parse_log_file(file_name):
             mapping = result.event_graph.get_map_node(int(m.group('unique')))
             #dst = result.event_graph.get_event_node(int(m.group('term_id')),int(m.group('term_gen')))
             dst = result.event_graph.get_event_node((m.group('term_id')),int(m.group('term_gen')))
-            if not src.is_no_event():
-                result.event_graph.add_edge(src,mapping)
-            if not dst.is_no_event():
-                result.event_graph.add_edge(mapping,dst)
+            result.event_graph.add_edge(src,mapping)
+            result.event_graph.add_edge(mapping,dst)
             continue
         m = index_space_size_pat.match(line)
         if m <> None:
