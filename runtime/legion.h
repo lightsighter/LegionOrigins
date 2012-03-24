@@ -1596,6 +1596,7 @@ namespace RegionRuntime {
         // Logical State
         PartState logical_state;
         std::set<PartitionID> open_logical;
+        ReductionOpID   logop; // logical reduction op
         std::list<std::pair<GeneralizedContext*,unsigned/*idx*/> > active_users;
         // This is for handling the case where we close up a subtree and then have two tasks 
         // that don't interfere and have to wait on the same close events
@@ -1708,6 +1709,7 @@ namespace RegionRuntime {
       public:
         // Logical state
         RegState logical_state; // For use with aliased partitions
+        ReductionOpID logop; // logical reduction operation (aliased only)
         std::map<LogicalRegion,RegState> logical_states; // For use with disjoint partitions
         std::list<std::pair<GeneralizedContext*,unsigned/*idx*/> > active_users;
         std::list<std::pair<GeneralizedContext*,unsigned/*idx*/> > closed_users;
