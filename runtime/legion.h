@@ -464,27 +464,31 @@ namespace RegionRuntime {
       // Create a requirement for a single region
       RegionRequirement(LogicalRegion _handle, PrivilegeMode _priv,
                         AllocateMode _alloc, CoherenceProperty _prop,
-                        LogicalRegion _parent, bool _verified = false)
-        : privilege(_priv), alloc(_alloc), prop(_prop), parent(_parent),
-          redop(0), verified(_verified), func_type(SINGULAR_FUNC)
-          { handle.region = _handle; }
+                        LogicalRegion _parent, bool _verified = false);
       // Create a requirement for a partition with the colorize
       // function describing how to map points in the index space
       // to colors for logical subregions in the partition
       RegionRequirement(PartitionID pid, ColorizeID _colorize,
                         PrivilegeMode _priv,
                         AllocateMode _alloc, CoherenceProperty _prop,
-                        LogicalRegion _parent, bool _verified = false)
-        : privilege(_priv), alloc(_alloc), prop(_prop), parent(_parent),
-          redop(0), verified(_verified), func_type(EXECUTABLE_FUNC),
-          colorize(_colorize) { handle.partition = pid; }
-      RegionRequirement(PartitionID pid, std::map<IndexPoint,Color> map,
+                        LogicalRegion _parent, bool _verified = false);
+      
+      RegionRequirement(PartitionID pid, const std::map<IndexPoint,Color> &map,
                         PrivilegeMode _priv, AllocateMode _alloc,
                         CoherenceProperty _prop, LogicalRegion _parent,
-                        bool _verified = false)
-        : privilege(_priv), alloc(_alloc), prop(_prop), parent(_parent),
-          redop(0), verified(_verified), func_type(MAPPED_FUNC), color_map(map)
-          { handle.partition = pid; }
+                        bool _verified = false);
+      
+      // Corresponding region requirements for reductions
+      // Notice you pass a ReductionOpID instead of a Privilege
+      RegionRequirement(LogicalRegion _handle, ReductionOpID op,
+                        AllocateMode _alloc, CoherenceProperty _prop,
+                        LogicalRegion _parent, bool _verified = false);
+      RegionRequirement(PartitionID pid, ColorizeID _colorize,
+                        ReductionOpID op, AllocateMode _alloc, CoherenceProperty _prop,
+                        LogicalRegion _parent, bool _verified = false);
+      RegionRequirement(PartitionID pid, const std::map<IndexPoint,Color> &map,
+                        ReductionOpID op, AllocateMode _alloc, CoherenceProperty _prop,
+                        LogicalRegion _parent, bool _verified = false);
     public:
       bool operator==(const RegionRequirement &req) const
         { return (handle.partition == req.handle.partition) && (privilege == req.privilege)
