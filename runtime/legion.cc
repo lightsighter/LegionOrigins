@@ -553,6 +553,7 @@ namespace RegionRuntime {
       result += sizeof(AllocateMode);
       result += sizeof(CoherenceProperty);
       result += sizeof(LogicalRegion);
+      result += sizeof(ReductionOpID);
       result += sizeof(bool);
       result += sizeof(ColoringType);
       switch (func_type)
@@ -593,6 +594,7 @@ namespace RegionRuntime {
       rez.serialize<AllocateMode>(alloc);
       rez.serialize<CoherenceProperty>(prop);
       rez.serialize<LogicalRegion>(parent);
+      rez.serialize<ReductionOpID>(redop);
       rez.serialize<bool>(verified);
       rez.serialize<ColoringType>(func_type);
       switch (func_type)
@@ -640,6 +642,7 @@ namespace RegionRuntime {
       derez.deserialize<AllocateMode>(alloc);
       derez.deserialize<CoherenceProperty>(prop);
       derez.deserialize<LogicalRegion>(parent);
+      derez.deserialize<ReductionOpID>(redop);
       derez.deserialize<bool>(verified);
       derez.deserialize<ColoringType>(func_type);
       switch (func_type)
@@ -688,6 +691,7 @@ namespace RegionRuntime {
       result += sizeof(AllocateMode);
       result += sizeof(CoherenceProperty);
       result += sizeof(LogicalRegion);
+      result += sizeof(ReductionOpID);
       return result; 
     }
 
@@ -700,6 +704,7 @@ namespace RegionRuntime {
       rez.serialize<AllocateMode>(alloc);
       rez.serialize<CoherenceProperty>(prop);
       rez.serialize<LogicalRegion>(parent);
+      rez.serialize<ReductionOpID>(redop);
     }
 
     //--------------------------------------------------------------------------
@@ -711,6 +716,7 @@ namespace RegionRuntime {
       derez.deserialize<AllocateMode>(alloc);
       derez.deserialize<CoherenceProperty>(prop);
       derez.deserialize<LogicalRegion>(parent);
+      derez.deserialize<ReductionOpID>(redop);
     }
 
     /////////////////////////////////////////////////////////////
@@ -9312,301 +9318,6 @@ namespace RegionRuntime {
       }
     }
 
-#if 0
-    //--------------------------------------------------------------------------------------------
-    Event RegionNode::register_physical_instance(RegionRenamer &ren, Event precondition)
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(ren.trace.back() == handle.id);
-      assert(!ren.trace.empty());
-#endif
-      // This is a multi-step algorithm.
-      // 1. Descend down to the logical region for the physical instance we are targeting.  If
-      //    we find any open parts of the tree which we depend on, close them up.
-      // 2. When we arrive at our target logical region, first check to see if we have
-      //    any dependences on the current tasks using the logical regions, if so add them
-      //    to our precondition.
-      // 3. Determine then if any copies are necessary to initialize our region, if so issue
-      //    them on the precondition.
-      // 4. Close up any logical subregions on which we depend for data (note this doesn't have
-      //    to be all the subregions if we are independent)
-      if (ren.trace.size() == 1)
-      {
-        // We've arrived at our destination
-
-        // First check to see if we're sanitizing
-        if (ren.sanitizing)
-        {
-#ifdef DEBUG_HIGH_LEVEL
-          assert(!ren.needs_initializing);
-#endif
-          // If we're santizing, create instance infos in this region for all the valid
-          // instances of this region
-          std::set<Memory> locations;
-          get_physical_locations(ren.ctx_id,locations,true/*ignore open below*/);
-          for (std::set<Memory>::const_iterator it = locations.begin();
-                it != locations.end(); it++)
-          {
-            std::pair<InstanceInfo*,bool> result = find_physical_instance(ren.ctx_id, *it, true/*allow up*/);
-            InstanceInfo *info = result.first;
-            if (info->handle != handle)
-            {
-              InstanceInfo *new_info = ren.ctx->create_instance_info(handle,info);
-              update_valid_instances(ren.ctx_id,new_info,false/*writer*/,ren.owned,ren.reduce);
-            }
-          }
-          // If we're sanitizing we're done at this point
-          return precondition;
-        }
-        bool written_to = HAS_WRITE(ren.get_req());
-        // We're not sanitizing, check to see if we have to initialize our physical instance
-        if (ren.needs_initializing)
-        {
-          if (!IS_WRITE_ONLY(ren.get_req()))
-          {
-            std::set<Memory> locations;
-            get_physical_locations(ren.ctx_id, locations, true/*ignore open below*/);
-            // If locations are empty, we're the first ones, so no need to initialize
-            if (!locations.empty())
-            {
-              initialize_instance(ren,locations);
-            }
-          }
-        }
-        // Now check to see if we have to close up any open partitions below
-        switch (region_states[ren.ctx_id].open_state)
-        {
-          case PART_EXCLUSIVE:
-            {
-#ifdef DEBUG_HIGH_LEVEL 
-              assert(region_states[ren.ctx_id].open_physical.size() == 1);
-#endif
-              // close up the open partition
-              PartitionID pid = *(region_states[ren.ctx_id].open_physical.begin());
-#ifdef DEBUG_HIGH_LEVEL
-              assert(ren.info->handle == this->handle);
-#endif
-              // Close up the tree
-              // If we're ready only, then only do the copies back, but leave the tree
-              // open in read-only mode since all those instances down there will
-              // still be valid
-              if (!IS_READ_ONLY(ren.get_req()))
-              {
-                partitions[pid]->close_physical_tree(ren.ctx_id,ren.info,ren.ctx,ren.mapper);
-                // mark that the partitions are closed
-                region_states[ren.ctx_id].open_physical.clear();
-                region_states[ren.ctx_id].open_state = PART_NOT_OPEN;
-              }
-              else
-              {
-                partitions[pid]->close_physical_tree(ren.ctx_id,ren.info,ren.ctx,ren.mapper,true/*leave open*/);
-                region_states[ren.ctx_id].open_state = PART_READ_ONLY;
-              }
-              written_to = true;
-              break;
-            }
-          case PART_READ_ONLY:
-            {
-              // If we're writing close up the open partitions
-              // because they no longer will contain valid copies of the data, otherwise
-              // we are read-only in which case the open regions will still have valid
-              // copies of the data so we can leave them open
-              if (written_to)
-              {
-                // Close up all the open partitions below
-                // We can pass the no instance pointer since
-                // everything below should be read only
-                for (std::set<PartitionID>::const_iterator it = region_states[ren.ctx_id].open_physical.begin();
-                      it != region_states[ren.ctx_id].open_physical.end(); it++)
-                {
-                  // All of the returning events here should be no events since the partition is read only
-                  partitions[*it]->close_physical_tree(ren.ctx_id,
-                                    InstanceInfo::get_no_instance(),ren.ctx,ren.mapper); 
-                }
-                // Mark that the partitions are closed
-                region_states[ren.ctx_id].open_physical.clear();
-                region_states[ren.ctx_id].open_state = PART_NOT_OPEN;
-              }
-              break;
-            }
-          case PART_NOT_OPEN:
-            {
-              // Don't need to do anything here
-              break;
-            }
-          default:
-            assert(false);
-        }
-        // Now check to see if we have any reductions that we need to close up to this instance
-        if (check_open_reductions(ren, ren.info))
-        {
-          written_to = true;
-        }
-        // Finally record that we are using this physical instance
-        // and update the state of the valid physical instances
-        precondition = ren.info->add_user(ren.ctx, ren.idx, precondition);
-        update_valid_instances(ren.ctx_id,ren.info,written_to,ren.owned);
-        // Return the precondition for when the task can begin
-        return precondition;
-      }
-      else
-      {
-        // We're not there yet 
-#ifdef DEBUG_HIGH_LEVEL
-        assert(ren.trace.size() > 1);
-#endif
-        // We aren't down to the bottom yet
-        // check to see if there are any open sub trees that we conflict with 
-        // See what the current state is and then look at our state 
-        switch (region_states[ren.ctx_id].open_state)
-        {
-          case PART_NOT_OPEN:
-            {
-#ifdef DEBUG_HIGH_LEVEL
-              assert(region_states[ren.ctx_id].open_physical.empty());
-#endif
-              // Check to see if we have any open reductions that need to be closed 
-              check_open_reductions(ren);
-              // It's not open, figure out what state we need it in, and open it
-              if (IS_READ_ONLY(ren.get_req()))
-              {
-                region_states[ren.ctx_id].open_state = PART_READ_ONLY;
-              }
-              else // Need exclusive access
-              {
-                region_states[ren.ctx_id].open_state = PART_EXCLUSIVE;
-              }
-              // Add the partition that we're going down and return the resulting event
-              PartitionID pid = (PartitionID)ren.trace.back();
-              region_states[ren.ctx_id].open_physical.insert(pid); 
-#ifdef DEBUG_HIGH_LEVEL
-              assert(partitions.find(pid) != partitions.end());
-#endif
-              // Open the rest of the tree and return the event when we're done
-              return partitions[pid]->open_physical_tree(ren, precondition);
-            }
-          case PART_EXCLUSIVE:
-            {
-#ifdef DEBUG_HIGH_LEVEL
-              assert(region_states[ren.ctx_id].open_physical.size() == 1);
-#endif
-              // Check to see if it is the same partition that we need
-              PartitionID current = *(region_states[ren.ctx_id].open_physical.begin());
-              if (current == ren.trace.back())
-              {
-                // Check for open reductions
-                check_open_reductions(ren);
-                // Same partition, continue on down the tree
-                return partitions[current]->register_physical_instance(ren, precondition);
-              }
-              else
-              {
-                bool target_owned;
-                InstanceInfo *target = select_target_instance(ren, target_owned);
-                // Perform the close operation
-                {
-#ifdef DEBUG_HIGH_LEVEL
-                  assert(target->handle == this->handle);
-#endif
-                  close_physical_tree(ren.ctx_id, target, ren.ctx, ren.mapper);
-                }
-                // Check for any open reducitons
-                check_open_reductions(ren, target);
-                // Update the valid instances here
-                update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
-                // Now that we've close up the open partition, open the one we want
-                region_states[ren.ctx_id].open_physical.clear(); 
-                PartitionID pid = (PartitionID)ren.trace.back();
-                region_states[ren.ctx_id].open_physical.insert(pid);
-                // Figure out which state the partition should be in
-                if (IS_READ_ONLY(ren.get_req()))
-                {
-                  region_states[ren.ctx_id].open_state = PART_READ_ONLY;
-                }
-                else // Need exclusive access
-                {
-                  region_states[ren.ctx_id].open_state = PART_EXCLUSIVE;
-                }
-                return partitions[pid]->open_physical_tree(ren, precondition);
-              }
-              break;
-            }
-          case PART_READ_ONLY:
-            {
-              PartitionID pid = ren.trace.back();
-#ifdef DEBUG_HIGH_LEVEL
-              assert(partitions.find(pid) != partitions.end());
-#endif
-              // Check to see if we also need read only or read-write
-              if (IS_READ_ONLY(ren.get_req()))
-              {
-                // check for open reductions
-                check_open_reductions(ren);
-                // If it's read only, just open the new partition in read only mode also
-                // and continue
-                // Check to see if it's already open
-                if (region_states[ren.ctx_id].open_physical.find(pid) == 
-                    region_states[ren.ctx_id].open_physical.end())
-                {
-                  // Add it to the list of read-only open partitions and open it
-                  region_states[ren.ctx_id].open_physical.insert(pid);
-                  return partitions[pid]->open_physical_tree(ren, precondition);
-                }
-                else
-                {
-                  // It's already open, so continue the traversal
-                  return partitions[pid]->register_physical_instance(ren, precondition);
-                }
-              }
-              else
-              {
-                // We need to close up all the partitions that we don't need 
-                bool already_open = false;
-                for (std::set<PartitionID>::const_iterator it = region_states[ren.ctx_id].open_physical.begin();
-                      it != region_states[ren.ctx_id].open_physical.end(); it++)
-                {
-                  if ((*it) == pid)
-                  {
-                    already_open = true;
-                    continue;
-                  }
-                  else
-                  {
-                    partitions[*it]->close_physical_tree(ren.ctx_id, InstanceInfo::get_no_instance(),
-                                                          ren.ctx,ren.mapper);
-                  }
-                }
-                // clear the list of open partitions and mark that this is now exclusive
-                region_states[ren.ctx_id].open_physical.clear();
-                region_states[ren.ctx_id].open_physical.insert(pid);
-                region_states[ren.ctx_id].open_state = PART_EXCLUSIVE;
-                // Check for any open reductions
-                check_open_reductions(ren);
-
-                if (already_open)
-                {
-                  // Continue the traversal
-                  return partitions[pid]->register_physical_instance(ren, precondition);
-                }
-                else
-                {
-                  // Open it and return the result
-                  return partitions[pid]->open_physical_tree(ren, precondition);
-                }
-              }
-              break;
-            }
-          default:
-            assert(false);
-        }
-        // We should never make it here either
-        assert(false);
-        return precondition;
-      }
-    }
-#endif
-
     //--------------------------------------------------------------------------------------------
     Event RegionNode::register_physical_instance(RegionRenamer &ren, Event precondition)
     //--------------------------------------------------------------------------------------------
@@ -9977,101 +9688,6 @@ namespace RegionRuntime {
       }
     }
 
-#if 0
-    //--------------------------------------------------------------------------------------------
-    Event RegionNode::open_physical_tree(RegionRenamer &ren, Event precondition)
-    //--------------------------------------------------------------------------------------------
-    {
-      if (ren.trace.size() == 1)
-      {
-        // We've arrived
-        region_states[ren.ctx_id].open_state = PART_NOT_OPEN;
-        region_states[ren.ctx_id].data_state = DATA_CLEAN; // necessary to find source copies
-
-        // First check to see if we're doing sanitizing or actual opening
-        if (ren.sanitizing)
-        {
-          // Create an instance info for each of the valid instances we can find 
-          std::set<Memory> locations;
-          get_physical_locations(ren.ctx_id,locations);
-#ifdef DEBUG_HIGH_LEVEL
-          assert(!locations.empty());
-#endif
-          // For each location, make a physical instance here
-          for (std::set<Memory>::const_iterator it = locations.begin();
-                it != locations.end(); it++)
-          {
-            std::pair<InstanceInfo*,bool> result = find_physical_instance(ren.ctx_id,*it);
-            InstanceInfo *info = result.first;
-            if (info->handle != handle)
-            {
-              info = ren.ctx->create_instance_info(handle,info);
-              update_valid_instances(ren.ctx_id, info, false/*write*/, ren.owned);
-            }
-          }
-          return precondition;
-        }
-        else
-        {
-          bool written_to = HAS_WRITE(ren.get_req());
-          // This is an actual opening
-          // Check to see if this is write-only, if so there is no need
-          // to issue the copy
-          if (ren.needs_initializing)
-          {
-            if (!IS_WRITE_ONLY(ren.get_req()))
-            {
-              std::set<Memory> locations;
-              get_physical_locations(ren.ctx_id, locations, true/*allow up*/);
-              // If locations is empty we're the first region so no need
-              // to initialize
-              if (!locations.empty())
-              {
-                initialize_instance(ren,locations);
-              }
-            }
-          }
-          if (check_open_reductions(ren, ren.info))
-          {
-            written_to = true;
-          }
-          // Record that we're using the instance and update the valid instances
-          update_valid_instances(ren.ctx_id, ren.info, written_to, ren.owned);
-          precondition = ren.info->add_user(ren.ctx, ren.idx, precondition);
-        }
-        return precondition;
-      }
-      else
-      {
-        // We're not there yet, update our state and continue the traversal
-#ifdef DEBUG_HIGH_LEVEL
-        assert(ren.trace.size() > 1);
-#endif
-        // Update our state
-        if (HAS_WRITE(ren.get_req()))
-        {
-          region_states[ren.ctx_id].open_state = PART_EXCLUSIVE;
-        }
-        else
-        {
-          region_states[ren.ctx_id].open_state = PART_READ_ONLY;
-        }
-        // The data at this region is clean because there is no data
-        region_states[ren.ctx_id].data_state = DATA_CLEAN;
-        // Continue the traversal
-        ren.trace.pop_back();
-        PartitionID pid = (PartitionID)ren.trace.back();
-#ifdef DEBUG_HIGH_LEVEL
-        assert(partitions.find(pid) != partitions.end());
-#endif
-        region_states[ren.ctx_id].open_physical.insert(pid);
-        // Check for open reductions
-        check_open_reductions(ren);
-        return partitions[pid]->open_physical_tree(ren,precondition);
-      }
-    }
-#endif
-
     //--------------------------------------------------------------------------------------------
     Event RegionNode::open_physical_tree(RegionRenamer &ren, Event precondition)
     //--------------------------------------------------------------------------------------------
@@ -10176,92 +9792,6 @@ namespace RegionRuntime {
         return partitions[pid]->open_physical_tree(ren,precondition); 
       }
     }
-
-#if 0
-    //--------------------------------------------------------------------------------------------
-    void RegionNode::close_physical_tree(ContextID ctx, InstanceInfo *target,  
-                                          GeneralizedContext *enclosing, Mapper *mapper)
-    //--------------------------------------------------------------------------------------------
-    {
-      if (region_states[ctx].data_state == DATA_DIRTY)
-      {
-#ifdef DEBUG_HIGH_LEVEL
-        assert(target != InstanceInfo::get_no_instance());
-#endif
-        // First check to see if the target has the same logical region as us, if not get the
-        // instance info for this region, or create a new once
-        if (target->handle != this->handle)
-        {
-          InstanceInfo *local_target = target->get_open_subregion(this->handle);
-          if (local_target == InstanceInfo::get_no_instance())
-          {
-            local_target = enclosing->create_instance_info(this->handle, target);
-          }
-          // Set the target to the correct instance info, this will allow close copies to 
-          // be performed in parallel
-          target = local_target;
-        }
-        std::set<Memory> locations;
-        get_physical_locations(ctx, locations, false/*allow up*/); // don't allow a copy up since we're doing a copy up
-        // Select a source instance to perform the copy back from
-        InstanceInfo *src_info = select_source_instance(ctx, mapper, locations, target->location, false/*allow up */);
-        target->copy_from(src_info, enclosing);
-      }
-      // Now check to see if we have any open partitions that we need to close
-      switch (region_states[ctx].open_state)
-      {
-        case PART_NOT_OPEN:
-          {
-#ifdef DEBUG_HIGH_LEVEL
-            assert(region_states[ctx].open_physical.empty());
-#endif
-            // Don't need to do anything
-            break;
-          }
-        case PART_EXCLUSIVE:
-          {
-#ifdef DEBUG_HIGH_LEVEL
-            assert(region_states[ctx].open_physical.size() == 1);
-#endif
-            // Close up the open partition 
-            PartitionID pid = *(region_states[ctx].open_physical.begin());
-            partitions[pid]->close_physical_tree(ctx,target,enclosing,mapper);
-            region_states[ctx].open_physical.clear();
-            region_states[ctx].open_state = PART_NOT_OPEN;
-            break;
-          }
-        case PART_READ_ONLY:
-          {
-            // Close up all the open partitions, pass no instance as the target
-            // since there should be no copies
-            for (std::set<PartitionID>::iterator it = region_states[ctx].open_physical.begin();
-                  it != region_states[ctx].open_physical.end(); it++)
-            {
-              partitions[*it]->close_physical_tree(ctx,InstanceInfo::get_no_instance(),
-                                                    enclosing,mapper);
-            }
-            region_states[ctx].open_physical.clear();
-            region_states[ctx].open_state = PART_NOT_OPEN;
-            break;
-        }
-        default:
-          assert(false); // Should never make it here
-      }
-      // Clear out our valid instances and mark that we are done
-#ifndef DISABLE_GC
-      for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
-            it != region_states[ctx].valid_instances.end(); it++)
-      {
-        if (it->second)
-        {
-          it->first->mark_invalid();
-        }
-      }
-#endif
-      region_states[ctx].valid_instances.clear();
-      region_states[ctx].data_state = DATA_CLEAN;
-    }
-#endif
 
     //--------------------------------------------------------------------------------------------
     void RegionNode::close_physical_tree(ContextID ctx, InstanceInfo *target,
@@ -11468,177 +10998,6 @@ namespace RegionRuntime {
       }
     }
 
-#if 0
-    //--------------------------------------------------------------------------------------------
-    Event PartitionNode::register_physical_instance(RegionRenamer &ren, Event precondition)
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(!ren.trace.empty());
-      assert(ren.trace.back() == pid);
-#endif
-      ren.trace.pop_back();
-      LogicalRegion log = { ren.trace.back() };
-      // Switch on the current state of the partition
-      switch (partition_states[ren.ctx_id].physical_state)
-      {
-        case REG_NOT_OPEN:
-          {
-            // Open it and continue the traversal
-            if (HAS_WRITE(ren.get_req()))
-            {
-              partition_states[ren.ctx_id].physical_state = REG_OPEN_EXCLUSIVE;
-            }
-            else
-            {
-              partition_states[ren.ctx_id].physical_state = REG_OPEN_READ_ONLY;
-            }
-            partition_states[ren.ctx_id].open_physical.insert(log);
-            // Continue the traversal
-            return children[log]->register_physical_instance(ren, precondition);
-          }
-        case REG_OPEN_READ_ONLY:
-          {
-            // Check to see if this is a read or write
-            if (HAS_WRITE(ren.get_req()))
-            {
-              // The resulting state will be exclusive
-              partition_states[ren.ctx_id].physical_state = REG_OPEN_EXCLUSIVE;
-              // Check to see if this partition is disjoint or not
-              if (disjoint)
-              {
-                // No need to worry, mark that things are written now
-                // Check to see if the region we want is already open
-                if (partition_states[ren.ctx_id].open_physical.find(log) ==
-                    partition_states[ren.ctx_id].open_physical.end())
-                {
-                  // Not open, add it and open it
-                  partition_states[ren.ctx_id].open_physical.insert(log);
-                  return children[log]->open_physical_tree(ren, precondition);
-                }
-                else
-                {
-                  // Already open, continue the traversal
-                  return children[log]->register_physical_instance(ren, precondition);
-                }
-              }
-              else
-              {
-                // This partition is not disjoint
-                bool already_open = false;
-                // Close all the open regions that aren't the ones we want
-                // We can pass the no instance since these are all ready only
-                for (std::set<LogicalRegion>::iterator it = partition_states[ren.ctx_id].open_physical.begin();
-                      it != partition_states[ren.ctx_id].open_physical.end(); it++)
-                {
-                  if ((*it) == log)
-                  {
-                    already_open = true;
-                    continue;
-                  }
-                  else
-                  {
-                    children[log]->close_physical_tree(ren.ctx_id, InstanceInfo::get_no_instance(),
-                                                        ren.ctx, ren.mapper);
-                  }
-                }
-                // Now clear the list of open regions and put ours back in
-                partition_states[ren.ctx_id].open_physical.clear();
-                if (already_open)
-                {
-                  partition_states[ren.ctx_id].open_physical.insert(log);
-                  return children[log]->register_physical_instance(ren, precondition);
-                }
-                else
-                {
-                  partition_states[ren.ctx_id].open_physical.insert(log);
-                  return children[log]->open_physical_tree(ren, precondition);
-                }
-              }
-            }
-            else
-            {
-              // Easy case, continue open with reads 
-              if (partition_states[ren.ctx_id].open_physical.find(log) ==
-                  partition_states[ren.ctx_id].open_physical.end())
-              {
-                // Not open yet, add it and then open it
-                partition_states[ren.ctx_id].open_physical.insert(log);
-                return children[log]->open_physical_tree(ren, precondition);
-              }
-              else
-              {
-                // Already open, continue the traversal
-                return children[log]->register_physical_instance(ren, precondition);
-              }
-            }
-            break; // Technically should never make it here
-          }
-        case REG_OPEN_EXCLUSIVE:
-          {
-            // Check to see if this partition is disjoint
-            if (disjoint)
-            {
-              // Check to see if it's open
-              if (partition_states[ren.ctx_id].open_physical.find(log) ==
-                  partition_states[ren.ctx_id].open_physical.end())
-              {
-                // Not already open, so add it and open it
-                partition_states[ren.ctx_id].open_physical.insert(log);
-                return children[log]->open_physical_tree(ren, precondition);
-              }
-              else
-              {
-                // Already open, continue the traversal
-                return children[log]->register_physical_instance(ren, precondition);
-              }
-            }
-            else
-            {
-              // There should only be one open partition here
-#ifdef DEBUG_HIGH_LEVEL
-              assert(partition_states[ren.ctx_id].open_physical.size() == 1);
-#endif
-              // Check to see if they are the same instance
-              if (*(partition_states[ren.ctx_id].open_physical.begin()) == log)
-              {
-                // Same instance, continue the traversal
-                return children[log]->register_physical_instance(ren, precondition);
-              }
-              else
-              {
-                InstanceInfo *target = parent->select_target_instance(ren); 
-                // Perform the close operation
-                {
-#ifdef DEBUG_HIGH_LEVEL
-                  assert(target->handle == parent->handle);
-#endif
-                  close_physical_tree(ren.ctx_id, target, ren.ctx, ren.mapper);
-                }
-                // update the valid instances
-                parent->update_valid_instances(ren.ctx_id, target, true/*writer*/, ren.owned);
-                // Update the state of this partition
-                partition_states[ren.ctx_id].open_physical.clear();
-                partition_states[ren.ctx_id].open_physical.insert(log);
-                if (IS_READ_ONLY(ren.get_req()))
-                {
-                  // if it's read only, we can open it in read-only mode
-                  partition_states[ren.ctx_id].physical_state = REG_OPEN_READ_ONLY;
-                }
-                // Finally we can open up the region and return
-                return children[log]->open_physical_tree(ren, precondition);
-              }
-            }
-            break; // Should never make it here
-          }
-        default:
-          assert(false); // Should never make it here
-      }
-      assert(false); // Should never make it here either
-      return precondition;
-    }
-#endif
-
     //--------------------------------------------------------------------------------------------
     Event PartitionNode::register_physical_instance(RegionRenamer &ren, Event precondition)
     //--------------------------------------------------------------------------------------------
@@ -11916,33 +11275,6 @@ namespace RegionRuntime {
       return precondition;
     }
 
-#if 0
-    //--------------------------------------------------------------------------------------------
-    Event PartitionNode::open_physical_tree(RegionRenamer &ren, Event precondition)
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(partition_states[ren.ctx_id].physical_state == REG_NOT_OPEN);
-      assert(ren.trace.size() > 1);
-      assert(ren.trace.back() == pid);
-#endif
-      ren.trace.pop_back(); 
-      LogicalRegion log = { ren.trace.back() };
-      // Open up this partition in the right way
-      if (HAS_WRITE(ren.get_req()))
-      {
-        partition_states[ren.ctx_id].physical_state = REG_OPEN_EXCLUSIVE; 
-      }
-      else
-      {
-        partition_states[ren.ctx_id].physical_state = REG_OPEN_READ_ONLY;
-      }
-      partition_states[ren.ctx_id].open_physical.insert(log);
-      // Continue opening
-      return children[log]->open_physical_tree(ren, precondition);
-    }
-#endif
-
     //--------------------------------------------------------------------------------------------
     Event PartitionNode::open_physical_tree(RegionRenamer &ren, Event precondition)
     //--------------------------------------------------------------------------------------------
@@ -11978,27 +11310,6 @@ namespace RegionRuntime {
       // Continue opening
       return children[log]->open_physical_tree(ren, precondition);
     }
-
-#if 0
-    //--------------------------------------------------------------------------------------------
-    void PartitionNode::close_physical_tree(ContextID ctx, InstanceInfo *info,  
-                                              GeneralizedContext *enclosing, Mapper *mapper)
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(partition_states[ctx].physical_state != REG_NOT_OPEN);
-#endif
-      // Close up all the open regions
-      for (std::set<LogicalRegion>::iterator it = partition_states[ctx].open_physical.begin();
-            it != partition_states[ctx].open_physical.end(); it++)
-      {
-        children[*it]->close_physical_tree(ctx, info, enclosing, mapper);  
-      }
-      // Mark everything closed
-      partition_states[ctx].open_physical.clear();
-      partition_states[ctx].physical_state = REG_NOT_OPEN;
-    }
-#endif
 
     //--------------------------------------------------------------------------------------------
     void PartitionNode::close_physical_tree(ContextID ctx, InstanceInfo *info,
