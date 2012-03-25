@@ -132,7 +132,7 @@ void region_main(const void *args, size_t arglen,
                  Context ctx, HighLevelRuntime *runtime)
 {
   int num_loops = 2;
-  int num_pieces = 8;
+  int num_pieces = 4;
   int nodes_per_piece = 2;
   int wires_per_piece = 4;
   int pct_wire_in_piece = 95;
@@ -181,15 +181,15 @@ void region_main(const void *args, size_t arglen,
   std::vector<RegionRequirement> dsc_regions;
   dsc_regions.push_back(RegionRequirement(parts.pvt_wires.id, 0/*identity*/,
                                           READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                          circuit.all_nodes));
+                                          circuit.all_wires));
   dsc_regions.push_back(RegionRequirement(parts.pvt_nodes.id, 0/*identity*/,
-                                          REDUCE, NO_MEMORY, SIMULTANEOUS,
+                                          READ_WRITE, NO_MEMORY, EXCLUSIVE,
                                           circuit.all_nodes));
   dsc_regions.push_back(RegionRequirement(parts.shr_nodes.id, 0/*identity*/,
-                                          REDUCE, NO_MEMORY, SIMULTANEOUS,
+                                          1/*redop id*/, NO_MEMORY, SIMULTANEOUS,
                                           circuit.all_nodes));
   dsc_regions.push_back(RegionRequirement(parts.ghost_nodes.id, 0/*identity*/,
-                                          REDUCE, NO_MEMORY, SIMULTANEOUS,
+                                          1/*redop id*/, NO_MEMORY, SIMULTANEOUS,
                                           circuit.all_nodes));
 
   std::vector<RegionRequirement> upv_regions;
@@ -207,7 +207,6 @@ void region_main(const void *args, size_t arglen,
   TaskArgument global_arg;
   ArgumentMap local_args;
 
-#if 0
   // Run the main loop
   for (int i = 0; i < num_loops; i++)
   {
@@ -221,7 +220,6 @@ void region_main(const void *args, size_t arglen,
     runtime->execute_index_space(ctx, UPDATE_VOLTAGES, index_space,
                                   upv_regions, global_arg, local_args, false/*must*/);
   }
-#endif
 
   // Now we can destroy the regions
   {
@@ -241,6 +239,7 @@ void calculate_currents_task(const void *global_args, size_t global_arglen,
                              std::vector<PhysicalRegion<AT> > &regions,
                              Context ctx, HighLevelRuntime *runtime)
 {
+#if 0
   PhysicalRegion<AT> pvt_wires = regions[0];
   PhysicalRegion<AT> pvt_nodes = regions[1];
   PhysicalRegion<AT> shr_nodes = regions[2];
@@ -292,6 +291,7 @@ void calculate_currents_task(const void *global_args, size_t global_arglen,
     pvt_wires.write(wire_ptr, wire);
   }
   delete itr;
+#endif
 }
 
 template<AccessorType AT>
@@ -301,6 +301,7 @@ void distribute_charge_task(const void *global_args, size_t global_arglen,
                             std::vector<PhysicalRegion<AT> > &regions,
                             Context ctx, HighLevelRuntime *runtime)
 {
+#if 0
   PhysicalRegion<AT> pvt_wires = regions[0];
   PhysicalRegion<AT> pvt_nodes = regions[1];
   PhysicalRegion<AT> shr_nodes = regions[2];
@@ -319,6 +320,7 @@ void distribute_charge_task(const void *global_args, size_t global_arglen,
     reduce_node<AT,AccumulateCharge>(pvt_nodes,shr_nodes,ghost_nodes,wire.out_loc, wire.out_ptr, dt * wire.current[WIRE_SEGMENTS-1]);
   }
   delete itr;
+#endif
 }
 
 template<AccessorType AT>
@@ -328,11 +330,13 @@ void update_voltages_task(const void *global_args, size_t global_arglen,
                           std::vector<PhysicalRegion<AT> > &regions,
                           Context ctx, HighLevelRuntime *runtime)
 {
+#if 0
   PhysicalRegion<AT> pvt_nodes = regions[0];
   PhysicalRegion<AT> shr_nodes = regions[1];
 
   update_region_voltages(pvt_nodes);
   update_region_voltages(shr_nodes);
+#endif
 }
 
 /////////////////
