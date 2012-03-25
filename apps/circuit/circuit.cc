@@ -63,16 +63,72 @@ struct Partitions {
 // Reduction Op
 class AccumulateCharge {
 public:
-  static void apply(CircuitNode *lhs, float rhs)
+  static const float identity = 0.0f;
+
+  template <bool EXCLUSIVE> static void apply(CircuitNode &lhs, float rhs);
+
+#if 0
+  template <>
+  static void apply<true>(CircuitNode &lhs, float rhs)
   {
-    lhs->charge += rhs;
+    lhs.charge += rhs;
   }
 
-  static float fold_rhs(float rhs1, float rhs2)
+  template <>
+  static void apply<false>(CircuitNode &lhs, float rhs)
   {
-    return rhs1 + rhs2;
+    // most cpus don't let you atomic add a float, so we use gcc's builtin
+    // compare-and-swap in a loop
+    int *target = (int *)&(lhs.charge);
+    union { int as_int; float as_float; } oldval, newval;
+    do {
+      oldval.as_int = *target;
+      newval.as_float = oldval.as_float + rhs;
+    } while(!__sync_bool_compare_and_swap(target, oldval.as_int, newval.as_int));
   }
+#endif
+#if 0
+  template <bool EXCLUSIVE> static void fold(float &rhs1, float rhs2);
+
+  template <>
+  static void fold<true>(float &rhs1, float rhs2)
+  {
+    rhs1 += rhs2;
+  }
+
+  template <>
+  static void fold<false>(float &rhs1, float rhs2)
+  {
+    // most cpus don't let you atomic add a float, so we use gcc's builtin
+    // compare-and-swap in a loop
+    int *target = (int *)&rhs1;
+    union { int as_int; float as_float; } oldval, newval;
+    do {
+      oldval.as_int = *target;
+      newval.as_float = oldval.as_float + rhs2;
+    } while(!__sync_bool_compare_and_swap(target, oldval.as_int, newval.as_int));
+  }
+#endif
 };
+
+template <>
+void AccumulateCharge::apply<true>(CircuitNode &lhs, float rhs)
+{
+  lhs.charge += rhs;
+}
+
+template <>
+void AccumulateCharge::apply<false>(CircuitNode &lhs, float rhs)
+{
+  // most cpus don't let you atomic add a float, so we use gcc's builtin
+  // compare-and-swap in a loop
+  int *target = (int *)&(lhs.charge);
+  union { int as_int; float as_float; } oldval, newval;
+  do {
+    oldval.as_int = *target;
+    newval.as_float = oldval.as_float + rhs;
+  } while(!__sync_bool_compare_and_swap(target, oldval.as_int, newval.as_int));
+}
 
 // Utility functions
 void parse_input_args(char **argv, int argc, int &num_loops, int &num_pieces,

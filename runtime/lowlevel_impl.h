@@ -400,16 +400,25 @@ namespace RegionRuntime {
 						    size_t bytes_needed);
       RegionInstanceUntyped create_instance_local(RegionMetaDataUntyped r,
 						  size_t bytes_needed);
+      RegionInstanceUntyped create_instance_local(RegionMetaDataUntyped r,
+						  size_t bytes_needed,
+						  ReductionOpID redopid);
 
       RegionAllocatorUntyped create_allocator_remote(RegionMetaDataUntyped r,
 						     size_t bytes_needed);
       RegionInstanceUntyped create_instance_remote(RegionMetaDataUntyped r,
 						   size_t bytes_needed);
+      RegionInstanceUntyped create_instance_remote(RegionMetaDataUntyped r,
+						   size_t bytes_needed,
+						   ReductionOpID redopid);
 
       virtual RegionAllocatorUntyped create_allocator(RegionMetaDataUntyped r,
 						      size_t bytes_needed) = 0;
       virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
 						    size_t bytes_needed) = 0;
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed,
+						    ReductionOpID redopid) = 0;
 
       void destroy_allocator(RegionAllocatorUntyped a, bool local_destroy);
       void destroy_instance(RegionInstanceUntyped i, bool local_destroy);
@@ -442,6 +451,8 @@ namespace RegionRuntime {
     public:
       Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset);
 
+      Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset, ReductionOpID _redopid);
+
       // when we auto-create a remote instance, we don't know region/offset
       Impl(RegionInstanceUntyped _me, Memory _memory);
 
@@ -466,6 +477,8 @@ namespace RegionRuntime {
 	bool valid;
 	RegionMetaDataUntyped region;
 	off_t offset;
+	bool is_reduction;
+	ReductionOpID redopid;
       } locked_data;
 
       Lock::Impl lock;

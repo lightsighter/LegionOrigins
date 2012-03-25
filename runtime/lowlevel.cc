@@ -834,6 +834,8 @@ namespace RegionRuntime {
 				       ValidMaskDataArgs,
 				       handle_valid_mask_data> ValidMaskDataMessage;
 
+    static ReductionOpTable reduce_op_table;
+
     class RegionMetaDataUntyped::Impl {
     public:
       Impl(RegionMetaDataUntyped _me, RegionMetaDataUntyped _parent,
@@ -887,12 +889,17 @@ namespace RegionRuntime {
 	delete valid_mask;
       }
 
-      size_t instance_size(void)
+      size_t instance_size(const ReductionOpUntyped *redop = 0)
       {
 	StaticAccess<RegionMetaDataUntyped::Impl> data(this);
 	assert(data->num_elmts > 0);
-	assert(data->elmt_size > 0);
-	size_t bytes = data->num_elmts * data->elmt_size;
+	size_t bytes;
+	if(redop) {
+	  bytes = data->num_elmts * redop->sizeof_rhs;
+	} else {
+	  assert(data->elmt_size > 0);
+	  bytes = data->num_elmts * data->elmt_size;
+	}
 	return bytes;
       }
 
@@ -1046,6 +1053,20 @@ namespace RegionRuntime {
       locked_data.valid = true;
       locked_data.region = _region;
       locked_data.offset = _offset;
+      locked_data.is_reduction = false;
+      locked_data.redopid = 0;
+      lock.init(ID(me).convert<Lock>(), ID(me).node());
+      lock.set_local_data(&locked_data);
+    }
+
+    RegionInstanceUntyped::Impl::Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset, ReductionOpID _redopid)
+      : me(_me), memory(_memory)
+    {
+      locked_data.valid = true;
+      locked_data.region = _region;
+      locked_data.offset = _offset;
+      locked_data.is_reduction = true;
+      locked_data.redopid = _redopid;
       lock.init(ID(me).convert<Lock>(), ID(me).node());
       lock.set_local_data(&locked_data);
     }
@@ -2122,6 +2143,13 @@ namespace RegionRuntime {
 	return create_instance_local(r, bytes_needed);
       }
 
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed,
+						    ReductionOpID redopid)
+      {
+	return create_instance_local(r, bytes_needed, redopid);
+      }
+
       virtual off_t alloc_bytes(size_t size)
       {
 	return alloc_bytes_local(size);
@@ -2168,6 +2196,13 @@ namespace RegionRuntime {
 						    size_t bytes_needed)
       {
 	return create_instance_remote(r, bytes_needed);
+      }
+
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed,
+						    ReductionOpID redopid)
+      {
+	return create_instance_remote(r, bytes_needed, redopid);
       }
 
       virtual off_t alloc_bytes(size_t size)
@@ -2239,6 +2274,17 @@ namespace RegionRuntime {
 	  return create_instance_local(r, bytes_needed);
 	} else {
 	  return create_instance_remote(r, bytes_needed);
+	}
+      }
+
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed,
+						    ReductionOpID redopid)
+      {
+	if(gasnet_mynode() == 0) {
+	  return create_instance_local(r, bytes_needed, redopid);
+	} else {
+	  return create_instance_remote(r, bytes_needed, redopid);
 	}
       }
 
@@ -2410,6 +2456,50 @@ namespace RegionRuntime {
       return i;
     }
 
+    RegionInstanceUntyped Memory::Impl::create_instance_local(RegionMetaDataUntyped r,
+							      size_t bytes_needed,
+							      ReductionOpID redopid)
+    {
+      off_t inst_offset = alloc_bytes(bytes_needed);
+      assert(inst_offset >= 0);
+
+      // SJT: think about this more to see if there are any race conditions
+      //  with an allocator temporarily having the wrong ID
+      RegionInstanceUntyped i = ID(ID::ID_INSTANCE, 
+				   ID(me).node(),
+				   ID(me).index_h(),
+				   0).convert<RegionInstanceUntyped>();
+
+      //RegionMetaDataImpl *r_impl = Runtime::runtime->get_metadata_impl(r);
+
+      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(i, r, me, inst_offset,
+									    redopid);
+
+      // find/make an available index to store this in
+      unsigned index;
+      {
+	AutoHSLLock al(mutex);
+
+	unsigned size = instances.size();
+	for(index = 0; index < size; index++)
+	  if(!instances[index]) {
+	    i.id |= index;
+	    i_impl->me = i;
+	    instances[index] = i_impl;
+	    break;
+	  }
+
+	i.id |= index;
+	i_impl->me = i;
+	if(index >= size) instances.push_back(i_impl);
+      }
+
+      log_copy.debug("local instance %x created in memory %x at offset %zd (redop=%d)",
+		     i.id, me.id, inst_offset, redopid);
+
+      return i;
+    }
+
     struct CreateAllocatorArgs {
       Memory m;
       RegionMetaDataUntyped r;
@@ -2459,6 +2549,8 @@ namespace RegionRuntime {
       Memory m;
       RegionMetaDataUntyped r;
       size_t bytes_needed;
+      bool reduction_instance;
+      ReductionOpID redopid;
     };
 
     struct CreateInstanceResp {
@@ -2470,7 +2562,11 @@ namespace RegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       CreateInstanceResp resp;
-      resp.i = args.m.impl()->create_instance(args.r, args.bytes_needed);
+      if(args.reduction_instance)
+	resp.i = args.m.impl()->create_instance(args.r, args.bytes_needed,
+						args.redopid);
+      else
+	resp.i = args.m.impl()->create_instance(args.r, args.bytes_needed);
       //resp.inst_offset = resp.i.impl()->locked_data.offset; // TODO: Static
       resp.inst_offset = StaticAccess<RegionInstanceUntyped::Impl>(resp.i.impl())->offset;
       return resp;
@@ -2489,6 +2585,37 @@ namespace RegionRuntime {
       args.m = me;
       args.r = r;
       args.bytes_needed = bytes_needed;
+      args.reduction_instance = false;
+      args.redopid = 0;
+      log_inst(LEVEL_DEBUG, "creating remote instance: node=%d", ID(me).node());
+      CreateInstanceResp resp = CreateInstanceMessage::request(ID(me).node(), args);
+      log_inst(LEVEL_DEBUG, "created remote instance: inst=%x offset=%zd", resp.i.id, resp.inst_offset);
+      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(resp.i, r, me, resp.inst_offset);
+      unsigned index = ID(resp.i).index_l();
+      // resize array if needed
+      if(index >= instances.size()) {
+	AutoHSLLock a(mutex);
+	if(index >= instances.size()) {
+	  log_inst(LEVEL_DEBUG, "resizing instance array: mem=%x old=%zd new=%d",
+		   me.id, instances.size(), index+1);
+	  for(unsigned i = instances.size(); i <= index; i++)
+	    instances.push_back(0);
+	}
+      }
+      instances[index] = i_impl;
+      return resp.i;
+    }
+
+    RegionInstanceUntyped Memory::Impl::create_instance_remote(RegionMetaDataUntyped r,
+							       size_t bytes_needed,
+							       ReductionOpID redopid)
+    {
+      CreateInstanceArgs args;
+      args.m = me;
+      args.r = r;
+      args.bytes_needed = bytes_needed;
+      args.reduction_instance = true;
+      args.redopid = redopid;
       log_inst(LEVEL_DEBUG, "creating remote instance: node=%d", ID(me).node());
       CreateInstanceResp resp = CreateInstanceMessage::request(ID(me).node(), args);
       log_inst(LEVEL_DEBUG, "created remote instance: inst=%x offset=%zd", resp.i.id, resp.inst_offset);
@@ -3552,6 +3679,24 @@ namespace RegionRuntime {
       return i;
     }
 
+    RegionInstanceUntyped RegionMetaDataUntyped::create_instance_untyped(Memory memory,
+									 ReductionOpID redopid) const
+    {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);      
+      ID id(memory);
+
+      const ReductionOpUntyped *redop = reduce_op_table[redopid];
+
+      Memory::Impl *m_impl = Runtime::runtime->get_memory_impl(memory);
+
+      size_t inst_bytes = impl()->instance_size(redop);
+
+      RegionInstanceUntyped i = m_impl->create_instance(*this, inst_bytes, redopid);
+      log_meta(LEVEL_INFO, "instance created: region=%x memory=%x id=%x bytes=%zd redop=%d",
+	       this->id, memory.id, i.id, inst_bytes, redopid);
+      return i;
+    }
+
     void RegionMetaDataUntyped::destroy_region_untyped(void) const
     {
       assert(0);
@@ -3996,6 +4141,9 @@ namespace RegionRuntime {
 
       StaticAccess<RegionInstanceUntyped::Impl> src_data(src_impl);
       StaticAccess<RegionInstanceUntyped::Impl> tgt_data(tgt_impl);
+
+      // code path for copies to/from reduction-only instances not done yet
+      assert(!src_data->is_reduction && !tgt_data->is_reduction);
 
       Memory::Impl *src_mem = src_impl->memory.impl();
       Memory::Impl *tgt_mem = tgt_impl->memory.impl();
@@ -4948,6 +5096,11 @@ namespace RegionRuntime {
 	perror("execvp");
       }
 	  
+      for(ReductionOpTable::const_iterator it = redop_table.begin();
+	  it != redop_table.end();
+	  it++)
+	reduce_op_table[it->first] = it->second;
+
       for(Processor::TaskIDTable::const_iterator it = task_table.begin();
 	  it != task_table.end();
 	  it++)

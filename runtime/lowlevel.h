@@ -229,6 +229,21 @@ namespace RegionRuntime {
       int first_enabled_elmt, last_enabled_elmt;
     };
 
+    // a reduction op needs to look like this
+#ifdef NOT_REALLY_CODE
+    class MyReductionOp {
+    public:
+      typedef int LHS;
+      typedef int RHS;
+
+      static void apply(LHS& lhs, RHS rhs);
+
+      // both of these are optional
+      static const RHS identity;
+      static void fold(RHS& rhs1, RHS rhs2);
+    };
+#endif
+
     typedef unsigned ReductionOpID;
     class ReductionOpUntyped {
     public:
@@ -237,17 +252,8 @@ namespace RegionRuntime {
       bool has_identity;
       bool is_foldable;
 
-      template <class LHS, class RHS>
-      static ReductionOpUntyped *create_reduction_op(void (*apply_fn)(LHS& lhs, RHS rhs));
-
-      template <class LHS, class RHS>
-      static ReductionOpUntyped *create_reduction_op(void (*apply_fn)(LHS& lhs, RHS rhs),
-						     RHS identity);
-
-      template <class LHS, class RHS>
-      static ReductionOpUntyped *create_reduction_op(void (*apply_fn)(LHS& lhs, RHS rhs),
-						     RHS identity,
-						     RHS (*fold_fn)(RHS rhs1, RHS rhs2));
+      template <class REDOP>
+	static ReductionOpUntyped *create_reduction_op(void);
 
     protected:
       ReductionOpUntyped(size_t _sizeof_lhs, size_t _sizeof_rhs,
@@ -307,7 +313,9 @@ namespace RegionRuntime {
       void free_untyped(unsigned ptr, unsigned count = 1) const;
     };
 
-    enum AccessorType { AccessorGeneric, AccessorArray, AccessorGPU };
+    enum AccessorType { AccessorGeneric, 
+			AccessorArray, AccessorArrayReductionFold,
+			AccessorGPU };
 
     template <AccessorType AT> class RegionInstanceAccessorUntyped;
 
@@ -344,7 +352,7 @@ namespace RegionRuntime {
       void reduce(ptr_t<T> ptr, RHS newval) const 
 	{ T val; 
 	  get_untyped(ptr.value*sizeof(T), &val, sizeof(T));
-	  REDOP::apply(&val, newval); 
+	  REDOP::template apply<true>(val, newval); // made our own copy, so 'exclusive'
 	  put_untyped(ptr.value*sizeof(T), &val, sizeof(T)); }
 
       template <AccessorType AT2>
@@ -379,7 +387,30 @@ namespace RegionRuntime {
       void write(ptr_t<T> ptr, T newval) const { ((T*)array_base)[ptr.value] = newval; }
 
       template <class REDOP, class T, class RHS>
-      void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::apply(((T*)array_base)[ptr.value], newval); }
+      void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::apply<false>(((T*)array_base)[ptr.value], newval); }
+    };
+
+    template <> class RegionInstanceAccessorUntyped<AccessorArrayReductionFold> {
+    public:
+      explicit RegionInstanceAccessorUntyped(void *_array_base)
+	: array_base(_array_base) {}
+
+      // Need copy constructors so we can move things around
+      RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorArray> &old)
+      { array_base = old.array_base; }
+
+      bool operator<(const RegionInstanceAccessorUntyped<AccessorArray> &rhs) const
+      { return array_base < rhs.array_base; }
+      bool operator==(const RegionInstanceAccessorUntyped<AccessorArray> &rhs) const
+      { return array_base == rhs.array_base; }
+      bool operator!=(const RegionInstanceAccessorUntyped<AccessorArray> &rhs) const
+      { return array_base != rhs.array_base; }
+
+      void *array_base;
+
+      // can't read or write a fold-only accessor
+      template <class REDOP, class T, class RHS>
+      void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::fold<false>(((RHS*)array_base)[ptr.value], newval); }
     };
 
     // only nvcc understands this
@@ -402,7 +433,7 @@ namespace RegionRuntime {
       __device__ void write(ptr_t<T> ptr, T newval) const { ((T*)array_base)[ptr.value] = newval; }
 
       template <class REDOP, class T, class RHS>
-      __device__ void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::apply(&((T*)array_base)[ptr.value], newval); }
+      __device__ void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::apply<false>(((T*)array_base)[ptr.value], newval); }
 #endif
     };
 
