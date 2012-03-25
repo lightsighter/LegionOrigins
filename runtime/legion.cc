@@ -3751,11 +3751,13 @@ namespace RegionRuntime {
           delete region_nodes;
           delete partition_nodes;
           delete instance_infos;
-          region_nodes = NULL;
-          partition_nodes = NULL;
-          instance_infos = NULL;
         }
       }
+      // Zero out the pointers to our maps so we
+      // don't accidentally re-used them
+      region_nodes = NULL;
+      partition_nodes = NULL;
+      instance_infos = NULL;
       regions.clear();
       constraint_space.clear();
       range_space.clear();
@@ -5106,7 +5108,7 @@ namespace RegionRuntime {
                 // Check to make sure the partition is disjoint or we're doing read-only
                 // for aliased partition
                 PartitionNode *part_node = (*partition_nodes)[req.handle.partition];
-                if ((!part_node->disjoint) && HAS_WRITE(req))
+                if ((!part_node->disjoint) && IS_WRITE(req))
                 {
                   log_task(LEVEL_ERROR,"Index space for task %s (ID %d) (unique id %d) "
                       "requested aliased partition %d in write mode (index %d)."
@@ -9078,7 +9080,7 @@ namespace RegionRuntime {
               }
               else if (IS_REDUCE(req))
               {
-                region_states[dep.ctx_id].logical_state = PART_REDUCE;
+                region_states[dep.ctx_id].logical_state = PART_EXCLUSIVE;
                 region_states[dep.ctx_id].logop = req.redop;
               }
               // Open the partition that we want
@@ -9136,7 +9138,7 @@ namespace RegionRuntime {
                   partitions[pid]->close_logical_tree(dep,true/*register dependences*/,
                                                       region_states[dep.ctx_id].closed_users,false/*closing part*/);
                   region_states[dep.ctx_id].logop = req.redop;
-                  region_states[dep.ctx_id].logical_state = PART_REDUCE;
+                  region_states[dep.ctx_id].logical_state = PART_EXCLUSIVE;
                   partitions[pid]->open_logical_tree(dep);
                 }
                 else
@@ -9159,43 +9161,43 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
               assert(region_states[dep.ctx_id].open_logical.size() == 1);
 #endif
-              // Do different things for read/writes and reductions
-              if (IS_READ_ONLY(req) || IS_WRITE(req))
+              // Check to see if the partition that we want is open
+              if (pid == *(region_states[dep.ctx_id].open_logical.begin()))
               {
-                // Check to see if the partition that we want is open
-                if (pid == *(region_states[dep.ctx_id].open_logical.begin()))
+                if (IS_REDUCE(req))
                 {
-                  // Same partition, continue the traversal
-                  partitions[pid]->register_logical_region(dep);
+                  region_states[dep.ctx_id].logop = req.redop;
                 }
-                else
-                {
-                  // This is a partition other than the one we want, close it up and open the new one
-                  PartitionID other = *(region_states[dep.ctx_id].open_logical.begin());
-                  partitions[other]->close_logical_tree(dep,true/*register dependences*/,
-                                                        region_states[dep.ctx_id].closed_users,false/*closing part*/);
-                  // Update our state to match
-                  region_states[dep.ctx_id].open_logical.clear();
-                  region_states[dep.ctx_id].open_logical.insert(pid);
-                  // If our new partition is read only, mark it as such, otherwise state is the same
-                  if (IS_READ_ONLY(dep.get_req()))
-                  {
-                    region_states[dep.ctx_id].logical_state = PART_READ_ONLY;
-                  } 
-                  partitions[pid]->open_logical_tree(dep);
-                }
+                // Same partition, continue the traversal
+                partitions[pid]->register_logical_region(dep);
               }
-              else // This is a reduction
+              else
               {
-                // Need to close up this tree and reopen it in reduction mode
+                // This is a partition other than the one we want, close it up and open the new one
                 PartitionID other = *(region_states[dep.ctx_id].open_logical.begin());
                 partitions[other]->close_logical_tree(dep,true/*register dependences*/,
                                                       region_states[dep.ctx_id].closed_users,false/*closing part*/);
-                // Update our state to be open in reduction mode
+                // Update our state to match
                 region_states[dep.ctx_id].open_logical.clear();
                 region_states[dep.ctx_id].open_logical.insert(pid);
-                region_states[dep.ctx_id].logical_state = PART_REDUCE;
-                region_states[dep.ctx_id].logop = req.redop;
+                // If our new partition is read only, mark it as such, otherwise state is the same
+                if (IS_READ_ONLY(req))
+                {
+                  region_states[dep.ctx_id].logical_state = PART_READ_ONLY;
+                } 
+                else if (IS_REDUCE(req))
+                {
+                  // If our reduction was already present, put it in reduction mode
+                  // otherwise keep it in exclusive mode
+                  if (req.redop == (region_states[dep.ctx_id].logop))
+                  {
+                    region_states[dep.ctx_id].logical_state = PART_REDUCE;
+                  }
+                  else
+                  {
+                    region_states[dep.ctx_id].logop = req.redop;
+                  }
+                }
                 partitions[pid]->open_logical_tree(dep);
               }
               break;
@@ -10312,8 +10314,7 @@ namespace RegionRuntime {
               log_task(LEVEL_ERROR,"Overwriting a prior physical instance for index space task "
                   "with unique id %d.  Violation of independent index space slices constraint. "
                   "See: groups.google.com/group/legiondevelopers/browse_thread/thread/39ad6b3b55ed9b8f", uid);
-              assert(false);
-              //exit(1);
+              exit(1);
             }
           }
         }
@@ -10765,7 +10766,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
                   assert(IS_REDUCE(req));
 #endif
-                  partition_states[dep.ctx_id].logical_state = REG_OPEN_REDUCE;
+                  partition_states[dep.ctx_id].logical_state = REG_OPEN_EXCLUSIVE;
                   partition_states[dep.ctx_id].logop = req.redop;
                 }
                 partition_states[dep.ctx_id].open_logical.insert(log);
@@ -10803,16 +10804,10 @@ namespace RegionRuntime {
                   }
                   partition_states[dep.ctx_id].open_logical.clear();
                   partition_states[dep.ctx_id].open_logical.insert(log);
-                  if (IS_WRITE(req))
+                  // Regardless of whether this is write or a reduce, open in exclusive mode
+                  partition_states[dep.ctx_id].logical_state = REG_OPEN_EXCLUSIVE;
+                  if (IS_REDUCE(req))
                   {
-                    partition_states[dep.ctx_id].logical_state = REG_OPEN_EXCLUSIVE;
-                  }
-                  else
-                  {
-#ifdef DEBUG_HIGH_LEVEL
-                    assert(IS_REDUCE(req));
-#endif
-                    partition_states[dep.ctx_id].logical_state = REG_OPEN_REDUCE;
                     partition_states[dep.ctx_id].logop = req.redop;
                   }
                   // Open up the one we want
@@ -10825,44 +10820,43 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
                 assert(partition_states[dep.ctx_id].open_logical.size() == 1);
 #endif
-                if (IS_READ_ONLY(req) || IS_WRITE(req))
+                // Check to see if the region we want to visit is the same
+                if (log == *(partition_states[dep.ctx_id].open_logical.begin()))
                 {
-                  // Check to see if the region we want to visit is the same
-                  if (log == *(partition_states[dep.ctx_id].open_logical.begin()))
+                  if (IS_REDUCE(req))
                   {
-                    // They are the same, continue the traversal
-                    children[log]->register_logical_region(dep);
+                    partition_states[dep.ctx_id].logop = req.redop; 
                   }
-                  else
-                  {
-                    // Different, close up the open one and open the one that we want
-                    LogicalRegion other = *(partition_states[dep.ctx_id].open_logical.begin());
-                    children[other]->close_logical_tree(dep,true/*register dependences*/,
-                                                        partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
-                    partition_states[dep.ctx_id].open_logical.clear();
-                    partition_states[dep.ctx_id].open_logical.insert(log);
-                    // If the new region is read-only change our state
-                    if (IS_READ_ONLY(dep.get_req()))
-                    {
-                      partition_states[dep.ctx_id].logical_state = REG_OPEN_READ_ONLY;
-                    }
-                    // Open the one we want
-                    children[log]->open_logical_tree(dep);
-                  }
+                  // They are the same, continue the traversal
+                  children[log]->register_logical_region(dep);
                 }
                 else
                 {
-#ifdef DEBUG_HIGH_LEVEL
-                  assert(IS_REDUCE(req));
-#endif
-                  // Close it up and open it again
+                  // Different, close up the open one and open the one that we want
                   LogicalRegion other = *(partition_states[dep.ctx_id].open_logical.begin());
                   children[other]->close_logical_tree(dep,true/*register dependences*/,
                                                       partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
                   partition_states[dep.ctx_id].open_logical.clear();
                   partition_states[dep.ctx_id].open_logical.insert(log);
-                  partition_states[dep.ctx_id].logical_state = REG_OPEN_REDUCE;
-                  partition_states[dep.ctx_id].logop = req.redop;
+                  // If the new region is read-only change our state
+                  if (IS_READ_ONLY(req))
+                  {
+                    partition_states[dep.ctx_id].logical_state = REG_OPEN_READ_ONLY;
+                  }
+                  else if (IS_REDUCE(req))
+                  {
+                    // Check to see if our reduction was already going on, if so put it in reduce mode
+                    // otherwise just keep it in exclusive mode
+                    if (req.redop == partition_states[dep.ctx_id].logop)
+                    {
+                      partition_states[dep.ctx_id].logical_state = REG_OPEN_REDUCE;
+                    }
+                    else
+                    {
+                      partition_states[dep.ctx_id].logop = req.redop;
+                    }
+                  }
+                  // Open the one we want
                   children[log]->open_logical_tree(dep);
                 }
                 break;
