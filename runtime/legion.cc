@@ -9020,6 +9020,7 @@ namespace RegionRuntime {
                                       region_states[dep.ctx_id].closed_users, false/*closing part*/);
               region_states[dep.ctx_id].open_logical.clear();
               region_states[dep.ctx_id].logical_state = PART_NOT_OPEN;
+              region_states[dep.ctx_id].logop = 0; // No more open reductions
               break;
             }
           case PART_REDUCE:
@@ -9035,6 +9036,7 @@ namespace RegionRuntime {
                 }
                 region_states[dep.ctx_id].open_logical.clear();
                 region_states[dep.ctx_id].logical_state = PART_NOT_OPEN;
+                region_states[dep.ctx_id].logop = 0; // No more open reductions
               }
               break;
             }
@@ -9304,7 +9306,9 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           assert(IS_REDUCE(req));
 #endif
-          region_states[dep.ctx_id].logical_state = PART_REDUCE;
+          // Open in exclusive but mark that there's a reduction going on below,
+          // we'll use this to know when we need to go into reduction mode
+          region_states[dep.ctx_id].logical_state = PART_EXCLUSIVE;
           region_states[dep.ctx_id].logop = req.redop;
         }
         region_states[dep.ctx_id].open_logical.insert(pid);
@@ -9356,6 +9360,7 @@ namespace RegionRuntime {
               ->close_logical_tree(dep,true/*register dependences*/,closed, closing_part);
             region_states[dep.ctx_id].open_logical.clear();
             region_states[dep.ctx_id].logical_state = PART_NOT_OPEN;
+            region_states[dep.ctx_id].logop = 0; // No more open reductions
             break;
           }
         default:
@@ -10690,6 +10695,130 @@ namespace RegionRuntime {
         partition_states[dep.ctx_id].open_logical.clear();
         partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
         partition_states[dep.ctx_id].logop = 0;
+
+        const RegionRequirement &req = dep.get_req();
+        if (disjoint)
+        {
+          // There are two optimized cases for disjoint: if everyone is read-only or if every one is doing
+          // the same reduction then we don't have to close everything up, otherwise we just close up all
+          // the open partitions below
+          switch (partition_states[dep.ctx_id].logical_state)
+          {
+            case REG_NOT_OPEN:
+              {
+                // No need to do anything
+                break;
+              }
+            case REG_OPEN_READ_ONLY:
+              {
+                // Check to see if we're reading too, if we are then we don't need to close anything
+                // up otherwise we need to close everything up which we can do by just falling
+                // through to the exclusive case
+                if (IS_READ_ONLY(req))
+                {
+                  break;
+                }
+                // Fall through
+              }
+            case REG_OPEN_EXCLUSIVE:
+              {
+                for (std::set<LogicalRegion>::const_iterator it = partition_states[dep.ctx_id].open_logical.begin();
+                        it != partition_states[dep.ctx_id].open_logical.end(); it++)
+                {
+                  children[*it]->close_logical_tree(dep,true/*register dependences*/,
+                                                    partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
+                }
+                partition_states[dep.ctx_id].open_logical.clear();
+                partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
+                partition_states[dep.ctx_id].logop = 0;
+                break;
+              }
+            case REG_OPEN_REDUCE:
+              {
+                // If we're doing the same kind of reduction then no need to close everything up,
+                // otherwise we need to close up all the open partitions
+                if (!IS_REDUCE(req) || (req.redop != partition_states[dep.ctx_id].logop))
+                {
+                  for (std::set<LogicalRegion>::const_iterator it = partition_states[dep.ctx_id].open_logical.begin();
+                        it != partition_states[dep.ctx_id].open_logical.end(); it++)
+                  {
+                    children[*it]->close_logical_tree(dep,true/*register dependences*/,
+                                                      partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
+                  }
+                  partition_states[dep.ctx_id].open_logical.clear();
+                  partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
+                  partition_states[dep.ctx_id].logop = 0;
+                }
+                break;
+              }
+            default:
+              assert(false);
+          }
+        }
+        else
+        {
+          // Aliased partition
+          switch (partition_states[dep.ctx_id].logical_state)
+          {
+            case REG_NOT_OPEN:
+              {
+                // No need to do anything
+                break;
+              }
+            case REG_OPEN_READ_ONLY:
+              {
+                // Check to see if we're read-only in which case we don't have to do anything
+                // otherwise we need to close up all the open regions
+                if (!IS_READ_ONLY(req))
+                {
+                  for (std::set<LogicalRegion>::const_iterator it = partition_states[dep.ctx_id].open_logical.begin();
+                        it != partition_states[dep.ctx_id].open_logical.end(); it++)
+                  {
+                    children[*it]->close_logical_tree(dep,true/*register dependences*/,
+                                                      partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
+                  }
+                  partition_states[dep.ctx_id].open_logical.clear();
+                  partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
+                  partition_states[dep.ctx_id].logop = 0;
+                }
+                break;
+              }
+            case REG_OPEN_EXCLUSIVE:
+              {
+                // Definitely need to close up the open region 
+#ifdef DEBUG_HIGH_LEVEL
+                assert(partition_states[dep.ctx_id].open_logical.size() == 1);
+#endif
+                LogicalRegion open = *(partition_states[dep.ctx_id].open_logical.begin());
+                children[open]->close_logical_tree(dep,true/*register dependences*/,
+                                                    partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
+                partition_states[dep.ctx_id].open_logical.clear();
+                partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
+                partition_states[dep.ctx_id].logop = 0;
+                break;
+              }
+            case REG_OPEN_REDUCE:
+              {
+                // If we're in reduce mode and this is a reduciton of the same kind we can leave it open,
+                // otherwise we need to close up the open regions
+                if (!IS_REDUCE(req) || (req.redop != partition_states[dep.ctx_id].logop))
+                {
+                  for (std::set<LogicalRegion>::const_iterator it = partition_states[dep.ctx_id].open_logical.begin();
+                        it != partition_states[dep.ctx_id].open_logical.end(); it++)
+                  {
+                    children[*it]->close_logical_tree(dep,true/*register dependences*/,
+                                                      partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
+                  }
+                  partition_states[dep.ctx_id].open_logical.clear();
+                  partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
+                  partition_states[dep.ctx_id].logop = 0;
+                }
+                break;
+              }
+            default:
+              assert(false);
+          }
+        }
       }
       else
       {
@@ -10726,8 +10855,58 @@ namespace RegionRuntime {
         // Different algorithms for disjoint and aliased partitions
         if (disjoint)
         {
-          // For disjoint, we don't ready care what mode the region is open in, we only care
-          // if it's already open
+          // For disjoint partitions, we'll use the state mode a little differently
+          // We'll optimize for the cases where we don't need to close up things below
+          // which is if everything is read-only and a task is using a partition in
+          // read-only or if everything is reduce and a task is in reduce.  The exclusive
+          // mode will act as bottom which just means we don't know and therefore have to
+          // close everthing up below.
+          const RegionRequirement &req = dep.get_req();
+          switch (partition_states[dep.ctx_id].logical_state)
+          {
+            case REG_NOT_OPEN:
+              {
+                if (IS_READ_ONLY(req))
+                {
+                  partition_states[dep.ctx_id].logical_state = REG_OPEN_READ_ONLY;
+                }
+                else if (IS_REDUCE(req))
+                {
+                  partition_states[dep.ctx_id].logical_state = REG_OPEN_REDUCE;
+                  partition_states[dep.ctx_id].logop = req.redop;
+                }
+                else
+                {
+                  partition_states[dep.ctx_id].logical_state = REG_OPEN_EXCLUSIVE;
+                }
+                break;
+              }
+            case REG_OPEN_READ_ONLY:
+              {
+                if (!IS_READ_ONLY(req))
+                {
+                  // Not everything is read-only any more, back to exclusive
+                  partition_states[dep.ctx_id].logical_state = REG_OPEN_EXCLUSIVE;
+                }
+                break;
+              }
+            case REG_OPEN_EXCLUSIVE:
+              {
+                // No matter what this is just going to stay in the bottom mode
+                break;
+              }
+            case REG_OPEN_REDUCE:
+              {
+                if (!IS_REDUCE(req) || (req.redop != partition_states[dep.ctx_id].logop))
+                {
+                  // Not everything is an open reduction anymore
+                  partition_states[dep.ctx_id].logical_state = REG_OPEN_EXCLUSIVE;
+                }
+                break;
+              }
+            default:
+              assert(false);
+          }
           if (partition_states[dep.ctx_id].open_logical.find(log) ==
               partition_states[dep.ctx_id].open_logical.end())
           {
@@ -10949,8 +11128,22 @@ namespace RegionRuntime {
         // Haven't arrived yet, continue the traversal
         dep.trace.pop_back();
         LogicalRegion log = { dep.trace.back() };
+        const RegionRequirement &req = dep.get_req();
         if (disjoint)
         {
+          if (IS_READ_ONLY(req))
+          {
+            partition_states[dep.ctx_id].logical_state = REG_OPEN_READ_ONLY;
+          }
+          else if (IS_REDUCE(req))
+          {
+            partition_states[dep.ctx_id].logical_state = REG_OPEN_REDUCE;
+            partition_states[dep.ctx_id].logop = req.redop;
+          }
+          else
+          {
+            partition_states[dep.ctx_id].logical_state = REG_OPEN_EXCLUSIVE;
+          }
           // Open our region and continue 
           partition_states[dep.ctx_id].open_logical.insert(log);
           children[log]->open_logical_tree(dep);
@@ -10958,7 +11151,6 @@ namespace RegionRuntime {
         else
         {
           // Open the region in the right mode
-          const RegionRequirement &req = dep.get_req();
           if (IS_READ_ONLY(req))
           {
             partition_states[dep.ctx_id].logical_state = REG_OPEN_READ_ONLY;
@@ -10972,7 +11164,9 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
             assert(IS_REDUCE(req));
 #endif
-            partition_states[dep.ctx_id].logical_state = REG_OPEN_REDUCE;
+            // Open this in exclusive mode, but mark that there is a reduction
+            // going on below which will allow us to go into reduce mode later
+            partition_states[dep.ctx_id].logical_state = REG_OPEN_EXCLUSIVE;
             partition_states[dep.ctx_id].logop = req.redop;
           }
           partition_states[dep.ctx_id].open_logical.insert(log);
