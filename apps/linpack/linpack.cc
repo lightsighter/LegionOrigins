@@ -51,6 +51,11 @@ struct MatrixBlock {
 };
 
 template <int NB>
+struct MatrixBlockRow {
+  double data[NB];
+};
+
+template <int NB>
 struct IndexBlock {
   int block_num;
 
@@ -72,6 +77,7 @@ struct BlockedMatrix {
   int num_row_parts, num_col_parts;
   Partition col_part;
   Partition row_parts[MAX_BLOCKS];
+  LogicalRegion panel_subregions[MAX_BLOCKS];
 
   ptr_t<IndexBlock<NB> > index_blocks[MAX_BLOCKS];
 
@@ -99,12 +105,14 @@ void create_blocked_matrix(Context ctx, HighLevelRuntime *runtime,
   matrix.col_part = runtime->create_partition(ctx,
 					      matrix.block_region,
 					      matrix.block_cols);
-  for(int j = 0; j < matrix.block_cols; j++)
+  for(int j = 0; j < matrix.block_cols; j++) {
+    matrix.panel_subregions[j] = runtime->get_subregion(ctx,
+							matrix.col_part,
+							j);
     matrix.row_parts[j] = runtime->create_partition(ctx,
-						    runtime->get_subregion(ctx,
-									   matrix.col_part,
-									   j),
+						    matrix.panel_subregions[j],
 						    Q);
+  }
 
   matrix.index_region = runtime->create_logical_region(ctx,
 						       sizeof(IndexBlock<NB>),
@@ -200,38 +208,6 @@ static Color colorize_identity_fn(const std::vector<int> &solution)
   return solution[0];
 }
 
-template<AccessorType AT, int NB>
-void rowswap_gather_task(const void *global_args, size_t global_arglen,
-			 const void *local_args, size_t local_arglen,
-			 const IndexPoint &point,
-			 std::vector<PhysicalRegion<AT> > &regions,
-			 Context ctx, HighLevelRuntime *runtime)
-{
-  printf("rowswap_gather: pt=%d\n", point[0]);
-}
-
-template <int NB>
-struct FillTopBlockArgs {
-  BlockedMatrix<NB> matrix;
-  int k;
-  int j;
-
-  FillTopBlockArgs(const BlockedMatrix<NB>& _matrix, int _k, int _j)
-    : matrix(_matrix), k(_k), j(_j) {}
-
-  operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
-};
-
-template<AccessorType AT, int NB>
-void fill_top_block_task(const void *args, size_t arglen,
-			 std::vector<PhysicalRegion<AT> > &regions,
-			 Context ctx, HighLevelRuntime *runtime)
-{
-  const FillTopBlockArgs<NB> *task_args = (const FillTopBlockArgs<NB> *)args;
-
-  printf("fill top block task: k=%d, j=%d\n", task_args->k, task_args->j);
-}
-
 class SingleTask {
 protected:
   Context ctx;
@@ -248,6 +224,185 @@ protected:
   Index1DTask(Context _ctx, HighLevelRuntime *_runtime, int _idx)
     : SingleTask(_ctx, _runtime), idx(_idx) {}
 };
+
+template <int NB>
+class RandomPanelTask : public Index1DTask {
+protected:
+
+  static TaskID task_id;
+
+  struct TaskArgs {
+    BlockedMatrix<NB> matrix;
+    int k;
+
+    TaskArgs(const BlockedMatrix<NB>& _matrix, int _k)
+      : matrix(_matrix), k(_k) {}
+    operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
+  };
+
+  enum {
+    REGION_PANEL,  // RWE
+    NUM_REGIONS
+  };
+
+  const TaskArgs *args;
+
+  RandomPanelTask(Context _ctx, HighLevelRuntime *_runtime, int _idx,
+		   const TaskArgs *_args)
+    : Index1DTask(_ctx, _runtime, _idx), args(_args) {}
+
+public:
+  template <AccessorType AT>
+  static void task_entry(const void *global_args, size_t global_arglen,
+			 const void *local_args, size_t local_arglen,
+			 const IndexPoint &point,
+			 std::vector<PhysicalRegion<AT> > &regions,
+			 Context ctx, HighLevelRuntime *runtime)
+  {
+    RandomPanelTask t(ctx, runtime, point[0], (const TaskArgs *)global_args);
+    t.run<AT>(regions);
+  }
+  
+protected:
+  template <AccessorType AT>
+  void run(std::vector<PhysicalRegion<AT> > &regions) const
+  {
+    printf("random_panel(yay): k=%d, idx=%d\n", args->k, idx);
+  }
+
+public:
+  static void register_task(TaskID desired_task_id = AUTO_GENERATE_ID)
+  {
+    task_id = HighLevelRuntime::register_index_task
+      <RandomPanelTask::task_entry<AccessorGeneric> >(desired_task_id,
+						       Processor::LOC_PROC,
+						       "random_matrix");
+  }
+
+  static FutureMap spawn(Context ctx, HighLevelRuntime *runtime,
+			 const Range &range,
+			 const BlockedMatrix<NB>& matrix,
+			 int k)
+  {
+    std::vector<Range> index_space;
+    index_space.push_back(range);
+
+    std::vector<RegionRequirement> reqs;
+    reqs.resize(NUM_REGIONS);
+
+    reqs[REGION_PANEL] = RegionRequirement(matrix.row_parts[k].id,
+					   COLORID_IDENTITY,
+					   READ_WRITE, NO_MEMORY, EXCLUSIVE,
+					   matrix.panel_subregions[k]);
+
+    ArgumentMap arg_map;
+
+    // double-check that we were registered properly
+    assert(task_id != 0);
+    FutureMap fm = runtime->execute_index_space(ctx, 
+						task_id,
+						index_space,
+						reqs,
+						TaskArgs(matrix, k),
+						ArgumentMap(),
+						false);
+    return fm;
+  }
+};
+
+template <int NB> TaskID RandomPanelTask<NB>::task_id;
+
+template <int NB>
+class RandomMatrixTask : public Index1DTask {
+protected:
+
+  static TaskID task_id;
+
+  struct TaskArgs {
+    BlockedMatrix<NB> matrix;
+
+    TaskArgs(const BlockedMatrix<NB>& _matrix)
+      : matrix(_matrix) {}
+    operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
+  };
+
+  enum {
+    REGION_PANEL,  // RWE
+    NUM_REGIONS
+  };
+
+  const TaskArgs *args;
+
+  RandomMatrixTask(Context _ctx, HighLevelRuntime *_runtime, int _idx,
+		   const TaskArgs *_args)
+    : Index1DTask(_ctx, _runtime, _idx), args(_args) {}
+
+public:
+  template <AccessorType AT>
+  static void task_entry(const void *global_args, size_t global_arglen,
+			 const void *local_args, size_t local_arglen,
+			 const IndexPoint &point,
+			 std::vector<PhysicalRegion<AT> > &regions,
+			 Context ctx, HighLevelRuntime *runtime)
+  {
+    RandomMatrixTask t(ctx, runtime, point[0], (const TaskArgs *)global_args);
+    t.run<AT>(regions);
+  }
+  
+protected:
+  template <AccessorType AT>
+  void run(std::vector<PhysicalRegion<AT> > &regions) const
+  {
+    printf("random_matrix(yay): idx=%d\n", idx);
+
+    runtime->unmap_region(ctx, regions[REGION_PANEL]);
+
+    FutureMap fm = RandomPanelTask<NB>::spawn(ctx, runtime,
+					      Range(0, args->matrix.num_row_parts - 1),
+					      args->matrix, idx);
+    fm.wait_all_results();
+  }
+
+public:
+  static void register_task(TaskID desired_task_id = AUTO_GENERATE_ID)
+  {
+    task_id = HighLevelRuntime::register_index_task
+      <RandomMatrixTask::task_entry<AccessorGeneric> >(desired_task_id,
+						       Processor::LOC_PROC,
+						       "random_matrix");
+  }
+
+  static FutureMap spawn(Context ctx, HighLevelRuntime *runtime,
+			 const Range &range,
+			 const BlockedMatrix<NB>& matrix)
+  {
+    std::vector<Range> index_space;
+    index_space.push_back(range);
+
+    std::vector<RegionRequirement> reqs;
+    reqs.resize(NUM_REGIONS);
+
+    reqs[REGION_PANEL] = RegionRequirement(matrix.col_part.id,
+					   COLORID_IDENTITY,
+					   READ_WRITE, NO_MEMORY, EXCLUSIVE,
+					   matrix.block_region);
+
+    ArgumentMap arg_map;
+
+    // double-check that we were registered properly
+    assert(task_id != 0);
+    FutureMap fm = runtime->execute_index_space(ctx, 
+						task_id,
+						index_space,
+						reqs,
+						TaskArgs(matrix),
+						ArgumentMap(),
+						false);
+    return fm;
+  }
+};
+
+template <int NB> TaskID RandomMatrixTask<NB>::task_id;
 
 template <int NB>
 class FillTopBlockTask : public SingleTask {
@@ -900,7 +1055,11 @@ void linpack_main(const void *args, size_t arglen,
   alloc_blocked_matrix<AT,NB>(ctx, runtime, matrix, regions[0]);
   //PhysicalRegion<AT> r = regions[0];
 
-  randomize_matrix<AT,NB>(ctx, runtime, matrix, regions[0]);
+  FutureMap fm = RandomMatrixTask<NB>::spawn(ctx, runtime, 
+					     Range(0, matrix.block_cols - 1),
+					     matrix);
+  fm.wait_all_results();
+  //randomize_matrix<AT,NB>(ctx, runtime, matrix, regions[0]);
 
   factor_matrix<AT,NB>(ctx, runtime, matrix);
 }
@@ -1215,6 +1374,8 @@ int main(int argc, char **argv) {
   //HighLevelRuntime::register_index_task<rowswap_gather_task<AccessorGeneric,1> >(TASKID_ROWSWAP_GATHER,Processor::LOC_PROC,"rowswap_gather");
   //HighLevelRuntime::register_index_task<update_panel_task<AccessorGeneric,1> >(TASKID_UPDATE_PANEL,Processor::LOC_PROC,"update_panel");
 
+  RandomPanelTask<1>::register_task();
+  RandomMatrixTask<1>::register_task();
   FillTopBlockTask<1>::register_task();
   SolveTopBlockTask<1>::register_task();
   TransposeRowsTask<1>::register_task();
