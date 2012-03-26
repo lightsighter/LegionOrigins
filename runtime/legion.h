@@ -123,6 +123,8 @@ namespace RegionRuntime {
     typedef LowLevel::ElementMask Mask;
     typedef LowLevel::Barrier Barrier;
     typedef LowLevel::ReductionOpID ReductionOpID;
+    typedef LowLevel::Machine::ProcessorMemoryAffinity ProcessorMemoryAffinity;
+    typedef LowLevel::Machine::MemoryMemoryAffinity MemoryMemoryAffinity;
     typedef unsigned int Color;
     typedef unsigned int MapperID;
     typedef unsigned int PartitionID;
@@ -292,7 +294,7 @@ namespace RegionRuntime {
       TaskCollection *variants;
     public:
       // Get the index point if it is an index point
-      virtual const IndexPoint& get_index_point(void) = 0;
+      virtual const IndexPoint& get_index_point(void) const = 0;
     public:
       bool operator==(const Task &task) const
         { return unique_id == task.unique_id; }
@@ -1217,6 +1219,12 @@ namespace RegionRuntime {
     // Task Context
     ///////////////////////////////////////////////////////////// 
     class TaskContext: public Task, protected GeneralizedContext {
+    private:
+      struct PreMappedRegion {
+      public:
+        InstanceInfo *info;
+        Event ready_event;
+      };
     protected:
       friend class HighLevelRuntime;
       friend class RegionNode;
@@ -1280,6 +1288,8 @@ namespace RegionRuntime {
                               const std::vector<unsigned> &mapped_counts, bool update); 
       void index_space_mapped(unsigned num_remote_points, const std::vector<unsigned> &mapped_counts);
       void index_space_finished(unsigned num_remote_points);
+      // Check to see whether the index space needs to pre-map any regions
+      void index_space_premap(void);
     protected:
       // functions for updating logical region trees
       void create_region(LogicalRegion handle); // (thread-safe)
@@ -1325,7 +1335,7 @@ namespace RegionRuntime {
       virtual InstanceInfo* create_instance_info(LogicalRegion newer, InstanceInfo *old);
     public:
       // Get the index point for this task
-      virtual const IndexPoint& get_index_point(void);
+      virtual const IndexPoint& get_index_point(void) const;
     private:
       HighLevelRuntime *const runtime;
       bool active;
@@ -1384,6 +1394,8 @@ namespace RegionRuntime {
       size_t reduction_size;
       // Track our sibling tasks on the same node so we can know when to deactivate them
       std::vector<TaskContext*> sibling_tasks;
+      // Pre-mapped instances for writes to individual logical regions
+      std::map<unsigned/*idx*/,PreMappedRegion> pre_mapped_regions;
     protected:
       TaskContext *parent_ctx; // The parent task on the originating processor
       Context orig_ctx; // Context on the original processor if remote
