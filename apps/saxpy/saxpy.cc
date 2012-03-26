@@ -421,7 +421,7 @@ public:
 #endif
   }
 
-  virtual void map_task_region(const Task *task, const RegionRequirement &req,
+  virtual void map_task_region(const Task *task, const RegionRequirement &req, unsigned index,
                                const std::set<Memory> &current_instances,
                                std::vector<Memory> &target_ranking, bool &enable_WAR_optimization) {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
@@ -583,7 +583,7 @@ public:
 #endif
   }
 
-  virtual void map_task_region(const Task *task, const RegionRequirement *req,
+  virtual void map_task_region(const Task *task, const RegionRequirement *req, unsigned index,
                                const std::vector<Memory> &valid_src_instances,
                                const std::vector<Memory> &valid_dst_instances,
                                Memory &chosen_src,
