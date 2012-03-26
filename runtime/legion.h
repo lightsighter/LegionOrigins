@@ -1654,9 +1654,9 @@ namespace RegionRuntime {
       // Initialize the physical context
       void initialize_physical_context(ContextID ctx);
       // Operations on the physical part of the region tree
-      void get_physical_locations(ContextID ctx_id, std::set<Memory> &locations, bool recurse = false);
+      void get_physical_locations(ContextID ctx_id, std::set<Memory> &locations, bool recurse, bool reduction);
       // Try to find a valid physical instance in the memory m
-      std::pair<InstanceInfo*,bool> find_physical_instance(ContextID ctx_id, Memory m, bool recurse = false);
+      std::pair<InstanceInfo*,bool> find_physical_instance(ContextID ctx_id, Memory m, bool recurse, bool reduction);
       // Register a physical instance with the region tree
       Event register_physical_instance(RegionRenamer &ren, Event precondition); 
       // Open up a physical region tree returning the event corresponding
@@ -1674,6 +1674,8 @@ namespace RegionRuntime {
       // physical instance's logical region
       void update_valid_instances(ContextID ctx_id, InstanceInfo *info, bool writer, bool owner,
                                   bool check_overwrite = false, UniqueID uid = 0);
+      // Update the reduction instances for the logical region
+      void update_reduction_instances(ContextID ctx_id, InstanceInfo *info, bool owner);
       // Initialize a physical instance
       void initialize_instance(RegionRenamer &ren, const std::set<Memory> &locations);
       // Select a target region for a close operation
@@ -1683,7 +1685,8 @@ namespace RegionRuntime {
                                             Memory target_location, bool allow_up);
       // A local helper method that does what close physical tree does without copying from
       // any dirty instances locally
-      bool close_local_tree(ContextID, InstanceInfo *target, GeneralizedContext *enclosing, Mapper *mapper, bool leave_open);
+      bool close_local_tree(ContextID, InstanceInfo *target, GeneralizedContext *enclosing, 
+                            Mapper *mapper, bool leave_open);
     private:
       const LogicalRegion handle;
       const unsigned depth;

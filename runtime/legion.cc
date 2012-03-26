@@ -1314,7 +1314,7 @@ namespace RegionRuntime {
       {
         std::set<Memory> sources; 
         RegionNode *handle = (*region_nodes)[req.handle.region];
-        handle->get_physical_locations(parent_physical_ctx,sources);
+        handle->get_physical_locations(parent_physical_ctx,sources,true/*recurse*/,IS_REDUCE(req));
         std::vector<Memory> locations;
         bool war_optimization = true;
         mapper->map_task_region(parent_ctx, req, sources, locations, war_optimization);
@@ -1331,7 +1331,7 @@ namespace RegionRuntime {
                   "logical region %x of inline mapping %d of task %s", req.handle.region.id, unique_id, parent_ctx->variants->name);
               exit(1);
             }
-            std::pair<InstanceInfo*,bool> result = handle->find_physical_instance(parent_physical_ctx, *it);
+            std::pair<InstanceInfo*,bool> result = handle->find_physical_instance(parent_physical_ctx, *it, true/*recurse*/,IS_REDUCE(req));
             chosen_info = result.first;
             if (chosen_info == InstanceInfo::get_no_instance())
             {
@@ -5352,7 +5352,7 @@ namespace RegionRuntime {
         ContextID parent_physical_ctx = get_enclosing_physical_context(idx);
         std::set<Memory> sources;
         RegionNode *handle = (*region_nodes)[regions[idx].handle.region];
-        handle->get_physical_locations(parent_physical_ctx, sources);
+        handle->get_physical_locations(parent_physical_ctx, sources, true/*recurse*/,IS_REDUCE(regions[idx]));
         std::vector<Memory> locations;
         bool war_optimization = true;
         mapper->map_task_region(this, regions[idx],sources,locations,war_optimization);
@@ -5382,7 +5382,8 @@ namespace RegionRuntime {
           for (std::vector<Memory>::const_iterator it = locations.begin();
                 it != locations.end(); it++)
           {
-            std::pair<InstanceInfo*,bool> result = handle->find_physical_instance(parent_physical_ctx,*it);
+            std::pair<InstanceInfo*,bool> result = handle->find_physical_instance(parent_physical_ctx,*it,
+                                                                  true/*recurse*/,IS_REDUCE(regions[idx]));
             InstanceInfo *info = result.first;
             bool needs_initializing = false;
             if (info == InstanceInfo::get_no_instance())
@@ -6964,7 +6965,17 @@ namespace RegionRuntime {
             physical_mapped.push_back(true/*mapped*/);
             // Update the valid instances of this region
             ContextID enclosing_ctx = get_enclosing_physical_context(idx);
-            (*region_nodes)[info->handle]->update_valid_instances(enclosing_ctx,info,HAS_WRITE(regions[idx]),owned);
+            if (IS_READ_ONLY(regions[idx]) || IS_WRITE(regions[idx]))
+            {
+              (*region_nodes)[info->handle]->update_valid_instances(enclosing_ctx,info,IS_WRITE(regions[idx]),owned);
+            }
+            else
+            {
+#ifdef DEBUG_HIGH_LEVEL
+              assert(IS_REDUCE(regions[idx]));
+#endif
+              (*region_nodes)[info->handle]->update_reduction_instances(enclosing_ctx,info,owned);
+            }
             // Now notify all the tasks waiting on this region that it is valid
             for (std::set<GeneralizedContext*>::const_iterator it = map_dependent_tasks[idx].begin();
                   it != map_dependent_tasks[idx].end(); it++)
@@ -7027,7 +7038,8 @@ namespace RegionRuntime {
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
           ContextID enclosing_ctx = get_enclosing_physical_context(idx);
-          bool has_write = HAS_WRITE(regions[idx]);
+          bool is_write = IS_WRITE(regions[idx]);
+          bool is_read_only = IS_READ_ONLY(regions[idx]);
           // Initializing mapping counts
           mapping_counts[idx] = 0;
           for (unsigned i = 0; i < num_remote_points; i++)
@@ -7042,9 +7054,20 @@ namespace RegionRuntime {
               assert(instance_infos->find(iid) != instance_infos->end());
 #endif
               InstanceInfo *info = (*instance_infos)[iid];    
-              // Update the valid instances
-              (*region_nodes)[info->handle]->update_valid_instances(enclosing_ctx,
-                  info, has_write, owned, true/*check overwrite*/, unique_id);
+              if (is_write || is_read_only)
+              {
+                // Update the valid instances
+                (*region_nodes)[info->handle]->update_valid_instances(enclosing_ctx,
+                    info, is_write, owned, true/*check overwrite*/, unique_id);
+              }
+              else
+              {
+#ifdef DEBUG_HIGH_LEVEL
+                assert(IS_REDUCE(regions[idx]));
+#endif
+                // Update the reduction instances
+                (*region_nodes)[info->handle]->update_reduction_instances(enclosing_ctx, info, owned);
+              }
               // Update the mapping counts
               mapping_counts[idx]++;
             }
@@ -8142,7 +8165,17 @@ namespace RegionRuntime {
 
           // When we insert the valid instance mark that it is not the owner so it is coming
           // from the parent task's context
-          reg->update_valid_instances(chosen_ctx[idx], clone_inst, true/*writer*/, true/*owner*/);
+          if (IS_READ_ONLY(regions[idx]) || IS_WRITE(regions[idx]))
+          {
+            reg->update_valid_instances(chosen_ctx[idx], clone_inst, true/*writer*/, true/*owner*/);
+          }
+          else
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            assert(IS_REDUCE(regions[idx]));
+#endif
+            reg->update_reduction_instances(chosen_ctx[idx], clone_inst, true/*owner*/);
+          }
         }
         else
         {
@@ -8484,7 +8517,8 @@ namespace RegionRuntime {
         assert(next_handle.exists());
 #endif
         InstanceInfo *next = current->get_open_subregion(next_handle);
-        if (next == InstanceInfo::get_no_instance())
+        if (next == InstanceInfo::get_no_instance() ||
+            !next->valid) // Must be valid to be reused
         {
           // Doesn't have an open instance info, so make one
           InstanceID iid = runtime->get_unique_instance_id();
@@ -8803,11 +8837,13 @@ namespace RegionRuntime {
               assert(false);
               //exit(1);
             }
+#ifndef DISABLE_GC
             // If we own it, we can invalidate it
             if (it->second)
             {
               it->first->mark_invalid();
             }
+#endif
           }
         }
         // Now make our new set of valid instances
@@ -8815,7 +8851,11 @@ namespace RegionRuntime {
         for (std::map<InstanceID,bool>::const_iterator it = new_valid.begin();
               it != new_valid.end(); it++)
         {
-          region_states[ctx].valid_instances[inst_map[it->first]] = it->second;
+          InstanceInfo *info = inst_map[it->first];
+#ifdef DEBUG_HIGH_LEVEL
+          assert(info->valid); 
+#endif
+          region_states[ctx].valid_instances[info] = it->second;
         }
       }
       else
@@ -8831,9 +8871,13 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           assert(inst_map.find(iid) != inst_map.end());
 #endif
+          InstanceInfo *info = inst_map[iid];
+#ifdef DEBUG_HIGH_LEVEL
+          assert(info->valid);
+#endif
           // Just put this into the set of valid instances
           region_states[ctx].valid_instances.insert(
-              std::pair<InstanceInfo*,bool>(inst_map[iid],owner));
+              std::pair<InstanceInfo*,bool>(info,owner));
         }
       }
       // Returning Reduction Instances
@@ -8854,8 +8898,8 @@ namespace RegionRuntime {
           new_reduc[iid] = owner;
         }
         // Check to see which of our instances are no longer valid
-        for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
-              it != region_states[ctx].valid_instances.end(); it++)
+        for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].reduction_instances.begin();
+              it != region_states[ctx].reduction_instances.end(); it++)
         {
           if (new_reduc.find(it->first->iid) == new_reduc.end())
           {
@@ -8867,10 +8911,12 @@ namespace RegionRuntime {
               // reduction instances
               new_reduc.insert(std::pair<InstanceID,bool>(it->first->iid,it->second));
             }
+#ifndef DISABLE_GC
             else if (it->second) // Otherwise we can invalidate it
             {
               it->first->mark_invalid();
             }
+#endif
           }
         }
         // Now make the new set of reduction instances
@@ -8878,7 +8924,11 @@ namespace RegionRuntime {
         for (std::map<InstanceID,bool>::const_iterator it = new_reduc.begin();
               it != new_reduc.end(); it++)
         {
-          region_states[ctx].reduction_instances[inst_map[it->first]] = it->second;
+          InstanceInfo *info = inst_map[it->first];
+#ifdef DEBUG_HIGH_LEVEL
+          assert(info->valid);
+#endif
+          region_states[ctx].reduction_instances[info] = it->second;
         }
       }
       else
@@ -9444,29 +9494,47 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void RegionNode::get_physical_locations(ContextID ctx, std::set<Memory> &locations, bool recurse)
+    void RegionNode::get_physical_locations(ContextID ctx, std::set<Memory> &locations, bool recurse, bool reduction)
     //--------------------------------------------------------------------------------------------
     {
-      // Add any physical instances that we have to the list of locations
-      for (std::map<InstanceInfo*,bool>::const_iterator it = 
-            region_states[ctx].valid_instances.begin(); it !=
-            region_states[ctx].valid_instances.end(); it++)
+      if (!reduction)
       {
-        locations.insert(it->first->location);
+        // Add any physical instances that we have to the list of locations
+        for (std::map<InstanceInfo*,bool>::const_iterator it = 
+              region_states[ctx].valid_instances.begin(); it !=
+              region_states[ctx].valid_instances.end(); it++)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          //if (it->second)
+          {
+            assert(it->first->valid);
+          }
+#endif
+          locations.insert(it->first->location);
+        }
+      }
+      else
+      {
+        for (std::map<InstanceInfo*,bool>::const_iterator it =
+              region_states[ctx].reduction_instances.begin(); it !=
+              region_states[ctx].reduction_instances.end(); it++)
+        {
+          locations.insert(it->first->location);
+        }
       }
       // Check to see if we have any exclusive open partitions if we do,
       // then there are no valid instances.  This is only true for the
       // initial region we check.
-      if (!recurse && region_states[ctx].open_state == PART_EXCLUSIVE)
+      if (!reduction && !recurse && region_states[ctx].open_state == PART_EXCLUSIVE)
       {
         return;
       }
       // If we are still clean we can see valid physical instances above us too!
       // Go up the tree looking for any valid physical instances until we get to the top
-      if ((region_states[ctx].data_state == DATA_CLEAN) && 
+      if (((region_states[ctx].data_state == DATA_CLEAN) || reduction) && 
           (parent != NULL))
       {
-        parent->parent->get_physical_locations(ctx,locations,true/*recurse*/);
+        parent->parent->get_physical_locations(ctx,locations,true/*recurse*/,reduction);
       }
     }
 
@@ -9500,16 +9568,16 @@ namespace RegionRuntime {
           // If we're santizing, create instance infos in this region for all the valid
           // instances of this region
           std::set<Memory> locations;
-          get_physical_locations(ren.ctx_id,locations,true/*ignore open below*/);
+          get_physical_locations(ren.ctx_id,locations,true/*ignore open below*/, false/*reduction*/);
           for (std::set<Memory>::const_iterator it = locations.begin();
                 it != locations.end(); it++)
           {
-            std::pair<InstanceInfo*,bool> result = find_physical_instance(ren.ctx_id, *it, true/*allow up*/);
+            std::pair<InstanceInfo*,bool> result = find_physical_instance(ren.ctx_id, *it, true/*allow up*/, false/*reduction*/);
             InstanceInfo *info = result.first;
             if (info->handle != handle)
             {
               InstanceInfo *new_info = ren.ctx->create_instance_info(handle,info);
-              update_valid_instances(ren.ctx_id,new_info,false/*writer*/,ren.owned);
+              update_valid_instances(ren.ctx_id,new_info,false/*writer*/,true/*owned*/);
             }
           }
           // If we're sanitizing we're done at this point
@@ -9539,9 +9607,8 @@ namespace RegionRuntime {
           // valid reducer at this point
           // Now we're the current user, record that we're using the region
           region_states[ren.ctx_id].redop = req.redop;
-          region_states[ren.ctx_id].reduction_instances.insert(
-              std::pair<InstanceInfo*,bool>(ren.info,ren.owned));
           precondition = ren.info->add_user(ren.ctx, ren.idx, precondition);
+          update_reduction_instances(ren.ctx_id, ren.info, ren.owned);
           return precondition;
         }
         // Otherwise this is an actual instance
@@ -9552,7 +9619,7 @@ namespace RegionRuntime {
           if (!IS_WRITE_ONLY(ren.get_req()))
           {
             std::set<Memory> locations;
-            get_physical_locations(ren.ctx_id, locations, true/*ignore open below*/);
+            get_physical_locations(ren.ctx_id, locations, true/*ignore open below*/,false/*reduction*/);
             // If locations are empty, we're the first ones, so no need to initialize
             if (!locations.empty())
             {
@@ -9705,7 +9772,6 @@ namespace RegionRuntime {
                   close_physical_tree(ren.ctx_id, target, ren.ctx, ren.mapper, IS_READ_ONLY(req));
                   // Update the valid instances here
                   update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
-                  region_states[ren.ctx_id].open_physical.clear(); 
                   PartitionID pid = (PartitionID)ren.trace.back();
                   region_states[ren.ctx_id].open_physical.insert(pid);
                   // Figure out which state the partition should be put in
@@ -9713,13 +9779,15 @@ namespace RegionRuntime {
                   {
                     region_states[ren.ctx_id].open_state = PART_READ_ONLY;
                     region_states[ren.ctx_id].exclusive_part = 0;
+                    // These have been left open so continue the traversal
+                    return partitions[pid]->register_physical_instance(ren, precondition);
                   }
                   else
                   {
                     region_states[ren.ctx_id].open_state = PART_EXCLUSIVE;
                     region_states[ren.ctx_id].exclusive_part = pid;
+                    return partitions[pid]->open_physical_tree(ren, precondition);
                   }
-                  return partitions[pid]->open_physical_tree(ren, precondition);
                 }
               }
               else if (IS_REDUCE(req))
@@ -9858,7 +9926,7 @@ namespace RegionRuntime {
         {
           // Create an instance info for each of the valid instances we can find 
           std::set<Memory> locations;
-          get_physical_locations(ren.ctx_id,locations);
+          get_physical_locations(ren.ctx_id,locations,true/*recurse*/,false/*reduction*/);
 #ifdef DEBUG_HIGH_LEVEL
           assert(!locations.empty());
 #endif
@@ -9866,12 +9934,12 @@ namespace RegionRuntime {
           for (std::set<Memory>::const_iterator it = locations.begin();
                 it != locations.end(); it++)
           {
-            std::pair<InstanceInfo*,bool> result = find_physical_instance(ren.ctx_id,*it);
+            std::pair<InstanceInfo*,bool> result = find_physical_instance(ren.ctx_id,*it,true/*recurse*/,false/*reduction*/);
             InstanceInfo *info = result.first;
             if (info->handle != handle)
             {
-              info = ren.ctx->create_instance_info(handle,info);
-              update_valid_instances(ren.ctx_id, info, false/*write*/, ren.owned);
+              InstanceInfo *new_info = ren.ctx->create_instance_info(handle,info);
+              update_valid_instances(ren.ctx_id, new_info, false/*write*/, true/*owned*/);
             }
           }
           return precondition;
@@ -9883,9 +9951,8 @@ namespace RegionRuntime {
           if (IS_REDUCE(req))
           {
             region_states[ren.ctx_id].redop = req.redop;
-            region_states[ren.ctx_id].reduction_instances.insert(
-                      std::pair<InstanceInfo*,bool>(ren.info, ren.owned));
             precondition = ren.info->add_user(ren.ctx, ren.idx, precondition);
+            update_reduction_instances(ren.ctx_id, ren.info, ren.owned);
             return precondition;
           }
 
@@ -9898,7 +9965,7 @@ namespace RegionRuntime {
             if (!IS_WRITE_ONLY(ren.get_req()))
             {
               std::set<Memory> locations;
-              get_physical_locations(ren.ctx_id, locations, true/*allow up*/);
+              get_physical_locations(ren.ctx_id, locations, true/*allow up*/,false/*reduction*/);
               // If locations is empty we're the first region so no need
               // to initialize
               if (!locations.empty())
@@ -9972,7 +10039,8 @@ namespace RegionRuntime {
           target = local_target;
         }
         std::set<Memory> locations;
-        get_physical_locations(ctx, locations, false/*allow up*/); // don't allow a copy up since we're doing a copy up
+        // don't allow a copy up since we're doing a copy up
+        get_physical_locations(ctx, locations, false/*allow up*/,false/*reduction*/); 
         // Select a source instance to perform the copy back from
         InstanceInfo *src_info = select_source_instance(ctx, mapper, locations, target->location, false/*allow up */);
         target->copy_from(src_info, enclosing);
@@ -9988,7 +10056,8 @@ namespace RegionRuntime {
         for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
               it != region_states[ctx].valid_instances.end(); it++)
         {
-          if (it->second)
+          // Also don't mark invalid the target instance
+          if (it->second && (it->first != target))
           {
             it->first->mark_invalid();
           }
@@ -10103,10 +10172,12 @@ namespace RegionRuntime {
         target->copy_from(it->first, enclosing, true/*reduction*/); 
         written_to = true;
         // We can also invalidate this if we own it
+#ifndef DISABLE_GC
         if (it->second)
         {
           it->first->mark_invalid();
         }
+#endif
       }
       region_states[ctx].reduction_instances.clear();
       region_states[ctx].redop = 0;
@@ -10203,7 +10274,7 @@ namespace RegionRuntime {
       InstanceInfo *target = InstanceInfo::get_no_instance();
       {
         std::set<Memory> locations;
-        get_physical_locations(ren.ctx_id,locations,true/*ignore open below*/);
+        get_physical_locations(ren.ctx_id,locations,true/*ignore open below*/,false/*reduction*/);
         // Ask the mapper for a list of target memories 
         std::vector<Memory> ranking;
         ren.mapper->rank_copy_targets(ren.ctx->get_enclosing_task(), ren.get_req(), locations, ranking);
@@ -10213,15 +10284,16 @@ namespace RegionRuntime {
           for (std::vector<Memory>::const_iterator mem_it = ranking.begin();
                 mem_it != ranking.end(); mem_it++)
           {
-            std::pair<InstanceInfo*,bool> result = find_physical_instance(ren.ctx_id,*mem_it,true/*allow up*/);
+            std::pair<InstanceInfo*,bool> result = find_physical_instance(ren.ctx_id,*mem_it,true/*allow up*/,false/*reduction*/);
             target = result.first;
-            target_owned = result.second;
             if (target != InstanceInfo::get_no_instance())
             {
+              target_owned = result.second;
               // Check to see if this is an instance info of the right logical region
               if (target->handle != handle)
               {
                 target = ren.ctx->create_instance_info(handle,target);
+                target_owned = true;
               }
               break;
             }
@@ -10229,9 +10301,9 @@ namespace RegionRuntime {
             {
               // Try to make it
               target = ren.ctx->create_instance_info(handle,*mem_it);
-              target_owned = true;
               if (target != InstanceInfo::get_no_instance())
               {
+                target_owned = true;
                 // Check to see if this is write-only, if so then there is
                 // no need to make a copy from anywhere, otherwise make the copy
                 if (!IS_WRITE_ONLY(ren.get_req()))
@@ -10252,6 +10324,7 @@ namespace RegionRuntime {
       }
 #ifdef DEBUG_HIGH_LEVEL
       assert(target != InstanceInfo::get_no_instance());
+      assert(target->valid);
 #endif
       return target;
     }
@@ -10265,7 +10338,7 @@ namespace RegionRuntime {
       if (locations.size() == 1)
       {
         // No point in invoking the mapper
-        std::pair<InstanceInfo*,bool> result = find_physical_instance(ctx, *(locations.begin()), allow_up); 
+        std::pair<InstanceInfo*,bool> result = find_physical_instance(ctx, *(locations.begin()), allow_up, false/*reduction*/); 
         src_info = result.first; 
       }
       else
@@ -10275,7 +10348,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(chosen_src.exists());
 #endif
-        std::pair<InstanceInfo*,bool> result = find_physical_instance(ctx, chosen_src, allow_up);
+        std::pair<InstanceInfo*,bool> result = find_physical_instance(ctx, chosen_src, allow_up, false/*reduction*/);
         src_info = result.first;   
       }
 #ifdef DEBUG_HIGH_LEVEL
@@ -10294,7 +10367,7 @@ namespace RegionRuntime {
       // This should always hold, if not something is wrong somewhere else
       assert(info->handle == handle); 
       // This only needs to be true if we are the owner
-      if (own)
+      //if (own)
       {
         assert(info->valid);
       }
@@ -10346,28 +10419,66 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    std::pair<InstanceInfo*,bool> RegionNode::find_physical_instance(ContextID ctx, Memory m, bool recurse)
+    void RegionNode::update_reduction_instances(ContextID ctx, InstanceInfo *info, bool owned)
     //--------------------------------------------------------------------------------------------
     {
-      // Check to see if we have any valid physical instances that we can use 
-      for (std::map<InstanceInfo*,bool>::const_iterator it = 
-            region_states[ctx].valid_instances.begin(); it !=
-            region_states[ctx].valid_instances.end(); it++)
+#ifdef DEBUG_HIGH_LEVEL
+      assert(info != InstanceInfo::get_no_instance());
+      // This should always hold, if not something is wrong somewhere else
+      assert(info->handle == handle); 
+      // This only needs to be true if we are the owner
+      if (owned)
       {
-        if (it->first->location == m)
-          return *it;
+        assert(info->valid);
+      }
+#endif
+      region_states[ctx].reduction_instances.insert(std::pair<InstanceInfo*,bool>(info,owned));
+    }
+
+    //--------------------------------------------------------------------------------------------
+    std::pair<InstanceInfo*,bool> RegionNode::find_physical_instance(ContextID ctx, Memory m, bool recurse, bool reduction)
+    //--------------------------------------------------------------------------------------------
+    {
+      if (!reduction)
+      {
+        // Check to see if we have any valid physical instances that we can use 
+        for (std::map<InstanceInfo*,bool>::const_iterator it = 
+              region_states[ctx].valid_instances.begin(); it !=
+              region_states[ctx].valid_instances.end(); it++)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          //if (it->second)
+          {
+            assert(it->first->valid);
+          }
+#endif
+          if (it->first->location == m)
+            return *it;
+        }
+      }
+      else
+      {
+        for (std::map<InstanceInfo*,bool>::const_iterator it = 
+              region_states[ctx].reduction_instances.begin(); it !=
+              region_states[ctx].reduction_instances.end(); it++)
+        {
+          if (it->first->location == m)
+          {
+            return *it;
+          }
+        }
       }
       // Check to see if we are allowed to continue up the tree
-      if (!recurse && (region_states[ctx].open_state == PART_EXCLUSIVE))
+      if (!reduction && !recurse && (region_states[ctx].open_state == PART_EXCLUSIVE))
       {
         return std::pair<InstanceInfo*,bool>(InstanceInfo::get_no_instance(),false);
       }
-      // We can only go up the tree if we are clean
+      // We can only go up the tree if we are clean or we are a reduction
       // If we didn't find anything, go up the tree
-      if ((region_states[ctx].data_state == DATA_CLEAN) &&
+      if (((region_states[ctx].data_state == DATA_CLEAN) || reduction) &&
           (parent != NULL))
       {
-        return parent->parent->find_physical_instance(ctx, m, true/*recurse*/);
+        return parent->parent->find_physical_instance(ctx, m, true/*recurse*/, reduction);
       }
       // Didn't find anything return the no instance
       return std::pair<InstanceInfo*,bool>(InstanceInfo::get_no_instance(),false);
@@ -11414,6 +11525,7 @@ namespace RegionRuntime {
                     partition_states[ren.ctx_id].physical_state = REG_OPEN_READ_ONLY;
                     partition_states[ren.ctx_id].exclusive_reg = LogicalRegion::NO_REGION;
                     partition_states[ren.ctx_id].redop = 0;
+                    return children[log]->register_physical_instance(ren, precondition);
                   }
                   else
                   {
@@ -11424,9 +11536,9 @@ namespace RegionRuntime {
                     {
                       partition_states[ren.ctx_id].redop = req.redop;
                     }
+                    // Open up the region and return
+                    return children[log]->open_physical_tree(ren, precondition);
                   }
-                  // Open up the region and return
-                  return children[log]->open_physical_tree(ren, precondition);
                 }
                 else // Reduction in exclusive mode down different open region
                 {
@@ -11481,14 +11593,15 @@ namespace RegionRuntime {
                   partition_states[ren.ctx_id].physical_state = REG_OPEN_READ_ONLY;
                   partition_states[ren.ctx_id].exclusive_reg = LogicalRegion::NO_REGION;
                   partition_states[ren.ctx_id].redop = 0;
+                  return children[log]->register_physical_instance(ren, precondition);
                 }
                 else
                 {
                   partition_states[ren.ctx_id].physical_state = REG_OPEN_EXCLUSIVE;
                   partition_states[ren.ctx_id].exclusive_reg = log;
                   partition_states[ren.ctx_id].redop = 0;
+                  return children[log]->open_physical_tree(ren, precondition);
                 }
-                return children[log]->open_physical_tree(ren, precondition);
               }
               else // another reduction
               {
