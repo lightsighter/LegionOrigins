@@ -25,10 +25,7 @@ enum {
   TIME_SYSTEM,
 };
 
-#define DETAILED_TIMING
-
-namespace RegionRuntime {
-  // widget for generating debug/info messages
+// widget for generating debug/info messages
   enum LogLevel {
     LEVEL_SPEW,
     LEVEL_DEBUG,
@@ -41,6 +38,9 @@ namespace RegionRuntime {
 #define COMPILE_TIME_MIN_LEVEL LEVEL_SPEW
 #endif
 
+#define DETAILED_TIMING
+
+namespace RegionRuntime {
   /**
    * A logger class for tracking everything from debug messages
    * to error messages.
