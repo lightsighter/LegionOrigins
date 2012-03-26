@@ -76,13 +76,13 @@ namespace RegionRuntime {
               if (local_affin[0].bandwidth > stack_it->second)
               {
                 inserted = true;
-                temp_stack.insert(stack_it,std::pair<Memory,unsigned>(*it,local_affin[0].latency));
+                temp_stack.insert(stack_it,std::pair<Memory,unsigned>(*it,local_affin[0].bandwidth));
                 break;
               }
             }
             if (!inserted)
             {
-              temp_stack.push_back(std::pair<Memory,unsigned>(*it,local_affin[0].latency));
+              temp_stack.push_back(std::pair<Memory,unsigned>(*it,local_affin[0].bandwidth));
             }
           }
         }
@@ -92,8 +92,8 @@ namespace RegionRuntime {
               it != temp_stack.end(); it++)
         {
           memory_stack.push_back(it->first);
-          log_mapper(LEVEL_INFO,"Default Mapper on processor %x stack %d is memory %d",
-              local_proc.id, idx++, it->first.id);
+          log_mapper(LEVEL_INFO,"Default Mapper on processor %x stack %d is memory %x with bandwidth %u",
+              local_proc.id, idx++, it->first.id, it->second);
         }
       }
       // Now build our set of similar processors and our alternative processor map
@@ -295,7 +295,7 @@ namespace RegionRuntime {
       {
         std::vector<Range> chunk = index_space;
         unsigned cur_proc = 0;
-        decompose_range_space(0, depth, index_space, chunk, chunks, cur_proc);
+        decompose_range_space(0, depth, index_space, chunk, chunks, cur_proc,proc_group);
       }
     }
 
@@ -386,18 +386,19 @@ namespace RegionRuntime {
     void Mapper::decompose_range_space(unsigned cur_depth, unsigned max_depth,
                                         const std::vector<Range> &index_space,
                                         std::vector<Range> &chunk,
-                                        std::vector<RangeSplit> &chunks, unsigned &proc_index)
+                                        std::vector<RangeSplit> &chunks, unsigned &proc_index,
+                                        std::vector<Processor> &target_procs)
     //--------------------------------------------------------------------------------------------
     {
       // Check to see if we've arrived at our max depth
       if (cur_depth == max_depth)
       {
         // Now add the chunk to the set of chunks 
-        chunks.push_back(RangeSplit(chunk, proc_group[proc_index], false/*recurse*/));
+        chunks.push_back(RangeSplit(chunk, target_procs[proc_index], false/*recurse*/));
         // Update the proc_index
         proc_index++;
         // Reset the current processor if necessary
-        if (proc_index == proc_group.size())
+        if (proc_index == target_procs.size())
         {
           proc_index = 0;
         }
@@ -410,7 +411,7 @@ namespace RegionRuntime {
         for (int idx = current.start; idx <= current.stop; idx += current.stride)
         {
           chunk[cur_depth] = Range(idx, idx, 1);
-          decompose_range_space(cur_depth+1,max_depth,index_space,chunk,chunks,proc_index);
+          decompose_range_space(cur_depth+1,max_depth,index_space,chunk,chunks,proc_index,target_procs);
         }
       }
     }
