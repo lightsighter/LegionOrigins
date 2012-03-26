@@ -17,7 +17,7 @@ public:
   virtual Processor target_task_steal(const std::set<Processor> &blacklist);
   virtual void permit_task_steal(Processor thief, const std::vector<const Task*> &tasks,
                                   std::set<const Task*> &to_steal);
-  virtual void map_task_region(const Task *task, const RegionRequirement &req,
+  virtual void map_task_region(const Task *task, const RegionRequirement &req, unsigned index,
                                 const std::set<Memory> &current_instances,
                                 std::vector<Memory> &target_ranking,
                                 bool &enable_WAR_optimization);
@@ -36,7 +36,7 @@ public:
   SequoiaMapper(Machine *m, HighLevelRuntime *rt, Processor local);
 public:
   virtual bool spawn_child_task(const Task *task);
-  virtual void map_task_region(const Task *task, const RegionRequirement &req,
+  virtual void map_task_region(const Task *task, const RegionRequirement &req, unsigned index,
                                 const std::set<Memory> &current_instances,
                                 std::vector<Memory> &target_ranking,
                                 bool &enable_WAR_optimization);

@@ -1317,7 +1317,7 @@ namespace RegionRuntime {
         handle->get_physical_locations(parent_physical_ctx,sources,true/*recurse*/,IS_REDUCE(req));
         std::vector<Memory> locations;
         bool war_optimization = true;
-        mapper->map_task_region(parent_ctx, req, sources, locations, war_optimization);
+        mapper->map_task_region(parent_ctx, req, 0/*index*/, sources, locations, war_optimization);
         if (!locations.empty())
         {
           // We're making our own
@@ -5355,7 +5355,7 @@ namespace RegionRuntime {
         handle->get_physical_locations(parent_physical_ctx, sources, true/*recurse*/,IS_REDUCE(regions[idx]));
         std::vector<Memory> locations;
         bool war_optimization = true;
-        mapper->map_task_region(this, regions[idx],sources,locations,war_optimization);
+        mapper->map_task_region(this, regions[idx], idx, sources,locations,war_optimization);
         // Check to make sure there is at least one instance
         bool no_mapping = false;
         if (locations.empty())
@@ -8539,7 +8539,25 @@ namespace RegionRuntime {
 #endif
       return current;
     }
-    
+
+    //--------------------------------------------------------------------------------------------
+    const IndexPoint& TaskContext::get_index_point(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      if (!is_index_space)
+      {
+        log_task(LEVEL_ERROR,"Requested point for non-index space task %s",variants->name);
+        exit(1);
+      }
+      if (!enumerated)
+      {
+        log_task(LEVEL_WARNING,"Task point for index space task %s hasn't been enumerated yet, results are undefined.",variants->name);
+      }
+#endif
+      return index_point;
+    }
+
     ///////////////////////////////////////////
     // Region Node 
     ///////////////////////////////////////////

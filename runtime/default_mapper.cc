@@ -300,7 +300,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::map_task_region(const Task *task, const RegionRequirement &req,
+    void Mapper::map_task_region(const Task *task, const RegionRequirement &req, unsigned index,
                                   const std::set<Memory> &current_instances,
                                   std::vector<Memory> &target_ranking, 
                                   bool &enable_WAR_optimization)

@@ -291,6 +291,9 @@ namespace RegionRuntime {
       // The Task Collection of low-level tasks for this user level task
       TaskCollection *variants;
     public:
+      // Get the index point if it is an index point
+      virtual const IndexPoint& get_index_point(void) = 0;
+    public:
       bool operator==(const Task &task) const
         { return unique_id == task.unique_id; }
       bool operator<(const Task &task) const
@@ -1017,7 +1020,7 @@ namespace RegionRuntime {
        * Write-After-Read optimization of making an additional copy of the data.  The
        * default value for enable_WAR_optimization is true.
        */
-      virtual void map_task_region(const Task *task, const RegionRequirement &req,
+      virtual void map_task_region(const Task *task, const RegionRequirement &req, unsigned index,
                                     const std::set<Memory> &current_instances,
                                     std::vector<Memory> &target_ranking,
                                     bool &enable_WAR_optimization);
@@ -1320,6 +1323,9 @@ namespace RegionRuntime {
       virtual const std::map<UniqueID,Event>& get_unresolved_dependences(unsigned idx);
       virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m);
       virtual InstanceInfo* create_instance_info(LogicalRegion newer, InstanceInfo *old);
+    public:
+      // Get the index point for this task
+      virtual const IndexPoint& get_index_point(void);
     private:
       HighLevelRuntime *const runtime;
       bool active;

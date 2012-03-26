@@ -48,7 +48,7 @@ void DebugMapper::permit_task_steal(Processor thief, const std::vector<const Tas
 }
 
 //--------------------------------------------------------------------------------------------
-void DebugMapper::map_task_region(const Task *task, const RegionRequirement &req,
+void DebugMapper::map_task_region(const Task *task, const RegionRequirement &req, unsigned index,
                                     const std::set<Memory> &current_instances,
                                     std::vector<Memory> &target_ranking,
                                     bool &enable_WAR_optimization)
@@ -99,7 +99,7 @@ bool SequoiaMapper::spawn_child_task(const Task *task)
 }
 
 //--------------------------------------------------------------------------------------------
-void SequoiaMapper::map_task_region(const Task *task, const RegionRequirement &req,
+void SequoiaMapper::map_task_region(const Task *task, const RegionRequirement &req, unsigned index,
                                     const std::set<Memory> &current_instances,
                                     std::vector<Memory> &target_ranking,
                                     bool &enable_WAR_optimization)
