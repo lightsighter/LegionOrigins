@@ -1843,16 +1843,13 @@ public:
     return;
   }
 
-  virtual void map_task_region(const Task *task, const RegionRequirement &req,
+  virtual void map_task_region(const Task *task, const RegionRequirement &req, unsigned index,
                                const std::set<Memory> &current_instances,
                                std::vector<Memory> &target_ranking,
                                bool &enable_WAR_optimization)
   {
     log_mapper.info("mapper: mapping region for task (%p,%p) region=%x", task, &req, req.parent.id);
-    int idx = -1;
-    for(unsigned i = 0; i < task->regions.size(); i++)
-      if(&req == &(task->regions[i]))
-	idx = i;
+    int idx = index; 
     log_mapper.info("func_id=%d map_tag=%d region_index=%d", task->task_id, task->tag, idx);
     std::vector< std::pair<Processor, Memory> >& loc_procs = cpu_mem_pairs[Processor::LOC_PROC];
     std::pair<Processor, Memory> cmp = loc_procs[task->tag % loc_procs.size()];
