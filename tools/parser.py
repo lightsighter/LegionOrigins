@@ -9,7 +9,7 @@ def parse_log_file(file_name):
     
     result = Log()
 
-    name_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\} Task ID (?P<uid>[0-9]+) (?P<name>\w+)")
+    name_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Task ID (?P<uid>[0-9]+) (?P<name>[\w ]+)")
 
     top_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Top Task (?P<uid>[0-9]+) (?P<tid>[0-9]+)")
 
@@ -146,7 +146,8 @@ def parse_log_file(file_name):
         if m <> None:
             #src = result.event_graph.get_event_node(int(m.group('start_id')),int(m.group('start_gen')))
             src = result.event_graph.get_event_node((m.group('start_id')),int(m.group('start_gen')))
-            task = result.event_graph.get_task_node(int(m.group('tid')),int(m.group('uid')))
+            uid = int(m.group('uid'))
+            task = result.event_graph.get_task_node(int(m.group('tid')),uid,result.get_name(uid))
             #dst = result.event_graph.get_event_node(int(m.group('term_id')),int(m.group('term_gen')))
             dst = result.event_graph.get_event_node((m.group('term_id')),int(m.group('term_gen')))
             result.event_graph.add_edge(src,task)
@@ -154,21 +155,22 @@ def parse_log_file(file_name):
             continue
         m = index_launch_pat.match(line)
         if m <> None:
-            space = result.event_graph.get_index_space(int(m.group('tid')),int(m.group('uid'))) 
+            uid = int(m.group('uid'))
+            space = result.event_graph.get_index_space(int(m.group('tid')),uid,result.get_name(uid)) 
             # Parse the point 
             index_points = m.group('points').rsplit()
             point = list()
             for i in range(int(m.group('point_size'))):
                 point.append(int(index_points[i]))
-            #point_node = result.event_graph.get_index_point(space,point)
+            point_node = result.event_graph.get_index_point(space,point)
             #src = result.event_graph.get_event_node(int(m.group('start_id')),int(m.group('start_gen')))
             #dst = result.event_graph.get_event_node(int(m.group('term_id')),int(m.group('term_gen')))
             src = result.event_graph.get_event_node((m.group('start_id')),int(m.group('start_gen')))
             dst = result.event_graph.get_event_node((m.group('term_id')),int(m.group('term_gen')))
-            #result.event_graph.add_index_dst_edge(space,src,point_node)
-            result.event_graph.add_edge(src,space)
-            #result.event_graph.add_index_src_edge(space,point_node,dst)
-            result.event_graph.add_edge(space,dst)
+            result.event_graph.add_index_dst_edge(space,src,point_node)
+            #result.event_graph.add_edge(src,space)
+            result.event_graph.add_index_src_edge(space,point_node,dst)
+            #result.event_graph.add_edge(space,dst)
             continue
         m = map_launch_pat.match(line)
         if m <> None:
