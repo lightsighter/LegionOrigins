@@ -463,6 +463,10 @@ namespace RegionRuntime {
       RegionInstanceUntyped::Impl *i_impl = (RegionInstanceUntyped::Impl *)internal_data;
       Memory::Impl *m_impl = i_impl->memory.impl();
 
+      // make sure it's not a reduction fold-only instance
+      StaticAccess<RegionInstanceUntyped::Impl> i_data(i_impl);
+      if(i_data->is_reduction) return false;
+
       // only things in FB and ZC memories can be converted to GPU accessors
       if(m_impl->kind == Memory::Impl::MKIND_GPUFB) return true;
       if(m_impl->kind == Memory::Impl::MKIND_ZEROCOPY) return true;
@@ -476,6 +480,8 @@ namespace RegionRuntime {
       Memory::Impl *m_impl = i_impl->memory.impl();
 
       StaticAccess<RegionInstanceUntyped::Impl> i_data(i_impl);
+
+      assert(i_data->is_reduction);
 
       // only things in FB and ZC memories can be converted to GPU accessors
       if(m_impl->kind == Memory::Impl::MKIND_GPUFB) {
@@ -491,6 +497,52 @@ namespace RegionRuntime {
 	void *base = (((char *)(zcm->gpu->internal->zcmem_gpu_base)) +
 		      zcm->gpu->internal->zcmem_reserve);
 	RegionInstanceAccessorUntyped<AccessorGPU> ria(((char *)base)+(i_data->offset));
+	return ria;
+      }
+
+      assert(0);
+    }
+
+    template <>
+    bool RegionInstanceAccessorUntyped<AccessorGeneric>::can_convert<AccessorGPUReductionFold>(void) const
+    {
+      RegionInstanceUntyped::Impl *i_impl = (RegionInstanceUntyped::Impl *)internal_data;
+      Memory::Impl *m_impl = i_impl->memory.impl();
+
+      // make sure it's a reduction fold-only instance
+      StaticAccess<RegionInstanceUntyped::Impl> i_data(i_impl);
+      if(!i_data->is_reduction) return false;
+
+      // only things in FB and ZC memories can be converted to GPU accessors
+      if(m_impl->kind == Memory::Impl::MKIND_GPUFB) return true;
+      if(m_impl->kind == Memory::Impl::MKIND_ZEROCOPY) return true;
+      return false;
+    }
+    
+    template <>
+    RegionInstanceAccessorUntyped<AccessorGPUReductionFold> RegionInstanceAccessorUntyped<AccessorGeneric>::convert<AccessorGPUReductionFold>(void) const
+    {
+      RegionInstanceUntyped::Impl *i_impl = (RegionInstanceUntyped::Impl *)internal_data;
+      Memory::Impl *m_impl = i_impl->memory.impl();
+
+      StaticAccess<RegionInstanceUntyped::Impl> i_data(i_impl);
+
+      assert(i_data->is_reduction);
+
+      // only things in FB and ZC memories can be converted to GPU accessors
+      if(m_impl->kind == Memory::Impl::MKIND_GPUFB) {
+	GPUFBMemory *fbm = (GPUFBMemory *)m_impl;
+	void *base = (((char *)(fbm->gpu->internal->fbmem_gpu_base)) +
+		      fbm->gpu->internal->fbmem_reserve);
+	RegionInstanceAccessorUntyped<AccessorGPUReductionFold> ria(((char *)base)+(i_data->offset));
+	return ria;
+      }
+
+      if(m_impl->kind == Memory::Impl::MKIND_ZEROCOPY) {
+	GPUZCMemory *zcm = (GPUZCMemory *)m_impl;
+	void *base = (((char *)(zcm->gpu->internal->zcmem_gpu_base)) +
+		      zcm->gpu->internal->zcmem_reserve);
+	RegionInstanceAccessorUntyped<AccessorGPUReductionFold> ria(((char *)base)+(i_data->offset));
 	return ria;
       }
 

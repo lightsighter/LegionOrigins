@@ -2175,7 +2175,7 @@ namespace RegionRuntime {
 	return (base + offset);
       }
 
-    protected:
+    public: //protected:
       char *base;
     };
 
@@ -4717,6 +4717,13 @@ namespace RegionRuntime {
       ((RegionInstanceUntyped::Impl *)internal_data)->put_bytes(ptr_value, src, size);
     }
 
+    bool RegionInstanceAccessorUntyped<AccessorGeneric>::is_reduction_only(void) const
+    {
+      RegionInstanceUntyped::Impl *i_impl = (RegionInstanceUntyped::Impl *)internal_data;
+      StaticAccess<RegionInstanceUntyped::Impl> i_data(i_impl);
+      return(i_data->is_reduction);
+    }
+
     template <>
     bool RegionInstanceAccessorUntyped<AccessorGeneric>::can_convert<AccessorGeneric>(void) const
     { return true; }
@@ -4728,16 +4735,91 @@ namespace RegionRuntime {
     template<>
     bool RegionInstanceAccessorUntyped<AccessorGeneric>::can_convert<AccessorArray>(void) const
     {
-      // TODO: Actually implement this
+      RegionInstanceUntyped::Impl *i_impl = (RegionInstanceUntyped::Impl *)internal_data;
+      Memory::Impl *m_impl = i_impl->memory.impl();
+
+      // make sure it's not a reduction fold-only instance
+      StaticAccess<RegionInstanceUntyped::Impl> i_data(i_impl);
+      if(i_data->is_reduction) return false;
+
+      // only things in local memory (SYSMEM or ZC) can be converted to
+      //   array accessors
+      if(m_impl->kind == Memory::Impl::MKIND_SYSMEM) return true;
+      if(m_impl->kind == Memory::Impl::MKIND_ZEROCOPY) return true;
       return false;
     }
 
     template<>
     RegionInstanceAccessorUntyped<AccessorArray> RegionInstanceAccessorUntyped<AccessorGeneric>::convert<AccessorArray>(void) const
     {
-      // TODO: Actually Implement this
-      assert(false);
-      return RegionInstanceAccessorUntyped<AccessorArray>(this->internal_data);
+      RegionInstanceUntyped::Impl *i_impl = (RegionInstanceUntyped::Impl *)internal_data;
+      Memory::Impl *m_impl = i_impl->memory.impl();
+
+      StaticAccess<RegionInstanceUntyped::Impl> i_data(i_impl);
+
+      assert(!i_data->is_reduction);
+
+      // only things in FB and ZC memories can be converted to GPU accessors
+      if(m_impl->kind == Memory::Impl::MKIND_SYSMEM) {
+	LocalCPUMemory *lcm = (LocalCPUMemory *)m_impl;
+	char *inst_base = lcm->base + i_data->offset;
+	RegionInstanceAccessorUntyped<AccessorArray> ria(inst_base);
+	return ria;
+      }
+
+      if(m_impl->kind == Memory::Impl::MKIND_ZEROCOPY) {
+	GPUZCMemory *zcm = (GPUZCMemory *)m_impl;
+	char *inst_base = zcm->cpu_base + i_data->offset;
+	RegionInstanceAccessorUntyped<AccessorArray> ria(inst_base);
+	return ria;
+      }
+
+      assert(0);
+    }
+    
+    template<>
+    bool RegionInstanceAccessorUntyped<AccessorGeneric>::can_convert<AccessorArrayReductionFold>(void) const
+    {
+      RegionInstanceUntyped::Impl *i_impl = (RegionInstanceUntyped::Impl *)internal_data;
+      Memory::Impl *m_impl = i_impl->memory.impl();
+
+      // make sure it's a reduction fold-only instance
+      StaticAccess<RegionInstanceUntyped::Impl> i_data(i_impl);
+      if(!i_data->is_reduction) return false;
+
+      // only things in local memory (SYSMEM or ZC) can be converted to
+      //   array accessors
+      if(m_impl->kind == Memory::Impl::MKIND_SYSMEM) return true;
+      if(m_impl->kind == Memory::Impl::MKIND_ZEROCOPY) return true;
+      return false;
+    }
+
+    template<>
+    RegionInstanceAccessorUntyped<AccessorArrayReductionFold> RegionInstanceAccessorUntyped<AccessorGeneric>::convert<AccessorArrayReductionFold>(void) const
+    {
+      RegionInstanceUntyped::Impl *i_impl = (RegionInstanceUntyped::Impl *)internal_data;
+      Memory::Impl *m_impl = i_impl->memory.impl();
+
+      StaticAccess<RegionInstanceUntyped::Impl> i_data(i_impl);
+
+      assert(i_data->is_reduction);
+
+      // only things in FB and ZC memories can be converted to GPU accessors
+      if(m_impl->kind == Memory::Impl::MKIND_SYSMEM) {
+	LocalCPUMemory *lcm = (LocalCPUMemory *)m_impl;
+	char *inst_base = lcm->base + i_data->offset;
+	RegionInstanceAccessorUntyped<AccessorArrayReductionFold> ria(inst_base);
+	return ria;
+      }
+
+      if(m_impl->kind == Memory::Impl::MKIND_ZEROCOPY) {
+	GPUZCMemory *zcm = (GPUZCMemory *)m_impl;
+	char *inst_base = zcm->cpu_base + i_data->offset;
+	RegionInstanceAccessorUntyped<AccessorArrayReductionFold> ria(inst_base);
+	return ria;
+      }
+
+      assert(0);
     }
     
     ///////////////////////////////////////////////////

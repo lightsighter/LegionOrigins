@@ -52,6 +52,7 @@ struct MatrixBlock {
 
 template <int NB>
 struct MatrixBlockRow {
+  int row_idx;
   double data[NB];
 };
 
@@ -937,6 +938,102 @@ public:
 template <int NB> TaskID UpdatePanelTask<NB>::task_id;
 
 template <int NB>
+class FactorPanelPieceTask : public Index1DTask {
+protected:
+
+  static TaskID task_id;
+
+  struct TaskArgs {
+    BlockedMatrix<NB> matrix;
+    MatrixBlockRow<NB> prev_orig, prev_best;
+    int k, i;
+
+    TaskArgs(const BlockedMatrix<NB>& _matrix, 
+	     const MatrixBlockRow<NB>& _prev_orig,
+	     const MatrixBlockRow<NB>& _prev_best,
+	     int _k, int _i)
+      : matrix(_matrix), prev_orig(_prev_orig), prev_best(_prev_best), 
+	k(_k), i(_i) {}
+    operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
+  };
+
+  enum {
+    REGION_PANEL,  // RWE
+    NUM_REGIONS
+  };
+
+  const TaskArgs *args;
+
+  FactorPanelPieceTask(Context _ctx, HighLevelRuntime *_runtime, int _idx,
+		  const TaskArgs *_args)
+    : Index1DTask(_ctx, _runtime, _idx), args(_args) {}
+
+public:
+  template <AccessorType AT>
+  static void task_entry(const void *global_args, size_t global_arglen,
+			 const void *local_args, size_t local_arglen,
+			 const IndexPoint &point,
+			 std::vector<PhysicalRegion<AT> > &regions,
+			 Context ctx, HighLevelRuntime *runtime)
+  {
+    FactorPanelPieceTask t(ctx, runtime, point[0], (const TaskArgs *)global_args);
+    t.run<AT>(regions);
+  }
+  
+protected:
+  template <AccessorType AT>
+  void run(std::vector<PhysicalRegion<AT> > &regions) const
+  {
+    int j = idx;
+
+    printf("factor_piece(yay): k=%d, i=%d, j=%d\n", args->k, args->i, j);
+  }
+
+public:
+  static void register_task(TaskID desired_task_id = AUTO_GENERATE_ID)
+  {
+    task_id = HighLevelRuntime::register_index_task
+      <FactorPanelPieceTask::task_entry<AccessorGeneric> >(desired_task_id,
+							   Processor::LOC_PROC,
+							   "factor_piece");
+  }
+
+  static FutureMap spawn(Context ctx, HighLevelRuntime *runtime,
+			 const Range &range,
+			 const BlockedMatrix<NB>& matrix, 
+			 const MatrixBlockRow<NB>& prev_orig,
+			 const MatrixBlockRow<NB>& prev_best,
+			 int k, int i)
+  {
+    std::vector<Range> index_space;
+    index_space.push_back(range);
+
+    std::vector<RegionRequirement> reqs;
+    reqs.resize(NUM_REGIONS);
+
+    reqs[REGION_PANEL] = RegionRequirement(matrix.row_parts[k].id,
+					   COLORID_IDENTITY,
+					   READ_WRITE, NO_MEMORY, EXCLUSIVE,
+					   matrix.panel_subregions[k]);
+
+    // double-check that we were registered properly
+    assert(task_id != 0);
+    FutureMap fm = runtime->execute_index_space(ctx, 
+						task_id,
+						index_space,
+						reqs,
+						TaskArgs(matrix, 
+							 prev_orig, prev_best,
+							 k, i),
+						ArgumentMap(),
+						false);
+    return fm;
+  }
+};
+
+template <int NB> TaskID FactorPanelPieceTask<NB>::task_id;
+
+template <int NB>
 class FactorPanelTask : public SingleTask {
 protected:
 
@@ -981,6 +1078,26 @@ protected:
 
     PhysicalRegion<AT> r_panel = regions[REGION_PANEL];
     PhysicalRegion<AT> r_index = regions[REGION_INDEX];
+
+    IndexBlock<NB> idx_blk;
+    MatrixBlock<NB> top_blk;
+    MatrixBlockRow<NB> prev_orig;
+    MatrixBlockRow<NB> prev_best;
+
+    runtime->unmap_region(ctx, r_panel);
+
+    for(int i = args->k * NB; 
+	(i <= args->matrix.rows) && (i <= (args->k + 1) * NB); 
+	i++) {
+      FutureMap fm = FactorPanelPieceTask<NB>::spawn(ctx, runtime,
+						     Range(0, args->matrix.num_row_parts - 1),
+						     args->matrix,
+						     prev_orig,
+						     prev_best,
+						     args->k, i);
+
+      fm.wait_all_results();
+    }
   }
 
 public:
@@ -1017,7 +1134,9 @@ public:
     // double-check that we were registered properly
     assert(task_id != 0);
     Future f = runtime->execute_task(ctx, task_id, reqs,
-				     TaskArgs(matrix, k));
+				     TaskArgs(matrix, k),
+				     0, // default mapper,
+				     Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION);
     return f;
   }
 };
@@ -1380,6 +1499,7 @@ int main(int argc, char **argv) {
   SolveTopBlockTask<1>::register_task();
   TransposeRowsTask<1>::register_task();
   UpdateSubmatrixTask<1>::register_task();
+  FactorPanelPieceTask<1>::register_task();
   FactorPanelTask<1>::register_task();
   UpdatePanelTask<1>::register_task();
 #if 0
