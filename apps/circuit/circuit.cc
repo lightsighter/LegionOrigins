@@ -87,8 +87,8 @@ public:
     } while(!__sync_bool_compare_and_swap(target, oldval.as_int, newval.as_int));
   }
 #endif
-#if 0
   template <bool EXCLUSIVE> static void fold(float &rhs1, float rhs2);
+#if 0
 
   template <>
   static void fold<true>(float &rhs1, float rhs2)
@@ -127,6 +127,25 @@ void AccumulateCharge::apply<false>(CircuitNode &lhs, float rhs)
   do {
     oldval.as_int = *target;
     newval.as_float = oldval.as_float + rhs;
+  } while(!__sync_bool_compare_and_swap(target, oldval.as_int, newval.as_int));
+}
+
+template <>
+void AccumulateCharge::fold<true>(float &rhs1, float rhs2)
+{
+  rhs1 += rhs2;
+}
+
+template <>
+void AccumulateCharge::fold<false>(float &rhs1, float rhs2)
+{
+  // most cpus don't let you atomic add a float, so we use gcc's builtin
+  // compare-and-swap in a loop
+  int *target = (int *)&rhs1;
+  union { int as_int; float as_float; } oldval, newval;
+  do {
+    oldval.as_int = *target;
+    newval.as_float = oldval.as_float + rhs2;
   } while(!__sync_bool_compare_and_swap(target, oldval.as_int, newval.as_int));
 }
 
@@ -431,10 +450,7 @@ void update_voltages_task_gpu(const void *global_args, size_t global_arglen,
 
 /// Start-up 
 
-void registration_func(Machine *machine, HighLevelRuntime *runtime, Processor local)
-{
-
-}
+void registration_func(Machine *machine, HighLevelRuntime *runtime, Processor local);
 
 int main(int argc, char **argv)
 {
@@ -459,6 +475,386 @@ int main(int argc, char **argv)
 
   return HighLevelRuntime::start(argc, argv);
 }
+
+/////////////////
+// Mappers 
+/////////////////
+
+RegionRuntime::Logger::Category log_circuit("circuit");
+
+class SharedMapper : public Mapper {
+public:
+  SharedMapper(Machine *m, HighLevelRuntime *rt, Processor local)
+    : Mapper(m, rt, local)
+  {
+    local_mem = memory_stack[0];
+    global_mem = memory_stack[1];
+
+    log_circuit(LEVEL_INFO,"CPU %x has local memory %x and global memory %x",local_proc.id,local_mem.id,global_mem.id);
+  }
+
+  virtual bool spawn_child_task(const Task *task)
+  {
+    if (task->task_id == REGION_MAIN)
+    {
+      return false;
+    }
+    return true;
+  }
+
+  virtual Processor select_initial_processor(const Task *task)
+  {
+    if (task->task_id == REGION_MAIN)
+    {
+      return local_proc;
+    }
+    assert(task->is_index_space);
+    // Only index space tasks here
+    const IndexPoint &point = task->get_index_point();
+    unsigned proc_id = point[0] % proc_group.size(); 
+    return proc_group[proc_id];
+  }
+
+  virtual Processor target_task_steal(const std::set<Processor> &blacklisted)
+  {
+    // No stealing
+    return Processor::NO_PROC;
+  }
+
+  virtual void permit_task_steal( Processor thief, const std::vector<const Task*> &tasks,
+                                  std::set<const Task*> &to_steal)
+  {
+    // Do nothing
+  }
+
+  virtual void map_task_region(const Task *task, const RegionRequirement &req, unsigned index,
+                                    const std::set<Memory> &current_instances,
+                                    std::vector<Memory> &target_ranking,
+                                    bool &enable_WAR_optimization) 
+  {
+    enable_WAR_optimization = false;
+    if (task->task_id == REGION_MAIN)
+    {
+      // Put everything in global mem 
+      target_ranking.push_back(global_mem);
+    }
+    else
+    {
+      switch (task->task_id)
+      {
+        case CALC_NEW_CURRENTS:
+          {
+            // All regions in local memory
+            target_ranking.push_back(local_mem);
+            break;
+          }
+        case DISTRIBUTE_CHARGE:
+          {
+            // All regions in local memory
+            target_ranking.push_back(local_mem);
+            break;
+          }
+        case UPDATE_VOLTAGES:
+          {
+            // All regions in local memory
+            target_ranking.push_back(local_mem);
+            break;
+          }
+        default:
+          assert(false);
+      }
+    }
+  }
+
+  virtual void rank_copy_targets(const Task *task, const RegionRequirement &req,
+                                  const std::set<Memory> &current_instances,
+                                  std::vector<Memory> &future_ranking)
+  {
+    // Put all copy back operations into the global memory
+    future_ranking.push_back(global_mem);
+  }
+
+private:
+  Memory global_mem;
+  Memory local_mem;
+};
+
+class CircuitMapper : public Mapper {
+public:
+  CircuitMapper(Machine *m, HighLevelRuntime *rt, Processor local)
+    : Mapper(m, rt, local)
+  {
+    const std::set<Processor> &all_procs = m->get_all_processors(); 
+    for (std::set<Processor>::const_iterator it = all_procs.begin();
+          it != all_procs.end(); it++)
+    {
+      Processor::Kind k = m->get_processor_kind(*it);
+      if (k == Processor::LOC_PROC)
+      {
+        cpu_procs.push_back(*it);
+      }
+      else if (k == Processor::TOC_PROC)
+      {
+        gpu_procs.push_back(*it);
+      }
+    }
+
+    // Now find our specific memories
+    if (proc_kind == Processor::LOC_PROC)
+    {
+      unsigned num_mem = memory_stack.size();
+      assert(num_mem >= 2);
+      gasnet_mem = memory_stack[num_mem-1];
+      {
+        std::vector<ProcessorMemoryAffinity> result;
+        m->get_proc_mem_affinity(result, local_proc, gasnet_mem);
+        assert(result.size() == 1);
+        log_circuit(LEVEL_INFO,"CPU %x has gasnet memory %x with "
+            "bandwidth %u and latency %u",local_proc.id, gasnet_mem.id,
+            result[0].bandwidth, result[0].latency);
+      }
+      zero_copy_mem = memory_stack[num_mem-2];
+      {
+        std::vector<ProcessorMemoryAffinity> result;
+        m->get_proc_mem_affinity(result, local_proc, zero_copy_mem);
+        assert(result.size() == 1);
+        log_circuit(LEVEL_INFO,"CPU %x has zero copy memory %x with "
+            "bandwidth %u and latency %u",local_proc.id, zero_copy_mem.id,
+            result[0].bandwidth, result[0].latency);
+      }
+      fb_mem = Memory::NO_MEMORY;
+    }
+    else
+    {
+      unsigned num_mem = memory_stack.size();
+      assert(num_mem >= 2);
+      zero_copy_mem = memory_stack[num_mem-1];
+      {
+        std::vector<ProcessorMemoryAffinity> result;
+        m->get_proc_mem_affinity(result, local_proc, zero_copy_mem);
+        assert(result.size() == 1);
+        log_circuit(LEVEL_INFO,"GPU %x has zero copy memory %x with "
+            "bandwidth %u and latency %u",local_proc.id, zero_copy_mem.id,
+            result[0].bandwidth, result[0].latency);
+      }
+      fb_mem = memory_stack[num_mem-2];
+      {
+        std::vector<ProcessorMemoryAffinity> result;
+        m->get_proc_mem_affinity(result, local_proc, fb_mem);
+        assert(result.size() == 1);
+        log_circuit(LEVEL_INFO,"GPU %x has frame buffer memory %x with "
+            "bandwidth %u and latency %u",local_proc.id, fb_mem.id,
+            result[0].bandwidth, result[0].latency);
+      }
+      // Need to compute the gasnet memory
+      {
+        // Assume the gasnet memory is the one with the smallest bandwidth
+        // from any CPU
+        assert(!cpu_procs.empty());
+        std::vector<ProcessorMemoryAffinity> result;
+        m->get_proc_mem_affinity(result, (cpu_procs.front()));
+        assert(!result.empty());
+        unsigned min_idx = 0;
+        unsigned min_bandwidth = result[0].bandwidth;
+        for (unsigned idx = 1; idx < result.size(); idx++)
+        {
+          if (result[idx].bandwidth < min_bandwidth)
+          {
+            min_bandwidth = result[idx].bandwidth;
+            min_idx = idx;
+          }
+        }
+        gasnet_mem = result[min_idx].m;
+        log_circuit(LEVEL_INFO,"GPU %x has gasnet memory %x with "
+            "bandwidth %u and latency %u",local_proc.id,gasnet_mem.id,
+            result[min_idx].bandwidth,result[min_idx].latency);
+      }
+    }
+  }
+public:
+  virtual bool spawn_child_task(const Task *task)
+  {
+    if (task->task_id == REGION_MAIN)
+    {
+      return false;
+    }
+    return true;
+  }
+
+  virtual Processor select_initial_processor(const Task *task)
+  {
+    if (task->task_id == REGION_MAIN)
+    {
+      return local_proc;
+    }
+    assert(task->is_index_space);
+    // Only index space tasks here
+    const IndexPoint &point = task->get_index_point();
+    unsigned proc_id = point[0] % gpu_procs.size(); 
+    return gpu_procs[proc_id];
+  }
+
+  virtual Processor target_task_steal(const std::set<Processor> &blacklisted)
+  {
+    // No stealing
+    return Processor::NO_PROC;
+  }
+
+  virtual void permit_task_steal( Processor thief, const std::vector<const Task*> &tasks,
+                                  std::set<const Task*> &to_steal)
+  {
+    // Do nothing
+  }
+
+  virtual void map_task_region(const Task *task, const RegionRequirement &req, unsigned index,
+                                    const std::set<Memory> &current_instances,
+                                    std::vector<Memory> &target_ranking,
+                                    bool &enable_WAR_optimization) 
+  {
+    enable_WAR_optimization = true;
+    if (proc_kind == Processor::LOC_PROC)
+    {
+      assert(task->task_id == REGION_MAIN);
+      // Put everything in gasnet here
+      target_ranking.push_back(gasnet_mem);
+    }
+    else
+    {
+      switch (task->task_id)
+      {
+        case CALC_NEW_CURRENTS:
+          {
+            switch (index)
+            {
+              case 0:
+                {
+                  // Wires in frame buffer
+                  target_ranking.push_back(fb_mem);
+                  // No WAR optimization here, re-use instances
+                  enable_WAR_optimization = false;
+                  break;
+                }
+              case 1:
+                {
+                  // Private nodes in frame buffer
+                  target_ranking.push_back(fb_mem);
+                  break;
+                }
+              case 2:
+                {
+                  // Shared nodes in zero-copy mem
+                  target_ranking.push_back(zero_copy_mem);
+                  break;
+                }
+              case 3:
+                {
+                  // Ghost nodes in zero-copy mem
+                  target_ranking.push_back(zero_copy_mem);
+                  break;
+                }
+              default:
+                assert(false);
+            }
+            break;
+          }
+        case DISTRIBUTE_CHARGE:
+          {
+            switch (index)
+            {
+              case 0:
+                {
+                  // Wires in frame buffer
+                  target_ranking.push_back(fb_mem);
+                  break;
+                }
+              case 1:
+                {
+                  // Private nodes in frame buffer
+                  target_ranking.push_back(fb_mem);
+                  // No WAR optimization here
+                  enable_WAR_optimization = false;
+                  break;
+                }
+              case 2:
+                {
+                  // Shared nodes in zero-copy mem
+                  target_ranking.push_back(zero_copy_mem);
+                  break;
+                }
+              case 3:
+                {
+                  // Shared nodes in zero-copy mem
+                  target_ranking.push_back(zero_copy_mem);
+                  break;
+                }
+              default:
+                assert(false);
+            }
+            break;
+          }
+        case UPDATE_VOLTAGES:
+          {
+            switch (index)
+            {
+              case 0:
+                {
+                  // Private nodes in frame buffer
+                  target_ranking.push_back(fb_mem);
+                  break;
+                }
+              case 1:
+                {
+                  // Shared nodes in zero-copy mem
+                  target_ranking.push_back(zero_copy_mem);
+                  break;
+                }
+              default:
+                assert(false);
+            }
+            break;
+          }
+        default:
+          assert(false);
+      }
+    }
+  }
+
+  virtual void rank_copy_targets(const Task *task, const RegionRequirement &req,
+                                  const std::set<Memory> &current_instances,
+                                  std::vector<Memory> &future_ranking)
+  {
+    // Put any close operations back into gasnet memory
+    future_ranking.push_back(gasnet_mem);
+  }
+
+  virtual void split_index_space(const Task *task, const std::vector<Range> &index_space,
+                                  std::vector<RangeSplit> &chunks)
+  {
+    std::vector<Range> chunk = index_space;
+    unsigned cur_proc = 0;
+    // Decompose over the GPUs
+    decompose_range_space(0, 1/*depth*/, index_space, chunk, chunks, cur_proc, gpu_procs);
+  }
+private:
+  std::vector<Processor> cpu_procs;
+  std::vector<Processor> gpu_procs;
+  Memory gasnet_mem;
+  Memory zero_copy_mem;
+  Memory fb_mem;
+};
+
+void registration_func(Machine *machine, HighLevelRuntime *runtime, Processor local)
+{
+#ifdef USING_SHARED
+  runtime->replace_default_mapper(new SharedMapper(machine, runtime, local));
+#else
+  runtime->replace_default_mapper(new CircuitMapper(machine, runtime, local));
+#endif
+}
+
+/////////////////
+// Helper functions 
+/////////////////
 
 void parse_input_args(char **argv, int argc, int &num_loops, int &num_pieces,
                       int &nodes_per_piece, int &wires_per_piece,

@@ -1058,7 +1058,8 @@ namespace RegionRuntime {
       // Helper functions for the default version of the mapper
       void decompose_range_space(unsigned cur_depth, unsigned max_depth,
           const std::vector<Range> &index_space, std::vector<Range> &chunk,
-          std::vector<RangeSplit> &chunks, unsigned &proc_index);
+          std::vector<RangeSplit> &chunks, unsigned &proc_index,
+          std::vector<Processor> &targets);
     protected:
       HighLevelRuntime *const runtime;
       const Processor local_proc;

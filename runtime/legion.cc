@@ -550,7 +550,9 @@ namespace RegionRuntime {
             break;
           }
         default:
-          assert(false);
+          // For the unitialized cases
+          func_type = SINGULAR_FUNC;
+          break;
       }
       return *this;
     }
@@ -5596,11 +5598,20 @@ namespace RegionRuntime {
       // Initialize region tree contexts
       initialize_region_tree_contexts();
       Event start_cond = Event::merge_events(wait_on_events);
+#ifdef TRACE_CAPTURE
+      if (!start_cond.exists())
+      {
+        UserEvent new_start = UserEvent::create_user_event();
+        new_start.trigger();
+        start_cond = new_start;
+      }
+#endif
 #ifdef DEBUG_HIGH_LEVEL
       {
         // Debug printing for legion spy
         log_event_merge(wait_on_events,start_cond);
         Event term = get_termination_event();
+        log_spy(LEVEL_INFO,"Task ID %d %s",this->unique_id,this->variants->name);
         if (is_index_space)
         {
           int index = 0;
@@ -6968,6 +6979,11 @@ namespace RegionRuntime {
             if (local_mapped[idx])
             {
               local_instances[idx]->remove_user(this->unique_id);
+#ifdef TRACE_CAPTURE
+              // Force this in the case of trace capture or we'll deadlock ourselves and the world ends
+              local_instances[idx]->removed_users.erase(this->unique_id);
+              local_instances[idx]->epoch_users.erase(this->unique_id);
+#endif
             }
             AutoLock map_lock(mapper_lock);
             RegionNode *top = (*region_nodes)[regions[idx].handle.region];
@@ -8428,7 +8444,9 @@ namespace RegionRuntime {
 #endif
           clone_inst->add_user(this,idx,Event::NO_EVENT);
 #ifdef DEBUG_HIGH_LEVEL
+#ifndef TRACE_CAPTURE
           assert(!precondition.exists()); // should be no precondition for using the instance
+#endif
 #endif
 
           // When we insert the valid instance mark that it is not the owner so it is coming
@@ -9120,8 +9138,7 @@ namespace RegionRuntime {
               log_task(LEVEL_ERROR,"Overwriting a prior physical instance for index space task "
                   "with unique id %d.  Violation of independent index space slices constraint. "
                   "See: groups.google.com/group/legiondevelopers/browse_thread/thread/39ad6b3b55ed9b8f", uid);
-              assert(false);
-              //exit(1);
+              exit(1);
             }
 #ifndef DISABLE_GC
             // If we own it, we can invalidate it
@@ -10055,7 +10072,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
                   assert(target->handle == this->handle);
 #endif
-                  close_physical_tree(ren.ctx_id, target, ren.ctx, ren.mapper, IS_READ_ONLY(req));
+                  close_local_tree(ren.ctx_id, target, ren.ctx, ren.mapper, IS_READ_ONLY(req));
                   // Update the valid instances here
                   update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
                   PartitionID pid = (PartitionID)ren.trace.back();
@@ -10105,7 +10122,7 @@ namespace RegionRuntime {
                     // Different reducers, need to close and then open again
                     bool target_owned;
                     InstanceInfo *target = select_target_instance(ren, target_owned);
-                    close_physical_tree(ren.ctx_id, target, ren.ctx, ren.mapper, false/*leave_open*/);
+                    close_local_tree(ren.ctx_id, target, ren.ctx, ren.mapper, false/*leave_open*/);
                     // Update the valid instances
                     update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
                     // Mark that we're the new user and stays in exclusive mode
@@ -10133,7 +10150,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
                 assert(target->handle == this->handle);
 #endif
-                close_physical_tree(ren.ctx_id, target, ren.ctx, ren.mapper,false/*leave open*/);
+                close_local_tree(ren.ctx_id, target, ren.ctx, ren.mapper,false/*leave open*/);
                 // Update the valid instances
                 update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
                 region_states[ren.ctx_id].open_physical.clear();
@@ -10175,7 +10192,7 @@ namespace RegionRuntime {
                   // These are different reducers, need to close everything up and open it again
                   bool target_owned;
                   InstanceInfo *target = select_target_instance(ren, target_owned);
-                  close_physical_tree(ren.ctx_id, target, ren.ctx, ren.mapper, false/*leave open*/);
+                  close_local_tree(ren.ctx_id, target, ren.ctx, ren.mapper, false/*leave open*/);
                   // Update the valid instances
                   update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
                   // Mark that we're the new user, and put it in exclusive mode
@@ -10431,7 +10448,7 @@ namespace RegionRuntime {
                   it != region_states[ctx].open_physical.end(); it++)
             {
               // These won't contain any dirty data, so no need to keep them open
-              partitions[current]->close_physical_tree(ctx,target,enclosing,mapper,false/*leave open*/);
+              partitions[*it]->close_physical_tree(ctx,target,enclosing,mapper,false/*leave open*/);
             }
             region_states[ctx].open_physical.clear();
             region_states[ctx].exclusive_part = 0;
@@ -12192,6 +12209,14 @@ namespace RegionRuntime {
         }
       }
       Event ret_event = Event::merge_events(wait_on_events);
+#ifdef TRACE_CAPTURE
+      if (!ret_event.exists())
+      {
+        UserEvent new_ret = UserEvent::create_user_event();
+        new_ret.trigger();
+        ret_event = new_ret;
+      }
+#endif
 #ifdef DEBUG_HIGH_LEVEL
       log_event_merge(wait_on_events,ret_event);
 #endif
@@ -12284,6 +12309,14 @@ namespace RegionRuntime {
       find_dependences_below(wait_on_events,true/*writer*/,true/*first*/);
       // Merge all the events together
       Event copy_precondition = Event::merge_events(wait_on_events);
+#ifdef TRACE_CAPTURE
+      if (!copy_precondition.exists())
+      {
+        UserEvent new_precond = UserEvent::create_user_event();
+        new_precond.trigger();
+        copy_precondition = new_precond;
+      }
+#endif
 #ifdef DEBUG_HIGH_LEVEL
       log_event_merge(wait_on_events, copy_precondition);
 #endif
@@ -12292,6 +12325,16 @@ namespace RegionRuntime {
       LogicalRegion hand_copy = src_info->handle;
       // Always give the element mask when making the copy operations just for completeness 
       Event copy_event = src_copy.copy_to_untyped(this->inst, hand_copy.get_valid_mask(), copy_precondition);
+#ifdef TRACE_CAPTURE
+      // For trace capture, we'll make sure there is always a unique event id for a copy result
+      if (!copy_event.exists())
+      {
+        UserEvent new_copy_event = UserEvent::create_user_event();
+        // Trigger it right away
+        new_copy_event.trigger();
+        copy_event = new_copy_event;
+      }
+#endif
       // Add the copy user
       src_info->add_copy_user(ctx->get_unique_id(),copy_event);
       ctx->add_source_physical_instance(src_info);
@@ -12453,11 +12496,8 @@ namespace RegionRuntime {
       std::set<Event> wait_on_events;
       find_dependences_above(wait_on_events,true/*writer*/,true/*skip local*/);
       find_dependences_below(wait_on_events,true/*writer*/,true/*first*/);
-      Event result = Event::merge_events(wait_on_events);
-#ifdef DEBUG_HIGH_LEVEL
-      log_event_merge(wait_on_events,result); 
-#endif
-      return result;
+      start_new_epoch(wait_on_events);
+      return valid_event;
     }
 
     //-------------------------------------------------------------------------
@@ -13645,6 +13685,14 @@ namespace RegionRuntime {
 #endif
       // Set the new valid event
       valid_event = Event::merge_events(wait_on_events);
+#ifdef TRACE_CAPTURE
+      if (!valid_event.exists())
+      {
+        UserEvent new_valid = UserEvent::create_user_event();
+        new_valid.trigger();
+        valid_event = new_valid;
+      }
+#endif
 #ifdef DEBUG_HIGH_LEVEL
       log_event_merge(wait_on_events,valid_event);
 #endif

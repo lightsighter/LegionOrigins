@@ -176,11 +176,15 @@ class Log(object):
         self.event_graph = EventGraph()
         self.name_map = dict()
 
-    def add_name(self,tid,name):
-        if tid in self.name_map:
-            assert self.name_map[tid] == name
+    def add_name(self,uid,name):
+        if uid in self.name_map:
+            assert self.name_map[uid] == name
         else:
-            self.name_map[tid] = name
+            self.name_map[uid] = name
+
+    def get_name(self,uid):
+        assert uid in self.name_map
+        return self.name_map[uid]
 
     def add_region(self,reg):
         assert(reg not in self.regions)
@@ -523,17 +527,19 @@ class IndexPoint(object):
         for i in range(len(self.point)-1):
             point_str = point_str + str(self.point[i]) +','
         point_str = point_str + str(self.point[len(self.point)-1]) + ')'
-        printer.println(self.name+' [style=filled,label="Point: '+point_str+
+        printer.println(self.name+' [style=filled,label="Task\ '+self.parent.task_name+'\\nTask\ ID\ '+str(self.parent.task_id)+
+            '\\nUnique\ ID\ '+str(self.parent.unique_id)+'\\nPoint:\ '+point_str+
             '",fillcolor=lightskyblue,fontsize=14,fontcolor=black,shape=record,penwidth=2];')
 
 class IndexSpaceNode(object):
-    def __init__(self,name,task_id,unique_id):
+    def __init__(self,name,task_id,unique_id,task_name):
         self.name = name
         self.task_id = task_id
         self.unique_id = unique_id
         self.points = list()
         self.dst_edges = dict() # incoming
         self.src_edges = dict() # outgoing
+        self.task_name = task_name
 
     def add_point(self,point):
         self.points.append(point)
@@ -549,7 +555,7 @@ class IndexSpaceNode(object):
 
     def print_edges(self,printer):
         if len(self.dst_edges) > 0:
-            all_same = True
+            all_same = False #True
             random = self.dst_edges[self.points[0]]
             for p,src in self.dst_edges.iteritems():
                 if src <> random:
@@ -559,9 +565,10 @@ class IndexSpaceNode(object):
                 printer.println(random.name + ' -> ' + self.points[0].name + ' [lhead='+self.name+'];')
             else:
                 for p,src in self.dst_edges.iteritems():
-                    printer.println(src.name + ' -> ' + p.name + ' [lhead='+self.name+'];')
+                    if not src.is_no_event():
+                        printer.println(src.name + ' -> ' + p.name + ';') # [lhead='+self.name+'];')
         if len(self.src_edges) > 0:
-            all_same = True
+            all_same = False #True
             random = self.src_edges[self.points[0]] 
             for p,s in self.src_edges.iteritems():
                 if s <> random:
@@ -572,12 +579,15 @@ class IndexSpaceNode(object):
                 printer.println(self.points[0].name + ' -> ' + random.name + ' [ltail='+self.name+'];') 
             else:
                 for p,dst in self.src_edges.iteritems():
-                    printer.println(p.name + ' -> ' + dst.name + ' [ltail='+self.name+'];')
+                    if not dst.is_no_event():
+                        printer.println(p.name + ' -> ' + dst.name + ';') # [ltail='+self.name+'];')
 
     def print_node(self,printer):
-        printer.println(self.name+' [style=filled,label="Index Space Task '+str(self.task_id)+
-                                  '\\nUnique ID '+str(self.unique_id)+'",fillcolor=lightskyblue,'+
-                                  'fontsize=14,fontcolor=black,shape=record,penwidth=2];')
+        for p in self.points:
+            p.print_node(printer)
+        #printer.println(self.name+' [style=filled,label="Index Space Task '+str(self.task_id)+
+        #                          '\\nUnique ID '+str(self.unique_id)+'",fillcolor=lightskyblue,'+
+        #                          'fontsize=14,fontcolor=black,shape=record,penwidth=2];')
         '''
         self.points = sorted(self.points)
         printer.println('subgraph '+self.name+' {');
@@ -629,13 +639,15 @@ class IndexSpaceNode(object):
         '''
 
 class TaskNode(object):
-    def __init__(self,name,task_id,unique_id):
+    def __init__(self,name,task_id,unique_id,task_name):
         self.name = name
         self.task_id = task_id
         self.unique_id = unique_id
+        self.task_name = task_name
 
     def print_node(self,printer):
-        printer.println(self.name+' [style=filled,label="Task\ '+str(self.task_id)+'\\nUnique\ ID\ '+str(self.unique_id)+
+        printer.println(self.name+' [style=filled,label="Task\ '+self.task_name+
+            '\\nTask\ ID\ '+str(self.task_id)+'\\nUnique\ ID\ '+str(self.unique_id)+
             '",fillcolor=lightskyblue,fontsize=14,fontcolor=black,shape=record,penwidth=2];')
 
 class MappingNode(object):
@@ -710,11 +722,11 @@ class EventGraph(object):
         self.copy_nodes.add(result)
         return result
 
-    def get_index_space(self,tid,uid):
+    def get_index_space(self,tid,uid,task_name):
         if uid in self.index_nodes:
             return self.index_nodes[uid]
         index_name = "cluster_index_space_node_"+str(self.get_next_node())
-        result = IndexSpaceNode(index_name,tid,uid)
+        result = IndexSpaceNode(index_name,tid,uid,task_name)
         self.index_nodes[uid] = result
         return result
 
@@ -724,9 +736,9 @@ class EventGraph(object):
         space.add_point(result)
         return result
 
-    def get_task_node(self,tid,uid):
+    def get_task_node(self,tid,uid,name):
         task_name = "task_node_"+str(self.get_next_node())
-        result = TaskNode(task_name,tid,uid)
+        result = TaskNode(task_name,tid,uid,name)
         self.task_nodes.add(result)
         return result
 
