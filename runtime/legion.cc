@@ -59,6 +59,7 @@ namespace RegionRuntime {
     Logger::Category log_garbage("gc");
     Logger::Category log_leak("leaks");
     Logger::Category log_variant("variants");
+    Logger::Category log_tree("tree_merge");
 
     // An auto locking class for taking a lock and releasing it when
     // the object goes out of scope
@@ -97,8 +98,8 @@ namespace RegionRuntime {
     }
 
     // Stuff for dependence detection
-    static inline DependenceType check_for_anti_dependence(const RegionRequirement &req1,
-                                                           const RegionRequirement &req2,
+    static inline DependenceType check_for_anti_dependence(const RegionUsage &req1,
+                                                           const RegionUsage &req2,
                                                            DependenceType actual)
     {
       // Check for WAR or WAW with write-only
@@ -124,8 +125,8 @@ namespace RegionRuntime {
       }
     }
 
-    static inline DependenceType check_dependence_type(const RegionRequirement &req1, 
-                                                       const RegionRequirement &req2)
+    static inline DependenceType check_dependence_type(const RegionUsage &req1, 
+                                                       const RegionUsage &req2)
     {
       // Two readers are never a dependence
       if (IS_READ_ONLY(req1) && IS_READ_ONLY(req2))
@@ -193,10 +194,10 @@ namespace RegionRuntime {
       }
     }
 
-    static inline bool perform_dependence_check(GeneralizedContext *ctx, unsigned idx, DependenceDetector &dep) 
+    static inline bool perform_dependence_check(const LogicalUser &state, DependenceDetector &dep) 
     {
       bool mapping_dependence = false;
-      DependenceType dtype = check_dependence_type(ctx->get_requirement(idx),dep.get_req());
+      DependenceType dtype = check_dependence_type(state.usage, dep.user.usage);
       switch (dtype)
       {
         case NO_DEPENDENCE:
@@ -208,7 +209,7 @@ namespace RegionRuntime {
         case ANTI_DEPENDENCE:
           {
             // Register the dependence
-            dep.ctx->add_mapping_dependence(dep.idx, ctx, idx, dtype);
+            dep.user.ctx->add_mapping_dependence(dep.user.idx, state, dtype);
             mapping_dependence = true;
             break;
           }
@@ -216,8 +217,8 @@ namespace RegionRuntime {
         case SIMULTANEOUS_DEPENDENCE:
           {
             // Register the unresolved dependence
-            dep.ctx->add_mapping_dependence(dep.idx, ctx, idx, dtype);
-            dep.ctx->add_unresolved_dependence(dep.idx, ctx, dtype);
+            dep.user.ctx->add_mapping_dependence(dep.user.idx, state, dtype);
+            dep.user.ctx->add_unresolved_dependence(dep.user.idx, state.ctx, dtype);
             mapping_dependence = true;
             break;
           }
@@ -551,7 +552,6 @@ namespace RegionRuntime {
           }
         default:
           // For the unitialized cases
-          func_type = SINGULAR_FUNC;
           break;
       }
       return *this;
@@ -695,41 +695,112 @@ namespace RegionRuntime {
       }
     }
 
+    /////////////////////////////////////////////////////////////
+    // RegionUsage 
+    ///////////////////////////////////////////////////////////// 
+
     //--------------------------------------------------------------------------
-    /*static*/ size_t RegionRequirement::compute_simple_size(void)
+    RegionUsage::RegionUsage(void)
+      : privilege(NO_ACCESS), alloc(NO_MEMORY), prop(EXCLUSIVE), redop(0)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    RegionUsage::RegionUsage(PrivilegeMode priv, AllocateMode all,
+                             CoherenceProperty pro, ReductionOpID red)
+      : privilege(priv), alloc(all), prop(pro), redop(red)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    RegionUsage::RegionUsage(const RegionUsage &usage)
+    //--------------------------------------------------------------------------
+    {
+      privilege = usage.privilege;
+      alloc = usage.alloc;
+      prop = usage.prop;
+      redop = usage.redop;
+    }
+
+    //--------------------------------------------------------------------------
+    RegionUsage::RegionUsage(const RegionRequirement &req)
+    //--------------------------------------------------------------------------
+    {
+      privilege = req.privilege;
+      alloc = req.alloc;
+      prop = req.prop;
+      redop = req.redop;
+    }
+
+    //--------------------------------------------------------------------------
+    RegionUsage& RegionUsage::operator=(const RegionUsage &usage)
+    //--------------------------------------------------------------------------
+    {
+      privilege = usage.privilege;
+      alloc = usage.alloc;
+      prop = usage.prop;
+      redop = usage.redop;
+      return *this;
+    }
+
+    //--------------------------------------------------------------------------
+    RegionUsage& RegionUsage::operator=(const RegionRequirement &req)
+    //--------------------------------------------------------------------------
+    {
+      privilege = req.privilege;
+      alloc = req.alloc;
+      prop = req.prop;
+      redop = req.redop;
+      return *this;
+    }
+
+    //--------------------------------------------------------------------------
+    bool RegionUsage::operator==(const RegionUsage &usage) const
+    //--------------------------------------------------------------------------
+    {
+      return (privilege == usage.privilege) && (alloc == usage.alloc) &&
+              (prop == usage.prop) && (redop == usage.redop);
+    }
+
+    //--------------------------------------------------------------------------
+    bool RegionUsage::operator<(const RegionUsage &usage) const
+    //--------------------------------------------------------------------------
+    {
+      return (privilege < usage.privilege) || (alloc < usage.alloc) ||
+              (prop < usage.prop) || (redop < usage.redop);
+    }
+
+    //--------------------------------------------------------------------------
+    /*static*/ size_t RegionUsage::compute_usage_size(void)
     //--------------------------------------------------------------------------
     {
       size_t result = 0;
-      result += sizeof(LogicalRegion); // pack as if it was a region
       result += sizeof(PrivilegeMode);
       result += sizeof(AllocateMode);
       result += sizeof(CoherenceProperty);
-      result += sizeof(LogicalRegion);
       result += sizeof(ReductionOpID);
       return result; 
     }
 
     //--------------------------------------------------------------------------
-    void RegionRequirement::pack_simple(Serializer &rez) const
+    void RegionUsage::pack_usage(Serializer &rez) const
     //--------------------------------------------------------------------------
     {
-      rez.serialize<LogicalRegion>(handle.region); // pack as if it was a region
       rez.serialize<PrivilegeMode>(privilege);
       rez.serialize<AllocateMode>(alloc);
       rez.serialize<CoherenceProperty>(prop);
-      rez.serialize<LogicalRegion>(parent);
       rez.serialize<ReductionOpID>(redop);
     }
 
     //--------------------------------------------------------------------------
-    void RegionRequirement::unpack_simple(Deserializer &derez)
+    void RegionUsage::unpack_usage(Deserializer &derez)
     //--------------------------------------------------------------------------
     {
-      derez.deserialize<LogicalRegion>(handle.region);
       derez.deserialize<PrivilegeMode>(privilege);
       derez.deserialize<AllocateMode>(alloc);
       derez.deserialize<CoherenceProperty>(prop);
-      derez.deserialize<LogicalRegion>(parent);
       derez.deserialize<ReductionOpID>(redop);
     }
 
@@ -1147,7 +1218,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     RegionMappingImpl::RegionMappingImpl(HighLevelRuntime *rt)
-      : runtime(rt), active(false)
+      : runtime(rt), active(false), current_gen(0)
     //--------------------------------------------------------------------------
     {
     }
@@ -1255,6 +1326,8 @@ namespace RegionRuntime {
       source_copy_instances.clear();
       active = false;
 
+      // Update the generation
+      current_gen++;
       // Put this back on this list of free mapping implementations for the runtime
       runtime->free_mapping(this);
     }
@@ -1279,6 +1352,26 @@ namespace RegionRuntime {
       assert(active);
 #endif
       return unmapped_event;
+    }
+
+    //--------------------------------------------------------------------------
+    RegionUsage RegionMappingImpl::get_usage(unsigned idx) const
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx == 0);
+#endif
+      return RegionUsage(req);
+    }
+
+    //--------------------------------------------------------------------------
+    const RegionRequirement& RegionMappingImpl::get_requirement(unsigned idx) const
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx == 0);
+#endif
+      return req;
     }
 
     //--------------------------------------------------------------------------
@@ -1445,7 +1538,7 @@ namespace RegionRuntime {
       // Set the ready event to be the resulting precondition
       ready_event = precondition;
 #ifdef DEBUG_HIGH_LEVEL
-      log_spy(LEVEL_INFO,"Mapping Performed %d %x %d %x %d",unique_id,ready_event.id,ready_event.gen,unmapped_event.id,unmapped_event.gen);
+      log_spy(LEVEL_INFO,"Mapping Performed %d %x %d %x %d",unique_id,ready_event.id,ready_event.gen,unmapped_event.id,unmapped_event.gen); 
 #endif
       mapped = true;
       // We're done mapping, so trigger the mapping event
@@ -1469,16 +1562,6 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    const RegionRequirement& RegionMappingImpl::get_requirement(unsigned idx) const
-    //--------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(idx == 0);
-#endif
-      return req;
-    }
-
-    //--------------------------------------------------------------------------
     InstanceInfo* RegionMappingImpl::get_chosen_instance(unsigned idx) const
     //--------------------------------------------------------------------------
     {
@@ -1490,26 +1573,33 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void RegionMappingImpl::add_mapping_dependence(unsigned idx, GeneralizedContext *ctx, 
-                                                    unsigned dep_idx, const DependenceType &dtype)
+    void RegionMappingImpl::add_mapping_dependence(unsigned idx, const LogicalUser &target, const DependenceType &dtype)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(idx == 0);
 #endif
-      log_spy(LEVEL_INFO,"Mapping Dependence %d %d %d %d %d %d",parent_ctx->unique_id,ctx->get_unique_id(),dep_idx,unique_id,idx,dtype);
-      if (ctx->add_waiting_dependence(this, dep_idx))
+      log_spy(LEVEL_INFO,"Mapping Dependence %d %d %d %d %d %d",parent_ctx->unique_id,target.uid,target.idx,unique_id,idx,dtype);
+      if (target.ctx->add_waiting_dependence(this, target))
       {
         remaining_notifications++;
       }
     }
 
     //--------------------------------------------------------------------------
-    bool RegionMappingImpl::add_waiting_dependence(GeneralizedContext *ctx, unsigned idx)
+    bool RegionMappingImpl::add_waiting_dependence(GeneralizedContext *ctx, const LogicalUser &original)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(idx == 0);
+      assert(original.gen <= current_gen);
+#endif
+      // Check to see if this mapping is already done
+      if (original.gen < current_gen)
+      {
+        return false;
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(original.idx == 0);
 #endif
       // check to see if we already mapped, if so no need to wait
       if (mapped)
@@ -1592,7 +1682,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     DeletionOp::DeletionOp(HighLevelRuntime *rt)
-      : runtime(rt), active(false)
+      : runtime(rt), active(false), current_gen(0)
     //--------------------------------------------------------------------------
     {
     }
@@ -1650,6 +1740,7 @@ namespace RegionRuntime {
       parent_ctx = NULL;
       active = false;
       current_lock = Lock::NO_LOCK;
+      current_gen++;
       runtime->free_deletion(this);
     }
 
@@ -1740,7 +1831,15 @@ namespace RegionRuntime {
       assert(false);
       return Event::NO_EVENT;
     }
-    
+
+    //--------------------------------------------------------------------------
+    RegionUsage DeletionOp::get_usage(unsigned idx) const
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+      return RegionUsage();
+    }
+
     //--------------------------------------------------------------------------
     const RegionRequirement& DeletionOp::get_requirement(unsigned idx) const
     //--------------------------------------------------------------------------
@@ -1748,7 +1847,7 @@ namespace RegionRuntime {
       assert(false);
       return *(new RegionRequirement());
     }
-
+    
     //--------------------------------------------------------------------------
     InstanceInfo* DeletionOp::get_chosen_instance(unsigned idx) const
     //--------------------------------------------------------------------------
@@ -1758,14 +1857,13 @@ namespace RegionRuntime {
     }
     
     //--------------------------------------------------------------------------
-    void DeletionOp::add_mapping_dependence(unsigned idx, GeneralizedContext *ctx,
-                                            unsigned dep_idx, const DependenceType &dtype)
+    void DeletionOp::add_mapping_dependence(unsigned idx, const LogicalUser &target, const DependenceType &dtype)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(idx == 0);
 #endif
-      if (ctx->add_waiting_dependence(this, dep_idx))
+      if (target.ctx->add_waiting_dependence(this, target))
       {
         remaining_notifications++;
       }
@@ -1780,7 +1878,7 @@ namespace RegionRuntime {
     }
     
     //--------------------------------------------------------------------------
-    bool DeletionOp::add_waiting_dependence(GeneralizedContext *ctx, unsigned idx)
+    bool DeletionOp::add_waiting_dependence(GeneralizedContext *ctx, const LogicalUser &target)
     //--------------------------------------------------------------------------
     {
       assert(false);
@@ -2656,7 +2754,6 @@ namespace RegionRuntime {
       AutoLock mapper_lock(mapper_locks[0]);
       delete mapper_objects[0];
       mapper_objects[0] = m;
-      outstanding_steals[0].clear();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3266,9 +3363,6 @@ namespace RegionRuntime {
         assert(outstanding_steals.find(map_id) != outstanding_steals.end());
 #endif
         std::set<Processor> &procs = outstanding_steals[map_id];
-#ifdef DEBUG_HIGH_LEVEL
-        assert(procs.find(advertiser) != procs.end()); // This should be in our outstanding list
-#endif
         procs.erase(advertiser);
       }
       {
@@ -3648,7 +3742,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     TaskContext::TaskContext(Processor p, HighLevelRuntime *r, ContextID id)
-      : runtime(r), active(false), ctx_id(id),  
+      : runtime(r), active(false), current_gen(0), ctx_id(id),  
         reduction(NULL), reduction_value(NULL), reduction_size(0), 
         local_proc(p), result(NULL), result_size(0), 
         region_nodes(NULL), partition_nodes(NULL), instance_infos(NULL),
@@ -3762,6 +3856,7 @@ namespace RegionRuntime {
       region_nodes = NULL;
       partition_nodes = NULL;
       instance_infos = NULL;
+      parent_ctx = NULL;
       regions.clear();
       constraint_space.clear();
       range_space.clear();
@@ -3797,6 +3892,8 @@ namespace RegionRuntime {
       future.reset();
       future_map.reset();
       active = false;
+      // Increment the generation of this context
+      current_gen++;
       // Tell the runtime this context is free again
       runtime->free_context(this);
     }
@@ -4647,13 +4744,13 @@ namespace RegionRuntime {
           // Initialize the state before unpacking
           RegionNode *parent = (*partition_nodes)[regions[idx].handle.partition]->parent;
           parent->initialize_physical_context(ctx_id);
-          parent->unpack_physical_state(ctx_id,derez,*instance_infos,false/*returning*/);
+          parent->unpack_physical_state(ctx_id,derez,false/*returning*/,false/*merge*/,*instance_infos);
         }
         else
         {
           RegionNode *reg_node = (*region_nodes)[regions[idx].handle.region];
           reg_node->initialize_physical_context(ctx_id);
-          reg_node->unpack_physical_state(ctx_id,derez,*instance_infos,false/*returning*/);
+          reg_node->unpack_physical_state(ctx_id,derez,false/*returning*/,false/*merge*/,*instance_infos);
         }
       }
 
@@ -5077,7 +5174,7 @@ namespace RegionRuntime {
             if (!child->regions[idx].verified)
               verify_privilege(regions[parent_idx],child->regions[idx],child->task_id,
                               idx, child->unique_id);
-            register_region_dependence(regions[parent_idx].handle.region,child,idx);
+            register_region_dependence(child->regions[idx],child,idx);
             break;
           }
         }
@@ -5087,7 +5184,7 @@ namespace RegionRuntime {
           if (created_regions.find(child->regions[idx].parent) != created_regions.end())
           {
             // No need to verify privilege here, we have read-write access to created
-            register_region_dependence(child->regions[idx].parent,child,idx);
+            register_region_dependence(child->regions[idx],child,idx);
           }
           else // if we make it here, it's an error
           {
@@ -5135,13 +5232,15 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void TaskContext::register_region_dependence(LogicalRegion parent, 
+    void TaskContext::register_region_dependence(const RegionRequirement &req, 
                                                   GeneralizedContext *child, unsigned child_idx)
     //--------------------------------------------------------------------------------------------
     {
-      DependenceDetector dep(this->ctx_id, child_idx, child, this);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(child->get_enclosing_task() == this);
+#endif
+      DependenceDetector dep(child_idx, child, this);
 
-      const RegionRequirement &req = child->get_requirement(child_idx);
       // Get the trace to put in the dependence detector
       // Check to see if we are looking for a logical region or a partition
       if (child->is_context())
@@ -5156,11 +5255,12 @@ namespace RegionRuntime {
             case SINGULAR_FUNC:
               {
                 log_region(LEVEL_DEBUG,"registering region dependence for region %x "
-                  "with parent %x in task %d",req.handle.region.id,parent.id,unique_id);
+                  "with parent %x in task %s in logical context %d on processor %x",
+                  req.handle.region.id,req.parent.id,variants->name,ctx_id,local_proc.id);
 #ifdef DEBUG_HIGH_LEVEL
                 bool trace_result =
 #endif
-                compute_region_trace(dep.trace, parent, req.handle.region);
+                compute_region_trace(dep.trace, req.parent, req.handle.region);
 #ifdef DEBUG_HIGH_LEVEL
                 assert(trace_result);
 #endif
@@ -5182,8 +5282,9 @@ namespace RegionRuntime {
                   exit(1);
                 }
                 log_region(LEVEL_DEBUG,"registering partition dependence for region %d "
-                  "with parent region %x in task %d",req.handle.partition,parent.id,unique_id);
-                compute_partition_trace(dep.trace, parent, req.handle.partition);
+                  "with parent region %x in task %s in logical context %d on processor %x",
+                  req.handle.partition,req.parent.id,variants->name,ctx_id,local_proc.id);
+                compute_partition_trace(dep.trace, req.parent, req.handle.partition);
                 break;
               }
             default:
@@ -5194,11 +5295,12 @@ namespace RegionRuntime {
         {
           // We're looking for a logical region
           log_region(LEVEL_DEBUG,"registering region dependence for region %x "
-            "with parent %x in task %d",req.handle.region.id, parent.id,unique_id);
+            "with parent %x in task %s in logical context %d on processor %x",
+            req.handle.region.id, req.parent.id,variants->name,ctx_id,local_proc.id);
 #ifdef DEBUG_HIGH_LEVEL
           bool trace_result = 
 #endif
-          compute_region_trace(dep.trace, parent, req.handle.region);
+          compute_region_trace(dep.trace, req.parent, req.handle.region);
 #ifdef DEBUG_HIGH_LEVEL
           assert(trace_result);
 #endif
@@ -5208,11 +5310,12 @@ namespace RegionRuntime {
       {
         // This is a region mapping so we're looking for a logical mapping
         log_region(LEVEL_DEBUG,"registering region dependence for mapping of region %x "
-            "with parent %x in task %d", req.handle.region.id,parent.id,unique_id);
+            "with parent %x in task %s in logical context %d on processor %x", 
+            req.handle.region.id,req.parent.id,variants->name,ctx_id,local_proc.id);
 #ifdef DEBUG_HIGH_LEVEL
         bool trace_result = 
 #endif
-        compute_region_trace(dep.trace, parent, req.handle.region);
+        compute_region_trace(dep.trace, req.parent, req.handle.region);
 #ifdef DEBUG_HIGH_LEVEL
         assert(trace_result);
 #endif
@@ -5220,7 +5323,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(current_taken);
 #endif
-      RegionNode *top = (*region_nodes)[parent];
+      RegionNode *top = (*region_nodes)[req.parent];
       top->register_logical_region(dep);
     }
 
@@ -5301,7 +5404,7 @@ namespace RegionRuntime {
           // Check the privileges
           if (!impl->req.verified)
             verify_privilege(regions[idx],impl->req);
-          register_region_dependence(impl->req.parent,impl,0);
+          register_region_dependence(impl->req,impl,0);
           break;
         }
       }
@@ -5311,7 +5414,7 @@ namespace RegionRuntime {
         if (created_regions.find(impl->req.parent) != created_regions.end())
         {
           // No need to verify privileges here, we have read-write access to created
-          register_region_dependence(impl->req.parent,impl,0);
+          register_region_dependence(impl->req,impl,0);
         }
         else // error condition
         {
@@ -6770,6 +6873,46 @@ namespace RegionRuntime {
           // Remove it from the list
           child_deletions.erase(it);
         }
+
+        // Issue any clean-up events and launch the termination task
+        // Now issue the termination task contingent on all our child tasks being done
+        // and the necessary copy up operations being applied
+        // Get a list of all the child task termination events so we know when they are done
+        for (std::vector<TaskContext*>::iterator it = child_tasks.begin();
+              it != child_tasks.end(); it++)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert((*it)->mapped);
+          assert((*it)->get_termination_event().exists());
+#endif
+          cleanup_events.insert((*it)->get_termination_event());
+        }
+
+        // Go through each of the mapped regions that we own and issue the necessary
+        // copy operations to restore data to the physical instances
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          // Check to see if we promised a physical instance
+          if (local_instances[idx] != InstanceInfo::get_no_instance())
+          {
+            // If we're still the owner, remove ourselves from the list of users
+            if (local_mapped[idx])
+            {
+              local_instances[idx]->remove_user(this->unique_id);
+#ifdef TRACE_CAPTURE
+              // Force this in the case of trace capture or we'll deadlock ourselves and the world ends
+              local_instances[idx]->removed_users.erase(this->unique_id);
+              local_instances[idx]->epoch_users.erase(this->unique_id);
+#endif
+            }
+            AutoLock map_lock(mapper_lock);
+            RegionNode *top = (*region_nodes)[regions[idx].handle.region];
+            top->close_physical_tree(chosen_ctx[idx],local_instances[idx],this,mapper,false/*leave open*/);
+            local_instances[idx]->mark_begin_close();
+            cleanup_events.insert(local_instances[idx]->force_closed());
+            local_instances[idx]->mark_finish_close();
+          }
+        }
         
         // Check to see if this is an index space or not
         if (!is_index_space)
@@ -6795,9 +6938,6 @@ namespace RegionRuntime {
           if (remote)
           {
             size_t buffer_size = sizeof(Processor) + sizeof(Context) + sizeof(bool);
-            // Send back the copy source instances that can be free
-            buffer_size += sizeof(size_t);
-            buffer_size += (source_copy_instances.size() * sizeof(InstanceID));
             
             std::map<PartitionNode*,unsigned> region_tree_updates;
             {
@@ -6828,6 +6968,7 @@ namespace RegionRuntime {
             buffer_size += sizeof(size_t); // num instances
             // Compute the actually needed set of instances
             std::set<InstanceInfo*> actual_instances;
+#if 0
             for (std::vector<InstanceInfo*>::const_iterator it = required_instances.begin();
                   it != required_instances.end(); it++)
             {
@@ -6838,23 +6979,42 @@ namespace RegionRuntime {
                 actual_instances.insert(*it);
               }
             }
+#endif
+            // The actual set of instances are all instances that are either remote or haven't been collected yet
+            for (std::map<InstanceID,InstanceInfo*>::const_iterator it = instance_infos->begin();
+                  it != instance_infos->end(); it++)
+            {
+              if (it->second->remote)
+              {
+                if (!it->second->returned)
+                {
+                  actual_instances.insert(it->second);
+                  buffer_size += it->second->compute_return_info_size(escaped_users,escaped_copies);
+                }
+              }
+            }
+            // Also pack up anything in the required instances that is not remote and still valid
+            for (std::vector<InstanceInfo*>::const_iterator it = required_instances.begin();
+                  it != required_instances.end(); it++)
+            {
+              if (!(*it)->remote && (actual_instances.find(*it) == actual_instances.end()))
+              {
+                actual_instances.insert(*it);
+                buffer_size += (*it)->compute_return_info_size(escaped_users,escaped_copies);
+              }
+#ifdef DEBUG_HIGH_LEVEL
+              else if ((*it)->remote)
+              {
+                assert(actual_instances.find(*it) != actual_instances.end());
+              }
+#endif
+            }
 
             // Now serialize everything
             Serializer rez(buffer_size);
             rez.serialize<Processor>(orig_proc);
             rez.serialize<Context>(orig_ctx);
             rez.serialize<bool>(is_index_space);
-
-            rez.serialize<size_t>(source_copy_instances.size());
-            for (std::vector<InstanceInfo*>::const_iterator it = source_copy_instances.begin();
-                  it != source_copy_instances.end(); it++)
-            {
-              rez.serialize<InstanceID>((*it)->iid);
-            }
-            // We can clear this now since we've removed all references
-            source_copy_instances.clear();
-
-            pack_tree_updates(rez,region_tree_updates);
 
             // Now do the instances
             rez.serialize<size_t>(actual_instances.size());
@@ -6863,6 +7023,9 @@ namespace RegionRuntime {
             {
               (*it)->pack_return_info(rez);
             }
+
+            pack_tree_updates(rez,region_tree_updates);
+            
             // The physical states for the regions that were unmapped
             for (unsigned idx = 0; idx < regions.size(); idx++)
             {
@@ -6952,45 +7115,7 @@ namespace RegionRuntime {
 #endif
           }
         }
-
-        // Issue any clean-up events and launch the termination task
-        // Now issue the termination task contingent on all our child tasks being done
-        // and the necessary copy up operations being applied
-        // Get a list of all the child task termination events so we know when they are done
         
-        for (std::vector<TaskContext*>::iterator it = child_tasks.begin();
-              it != child_tasks.end(); it++)
-        {
-#ifdef DEBUG_HIGH_LEVEL
-          assert((*it)->mapped);
-          assert((*it)->get_termination_event().exists());
-#endif
-          cleanup_events.insert((*it)->get_termination_event());
-        }
-
-        // Go through each of the mapped regions that we own and issue the necessary
-        // copy operations to restore data to the physical instances
-        for (unsigned idx = 0; idx < regions.size(); idx++)
-        {
-          // Check to see if we promised a physical instance
-          if (local_instances[idx] != InstanceInfo::get_no_instance())
-          {
-            // If we're still the owner, remove ourselves from the list of users
-            if (local_mapped[idx])
-            {
-              local_instances[idx]->remove_user(this->unique_id);
-#ifdef TRACE_CAPTURE
-              // Force this in the case of trace capture or we'll deadlock ourselves and the world ends
-              local_instances[idx]->removed_users.erase(this->unique_id);
-              local_instances[idx]->epoch_users.erase(this->unique_id);
-#endif
-            }
-            AutoLock map_lock(mapper_lock);
-            RegionNode *top = (*region_nodes)[regions[idx].handle.region];
-            top->close_physical_tree(chosen_ctx[idx],local_instances[idx],this,mapper,false/*leave open*/);
-            cleanup_events.insert(local_instances[idx]->force_closed());
-          }
-        }
 #ifdef DEBUG_HIGH_LEVEL
         current_taken = false;
 #endif
@@ -7382,25 +7507,6 @@ namespace RegionRuntime {
       bool returning_slice;
       derez.deserialize<bool>(returning_slice);
 
-      // Unpack the source copy instances
-      size_t num_source_copies;
-      derez.deserialize<size_t>(num_source_copies);
-      for (unsigned idx = 0; idx < num_source_copies; idx++)
-      {
-        InstanceID iid;
-        derez.deserialize<InstanceID>(iid);
-#ifdef DEBUG_HIGH_LEVEL
-        assert(instance_infos->find(iid) != instance_infos->end());
-#endif
-        (*instance_infos)[iid]->remove_copy_user(this->unique_id);
-      }
-      // Unpack the region tree updates
-      // unpack the created regions, do this in whatever the outermost enclosing context is
-      ContextID outermost = get_outermost_physical_context();
-      std::vector<LogicalRegion> created;
-      // unpack the region tree updates
-      unpack_tree_updates(derez,created,outermost);
-
       // Unpack the instance infos
       size_t num_instance_infos;
       derez.deserialize<size_t>(num_instance_infos);
@@ -7408,6 +7514,13 @@ namespace RegionRuntime {
       {
         InstanceInfo::unpack_return_instance_info(derez, instance_infos);
       }
+
+      // Unpack the region tree updates
+      // unpack the created regions, do this in whatever the outermost enclosing context is
+      ContextID outermost = get_outermost_physical_context();
+      std::vector<LogicalRegion> created;
+      // unpack the region tree updates
+      unpack_tree_updates(derez,created,outermost);
 
       // Unpack the states differently since we need to know which context something goes in
       if (!returning_slice)
@@ -7421,14 +7534,17 @@ namespace RegionRuntime {
         {
           if (physical_instances[idx] == InstanceInfo::get_no_instance())
           {
+            bool merge = IS_READ_ONLY(regions[idx]) || IS_REDUCE(regions[idx]);
             (*region_nodes)[regions[idx].handle.region]->unpack_physical_state(
-                      get_enclosing_physical_context(idx),derez,*instance_infos,true/*returning*/,this->unique_id);
+                      get_enclosing_physical_context(idx),derez,
+                      true/*returning*/, merge, *instance_infos,this->unique_id);
           }
         }
         for (unsigned idx = 0; idx < created.size(); idx++)
         {
+          // No need to mark these as returning since they are newly created
           (*region_nodes)[created[idx]]->unpack_physical_state(
-                        outermost,derez,*instance_infos,true/*returning*/,this->unique_id);
+                        outermost,derez,false/*returning*/,false/*merge*/,*instance_infos);
         }
         // Now we can go through and notify all our map dependent tasks that the information has been propagated back
         // into the physical region trees
@@ -7480,15 +7596,16 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           assert(idx < regions.size());
 #endif
+          bool merge = IS_READ_ONLY(regions[idx]) || IS_REDUCE(regions[idx]);
           (*region_nodes)[handle]->unpack_physical_state(get_enclosing_physical_context(idx),
-              derez, *instance_infos, true/*returning*/, this->unique_id);
+              derez, true/*returning*/, merge, *instance_infos, this->unique_id);
           // Also update the mapping count for this index
           mapped_counts[idx]++;
         }
         // Also unpack the create regions' state
         for (unsigned idx = 0; idx < created.size(); idx++)
         {
-          (*region_nodes)[created[idx]]->unpack_physical_state(outermost,derez,*instance_infos,false/*returning*/);
+          (*region_nodes)[created[idx]]->unpack_physical_state(outermost,derez,false/*returning*/,false/*merge*/,*instance_infos);
         }
         // Unpack the number of points from this index space slice
         unsigned num_remote_points;
@@ -7627,13 +7744,6 @@ namespace RegionRuntime {
         {
           // Need to pack up the state of the slice to send back
           size_t buffer_size = sizeof(Processor) + sizeof(Context) + sizeof(bool);
-          buffer_size += sizeof(size_t); // num of source copies to free
-          size_t num_src_copies = this->source_copy_instances.size();
-          for (unsigned idx = 0; idx < sibling_tasks.size(); idx++)
-          {
-            num_src_copies += sibling_tasks[idx]->source_copy_instances.size();
-          }
-          buffer_size += (num_src_copies * sizeof(InstanceID));
           // Updates to the region tree, already merged into this instance in children_mapped
           std::map<PartitionNode*,unsigned> region_tree_updates;
           {
@@ -7699,6 +7809,7 @@ namespace RegionRuntime {
           // Now the size of all the physical instances we need to pass back
           buffer_size += sizeof(size_t);
           std::set<InstanceInfo*> actual_instances;
+#if 0
           for (std::vector<InstanceInfo*>::const_iterator it = required_instances.begin();
                 it != required_instances.end(); it++)
           {
@@ -7707,6 +7818,41 @@ namespace RegionRuntime {
               buffer_size += (*it)->compute_return_info_size(escaped_users,escaped_copies);
               actual_instances.insert(*it);
             }
+          }
+#endif
+          // Send back the set of all instance infos that are remote and haven't been sent back
+          // or are local and haven't been collected
+          for (std::map<InstanceID,InstanceInfo*>::const_iterator it = instance_infos->begin();
+                it != instance_infos->end(); it++)
+          {
+            if (it->second->remote)
+            {
+              if (!it->second->returned)
+              {
+                actual_instances.insert(it->second);
+                buffer_size += it->second->compute_return_info_size(escaped_users,escaped_copies);
+              }
+            }
+          }
+          // Also send back all the valid instances that are local in required instances
+          for (std::vector<InstanceInfo*>::const_iterator it = required_instances.begin();
+                it != required_instances.end(); it++)
+          {
+            if (!(*it)->remote && (actual_instances.find(*it) == actual_instances.end()))
+            {
+#ifdef DEBUG_HIGH_LEVEL
+              assert((*it)->valid);
+#endif
+              actual_instances.insert(*it);
+              buffer_size += (*it)->compute_return_info_size(escaped_users,escaped_copies);
+            }
+#ifdef DEBUG_HIGH_LEVEL
+            else if ((*it)->remote)
+            {
+              // If it's remote it should already be in our set of actual instances
+              assert(actual_instances.find(*it) != actual_instances.end());
+            }
+#endif
           }
           // Also include the number of local points
           buffer_size += sizeof(unsigned);
@@ -7717,29 +7863,6 @@ namespace RegionRuntime {
           rez.serialize<Context>(orig_ctx);
           rez.serialize<bool>(is_index_space);
 
-          // Pack the source copy free
-          rez.serialize<size_t>(num_src_copies);
-          // First pack our own
-          for (unsigned idx = 0; idx < source_copy_instances.size(); idx++)
-          {
-            rez.serialize<InstanceID>(source_copy_instances[idx]->iid);
-          }
-          // We can clear these now that we've sent them back
-          source_copy_instances.clear();
-          for (std::vector<TaskContext*>::const_iterator it = sibling_tasks.begin();
-                it != sibling_tasks.end(); it++)
-          {
-            for (unsigned idx = 0; idx < (*it)->source_copy_instances.size(); idx++)
-            {
-              rez.serialize<InstanceID>((*it)->source_copy_instances[idx]->iid);
-            }
-            // We can clear these now
-            (*it)->source_copy_instances.clear();
-          }
-
-          // Now pack the physical region tree updates
-          pack_tree_updates(rez, region_tree_updates);
-
           // Now the physical instances that need to be packed
           rez.serialize<size_t>(actual_instances.size());
           for (std::set<InstanceInfo*>::const_iterator it = actual_instances.begin();
@@ -7747,6 +7870,9 @@ namespace RegionRuntime {
           {
             (*it)->pack_return_info(rez);
           }
+
+          // Now pack the physical region tree updates
+          pack_tree_updates(rez, region_tree_updates);
 
           // Now pack the physical states to be passed back
           rez.serialize<size_t>(already_packed.size());
@@ -8647,6 +8773,16 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    RegionUsage TaskContext::get_usage(unsigned idx) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx < regions.size());
+#endif
+      return RegionUsage(regions[idx]);
+    }
+
+    //--------------------------------------------------------------------------------------------
     const RegionRequirement& TaskContext::get_requirement(unsigned idx) const
     //--------------------------------------------------------------------------------------------
     {
@@ -8667,23 +8803,22 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void TaskContext::add_mapping_dependence(unsigned idx, GeneralizedContext *ctx, 
-                                              unsigned dep_idx, const DependenceType &dtype)
+    void TaskContext::add_mapping_dependence(unsigned idx, const LogicalUser &target, const DependenceType &dtype)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      if (this == ctx)
+      if (this == target.ctx)
       {
         log_region(LEVEL_ERROR,"Illegal dependence between two regions %x and %x (with index %d and %d) "
                                 "in task %s (ID %d) with unique id %d",this->regions[idx].handle.region.id,
-                                this->regions[dep_idx].handle.region.id,idx,dep_idx,
+                                this->regions[target.idx].handle.region.id,idx,target.idx,
                                 variants->name,task_id,unique_id);
         exit(1);
       }
 #endif
       log_spy(LEVEL_INFO,"Mapping Dependence %d %d %d %d %d %d",
-                          parent_ctx->unique_id,ctx->get_unique_id(),dep_idx,unique_id,idx,dtype);
-      bool new_dep = ctx->add_waiting_dependence(this,dep_idx);
+                          parent_ctx->unique_id,target.uid,target.idx,unique_id,idx,dtype);
+      bool new_dep = target.ctx->add_waiting_dependence(this,target);
       if (new_dep)
       {
         remaining_notifications++;
@@ -8691,11 +8826,20 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    bool TaskContext::add_waiting_dependence(GeneralizedContext *ctx, unsigned idx)
+    bool TaskContext::add_waiting_dependence(GeneralizedContext *ctx, const LogicalUser &original)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(idx < map_dependent_tasks.size());
+      assert(original.gen <= current_gen);
+#endif
+      // Check to see if this is still the same context
+      if (original.gen < current_gen)
+      {
+        // Task is already done, no mapping dependence
+        return false;
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(original.idx < map_dependent_tasks.size());
 #endif
       // Check to see if we already mapped, if we did no need to register the dependence
       // We check this condition differently for tasks and index spaces
@@ -8703,12 +8847,12 @@ namespace RegionRuntime {
       {
 #ifdef DEBUG_HIGH_LEVEL
         assert(index_owner);
-        assert(idx < mapped_physical_instances.size());
+        assert(original.idx < mapped_physical_instances.size());
 #endif
         // This is an index space so check to see if we have seen all the updates
         // for the index space and also whether all of them mapped the task
         if ((frac_index_space.first == frac_index_space.second) &&
-            (mapped_physical_instances[idx] == num_total_points))
+            (mapped_physical_instances[original.idx] == num_total_points))
         {
           return false; // been mapped by everybody
         }
@@ -8716,12 +8860,12 @@ namespace RegionRuntime {
       else
       {
         // If this is not an index space, see if there is a valid physical instances
-        if ((idx < physical_instances.size()) && physical_mapped[idx])
+        if ((original.idx < physical_instances.size()) && physical_mapped[original.idx])
         {
           return false; // no need to wait since it's already been mapped 
         }
       }
-      std::pair<std::set<GeneralizedContext*>::iterator,bool> result = map_dependent_tasks[idx].insert(ctx);
+      std::pair<std::set<GeneralizedContext*>::iterator,bool> result = map_dependent_tasks[original.idx].insert(ctx);
       return result.second;
     }
 
@@ -8771,6 +8915,9 @@ namespace RegionRuntime {
       (*instance_infos)[iid] = result_info;
       log_inst(LEVEL_DEBUG,"Creating physical instance %x of logical region %x in memory %x",
           inst.id, handle.id, m.id);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!result_info->collected);
+#endif
       return result_info;
     }
 
@@ -8783,6 +8930,7 @@ namespace RegionRuntime {
       assert(old != InstanceInfo::get_no_instance());
       assert(current_taken);
       assert(old->handle != newer);
+      assert(!old->collected);
 #endif
       // Make a new instance info for all those that don't already exist along the path
       std::vector<unsigned> trace;
@@ -8802,9 +8950,10 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(next_handle.exists());
 #endif
+        // We're just making views onto this physical instance, we should never have
+        // overlapping views so check to see if there are any already open
         InstanceInfo *next = current->get_open_subregion(next_handle);
-        if (next == InstanceInfo::get_no_instance() ||
-            !next->valid) // Must be valid to be reused
+        if (next == InstanceInfo::get_no_instance())
         {
           // Doesn't have an open instance info, so make one
           InstanceID iid = runtime->get_unique_instance_id();
@@ -8818,6 +8967,9 @@ namespace RegionRuntime {
               "for subregion %x", current->inst.id, current->handle.id, current->location.id, next_handle.id);
 
         }
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!next->collected);
+#endif
         current = next;
       }
 #ifdef DEBUG_HIGH_LEVEL
@@ -9022,6 +9174,11 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       rez.serialize<LogicalRegion>(handle); // this is for a sanity check
+      rez.serialize<PartState>(region_states[ctx].open_state);
+      rez.serialize<DataState>(region_states[ctx].data_state);
+      rez.serialize<ReductionOpID>(region_states[ctx].redop);
+      rez.serialize<PartitionID>(region_states[ctx].exclusive_part);
+
       rez.serialize<size_t>(region_states[ctx].open_physical.size());
       for (std::set<PartitionID>::const_iterator it = region_states[ctx].open_physical.begin();
             it != region_states[ctx].open_physical.end(); it++)
@@ -9043,10 +9200,6 @@ namespace RegionRuntime {
         rez.serialize<bool>(it->second);
       }
 
-      rez.serialize<PartState>(region_states[ctx].open_state);
-      rez.serialize<DataState>(region_states[ctx].data_state);
-      rez.serialize<ReductionOpID>(region_states[ctx].redop);
-      rez.serialize<PartitionID>(region_states[ctx].exclusive_part);
       // Serialize each of the open sub partitions
       for (std::set<PartitionID>::const_iterator it = region_states[ctx].open_physical.begin();
             it != region_states[ctx].open_physical.end(); it++)
@@ -9056,8 +9209,8 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void RegionNode::unpack_physical_state(ContextID ctx, Deserializer &derez, 
-                std::map<InstanceID,InstanceInfo*> &inst_map, bool returning, UniqueID uid /*=0*/)
+    void RegionNode::unpack_physical_state(ContextID ctx, Deserializer &derez, bool returning, bool merge, 
+                std::map<InstanceID,InstanceInfo*> &inst_map, UniqueID uid /*=0*/)
     //--------------------------------------------------------------------------------------------
     {
       LogicalRegion handle_check;
@@ -9065,37 +9218,228 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(handle_check == handle);
 #endif
+      std::set<PartitionID> new_open;
       // Returning open partitions
       if (returning)
       {
-        // Returning, check to see which of our old partitions
-        // were closed so we can close them, then update the list
-        std::set<PartitionID> new_open;
-        size_t num_open;
-        derez.deserialize<size_t>(num_open);
-        for (unsigned idx = 0; idx < num_open; idx++)
+        // Check to see if we're merging or not
+        // The only cases for merging are:
+        // - Read-only
+        // - Reduce (same op)
+        // - Index space
+        if (merge)
         {
-          PartitionID pid;
-          derez.deserialize<PartitionID>(pid);
-          new_open.insert(pid);
-        }
-        // Go through our current open partitions and invalidate any that
-        // are no longer open
-        for (std::set<PartitionID>::const_iterator it = region_states[ctx].open_physical.begin();
-              it != region_states[ctx].open_physical.end(); it++)
-        {
-          if (new_open.find(*it) == new_open.end())
+          PartState new_open_state;
+          derez.deserialize<PartState>(new_open_state);
+          DataState new_data_state;
+          derez.deserialize<DataState>(new_data_state);
+          ReductionOpID new_redop;
+          derez.deserialize<ReductionOpID>(new_redop);
+          PartitionID new_exclusive_part;
+          derez.deserialize<PartitionID>(new_exclusive_part);
+          // Returning, check to see which of our old partitions
+          // were closed so we can close them, then update the list
+          size_t num_open;
+          derez.deserialize<size_t>(num_open);
+          for (unsigned idx = 0; idx < num_open; idx++)
           {
-            // Invalidate all the instances
-            partitions[*it]->invalidate_physical_tree(ctx);
+            PartitionID pid;
+            derez.deserialize<PartitionID>(pid);
+            new_open.insert(pid);
           }
+          // Check our current state
+          switch (region_states[ctx].open_state)
+          {
+            case PART_NOT_OPEN:
+              {
+                // Easy case, just make the returning set the current set
+                region_states[ctx].open_state = new_open_state;
+                
+                region_states[ctx].redop = new_redop;
+                region_states[ctx].exclusive_part = new_exclusive_part;
+                region_states[ctx].open_physical = new_open;
+                break;
+              }
+            case PART_READ_ONLY:
+              {
+                if (new_open_state == PART_READ_ONLY)
+                {
+                  // Just add our open partitions to the list of open and we're done
+                  region_states[ctx].open_physical.insert(new_open.begin(),new_open.end());
+                }
+                else if (new_open_state == PART_NOT_OPEN)
+                {
+                  // Do nothing, we're done
+#ifdef DEBUG_HIGH_LEVEL
+                  assert(new_open.empty()); // Shouldn't be any open partitions
+#endif
+                }
+                else
+                {
+                  log_tree(LEVEL_ERROR,"Tree merge error: trying to merge %d state with read-only.  This is a runtime bug.",
+                      new_open_state);
+                  exit(1);
+                }
+                break;
+              }
+            case PART_EXCLUSIVE:
+              {
+                switch (new_open_state)
+                {
+                  case PART_NOT_OPEN:
+                    {
+                      // We're done
+#ifdef DEBUG_HIGH_LEVEL
+                      assert(new_open.empty());
+#endif
+                      break;
+                    }
+                  case PART_READ_ONLY:
+                  case PART_EXCLUSIVE:
+                    {
+                      // Better only be one open partition and better be the same partition
+                      if ((new_open.size() == 1) &&
+                          (*(new_open.begin()) == region_states[ctx].exclusive_part))
+                      {
+                        // We're still good
+                      }
+                      else
+                      {
+                        // Check to see if they both have the same reduction op going on
+                        if ((new_redop != 0) && (new_redop == region_states[ctx].redop))
+                        {
+                          // Move everything into a reduction state
+                          region_states[ctx].open_state = PART_REDUCE;
+                          region_states[ctx].open_physical.insert(new_exclusive_part);
+                        }
+                        else
+                        {
+                          log_tree(LEVEL_ERROR,"Tree merge error: trying to merge %d state with exclusive.  This is a runtime bug.",
+                              new_open_state); 
+                          exit(1);
+                        }
+                      }
+                      break;
+                    }
+                  case PART_REDUCE:
+                    {
+                      if (region_states[ctx].exclusive_part != new_exclusive_part)
+                      {
+                        log_tree(LEVEL_ERROR,"Tree merge error: non-matching exclusive partitions %d and %d for reduction %d. "
+                            "This is a runtime bug.",region_states[ctx].exclusive_part,new_exclusive_part,new_redop);
+                        exit(1);
+                      }
+                      if ((region_states[ctx].redop != 0) && (region_states[ctx].redop != new_redop))
+                      {
+                        log_tree(LEVEL_ERROR,"Tree merge error: incompatible reduction ops %d and %d. This is a runtime bug.",
+                            region_states[ctx].redop,new_redop);
+                        exit(1);
+                      }
+                      // Set the reduction op, update the state
+                      region_states[ctx].redop = new_redop; 
+                      region_states[ctx].open_state = PART_REDUCE;
+                      region_states[ctx].open_physical.insert(new_open.begin(),new_open.end());
+                      break;
+                    }
+                  default:
+                    assert(false);
+                }
+                break;
+              }
+            case PART_REDUCE:
+              {
+                switch (new_open_state)
+                {
+                  case PART_NOT_OPEN:
+                    {
+                      // We're done
+#ifdef DEBUG_HIGH_LEVEL
+                      assert(new_open.empty());
+#endif
+                      break;
+                    }
+                  case PART_READ_ONLY:
+                    {
+                      log_tree(LEVEL_ERROR,"Tree merge error: trying to merge read only state with reduce state.  This is a runtime bug.");
+                      exit(1);
+                      break;
+                    }
+                  case PART_EXCLUSIVE:
+                    {
+                      // Better match the current exclusive part
+                      if (region_states[ctx].exclusive_part != new_exclusive_part)
+                      {
+                        log_tree(LEVEL_ERROR,"Tree merge error: trying to merge incompatible exclusive partitions %d and %d in reduce mode. "
+                            "This is a runtime bug.",region_states[ctx].exclusive_part,new_exclusive_part);
+                        exit(1);
+                      }
+                      break;
+                    }
+                  case PART_REDUCE:
+                    {
+                      if (region_states[ctx].redop != new_redop)
+                      {
+                        log_tree(LEVEL_ERROR,"Tree merge error: trying to merge incompatible reduction ops %d and %d. "
+                            "This is a runtime bug.",region_states[ctx].redop,new_redop);
+                        exit(1);
+                      }
+                      break;
+                    }
+                  default:
+                    assert(false);
+                }
+                break;
+              }
+            default:
+              assert(false);
+          }
+          // Merge the data state for everyone
+          if (region_states[ctx].data_state == DATA_CLEAN)
+          {
+            region_states[ctx].data_state = new_data_state;
+          }
+          // Otherwise its already dirty and it can't get any dirtier
         }
-        // Update the set of new open partitions
-        region_states[ctx].open_physical = new_open;
+        else
+        {
+          // We're not merging update all the states and invalidate all the partitions that are no longer open
+          derez.deserialize<PartState>(region_states[ctx].open_state);
+          derez.deserialize<DataState>(region_states[ctx].data_state);
+          derez.deserialize<ReductionOpID>(region_states[ctx].redop);
+          derez.deserialize<PartitionID>(region_states[ctx].exclusive_part);
+
+          size_t num_open;
+          derez.deserialize<size_t>(num_open);
+          for (unsigned idx = 0; idx < num_open; idx++)
+          {
+            PartitionID pid;
+            derez.deserialize<PartitionID>(pid);
+            new_open.insert(pid);
+          }
+          
+          // Go through and invalidate all the ones that are no longer open
+          for (std::set<PartitionID>::const_iterator it = region_states[ctx].open_physical.begin();
+                it != region_states[ctx].open_physical.end(); it++)
+          {
+            if (new_open.find(*it) == new_open.end())
+            {
+              // This partition is no longer open, so invalidate it
+              partitions[*it]->invalidate_physical_tree(ctx);
+            }
+          }
+
+          // Now we're dont we can just set the set of open partitions
+          region_states[ctx].open_physical = new_open;
+        }
       }
       else
       {
         // Not returning, just write into everything
+        derez.deserialize<PartState>(region_states[ctx].open_state);
+        derez.deserialize<DataState>(region_states[ctx].data_state);
+        derez.deserialize<ReductionOpID>(region_states[ctx].redop);
+        derez.deserialize<PartitionID>(region_states[ctx].exclusive_part);
+
         size_t num_open;
         derez.deserialize<size_t>(num_open);
         for (unsigned idx = 0; idx < num_open; idx++)
@@ -9104,6 +9448,7 @@ namespace RegionRuntime {
           derez.deserialize<PartitionID>(pid);
           region_states[ctx].open_physical.insert(pid);
         }
+        new_open = region_states[ctx].open_physical;
       }
       // Returning Valid Instances
       if (returning)
@@ -9111,54 +9456,80 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(uid != 0);
 #endif
-        size_t num_valid;
-        derez.deserialize<size_t>(num_valid);
-        std::map<InstanceID,bool> new_valid;
-        for (unsigned idx = 0; idx < num_valid; idx++)
+        if (merge)
         {
-          InstanceID iid;
-          derez.deserialize<InstanceID>(iid);
-          bool owner;
-          derez.deserialize<bool>(owner);
-#ifdef DEBUG_HIGH_LEVEL
-          assert(inst_map.find(iid) != inst_map.end());
-#endif
-          new_valid[iid] = owner;
-        }
-        // Now check to see which of our instances are no longer valid, make sure none of
-        // them share the same user id
-        for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
-              it != region_states[ctx].valid_instances.end(); it++)
-        {
-          if (new_valid.find(it->first->iid) == new_valid.end())
+          // Just put back any instances that weren't there before
+          size_t num_valid;
+          derez.deserialize<size_t>(num_valid);
+          for (unsigned idx = 0; idx < num_valid; idx++)
           {
-            // Check for overwrite
-            if (it->first->has_user(uid))
-            {
-              log_task(LEVEL_ERROR,"Overwriting a prior physical instance for index space task "
-                  "with unique id %d.  Violation of independent index space slices constraint. "
-                  "See: groups.google.com/group/legiondevelopers/browse_thread/thread/39ad6b3b55ed9b8f", uid);
-              exit(1);
-            }
-#ifndef DISABLE_GC
-            // If we own it, we can invalidate it
-            if (it->second)
-            {
-              it->first->mark_invalid();
-            }
+            InstanceID iid;
+            derez.deserialize<InstanceID>(iid);
+            bool owner;
+            derez.deserialize<bool>(owner);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(inst_map.find(iid) != inst_map.end());
 #endif
+            if (region_states[ctx].valid_instances.find(inst_map[iid]) == region_states[ctx].valid_instances.end())
+            {
+              // Add it to the list of valid instances
+              region_states[ctx].valid_instances.insert(
+                  std::pair<InstanceInfo*,bool>(inst_map[iid],owner));
+            }
           }
         }
-        // Now make our new set of valid instances
-        region_states[ctx].valid_instances.clear();
-        for (std::map<InstanceID,bool>::const_iterator it = new_valid.begin();
-              it != new_valid.end(); it++)
+        else
         {
-          InstanceInfo *info = inst_map[it->first];
+          // Not merging, so we can just invalidate all the old stuff
+          size_t num_valid;
+          derez.deserialize<size_t>(num_valid);
+          std::map<InstanceID,bool> new_valid;
+          for (unsigned idx = 0; idx < num_valid; idx++)
+          {
+            InstanceID iid;
+            derez.deserialize<InstanceID>(iid);
+            bool owner;
+            derez.deserialize<bool>(owner);
 #ifdef DEBUG_HIGH_LEVEL
-          assert(info->valid); 
+            assert(inst_map.find(iid) != inst_map.end());
 #endif
-          region_states[ctx].valid_instances[info] = it->second;
+            new_valid[iid] = owner;
+          }
+          // Now check to see which of our instances are no longer valid, make sure none of
+          // them share the same user id
+          for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
+                it != region_states[ctx].valid_instances.end(); it++)
+          {
+            if (new_valid.find(it->first->iid) == new_valid.end())
+            {
+              // Check for overwrite
+              if (it->first->has_user(uid))
+              {
+                log_task(LEVEL_ERROR,"Overwriting a prior physical instance for index space task "
+                    "with unique id %d.  Violation of independent index space slices constraint. "
+                    "See: groups.google.com/group/legiondevelopers/browse_thread/thread/39ad6b3b55ed9b8f", uid);
+                exit(1);
+              }
+#ifndef DISABLE_GC
+              // If we own it, we can invalidate it
+              if (it->second)
+              {
+                it->first->mark_invalid();
+              }
+#endif
+            }
+          }
+          // Now make our new set of valid instances
+          region_states[ctx].valid_instances.clear();
+          for (std::map<InstanceID,bool>::const_iterator it = new_valid.begin();
+                it != new_valid.end(); it++)
+          {
+            InstanceInfo *info = inst_map[it->first];
+#ifdef DEBUG_HIGH_LEVEL
+            assert(info->valid); 
+#endif
+            region_states[ctx].valid_instances[info] = it->second;
+          }
         }
       }
       else
@@ -9186,52 +9557,76 @@ namespace RegionRuntime {
       // Returning Reduction Instances
       if (returning)
       {
-        size_t num_reduc;
-        derez.deserialize<size_t>(num_reduc);
-        std::map<InstanceID,bool> new_reduc;
-        for (unsigned idx = 0; idx < num_reduc; idx++)
+        if (merge)
         {
-          InstanceID iid;
-          derez.deserialize<InstanceID>(iid);
-          bool owner;
-          derez.deserialize<bool>(owner);
-#ifdef DEBUG_HIGH_LEVEL
-          assert(inst_map.find(iid) != inst_map.end());
-#endif
-          new_reduc[iid] = owner;
-        }
-        // Check to see which of our instances are no longer valid
-        for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].reduction_instances.begin();
-              it != region_states[ctx].reduction_instances.end(); it++)
-        {
-          if (new_reduc.find(it->first->iid) == new_reduc.end())
+          size_t num_reduc;
+          derez.deserialize<size_t>(num_reduc);
+          for (unsigned idx = 0; idx < num_reduc; idx++)
           {
-            // Check to see if this is from the same user.  In the case of reductions, its ok for
-            // their to be multiple no-conflicting mappings of the same instance from the same user
-            if (it->first->has_user(uid))
-            {
-              // Add it to the list of new reductions, this will merge together are all the
-              // reduction instances
-              new_reduc.insert(std::pair<InstanceID,bool>(it->first->iid,it->second));
-            }
-#ifndef DISABLE_GC
-            else if (it->second) // Otherwise we can invalidate it
-            {
-              it->first->mark_invalid();
-            }
+            InstanceID iid;
+            derez.deserialize<InstanceID>(iid);
+            bool owner;
+            derez.deserialize<bool>(owner);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(inst_map.find(iid) != inst_map.end());
 #endif
+            if (region_states[ctx].reduction_instances.find(inst_map[iid]) == region_states[ctx].reduction_instances.end())
+            {
+              // Add it to the set of reduction instances
+              region_states[ctx].reduction_instances.insert(
+                  std::pair<InstanceInfo*,bool>(inst_map[iid],owner));
+            }
           }
         }
-        // Now make the new set of reduction instances
-        region_states[ctx].reduction_instances.clear();
-        for (std::map<InstanceID,bool>::const_iterator it = new_reduc.begin();
-              it != new_reduc.end(); it++)
+        else
         {
-          InstanceInfo *info = inst_map[it->first];
+          size_t num_reduc;
+          derez.deserialize<size_t>(num_reduc);
+          std::map<InstanceID,bool> new_reduc;
+          for (unsigned idx = 0; idx < num_reduc; idx++)
+          {
+            InstanceID iid;
+            derez.deserialize<InstanceID>(iid);
+            bool owner;
+            derez.deserialize<bool>(owner);
 #ifdef DEBUG_HIGH_LEVEL
-          assert(info->valid);
+            assert(inst_map.find(iid) != inst_map.end());
 #endif
-          region_states[ctx].reduction_instances[info] = it->second;
+            new_reduc[iid] = owner;
+          }
+          // Check to see which of our instances are no longer valid
+          for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].reduction_instances.begin();
+                it != region_states[ctx].reduction_instances.end(); it++)
+          {
+            if (new_reduc.find(it->first->iid) == new_reduc.end())
+            {
+              // Check to see if this is from the same user.  In the case of reductions, its ok for
+              // their to be multiple no-conflicting mappings of the same instance from the same user
+              if (it->first->has_user(uid))
+              {
+                // Add it to the list of new reductions, this will merge together are all the
+                // reduction instances
+                new_reduc.insert(std::pair<InstanceID,bool>(it->first->iid,it->second));
+              }
+#ifndef DISABLE_GC
+              else if (it->second) // Otherwise we can invalidate it
+              {
+                it->first->mark_invalid();
+              }
+#endif
+            }
+          }
+          // Now make the new set of reduction instances
+          region_states[ctx].reduction_instances.clear();
+          for (std::map<InstanceID,bool>::const_iterator it = new_reduc.begin();
+                it != new_reduc.end(); it++)
+          {
+            InstanceInfo *info = inst_map[it->first];
+#ifdef DEBUG_HIGH_LEVEL
+            assert(info->valid);
+#endif
+            region_states[ctx].reduction_instances[info] = it->second;
+          }
         }
       }
       else
@@ -9251,15 +9646,12 @@ namespace RegionRuntime {
               std::pair<InstanceInfo*,bool>(inst_map[iid],owner));
         }
       }
-      derez.deserialize<PartState>(region_states[ctx].open_state);
-      derez.deserialize<DataState>(region_states[ctx].data_state);
-      derez.deserialize<ReductionOpID>(region_states[ctx].redop);
-      derez.deserialize<PartitionID>(region_states[ctx].exclusive_part);
-      // unpack all the open states below
-      for (std::set<PartitionID>::const_iterator it = region_states[ctx].open_physical.begin();
-            it != region_states[ctx].open_physical.end(); it++)
+      
+      // unpack all the new open states below (use new in case we merged)
+      for (std::set<PartitionID>::const_iterator it = new_open.begin();
+            it != new_open.end(); it++)
       {
-        partitions[*it]->unpack_physical_state(ctx, derez, inst_map, returning, uid);
+        partitions[*it]->unpack_physical_state(ctx, derez, returning, merge, inst_map, uid);
       }
     }
 
@@ -9292,6 +9684,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!dep.trace.empty());
       assert(dep.trace.back() == handle.id);
+      assert(dep.parent->ctx_id == dep.ctx_id);
 #endif
       // Check to see if we've arrived at our destination
       if (dep.trace.size() == 1)
@@ -9302,11 +9695,11 @@ namespace RegionRuntime {
         // any dependences we have on them.  If we find one that is a true dependence we
         // can remove it from the list since we dominate it
         unsigned mapping_dependence_count = 0;
-        for (std::list<std::pair<GeneralizedContext*,unsigned> >::iterator it = 
+        for (std::list<LogicalUser>::const_iterator it = 
               region_states[dep.ctx_id].active_users.begin(); it !=
               region_states[dep.ctx_id].active_users.end(); it++)
         {
-          if (perform_dependence_check(it->first,it->second,dep))
+          if (perform_dependence_check(*it,dep))
           {
             mapping_dependence_count++;
           }
@@ -9322,20 +9715,19 @@ namespace RegionRuntime {
         else
         {
           // We didn't dominate everyone, add the closed users to our mapping dependence
-          for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it = 
+          for (std::list<LogicalUser>::const_iterator it = 
                 region_states[dep.ctx_id].closed_users.begin(); it !=
                 region_states[dep.ctx_id].closed_users.end(); it++)
           {
-            perform_dependence_check(it->first,it->second,dep);
+            perform_dependence_check(*it,dep);
           }
         }
         // Add ourselves to the list of active users
-        region_states[dep.ctx_id].active_users.push_back(
-            std::pair<GeneralizedContext*,unsigned>(dep.ctx,dep.idx));
+        region_states[dep.ctx_id].active_users.push_back(dep.user);
 
         // We've arrived at the region we were targetting
         // First check to see if there are any open partitions below us that we need to close
-        const RegionRequirement &req = dep.get_req();
+        const RegionUsage &req = dep.user.usage;
         switch (region_states[dep.ctx_id].logical_state)
         {
           case PART_NOT_OPEN:
@@ -9404,18 +9796,18 @@ namespace RegionRuntime {
         dep.trace.pop_back();
         PartitionID pid = (PartitionID)dep.trace.back();
         // Not where we want to be yet, check for any dependences and continue the traversal
-        for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it = 
+        for (std::list<LogicalUser>::const_iterator it = 
             region_states[dep.ctx_id].active_users.begin(); it != region_states[dep.ctx_id].active_users.end(); it++)
         {
-          perform_dependence_check(it->first, it->second, dep);
+          perform_dependence_check(*it, dep);
         }
         // Also need to register any closed users as mapping dependences
-        for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it =
+        for (std::list<LogicalUser>::const_iterator it =
               region_states[dep.ctx_id].closed_users.begin(); it != region_states[dep.ctx_id].closed_users.end(); it++)
         {
-          perform_dependence_check(it->first, it->second, dep);
+          perform_dependence_check(*it, dep);
         }
-        const RegionRequirement &req = dep.get_req();
+        const RegionUsage &req = dep.user.usage;
         switch (region_states[dep.ctx_id].logical_state)
         {
           case PART_NOT_OPEN:
@@ -9632,20 +10024,20 @@ namespace RegionRuntime {
       assert(region_states[dep.ctx_id].closed_users.empty());
       assert(region_states[dep.ctx_id].open_logical.empty());
       assert(region_states[dep.ctx_id].logop == 0);
+      assert(dep.parent->ctx_id == dep.ctx_id);
 #endif
       // check to see if we've arrived at the region that we want
       if (dep.trace.size() == 1)
       {
         // We've arrived, register that we are now a user of this physical instance
-        region_states[dep.ctx_id].active_users.push_back(
-            std::pair<GeneralizedContext*,unsigned>(dep.ctx,dep.idx));
+        region_states[dep.ctx_id].active_users.push_back(dep.user);
       }
       else
       { 
         dep.trace.pop_back();
         PartitionID pid = (PartitionID)dep.trace.back();
         // Not there yet, open the right partition in the correct state and continue the traversal
-        const RegionRequirement &req = dep.get_req();
+        const RegionUsage &req = dep.user.usage;
         if (IS_READ_ONLY(req))
         {
           region_states[dep.ctx_id].logical_state = PART_READ_ONLY;
@@ -9671,7 +10063,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     void RegionNode::close_logical_tree(DependenceDetector &dep, bool register_dependences,
-                                        std::list<std::pair<GeneralizedContext*,unsigned> > &closed, bool closing_part)
+                                        std::list<LogicalUser> &closed, bool closing_part)
     //--------------------------------------------------------------------------------------------
     {
       // First check to see if we have any open partitions to close
@@ -9724,17 +10116,17 @@ namespace RegionRuntime {
       {
         // Everything here is a mapping dependence since we will be copying from these
         // regions back into their parent regions
-        for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it = 
+        for (std::list<LogicalUser>::const_iterator it = 
             region_states[dep.ctx_id].active_users.begin(); it !=
             region_states[dep.ctx_id].active_users.end(); it++)
         {
           // Special case for when closing a partition, if we are already a user then we
           // can ignore it because have over-approximated our set of regions by saying we're using a partition
-          if (closing_part && (dep.ctx == it->first))
+          if (closing_part && (it->ctx == dep.user.ctx))
           {
             continue;
           }
-          perform_dependence_check(it->first, it->second, dep);
+          perform_dependence_check(*it, dep);
           // Also put them onto the closed list
           closed.push_back(*it);
         }
@@ -9752,17 +10144,17 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       // Register dependences on all the users
-      for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it =
+      for (std::list<LogicalUser>::const_iterator it = 
             region_states[ctx].active_users.begin(); it !=
             region_states[ctx].active_users.end(); it++)
       {
-        op->add_mapping_dependence(0/*idx*/, it->first, it->second, TRUE_DEPENDENCE);
+        op->add_mapping_dependence(0/*idx*/, *it, TRUE_DEPENDENCE);
       }
-      for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it =
+      for (std::list<LogicalUser>::const_iterator it = 
             region_states[ctx].closed_users.begin(); it !=
             region_states[ctx].closed_users.end(); it++)
       {
-        op->add_mapping_dependence(0/*idx*/, it->first, it->second, TRUE_DEPENDENCE);
+        op->add_mapping_dependence(0/*idx*/, *it, TRUE_DEPENDENCE);
       }
       // Traverse any open partitions 
       for (std::set<PartitionID>::const_iterator it = region_states[ctx].open_logical.begin();
@@ -9886,7 +10278,7 @@ namespace RegionRuntime {
           // If we're sanitizing we're done at this point
           return precondition;
         }
-        const RegionRequirement &req = ren.get_req();
+        const RegionUsage &req = ren.usage;
         // Now check to see if we're a reduction, which is a really easy case to handle
         if (IS_REDUCE(req))
         {
@@ -9899,9 +10291,9 @@ namespace RegionRuntime {
             // and then make us the new reduction users
             bool target_owned;
             InstanceInfo *target = select_target_instance(ren, target_owned); 
-            close_local_tree(ren.ctx_id, target, ren.ctx, ren.mapper, false/*leave open*/);
             // Update the valid instances
             update_valid_instances(ren.ctx_id, target, true/*writer*/,target_owned);
+            close_local_tree(ren.ctx_id, target, ren.ctx, ren.mapper, false/*leave open*/);
 #ifdef DEBUG_HIGH_LEVEL
             assert(region_states[ren.ctx_id].reduction_instances.empty());
 #endif
@@ -9919,7 +10311,7 @@ namespace RegionRuntime {
         // Check to see if we have to initialize our physical instance
         if (ren.needs_initializing)
         {
-          if (!IS_WRITE_ONLY(ren.get_req()))
+          if (!IS_WRITE_ONLY(req))
           {
             std::set<Memory> locations;
             get_physical_locations(ren.ctx_id, locations, true/*ignore open below*/,false/*reduction*/);
@@ -9933,6 +10325,7 @@ namespace RegionRuntime {
         // Now close up the tree, this will capture any outstanding data either in the
         // form of reductions or of dirty children.  If we're ready only, mark that it
         // is acceptable to keep the children open
+        update_valid_instances(ren.ctx_id,ren.info,written_to,ren.owned);
         if (close_local_tree(ren.ctx_id, ren.info, ren.ctx, ren.mapper, IS_READ_ONLY(req)))
         {
           written_to = true;
@@ -9940,13 +10333,12 @@ namespace RegionRuntime {
         // Finally record that we are using this physical instance
         // and update the state of the valid physical instances
         precondition = ren.info->add_user(ren.ctx, ren.idx, precondition);
-        update_valid_instances(ren.ctx_id,ren.info,written_to,ren.owned);
         // Return the precondition for when the task can begin
         return precondition;
       }
       else
       {
-        const RegionRequirement &req = ren.get_req();
+        const RegionUsage &req = ren.usage;
         ren.trace.pop_back();
         // We're not there yet
         switch (region_states[ren.ctx_id].open_state)
@@ -10072,9 +10464,9 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
                   assert(target->handle == this->handle);
 #endif
-                  close_local_tree(ren.ctx_id, target, ren.ctx, ren.mapper, IS_READ_ONLY(req));
                   // Update the valid instances here
                   update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
+                  close_local_tree(ren.ctx_id, target, ren.ctx, ren.mapper, IS_READ_ONLY(req));
                   PartitionID pid = (PartitionID)ren.trace.back();
                   region_states[ren.ctx_id].open_physical.insert(pid);
                   // Figure out which state the partition should be put in
@@ -10082,8 +10474,7 @@ namespace RegionRuntime {
                   {
                     region_states[ren.ctx_id].open_state = PART_READ_ONLY;
                     region_states[ren.ctx_id].exclusive_part = 0;
-                    // These have been left open so continue the traversal
-                    return partitions[pid]->register_physical_instance(ren, precondition);
+                    return partitions[pid]->open_physical_tree(ren, precondition);
                   }
                   else
                   {
@@ -10122,9 +10513,9 @@ namespace RegionRuntime {
                     // Different reducers, need to close and then open again
                     bool target_owned;
                     InstanceInfo *target = select_target_instance(ren, target_owned);
-                    close_local_tree(ren.ctx_id, target, ren.ctx, ren.mapper, false/*leave_open*/);
                     // Update the valid instances
                     update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
+                    close_local_tree(ren.ctx_id, target, ren.ctx, ren.mapper, false/*leave_open*/);
                     // Mark that we're the new user and stays in exclusive mode
                     region_states[ren.ctx_id].exclusive_part = pid;
                     region_states[ren.ctx_id].open_physical.insert(pid);
@@ -10150,9 +10541,9 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
                 assert(target->handle == this->handle);
 #endif
-                close_local_tree(ren.ctx_id, target, ren.ctx, ren.mapper,false/*leave open*/);
                 // Update the valid instances
                 update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
+                close_local_tree(ren.ctx_id, target, ren.ctx, ren.mapper,false/*leave open*/);
                 region_states[ren.ctx_id].open_physical.clear();
                 PartitionID pid = (PartitionID)ren.trace.back();
                 region_states[ren.ctx_id].open_physical.insert(pid);
@@ -10192,9 +10583,9 @@ namespace RegionRuntime {
                   // These are different reducers, need to close everything up and open it again
                   bool target_owned;
                   InstanceInfo *target = select_target_instance(ren, target_owned);
-                  close_local_tree(ren.ctx_id, target, ren.ctx, ren.mapper, false/*leave open*/);
                   // Update the valid instances
                   update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
+                  close_local_tree(ren.ctx_id, target, ren.ctx, ren.mapper, false/*leave open*/);
                   // Mark that we're the new user, and put it in exclusive mode
                   region_states[ren.ctx_id].open_physical.insert(pid);
                   region_states[ren.ctx_id].exclusive_part = pid;
@@ -10218,12 +10609,18 @@ namespace RegionRuntime {
     Event RegionNode::open_physical_tree(RegionRenamer &ren, Event precondition)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(region_states[ren.ctx_id].valid_instances.empty());
+      assert(region_states[ren.ctx_id].reduction_instances.empty());
+      assert(region_states[ren.ctx_id].data_state == DATA_CLEAN);
+      assert(region_states[ren.ctx_id].open_state == PART_NOT_OPEN);
+      assert(region_states[ren.ctx_id].open_physical.empty());
+      assert(region_states[ren.ctx_id].exclusive_part == 0);
+      assert(region_states[ren.ctx_id].redop == 0);
+#endif
       if (ren.trace.size() == 1)
       {
         // We've arrived
-        region_states[ren.ctx_id].open_state = PART_NOT_OPEN;
-        region_states[ren.ctx_id].data_state = DATA_CLEAN; // necessary to find source copies
-
         // First check to see if we're doing sanitizing or actual opening
         if (ren.sanitizing)
         {
@@ -10249,7 +10646,7 @@ namespace RegionRuntime {
         }
         else
         {
-          const RegionRequirement &req = ren.get_req();
+          const RegionUsage &req = ren.usage;
           // Check to see if we're a reduction
           if (IS_REDUCE(req))
           {
@@ -10265,7 +10662,7 @@ namespace RegionRuntime {
           // to issue the copy
           if (ren.needs_initializing)
           {
-            if (!IS_WRITE_ONLY(ren.get_req()))
+            if (!IS_WRITE_ONLY(req))
             {
               std::set<Memory> locations;
               get_physical_locations(ren.ctx_id, locations, true/*allow up*/,false/*reduction*/);
@@ -10297,7 +10694,7 @@ namespace RegionRuntime {
 #endif
         region_states[ren.ctx_id].open_physical.insert(pid);
         // Update our state
-        const RegionRequirement &req = ren.get_req();
+        const RegionUsage &req = ren.usage;
         if (IS_WRITE(req) || IS_REDUCE(req))
         {
           region_states[ren.ctx_id].open_state = PART_EXCLUSIVE;
@@ -10310,10 +10707,8 @@ namespace RegionRuntime {
         else
         {
           region_states[ren.ctx_id].open_state = PART_READ_ONLY;
-          region_states[ren.ctx_id].exclusive_part = 0;
         }
         // The data at this region is clean because there is no data
-        region_states[ren.ctx_id].data_state = DATA_CLEAN;
         return partitions[pid]->open_physical_tree(ren,precondition); 
       }
     }
@@ -10323,24 +10718,26 @@ namespace RegionRuntime {
                               GeneralizedContext *enclosing, Mapper *mapper, bool leave_open)
     //--------------------------------------------------------------------------------------------
     {
+      // First check to see if the target has the same logical region as us, if not get the
+      // instance info for this region, or create a new once
+      if ((target != InstanceInfo::get_no_instance()) && (target->handle != this->handle))
+      {
+        InstanceInfo *local_target = target->get_open_subregion(this->handle);
+        if (local_target == InstanceInfo::get_no_instance())
+        {
+          local_target = enclosing->create_instance_info(this->handle, target);
+        }
+        // Set the target to the correct instance info, this will allow close copies to 
+        // be performed in parallel
+        target = local_target;
+        
+      }
+
       if (region_states[ctx].data_state == DATA_DIRTY)
       {
 #ifdef DEBUG_HIGH_LEVEL
         assert(target != InstanceInfo::get_no_instance());
 #endif
-        // First check to see if the target has the same logical region as us, if not get the
-        // instance info for this region, or create a new once
-        if (target->handle != this->handle)
-        {
-          InstanceInfo *local_target = target->get_open_subregion(this->handle);
-          if (local_target == InstanceInfo::get_no_instance())
-          {
-            local_target = enclosing->create_instance_info(this->handle, target);
-          }
-          // Set the target to the correct instance info, this will allow close copies to 
-          // be performed in parallel
-          target = local_target;
-        }
         std::set<Memory> locations;
         // don't allow a copy up since we're doing a copy up
         get_physical_locations(ctx, locations, false/*allow up*/,false/*reduction*/); 
@@ -10377,6 +10774,10 @@ namespace RegionRuntime {
                         GeneralizedContext *enclosing, Mapper *mapper, bool leave_open)
     //--------------------------------------------------------------------------------------------
     {
+      if (target != InstanceInfo::get_no_instance())
+      {
+        target->mark_begin_close();
+      }
       bool written_to = false;
       // See if we have any partitions to close
       switch (region_states[ctx].open_state)
@@ -10397,6 +10798,7 @@ namespace RegionRuntime {
             // Close up the open partition 
             PartitionID pid = *(region_states[ctx].open_physical.begin());
             partitions[pid]->close_physical_tree(ctx,target,enclosing,mapper,leave_open);
+            target->force_closed();
             written_to = true;
             if (!leave_open)
             {
@@ -10422,11 +10824,13 @@ namespace RegionRuntime {
               for (std::set<PartitionID>::iterator it = region_states[ctx].open_physical.begin();
                     it != region_states[ctx].open_physical.end(); it++)
               {
-                partitions[*it]->close_physical_tree(ctx,InstanceInfo::get_no_instance(),
-                                                      enclosing,mapper, leave_open);
+                partitions[*it]->close_physical_tree(ctx, InstanceInfo::get_no_instance(),
+                                                      enclosing, mapper, leave_open);
               }
               region_states[ctx].open_physical.clear();
               region_states[ctx].open_state = PART_NOT_OPEN;
+              // Close up the instance
+              target->force_closed();
             }
             break;
           }
@@ -10452,17 +10856,9 @@ namespace RegionRuntime {
             }
             region_states[ctx].open_physical.clear();
             region_states[ctx].exclusive_part = 0;
-            if (!leave_open)
-            {
-              region_states[ctx].open_state = PART_NOT_OPEN;
-            }
-            else
-            {
-              // The partition with no-reduction data in it is the only one worth keeping open
-              // All other partitions only could have reduction data in them
-              region_states[ctx].open_physical.insert(current);
-              region_states[ctx].open_state = PART_READ_ONLY;
-            }
+            region_states[ctx].open_state = PART_NOT_OPEN;
+            // Close up the instance
+            target->force_closed(); 
             break;
           }
         default:
@@ -10484,6 +10880,11 @@ namespace RegionRuntime {
       }
       region_states[ctx].reduction_instances.clear();
       region_states[ctx].redop = 0;
+
+      if (target != InstanceInfo::get_no_instance())
+      {
+        target->mark_finish_close();
+      }
 
       return written_to;
     }
@@ -10580,7 +10981,7 @@ namespace RegionRuntime {
         get_physical_locations(ren.ctx_id,locations,true/*ignore open below*/,false/*reduction*/);
         // Ask the mapper for a list of target memories 
         std::vector<Memory> ranking;
-        ren.mapper->rank_copy_targets(ren.ctx->get_enclosing_task(), ren.get_req(), locations, ranking);
+        ren.mapper->rank_copy_targets(ren.ctx->get_enclosing_task(), ren.ctx->get_requirement(ren.idx), locations, ranking);
         // Now go through and try and make the required instance
         {
           // Go over the memories and try and find/make the instance
@@ -10595,6 +10996,9 @@ namespace RegionRuntime {
               // Check to see if this is an instance info of the right logical region
               if (target->handle != handle)
               {
+#ifdef DEBUG_HIGH_LEVEL
+                assert(!target->collected);
+#endif
                 target = ren.ctx->create_instance_info(handle,target);
                 target_owned = true;
               }
@@ -10609,7 +11013,7 @@ namespace RegionRuntime {
                 target_owned = true;
                 // Check to see if this is write-only, if so then there is
                 // no need to make a copy from anywhere, otherwise make the copy
-                if (!IS_WRITE_ONLY(ren.get_req()))
+                if (!IS_WRITE_ONLY(ren.usage))
                 {
                   // We just created an instance so we need to initialize it
                   initialize_instance(ren, locations);
@@ -10627,7 +11031,7 @@ namespace RegionRuntime {
       }
 #ifdef DEBUG_HIGH_LEVEL
       assert(target != InstanceInfo::get_no_instance());
-      assert(target->valid);
+      assert(!target->collected);
 #endif
       return target;
     }
@@ -10669,12 +11073,12 @@ namespace RegionRuntime {
       assert(info != InstanceInfo::get_no_instance());
       // This should always hold, if not something is wrong somewhere else
       assert(info->handle == handle); 
-      // This only needs to be true if we are the owner
-      //if (own)
-      {
-        assert(info->valid);
-      }
 #endif
+      // If this instance isn't already a valid instance, mark that it will now be valid
+      if (own && region_states[ctx].valid_instances.find(info) == region_states[ctx].valid_instances.end())
+      {
+        info->mark_valid();
+      }
       // If it's a writer we invalidate everything and make this the new instance 
       if (writer)
       {
@@ -10730,11 +11134,12 @@ namespace RegionRuntime {
       // This should always hold, if not something is wrong somewhere else
       assert(info->handle == handle); 
       // This only needs to be true if we are the owner
-      if (owned)
-      {
-        assert(info->valid);
-      }
 #endif
+      // If we didn't own this previously, mark that it will now be valid
+      if (owned && region_states[ctx].reduction_instances.find(info) == region_states[ctx].reduction_instances.end())
+      {
+        info->mark_valid();
+      }
       region_states[ctx].reduction_instances.insert(std::pair<InstanceInfo*,bool>(info,owned));
     }
 
@@ -10965,14 +11370,15 @@ namespace RegionRuntime {
     {
       rez.serialize<PartitionID>(pid);
       rez.serialize<RegState>(partition_states[ctx].physical_state);
+      rez.serialize<LogicalRegion>(partition_states[ctx].exclusive_reg);
+      rez.serialize<ReductionOpID>(partition_states[ctx].redop);
+
       rez.serialize<size_t>(partition_states[ctx].open_physical.size());
       for (std::set<LogicalRegion>::const_iterator it = partition_states[ctx].open_physical.begin();
              it != partition_states[ctx].open_physical.end(); it++)
       {
         rez.serialize<LogicalRegion>(*it);
       }
-      rez.serialize<LogicalRegion>(partition_states[ctx].exclusive_reg);
-      rez.serialize<ReductionOpID>(partition_states[ctx].redop);
       for (std::set<LogicalRegion>::const_iterator it = partition_states[ctx].open_physical.begin();
             it != partition_states[ctx].open_physical.end(); it++)
       {
@@ -10981,8 +11387,8 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void PartitionNode::unpack_physical_state(ContextID ctx, Deserializer &derez, 
-        std::map<InstanceID,InstanceInfo*> &inst_map, bool returning, UniqueID uid /*=0*/)
+    void PartitionNode::unpack_physical_state(ContextID ctx, Deserializer &derez, bool returning, bool merge,
+        std::map<InstanceID,InstanceInfo*> &inst_map, UniqueID uid /*=0*/)
     //--------------------------------------------------------------------------------------------
     {
       PartitionID check_pid;
@@ -10990,36 +11396,205 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(check_pid == pid);
 #endif
-      derez.deserialize<RegState>(partition_states[ctx].physical_state);
+      std::set<LogicalRegion> new_open;
       if (returning)
       {
-        // Check to see if there are any regions that were open that are no longer open
-        // and if so invalidate them
-        std::set<LogicalRegion> new_open;
-        size_t num_open;
-        derez.deserialize<size_t>(num_open);
-        for (unsigned idx = 0; idx < num_open; idx++)
+        if (merge)
         {
-          LogicalRegion child;
-          derez.deserialize<LogicalRegion>(child);
-          new_open.insert(child);
-        }
-        // Go through our currently open children and see if there are 
-        // any that are no longer open, if so invalidate them
-        for (std::set<LogicalRegion>::const_iterator it = partition_states[ctx].open_physical.begin();
-              it != partition_states[ctx].open_physical.end(); it++)
-        {
-          if (new_open.find(*it) == new_open.end())
+          if (disjoint)
           {
-            // Invalidate the subtree 
-            children[*it]->invalidate_physical_tree(ctx);
+            // Disjoint partitions are easy to merge 
+            RegState new_physical_state;
+            derez.deserialize<RegState>(new_physical_state);
+            // If they're the same, we're done, if they're different, mark as exclusive (i.e. bottom)
+            if (new_physical_state != partition_states[ctx].physical_state)
+            {
+              partition_states[ctx].physical_state = REG_OPEN_EXCLUSIVE;
+            }
+            // Unpack everything else
+            derez.deserialize<LogicalRegion>(partition_states[ctx].exclusive_reg);
+            derez.deserialize<ReductionOpID>(partition_states[ctx].redop);
+            size_t num_open;
+            derez.deserialize<size_t>(num_open);
+            for (unsigned idx = 0; idx < num_open; idx++)
+            {
+              LogicalRegion child;
+              derez.deserialize<LogicalRegion>(child);
+              new_open.insert(child);
+              // If it wasn't there before, add it
+              if (partition_states[ctx].open_physical.find(child) == partition_states[ctx].open_physical.end())
+              {
+                partition_states[ctx].open_physical.insert(child);
+              }
+            }
+          }
+          else
+          {
+            RegState new_physical_state;
+            derez.deserialize<RegState>(new_physical_state);
+            LogicalRegion new_exclusive_reg;
+            derez.deserialize<LogicalRegion>(new_exclusive_reg);
+            ReductionOpID new_redop;
+            derez.deserialize<ReductionOpID>(new_redop);
+            size_t num_open;
+            derez.deserialize<size_t>(num_open);
+            for (unsigned idx = 0; idx < num_open; idx++)
+            {
+              LogicalRegion child;
+              derez.deserialize<LogicalRegion>(child);
+              new_open.insert(child);
+            } 
+            switch (partition_states[ctx].physical_state)
+            {
+              case REG_NOT_OPEN:
+                {
+                  // Just assign it and we're done
+                  partition_states[ctx].physical_state = new_physical_state;
+                  partition_states[ctx].exclusive_reg = new_exclusive_reg;
+                  partition_states[ctx].redop = new_redop;
+                  partition_states[ctx].open_physical = new_open;
+                  break;
+                }
+              case REG_OPEN_READ_ONLY:
+                {
+                  if (new_physical_state == REG_NOT_OPEN)
+                  {
+                    // Nothing to do here
+#ifdef DEBUG_HIGH_LEVEL
+                    assert(new_open.empty());
+#endif
+                  }
+                  else if (new_physical_state != REG_OPEN_READ_ONLY)
+                  {
+                    log_tree(LEVEL_ERROR,"Tree merge error: merging aliased partition of type %d to read-only.  "
+                        "This is a runtime bug.",new_physical_state);
+                    exit(1);
+                  }
+                  partition_states[ctx].open_physical.insert(new_open.begin(),new_open.end());
+                  break;
+                }
+              case REG_OPEN_EXCLUSIVE:
+                {
+                  if (new_physical_state == REG_OPEN_EXCLUSIVE)
+                  {
+                    if (new_exclusive_reg != partition_states[ctx].exclusive_reg)
+                    {
+                      // Check to see if they have the same reduction op, in which case it's a reduction, otherwise its an error
+                      if ((new_redop != 0) && (new_redop == partition_states[ctx].redop))
+                      {
+                        partition_states[ctx].physical_state = REG_OPEN_REDUCE;
+                        partition_states[ctx].open_physical.insert(new_exclusive_reg);
+                      }
+                      else
+                      {
+                        log_tree(LEVEL_ERROR,"Tree merge error: merging incompatible exclusive aliased partitions.  This is a runtime bug.");
+                        exit(1);
+                      }
+                    }
+#ifdef DEBUG_HIGH_LEVEL
+                    assert(new_open.size() == 1);
+#endif
+                  }
+                  else if (new_physical_state == REG_OPEN_REDUCE)
+                  {
+                    if (new_exclusive_reg != partition_states[ctx].exclusive_reg)
+                    {
+                      log_tree(LEVEL_ERROR,"Tree merging error: merging incompatbile exclusive aliased partition with reduce partition. "
+                          "This is a runtime bug.");
+                      exit(1);
+                    }
+                    partition_states[ctx].physical_state = new_physical_state;
+                    partition_states[ctx].redop = new_redop;
+                    partition_states[ctx].open_physical.insert(new_open.begin(),new_open.end());
+                  }
+                  else if (new_physical_state == REG_NOT_OPEN)
+                  {
+                    // Nothing to do here
+#ifdef DEBUG_HIGH_LEVEL
+                    assert(new_open.empty());
+#endif
+                  }
+                  else
+                  {
+                    log_tree(LEVEL_ERROR,"Tree merge error: merging read-only partition into exclusive partition.  This is a runtime bug.");
+                    exit(1);
+                  }
+                  break;
+                }
+              case REG_OPEN_REDUCE:
+                {
+                  if (new_physical_state == REG_OPEN_EXCLUSIVE)
+                  {
+                    if (new_exclusive_reg != partition_states[ctx].exclusive_reg)
+                    {
+                      log_tree(LEVEL_ERROR,"Tree merge error: merging exclusive partition into reduce partition with different exclusives. "
+                          "This is a runtime bug.");
+                      exit(1);
+                    }
+                  }
+                  else if (new_physical_state == REG_OPEN_REDUCE)
+                  {
+                    if (new_redop != partition_states[ctx].redop)
+                    {
+                      log_tree(LEVEL_ERROR,"Tree merge error: merging incompatible reductions in aliased partition. "
+                          "This is a runtime bug.");
+                      exit(1);
+                    }
+                    partition_states[ctx].open_physical.insert(new_open.begin(),new_open.end());
+                  }
+                  else if (new_physical_state == REG_NOT_OPEN)
+                  {
+                    // Nothing to do here
+#ifdef DEBUG_HIGH_LEVEL
+                    assert(new_open.empty());
+#endif
+                  }
+                  else
+                  {
+                    log_tree(LEVEL_ERROR,"Tree merge error: merging read-only partition into reduce partition.  This is a runtime bug.");
+                    exit(1);
+                  }
+                }
+              default:
+                assert(false);
+            }
           }
         }
-        // Set our new set of open regions
-        partition_states[ctx].open_physical = new_open;
+        else
+        {
+          derez.deserialize<RegState>(partition_states[ctx].physical_state);
+          derez.deserialize<LogicalRegion>(partition_states[ctx].exclusive_reg);
+          derez.deserialize<ReductionOpID>(partition_states[ctx].redop);
+          // Check to see if there are any regions that were open that are no longer open
+          // and if so invalidate them
+          size_t num_open;
+          derez.deserialize<size_t>(num_open);
+          for (unsigned idx = 0; idx < num_open; idx++)
+          {
+            LogicalRegion child;
+            derez.deserialize<LogicalRegion>(child);
+            new_open.insert(child);
+          }
+          // Go through our currently open children and see if there are 
+          // any that are no longer open, if so invalidate them
+          for (std::set<LogicalRegion>::const_iterator it = partition_states[ctx].open_physical.begin();
+                it != partition_states[ctx].open_physical.end(); it++)
+          {
+            if (new_open.find(*it) == new_open.end())
+            {
+              // Invalidate the subtree 
+              children[*it]->invalidate_physical_tree(ctx);
+            }
+          }
+          // Set our new set of open regions
+          partition_states[ctx].open_physical = new_open;
+        }
       }
       else
       {
+        derez.deserialize<RegState>(partition_states[ctx].physical_state);
+        derez.deserialize<LogicalRegion>(partition_states[ctx].exclusive_reg);
+        derez.deserialize<ReductionOpID>(partition_states[ctx].redop);
         // Not returning, just open and do the standard thing
         size_t num_open;
         derez.deserialize<size_t>(num_open);
@@ -11029,13 +11604,14 @@ namespace RegionRuntime {
           derez.deserialize<LogicalRegion>(child);
           partition_states[ctx].open_physical.insert(child);
         }
+        new_open = partition_states[ctx].open_physical;
       }
-      derez.deserialize<LogicalRegion>(partition_states[ctx].exclusive_reg);
-      derez.deserialize<ReductionOpID>(partition_states[ctx].redop);
-      for (std::set<LogicalRegion>::const_iterator it = partition_states[ctx].open_physical.begin();
-            it != partition_states[ctx].open_physical.end(); it++)
+      
+      // Iterate over the newly opened ones in case we merged
+      for (std::set<LogicalRegion>::const_iterator it = new_open.begin();
+            it != new_open.end(); it++)
       {
-        children[*it]->unpack_physical_state(ctx, derez, inst_map, returning, uid);
+        children[*it]->unpack_physical_state(ctx, derez, returning, merge, inst_map, uid);
       }
     }
 
@@ -11065,20 +11641,16 @@ namespace RegionRuntime {
     void PartitionNode::register_logical_region(DependenceDetector &dep)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(!dep.trace.empty());
-      assert(dep.trace.back() == pid);
-#endif
       // Check to see if we have arrived at the partition that we want
       if (dep.trace.size() == 1)
       {
         unsigned mapping_dependence_count = 0;
         // First update the set of active tasks and register dependences
-        for (std::list<std::pair<GeneralizedContext*,unsigned> >::iterator it =
+        for (std::list<LogicalUser>::const_iterator it = 
               partition_states[dep.ctx_id].active_users.begin(); it !=
               partition_states[dep.ctx_id].active_users.end(); it++)
         {
-          perform_dependence_check(it->first, it->second, dep);
+          perform_dependence_check(*it, dep);
         }
         // if we dominated all the active tasks, move them to the closed set and start a new active set
         // otherwise we have to register the closed tasks as mapping dependences
@@ -11089,28 +11661,17 @@ namespace RegionRuntime {
         }
         else
         {
-          for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it = 
-                  partition_states[dep.ctx_id].closed_users.begin(); it !=
-                  partition_states[dep.ctx_id].closed_users.end(); it++)
+          for (std::list<LogicalUser>::const_iterator it = 
+                partition_states[dep.ctx_id].closed_users.begin(); it !=
+                partition_states[dep.ctx_id].closed_users.end(); it++)
           {
-            perform_dependence_check(it->first, it->second, dep);
+            perform_dependence_check(*it, dep);
           } 
         }
         // Add ourselves as an active users
-        partition_states[dep.ctx_id].active_users.push_back(std::pair<GeneralizedContext*,unsigned>(dep.ctx,dep.idx));
+        partition_states[dep.ctx_id].active_users.push_back(dep.user);
 
-        // close up any open regions below us regardless of whether we are disjoint or not
-        for (std::set<LogicalRegion>::const_iterator it = partition_states[dep.ctx_id].open_logical.begin();
-              it != partition_states[dep.ctx_id].open_logical.end(); it++)
-        {
-          children[*it]->close_logical_tree(dep,true/*register dependences*/,
-                                            partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
-        }
-        partition_states[dep.ctx_id].open_logical.clear();
-        partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
-        partition_states[dep.ctx_id].logop = 0;
-
-        const RegionRequirement &req = dep.get_req();
+        const RegionUsage &req = dep.user.usage;
         if (disjoint)
         {
           // There are two optimized cases for disjoint: if everyone is read-only or if every one is doing
@@ -11240,7 +11801,7 @@ namespace RegionRuntime {
         dep.trace.pop_back();
         LogicalRegion log = { dep.trace.back() };
         // Check for any dependences on current active users
-        for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it = 
+        for (std::list<LogicalUser>::const_iterator it = 
               partition_states[dep.ctx_id].active_users.begin(); it !=
               partition_states[dep.ctx_id].active_users.end(); it++)
         {
@@ -11249,20 +11810,20 @@ namespace RegionRuntime {
           // anyone else that tries to use this partition will already detect us as a mapping dependence.
           // This is only valid for partitions on index spaces because it is an over-approximation of the
           // set of logical regions that we are using.
-          if (it->first == dep.ctx)
+          if (it->ctx == dep.user.ctx)
           {
             continue;
           }
-          perform_dependence_check(it->first, it->second, dep);
+          perform_dependence_check(*it, dep);
         }
 
         // Check to see if we have any closed users to wait for
         {
-          for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it = 
+          for (std::list<LogicalUser>::const_iterator it = 
                 partition_states[dep.ctx_id].closed_users.begin(); it !=
                 partition_states[dep.ctx_id].closed_users.end(); it++)
           {
-            perform_dependence_check(it->first, it->second, dep);
+            perform_dependence_check(*it, dep);
           }
         }
         
@@ -11275,7 +11836,7 @@ namespace RegionRuntime {
           // read-only or if everything is reduce and a task is in reduce.  The exclusive
           // mode will act as bottom which just means we don't know and therefore have to
           // close everthing up below.
-          const RegionRequirement &req = dep.get_req();
+          const RegionUsage &req = dep.user.usage;
           switch (partition_states[dep.ctx_id].logical_state)
           {
             case REG_NOT_OPEN:
@@ -11336,7 +11897,7 @@ namespace RegionRuntime {
         }
         else
         {
-          const RegionRequirement &req = dep.get_req();
+          const RegionUsage &req = dep.user.usage;
           // Aliased partition, check to see which mode it is open in
           switch (partition_states[dep.ctx_id].logical_state)
           {
@@ -11529,20 +12090,20 @@ namespace RegionRuntime {
       assert(partition_states[dep.ctx_id].active_users.empty());
       assert(partition_states[dep.ctx_id].closed_users.empty());
       assert(partition_states[dep.ctx_id].logop == 0);
+      assert(dep.parent->ctx_id == dep.ctx_id);
 #endif
       // Check to see if we have arrived
       if (dep.trace.size() == 1)
       {
         // We've arrived, add ourselves to the list of active tasks
-        partition_states[dep.ctx_id].active_users.push_back(
-            std::pair<GeneralizedContext*,unsigned>(dep.ctx,dep.idx));
+        partition_states[dep.ctx_id].active_users.push_back(dep.user);
       }
       else
       {
         // Haven't arrived yet, continue the traversal
         dep.trace.pop_back();
         LogicalRegion log = { dep.trace.back() };
-        const RegionRequirement &req = dep.get_req();
+        const RegionUsage &req = dep.user.usage;
         if (disjoint)
         {
           if (IS_READ_ONLY(req))
@@ -11591,7 +12152,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     void PartitionNode::close_logical_tree(DependenceDetector &dep, bool register_dependences,
-                   std::list<std::pair<GeneralizedContext*,unsigned> > &closed, bool closing_part)
+                   std::list<LogicalUser> &closed, bool closing_part)
     //--------------------------------------------------------------------------------------------
     {
       // Close out all our open partitions, regardless of whether we are disjoint or not
@@ -11609,11 +12170,11 @@ namespace RegionRuntime {
       {
         // Everything here is a mapping dependence since we will be copying from these regions
         // back into their parent regions
-        for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it = 
+        for (std::list<LogicalUser>::const_iterator it = 
               partition_states[dep.ctx_id].active_users.begin(); it !=
               partition_states[dep.ctx_id].active_users.end(); it++)
         {
-          perform_dependence_check(it->first, it->second, dep);
+          perform_dependence_check(*it, dep);
           // Also put them on the closed list
           closed.push_back(*it);
         }
@@ -11631,17 +12192,17 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       // Register dependences on any users
-      for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it =
+      for (std::list<LogicalUser>::const_iterator it = 
             partition_states[ctx].active_users.begin(); it !=
             partition_states[ctx].active_users.end(); it++)
       {
-        op->add_mapping_dependence(0/*idx*/, it->first, it->second, TRUE_DEPENDENCE);
+        op->add_mapping_dependence(0/*idx*/, *it, TRUE_DEPENDENCE);
       }
-      for (std::list<std::pair<GeneralizedContext*,unsigned> >::const_iterator it = 
+      for (std::list<LogicalUser>::const_iterator it = 
             partition_states[ctx].closed_users.begin(); it !=
             partition_states[ctx].closed_users.end(); it++)
       {
-        op->add_mapping_dependence(0/*idx*/, it->first, it->second, TRUE_DEPENDENCE);
+        op->add_mapping_dependence(0/*idx*/, *it, TRUE_DEPENDENCE);
       }
       // Continue the traversal on any open regions
       for (std::set<LogicalRegion>::const_iterator it = partition_states[ctx].open_logical.begin();
@@ -11682,7 +12243,7 @@ namespace RegionRuntime {
 #endif
       ren.trace.pop_back();
       LogicalRegion log = { ren.trace.back() };
-      const RegionRequirement &req = ren.get_req();
+      const RegionUsage &req = ren.usage;
       // Disjoint partition
       if (disjoint)
       {
@@ -11818,9 +12379,9 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
                   assert(target->handle == parent->handle);
 #endif
-                  close_physical_tree(ren.ctx_id, target, ren.ctx, ren.mapper, IS_READ_ONLY(req)/*leave open*/);
                   // Update the parent valid instances
                   parent->update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
+                  close_physical_tree(ren.ctx_id, target, ren.ctx, ren.mapper, IS_READ_ONLY(req)/*leave open*/);
                   // Update the state of this partition
                   partition_states[ren.ctx_id].open_physical.insert(log);
                   if (IS_READ_ONLY(req))
@@ -11864,8 +12425,8 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
                     assert(target->handle == parent->handle);
 #endif
-                    close_physical_tree(ren.ctx_id, target, ren.ctx, ren.mapper, false/*leave open*/);
                     parent->update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
+                    close_physical_tree(ren.ctx_id, target, ren.ctx, ren.mapper, false/*leave open*/);
                     // Partition stays in exclusive mode
                     partition_states[ren.ctx_id].physical_state = REG_OPEN_EXCLUSIVE;
                     partition_states[ren.ctx_id].open_physical.insert(log);
@@ -11887,8 +12448,8 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
                 assert(target->handle == parent->handle);
 #endif
-                close_physical_tree(ren.ctx_id, target, ren.ctx, ren.mapper, IS_READ_ONLY(req));
                 parent->update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
+                close_physical_tree(ren.ctx_id, target, ren.ctx, ren.mapper, IS_READ_ONLY(req));
                 // Update the state of the partition
                 partition_states[ren.ctx_id].open_physical.insert(log);
                 if (IS_READ_ONLY(req))
@@ -11931,8 +12492,8 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
                   assert(target->handle == parent->handle);
 #endif
-                  close_physical_tree(ren.ctx_id, target, ren.ctx, ren.mapper, false/*leave open*/);
                   parent->update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
+                  close_physical_tree(ren.ctx_id, target, ren.ctx, ren.mapper, false/*leave open*/);
                   // Partition stays in exclusive mode
                   partition_states[ren.ctx_id].physical_state = REG_OPEN_EXCLUSIVE;
                   partition_states[ren.ctx_id].open_physical.insert(log);
@@ -11964,7 +12525,7 @@ namespace RegionRuntime {
       LogicalRegion log = { ren.trace.back() };
       if (!disjoint)
       {
-        const RegionRequirement &req = ren.get_req();
+        const RegionUsage &req = ren.usage;
         if (IS_READ_ONLY(req))
         {
           partition_states[ren.ctx_id].physical_state = REG_OPEN_READ_ONLY;
@@ -12050,18 +12611,20 @@ namespace RegionRuntime {
     //-------------------------------------------------------------------------
     InstanceInfo::InstanceInfo(void) :
       iid(0), handle(LogicalRegion::NO_REGION), location(Memory::NO_MEMORY),
-      inst(RegionInstance::NO_INST), valid(false), remote(true), open_child(false), clone(false), children(0),
-      parent(NULL), valid_event(Event::NO_EVENT), inst_lock(Lock::NO_LOCK)
+      inst(RegionInstance::NO_INST), valid(false), remote(false), 
+      open_child(false), clone(false), children(0),
+      collected(false), remote_copies(0), returned(false),
+      parent(NULL), valid_event(Event::NO_EVENT), inst_lock(Lock::NO_LOCK), closing(false)
     //-------------------------------------------------------------------------
     {
-
     }
     
     //-------------------------------------------------------------------------
     InstanceInfo::InstanceInfo(InstanceID id, LogicalRegion r, Memory m,
                 RegionInstance i, bool rem, InstanceInfo *par, bool open, bool c /*= false*/) :
-      iid(id), handle(r), location(m), inst(i), valid(true), remote(rem), 
-      open_child(open), clone(c), children(0), parent(par)
+      iid(id), handle(r), location(m), inst(i), valid(false), remote(rem), open_child(open), 
+      clone(c), children(0), collected(false), remote_copies(0), returned(false), 
+      parent(par), closing(false)
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL 
@@ -12098,7 +12661,7 @@ namespace RegionRuntime {
     //-------------------------------------------------------------------------
     {
       // If we're the original version of the instance info then delete the lock
-      if (!remote && (parent == NULL))
+      if (!remote && (parent == NULL) && (this != InstanceInfo::get_no_instance()))
       {
         inst_lock.destroy_lock();
       }
@@ -12115,6 +12678,10 @@ namespace RegionRuntime {
         }
       }
 #endif
+      if (remote)
+      {
+        assert(returned);
+      }
 #endif
     }
 
@@ -12142,18 +12709,22 @@ namespace RegionRuntime {
     Event InstanceInfo::add_user(GeneralizedContext *ctx, unsigned idx, Event precondition)
     //-------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!collected);
+#endif
       // Go through all the current users and see if there are any
       // true dependences between the current users and the new user
       std::set<Event> wait_on_events;
-      // Add the valid event (covers all write copy events)
+      
+      // Add the precondition
       if (precondition.exists())
       {
         wait_on_events.insert(precondition);
       }
-      const RegionRequirement &req = ctx->get_requirement(idx);
-      // Get all the dependences in this region and above
-      find_dependences_above(wait_on_events, req, true/*skip first*/);
-      find_dependences_below(wait_on_events, req, true/*first*/);
+
+      const RegionUsage &usage = ctx->get_usage(idx);
+      find_dependences_below(wait_on_events, usage);
+      find_dependences_above(wait_on_events, usage, true/*skip first*/);
 
       // Also check the unresolved dependences to see if any possible unresolved
       // dependences are using this instance in which case we can avoid the dependence
@@ -12180,7 +12751,7 @@ namespace RegionRuntime {
         if (added_users.find(uid) == added_users.end())
         {
           // If this is remote, add it to the added users to track the new ones
-          UserTask ut(ctx->get_requirement(idx), 1, ctx->get_termination_event());
+          UserTask ut(ctx->get_usage(idx), 1, ctx->get_termination_event());
           added_users.insert(std::pair<UniqueID,UserTask>(uid,ut));
         }
         else
@@ -12192,7 +12763,7 @@ namespace RegionRuntime {
       {
         if (users.find(uid) == users.end())
         {
-          UserTask ut(ctx->get_requirement(idx), 1, ctx->get_termination_event()); 
+          UserTask ut(ctx->get_usage(idx), 1, ctx->get_termination_event()); 
           users.insert(std::pair<UniqueID,UserTask>(uid,ut));
         }
         else
@@ -12227,6 +12798,9 @@ namespace RegionRuntime {
     void InstanceInfo::remove_user(UniqueID uid, unsigned ref /*=1*/)
     //-------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!collected);
+#endif
       // Don't check these if we're remote shouldn't be able to remove them anyway
       if (!remote && (users.find(uid) != users.end()))
       {
@@ -12294,6 +12868,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(src_info != InstanceInfo::get_no_instance());
       assert(this != InstanceInfo::get_no_instance());
+      assert(!collected);
 #endif
       // Check to see if they are the same, if so return the valid event for this instance 
       if (src_info->inst == this->inst)
@@ -12302,11 +12877,24 @@ namespace RegionRuntime {
       }
       // Get the preconditions for performing the copy operation 
       std::set<Event> wait_on_events;
+      // Check ourselves first, we better start a new epoch
+      if (find_dependences_below(wait_on_events,true/*writer*/))
+      {
+        start_new_epoch(wait_on_events);
+        wait_on_events.clear();
+        // Can replace all those events with the new valid event
+        wait_on_events.insert(valid_event);
+      }
+#if DEBUG_HIGH_LEVEL
+      else
+      {
+        assert(false); // We should always start a new epoch for a copy writer
+      }
+#endif
+      // Check up the tree also
+      find_dependences_above(wait_on_events,true/*writer*/,true/*skip first*/);
       // Do the source instance
       src_info->get_copy_precondition(wait_on_events);
-      // Now ourselves
-      find_dependences_above(wait_on_events,true/*writer*/,true/*skip first*/);
-      find_dependences_below(wait_on_events,true/*writer*/,true/*first*/);
       // Merge all the events together
       Event copy_precondition = Event::merge_events(wait_on_events);
 #ifdef TRACE_CAPTURE
@@ -12342,7 +12930,7 @@ namespace RegionRuntime {
       log_spy(LEVEL_INFO,"Event Copy Event %x %d %x %x %x %x %x %x %x %d",
           copy_precondition.id,copy_precondition.gen,src_info->inst.id,src_info->handle.id,src_info->location.id,
           this->inst.id,this->handle.id,this->location.id,copy_event.id,copy_event.gen);
-      // Since we just wrote to this whole instance, we can update the valid event
+      // Since we checked above that we just started a new epoch we can just update the valid event here
       valid_event = copy_event;
     }
 
@@ -12350,6 +12938,9 @@ namespace RegionRuntime {
     void InstanceInfo::add_copy_user(UniqueID uid, Event copy_finish)
     //-------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!collected);
+#endif
       // This is now a user of the current epoch
       epoch_copy_users.insert(uid);
       if (remote)
@@ -12388,6 +12979,9 @@ namespace RegionRuntime {
     void InstanceInfo::remove_copy_user(UniqueID uid, unsigned ref /*=1*/)
     //-------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!collected);
+#endif
       // Only check base users if not remote
       if (!remote && (copy_users.find(uid) != copy_users.end()))
       {
@@ -12447,13 +13041,13 @@ namespace RegionRuntime {
     bool InstanceInfo::has_war_dependence(GeneralizedContext *ctx, unsigned idx)
     //-------------------------------------------------------------------------
     {
-      const RegionRequirement &req = ctx->get_requirement(idx);
+      const RegionUsage &usage = ctx->get_usage(idx);
       // No WAR without this being a write
-      if (!HAS_WRITE(req))
+      if (!HAS_WRITE(usage))
       {
         return false;
       }
-      return has_war_above(req) || has_war_below(req,true/*skip first*/);
+      return has_war_above(usage) || has_war_below(usage,true/*skip first*/);
     }
 
     //-------------------------------------------------------------------------
@@ -12464,11 +13058,23 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    void InstanceInfo::mark_invalid(void)
+    void InstanceInfo::mark_valid(void)
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
+      assert(!collected);
+#endif
+      valid = true;
+    }
+
+    //-------------------------------------------------------------------------
+    void InstanceInfo::mark_invalid(void)
+    //-------------------------------------------------------------------------
+    {
+      // Should never be duplicates
+#ifdef DEBUG_HIGH_LEVEL
       assert(valid);
+      assert(!collected);
 #endif
       valid = false;
       garbage_collect();
@@ -12478,11 +13084,17 @@ namespace RegionRuntime {
     InstanceInfo* InstanceInfo::get_open_subregion(LogicalRegion handle) const
     //-------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!collected);
+#endif
       for (std::list<InstanceInfo*>::const_iterator it = open_children.begin();
             it != open_children.end(); it++)
       {
         if (handle == (*it)->handle)
         {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(!(*it)->collected);
+#endif
           return *it;
         }
       }
@@ -12490,13 +13102,47 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
+    void InstanceInfo::mark_begin_close(void)
+    //-------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!collected);
+      assert(!closing);
+#endif
+      closing = true;
+    }
+
+    //-------------------------------------------------------------------------
+    void InstanceInfo::mark_finish_close(void)
+    //-------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!collected);
+      assert(closing);
+#endif
+      closing = false;
+    }
+
+    //-------------------------------------------------------------------------
     Event InstanceInfo::force_closed(void)
     //-------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(this != InstanceInfo::get_no_instance());
+      assert(!collected);
+      assert(closing); // We should already be in closing mode
+#endif
       std::set<Event> wait_on_events;
-      find_dependences_above(wait_on_events,true/*writer*/,true/*skip local*/);
-      find_dependences_below(wait_on_events,true/*writer*/,true/*first*/);
-      start_new_epoch(wait_on_events);
+      if (find_dependences_below(wait_on_events,true/*writer*/))
+      {
+        start_new_epoch(wait_on_events);
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      else
+      {
+        assert(false); // Should always start a new epoch here
+      }
+#endif
       return valid_event;
     }
 
@@ -12504,6 +13150,9 @@ namespace RegionRuntime {
     void InstanceInfo::get_needed_instances(std::vector<InstanceInfo*> &needed_instances)
     //-------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!collected);
+#endif
       get_needed_above(needed_instances);
       get_needed_below(needed_instances,true/*skip first*/);
     }
@@ -12519,6 +13168,7 @@ namespace RegionRuntime {
       result += sizeof(Memory);
       result += sizeof(RegionInstance);
       result += sizeof(InstanceID); // parent
+      result += sizeof(bool); // open child
       result += sizeof(Event); // valid event
       result += sizeof(Lock); // lock
       result += sizeof(bool); // valid
@@ -12535,6 +13185,9 @@ namespace RegionRuntime {
     void InstanceInfo::pack_instance_info(Serializer &rez)
     //-------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!collected);
+#endif
       rez.serialize<InstanceID>(iid);
       rez.serialize<LogicalRegion>(handle);
       rez.serialize<Memory>(location);
@@ -12547,6 +13200,7 @@ namespace RegionRuntime {
       {
         rez.serialize<InstanceID>(0);
       }
+      rez.serialize<bool>(open_child);
       rez.serialize<Event>(valid_event);
       rez.serialize<Lock>(inst_lock);
       rez.serialize<bool>(valid);
@@ -12609,6 +13263,8 @@ namespace RegionRuntime {
 #endif
         }
       }
+      // Mark that this instance now has a remote copy
+      remote_copies++;
     }
 
     //-------------------------------------------------------------------------
@@ -12634,8 +13290,10 @@ namespace RegionRuntime {
 #endif
         parent = (*infos)[parent_iid];
       }
+      bool open_child;
+      derez.deserialize<bool>(open_child);
       // This is an open child otherwise it would never have been sent remotely
-      InstanceInfo *result_info = new InstanceInfo(iid,handle,location,inst,true/*remote*/,parent,true/*open*/);
+      InstanceInfo *result_info = new InstanceInfo(iid,handle,location,inst,true/*remote*/,parent,open_child/*open*/);
 
       derez.deserialize<Event>(result_info->valid_event);
       derez.deserialize<Lock>(result_info->inst_lock);
@@ -12703,6 +13361,12 @@ namespace RegionRuntime {
         result += sizeof(size_t); // num copy users + num added copy users
         result += ((copy_users.size() + added_copy_users.size()) * (sizeof(UniqueID) + sizeof(CopyUser)));
       }
+#ifdef TRACE_CAPTURE
+      result += sizeof(size_t);
+      result += (removed_users.size() * (sizeof(UniqueID) + compute_user_task_size()));
+      result += sizeof(size_t);
+      result += (removed_copy_users.size() * (sizeof(UniqueID) + sizeof(CopyUser)));
+#endif
       // Also send back the epoch users
       result += sizeof(size_t);
       result += (epoch_users.size() * sizeof(UniqueID));
@@ -12762,6 +13426,12 @@ namespace RegionRuntime {
     void InstanceInfo::pack_return_info(Serializer &rez)
     //-------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(remote_copies == 0); // These better all be back by now
+      assert(!collected);
+      // Should only be returned once
+      assert(!returned);
+#endif
       rez.serialize<InstanceID>(iid);
       rez.serialize<bool>(remote);
       rez.serialize<bool>(open_child);
@@ -12790,6 +13460,9 @@ namespace RegionRuntime {
         rez.serialize<RegionInstance>(inst);
         if (parent != NULL)
         {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(!parent->clone); // Should never be packing anything whose parent is a clone
+#endif
           rez.serialize<InstanceID>(parent->iid);
         }
         else
@@ -12834,19 +13507,58 @@ namespace RegionRuntime {
         added_copy_users.insert(copy_users.begin(),copy_users.end());
         copy_users.clear();
       }
+#ifdef TRACE_CAPTURE
+      rez.serialize<size_t>(removed_users.size());
+      for (std::map<UniqueID,UserTask>::const_iterator it = removed_users.begin();
+            it != removed_users.end(); it++)
+      {
+        rez.serialize<UniqueID>(it->first);
+        pack_user_task(rez, it->second);
+      }
+      rez.serialize<size_t>(removed_copy_users.size());
+      for (std::map<UniqueID,CopyUser>::const_iterator it = removed_copy_users.begin();
+            it != removed_copy_users.end(); it++)
+      {
+        rez.serialize<UniqueID>(it->first);
+        rez.serialize<CopyUser>(it->second);
+      }
+#endif
+
       // Pack the epoch users
       rez.serialize<size_t>(epoch_users.size());
       for (std::set<UniqueID>::const_iterator it = epoch_users.begin();
             it != epoch_users.end(); it++)
       {
         rez.serialize<UniqueID>(*it);
+#ifndef TRACE_CAPTURE
+#ifdef DEBUG_HIGH_LEVEL
+        assert((users.find(*it) != users.end()) ||
+               (added_users.find(*it) != added_users.end()));
+#endif
+#else
+        assert((users.find(*it) != users.end()) ||
+               (added_users.find(*it) != added_users.end()) ||
+               (removed_users.find(*it) != removed_users.end())); 
+#endif
       }
       rez.serialize<size_t>(epoch_copy_users.size());
       for (std::set<UniqueID>::const_iterator it = epoch_copy_users.begin();
             it != epoch_copy_users.end(); it++)
       {
         rez.serialize<UniqueID>(*it);
+#ifndef TRACE_CAPTURE
+#ifdef DEBUG_HIGH_LEVEL
+        assert((copy_users.find(*it) != copy_users.end()) ||
+               (added_copy_users.find(*it) != added_copy_users.end()));
+#endif
+#else
+        assert((copy_users.find(*it) != copy_users.end()) ||
+               (added_copy_users.find(*it) != added_copy_users.end()) ||
+               (removed_copy_users.find(*it) != removed_copy_users.end())); 
+#endif
       }
+      // Mark that this instance has been returned
+      returned = true;
     }
 
     //-------------------------------------------------------------------------
@@ -12858,10 +13570,10 @@ namespace RegionRuntime {
       derez.deserialize<InstanceID>(iid);
       bool old_instance;
       derez.deserialize<bool>(old_instance);
-      bool open_child;
-      derez.deserialize<bool>(open_child);
       if (!old_instance)
       {
+        bool open_child;
+        derez.deserialize<bool>(open_child);
         // This instance better not exist in the list of instance infos
 #ifdef DEBUG_HIGH_LEVEL
         assert(infos->find(iid) == infos->end());
@@ -12906,6 +13618,27 @@ namespace RegionRuntime {
           derez.deserialize<CopyUser>(user.second);
           result_info->copy_users.insert(user);
         }
+#ifdef TRACE_CAPTURE
+        // Unpack removed users for trace capture
+        size_t num_removed_users;
+        derez.deserialize<size_t>(num_removed_users);
+        for (unsigned idx = 0; idx < num_removed_users; idx++)
+        {
+          std::pair<UniqueID,UserTask> user;
+          derez.deserialize<UniqueID>(user.first);
+          result_info->unpack_user_task(derez, user.second);
+          result_info->removed_users.insert(user);
+        }
+        size_t num_removed_copy_users;
+        derez.deserialize<size_t>(num_removed_copy_users);
+        for (unsigned idx = 0; idx < num_removed_copy_users; idx++)
+        {
+          std::pair<UniqueID,CopyUser> user;
+          derez.deserialize<UniqueID>(user.first);
+          derez.deserialize<CopyUser>(user.second);
+          result_info->removed_copy_users.insert(user);
+        }
+#endif
         // Unpack the epoch users
         size_t num_epoch_users;
         derez.deserialize<size_t>(num_epoch_users);
@@ -12913,8 +13646,13 @@ namespace RegionRuntime {
         {
           UniqueID uid;
           derez.deserialize<UniqueID>(uid);
+#ifndef TRACE_CAPTURE
 #ifdef DEBUG_HIGH_LEVEL
           assert(result_info->users.find(uid) != result_info->users.end());
+#endif
+#else
+          assert((result_info->users.find(uid) != result_info->users.end()) ||
+                 (result_info->removed_users.find(uid) != result_info->removed_users.end()));
 #endif
           result_info->epoch_users.insert(uid);
         }
@@ -12924,8 +13662,13 @@ namespace RegionRuntime {
         {
           UniqueID uid;
           derez.deserialize<UniqueID>(uid);
+#ifndef TRACE_CAPTURE
 #ifdef DEBUG_HIGH_LEVEL
           assert(result_info->copy_users.find(uid) != result_info->copy_users.end());
+#endif
+#else
+          assert((result_info->copy_users.find(uid) != result_info->copy_users.end()) ||
+                 (result_info->removed_copy_users.find(uid) != result_info->removed_copy_users.end()));
 #endif
           result_info->epoch_copy_users.insert(uid);
         }
@@ -12942,30 +13685,40 @@ namespace RegionRuntime {
         (*infos)[iid]->merge_instance_info(derez);
         return (*infos)[iid];
       }
-
     }
 
     //-------------------------------------------------------------------------
     void InstanceInfo::merge_instance_info(Deserializer &derez)
     //-------------------------------------------------------------------------
     {
+      // There better have been an outstanding version of this instance
+#ifdef DEBUG_HIGH_LEVEL
+      assert(remote_copies > 0); // decremented at the bottom
+#endif
+      bool new_open_child;
+      derez.deserialize<bool>(new_open_child);
+      if (!open_child && new_open_child && (parent != NULL))
+      {
+        // Tell our parent that we're open again
+        parent->reopen_child(this);
+        open_child = true;
+      }
       Event new_valid_event;
       derez.deserialize<Event>(new_valid_event);
       // Check to see if the new valid event is the same as the old one
       // If it's not we can clear out all our old users and open children
       if (valid_event != new_valid_event)
       {
-        epoch_users.clear();
-        epoch_copy_users.clear();
-        // This is safe because any children we do have will get unpacked after us
-        for (std::list<InstanceInfo*>::const_iterator it = open_children.begin();
-              it != open_children.end(); it++)
-        {
-          (*it)->close_child();
-        }
-        open_children.clear();
+        // Merge the valid events and make that the new valid event
+        std::set<Event> valid_set;
+        valid_set.insert(valid_event);
+        valid_set.insert(new_valid_event);
+        Event result = Event::merge_events(valid_set);
+#ifdef DEBUG_HIGH_LEVEL
+        log_event_merge(valid_set,result);
+#endif
         // Update the valid event
-        valid_event = new_valid_event; 
+        valid_event = result; 
       }
       size_t num_added_users;
       derez.deserialize<size_t>(num_added_users);
@@ -13029,6 +13782,27 @@ namespace RegionRuntime {
           }
         }
       }
+#ifdef TRACE_CAPTURE
+      // Unpack removed users for trace capture
+      size_t num_removed_users;
+      derez.deserialize<size_t>(num_removed_users);
+      for (unsigned idx = 0; idx < num_removed_users; idx++)
+      {
+        std::pair<UniqueID,UserTask> user;
+        derez.deserialize<UniqueID>(user.first);
+        unpack_user_task(derez, user.second);
+        removed_users.insert(user);
+      }
+      size_t num_removed_copy_users;
+      derez.deserialize<size_t>(num_removed_copy_users);
+      for (unsigned idx = 0; idx < num_removed_copy_users; idx++)
+      {
+        std::pair<UniqueID,CopyUser> user;
+        derez.deserialize<UniqueID>(user.first);
+        derez.deserialize<CopyUser>(user.second);
+        removed_copy_users.insert(user);
+      } 
+#endif
       // Unpack the epoch users
       size_t num_epoch_users;
       derez.deserialize<size_t>(num_epoch_users);
@@ -13036,7 +13810,16 @@ namespace RegionRuntime {
       {
         UniqueID uid;
         derez.deserialize<UniqueID>(uid);
-        epoch_users.insert(uid);
+        // Check to see if this is still a valid epoch user
+        if ((epoch_users.find(uid) == epoch_users.end()) &&
+            ((users.find(uid) != users.end()) || (added_users.find(uid) != added_users.end())
+#ifdef TRACE_CAPTURE
+             || (removed_users.find(uid) != removed_users.end())
+#endif
+             ))
+        {
+          epoch_users.insert(uid);
+        }
       }
       size_t num_epoch_copy_users;
       derez.deserialize<size_t>(num_epoch_copy_users);
@@ -13044,7 +13827,20 @@ namespace RegionRuntime {
       {
         UniqueID uid;
         derez.deserialize<UniqueID>(uid);
-        epoch_copy_users.insert(uid);
+        if ((epoch_copy_users.find(uid) == epoch_copy_users.end()) &&
+            ((copy_users.find(uid) != copy_users.end()) || (added_copy_users.find(uid) != added_copy_users.end())
+#ifdef TRACE_CAPTURE
+             || (removed_copy_users.find(uid) != removed_copy_users.end())
+#endif
+            ))
+        {
+          epoch_copy_users.insert(uid);
+        }
+      }
+      remote_copies--;
+      if (remote_copies == 0)
+      {
+        garbage_collect();
       }
     }
 
@@ -13053,7 +13849,7 @@ namespace RegionRuntime {
     //-------------------------------------------------------------------------
     {
       size_t result = 0;
-      result += RegionRequirement::compute_simple_size();
+      result += RegionUsage::compute_usage_size();
       result += sizeof(unsigned);
       result += sizeof(Event);
       return result;
@@ -13063,7 +13859,7 @@ namespace RegionRuntime {
     void InstanceInfo::pack_user_task(Serializer &rez, const UserTask &task) const
     //-------------------------------------------------------------------------
     {
-      task.req.pack_simple(rez);
+      task.usage.pack_usage(rez);
       rez.serialize<unsigned>(task.references);
       rez.serialize<Event>(task.term_event);
     }
@@ -13072,26 +13868,26 @@ namespace RegionRuntime {
     void InstanceInfo::unpack_user_task(Deserializer &derez, UserTask &task) const
     //-------------------------------------------------------------------------
     {
-      task.req.unpack_simple(derez);
+      task.usage.unpack_usage(derez);
       derez.deserialize<unsigned>(task.references);
       derez.deserialize<Event>(task.term_event);
     }
 
     //-------------------------------------------------------------------------
     void InstanceInfo::find_dependences_above(std::set<Event> &wait_on_events, 
-                                              const RegionRequirement &req, bool skip_local)
+                                              const RegionUsage &usage, bool skip_local)
     //-------------------------------------------------------------------------
     {
       // Don't need valid events on the way up, we'll get the valid events
       // that matter on the way down
       if (!skip_local)
       {
-        find_local_dependences(wait_on_events,req);
+        find_local_dependences(wait_on_events,usage);
       }
       // Continue up the tree if possible
       if (parent != NULL)
       {
-        parent->find_dependences_above(wait_on_events, req, false/*skip local*/);
+        parent->find_dependences_above(wait_on_events, usage, false/*skip local*/);
       }
     }
 
@@ -13113,156 +13909,66 @@ namespace RegionRuntime {
 
     //-------------------------------------------------------------------------
     bool InstanceInfo::find_dependences_below(std::set<Event> &wait_on_events, 
-                                              const RegionRequirement &req, bool first)
+                                              const RegionUsage &usage)
     //-------------------------------------------------------------------------
     {
-      // If we're first, we want to try to do the optimization to see if we
-      // can start a new epoch
-      if (first)
+      if (valid_event.exists())
       {
-        // Find local dependences
-        // Keep them in a local set for now
-        std::set<Event> local_wait_on_events;
-        // Add our valid event to the local list
-        if (valid_event.exists())
+        wait_on_events.insert(valid_event);
+      }
+      // We're not the first, so the trying to create a new epoch doesn't matter, but
+      // we do want to know when we can be closed
+      bool all_dominated = find_local_dependences(wait_on_events,usage);
+      for (std::list<InstanceInfo*>::iterator it = open_children.begin();
+            it != open_children.end(); /*nothing*/)
+      {
+        if ((*it)->find_dependences_below(wait_on_events, usage))
         {
-          local_wait_on_events.insert(valid_event);
-        }
-        // Now check our local dependences, keep track of if we dominated all local users
-        bool all_dominated = find_local_dependences(local_wait_on_events,req);
-        // Now check out open children, again use the local_wait_on_events
-        for (std::list<InstanceInfo*>::iterator it = open_children.begin();
-              it != open_children.end(); /*nothing*/)
-        {
-          if ((*it)->find_dependences_below(local_wait_on_events, req, false/*first*/))
-          {
-            (*it)->close_child();
-            it = open_children.erase(it);
-          }
-          else
-          {
-            it++;
-          }
-        }
-        // Check to see if we can start a new epoch
-        if (all_dominated && open_children.empty())
-        {
-          start_new_epoch(local_wait_on_events);
-          // Add the newly created valid event to the list of events to wait on
-          wait_on_events.insert(valid_event);
-          return true;
+          InstanceInfo *child = *it;
+          it = open_children.erase(it);
+          child->close_child();
         }
         else
         {
-          // Can't start a new epoch, add our events to wait on
-          wait_on_events.insert(local_wait_on_events.begin(),local_wait_on_events.end());
-          return false;
+          it++;
         }
       }
-      else
-      {
-        if (valid_event.exists())
-        {
-          wait_on_events.insert(valid_event);
-        }
-        // We're not the first, so the trying to create a new epoch doesn't matter, but
-        // we do want to know when we can be closed
-        bool all_dominated = find_local_dependences(wait_on_events,req);
-        for (std::list<InstanceInfo*>::iterator it = open_children.begin();
-              it != open_children.end(); /*nothing*/)
-        {
-          if ((*it)->find_dependences_below(wait_on_events, req, false/*first*/))
-          {
-            (*it)->close_child();
-            it = open_children.erase(it);
-          }
-          else
-          {
-            it++;
-          }
-        }
-        // Return true if we can be closed
-        return (all_dominated && open_children.empty());
-      }
+      // Return true if we can be closed
+      return (all_dominated && open_children.empty());
     }
 
     //-------------------------------------------------------------------------
-    bool InstanceInfo::find_dependences_below(std::set<Event> &wait_on_events, bool writer, bool first)
+    bool InstanceInfo::find_dependences_below(std::set<Event> &wait_on_events, bool writer)
     //-------------------------------------------------------------------------
     {
-      // If we're first, we want to try to do the optimization to see if we
-      // can start a new epoch
-      if (first)
+      if (valid_event.exists())
       {
-        // Find local dependences
-        // Keep them in a local set for now
-        std::set<Event> local_wait_on_events;
-        // Add our valid event to the local list
-        if (valid_event.exists())
+        wait_on_events.insert(valid_event);
+      }
+      // We're not the first, so the trying to create a new epoch doesn't matter, but
+      // we do want to know when we can be closed
+      bool all_dominated = find_local_dependences(wait_on_events,writer);
+      for (std::list<InstanceInfo*>::iterator it = open_children.begin();
+            it != open_children.end(); /*nothing*/)
+      {
+        if ((*it)->find_dependences_below(wait_on_events, writer))
         {
-          local_wait_on_events.insert(valid_event);
-        }
-        // Now check our local dependences, keep track of if we dominated all local users
-        bool all_dominated = find_local_dependences(local_wait_on_events,writer);
-        // Now check out open children, again use the local_wait_on_events
-        for (std::list<InstanceInfo*>::iterator it = open_children.begin();
-              it != open_children.end(); /*nothing*/)
-        {
-          if ((*it)->find_dependences_below(local_wait_on_events, writer, false/*first*/))
-          {
-            (*it)->close_child();
-            it = open_children.erase(it);
-          }
-          else
-          {
-            it++;
-          }
-        }
-        // Check to see if we can start a new epoch
-        if (all_dominated && open_children.empty())
-        {
-          start_new_epoch(local_wait_on_events);
-          // Add the newly created valid event to the list of events to wait on
-          wait_on_events.insert(valid_event);
-          return true;
+          InstanceInfo *child = *it;
+          it = open_children.erase(it);
+          child->close_child();
         }
         else
         {
-          // Can't start a new epoch, add our events to wait on
-          wait_on_events.insert(local_wait_on_events.begin(),local_wait_on_events.end());
-          return false;
+          it++;
         }
       }
-      else
-      {
-        if (valid_event.exists())
-        {
-          wait_on_events.insert(valid_event);
-        }
-        // We're not the first, so the trying to create a new epoch doesn't matter, but
-        // we do want to know when we can be closed
-        bool all_dominated = find_local_dependences(wait_on_events,writer);
-        for (std::list<InstanceInfo*>::iterator it = open_children.begin();
-              it != open_children.end(); /*nothing*/)
-        {
-          if ((*it)->find_dependences_below(wait_on_events, writer, false/*first*/))
-          {
-            (*it)->close_child();
-            it = open_children.erase(it);
-          }
-          else
-          {
-            it++;
-          }
-        }
-        // Return true if we can be closed
-        return (all_dominated && open_children.empty());
-      }
+      // Return true if we can be closed
+      return (all_dominated && open_children.empty());
     }
 
     //-------------------------------------------------------------------------
     bool InstanceInfo::find_local_dependences(std::set<Event> &wait_on_events,
-                                              const RegionRequirement &req)
+                                              const RegionUsage &usage)
     //-------------------------------------------------------------------------
     {
       bool all_dominated = true;
@@ -13274,7 +13980,7 @@ namespace RegionRuntime {
         Event term_event;
         if (users.find(*it) != users.end())
         {
-          dtype = check_dependence_type(users[*it].req,req);
+          dtype = check_dependence_type(users[*it].usage,usage);
           term_event = users[*it].term_event;
         }
         else
@@ -13283,18 +13989,18 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           assert(added_users.find(*it) != added_users.end());
 #endif
-          dtype = check_dependence_type(added_users[*it].req,req);
+          dtype = check_dependence_type(added_users[*it].usage,usage);
           term_event = added_users[*it].term_event;
 #else
           if (added_users.find(*it) != added_users.end())
           {
-            dtype = check_dependence_type(added_users[*it].req,req);
+            dtype = check_dependence_type(added_users[*it].usage,usage);
             term_event = added_users[*it].term_event;
           }
           else
           {
             assert(removed_users.find(*it) != removed_users.end());
-            dtype = check_dependence_type(removed_users[*it].req,req);
+            dtype = check_dependence_type(removed_users[*it].usage,usage);
             term_event = removed_users[*it].term_event;
           }
 #endif
@@ -13321,7 +14027,7 @@ namespace RegionRuntime {
         }
       }
       // Then do all the copy users
-      if (HAS_WRITE(req))
+      if (HAS_WRITE(usage))
       {
         // If we're about to write, all the current epoch copy operations are dependences
         for (std::set<UniqueID>::const_iterator it = epoch_copy_users.begin();
@@ -13432,7 +14138,7 @@ namespace RegionRuntime {
         {
           if (users.find(*it) != users.end())
           {
-            if (HAS_WRITE(users[*it].req))
+            if (HAS_WRITE(users[*it].usage))
             {
               wait_on_events.insert(users[*it].term_event);
             }
@@ -13447,7 +14153,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
             assert(added_users.find(*it) != added_users.end());
 #endif
-            if (HAS_WRITE(added_users[*it].req))
+            if (HAS_WRITE(added_users[*it].usage))
             {
               wait_on_events.insert(added_users[*it].term_event);
             }
@@ -13458,7 +14164,7 @@ namespace RegionRuntime {
 #else
             if (added_users.find(*it) != added_users.end())
             {
-              if (HAS_WRITE(added_users[*it].req))
+              if (HAS_WRITE(added_users[*it].usage))
               {
                 wait_on_events.insert(added_users[*it].term_event);
               }
@@ -13470,7 +14176,7 @@ namespace RegionRuntime {
             else
             {
               assert(removed_users.find(*it) != removed_users.end());
-              if (HAS_WRITE(removed_users[*it].req))
+              if (HAS_WRITE(removed_users[*it].usage))
               {
                 wait_on_events.insert(removed_users[*it].term_event);
               }
@@ -13487,33 +14193,33 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    bool InstanceInfo::has_war_above(const RegionRequirement &req)
+    bool InstanceInfo::has_war_above(const RegionUsage &usage)
     //-------------------------------------------------------------------------
     {
-      if (local_has_war(req))
+      if (local_has_war(usage))
       {
         return true;
       }
       if (parent != NULL)
       {
-        return parent->has_war_above(req);
+        return parent->has_war_above(usage);
       }
       return false;
     }
 
     //-------------------------------------------------------------------------
-    bool InstanceInfo::has_war_below(const RegionRequirement &req, bool skip_local)
+    bool InstanceInfo::has_war_below(const RegionUsage &usage, bool skip_local)
     //-------------------------------------------------------------------------
     {
       // Don't bother checking copies, they happen fast
-      if (!skip_local && local_has_war(req))
+      if (!skip_local && local_has_war(usage))
       {
         return true;
       }
       for (std::list<InstanceInfo*>::const_iterator it = open_children.begin();
             it != open_children.end(); it++)
       {
-        if ((*it)->has_war_below(req,false/*skip local*/))
+        if ((*it)->has_war_below(usage,false/*skip local*/))
         {
           return true;
         }
@@ -13522,7 +14228,7 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    bool InstanceInfo::local_has_war(const RegionRequirement &req)
+    bool InstanceInfo::local_has_war(const RegionUsage &usage)
     //-------------------------------------------------------------------------
     {
       // Don't bother checking copies, they happen fast
@@ -13532,7 +14238,7 @@ namespace RegionRuntime {
         DependenceType dtype;
         if (users.find(*it) != users.end())
         {
-          dtype = check_dependence_type(users[*it].req,req); 
+          dtype = check_dependence_type(users[*it].usage,usage); 
         }
         else
         {
@@ -13540,16 +14246,16 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           assert(added_users.find(*it) != added_users.end());
 #endif
-          dtype = check_dependence_type(added_users[*it].req,req);
+          dtype = check_dependence_type(added_users[*it].usage,usage);
 #else
           if (added_users.find(*it) != added_users.end())
           {
-            dtype = check_dependence_type(added_users[*it].req,req);
+            dtype = check_dependence_type(added_users[*it].usage,usage);
           }
           else
           {
             assert(removed_users.find(*it) != removed_users.end());
-            dtype = check_dependence_type(removed_users[*it].req,req);
+            dtype = check_dependence_type(removed_users[*it].usage,usage);
           }
 #endif
         }
@@ -13592,8 +14298,9 @@ namespace RegionRuntime {
     void InstanceInfo::get_copy_precondition(std::set<Event> &wait_on_events)
     //-------------------------------------------------------------------------
     {
+      // No point in checking for new epoch for a copy reader
       find_dependences_above(wait_on_events, false/*writer*/, true/*skip first*/);
-      find_dependences_below(wait_on_events, false/*writer*/, true/*first*/);
+      find_dependences_below(wait_on_events, false/*writer*/);
     }
 
     //-------------------------------------------------------------------------
@@ -13644,12 +14351,24 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(child != InstanceInfo::get_no_instance());
+      assert(!collected);
 #endif
       children++;
       if (open)
       {
         open_children.push_back(child);
       }
+    }
+
+    //-------------------------------------------------------------------------
+    void InstanceInfo::reopen_child(InstanceInfo *child)
+    //-------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(child != InstanceInfo::get_no_instance());
+      assert(!collected);
+#endif
+      open_children.push_back(child);
     }
 
     //-------------------------------------------------------------------------
@@ -13660,18 +14379,54 @@ namespace RegionRuntime {
       assert(open_child);
 #endif
       open_child = false;
+      // Get the count of children.  If we don't have any children we should
+      // try collecting ourselves at the end of the method
+      unsigned old_num_children = children;
+      // Close up any open children we might have
+      std::list<InstanceInfo*>::iterator it = open_children.begin();
+      while (!open_children.empty())
+      {
+        InstanceInfo *child = *it;
+        // Remove it from the list prior to closing it in case it gets 
+        // garbage collected and comes back up and tries to remove itself
+        // from the list we won't end up invalidating our iterator
+        it = open_children.erase(it);
+        // Now close our open children
+        child->close_child();
+      }
+      // No need to try garbage collecting ourselves yet, that'll happen
+      // if all the children remove themselves
+      if (old_num_children == 0)
+      {
+        // Make sure we try collecting the leaf instance infos
+        garbage_collect();
+      }
     }
 
     //-------------------------------------------------------------------------
-    void InstanceInfo::remove_child(void)
+    void InstanceInfo::remove_child(InstanceInfo *child)
     //-------------------------------------------------------------------------
     {
       #ifdef DEBUG_HIGH_LEVEL
       assert(children > 0);
 #endif
       children--;
+      // Check to see if we can remove this child from this list of open
+      // instance infos
+      for (std::list<InstanceInfo*>::iterator it = open_children.begin();
+            it != open_children.end(); it++)
+      {
+        if (*it == child)
+        {
+          open_children.erase(it);
+          break;
+        }
+      }
       if (children == 0)
       {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(open_children.empty()); // There better not be any dangling open children
+#endif
         garbage_collect();
       }
     }
@@ -13710,9 +14465,13 @@ namespace RegionRuntime {
     //-------------------------------------------------------------------------
     {
       // Check all the conditions for being able to delete the instance
-      if (!valid && !remote && !clone && (children == 0) && users.empty() &&
-          added_users.empty() && copy_users.empty() && added_copy_users.empty())
+      if (!valid && !remote && !clone && !closing && (children == 0) && (remote_copies == 0) && 
+          users.empty() && added_users.empty() && copy_users.empty() && added_copy_users.empty())
       {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!collected);
+#endif
+        collected = true;
         // If parent is NULL we are the owner
         if (parent == NULL)
         {
@@ -13724,7 +14483,7 @@ namespace RegionRuntime {
         else
         {
           // Tell our parent that we're done with our part of the instance
-          parent->remove_child();
+          parent->remove_child(this);
         }
       }
     }
@@ -13740,6 +14499,7 @@ namespace RegionRuntime {
       size_t result = 0;
       result += sizeof(InstanceID);
       result += sizeof(UniqueID);
+      result += sizeof(unsigned);
       return result;
     }
 
@@ -13749,6 +14509,7 @@ namespace RegionRuntime {
     {
       rez.serialize<InstanceID>(iid);
       rez.serialize<UniqueID>(user);
+      rez.serialize<unsigned>(references);
     }
 
     //-------------------------------------------------------------------------
@@ -13758,6 +14519,7 @@ namespace RegionRuntime {
     {
       derez.deserialize<InstanceID>(target.iid);
       derez.deserialize<UniqueID>(target.user);
+      derez.deserialize<unsigned>(target.references);
     }
 
     ///////////////////////////////////////////
@@ -13823,9 +14585,86 @@ namespace RegionRuntime {
     }
 
     ///////////////////////////////////////////
+    // Fraction 
+    ///////////////////////////////////////////
+    
+    //-------------------------------------------------------------------------
+    Fraction::Fraction(void)
+      : numerator(1), denominator(1)
+    //-------------------------------------------------------------------------
+    {
+    }
+
+    //-------------------------------------------------------------------------
+    Fraction::Fraction(const Fraction &f)
+    //-------------------------------------------------------------------------
+    {
+      numerator = f.numerator;
+      denominator = f.denominator;
+    }
+
+    //-------------------------------------------------------------------------
+    void Fraction::divide(unsigned factor)
+    //-------------------------------------------------------------------------
+    {
+      denominator /= factor;
+    }
+
+    //-------------------------------------------------------------------------
+    void Fraction::add(const Fraction &rhs)
+    //-------------------------------------------------------------------------
+    {
+      if (denominator == rhs.denominator)
+      {
+        numerator += rhs.numerator;
+      }
+      else
+      {
+        // Denominators are different, make them the same
+        // Check if one denominator is divisible by another
+        if ((denominator % rhs.denominator) == 0)
+        {
+          // Our denominator is bigger
+          unsigned factor = denominator/rhs.denominator; 
+          numerator += (rhs.numerator*factor);
+        }
+        else if ((rhs.denominator % denominator) == 0)
+        {
+          // Rhs denominator is bigger
+          unsigned factor = rhs.denominator/denominator;
+          numerator = (numerator*factor) + rhs.numerator;
+          denominator *= factor;
+        }
+        else
+        {
+          // One denominator is not divisible by the other, compute a common denominator
+          unsigned lhs_num = numerator * rhs.denominator;
+          unsigned rhs_num = rhs.numerator * denominator;
+          numerator = lhs_num + rhs_num;
+          denominator *= rhs.denominator;
+        }
+      }
+    }
+
+    //-------------------------------------------------------------------------
+    bool Fraction::is_whole(void) const
+    //-------------------------------------------------------------------------
+    {
+      return (numerator == denominator);
+    }
+
+    //-------------------------------------------------------------------------
+    Fraction& Fraction::operator=(const Fraction &rhs)
+    //-------------------------------------------------------------------------
+    {
+      numerator = rhs.numerator;
+      denominator = rhs.denominator;
+      return *this;
+    }
+
+    ///////////////////////////////////////////
     // Unsized Constraint 
     ///////////////////////////////////////////
-
 #if 0 // In case we need these in the future
     //-------------------------------------------------------------------------
     size_t UnsizedConstraint::compute_size(void) const

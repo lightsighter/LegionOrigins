@@ -109,6 +109,9 @@ namespace RegionRuntime {
     class RegionRenamer;
     class EscapedUser;
     class EscapedCopier;
+    class RegionUsage;
+    class LogicalUser;
+    class Fraction;
 
     // Some typedefs
     typedef LowLevel::Machine Machine;
@@ -132,6 +135,7 @@ namespace RegionRuntime {
     typedef unsigned int ColorizeID;
     typedef unsigned int ContextID;
     typedef unsigned int InstanceID;
+    typedef unsigned int GenerationID;
     typedef Processor::TaskFuncID TaskID;
     typedef TaskContext* Context;
     typedef std::vector<int> IndexPoint;
@@ -1191,6 +1195,32 @@ namespace RegionRuntime {
 #endif
 
     /////////////////////////////////////////////////////////////
+    // RegionUsage 
+    /////////////////////////////////////////////////////////////
+    class RegionUsage {
+    public:
+      PrivilegeMode     privilege;
+      AllocateMode      alloc;
+      CoherenceProperty prop;
+      ReductionOpID     redop;
+    public:
+      RegionUsage(void);
+      RegionUsage(PrivilegeMode priv, AllocateMode all,
+                  CoherenceProperty pro, ReductionOpID red);
+    public:
+      RegionUsage(const RegionUsage &usage);
+      RegionUsage(const RegionRequirement &req);
+      RegionUsage& operator=(const RegionUsage &usage);
+      RegionUsage& operator=(const RegionRequirement &req);
+      bool operator==(const RegionUsage &usage) const;
+      bool operator<(const RegionUsage &usage) const;
+    public:
+      static size_t compute_usage_size(void);
+      void pack_usage(Serializer &rez) const;
+      void unpack_usage(Deserializer &derez);
+    };
+
+    /////////////////////////////////////////////////////////////
     // Generalized Context 
     /////////////////////////////////////////////////////////////
     /**
@@ -1203,13 +1233,15 @@ namespace RegionRuntime {
       virtual bool is_ready(void) const = 0;
       virtual UniqueID get_unique_id(void) const = 0;
       virtual Event get_termination_event(void) const = 0;
-      virtual void add_source_physical_instance(InstanceInfo *info) = 0;
+      virtual GenerationID get_generation(void) const = 0;
+      virtual RegionUsage get_usage(unsigned idx) const = 0;
       virtual const RegionRequirement& get_requirement(unsigned idx) const = 0;
-      virtual const Task*const get_enclosing_task(void) const = 0;
+      virtual void add_source_physical_instance(InstanceInfo *info) = 0;
+      virtual const TaskContext*const get_enclosing_task(void) const = 0;
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const = 0;
       virtual void notify(void) = 0;
-      virtual void add_mapping_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx, const DependenceType &dtype) = 0;
-      virtual bool add_waiting_dependence(GeneralizedContext *ctx, unsigned idx/*local*/) = 0;
+      virtual void add_mapping_dependence(unsigned idx, const LogicalUser &target, const DependenceType &dtype) = 0;
+      virtual bool add_waiting_dependence(GeneralizedContext *waiter, const LogicalUser &original) = 0;
       virtual void add_unresolved_dependence(unsigned idx, GeneralizedContext *ctx, DependenceType dtype) = 0;
       virtual const std::map<UniqueID,Event>& get_unresolved_dependences(unsigned idx) = 0;
       virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m) = 0;
@@ -1306,7 +1338,7 @@ namespace RegionRuntime {
       // Utility functions
       bool compute_region_trace(std::vector<unsigned> &trace, LogicalRegion parent, LogicalRegion child);
       bool compute_partition_trace(std::vector<unsigned> &trace, LogicalRegion parent, PartitionID part);
-      void register_region_dependence(LogicalRegion parent, GeneralizedContext *child, unsigned child_idx);
+      void register_region_dependence(const RegionRequirement &req, GeneralizedContext *child, unsigned child_idx);
       void verify_privilege(const RegionRequirement &par_req, const RegionRequirement &child_req,
                       /*for error reporting*/unsigned task = false, unsigned idx = 0, unsigned unique = 0);
       void initialize_region_tree_contexts(void);
@@ -1324,13 +1356,15 @@ namespace RegionRuntime {
       virtual void notify(void);
       virtual void add_source_physical_instance(InstanceInfo *src_info);
       virtual UniqueID get_unique_id(void) const { return unique_id; }
+      virtual GenerationID get_generation(void) const { return current_gen; }
       virtual Event get_termination_event(void) const;
+      virtual RegionUsage get_usage(unsigned idx) const;
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
-      virtual const Task*const get_enclosing_task(void) const { return this; }
+      virtual const TaskContext*const get_enclosing_task(void) const { return parent_ctx; }
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const;
-      virtual void add_mapping_dependence(unsigned idx, GeneralizedContext *c, unsigned dep_idx, const DependenceType &dtype);
+      virtual void add_mapping_dependence(unsigned idx, const LogicalUser &target, const DependenceType &dtype);
       virtual void add_unresolved_dependence(unsigned idx, GeneralizedContext *c, DependenceType dtype);
-      virtual bool add_waiting_dependence(GeneralizedContext *ctx, unsigned idx);
+      virtual bool add_waiting_dependence(GeneralizedContext *waiter, const LogicalUser &original);
       virtual const std::map<UniqueID,Event>& get_unresolved_dependences(unsigned idx);
       virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m);
       virtual InstanceInfo* create_instance_info(LogicalRegion newer, InstanceInfo *old);
@@ -1340,6 +1374,8 @@ namespace RegionRuntime {
     private:
       HighLevelRuntime *const runtime;
       bool active;
+      GenerationID current_gen;
+    public:
       const ContextID ctx_id;
     protected:
       // Partial unpack information so we don't have to unpack everything and repack it all the time
@@ -1503,6 +1539,7 @@ namespace RegionRuntime {
       PhysicalRegion<AccessorArray> fast_result;
       bool active;
       bool mapped;
+      GenerationID current_gen;
     private:
       std::set<GeneralizedContext*> map_dependent_tasks; 
       std::map<UniqueID,Event> unresolved_dependences;
@@ -1530,13 +1567,15 @@ namespace RegionRuntime {
       void perform_mapping(Mapper *m); // (thread-safe)
       virtual void add_source_physical_instance(InstanceInfo *info);
       virtual UniqueID get_unique_id(void) const { return unique_id; }
+      virtual GenerationID get_generation(void) const { return current_gen; }
       virtual Event get_termination_event(void) const; 
+      virtual RegionUsage get_usage(unsigned idx) const;
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
-      virtual const Task*const get_enclosing_task(void) const { return parent_ctx; }
+      virtual const TaskContext*const get_enclosing_task(void) const { return parent_ctx; }
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const;
-      virtual void add_mapping_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx, const DependenceType &dtype);
+      virtual void add_mapping_dependence(unsigned idx, const LogicalUser &target, const DependenceType &dtype);
       virtual void add_unresolved_dependence(unsigned idx, GeneralizedContext *ctx, DependenceType dtype);
-      virtual bool add_waiting_dependence(GeneralizedContext *ctx, unsigned idx);
+      virtual bool add_waiting_dependence(GeneralizedContext *waiter, const LogicalUser &target);
       virtual const std::map<UniqueID,Event>& get_unresolved_dependences(unsigned idx);
       virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m);
       virtual InstanceInfo* create_instance_info(LogicalRegion newer, InstanceInfo *old);
@@ -1564,6 +1603,7 @@ namespace RegionRuntime {
       Lock current_lock;
       bool active;
       bool performed; // to avoid race conditions, its possible this can be played twice
+      GenerationID current_gen;
     protected:
       friend class HighLevelRuntime;
       friend class TaskContext;
@@ -1583,16 +1623,37 @@ namespace RegionRuntime {
       virtual void notify(void);
       virtual void add_source_physical_instance(InstanceInfo *info);
       virtual UniqueID get_unique_id(void) const;
+      virtual GenerationID get_generation(void) const { return current_gen; }
       virtual Event get_termination_event(void) const;
+      virtual RegionUsage get_usage(unsigned idx) const;
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
-      virtual const Task*const get_enclosing_task(void) const { return parent_ctx; }
+      virtual const TaskContext*const get_enclosing_task(void) const { return parent_ctx; }
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const;
-      virtual void add_mapping_dependence(unsigned idx, GeneralizedContext *ctx, unsigned dep_idx, const DependenceType &dtype);
+      virtual void add_mapping_dependence(unsigned idx, const LogicalUser &target, const DependenceType &dtype);
       virtual void add_unresolved_dependence(unsigned idx, GeneralizedContext *ctx, DependenceType dtype);
-      virtual bool add_waiting_dependence(GeneralizedContext *ctx, unsigned idx);
+      virtual bool add_waiting_dependence(GeneralizedContext *waiter, const LogicalUser &original);
       virtual const std::map<UniqueID,Event>& get_unresolved_dependences(unsigned idx);
       virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m);
       virtual InstanceInfo* create_instance_info(LogicalRegion newer, InstanceInfo *old);
+    };
+
+    /////////////////////////////////////////////////////////////
+    // LogicalState 
+    /////////////////////////////////////////////////////////////
+    /**
+     * For tracking information about logical state in regions and partitions
+     */
+    class LogicalUser {
+    public:
+      GeneralizedContext *ctx;
+      unsigned idx;
+      GenerationID gen;
+      RegionUsage usage;
+      UniqueID uid;
+    public:
+      LogicalUser(GeneralizedContext *c, unsigned i,
+                  GenerationID g, const RegionUsage &u)
+        : ctx(c), idx(i), gen(g), usage(u), uid(c->get_unique_id()) { }
     };
 
     /////////////////////////////////////////////////////////////
@@ -1616,10 +1677,10 @@ namespace RegionRuntime {
         PartState logical_state;
         std::set<PartitionID> open_logical;
         ReductionOpID   logop; // logical reduction op
-        std::list<std::pair<GeneralizedContext*,unsigned/*idx*/> > active_users;
+        std::list<LogicalUser> active_users;
         // This is for handling the case where we close up a subtree and then have two tasks 
         // that don't interfere and have to wait on the same close events
-        std::list<std::pair<GeneralizedContext*,unsigned/*idx*/> > closed_users;
+        std::list<LogicalUser> closed_users;
         // Physical State
         std::set<PartitionID> open_physical; 
         PartitionID exclusive_part; // The one exclusive partition (if any)
@@ -1655,8 +1716,8 @@ namespace RegionRuntime {
     protected:
       size_t compute_physical_state_size(ContextID ctx, std::vector<InstanceInfo*> &needed);
       void pack_physical_state(ContextID ctx, Serializer &rez);
-      void unpack_physical_state(ContextID ctx, Deserializer &derez,  
-          std::map<InstanceID,InstanceInfo*> &inst_map, bool returning, UniqueID uid = 0);
+      void unpack_physical_state(ContextID ctx, Deserializer &derez, bool returning, bool merge,
+          std::map<InstanceID,InstanceInfo*> &inst_map, UniqueID uid = 0);
     protected:
       // Initialize the logical context
       void initialize_logical_context(ContextID ctx);
@@ -1666,7 +1727,7 @@ namespace RegionRuntime {
       void open_logical_tree(DependenceDetector &dep);
       // Close up a logical region tree
       void close_logical_tree(DependenceDetector &dep, bool register_dependences,
-                            std::list<std::pair<GeneralizedContext*,unsigned> > &closed, bool closing_part);
+                            std::list<LogicalUser> &closed, bool closing_part);
       // Register a deletion on the logical region tree
       void register_deletion(ContextID ctx, DeletionOp *op);
     protected:
@@ -1733,8 +1794,8 @@ namespace RegionRuntime {
         RegState logical_state; // For use with aliased partitions
         ReductionOpID logop; // logical reduction operation (aliased only)
         std::map<LogicalRegion,RegState> logical_states; // For use with disjoint partitions
-        std::list<std::pair<GeneralizedContext*,unsigned/*idx*/> > active_users;
-        std::list<std::pair<GeneralizedContext*,unsigned/*idx*/> > closed_users;
+        std::list<LogicalUser> active_users;
+        std::list<LogicalUser> closed_users;
         std::set<LogicalRegion> open_logical;
         // Physical state 
         RegState physical_state; // (aliased only)
@@ -1765,8 +1826,8 @@ namespace RegionRuntime {
     protected:
       size_t compute_physical_state_size(ContextID ctx, std::vector<InstanceInfo*> &needed);
       void pack_physical_state(ContextID ctx, Serializer &rez);
-      void unpack_physical_state(ContextID ctx, Deserializer &derez,  
-              std::map<InstanceID,InstanceInfo*> &inst_map, bool returning, UniqueID uid = 0);
+      void unpack_physical_state(ContextID ctx, Deserializer &derez, bool returning, bool merge,
+              std::map<InstanceID,InstanceInfo*> &inst_map, UniqueID uid = 0);
     protected:
       // Logical operations on partitions 
       void initialize_logical_context(ContextID ctx);
@@ -1776,7 +1837,7 @@ namespace RegionRuntime {
       void open_logical_tree(DependenceDetector &dep);
       // Close up a logical region tree
       void close_logical_tree(DependenceDetector &dep, bool register_dependences,
-                              std::list<std::pair<GeneralizedContext*,unsigned> > &closed, bool closing_part);
+                              std::list<LogicalUser> &closed, bool closing_part);
       // Register a deletion on the tree
       void register_deletion(ContextID ctx, DeletionOp *op);
     protected:
@@ -1813,13 +1874,13 @@ namespace RegionRuntime {
     private:
       struct UserTask {
       public:
-        RegionRequirement req;
+        RegionUsage usage;
         unsigned references;
         Event term_event;
       public:
         UserTask() { }
-        UserTask(RegionRequirement r, unsigned ref, Event t)
-          : req(r), references(ref), term_event(t) { }
+        UserTask(const RegionUsage& u, unsigned ref, Event t)
+          : usage(u), references(ref), term_event(t) { }
       };
       struct CopyUser {
       public:
@@ -1867,8 +1928,14 @@ namespace RegionRuntime {
       bool has_user(UniqueID uid) const;
       // Mark that the instance is no longer valid
       void mark_invalid(void);
+      // Mark that the instance is valid
+      void mark_valid(void);
       // Check to see if there is an open subregion with the given handle
       InstanceInfo* get_open_subregion(LogicalRegion handle) const;
+      // Prerequisite to closing something, mark that we're closing to this instance so it doesn't get collected
+      void mark_begin_close(void);
+      // Mark that we are done closing
+      void mark_finish_close(void);
       // Get the event corresponding to when this logical version of the physical instance is ready
       // Similar to a add_copy_user with a write except without the added reference
       Event force_closed(void);
@@ -1894,18 +1961,18 @@ namespace RegionRuntime {
       void   unpack_user_task(Deserializer &derez, UserTask &task) const;
     protected:
       // For going up the tree looking for dependences
-      void find_dependences_above(std::set<Event> &wait_on_events, const RegionRequirement &req, bool skip_local);
+      void find_dependences_above(std::set<Event> &wait_on_events, const RegionUsage &usage, bool skip_local);
       void find_dependences_above(std::set<Event> &wait_on_events, bool writer, bool skip_local); // for copies
       // Find dependences below (return whether or not the child is still open)
-      bool find_dependences_below(std::set<Event> &wait_on_events, const RegionRequirement &req, bool first);
-      bool find_dependences_below(std::set<Event> &wait_on_events, bool writer, bool first); // for copies
+      bool find_dependences_below(std::set<Event> &wait_on_events, const RegionUsage &usage);
+      bool find_dependences_below(std::set<Event> &wait_on_events, bool writer); // for copies
       // Local find dependences operation (return true if all dominated)
-      bool find_local_dependences(std::set<Event> &wait_on_events, const RegionRequirement &req);
+      bool find_local_dependences(std::set<Event> &wait_on_events, const RegionUsage &usage);
       bool find_local_dependences(std::set<Event> &wait_on_events, bool writer); // for copies
       // Check for war dependences above and below
-      bool has_war_above(const RegionRequirement &req);
-      bool has_war_below(const RegionRequirement &req, bool skip_local);
-      bool local_has_war(const RegionRequirement &req);
+      bool has_war_above(const RegionUsage &usage);
+      bool has_war_below(const RegionUsage &usage, bool skip_local);
+      bool local_has_war(const RegionUsage &usage);
       // Get needed instances above and below
       void get_needed_above(std::vector<InstanceInfo*> &needed_instances);
       void get_needed_below(std::vector<InstanceInfo*> &needed_instances, bool skip_local);
@@ -1916,8 +1983,9 @@ namespace RegionRuntime {
       bool has_user_below(UniqueID uid, bool skip_local) const;
       // Add and remove children
       void add_child(InstanceInfo *child, bool open);
+      void reopen_child(InstanceInfo *child);
       void close_child(void);
-      void remove_child(void);
+      void remove_child(InstanceInfo *info);
       // Start a new epoch
       void start_new_epoch(std::set<Event> &wait_on_events);
       // Check to see if we can garbage collect this instance
@@ -1928,6 +1996,9 @@ namespace RegionRuntime {
       bool open_child; // is this an open child of it's parent
       const bool clone; // is this a clone, in which case no garbage collection
       unsigned children;
+      bool collected; // Whether this instance has been collected
+      unsigned remote_copies;
+      bool returned; // If this instance has been sent back already
       InstanceInfo *parent;
       Event valid_event;
       Lock inst_lock;
@@ -1940,6 +2011,8 @@ namespace RegionRuntime {
       std::set<UniqueID> epoch_copy_users;
       // Track which of our children are open and need to be traversed
       std::list<InstanceInfo*> open_children;
+      // Don't let garbage collection proceed past this instance when performing a forced close
+      bool closing;
 #ifdef TRACE_CAPTURE
       std::map<UniqueID,UserTask> removed_users;
       std::map<UniqueID,CopyUser> removed_copy_users;
@@ -1958,16 +2031,13 @@ namespace RegionRuntime {
       friend class PartitionNode;
     public:
       const ContextID ctx_id;
-      const unsigned idx;
-      GeneralizedContext *const ctx;
       TaskContext *const parent;
+      const LogicalUser user;
       std::vector<unsigned> trace;
     protected:
-      DependenceDetector(ContextID id, unsigned i,
-          GeneralizedContext *c, TaskContext *p) 
-        : ctx_id(id), idx(i), ctx(c), parent(p) { }
-    public:
-      const RegionRequirement& get_req(void) const { return ctx->get_requirement(idx); }
+      DependenceDetector(unsigned i, GeneralizedContext *c, TaskContext *p) 
+        : ctx_id(p->ctx_id), parent(p), 
+        user(LogicalUser(c, i, c->get_generation(), c->get_usage(i))) { }
     };
 
     /////////////////////////////////////////////////////////////
@@ -1983,6 +2053,7 @@ namespace RegionRuntime {
       const ContextID ctx_id;
       const unsigned idx;
       GeneralizedContext *const ctx;
+      const RegionUsage usage;
       InstanceInfo *info;
       Mapper *const mapper;
       std::vector<unsigned> trace;
@@ -1993,21 +2064,19 @@ namespace RegionRuntime {
       // A region renamer for task contexts
       RegionRenamer(ContextID id, unsigned index, TaskContext *c, 
           InstanceInfo *i, Mapper *m, bool init, bool own)
-        : ctx_id(id), idx(index), ctx(c), info(i), mapper(m),
+        : ctx_id(id), idx(index), ctx(c), usage(c->get_usage(index)), info(i), mapper(m),
           needs_initializing(init), sanitizing(false), owned(own) { }
       // A region renamer for mapping implementations
       RegionRenamer(ContextID id, RegionMappingImpl *c,
           InstanceInfo *i, Mapper *m, bool init, bool own)
-        : ctx_id(id), idx(0), ctx(c), info(i), mapper(m),
+        : ctx_id(id), idx(0), ctx(c), usage(c->get_usage(0)), info(i), mapper(m),
           needs_initializing(init), sanitizing(false), owned(own) { }
       // A region renamer for sanitizing a physical region tree
       // so that there are no remote close operations
       RegionRenamer(ContextID id, unsigned index,
           TaskContext *c, Mapper *m)
-        : ctx_id(id), idx(index), ctx(c), info(NULL),
+        : ctx_id(id), idx(index), ctx(c), usage(c->get_usage(index)), info(NULL),
           mapper(m), needs_initializing(false), sanitizing(true), owned(true) { }
-    protected:
-      const RegionRequirement& get_req(void) const { return ctx->get_requirement(idx); }
     };
 
     /////////////////////////////////////////////////////////////
@@ -2110,6 +2179,25 @@ namespace RegionRuntime {
     private:
       const char *location;
       size_t remaining_bytes;
+    };
+
+    /////////////////////////////////////////////////////////////
+    // Fraction 
+    /////////////////////////////////////////////////////////////
+    class Fraction {
+    public:
+      Fraction(void);
+      Fraction(const Fraction &f);
+    public:
+      void divide(unsigned factor);
+      void add(const Fraction &rhs);
+    public:
+      bool is_whole(void) const;
+    public:
+      Fraction& operator=(const Fraction &rhs);
+    private:
+      unsigned numerator;
+      unsigned denominator;
     };
 
     /////////////////////////////////////////////////////////////////////////////////
