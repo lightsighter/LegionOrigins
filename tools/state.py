@@ -284,17 +284,20 @@ class Context(object):
         self.deps = set()
 
     def add_task(self, task):
+        assert(task.uid not in self.maps)
         assert(task.uid not in self.tasks)
         self.tasks[task.uid] = task
 
     def get_task(self, uid):
-        assert (uid in self.tasks) or (uid in self.maps)
+        # Exclusive OR (should be in one or the other but not both)
+        assert ((uid in self.tasks) and (uid not in self.maps)) or ((uid not in self.tasks) and (uid in self.maps))
         if uid in self.tasks:
             return self.tasks[uid]
         else:
             return self.maps[uid]
 
     def add_map(self, mmap):
+        assert(mmap.uid not in self.tasks)
         assert(mmap.uid not in self.maps)
         self.maps[mmap.uid] = mmap
 
@@ -317,22 +320,9 @@ class Context(object):
             printer.print_map(mmap)
         # Then print the dependences as edges
         for dep in self.deps:
-            if dep.fuid in self.tasks:
-                t1 = self.tasks[dep.fuid]
-                if dep.suid in self.tasks:
-                    t2 = self.tasks[dep.suid]
-                    printer.print_dependence(dep,t1,t2)
-                else:
-                    t2 = self.maps[dep.suid]
-                    printer.print_dependence(dep,t1,t2)
-            else:
-                t1 = self.maps[dep.fuid]
-                if dep.suid in self.tasks:
-                    t2 = self.tasks[dep.suid]
-                    printer.print_dependence(dep,t1,t2)
-                else:
-                    t2 = self.maps[dep.suid]
-                    printer.print_dependence(dep,t1,t2)
+            t1 = self.get_task(dep.fuid)
+            t2 = self.get_task(dep.suid)
+            printer.print_dependence(dep,t1,t2)
 
 class Usage(object):
     def __init__(self,is_region,handle,parent,privilege,coherence):

@@ -17,9 +17,9 @@ def parse_log_file(file_name):
 
     map_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Map (?P<unique>[0-9]+) Parent (?P<parent>[0-9]+)")
 
-    region_usage_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Context (?P<context>[0-9]+) Task (?P<unique>[0-9]+) Region (?P<idx>[0-9]+) Handle (?P<handle>[0-9]+) Parent (?P<parent>[0-9]+) Privilege (?P<privilege>[0-9]) Coherence (?P<coherence>[0-9])")
+    region_usage_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Context (?P<context>[0-9]+) Task (?P<unique>[0-9]+) Region (?P<idx>[0-9]+) Handle (?P<handle>[0-9a-f]+) Parent (?P<parent>[0-9a-f]+) Privilege (?P<privilege>[0-9]) Coherence (?P<coherence>[0-9])")
 
-    partition_usage_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Context (?P<context>[0-9]+) Task (?P<unique>[0-9]+) Partition (?P<idx>[0-9]+) Handle (?P<handle>[0-9]+) Parent (?P<parent>[0-9]+) Privilege (?P<privilege>[0-9]) Coherence (?P<coherence>[0-9])")
+    partition_usage_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Context (?P<context>[0-9]+) Task (?P<unique>[0-9]+) Partition (?P<idx>[0-9]+) Handle (?P<handle>[0-9a-f]+) Parent (?P<parent>[0-9a-f]+) Privilege (?P<privilege>[0-9]) Coherence (?P<coherence>[0-9])")
 
     dependence_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Mapping Dependence (?P<context>[0-9]+) (?P<uid_one>[0-9]+) (?P<idx_one>[0-9]+) (?P<uid_two>[0-9]+) (?P<idx_two>[0-9]+) (?P<type>[0-9]+)")
 
@@ -48,28 +48,28 @@ def parse_log_file(file_name):
             continue
         m = top_pat.match(line)
         if m <> None:
-            task = Task(int(m.group('uid')),"Top Level",int(m.group('tid')))
+            task = Task((m.group('uid')),"Top Level",int(m.group('tid')))
             # No need to add it to a context since it isn't in one
             # Create a new context for this task
             result.create_context(task)
             continue
         m = task_pat.match(line)
         if m <> None:
-            task = Task(int(m.group('unique')),m.group('name'),int(m.group('id')))
+            task = Task((m.group('unique')),m.group('name'),int(m.group('id')))
             # Add the task to its enclosing context
-            result.get_context(int(m.group('parent'))).add_task(task)
+            result.get_context((m.group('parent'))).add_task(task)
             # Create a new context for this task
             result.create_context(task)
             continue
         m = map_pat.match(line)
         if m <> None:
-            mmap = Map(int(m.group('unique')))
-            result.get_context(int(m.group('parent'))).add_map(mmap)
+            mmap = Map((m.group('unique')))
+            result.get_context((m.group('parent'))).add_map(mmap)
             # No need to create a context since this is a map
             continue
         m = region_usage_pat.match(line)
         if m <> None:
-            task = result.get_context(int(m.group('context'))).get_task(int(m.group('unique')))  
+            task = result.get_context((m.group('context'))).get_task((m.group('unique')))  
             idx = int(m.group('idx'))
             #usage = Usage(True,int(m.group('handle')),int(m.group('parent')),int(m.group('privilege')),int(m.group('coherence')))
             usage = Usage(True,m.group('handle'),m.group('parent'),int(m.group('privilege')),int(m.group('coherence')))
@@ -77,7 +77,7 @@ def parse_log_file(file_name):
             continue
         m = partition_usage_pat.match(line)
         if m <> None:
-            task = result.get_context(int(m.group('context'))).get_task(int(m.group('unique')))
+            task = result.get_context((m.group('context'))).get_task((m.group('unique')))
             idx = int(m.group('idx'))
             #usage = Usage(False,int(m.group('handle')),int(m.group('parent')),int(m.group('privilege')),int(m.group('coherence')))
             usage = Usage(False,m.group('handle'),m.group('parent'),int(m.group('privilege')),int(m.group('coherence')))
@@ -85,10 +85,10 @@ def parse_log_file(file_name):
             continue
         m = dependence_pat.match(line)
         if m <> None:
-            dependence = Dependence(int(m.group('uid_one')),int(m.group('idx_one')),
-                                    int(m.group('uid_two')),int(m.group('idx_two')),
+            dependence = Dependence((m.group('uid_one')),int(m.group('idx_one')),
+                                    (m.group('uid_two')),int(m.group('idx_two')),
                                     int(m.group('type')))
-            result.get_context(int(m.group('context'))).add_dependence(dependence)
+            result.get_context((m.group('context'))).add_dependence(dependence)
             continue
         m = subregion_pat.match(line)
         if m <> None:
@@ -184,7 +184,7 @@ def parse_log_file(file_name):
             continue
         m = index_space_size_pat.match(line)
         if m <> None:
-            task = result.get_context(int(m.group('context'))).get_task(int(m.group('unique')))  
+            task = result.get_context((m.group('context'))).get_task((m.group('unique')))  
             task.set_index_space_size(int(m.group('size')))
             continue
     return result
