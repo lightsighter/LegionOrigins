@@ -1983,7 +1983,7 @@ namespace RegionRuntime {
 	RegionMetaDataUntyped get_metadata(void);
 
 	RegionAllocatorUntyped create_allocator(Memory m);
-	RegionInstanceUntyped  create_instance(Memory m);
+	RegionInstanceUntyped  create_instance(Memory m, ReductionOpID redop = 0);
 
 	void destroy_allocator(RegionAllocatorUntyped a);
 	void destroy_instance(RegionInstanceUntyped i);
@@ -2486,6 +2486,13 @@ namespace RegionRuntime {
 	return r->create_instance(m);
     }
 
+    RegionInstanceUntyped RegionMetaDataUntyped::create_instance_untyped(Memory m, ReductionOpID redop) const
+    {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+        RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
+        return r->create_instance(m, redop);
+    }
+
     void RegionMetaDataUntyped::destroy_region_untyped(void) const
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
@@ -2652,7 +2659,7 @@ namespace RegionRuntime {
 	return allocator->get_allocator();
     }
 
-    RegionInstanceUntyped RegionMetaDataImpl::create_instance(Memory m)
+    RegionInstanceUntyped RegionMetaDataImpl::create_instance(Memory m, ReductionOpID redop /*=0*/)
     {
         if (!m.exists())
         {
