@@ -1431,7 +1431,8 @@ namespace RegionRuntime {
             if (chosen_info == InstanceInfo::get_no_instance())
             {
               // We couldn't find a pre-existing instance, try to make one
-              chosen_info = parent_ctx->create_instance_info(req.handle.region,*it);
+              chosen_info = parent_ctx->create_instance_info(req.handle.region,*it,
+                                                            (IS_REDUCE(req) ? req.redop : 0));
               if (chosen_info == InstanceInfo::get_no_instance())
               {
                 continue;
@@ -1454,19 +1455,28 @@ namespace RegionRuntime {
               }
               instance_owned = result.second;
             }
-            // Check for any write-after-read dependences
-            if (war_optimization && chosen_info->has_war_dependence(this, 0))
+
+            if (IS_REDUCE(req))
             {
-#ifdef DEBUG_HIGH_LEVEL
-              assert(!needs_initializing);
-#endif
-              // Try creating a new physical instance in the same location as the previous
-              InstanceInfo *new_info = create_instance_info(req.handle.region, chosen_info->location);
-              if (new_info != InstanceInfo::get_no_instance())
+              // Reductions don't need initializing
+              needs_initializing = false;
+            }
+            else if (IS_WRITE(req))
+            {
+              // Check for any write-after-read dependences
+              if (war_optimization && chosen_info->has_war_dependence(this, 0))
               {
-                chosen_info = new_info;
-                needs_initializing = true;
-                instance_owned = true;
+#ifdef DEBUG_HIGH_LEVEL
+                assert(!needs_initializing);
+#endif
+                // Try creating a new physical instance in the same location as the previous
+                InstanceInfo *new_info = create_instance_info(req.handle.region, chosen_info->location, 0/*redop*/);
+                if (new_info != InstanceInfo::get_no_instance())
+                {
+                  chosen_info = new_info;
+                  needs_initializing = true;
+                  instance_owned = true;
+                }
               }
             }
             found = true;
@@ -1633,10 +1643,10 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    InstanceInfo* RegionMappingImpl::create_instance_info(LogicalRegion handle, Memory m)
+    InstanceInfo* RegionMappingImpl::create_instance_info(LogicalRegion handle, Memory m, ReductionOpID redop)
     //--------------------------------------------------------------------------
     {
-      return parent_ctx->create_instance_info(handle, m);
+      return parent_ctx->create_instance_info(handle, m, redop);
     }
 
     //--------------------------------------------------------------------------
@@ -1893,7 +1903,7 @@ namespace RegionRuntime {
     }
     
     //--------------------------------------------------------------------------
-    InstanceInfo* DeletionOp::create_instance_info(LogicalRegion handle, Memory m)
+    InstanceInfo* DeletionOp::create_instance_info(LogicalRegion handle, Memory m, ReductionOpID redop)
     //--------------------------------------------------------------------------
     {
       assert(false);
@@ -5776,7 +5786,8 @@ namespace RegionRuntime {
             if (info == InstanceInfo::get_no_instance())
             {
               // We couldn't find a pre-existing instance, try to make one
-              info = create_instance_info(regions[idx].handle.region, *it);
+              info = create_instance_info(regions[idx].handle.region, *it,
+                                          (IS_REDUCE(regions[idx]) ? regions[idx].redop : 0));
               if (info == InstanceInfo::get_no_instance())
               {
                 // Couldn't make it, try the next location
@@ -5802,20 +5813,28 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
             assert(info != InstanceInfo::get_no_instance());
 #endif
-            // Check for any Write-After-Read dependences
-            if (war_optimization && info->has_war_dependence(this,idx))
+            if (IS_REDUCE(regions[idx]))
             {
-#ifdef DEBUG_HIGH_LEVEL
-              assert(!needs_initializing); // shouldn't have war conflict if we have a new instance
-#endif
-              // Try creating a new physical instance in the same location as the previous 
-              InstanceInfo *new_info = create_instance_info(regions[idx].handle.region, info->location);
-              if (new_info != InstanceInfo::get_no_instance())
+              // Reduction instances should never need to be initialized
+              needs_initializing = false;
+            }
+            else if (IS_WRITE(regions[idx]))
+            {
+              // Check for any Write-After-Read dependences (don't need to check for this for reductions or reads)
+              if (war_optimization && info->has_war_dependence(this,idx))
               {
-                // We successfully made it, so update the meta infromation
-                info = new_info;
-                needs_initializing = true;
-                instance_owned = true;
+#ifdef DEBUG_HIGH_LEVEL
+                assert(!needs_initializing); // shouldn't have war conflict if we have a new instance
+#endif
+                // Try creating a new physical instance in the same location as the previous 
+                InstanceInfo *new_info = create_instance_info(regions[idx].handle.region, info->location, 0/*redop*/);
+                if (new_info != InstanceInfo::get_no_instance())
+                {
+                  // We successfully made it, so update the meta infromation
+                  info = new_info;
+                  needs_initializing = true;
+                  instance_owned = true;
+                }
               }
             }
 #ifdef DEBUG_HIGH_LEVEL
@@ -6826,7 +6845,8 @@ namespace RegionRuntime {
             if (info == InstanceInfo::get_no_instance())
             {
               // We couldn't find a pre-existing instance, try to make one
-              info = create_instance_info(regions[idx].handle.region, *it);
+              info = create_instance_info(regions[idx].handle.region, *it,
+                                          (IS_REDUCE(regions[idx]) ? regions[idx].redop : 0));
               if (info == InstanceInfo::get_no_instance())
               {
                 // Couldn't make it, try the next location
@@ -6852,20 +6872,28 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
             assert(info != InstanceInfo::get_no_instance());
 #endif
-            // Check for any Write-After-Read dependences
-            if (war_optimization && info->has_war_dependence(this,idx))
+            if (IS_REDUCE(regions[idx]))
             {
-#ifdef DEBUG_HIGH_LEVEL
-              assert(!needs_initializing); // shouldn't have war conflict if we have a new instance
-#endif
-              // Try creating a new physical instance in the same location as the previous 
-              InstanceInfo *new_info = create_instance_info(regions[idx].handle.region, info->location);
-              if (new_info != InstanceInfo::get_no_instance())
+              // Reductions don't need to be initialized
+              needs_initializing = false;
+            }
+            else if (IS_WRITE(regions[idx]))
+            {
+              // Check for any Write-After-Read dependences
+              if (war_optimization && info->has_war_dependence(this,idx))
               {
-                // We successfully made it, so update the meta infromation
-                info = new_info;
-                needs_initializing = true;
-                instance_owned = true;
+#ifdef DEBUG_HIGH_LEVEL
+                assert(!needs_initializing); // shouldn't have war conflict if we have a new instance
+#endif
+                // Try creating a new physical instance in the same location as the previous 
+                InstanceInfo *new_info = create_instance_info(regions[idx].handle.region, info->location, 0/*redop*/);
+                if (new_info != InstanceInfo::get_no_instance())
+                {
+                  // We successfully made it, so update the meta infromation
+                  info = new_info;
+                  needs_initializing = true;
+                  instance_owned = true;
+                }
               }
             }
 #ifdef DEBUG_HIGH_LEVEL
@@ -9090,7 +9118,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    InstanceInfo* TaskContext::create_instance_info(LogicalRegion handle, Memory m)
+    InstanceInfo* TaskContext::create_instance_info(LogicalRegion handle, Memory m, ReductionOpID redop)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -9099,7 +9127,15 @@ namespace RegionRuntime {
       assert(current_taken);
 #endif
       // Try to make the instance in the memory
-      RegionInstance inst = handle.create_instance_untyped(m);
+      RegionInstance inst;
+      if (redop == 0)
+      {
+        inst = handle.create_instance_untyped(m);
+      }
+      else
+      {
+        inst = handle.create_instance_untyped(m, redop);
+      }
       if (!inst.exists())
       {
         return InstanceInfo::get_no_instance();
@@ -11069,7 +11105,7 @@ namespace RegionRuntime {
       for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].reduction_instances.begin();
             it != region_states[ctx].reduction_instances.end(); it++)
       {
-        target->copy_from(it->first, enclosing, true/*reduction*/); 
+        target->copy_from(it->first, enclosing, region_states[ctx].redop); 
         written_to = true;
         // We can also invalidate this if we own it
 #ifndef DISABLE_GC
@@ -11208,7 +11244,7 @@ namespace RegionRuntime {
             else
             {
               // Try to make it
-              target = ren.ctx->create_instance_info(handle,*mem_it);
+              target = ren.ctx->create_instance_info(handle,*mem_it,0/*redop*/);
               if (target != InstanceInfo::get_no_instance())
               {
                 target_owned = true;
@@ -13064,7 +13100,7 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    void InstanceInfo::copy_from(InstanceInfo *src_info, GeneralizedContext *ctx, bool reduction /*= false*/)
+    void InstanceInfo::copy_from(InstanceInfo *src_info, GeneralizedContext *ctx, ReductionOpID redop /*=0*/)
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -13077,67 +13113,127 @@ namespace RegionRuntime {
       {
         return;
       }
-      // Get the preconditions for performing the copy operation 
-      std::set<Event> wait_on_events;
-      // Check ourselves first, we better start a new epoch
-      if (find_dependences_below(wait_on_events,true/*writer*/))
+      if (redop == 0) // not a reduction
       {
-        start_new_epoch(wait_on_events);
-        wait_on_events.clear();
-        // Can replace all those events with the new valid event
-        wait_on_events.insert(valid_event);
-      }
+        // These are full on write copies which will depend on all prior users finishing
+        // and therefore will establish a new valid event for the InstanceInfo
+
+        // Get the preconditions for performing the copy operation 
+        std::set<Event> wait_on_events;
+        // Check ourselves first, we better start a new epoch
+        if (find_dependences_below(wait_on_events,true/*writer*/,redop))
+        {
+          start_new_epoch(wait_on_events);
+          wait_on_events.clear();
+          // Can replace all those events with the new valid event
+          wait_on_events.insert(valid_event);
+        }
 #if DEBUG_HIGH_LEVEL
-      else
-      {
-        assert(false); // We should always start a new epoch for a copy writer
-      }
+        else
+        {
+          assert(false); // We should always start a new epoch for a copy writer
+        }
 #endif
-      // Check up the tree also
-      find_dependences_above(wait_on_events,true/*writer*/,true/*skip first*/);
-      // Do the source instance
-      src_info->get_copy_precondition(wait_on_events);
-      // Merge all the events together
-      Event copy_precondition = Event::merge_events(wait_on_events);
+        // Check up the tree also
+        find_dependences_above(wait_on_events,true/*writer*/,redop,true/*skip first*/);
+        // Do the source instance
+        src_info->get_copy_precondition(wait_on_events);
+        // Merge all the events together
+        Event copy_precondition = Event::merge_events(wait_on_events);
 #ifdef TRACE_CAPTURE
-      if (!copy_precondition.exists())
-      {
-        UserEvent new_precond = UserEvent::create_user_event();
-        new_precond.trigger();
-        copy_precondition = new_precond;
-      }
+        if (!copy_precondition.exists())
+        {
+          UserEvent new_precond = UserEvent::create_user_event();
+          new_precond.trigger();
+          copy_precondition = new_precond;
+        }
 #endif
 #ifdef DEBUG_HIGH_LEVEL
-      log_event_merge(wait_on_events, copy_precondition);
+        log_event_merge(wait_on_events, copy_precondition);
 #endif
-      // Perform the copy
-      RegionInstance src_copy = src_info->inst;
-      LogicalRegion hand_copy = src_info->handle;
-      // Always give the element mask when making the copy operations just for completeness 
-      Event copy_event = src_copy.copy_to_untyped(this->inst, hand_copy.get_valid_mask(), copy_precondition);
+        // Perform the copy
+        RegionInstance src_copy = src_info->inst;
+        LogicalRegion hand_copy = src_info->handle;
+        // Always give the element mask when making the copy operations just for completeness 
+        Event copy_event = src_copy.copy_to_untyped(this->inst, hand_copy.get_valid_mask(), copy_precondition);
 #ifdef TRACE_CAPTURE
-      // For trace capture, we'll make sure there is always a unique event id for a copy result
-      if (!copy_event.exists())
-      {
-        UserEvent new_copy_event = UserEvent::create_user_event();
-        // Trigger it right away
-        new_copy_event.trigger();
-        copy_event = new_copy_event;
-      }
+        // For trace capture, we'll make sure there is always a unique event id for a copy result
+        if (!copy_event.exists())
+        {
+          UserEvent new_copy_event = UserEvent::create_user_event();
+          // Trigger it right away
+          new_copy_event.trigger();
+          copy_event = new_copy_event;
+        }
 #endif
-      // Add the copy user
-      src_info->add_copy_user(ctx->get_unique_id(),copy_event);
-      ctx->add_source_physical_instance(src_info);
-      // We don't add destination user information here anticipating that the destination will be used elsewhere
-      log_spy(LEVEL_INFO,"Event Copy Event %x %d %x %x %x %x %x %x %x %d",
-          copy_precondition.id,copy_precondition.gen,src_info->inst.id,src_info->handle.id,src_info->location.id,
-          this->inst.id,this->handle.id,this->location.id,copy_event.id,copy_event.gen);
-      // Since we checked above that we just started a new epoch we can just update the valid event here
-      valid_event = copy_event;
+        // Add the copy user
+        src_info->add_copy_user(ctx->get_unique_id(),copy_event);
+        ctx->add_source_physical_instance(src_info);
+        // We don't add destination user information here anticipating that the destination will be used elsewhere
+        log_spy(LEVEL_INFO,"Event Copy Event %x %d %x %x %x %x %x %x %x %d",
+            copy_precondition.id,copy_precondition.gen,src_info->inst.id,src_info->handle.id,src_info->location.id,
+            this->inst.id,this->handle.id,this->location.id,copy_event.id,copy_event.gen);
+        // Since we checked above that we just started a new epoch we can just update the valid event here
+        valid_event = copy_event;
+      }
+      else
+      {
+        // This is a reduction copy which means we should allow many reduction copies to happen in parallel
+        // This also means that this copy won't establish a new valid event
+        std::set<Event> wait_on_events; 
+        if (find_dependences_below(wait_on_events,false/*writer*/,redop))
+        {
+          start_new_epoch(wait_on_events);
+          wait_on_events.clear();
+          wait_on_events.insert(valid_event);
+        }
+        // Up the tree also
+        find_dependences_above(wait_on_events,false/*writer*/,redop,true/*skip_first*/);
+        // Do the source instance
+        src_info->get_copy_precondition(wait_on_events);
+        // Merge all the events together
+        Event copy_precondition = Event::merge_events(wait_on_events);
+#ifdef TRACE_CAPTURE
+        if (!copy_precondition.exists())
+        {
+          UserEvent new_precond = UserEvent::create_user_event();
+          new_precond.trigger();
+          copy_precondition = new_precond;
+        }
+#endif
+#ifdef DEBUG_HIGH_LEVEL
+        log_event_merge(wait_on_events, copy_precondition);
+#endif
+        // Perform the copy
+        RegionInstance src_copy = src_info->inst;
+        // No need to provide the mask on this copy since its a reduction instance
+        Event copy_event = src_copy.copy_to_untyped(this->inst, copy_precondition);
+#ifdef TRACE_CAPTURE
+        // For trace capture, we'll make sure there is always a unique event id for a copy result
+        if (!copy_event.exists())
+        {
+          UserEvent new_copy_event = UserEvent::create_user_event();
+          // Trigger it right away
+          new_copy_event.trigger();
+          copy_event = new_copy_event;
+        }
+#endif
+        // Add the copy user
+        src_info->add_copy_user(ctx->get_unique_id(),copy_event);
+        ctx->add_source_physical_instance(src_info);
+        // Also add the reduction user
+        // cheating here a little by having the reference removed as if it was a source instance
+        add_copy_user(ctx->get_unique_id(),copy_event,true/*reduction*/); 
+        ctx->add_source_physical_instance(this);
+        log_spy(LEVEL_INFO,"Event Copy Event %x %d %x %x %x %x %x %x %x %d",
+            copy_precondition.id,copy_precondition.gen,src_info->inst.id,src_info->handle.id,src_info->location.id,
+            this->inst.id,this->handle.id,this->location.id,copy_event.id,copy_event.gen);
+        // No need to update the valid event since we won't dominate everything
+      }
     }
 
     //-------------------------------------------------------------------------
-    void InstanceInfo::add_copy_user(UniqueID uid, Event copy_finish)
+    void InstanceInfo::add_copy_user(UniqueID uid, Event copy_finish, ReductionOpID redop /*=0*/)
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -13150,7 +13246,7 @@ namespace RegionRuntime {
         // See if it already exists
         if (added_copy_users.find(uid) == added_copy_users.end())
         {
-          added_copy_users.insert(std::pair<UniqueID,CopyUser>(uid,CopyUser(1,copy_finish)));
+          added_copy_users.insert(std::pair<UniqueID,CopyUser>(uid,CopyUser(1,copy_finish,redop)));
         }
         else
         {
@@ -13161,7 +13257,7 @@ namespace RegionRuntime {
       {
         if (copy_users.find(uid) == copy_users.end())
         {
-          copy_users.insert(std::pair<UniqueID,CopyUser>(uid,CopyUser(1,copy_finish)));
+          copy_users.insert(std::pair<UniqueID,CopyUser>(uid,CopyUser(1,copy_finish,redop)));
         }
         else
         {
@@ -13335,7 +13431,7 @@ namespace RegionRuntime {
       assert(closing); // We should already be in closing mode
 #endif
       std::set<Event> wait_on_events;
-      if (find_dependences_below(wait_on_events,true/*writer*/))
+      if (find_dependences_below(wait_on_events,true/*writer*/,0/*reduction*/))
       {
         start_new_epoch(wait_on_events);
       }
@@ -14119,18 +14215,19 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    void InstanceInfo::find_dependences_above(std::set<Event> &wait_on_events, bool writer, bool skip_local)
+    void InstanceInfo::find_dependences_above(std::set<Event> &wait_on_events, 
+                                      bool writer, ReductionOpID redop, bool skip_local)
     //-------------------------------------------------------------------------
     {
       // Don't need valid events on the way up, an open child valid event is always
       // at or farther ahead in the future than its parent's valid event
       if (!skip_local)
       {
-        find_local_dependences(wait_on_events,writer);
+        find_local_dependences(wait_on_events, writer, redop);
       }
       if (parent != NULL)
       {
-        parent->find_dependences_above(wait_on_events, writer, false/*skip local*/);
+        parent->find_dependences_above(wait_on_events, writer, redop, false/*skip local*/);
       }
     }
 
@@ -14165,7 +14262,7 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    bool InstanceInfo::find_dependences_below(std::set<Event> &wait_on_events, bool writer)
+    bool InstanceInfo::find_dependences_below(std::set<Event> &wait_on_events, bool writer, ReductionOpID redop)
     //-------------------------------------------------------------------------
     {
       if (valid_event.exists())
@@ -14174,11 +14271,11 @@ namespace RegionRuntime {
       }
       // We're not the first, so the trying to create a new epoch doesn't matter, but
       // we do want to know when we can be closed
-      bool all_dominated = find_local_dependences(wait_on_events,writer);
+      bool all_dominated = find_local_dependences(wait_on_events,writer,redop);
       for (std::list<InstanceInfo*>::iterator it = open_children.begin();
             it != open_children.end(); /*nothing*/)
       {
-        if ((*it)->find_dependences_below(wait_on_events, writer))
+        if ((*it)->find_dependences_below(wait_on_events, writer, redop))
         {
           InstanceInfo *child = *it;
           it = open_children.erase(it);
@@ -14253,8 +14350,9 @@ namespace RegionRuntime {
             assert(false);
         }
       }
+
       // Then do all the copy users
-      if (HAS_WRITE(usage))
+      if (IS_WRITE(usage))
       {
         // If we're about to write, all the current epoch copy operations are dependences
         for (std::set<UniqueID>::const_iterator it = epoch_copy_users.begin();
@@ -14285,17 +14383,127 @@ namespace RegionRuntime {
           }
         }
       }
+      else if (IS_REDUCE(usage))
+      {
+        // This is a reduction, wait for all copy events that aren't reductions of the same type
+        for (std::set<UniqueID>::const_iterator it = epoch_copy_users.begin();
+              it != epoch_copy_users.end(); it++)
+        {
+          if (copy_users.find(*it) != copy_users.end())
+          {
+            if (copy_users[*it].redop != usage.redop)
+            {
+              wait_on_events.insert(copy_users[*it].term_event);  
+            }
+            else
+            {
+              all_dominated = false;
+            }
+          }
+          else
+          {
+#ifndef TRACE_CAPTURE
+#ifdef DEBUG_HIGH_LEVEL
+            assert(added_copy_users.find(*it) != added_copy_users.end()); 
+#endif
+            if (added_copy_users[*it].redop != usage.redop)
+            {
+              wait_on_events.insert(added_copy_users[*it].term_event);
+            }
+            else
+            {
+              all_dominated = false;
+            }
+#else
+            if (added_copy_users.find(*it) != added_copy_users.end())
+            {
+              if (added_copy_users[*it].redop != usage.redop)
+              {
+                wait_on_events.insert(added_copy_users[*it].term_event);
+              }
+              else
+              {
+                all_dominated = false;
+              }
+            }
+            else
+            {
+              assert(removed_copy_users.find(*it) != removed_copy_users.end());
+              if (removed_copy_users[*it].redop != usage.redop)
+              {
+                wait_on_events.insert(removed_copy_users[*it].term_event);
+              }
+            }
+#endif
+          }
+        }
+      }
       else
       {
-        all_dominated = true;
+        // this is a read, check to see if there are any reductions going on that we
+        // need to wait for
+        for (std::set<UniqueID>::const_iterator it = epoch_copy_users.begin();
+              it != epoch_copy_users.end(); it++)
+        {
+          if (copy_users.find(*it) != copy_users.end())
+          {
+            if (copy_users[*it].redop != 0)
+            {
+              wait_on_events.insert(copy_users[*it].term_event);
+            }
+            else
+            {
+              all_dominated = false;
+            }
+          }
+          else
+          {
+#ifndef TRACE_CAPTURE
+#ifdef DEBUG_HIGH_LEVEL
+            assert(added_copy_users.find(*it) != added_copy_users.end());
+#endif
+            if (added_copy_users[*it].redop != 0)
+            {
+              wait_on_events.insert(added_copy_users[*it].term_event);
+            }
+            else
+            {
+              all_dominated = false;
+            }
+#else
+            if (added_copy_users.find(*it) != added_copy_users.end())
+            {
+              if (added_copy_users[*it].redop != 0)
+              {
+                wait_on_events.insert(added_copy_users[*it].term_event);
+              }
+              else
+              {
+                all_dominated = false;
+              }
+            }
+            else
+            {
+              assert(removed_copy_users.find(*it) != removed_copy_users.end());
+              if (removed_copy_users[*it].redop != 0)
+              {
+                wait_on_events.insert(removed_copy_users[*it].term_event);
+              }
+            }
+#endif
+          }
+        }
       }
       return all_dominated;
     }
     
     //-------------------------------------------------------------------------
-    bool InstanceInfo::find_local_dependences(std::set<Event> &wait_on_events, bool writer)
+    bool InstanceInfo::find_local_dependences(std::set<Event> &wait_on_events, bool writer, ReductionOpID redop)
     //-------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!(writer && (redop != 0)));
+#endif
       if (writer)
       {
         // Just wait for everyone to finish
@@ -14355,8 +14563,125 @@ namespace RegionRuntime {
         }
         return true;
       }
+      else if (redop != 0)
+      {
+        // Wait for everyone except other reductions to finish performing.  Note we don't
+        // have to worry about different types of reduction ops from interferring here
+        // because the region tree traversal ensures that will never happen
+        bool all_dominated = true;
+        for (std::set<UniqueID>::const_iterator it = epoch_users.begin();
+              it != epoch_users.end(); it++)
+        {
+          if (users.find(*it) != users.end())
+          {
+            // don't need to wait for other reducers to finish
+            if (IS_REDUCE(users[*it].usage) &&
+                (users[*it].usage.redop == redop))
+            {
+              all_dominated = false;
+            }
+            else
+            {
+              wait_on_events.insert(users[*it].term_event);
+            }
+          }
+          else
+          {
+#ifndef TRACE_CAPTURE
+#ifdef DEBUG_HIGH_LEVEL
+            assert(added_users.find(*it) != added_users.end());
+#endif
+            if (IS_REDUCE(added_users[*it].usage) &&
+                (added_users[*it].usage.redop != redop))
+            {
+              all_dominated = false;
+            }
+            else
+            {
+              wait_on_events.insert(added_users[*it].term_event);
+            }
+#else
+            if (added_users.find(*it) != added_users.end())
+            {
+              if (IS_REDUCE(added_users[*it].usage) &&
+                  (added_users[*it].usage.redop == redop))
+              {
+                all_dominated = false;
+              }
+              else
+              {
+                wait_on_events.insert(added_users[*it].term_event);
+              }
+            }
+            else
+            {
+              assert(removed_users.find(*it) != removed_users.end());
+              // All dominated is still true here since this was in the removed users set
+              if (!IS_REDUCE(removed_users[*it].usage) &&
+                  (removed_users[*it].usage.redop != redop))
+              {
+                wait_on_events.insert(removed_users[*it].term_event);
+              }
+            }
+#endif
+          }
+        }
+        for (std::set<UniqueID>::const_iterator it = epoch_copy_users.begin();
+              it != epoch_copy_users.end(); it++)
+        {
+          if (copy_users.find(*it) != copy_users.end())
+          {
+            if (copy_users[*it].redop == redop)
+            {
+              all_dominated = false;
+            }
+            else
+            {
+              wait_on_events.insert(copy_users[*it].term_event);
+            }
+          }
+          else
+          {
+#ifndef TRACE_CAPTURE
+#ifdef DEBUG_HIGH_LEVEL
+            assert(added_copy_users.find(*it) != added_copy_users.end());
+#endif
+            if (added_copy_users[*it].redop == redop)
+            {
+              all_dominated = false;
+            }
+            else
+            {
+              wait_on_events.insert(added_copy_users[*it].term_event);
+            }
+#else
+            if (added_copy_users.find(*it) != added_copy_users.end())
+            {
+              if (added_copy_users[*it].redop == redop)
+              {
+                all_dominated = false;
+              }
+              else
+              {
+                wait_on_events.insert(added_copy_users[*it].term_event);
+              }
+            }
+            else
+            {
+              assert(removed_copy_users.find(*it) != removed_copy_users.end());
+              if (!removed_copy_users[*it].redop == redop)
+              {
+                wait_on_events.insert(removed_copy_users[*it].term_event);
+              }
+            }
+#endif
+          }
+        }
+        return all_dominated;
+      }
       else
       {
+        // This is a read copy
         // Can't dominate everything unless there are no other copy users
         bool all_dominated = epoch_copy_users.empty();
         // Only need to look at other task users, see if they have a write
@@ -14526,8 +14851,8 @@ namespace RegionRuntime {
     //-------------------------------------------------------------------------
     {
       // No point in checking for new epoch for a copy reader
-      find_dependences_above(wait_on_events, false/*writer*/, true/*skip first*/);
-      find_dependences_below(wait_on_events, false/*writer*/);
+      find_dependences_above(wait_on_events, false/*writer*/, 0/*reduction*/, true/*skip first*/);
+      find_dependences_below(wait_on_events, false/*writer*/, 0/*reduction*/);
     }
 
     //-------------------------------------------------------------------------
@@ -14853,7 +15178,7 @@ namespace RegionRuntime {
 #endif
       unsigned new_denom = denominator * factor;
 #ifdef DEBUG_HIGH_LEVEL
-      assert(new_denom > 0);
+      assert(new_denom > 0); // check for integer overflow
 #endif
       denominator = new_denom;
     }
