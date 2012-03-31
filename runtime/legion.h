@@ -878,7 +878,7 @@ namespace RegionRuntime {
       void check_spawn_task(TaskContext *ctx); // set the spawn parameter
       bool target_task(TaskContext *ctx); // Select a target processor, return true if local 
       // Need to hold queue lock prior to calling split task
-      bool split_task(TaskContext *ctx); // Return true if still local
+      bool split_task(TaskContext *ctx, unsigned ways); // Return true if still local
       void issue_steal_requests(void);
       void advertise(MapperID map_id); // Advertise work when we have it for a given mapper
     private:
@@ -955,9 +955,9 @@ namespace RegionRuntime {
       public:
         ConstraintSplit(const std::vector<Constraint> &cons,
                         Processor proc, bool rec)
-          : constraints(cons), p(proc), recurse(rec) { }
+          : space(cons), p(proc), recurse(rec) { }
       public:
-        std::vector<Constraint> constraints;
+        std::vector<Constraint> space;
         Processor p;
         bool recurse;
       };
@@ -965,9 +965,9 @@ namespace RegionRuntime {
       public:
         RangeSplit(const std::vector<Range> &r,
                     Processor proc, bool rec)
-          : ranges(r), p(proc), recurse(rec) { }
+          : space(r), p(proc), recurse(rec) { }
       public:
-        std::vector<Range> ranges;
+        std::vector<Range> space;
         Processor p;
         bool recurse;
       };
@@ -1283,12 +1283,16 @@ namespace RegionRuntime {
     protected:
       // functions for packing and unpacking tasks
       size_t compute_task_size(void);
-      void pack_task(Serializer &rez);
+      void pack_task(Serializer &rez, unsigned num_copies/*including local*/);
       void unpack_task(Deserializer &derez);
       void final_unpack_task(void);
       // Return true if this task still has index parts on this machine
-      bool distribute_index_space(std::vector<Mapper::ConstraintSplit> &chunks);
-      bool distribute_index_space(std::vector<Mapper::RangeSplit> &chunks);
+      template<typename T, typename CT>
+      bool distribute_index_space(std::vector<CT> &chunks, unsigned ways);
+      template<typename T>
+      void set_space(const std::vector<T> &space);
+      template<typename T>
+      const std::vector<T>& get_space(void) const;
       // Compute region tree updates
       size_t compute_tree_update_size(const std::map<LogicalRegion,unsigned/*idx*/> &to_check, 
                                       std::map<PartitionNode*,unsigned/*idx*/> &region_tree_updates);
@@ -1411,6 +1415,9 @@ namespace RegionRuntime {
       unsigned num_local_unfinished;
       // Keep track of what fraction of the work we own (1/denominator)
       unsigned denominator;  
+      // Factor to divide all instance info fractions by during final unpack, handles recursive
+      // split information when instance infos are not unpacked
+      unsigned split_factor;
       // for the index owner only
       std::pair<unsigned,unsigned> frac_index_space; // determine when we've seen all the index space
       unsigned num_total_points;
@@ -1868,6 +1875,32 @@ namespace RegionRuntime {
     };
 
     /////////////////////////////////////////////////////////////
+    // Fraction 
+    /////////////////////////////////////////////////////////////
+    class Fraction {
+    public:
+      Fraction(void);
+      Fraction(unsigned num, unsigned denom);
+      Fraction(const Fraction &f);
+    public:
+      void divide(unsigned factor);
+      void add(const Fraction &rhs);
+      void subtract(const Fraction &rhs);
+      // Return a fraction that can be taken from this fraction 
+      // such that it leaves at least 1/ways parts local after (ways-1) portions
+      // are taken from this instance
+      Fraction get_part(unsigned ways);
+    public:
+      bool is_whole(void) const;
+      bool is_empty(void) const;
+    public:
+      Fraction& operator=(const Fraction &rhs);
+    private:
+      unsigned numerator;
+      unsigned denominator;
+    };
+
+    /////////////////////////////////////////////////////////////
     // InstanceInfo 
     ///////////////////////////////////////////////////////////// 
     class InstanceInfo {
@@ -1943,9 +1976,10 @@ namespace RegionRuntime {
       // Get the set of InstanceInfos needed, this instance and all parent instances
       void get_needed_instances(std::vector<InstanceInfo*> &needed_instances); 
       // Operations for packing return information for instance infos
+      Fraction get_subtract_frac(unsigned ways);
       size_t compute_info_size(void) const;
-      void pack_instance_info(Serializer &rez);
-      static void unpack_instance_info(Deserializer &derez, std::map<InstanceID,InstanceInfo*> *infos);
+      void pack_instance_info(Serializer &rez, const Fraction &to_take);
+      static void unpack_instance_info(Deserializer &derez, std::map<InstanceID,InstanceInfo*> *infos, unsigned split_factor);
       // Operations for packing return information for instance infos
       // Note for packing return infos we have to return all the added references even if they aren't in the context
       // we're using so we don't accidentally reclaim the instance too early
@@ -1997,8 +2031,8 @@ namespace RegionRuntime {
       const bool clone; // is this a clone, in which case no garbage collection
       unsigned children;
       bool collected; // Whether this instance has been collected
-      unsigned remote_copies;
       bool returned; // If this instance has been sent back already
+      Fraction local_frac; // Fraction of this instance info that is local to here (will be 1 when can be collected)
       InstanceInfo *parent;
       Event valid_event;
       Lock inst_lock;
@@ -2181,25 +2215,7 @@ namespace RegionRuntime {
       size_t remaining_bytes;
     };
 
-    /////////////////////////////////////////////////////////////
-    // Fraction 
-    /////////////////////////////////////////////////////////////
-    class Fraction {
-    public:
-      Fraction(void);
-      Fraction(const Fraction &f);
-    public:
-      void divide(unsigned factor);
-      void add(const Fraction &rhs);
-    public:
-      bool is_whole(void) const;
-    public:
-      Fraction& operator=(const Fraction &rhs);
-    private:
-      unsigned numerator;
-      unsigned denominator;
-    };
-
+    
     /////////////////////////////////////////////////////////////////////////////////
     //  Wrapper functions for high level tasks                                     //
     /////////////////////////////////////////////////////////////////////////////////

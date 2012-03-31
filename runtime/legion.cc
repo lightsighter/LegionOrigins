@@ -3043,7 +3043,7 @@ namespace RegionRuntime {
           {
             // Need to hold the queue lock before calling split task
             AutoLock ready_queue_lock(queue_lock); 
-            bool still_local = split_task(ctx);
+            bool still_local = split_task(ctx,1);
             // If it's still local add it to the ready queue
             if (still_local)
             {
@@ -3228,7 +3228,9 @@ namespace RegionRuntime {
         for (std::set<TaskContext*>::iterator it = stolen.begin();
                 it != stolen.end(); it++)
         {
-          (*it)->pack_task(rez);
+          // Not that if the task is already remote the 2 won't matter
+          // because it will be partially packed
+          (*it)->pack_task(rez,2/*one local and one global*/);
         }
         // Send the task the theif's utility processor
         Processor utility = thief.get_utility_processor();
@@ -3584,7 +3586,9 @@ namespace RegionRuntime {
             rez.serialize<Processor>(target); // The actual target processor
             rez.serialize<Processor>(local_proc); // The origin processor
             rez.serialize<size_t>(1); // We're only sending one task
-            task->pack_task(rez);
+            // Note if this task is already remote it won't matter since the
+            // InstanceInfos are already packed
+            task->pack_task(rez,2/*one local and one global*/);
             // Send the task to the utility processor
             utility.spawn(ENQUEUE_TASK_ID,rez.get_buffer(),buffer_size);
 #ifdef DEBUG_HIGH_LEVEL
@@ -3606,12 +3610,12 @@ namespace RegionRuntime {
         // Need to hold the queue lock before calling split task
         // to maintain partial order on lock acquires
         AutoLock ready_queue_lock(queue_lock);
-        return split_task(task);
+        return split_task(task,1);
       }
     }
 
     //--------------------------------------------------------------------------------------------
-    bool HighLevelRuntime::split_task(TaskContext *ctx)
+    bool HighLevelRuntime::split_task(TaskContext *ctx, unsigned ways)
     //--------------------------------------------------------------------------------------------
     {
       // Keep splitting this task until it doesn't need to be split anymore
@@ -3627,7 +3631,7 @@ namespace RegionRuntime {
             AutoLock mapper_lock(ctx->mapper_lock);
             ctx->mapper->split_index_space(ctx, ctx->constraint_space, chunks);
           }
-          still_local = ctx->distribute_index_space(chunks);
+          still_local = ctx->distribute_index_space<Constraint,Mapper::ConstraintSplit>(chunks,ways);
         }
         else
         {
@@ -3637,7 +3641,7 @@ namespace RegionRuntime {
             AutoLock mapper_lock(ctx->mapper_lock);
             ctx->mapper->split_index_space(ctx, ctx->range_space, chunks);
           }
-          still_local = ctx->distribute_index_space(chunks);
+          still_local = ctx->distribute_index_space<Range,Mapper::RangeSplit>(chunks,ways);
         }
       }
       return still_local;
@@ -3998,6 +4002,7 @@ namespace RegionRuntime {
       num_unmapped_points = 0;
       num_unfinished_points = 0;
       denominator = 1;
+      split_factor = 1;
       frac_index_space = std::pair<unsigned,unsigned>(0,1);
       mapped_physical_instances.resize(regions.size());
       for (unsigned idx = 0; idx < regions.size(); idx++)
@@ -4030,6 +4035,7 @@ namespace RegionRuntime {
       num_unmapped_points = 0;
       num_unfinished_points = 0;
       denominator = 1;
+      split_factor = 1;
       frac_index_space = std::pair<unsigned,unsigned>(0,1);
       mapped_physical_instances.resize(regions.size());
       for (unsigned idx = 0; idx < regions.size(); idx++)
@@ -4302,6 +4308,7 @@ namespace RegionRuntime {
         assert(slice_owner);
 #endif
         result += sizeof(unsigned); // denominator
+        result += sizeof(unsigned); // split_factor
         // Pack the argument map
         result += index_arg_map.compute_size();
         // Don't send enumerated or index_point
@@ -4337,17 +4344,21 @@ namespace RegionRuntime {
               // Play the trace for each of the child regions of the partition 
               PartitionNode *part_node = (*partition_nodes)[regions[idx].handle.partition];
               RegionNode *top = (*region_nodes)[regions[idx].parent];
+              std::vector<unsigned> trace;
+#ifdef DEBUG_HIGH_LEVEL
+              assert(!part_node->children.empty());
+              bool trace_result =
+#endif
+              compute_region_trace(trace,regions[idx].parent,(part_node->children.begin())->first);
+#ifdef DEBUG_HIGH_LEVEL
+              assert(trace_result);
+#endif
               for (std::map<LogicalRegion,RegionNode*>::const_iterator it = part_node->children.begin();
                     it != part_node->children.end(); it++)
               {
-                renamer.trace.clear();
-#ifdef DEBUG_HIGH_LEVEL
-                bool trace_result =
-#endif
-                compute_region_trace(renamer.trace,regions[idx].parent,it->first);
-#ifdef DEBUG_HIGH_LEVEL
-                assert(trace_result);
-#endif
+                // Update which child we're going to
+                renamer.trace = trace;
+                renamer.trace[0] = it->first.id;
                 top->register_physical_instance(renamer,Event::NO_EVENT);
               }
               // Now that we've sanitized the region, update the region requirement
@@ -4455,7 +4466,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void TaskContext::pack_task(Serializer &rez)
+    void TaskContext::pack_task(Serializer &rez, unsigned num_copies)
     //--------------------------------------------------------------------------------------------
     {
       rez.serialize<UniqueID>(unique_id);
@@ -4497,6 +4508,7 @@ namespace RegionRuntime {
           }
         }
         rez.serialize<unsigned>(denominator);
+        rez.serialize<unsigned>(split_factor);
         index_arg_map.pack_argument_map(rez); 
         rez.serialize<Barrier>(start_index_event);
       }
@@ -4519,7 +4531,9 @@ namespace RegionRuntime {
           {
             if (actually_needed.find(*it) == actually_needed.end())
             {
-              (*it)->pack_instance_info(rez);
+              // Get the fraction for this instance
+              Fraction to_take = (*it)->get_subtract_frac(num_copies);
+              (*it)->pack_instance_info(rez,to_take);
               actually_needed.insert(*it);
             }
           }
@@ -4644,6 +4658,7 @@ namespace RegionRuntime {
           }
         }
         derez.deserialize<unsigned>(denominator);
+        derez.deserialize<unsigned>(split_factor);
         index_arg_map.unpack_argument_map(derez);
         derez.deserialize<Barrier>(start_index_event);
         enumerated = false;
@@ -4685,9 +4700,21 @@ namespace RegionRuntime {
       // unpack the instance infos
       size_t num_insts;
       derez.deserialize<size_t>(num_insts);
-      for (unsigned idx = 0; idx < num_insts; idx++)
+      // If we're an index space we have to set the scale factor for
+      // unpacking the instance infos (in case we got split recursively along the way)
+      if (is_index_space)
       {
-        InstanceInfo::unpack_instance_info(derez, instance_infos);
+        for (unsigned idx = 0; idx < num_insts; idx++)
+        {
+          InstanceInfo::unpack_instance_info(derez, instance_infos, split_factor);
+        }
+      }
+      else
+      {
+        for (unsigned idx = 0; idx < num_insts; idx++)
+        {
+          InstanceInfo::unpack_instance_info(derez, instance_infos, 1/*split factor*/);
+        }
       }
       // unpack the unresolved dependences
       unresolved_dependences.resize(regions.size());
@@ -4916,6 +4943,7 @@ namespace RegionRuntime {
 #endif
     }
 
+#if 0
     //--------------------------------------------------------------------------------------------
     bool TaskContext::distribute_index_space(std::vector<Mapper::ConstraintSplit> &chunks)
     //--------------------------------------------------------------------------------------------
@@ -5146,6 +5174,174 @@ namespace RegionRuntime {
         denominator = 0;
       }
       return has_local;
+    }
+#endif
+
+    //--------------------------------------------------------------------------------------------
+    template<typename T, typename CT>
+    bool TaskContext::distribute_index_space(std::vector<CT> &chunks, unsigned ways)
+    //--------------------------------------------------------------------------------------------
+    {
+      bool has_local = false;
+      std::vector<T> local_space;
+      bool split = false;
+      // Compute the new fraction of work that everyone will have
+      denominator *= chunks.size();
+      // Check to see if we are already partially packed, if we are, then we need
+      // to update the split factor of the index space before sending things remotely
+      // This also figures out if we have a local part
+      if (partially_unpacked)
+      {
+        // Even if not send remotely, they'll still be unpacked in separate contexts
+        split_factor *= chunks.size();
+      }
+      else
+      {
+        // Otherwise multiply our ways by the chunk size
+        ways *= chunks.size();
+      }
+      // Send all the remote chunks out
+      {
+        // Need to hold the task's context lock to do this
+        AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = true;
+#endif
+        // We only need to compute the return size one time
+        size_t buffer_size = 2*sizeof(Processor) + sizeof(size_t) + compute_task_size();
+        for (typename std::vector<CT>::const_iterator it = chunks.begin();
+              it != chunks.end(); it++)
+        {
+          if (it->p != local_proc)
+          {
+            this->need_split = it->recurse;
+            set_space<T>(it->space);
+            Serializer rez(buffer_size);
+            rez.serialize<Processor>(it->p); // Actual target processor
+            rez.serialize<Processor>(local_proc); // local processor
+            rez.serialize<size_t>(1); // numbef of tasks
+            // If we're not remote, then we need to keep a fraction of instance here
+            // anyway, otherwise we're partially unpacked so the +1 won't matter
+            pack_task(rez,ways);
+            // Send the task to the utility processor
+            Processor utility = it->p.get_utility_processor();
+            utility.spawn(ENQUEUE_TASK_ID,rez.get_buffer(),buffer_size);
+          }
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = false;
+#endif
+      }
+      // We're done sending chunks remotely, now handle our local chunks
+      for (typename std::vector<CT>::const_iterator it = chunks.begin();
+            it != chunks.end(); it++)
+      {
+        if (it->p == local_proc)
+        {
+          if (has_local)
+          {
+            if (it->recurse)
+            {
+              set_space<T>(it->space); 
+              bool still_local = runtime->split_task(this, ways);
+              if (still_local)
+              {
+                // Set fields and then clone the context
+                this->need_split = false;
+                TaskContext *clone = runtime->get_available_context(false/*new tree*/);
+                clone_index_space_task(clone,true/*slice*/);
+                clone->set_space<T>(this->get_space<T>());
+                // Put it in the ready queue
+                // Needed to own queue lock before calling split_task which
+                // is the only task that calls this task
+                runtime->add_to_ready_queue(clone,false/*need lock*/);
+              }
+            }
+            else
+            {
+              this->need_split = false;
+              // Clone it and put it in the ready queue
+              TaskContext *clone = runtime->get_available_context(false/*new tree*/);
+              clone_index_space_task(clone,true/*slice*/);
+              clone->set_space<T>(it->space);
+              // Put it in the ready queue (see note about lock above)
+              runtime->add_to_ready_queue(clone,false/*need lock*/);
+            }
+          }
+          else
+          {
+            // Haven't allocated this context to anyone yet, so put the chunk in this context 
+            if (it->recurse)
+            {
+              set_space<T>(it->space);
+              bool still_local = runtime->split_task(this, ways);
+              if (still_local)
+              {
+                // Store in local variables so we can continue cloning this context
+                has_local = true;
+                local_space = get_space<T>();
+                split = false;
+              }
+            }
+            else
+            {
+              // Store in local variables so we can continue cloning this context
+              has_local = true;
+              local_space = it->space;
+              split = it->recurse;
+            }
+          }
+        }
+      }
+      // If there is still a local context, set its fields and save it
+      if (has_local)
+      {
+        this->need_split = split;
+        set_space<T>(local_space);
+        this->slice_owner = true;
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!this->need_split);
+#endif
+      }
+      else
+      {
+        this->slice_owner = false;
+        denominator = 0;
+      }
+
+      return has_local;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    template<>
+    void TaskContext::set_space<Constraint>(const std::vector<Constraint> &space)
+    //--------------------------------------------------------------------------------------------
+    {
+      constraint_space = space; 
+    }
+
+    //--------------------------------------------------------------------------------------------
+    template<>
+    void TaskContext::set_space<Range>(const std::vector<Range> &space)
+    //--------------------------------------------------------------------------------------------
+    {
+      range_space = space;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    template<>
+    const std::vector<Constraint>& TaskContext::get_space(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      return constraint_space;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    template<>
+    const std::vector<Range>& TaskContext::get_space(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      return range_space;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -6332,6 +6528,7 @@ namespace RegionRuntime {
           clone->local_arg_size = local_arg.get_size();
         }
         clone->denominator = 0; // doesn't own anything
+        clone->split_factor = 0;
       }
       else
       {
@@ -6345,6 +6542,9 @@ namespace RegionRuntime {
         // Get the arg map from the original
         clone->index_arg_map = this->index_arg_map;
         clone->denominator = this->denominator;
+        clone->split_factor = this->split_factor;
+        // Check to see if we've already sanitized the tree
+        clone->sanitized = this->sanitized;
       }
       clone->index_owner = false;
       clone->slice_owner = slice;
@@ -9508,6 +9708,7 @@ namespace RegionRuntime {
                 log_task(LEVEL_ERROR,"Overwriting a prior physical instance for index space task "
                     "with unique id %d.  Violation of independent index space slices constraint. "
                     "See: groups.google.com/group/legiondevelopers/browse_thread/thread/39ad6b3b55ed9b8f", uid);
+                assert(false);
                 exit(1);
               }
 #ifndef DISABLE_GC
@@ -11099,6 +11300,7 @@ namespace RegionRuntime {
               log_task(LEVEL_ERROR,"Overwriting a prior physical instance for index space task "
                   "with unique id %d.  Violation of independent index space slices constraint. "
                   "See: groups.google.com/group/legiondevelopers/browse_thread/thread/39ad6b3b55ed9b8f", uid);
+              assert(false);
               exit(1);
             }
           }
@@ -12613,7 +12815,7 @@ namespace RegionRuntime {
       iid(0), handle(LogicalRegion::NO_REGION), location(Memory::NO_MEMORY),
       inst(RegionInstance::NO_INST), valid(false), remote(false), 
       open_child(false), clone(false), children(0),
-      collected(false), remote_copies(0), returned(false),
+      collected(false), returned(false), local_frac(Fraction(1,1)), 
       parent(NULL), valid_event(Event::NO_EVENT), inst_lock(Lock::NO_LOCK), closing(false)
     //-------------------------------------------------------------------------
     {
@@ -12623,8 +12825,8 @@ namespace RegionRuntime {
     InstanceInfo::InstanceInfo(InstanceID id, LogicalRegion r, Memory m,
                 RegionInstance i, bool rem, InstanceInfo *par, bool open, bool c /*= false*/) :
       iid(id), handle(r), location(m), inst(i), valid(false), remote(rem), open_child(open), 
-      clone(c), children(0), collected(false), remote_copies(0), returned(false), 
-      parent(par), closing(false)
+      clone(c), children(0), collected(false), returned(false), 
+      local_frac(Fraction(1,1)), parent(par), closing(false)
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL 
@@ -12670,7 +12872,7 @@ namespace RegionRuntime {
       // If this is the owner we should have deleted the instance by now
       if (!remote && !clone && (parent == NULL))
       {
-        if (valid || (children > 0) || !users.empty() ||
+        if (valid || (children > 0) || !users.empty() || !local_frac.is_whole() ||
             !added_users.empty() || !copy_users.empty() || !added_copy_users.empty())
         {
           log_leak(LEVEL_INFO,"Physical instance %x of logical region %x in memory %x is being leaked",
@@ -13158,6 +13360,13 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
+    Fraction InstanceInfo::get_subtract_frac(unsigned ways)
+    //-------------------------------------------------------------------------
+    {
+      return local_frac.get_part(ways);
+    }
+
+    //-------------------------------------------------------------------------
     size_t InstanceInfo::compute_info_size(void) const
     //-------------------------------------------------------------------------
     {
@@ -13172,6 +13381,7 @@ namespace RegionRuntime {
       result += sizeof(Event); // valid event
       result += sizeof(Lock); // lock
       result += sizeof(bool); // valid
+      result += sizeof(Fraction);
       // No need to move remote or children since this will be a remote version
       // Only send the epoch users, the remote version won't be able to garbage collect anyway
       result += sizeof(size_t); // num users + num added users
@@ -13182,12 +13392,16 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    void InstanceInfo::pack_instance_info(Serializer &rez)
+    void InstanceInfo::pack_instance_info(Serializer &rez, const Fraction &to_take)
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!collected);
 #endif
+
+      // Subtract the fraction that we're taking
+      local_frac.subtract(to_take);
+
       rez.serialize<InstanceID>(iid);
       rez.serialize<LogicalRegion>(handle);
       rez.serialize<Memory>(location);
@@ -13204,6 +13418,7 @@ namespace RegionRuntime {
       rez.serialize<Event>(valid_event);
       rez.serialize<Lock>(inst_lock);
       rez.serialize<bool>(valid);
+      rez.serialize<Fraction>(to_take);
       
       rez.serialize<size_t>(epoch_users.size());
       for (std::set<UniqueID>::const_iterator it = epoch_users.begin();
@@ -13263,13 +13478,11 @@ namespace RegionRuntime {
 #endif
         }
       }
-      // Mark that this instance now has a remote copy
-      remote_copies++;
     }
 
     //-------------------------------------------------------------------------
     /*static*/void InstanceInfo::unpack_instance_info(Deserializer &derez, 
-                                      std::map<InstanceID,InstanceInfo*> *infos)
+                      std::map<InstanceID,InstanceInfo*> *infos, unsigned split_factor)
     //-------------------------------------------------------------------------
     {
       InstanceID iid;
@@ -13298,6 +13511,9 @@ namespace RegionRuntime {
       derez.deserialize<Event>(result_info->valid_event);
       derez.deserialize<Lock>(result_info->inst_lock);
       derez.deserialize<bool>(result_info->valid);
+      derez.deserialize<Fraction>(result_info->local_frac);
+      // Scale the fraction by the split factor
+      result_info->local_frac.divide(split_factor);
 
       // Put all the users in the base users since this is remote
       size_t num_users;
@@ -13338,6 +13554,7 @@ namespace RegionRuntime {
       result += sizeof(InstanceID); // our iid
       result += sizeof(bool); // remote returning or escaping
       result += sizeof(bool); // open child
+      result += sizeof(Fraction); // local_frac
       if (remote)
       {
         result += sizeof(Event); // valid event
@@ -13427,7 +13644,6 @@ namespace RegionRuntime {
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(remote_copies == 0); // These better all be back by now
       assert(!collected);
       // Should only be returned once
       assert(!returned);
@@ -13435,6 +13651,7 @@ namespace RegionRuntime {
       rez.serialize<InstanceID>(iid);
       rez.serialize<bool>(remote);
       rez.serialize<bool>(open_child);
+      rez.serialize<Fraction>(local_frac);
       if (remote)
       {
         rez.serialize<Event>(valid_event);
@@ -13574,6 +13791,8 @@ namespace RegionRuntime {
       {
         bool open_child;
         derez.deserialize<bool>(open_child);
+        Fraction local_frac;
+        derez.deserialize<Fraction>(local_frac);
         // This instance better not exist in the list of instance infos
 #ifdef DEBUG_HIGH_LEVEL
         assert(infos->find(iid) == infos->end());
@@ -13598,6 +13817,8 @@ namespace RegionRuntime {
 #endif
           result_info = new InstanceInfo(iid, handle, location, inst, false/*remote*/,(*infos)[parent_iid],open_child);
         }
+        // Set the local fraction from above
+        result_info->local_frac = local_frac;
         derez.deserialize<Event>(result_info->valid_event);
         derez.deserialize<Lock>(result_info->inst_lock);
         size_t num_users;
@@ -13691,9 +13912,8 @@ namespace RegionRuntime {
     void InstanceInfo::merge_instance_info(Deserializer &derez)
     //-------------------------------------------------------------------------
     {
-      // There better have been an outstanding version of this instance
 #ifdef DEBUG_HIGH_LEVEL
-      assert(remote_copies > 0); // decremented at the bottom
+      assert(!returned);
 #endif
       bool new_open_child;
       derez.deserialize<bool>(new_open_child);
@@ -13703,6 +13923,12 @@ namespace RegionRuntime {
         parent->reopen_child(this);
         open_child = true;
       }
+
+      Fraction returning_frac;
+      derez.deserialize<Fraction>(returning_frac);
+      // Add the returning frac back to our current frac
+      local_frac.add(returning_frac);
+
       Event new_valid_event;
       derez.deserialize<Event>(new_valid_event);
       // Check to see if the new valid event is the same as the old one
@@ -13837,8 +14063,9 @@ namespace RegionRuntime {
           epoch_copy_users.insert(uid);
         }
       }
-      remote_copies--;
-      if (remote_copies == 0)
+      // Check to see if our local fraction is back to being whole,
+      // if it is then try garbage collecting
+      if (local_frac.is_whole())
       {
         garbage_collect();
       }
@@ -14465,7 +14692,7 @@ namespace RegionRuntime {
     //-------------------------------------------------------------------------
     {
       // Check all the conditions for being able to delete the instance
-      if (!valid && !remote && !clone && !closing && (children == 0) && (remote_copies == 0) && 
+      if (!valid && !remote && !clone && !closing && (children == 0) && local_frac.is_whole() && 
           users.empty() && added_users.empty() && copy_users.empty() && added_copy_users.empty())
       {
 #ifdef DEBUG_HIGH_LEVEL
@@ -14596,9 +14823,22 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
+    Fraction::Fraction(unsigned num, unsigned denom)
+      : numerator(num), denominator(denom)
+    //-------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(denom > 0);
+#endif
+    }
+
+    //-------------------------------------------------------------------------
     Fraction::Fraction(const Fraction &f)
     //-------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(f.denominator > 0);
+#endif
       numerator = f.numerator;
       denominator = f.denominator;
     }
@@ -14607,7 +14847,15 @@ namespace RegionRuntime {
     void Fraction::divide(unsigned factor)
     //-------------------------------------------------------------------------
     {
-      denominator /= factor;
+#ifdef DEBUG_HIGH_LEVEL
+      assert(factor != 0);
+      assert(denominator > 0);
+#endif
+      unsigned new_denom = denominator * factor;
+#ifdef DEBUG_HIGH_LEVEL
+      assert(new_denom > 0);
+#endif
+      denominator = new_denom;
     }
 
     //-------------------------------------------------------------------------
@@ -14644,6 +14892,76 @@ namespace RegionRuntime {
           denominator *= rhs.denominator;
         }
       }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(numerator <= denominator); // Should always be less than or equal to 1
+#endif
+    }
+
+    //-------------------------------------------------------------------------
+    void Fraction::subtract(const Fraction &rhs)
+    //-------------------------------------------------------------------------
+    {
+      if (denominator == rhs.denominator)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(numerator >= rhs.numerator); 
+#endif
+        numerator -= rhs.numerator;
+      }
+      else
+      {
+        if ((denominator % rhs.denominator) == 0)
+        {
+          // Our denominator is bigger
+          unsigned factor = denominator/rhs.denominator;
+#ifdef DEBUG_HIGH_LEVEL
+          assert(numerator >= (rhs.numerator*factor));
+#endif
+          numerator -= (rhs.numerator*factor);
+        }
+        else if ((rhs.denominator % denominator) == 0)
+        {
+          // Rhs denominator is bigger
+          unsigned factor = rhs.denominator/denominator;
+#ifdef DEBUG_HIGH_LEVEL
+          assert((numerator*factor) >= rhs.numerator);
+#endif
+          numerator = (numerator*factor) - rhs.numerator;
+          denominator *= factor;
+        }
+        else
+        {
+          // One denominator is not divisible by the other, compute a common denominator
+          unsigned lhs_num = numerator * rhs.denominator;
+          unsigned rhs_num = rhs.numerator * denominator;
+#ifdef DEBUG_HIGH_LEVEL
+          assert(lhs_num >= rhs_num);
+#endif
+          numerator = lhs_num - rhs_num;
+          denominator *= rhs.denominator; 
+        }
+      }
+    }
+
+    //-------------------------------------------------------------------------
+    Fraction Fraction::get_part(unsigned ways)
+    //-------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(ways > 0);
+#endif
+      // Check to see if we have enough parts in the numerator, if not
+      // multiply both numerator and denominator by ways
+      // and return one over denominator
+      if (ways > numerator)
+      {
+        numerator *= ways;
+        denominator *= ways;
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(numerator >= ways);
+#endif
+      return Fraction(1,denominator);
     }
 
     //-------------------------------------------------------------------------
@@ -14651,6 +14969,13 @@ namespace RegionRuntime {
     //-------------------------------------------------------------------------
     {
       return (numerator == denominator);
+    }
+
+    //-------------------------------------------------------------------------
+    bool Fraction::is_empty(void) const
+    //-------------------------------------------------------------------------
+    {
+      return (numerator == 0);
     }
 
     //-------------------------------------------------------------------------
