@@ -99,7 +99,7 @@ namespace RegionRuntime {
 
     class Runtime {
     public:
-      Runtime(Machine *m);
+      Runtime(Machine *m, const ReductionOpTable &table);
     public:
       static Runtime* get_runtime(void) { return runtime; } 
 
@@ -116,7 +116,10 @@ namespace RegionRuntime {
       RegionMetaDataImpl*  get_free_metadata(size_t num_elmts, size_t elmt_size);
       RegionMetaDataImpl*  get_free_metadata(RegionMetaDataImpl *par, const ElementMask &mask);
       RegionAllocatorImpl* get_free_allocator(RegionMetaDataImpl *owner);
-      RegionInstanceImpl*  get_free_instance(RegionMetaDataUntyped r, Memory m, size_t num_elmts, size_t elmt_size, char *ptr);
+      RegionInstanceImpl*  get_free_instance(RegionMetaDataUntyped r, Memory m, size_t num_elmts, 
+                                              size_t elmt_size, char *ptr, const ReductionOpUntyped *redop);
+
+      const ReductionOpUntyped* get_reduction_op(ReductionOpID redop);
 
       // Return events that are free
       void free_event(EventImpl *event);
@@ -124,6 +127,7 @@ namespace RegionRuntime {
       static Runtime *runtime;
     protected:
       friend class Machine;
+      ReductionOpTable redop_table;
       std::vector<EventImpl*> events;
       std::list<EventImpl*> free_events; // Keep a free list of events since this seems to dominate perf
       std::vector<LockImpl*> locks;
@@ -1983,7 +1987,7 @@ namespace RegionRuntime {
 	RegionMetaDataUntyped get_metadata(void);
 
 	RegionAllocatorUntyped create_allocator(Memory m);
-	RegionInstanceUntyped  create_instance(Memory m);
+	RegionInstanceUntyped  create_instance(Memory m, ReductionOpID redop = 0);
 
 	void destroy_allocator(RegionAllocatorUntyped a);
 	void destroy_instance(RegionInstanceUntyped i);
@@ -2130,8 +2134,8 @@ namespace RegionRuntime {
     class RegionInstanceImpl : public Triggerable { 
     public:
         RegionInstanceImpl(int idx, RegionMetaDataUntyped r, Memory m, size_t num, size_t elem_size, 
-                            bool activate = false, char *base = NULL)
-	        : elmt_size(elem_size), num_elmts(num), index(idx), next_handle(1)
+                            bool activate = false, char *base = NULL, const ReductionOpUntyped *op = NULL)
+	        : elmt_size(elem_size), num_elmts(num), reduction((op!=NULL)), redop(op), index(idx), next_handle(1)
 	{
                 mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
 		PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
@@ -2157,7 +2161,8 @@ namespace RegionRuntime {
     public:
 	const void* read(unsigned ptr);
 	void write(unsigned ptr, const void* newval);	
-        bool activate(RegionMetaDataUntyped r, Memory m, size_t num_elmts, size_t elem_size, char *base);
+        bool activate(RegionMetaDataUntyped r, Memory m, size_t num_elmts, size_t elem_size, 
+                      char *base, const ReductionOpUntyped *op);
 	void deactivate(void);
 	Event copy_to(RegionInstanceUntyped target, Event wait_on);
         Event copy_to(RegionInstanceUntyped target, const ElementMask &mask, Event wait_on);
@@ -2165,6 +2170,7 @@ namespace RegionRuntime {
 	void trigger(unsigned count, TriggerHandle handle);
 	Lock get_lock(void);
         void perform_copy_operation(RegionInstanceImpl *target, const ElementMask &src_mask, const ElementMask &dst_mask);
+        bool is_reduction(void) const { return reduction; }
     private:
         class CopyOperation {
         public:
@@ -2185,6 +2191,8 @@ namespace RegionRuntime {
 	size_t num_elmts;
 	Memory memory;
 	pthread_mutex_t *mutex;
+        bool reduction;
+        const ReductionOpUntyped *redop;
 	bool active;
 	const int index;
 	// Fields for the copy operation
@@ -2235,7 +2243,8 @@ namespace RegionRuntime {
       memcpy((base_ptr + ptr),newval,elmt_size);
     }
 
-    bool RegionInstanceImpl::activate(RegionMetaDataUntyped r, Memory m, size_t num, size_t elem_size, char *base)
+    bool RegionInstanceImpl::activate(RegionMetaDataUntyped r, Memory m, size_t num, size_t elem_size, 
+                                      char *base, const ReductionOpUntyped *op)
     {
 	bool result = false;
 #if 0
@@ -2255,6 +2264,8 @@ namespace RegionRuntime {
 		elmt_size = elem_size;
 		//MemoryImpl *mem = Runtime::get_runtime()->get_memory_impl(m);
 		base_ptr = base; //(char*)mem->allocate_space(num_elmts*elmt_size);
+                redop = op;
+                reduction = (redop != NULL);
 #ifdef DEBUG_LOW_LEVEL
 		assert(base_ptr != NULL);
 #endif
@@ -2273,6 +2284,8 @@ namespace RegionRuntime {
 	num_elmts = 0;
 	elmt_size = 0;
 	base_ptr = NULL;	
+        redop = NULL;
+        reduction = false;
 	lock->deactivate();
 	lock = NULL;
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
@@ -2424,25 +2437,59 @@ namespace RegionRuntime {
       ((RegionInstanceImpl *)internal_data)->write(ptr_value, src);
     }
 
+    // Acessor Generic (can convert)
     template <>
     bool RegionInstanceAccessorUntyped<AccessorGeneric>::can_convert<AccessorGeneric>(void) const
     { return true; }
-    
+
+    template<>
+    bool RegionInstanceAccessorUntyped<AccessorGeneric>::can_convert<AccessorArray>(void) const
+    { 
+      RegionInstanceImpl *impl = (RegionInstanceImpl*)internal_data;
+      if (impl->is_reduction())
+      {
+        return false;
+      }
+      else
+      {
+        return true;
+      }
+    }
+
+    template<>
+    bool RegionInstanceAccessorUntyped<AccessorGeneric>::can_convert<AccessorArrayReductionFold>(void) const
+    {
+      RegionInstanceImpl *impl = (RegionInstanceImpl*)internal_data;
+      if (impl->is_reduction())
+      {
+        return true;
+      }
+      else
+      {
+        return false;
+      }
+    }
+
+    bool RegionInstanceAccessorUntyped<AccessorGeneric>::is_reduction_only(void) const
+    {
+      RegionInstanceImpl *impl = (RegionInstanceImpl*)internal_data;
+      return impl->is_reduction();
+    }
+
+    // Accessor Generic (convert)
     template <>
     RegionInstanceAccessorUntyped<AccessorGeneric> RegionInstanceAccessorUntyped<AccessorGeneric>::convert<AccessorGeneric>(void) const
     { return *this; }
 
     template<>
-    bool RegionInstanceAccessorUntyped<AccessorGeneric>::can_convert<AccessorArray>(void) const
-    { return true; }
-
-    template<>
     RegionInstanceAccessorUntyped<AccessorArray> RegionInstanceAccessorUntyped<AccessorGeneric>::convert<AccessorArray>(void) const
-    { return RegionInstanceAccessorUntyped<AccessorArray>(this->internal_data); }
+    { 
+#ifdef DEBUG_LOW_LEVEL
+      assert(!this->is_reduction_only());
+#endif
+      return RegionInstanceAccessorUntyped<AccessorArray>(this->internal_data); 
+    }
 
-    bool RegionInstanceAccessorUntyped<AccessorGeneric>::is_reduction_only(void) const
-    { return false; }
-    
     ////////////////////////////////////////////////////////
     // RegionMetaDataUntyped 
     ////////////////////////////////////////////////////////
@@ -2484,6 +2531,13 @@ namespace RegionRuntime {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
 	return r->create_instance(m);
+    }
+
+    RegionInstanceUntyped RegionMetaDataUntyped::create_instance_untyped(Memory m, ReductionOpID redop) const
+    {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+        RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
+        return r->create_instance(m, redop);
     }
 
     void RegionMetaDataUntyped::destroy_region_untyped(void) const
@@ -2652,7 +2706,7 @@ namespace RegionRuntime {
 	return allocator->get_allocator();
     }
 
-    RegionInstanceUntyped RegionMetaDataImpl::create_instance(Memory m)
+    RegionInstanceUntyped RegionMetaDataImpl::create_instance(Memory m, ReductionOpID redop /*=0*/)
     {
         if (!m.exists())
         {
@@ -2661,18 +2715,41 @@ namespace RegionRuntime {
         // First try to create the location in the memory, if there is no space
         // don't bother trying to make the data
         MemoryImpl *mem = Runtime::get_runtime()->get_memory_impl(m);
-        char *ptr = (char*)mem->allocate_space(num_elmts*elmt_size);
-        if (ptr == NULL)
+        //if (redop == 0)
         {
-          return RegionInstanceUntyped::NO_INST;
+          // No reduction op
+          char *ptr = (char*)mem->allocate_space(num_elmts*elmt_size);
+          if (ptr == NULL)
+          {
+            return RegionInstanceUntyped::NO_INST;
+          }
+          PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
+          RegionMetaDataUntyped r = { index };
+          RegionInstanceImpl* impl = Runtime::get_runtime()->get_free_instance(r,m,num_elmts, elmt_size, ptr, NULL/*redop*/);
+          RegionInstanceUntyped inst = impl->get_instance();
+          instances.insert(inst);
+          PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
+          return inst;
         }
-	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
-        RegionMetaDataUntyped r = { index };
-	RegionInstanceImpl* impl = Runtime::get_runtime()->get_free_instance(r,m,num_elmts, elmt_size, ptr);
-	RegionInstanceUntyped inst = impl->get_instance();
-	instances.insert(inst);
-	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
-	return inst;
+#if 0
+        else
+        {
+          const ReductionOpUntyped *op = Runtime::get_runtime()->get_reduction_op(redop);
+          char *ptr = (char*)mem->allocate_space(num_elmts*(op->sizeof_lhs));
+          if (ptr == NULL)
+          {
+            return RegionInstanceUntyped::NO_INST;
+          }
+          // TODO: how to initialize a reduction intance with an identity
+          PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
+          RegionMetaDataUntyped r = { index };
+          RegionInstanceImpl *impl = Runtime::get_runtime()->get_free_instance(r,m,num_elmts, op->sizeof_lhs, ptr, op);
+          RegionInstanceUntyped inst = impl->get_instance();
+          instances.insert(inst);
+          PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
+          return inst;
+        }
+#endif
     }
 
     void RegionMetaDataImpl::destroy_allocator(RegionAllocatorUntyped a)
@@ -2749,7 +2826,7 @@ namespace RegionRuntime {
         }
 	
 	// Create the runtime and initialize with this machine
-	Runtime::runtime = new Runtime(this);
+	Runtime::runtime = new Runtime(this, redop_table);
 
         // Initialize the logger
         Logger::init(*argc, (const char**)*argv);
@@ -2994,8 +3071,8 @@ namespace RegionRuntime {
     // Runtime 
     ////////////////////////////////////////////////////////
 
-    Runtime::Runtime(Machine *m)
-	: machine(m)
+    Runtime::Runtime(Machine *m, const ReductionOpTable &table)
+	: redop_table(table), machine(m)
     {
 	for (unsigned i=0; i<BASE_EVENTS; i++)
         {
@@ -3330,7 +3407,8 @@ namespace RegionRuntime {
 	return result;
     }
 
-    RegionInstanceImpl* Runtime::get_free_instance(RegionMetaDataUntyped r, Memory m, size_t num_elmts, size_t elmt_size, char *ptr)
+    RegionInstanceImpl* Runtime::get_free_instance(RegionMetaDataUntyped r, Memory m, size_t num_elmts, 
+                                                    size_t elmt_size, char *ptr, const ReductionOpUntyped *redop)
     {
         PTHREAD_SAFE_CALL(pthread_mutex_lock(&free_inst_lock));
         if (!free_instances.empty())
@@ -3338,7 +3416,7 @@ namespace RegionRuntime {
           RegionInstanceImpl *result = free_instances.front();
           free_instances.pop_front();
           PTHREAD_SAFE_CALL(pthread_mutex_unlock(&free_inst_lock));
-          bool activated = result->activate(r, m, num_elmts, elmt_size, ptr);
+          bool activated = result->activate(r, m, num_elmts, elmt_size, ptr, redop);
 #ifdef DEBUG_LOW_LEVEL
           assert(activated);
 #endif
@@ -3347,7 +3425,7 @@ namespace RegionRuntime {
 	// Nothing free so make a new one
 	PTHREAD_SAFE_CALL(pthread_rwlock_wrlock(&instance_lock));
 	unsigned int index = instances.size();
-	instances.push_back(new RegionInstanceImpl(index,r,m,num_elmts,elmt_size,true,ptr));
+	instances.push_back(new RegionInstanceImpl(index,r,m,num_elmts,elmt_size,true,ptr,redop));
 	RegionInstanceImpl *result = instances[index];
         // Create a whole bunch of other instances while we're here
         for (unsigned idx=1; idx < BASE_INSTANCES; idx++)
@@ -3358,6 +3436,14 @@ namespace RegionRuntime {
 	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&instance_lock));
         PTHREAD_SAFE_CALL(pthread_mutex_unlock(&free_inst_lock));
 	return result;
+    }
+
+    const ReductionOpUntyped* Runtime::get_reduction_op(ReductionOpID redop)
+    {
+#ifdef DEBUG_LOW_LEVEL
+      assert(redop_table.find(redop) != redop_table.end());
+#endif
+      return redop_table[redop];
     }
 
   };

@@ -645,8 +645,9 @@ namespace RegionRuntime {
       static int start(int argc, char **argv);
       // Set the ID of the top-level task, if not set it defaults to 0
       static void set_top_level_task_id(Processor::TaskFuncID top_id);
-      // Call visible to the user to set up the task map
-      static void register_runtime_tasks(Processor::TaskIDTable &table);
+      // Call visible to the user to create a reduction op
+      template<typename REDOP>
+      static void register_reduction_op(ReductionOpID redop_id);
       // Call visible to the user to give a task to call to initialize mappers, colorize functions, etc.
       static void set_registration_callback(RegistrationCallbackFnptr callback);
       // Register a task for a single task (the first one of these will be the top level task)
@@ -709,6 +710,7 @@ namespace RegionRuntime {
       static TaskID update_collection_table(void (*low_level_ptr)(const void *,size_t,Processor),
                                           TaskID uid, const char *name, bool index_space,
                                           Processor::Kind proc_kind);
+      static void register_runtime_tasks(Processor::TaskIDTable &table);
     private:
       // Get the next low-level task id that is available
       static Processor::TaskFuncID get_next_available_id(void);
@@ -1244,7 +1246,7 @@ namespace RegionRuntime {
       virtual bool add_waiting_dependence(GeneralizedContext *waiter, const LogicalUser &original) = 0;
       virtual void add_unresolved_dependence(unsigned idx, GeneralizedContext *ctx, DependenceType dtype) = 0;
       virtual const std::map<UniqueID,Event>& get_unresolved_dependences(unsigned idx) = 0;
-      virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m) = 0;
+      virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m, ReductionOpID redop) = 0;
       virtual InstanceInfo* create_instance_info(LogicalRegion newer, InstanceInfo *old) = 0;
     };
 
@@ -1370,7 +1372,7 @@ namespace RegionRuntime {
       virtual void add_unresolved_dependence(unsigned idx, GeneralizedContext *c, DependenceType dtype);
       virtual bool add_waiting_dependence(GeneralizedContext *waiter, const LogicalUser &original);
       virtual const std::map<UniqueID,Event>& get_unresolved_dependences(unsigned idx);
-      virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m);
+      virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m, ReductionOpID redop);
       virtual InstanceInfo* create_instance_info(LogicalRegion newer, InstanceInfo *old);
     public:
       // Get the index point for this task
@@ -1584,7 +1586,7 @@ namespace RegionRuntime {
       virtual void add_unresolved_dependence(unsigned idx, GeneralizedContext *ctx, DependenceType dtype);
       virtual bool add_waiting_dependence(GeneralizedContext *waiter, const LogicalUser &target);
       virtual const std::map<UniqueID,Event>& get_unresolved_dependences(unsigned idx);
-      virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m);
+      virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m, ReductionOpID redop);
       virtual InstanceInfo* create_instance_info(LogicalRegion newer, InstanceInfo *old);
     private:
       bool compute_region_trace(std::vector<unsigned> &trace, LogicalRegion parent, LogicalRegion child);
@@ -1640,7 +1642,7 @@ namespace RegionRuntime {
       virtual void add_unresolved_dependence(unsigned idx, GeneralizedContext *ctx, DependenceType dtype);
       virtual bool add_waiting_dependence(GeneralizedContext *waiter, const LogicalUser &original);
       virtual const std::map<UniqueID,Event>& get_unresolved_dependences(unsigned idx);
-      virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m);
+      virtual InstanceInfo* create_instance_info(LogicalRegion handle, Memory m, ReductionOpID redop);
       virtual InstanceInfo* create_instance_info(LogicalRegion newer, InstanceInfo *old);
     };
 
@@ -1919,10 +1921,11 @@ namespace RegionRuntime {
       public:
         unsigned references;
         Event term_event;
+        ReductionOpID redop;
       public:
         CopyUser() { }
-        CopyUser(unsigned r, Event t)
-          : references(r), term_event(t) { }
+        CopyUser(unsigned r, Event t, ReductionOpID op)
+          : references(r), term_event(t), redop(op) { }
       };
     public:
       const InstanceID iid;
@@ -1949,8 +1952,8 @@ namespace RegionRuntime {
       Event add_user(GeneralizedContext *ctx, unsigned idx, Event precondition);
       void  remove_user(UniqueID uid, unsigned ref = 1);
       // Perform a copy operation from the source info to this info
-      void copy_from(InstanceInfo *src_info, GeneralizedContext *ctx, bool reduction = false);
-      void add_copy_user(UniqueID uid, Event copy_finish);
+      void copy_from(InstanceInfo *src_info, GeneralizedContext *ctx, ReductionOpID redop = 0);
+      void add_copy_user(UniqueID uid, Event copy_finish, ReductionOpID redop = 0);
       void remove_copy_user(UniqueID uid, unsigned ref = 1);
       // Allow for locking and unlocking of the instance
       Event lock_instance(Event precondition);
@@ -1996,13 +1999,13 @@ namespace RegionRuntime {
     protected:
       // For going up the tree looking for dependences
       void find_dependences_above(std::set<Event> &wait_on_events, const RegionUsage &usage, bool skip_local);
-      void find_dependences_above(std::set<Event> &wait_on_events, bool writer, bool skip_local); // for copies
+      void find_dependences_above(std::set<Event> &wait_on_events, bool writer, ReductionOpID redop, bool skip_local); // for copies
       // Find dependences below (return whether or not the child is still open)
       bool find_dependences_below(std::set<Event> &wait_on_events, const RegionUsage &usage);
-      bool find_dependences_below(std::set<Event> &wait_on_events, bool writer); // for copies
+      bool find_dependences_below(std::set<Event> &wait_on_events, bool writer, ReductionOpID redop); // for copies
       // Local find dependences operation (return true if all dominated)
       bool find_local_dependences(std::set<Event> &wait_on_events, const RegionUsage &usage);
-      bool find_local_dependences(std::set<Event> &wait_on_events, bool writer); // for copies
+      bool find_local_dependences(std::set<Event> &wait_on_events, bool writer, ReductionOpID redop); // for copies
       // Check for war dependences above and below
       bool has_war_above(const RegionUsage &usage);
       bool has_war_below(const RegionUsage &usage, bool skip_local);
@@ -2595,6 +2598,26 @@ namespace RegionRuntime {
 
       // Send the return value back
       runtime->end_task(ctx, NULL, 0, regions);
+    }
+
+    //--------------------------------------------------------------------------
+    template<typename REDOP>
+    /*static*/ void HighLevelRuntime::register_reduction_op(ReductionOpID redop_id)
+    //--------------------------------------------------------------------------
+    {
+      if (redop_id == 0)
+      {
+        fprintf(stderr,"ERROR: ReductionOpID zero is reserved.\n");
+        exit(1);
+      }
+      LowLevel::ReductionOpTable &red_table = HighLevelRuntime::get_reduction_table(); 
+      // Check to make sure we're not overwriting a prior reduction op 
+      if (red_table.find(redop_id) != red_table.end())
+      {
+        fprintf(stderr,"ERROR: ReductionOpID %d has already been used in the reduction table\n",redop_id);
+        exit(1);
+      }
+      red_table[redop_id] = LowLevel::ReductionOpUntyped::create_reduction_op<REDOP>(); 
     }
 
     //--------------------------------------------------------------------------
