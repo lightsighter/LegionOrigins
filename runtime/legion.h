@@ -645,8 +645,9 @@ namespace RegionRuntime {
       static int start(int argc, char **argv);
       // Set the ID of the top-level task, if not set it defaults to 0
       static void set_top_level_task_id(Processor::TaskFuncID top_id);
-      // Call visible to the user to set up the task map
-      static void register_runtime_tasks(Processor::TaskIDTable &table);
+      // Call visible to the user to create a reduction op
+      template<typename REDOP>
+      static void register_reduction_op(ReductionOpID redop_id);
       // Call visible to the user to give a task to call to initialize mappers, colorize functions, etc.
       static void set_registration_callback(RegistrationCallbackFnptr callback);
       // Register a task for a single task (the first one of these will be the top level task)
@@ -709,6 +710,7 @@ namespace RegionRuntime {
       static TaskID update_collection_table(void (*low_level_ptr)(const void *,size_t,Processor),
                                           TaskID uid, const char *name, bool index_space,
                                           Processor::Kind proc_kind);
+      static void register_runtime_tasks(Processor::TaskIDTable &table);
     private:
       // Get the next low-level task id that is available
       static Processor::TaskFuncID get_next_available_id(void);
@@ -2596,6 +2598,26 @@ namespace RegionRuntime {
 
       // Send the return value back
       runtime->end_task(ctx, NULL, 0, regions);
+    }
+
+    //--------------------------------------------------------------------------
+    template<typename REDOP>
+    /*static*/ void HighLevelRuntime::register_reduction_op(ReductionOpID redop_id)
+    //--------------------------------------------------------------------------
+    {
+      if (redop_id == 0)
+      {
+        fprintf(stderr,"ERROR: ReductionOpID zero is reserved.\n");
+        exit(1);
+      }
+      LowLevel::ReductionOpTable &red_table = HighLevelRuntime::get_reduction_table(); 
+      // Check to make sure we're not overwriting a prior reduction op 
+      if (red_table.find(redop_id) != red_table.end())
+      {
+        fprintf(stderr,"ERROR: ReductionOpID %d has already been used in the reduction table\n",redop_id);
+        exit(1);
+      }
+      red_table[redop_id] = LowLevel::ReductionOpUntyped::create_reduction_op<REDOP>(); 
     }
 
     //--------------------------------------------------------------------------
