@@ -255,6 +255,11 @@ namespace RegionRuntime {
       template <class REDOP>
 	static ReductionOpUntyped *create_reduction_op(void);
 
+      virtual void apply(void *lhs_ptr, const void *rhs_ptr, size_t count,
+			 bool exclusive = false) = 0;
+      virtual void fold(void *rhs1_ptr, const void *rhs2_ptr, size_t count,
+			bool exclusive = false) = 0;
+
     protected:
       ReductionOpUntyped(size_t _sizeof_lhs, size_t _sizeof_rhs,
 			 bool _has_identity, bool _is_foldable)
@@ -262,6 +267,51 @@ namespace RegionRuntime {
   	  has_identity(_has_identity), is_foldable(_is_foldable) {}
     };
     typedef std::map<ReductionOpID, const ReductionOpUntyped *> ReductionOpTable;
+
+    template <class REDOP>
+    class ReductionOp : public ReductionOpUntyped {
+    public:
+      // TODO: don't assume identity and fold are available - use scary
+      //  template-fu to figure it out
+      ReductionOp(void)
+	: ReductionOpUntyped(sizeof(REDOP::LHS), sizeof(REDOP::RHS),
+			     true, true) {}
+
+      virtual void apply(void *lhs_ptr, const void *rhs_ptr, size_t count,
+			 bool exclusive = false)
+      {
+	typename REDOP::LHS *lhs = (typename REDOP::LHS *)lhs_ptr;
+	const typename REDOP::RHS *rhs = (const typename REDOP::RHS *)rhs_ptr;
+	if(exclusive) {
+	  for(size_t i = 0; i < count; i++)
+	    REDOP::apply<true>(lhs[i], rhs[i]);
+	} else {
+	  for(size_t i = 0; i < count; i++)
+	    REDOP::apply<false>(lhs[i], rhs[i]);
+	}
+      }
+
+      virtual void fold(void *rhs1_ptr, const void *rhs2_ptr, size_t count,
+			bool exclusive = false)
+      {
+	typename REDOP::RHS *rhs1 = (typename REDOP::RHS *)rhs1_ptr;
+	const typename REDOP::RHS *rhs2 = (const typename REDOP::RHS *)rhs2_ptr;
+	if(exclusive) {
+	  for(size_t i = 0; i < count; i++)
+	    REDOP::fold<true>(rhs1[i], rhs2[i]);
+	} else {
+	  for(size_t i = 0; i < count; i++)
+	    REDOP::fold<false>(rhs1[i], rhs2[i]);
+	}
+      }
+    };
+
+    template <class REDOP>
+    ReductionOpUntyped *ReductionOpUntyped::create_reduction_op(void)
+    {
+      ReductionOp<REDOP> *redop = new ReductionOp<REDOP>();
+      return redop;
+    }
 
     class RegionMetaDataUntyped {
     public:
