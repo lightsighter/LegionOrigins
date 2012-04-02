@@ -259,6 +259,7 @@ namespace RegionRuntime {
 			 bool exclusive = false) = 0;
       virtual void fold(void *rhs1_ptr, const void *rhs2_ptr, size_t count,
 			bool exclusive = false) = 0;
+      virtual void init(void *rhs_ptr, size_t count) = 0;
 
     protected:
       ReductionOpUntyped(size_t _sizeof_lhs, size_t _sizeof_rhs,
@@ -303,6 +304,16 @@ namespace RegionRuntime {
 	  for(size_t i = 0; i < count; i++)
 	    REDOP::fold<false>(rhs1[i], rhs2[i]);
 	}
+      }
+
+      virtual void init(void *rhs_ptr, size_t count)
+      {
+        char *ptr = (char*)rhs_ptr;
+        for (size_t i = 0; i < count; i++)
+        {
+          memcpy(rhs_ptr, &(REDOP::identity), sizeof_rhs);
+          ptr += sizeof_rhs;
+        }
       }
     };
 
