@@ -31,6 +31,7 @@ endif
 # Manage the output setting
 CC_FLAGS	+= -DCOMPILE_TIME_MIN_LEVEL=$(OUTPUT_LEVEL)
 
+#CC_FLAGS += -DUSE_MASKED_COPIES
 
 # Set the source files
 ifndef SHARED_LOWLEVEL

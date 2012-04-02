@@ -219,6 +219,20 @@ namespace RegionRuntime {
       const void *get_raw(void) const;
       void set_raw(const void *data);
 
+      template <class T>
+      static int forall_ranges(T &executor,
+			       const ElementMask &mask,
+			       int start = 0, int count = -1,
+			       bool do_enabled = true);
+
+      template <class T>
+      static int forall_ranges(T &executor,
+			       const ElementMask &mask1, 
+			       const ElementMask &mask2,
+			       int start = 0, int count = -1,
+			       bool do_enabled1 = true,
+			       bool do_enabled2 = true);
+
     protected:
       friend class Enumerator;
       int first_element;

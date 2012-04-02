@@ -3990,6 +3990,77 @@ namespace RegionRuntime {
       }
     }
 
+    template <class T>
+    /*static*/ int ElementMask::forall_ranges(T &executor,
+					      const ElementMask &mask1, 
+					      const ElementMask &mask2,
+					      int start /*= 0*/,
+					      int count /*= -1*/,
+					      bool do_enabled1 /*= true*/,
+					      bool do_enabled2 /*= true*/)
+    {
+      ElementMask::Enumerator enum1(mask1, start, do_enabled1 ? 1 : 0);
+      ElementMask::Enumerator enum2(mask2, start, do_enabled2 ? 1 : 0);
+
+      int pos1, len1, pos2, len2;
+
+      if(!enum1.get_next(pos1, len1)) return 0;
+      if(!enum2.get_next(pos2, len2)) return 0;
+      if(count == 0) return 0;
+
+      int total = 0;
+
+      while(true) {
+	printf("S:%d(%d) T:%d(%d)\n", pos1, len1, pos2, len2);
+
+	if(len1 <= 0) {
+	  if(!enum1.get_next(pos1, len1)) break;
+	  if((count > 0) && ((pos1 + len1) > (start + count))) {
+	    len1 = (start + count) - pos1;
+	    if(len1 < 0) break;
+	  }
+	  continue;
+	}
+
+	if(len2 <= 0) {
+	  if(!enum2.get_next(pos2, len2)) break;
+	  if((count > 0) && ((pos2 + len2) > (start + count))) {
+	    len2 = (start + count) - pos2;
+	    if(len2 < 0) break;
+	  }
+	  continue;
+	}
+
+	if(pos1 < pos2) {
+	  len1 -= (pos2 - pos1);
+	  pos1 = pos2;
+	  continue;
+	}
+
+	if(pos2 < pos1) {
+	  len2 -= (pos1 - pos2);
+	  pos2 = pos1;
+	  continue;
+	}
+
+	assert((pos1 == pos2) && (len1 > 0) && (len2 > 0));
+
+	int span_len = (len1 < len2) ? len1 : len2;
+
+	executor.do_span(pos1, span_len);
+
+	pos1 += span_len;
+	len1 -= span_len;
+	pos2 += span_len;
+	len2 -= span_len;
+
+	total += span_len;
+      }
+
+      return total;
+    }
+
+
     ///////////////////////////////////////////////////
     // Region Allocators
 
@@ -4128,6 +4199,119 @@ namespace RegionRuntime {
       Event after_copy;
     };
 
+    namespace RangeExecutors {
+      class Memcpy {
+      public:
+	Memcpy(void *_dst_base, const void *_src_base, size_t _elmt_size)
+	  : dst_base((char *)_dst_base), src_base((const char *)_src_base),
+	    elmt_size(_elmt_size) {}
+
+	template <class T>
+	Memcpy(T *_dst_base, const T *_src_base)
+	  : dst_base((char *)_dst_base), src_base((const char *)_src_base),
+	    elmt_size(sizeof(T)) {}
+
+	void do_span(int offset, int count)
+	{
+	  off_t byte_offset = offset * elmt_size;
+	  size_t byte_count = count * elmt_size;
+	  memcpy(dst_base + byte_offset,
+		 src_base + byte_offset,
+		 byte_count);
+	}
+
+      protected:
+	char *dst_base;
+	const char *src_base;
+	size_t elmt_size;
+      };
+
+      class GasnetPut {
+      public:
+	GasnetPut(Memory::Impl *_tgt_mem, off_t _tgt_offset,
+		  const void *_src_ptr, size_t _elmt_size)
+	  : tgt_mem(_tgt_mem), tgt_offset(_tgt_offset),
+	    src_ptr((const char *)_src_ptr), elmt_size(_elmt_size) {}
+
+	void do_span(int offset, int count)
+	{
+	  off_t byte_offset = offset * elmt_size;
+	  size_t byte_count = count * elmt_size;
+	
+	  tgt_mem->put_bytes(tgt_offset + byte_offset,
+			     src_ptr + offset,
+			     byte_count);
+	}
+
+      protected:
+	Memory::Impl *tgt_mem;
+	off_t tgt_offset;
+	const char *src_ptr;
+	size_t elmt_size;
+      };
+
+      class GasnetGet {
+      public:
+	GasnetGet(void *_tgt_ptr,
+		  Memory::Impl *_src_mem, off_t _src_offset,
+		  size_t _elmt_size)
+	  : tgt_ptr((char *)_tgt_ptr), src_mem(_src_mem),
+	    src_offset(_src_offset), elmt_size(_elmt_size) {}
+
+	void do_span(int offset, int count)
+	{
+	  off_t byte_offset = offset * elmt_size;
+	  size_t byte_count = count * elmt_size;
+	
+	  src_mem->get_bytes(src_offset + byte_offset,
+			     tgt_ptr + offset,
+			     byte_count);
+	}
+
+      protected:
+	char *tgt_ptr;
+	Memory::Impl *src_mem;
+	off_t src_offset;
+	size_t elmt_size;
+      };
+
+      class GasnetGetAndPut {
+      public:
+	GasnetGetAndPut(Memory::Impl *_tgt_mem, off_t _tgt_offset,
+			Memory::Impl *_src_mem, off_t _src_offset,
+			size_t _elmt_size)
+	  : tgt_mem(_tgt_mem), tgt_offset(_tgt_offset),
+	    src_mem(_src_mem), src_offset(_src_offset), elmt_size(_elmt_size) {}
+
+	static const size_t CHUNK_SIZE = 16384;
+
+	void do_span(int offset, int count)
+	{
+	  off_t byte_offset = offset * elmt_size;
+	  size_t byte_count = count * elmt_size;
+
+	  while(byte_count > CHUNK_SIZE) {
+	    src_mem->get_bytes(src_offset + byte_offset, chunk, CHUNK_SIZE);
+	    tgt_mem->put_bytes(tgt_offset + byte_offset, chunk, CHUNK_SIZE);
+	    byte_offset += CHUNK_SIZE;
+	    byte_count -= CHUNK_SIZE;
+	  }
+	  if(byte_count > 0) {
+	    src_mem->get_bytes(src_offset + byte_offset, chunk, byte_count);
+	    tgt_mem->put_bytes(tgt_offset + byte_offset, chunk, byte_count);
+	  }
+	}
+
+      protected:
+	Memory::Impl *tgt_mem;
+	off_t tgt_offset;
+	Memory::Impl *src_mem;
+	off_t src_offset;
+	size_t elmt_size;
+	char chunk[CHUNK_SIZE];
+      };
+    }; // namespace RangeExecutors
+
     /*static*/ Event RegionInstanceUntyped::Impl::copy(RegionInstanceUntyped src, 
 						       RegionInstanceUntyped target,
 						       size_t elmt_size,
@@ -4231,6 +4415,11 @@ namespace RegionRuntime {
 	      assert(tgt_ptr != 0);
 
 #ifdef USE_MASKED_COPIES
+	      RangeExecutors::Memcpy rexec(tgt_ptr,
+					   src_ptr,
+					   elmt_size);
+	      ElementMask::forall_ranges(rexec, *tgt_mask, *src_mask);
+#if 0
 	      ElementMask::Enumerator src_ranges(*src_mask, 0, 1);
 	      ElementMask::Enumerator tgt_ranges(*tgt_mask, 0, 1);
 	      int src_pos, src_len, tgt_pos, tgt_len;
@@ -4271,6 +4460,7 @@ namespace RegionRuntime {
 		  src_len -= to_copy;
 		  tgt_len -= to_copy;
 		}
+#endif
 #else
 	      memcpy(tgt_ptr, src_ptr, bytes_to_copy);
 #endif
@@ -4280,6 +4470,10 @@ namespace RegionRuntime {
 	  case Memory::Impl::MKIND_GASNET:
 	    {
 #ifdef USE_MASKED_COPIES
+	      RangeExecutors::GasnetPut rexec(tgt_mem, tgt_data->offset,
+					      src_ptr, elmt_size);
+	      ElementMask::forall_ranges(rexec, *tgt_mask, *src_mask);
+#if 0
 	      ElementMask::Enumerator src_ranges(*src_mask, 0, 1);
 	      ElementMask::Enumerator tgt_ranges(*tgt_mask, 0, 1);
 	      int src_pos, src_len, tgt_pos, tgt_len;
@@ -4321,6 +4515,7 @@ namespace RegionRuntime {
 		  src_len -= to_copy;
 		  tgt_len -= to_copy;
 		}
+#endif
 #else
 	      tgt_mem->put_bytes(tgt_data->offset, src_ptr, bytes_to_copy);
 #endif
@@ -4358,6 +4553,10 @@ namespace RegionRuntime {
 	      assert(tgt_ptr != 0);
 
 #ifdef USE_MASKED_COPIES
+	      RangeExecutors::GasnetGet rexec(tgt_ptr, src_mem, 
+					      src_data->offset, elmt_size);
+	      ElementMask::forall_ranges(rexec, *tgt_mask, *src_mask);
+#if 0
 	      ElementMask::Enumerator src_ranges(*src_mask, 0, 1);
 	      ElementMask::Enumerator tgt_ranges(*tgt_mask, 0, 1);
 	      int src_pos, src_len, tgt_pos, tgt_len;
@@ -4399,6 +4598,7 @@ namespace RegionRuntime {
 		  src_len -= to_copy;
 		  tgt_len -= to_copy;
 		}
+#endif
 #else
 	      src_mem->get_bytes(src_data->offset, tgt_ptr, bytes_to_copy);
 #endif
@@ -4411,6 +4611,11 @@ namespace RegionRuntime {
 	      unsigned char temp_block[BLOCK_SIZE];
 
 #ifdef USE_MASKED_COPIES
+	      RangeExecutors::GasnetGetAndPut rexec(tgt_mem, tgt_data->offset,
+						    src_mem, src_data->offset,
+						    elmt_size);
+	      ElementMask::forall_ranges(rexec, *tgt_mask, *src_mask);
+#if 0
 	      ElementMask::Enumerator src_ranges(*src_mask, 0, 1);
 	      ElementMask::Enumerator tgt_ranges(*tgt_mask, 0, 1);
 	      int src_pos, src_len, tgt_pos, tgt_len;
@@ -4460,6 +4665,7 @@ namespace RegionRuntime {
 		  src_len -= to_copy;
 		  tgt_len -= to_copy;
 		}
+#endif
 #else
 	      size_t bytes_copied = 0;
 	      while(bytes_copied < bytes_to_copy) {
