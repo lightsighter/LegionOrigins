@@ -320,13 +320,13 @@ namespace RegionRuntime {
 	}
       }
 
-      virtual void init(void *rhs_ptr, size_t count)
+      virtual void init(void *ptr, size_t count)
       {
-        char *ptr = (char*)rhs_ptr;
+        typename REDOP::RHS *rhs_ptr = (typename REDOP::RHS *)ptr;
         for (size_t i = 0; i < count; i++)
         {
           memcpy(rhs_ptr, &(REDOP::identity), sizeof_rhs);
-          ptr += sizeof_rhs;
+          rhs_ptr++;
         }
       }
     };
