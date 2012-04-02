@@ -120,13 +120,13 @@ public:
 const float AccumulateCharge::identity = 0.0f;
 
 template <>
-void AccumulateCharge::apply<true>(LHS &lhs, RHS rhs)
+void AccumulateCharge::apply<true>(LHS &lhs, RHS rhs) 
 {
   lhs.charge += rhs;
 }
 
 template <>
-void AccumulateCharge::apply<false>(LHS &lhs, RHS rhs)
+void AccumulateCharge::apply<false>(LHS &lhs, RHS rhs) 
 {
   // most cpus don't let you atomic add a float, so we use gcc's builtin
   // compare-and-swap in a loop
@@ -139,13 +139,13 @@ void AccumulateCharge::apply<false>(LHS &lhs, RHS rhs)
 }
 
 template <>
-void AccumulateCharge::fold<true>(RHS &rhs1, RHS rhs2)
+void AccumulateCharge::fold<true>(RHS &rhs1, RHS rhs2) 
 {
   rhs1 += rhs2;
 }
 
 template <>
-void AccumulateCharge::fold<false>(RHS &rhs1, RHS rhs2)
+void AccumulateCharge::fold<false>(RHS &rhs1, RHS rhs2) 
 {
   // most cpus don't let you atomic add a float, so we use gcc's builtin
   // compare-and-swap in a loop
