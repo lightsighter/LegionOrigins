@@ -1723,7 +1723,7 @@ namespace RegionRuntime {
       size_t compute_region_tree_update_size(std::set<PartitionNode*> &updates);
       void mark_tree_unadded(bool release_resources);
     protected:
-      size_t compute_physical_state_size(ContextID ctx, std::vector<InstanceInfo*> &needed);
+      size_t compute_physical_state_size(ContextID ctx, std::vector<InstanceInfo*> &needed, bool returning);
       void pack_physical_state(ContextID ctx, Serializer &rez);
       void unpack_physical_state(ContextID ctx, Deserializer &derez, bool returning, bool merge,
           std::map<InstanceID,InstanceInfo*> &inst_map, UniqueID uid = 0);
@@ -1833,7 +1833,7 @@ namespace RegionRuntime {
       size_t compute_region_tree_update_size(std::set<PartitionNode*> &updates);
       void mark_tree_unadded(bool reclaim_resources); // Mark the node as no longer being added
     protected:
-      size_t compute_physical_state_size(ContextID ctx, std::vector<InstanceInfo*> &needed);
+      size_t compute_physical_state_size(ContextID ctx, std::vector<InstanceInfo*> &needed, bool returning);
       void pack_physical_state(ContextID ctx, Serializer &rez);
       void unpack_physical_state(ContextID ctx, Deserializer &derez, bool returning, bool merge,
               std::map<InstanceID,InstanceInfo*> &inst_map, UniqueID uid = 0);
@@ -1976,8 +1976,12 @@ namespace RegionRuntime {
       // Similar to a add_copy_user with a write except without the added reference
       Event force_closed(void);
     protected:
-      // Get the set of InstanceInfos needed, this instance and all parent instances
-      void get_needed_instances(std::vector<InstanceInfo*> &needed_instances); 
+      // Get the set of InstanceInfos needed for sending a region tree remotely
+      // This is all ancestor regions and open children only
+      void get_needed_instances_outgoing(std::vector<InstanceInfo*> &needed_instances); 
+      // Get the set of InstanceInfos needed for returning a region tree
+      // This is all ancestor regions and all children (since we need to prevent garbage collection)
+      void get_needed_instances_returning(std::vector<InstanceInfo*> &needed_instances);
       // Operations for packing return information for instance infos
       Fraction get_subtract_frac(unsigned ways);
       size_t compute_info_size(void) const;
@@ -2011,8 +2015,10 @@ namespace RegionRuntime {
       bool has_war_below(const RegionUsage &usage, bool skip_local);
       bool local_has_war(const RegionUsage &usage);
       // Get needed instances above and below
-      void get_needed_above(std::vector<InstanceInfo*> &needed_instances);
-      void get_needed_below(std::vector<InstanceInfo*> &needed_instances, bool skip_local);
+      void get_needed_above_outgoing(std::vector<InstanceInfo*> &needed_instances);
+      void get_needed_below_outgoing(std::vector<InstanceInfo*> &needed_instances, bool skip_local);
+      void get_needed_above_returning(std::vector<InstanceInfo*> &needed_instances);
+      void get_needed_below_returning(std::vector<InstanceInfo*> &needed_instances, bool skip_local);
       // Get the precondition for reading the instance
       void get_copy_precondition(std::set<Event> &wait_on_events);
       // Has user for checking on unresolved dependences
@@ -2020,7 +2026,6 @@ namespace RegionRuntime {
       bool has_user_below(UniqueID uid, bool skip_local) const;
       // Add and remove children
       void add_child(InstanceInfo *child, bool open);
-      void reopen_child(InstanceInfo *child);
       void close_child(void);
       void remove_child(InstanceInfo *info);
       // Start a new epoch
@@ -2032,7 +2037,7 @@ namespace RegionRuntime {
       bool remote;
       bool open_child; // is this an open child of it's parent
       const bool clone; // is this a clone, in which case no garbage collection
-      unsigned children;
+      unsigned children; // if the instance is remote this doesn't matter, children will add themselves when returned
       bool collected; // Whether this instance has been collected
       bool returned; // If this instance has been sent back already
       Fraction local_frac; // Fraction of this instance info that is local to here (will be 1 when can be collected)
@@ -2048,6 +2053,8 @@ namespace RegionRuntime {
       std::set<UniqueID> epoch_copy_users;
       // Track which of our children are open and need to be traversed
       std::list<InstanceInfo*> open_children;
+      // All the children we know about
+      std::list<InstanceInfo*> all_children;
       // Don't let garbage collection proceed past this instance when performing a forced close
       bool closing;
 #ifdef TRACE_CAPTURE

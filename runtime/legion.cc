@@ -4432,7 +4432,7 @@ namespace RegionRuntime {
         {
           result += (sizeof(unsigned) + sizeof(InstanceID) + sizeof(Event));
           // Also compute the needed instances
-          it->second.info->get_needed_instances(needed_instances);
+          it->second.info->get_needed_instances_outgoing(needed_instances);
         }
         // Compute the information for moving the physical region trees that we need
         for (unsigned idx = 0; idx < regions.size(); idx++)
@@ -4447,12 +4447,12 @@ namespace RegionRuntime {
           if (is_index_space && (regions[idx].func_type != SINGULAR_FUNC))
           {
             result += (*partition_nodes)[regions[idx].handle.partition]->parent->
-              compute_physical_state_size(get_enclosing_physical_context(idx),needed_instances);
+              compute_physical_state_size(get_enclosing_physical_context(idx),needed_instances,false/*returning*/);
           }
           else
           {
             result += (*region_nodes)[regions[idx].handle.region]->
-              compute_physical_state_size(get_enclosing_physical_context(idx),needed_instances);
+              compute_physical_state_size(get_enclosing_physical_context(idx),needed_instances,false/*returning*/);
           }
         }
         // compute the size of the needed instances
@@ -7184,13 +7184,13 @@ namespace RegionRuntime {
               if (physical_instances[idx] == InstanceInfo::get_no_instance())
               {
                 buffer_size += (*region_nodes)[regions[idx].handle.region]->
-                                compute_physical_state_size(ctx_id,required_instances);
+                                compute_physical_state_size(ctx_id,required_instances,true/*returning*/);
               }
             }
             for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
                   it != created_regions.end(); it++)
             {
-              buffer_size += (*region_nodes)[it->first]->compute_physical_state_size(it->second,required_instances);
+              buffer_size += (*region_nodes)[it->first]->compute_physical_state_size(it->second,required_instances,true/*returning*/);
             }
             // Also include the size of the instances to pass pack
             buffer_size += sizeof(size_t); // num instances
@@ -7208,7 +7208,7 @@ namespace RegionRuntime {
               }
             }
 #endif
-            // The actual set of instances are all instances that are either remote or haven't been collected yet
+            // Get the required infos for all the remote instances that need to be returned
             for (std::map<InstanceID,InstanceInfo*>::const_iterator it = instance_infos->begin();
                   it != instance_infos->end(); it++)
             {
@@ -7216,8 +7216,7 @@ namespace RegionRuntime {
               {
                 if (!it->second->returned)
                 {
-                  actual_instances.insert(it->second);
-                  buffer_size += it->second->compute_return_info_size(escaped_users,escaped_copies);
+                  it->second->get_needed_instances_returning(required_instances);
                 }
               }
             }
@@ -7225,17 +7224,11 @@ namespace RegionRuntime {
             for (std::vector<InstanceInfo*>::const_iterator it = required_instances.begin();
                   it != required_instances.end(); it++)
             {
-              if (!(*it)->remote && (actual_instances.find(*it) == actual_instances.end()))
+              if (actual_instances.find(*it) == actual_instances.end())
               {
                 actual_instances.insert(*it);
                 buffer_size += (*it)->compute_return_info_size(escaped_users,escaped_copies);
               }
-#ifdef DEBUG_HIGH_LEVEL
-              else if ((*it)->remote)
-              {
-                assert(actual_instances.find(*it) != actual_instances.end());
-              }
-#endif
             }
 
             // Now serialize everything
@@ -8005,7 +7998,7 @@ namespace RegionRuntime {
                 (already_packed.find(regions[idx].handle.region) == already_packed.end()))
             {
               buffer_size += (*region_nodes)[regions[idx].handle.region]->
-                              compute_physical_state_size(ctx_id,required_instances);
+                              compute_physical_state_size(ctx_id,required_instances,true/*returning*/);
               already_packed.insert(std::pair<LogicalRegion,unsigned>(regions[idx].handle.region,idx));
             }
           }
@@ -8022,7 +8015,7 @@ namespace RegionRuntime {
                   (already_packed.find((*it)->regions[idx].handle.region) == already_packed.end()))
               {
                 buffer_size += (*region_nodes)[(*it)->regions[idx].handle.region]->
-                                compute_physical_state_size(ctx_id,required_instances);
+                                compute_physical_state_size(ctx_id,required_instances,true/*returning*/);
                 already_packed.insert(std::pair<LogicalRegion,unsigned>(regions[idx].handle.region,idx));
               }
             }
@@ -8032,7 +8025,7 @@ namespace RegionRuntime {
           for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
                 it != created_regions.end(); it++)
           {
-            buffer_size += (*region_nodes)[it->first]->compute_physical_state_size(it->second,required_instances);
+            buffer_size += (*region_nodes)[it->first]->compute_physical_state_size(it->second,required_instances,true/*returning*/);
           }
           // Now the size of all the physical instances we need to pass back
           buffer_size += sizeof(size_t);
@@ -8057,30 +8050,20 @@ namespace RegionRuntime {
             {
               if (!it->second->returned)
               {
-                actual_instances.insert(it->second);
-                buffer_size += it->second->compute_return_info_size(escaped_users,escaped_copies);
+                // Add all the instance infos needed for going back
+                it->second->get_needed_instances_returning(required_instances);
               }
             }
           }
-          // Also send back all the valid instances that are local in required instances
+          // Send back all the required instances
           for (std::vector<InstanceInfo*>::const_iterator it = required_instances.begin();
                 it != required_instances.end(); it++)
           {
-            if (!(*it)->remote && (actual_instances.find(*it) == actual_instances.end()))
+            if (actual_instances.find(*it) == actual_instances.end())
             {
-#ifdef DEBUG_HIGH_LEVEL
-              assert((*it)->valid);
-#endif
               actual_instances.insert(*it);
               buffer_size += (*it)->compute_return_info_size(escaped_users,escaped_copies);
             }
-#ifdef DEBUG_HIGH_LEVEL
-            else if ((*it)->remote)
-            {
-              // If it's remote it should already be in our set of actual instances
-              assert(actual_instances.find(*it) != actual_instances.end());
-            }
-#endif
           }
           // Also include the number of local points
           buffer_size += sizeof(unsigned);
@@ -9371,7 +9354,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    size_t RegionNode::compute_physical_state_size(ContextID ctx, std::vector<InstanceInfo*> &needed)
+    size_t RegionNode::compute_physical_state_size(ContextID ctx, std::vector<InstanceInfo*> &needed, bool returning)
     //--------------------------------------------------------------------------------------------
     {
       size_t result = 0;
@@ -9386,21 +9369,39 @@ namespace RegionRuntime {
       result += sizeof(ReductionOpID);
       result += sizeof(PartitionID);
       // Update the needed infos
-      for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
-            it != region_states[ctx].valid_instances.end(); it++)
+      if (!returning)
       {
-        it->first->get_needed_instances(needed);
+        // outgoing
+        for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
+              it != region_states[ctx].valid_instances.end(); it++)
+        {
+          it->first->get_needed_instances_outgoing(needed);
+        }
+        for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].reduction_instances.begin();
+              it != region_states[ctx].reduction_instances.end(); it++)
+        {
+          it->first->get_needed_instances_outgoing(needed);
+        }
       }
-      for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].reduction_instances.begin();
-            it != region_states[ctx].reduction_instances.end(); it++)
+      else
       {
-        it->first->get_needed_instances(needed);
+        // returning
+        for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
+              it != region_states[ctx].valid_instances.end(); it++)
+        {
+          it->first->get_needed_instances_returning(needed);
+        }
+        for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].reduction_instances.begin();
+              it != region_states[ctx].reduction_instances.end(); it++)
+        {
+          it->first->get_needed_instances_returning(needed);
+        }
       }
       // for each of the open partitions add their state
       for (std::set<PartitionID>::const_iterator it = region_states[ctx].open_physical.begin();
             it != region_states[ctx].open_physical.end(); it++)
       {
-        result += partitions[*it]->compute_physical_state_size(ctx,needed);
+        result += partitions[*it]->compute_physical_state_size(ctx,needed,returning);
       }
       return result;
     }
@@ -11583,7 +11584,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    size_t PartitionNode::compute_physical_state_size(ContextID ctx, std::vector<InstanceInfo*> &needed)
+    size_t PartitionNode::compute_physical_state_size(ContextID ctx, std::vector<InstanceInfo*> &needed, bool returning)
     //--------------------------------------------------------------------------------------------
     {
       size_t result = 0;
@@ -11597,7 +11598,7 @@ namespace RegionRuntime {
       for (std::set<LogicalRegion>::const_iterator it = partition_states[ctx].open_physical.begin();
             it != partition_states[ctx].open_physical.end(); it++)
       {
-        result += children[*it]->compute_physical_state_size(ctx, needed); 
+        result += children[*it]->compute_physical_state_size(ctx, needed, returning); 
       }
       return result;
     }
@@ -12872,8 +12873,7 @@ namespace RegionRuntime {
 #endif
       if (parent != NULL)
       {
-        // tell the parent it has children
-        parent->add_child(this, open);
+        parent->add_child(this, open_child);
         inst_lock = parent->inst_lock;
         // set our valid event to be the parent's valid event 
         valid_event = parent->valid_event;
@@ -13445,14 +13445,25 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    void InstanceInfo::get_needed_instances(std::vector<InstanceInfo*> &needed_instances)
+    void InstanceInfo::get_needed_instances_outgoing(std::vector<InstanceInfo*> &needed_instances)
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!collected);
 #endif
-      get_needed_above(needed_instances);
-      get_needed_below(needed_instances,true/*skip first*/);
+      get_needed_above_outgoing(needed_instances);
+      get_needed_below_outgoing(needed_instances,true/*skip first*/);
+    }
+
+    //-------------------------------------------------------------------------
+    void InstanceInfo::get_needed_instances_returning(std::vector<InstanceInfo*> &needed_instances)
+    //-------------------------------------------------------------------------
+    {
+ #ifdef DEBUG_HIGH_LEVEL
+      assert(!collected);
+#endif
+      get_needed_above_returning(needed_instances);
+      get_needed_below_returning(needed_instances,true/*skip first*/); 
     }
 
     //-------------------------------------------------------------------------
@@ -13478,8 +13489,8 @@ namespace RegionRuntime {
       result += sizeof(Lock); // lock
       result += sizeof(bool); // valid
       result += sizeof(Fraction);
-      // No need to move remote or children since this will be a remote version
       // Only send the epoch users, the remote version won't be able to garbage collect anyway
+      // No need to send the number of children since we can't garbage collect remotely anyway
       result += sizeof(size_t); // num users + num added users
       result += ((epoch_users.size()) * (sizeof(UniqueID) + compute_user_task_size()));
       result += sizeof(size_t); // num copy users + num copy users
@@ -13654,6 +13665,9 @@ namespace RegionRuntime {
       if (remote)
       {
         result += sizeof(Event); // valid event
+        // send back the IDs of the open children so we can close the ones that aren't
+        result += sizeof(size_t);
+        result += (open_children.size() * sizeof(InstanceID));
         // only need to return the added users
         result += sizeof(size_t); // num added users
         result += (added_users.size() * (sizeof(UniqueID) + compute_user_task_size()));
@@ -13751,6 +13765,14 @@ namespace RegionRuntime {
       if (remote)
       {
         rez.serialize<Event>(valid_event);
+
+        rez.serialize<size_t>(open_children.size());
+        for (std::list<InstanceInfo*>::const_iterator it = open_children.begin();
+              it != open_children.end(); it++)
+        {
+          rez.serialize<InstanceID>((*it)->iid);
+        }
+
         rez.serialize<size_t>(added_users.size());
         for (std::map<UniqueID,UserTask>::const_iterator it = added_users.begin();
               it != added_users.end(); it++)
@@ -14013,12 +14035,15 @@ namespace RegionRuntime {
 #endif
       bool new_open_child;
       derez.deserialize<bool>(new_open_child);
-      if (!open_child && new_open_child && (parent != NULL))
-      {
-        // Tell our parent that we're open again
-        parent->reopen_child(this);
-        open_child = true;
-      }
+#ifdef DEBUG_HIGH_LEVEL
+      // This should always be true.  If we were closed remotely, our parent
+      // instance should have unpacked us first and realized that we were
+      // closed and then closed us.  It's also possible that this instance is
+      // coming back after the mapping process has moved on, so the local instance
+      // might be closed while the older child is still open in which case we just
+      // ignore it.
+      assert((new_open_child == open_child) || (!open_child && new_open_child));
+#endif
 
       Fraction returning_frac;
       derez.deserialize<Fraction>(returning_frac);
@@ -14028,7 +14053,6 @@ namespace RegionRuntime {
       Event new_valid_event;
       derez.deserialize<Event>(new_valid_event);
       // Check to see if the new valid event is the same as the old one
-      // If it's not we can clear out all our old users and open children
       if (valid_event != new_valid_event)
       {
         // Merge the valid events and make that the new valid event
@@ -14042,6 +14066,43 @@ namespace RegionRuntime {
         // Update the valid event
         valid_event = result; 
       }
+
+      // Unpack the open children, if there are any local open children
+      // that are not in the set of open children that is returning, we
+      // need to close them.  This prevents us from having two open children
+      // for the same logical region.  This is correct because the region
+      // tree traversal ensures either that a remote instance and the local instance
+      // can be mapped in parallel with no close operations, or the returning
+      // instance is new state of the region tree which means that its state
+      // should be the new valid state
+      {
+        std::set<InstanceID> returning_open;
+        size_t num_open_kids;
+        derez.deserialize<size_t>(num_open_kids);
+        for (unsigned idx = 0; idx < num_open_kids; idx++)
+        {
+          InstanceID kid_iid;
+          derez.deserialize<InstanceID>(kid_iid);
+          returning_open.insert(kid_iid);
+        }
+        // Go through our currently open children and see if any of them
+        // should be closed.  Just mark them closed, they will can be garbage
+        // collected when they get unpacked themselves
+        for (std::list<InstanceInfo*>::iterator it = open_children.begin();
+              it != open_children.end(); /*nothing*/)
+        {
+          if (returning_open.find((*it)->iid) == returning_open.end())
+          {
+            (*it)->open_child = false;
+            it = open_children.erase(it);
+          }
+          else
+          {
+            it++;
+          }
+        }
+      }
+
       size_t num_added_users;
       derez.deserialize<size_t>(num_added_users);
       for (unsigned idx = 0; idx < num_added_users; idx++)
@@ -14820,29 +14881,63 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    void InstanceInfo::get_needed_above(std::vector<InstanceInfo*> &needed_instances)
+    void InstanceInfo::get_needed_above_outgoing(std::vector<InstanceInfo*> &needed_instances)
     //-------------------------------------------------------------------------
     {
       // Parent first
       if (parent != NULL)
       {
-        parent->get_needed_above(needed_instances);
+        parent->get_needed_above_outgoing(needed_instances);
       }
       needed_instances.push_back(this);
     }
 
     //-------------------------------------------------------------------------
-    void InstanceInfo::get_needed_below(std::vector<InstanceInfo*> &needed_instances, bool skip_local)
+    void InstanceInfo::get_needed_below_outgoing(std::vector<InstanceInfo*> &needed_instances, bool skip_local)
     //-------------------------------------------------------------------------
     {
       if (!skip_local)
       {
         needed_instances.push_back(this);
       }
+      // Only need to get open children outoing
       for (std::list<InstanceInfo*>::const_iterator it = open_children.begin();
             it != open_children.end(); it++)
       {
-        (*it)->get_needed_below(needed_instances,false/*skip local*/);
+        (*it)->get_needed_below_outgoing(needed_instances,false/*skip local*/);
+      }
+    }
+
+    //-------------------------------------------------------------------------
+    void InstanceInfo::get_needed_above_returning(std::vector<InstanceInfo*> &needed_instances)
+    //-------------------------------------------------------------------------
+    {
+      // Parent first
+      if (parent != NULL)
+      {
+        parent->get_needed_above_returning(needed_instances);
+      }
+      // only add this if it hasn't already been returned
+      if (!returned)
+      {
+        needed_instances.push_back(this);
+      }
+    }
+
+    //-------------------------------------------------------------------------
+    void InstanceInfo::get_needed_below_returning(std::vector<InstanceInfo*> &needed_instances, bool skip_local)
+    //-------------------------------------------------------------------------
+    {
+      // only return this if it hasn't been returned already
+      if (!skip_local && !returned)
+      {
+        needed_instances.push_back(this);
+      }
+      // Need all children returning
+      for (std::list<InstanceInfo*>::const_iterator it = all_children.begin();
+            it != all_children.end(); it++)
+      {
+        (*it)->get_needed_below_returning(needed_instances,false/*skip local*/);
       }
     }
     
@@ -14906,21 +15001,11 @@ namespace RegionRuntime {
       assert(!collected);
 #endif
       children++;
+      all_children.push_back(child);
       if (open)
       {
         open_children.push_back(child);
       }
-    }
-
-    //-------------------------------------------------------------------------
-    void InstanceInfo::reopen_child(InstanceInfo *child)
-    //-------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(child != InstanceInfo::get_no_instance());
-      assert(!collected);
-#endif
-      open_children.push_back(child);
     }
 
     //-------------------------------------------------------------------------
@@ -14959,10 +15044,31 @@ namespace RegionRuntime {
     void InstanceInfo::remove_child(InstanceInfo *child)
     //-------------------------------------------------------------------------
     {
-      #ifdef DEBUG_HIGH_LEVEL
+#ifdef DEBUG_HIGH_LEVEL
       assert(children > 0);
 #endif
       children--;
+      // Remove the child from the list of all_children
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        bool found = false;
+#endif
+        for (std::list<InstanceInfo*>::iterator it = all_children.begin();
+              it != all_children.end(); it++)
+        {
+          if (*it == child)
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            found = true;
+#endif
+            all_children.erase(it);
+            break;
+          }
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        assert(found);
+#endif
+      }
       // Check to see if we can remove this child from this list of open
       // instance infos
       for (std::list<InstanceInfo*>::iterator it = open_children.begin();
