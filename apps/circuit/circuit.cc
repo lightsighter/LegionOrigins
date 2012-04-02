@@ -24,6 +24,10 @@ enum PointerLocation {
   GHOST_PTR,
 };
 
+enum {
+  REDUCE_ID = 1,
+};
+
 // Data type definitions
 
 struct CircuitNode {
@@ -63,9 +67,11 @@ struct Partitions {
 // Reduction Op
 class AccumulateCharge {
 public:
-  static const float identity = 0.0f;
+  typedef CircuitNode LHS;
+  typedef float RHS;
+  static const float identity;
 
-  template <bool EXCLUSIVE> static void apply(CircuitNode &lhs, float rhs);
+  template <bool EXCLUSIVE> static void apply(LHS &lhs, RHS rhs);
 
 #if 0
   template <>
@@ -87,7 +93,7 @@ public:
     } while(!__sync_bool_compare_and_swap(target, oldval.as_int, newval.as_int));
   }
 #endif
-  template <bool EXCLUSIVE> static void fold(float &rhs1, float rhs2);
+  template <bool EXCLUSIVE> static void fold(RHS &rhs1, RHS rhs2);
 #if 0
 
   template <>
@@ -111,14 +117,16 @@ public:
 #endif
 };
 
+const float AccumulateCharge::identity = 0.0f;
+
 template <>
-void AccumulateCharge::apply<true>(CircuitNode &lhs, float rhs)
+void AccumulateCharge::apply<true>(LHS &lhs, RHS rhs)
 {
   lhs.charge += rhs;
 }
 
 template <>
-void AccumulateCharge::apply<false>(CircuitNode &lhs, float rhs)
+void AccumulateCharge::apply<false>(LHS &lhs, RHS rhs)
 {
   // most cpus don't let you atomic add a float, so we use gcc's builtin
   // compare-and-swap in a loop
@@ -131,13 +139,13 @@ void AccumulateCharge::apply<false>(CircuitNode &lhs, float rhs)
 }
 
 template <>
-void AccumulateCharge::fold<true>(float &rhs1, float rhs2)
+void AccumulateCharge::fold<true>(RHS &rhs1, RHS rhs2)
 {
   rhs1 += rhs2;
 }
 
 template <>
-void AccumulateCharge::fold<false>(float &rhs1, float rhs2)
+void AccumulateCharge::fold<false>(RHS &rhs1, RHS rhs2)
 {
   // most cpus don't let you atomic add a float, so we use gcc's builtin
   // compare-and-swap in a loop
@@ -261,10 +269,10 @@ void region_main(const void *args, size_t arglen,
                                           READ_WRITE, NO_MEMORY, EXCLUSIVE,
                                           circuit.all_nodes));
   dsc_regions.push_back(RegionRequirement(parts.shr_nodes.id, 0/*identity*/,
-                                          1/*redop id*/, NO_MEMORY, SIMULTANEOUS,
+                                          REDUCE_ID/*redop id*/, NO_MEMORY, SIMULTANEOUS,
                                           circuit.all_nodes));
   dsc_regions.push_back(RegionRequirement(parts.ghost_nodes.id, 0/*identity*/,
-                                          1/*redop id*/, NO_MEMORY, SIMULTANEOUS,
+                                          REDUCE_ID/*redop id*/, NO_MEMORY, SIMULTANEOUS,
                                           circuit.all_nodes));
 
   std::vector<RegionRequirement> upv_regions;
@@ -472,6 +480,9 @@ int main(int argc, char **argv)
           distribute_charge_task_gpu<AccessorGeneric> >(DISTRIBUTE_CHARGE, Processor::TOC_PROC, "distribute_charege");
   HighLevelRuntime::register_index_task<
           update_voltages_task_gpu<AccessorGeneric> >(UPDATE_VOLTAGES, Processor::TOC_PROC, "update_voltages");
+
+  // Register reduction op
+  HighLevelRuntime::register_reduction_op<AccumulateCharge>(REDUCE_ID);
 
   return HighLevelRuntime::start(argc, argv);
 }
