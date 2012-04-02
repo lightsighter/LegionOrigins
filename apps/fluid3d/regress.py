@@ -86,8 +86,8 @@ def validate(epsilons):
     return all(map(lambda e: e < _max_epsilon, epsilons.itervalues()))
 
 def summarize_params(nbx = 1, nby = 1, nbz = 1, steps = 1, **others):
-    return '%sx%sx%s (%ss)%s' % (
-        nbx, nby, nbz, steps,
+    return '%sx%sx%s (%s step%s)%s' % (
+        nbx, nby, nbz, steps, '' if steps == 1 else 's',
         ', '.join(['%s %s' % kv for kv in others.iteritems()]))
 
 _status_table = [
