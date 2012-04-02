@@ -270,10 +270,10 @@ namespace RegionRuntime {
 	static ReductionOpUntyped *create_reduction_op(void);
 
       virtual void apply(void *lhs_ptr, const void *rhs_ptr, size_t count,
-			 bool exclusive = false) = 0;
+			 bool exclusive = false) const = 0;
       virtual void fold(void *rhs1_ptr, const void *rhs2_ptr, size_t count,
-			bool exclusive = false) = 0;
-      virtual void init(void *rhs_ptr, size_t count) = 0;
+			bool exclusive = false) const = 0;
+      virtual void init(void *rhs_ptr, size_t count) const = 0;
 
     protected:
       ReductionOpUntyped(size_t _sizeof_lhs, size_t _sizeof_rhs,
@@ -293,7 +293,7 @@ namespace RegionRuntime {
 			     true, true) {}
 
       virtual void apply(void *lhs_ptr, const void *rhs_ptr, size_t count,
-			 bool exclusive = false)
+			 bool exclusive = false) const
       {
 	typename REDOP::LHS *lhs = (typename REDOP::LHS *)lhs_ptr;
 	const typename REDOP::RHS *rhs = (const typename REDOP::RHS *)rhs_ptr;
@@ -307,7 +307,7 @@ namespace RegionRuntime {
       }
 
       virtual void fold(void *rhs1_ptr, const void *rhs2_ptr, size_t count,
-			bool exclusive = false)
+			bool exclusive = false) const
       {
 	typename REDOP::RHS *rhs1 = (typename REDOP::RHS *)rhs1_ptr;
 	const typename REDOP::RHS *rhs2 = (const typename REDOP::RHS *)rhs2_ptr;
@@ -320,14 +320,11 @@ namespace RegionRuntime {
 	}
       }
 
-      virtual void init(void *ptr, size_t count)
+      virtual void init(void *ptr, size_t count) const
       {
         typename REDOP::RHS *rhs_ptr = (typename REDOP::RHS *)ptr;
         for (size_t i = 0; i < count; i++)
-        {
-          memcpy(rhs_ptr, &(REDOP::identity), sizeof_rhs);
-          rhs_ptr++;
-        }
+          memcpy(rhs_ptr++, &(REDOP::identity), sizeof_rhs);
       }
     };
 
