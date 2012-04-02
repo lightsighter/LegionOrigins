@@ -2370,44 +2370,143 @@ namespace RegionRuntime {
         assert((src_ptr != NULL) && (tgt_ptr != NULL));
 #endif
         int src_pos, src_len, tgt_pos, tgt_len;
-        if(src_ranges->get_next(src_pos, src_len) &&
-           tgt_ranges->get_next(tgt_pos, tgt_len))
+        if (!reduction)
         {
-            while(true) {
-              //printf("S:%d(%d) T:%d(%d)\n", src_pos, src_len, tgt_pos, tgt_len);
-              if(src_len <= 0) {
-                if(!src_ranges->get_next(src_pos, src_len)) break;
-                continue;
-              }
-              if(tgt_len <= 0) {
-                if(!tgt_ranges->get_next(tgt_pos, tgt_len)) break;
-                continue;
-              }
-              if(src_pos < tgt_pos) {
-                src_len -= (tgt_pos - src_pos);
-                src_pos = tgt_pos;
-                continue;
-              }
-              if(tgt_pos < src_pos) {
-                tgt_len -= (src_pos - tgt_pos);
-                tgt_pos = src_pos;
-                continue;
-              }
-              assert((src_pos == tgt_pos) && (src_len > 0) && (tgt_len > 0));
-              int to_copy = (src_len < tgt_len) ? src_len : tgt_len;
-              //printf("C:%d(%d)\n", src_pos, to_copy);
+          // We should never copy from a reduction instance to a non-reduction instance
+#ifdef DEBUG_LOW_LEVEL
+          assert(!target->reduction);
+#endif
+          if(src_ranges->get_next(src_pos, src_len) &&
+             tgt_ranges->get_next(tgt_pos, tgt_len))
+          {
+              while(true) {
+                //printf("S:%d(%d) T:%d(%d)\n", src_pos, src_len, tgt_pos, tgt_len);
+                if(src_len <= 0) {
+                  if(!src_ranges->get_next(src_pos, src_len)) break;
+                  continue;
+                }
+                if(tgt_len <= 0) {
+                  if(!tgt_ranges->get_next(tgt_pos, tgt_len)) break;
+                  continue;
+                }
+                if(src_pos < tgt_pos) {
+                  src_len -= (tgt_pos - src_pos);
+                  src_pos = tgt_pos;
+                  continue;
+                }
+                if(tgt_pos < src_pos) {
+                  tgt_len -= (src_pos - tgt_pos);
+                  tgt_pos = src_pos;
+                  continue;
+                }
+                assert((src_pos == tgt_pos) && (src_len > 0) && (tgt_len > 0));
+                int to_copy = (src_len < tgt_len) ? src_len : tgt_len;
+                //printf("C:%d(%d)\n", src_pos, to_copy);
 
-              // actual copy!
-              off_t offset = src_pos * elmt_size;
-              size_t amount = to_copy * elmt_size;
-              memcpy(((char *)tgt_ptr)+offset, 
-                     ((const char *)src_ptr)+offset, amount);
+                // actual copy!
+                off_t offset = src_pos * elmt_size;
+                size_t amount = to_copy * elmt_size;
+                memcpy(((char *)tgt_ptr)+offset, 
+                       ((const char *)src_ptr)+offset, amount);
 
-              src_pos += to_copy;
-              tgt_pos += to_copy;
-              src_len -= to_copy;
-              tgt_len -= to_copy;
+                src_pos += to_copy;
+                tgt_pos += to_copy;
+                src_len -= to_copy;
+                tgt_len -= to_copy;
+              }
+          }
+        }
+        else
+        {
+          // This is a reduction instance, see if we are doing a reduction-to-normal copy 
+          // or a reduction-to-reduction copy
+          if (!target->reduction)
+          {
+            // Reduction-to-normal copy
+            if(src_ranges->get_next(src_pos, src_len) &&
+               tgt_ranges->get_next(tgt_pos, tgt_len))
+            {
+                while(true) {
+                  //printf("S:%d(%d) T:%d(%d)\n", src_pos, src_len, tgt_pos, tgt_len);
+                  if(src_len <= 0) {
+                    if(!src_ranges->get_next(src_pos, src_len)) break;
+                    continue;
+                  }
+                  if(tgt_len <= 0) {
+                    if(!tgt_ranges->get_next(tgt_pos, tgt_len)) break;
+                    continue;
+                  }
+                  if(src_pos < tgt_pos) {
+                    src_len -= (tgt_pos - src_pos);
+                    src_pos = tgt_pos;
+                    continue;
+                  }
+                  if(tgt_pos < src_pos) {
+                    tgt_len -= (src_pos - tgt_pos);
+                    tgt_pos = src_pos;
+                    continue;
+                  }
+                  assert((src_pos == tgt_pos) && (src_len > 0) && (tgt_len > 0));
+                  int to_copy = (src_len < tgt_len) ? src_len : tgt_len;
+                  //printf("C:%d(%d)\n", src_pos, to_copy);
+
+                  // Apply the reduction
+                  off_t src_offset = src_pos * redop->sizeof_rhs;
+                  off_t dst_offset = src_pos * elmt_size;
+                  // Don't multiply by element size here since we want the
+                  // actual number of elements and not the number of bytes
+                  redop->apply(((char *)tgt_ptr)+dst_offset,
+                               ((const char *)src_ptr)+src_offset,to_copy,false/*exclusive*/);
+
+                  src_pos += to_copy;
+                  tgt_pos += to_copy;
+                  src_len -= to_copy;
+                  tgt_len -= to_copy;
+                }
             }
+          }
+          else
+          {
+            // Reduction-to-reduction copy
+            if(src_ranges->get_next(src_pos, src_len) &&
+               tgt_ranges->get_next(tgt_pos, tgt_len))
+            {
+                while(true) {
+                  //printf("S:%d(%d) T:%d(%d)\n", src_pos, src_len, tgt_pos, tgt_len);
+                  if(src_len <= 0) {
+                    if(!src_ranges->get_next(src_pos, src_len)) break;
+                    continue;
+                  }
+                  if(tgt_len <= 0) {
+                    if(!tgt_ranges->get_next(tgt_pos, tgt_len)) break;
+                    continue;
+                  }
+                  if(src_pos < tgt_pos) {
+                    src_len -= (tgt_pos - src_pos);
+                    src_pos = tgt_pos;
+                    continue;
+                  }
+                  if(tgt_pos < src_pos) {
+                    tgt_len -= (src_pos - tgt_pos);
+                    tgt_pos = src_pos;
+                    continue;
+                  }
+                  assert((src_pos == tgt_pos) && (src_len > 0) && (tgt_len > 0));
+                  int to_copy = (src_len < tgt_len) ? src_len : tgt_len;
+                  //printf("C:%d(%d)\n", src_pos, to_copy);
+
+                  // actual copy!
+                  off_t offset = src_pos * redop->sizeof_rhs;
+                  redop->fold(((char *)tgt_ptr)+offset,
+                              ((const char*)src_ptr)+offset,to_copy,false/*exlusive*/);
+
+                  src_pos += to_copy;
+                  tgt_pos += to_copy;
+                  src_len -= to_copy;
+                  tgt_len -= to_copy;
+                }
+            }
+          }
         }
 
         delete src_ranges;
@@ -2715,7 +2814,7 @@ namespace RegionRuntime {
         // First try to create the location in the memory, if there is no space
         // don't bother trying to make the data
         MemoryImpl *mem = Runtime::get_runtime()->get_memory_impl(m);
-        //if (redop == 0)
+        if (redop == 0)
         {
           // No reduction op
           char *ptr = (char*)mem->allocate_space(num_elmts*elmt_size);
@@ -2731,16 +2830,17 @@ namespace RegionRuntime {
           PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
           return inst;
         }
-#if 0
         else
         {
           const ReductionOpUntyped *op = Runtime::get_runtime()->get_reduction_op(redop);
-          char *ptr = (char*)mem->allocate_space(num_elmts*(op->sizeof_lhs));
+          char *ptr = (char*)mem->allocate_space(num_elmts*(op->sizeof_rhs));
           if (ptr == NULL)
           {
             return RegionInstanceUntyped::NO_INST;
           }
-          // TODO: how to initialize a reduction intance with an identity
+          // Initialize the reduction instance 
+          op->init(ptr, num_elmts);
+          // Set everything up
           PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
           RegionMetaDataUntyped r = { index };
           RegionInstanceImpl *impl = Runtime::get_runtime()->get_free_instance(r,m,num_elmts, op->sizeof_lhs, ptr, op);
@@ -2749,7 +2849,6 @@ namespace RegionRuntime {
           PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
           return inst;
         }
-#endif
     }
 
     void RegionMetaDataImpl::destroy_allocator(RegionAllocatorUntyped a)
