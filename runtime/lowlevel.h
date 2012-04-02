@@ -289,7 +289,7 @@ namespace RegionRuntime {
       // TODO: don't assume identity and fold are available - use scary
       //  template-fu to figure it out
       ReductionOp(void)
-	: ReductionOpUntyped(sizeof(REDOP::LHS), sizeof(REDOP::RHS),
+	: ReductionOpUntyped(sizeof(typename REDOP::LHS), sizeof(typename REDOP::RHS),
 			     true, true) {}
 
       virtual void apply(void *lhs_ptr, const void *rhs_ptr, size_t count,
@@ -299,10 +299,10 @@ namespace RegionRuntime {
 	const typename REDOP::RHS *rhs = (const typename REDOP::RHS *)rhs_ptr;
 	if(exclusive) {
 	  for(size_t i = 0; i < count; i++)
-	    REDOP::apply<true>(lhs[i], rhs[i]);
+	    REDOP::template apply<true>(lhs[i], rhs[i]);
 	} else {
 	  for(size_t i = 0; i < count; i++)
-	    REDOP::apply<false>(lhs[i], rhs[i]);
+	    REDOP::template apply<false>(lhs[i], rhs[i]);
 	}
       }
 
@@ -313,10 +313,10 @@ namespace RegionRuntime {
 	const typename REDOP::RHS *rhs2 = (const typename REDOP::RHS *)rhs2_ptr;
 	if(exclusive) {
 	  for(size_t i = 0; i < count; i++)
-	    REDOP::fold<true>(rhs1[i], rhs2[i]);
+	    REDOP::template fold<true>(rhs1[i], rhs2[i]);
 	} else {
 	  for(size_t i = 0; i < count; i++)
-	    REDOP::fold<false>(rhs1[i], rhs2[i]);
+	    REDOP::template fold<false>(rhs1[i], rhs2[i]);
 	}
       }
 
