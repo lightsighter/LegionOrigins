@@ -79,4 +79,4 @@ if __name__ == '__main__':
     for nbx in divs:
         for nby in divs:
             for nbz in divs:
-                regress(nbx = nbx, nby = nby, nbz = nbz, steps = 1)
+                regress(nbx = nbx, nby = nby, nbz = nbz, steps = 4)

@@ -1041,9 +1041,9 @@ void init_and_rebuild(const void *args, size_t arglen,
           int ck = cz + (b.z*mbsz + (b.z < ovbz ? b.z : ovbz)) - 1;
 
           // Assume particles move no more than one block per timestep
-          assert(-1 <= di - ci && di - ci <= 1);
-          assert(-1 <= dj - cj && dj - cj <= 1);
-          assert(-1 <= dk - ck && dk - ck <= 1);
+          if(di - ci < -1) di = ci - 1; else if(di - ci > 1) di = ci + 1;
+          if(dj - cj < -1) dj = cj - 1; else if(dj - cj > 1) dj = cj + 1;
+          if(dk - ck < -1) dk = ck - 1; else if(dk - ck > 1) dk = ck + 1;
           int dx = cx + (di - ci);
           int dy = cy + (dj - cj);
           int dz = cz + (dk - ck);

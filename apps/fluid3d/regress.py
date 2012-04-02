@@ -168,5 +168,9 @@ if __name__ == '__main__':
                 regress(nbx = nbx, nby = nby, nbz = nbz, steps = 1)
 
     print
-    print "Note: This isn't expected to pass, but it shouldn't crash."
-    regress(nbx = 1, nby = 1, nbz = 1, steps = 4)
+    print "Note: The following are not expected to pass, but shouldn't crash."
+    divs = (1, 2)
+    for nbx in divs:
+        for nby in divs:
+            for nbz in divs:
+                regress(nbx = nbx, nby = nby, nbz = nbz, steps = 4)
