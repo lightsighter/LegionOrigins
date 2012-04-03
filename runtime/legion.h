@@ -609,6 +609,8 @@ namespace RegionRuntime {
     public:
       inline PointerIterator* iterator(void) const;
     private:
+      void verify_access(unsigned ptr); // For checking access to pointers
+    private:
       bool valid_allocator;
       bool valid_instance;
       LowLevel::RegionAllocatorUntyped allocator;
@@ -1235,6 +1237,7 @@ namespace RegionRuntime {
       virtual bool is_ready(void) const = 0;
       virtual UniqueID get_unique_id(void) const = 0;
       virtual Event get_termination_event(void) const = 0;
+      virtual Event get_individual_term_event(void) const = 0; // Only different from previous method for index spaces
       virtual GenerationID get_generation(void) const = 0;
       virtual RegionUsage get_usage(unsigned idx) const = 0;
       virtual const RegionRequirement& get_requirement(unsigned idx) const = 0;
@@ -1364,6 +1367,7 @@ namespace RegionRuntime {
       virtual UniqueID get_unique_id(void) const { return unique_id; }
       virtual GenerationID get_generation(void) const { return current_gen; }
       virtual Event get_termination_event(void) const;
+      virtual Event get_individual_term_event(void) const;
       virtual RegionUsage get_usage(unsigned idx) const;
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
       virtual const TaskContext*const get_enclosing_task(void) const { return parent_ctx; }
@@ -1428,6 +1432,8 @@ namespace RegionRuntime {
       std::vector<unsigned> mapped_physical_instances; // count of the number of mapped physical instances
       // A list of remote physical copy instances that need to be freed
       std::vector<InstanceInfo*> remote_copy_instances;
+      // A termination event for just this point in the index space
+      UserEvent individual_term_event;
       // Barrier event for when all the tasks are ready to run for must parallelism
       Barrier start_index_event; 
       // Result for the index space
@@ -1578,6 +1584,7 @@ namespace RegionRuntime {
       virtual UniqueID get_unique_id(void) const { return unique_id; }
       virtual GenerationID get_generation(void) const { return current_gen; }
       virtual Event get_termination_event(void) const; 
+      virtual Event get_individual_term_event(void) const;
       virtual RegionUsage get_usage(unsigned idx) const;
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
       virtual const TaskContext*const get_enclosing_task(void) const { return parent_ctx; }
@@ -1634,6 +1641,7 @@ namespace RegionRuntime {
       virtual UniqueID get_unique_id(void) const;
       virtual GenerationID get_generation(void) const { return current_gen; }
       virtual Event get_termination_event(void) const;
+      virtual Event get_individual_term_event(void) const;
       virtual RegionUsage get_usage(unsigned idx) const;
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
       virtual const TaskContext*const get_enclosing_task(void) const { return parent_ctx; }
@@ -1912,10 +1920,11 @@ namespace RegionRuntime {
         RegionUsage usage;
         unsigned references;
         Event term_event;
+        Event general_term_event; // The general termination event
       public:
         UserTask() { }
-        UserTask(const RegionUsage& u, unsigned ref, Event t)
-          : usage(u), references(ref), term_event(t) { }
+        UserTask(const RegionUsage& u, unsigned ref, Event t, Event g)
+          : usage(u), references(ref), term_event(t), general_term_event(g) { }
       };
       struct CopyUser {
       public:
@@ -3220,6 +3229,10 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(valid);
+      for (unsigned i = 0; i < count; i++)
+      {
+        verify_access(ptr.value+i);
+      }
 #endif
       static_cast<LowLevel::RegionAllocator<T> >(allocator).free(ptr,count); 
     }
@@ -3231,6 +3244,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(valid);
+      verify_access(ptr.value);
 #endif
       return static_cast<LowLevel::RegionInstanceAccessor<T,AT_CONV(AT)> >(instance).read(ptr); 
     }
@@ -3242,6 +3256,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(valid);
+      verify_access(ptr.value);
 #endif
       static_cast<LowLevel::RegionInstanceAccessor<T,AT_CONV(AT)> >(instance).write(ptr,newval); 
     }
@@ -3253,6 +3268,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(valid);
+      verify_access(ptr.value);
 #endif
       static_cast<LowLevel::RegionInstanceAccessor<T,AT_CONV(AT)> >(instance).reduce<REDOP>(ptr,newval); 
     }
@@ -3311,6 +3327,20 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(valid); // if this wasn't inline mapped, it should already be valid
 #endif
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT>
+    inline void PhysicalRegion<AT>::verify_access(unsigned ptr)
+    //--------------------------------------------------------------------------
+    {
+      const LowLevel::ElementMask &mask = handle.get_valid_mask();
+      if (!mask.is_set(ptr))
+      {
+        fprintf(stderr,"ERROR: Accessing invalid pointer %d in logical region %x\n",
+                ptr, handle.id);
+        assert(false);
       }
     }
 

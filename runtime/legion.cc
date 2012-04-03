@@ -1355,6 +1355,16 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    Event RegionMappingImpl::get_individual_term_event(void) const
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      return unmapped_event;
+    }
+
+    //--------------------------------------------------------------------------
     RegionUsage RegionMappingImpl::get_usage(unsigned idx) const
     //--------------------------------------------------------------------------
     {
@@ -1836,6 +1846,14 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     Event DeletionOp::get_termination_event(void) const
+    //--------------------------------------------------------------------------
+    {
+      assert(false);
+      return Event::NO_EVENT;
+    }
+
+    //--------------------------------------------------------------------------
+    Event DeletionOp::get_individual_term_event(void) const
     //--------------------------------------------------------------------------
     {
       assert(false);
@@ -5695,13 +5713,18 @@ namespace RegionRuntime {
 #endif
       }
       // Check to see if this is an index space and it hasn't been enumerated
-      if (is_index_space && !enumerated)
+      if (is_index_space)
       {
-        // enumerate this task
-        enumerate_index_space();
+        if (!enumerated)
+        {
+          // enumerate this task
+          enumerate_index_space();
+        }
 #ifdef DEBUG_HIGH_LEVEL
         assert(enumerated);
 #endif
+        // Also create the individual termination event for this point in the index space
+        individual_term_event = UserEvent::create_user_event();
       }
       // Need the current context lock in exclusive mode to do this
       AutoLock ctx_lock(current_lock);
@@ -5841,7 +5864,7 @@ namespace RegionRuntime {
             log_inst(LEVEL_DEBUG,"Mapping region %x (idx %d) of task %s (ID %d) (unique id %d) to physical "
                 "instance %x of logical region %x in memory %x",regions[idx].handle.region.id,idx,
                 variants->name, task_id,
-                unique_id,info->iid,info->handle.id,info->location.id);
+                unique_id,info->inst.id,info->handle.id,info->location.id);
 #endif
             physical_instances.push_back(info);
             physical_owned.push_back(instance_owned);
@@ -5928,7 +5951,7 @@ namespace RegionRuntime {
       {
         // Debug printing for legion spy
         log_event_merge(wait_on_events,start_cond);
-        Event term = get_termination_event();
+        Event term = termination_event;
         log_spy(LEVEL_INFO,"Task ID %d %s",this->unique_id,this->variants->name);
         if (is_index_space)
         {
@@ -5938,8 +5961,9 @@ namespace RegionRuntime {
           {
             index = sprintf(&point_buffer[index],"%d ",index_point[idx]);
           }
-          log_spy(LEVEL_INFO,"Index Task Launch %d %d %x %d %x %d %ld %s",
-              task_id,unique_id,start_cond.id,start_cond.gen,term.id,term.gen,index_point.size(),point_buffer);
+          log_spy(LEVEL_INFO,"Index Task Launch %d %d %x %d %x %d %x %d %ld %s",
+              task_id,unique_id,start_cond.id,start_cond.gen,term.id,term.gen,
+              individual_term_event.id,individual_term_event.gen,index_point.size(),point_buffer);
         }
         else
         {
@@ -7467,6 +7491,9 @@ namespace RegionRuntime {
         }
         // Wait to tell the slice owner until we're done with everything otherwise
         // we might deactivate ourselves before we've finished all our operations
+
+        // We can trigger our individual termination event now
+        individual_term_event.trigger();
       }
 
       // Release any references that we have on our instances
@@ -8888,6 +8915,12 @@ namespace RegionRuntime {
       // InstanceInfo which will never collect the instance
       local_instances[idx]->remove_user(this->unique_id);
       local_mapped[idx] = false; 
+#ifdef TRACE_CAPTURE
+      // If we're doing a trace capture, we have to forcibly remove this instance
+      // from the removed users to avoid deadlock
+      local_instances[idx]->epoch_users.erase(this->unique_id);
+      local_instances[idx]->removed_users.erase(this->unique_id);
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -8980,6 +9013,18 @@ namespace RegionRuntime {
     Event TaskContext::get_termination_event(void) const
     //--------------------------------------------------------------------------------------------
     {
+      return termination_event;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    Event TaskContext::get_individual_term_event(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      if (is_index_space)
+      {
+        return individual_term_event; 
+      }
+      // Otherwise just return the normal termination event
       return termination_event;
     }
 
@@ -12984,16 +13029,46 @@ namespace RegionRuntime {
       UniqueID uid = ctx->get_unique_id();
       // This is now a user of the current epoch
       epoch_users.insert(uid);
+      // As long as we only have one user with a given user ID, we will use the individual
+      // termination event for that user.  As soon as we have multiple (regardless of whether
+      // they are in the user or added user category) we switch over to using the generic
+      // termination event (i.e. event for the entire index space) as the termination event.
+      // This is precise for single users of a physical instance and when all users in an index
+      // space use the same physical instance.  Otherwise we loose some precision but avoid
+      // creating long event chains in the event graph which seems more efficient.
       if (remote)
       {
         if (added_users.find(uid) == added_users.end())
         {
-          // If this is remote, add it to the added users to track the new ones
-          UserTask ut(ctx->get_usage(idx), 1, ctx->get_termination_event());
-          added_users.insert(std::pair<UniqueID,UserTask>(uid,ut));
+          // We also have to check to see if we have another user with the same ID in the 
+          // normal users, if we do we jump to 
+          if (users.find(uid) == users.end())
+          {
+            // If this is remote, add it to the added users to track the new ones
+            // Use the individual term event since this is the first one
+            UserTask ut(ctx->get_usage(idx), 1, ctx->get_individual_term_event(), ctx->get_termination_event());
+            //UserTask ut(ctx->get_usage(idx), 1, ctx->get_termination_event(), ctx->get_termination_event());
+            added_users.insert(std::pair<UniqueID,UserTask>(uid,ut));
+          }
+          else
+          {
+            Event general_term = users[uid].general_term_event;
+            // There is already a user, update both with the general termination event
+            UserTask ut(ctx->get_usage(idx), 1, general_term, general_term);
+            added_users.insert(std::pair<UniqueID,UserTask>(uid,ut));
+            // Also update the user to use the general termination event
+            users[uid].term_event = general_term;
+          }
         }
         else
         {
+          // Check to see if there is only a single users so far in which case
+          // we have to upgrade to the general termination event, otherwise we've
+          // done it previously
+          if (added_users[uid].references == 1 && (users.find(uid) == users.end()))
+          {
+            added_users[uid].term_event = added_users[uid].general_term_event;
+          }
           added_users[uid].references++;
         }
       }
@@ -13001,20 +13076,18 @@ namespace RegionRuntime {
       {
         if (users.find(uid) == users.end())
         {
-          UserTask ut(ctx->get_usage(idx), 1, ctx->get_termination_event()); 
+          UserTask ut(ctx->get_usage(idx), 1, ctx->get_individual_term_event(), ctx->get_termination_event()); 
+          //UserTask ut(ctx->get_usage(idx), 1, ctx->get_termination_event(), ctx->get_termination_event());
           users.insert(std::pair<UniqueID,UserTask>(uid,ut));
         }
         else
         {
+          // We're about to have multiple users, upgrade to the general termination event
+          if (users[uid].references == 1)
+          {
+            users[uid].term_event = users[uid].general_term_event;
+          }
           users[uid].references++; 
-        }
-        // A weird condition of index spaces, check to see if there are any
-        // users of the instance with the same unique id in the added users,
-        // if so merge them over here
-        if (added_users.find(uid) != added_users.end())
-        {
-          users[uid].references += added_users[uid].references;
-          added_users.erase(uid);
         }
       }
       Event ret_event = Event::merge_events(wait_on_events);
@@ -14116,10 +14189,23 @@ namespace RegionRuntime {
         {
           if (added_users.find(added_user.first) == added_users.end())
           {
+            // Check to see if there are any users with the same id, if there
+            // are then we have to update to the general termination event
+            if (users.find(added_user.first) != users.end())
+            {
+              users[added_user.first].term_event = added_user.second.general_term_event;
+              added_user.second.term_event = added_user.second.general_term_event;
+            }
             added_users.insert(added_user);
           }
           else
           {
+            // Check to see if there was only one users previously
+            if ((added_users[added_user.first].references == 1) &&
+                (users.find(added_user.first) == users.end()))
+            {
+              added_users[added_user.first].term_event = added_user.second.general_term_event;
+            }
             added_users[added_user.first].references += added_user.second.references;
           }
         }
@@ -14127,10 +14213,17 @@ namespace RegionRuntime {
         {
           if (users.find(added_user.first) == users.end())
           {
+            // No need to update termination event here
             users.insert(added_user);
           }
           else
           {
+            // Check to see if there was only one user previously, in which
+            // case we have to move to using the general termination event
+            if (users[added_user.first].references == 1)
+            {
+              users[added_user.first].term_event = added_user.second.general_term_event;
+            }
             users[added_user.first].references += added_user.second.references;
           }
         }
@@ -14235,7 +14328,7 @@ namespace RegionRuntime {
       size_t result = 0;
       result += RegionUsage::compute_usage_size();
       result += sizeof(unsigned);
-      result += sizeof(Event);
+      result += (2*sizeof(Event));
       return result;
     }
     
@@ -14246,6 +14339,7 @@ namespace RegionRuntime {
       task.usage.pack_usage(rez);
       rez.serialize<unsigned>(task.references);
       rez.serialize<Event>(task.term_event);
+      rez.serialize<Event>(task.general_term_event);
     }
 
     //-------------------------------------------------------------------------
@@ -14255,6 +14349,7 @@ namespace RegionRuntime {
       task.usage.unpack_usage(derez);
       derez.deserialize<unsigned>(task.references);
       derez.deserialize<Event>(task.term_event);
+      derez.deserialize<Event>(task.general_term_event);
     }
 
     //-------------------------------------------------------------------------
