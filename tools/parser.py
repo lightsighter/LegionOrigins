@@ -35,7 +35,7 @@ def parse_log_file(file_name):
 
     task_launch_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Task Launch (?P<tid>[0-9]+) (?P<uid>[0-9]+) (?P<start_id>[0-9a-f]+) (?P<start_gen>[0-9]+) (?P<term_id>[0-9a-f]+) (?P<term_gen>[0-9]+)")
 
-    index_launch_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Index Task Launch (?P<tid>[0-9]+) (?P<uid>[0-9]+) (?P<start_id>[0-9a-f]+) (?P<start_gen>[0-9]+) (?P<term_id>[0-9a-f]+) (?P<term_gen>[0-9]+) (?P<point_size>[0-9]+) (?P<points>[0-9 ]+)")
+    index_launch_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Index Task Launch (?P<tid>[0-9]+) (?P<uid>[0-9]+) (?P<start_id>[0-9a-f]+) (?P<start_gen>[0-9]+) (?P<term_id>[0-9a-f]+) (?P<term_gen>[0-9]+) (?P<indiv_term_id>[0-9a-f]+) (?P<indiv_term_gen>[0-9]+) (?P<point_size>[0-9]+) (?P<points>[0-9 ]+)")
 
     index_space_size_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Index Space (?P<unique>[0-9]+) Context (?P<context>[0-9]+) Size (?P<size>[0-9]+)")
 
@@ -167,9 +167,12 @@ def parse_log_file(file_name):
             #dst = result.event_graph.get_event_node(int(m.group('term_id')),int(m.group('term_gen')))
             src = result.event_graph.get_event_node((m.group('start_id')),int(m.group('start_gen')))
             dst = result.event_graph.get_event_node((m.group('term_id')),int(m.group('term_gen')))
+            ind = result.event_graph.get_event_node((m.group('indiv_term_id')),int(m.group('indiv_term_gen')))
             result.event_graph.add_index_dst_edge(space,src,point_node)
             #result.event_graph.add_edge(src,space)
-            result.event_graph.add_index_src_edge(space,point_node,dst)
+            result.event_graph.add_index_src_edge(space,point_node,ind)
+            # Add an edge from each individual termination event to the general termination event
+            result.event_graph.add_edge(ind,dst)
             #result.event_graph.add_edge(space,dst)
             continue
         m = map_launch_pat.match(line)
