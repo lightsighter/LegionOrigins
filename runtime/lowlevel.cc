@@ -3910,6 +3910,12 @@ namespace RegionRuntime {
       assert(0);
     }
 
+    bool ElementMask::is_set(int ptr) const
+    {
+      // TODO: implement this
+      return true;
+    }
+
     ElementMask::Enumerator *ElementMask::enumerate_enabled(int start /*= 0*/) const
     {
       return new ElementMask::Enumerator(*this, start, 1);
