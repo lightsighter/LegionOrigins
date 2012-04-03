@@ -716,11 +716,14 @@ void main_task(const void *args, size_t arglen,
   int origNumParticles;
   {
     std::vector<RegionRequirement> init_regions;
-    for (unsigned id = 0; id < numBlocks; id++) {
-      init_regions.push_back(RegionRequirement(blocks[id].base[1],
-                                               READ_WRITE, ALLOCABLE, EXCLUSIVE,
-                                               tlr->real_cells[1]));
-    }
+    //for (unsigned id = 0; id < numBlocks; id++) {
+    //  init_regions.push_back(RegionRequirement(blocks[id].base[1],
+    //                                           READ_WRITE, ALLOCABLE, EXCLUSIVE,
+    //                                           tlr->real_cells[1]));
+    //}
+    init_regions.push_back(RegionRequirement(tlr->real_cells[1],
+                                             READ_WRITE, ALLOCABLE, EXCLUSIVE,
+                                             tlr->real_cells[1]));
 
     std::string fileName = "init.fluid";
 
@@ -912,11 +915,14 @@ void main_task(const void *args, size_t arglen,
     int target_buffer = cur_buffer;
 #endif
     std::vector<RegionRequirement> init_regions;
-    for (unsigned id = 0; id < numBlocks; id++) {
-      init_regions.push_back(RegionRequirement(blocks[id].base[target_buffer],
-                                               READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                               tlr->real_cells[target_buffer]));
-    }
+    //for (unsigned id = 0; id < numBlocks; id++) {
+    //  init_regions.push_back(RegionRequirement(blocks[id].base[target_buffer],
+    //                                           READ_ONLY, NO_MEMORY, EXCLUSIVE,
+    //                                           tlr->real_cells[target_buffer]));
+    //}
+    init_regions.push_back(RegionRequirement(tlr->real_cells[target_buffer],
+                                             READ_ONLY, NO_MEMORY, EXCLUSIVE,
+                                             tlr->real_cells[target_buffer]));
 
     std::string fileName = "output.fluid";
 
@@ -1813,9 +1819,10 @@ public:
     case TASKID_GATHER_FORCES:
       {
         // Distribute these over all CPUs
-        log_mapper.info("mapping task %d with tag %d to processor %x",task->task_id,
-                        task->tag, loc_procs[task->tag % loc_procs.size()].first.id);
-        return loc_procs[task->tag % loc_procs.size()].first;
+        //log_mapper.info("mapping task %d with tag %d to processor %x",task->task_id,
+        //                task->tag, loc_procs[task->tag % loc_procs.size()].first.id);
+        //return loc_procs[task->tag % loc_procs.size()].first;
+        return loc_procs[0].first;
       }
       break;
     default:
@@ -1966,7 +1973,7 @@ void create_mappers(Machine *machine, HighLevelRuntime *runtime, Processor local
   // Elliott: mapper dropping half my particles????
   // Yes, it looks like this really does have an impact (2012-03-19 4:02pm)
   // It's still not perfect, but I lose half my particles with FluidMapper
-  //runtime->replace_default_mapper(new FluidMapper(machine,runtime,local));
+  runtime->replace_default_mapper(new FluidMapper(machine,runtime,local));
 }
 
 int main(int argc, char **argv)
