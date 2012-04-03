@@ -481,7 +481,7 @@ namespace RegionRuntime {
 
       StaticAccess<RegionInstanceUntyped::Impl> i_data(i_impl);
 
-      assert(i_data->is_reduction);
+      assert(!i_data->is_reduction);
 
       // only things in FB and ZC memories can be converted to GPU accessors
       if(m_impl->kind == Memory::Impl::MKIND_GPUFB) {

@@ -889,6 +889,16 @@ namespace RegionRuntime {
 	delete valid_mask;
       }
 
+      bool is_parent_of(RegionMetaDataUntyped other)
+      {
+	while(other != RegionMetaDataUntyped::NO_REGION) {
+	  if(other == me) return true;
+	  RegionMetaDataUntyped::Impl *other_impl = other.impl();
+	  other = StaticAccess<RegionMetaDataUntyped::Impl>(other_impl)->parent;
+	}
+	return false;
+      }
+
       size_t instance_size(const ReductionOpUntyped *redop = 0)
       {
 	StaticAccess<RegionMetaDataUntyped::Impl> data(this);
@@ -3992,6 +4002,40 @@ namespace RegionRuntime {
 
     template <class T>
     /*static*/ int ElementMask::forall_ranges(T &executor,
+					      const ElementMask &mask,
+					      int start /*= 0*/,
+					      int count /*= -1*/,
+					      bool do_enabled /*= true*/)
+    {
+      if(count == 0) return 0;
+
+      ElementMask::Enumerator enum1(mask, start, do_enabled ? 1 : 0);
+
+      int total = 0;
+
+      int pos, len;
+      while(enum1.get_next(pos, len)) {
+	if(pos < start) {
+	  len -= (start - pos);
+	  pos = start;
+	}
+
+	if((count > 0) && ((pos + len) > (start + count))) {
+	  len = start + count - pos;
+	}
+
+	if(len > 0) {
+	  printf("S:%d(%d)\n", pos, len);
+	  executor.do_span(pos, len);
+	  total += len;
+	}
+      }
+
+      return total;
+    }
+
+    template <class T>
+    /*static*/ int ElementMask::forall_ranges(T &executor,
 					      const ElementMask &mask1, 
 					      const ElementMask &mask2,
 					      int start /*= 0*/,
@@ -4176,25 +4220,27 @@ namespace RegionRuntime {
     class DeferredCopy : public Event::Impl::EventWaiter {
     public:
       DeferredCopy(RegionInstanceUntyped _src, RegionInstanceUntyped _target,
+		   RegionMetaDataUntyped _region,
 		   size_t _elmt_size, size_t _bytes_to_copy, Event _after_copy)
-	: src(_src), target(_target), 
+	: src(_src), target(_target), region(_region),
 	  elmt_size(_elmt_size), bytes_to_copy(_bytes_to_copy), 
 	  after_copy(_after_copy) {}
 
       virtual void event_triggered(void)
       {
-	RegionInstanceUntyped::Impl::copy(src, target, 
+	RegionInstanceUntyped::Impl::copy(src, target, region, 
 					  elmt_size, bytes_to_copy, after_copy);
       }
 
       virtual void print_info(void)
       {
-	printf("deferred copy: src=%x tgt=%x after=%x/%d\n",
-	       src.id, target.id, after_copy.id, after_copy.gen);
+	printf("deferred copy: src=%x tgt=%x region=%x after=%x/%d\n",
+	       src.id, target.id, region.id, after_copy.id, after_copy.gen);
       }
 
     protected:
       RegionInstanceUntyped src, target;
+      RegionMetaDataUntyped region;
       size_t elmt_size, bytes_to_copy;
       Event after_copy;
     };
@@ -4314,10 +4360,223 @@ namespace RegionRuntime {
 
     /*static*/ Event RegionInstanceUntyped::Impl::copy(RegionInstanceUntyped src, 
 						       RegionInstanceUntyped target,
+						       RegionMetaDataUntyped region,
 						       size_t elmt_size,
 						       size_t bytes_to_copy,
 						       Event after_copy /*= Event::NO_EVENT*/)
     {
+      DetailedTimer::ScopedPush sp(TIME_COPY);
+
+      RegionInstanceUntyped::Impl *src_impl = src.impl();
+      RegionInstanceUntyped::Impl *tgt_impl = target.impl();
+
+      StaticAccess<RegionInstanceUntyped::Impl> src_data(src_impl);
+      StaticAccess<RegionInstanceUntyped::Impl> tgt_data(tgt_impl);
+
+      // code path for copies to/from reduction-only instances not done yet
+      // are we doing a reduction?
+      const ReductionOpUntyped *redop = (src_data->is_reduction ?
+					   reduce_op_table[src_data->redopid] :
+					   0);
+      bool red_fold = tgt_data->is_reduction;
+      // if destination is a reduction, source must be also and must match
+      assert(!tgt_data->is_reduction || (src_data->is_reduction &&
+					 (src_data->redopid == tgt_data->redopid)));
+
+      Memory::Impl *src_mem = src_impl->memory.impl();
+      Memory::Impl *tgt_mem = tgt_impl->memory.impl();
+
+      // get valid masks from region to limit copy to correct data
+      RegionMetaDataUntyped::Impl *reg_impl = region.impl();
+      //RegionMetaDataUntyped::Impl *src_reg = src_data->region.impl();
+      //RegionMetaDataUntyped::Impl *tgt_reg = tgt_data->region.impl();
+
+      log_copy.info("copy: %x->%x (%x/%p)",
+		    src.id, target.id, region.id, reg_impl->valid_mask);
+
+      // if we're missing the valid mask, we'll need to request it and
+      //  wait again
+      if(!reg_impl->valid_mask_complete) {
+	Event wait_on = reg_impl->request_valid_mask();
+
+	fflush(stdout);
+	log_copy.info("missing valid mask (%x/%p) - waiting for %x/%d",
+		      region.id, reg_impl->valid_mask,
+		      wait_on.id, wait_on.gen);
+	if(!after_copy.exists())
+	  after_copy = Event::Impl::create_event();
+
+	wait_on.impl()->add_waiter(wait_on,
+				   new DeferredCopy(src,
+						    target,
+						    region,
+						    elmt_size,
+						    bytes_to_copy,
+						    after_copy));
+	return after_copy;
+      }
+
+      log_copy.debug("performing copy %x (%d) -> %x (%d) - %zd bytes (%zd)", src.id, src_mem->kind, target.id, tgt_mem->kind, bytes_to_copy, elmt_size);
+
+      switch(src_mem->kind) {
+      case Memory::Impl::MKIND_SYSMEM:
+      case Memory::Impl::MKIND_ZEROCOPY:
+	{
+	  const void *src_ptr = src_mem->get_direct_ptr(src_data->offset, bytes_to_copy);
+	  assert(src_ptr != 0);
+
+	  switch(tgt_mem->kind) {
+	  case Memory::Impl::MKIND_SYSMEM:
+	  case Memory::Impl::MKIND_ZEROCOPY:
+	    {
+	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->offset, bytes_to_copy);
+	      assert(tgt_ptr != 0);
+
+	      assert(!redop);
+	      RangeExecutors::Memcpy rexec(tgt_ptr,
+					   src_ptr,
+					   elmt_size);
+	      ElementMask::forall_ranges(rexec, *reg_impl->valid_mask);
+	    }
+	    break;
+
+	  case Memory::Impl::MKIND_GASNET:
+	    {
+	      assert(!redop);
+	      RangeExecutors::GasnetPut rexec(tgt_mem, tgt_data->offset,
+					      src_ptr, elmt_size);
+	      ElementMask::forall_ranges(rexec, *reg_impl->valid_mask);
+	    }
+	    break;
+
+	  case Memory::Impl::MKIND_GPUFB:
+	    {
+	      // all GPU operations are deferred, so we need an event if
+	      //  we don't already have one created
+	      assert(!redop);
+	      if(!after_copy.exists())
+		after_copy = Event::Impl::create_event();
+	      ((GPUFBMemory *)tgt_mem)->gpu->copy_to_fb(tgt_data->offset,
+							src_ptr,
+							bytes_to_copy,
+							Event::NO_EVENT,
+							after_copy);
+	      return after_copy;
+	    }
+	    break;
+
+	  default:
+	    assert(0);
+	  }
+	}
+	break;
+
+      case Memory::Impl::MKIND_GASNET:
+	{
+	  switch(tgt_mem->kind) {
+	  case Memory::Impl::MKIND_SYSMEM:
+	  case Memory::Impl::MKIND_ZEROCOPY:
+	    {
+	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->offset, bytes_to_copy);
+	      assert(tgt_ptr != 0);
+
+	      assert(!redop);
+	      RangeExecutors::GasnetGet rexec(tgt_ptr, src_mem, 
+					      src_data->offset, elmt_size);
+	      ElementMask::forall_ranges(rexec, *reg_impl->valid_mask);
+	    }
+	    break;
+
+	  case Memory::Impl::MKIND_GASNET:
+	    {
+	      assert(!redop);
+	      RangeExecutors::GasnetGetAndPut rexec(tgt_mem, tgt_data->offset,
+						    src_mem, src_data->offset,
+						    elmt_size);
+	      ElementMask::forall_ranges(rexec, *reg_impl->valid_mask);
+	    }
+	    break;
+
+	  case Memory::Impl::MKIND_GPUFB:
+	    {
+	      assert(!redop);
+	      // all GPU operations are deferred, so we need an event if
+	      //  we don't already have one created
+	      if(!after_copy.exists())
+		after_copy = Event::Impl::create_event();
+	      ((GPUFBMemory *)tgt_mem)->gpu->copy_to_fb_generic(tgt_data->offset,
+								src_mem,
+								src_data->offset,
+								bytes_to_copy,
+								Event::NO_EVENT,
+								after_copy);
+	      return after_copy;
+	    }
+	    break;
+
+	  default:
+	    assert(0);
+	  }
+	}
+	break;
+
+      case Memory::Impl::MKIND_GPUFB:
+	{
+	  switch(tgt_mem->kind) {
+	  case Memory::Impl::MKIND_SYSMEM:
+	  case Memory::Impl::MKIND_ZEROCOPY:
+	    {
+	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->offset, bytes_to_copy);
+	      assert(tgt_ptr != 0);
+
+	      assert(!redop);
+	      // all GPU operations are deferred, so we need an event if
+	      //  we don't already have one created
+	      if(!after_copy.exists())
+		after_copy = Event::Impl::create_event();
+	      ((GPUFBMemory *)src_mem)->gpu->copy_from_fb(tgt_ptr, src_data->offset,
+							  bytes_to_copy,
+							  Event::NO_EVENT,
+							  after_copy);
+	      return after_copy;
+	    }
+	    break;
+
+	  case Memory::Impl::MKIND_GASNET:
+	    {
+	      assert(!redop);
+	      // all GPU operations are deferred, so we need an event if
+	      //  we don't already have one created
+	      if(!after_copy.exists())
+		after_copy = Event::Impl::create_event();
+	      ((GPUFBMemory *)src_mem)->gpu->copy_from_fb_generic(tgt_mem,
+								  tgt_data->offset,
+								  src_data->offset,
+								  bytes_to_copy,
+								  Event::NO_EVENT,
+								  after_copy);
+	      return after_copy;
+	    }
+	    break;
+
+	  default:
+	    assert(0);
+	  }
+	}
+	break;
+
+      default:
+	assert(0);
+      }
+
+      log_copy.debug("finished copy %x (%d) -> %x (%d) - %zd bytes (%zd), event=%x/%d", src.id, src_mem->kind, target.id, tgt_mem->kind, bytes_to_copy, elmt_size, after_copy.id, after_copy.gen);
+
+      if(after_copy.exists())
+	after_copy.impl()->trigger(after_copy.gen, gasnet_mynode());
+      return after_copy;
+
+
+#if OLD_COPY_CODE
       DetailedTimer::ScopedPush sp(TIME_COPY);
 
       RegionInstanceUntyped::Impl *src_impl = src.impl();
@@ -4761,10 +5020,12 @@ namespace RegionRuntime {
       if(after_copy.exists())
 	after_copy.impl()->trigger(after_copy.gen, gasnet_mynode());
       return after_copy;
+#endif
     }
 
     struct RemoteCopyArgs {
       RegionInstanceUntyped source, target;
+      RegionMetaDataUntyped region;
       size_t elmt_size, bytes_to_copy;
       Event before_copy, after_copy;
     };
@@ -4779,6 +5040,7 @@ namespace RegionRuntime {
 
       if(args.before_copy.has_triggered()) {
 	RegionInstanceUntyped::Impl::copy(args.source, args.target,
+					  args.region,
 					  args.elmt_size,
 					  args.bytes_to_copy,
 					  args.after_copy);
@@ -4786,6 +5048,7 @@ namespace RegionRuntime {
 	args.before_copy.impl()->add_waiter(args.before_copy,
 					    new DeferredCopy(args.source,
 							     args.target,
+							     args.region,
 							     args.elmt_size,
 							     args.bytes_to_copy,
 							     args.after_copy));
@@ -4802,6 +5065,27 @@ namespace RegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       RegionInstanceUntyped::Impl *src_impl = impl();
       RegionInstanceUntyped::Impl *dst_impl = target.impl();
+
+      // figure out which of src or target is the smaller - punt if one
+      //  is not a direct ancestor of the other
+      RegionMetaDataUntyped src_region = StaticAccess<RegionInstanceUntyped::Impl>(src_impl)->region;
+      RegionMetaDataUntyped dst_region = StaticAccess<RegionInstanceUntyped::Impl>(dst_impl)->region;
+
+      if(src_region == dst_region) {
+	log_copy.info("region match: %x\n", src_region.id);
+	return copy_to_untyped(target, src_region, wait_on);
+      } else
+	if(src_region.impl()->is_parent_of(dst_region)) {
+	  log_copy.info("src is parent of dst: %x >= %x\n", src_region.id, dst_region.id);
+	  return copy_to_untyped(target, dst_region, wait_on);
+	} else
+	  if(dst_region.impl()->is_parent_of(src_region)) {
+	    log_copy.info("dst is parent of src: %x >= %x\n", dst_region.id, src_region.id);
+	    return copy_to_untyped(target, src_region, wait_on);
+	  } else {
+	    assert(0);
+	  }
+#if 0
       Memory::Impl *src_mem = src_impl->memory.impl();
       Memory::Impl *dst_mem = dst_impl->memory.impl();
 
@@ -4903,6 +5187,7 @@ namespace RegionRuntime {
       // we can do the copy immediately here
       return RegionInstanceUntyped::Impl::copy(*this, target, 
 					       elmt_size, bytes_to_copy);
+#endif
     }
 
     Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target,
@@ -4911,6 +5196,56 @@ namespace RegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       assert(0);
+    }
+
+    Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target,
+						 RegionMetaDataUntyped region,
+						 Event wait_on /*= Event::NO_EVENT*/)
+    {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+
+      log_copy.info("copy_to_untyped(%x, %x, %x/%d)",
+		    target.id, region.id, wait_on.id, wait_on.gen);
+
+      RegionInstanceUntyped::Impl *src_impl = impl();
+      RegionInstanceUntyped::Impl *dst_impl = target.impl();
+
+      // the region we're being asked to copy must be a subregion (or same
+      //  region) of both the src and dst instance's regions
+      RegionMetaDataUntyped src_region = StaticAccess<RegionInstanceUntyped::Impl>(src_impl)->region;
+      RegionMetaDataUntyped dst_region = StaticAccess<RegionInstanceUntyped::Impl>(dst_impl)->region;
+
+      assert(src_region.impl()->is_parent_of(region));
+      assert(dst_region.impl()->is_parent_of(region));
+
+      Memory::Impl *src_mem = src_impl->memory.impl();
+      Memory::Impl *dst_mem = dst_impl->memory.impl();
+
+      log_copy.debug("copy instance: %x (%d) -> %x (%d), wait=%x/%d", id, src_mem->kind, target.id, dst_mem->kind, wait_on.id, wait_on.gen);
+
+      size_t bytes_to_copy, elmt_size;
+      {
+	StaticAccess<RegionInstanceUntyped::Impl> src_data(src_impl);
+	bytes_to_copy = src_data->region.impl()->instance_size();
+	elmt_size = StaticAccess<RegionMetaDataUntyped::Impl>(src_data->region.impl())->elmt_size;
+      }
+      log_copy.debug("COPY %x (%d) -> %x (%d) - %zd bytes (%zd)", id, src_mem->kind, target.id, dst_mem->kind, bytes_to_copy, elmt_size);
+
+      if(!wait_on.has_triggered()) {
+	Event after_copy = Event::Impl::create_event();
+	log_copy.debug("copy deferred: %x (%d) -> %x (%d), wait=%x/%d after=%x/%d", id, src_mem->kind, target.id, dst_mem->kind, wait_on.id, wait_on.gen, after_copy.id, after_copy.gen);
+	wait_on.impl()->add_waiter(wait_on,
+				   new DeferredCopy(*this, target,
+						    region,
+						    elmt_size,
+						    bytes_to_copy, 
+						    after_copy));
+	return after_copy;
+      }
+
+      // we can do the copy immediately here
+      return RegionInstanceUntyped::Impl::copy(*this, target, region,
+					       elmt_size, bytes_to_copy);
     }
 
     void RegionInstanceAccessorUntyped<AccessorGeneric>::get_untyped(unsigned ptr_value, void *dst, size_t size) const

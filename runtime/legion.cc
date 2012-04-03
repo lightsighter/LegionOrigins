@@ -13228,7 +13228,7 @@ namespace RegionRuntime {
         RegionInstance src_copy = src_info->inst;
         LogicalRegion hand_copy = src_info->handle;
         // Always give the element mask when making the copy operations just for completeness 
-        Event copy_event = src_copy.copy_to_untyped(this->inst, hand_copy.get_valid_mask(), copy_precondition);
+        Event copy_event = src_copy.copy_to_untyped(this->inst, hand_copy, copy_precondition);
 #ifdef TRACE_CAPTURE
         // For trace capture, we'll make sure there is always a unique event id for a copy result
         if (!copy_event.exists())

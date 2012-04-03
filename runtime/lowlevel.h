@@ -601,6 +601,7 @@ namespace RegionRuntime {
 
       Event copy_to_untyped(RegionInstanceUntyped target, Event wait_on = Event::NO_EVENT);
       Event copy_to_untyped(RegionInstanceUntyped target, const ElementMask &mask, Event wait_on = Event::NO_EVENT);
+      Event copy_to_untyped(RegionInstanceUntyped target, RegionMetaDataUntyped region, Event wait_on = Event::NO_EVENT);
     };
 
     template <class T>
