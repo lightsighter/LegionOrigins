@@ -541,7 +541,7 @@ namespace RegionRuntime {
 #ifdef __CUDACC__
       // no read or write on a reduction-fold-only accessor
       template <class REDOP, class T, class RHS>
-      __device__ void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::fold<false>(((T*)array_base)[ptr.value], newval); }
+      __device__ void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::fold<false>(((RHS*)array_base)[ptr.value], newval); }
 #endif
     };
 
