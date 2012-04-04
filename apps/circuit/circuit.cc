@@ -6,63 +6,12 @@
 #include <algorithm>
 #include <cmath>
 
+#include "circuit.h"
 #include "legion.h"
 #include "alt_mappers.h"
 
 using namespace RegionRuntime::HighLevel;
 
-enum {
-  REGION_MAIN,
-  CALC_NEW_CURRENTS,
-  DISTRIBUTE_CHARGE,
-  UPDATE_VOLTAGES,
-};
-
-enum PointerLocation {
-  PRIVATE_PTR,
-  SHARED_PTR,
-  GHOST_PTR,
-};
-
-enum {
-  REDUCE_ID = 1,
-};
-
-// Data type definitions
-
-struct CircuitNode {
-  float charge;
-  float voltage;
-  float capacitance;
-  float leakage;
-};
-
-#define WIRE_SEGMENTS 10
-
-struct CircuitWire {
-  ptr_t<CircuitNode> in_ptr, out_ptr;
-  PointerLocation in_loc, out_loc;
-  float inductance;
-  float resistance;
-  float current[WIRE_SEGMENTS];
-  float capacitance;
-  float voltage[WIRE_SEGMENTS-1];
-};
-
-struct Circuit {
-  LogicalRegion all_nodes;
-  LogicalRegion all_wires;
-};
-
-struct CircuitPiece {
-  LogicalRegion pvt_nodes, shr_nodes, ghost_nodes;
-  LogicalRegion pvt_wires;
-};
-
-struct Partitions {
-  Partition pvt_wires;
-  Partition pvt_nodes, shr_nodes, ghost_nodes;
-};
 
 // Reduction Op
 class AccumulateCharge {
@@ -73,48 +22,7 @@ public:
 
   template <bool EXCLUSIVE> static void apply(LHS &lhs, RHS rhs);
 
-#if 0
-  template <>
-  static void apply<true>(CircuitNode &lhs, float rhs)
-  {
-    lhs.charge += rhs;
-  }
-
-  template <>
-  static void apply<false>(CircuitNode &lhs, float rhs)
-  {
-    // most cpus don't let you atomic add a float, so we use gcc's builtin
-    // compare-and-swap in a loop
-    int *target = (int *)&(lhs.charge);
-    union { int as_int; float as_float; } oldval, newval;
-    do {
-      oldval.as_int = *target;
-      newval.as_float = oldval.as_float + rhs;
-    } while(!__sync_bool_compare_and_swap(target, oldval.as_int, newval.as_int));
-  }
-#endif
   template <bool EXCLUSIVE> static void fold(RHS &rhs1, RHS rhs2);
-#if 0
-
-  template <>
-  static void fold<true>(float &rhs1, float rhs2)
-  {
-    rhs1 += rhs2;
-  }
-
-  template <>
-  static void fold<false>(float &rhs1, float rhs2)
-  {
-    // most cpus don't let you atomic add a float, so we use gcc's builtin
-    // compare-and-swap in a loop
-    int *target = (int *)&rhs1;
-    union { int as_int; float as_float; } oldval, newval;
-    do {
-      oldval.as_int = *target;
-      newval.as_float = oldval.as_float + rhs2;
-    } while(!__sync_bool_compare_and_swap(target, oldval.as_int, newval.as_int));
-  }
-#endif
 };
 
 const float AccumulateCharge::identity = 0.0f;
@@ -289,6 +197,12 @@ void region_main(const void *args, size_t arglen,
   // Global arguments, we really don't have any
   TaskArgument global_arg;
   ArgumentMap local_args;
+  for (int idx = 0; idx < num_pieces; idx++)
+  {
+    IndexPoint p(1);
+    p[0] = idx;
+    local_args[p] = TaskArgument(&(pieces[idx]),sizeof(CircuitPiece));
+  }
 
   // Run the main loop
   for (int i = 0; i < num_loops; i++)
@@ -322,7 +236,7 @@ void calculate_currents_task(const void *global_args, size_t global_arglen,
                              std::vector<PhysicalRegion<AT> > &regions,
                              Context ctx, HighLevelRuntime *runtime)
 {
-#if 0
+#if 1
   PhysicalRegion<AT> pvt_wires = regions[0];
   PhysicalRegion<AT> pvt_nodes = regions[1];
   PhysicalRegion<AT> shr_nodes = regions[2];
@@ -384,7 +298,7 @@ void distribute_charge_task(const void *global_args, size_t global_arglen,
                             std::vector<PhysicalRegion<AT> > &regions,
                             Context ctx, HighLevelRuntime *runtime)
 {
-#if 0
+#if 1
   PhysicalRegion<AT> pvt_wires = regions[0];
   PhysicalRegion<AT> pvt_nodes = regions[1];
   PhysicalRegion<AT> shr_nodes = regions[2];
@@ -413,7 +327,7 @@ void update_voltages_task(const void *global_args, size_t global_arglen,
                           std::vector<PhysicalRegion<AT> > &regions,
                           Context ctx, HighLevelRuntime *runtime)
 {
-#if 0
+#if 1
   PhysicalRegion<AT> pvt_nodes = regions[0];
   PhysicalRegion<AT> shr_nodes = regions[1];
 
@@ -433,7 +347,17 @@ void calculate_currents_task_gpu(const void *global_args, size_t global_arglen,
                                  std::vector<PhysicalRegion<AT> > &regions,
                                  Context ctx, HighLevelRuntime *runtime)
 {
+  CircuitPiece *p = (CircuitPiece*)local_args;
+  PhysicalRegion<AT> wires = regions[0];
+  PhysicalRegion<AT> pvt   = regions[1];
+  PhysicalRegion<AT> owned = regions[2];
+  PhysicalRegion<AT> ghost = regions[3];
 
+  calc_new_currents_gpu(p,
+                        wires.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
+                        pvt.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
+                        owned.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
+                        ghost.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>());
 }
 
 template<AccessorType AT>
@@ -443,7 +367,17 @@ void distribute_charge_task_gpu(const void *global_args, size_t global_arglen,
                                 std::vector<PhysicalRegion<AT> > &regions,
                                 Context ctx, HighLevelRuntime *runtime)
 {
+  CircuitPiece *p = (CircuitPiece*)local_args;
+  PhysicalRegion<AT> wires = regions[0];
+  PhysicalRegion<AT> pvt   = regions[1];
+  PhysicalRegion<AT> owned = regions[2];
+  PhysicalRegion<AT> ghost = regions[3];
 
+  distribute_charge_gpu(p,
+                        wires.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
+                        pvt.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
+                        owned.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPUReductionFold>(),
+                        ghost.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPUReductionFold>());
 }
 
 template<AccessorType AT>
@@ -453,7 +387,13 @@ void update_voltages_task_gpu(const void *global_args, size_t global_arglen,
                               std::vector<PhysicalRegion<AT> > &regions,
                               Context ctx, HighLevelRuntime *runtime)
 {
+  CircuitPiece *p = (CircuitPiece*)local_args;
+  PhysicalRegion<AT> pvt   = regions[0];
+  PhysicalRegion<AT> owned = regions[1];
 
+  update_voltages_gpu(p,
+                      pvt.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
+                      owned.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>());
 }
 
 /// Start-up 
@@ -473,6 +413,7 @@ int main(int argc, char **argv)
           distribute_charge_task<AccessorGeneric> >(DISTRIBUTE_CHARGE, Processor::LOC_PROC, "distribute_charege");
   HighLevelRuntime::register_index_task<
           update_voltages_task<AccessorGeneric> >(UPDATE_VOLTAGES, Processor::LOC_PROC, "update_voltages");
+#ifndef USING_SHARED
   // GPU versions
   HighLevelRuntime::register_index_task<
           calculate_currents_task_gpu<AccessorGeneric> >(CALC_NEW_CURRENTS, Processor::TOC_PROC, "calc_new_currents");
@@ -480,6 +421,7 @@ int main(int argc, char **argv)
           distribute_charge_task_gpu<AccessorGeneric> >(DISTRIBUTE_CHARGE, Processor::TOC_PROC, "distribute_charege");
   HighLevelRuntime::register_index_task<
           update_voltages_task_gpu<AccessorGeneric> >(UPDATE_VOLTAGES, Processor::TOC_PROC, "update_voltages");
+#endif
 
   // Register reduction op
   HighLevelRuntime::register_reduction_op<AccumulateCharge>(REDUCE_ID);
@@ -965,6 +907,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
   srand48(random_seed);
 
   nodes.wait_until_valid();
+  ptr_t<CircuitNode> *first_nodes = new ptr_t<CircuitNode>[num_pieces];
   // Allocate all the nodes
   nodes.alloc<CircuitNode>(num_pieces*nodes_per_piece);
   {
@@ -975,6 +918,11 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
       {
         assert(itr->has_next());
         ptr_t<CircuitNode> node_ptr = itr->next<CircuitNode>();
+        // Record the first node pointer for this piece
+        if (i == 0)
+        {
+          first_nodes[n] = node_ptr;
+        }
         CircuitNode node;
         node.charge = 0.f;
         node.voltage = 2*drand48() - 1;
@@ -994,6 +942,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
   }
 
   wires.wait_until_valid();
+  ptr_t<CircuitWire> *first_wires = new ptr_t<CircuitWire>[num_pieces];
   // Allocate all the wires
   wires.alloc<CircuitWire>(num_pieces*wires_per_piece);
   {
@@ -1004,6 +953,11 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
       {
         assert(itr->has_next());
         ptr_t<CircuitWire> wire_ptr = itr->next<CircuitWire>();
+        // Record the first wire pointer for this piece
+        if (i == 0)
+        {
+          first_wires[n] = wire_ptr;
+        }
         CircuitWire wire;
         for (int j = 0; j < WIRE_SEGMENTS; j++) wire.current[j] = 0.f;
         for (int j = 0; j < WIRE_SEGMENTS-1; j++) wire.voltage[j] = 0.f;
@@ -1105,7 +1059,14 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
     pieces[n].shr_nodes = runtime->get_subregion(ctx, result.shr_nodes, n);
     pieces[n].ghost_nodes = runtime->get_subregion(ctx, result.ghost_nodes, n);
     pieces[n].pvt_wires = runtime->get_subregion(ctx, result.pvt_wires, n);
+    pieces[n].num_wires = wires_per_piece;
+    pieces[n].first_wire = first_wires[n];
+    pieces[n].num_nodes = nodes_per_piece;
+    pieces[n].first_node = first_nodes[n];
   }
+
+  delete [] first_wires;
+  delete [] first_nodes;
 
   printf("Finished initializing simulation...\n");
 

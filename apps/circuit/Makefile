@@ -13,7 +13,7 @@ OUTPUT_LEVEL=LEVEL_DEBUG  # Compile time print level
 OUTFILE		:= ckt_sim
 # List all the application source files here
 GEN_SRC		:= circuit.cc	# .cc files
-GEN_GPU_SRC	:=		# .cu files
+GEN_GPU_SRC	:= circuit_gpu.cu# .cu files
 
 # You can modify these variables, some will be appended to by the runtime makefile
 INC_FLAGS	:=
@@ -21,6 +21,10 @@ CC_FLAGS	:=
 NVCC_FLAGS	:=
 GASNET_FLAGS	:=
 LD_FLAGS	:=
+
+ifdef SHARED_LOWLEVEL
+CC_FLAGS	+= -DUSING_SHARED #-DTRACE_CAPTURE
+endif
 
 ###########################################################################
 #
@@ -62,20 +66,33 @@ MAPPER_SRC	:=
 include $(LG_RT_DIR)/runtime.mk
 
 GEN_OBJS	:= $(GEN_SRC:.cc=.o)
-GEN_GPU_OBJS	:= $(GEN_GPU_SRC:.cu=.o)
 LOW_RUNTIME_OBJS:= $(LOW_RUNTIME_SRC:.cc=.o)
 HIGH_RUNTIME_OBJS:=$(HIGH_RUNTIME_SRC:.cc=.o)
-GPU_RUNTIME_OBJS:=$(GPU_RUNTIME_SRC:.cu=.o)
 MAPPER_OBJS	:= $(MAPPER_SRC:.cc=.o)
+# Only compile the gpu objects if we need to 
+ifndef SHARED_LOWLEVEL
+GEN_GPU_OBJS	:= $(GEN_GPU_SRC:.cu=.o)
+GPU_RUNTIME_OBJS:= $(GPU_RUNTIME_SRC:.cu=.o)
+else
+GEN_GPU_OBJS	:=
+GPU_RUNTIME_OBJS:=
+endif
 
 ALL_OBJS	:= $(GEN_OBJS) $(GEN_GPU_OBJS) $(LOW_RUNTIME_OBJS) $(HIGH_RUNTIME_OBJS) $(GPU_RUNTIME_OBJS) $(MAPPER_OBJS)
 
 all:
 	$(MAKE) $(OUTFILE)
 
+# If we're using the general shared low level we have to link with nvcc
+ifdef SHARED_LOWLEVEL
 $(OUTFILE) : $(ALL_OBJS)
 	@echo "---> Linking objects into one binary: $(OUTFILE)"
 	$(GCC) -o $(OUTFILE) $(ALL_OBJS) $(LD_FLAGS) $(GASNET_FLAGS)
+else
+$(OUTFILE) : $(ALL_OBJS)
+	@echo "---> Linking objects into one binary: $(OUTFILE)"
+	$(NVCC) -o $(OUTFILE) $(ALL_OBJS) $(LD_FLAGS) $(GASNET_FLAGS)
+endif
 
 $(GEN_OBJS) : %.o : %.cc
 	$(GCC) -o $@ -c $< $(INC_FLAGS) $(CC_FLAGS)
