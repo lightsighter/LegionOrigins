@@ -87,11 +87,6 @@ def prep_input():
 def get_input():
     return _input_filename
 
-_solution_filename = None
-def prep_solution():
-    global _solution_filename
-    _solution_filename = os.path.join(_root_dir, 'out_5K.fluid')
-
 prep = [prep_parsec, prep_legion, prep_input]
 
 _re_timing = re.compile(r'^ELAPSED TIME\s=\s+(\d+\.\d+)\ss$', re.MULTILINE)
