@@ -2166,6 +2166,7 @@ namespace RegionRuntime {
 	void deactivate(void);
 	Event copy_to(RegionInstanceUntyped target, Event wait_on);
         Event copy_to(RegionInstanceUntyped target, const ElementMask &mask, Event wait_on);
+        Event copy_to(RegionInstanceUntyped target, RegionMetaDataUntyped src_region, Event wait_on);
 	RegionInstanceUntyped get_instance(void) const;
 	void trigger(unsigned count, TriggerHandle handle);
 	Lock get_lock(void);
@@ -2227,8 +2228,14 @@ namespace RegionRuntime {
                                                 Event wait_on)
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
-      // TODO: Update this to take the mask into account
       return Runtime::get_runtime()->get_instance_impl(*this)->copy_to(target,mask,wait_on);
+    }
+
+    Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, RegionMetaDataUntyped region,
+                                                 Event wait_on)
+    {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+      return Runtime::get_runtime()->get_instance_impl(*this)->copy_to(target,region,wait_on);
     }
 
     const void* RegionInstanceImpl::read(unsigned ptr)
@@ -2295,7 +2302,12 @@ namespace RegionRuntime {
 
     Event RegionInstanceImpl::copy_to(RegionInstanceUntyped target, Event wait_on)
     {
-      const ElementMask &mask = region.get_valid_mask();
+      return copy_to(target,region,wait_on);
+    }
+
+    Event RegionInstanceImpl::copy_to(RegionInstanceUntyped target, RegionMetaDataUntyped src_region, Event wait_on)
+    {
+      const ElementMask &mask = src_region.get_valid_mask();
       return copy_to(target,mask,wait_on);
     }
 
