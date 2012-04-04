@@ -83,14 +83,12 @@ ALL_OBJS	:= $(GEN_OBJS) $(GEN_GPU_OBJS) $(LOW_RUNTIME_OBJS) $(HIGH_RUNTIME_OBJS)
 all:
 	$(MAKE) $(OUTFILE)
 
-# If we're using the general shared low level we have to link with nvcc
-ifdef SHARED_LOWLEVEL
+# If we're using the general low-level runtime we have to link with nvcc
 $(OUTFILE) : $(ALL_OBJS)
 	@echo "---> Linking objects into one binary: $(OUTFILE)"
+ifdef SHARED_LOWLEVEL
 	$(GCC) -o $(OUTFILE) $(ALL_OBJS) $(LD_FLAGS) $(GASNET_FLAGS)
 else
-$(OUTFILE) : $(ALL_OBJS)
-	@echo "---> Linking objects into one binary: $(OUTFILE)"
 	$(NVCC) -o $(OUTFILE) $(ALL_OBJS) $(LD_FLAGS) $(GASNET_FLAGS)
 endif
 
