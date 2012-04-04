@@ -39,8 +39,8 @@ void simulate_circuit(Circuit c) : RWE(c.r_all_nodes,c.r_all_wires)
 
   CircuitPiece pieces[MAX_PIECES];
   for(i = 0; i #$<$# MAX_PIECES; i++) 
-    pieces[i] = { rn_pvt = p_pvt_nodes[i], rn_shr = p_shr_nodes[i],
-                  rn_ghost = p_ghost_nodes[i], rw_pvt = p_wires[i] };
+    pieces[i] = { rn_pvt: p_pvt_nodes[i], rn_shr: p_shr_nodes[i],
+                  rn_ghost: p_ghost_nodes[i], rw_pvt: p_wires[i] };
   while(!done) {
     spawn (i = 0; i #$<$# MAX_PIECES; i++) calc_new_currents(pieces[i]);
     spawn (i = 0; i #$<$# MAX_PIECES; i++) distribute_charge(pieces[i]);
