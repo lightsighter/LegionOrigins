@@ -405,6 +405,54 @@ namespace RegionRuntime {
     }
 #endif
 
+    //--------------------------------------------------------------------------
+    template<>
+    void PhysicalRegion<AccessorGeneric>::set_instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric> inst)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(valid);
+#endif
+      valid_instance = true;
+      instance = inst;
+    }
+
+    //--------------------------------------------------------------------------
+    template<>
+    void PhysicalRegion<AccessorArray>::set_instance(LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorArray> inst)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(valid);
+#endif
+      valid_instance = true;
+      instance = inst;
+    }
+
+    //--------------------------------------------------------------------------
+    template<>
+    LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric> PhysicalRegion<AccessorGeneric>::get_instance(void) const
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(valid);
+      assert(valid_instance);
+#endif
+      return instance;
+    }
+
+    //--------------------------------------------------------------------------
+    template<>
+    LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorArray> PhysicalRegion<AccessorArray>::get_instance(void) const
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(valid);
+      assert(valid_instance);
+#endif
+      return instance;
+    }
+
     /////////////////////////////////////////////////////////////
     // Region Requirement 
     ///////////////////////////////////////////////////////////// 
@@ -13226,9 +13274,8 @@ namespace RegionRuntime {
 #endif
         // Perform the copy
         RegionInstance src_copy = src_info->inst;
-        LogicalRegion hand_copy = src_info->handle;
         // Always give the element mask when making the copy operations just for completeness 
-        Event copy_event = src_copy.copy_to_untyped(this->inst, hand_copy, copy_precondition);
+        Event copy_event = src_copy.copy_to_untyped(this->inst, src_info->handle, copy_precondition);
 #ifdef TRACE_CAPTURE
         // For trace capture, we'll make sure there is always a unique event id for a copy result
         if (!copy_event.exists())

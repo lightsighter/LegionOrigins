@@ -21,8 +21,7 @@
 #define AUTO_GENERATE_ID  UINT_MAX
 
 // Need to modify this as we update the set of Accessor types
-#define AT_CONV(at) ((at == AccessorGeneric) ? LowLevel::AccessorGeneric : \
-                    (at == AccessorArray) ? LowLevel::AccessorArray : LowLevel::AccessorGPU)
+#define AT_CONV(at) ((at == AccessorGeneric) ? LowLevel::AccessorGeneric : LowLevel::AccessorArray )
 
 namespace RegionRuntime {
   namespace HighLevel {
@@ -46,10 +45,10 @@ namespace RegionRuntime {
       TIME_HIGH_LEVEL_ISSUE_STEAL = TIME_HIGH_LEVEL, //= 114,
     };
 
+    // Only support two high-level accessor modes at the moment
     enum AccessorType {
       AccessorGeneric = LowLevel::AccessorGeneric,
       AccessorArray   = LowLevel::AccessorArray,
-      AccessorGPU     = LowLevel::AccessorGPU,
     };
 
     enum PrivilegeMode {
@@ -574,8 +573,9 @@ namespace RegionRuntime {
      * interface to a physical region so we don't need to keep the 
      * type around for this level of the runtime.
      *
-     * Have two versions of a physical region to prevent the low level
-     * runtime from showing through.
+     * There will only ever be two types of Physical Regions: Generic and Array
+     * If a programmer wants access to the specific accesso so they can specialize
+     * it themselves, they can get at it through the 'get_instance' method
      */
     template<AccessorType AT>
     class PhysicalRegion {
@@ -585,7 +585,6 @@ namespace RegionRuntime {
       friend class RegionMappingImpl;
       friend class PhysicalRegion<AccessorGeneric>;
       friend class PhysicalRegion<AccessorArray>;
-      friend class PhysicalRegion<AccessorGPU>;
       PhysicalRegion(RegionMappingImpl *im, LogicalRegion h);
       PhysicalRegion(unsigned id, LogicalRegion h);
       void set_allocator(LowLevel::RegionAllocatorUntyped alloc);
@@ -598,7 +597,9 @@ namespace RegionRuntime {
       template<typename T> inline T        read(ptr_t<T> ptr);
       template<typename T> inline void     write(ptr_t<T> ptr, T newval);
       template<typename T, typename REDOP, typename RHS> inline void reduce(ptr_t<T> ptr, RHS newval);
-    public:
+    public: 
+      LowLevel::RegionAllocatorUntyped get_allocator(void) const;
+      LowLevel::RegionInstanceAccessorUntyped<AT_CONV(AT)> get_instance(void) const;
       template<AccessorType AT2> bool can_convert(void) const;
       template<AccessorType AT2> PhysicalRegion<AT2> convert(void) const;
     public:
@@ -3200,17 +3201,16 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     template<AccessorType AT>
-    void PhysicalRegion<AT>::set_instance(LowLevel::RegionInstanceAccessorUntyped<AT_CONV(AT)> inst)
+    LowLevel::RegionAllocatorUntyped PhysicalRegion<AT>::get_allocator(void) const
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(valid);
+      assert(valid_allocator);
 #endif
-      valid_instance = true;
-      instance = inst;
+      return allocator;
     }
 
-    
     //--------------------------------------------------------------------------
     template<AccessorType AT> template<typename T>
     inline ptr_t<T> PhysicalRegion<AT>::alloc(unsigned count)
