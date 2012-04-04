@@ -13,7 +13,11 @@ INC_FLAGS 	+= -I$(GASNET)/include -I$(GASNET)/include/ibv-conduit
 INC_FLAGS	+= -I$(CUDA)/include
 CC_FLAGS	+= -DGASNET_CONDUIT_IBV
 LD_FLAGS	+= -L$(GASNET)/lib -lgasnet-ibv-par -libverbs
+ifdef SHARED_LOWLEVEL
 LD_FLAGS	+= -L$(CUDA)/lib64 -lcudart -lcuda -Wl,-rpath=$(CUDA)/lib64
+else
+LD_FLAGS	+= -L$(CUDA)/lib64 -lcudart -lcuda -Xlinker -rpath=$(CUDA)/lib64
+endif
 NVCC_FLAGS	+= -arch=sm_20
 ifdef DEBUG
 NVCC_FLAGS	+= -g -G
