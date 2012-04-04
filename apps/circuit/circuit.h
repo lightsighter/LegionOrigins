@@ -67,6 +67,8 @@ struct Partitions {
 typedef RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorGPU> GPU_Accessor;
 typedef RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorGPUReductionFold> GPU_Reducer;
 
+void register_gpu_reduction(void);
+
 void calc_new_currents_gpu(CircuitPiece *p,
                            GPU_Accessor wires,
                            GPU_Accessor pvt,
