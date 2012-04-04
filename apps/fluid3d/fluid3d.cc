@@ -281,7 +281,17 @@ struct TopLevelRegions {
   LogicalRegion edge_cells;
 };
 
-const float restParticlesPerMeter = 204.0f;
+// Data from header in fluid file, needed for determining problem size.
+struct FluidSpec {
+  FluidSpec() : restParticlesPerMeter(0.0), origNumParticles(0) {}
+  FluidSpec(float rPPM, int oNP) : restParticlesPerMeter(rPPM), origNumParticles(oNP) {}
+  float restParticlesPerMeter;
+  int origNumParticles;
+};
+
+FluidSpec load_file_header(const char *fileName);
+
+//const float restParticlesPerMeter = 204.0f;
 const float timeStep = 0.005f;
 const float doubleRestDensity = 2000.f;
 const float kernelRadiusMultiplier = 1.695f;
@@ -291,11 +301,53 @@ const Vec3 externalAcceleration(0.f, -9.8f, 0.f);
 const Vec3 domainMin(-0.065f, -0.08f, -0.065f);
 const Vec3 domainMax(0.065f, 0.1f, 0.065f);
 
-float h, hSq;
-float densityCoeff, pressureCoeff, viscosityCoeff;
-unsigned nx, ny, nz, numCells;
+// Configuration parameters for the simulation, vary depending on FluidSpec.
+struct FluidConfig {
+  float h, hSq;
+  float densityCoeff, pressureCoeff, viscosityCoeff;
+  unsigned nx, ny, nz, numCells;
+  Vec3 delta;				// cell dimensions
+};
+
+FluidConfig init_config(FluidSpec spec)
+{
+  float &restParticlesPerMeter = spec.restParticlesPerMeter;
+
+  FluidConfig conf;
+  float &h = conf.h, &hSq = conf.hSq;
+  float &densityCoeff = conf.densityCoeff;
+  float &pressureCoeff = conf.pressureCoeff;
+  float &viscosityCoeff = conf.viscosityCoeff;
+  unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz, &numCells = conf.numCells;
+  Vec3 &delta = conf.delta;
+
+  // Simulation parameters
+  h = kernelRadiusMultiplier / restParticlesPerMeter;
+  hSq = h*h;
+  const float pi = 3.14159265358979f;
+  float coeff1 = 315.f / (64.f*pi*pow(h,9.f));
+  float coeff2 = 15.f / (pi*pow(h,6.f));
+  float coeff3 = 45.f / (pi*pow(h,6.f));
+  float particleMass = 0.5f*doubleRestDensity / (restParticlesPerMeter*restParticlesPerMeter*restParticlesPerMeter);
+  densityCoeff = particleMass * coeff1;
+  pressureCoeff = 3.f*coeff2 * 0.5f*stiffness * particleMass;
+  viscosityCoeff = viscosity * coeff3 * particleMass;
+
+  // Simulation grid size
+  Vec3 range = domainMax - domainMin;
+  nx = (int)(range.x / h);
+  ny = (int)(range.y / h);
+  nz = (int)(range.z / h);
+  numCells = nx*ny*nz;
+  delta.x = range.x / nx;
+  delta.y = range.y / ny;
+  delta.z = range.z / nz;
+  assert(delta.x >= h && delta.y >= h && delta.z >= h);
+
+  return conf;
+}
+
 unsigned nbx, nby, nbz, numBlocks;
-Vec3 delta;				// cell dimensions
 
 static inline int MOVE_BX(int x, int dir) { return MOVE_X(x, dir, 0, nbx-1); }
 static inline int MOVE_BY(int y, int dir) { return MOVE_Y(y, dir, 0, nby-1); }
@@ -411,6 +463,10 @@ void top_level_task(const void *args, size_t arglen,
   while(!Config::args_read)
     sleep(1);
 
+  // read input file header to get problem size
+  FluidConfig conf = init_config(load_file_header("init.fluid"));
+  unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
+
   // workaround for inability to use a region in task that created it
   // build regions for cells and then do all work in a subtask
   {
@@ -425,7 +481,6 @@ void top_level_task(const void *args, size_t arglen,
                                            2*nbx*rny*rnz + 2*nby*rnx*rnz + 2*nbz*rnx*rny
                                            - 4*nbx*nby*rnz - 4*nbx*nbz*rny - 4*nby*nbz*rnx
                                            + 8*nbx*nby*nbz);
-    TaskArgument tlr_arg(&tlr, sizeof(tlr));
 
     std::vector<RegionRequirement> main_regions;
     main_regions.push_back(RegionRequirement(tlr.real_cells[0],
@@ -438,9 +493,15 @@ void top_level_task(const void *args, size_t arglen,
 					     READ_WRITE, ALLOCABLE, EXCLUSIVE,
 					     tlr.edge_cells));
 
+    unsigned bufsize = sizeof(FluidConfig) + sizeof(TopLevelRegions);
+    BlockSerializer ser(bufsize);
+    ser.Serializer::serialize(conf);
+    ser.Serializer::serialize(tlr);
+    TaskArgument buffer(ser.get_buffer(), bufsize);
+
     Future f = runtime->execute_task(ctx, TASKID_MAIN_TASK,
 				     main_regions,
-                                     tlr_arg,
+                                     buffer,
 				     0, 0);
     f.get_void_result();
   }
@@ -474,14 +535,24 @@ void main_task(const void *args, size_t arglen,
 	       std::vector<PhysicalRegion<AT> > &regions,
 	       Context ctx, HighLevelRuntime *runtime)
 {
+  FluidConfig conf;
+  TopLevelRegions tlr;
+  {
+    BlockDeserializer deser(args, arglen);
+    deser.Deserializer::deserialize(conf);
+    deser.Deserializer::deserialize(tlr);
+  }
+  unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
+
   log_app.info("In main_task...");
+
+  printf("fluid: cells     = %d (%d x %d x %d)\n", nx*ny*nz, nx, ny, nz);
+  printf("fluid: divisions = %d x %d x %d\n", nbx, nby, nbz);
 
   PhysicalRegion<AT> real_cells[2];
   real_cells[0] = regions[0];
   real_cells[1] = regions[1];
   PhysicalRegion<AT> edge_cells = regions[2];
-
-  TopLevelRegions *tlr = (TopLevelRegions *)args;
 
   std::vector<Block> blocks;
   blocks.resize(numBlocks);
@@ -530,7 +601,7 @@ void main_task(const void *args, size_t arglen,
 
     // Create the partitions
     Partition cell_part = runtime->create_partition(ctx,
-                                                    tlr->real_cells[b],
+                                                    tlr.real_cells[b],
                                                     coloring,
                                                     true/*disjoint*/);
 
@@ -686,7 +757,7 @@ void main_task(const void *args, size_t arglen,
       }
 
   // now partition the edge cells
-  Partition edge_part = runtime->create_partition(ctx, tlr->edge_cells,
+  Partition edge_part = runtime->create_partition(ctx, tlr.edge_cells,
                                                   coloring,
                                                   true/*disjoint*/);
 
@@ -713,17 +784,17 @@ void main_task(const void *args, size_t arglen,
   runtime->unmap_region(ctx, edge_cells);
 
   // Initialize the simulation in buffer 1
-  int origNumParticles;
+  FluidSpec spec;
   {
     std::vector<RegionRequirement> init_regions;
     //for (unsigned id = 0; id < numBlocks; id++) {
     //  init_regions.push_back(RegionRequirement(blocks[id].base[1],
     //                                           READ_WRITE, ALLOCABLE, EXCLUSIVE,
-    //                                           tlr->real_cells[1]));
+    //                                           tlr.real_cells[1]));
     //}
-    init_regions.push_back(RegionRequirement(tlr->real_cells[1],
+    init_regions.push_back(RegionRequirement(tlr.real_cells[1],
                                              READ_WRITE, ALLOCABLE, EXCLUSIVE,
-                                             tlr->real_cells[1]));
+                                             tlr.real_cells[1]));
 
     std::string fileName = "init.fluid";
 
@@ -742,7 +813,7 @@ void main_task(const void *args, size_t arglen,
                                      init_regions,
                                      buffer,
                                      0, 0);
-    origNumParticles = f.get_result<int>();
+    spec = f.get_result<FluidSpec>();
   }
 
   printf("STARTING MAIN SIMULATION LOOP\n");
@@ -768,19 +839,20 @@ void main_task(const void *args, size_t arglen,
       // read old
       init_regions.push_back(RegionRequirement(blocks[id].base[1 - cur_buffer],
 					       READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					       tlr->real_cells[1 - cur_buffer]));
+					       tlr.real_cells[1 - cur_buffer]));
       // write new
       init_regions.push_back(RegionRequirement(blocks[id].base[cur_buffer],
 					       READ_WRITE, NO_MEMORY, EXCLUSIVE,
-					       tlr->real_cells[cur_buffer]));
+					       tlr.real_cells[cur_buffer]));
 
       // write edge0
       get_all_regions(blocks[id].edge[0], init_regions,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-		      tlr->edge_cells);
+		      tlr.edge_cells);
 
-      unsigned bufsize = BLOCK_SIZE(blocks[id]);
+      unsigned bufsize = sizeof(FluidConfig) + BLOCK_SIZE(blocks[id]);
       BlockSerializer ser(bufsize);
+      ser.Serializer::serialize(conf);
       ser.serialize(blocks[id]);
       TaskArgument buffer(ser.get_buffer(), bufsize);
 
@@ -803,12 +875,12 @@ void main_task(const void *args, size_t arglen,
 
       rebuild_regions.push_back(RegionRequirement(blocks[id].base[cur_buffer],
 						  READ_WRITE, NO_MEMORY, EXCLUSIVE,
-						  tlr->real_cells[cur_buffer]));
+						  tlr.real_cells[cur_buffer]));
 
       // write edge1
       get_all_regions(blocks[id].edge[1], rebuild_regions,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-		      tlr->edge_cells);
+		      tlr.edge_cells);
 
       unsigned bufsize = BLOCK_SIZE(blocks[id]);
       BlockSerializer ser(bufsize);
@@ -834,15 +906,16 @@ void main_task(const void *args, size_t arglen,
 
       density_regions.push_back(RegionRequirement(blocks[id].base[cur_buffer],
 						  READ_WRITE, NO_MEMORY, EXCLUSIVE,
-						  tlr->real_cells[cur_buffer]));
+						  tlr.real_cells[cur_buffer]));
 
       // write edge1
       get_all_regions(blocks[id].edge[0], density_regions,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-		      tlr->edge_cells);
+		      tlr.edge_cells);
 
-      unsigned bufsize = BLOCK_SIZE(blocks[id]);
+      unsigned bufsize = sizeof(FluidConfig) + BLOCK_SIZE(blocks[id]);
       BlockSerializer ser(bufsize);
+      ser.Serializer::serialize(conf);
       ser.serialize(blocks[id]);
       TaskArgument buffer(ser.get_buffer(), bufsize);
 
@@ -867,15 +940,16 @@ void main_task(const void *args, size_t arglen,
 
       force_regions.push_back(RegionRequirement(blocks[id].base[cur_buffer],
 						READ_WRITE, NO_MEMORY, EXCLUSIVE,
-						tlr->real_cells[cur_buffer]));
+						tlr.real_cells[cur_buffer]));
 
       // write edge1
       get_all_regions(blocks[id].edge[1], force_regions,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-		      tlr->edge_cells);
+		      tlr.edge_cells);
 
-      unsigned bufsize = BLOCK_SIZE(blocks[id]);
+      unsigned bufsize = sizeof(FluidConfig) + BLOCK_SIZE(blocks[id]);
       BlockSerializer ser(bufsize);
+      ser.Serializer::serialize(conf);
       ser.serialize(blocks[id]);
       TaskArgument buffer(ser.get_buffer(), bufsize);
 
@@ -918,21 +992,23 @@ void main_task(const void *args, size_t arglen,
     //for (unsigned id = 0; id < numBlocks; id++) {
     //  init_regions.push_back(RegionRequirement(blocks[id].base[target_buffer],
     //                                           READ_ONLY, NO_MEMORY, EXCLUSIVE,
-    //                                           tlr->real_cells[target_buffer]));
+    //                                           tlr.real_cells[target_buffer]));
     //}
-    init_regions.push_back(RegionRequirement(tlr->real_cells[target_buffer],
+    init_regions.push_back(RegionRequirement(tlr.real_cells[target_buffer],
                                              READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                             tlr->real_cells[target_buffer]));
+                                             tlr.real_cells[target_buffer]));
 
     std::string fileName = "output.fluid";
 
-    unsigned bufsize = sizeof(int)*2 + sizeof(size_t) + fileName.length();
+    unsigned bufsize = sizeof(FluidSpec) + sizeof(FluidConfig) + sizeof(int) +
+      sizeof(size_t) + fileName.length();
     for (unsigned id = 0; id < numBlocks; id++) {
       bufsize += BLOCK_SIZE(blocks[id]);
     }
     BlockSerializer ser(bufsize);
+    ser.Serializer::serialize(spec);
+    ser.Serializer::serialize(conf);
     ser.Serializer::serialize(target_buffer);
-    ser.Serializer::serialize(origNumParticles);
     for (unsigned id = 0; id < numBlocks; id++) {
       ser.serialize(blocks[id]);
     }
@@ -987,11 +1063,15 @@ void init_and_rebuild(const void *args, size_t arglen,
                 std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
+  FluidConfig conf;
   Block b;
   {
     BlockDeserializer deser(args, arglen);
+    deser.Deserializer::deserialize(conf);
     deser.deserialize(b);
   }
+  unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
+  Vec3 &delta = conf.delta;
   int cb = b.cb; // current buffer
   int eb = 0; // edge phase for this task is 0
   // Initialize all the cells and update all our cells
@@ -1140,11 +1220,15 @@ void scatter_densities(const void *args, size_t arglen,
                 std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
+  FluidConfig conf;
   Block b;
   {
     BlockDeserializer deser(args, arglen);
+    deser.Deserializer::deserialize(conf);
     deser.deserialize(b);
   }
+  float &hSq = conf.hSq;
+  float &densityCoeff = conf.densityCoeff;
   int cb = b.cb; // current buffer
   int eb = 0; // edge phase for this task is 0
   // Initialize all the cells and update all our cells
@@ -1271,11 +1355,17 @@ void gather_forces_and_advance(const void *args, size_t arglen,
                 std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
+  FluidConfig conf;
   Block b;
   {
     BlockDeserializer deser(args, arglen);
+    deser.Deserializer::deserialize(conf);
     deser.deserialize(b);
   }
+  float &h = conf.h, &hSq = conf.hSq;
+  float &pressureCoeff = conf.pressureCoeff;
+  float &viscosityCoeff = conf.viscosityCoeff;
+
   int cb = b.cb; // current buffer
   int eb = 1; // edge phase for this task is 1
   // Initialize all the cells and update all our cells
@@ -1426,8 +1516,24 @@ static inline int bswap_int32(int x) {
            (((x) & 0x0000ff00) <<  8) | (((x) & 0x000000ff) << 24) );
 }
 
+FluidSpec load_file_header(const char *fileName)
+{
+  std::ifstream file(fileName, std::ios::binary);
+  assert(file);
+
+  float restParticlesPerMeter;
+  int origNumParticles;
+  file.read((char *)&restParticlesPerMeter, 4);
+  file.read((char *)&origNumParticles, 4);
+  if(!isLittleEndian()) {
+    restParticlesPerMeter = bswap_float(restParticlesPerMeter);
+    origNumParticles          = bswap_int32(origNumParticles);
+  }
+  return FluidSpec(restParticlesPerMeter, origNumParticles);
+}
+
 template<AccessorType AT>
-int load_file(const void *args, size_t arglen,
+FluidSpec load_file(const void *args, size_t arglen,
               std::vector<PhysicalRegion<AT> > &regions,
               Context ctx, HighLevelRuntime *runtime)
 {
@@ -1466,16 +1572,21 @@ int load_file(const void *args, size_t arglen,
   std::ifstream file(fileName.c_str(), std::ios::binary);
   assert(file);
 
-  float tempRestParticlesPerMeter = restParticlesPerMeter;
-  int origNumParticles = 0, numParticles = 0;
+  FluidSpec spec;
+  float &restParticlesPerMeter = spec.restParticlesPerMeter;
+  int &origNumParticles = spec.origNumParticles, numParticles;
 
-  file.read((char *)&tempRestParticlesPerMeter, 4);
+  file.read((char *)&restParticlesPerMeter, 4);
   file.read((char *)&origNumParticles, 4);
   if(!isLittleEndian()) {
-    tempRestParticlesPerMeter = bswap_float(tempRestParticlesPerMeter);
+    restParticlesPerMeter = bswap_float(restParticlesPerMeter);
     origNumParticles          = bswap_int32(origNumParticles);
   }
   numParticles = origNumParticles;
+
+  FluidConfig conf = init_config(spec);
+  unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
+  Vec3 &delta = conf.delta;
 
   // Minimum block sizes
   int mbsx = nx / nbx;
@@ -1564,10 +1675,7 @@ int load_file(const void *args, size_t arglen,
 
   log_app.info("Done loading file.");
 
-  // TODO: Also return tempRestParticlesPerMeter...
-  assert(fabs(tempRestParticlesPerMeter - restParticlesPerMeter) < 0.00001);
-
-  return origNumParticles;
+  return spec;
 }
 
 template<AccessorType AT>
@@ -1578,17 +1686,23 @@ void save_file(const void *args, size_t arglen,
   std::vector<Block> blocks;
   std::string fileName;
   int b;
-  int origNumParticles;
-  blocks.resize(numBlocks);
+  FluidSpec spec;
+  FluidConfig conf;
   {
     BlockDeserializer deser(args, arglen);
+    deser.Deserializer::deserialize(spec);
+    deser.Deserializer::deserialize(conf);
     deser.Deserializer::deserialize(b);
-    deser.Deserializer::deserialize(origNumParticles);
+
+    blocks.resize(numBlocks);
     for (unsigned i = 0; i < numBlocks; i++) {
       deser.deserialize(blocks[i]);
     }
     deser.deserialize(fileName);
   }
+  float &restParticlesPerMeter = spec.restParticlesPerMeter;
+  int &origNumParticles = spec.origNumParticles;
+  unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
 
   PhysicalRegion<AT> real_cells = regions[0];
 
@@ -1988,34 +2102,12 @@ int main(int argc, char **argv)
   HighLevelRuntime::register_single_task<gather_densities<AccessorGeneric> >(TASKID_GATHER_DENSITIES,Processor::LOC_PROC,"gather_densities");
   HighLevelRuntime::register_single_task<scatter_forces<AccessorGeneric> >(TASKID_SCATTER_FORCES,Processor::LOC_PROC,"scatter_forces");
   HighLevelRuntime::register_single_task<gather_forces_and_advance<AccessorGeneric> >(TASKID_GATHER_FORCES,Processor::LOC_PROC,"gather_forces");
-  HighLevelRuntime::register_single_task<int, load_file<AccessorGeneric> >(TASKID_LOAD_FILE,Processor::LOC_PROC,"load_file");
+  HighLevelRuntime::register_single_task<FluidSpec, load_file<AccessorGeneric> >(TASKID_LOAD_FILE,Processor::LOC_PROC,"load_file");
   HighLevelRuntime::register_single_task<save_file<AccessorGeneric> >(TASKID_SAVE_FILE,Processor::LOC_PROC,"save_file");
 
-  // Initialize the simulation
-  h = kernelRadiusMultiplier / restParticlesPerMeter;
-  hSq = h*h;
-  const float pi = 3.14159265358979f;
-  float coeff1 = 315.f / (64.f*pi*pow(h,9.f));
-  float coeff2 = 15.f / (pi*pow(h,6.f));
-  float coeff3 = 45.f / (pi*pow(h,6.f));
-  float particleMass = 0.5f*doubleRestDensity / (restParticlesPerMeter*restParticlesPerMeter*restParticlesPerMeter);
-  densityCoeff = particleMass * coeff1;
-  pressureCoeff = 3.f*coeff2 * 0.5f*stiffness * particleMass;
-  viscosityCoeff = viscosity * coeff3 * particleMass;
-
-  // TODO: Update this code to scale up
-  Vec3 range = domainMax - domainMin;
-  nx = (int)(range.x / h);
-  ny = (int)(range.y / h);
-  nz = (int)(range.z / h);
-  numCells = nx*ny*nz;
-  delta.x = range.x / nx;
-  delta.y = range.y / ny;
-  delta.z = range.z / nz;
-  assert(delta.x >= h && delta.y >= h && delta.z >= h);
-  nbx = 8;
-  nby = 8;
-  nbz = 8;
+  nbx = 1;
+  nby = 1;
+  nbz = 1;
 
   for(int i = 1; i < argc; i++) {
     if(!strcmp(argv[i], "-s")) {
@@ -2039,8 +2131,6 @@ int main(int argc, char **argv)
     }
   }
   numBlocks = nbx * nby * nbz;
-  printf("fluid: cells     = %d (%d x %d x %d)\n", nx*ny*nz, nx, ny, nz);
-  printf("fluid: divisions = %d x %d x %d\n", nbx, nby, nbz);
   Config::args_read = true;
 
   return HighLevelRuntime::start(argc,argv);

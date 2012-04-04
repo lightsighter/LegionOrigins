@@ -81,7 +81,7 @@ _input_filename = None
 def prep_input():
     global _input_filename
     _input_filename = os.path.join(_root_dir, 'init.fluid')
-    shutil.copyfile(os.path.join(_root_dir, 'in_5K.fluid'),
+    shutil.copyfile(os.path.join(_root_dir, 'in_300K.fluid'),
                     _input_filename)
 
 def get_input():
@@ -98,7 +98,7 @@ _re_timing = re.compile(r'^ELAPSED TIME\s=\s+(\d+\.\d+)\ss$', re.MULTILINE)
 def parse_timing(output):
     match = re.search(_re_timing, output)
     if match is None:
-        return {'total': None, 'speedup': None}
+        return None
     return float(match.group(1))
 
 _baseline = None
@@ -106,6 +106,8 @@ def get_baseline():
     return _baseline
 
 def summarize_timing(timing):
+    if timing is None:
+        return {'error': 'timing not available'}
     if get_baseline() is None:
         return {'total': '%0.3f s' % timing, 'speedup': None}
     return {'total': '%0.3f s' % timing, 'speedup': '%0.3f' % (get_baseline() / timing)}
@@ -135,16 +137,18 @@ def perf_check(program, **params):
     summary = summarize(params, summarize_timing(timing))
     print summary
 
+_num_steps = 4
 if __name__ == '__main__':
     for thunk in prep: thunk()
+
     print 'Baseline PARSEC serial:'
-    init_baseline(parsec_serial)
+    init_baseline(parsec_serial, nbx = 1, nby = 1, nbz = 1, steps = _num_steps)
     print
 
     print 'PARSEC pthreads:'
     thread_counts = (1, 2, 4, 8)
     for thread_count in thread_counts:
-        perf_check(parsec_pthreads, nbx = thread_count, nby = 1, nbz = 1, steps = 10)
+        perf_check(parsec_pthreads, nbx = thread_count, nby = 1, nbz = 1, steps = _num_steps)
     print
 
     print 'Legion:'
@@ -152,4 +156,4 @@ if __name__ == '__main__':
     for nbx in divs:
         for nby in divs:
             for nbz in divs:
-                perf_check(legion, nbx = nbx, nby = nby, nbz = nbz, steps = 10)
+                perf_check(legion, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps)
