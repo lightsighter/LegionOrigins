@@ -12,6 +12,7 @@
 
 using namespace RegionRuntime::HighLevel;
 
+//#define DISABLE_MATH
 
 // Reduction Op
 class AccumulateCharge {
@@ -147,6 +148,7 @@ void region_main(const void *args, size_t arglen,
     int num_circuit_wires = num_pieces * wires_per_piece;
     circuit.all_nodes = runtime->create_logical_region(ctx,sizeof(CircuitNode), num_circuit_nodes);
     circuit.all_wires = runtime->create_logical_region(ctx,sizeof(CircuitWire), num_circuit_wires);
+    circuit.node_locator = runtime->create_logical_region(ctx, sizeof(bool), num_circuit_nodes);
   }
 
   // Load the circuit
@@ -190,6 +192,12 @@ void region_main(const void *args, size_t arglen,
   upv_regions.push_back(RegionRequirement(parts.shr_nodes.id, 0/*identity*/,
                                           READ_WRITE, NO_MEMORY, EXCLUSIVE,
                                           circuit.all_nodes));
+#ifndef USING_SHARED
+  // We need a copy of the map that tells us whether a pointer is pvt or shared
+  upv_regions.push_back(RegionRequirement(parts.node_locations.id, 0/*identity*/,
+                                          READ_ONLY, NO_MEMORY, EXCLUSIVE,
+                                          circuit.node_locator));
+#endif
 
   std::vector<Range> index_space;
   index_space.push_back(Range(0,num_pieces-1,1));
@@ -236,7 +244,7 @@ void calculate_currents_task(const void *global_args, size_t global_arglen,
                              std::vector<PhysicalRegion<AT> > &regions,
                              Context ctx, HighLevelRuntime *runtime)
 {
-#if 1
+#ifndef DISABLE_MATH
   PhysicalRegion<AT> pvt_wires = regions[0];
   PhysicalRegion<AT> pvt_nodes = regions[1];
   PhysicalRegion<AT> shr_nodes = regions[2];
@@ -298,7 +306,7 @@ void distribute_charge_task(const void *global_args, size_t global_arglen,
                             std::vector<PhysicalRegion<AT> > &regions,
                             Context ctx, HighLevelRuntime *runtime)
 {
-#if 1
+#ifndef DISABLE_MATH 
   PhysicalRegion<AT> pvt_wires = regions[0];
   PhysicalRegion<AT> pvt_nodes = regions[1];
   PhysicalRegion<AT> shr_nodes = regions[2];
@@ -327,7 +335,7 @@ void update_voltages_task(const void *global_args, size_t global_arglen,
                           std::vector<PhysicalRegion<AT> > &regions,
                           Context ctx, HighLevelRuntime *runtime)
 {
-#if 1
+#ifndef DISABLE_MATH
   PhysicalRegion<AT> pvt_nodes = regions[0];
   PhysicalRegion<AT> shr_nodes = regions[1];
 
@@ -347,6 +355,7 @@ void calculate_currents_task_gpu(const void *global_args, size_t global_arglen,
                                  std::vector<PhysicalRegion<AT> > &regions,
                                  Context ctx, HighLevelRuntime *runtime)
 {
+#ifndef DISABLE_MATH
   CircuitPiece *p = (CircuitPiece*)local_args;
   PhysicalRegion<AT> wires = regions[0];
   PhysicalRegion<AT> pvt   = regions[1];
@@ -358,6 +367,7 @@ void calculate_currents_task_gpu(const void *global_args, size_t global_arglen,
                         pvt.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
                         owned.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
                         ghost.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>());
+#endif
 }
 
 template<AccessorType AT>
@@ -367,6 +377,7 @@ void distribute_charge_task_gpu(const void *global_args, size_t global_arglen,
                                 std::vector<PhysicalRegion<AT> > &regions,
                                 Context ctx, HighLevelRuntime *runtime)
 {
+#ifndef DISABLE_MATH
   CircuitPiece *p = (CircuitPiece*)local_args;
   PhysicalRegion<AT> wires = regions[0];
   PhysicalRegion<AT> pvt   = regions[1];
@@ -378,6 +389,7 @@ void distribute_charge_task_gpu(const void *global_args, size_t global_arglen,
                         pvt.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
                         owned.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPUReductionFold>(),
                         ghost.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPUReductionFold>());
+#endif
 }
 
 template<AccessorType AT>
@@ -387,13 +399,17 @@ void update_voltages_task_gpu(const void *global_args, size_t global_arglen,
                               std::vector<PhysicalRegion<AT> > &regions,
                               Context ctx, HighLevelRuntime *runtime)
 {
+#ifndef DISABLE_MATH
   CircuitPiece *p = (CircuitPiece*)local_args;
-  PhysicalRegion<AT> pvt   = regions[0];
-  PhysicalRegion<AT> owned = regions[1];
+  PhysicalRegion<AT> pvt     = regions[0];
+  PhysicalRegion<AT> owned   = regions[1];
+  //PhysicalRegion<AT> locator = regions[2];
 
   update_voltages_gpu(p,
                       pvt.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
+                      owned.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
                       owned.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>());
+#endif
 }
 
 /// Start-up 
@@ -761,6 +777,12 @@ public:
                   target_ranking.push_back(zero_copy_mem);
                   break;
                 }
+              case 2:
+                {
+                  // Locator map, always put in our frame buffer
+                  target_ranking.push_back(fb_mem);
+                  break;
+                }
               default:
                 assert(false);
             }
@@ -896,27 +918,36 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
                                                                     RegionRequirement(ckt.all_nodes,
                                                                     READ_WRITE, ALLOCABLE, EXCLUSIVE,
                                                                     ckt.all_nodes));
+  PhysicalRegion<AccessorGeneric> locator = runtime->map_region<AccessorGeneric>(ctx,
+                                                                    RegionRequirement(ckt.node_locator,
+                                                                    READ_WRITE, ALLOCABLE, EXCLUSIVE,
+                                                                    ckt.node_locator));
 
   std::vector<std::set<utptr_t> > wire_owner_map(num_pieces);
   std::vector<std::set<utptr_t> > private_node_map(num_pieces);
   std::vector<std::set<utptr_t> > shared_node_map(num_pieces);
   std::vector<std::set<utptr_t> > ghost_node_map(num_pieces);
+  std::vector<std::set<utptr_t> > locator_node_map(num_pieces);
 
   std::vector<std::set<utptr_t> > privacy_map(2);
 
   srand48(random_seed);
 
   nodes.wait_until_valid();
+  locator.wait_until_valid();
   ptr_t<CircuitNode> *first_nodes = new ptr_t<CircuitNode>[num_pieces];
   // Allocate all the nodes
   nodes.alloc<CircuitNode>(num_pieces*nodes_per_piece);
+  locator.alloc<CircuitNode>(num_pieces*nodes_per_piece); 
   {
     PointerIterator *itr = nodes.iterator();
+    PointerIterator *loc_itr = locator.iterator();
     for (int n = 0; n < num_pieces; n++)
     {
       for (int i = 0; i < nodes_per_piece; i++)
       {
         assert(itr->has_next());
+        assert(loc_itr->has_next());
         ptr_t<CircuitNode> node_ptr = itr->next<CircuitNode>();
         // Record the first node pointer for this piece
         if (i == 0)
@@ -936,9 +967,11 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
         // wires that are non-local
         private_node_map[n].insert(node_ptr);
         privacy_map[0].insert(node_ptr);
+        locator_node_map[n].insert(loc_itr->next<bool>());
       }
     }
     delete itr;
+    delete loc_itr;
   }
 
   wires.wait_until_valid();
@@ -996,21 +1029,30 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
   // Second pass: first go through and see which of the private nodes are no longer private
   {
     PointerIterator *itr = nodes.iterator();
+    PointerIterator *loc_itr = locator.iterator();
     for (int n = 0; n < num_pieces; n++)
     {
       for (int i = 0; i < nodes_per_piece; i++)
       {
         assert(itr->has_next());
+        assert(loc_itr->has_next());
         ptr_t<CircuitNode> node_ptr = itr->next<CircuitNode>();
+        ptr_t<bool> loc_ptr = loc_itr->next<bool>();
         if (privacy_map[0].find(node_ptr) == privacy_map[0].end())
         {
           private_node_map[n].erase(node_ptr);
           // node is now shared
           shared_node_map[n].insert(node_ptr);
+          locator.write(loc_ptr,false); // node is local
+        }
+        else
+        {
+          locator.write(loc_ptr,true); // node is shared
         }
       }
     }
     delete itr;
+    delete loc_itr;
   }
   // Second pass (part 2): go through the wires and update the locations
   {
@@ -1035,6 +1077,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
   // Unmap our inline regions
   runtime->unmap_region(ctx, wires);
   runtime->unmap_region(ctx, nodes);
+  runtime->unmap_region(ctx, locator);
 
   // Now we can create our partitions and update the circuit pieces
 
@@ -1051,6 +1094,8 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
   result.ghost_nodes = runtime->create_partition(ctx, all_shared, ghost_node_map, false/*disjoint*/);
 
   result.pvt_wires = runtime->create_partition(ctx, ckt.all_wires, wire_owner_map); 
+
+  result.node_locations = runtime->create_partition(ctx, ckt.node_locator, locator_node_map);
 
   // Build the pieces
   for (int n = 0; n < num_pieces; n++)

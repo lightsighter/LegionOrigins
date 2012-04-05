@@ -48,6 +48,7 @@ struct CircuitWire {
 struct Circuit {
   LogicalRegion all_nodes;
   LogicalRegion all_wires;
+  LogicalRegion node_locator;
 };
 
 struct CircuitPiece {
@@ -62,6 +63,7 @@ struct CircuitPiece {
 struct Partitions {
   Partition pvt_wires;
   Partition pvt_nodes, shr_nodes, ghost_nodes;
+  Partition node_locations;
 };
 
 typedef RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorGPU> GPU_Accessor;
@@ -83,6 +85,7 @@ void distribute_charge_gpu(CircuitPiece *p,
 
 void update_voltages_gpu(CircuitPiece *p,
                          GPU_Accessor pvt,
-                         GPU_Accessor owned);
+                         GPU_Accessor owned,
+                         GPU_Accessor locator);
 
 #endif // __CIRCUIT_H__
