@@ -23,9 +23,17 @@ public:
 public:
   unsigned value; 
 public: 
+#ifdef __CUDACC__
+  __host__ __device__
+#endif
   utptr_t& operator=(const utptr_t &ptr) { value = ptr.value; return *this; }
+
   template<typename T>
+#ifdef __CUDACC__
+  __host__ __device__
+#endif
   utptr_t& operator=(const ptr_t<T> &ptr) { value = ptr.value; return *this; }
+
   bool operator==(const utptr_t &ptr) const { return (ptr.value == this->value); }
   bool operator!=(const utptr_t &ptr) const { return (ptr.value != this->value); }
   bool operator< (const utptr_t &ptr) const { return (ptr.value <  this->value); }
@@ -45,7 +53,13 @@ public:
 public:
   unsigned value; 
 public:
+#ifdef __CUDACC__
+  __host__ __device__
+#endif
   ptr_t<T>& operator=(const ptr_t<T> &ptr) { value = ptr.value; return *this; }
+#ifdef __CUDACC__
+  __host__ __device__
+#endif
   ptr_t<T>& operator=(const utptr_t &ptr)  { value = ptr.value; return *this; }
   bool operator==(const ptr_t<T> &ptr) const { return (ptr.value == this->value); }
   bool operator!=(const ptr_t<T> &ptr) const { return (ptr.value != this->value); }
