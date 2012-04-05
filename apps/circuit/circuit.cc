@@ -230,6 +230,7 @@ void region_main(const void *args, size_t arglen,
   {
     runtime->destroy_logical_region(ctx,circuit.all_nodes);
     runtime->destroy_logical_region(ctx,circuit.all_wires);
+    runtime->destroy_logical_region(ctx,circuit.node_locator);
   }
 }
 
