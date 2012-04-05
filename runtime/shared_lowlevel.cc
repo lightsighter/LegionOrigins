@@ -2371,16 +2371,110 @@ namespace RegionRuntime {
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
+    namespace RangeExecutors {
+      class Memcpy {
+      public:
+        Memcpy(void *_dst_base, const void *_src_base, size_t _elmt_size)
+          : dst_base((char*)_dst_base), src_base((const char*)_src_base), 
+            elmt_size(_elmt_size) { }
+
+        void do_span(int offset, int count)
+        {
+          off_t byte_offset = offset * elmt_size;
+          size_t byte_count = count  * elmt_size;
+          memcpy(dst_base + byte_offset,
+                 src_base + byte_offset,
+                 byte_count);
+        }
+
+      protected:
+        char *dst_base;
+        const char *src_base;
+        size_t elmt_size;
+      };
+
+      class RedopApply {
+      public:
+        RedopApply(const ReductionOpUntyped *_redop, void *_dst_base,
+                   const void *_src_base, size_t _elmt_size)
+          : redop(_redop), dst_base((char*)_dst_base),
+            src_base((const char*)_src_base), elmt_size(_elmt_size) { }
+
+        void do_span(int offset, int count)
+        {
+          off_t src_offset = offset * redop->sizeof_rhs; 
+          off_t dst_offset = offset * elmt_size;
+          redop->apply(dst_base + dst_offset,
+                       src_base + src_offset,
+                       count, false/*exclusive*/);
+        }
+
+      protected:
+        const ReductionOpUntyped *redop;
+        char *dst_base;
+        const char *src_base;
+        size_t elmt_size;
+      };
+
+      class RedopFold {
+      public:
+        RedopFold(const ReductionOpUntyped *_redop, void *_dst_base,
+                  const void *_src_base)
+          : redop(_redop), dst_base((char*)_dst_base),
+            src_base((const char*)_src_base) { }
+
+        void do_span(int offset, int count)
+        {
+          off_t byte_offset = offset * redop->sizeof_rhs; 
+          redop->fold(dst_base + byte_offset,
+                      src_base + byte_offset,
+                      count, false/*exclusive*/);
+        }
+
+      protected:
+        const ReductionOpUntyped *redop;
+        char *dst_base;
+        const char *src_base;
+      };
+    }; // Namespace RangeExecutors
+
     void RegionInstanceImpl::perform_copy_operation(RegionInstanceImpl *target, const ElementMask &src_mask, const ElementMask &dst_mask)
     {
-        ElementMask::Enumerator *src_ranges = src_mask.enumerate_enabled();
-        ElementMask::Enumerator *tgt_ranges = dst_mask.enumerate_enabled();
+        //ElementMask::Enumerator *src_ranges = src_mask.enumerate_enabled();
+        //ElementMask::Enumerator *tgt_ranges = dst_mask.enumerate_enabled();
 
         const void *src_ptr = base_ptr;
-        const void *tgt_ptr = target->base_ptr;
+        void       *tgt_ptr = target->base_ptr;
 #ifdef DEBUG_LOW_LEVEL
         assert((src_ptr != NULL) && (tgt_ptr != NULL));
 #endif
+        if (!reduction)
+        {
+#ifdef DEBUG_LOW_LEVEL
+          assert(!target->reduction);
+#endif
+          // This is a normal copy
+          RangeExecutors::Memcpy rexec(tgt_ptr, src_ptr, elmt_size);
+          ElementMask::forall_ranges(rexec, dst_mask, src_mask);
+        }
+        else
+        {
+          // This is a reduction instance, see if we are doing a reduction-to-normal copy 
+          // or a reduction-to-reduction copy
+          if (!target->reduction)
+          {
+            // Reduction-to-normal copy  
+            RangeExecutors::RedopApply rexec(redop, tgt_ptr, src_ptr, elmt_size);
+            ElementMask::forall_ranges(rexec, dst_mask, src_mask);
+          }
+          else
+          {
+            // Reduction-to-reduction copy
+            RangeExecutors::RedopFold rexec(redop, tgt_ptr, src_ptr);
+            ElementMask::forall_ranges(rexec, dst_mask, src_mask);
+          }
+        }
+#if 0
         int src_pos, src_len, tgt_pos, tgt_len;
         if (!reduction)
         {
@@ -2523,6 +2617,7 @@ namespace RegionRuntime {
 
         delete src_ranges;
         delete tgt_ranges;
+#endif
     }
 
     RegionInstanceUntyped RegionInstanceImpl::get_instance(void) const
