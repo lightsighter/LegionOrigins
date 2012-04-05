@@ -46,19 +46,19 @@ def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None, output = None,
     return (retcode, cmd_out)
 
 _input_filename = None
-def prep_input():
+def prep_input(size = 5):
     global _input_filename
     _input_filename = os.path.join(_root_dir, 'init.fluid')
-    shutil.copyfile(os.path.join(_root_dir, 'in_5K.fluid'),
+    shutil.copyfile(os.path.join(_root_dir, 'in_%dK.fluid' % size),
                     _input_filename)
 
 def get_input():
     return _input_filename
 
 _solution_filename = None
-def prep_solution():
+def prep_solution(size = 5):
     global _solution_filename
-    _solution_filename = os.path.join(_root_dir, 'out_5K.fluid')
+    _solution_filename = os.path.join(_root_dir, 'out_%dK.fluid' % size)
 
 def get_solution():
     return _solution_filename
@@ -161,6 +161,8 @@ def regress(**params):
 
 if __name__ == '__main__':
     for thunk in prep: thunk()
+
+    print 'Testing small (5K) input.'
     divs = (1, 2, 4)
     for nbx in divs:
         for nby in divs:
@@ -168,9 +170,19 @@ if __name__ == '__main__':
                 regress(nbx = nbx, nby = nby, nbz = nbz, steps = 1)
 
     print
-    print "Note: The following are not expected to pass, but shouldn't crash."
+    print "Note: The following are expected to fail, but should NOT crash."
     divs = (1, 2)
     for nbx in divs:
         for nby in divs:
             for nbz in divs:
                 regress(nbx = nbx, nby = nby, nbz = nbz, steps = 4)
+
+    prep_input(300)
+    prep_solution(300)
+    print
+    print 'Testing large (300K) input. (This might take a while.)'
+    divs = (1, 2, 4)
+    for nbx in divs:
+        for nby in divs:
+            for nbz in divs:
+                regress(nbx = nbx, nby = nby, nbz = nbz, steps = 1)

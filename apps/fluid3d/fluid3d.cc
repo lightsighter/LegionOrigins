@@ -584,7 +584,11 @@ void main_task(const void *args, size_t arglen,
     std::vector<std::set<utptr_t> > coloring;
     coloring.resize(numBlocks);
 
-    // allocate cells, store pointers, set up colors
+    // allocate cells, then iterate the region to get pointers
+    real_cells[b].template alloc<Cell>(nx*ny*nz);
+    PointerIterator *iter = real_cells[b].iterator();
+
+    // store pointers, set up colors
     for (unsigned idz = 0; idz < nbz; idz++)
       for (unsigned idy = 0; idy < nby; idy++)
         for (unsigned idx = 0; idx < nbx; idx++) {
@@ -593,7 +597,7 @@ void main_task(const void *args, size_t arglen,
           for(unsigned cz = 0; cz < blocks[id].CELLS_Z; cz++)
             for(unsigned cy = 0; cy < blocks[id].CELLS_Y; cy++)
               for(unsigned cx = 0; cx < blocks[id].CELLS_X; cx++) {
-                ptr_t<Cell> cell = real_cells[b].template alloc<Cell>();
+                ptr_t<Cell> cell = iter->next<Cell>();
                 coloring[id].insert(cell);
                 blocks[id].cells[b][cz+1][cy+1][cx+1] = cell;
               }
@@ -619,6 +623,11 @@ void main_task(const void *args, size_t arglen,
   coloring.resize(numBlocks * GHOST_CELLS);
 
   // allocate cells, set up coloring
+  unsigned rnx = nx + 2*nbx, rny = ny + 2*nby, rnz = nz + 2*nbz;
+  edge_cells.template alloc<Cell>(2*nbx*rny*rnz + 2*nby*rnx*rnz + 2*nbz*rnx*rny
+                                  - 4*nbx*nby*rnz - 4*nbx*nbz*rny - 4*nby*nbz*rnx
+                                  + 8*nbx*nby*nbz);
+  PointerIterator *iter = edge_cells.iterator();
   int color = 0;
   for (unsigned idz = 0; idz < nbz; idz++)
     for (unsigned idy = 0; idy < nby; idy++)
@@ -635,7 +644,7 @@ void main_task(const void *args, size_t arglen,
         // eight corners
 #define CORNER(dir,ix,iy,iz) do {                                       \
           unsigned id2 = (MOVE_BZ(idz,dir)*nby + MOVE_BY(idy,dir))*nbx + MOVE_BX(idx,dir); \
-          ptr_t<Cell> cell = edge_cells.template alloc<Cell>();         \
+          ptr_t<Cell> cell = iter->next<Cell>();                        \
           coloring[color + dir].insert(cell);                           \
           blocks[id].cells[0][iz*CZ][iy*CY][ix*CX] = cell;              \
           blocks[id2].cells[1][NEIGH_Z(idz, dir, iz)*C2Z][NEIGH_Y(idy, dir, iy)*C2Y][NEIGH_X(idx, dir, ix)*C2X] = cell; \
@@ -654,7 +663,7 @@ void main_task(const void *args, size_t arglen,
 #define XAXIS(dir,iy,iz) do {                                           \
           unsigned id2 = (MOVE_BZ(idz,dir)*nby + MOVE_BY(idy,dir))*nbx + idx; \
           for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {        \
-            ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
+            ptr_t<Cell> cell = iter->next<Cell>();                      \
             coloring[color + dir].insert(cell);                         \
             blocks[id].cells[0][iz*CZ][iy*CY][cx] = cell;               \
             blocks[id2].cells[1][NEIGH_Z(idz, dir, iz)*C2Z][NEIGH_Y(idy, dir, iy)*C2Y][cx] = cell; \
@@ -670,7 +679,7 @@ void main_task(const void *args, size_t arglen,
 #define YAXIS(dir,ix,iz) do {                                           \
           unsigned id2 = (MOVE_BZ(idz,dir)*nby + idy)*nbx + MOVE_BX(idx,dir); \
           for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {        \
-            ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
+            ptr_t<Cell> cell = iter->next<Cell>();                      \
             coloring[color + dir].insert(cell);                         \
             blocks[id].cells[0][iz*CZ][cy][ix*CX] = cell;               \
             blocks[id2].cells[1][NEIGH_Z(idz, dir, iz)*C2Z][cy][NEIGH_X(idx, dir, ix)*C2X] = cell; \
@@ -686,7 +695,7 @@ void main_task(const void *args, size_t arglen,
 #define ZAXIS(dir,ix,iy) do {                                           \
           unsigned id2 = (idz*nby + MOVE_BY(idy,dir))*nbx + MOVE_BX(idx,dir); \
           for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
-            ptr_t<Cell> cell = edge_cells.template alloc<Cell>();       \
+            ptr_t<Cell> cell = iter->next<Cell>();                      \
             coloring[color + dir].insert(cell);                         \
             blocks[id].cells[0][cz][iy*CY][ix*CX] = cell;               \
             blocks[id2].cells[1][cz][NEIGH_Y(idy, dir, iy)*C2Y][NEIGH_X(idx, dir, ix)*C2X] = cell; \
@@ -703,7 +712,7 @@ void main_task(const void *args, size_t arglen,
           unsigned id2 = (MOVE_BZ(idz,dir)*nby + idy)*nbx + idx;        \
           for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {        \
             for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {      \
-              ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
+              ptr_t<Cell> cell = iter->next<Cell>();                    \
               coloring[color + dir].insert(cell);                       \
               blocks[id].cells[0][iz*CZ][cy][cx] = cell;                \
               blocks[id2].cells[1][NEIGH_Z(idz, dir, iz)*C2Z][cy][cx] = cell; \
@@ -719,7 +728,7 @@ void main_task(const void *args, size_t arglen,
           unsigned id2 = (idz*nby + MOVE_BY(idy,dir))*nbx + idx;        \
           for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
             for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {      \
-              ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
+              ptr_t<Cell> cell = iter->next<Cell>();                    \
               coloring[color + dir].insert(cell);                       \
               blocks[id].cells[0][cz][iy*CY][cx] = cell;                \
               blocks[id2].cells[1][cz][NEIGH_Y(idy, dir, iy)*C2Y][cx] = cell; \
@@ -735,7 +744,7 @@ void main_task(const void *args, size_t arglen,
           unsigned id2 = (idz*nby + idy)*nbx + MOVE_BX(idx,dir);        \
           for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
             for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {      \
-              ptr_t<Cell> cell = edge_cells.template alloc<Cell>();     \
+              ptr_t<Cell> cell = iter->next<Cell>();                    \
               coloring[color + dir].insert(cell);                       \
               blocks[id].cells[0][cz][cy][ix*CX] = cell;                \
               blocks[id2].cells[1][cz][cy][NEIGH_X(idx, dir, ix)*C2X] = cell; \
@@ -2084,10 +2093,9 @@ public:
 
 void create_mappers(Machine *machine, HighLevelRuntime *runtime, Processor local)
 {
-  // Elliott: mapper dropping half my particles????
-  // Yes, it looks like this really does have an impact (2012-03-19 4:02pm)
-  // It's still not perfect, but I lose half my particles with FluidMapper
-  runtime->replace_default_mapper(new FluidMapper(machine,runtime,local));
+  // Elliott: This shouldn't impact correctness any more, but might
+  // impact performance and/or memory use.
+  //runtime->replace_default_mapper(new FluidMapper(machine,runtime,local));
 }
 
 int main(int argc, char **argv)
