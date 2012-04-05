@@ -1243,7 +1243,7 @@ namespace RegionRuntime {
       virtual RegionUsage get_usage(unsigned idx) const = 0;
       virtual const RegionRequirement& get_requirement(unsigned idx) const = 0;
       virtual void add_source_physical_instance(InstanceInfo *info) = 0;
-      virtual const TaskContext*const get_enclosing_task(void) const = 0;
+      virtual const TaskContext* get_enclosing_task(void) const = 0;
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const = 0;
       virtual void notify(void) = 0;
       virtual void add_mapping_dependence(unsigned idx, const LogicalUser &target, const DependenceType &dtype) = 0;
@@ -1371,7 +1371,7 @@ namespace RegionRuntime {
       virtual Event get_individual_term_event(void) const;
       virtual RegionUsage get_usage(unsigned idx) const;
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
-      virtual const TaskContext*const get_enclosing_task(void) const { return parent_ctx; }
+      virtual const TaskContext* get_enclosing_task(void) const { return parent_ctx; }
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const;
       virtual void add_mapping_dependence(unsigned idx, const LogicalUser &target, const DependenceType &dtype);
       virtual void add_unresolved_dependence(unsigned idx, GeneralizedContext *c, DependenceType dtype);
@@ -1588,7 +1588,7 @@ namespace RegionRuntime {
       virtual Event get_individual_term_event(void) const;
       virtual RegionUsage get_usage(unsigned idx) const;
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
-      virtual const TaskContext*const get_enclosing_task(void) const { return parent_ctx; }
+      virtual const TaskContext* get_enclosing_task(void) const { return parent_ctx; }
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const;
       virtual void add_mapping_dependence(unsigned idx, const LogicalUser &target, const DependenceType &dtype);
       virtual void add_unresolved_dependence(unsigned idx, GeneralizedContext *ctx, DependenceType dtype);
@@ -1645,7 +1645,7 @@ namespace RegionRuntime {
       virtual Event get_individual_term_event(void) const;
       virtual RegionUsage get_usage(unsigned idx) const;
       virtual const RegionRequirement& get_requirement(unsigned idx) const;
-      virtual const TaskContext*const get_enclosing_task(void) const { return parent_ctx; }
+      virtual const TaskContext* get_enclosing_task(void) const { return parent_ctx; }
       virtual InstanceInfo* get_chosen_instance(unsigned idx) const;
       virtual void add_mapping_dependence(unsigned idx, const LogicalUser &target, const DependenceType &dtype);
       virtual void add_unresolved_dependence(unsigned idx, GeneralizedContext *ctx, DependenceType dtype);
