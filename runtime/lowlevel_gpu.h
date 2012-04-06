@@ -22,6 +22,10 @@ namespace RegionRuntime {
 			      //std::set<RegionInstanceUntyped> instances_needed,
 			      Event start_event, Event finish_event);
 
+      virtual void enable_idle_task(void);
+
+      virtual void disable_idle_task(void);
+
       void copy_to_fb(off_t dst_offset, const void *src, size_t bytes,
 		      Event start_event, Event finish_event);
 

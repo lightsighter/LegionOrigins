@@ -721,7 +721,7 @@ namespace RegionRuntime {
 	  if(!data->valid) {
 	    // get a valid copy of the static data by taking and then releasing
 	    //  a shared lock
-	    thing_with_data->lock.lock(1, false).wait();
+	    thing_with_data->lock.lock(1, false).wait(true);// TODO: must this be blocking?
 	    thing_with_data->lock.unlock();
 	    assert(data->valid);
 	  }
@@ -2847,7 +2847,7 @@ namespace RegionRuntime {
 		 task->finish_event.gen);
 	}
 
-	void sleep_on_event(Event wait_for)
+	void sleep_on_event(Event wait_for, bool block = false)
 	{
 #define MULTIPLE_TASKS_PER_THREAD	  
 #ifdef MULTIPLE_TASKS_PER_THREAD	  
@@ -2855,7 +2855,7 @@ namespace RegionRuntime {
 	  //  we can do in the meantime
 	  log_task(LEVEL_DEBUG, "thread needs to wait on event: event=%x/%d",
 		   wait_for.id, wait_for.gen);
-	  while(1) {
+	  while(!block) {
 	    if(wait_for.has_triggered()) return; // early out
 
 	    AutoHSLLock a(proc->mutex);
@@ -3027,7 +3027,7 @@ namespace RegionRuntime {
 	    } else {
 	      // we're idle - see if somebody else is already calling the
 	      //  idle task (or if we're at the limit of active threads
-	      if(proc->idle_task && !proc->in_idle_task &&
+	      if(proc->idle_task && !proc->in_idle_task && proc->idle_task_enabled &&
 		 (proc->active_thread_count < proc->max_active_threads)) {
 		proc->in_idle_task = true;
 		proc->active_thread_count++;
@@ -3137,7 +3137,8 @@ namespace RegionRuntime {
 	: Processor::Impl(_me, Processor::LOC_PROC), core_id(_core_id),
 	  total_threads(_total_threads),
 	  active_thread_count(0), max_active_threads(_max_active_threads),
-	  init_done(false), shutdown_requested(false), in_idle_task(false)
+	  init_done(false), shutdown_requested(false), in_idle_task(false),
+	  idle_task_enabled(true)
       {
 	// if a processor-idle task is in the table, make a Task object for it
 	Processor::TaskIDTable::iterator it = task_id_table.find(Processor::TASK_ID_PROCESSOR_IDLE);
@@ -3205,7 +3206,7 @@ namespace RegionRuntime {
 	}
 
 	// can we give them the idle task to run?
-	if(idle_task && !in_idle_task) {
+	if(idle_task && !in_idle_task && idle_task_enabled) {
 	  in_idle_task = true;
 	  active_thread_count++;
 	  log_task(LEVEL_SPEW, "idle task assigned to thread: proc=%x", me.id);
@@ -3281,6 +3282,20 @@ namespace RegionRuntime {
 	}
       }
 
+      virtual void enable_idle_task(void)
+      {
+	log_task.info("idle task enabled for processor %x", me.id);
+	idle_task_enabled = true;
+	// TODO: wake up thread if we're called from another thread
+      }
+
+      virtual void disable_idle_task(void)
+      {
+	//log_task.info("idle task NOT disabled for processor %x", me.id);
+	//log_task.info("idle task disabled for processor %x", me.id);
+	//idle_task_enabled = false;
+      }
+
     protected:
       int core_id;
       int total_threads, active_thread_count, max_active_threads;
@@ -3291,6 +3306,7 @@ namespace RegionRuntime {
       gasnet_hsl_t mutex;
       bool init_done, shutdown_requested, in_idle_task;
       Task *idle_task;
+      bool idle_task_enabled;
     };
 
     struct SpawnTaskArgs {
@@ -3316,7 +3332,7 @@ namespace RegionRuntime {
       void *ptr = gasnett_threadkey_get(cur_thread);
       if(ptr != 0) {
 	LocalProcessor::Thread *thr = (LocalProcessor::Thread *)ptr;
-	thr->sleep_on_event(*this);
+	thr->sleep_on_event(*this, block);
 	return;
       }
       // maybe a GPU thread?
@@ -3404,12 +3420,12 @@ namespace RegionRuntime {
 
     void Processor::enable_idle_task(void)
     {
-      // TODO: Implement this
+      impl()->enable_idle_task();
     }
 
     void Processor::disable_idle_task(void)
     {
-      // TODO: Implement this
+      impl()->disable_idle_task();
     }
 
     ///////////////////////////////////////////////////
@@ -4197,6 +4213,42 @@ namespace RegionRuntime {
 	size_t elmt_size;
       };
 
+      class GasnetPutReduce : public GasnetPut {
+      public:
+	GasnetPutReduce(Memory::Impl *_tgt_mem, off_t _tgt_offset,
+			const ReductionOpUntyped *_redop, bool _redfold,
+			const void *_src_ptr, size_t _elmt_size)
+	  : GasnetPut(_tgt_mem, _tgt_offset, _src_ptr, _elmt_size),
+	    redop(_redop), redfold(_redfold) {}
+
+	void do_span(int offset, int count)
+	{
+	  assert(redfold == false);
+	  off_t tgt_byte_offset = offset * redop->sizeof_lhs;
+	  off_t src_byte_offset = offset * elmt_size;
+	  assert(elmt_size == redop->sizeof_rhs);
+
+	  char buffer[1024];
+	  assert(redop->sizeof_lhs <= 1024);
+
+	  for(int i = 0; i < count; i++) {
+	    tgt_mem->get_bytes(tgt_offset + tgt_byte_offset,
+			       buffer,
+			       redop->sizeof_lhs);
+
+	    redop->apply(buffer, src_ptr + src_byte_offset, 1, true);
+	      
+	    tgt_mem->put_bytes(tgt_offset + tgt_byte_offset,
+			       buffer,
+			       redop->sizeof_lhs);
+	  }
+	}
+
+      protected:
+	const ReductionOpUntyped *redop;
+	bool redfold;
+      };
+
       class GasnetGet {
       public:
 	GasnetGet(void *_tgt_ptr,
@@ -4343,10 +4395,16 @@ namespace RegionRuntime {
 
 	  case Memory::Impl::MKIND_GASNET:
 	    {
-	      assert(!redop);
-	      RangeExecutors::GasnetPut rexec(tgt_mem, tgt_data->offset,
-					      src_ptr, elmt_size);
-	      ElementMask::forall_ranges(rexec, *reg_impl->valid_mask);
+	      if(redop) {
+		RangeExecutors::GasnetPutReduce rexec(tgt_mem, tgt_data->offset,
+						      redop, red_fold,
+						      src_ptr, elmt_size);
+		ElementMask::forall_ranges(rexec, *reg_impl->valid_mask);
+	      } else {
+		RangeExecutors::GasnetPut rexec(tgt_mem, tgt_data->offset,
+						src_ptr, elmt_size);
+		ElementMask::forall_ranges(rexec, *reg_impl->valid_mask);
+	      }
 	    }
 	    break;
 
@@ -5128,9 +5186,35 @@ namespace RegionRuntime {
       {
 	StaticAccess<RegionInstanceUntyped::Impl> src_data(src_impl);
 	bytes_to_copy = src_data->region.impl()->instance_size();
-	elmt_size = StaticAccess<RegionMetaDataUntyped::Impl>(src_data->region.impl())->elmt_size;
+	elmt_size = (src_data->is_reduction ?
+		       reduce_op_table[src_data->redopid]->sizeof_rhs :
+		       StaticAccess<RegionMetaDataUntyped::Impl>(src_data->region.impl())->elmt_size);
       }
       log_copy.debug("COPY %x (%d) -> %x (%d) - %zd bytes (%zd)", id, src_mem->kind, target.id, dst_mem->kind, bytes_to_copy, elmt_size);
+
+      // check to see if we can access the source memory - if not, we'll send
+      //  the request to somebody who can
+      if(src_mem->kind == Memory::Impl::MKIND_REMOTE) {
+	// plan B: if one side is remote, try delegating to the node
+	//  that owns the other side of the copy
+	unsigned delegate = ID(src_impl->memory).node();
+	assert(delegate != gasnet_mynode());
+
+	log_copy.info("passsing the buck to node %d for %x->%x copy",
+		      delegate, src_mem->me.id, dst_mem->me.id);
+	Event after_copy = Event::Impl::create_event();
+	RemoteCopyArgs args;
+	args.source = *this;
+	args.target = target;
+	args.region = region;
+	args.elmt_size = elmt_size;
+	args.bytes_to_copy = bytes_to_copy;
+	args.before_copy = wait_on;
+	args.after_copy = after_copy;
+	RemoteCopyMessage::request(delegate, args);
+	
+	return after_copy;
+      }
 
       if(!wait_on.has_triggered()) {
 	Event after_copy = Event::Impl::create_event();

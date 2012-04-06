@@ -1,6 +1,8 @@
 
 GASNET 	:= /usr/local/gasnet-1.16.2
+ifndef CUDA
 CUDA	:= /usr/local/cuda
+endif
 
 ifndef LG_RT_DIR
 $(error LG_RT_DIR variable is not defined, aborting build)

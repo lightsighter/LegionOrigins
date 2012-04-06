@@ -274,7 +274,7 @@ namespace RegionRuntime {
 	  if(!data->valid) {
 	    // get a valid copy of the static data by taking and then releasing
 	    //  a shared lock
-	    thing_with_data->lock.lock(1, false).wait();
+	    thing_with_data->lock.lock(1, false).wait(true);// TODO: must this be blocking?
 	    thing_with_data->lock.unlock();
 	    assert(data->valid);
 	  }
@@ -367,6 +367,9 @@ namespace RegionRuntime {
 	if(run_counter)
 	  run_counter->decrement();
       }
+
+      virtual void enable_idle_task(void) { assert(0); }
+      virtual void disable_idle_task(void) { assert(0); }
 
     public:
       Processor me;

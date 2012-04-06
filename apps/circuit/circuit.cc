@@ -12,6 +12,8 @@
 
 using namespace RegionRuntime::HighLevel;
 
+RegionRuntime::Logger::Category log_circuit("circuit");
+
 //#define DISABLE_MATH
 
 // Reduction Op
@@ -137,7 +139,7 @@ void region_main(const void *args, size_t arglen,
     parse_input_args(argv, argc, num_loops, num_pieces, nodes_per_piece, 
                       wires_per_piece, pct_wire_in_piece, random_seed);
 
-    printf("circuit settings: loops=%d pieces=%d nodes/piece=%d wires/piece=%d pct_in_piece=%d seed=%d\n",
+    log_circuit.info("circuit settings: loops=%d pieces=%d nodes/piece=%d wires/piece=%d pct_in_piece=%d seed=%d\n",
        num_loops, num_pieces, nodes_per_piece, wires_per_piece,
        pct_wire_in_piece, random_seed);
   }
@@ -215,6 +217,8 @@ void region_main(const void *args, size_t arglen,
   // Run the main loop
   for (int i = 0; i < num_loops; i++)
   {
+    log_circuit.info("starting loop %d out of %d", i, num_loops);
+
     // Calculate new currents
     runtime->execute_index_space(ctx, CALC_NEW_CURRENTS, index_space,
                                   cnc_regions, global_arg, local_args, false/*must*/);
@@ -225,6 +229,8 @@ void region_main(const void *args, size_t arglen,
     runtime->execute_index_space(ctx, UPDATE_VOLTAGES, index_space,
                                   upv_regions, global_arg, local_args, false/*must*/);
   }
+
+  log_circuit.info("simulation complete - destroying regions");
 
   // Now we can destroy the regions
   {
@@ -450,8 +456,6 @@ int main(int argc, char **argv)
 // Mappers 
 /////////////////
 
-RegionRuntime::Logger::Category log_circuit("circuit");
-
 class SharedMapper : public Mapper {
 public:
   SharedMapper(Machine *m, HighLevelRuntime *rt, Processor local)
@@ -460,7 +464,7 @@ public:
     local_mem = memory_stack[0];
     global_mem = memory_stack[1];
 
-    log_circuit(LEVEL_INFO,"CPU %x has local memory %x and global memory %x",local_proc.id,local_mem.id,global_mem.id);
+    log_circuit.debug("CPU %x has local memory %x and global memory %x",local_proc.id,local_mem.id,global_mem.id);
   }
 
   virtual bool spawn_child_task(const Task *task)
@@ -579,7 +583,7 @@ public:
         std::vector<ProcessorMemoryAffinity> result;
         m->get_proc_mem_affinity(result, local_proc, gasnet_mem);
         assert(result.size() == 1);
-        log_circuit(LEVEL_INFO,"CPU %x has gasnet memory %x with "
+        log_circuit.debug("CPU %x has gasnet memory %x with "
             "bandwidth %u and latency %u",local_proc.id, gasnet_mem.id,
             result[0].bandwidth, result[0].latency);
       }
@@ -588,7 +592,7 @@ public:
         std::vector<ProcessorMemoryAffinity> result;
         m->get_proc_mem_affinity(result, local_proc, zero_copy_mem);
         assert(result.size() == 1);
-        log_circuit(LEVEL_INFO,"CPU %x has zero copy memory %x with "
+        log_circuit.debug("CPU %x has zero copy memory %x with "
             "bandwidth %u and latency %u",local_proc.id, zero_copy_mem.id,
             result[0].bandwidth, result[0].latency);
       }
@@ -603,7 +607,7 @@ public:
         std::vector<ProcessorMemoryAffinity> result;
         m->get_proc_mem_affinity(result, local_proc, zero_copy_mem);
         assert(result.size() == 1);
-        log_circuit(LEVEL_INFO,"GPU %x has zero copy memory %x with "
+        log_circuit.debug("GPU %x has zero copy memory %x with "
             "bandwidth %u and latency %u",local_proc.id, zero_copy_mem.id,
             result[0].bandwidth, result[0].latency);
       }
@@ -612,7 +616,7 @@ public:
         std::vector<ProcessorMemoryAffinity> result;
         m->get_proc_mem_affinity(result, local_proc, fb_mem);
         assert(result.size() == 1);
-        log_circuit(LEVEL_INFO,"GPU %x has frame buffer memory %x with "
+        log_circuit.debug("GPU %x has frame buffer memory %x with "
             "bandwidth %u and latency %u",local_proc.id, fb_mem.id,
             result[0].bandwidth, result[0].latency);
       }
@@ -635,7 +639,7 @@ public:
           }
         }
         gasnet_mem = result[min_idx].m;
-        log_circuit(LEVEL_INFO,"GPU %x has gasnet memory %x with "
+        log_circuit.debug("GPU %x has gasnet memory %x with "
             "bandwidth %u and latency %u",local_proc.id,gasnet_mem.id,
             result[min_idx].bandwidth,result[min_idx].latency);
       }
@@ -909,7 +913,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
                         HighLevelRuntime *runtime, int num_pieces, int nodes_per_piece,
                         int wires_per_piece, int pct_wire_in_piece, int random_seed)
 {
-  printf("Initializing circuit simulation...\n");
+  log_circuit.info("Initializing circuit simulation...\n");
   // inline map physical instances for the nodes and wire regions
   PhysicalRegion<AccessorGeneric> wires = runtime->map_region<AccessorGeneric>(ctx, 
                                                                     RegionRequirement(ckt.all_wires,
@@ -1114,7 +1118,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
   delete [] first_wires;
   delete [] first_nodes;
 
-  printf("Finished initializing simulation...\n");
+  log_circuit.info("Finished initializing simulation...\n");
 
   return result;
 }

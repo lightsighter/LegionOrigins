@@ -72,13 +72,15 @@ namespace RegionRuntime {
       bool initialized;
       bool worker_enabled;
       bool shutdown_requested;
+      bool idle_task_enabled;
       pthread_t gpu_thread;
       gasnet_hsl_t mutex;
       gasnett_cond_t parent_condvar, worker_condvar;
       std::list<GPUJob *> jobs;
 
       Internal(void)
-	: initialized(false), worker_enabled(false), shutdown_requested(false)
+	: initialized(false), worker_enabled(false), shutdown_requested(false),
+	  idle_task_enabled(true)
       {
 	gasnet_hsl_init(&mutex);
 	gasnett_cond_init(&parent_condvar);
@@ -136,20 +138,20 @@ namespace RegionRuntime {
 	    while((jobs.size() == 0) && !shutdown_requested) {
 	      // see if there's an idle task we should run
 	      Processor::TaskIDTable::iterator it = task_id_table.find(Processor::TASK_ID_PROCESSOR_IDLE);
-	      if(it != task_id_table.end()) {
+	      if(idle_task_enabled && (it != task_id_table.end())) {
 		gasnet_hsl_unlock(&mutex);
 		log_gpu.spew("running scheduler thread");
 		(it->second)(0, 0, gpu->me);
 		log_gpu.spew("returned from scheduler thread");
 		gasnet_hsl_lock(&mutex);
 	      } else {
-		printf("job queue empty - sleeping\n");
+		log_gpu.debug("job queue empty - sleeping\n");
 		gasnett_cond_wait(&worker_condvar, &mutex.lock);
 		if(shutdown_requested) {
-		  printf("awoke due to shutdown request...\n");
+		  log_gpu.debug("awoke due to shutdown request...\n");
 		  break;
 		}
-		printf("awake again...\n");
+		log_gpu.debug("awake again...\n");
 	      }
 	    }
 	    if(shutdown_requested) break;
@@ -391,6 +393,20 @@ namespace RegionRuntime {
 	internal->shutdown_requested = true;
 	gasnett_cond_signal(&internal->worker_condvar);
       }
+    }
+
+    void GPUProcessor::enable_idle_task(void)
+    {
+      log_gpu.info("idle task enabled for processor %x", me.id);
+      internal->idle_task_enabled = true;
+      // TODO: wake up thread if we're called from another thread
+    }
+
+    void GPUProcessor::disable_idle_task(void)
+    {
+      //log_gpu.info("idle task NOT disabled for processor %x", me.id);
+      //log_gpu.info("idle task disabled for processor %x", me.id);
+      //internal->idle_task_enabled = false;
     }
 
     void GPUProcessor::copy_to_fb(off_t dst_offset, const void *src, size_t bytes,
