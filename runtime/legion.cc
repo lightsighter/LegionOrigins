@@ -579,6 +579,7 @@ namespace RegionRuntime {
       alloc = rhs.alloc;
       prop = rhs.prop;
       parent = rhs.parent;
+      redop = rhs.redop;
       verified = rhs.verified;
       func_type = rhs.func_type;
       switch (func_type)
