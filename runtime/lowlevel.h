@@ -518,13 +518,16 @@ namespace RegionRuntime {
 
 #ifdef __CUDACC__
       template <class T>
-      __device__ T read(ptr_t<T> ptr) const { return ((T*)array_base)[ptr.value]; }
+      __device__ __forceinline__
+      T read(ptr_t<T> ptr) const { return ((T*)array_base)[ptr.value]; }
 
       template <class T>
-      __device__ void write(ptr_t<T> ptr, T newval) const { ((T*)array_base)[ptr.value] = newval; }
+      __device__ __forceinline__
+      void write(ptr_t<T> ptr, T newval) const { ((T*)array_base)[ptr.value] = newval; }
 
       template <class REDOP, class T, class RHS>
-      __device__ void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::apply<false>(((T*)array_base)[ptr.value], newval); }
+      __device__ __forceinline__
+      void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::apply<false>(((T*)array_base)[ptr.value], newval); }
 #endif
     };
 
@@ -542,7 +545,8 @@ namespace RegionRuntime {
 #ifdef __CUDACC__
       // no read or write on a reduction-fold-only accessor
       template <class REDOP, class T, class RHS>
-      __device__ void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::fold<false>(((RHS*)array_base)[ptr.value], newval); }
+      __device__ __forceinline__
+      void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::fold<false>(((RHS*)array_base)[ptr.value], newval); }
 #endif
     };
 
