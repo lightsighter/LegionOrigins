@@ -5801,7 +5801,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           log_inst(LEVEL_DEBUG,"Region %x (idx %d) of task %s (ID %d) (unique id %d) was pre-mapped to physical "
               "instance %x of logical region %x in memory %x",regions[idx].handle.region.id,idx,
-              variants->name, task_id, unique_id,pre_mapped_regions[idx].info->iid,
+              variants->name, task_id, unique_id,pre_mapped_regions[idx].info->inst.id,
               pre_mapped_regions[idx].info->handle.id,pre_mapped_regions[idx].info->location.id);
 #endif
           // Make this a No-instance so that it doesn't get send back, but in 
@@ -5911,9 +5911,9 @@ namespace RegionRuntime {
             }
 #ifdef DEBUG_HIGH_LEVEL
             log_inst(LEVEL_DEBUG,"Mapping region %x (idx %d) of task %s (ID %d) (unique id %d) to physical "
-                "instance %x of logical region %x in memory %x",regions[idx].handle.region.id,idx,
+                "instance %x (iid %d) of logical region %x in memory %x",regions[idx].handle.region.id,idx,
                 variants->name, task_id,
-                unique_id,info->inst.id,info->handle.id,info->location.id);
+                unique_id,info->inst.id,info->iid,info->handle.id,info->location.id);
 #endif
             physical_instances.push_back(info);
             physical_owned.push_back(instance_owned);
