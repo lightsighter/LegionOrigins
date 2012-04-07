@@ -41,9 +41,9 @@ namespace RegionRuntime {
 #endif
       id_t id;
       gen_t gen;
-      bool operator<(const Event& rhs) const { return id < rhs.id; }
-      bool operator==(const Event& rhs) const { return id == rhs.id; }
-      bool operator!=(const Event& rhs) const { return id != rhs.id; }
+      bool operator<(const Event& rhs) const { return  (id < rhs.id) || (gen < rhs.gen); }
+      bool operator==(const Event& rhs) const { return (id == rhs.id) && (gen == rhs.gen); }
+      bool operator!=(const Event& rhs) const { return (id != rhs.id) || (gen != rhs.gen); }
 
       class Impl;
       Impl *impl(void) const;
