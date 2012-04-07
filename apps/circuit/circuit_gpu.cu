@@ -4,13 +4,24 @@
 
 #include "circuit.h"
 
+#define CUDA_SAFE_CALL(expr)				\
+	{						\
+		cudaError_t err = (expr);		\
+		if (err != cudaSuccess)			\
+		{					\
+			printf("Cuda error: %s\n", cudaGetErrorString(err));	\
+			assert(false);			\
+		}					\
+	}
+
+
 class GPUAccumulateCharge {
 public:
   typedef CircuitNode LHS;
   typedef float RHS;
 
   template<bool EXCLUSIVE>
-  __device__
+  __device__ __forceinline__
   static void apply(LHS &lhs, RHS &rhs)
   {
     float *target = &(lhs.charge); 
@@ -18,7 +29,7 @@ public:
   }
 
   template<bool EXCLUSIVE>
-  __device__
+  __device__ __forceinline__
   static void fold(RHS &rhs1, RHS rhs2)
   {
     float *target = &rhs1;
@@ -26,7 +37,7 @@ public:
   }
 };
 
-__device__
+__device__ __forceinline__
 CircuitNode get_node(GPU_Accessor pvt, GPU_Accessor owned, GPU_Accessor ghost, 
                       PointerLocation loc, ptr_t<CircuitNode> ptr)
 {
@@ -48,8 +59,10 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
                               GPU_Accessor wires,
                               GPU_Accessor pvt,
                               GPU_Accessor owned,
-                              GPU_Accessor ghost)
+                              GPU_Accessor ghost,
+                              int flag)
 {
+#ifndef DISABLE_MATH
   int tid = blockIdx.x * blockDim.x + threadIdx.x; 
 
   if (tid < num_wires)
@@ -94,9 +107,9 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
       wire.current[i] = new_i[i];
     for (int i = 0; i < WIRE_SEGMENTS-1; i++)
       wire.voltage[i] = new_v[i+1];
-
     wires.write(local_ptr, wire);
   }
+#endif
 }
 
 __host__
@@ -104,19 +117,21 @@ void calc_new_currents_gpu(CircuitPiece *p,
                            GPU_Accessor wires,
                            GPU_Accessor pvt,
                            GPU_Accessor owned,
-                           GPU_Accessor ghost)
+                           GPU_Accessor ghost,
+                           int flag)
 {
   int num_blocks = (p->num_wires+255) >> 8; 
 
   calc_new_currents_kernel<<<num_blocks,256>>>(p->first_wire,
                                                p->num_wires,
-                                               wires, pvt, owned, ghost);
+                                               wires, pvt, owned, ghost,
+                                               flag);
 
-  cudaDeviceSynchronize();
+  CUDA_SAFE_CALL(cudaDeviceSynchronize());
 }
 
 template<typename REDOP>
-__device__
+__device__ __forceinline__
 void reduce_local(GPU_Accessor pvt, GPU_Reducer owned, GPU_Reducer ghost,
                   PointerLocation loc, ptr_t<CircuitNode> ptr, typename REDOP::RHS value)
 {
@@ -131,6 +146,8 @@ void reduce_local(GPU_Accessor pvt, GPU_Reducer owned, GPU_Reducer ghost,
     case GHOST_PTR:
       ghost.template reduce<REDOP,CircuitNode,typename REDOP::RHS>(ptr, value);
       break;
+    default:
+      assert(false);
   }
 }
 
@@ -140,8 +157,10 @@ void distribute_charge_kernel(ptr_t<CircuitWire> first,
                               GPU_Accessor wires,
                               GPU_Accessor pvt,
                               GPU_Reducer owned,
-                              GPU_Reducer ghost)
+                              GPU_Reducer ghost,
+                              int flag)
 {
+#ifndef DISABLE_MATH
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
   if (tid < num_wires)
@@ -156,6 +175,7 @@ void distribute_charge_kernel(ptr_t<CircuitWire> first,
     reduce_local<GPUAccumulateCharge>(pvt, owned, ghost, wire.in_loc, wire.in_ptr, -dt * wire.current[0]);
     reduce_local<GPUAccumulateCharge>(pvt, owned, ghost, wire.out_loc, wire.out_ptr, dt * wire.current[WIRE_SEGMENTS-1]);
   }
+#endif
 }
 
 __host__
@@ -163,15 +183,17 @@ void distribute_charge_gpu(CircuitPiece *p,
                            GPU_Accessor wires,
                            GPU_Accessor pvt,
                            GPU_Reducer owned,
-                           GPU_Reducer ghost)
+                           GPU_Reducer ghost,
+                           int flag)
 {
   int num_blocks = (p->num_wires+255) >> 8;
 
   distribute_charge_kernel<<<num_blocks,256>>>(p->first_wire,
                                                p->num_wires,
-                                               wires, pvt, owned, ghost);
+                                               wires, pvt, owned, ghost,
+                                               flag);
 
-  cudaDeviceSynchronize();
+  CUDA_SAFE_CALL(cudaDeviceSynchronize());
 }
 
 __global__
@@ -179,8 +201,10 @@ void update_voltages_kernel(ptr_t<CircuitNode> first,
                             int num_nodes,
                             GPU_Accessor pvt,
                             GPU_Accessor owned,
-                            GPU_Accessor locator)
+                            GPU_Accessor locator,
+                            int flag)
 {
+#ifndef DISABLE_MATH
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
   if (tid < num_nodes)
@@ -190,37 +214,42 @@ void update_voltages_kernel(ptr_t<CircuitNode> first,
     ptr_t<CircuitNode> local_node;
     local_node.value = first.value + tid;
     // Figure out if this node is pvt or not
-    bool is_pvt = locator.read(locator_ptr);
-    CircuitNode cur_node;
-    if (is_pvt)
-      cur_node = pvt.read(local_node);
-    else
-      cur_node = owned.read(local_node);
+    {
+      bool is_pvt = locator.read(locator_ptr);
+      CircuitNode cur_node;
+      if (is_pvt)
+        cur_node = pvt.read(local_node);
+      else
+        cur_node = owned.read(local_node);
 
-    // charge adds in, and then some leaks away
-    cur_node.voltage += cur_node.charge / cur_node.capacitance;
-    cur_node.voltage *= (1 - cur_node.leakage);
-    cur_node.charge = 0;
+      // charge adds in, and then some leaks away
+      cur_node.voltage += cur_node.charge / cur_node.capacitance;
+      cur_node.voltage *= (1 - cur_node.leakage);
+      cur_node.charge = 0;
 
-    if (is_pvt)
-      pvt.write(local_node, cur_node);
-    else
-      owned.write(local_node, cur_node);
+      if (is_pvt)
+        pvt.write(local_node, cur_node);
+      else
+        owned.write(local_node, cur_node);
+    }
   }
+#endif
 }
 
 __host__
 void update_voltages_gpu(CircuitPiece *p,
                          GPU_Accessor pvt,
                          GPU_Accessor owned,
-                         GPU_Accessor locator)
+                         GPU_Accessor locator,
+                         int flag)
 {
   int num_blocks = (p->num_nodes+255) >> 8;
 
   update_voltages_kernel<<<num_blocks,256>>>(p->first_node,
                                              p->num_nodes,
-                                             pvt, owned, locator);
+                                             pvt, owned, locator,
+                                             flag);
 
-  cudaDeviceSynchronize();
+  CUDA_SAFE_CALL(cudaDeviceSynchronize());
 }
 

@@ -4,6 +4,8 @@
 
 #include "legion.h"
 
+//#define DISABLE_MATH
+
 // Data type definitions
 
 using namespace RegionRuntime::HighLevel;
@@ -75,17 +77,20 @@ void calc_new_currents_gpu(CircuitPiece *p,
                            GPU_Accessor wires,
                            GPU_Accessor pvt,
                            GPU_Accessor owned,
-                           GPU_Accessor ghost);
+                           GPU_Accessor ghost,
+                           int flag = 0);
 
 void distribute_charge_gpu(CircuitPiece *p,
                            GPU_Accessor wires,
                            GPU_Accessor pvt,
                            GPU_Reducer owned,
-                           GPU_Reducer ghost);
+                           GPU_Reducer ghost,
+                           int flag = 0);
 
 void update_voltages_gpu(CircuitPiece *p,
                          GPU_Accessor pvt,
                          GPU_Accessor owned,
-                         GPU_Accessor locator);
+                         GPU_Accessor locator,
+                         int flag = 0);
 
 #endif // __CIRCUIT_H__

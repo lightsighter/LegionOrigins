@@ -14,8 +14,6 @@ using namespace RegionRuntime::HighLevel;
 
 RegionRuntime::Logger::Category log_circuit("circuit");
 
-//#define DISABLE_MATH
-
 // Reduction Op
 class AccumulateCharge {
 public:
@@ -139,7 +137,7 @@ void region_main(const void *args, size_t arglen,
     parse_input_args(argv, argc, num_loops, num_pieces, nodes_per_piece, 
                       wires_per_piece, pct_wire_in_piece, random_seed);
 
-    log_circuit.info("circuit settings: loops=%d pieces=%d nodes/piece=%d wires/piece=%d pct_in_piece=%d seed=%d\n",
+    log_circuit.info("circuit settings: loops=%d pieces=%d nodes/piece=%d wires/piece=%d pct_in_piece=%d seed=%d",
        num_loops, num_pieces, nodes_per_piece, wires_per_piece,
        pct_wire_in_piece, random_seed);
   }
@@ -362,7 +360,7 @@ void calculate_currents_task_gpu(const void *global_args, size_t global_arglen,
                                  std::vector<PhysicalRegion<AT> > &regions,
                                  Context ctx, HighLevelRuntime *runtime)
 {
-#ifndef DISABLE_MATH
+  log_circuit(LEVEL_INFO,"GPU calculate currents for point %d",point[0]);
   CircuitPiece *p = (CircuitPiece*)local_args;
   PhysicalRegion<AT> wires = regions[0];
   PhysicalRegion<AT> pvt   = regions[1];
@@ -374,7 +372,6 @@ void calculate_currents_task_gpu(const void *global_args, size_t global_arglen,
                         pvt.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
                         owned.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
                         ghost.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>());
-#endif
 }
 
 template<AccessorType AT>
@@ -384,7 +381,7 @@ void distribute_charge_task_gpu(const void *global_args, size_t global_arglen,
                                 std::vector<PhysicalRegion<AT> > &regions,
                                 Context ctx, HighLevelRuntime *runtime)
 {
-#ifndef DISABLE_MATH
+  log_circuit(LEVEL_INFO,"GPU Distribute charge for point %d",point[0]);
   CircuitPiece *p = (CircuitPiece*)local_args;
   PhysicalRegion<AT> wires = regions[0];
   PhysicalRegion<AT> pvt   = regions[1];
@@ -396,7 +393,6 @@ void distribute_charge_task_gpu(const void *global_args, size_t global_arglen,
                         pvt.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
                         owned.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPUReductionFold>(),
                         ghost.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPUReductionFold>());
-#endif
 }
 
 template<AccessorType AT>
@@ -406,7 +402,7 @@ void update_voltages_task_gpu(const void *global_args, size_t global_arglen,
                               std::vector<PhysicalRegion<AT> > &regions,
                               Context ctx, HighLevelRuntime *runtime)
 {
-#ifndef DISABLE_MATH
+  log_circuit(LEVEL_INFO,"GPU update voltages for point %d",point[0]);
   CircuitPiece *p = (CircuitPiece*)local_args;
   PhysicalRegion<AT> pvt     = regions[0];
   PhysicalRegion<AT> owned   = regions[1];
@@ -416,7 +412,6 @@ void update_voltages_task_gpu(const void *global_args, size_t global_arglen,
                       pvt.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
                       owned.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
                       owned.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>());
-#endif
 }
 
 /// Start-up 
@@ -433,7 +428,7 @@ int main(int argc, char **argv)
   HighLevelRuntime::register_index_task<
           calculate_currents_task<AccessorGeneric> >(CALC_NEW_CURRENTS, Processor::LOC_PROC, "calc_new_currents");
   HighLevelRuntime::register_index_task<
-          distribute_charge_task<AccessorGeneric> >(DISTRIBUTE_CHARGE, Processor::LOC_PROC, "distribute_charege");
+          distribute_charge_task<AccessorGeneric> >(DISTRIBUTE_CHARGE, Processor::LOC_PROC, "distribute_charge");
   HighLevelRuntime::register_index_task<
           update_voltages_task<AccessorGeneric> >(UPDATE_VOLTAGES, Processor::LOC_PROC, "update_voltages");
 #ifndef USING_SHARED
@@ -441,7 +436,7 @@ int main(int argc, char **argv)
   HighLevelRuntime::register_index_task<
           calculate_currents_task_gpu<AccessorGeneric> >(CALC_NEW_CURRENTS, Processor::TOC_PROC, "calc_new_currents");
   HighLevelRuntime::register_index_task<
-          distribute_charge_task_gpu<AccessorGeneric> >(DISTRIBUTE_CHARGE, Processor::TOC_PROC, "distribute_charege");
+          distribute_charge_task_gpu<AccessorGeneric> >(DISTRIBUTE_CHARGE, Processor::TOC_PROC, "distribute_charge");
   HighLevelRuntime::register_index_task<
           update_voltages_task_gpu<AccessorGeneric> >(UPDATE_VOLTAGES, Processor::TOC_PROC, "update_voltages");
 #endif
@@ -486,7 +481,8 @@ public:
     // Only index space tasks here
     const IndexPoint &point = task->get_index_point();
     unsigned proc_id = point[0] % proc_group.size(); 
-    return proc_group[proc_id];
+    Processor ret_proc = proc_group[proc_id];
+    return ret_proc;
   }
 
   virtual Processor target_task_steal(const std::set<Processor> &blacklisted)
@@ -685,7 +681,7 @@ public:
                                     std::vector<Memory> &target_ranking,
                                     bool &enable_WAR_optimization) 
   {
-    enable_WAR_optimization = true;
+    //enable_WAR_optimization = false;
     if (proc_kind == Processor::LOC_PROC)
     {
       assert(task->task_id == REGION_MAIN);
@@ -705,7 +701,7 @@ public:
                   // Wires in frame buffer
                   target_ranking.push_back(fb_mem);
                   // No WAR optimization here, re-use instances
-                  enable_WAR_optimization = false;
+                  //enable_WAR_optimization = false;
                   break;
                 }
               case 1:
@@ -746,7 +742,7 @@ public:
                   // Private nodes in frame buffer
                   target_ranking.push_back(fb_mem);
                   // No WAR optimization here
-                  enable_WAR_optimization = false;
+                  //enable_WAR_optimization = false;
                   break;
                 }
               case 2:
@@ -913,7 +909,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
                         HighLevelRuntime *runtime, int num_pieces, int nodes_per_piece,
                         int wires_per_piece, int pct_wire_in_piece, int random_seed)
 {
-  log_circuit.info("Initializing circuit simulation...\n");
+  log_circuit.info("Initializing circuit simulation...");
   // inline map physical instances for the nodes and wire regions
   PhysicalRegion<AccessorGeneric> wires = runtime->map_region<AccessorGeneric>(ctx, 
                                                                     RegionRequirement(ckt.all_wires,
@@ -1048,11 +1044,11 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
           private_node_map[n].erase(node_ptr);
           // node is now shared
           shared_node_map[n].insert(node_ptr);
-          locator.write(loc_ptr,false); // node is local
+          locator.write(loc_ptr,false); // node is shared 
         }
         else
         {
-          locator.write(loc_ptr,true); // node is shared
+          locator.write(loc_ptr,true); // node is private 
         }
       }
     }
@@ -1118,7 +1114,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
   delete [] first_wires;
   delete [] first_nodes;
 
-  log_circuit.info("Finished initializing simulation...\n");
+  log_circuit.info("Finished initializing simulation...");
 
   return result;
 }
