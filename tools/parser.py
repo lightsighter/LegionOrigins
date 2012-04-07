@@ -9,37 +9,37 @@ def parse_log_file(file_name):
     
     result = Log()
 
-    name_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Task ID (?P<uid>[0-9]+) (?P<name>[\w ]+)")
+    name_pat = re.compile("\[[0-9]+ - [0-9a-f]+\] \{\w+\}\{legion_spy\}: Task ID (?P<uid>[0-9]+) (?P<name>[\w ]+)")
 
-    top_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Top Task (?P<uid>[0-9]+) (?P<tid>[0-9]+)")
+    top_pat = re.compile("\[[0-9]+ - [0-9a-f]+\] \{\w+\}\{legion_spy\}: Top Task (?P<uid>[0-9]+) (?P<tid>[0-9]+)")
 
-    task_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Task (?P<unique>[0-9]+) (?P<name>\w+) Task ID (?P<id>[0-9]+) Parent Context (?P<parent>[0-9]+)")
+    task_pat = re.compile("\[[0-9]+ - [0-9a-f]+\] \{\w+\}\{legion_spy\}: Task (?P<unique>[0-9]+) (?P<name>\w+) Task ID (?P<id>[0-9]+) Parent Context (?P<parent>[0-9]+)")
 
-    map_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Map (?P<unique>[0-9]+) Parent (?P<parent>[0-9]+)")
+    map_pat = re.compile("\[[0-9]+ - [0-9a-f]+\] \{\w+\}\{legion_spy\}: Map (?P<unique>[0-9]+) Parent (?P<parent>[0-9]+)")
 
-    region_usage_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Context (?P<context>[0-9]+) Task (?P<unique>[0-9]+) Region (?P<idx>[0-9]+) Handle (?P<handle>[0-9a-f]+) Parent (?P<parent>[0-9a-f]+) Privilege (?P<privilege>[0-9]) Coherence (?P<coherence>[0-9])")
+    region_usage_pat = re.compile("\[[0-9]+ - [0-9a-f]+\] \{\w+\}\{legion_spy\}: Context (?P<context>[0-9]+) Task (?P<unique>[0-9]+) Region (?P<idx>[0-9]+) Handle (?P<handle>[0-9a-f]+) Parent (?P<parent>[0-9a-f]+) Privilege (?P<privilege>[0-9]) Coherence (?P<coherence>[0-9])")
 
-    partition_usage_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Context (?P<context>[0-9]+) Task (?P<unique>[0-9]+) Partition (?P<idx>[0-9]+) Handle (?P<handle>[0-9a-f]+) Parent (?P<parent>[0-9a-f]+) Privilege (?P<privilege>[0-9]) Coherence (?P<coherence>[0-9])")
+    partition_usage_pat = re.compile("\[[0-9]+ - [0-9a-f]+\] \{\w+\}\{legion_spy\}: Context (?P<context>[0-9]+) Task (?P<unique>[0-9]+) Partition (?P<idx>[0-9]+) Handle (?P<handle>[0-9a-f]+) Parent (?P<parent>[0-9a-f]+) Privilege (?P<privilege>[0-9]) Coherence (?P<coherence>[0-9])")
 
-    dependence_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Mapping Dependence (?P<context>[0-9]+) (?P<uid_one>[0-9]+) (?P<idx_one>[0-9]+) (?P<uid_two>[0-9]+) (?P<idx_two>[0-9]+) (?P<type>[0-9]+)")
+    dependence_pat = re.compile("\[[0-9]+ - [0-9a-f]+\] \{\w+\}\{legion_spy\}: Mapping Dependence (?P<context>[0-9]+) (?P<uid_one>[0-9]+) (?P<idx_one>[0-9]+) (?P<uid_two>[0-9]+) (?P<idx_two>[0-9]+) (?P<type>[0-9]+)")
 
-    region_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Region (?P<handle>[0-9a-f]+)")
+    region_pat = re.compile("\[[0-9]+ - [0-9a-f]+\] \{\w+\}\{legion_spy\}: Region (?P<handle>[0-9a-f]+)")
 
-    part_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Partition (?P<pid>[0-9]+) Parent (?P<parent>[0-9a-f]+) Disjoint (?P<disjoint>[0-1])")
+    part_pat = re.compile("\[[0-9]+ - [0-9a-f]+\] \{\w+\}\{legion_spy\}: Partition (?P<pid>[0-9]+) Parent (?P<parent>[0-9a-f]+) Disjoint (?P<disjoint>[0-1])")
 
-    subregion_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Region (?P<handle>[0-9a-f]+) Parent (?P<parent>[0-9a-f]+)")
+    subregion_pat = re.compile("\[[0-9]+ - [0-9a-f]+\] \{\w+\}\{legion_spy\}: Region (?P<handle>[0-9a-f]+) Parent (?P<parent>[0-9a-f]+)")
 
-    event_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Event Event (?P<src_id>[0-9a-f]+) (?P<src_gen>[0-9]+) (?P<dst_id>[0-9a-f]+) (?P<dst_gen>[0-9]+)");
+    event_pat = re.compile("\[[0-9]+ - [0-9a-f]+\] \{\w+\}\{legion_spy\}: Event Event (?P<src_id>[0-9a-f]+) (?P<src_gen>[0-9]+) (?P<dst_id>[0-9a-f]+) (?P<dst_gen>[0-9]+)");
 
-    copy_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Event Copy Event (?P<src_id>[0-9a-f]+) (?P<src_gen>[0-9]+) (?P<src_inst>[0-9a-f]+) (?P<src_handle>[0-9a-f]+) (?P<src_loc>[0-9a-f]+) (?P<dst_inst>[0-9a-f]+) (?P<dst_handle>[0-9a-f]+) (?P<dst_loc>[0-9a-f]+) (?P<dst_id>[0-9a-f]+) (?P<dst_gen>[0-9]+)") 
+    copy_pat = re.compile("\[[0-9]+ - [0-9a-f]+\] \{\w+\}\{legion_spy\}: Event Copy Event (?P<src_id>[0-9a-f]+) (?P<src_gen>[0-9]+) (?P<src_inst>[0-9a-f]+) (?P<src_handle>[0-9a-f]+) (?P<src_loc>[0-9a-f]+) (?P<dst_inst>[0-9a-f]+) (?P<dst_handle>[0-9a-f]+) (?P<dst_loc>[0-9a-f]+) (?P<dst_id>[0-9a-f]+) (?P<dst_gen>[0-9]+)") 
 
-    task_launch_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Task Launch (?P<tid>[0-9]+) (?P<uid>[0-9]+) (?P<start_id>[0-9a-f]+) (?P<start_gen>[0-9]+) (?P<term_id>[0-9a-f]+) (?P<term_gen>[0-9]+)")
+    task_launch_pat = re.compile("\[[0-9]+ - [0-9a-f]+\] \{\w+\}\{legion_spy\}: Task Launch (?P<tid>[0-9]+) (?P<uid>[0-9]+) (?P<start_id>[0-9a-f]+) (?P<start_gen>[0-9]+) (?P<term_id>[0-9a-f]+) (?P<term_gen>[0-9]+)")
 
-    index_launch_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Index Task Launch (?P<tid>[0-9]+) (?P<uid>[0-9]+) (?P<start_id>[0-9a-f]+) (?P<start_gen>[0-9]+) (?P<term_id>[0-9a-f]+) (?P<term_gen>[0-9]+) (?P<indiv_term_id>[0-9a-f]+) (?P<indiv_term_gen>[0-9]+) (?P<point_size>[0-9]+) (?P<points>[0-9 ]+)")
+    index_launch_pat = re.compile("\[[0-9]+ - [0-9a-f]+\] \{\w+\}\{legion_spy\}: Index Task Launch (?P<tid>[0-9]+) (?P<uid>[0-9]+) (?P<start_id>[0-9a-f]+) (?P<start_gen>[0-9]+) (?P<term_id>[0-9a-f]+) (?P<term_gen>[0-9]+) (?P<indiv_term_id>[0-9a-f]+) (?P<indiv_term_gen>[0-9]+) (?P<point_size>[0-9]+) (?P<points>[0-9 ]+)")
 
-    index_space_size_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Index Space (?P<unique>[0-9]+) Context (?P<context>[0-9]+) Size (?P<size>[0-9]+)")
+    index_space_size_pat = re.compile("\[[0-9]+ - [0-9a-f]+\] \{\w+\}\{legion_spy\}: Index Space (?P<unique>[0-9]+) Context (?P<context>[0-9]+) Size (?P<size>[0-9]+)")
 
-    map_launch_pat = re.compile("\[[0-9]+ - [0-9]+\] \{\w+\}\{legion_spy\}: Mapping Performed (?P<unique>[0-9]+) (?P<start_id>[0-9a-f]+) (?P<start_gen>[0-9]+) (?P<term_id>[0-9a-f]+) (?P<term_gen>[0-9]+)")
+    map_launch_pat = re.compile("\[[0-9]+ - [0-9a-f]+\] \{\w+\}\{legion_spy\}: Mapping Performed (?P<unique>[0-9]+) (?P<start_id>[0-9a-f]+) (?P<start_gen>[0-9]+) (?P<term_id>[0-9a-f]+) (?P<term_gen>[0-9]+)")
 
     for line in log:
         m = name_pat.match(line)
