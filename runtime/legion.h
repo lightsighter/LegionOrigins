@@ -408,7 +408,7 @@ namespace RegionRuntime {
       friend class HighLevelRuntime;
       Future(FutureImpl *impl); 
     public:
-      Future();
+      Future(void);
       Future(const Future& f);
       ~Future(void);
     public:
@@ -432,9 +432,9 @@ namespace RegionRuntime {
       FutureMapImpl *impl;
     protected:
       friend class HighLevelRuntime;
-      FutureMap();
       FutureMap(FutureMapImpl *impl);
     public:
+      FutureMap(void);
       FutureMap(const FutureMap &f);
       ~FutureMap(void);
     public:
