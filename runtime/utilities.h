@@ -38,7 +38,7 @@ enum {
 #define COMPILE_TIME_MIN_LEVEL LEVEL_SPEW
 #endif
 
-#define DETAILED_TIMING
+//#define DETAILED_TIMING
 
 namespace RegionRuntime {
   /**
@@ -306,6 +306,29 @@ namespace RegionRuntime {
         ScopedPush(int timer_kind) { push_timer(timer_kind); }
         ~ScopedPush(void) { pop_timer(); }
       };
+
+      static const char* stringify(int level)
+      {
+        switch (level)
+        {
+          case TIME_NONE:
+            return "NONE";
+          case TIME_KERNEL:
+            return "KERNEL";
+          case TIME_COPY:
+            return "COPY";
+          case TIME_HIGH_LEVEL:
+            return "HIGH-LEVEL";
+          case TIME_LOW_LEVEL:
+            return "LOW-LEVEL";
+          case TIME_MAPPER:
+            return "MAPPER";
+          case TIME_SYSTEM:
+            return "SYSTEM";
+        }
+        assert(false);
+        return NULL;
+      }
     };
   };
 

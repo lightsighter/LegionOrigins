@@ -296,7 +296,7 @@ namespace RegionRuntime {
       for (std::map<int,double>::iterator it = timers.begin();
             it != timers.end(); it++)
       {
-        printf("%4d - %7.3f s\n", it->first, it->second);
+        printf("%12s - %7.3f s\n", stringify(it->first), it->second);
       }
       printf("END OF DETAILED TIMING SUMMARY\n");
     }
