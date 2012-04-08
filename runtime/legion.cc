@@ -1471,7 +1471,10 @@ namespace RegionRuntime {
         handle->get_physical_locations(parent_physical_ctx,sources,true/*recurse*/,IS_REDUCE(req));
         std::vector<Memory> locations;
         bool war_optimization = true;
-        mapper->map_task_region(parent_ctx, req, 0/*index*/, sources, locations, war_optimization);
+        {
+          DetailedTimer::ScopedPush sp(TIME_MAPPER);
+          mapper->map_task_region(parent_ctx, req, 0/*index*/, sources, locations, war_optimization);
+        }
         if (!locations.empty())
         {
           // We're making our own
@@ -2675,6 +2678,7 @@ namespace RegionRuntime {
     LogicalRegion HighLevelRuntime::get_subregion(Context ctx, Partition part, Color c) const
     //--------------------------------------------------------------------------------------------
     {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_GET_SUBREGION);
       return ctx->get_subregion(part.id, c);
     }
 
@@ -2683,6 +2687,7 @@ namespace RegionRuntime {
     PhysicalRegion<AccessorArray> HighLevelRuntime::map_region(Context ctx, RegionRequirement req)
     //--------------------------------------------------------------------------------------------
     {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_INLINE_MAP);
       RegionMappingImpl *impl = get_available_mapping(ctx, req); 
 
       internal_map_region(ctx, impl);
@@ -2695,6 +2700,7 @@ namespace RegionRuntime {
     PhysicalRegion<AccessorGeneric> HighLevelRuntime::map_region(Context ctx, RegionRequirement req)
     //--------------------------------------------------------------------------------------------
     {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_INLINE_MAP);
       RegionMappingImpl *impl = get_available_mapping(ctx, req); 
 
       internal_map_region(ctx, impl);
@@ -2727,7 +2733,8 @@ namespace RegionRuntime {
     void HighLevelRuntime::unmap_region(Context ctx, PhysicalRegion<AccessorArray> &region)
     //--------------------------------------------------------------------------------------------
     {
-      #ifdef DEBUG_HIGH_LEVEL
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_INLINE_MAP);
+#ifdef DEBUG_HIGH_LEVEL
       assert(region.valid);
 #endif
       if (region.inline_mapped)
@@ -2748,6 +2755,7 @@ namespace RegionRuntime {
     void HighLevelRuntime::unmap_region(Context ctx, PhysicalRegion<AccessorGeneric> &region)
     //--------------------------------------------------------------------------------------------
     {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_INLINE_MAP);
 #ifdef DEBUG_HIGH_LEVEL
       assert(region.valid);
 #endif
@@ -3235,6 +3243,7 @@ namespace RegionRuntime {
             AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
             // Also need exclusive access to the mapper itself
             AutoLock mapper_lock(mapper_locks[stealer]);
+            DetailedTimer::ScopedPush sp(TIME_MAPPER);
             mapper_objects[stealer]->permit_task_steal(thief, mapper_tasks, to_steal);
           }
           // Add the results to the set of stolen tasks
@@ -3622,7 +3631,10 @@ namespace RegionRuntime {
         // Need to acquire the locks for the mapper array and the mapper
         AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
         AutoLock mapper_lock(mapper_locks[ctx->map_id]);
-        spawn = mapper_objects[ctx->map_id]->spawn_child_task(ctx);
+        {
+          DetailedTimer::ScopedPush sp(TIME_MAPPER);
+          spawn = mapper_objects[ctx->map_id]->spawn_child_task(ctx);
+        }
       }
       // Update the value in the context
       ctx->stealable = spawn;
@@ -3642,6 +3654,7 @@ namespace RegionRuntime {
           // Need to get access to array of mappers
           {
             AutoLock mapper_lock(task->mapper_lock);
+            DetailedTimer::ScopedPush sp(TIME_MAPPER);
             target = task->mapper->select_initial_processor(task);
           }
 #ifdef DEBUG_HIGH_LEVEL
@@ -3706,6 +3719,7 @@ namespace RegionRuntime {
           {
             // Ask the mapper to perform the division
             AutoLock mapper_lock(ctx->mapper_lock);
+            DetailedTimer::ScopedPush sp(TIME_MAPPER);
             ctx->mapper->split_index_space(ctx, ctx->constraint_space, chunks);
           }
           still_local = ctx->distribute_index_space<Constraint,Mapper::ConstraintSplit>(chunks,ways);
@@ -3716,6 +3730,7 @@ namespace RegionRuntime {
           {
             // Ask the mapper to perform the division
             AutoLock mapper_lock(ctx->mapper_lock);
+            DetailedTimer::ScopedPush sp(TIME_MAPPER);
             ctx->mapper->split_index_space(ctx, ctx->range_space, chunks);
           }
           still_local = ctx->distribute_index_space<Range,Mapper::RangeSplit>(chunks,ways);
@@ -3746,6 +3761,7 @@ namespace RegionRuntime {
           {
             // Need to get the individual mapper lock
             AutoLock mapper_lock(mapper_locks[i]);
+            DetailedTimer::ScopedPush sp(TIME_MAPPER);
             p = mapper_objects[i]->target_task_steal(blacklist);
           }
           std::set<Processor>::const_iterator finder = blacklist.find(p);
@@ -5823,7 +5839,10 @@ namespace RegionRuntime {
         handle->get_physical_locations(parent_physical_ctx, sources, true/*recurse*/,IS_REDUCE(regions[idx]));
         std::vector<Memory> locations;
         bool war_optimization = true;
-        mapper->map_task_region(this, regions[idx], idx, sources,locations,war_optimization);
+        {
+          DetailedTimer::ScopedPush sp(TIME_MAPPER);
+          mapper->map_task_region(this, regions[idx], idx, sources,locations,war_optimization);
+        }
         // Check to make sure there is at least one instance
         bool no_mapping = false;
         if (locations.empty())
@@ -6886,7 +6905,10 @@ namespace RegionRuntime {
           handle->get_physical_locations(parent_physical_ctx, sources, true/*recurse*/,IS_REDUCE(regions[idx]));
           std::vector<Memory> locations;
           bool war_optimization = true;
-          mapper->map_task_region(this, regions[idx], idx, sources,locations,war_optimization);
+          {
+            DetailedTimer::ScopedPush sp(TIME_MAPPER);
+            mapper->map_task_region(this, regions[idx], idx, sources,locations,war_optimization);
+          }
           // Check to make sure there is at least one instance
           if (locations.empty())
           {
@@ -11313,7 +11335,10 @@ namespace RegionRuntime {
         get_physical_locations(ren.ctx_id,locations,true/*ignore open below*/,false/*reduction*/);
         // Ask the mapper for a list of target memories 
         std::vector<Memory> ranking;
-        ren.mapper->rank_copy_targets(ren.ctx->get_enclosing_task(), ren.ctx->get_requirement(ren.idx), locations, ranking);
+        {
+          DetailedTimer::ScopedPush sp(TIME_MAPPER);
+          ren.mapper->rank_copy_targets(ren.ctx->get_enclosing_task(), ren.ctx->get_requirement(ren.idx), locations, ranking);
+        }
         // Now go through and try and make the required instance
         {
           // Go over the memories and try and find/make the instance
@@ -11383,7 +11408,10 @@ namespace RegionRuntime {
       else
       {
         Memory chosen_src = Memory::NO_MEMORY;
-        mapper->select_copy_source(locations, target_location, chosen_src);
+        {
+          DetailedTimer::ScopedPush sp(TIME_MAPPER);
+          mapper->select_copy_source(locations, target_location, chosen_src);
+        }
 #ifdef DEBUG_HIGH_LEVEL
         assert(chosen_src.exists());
 #endif

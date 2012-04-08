@@ -43,6 +43,8 @@ namespace RegionRuntime {
       TIME_HIGH_LEVEL_EXECUTE_TASK = TIME_HIGH_LEVEL, //= 112,
       TIME_HIGH_LEVEL_SCHEDULER = TIME_HIGH_LEVEL, //= 113,
       TIME_HIGH_LEVEL_ISSUE_STEAL = TIME_HIGH_LEVEL, //= 114,
+      TIME_HIGH_LEVEL_GET_SUBREGION = TIME_HIGH_LEVEL, //= 115
+      TIME_HIGH_LEVEL_INLINE_MAP = TIME_HIGH_LEVEL, //= 116
     };
 
     // Only support two high-level accessor modes at the moment
