@@ -576,6 +576,7 @@ namespace RegionRuntime {
             // Wait until the generation indicates that the event has occurred
             while (needed_gen > generation) 
             {
+                    DetailedTimer::ScopedPush sp(TIME_NONE);
                     PTHREAD_SAFE_CALL(pthread_cond_wait(wait_cond,mutex));
             }
             PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
@@ -1456,6 +1457,7 @@ namespace RegionRuntime {
                         // Check to see if we have to wait for our utility processor to finish
                         if (!util_shutdown)
                         {
+                          DetailedTimer::ScopedPush sp(TIME_NONE);
                           // Wait for our utility processor to indicate that its done
                           PTHREAD_SAFE_CALL(pthread_cond_wait(wait_cond,mutex));
                         }
@@ -1489,6 +1491,7 @@ namespace RegionRuntime {
 		// Wait until someone tells us there is work to do unless we've been told to shutdown
                 if (!shutdown)
                 {
+                  DetailedTimer::ScopedPush sp(TIME_NONE);
                   PTHREAD_SAFE_CALL(pthread_cond_wait(wait_cond,mutex));
                 }
 		PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
