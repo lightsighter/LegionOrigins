@@ -5,6 +5,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cmath>
+#include <time.h>
 
 #include "circuit.h"
 #include "legion.h"
@@ -156,6 +157,12 @@ void region_main(const void *args, size_t arglen,
   Partitions parts = load_circuit(circuit, pieces, ctx, runtime, num_pieces, nodes_per_piece,
                                   wires_per_piece, pct_wire_in_piece, random_seed);
 
+  // Start the simulation
+  printf("Starting main simulation loop\n");
+  struct timespec ts_start, ts_end;
+  clock_gettime(CLOCK_MONOTONIC, &ts_start);
+  RegionRuntime::LowLevel::DetailedTimer::clear_timers();
+
   // Build the region requirements for each task
   std::vector<RegionRequirement> cnc_regions;
   cnc_regions.push_back(RegionRequirement(parts.pvt_wires.id, 0/*identity colorize function*/,
@@ -212,6 +219,7 @@ void region_main(const void *args, size_t arglen,
     local_args[p] = TaskArgument(&(pieces[idx]),sizeof(CircuitPiece));
   }
 
+  FutureMap last;
   // Run the main loop
   for (int i = 0; i < num_loops; i++)
   {
@@ -224,11 +232,39 @@ void region_main(const void *args, size_t arglen,
     runtime->execute_index_space(ctx, DISTRIBUTE_CHARGE, index_space,
                                   dsc_regions, global_arg, local_args, false/*must*/);
     // Update voltages
-    runtime->execute_index_space(ctx, UPDATE_VOLTAGES, index_space,
+    last = runtime->execute_index_space(ctx, UPDATE_VOLTAGES, index_space,
                                   upv_regions, global_arg, local_args, false/*must*/);
   }
 
-  log_circuit.info("simulation complete - destroying regions");
+  log_circuit(LEVEL_INFO,"waiting for all simulation tasks to complete");
+
+  last.wait_all_results();
+  clock_gettime(CLOCK_MONOTONIC, &ts_end);
+
+  {
+    double sim_time = ((1.0 * (ts_end.tv_sec - ts_start.tv_sec)) +
+                       (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
+    printf("ELAPSED TIME = %7.3f s\n", sim_time);
+
+    // Compute the floating point operations per second
+    long num_circuit_nodes = num_pieces * nodes_per_piece;
+    long num_circuit_wires = num_pieces * wires_per_piece;
+    // calculate currents
+    long operations = num_circuit_wires * (WIRE_SEGMENTS*6 + (WIRE_SEGMENTS-1)*4) * STEPS;
+    // distribute charge
+    operations += (num_circuit_wires * 4);
+    // update voltages
+    operations += (num_circuit_nodes * 4);
+    // multiply by the number of loops
+    operations *= num_loops;
+
+    // Compute the number of gflops
+    double gflops = (1e-9*operations)/sim_time;
+    printf("GFLOPS = %7.3f GFLOPS\n", gflops);
+  }
+  RegionRuntime::LowLevel::DetailedTimer::report_timers();
+
+  log_circuit(LEVEL_INFO,"simulation complete - destroying regions");
 
   // Now we can destroy the regions
   {
@@ -249,6 +285,7 @@ void calculate_currents_task(const void *global_args, size_t global_arglen,
                              std::vector<PhysicalRegion<AT> > &regions,
                              Context ctx, HighLevelRuntime *runtime)
 {
+  log_circuit(LEVEL_DEBUG,"CPU calculate currents for point %d",point[0]);
 #ifndef DISABLE_MATH
   PhysicalRegion<AT> pvt_wires = regions[0];
   PhysicalRegion<AT> pvt_nodes = regions[1];
@@ -265,8 +302,8 @@ void calculate_currents_task(const void *global_args, size_t global_arglen,
     CircuitNode out_node = get_node(pvt_nodes, shr_nodes, ghost_nodes, wire.out_loc, wire.out_ptr);
 
     // Solve RLC model iteratively
-    float dt = 1e-6;
-    int steps = 10000;
+    float dt = DELTAT;
+    const int steps = STEPS;
     float new_v[WIRE_SEGMENTS+1];
     float new_i[WIRE_SEGMENTS];
     for (int i = 0; i < WIRE_SEGMENTS; i++)
@@ -311,6 +348,7 @@ void distribute_charge_task(const void *global_args, size_t global_arglen,
                             std::vector<PhysicalRegion<AT> > &regions,
                             Context ctx, HighLevelRuntime *runtime)
 {
+  log_circuit(LEVEL_DEBUG,"CPU distribute charge for point %d",point[0]);
 #ifndef DISABLE_MATH 
   PhysicalRegion<AT> pvt_wires = regions[0];
   PhysicalRegion<AT> pvt_nodes = regions[1];
@@ -340,6 +378,7 @@ void update_voltages_task(const void *global_args, size_t global_arglen,
                           std::vector<PhysicalRegion<AT> > &regions,
                           Context ctx, HighLevelRuntime *runtime)
 {
+  log_circuit(LEVEL_DEBUG,"CPU update voltages for point %d",point[0]);
 #ifndef DISABLE_MATH
   PhysicalRegion<AT> pvt_nodes = regions[0];
   PhysicalRegion<AT> shr_nodes = regions[1];
@@ -360,7 +399,7 @@ void calculate_currents_task_gpu(const void *global_args, size_t global_arglen,
                                  std::vector<PhysicalRegion<AT> > &regions,
                                  Context ctx, HighLevelRuntime *runtime)
 {
-  log_circuit(LEVEL_INFO,"GPU calculate currents for point %d",point[0]);
+  log_circuit(LEVEL_DEBUG,"GPU calculate currents for point %d",point[0]);
   CircuitPiece *p = (CircuitPiece*)local_args;
   PhysicalRegion<AT> wires = regions[0];
   PhysicalRegion<AT> pvt   = regions[1];
@@ -381,7 +420,7 @@ void distribute_charge_task_gpu(const void *global_args, size_t global_arglen,
                                 std::vector<PhysicalRegion<AT> > &regions,
                                 Context ctx, HighLevelRuntime *runtime)
 {
-  log_circuit(LEVEL_INFO,"GPU Distribute charge for point %d",point[0]);
+  log_circuit(LEVEL_DEBUG,"GPU distribute charge for point %d",point[0]);
   CircuitPiece *p = (CircuitPiece*)local_args;
   PhysicalRegion<AT> wires = regions[0];
   PhysicalRegion<AT> pvt   = regions[1];
@@ -402,7 +441,7 @@ void update_voltages_task_gpu(const void *global_args, size_t global_arglen,
                               std::vector<PhysicalRegion<AT> > &regions,
                               Context ctx, HighLevelRuntime *runtime)
 {
-  log_circuit(LEVEL_INFO,"GPU update voltages for point %d",point[0]);
+  log_circuit(LEVEL_DEBUG,"GPU update voltages for point %d",point[0]);
   CircuitPiece *p = (CircuitPiece*)local_args;
   PhysicalRegion<AT> pvt     = regions[0];
   PhysicalRegion<AT> owned   = regions[1];
@@ -681,7 +720,7 @@ public:
                                     std::vector<Memory> &target_ranking,
                                     bool &enable_WAR_optimization) 
   {
-    //enable_WAR_optimization = false;
+    enable_WAR_optimization = false;
     if (proc_kind == Processor::LOC_PROC)
     {
       assert(task->task_id == REGION_MAIN);
@@ -701,7 +740,7 @@ public:
                   // Wires in frame buffer
                   target_ranking.push_back(fb_mem);
                   // No WAR optimization here, re-use instances
-                  //enable_WAR_optimization = false;
+                  enable_WAR_optimization = false;
                   break;
                 }
               case 1:
@@ -742,7 +781,7 @@ public:
                   // Private nodes in frame buffer
                   target_ranking.push_back(fb_mem);
                   // No WAR optimization here
-                  //enable_WAR_optimization = false;
+                  enable_WAR_optimization = false;
                   break;
                 }
               case 2:

@@ -36,6 +36,8 @@ struct CircuitNode {
 };
 
 #define WIRE_SEGMENTS 10
+#define STEPS         10000
+#define DELTAT        1e-6
 
 struct CircuitWire {
   ptr_t<CircuitNode> in_ptr, out_ptr;

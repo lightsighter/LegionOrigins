@@ -75,8 +75,8 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
     CircuitNode out_node = get_node(pvt, owned, ghost, wire.out_loc, wire.out_ptr);
 
     // Solve RLC model iteratively
-    float dt = 1e-6;
-    int steps = 10000;
+    float dt = DELTAT;
+    const int steps = STEPS;
     float new_v[WIRE_SEGMENTS+1];
     float new_i[WIRE_SEGMENTS];
     for (int i = 0; i < WIRE_SEGMENTS; i++)
