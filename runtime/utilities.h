@@ -289,13 +289,13 @@ namespace RegionRuntime {
     class DetailedTimer {
     public:
 #ifdef DETAILED_TIMING
-      static void clear_timers(void);
+      static void clear_timers(bool all_nodes = true);
       static void push_timer(int timer_kind);
       static void pop_timer(void);
       static void roll_up_timers(std::map<int, double>& timers, bool local_only);
       static void report_timers(bool local_only = false);
 #else
-      static void clear_timers(void) {}
+      static void clear_timers(bool all_nodes = true) {}
       static void push_timer(int timer_kind) {}
       static void pop_timer(void) {}
       static void roll_up_timers(std::map<int, double>& timers, bool local_only) {}

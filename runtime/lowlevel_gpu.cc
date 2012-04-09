@@ -405,8 +405,8 @@ namespace RegionRuntime {
     void GPUProcessor::disable_idle_task(void)
     {
       //log_gpu.info("idle task NOT disabled for processor %x", me.id);
-      //log_gpu.info("idle task disabled for processor %x", me.id);
-      //internal->idle_task_enabled = false;
+      log_gpu.info("idle task disabled for processor %x", me.id);
+      internal->idle_task_enabled = false;
     }
 
     void GPUProcessor::copy_to_fb(off_t dst_offset, const void *src, size_t bytes,
@@ -427,6 +427,17 @@ namespace RegionRuntime {
 		     ((char *)internal->fbmem_gpu_base) + (internal->fbmem_reserve + src_offset),
 		     bytes,
 		     cudaMemcpyDeviceToHost))->run_or_wait(start_event);
+    }
+
+    void GPUProcessor::copy_within_fb(off_t dst_offset, off_t src_offset,
+				      size_t bytes,
+				      Event start_event, Event finish_event)
+    {
+      (new GPUMemcpy(this, finish_event,
+		     ((char *)internal->fbmem_gpu_base) + (internal->fbmem_reserve + dst_offset),
+		     ((char *)internal->fbmem_gpu_base) + (internal->fbmem_reserve + src_offset),
+		     bytes,
+		     cudaMemcpyDeviceToDevice))->run_or_wait(start_event);
     }
 
     void GPUProcessor::copy_to_fb_generic(off_t dst_offset, 
