@@ -229,6 +229,7 @@ namespace RegionRuntime {
     
     Logger::Category log_gpu("gpu");
     Logger::Category log_mutex("mutex");
+    Logger::Category log_timer("timer");
 
     enum ActiveMessageIDs {
       FIRST_AVAILABLE = 140,
@@ -250,6 +251,7 @@ namespace RegionRuntime {
       VALID_MASK_DATA_MSGID,
       ROLL_UP_TIMER_MSGID,
       ROLL_UP_DATA_MSGID,
+      CLEAR_TIMER_MSGID,
     };
 
     // detailed timer stuff
@@ -277,18 +279,44 @@ namespace RegionRuntime {
     gasnet_hsl_t timer_data_mutex = GASNET_HSL_INITIALIZER;
     std::vector<PerThreadTimerData *> timer_data;
     __thread PerThreadTimerData *thread_timer_data;
+
+    struct ClearTimerRequestArgs {
+      int sender;
+    };
+
+    void handle_clear_timer_request(ClearTimerRequestArgs args)
+    {
+      DetailedTimer::clear_timers(false);
+    }
+
+    typedef ActiveMessageShortNoReply<CLEAR_TIMER_MSGID,
+				      ClearTimerRequestArgs,
+				      handle_clear_timer_request> ClearTimerRequestMessage;
     
 #ifdef DETAILED_TIMING
-    /*static*/ void DetailedTimer::clear_timers(void)
+    /*static*/ void DetailedTimer::clear_timers(bool all_nodes /*= true*/)
     {
       // take global mutex because we need to walk the list
-      AutoHSLLock l1(timer_data_mutex);
-      for(std::vector<PerThreadTimerData *>::iterator it = timer_data.begin();
-          it != timer_data.end();
-          it++) {
-        // take each thread's data's lock too
-        AutoHSLLock l2((*it)->mutex);
-        (*it)->timer_accum.clear();
+      {
+	log_timer.warning("clearing timers");
+	AutoHSLLock l1(timer_data_mutex);
+	for(std::vector<PerThreadTimerData *>::iterator it = timer_data.begin();
+	    it != timer_data.end();
+	    it++) {
+	  // take each thread's data's lock too
+	  AutoHSLLock l2((*it)->mutex);
+	  (*it)->timer_accum.clear();
+	}
+      }
+
+      // if we've been asked to clear other nodes too, send a message
+      if(all_nodes) {
+	ClearTimerRequestArgs args;
+	args.sender = gasnet_mynode();
+
+	for(int i = 0; i < gasnet_nodes(); i++)
+	  if(i != gasnet_mynode())
+	    ClearTimerRequestMessage::request(i, args);
       }
     }
 
@@ -2835,6 +2863,7 @@ namespace RegionRuntime {
 	  if(instant_trigger_guard) {
 	    instant_trigger_guard = false;
 	  } else {
+	    proc->preemptable_threads.remove(this);
 	    proc->resumable_threads.push_back(this);
 	    proc->start_some_threads();
 	  }
@@ -2849,92 +2878,106 @@ namespace RegionRuntime {
 
 	void sleep_on_event(Event wait_for, bool block = false)
 	{
-#define MULTIPLE_TASKS_PER_THREAD	  
-#ifdef MULTIPLE_TASKS_PER_THREAD	  
 	  // if we're going to wait, see if there's something useful
 	  //  we can do in the meantime
 	  log_task(LEVEL_DEBUG, "thread needs to wait on event: event=%x/%d",
 		   wait_for.id, wait_for.gen);
-	  while(!block) {
-	    if(wait_for.has_triggered()) return; // early out
+	  while(!wait_for.has_triggered()) {
+#define MULTIPLE_TASKS_PER_THREAD	  
+#ifdef MULTIPLE_TASKS_PER_THREAD	  
+	    while(!block) {
+	      AutoHSLLock a(proc->mutex);
 
-	    AutoHSLLock a(proc->mutex);
+	      proc->active_thread_count--;
+	      Task *new_task = proc->select_task();
+	      if(!new_task) {
+		proc->active_thread_count++; //put count back (we'll dec below)
+		break;  // nope, have to sleep
+	      }
 
-	    proc->active_thread_count--;
-	    Task *new_task = proc->select_task();
-	    if(!new_task) {
-	      proc->active_thread_count++; //put count back (we'll dec below)
-	      break;  // nope, have to sleep
+	      Task *old_task = task;
+	      log_task(LEVEL_SPEW, "thread task swap: old=%p new=%p",
+		       old_task, new_task);
+	      task = new_task;
+
+	      // run task (without lock)
+	      gasnet_hsl_unlock(&proc->mutex);
+	      task->run();
+	      gasnet_hsl_lock(&proc->mutex);
+
+	      // TODO: delete task?
+	      if(task == proc->idle_task) {
+		log_task(LEVEL_SPEW, "thread returned from idle task: proc=%x", proc->me.id);
+		proc->in_idle_task = false;
+	      }
+
+	      log_task(LEVEL_SPEW, "thread returning to old task: old=%p new=%p",
+		       old_task, new_task);
+	      task = old_task;
 	    }
-
-	    Task *old_task = task;
-	    log_task(LEVEL_SPEW, "thread task swap: old=%p new=%p",
-		     old_task, new_task);
-	    task = new_task;
-
-	    // run task (without lock)
-	    gasnet_hsl_unlock(&proc->mutex);
-	    task->run();
-	    gasnet_hsl_lock(&proc->mutex);
-
-	    // TODO: delete task?
-	    if(task == proc->idle_task) {
-	      log_task(LEVEL_SPEW, "thread returned from idle task: proc=%x", proc->me.id);
-	      proc->in_idle_task = false;
-	    }
-
-	    log_task(LEVEL_SPEW, "thread returning to old task: old=%p new=%p",
-		     old_task, new_task);
-	    task = old_task;
-	  }
 #endif
 
-	  // icky race conditions here - once we add ourselves as a waiter, 
-	  //  the trigger could come right away (and need the lock), so we
-	  //  have to set a flag (also save the event ID we're waiting on
-	  //  for debug goodness), then add a waiter to the event and THEN
-	  //  take our own lock and see if we still need to sleep
-	  instant_trigger_guard = true;
-	  suspend_event = wait_for;
+	    // if we get to this point, we're going to sleep because we
+	    //  don't have anything immediately to do - we'll wake up either
+	    //  when our event has triggered, or (if !block) when some new
+	    //  task becomes runnable
 
-	  wait_for.impl()->add_waiter(wait_for, this);
+	    // icky race conditions here - once we add ourselves as a waiter, 
+	    //  the trigger could come right away (and need the lock), so we
+	    //  have to set a flag (also save the event ID we're waiting on
+	    //  for debug goodness), then add a waiter to the event and THEN
+	    //  take our own lock and see if we still need to sleep
+	    instant_trigger_guard = true;
+	    suspend_event = wait_for;
+	  
+	    wait_for.impl()->add_waiter(wait_for, this);
 
-	  {
-	    AutoHSLLock a(proc->mutex);
+	    {
+	      AutoHSLLock a(proc->mutex);
 
-	    if(instant_trigger_guard) {
-	      // guard is still active, so we can safely sleep
-	      instant_trigger_guard = false;
+	      if(instant_trigger_guard) {
+		// guard is still active, so we can safely sleep
+		instant_trigger_guard = false;
 
-	      // NOTE: while tempting, it's not OK to check the event's
-	      //  triggeredness again here - it can result in an event_triggered()
-	      //  sent to us without us going to sleep, which would be bad
-	      log_task(LEVEL_DEBUG, "thread sleeping on event: thread=%p event=%x/%d",
-		       this, wait_for.id, wait_for.gen);
-	      // decrement the active thread count (check to see if somebody
-	      //  else can run)
-	      proc->active_thread_count--;
-	      log_task(LEVEL_SPEW, "ATC = %d", proc->active_thread_count);
-	      proc->start_some_threads();
+		// NOTE: while tempting, it's not OK to check the event's
+		//  triggeredness again here - it can result in an event_triggered()
+		//  sent to us without us going to sleep, which would be bad
+		log_task(LEVEL_DEBUG, "thread sleeping on event: thread=%p event=%x/%d",
+			 this, wait_for.id, wait_for.gen);
+		// decrement the active thread count (check to see if somebody
+		//  else can run)
+		proc->active_thread_count--;
+		log_task(LEVEL_SPEW, "ATC = %d", proc->active_thread_count);
+		proc->start_some_threads();
 
-	      if((proc->active_thread_count == 0) &&
-		 (proc->avail_threads.size() == 0) &&
-		 (proc->ready_tasks.size() > 0)) 
-		log_task(LEVEL_INFO, "warning: all threads for proc=%x sleeping with tasks ready", proc->me.id);
+		if((proc->active_thread_count == 0) &&
+		   (proc->avail_threads.size() == 0) &&
+		   (proc->ready_tasks.size() > 0)) 
+		  log_task(LEVEL_INFO, "warning: all threads for proc=%x sleeping with tasks ready", proc->me.id);
 
-	      // now sleep on our condition variable - we'll wake up after
-	      //  we've been moved to the resumable list and chosen from there
-	      state = STATE_SUSPEND;
-	      fflush(stdout);
-	      do {
-		// guard against spurious wakeups
-		gasnett_cond_wait(&condvar, &proc->mutex.lock);
-	      } while(state == STATE_SUSPEND);
-	      log_task(LEVEL_DEBUG, "thread done sleeping on event: thread=%p event=%x/%d",
-		       this, wait_for.id, wait_for.gen);
-	    } else {
-	      log_task(LEVEL_DEBUG, "thread got instant trigger on event: thread=%p event=%x/%d",
-		       this, wait_for.id, wait_for.gen);
+		// now sleep on our condition variable - we'll wake up after
+		//  we've been moved to the resumable list and chosen from there
+		state = STATE_SUSPEND;
+		if(!block) {
+		  log_task(LEVEL_INFO, "putting thread on pre-emptable list");
+		  proc->preemptable_threads.push_back(this);
+		}
+		fflush(stdout);
+		do {
+		  // guard against spurious wakeups
+		  gasnett_cond_wait(&condvar, &proc->mutex.lock);
+		} while(state == STATE_SUSPEND);
+		if(wait_for.has_triggered()) {
+		  log_task(LEVEL_DEBUG, "thread done sleeping on event: thread=%p event=%x/%d",
+			   this, wait_for.id, wait_for.gen);
+		} else {
+		  log_task(LEVEL_DEBUG, "thread awake but event still not ready: thread=%p event=%x/%d",
+			   this, wait_for.id, wait_for.gen);
+		}
+	      } else {
+		log_task(LEVEL_DEBUG, "thread got instant trigger on event: thread=%p event=%x/%d",
+			 this, wait_for.id, wait_for.gen);
+	      }
 	    }
 	  }
 	}
@@ -3188,6 +3231,25 @@ namespace RegionRuntime {
 	  // no?  just stuff it on ready list
 	  log_task(LEVEL_DEBUG, "no thread available for new task: proc=%x task=%p", me.id, task);
 	  ready_tasks.push_back(task);
+
+	  // if there are any pre-emptable threads, move one to the resumable
+	  //  list and it might be able to grab this task and run it
+	  if(preemptable_threads.size() > 0) {
+	    Thread *thread = preemptable_threads.front();
+	    preemptable_threads.pop_front();
+	    assert(thread->state == Thread::STATE_SUSPEND);
+
+	    if(active_thread_count < max_active_threads) {
+	      log_task(LEVEL_INFO, "waking up preemptable thread: thread=%p", thread);
+	      active_thread_count++;
+	      log_task(LEVEL_SPEW, "ATC = %d", active_thread_count);
+	      thread->resume_task();
+	    } else {
+	      log_task(LEVEL_INFO, "making preemptable thread resumable: thread=%p", thread);
+	      
+	      resumable_threads.push_back(thread);
+	    }
+	  }
 	}
       }
 
@@ -3292,8 +3354,8 @@ namespace RegionRuntime {
       virtual void disable_idle_task(void)
       {
 	//log_task.info("idle task NOT disabled for processor %x", me.id);
-	//log_task.info("idle task disabled for processor %x", me.id);
-	//idle_task_enabled = false;
+	log_task.info("idle task disabled for processor %x", me.id);
+	idle_task_enabled = false;
       }
 
     protected:
@@ -3302,6 +3364,7 @@ namespace RegionRuntime {
       std::list<Task *> ready_tasks;
       std::list<Thread *> avail_threads;
       std::list<Thread *> resumable_threads;
+      std::list<Thread *> preemptable_threads;
       std::set<Thread *> all_threads;
       gasnet_hsl_t mutex;
       bool init_done, shutdown_requested, in_idle_task;
@@ -4514,6 +4577,24 @@ namespace RegionRuntime {
 								  bytes_to_copy,
 								  Event::NO_EVENT,
 								  after_copy);
+	      return after_copy;
+	    }
+	    break;
+
+	  case Memory::Impl::MKIND_GPUFB:
+	    {
+	      // only support copies within the same FB for now
+	      assert(src_mem == tgt_mem);
+	      assert(!redop);
+	      // all GPU operations are deferred, so we need an event if
+	      //  we don't already have one created
+	      if(!after_copy.exists())
+		after_copy = Event::Impl::create_event();
+	      ((GPUFBMemory *)src_mem)->gpu->copy_within_fb(tgt_data->offset,
+							    src_data->offset,
+							    bytes_to_copy,
+							    Event::NO_EVENT,
+							    after_copy);
 	      return after_copy;
 	    }
 	    break;
@@ -5769,6 +5850,7 @@ namespace RegionRuntime {
       hcount += ValidMaskDataMessage::add_handler_entries(&handlers[hcount]);
       hcount += RollUpRequestMessage::add_handler_entries(&handlers[hcount]);
       hcount += RollUpDataMessage::add_handler_entries(&handlers[hcount]);
+      hcount += ClearTimerRequestMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage2::add_handler_entries(&handlers[hcount]);
 
