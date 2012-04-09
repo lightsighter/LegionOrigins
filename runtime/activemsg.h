@@ -309,8 +309,8 @@ class ActiveMessageMediumNoReply {
   {
     void *dstptr = 0;
     if(datalen > gasnet_AMMaxMedium()) {
-      fprintf(stderr, "DATALEN = %zd (max=%zd)\n", datalen,
-	      gasnet_AMMaxMedium());
+      //fprintf(stderr, "DATALEN = %zd (max=%zd)\n", datalen,
+	//      gasnet_AMMaxMedium());
       dstptr = get_remote_msgptr(dest, datalen);
     }
 #ifdef CHECK_REENTRANT_MESSAGES
