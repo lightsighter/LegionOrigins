@@ -2244,6 +2244,7 @@ namespace RegionRuntime {
     /*static*/ volatile RegistrationCallbackFnptr HighLevelRuntime::registration_callback = NULL;
     /*static*/ Processor::TaskFuncID HighLevelRuntime::legion_main_id = 0;
     /*static*/ InputArgs HighLevelRuntime::hlr_inputs = { NULL, 0 };
+    /*static*/ unsigned HighLevelRuntime::max_tasks_per_schedule_request = MAX_TASK_MAPS_PER_STEP;
 
     //--------------------------------------------------------------------------------------------
     /*static*/ void HighLevelRuntime::set_registration_callback(RegistrationCallbackFnptr callback)
@@ -2260,6 +2261,28 @@ namespace RegionRuntime {
       // as they might be changed by GASNet or MPI or whatever
       Machine m(&argc, &argv, HighLevelRuntime::get_task_table(true/*add runtime tasks*/), 
                 HighLevelRuntime::get_reduction_table(), false/*cps style*/);
+      // Parse any inputs for the high level runtime
+      {
+#define INT_ARG(argname, varname) do { \
+        if(!strcmp((argv)[i], argname)) {		\
+          varname = atoi((argv)[++i]);		\
+          continue;					\
+        } } while(0)
+
+#define BOOL_ARG(argname, varname) do { \
+        if(!strcmp((argv)[i], argname)) {		\
+          varname = true;				\
+          continue;					\
+        } } while(0)
+
+        max_tasks_per_schedule_request = MAX_TASK_MAPS_PER_STEP;
+        for (int i = 1; i < argc; i++)
+        {
+          INT_ARG("-hl:sched", max_tasks_per_schedule_request);
+        }
+#undef INT_ARG
+#undef BOOL_ARG
+      }
       // Now we can set out input args
       hlr_inputs.argv = argv;
       hlr_inputs.argc = argc;
@@ -3471,7 +3494,7 @@ namespace RegionRuntime {
     {
       // Update the queue to make sure as many tasks are awake as possible
       update_queue();
-      // Launch up to MAX_TASK_MAPS_PER_STEP tasks, either from the ready queue, or
+      // Launch up to max_tasks_per_schedule_request tasks, either from the ready queue, or
       // by detecting tasks that become ready to map on the waiting queue
       int mapped_tasks = 0;
       // First try launching from the ready queue
@@ -3482,7 +3505,7 @@ namespace RegionRuntime {
       log_task(LEVEL_SPEW,"Running scheduler on processor %x with %ld tasks in ready queue",
               local_proc.id, ready_queue.size());
 
-      while (!ready_queue.empty() && (mapped_tasks<MAX_TASK_MAPS_PER_STEP))
+      while (!ready_queue.empty() && (mapped_tasks<max_tasks_per_schedule_request))
       {
 	DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_SCHEDULER);
         // TODO: Something more intelligent than the first thing on the ready queue
@@ -3518,7 +3541,7 @@ namespace RegionRuntime {
       // If we make it here, we can unlock the queue lock
       queue_lock.unlock();
       // If we mapped enough tasks, we can return now
-      if (mapped_tasks == MAX_TASK_MAPS_PER_STEP)
+      if (mapped_tasks == max_tasks_per_schedule_request)
         return;
       // If we've made it here, we've run out of work to do on our local processor
       // so we need to issue a steal request to another processor
