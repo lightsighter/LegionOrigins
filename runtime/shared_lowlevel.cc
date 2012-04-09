@@ -2443,6 +2443,7 @@ namespace RegionRuntime {
 
     void RegionInstanceImpl::perform_copy_operation(RegionInstanceImpl *target, const ElementMask &src_mask, const ElementMask &dst_mask)
     {
+        DetailedTimer::ScopedPush sp(TIME_COPY); 
         const void *src_ptr = base_ptr;
         void       *tgt_ptr = target->base_ptr;
 #ifdef DEBUG_LOW_LEVEL
