@@ -325,6 +325,14 @@ namespace RegionRuntime {
             return "MAPPER";
           case TIME_SYSTEM:
             return "SYSTEM";
+            // Default case just print the number
+          default:
+            {
+              // We only call this at the end of the run so leaking a little memory isn't too bad
+              char *result = new char[10];
+              sprintf(result,"%d",level);
+              return result;
+            }
         }
         assert(false);
         return NULL;
