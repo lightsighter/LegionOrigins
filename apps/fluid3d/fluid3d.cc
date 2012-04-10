@@ -18,11 +18,6 @@ using namespace RegionRuntime::HighLevel;
 
 RegionRuntime::Logger::Category log_mapper("mapper");
 
-namespace Config {
-  unsigned num_steps = 4;
-  bool args_read = false;
-};
-
 enum {
   TOP_LEVEL_TASK_ID,
   TASKID_INIT_CELLS,
@@ -347,6 +342,13 @@ FluidConfig init_config(FluidSpec spec)
   return conf;
 }
 
+// FIXME (Elliott): This WILL NOT work when running on multiple nodes
+// with GASNET.  Needs to be a struct like other config parameters.
+namespace Config {
+  unsigned num_steps = 4;
+  bool args_read = false;
+};
+
 unsigned nbx, nby, nbz, numBlocks;
 
 static inline int MOVE_BX(int x, int dir) { return MOVE_X(x, dir, 0, nbx-1); }
@@ -440,9 +442,42 @@ public:
   }
 };
 
-void get_all_regions(LogicalRegion *ghosts, std::vector<RegionRequirement> &reqs,
-                     PrivilegeMode access, AllocateMode mem, 
-                     CoherenceProperty prop, LogicalRegion parent)
+static void parse_args(int argc, char **argv)
+{
+  Config::args_read = false;
+  Config::num_steps = 4;
+  nbx = 1;
+  nby = 1;
+  nbz = 1;
+
+  for(int i = 1; i < argc; i++) {
+    if(!strcmp(argv[i], "-s")) {
+      Config::num_steps = atoi(argv[++i]);
+      continue;
+    }
+    
+    if(!strcmp(argv[i], "-nbx")) {
+      nbx = atoi(argv[++i]);
+      continue;
+    }
+    
+    if(!strcmp(argv[i], "-nby")) {
+      nby = atoi(argv[++i]);
+      continue;
+    }
+
+    if(!strcmp(argv[i], "-nbz")) {
+      nbz = atoi(argv[++i]);
+      continue;
+    }
+  }
+  numBlocks = nbx * nby * nbz;
+  Config::args_read = true;
+}
+
+static void get_all_regions(LogicalRegion *ghosts, std::vector<RegionRequirement> &reqs,
+                            PrivilegeMode access, AllocateMode mem, 
+                            CoherenceProperty prop, LogicalRegion parent)
 {
   for (unsigned g = 0; g < GHOST_CELLS; g++)
   {
@@ -459,9 +494,12 @@ void top_level_task(const void *args, size_t arglen,
 {
   log_app.info("In top_level_task...");
 
-  // don't do anything until all the command-line args have been ready
-  while(!Config::args_read)
-    sleep(1);
+  InputArgs *inputs = (InputArgs*)args;
+  char **argv = inputs->argv;
+  int argc = inputs->argc;
+
+  // parse command line arguments
+  parse_args(argc, argv);
 
   // read input file header to get problem size
   FluidConfig conf = init_config(load_file_header("init.fluid"));
@@ -548,6 +586,7 @@ void main_task(const void *args, size_t arglen,
 
   printf("fluid: cells     = %d (%d x %d x %d)\n", nx*ny*nz, nx, ny, nz);
   printf("fluid: divisions = %d x %d x %d\n", nbx, nby, nbz);
+  printf("fluid: steps     = %d\n", Config::num_steps);
 
   PhysicalRegion<AT> real_cells[2];
   real_cells[0] = regions[0];
@@ -2112,34 +2151,6 @@ int main(int argc, char **argv)
   HighLevelRuntime::register_single_task<gather_forces_and_advance<AccessorGeneric> >(TASKID_GATHER_FORCES,Processor::LOC_PROC,"gather_forces");
   HighLevelRuntime::register_single_task<FluidSpec, load_file<AccessorGeneric> >(TASKID_LOAD_FILE,Processor::LOC_PROC,"load_file");
   HighLevelRuntime::register_single_task<save_file<AccessorGeneric> >(TASKID_SAVE_FILE,Processor::LOC_PROC,"save_file");
-
-  nbx = 1;
-  nby = 1;
-  nbz = 1;
-
-  for(int i = 1; i < argc; i++) {
-    if(!strcmp(argv[i], "-s")) {
-      Config::num_steps = atoi(argv[++i]);
-      continue;
-    }
-    
-    if(!strcmp(argv[i], "-nbx")) {
-      nbx = atoi(argv[++i]);
-      continue;
-    }
-    
-    if(!strcmp(argv[i], "-nby")) {
-      nby = atoi(argv[++i]);
-      continue;
-    }
-
-    if(!strcmp(argv[i], "-nbz")) {
-      nbz = atoi(argv[++i]);
-      continue;
-    }
-  }
-  numBlocks = nbx * nby * nbz;
-  Config::args_read = true;
 
   return HighLevelRuntime::start(argc,argv);
 }
