@@ -893,7 +893,7 @@ namespace RegionRuntime {
       static HighLevelRuntime *runtime_map;
       static volatile RegistrationCallbackFnptr registration_callback;
       static Processor::TaskFuncID legion_main_id;
-      static unsigned max_tasks_per_schedule_request;
+      static int max_tasks_per_schedule_request;
     public:
       // member variables for getting the default arguments
       // Note that these are available to the mapper through the pointer to the runtime

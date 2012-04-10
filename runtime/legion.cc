@@ -2244,7 +2244,7 @@ namespace RegionRuntime {
     /*static*/ volatile RegistrationCallbackFnptr HighLevelRuntime::registration_callback = NULL;
     /*static*/ Processor::TaskFuncID HighLevelRuntime::legion_main_id = 0;
     /*static*/ InputArgs HighLevelRuntime::hlr_inputs = { NULL, 0 };
-    /*static*/ unsigned HighLevelRuntime::max_tasks_per_schedule_request = MAX_TASK_MAPS_PER_STEP;
+    /*static*/ int HighLevelRuntime::max_tasks_per_schedule_request = MAX_TASK_MAPS_PER_STEP;
 
     //--------------------------------------------------------------------------------------------
     /*static*/ void HighLevelRuntime::set_registration_callback(RegistrationCallbackFnptr callback)
@@ -2282,6 +2282,9 @@ namespace RegionRuntime {
         }
 #undef INT_ARG
 #undef BOOL_ARG
+#ifdef DEBUG_HIGH_LEVEL
+        assert(max_tasks_per_schedule_request > 0);
+#endif
       }
       // Now we can set out input args
       hlr_inputs.argv = argv;
@@ -13044,7 +13047,7 @@ namespace RegionRuntime {
     //-------------------------------------------------------------------------
     {
       // If we're the original version of the instance info then delete the lock
-      if (!remote && (parent == NULL) && (this != InstanceInfo::get_no_instance()))
+      if (!remote && !clone && (parent == NULL) && (this != InstanceInfo::get_no_instance()))
       {
         inst_lock.destroy_lock();
       }
