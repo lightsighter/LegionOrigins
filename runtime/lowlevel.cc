@@ -3195,6 +3195,8 @@ namespace RegionRuntime {
 	  init_done(false), shutdown_requested(false), in_idle_task(false),
 	  idle_task_enabled(true)
       {
+        gasnet_hsl_init(&mutex);
+
 	// if a processor-idle task is in the table, make a Task object for it
 	Processor::TaskIDTable::iterator it = task_id_table.find(Processor::TASK_ID_PROCESSOR_IDLE);
 	idle_task = ((it != task_id_table.end()) ?

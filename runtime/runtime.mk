@@ -1,5 +1,7 @@
 
+ifndef GASNET
 GASNET 	:= /usr/local/gasnet-1.16.2
+endif
 ifndef CUDA
 CUDA	:= /usr/local/cuda
 endif
