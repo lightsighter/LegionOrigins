@@ -188,7 +188,7 @@ namespace RegionRuntime {
     __thread PerThreadTimerData *thread_timer_data;
 
 #ifdef DETAILED_TIMING
-    /*static*/ void DetailedTimer::clear_timers(void)
+    /*static*/ void DetailedTimer::clear_timers(bool all_nodes /*=true*/)
     {
       PTHREAD_SAFE_CALL(pthread_mutex_lock(&global_timer_mutex));
       for (std::vector<PerThreadTimerData*>::iterator it = timer_data.begin();
