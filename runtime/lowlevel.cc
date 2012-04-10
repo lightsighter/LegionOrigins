@@ -798,9 +798,9 @@ namespace RegionRuntime {
     Node::Node(void)
     {
       gasnet_hsl_init(&mutex);
-      events.reserve(1000);
+      events.reserve(10000);
       num_events = 0;
-      locks.reserve(1000);
+      locks.reserve(10000);
       num_locks = 0;
     }
 
@@ -1620,11 +1620,14 @@ namespace RegionRuntime {
       init(Lock::NO_LOCK, -1);
     }
 
+    Logger::Category log_lock("lock");
+
     void Lock::Impl::init(Lock _me, unsigned _init_owner)
     {
       me = _me;
       owner = _init_owner;
-      count = 0;
+      count = ZERO_COUNT;
+      log_lock.debug("count init [%p]=%d", &count, count);
       mode = 0;
       in_use = false;
       mutex = new gasnet_hsl_t;
@@ -1635,8 +1638,6 @@ namespace RegionRuntime {
       local_data = 0;
       local_data_size = 0;
     }
-
-    Logger::Category log_lock("lock");
 
     /*static*/ void /*Lock::Impl::*/handle_lock_request(LockRequestArgs args)
     {
@@ -1667,7 +1668,8 @@ namespace RegionRuntime {
 
 	// case 2: we're the owner, and nobody is holding the lock, so grant
 	//  it to the (original) requestor
-	if((impl->count == 0) && (impl->remote_sharer_mask == 0)) {
+	if((impl->count == Lock::Impl::ZERO_COUNT) && 
+	   (impl->remote_sharer_mask == 0)) {
 	  assert(impl->remote_waiter_mask == 0);
 
 	  log_lock(LEVEL_DEBUG, "granting lock request: lock=%x, node=%d, mode=%d",
@@ -1746,8 +1748,8 @@ namespace RegionRuntime {
     Event Lock::Impl::lock(unsigned new_mode, bool exclusive,
 			   Event after_lock /*= Event::NO_EVENT*/)
     {
-      log_lock(LEVEL_DEBUG, "local lock request: lock=%x mode=%d excl=%d event=%x/%d",
-	       me.id, new_mode, exclusive, after_lock.id, after_lock.gen);
+      log_lock(LEVEL_DEBUG, "local lock request: lock=%x mode=%d excl=%d event=%x/%d count=%d impl=%p",
+	       me.id, new_mode, exclusive, after_lock.id, after_lock.gen, count, this);
 
       // collapse exclusivity into mode
       if(exclusive) new_mode = MODE_EXCL;
@@ -1762,20 +1764,22 @@ namespace RegionRuntime {
 	if(owner == gasnet_mynode()) {
 	  // case 1: we own the lock
 	  // can we grant it?
-	  if((count == 0) || ((mode == new_mode) && (mode != MODE_EXCL))) {
+	  if((count == ZERO_COUNT) || ((mode == new_mode) && (mode != MODE_EXCL))) {
 	    mode = new_mode;
 	    count++;
+	    log_lock.debug("count ++(1) [%p]=%d", &count, count);
 	    got_lock = true;
 	  }
 	} else {
 	  // somebody else owns it
 	
 	  // are we sharing?
-	  if((count > 0) && (mode == new_mode)) {
+	  if((count > ZERO_COUNT) && (mode == new_mode)) {
 	    // we're allowed to grant additional sharers with the same mode
 	    assert(mode != MODE_EXCL);
 	    if(mode == new_mode) {
 	      count++;
+	      log_lock.debug("count ++(2) [%p]=%d", &count, count);
 	      got_lock = true;
 	    }
 	  }
@@ -1796,6 +1800,9 @@ namespace RegionRuntime {
 	    requested = true;
 	  }
 	}
+  
+	log_lock(LEVEL_DEBUG, "local lock result: lock=%x got=%d req=%d count=%d",
+		 me.id, got_lock ? 1 : 0, requested ? 1 : 0, count);
 
 	// if we didn't get the lock, put our event on the queue of local
 	//  waiters - create an event if we weren't given one to use
@@ -1841,14 +1848,16 @@ namespace RegionRuntime {
 	  local_waiters.erase(MODE_EXCL);
 	  
 	mode = MODE_EXCL;
-	count = 1;
+	count = ZERO_COUNT + 1;
+	log_lock.debug("count <-1 [%p]=%d", &count, count);
       } else {
 	// pull a whole list of waiters that want to share with the same mode
 	std::map<unsigned, std::deque<Event> >::iterator it = local_waiters.begin();
 	
 	mode = it->first;
-	count = it->second.size();
-	assert(count > 0);
+	count = ZERO_COUNT + it->second.size();
+	log_lock.debug("count <-waiters [%p]=%d", &count, count);
+	assert(count > ZERO_COUNT);
 	// grab the list of events wanting to share the lock
 	to_wake.swap(it->second);
 	local_waiters.erase(it);  // actually pull list off map!
@@ -1875,12 +1884,15 @@ namespace RegionRuntime {
 		 me.id, count, mode, remote_sharer_mask, remote_waiter_mask);
 	AutoHSLLock a(mutex); // hold mutex on lock for entire function
 
-	assert(count > 0);
+	assert(count > ZERO_COUNT);
 
 	// if this isn't the last holder of the lock, just decrement count
 	//  and return
 	count--;
-	if(count > 0) break;
+	log_lock.debug("count -- [%p]=%d", &count, count);
+	log_lock(LEVEL_DEBUG, "post-unlock: lock=%x count=%d mode=%d share=%lx wait=%lx",
+		 me.id, count, mode, remote_sharer_mask, remote_waiter_mask);
+	if(count > ZERO_COUNT) break;
 
 	// case 1: if we were sharing somebody else's lock, tell them we're
 	//  done
@@ -1939,14 +1951,14 @@ namespace RegionRuntime {
       if(owner != gasnet_mynode()) return false;
 
       // conservative check on lock count also doesn't need mutex
-      if(count == 0) return false;
+      if(count == ZERO_COUNT) return false;
 
       // a careful check of the lock mode and count does require the mutex
       bool held;
       {
 	AutoHSLLock a(mutex);
 
-	held = ((count > 0) &&
+	held = ((count > ZERO_COUNT) &&
 		((mode == check_mode) || ((mode == 0) && excl_ok)));
       }
 
@@ -5856,7 +5868,7 @@ namespace RegionRuntime {
 
       CHECK_GASNET( gasnet_attach(handlers, hcount, (gasnet_mem_size_in_mb << 20), 0) );
 
-      size_t lmb_size = 1 << 20;
+      size_t lmb_size = 16 << 20;
       init_lmbs(lmb_size);
 
       pthread_t poll_thread;

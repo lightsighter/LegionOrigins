@@ -235,7 +235,7 @@ namespace RegionRuntime {
       unsigned mode;  // lock mode
       bool in_use;
 
-      enum { MODE_EXCL = 0 };
+      enum { MODE_EXCL = 0, ZERO_COUNT = 0x11223344 };
 
       gasnet_hsl_t *mutex; // controls which local thread has access to internal data (not runtime-visible lock)
 
