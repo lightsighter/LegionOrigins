@@ -46,17 +46,17 @@ def prep_parsec():
         sp.check_call([_parsec_mgmt, '-a', 'build', '-p', 'fluidanimate', '-c', 'gcc-pthreads'])
         print
 
-def parsec_serial(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None, output = None,
+def parsec_serial(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None,
            **_ignored):
     return check_output(
         [_parsec_fluid_serial, str(nbx*nby*nbz), str(steps),
-         str(input), str(output)])
+         str(input)])
 
-def parsec_pthreads(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None, output = None,
+def parsec_pthreads(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None,
            **_ignored):
     return check_output(
         [_parsec_fluid_pthreads, str(nbx*nby*nbz), str(steps),
-         str(input), str(output)])
+         str(input)])
 
 _legion_fluid = None
 def prep_legion():
@@ -66,7 +66,7 @@ def prep_legion():
         sp.check_call(['make'], cwd=_root_dir)
         print
 
-def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None, output = None,
+def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None,
            legion_logging = 4,
            **_ignored):
     return check_output(
