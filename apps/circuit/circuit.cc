@@ -236,12 +236,12 @@ void region_main(const void *args, size_t arglen,
                                   upv_regions, global_arg, local_args, false/*must*/);
   }
 
-  log_circuit(LEVEL_INFO,"waiting for all simulation tasks to complete");
+  log_circuit(LEVEL_WARNING,"waiting for all simulation tasks to complete");
 
   last.wait_all_results();
   clock_gettime(CLOCK_MONOTONIC, &ts_end);
 
-  log_circuit(LEVEL_INFO,"SUCCESS!");
+  log_circuit(LEVEL_WARNING,"SUCCESS!");
   {
     double sim_time = ((1.0 * (ts_end.tv_sec - ts_start.tv_sec)) +
                        (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
@@ -265,7 +265,7 @@ void region_main(const void *args, size_t arglen,
   }
   RegionRuntime::LowLevel::DetailedTimer::report_timers();
 
-  log_circuit(LEVEL_INFO,"simulation complete - destroying regions");
+  log_circuit(LEVEL_WARNING,"simulation complete - destroying regions");
 
   // Now we can destroy the regions
   {
@@ -949,7 +949,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
                         HighLevelRuntime *runtime, int num_pieces, int nodes_per_piece,
                         int wires_per_piece, int pct_wire_in_piece, int random_seed)
 {
-  log_circuit.info("Initializing circuit simulation...");
+  log_circuit(LEVEL_WARNING,"Initializing circuit simulation...");
   // inline map physical instances for the nodes and wire regions
   PhysicalRegion<AccessorGeneric> wires = runtime->map_region<AccessorGeneric>(ctx, 
                                                                     RegionRequirement(ckt.all_wires,
@@ -1154,7 +1154,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
   delete [] first_wires;
   delete [] first_nodes;
 
-  log_circuit.info("Finished initializing simulation...");
+  log_circuit(LEVEL_WARNING,"Finished initializing simulation...");
 
   return result;
 }
