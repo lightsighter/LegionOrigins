@@ -76,6 +76,12 @@ namespace RegionRuntime {
 	return create_instance_local(r, bytes_needed, redopid);
       }
 
+      virtual void destroy_instance(RegionInstanceUntyped i, 
+				    bool local_destroy)
+      {
+	destroy_instance_local(i, local_destroy);
+      }
+
       virtual off_t alloc_bytes(size_t size)
       {
 	return alloc_bytes_local(size);
@@ -131,6 +137,12 @@ namespace RegionRuntime {
 						    ReductionOpID redopid)
       {
 	return create_instance_local(r, bytes_needed, redopid);
+      }
+
+      virtual void destroy_instance(RegionInstanceUntyped i, 
+				    bool local_destroy)
+      {
+	destroy_instance_local(i, local_destroy);
       }
 
       virtual off_t alloc_bytes(size_t size)

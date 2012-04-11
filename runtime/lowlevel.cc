@@ -252,6 +252,7 @@ namespace RegionRuntime {
       ROLL_UP_TIMER_MSGID,
       ROLL_UP_DATA_MSGID,
       CLEAR_TIMER_MSGID,
+      DESTROY_INST_MSGID,
     };
 
     // detailed timer stuff
@@ -1085,24 +1086,26 @@ namespace RegionRuntime {
       ElementMask avail_elmts, changed_elmts;
     };
 
-    RegionInstanceUntyped::Impl::Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset)
+    RegionInstanceUntyped::Impl::Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset, size_t _size)
       : me(_me), memory(_memory)
     {
       locked_data.valid = true;
       locked_data.region = _region;
       locked_data.offset = _offset;
+      locked_data.offset = _size;
       locked_data.is_reduction = false;
       locked_data.redopid = 0;
       lock.init(ID(me).convert<Lock>(), ID(me).node());
       lock.set_local_data(&locked_data);
     }
 
-    RegionInstanceUntyped::Impl::Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset, ReductionOpID _redopid)
+    RegionInstanceUntyped::Impl::Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset, size_t _size, ReductionOpID _redopid)
       : me(_me), memory(_memory)
     {
       locked_data.valid = true;
       locked_data.region = _region;
       locked_data.offset = _offset;
+      locked_data.size = _size;
       locked_data.is_reduction = true;
       locked_data.redopid = _redopid;
       lock.init(ID(me).convert<Lock>(), ID(me).node());
@@ -1116,6 +1119,7 @@ namespace RegionRuntime {
       locked_data.valid = false;
       locked_data.region = RegionMetaDataUntyped::NO_REGION;
       locked_data.offset = -1;
+      locked_data.size = 0;
       lock.init(ID(me).convert<Lock>(), ID(me).node());
       lock.set_local_data(&locked_data);
     }
@@ -2144,7 +2148,8 @@ namespace RegionRuntime {
 
     void Memory::Impl::free_bytes_local(off_t offset, size_t size)
     {
-      assert(0);
+      log_malloc.info("ignoring free request: mem=%x offset=%zd size=%zd",
+		      me.id, offset, size);
     }
 
     off_t Memory::Impl::alloc_bytes_remote(size_t size)
@@ -2200,6 +2205,12 @@ namespace RegionRuntime {
 	return create_instance_local(r, bytes_needed, redopid);
       }
 
+      virtual void destroy_instance(RegionInstanceUntyped i, 
+				    bool local_destroy)
+      {
+	destroy_instance_local(i, local_destroy);
+      }
+
       virtual off_t alloc_bytes(size_t size)
       {
 	return alloc_bytes_local(size);
@@ -2253,6 +2264,12 @@ namespace RegionRuntime {
 						    ReductionOpID redopid)
       {
 	return create_instance_remote(r, bytes_needed, redopid);
+      }
+
+      virtual void destroy_instance(RegionInstanceUntyped i, 
+				    bool local_destroy)
+      {
+	destroy_instance_remote(i, local_destroy);
       }
 
       virtual off_t alloc_bytes(size_t size)
@@ -2335,6 +2352,16 @@ namespace RegionRuntime {
 	  return create_instance_local(r, bytes_needed, redopid);
 	} else {
 	  return create_instance_remote(r, bytes_needed, redopid);
+	}
+      }
+
+      virtual void destroy_instance(RegionInstanceUntyped i, 
+				    bool local_destroy)
+      {
+	if(gasnet_mynode() == 0) {
+	  destroy_instance_local(i, local_destroy);
+	} else {
+	  destroy_instance_remote(i, local_destroy);
 	}
       }
 
@@ -2482,7 +2509,7 @@ namespace RegionRuntime {
 
       //RegionMetaDataImpl *r_impl = Runtime::runtime->get_metadata_impl(r);
 
-      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(i, r, me, inst_offset);
+      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(i, r, me, inst_offset, bytes_needed);
 
       // find/make an available index to store this in
       unsigned index;
@@ -2646,7 +2673,7 @@ namespace RegionRuntime {
       log_inst(LEVEL_DEBUG, "creating remote instance: node=%d", ID(me).node());
       CreateInstanceResp resp = CreateInstanceMessage::request(ID(me).node(), args);
       log_inst(LEVEL_DEBUG, "created remote instance: inst=%x offset=%zd", resp.i.id, resp.inst_offset);
-      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(resp.i, r, me, resp.inst_offset);
+      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(resp.i, r, me, resp.inst_offset, bytes_needed);
       unsigned index = ID(resp.i).index_l();
       // resize array if needed
       if(index >= instances.size()) {
@@ -2675,7 +2702,7 @@ namespace RegionRuntime {
       log_inst(LEVEL_DEBUG, "creating remote instance: node=%d", ID(me).node());
       CreateInstanceResp resp = CreateInstanceMessage::request(ID(me).node(), args);
       log_inst(LEVEL_DEBUG, "created remote instance: inst=%x offset=%zd", resp.i.id, resp.inst_offset);
-      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(resp.i, r, me, resp.inst_offset);
+      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(resp.i, r, me, resp.inst_offset, bytes_needed);
       unsigned index = ID(resp.i).index_l();
       // resize array if needed
       if(index >= instances.size()) {
@@ -2758,17 +2785,60 @@ namespace RegionRuntime {
       allocators[index] = 0;
     }
 
-    void Memory::Impl::destroy_instance(RegionInstanceUntyped i, bool local_destroy)
+    void Memory::Impl::destroy_instance_local(RegionInstanceUntyped i, 
+					      bool local_destroy)
     {
-      return; // TODO: FIX!
+      log_inst(LEVEL_INFO, "destroying local instance: mem=%x inst=%x", me.id, i.id);
+
+      // all we do for now is free the actual data storage
+      unsigned index = ID(me).index_l();
+      assert(index < instances.size());
+      RegionInstanceUntyped::Impl *iimpl = instances[index];
+      free_bytes(iimpl->locked_data.offset, iimpl->locked_data.size);
+      
+      return; // TODO: free up actual instance record?
       ID id(i);
 
       // TODO: actually free corresponding storage
-
+#if 0
       unsigned index = id.index_l();
       assert(index < instances.size());
       delete instances[index];
       instances[index] = 0;
+#endif
+    }
+
+    struct DestroyInstanceArgs {
+      Memory m;
+      RegionInstanceUntyped i;
+    };
+
+    void handle_destroy_instance(DestroyInstanceArgs args)
+    {
+      args.m.impl()->destroy_instance(args.i, false);
+    }
+
+    typedef ActiveMessageShortNoReply<DESTROY_INST_MSGID,
+				      DestroyInstanceArgs,
+				      handle_destroy_instance> DestroyInstanceMessage;
+
+    void Memory::Impl::destroy_instance_remote(RegionInstanceUntyped i, 
+					       bool local_destroy)
+    {
+      // if we're the original destroyer of the instance, tell the owner
+      if(local_destroy) {
+	int owner = ID(me).node();
+
+	DestroyInstanceArgs args;
+	args.m = me;
+	args.i = i;
+	log_inst(LEVEL_DEBUG, "destroying remote instance: node=%d inst=%x", owner, i.id);
+
+	DestroyInstanceMessage::request(owner, args);
+      }
+
+      // and right now, we leave the instance itself untouched
+      return;
     }
 
     ///////////////////////////////////////////////////

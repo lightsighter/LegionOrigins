@@ -1983,8 +1983,8 @@ public:
         // Distribute these over all CPUs
         //log_mapper.info("mapping task %d with tag %d to processor %x",task->task_id,
         //                task->tag, loc_procs[task->tag % loc_procs.size()].first.id);
-        //return loc_procs[task->tag % loc_procs.size()].first;
-        return loc_procs[0].first;
+        return loc_procs[task->tag % loc_procs.size()].first;
+        //return loc_procs[0].first;
       }
       break;
     default:
