@@ -5783,9 +5783,24 @@ namespace RegionRuntime {
       return 0;
     }
 
+    // Small hack for tracking the local cpu procs and gpu procs
+    static std::set<LocalProcessor*>& get_local_cpu_procs_set(void)
+    {
+      static std::set<LocalProcessor*> local_cpus;
+      return local_cpus;
+    } 
+#ifdef USE_GPU
+    static std::set<GPUProcessor*>& get_local_gpu_procs_set(void)
+    {
+      static std::set<GPUProcessor*> local_gpus;
+      return local_gpus;
+    }
+#endif
+
     static Machine *the_machine = 0;
 
     /*static*/ Machine *Machine::get_machine(void) { return the_machine; }
+
 
     Machine::Machine(int *argc, char ***argv,
 		     const Processor::TaskIDTable &task_table,
@@ -5918,7 +5933,7 @@ namespace RegionRuntime {
       announce_data.num_memories = (1 + 2 * num_local_gpus);
 
       // create local processors
-      std::set<LocalProcessor *> local_cpu_procs;
+      std::set<LocalProcessor *> &local_cpu_procs = get_local_cpu_procs_set();
 
       for(unsigned i = 0; i < num_local_cpus; i++) {
 	LocalProcessor *lp = new LocalProcessor(ID(ID::ID_PROCESSOR, 
@@ -5978,7 +5993,7 @@ namespace RegionRuntime {
       }
 
 #ifdef USE_GPU
-      std::set<GPUProcessor *> local_gpu_procs;
+      std::set<GPUProcessor *> &local_gpu_procs = get_local_gpu_procs_set();
 
       if(num_local_gpus > 0) {
 	for(unsigned i = 0; i < num_local_gpus; i++) {
@@ -6107,7 +6122,6 @@ namespace RegionRuntime {
 	  }
 	}
       }	
-#endif
 
       // now that we've got the machine description all set up, we can start
       //  the worker threads for local processors, which'll probably ask the
@@ -6122,6 +6136,7 @@ namespace RegionRuntime {
 	  it != local_gpu_procs.end();
 	  it++)
 	(*it)->start_worker_thread();
+#endif
 #endif
     }
 
@@ -6183,6 +6198,23 @@ namespace RegionRuntime {
 		      RunStyle style /*= ONE_TASK_ONLY*/,
 		      const void *args /*= 0*/, size_t arglen /*= 0*/)
     {
+      // now that we've got the machine description all set up, we can start
+      //  the worker threads for local processors, which'll probably ask the
+      //  high-level runtime to set itself up
+      std::set<LocalProcessor*> &local_cpu_procs = get_local_cpu_procs_set();
+      for(std::set<LocalProcessor *>::iterator it = local_cpu_procs.begin();
+	  it != local_cpu_procs.end();
+	  it++)
+	(*it)->start_worker_threads();
+
+#ifdef USE_GPU
+      std::set<GPUProcessor*> &local_gpu_procs = get_local_gpu_procs_set();
+      for(std::set<GPUProcessor *>::iterator it = local_gpu_procs.begin();
+	  it != local_gpu_procs.end();
+	  it++)
+	(*it)->start_worker_thread();
+#endif
+
       const std::vector<Processor::Impl *>& local_procs = Runtime::runtime->nodes[gasnet_mynode()].processors;
       Atomic<int> running_proc_count(local_procs.size());
 
