@@ -3068,6 +3068,15 @@ namespace RegionRuntime {
 
 	      // when we wake up, expect to have a task
 	      assert(me->task != 0);
+              // check to see if the task we've been given is a shutdown task, if so breakout
+              if (me->task->func_id == 0)
+              {
+                assert(proc->shutdown_requested);
+                // set the state up and break out of the loop
+                me->state = STATE_RUN;
+                me->task = 0;
+                break;
+              }
 	    }
 #if 0
 	    // see if there's work sitting around (and we're allowed to 
@@ -3229,6 +3238,13 @@ namespace RegionRuntime {
 	if(task->func_id == 0) {
 	  log_task(LEVEL_INFO, "shutdown request received!");
 	  shutdown_requested = true;
+          // Wake up any available threads that may be sleeping
+          while (!avail_threads.empty()) {
+            Thread *thread = avail_threads.front();
+            avail_threads.pop_front();
+            log_task(LEVEL_DEBUG, "waking thread to shutdown: proc=%x task=%p thread=%p", me.id, task, thread);
+            thread->set_task_and_wake(task);
+          }
 	  return;
 	}
 
