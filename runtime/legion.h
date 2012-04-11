@@ -593,7 +593,6 @@ namespace RegionRuntime {
       void set_instance(LowLevel::RegionInstanceAccessorUntyped<AT_CONV(AT)> inst);
     public:
       PhysicalRegion(LogicalRegion h = LogicalRegion::NO_REGION);
-      PhysicalRegion(const PhysicalRegion<AT> &rhs);
       // including definitions below so templates are instantiated and inlined
       template<typename T> inline ptr_t<T> alloc(unsigned count = 1);
       template<typename T> inline void     free(ptr_t<T> ptr,unsigned count = 1);
@@ -610,7 +609,6 @@ namespace RegionRuntime {
     public:
       inline bool operator==(const PhysicalRegion<AT> &accessor) const;
       inline bool operator<(const PhysicalRegion<AT> &accessor) const;
-      inline PhysicalRegion<AT>& operator=(const PhysicalRegion<AT> &accessor);
     public:
       inline PointerIterator* iterator(void) const;
     private:
@@ -626,7 +624,6 @@ namespace RegionRuntime {
       RegionMappingImpl *impl;
       unsigned idx;
       LogicalRegion handle;
-      const LowLevel::ElementMask *valid_mask;
     };
 
     
@@ -3162,7 +3159,7 @@ namespace RegionRuntime {
     PhysicalRegion<AT>::PhysicalRegion(RegionMappingImpl *im, LogicalRegion h)
       : valid_allocator(false), valid_instance(false),
           instance(LowLevel::RegionInstanceAccessorUntyped<AT_CONV(AT)>(NULL)),
-          valid(false), inline_mapped(true), impl(im), handle(h), valid_mask(&(h.get_valid_mask()))
+          valid(false), inline_mapped(true), impl(im), handle(h)
     //--------------------------------------------------------------------------
     {
     }
@@ -3172,7 +3169,7 @@ namespace RegionRuntime {
     PhysicalRegion<AT>::PhysicalRegion(unsigned id, LogicalRegion h)
       : valid_allocator(false), valid_instance(false),
           instance(LowLevel::RegionInstanceAccessorUntyped<AT_CONV(AT)>(NULL)),
-          valid(true), inline_mapped(false), idx(id), handle(h), valid_mask(&(h.get_valid_mask()))
+          valid(true), inline_mapped(false), idx(id), handle(h) 
     //--------------------------------------------------------------------------
     {
     }
@@ -3182,19 +3179,7 @@ namespace RegionRuntime {
     PhysicalRegion<AT>::PhysicalRegion(LogicalRegion h /*= LogicalRegion::NO_REGION*/)
       : valid_allocator(false), valid_instance(false),
           instance(LowLevel::RegionInstanceAccessorUntyped<AT_CONV(AT)>(NULL)),
-          valid(false), inline_mapped(false), impl(NULL), idx(0),
-          handle(h), valid_mask((h.exists() ? &(h.get_valid_mask()) : NULL))
-    //--------------------------------------------------------------------------
-    {
-    }
-
-    //--------------------------------------------------------------------------
-    template<AccessorType AT>
-    PhysicalRegion<AT>::PhysicalRegion(const PhysicalRegion<AT> &rhs)
-      : valid_allocator(rhs.valid_allocator), valid_instance(rhs.valid_instance),
-        allocator(rhs.allocator), instance(rhs.instance), 
-        valid(rhs.valid), inline_mapped(rhs.inline_mapped), impl(rhs.impl), idx(rhs.idx),
-        handle(rhs.handle), valid_mask((handle.exists() ? &(handle.get_valid_mask()) : NULL))
+          handle(h) 
     //--------------------------------------------------------------------------
     {
     }
@@ -3347,7 +3332,8 @@ namespace RegionRuntime {
     inline void PhysicalRegion<AT>::verify_access(unsigned ptr)
     //--------------------------------------------------------------------------
     {
-      if (!valid_mask->is_set(ptr))
+      const LowLevel::ElementMask &mask = handle.get_valid_mask();
+      if (!mask.is_set(ptr))
       {
         fprintf(stderr,"ERROR: Accessing invalid pointer %d in logical region %x\n",
                 ptr, handle.id);
@@ -3373,28 +3359,11 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     template<AccessorType AT>
-    inline PhysicalRegion<AT>& PhysicalRegion<AT>::operator=(const PhysicalRegion<AT> &rhs)
-    //--------------------------------------------------------------------------
-    {
-      valid_allocator = rhs.valid_allocator;
-      valid_instance = rhs.valid_instance;
-      allocator = rhs.allocator;
-      instance = rhs.instance;
-      valid = rhs.valid;
-      inline_mapped = rhs.inline_mapped;
-      impl = rhs.impl;
-      idx = rhs.idx;
-      handle = rhs.handle;
-      valid_mask = rhs.valid_mask;
-      return *this;
-    }
-
-    //--------------------------------------------------------------------------
-    template<AccessorType AT>
     inline PointerIterator* PhysicalRegion<AT>::iterator(void) const
     //--------------------------------------------------------------------------
     {
-      return new PointerIterator(valid_mask->enumerate_enabled());
+      LogicalRegion copy = handle;
+      return new PointerIterator(copy.get_valid_mask().enumerate_enabled());
     }
 
     //--------------------------------------------------------------------------
