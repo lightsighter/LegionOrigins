@@ -2468,7 +2468,10 @@ namespace RegionRuntime {
 							      size_t bytes_needed)
     {
       off_t inst_offset = alloc_bytes(bytes_needed);
-      assert(inst_offset >= 0);
+      if (inst_offset < 0)
+      {
+        return RegionInstanceUntyped::NO_INST;
+      }
 
       // SJT: think about this more to see if there are any race conditions
       //  with an allocator temporarily having the wrong ID
@@ -2511,7 +2514,10 @@ namespace RegionRuntime {
 							      ReductionOpID redopid)
     {
       off_t inst_offset = alloc_bytes(bytes_needed);
-      assert(inst_offset >= 0);
+      if (inst_offset < 0)
+      {
+        return RegionInstanceUntyped::NO_INST;
+      }
 
       // SJT: think about this more to see if there are any race conditions
       //  with an allocator temporarily having the wrong ID
