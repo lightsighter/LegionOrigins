@@ -159,9 +159,9 @@ void region_main(const void *args, size_t arglen,
 
   // Start the simulation
   printf("Starting main simulation loop\n");
+  RegionRuntime::LowLevel::DetailedTimer::clear_timers();
   struct timespec ts_start, ts_end;
   clock_gettime(CLOCK_MONOTONIC, &ts_start);
-  RegionRuntime::LowLevel::DetailedTimer::clear_timers();
 
   // Build the region requirements for each task
   std::vector<RegionRequirement> cnc_regions;
@@ -241,6 +241,7 @@ void region_main(const void *args, size_t arglen,
   last.wait_all_results();
   clock_gettime(CLOCK_MONOTONIC, &ts_end);
 
+  log_circuit(LEVEL_INFO,"SUCCESS!");
   {
     double sim_time = ((1.0 * (ts_end.tv_sec - ts_start.tv_sec)) +
                        (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
