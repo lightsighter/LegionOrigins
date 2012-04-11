@@ -302,6 +302,7 @@ struct FluidConfig {
   float densityCoeff, pressureCoeff, viscosityCoeff;
   unsigned nx, ny, nz, numCells;
   Vec3 delta;				// cell dimensions
+  unsigned num_steps;
 };
 
 FluidConfig init_config(FluidSpec spec)
@@ -341,13 +342,6 @@ FluidConfig init_config(FluidSpec spec)
 
   return conf;
 }
-
-// FIXME (Elliott): This WILL NOT work when running on multiple nodes
-// with GASNET.  Needs to be a struct like other config parameters.
-namespace Config {
-  unsigned num_steps = 4;
-  bool args_read = false;
-};
 
 unsigned nbx, nby, nbz, numBlocks;
 
@@ -442,17 +436,21 @@ public:
   }
 };
 
-static void parse_args(int argc, char **argv)
+static unsigned parse_args(int argc, char **argv)
 {
-  Config::args_read = false;
-  Config::num_steps = 4;
+  unsigned num_steps = 4;
   nbx = 1;
   nby = 1;
   nbz = 1;
 
+  printf("fluid: %p %d ",argv,argc);
+  for (int i = 1; i < argc; i++)
+    printf("%s ",argv[i]);
+  printf("\n");
+
   for(int i = 1; i < argc; i++) {
     if(!strcmp(argv[i], "-s")) {
-      Config::num_steps = atoi(argv[++i]);
+      num_steps = atoi(argv[++i]);
       continue;
     }
     
@@ -472,7 +470,7 @@ static void parse_args(int argc, char **argv)
     }
   }
   numBlocks = nbx * nby * nbz;
-  Config::args_read = true;
+  return num_steps;
 }
 
 static void get_all_regions(LogicalRegion *ghosts, std::vector<RegionRequirement> &reqs,
@@ -499,11 +497,13 @@ void top_level_task(const void *args, size_t arglen,
   int argc = inputs->argc;
 
   // parse command line arguments
-  parse_args(argc, argv);
+  unsigned num_steps = parse_args(argc, argv);
 
   // read input file header to get problem size
   FluidConfig conf = init_config(load_file_header("init.fluid"));
   unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
+  // Set the number of steps to run
+  conf.num_steps = num_steps;
 
   // workaround for inability to use a region in task that created it
   // build regions for cells and then do all work in a subtask
@@ -586,7 +586,7 @@ void main_task(const void *args, size_t arglen,
 
   printf("fluid: cells     = %d (%d x %d x %d)\n", nx*ny*nz, nx, ny, nz);
   printf("fluid: divisions = %d x %d x %d\n", nbx, nby, nbz);
-  printf("fluid: steps     = %d\n", Config::num_steps);
+  printf("fluid: steps     = %d\n", conf.num_steps);
 
   PhysicalRegion<AT> real_cells[2];
   real_cells[0] = regions[0];
@@ -872,7 +872,7 @@ void main_task(const void *args, size_t arglen,
 
   int cur_buffer = 0;  // buffer we're generating on this pass
   // Run the simulation
-  for (unsigned step = 0; step < Config::num_steps; step++)
+  for (unsigned step = 0; step < conf.num_steps; step++)
   {
     for (unsigned id = 0; id < numBlocks; id++)
       blocks[id].cb = cur_buffer;
@@ -1007,7 +1007,7 @@ void main_task(const void *args, size_t arglen,
                                        0, id);
 
       // remember the futures for the last pass so we can wait on them
-      if(step == Config::num_steps - 1)
+      if(step == conf.num_steps - 1)
         futures.push_back(f);
     }
 
