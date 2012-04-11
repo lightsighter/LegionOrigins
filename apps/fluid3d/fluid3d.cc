@@ -2134,7 +2134,7 @@ void create_mappers(Machine *machine, HighLevelRuntime *runtime, Processor local
 {
   // Elliott: This shouldn't impact correctness any more, but might
   // impact performance and/or memory use.
-  //runtime->replace_default_mapper(new FluidMapper(machine,runtime,local));
+  runtime->replace_default_mapper(new FluidMapper(machine,runtime,local));
 }
 
 int main(int argc, char **argv)
