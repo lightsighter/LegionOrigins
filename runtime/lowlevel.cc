@@ -2408,7 +2408,11 @@ namespace RegionRuntime {
 
       virtual void free_bytes(off_t offset, size_t size)
       {
-	assert(0);
+	if(gasnet_mynode() == 0) {
+	  free_bytes_local(offset, size);
+	} else {
+	  free_bytes_remote(offset, size);
+	}
       }
 
       virtual void get_bytes(off_t offset, void *dst, size_t size)
@@ -2555,7 +2559,7 @@ namespace RegionRuntime {
 
       //RegionMetaDataImpl *r_impl = Runtime::runtime->get_metadata_impl(r);
 
-      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(i, r, me, inst_offset,
+      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(i, r, me, inst_offset, bytes_needed,
 									    redopid);
 
       // find/make an available index to store this in
@@ -2951,9 +2955,12 @@ namespace RegionRuntime {
 	  if(instant_trigger_guard) {
 	    instant_trigger_guard = false;
 	  } else {
-	    proc->preemptable_threads.remove(this);
-	    proc->resumable_threads.push_back(this);
-	    proc->start_some_threads();
+	    log_task.debug("thread now resumable: thread=%p, state=%d", this, state);
+	    if(state == STATE_SUSPEND) {
+	      proc->preemptable_threads.remove(this);
+	      proc->resumable_threads.push_back(this);
+	      proc->start_some_threads();
+	    }
 	  }
 	}
 
@@ -2970,7 +2977,7 @@ namespace RegionRuntime {
 	  //  we can do in the meantime
 	  log_task(LEVEL_DEBUG, "thread needs to wait on event: event=%x/%d",
 		   wait_for.id, wait_for.gen);
-	  while(!wait_for.has_triggered()) {
+	  for(int pass = 1; !wait_for.has_triggered(); pass++) {
 #define MULTIPLE_TASKS_PER_THREAD	  
 #ifdef MULTIPLE_TASKS_PER_THREAD	  
 	    while(!block) {
@@ -3018,7 +3025,9 @@ namespace RegionRuntime {
 	    instant_trigger_guard = true;
 	    suspend_event = wait_for;
 	  
-	    wait_for.impl()->add_waiter(wait_for, this);
+	    // only add a waiter on the first pass
+	    if(pass == 1)
+	      wait_for.impl()->add_waiter(wait_for, this);
 
 	    {
 	      AutoHSLLock a(proc->mutex);
@@ -5972,6 +5981,7 @@ namespace RegionRuntime {
       hcount += RollUpRequestMessage::add_handler_entries(&handlers[hcount]);
       hcount += RollUpDataMessage::add_handler_entries(&handlers[hcount]);
       hcount += ClearTimerRequestMessage::add_handler_entries(&handlers[hcount]);
+      hcount += DestroyInstanceMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage2::add_handler_entries(&handlers[hcount]);
 
