@@ -848,9 +848,8 @@ namespace RegionRuntime {
       DeletionOp*        get_available_deletion(TaskContext *ctx, PartitionID pid);
     private:
       void add_to_ready_queue(TaskContext *ctx, bool acquire_lock = true);
-      void add_to_waiting_queue(TaskContext *ctx);
-      void add_to_waiting_queue(RegionMappingImpl *impl);
-      void add_to_waiting_queue(DeletionOp *op);
+      void add_to_ready_queue(RegionMappingImpl *impl, bool acquire_lock = true);
+      void add_to_ready_queue(DeletionOp *op, bool acquire_lock = true);
     protected:
       // Make it so TaskContext and RegionMappingImpl can put themselves
       // back on the free list
@@ -880,7 +879,7 @@ namespace RegionRuntime {
       void process_advertisement(const void * args, size_t arglen); 
       // Where the magic happens!
       void process_schedule_request(void); 
-      void update_queue(void); 
+      void perform_maps_and_deletions(void); 
       void perform_region_mapping(RegionMappingImpl *impl);
       void check_spawn_task(TaskContext *ctx); // set the spawn parameter
       bool target_task(TaskContext *ctx); // Select a target processor, return true if local 
@@ -911,16 +910,15 @@ namespace RegionRuntime {
       // Task Contexts
       bool idle_task_enabled; // Keep track if the idle task enabled or not
       std::list<TaskContext*> ready_queue; // Tasks ready to be mapped/stolen
-      std::list<TaskContext*> waiting_queue; // Tasks still unmappable
       Lock queue_lock; // Protect ready and waiting queues and idle_task_enabled
       unsigned total_contexts;
       std::list<TaskContext*> available_contexts; // open task descriptions
       Lock available_lock; // Protect available contexts
       // Region Mappings 
-      std::list<RegionMappingImpl*> waiting_maps;
+      std::vector<RegionMappingImpl*> ready_maps;
       std::list<RegionMappingImpl*> available_maps;
       // Region Deletions
-      std::list<DeletionOp*> waiting_deletions;
+      std::vector<DeletionOp*> ready_deletions;
       std::list<DeletionOp*> available_deletions;
       // Keep track of how to do partition numbering
       Lock unique_lock; // Make sure all unique values are actually unique
@@ -3060,10 +3058,9 @@ namespace RegionRuntime {
           add_to_ready_queue(desc); 
         }
       }
-      else
-      {
-        add_to_waiting_queue(desc);
-      }
+      // If its not ready it's registered in the logical tree and someone will
+      // notify it and it will add itself to the ready queue
+
       // Return the future map that wraps the future map implementation 
       return FutureMap(&desc->future_map);
     }
@@ -3120,10 +3117,9 @@ namespace RegionRuntime {
           add_to_ready_queue(desc); 
         }
       }
-      else
-      {
-        add_to_waiting_queue(desc);
-      }
+      // If its not ready it's registered in the logical tree and someone will
+      // notify it and it will add itself to the ready queue
+      
       // Return the future where the return value will be set
       return Future(&desc->future);
     }
