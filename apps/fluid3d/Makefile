@@ -6,6 +6,8 @@ endif
 #Flags for directing the runtime makefile what to include
 DEBUG=1                   # Include debugging symbols
 OUTPUT_LEVEL=LEVEL_DEBUG  # Compile time print level
+#DEBUG=1                   # Include debugging symbols
+#OUTPUT_LEVEL=LEVEL_DEBUG  # Compile time print level
 #SHARED_LOWLEVEL=1	  # Use the shared low level
 #ALT_MAPPERS=1		  # Build the alternative mappers
 

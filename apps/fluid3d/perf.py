@@ -59,6 +59,7 @@ def parsec_pthreads(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None,
          str(input)])
 
 _legion_fluid = None
+_legion_use_gasnet = True
 def prep_legion():
     global _legion_fluid
     _legion_fluid = os.path.join(_root_dir, 'fluid3d')
@@ -70,9 +71,10 @@ def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None,
            legion_logging = 4,
            **_ignored):
     return check_output(
+        (['gasnetrun_ibv', '-n', str(1)] if _legion_use_gasnet else []) +
         [_legion_fluid,
          '-ll:csize', '16384', '-ll:gsize', '2000',
-         '-ll:l1size', '16384', '-ll:cpu', str(nbx*nby*nbz),
+         '-ll:cpu', str(nbx*nby*nbz),
          '-level', str(legion_logging),
          '-nbx', str(nbx), '-nby', str(nby), '-nbz', str(nbz), '-s', str(steps),
         ])

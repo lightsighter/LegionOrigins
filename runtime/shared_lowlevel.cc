@@ -836,6 +836,8 @@ namespace RegionRuntime {
 
     /*static*/ const Lock Lock::NO_LOCK = Lock();
 
+    Logger::Category log_lock("lock");
+
     class LockImpl : public Triggerable {
     public:
 	LockImpl(int idx, bool activate = false) : index(idx) {
@@ -918,6 +920,8 @@ namespace RegionRuntime {
     {
 	Event result = Event::NO_EVENT;
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
+        log_lock(LEVEL_DEBUG,"lock request: lock=%x mode=%d excl=%d event=%x/%d count=%d",
+                 index, m, exc, wait_on.id, wait_on.gen, holders); 
         // check to see if we have to wait on event first
         bool must_wait = false;
         if (wait_on.exists())
@@ -1001,6 +1005,8 @@ namespace RegionRuntime {
     void LockImpl::unlock(Event wait_on)
     {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
+        log_lock(LEVEL_DEBUG,"unlock request: lock=%x mode=%d excl=%d event=%x/%d count=%d",
+                 index, mode, exclusive, wait_on.id, wait_on.gen, holders);
 	if (wait_on.exists())
 	{
 		// Register this lock to be unlocked when the even triggers	

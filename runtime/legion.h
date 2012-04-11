@@ -593,6 +593,7 @@ namespace RegionRuntime {
       void set_instance(LowLevel::RegionInstanceAccessorUntyped<AT_CONV(AT)> inst);
     public:
       PhysicalRegion(LogicalRegion h = LogicalRegion::NO_REGION);
+      PhysicalRegion(const PhysicalRegion<AT> &rhs);
       // including definitions below so templates are instantiated and inlined
       template<typename T> inline ptr_t<T> alloc(unsigned count = 1);
       template<typename T> inline void     free(ptr_t<T> ptr,unsigned count = 1);
@@ -609,6 +610,7 @@ namespace RegionRuntime {
     public:
       inline bool operator==(const PhysicalRegion<AT> &accessor) const;
       inline bool operator<(const PhysicalRegion<AT> &accessor) const;
+      inline PhysicalRegion<AT>& operator=(const PhysicalRegion<AT> &accessor);
     public:
       inline PointerIterator* iterator(void) const;
     private:
@@ -624,6 +626,7 @@ namespace RegionRuntime {
       RegionMappingImpl *impl;
       unsigned idx;
       LogicalRegion handle;
+      const LowLevel::ElementMask *valid_mask;
     };
 
     
@@ -655,6 +658,8 @@ namespace RegionRuntime {
       static void register_reduction_op(ReductionOpID redop_id);
       // Call visible to the user to give a task to call to initialize mappers, colorize functions, etc.
       static void set_registration_callback(RegistrationCallbackFnptr callback);
+      // Get the input args for the top level task
+      static InputArgs& get_input_args(void);
       // Register a task for a single task (the first one of these will be the top level task)
       template<typename T,
         T (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
@@ -848,9 +853,8 @@ namespace RegionRuntime {
       DeletionOp*        get_available_deletion(TaskContext *ctx, PartitionID pid);
     private:
       void add_to_ready_queue(TaskContext *ctx, bool acquire_lock = true);
-      void add_to_waiting_queue(TaskContext *ctx);
-      void add_to_waiting_queue(RegionMappingImpl *impl);
-      void add_to_waiting_queue(DeletionOp *op);
+      void add_to_ready_queue(RegionMappingImpl *impl, bool acquire_lock = true);
+      void add_to_ready_queue(DeletionOp *op, bool acquire_lock = true);
     protected:
       // Make it so TaskContext and RegionMappingImpl can put themselves
       // back on the free list
@@ -880,7 +884,7 @@ namespace RegionRuntime {
       void process_advertisement(const void * args, size_t arglen); 
       // Where the magic happens!
       void process_schedule_request(void); 
-      void update_queue(void); 
+      void perform_maps_and_deletions(void); 
       void perform_region_mapping(RegionMappingImpl *impl);
       void check_spawn_task(TaskContext *ctx); // set the spawn parameter
       bool target_task(TaskContext *ctx); // Select a target processor, return true if local 
@@ -894,10 +898,6 @@ namespace RegionRuntime {
       static volatile RegistrationCallbackFnptr registration_callback;
       static Processor::TaskFuncID legion_main_id;
       static int max_tasks_per_schedule_request;
-    public:
-      // member variables for getting the default arguments
-      // Note that these are available to the mapper through the pointer to the runtime
-      static InputArgs hlr_inputs;
     private:
       // Member variables
       const Processor local_proc;
@@ -911,16 +911,15 @@ namespace RegionRuntime {
       // Task Contexts
       bool idle_task_enabled; // Keep track if the idle task enabled or not
       std::list<TaskContext*> ready_queue; // Tasks ready to be mapped/stolen
-      std::list<TaskContext*> waiting_queue; // Tasks still unmappable
       Lock queue_lock; // Protect ready and waiting queues and idle_task_enabled
       unsigned total_contexts;
       std::list<TaskContext*> available_contexts; // open task descriptions
       Lock available_lock; // Protect available contexts
       // Region Mappings 
-      std::list<RegionMappingImpl*> waiting_maps;
+      std::vector<RegionMappingImpl*> ready_maps;
       std::list<RegionMappingImpl*> available_maps;
       // Region Deletions
-      std::list<DeletionOp*> waiting_deletions;
+      std::vector<DeletionOp*> ready_deletions;
       std::list<DeletionOp*> available_deletions;
       // Keep track of how to do partition numbering
       Lock unique_lock; // Make sure all unique values are actually unique
@@ -3060,10 +3059,9 @@ namespace RegionRuntime {
           add_to_ready_queue(desc); 
         }
       }
-      else
-      {
-        add_to_waiting_queue(desc);
-      }
+      // If its not ready it's registered in the logical tree and someone will
+      // notify it and it will add itself to the ready queue
+
       // Return the future map that wraps the future map implementation 
       return FutureMap(&desc->future_map);
     }
@@ -3120,10 +3118,9 @@ namespace RegionRuntime {
           add_to_ready_queue(desc); 
         }
       }
-      else
-      {
-        add_to_waiting_queue(desc);
-      }
+      // If its not ready it's registered in the logical tree and someone will
+      // notify it and it will add itself to the ready queue
+      
       // Return the future where the return value will be set
       return Future(&desc->future);
     }
@@ -3165,7 +3162,7 @@ namespace RegionRuntime {
     PhysicalRegion<AT>::PhysicalRegion(RegionMappingImpl *im, LogicalRegion h)
       : valid_allocator(false), valid_instance(false),
           instance(LowLevel::RegionInstanceAccessorUntyped<AT_CONV(AT)>(NULL)),
-          valid(false), inline_mapped(true), impl(im), handle(h)
+          valid(false), inline_mapped(true), impl(im), handle(h), valid_mask(&(h.get_valid_mask()))
     //--------------------------------------------------------------------------
     {
     }
@@ -3175,7 +3172,7 @@ namespace RegionRuntime {
     PhysicalRegion<AT>::PhysicalRegion(unsigned id, LogicalRegion h)
       : valid_allocator(false), valid_instance(false),
           instance(LowLevel::RegionInstanceAccessorUntyped<AT_CONV(AT)>(NULL)),
-          valid(true), inline_mapped(false), idx(id), handle(h) 
+          valid(true), inline_mapped(false), idx(id), handle(h), valid_mask(&(h.get_valid_mask()))
     //--------------------------------------------------------------------------
     {
     }
@@ -3185,7 +3182,19 @@ namespace RegionRuntime {
     PhysicalRegion<AT>::PhysicalRegion(LogicalRegion h /*= LogicalRegion::NO_REGION*/)
       : valid_allocator(false), valid_instance(false),
           instance(LowLevel::RegionInstanceAccessorUntyped<AT_CONV(AT)>(NULL)),
-          handle(h) 
+          valid(false), inline_mapped(false), impl(NULL), idx(0),
+          handle(h), valid_mask((h.exists() ? &(h.get_valid_mask()) : NULL))
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT>
+    PhysicalRegion<AT>::PhysicalRegion(const PhysicalRegion<AT> &rhs)
+      : valid_allocator(rhs.valid_allocator), valid_instance(rhs.valid_instance),
+        allocator(rhs.allocator), instance(rhs.instance), 
+        valid(rhs.valid), inline_mapped(rhs.inline_mapped), impl(rhs.impl), idx(rhs.idx),
+        handle(rhs.handle), valid_mask((handle.exists() ? &(handle.get_valid_mask()) : NULL))
     //--------------------------------------------------------------------------
     {
     }
@@ -3338,8 +3347,7 @@ namespace RegionRuntime {
     inline void PhysicalRegion<AT>::verify_access(unsigned ptr)
     //--------------------------------------------------------------------------
     {
-      const LowLevel::ElementMask &mask = handle.get_valid_mask();
-      if (!mask.is_set(ptr))
+      if (!valid_mask->is_set(ptr))
       {
         fprintf(stderr,"ERROR: Accessing invalid pointer %d in logical region %x\n",
                 ptr, handle.id);
@@ -3365,11 +3373,28 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     template<AccessorType AT>
+    inline PhysicalRegion<AT>& PhysicalRegion<AT>::operator=(const PhysicalRegion<AT> &rhs)
+    //--------------------------------------------------------------------------
+    {
+      valid_allocator = rhs.valid_allocator;
+      valid_instance = rhs.valid_instance;
+      allocator = rhs.allocator;
+      instance = rhs.instance;
+      valid = rhs.valid;
+      inline_mapped = rhs.inline_mapped;
+      impl = rhs.impl;
+      idx = rhs.idx;
+      handle = rhs.handle;
+      valid_mask = rhs.valid_mask;
+      return *this;
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT>
     inline PointerIterator* PhysicalRegion<AT>::iterator(void) const
     //--------------------------------------------------------------------------
     {
-      LogicalRegion copy = handle;
-      return new PointerIterator(copy.get_valid_mask().enumerate_enabled());
+      return new PointerIterator(valid_mask->enumerate_enabled());
     }
 
     //--------------------------------------------------------------------------

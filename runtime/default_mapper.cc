@@ -31,8 +31,8 @@ namespace RegionRuntime {
       war_enabled          = STATIC_WAR_ENABLED;
       // Check to see if there any input arguments to parse
       {
-        int argc = HighLevelRuntime::hlr_inputs.argc;
-        char **argv = HighLevelRuntime::hlr_inputs.argv;
+        int argc = HighLevelRuntime::get_input_args().argc;
+        char **argv = HighLevelRuntime::get_input_args().argv;
         // Parse the input arguments looking for ones for the default mapper
         for (int i=1; i < argc; i++)
         {

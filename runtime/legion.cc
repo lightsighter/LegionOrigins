@@ -1448,6 +1448,11 @@ namespace RegionRuntime {
       assert(remaining_notifications > 0);
 #endif
       remaining_notifications--;
+      // if this is ready put it on the ready queue
+      if (remaining_notifications == 0)
+      {
+        runtime->add_to_ready_queue(this);
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -1879,6 +1884,10 @@ namespace RegionRuntime {
       assert(remaining_notifications > 0);
 #endif
       remaining_notifications--;
+      if (remaining_notifications == 0)
+      {
+        runtime->add_to_ready_queue(this);
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -2087,7 +2096,7 @@ namespace RegionRuntime {
           {
             char *ptr = (char*)default_args;
             ptr += sizeof(Context);
-            memcpy(ptr, &hlr_inputs, sizeof(InputArgs));
+            memcpy(ptr, &HighLevelRuntime::get_input_args(), sizeof(InputArgs));
           }
           desc->initialize_task(NULL/*no parent*/,tid, HighLevelRuntime::legion_main_id,default_args,
                                 default_size, 0, 0, mapper_objects[0], mapper_locks[0]);
@@ -2169,6 +2178,14 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    /*static*/ InputArgs& HighLevelRuntime::get_input_args(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      static InputArgs inputs = { NULL, 0 };
+      return inputs;
+    }
+
+    //--------------------------------------------------------------------------------------------
     /*static*/ TaskID HighLevelRuntime::update_collection_table(void (*low_level_ptr)(const void*,size_t,Processor),
                                                     TaskID uid, const char *name, bool index_space,
                                                     Processor::Kind proc_kind)
@@ -2243,7 +2260,6 @@ namespace RegionRuntime {
 
     /*static*/ volatile RegistrationCallbackFnptr HighLevelRuntime::registration_callback = NULL;
     /*static*/ Processor::TaskFuncID HighLevelRuntime::legion_main_id = 0;
-    /*static*/ InputArgs HighLevelRuntime::hlr_inputs = { NULL, 0 };
     /*static*/ int HighLevelRuntime::max_tasks_per_schedule_request = MAX_TASK_MAPS_PER_STEP;
 
     //--------------------------------------------------------------------------------------------
@@ -2287,8 +2303,8 @@ namespace RegionRuntime {
 #endif
       }
       // Now we can set out input args
-      hlr_inputs.argv = argv;
-      hlr_inputs.argc = argc;
+      HighLevelRuntime::get_input_args().argv = argv;
+      HighLevelRuntime::get_input_args().argc = argc;
       // Kick off the low-level machine (control never returns)
       m.run();
       // We should never make it here (if we do return with non-zero error code)
@@ -2484,10 +2500,8 @@ namespace RegionRuntime {
         }
         // No need to reclaim the context, the parent context has a pointer to reclaim later
       }
-      else
-      {
-        add_to_waiting_queue(desc);
-      }
+      // If its not ready it's registered in the logical tree and someone will
+      // notify it and it will add itself to the ready queue
 
       return Future(&desc->future);
     }
@@ -2529,10 +2543,8 @@ namespace RegionRuntime {
         op->perform_deletion(true/*need lock*/);
         op->deactivate();
       }
-      else
-      {
-        add_to_waiting_queue(op);
-      }
+      // If its not ready it's registered in the logical tree and someone will
+      // notify it and it will add itself to the ready queue
     }
     
     //--------------------------------------------------------------------------------------------
@@ -2694,10 +2706,8 @@ namespace RegionRuntime {
         op->perform_deletion(true/*need lock*/);
         op->deactivate();
       }
-      else
-      {
-        add_to_waiting_queue(op);
-      }
+      // If its not ready it's registered in the logical tree and someone will
+      // notify it and it will add itself to the ready queue
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2748,10 +2758,8 @@ namespace RegionRuntime {
       {
         perform_region_mapping(impl);
       }
-      else
-      {
-        add_to_waiting_queue(impl);
-      }
+      // If its not ready it's registered in the logical tree and someone will
+      // notify it and it will add itself to the ready queue
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3022,51 +3030,58 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::add_to_waiting_queue(TaskContext *ctx)
+    void HighLevelRuntime::add_to_ready_queue(RegionMappingImpl *impl, bool acquire_lock/*=true*/)
     //--------------------------------------------------------------------------------------------
     {
-      AutoLock q_lock(queue_lock);
-      // Put it on the waiting queue
-      waiting_queue.push_back(ctx);
-      // enable the idle task so it will get scheduled eventually
-      if (!idle_task_enabled)
+      if (acquire_lock)
       {
-        Processor copy = local_proc;
-        copy.enable_idle_task();
-        idle_task_enabled = true;
+        AutoLock q_lock(queue_lock);
+        // Put it on the ready queue
+        ready_maps.push_back(impl);
+        if (!idle_task_enabled)
+        {
+          Processor copy = local_proc;
+          copy.enable_idle_task();
+          idle_task_enabled = true;
+        }
       }
-      // No need to advertise this yet since it can't be stolen
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::add_to_waiting_queue(RegionMappingImpl *impl)
-    //--------------------------------------------------------------------------------------------
-    {
-      AutoLock q_lock(queue_lock);
-      // Put it on the map waiting queue
-      waiting_maps.push_back(impl);
-      // enable the idle task so it will get run
-      if (!idle_task_enabled)
+      else
       {
-        Processor copy = local_proc;
-        copy.enable_idle_task();
-        idle_task_enabled = true;
+        ready_maps.push_back(impl);
+        if (!idle_task_enabled)
+        {
+          Processor copy = local_proc;
+          copy.enable_idle_task();
+          idle_task_enabled = true;
+        }
       }
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::add_to_waiting_queue(DeletionOp *op)
+    void HighLevelRuntime::add_to_ready_queue(DeletionOp *op, bool acquire_lock/*=true*/)
     //--------------------------------------------------------------------------------------------
     {
-      AutoLock q_lock(queue_lock);
-      // Put it on the deletion waiting queue
-      waiting_deletions.push_back(op);
-      // enable the idle task so that this will get run
-      if (!idle_task_enabled)
+      if (acquire_lock)
       {
-        Processor copy = local_proc;
-        copy.enable_idle_task();
-        idle_task_enabled = true;
+        AutoLock q_lock(queue_lock);
+        // Put it on the ready queue
+        ready_deletions.push_back(op);
+        if (!idle_task_enabled)
+        {
+          Processor copy = local_proc;
+          copy.enable_idle_task();
+          idle_task_enabled = true;
+        } 
+      }
+      else
+      {
+        ready_deletions.push_back(op);
+        if (!idle_task_enabled)
+        {
+          Processor copy = local_proc;
+          copy.enable_idle_task();
+          idle_task_enabled = true;
+        }
       }
     }
 
@@ -3495,8 +3510,8 @@ namespace RegionRuntime {
     void HighLevelRuntime::process_schedule_request(void)
     //--------------------------------------------------------------------------------------------
     {
-      // Update the queue to make sure as many tasks are awake as possible
-      update_queue();
+      // Perform maps and deletions to make sure as many tasks are awake as possible
+      perform_maps_and_deletions();
       // Launch up to max_tasks_per_schedule_request tasks, either from the ready queue, or
       // by detecting tasks that become ready to map on the waiting queue
       int mapped_tasks = 0;
@@ -3505,8 +3520,8 @@ namespace RegionRuntime {
       // Get the lock for the ready queue lock in exclusive mode
       Event lock_event = queue_lock.lock(0,true);
       lock_event.wait(true/*block*/);
-      log_task(LEVEL_SPEW,"Running scheduler on processor %x with %ld tasks in ready queue",
-              local_proc.id, ready_queue.size());
+      log_task(LEVEL_DEBUG,"Running scheduler on processor %x with %ld tasks in ready queue and idle task enabled %d",
+              local_proc.id, ready_queue.size(), idle_task_enabled);
 
       while (!ready_queue.empty() && (mapped_tasks<max_tasks_per_schedule_request))
       {
@@ -3525,8 +3540,8 @@ namespace RegionRuntime {
           //  Check to see if this is an index space and it needs to be split
           // Now map the task and then launch it on the processor
           task->map_and_launch();
-          // Check the waiting queue for new tasks to move onto our ready queue
-          update_queue();
+          // Perform and maps or deletions that were made ready
+          perform_maps_and_deletions();
         }
         // Need to acquire the lock for the next time we go around the loop
         lock_event = queue_lock.lock(0,true/*exclusive*/);
@@ -3534,8 +3549,8 @@ namespace RegionRuntime {
       }
       // Check to see if have any remaining work in our queues, 
       // if not, then disable the idle task
-      if (ready_queue.empty() && waiting_queue.empty()
-          && waiting_maps.empty() && waiting_deletions.empty())
+      if (ready_queue.empty() &&
+          ready_maps.empty() && ready_deletions.empty())
       {
         idle_task_enabled = false;
         Processor copy = local_proc;
@@ -3553,7 +3568,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::update_queue(void)
+    void HighLevelRuntime::perform_maps_and_deletions(void)
     //--------------------------------------------------------------------------------------------
     {
       // Only hold the queue lock when touching the queues
@@ -3564,71 +3579,39 @@ namespace RegionRuntime {
       // Check any of the mapping operations that we need to perform to
       // see if they are ready to be performed.  If so we can just perform them here
       {
-        std::list<RegionMappingImpl*>::iterator map_it = waiting_maps.begin();
-        while (map_it != waiting_maps.end())
+        for (unsigned idx = 0; idx < ready_maps.size(); idx++)
         {
-          if ((*map_it)->is_ready())
-          {
-            RegionMappingImpl *mapping = *map_it;
-            map_it = waiting_maps.erase(map_it);
-            // Release the lock to perform the mapping
-            queue_lock.unlock();
-            // All of the dependences on this mapping have been satisfied, map it
-            perform_region_mapping(mapping);
-            Event lock_event = queue_lock.lock(0,true/*exclusive*/);
-            lock_event.wait(true/*block*/);
-          }
-          else
-          {
-            map_it++;
-          }
+          RegionMappingImpl *mapping = ready_maps[idx];
+          // Release the lock in case more maps get added
+          queue_lock.unlock();
+#ifdef DEBUG_HIGH_LEVEL
+          assert(mapping->is_ready());
+#endif
+          perform_region_mapping(mapping);
+          // Get the lock back
+          Event lock_event = queue_lock.lock(0,true/*exclusive*/);
+          lock_event.wait(true/*block*/);
         }
-      }
-      // Then check any tasks that might have been woken up because mappings are ready
-      // (still holding the lock)
-      {
-        // Iterate over the waiting queue looking for tasks that are now mappable
-        std::list<TaskContext*>::iterator task_it = waiting_queue.begin();
-        while (task_it != waiting_queue.end())
-        {
-          if ((*task_it)->is_ready())
-          {
-            TaskContext *desc = *task_it;
-            // Push it onto the ready queue
-            add_to_ready_queue(desc, false/*already hold lock*/);
-            // Remove it from the waiting queue
-            task_it = waiting_queue.erase(task_it);
-          }
-          else
-          {
-            task_it++;
-          }
-        }
+        // Now we can clear the list of maps since they've all been performed
+        ready_maps.clear();
       }
       // Finally check the list of region deletion operations to be performed to
       // see if any of them are ready to be performed
       // (still holding the lock)
       {
-        std::list<DeletionOp*>::iterator del_it = waiting_deletions.begin();
-        while (del_it != waiting_deletions.end())
+        for (unsigned idx = 0; idx < ready_deletions.size(); idx ++)
         {
-          if ((*del_it)->is_ready())
-          {
-            DeletionOp *op = *del_it;
-            del_it = waiting_deletions.erase(del_it);
-            // Release the lock
-            queue_lock.unlock();
-            op->perform_deletion(true/*need lock*/);
-            // We can also deactivate the deletion now that we know its done
-            op->deactivate();
-            // Reacquire the lock
-            Event lock_event = queue_lock.lock(0,true/*exclusive*/);
-            lock_event.wait(true/*block*/);
-          }
-          else
-          {
-            del_it++;
-          }
+          DeletionOp *op = ready_deletions[idx];
+          queue_lock.unlock();
+#ifdef DEBUG_HIGH_LEVEL
+          assert(op->is_ready());
+#endif
+          op->perform_deletion(true/*need lock*/);
+          // We can also deactivate the deletion now that we know it is done
+          op->deactivate();
+          // Reacquire the queue lock
+          Event lock_event = queue_lock.lock(0,true/*exclusive*/);
+          lock_event.wait(true/*block*/);
         }
       }
       // Now that we're done, release the lock
@@ -9097,6 +9080,10 @@ namespace RegionRuntime {
       assert(remaining_notifications > 0);
 #endif
       remaining_notifications--;
+      if (remaining_notifications == 0)
+      {
+        runtime->add_to_ready_queue(this);
+      }
     }
 
     //--------------------------------------------------------------------------------------------
