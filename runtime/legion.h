@@ -658,6 +658,8 @@ namespace RegionRuntime {
       static void register_reduction_op(ReductionOpID redop_id);
       // Call visible to the user to give a task to call to initialize mappers, colorize functions, etc.
       static void set_registration_callback(RegistrationCallbackFnptr callback);
+      // Get the input args for the top level task
+      static InputArgs& get_input_args(void);
       // Register a task for a single task (the first one of these will be the top level task)
       template<typename T,
         T (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion<AccessorGeneric> >&,Context,HighLevelRuntime*)>
@@ -896,10 +898,6 @@ namespace RegionRuntime {
       static volatile RegistrationCallbackFnptr registration_callback;
       static Processor::TaskFuncID legion_main_id;
       static int max_tasks_per_schedule_request;
-    public:
-      // member variables for getting the default arguments
-      // Note that these are available to the mapper through the pointer to the runtime
-      static InputArgs hlr_inputs;
     private:
       // Member variables
       const Processor local_proc;

@@ -2096,7 +2096,7 @@ namespace RegionRuntime {
           {
             char *ptr = (char*)default_args;
             ptr += sizeof(Context);
-            memcpy(ptr, &hlr_inputs, sizeof(InputArgs));
+            memcpy(ptr, &HighLevelRuntime::get_input_args(), sizeof(InputArgs));
           }
           desc->initialize_task(NULL/*no parent*/,tid, HighLevelRuntime::legion_main_id,default_args,
                                 default_size, 0, 0, mapper_objects[0], mapper_locks[0]);
@@ -2178,6 +2178,14 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    /*static*/ InputArgs& HighLevelRuntime::get_input_args(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      static InputArgs inputs = { NULL, 0 };
+      return inputs;
+    }
+
+    //--------------------------------------------------------------------------------------------
     /*static*/ TaskID HighLevelRuntime::update_collection_table(void (*low_level_ptr)(const void*,size_t,Processor),
                                                     TaskID uid, const char *name, bool index_space,
                                                     Processor::Kind proc_kind)
@@ -2252,7 +2260,6 @@ namespace RegionRuntime {
 
     /*static*/ volatile RegistrationCallbackFnptr HighLevelRuntime::registration_callback = NULL;
     /*static*/ Processor::TaskFuncID HighLevelRuntime::legion_main_id = 0;
-    /*static*/ InputArgs HighLevelRuntime::hlr_inputs = { NULL, 0 };
     /*static*/ int HighLevelRuntime::max_tasks_per_schedule_request = MAX_TASK_MAPS_PER_STEP;
 
     //--------------------------------------------------------------------------------------------
@@ -2296,8 +2303,8 @@ namespace RegionRuntime {
 #endif
       }
       // Now we can set out input args
-      hlr_inputs.argv = argv;
-      hlr_inputs.argc = argc;
+      HighLevelRuntime::get_input_args().argv = argv;
+      HighLevelRuntime::get_input_args().argc = argc;
       // Kick off the low-level machine (control never returns)
       m.run();
       // We should never make it here (if we do return with non-zero error code)
