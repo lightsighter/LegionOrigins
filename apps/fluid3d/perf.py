@@ -74,7 +74,7 @@ def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None,
         (['gasnetrun_ibv', '-n', str(1)] if _legion_use_gasnet else []) +
         [_legion_fluid,
          '-ll:csize', '16384', '-ll:gsize', '2000',
-         '-ll:cpu', str(1),#str(nbx*nby*nbz),
+         '-ll:cpu', str(nbx*nby*nbz),
          '-level', str(legion_logging),
          '-nbx', str(nbx), '-nby', str(nby), '-nbz', str(nbz), '-s', str(steps),
         ])
