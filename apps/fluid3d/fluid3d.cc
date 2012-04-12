@@ -908,6 +908,7 @@ void main_task(const void *args, size_t arglen,
                                        init_regions,
                                        buffer,
                                        0, id);
+      f.release();
     }
 
     // Rebuild reduce (reduction)
@@ -939,6 +940,7 @@ void main_task(const void *args, size_t arglen,
 				       rebuild_regions,
                                        buffer,
                                        0, id);
+      f.release();
     }
 
     // init forces and scatter densities
@@ -971,6 +973,7 @@ void main_task(const void *args, size_t arglen,
 				       density_regions, 
                                        buffer,
                                        0, id);
+      f.release();
     }
 
     // Gather forces and advance
@@ -1009,6 +1012,8 @@ void main_task(const void *args, size_t arglen,
       // remember the futures for the last pass so we can wait on them
       if(step == conf.num_steps - 1)
         futures.push_back(f);
+      else
+        f.release();
     }
 
     // flip the phase
