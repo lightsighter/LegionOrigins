@@ -138,7 +138,7 @@ void region_main(const void *args, size_t arglen,
     parse_input_args(argv, argc, num_loops, num_pieces, nodes_per_piece, 
                       wires_per_piece, pct_wire_in_piece, random_seed);
 
-    log_circuit.info("circuit settings: loops=%d pieces=%d nodes/piece=%d wires/piece=%d pct_in_piece=%d seed=%d",
+    log_circuit(LEVEL_WARNING,"circuit settings: loops=%d pieces=%d nodes/piece=%d wires/piece=%d pct_in_piece=%d seed=%d",
        num_loops, num_pieces, nodes_per_piece, wires_per_piece,
        pct_wire_in_piece, random_seed);
   }
@@ -223,17 +223,25 @@ void region_main(const void *args, size_t arglen,
   // Run the main loop
   for (int i = 0; i < num_loops; i++)
   {
-    log_circuit.info("starting loop %d out of %d", i, num_loops);
+    log_circuit(LEVEL_WARNING,"starting loop %d out of %d", i, num_loops);
 
     // Calculate new currents
-    runtime->execute_index_space(ctx, CALC_NEW_CURRENTS, index_space,
+    last = runtime->execute_index_space(ctx, CALC_NEW_CURRENTS, index_space,
                                   cnc_regions, global_arg, local_args, false/*must*/);
+    last.release();
+
     // Distribute charge
-    runtime->execute_index_space(ctx, DISTRIBUTE_CHARGE, index_space,
+    last = runtime->execute_index_space(ctx, DISTRIBUTE_CHARGE, index_space,
                                   dsc_regions, global_arg, local_args, false/*must*/);
+    last.release();
+
     // Update voltages
     last = runtime->execute_index_space(ctx, UPDATE_VOLTAGES, index_space,
                                   upv_regions, global_arg, local_args, false/*must*/);
+    if (i != (num_loops-1))
+    {
+      last.release();
+    }
   }
 
   log_circuit(LEVEL_WARNING,"waiting for all simulation tasks to complete");
