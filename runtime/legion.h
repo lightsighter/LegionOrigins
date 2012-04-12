@@ -83,6 +83,7 @@ namespace RegionRuntime {
     // Forward declarations for user level objects
     class Task;
     class TaskCollection;
+    class Partition;
     class Future;
     class FutureMap;
     class RegionRequirement;
@@ -480,6 +481,17 @@ namespace RegionRuntime {
       // Create a requirement for a partition with the colorize
       // function describing how to map points in the index space
       // to colors for logical subregions in the partition
+      RegionRequirement(Partition pid, ColorizeID _colorize,
+                        PrivilegeMode _priv,
+                        AllocateMode _alloc, CoherenceProperty _prop,
+                        LogicalRegion _parent, bool _verified = false);
+      
+      RegionRequirement(Partition pid, const std::map<IndexPoint,Color> &map,
+                        PrivilegeMode _priv, AllocateMode _alloc,
+                        CoherenceProperty _prop, LogicalRegion _parent,
+                        bool _verified = false);
+
+      // These are around for backwards compatability
       RegionRequirement(PartitionID pid, ColorizeID _colorize,
                         PrivilegeMode _priv,
                         AllocateMode _alloc, CoherenceProperty _prop,
@@ -495,6 +507,14 @@ namespace RegionRuntime {
       RegionRequirement(LogicalRegion _handle, ReductionOpID op,
                         AllocateMode _alloc, CoherenceProperty _prop,
                         LogicalRegion _parent, bool _verified = false);
+      RegionRequirement(Partition pid, ColorizeID _colorize,
+                        ReductionOpID op, AllocateMode _alloc, CoherenceProperty _prop,
+                        LogicalRegion _parent, bool _verified = false);
+      RegionRequirement(Partition pid, const std::map<IndexPoint,Color> &map,
+                        ReductionOpID op, AllocateMode _alloc, CoherenceProperty _prop,
+                        LogicalRegion _parent, bool _verified = false);
+
+      // These are around for backwards compatability
       RegionRequirement(PartitionID pid, ColorizeID _colorize,
                         ReductionOpID op, AllocateMode _alloc, CoherenceProperty _prop,
                         LogicalRegion _parent, bool _verified = false);

@@ -476,6 +476,44 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    RegionRequirement::RegionRequirement(Partition pid, ColorizeID _colorize,
+                PrivilegeMode _priv, AllocateMode _alloc, CoherenceProperty _prop,
+                LogicalRegion _parent, bool _verified)
+      : privilege(_priv), alloc(_alloc), prop(_prop), parent(_parent),
+        redop(0), verified(_verified), func_type(EXECUTABLE_FUNC),
+        colorize(_colorize) 
+    //--------------------------------------------------------------------------
+    { 
+#ifdef DEBUG_HIGH_LEVEL
+      if (IS_REDUCE(*this))
+      {
+        log_region(LEVEL_ERROR,"ERROR: Use different RegionRequirement constructor for reductions");
+        exit(1);
+      }
+#endif
+      handle.partition = pid.id; 
+    }
+
+    //--------------------------------------------------------------------------
+    RegionRequirement::RegionRequirement(Partition pid, 
+                  const std::map<IndexPoint,Color> &map, PrivilegeMode _priv,
+                  AllocateMode _alloc, CoherenceProperty _prop, 
+                  LogicalRegion _parent, bool _verified)
+      : privilege(_priv), alloc(_alloc), prop(_prop), parent(_parent),
+        redop(0), verified(_verified), func_type(MAPPED_FUNC), color_map(map)
+    //--------------------------------------------------------------------------
+    { 
+#ifdef DEBUG_HIGH_LEVEL
+      if (IS_REDUCE(*this))
+      {
+        log_region(LEVEL_ERROR,"ERROR: Use different RegionRequirement constructor for reductions");
+        exit(1);
+      }
+#endif
+      handle.partition = pid.id; 
+    }
+
+    //--------------------------------------------------------------------------
     RegionRequirement::RegionRequirement(PartitionID pid, ColorizeID _colorize,
                 PrivilegeMode _priv, AllocateMode _alloc, CoherenceProperty _prop,
                 LogicalRegion _parent, bool _verified)
@@ -529,6 +567,42 @@ namespace RegionRuntime {
       }
 #endif
       handle.region = _handle;
+    }
+
+    //--------------------------------------------------------------------------
+    RegionRequirement::RegionRequirement(Partition pid, ColorizeID _colorize,
+                        ReductionOpID op, AllocateMode _alloc, CoherenceProperty _prop,
+                        LogicalRegion _parent, bool _verified)
+      : privilege(REDUCE), alloc(_alloc), prop(_prop), parent(_parent),
+        redop(op), verified(_verified), func_type(EXECUTABLE_FUNC), colorize(_colorize)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      if (redop == 0)
+      {
+        log_region(LEVEL_ERROR,"Zero is not a valid ReductionOpID");
+        exit(1);
+      }
+#endif
+      handle.partition = pid.id;
+    }
+
+    //--------------------------------------------------------------------------
+    RegionRequirement::RegionRequirement(Partition pid, const std::map<IndexPoint,Color> &map,
+                        ReductionOpID op, AllocateMode _alloc, CoherenceProperty _prop,
+                        LogicalRegion _parent, bool _verified)
+      : privilege(REDUCE), alloc(_alloc), prop(_prop), parent(_parent),
+        redop(op), verified(_verified), func_type(MAPPED_FUNC), color_map(map)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      if (redop == 0)
+      {
+        log_region(LEVEL_ERROR,"Zero is not a valid ReductionOpID");
+        exit(1);
+      }
+#endif
+      handle.partition = pid.id;
     }
 
     //--------------------------------------------------------------------------
