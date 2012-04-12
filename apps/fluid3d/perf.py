@@ -94,7 +94,8 @@ def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None,
     cpu_count = min(divisions, get_cpu_count_per_node())
     node_count = min(int(math.ceil(float(divisions) / get_cpu_count_per_node())),
                      get_node_count())
-    print '(%d nodes %d CPUs)' % (node_count, cpu_count),
+    print '(%d node%s %2d CPU%s)' % (node_count, ' ' if node_count == 1 else 's',
+                                    cpu_count, ' ' if cpu_count == 1 else 's'),
     return check_output(
         (['gasnetrun_ibv', '-n', str(node_count)] if _legion_use_gasnet else []) +
         [_legion_fluid,
