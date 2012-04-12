@@ -479,6 +479,9 @@ namespace RegionRuntime {
 
       template <class REDOP, class T, class RHS>
       void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::apply<false>(((T*)array_base)[ptr.value], newval); }
+
+      template <class T>
+      T &ref(ptr_t<T> ptr) const { return ((T*)array_base)[ptr.value]; }
     };
 
     template <> class RegionInstanceAccessorUntyped<AccessorArrayReductionFold> {
@@ -528,6 +531,10 @@ namespace RegionRuntime {
       template <class REDOP, class T, class RHS>
       __device__ __forceinline__
       void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::apply<false>(((T*)array_base)[ptr.value], newval); }
+
+      template <class T>
+      __device__ __forceinline__
+      T &ref(ptr_t<T> ptr) const { return ((T*)array_base)[ptr.value]; }
 #endif
     };
 
