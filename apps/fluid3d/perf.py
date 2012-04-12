@@ -175,9 +175,14 @@ if __name__ == '__main__':
     print
 
     print 'PARSEC pthreads:'
-    thread_counts = (1, 2, 4, 8)
-    for thread_count in thread_counts:
-        perf_check(parsec_pthreads, nbx = thread_count, nby = 1, nbz = 1, steps = _num_steps)
+    lsbs = range(6)
+    for lsb in lsbs:
+	nbx = 1 << (lsb/2);
+        nby = 1
+	nbz = 1 << (lsb/2);
+        if nbx*nbz != 1 << lsb:
+            nbx *= 2
+        perf_check(parsec_pthreads, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps)
     print
 
     print 'Legion:'
