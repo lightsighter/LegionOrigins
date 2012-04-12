@@ -1146,6 +1146,8 @@ namespace RegionRuntime {
     private:
       Event set_event;
       void *result;
+      bool finished;
+      Lock impl_lock;
     protected:
       friend class HighLevelRuntime;
       friend class TaskContext;
@@ -1154,6 +1156,10 @@ namespace RegionRuntime {
       ~FutureImpl(void);
       void set_result(const void *res, size_t result_size);
       void set_result(Deserializer &derez);
+      // Mark when this future is done, the second call to this
+      // will return true and it is that person who is responsible
+      // for deleting the impl
+      bool mark_finished(void);
     public:
       template<typename T> inline T get_result(void);
       inline void get_void_result(void);
@@ -1167,6 +1173,7 @@ namespace RegionRuntime {
     private:
       Event all_set_event;
       Lock  map_lock;
+      bool finished;
       std::map<IndexPoint,UserEvent> outstanding_waits;
       std::map<IndexPoint,TaskArgument>  valid_results;
     protected:
@@ -1177,6 +1184,10 @@ namespace RegionRuntime {
       ~FutureMapImpl(void);
       void set_result(const IndexPoint &point, const void *res, size_t result_size);
       void set_result(size_t point_size, Deserializer &derez);
+      // Mark when this future is done, the second call to this
+      // will return true and it is that person who is responsible
+      // for deleting the impl
+      bool mark_finished(void);
     protected:
       size_t compute_future_map_size(void) const;
       void pack_future_map(Serializer &rez) const;
@@ -2872,7 +2883,11 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(impl != NULL);
 #endif
-      delete impl;
+      // mark it finished and see if we can delete it
+      if (impl->mark_finished())
+      {
+        delete impl;
+      }
       impl = NULL;
     }
 
@@ -2939,7 +2954,11 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(impl != NULL);
 #endif
-      delete impl;
+      // mark that we're finished and see if we can delete it
+      if (impl->mark_finished())
+      {
+        delete impl;
+      }
       impl = NULL;
     }
 

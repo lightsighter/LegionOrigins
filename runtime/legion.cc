@@ -964,7 +964,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     FutureImpl::FutureImpl(Event set_e)
-      : set_event(set_e), result(NULL)
+      : set_event(set_e), result(NULL), finished(false), impl_lock(Lock::create_lock())
     //--------------------------------------------------------------------------
     {
     }
@@ -977,6 +977,7 @@ namespace RegionRuntime {
       {
         free(result);
       }
+      impl_lock.destroy_lock();
     }
 
     //--------------------------------------------------------------------------
@@ -1010,6 +1011,16 @@ namespace RegionRuntime {
       }
 #endif
       derez.deserialize(result,result_size);
+    }
+
+    //--------------------------------------------------------------------------
+    bool FutureImpl::mark_finished(void)
+    //--------------------------------------------------------------------------
+    {
+      AutoLock impl_l(impl_lock);
+      bool result = finished;
+      finished = true;
+      return result;
     }
 
     /////////////////////////////////////////////////////////////
@@ -1049,7 +1060,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     FutureMapImpl::FutureMapImpl(Event set_e)
-      : all_set_event(set_e), map_lock(Lock::create_lock())
+      : all_set_event(set_e), map_lock(Lock::create_lock()), finished(false)
     //--------------------------------------------------------------------------
     {
     }
@@ -1181,6 +1192,16 @@ namespace RegionRuntime {
       {
         set_result(dim_size,derez);
       }
+    }
+
+    //--------------------------------------------------------------------------
+    bool FutureMapImpl::mark_finished(void)
+    //--------------------------------------------------------------------------
+    {
+      AutoLock m_lock(map_lock);
+      bool result = finished;
+      finished = true;
+      return result;
     }
 
     /////////////////////////////////////////////////////////////
@@ -3996,14 +4017,23 @@ namespace RegionRuntime {
           delete partition_nodes;
           delete instance_infos;
         }
-        // If we have a remote future map free it
+        // If we have a remote future map we're always the one to delete it
         if (future_map != NULL)
         {
           delete future_map;
+          future_map = NULL;
         }
       }
-      // It's up to the user to free futures that were handed out
+      // Check to see if we can free any of our futures
+      if ((future != NULL) && future->mark_finished())
+      {
+        delete future;
+      }
       future = NULL;
+      if ((future_map != NULL) && future_map->mark_finished())
+      {
+        delete future_map;
+      }
       future_map = NULL;
       // Zero out the pointers to our maps so we
       // don't accidentally re-used them
