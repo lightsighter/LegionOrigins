@@ -17,6 +17,9 @@
 #define DEFAULT_MAPPER_SLOTS 	8
 #define DEFAULT_CONTEXTS        16 
 
+// Minimum fraction split
+#define MIN_FRACTION_SPLIT      256
+
 #define MAX_TASK_MAPS_PER_STEP  1
 
 // check this relative to the machine file and the low level runtime
@@ -13085,7 +13088,7 @@ namespace RegionRuntime {
       iid(0), handle(LogicalRegion::NO_REGION), location(Memory::NO_MEMORY),
       inst(RegionInstance::NO_INST), valid(false), remote(false), 
       open_child(false), clone(false), children(0),
-      collected(false), returned(false), local_frac(Fraction(1,1)), 
+      collected(false), returned(false), local_frac(Fraction()), 
       parent(NULL), valid_event(Event::NO_EVENT), inst_lock(Lock::NO_LOCK), closing(false)
     //-------------------------------------------------------------------------
     {
@@ -13096,7 +13099,7 @@ namespace RegionRuntime {
                 RegionInstance i, bool rem, InstanceInfo *par, bool open, bool c /*= false*/) :
       iid(id), handle(r), location(m), inst(i), valid(false), remote(rem), open_child(open), 
       clone(c), children(0), collected(false), returned(false), 
-      local_frac(Fraction(1,1)), parent(par), closing(false)
+      local_frac(Fraction()), parent(par), closing(false)
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL 
@@ -15528,9 +15531,15 @@ namespace RegionRuntime {
     // Fraction 
     ///////////////////////////////////////////
     
+    // There is an interesting design decision about how to break up the 32 bit
+    // address space for fractions.  We'll assume that there will be some
+    // balance between the depth and breadth of the task tree so we can split up
+    // the fractions efficiently.  We assume that there will be large fan-outs
+    // in the task tree as well as potentially large numbers of task calls at
+    // each node.  However, we'll assume that the tree is not very deep.
     //-------------------------------------------------------------------------
     Fraction::Fraction(void)
-      : numerator(1), denominator(1)
+      : numerator(256), denominator(256)
     //-------------------------------------------------------------------------
     {
     }
@@ -15575,6 +15584,9 @@ namespace RegionRuntime {
     void Fraction::add(const Fraction &rhs)
     //-------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(denominator > 0);
+#endif
       if (denominator == rhs.denominator)
       {
         numerator += rhs.numerator;
@@ -15595,6 +15607,9 @@ namespace RegionRuntime {
           unsigned factor = rhs.denominator/denominator;
           numerator = (numerator*factor) + rhs.numerator;
           denominator *= factor;
+#ifdef DEBUG_HIGH_LEVEL
+          assert(denominator > 0); // check for integer overflow
+#endif
         }
         else
         {
@@ -15603,6 +15618,9 @@ namespace RegionRuntime {
           unsigned rhs_num = rhs.numerator * denominator;
           numerator = lhs_num + rhs_num;
           denominator *= rhs.denominator;
+#ifdef DEBUG_HIGH_LEVEL
+          assert(denominator > 0); // check for integer overflow
+#endif
         }
       }
 #ifdef DEBUG_HIGH_LEVEL
@@ -15614,6 +15632,9 @@ namespace RegionRuntime {
     void Fraction::subtract(const Fraction &rhs)
     //-------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(denominator > 0);
+#endif
       if (denominator == rhs.denominator)
       {
 #ifdef DEBUG_HIGH_LEVEL
@@ -15641,6 +15662,9 @@ namespace RegionRuntime {
 #endif
           numerator = (numerator*factor) - rhs.numerator;
           denominator *= factor;
+#ifdef DEBUG_HIGH_LEVEL
+          assert(denominator > 0); // check for integer overflow
+#endif
         }
         else
         {
@@ -15652,7 +15676,20 @@ namespace RegionRuntime {
 #endif
           numerator = lhs_num - rhs_num;
           denominator *= rhs.denominator; 
+#ifdef DEBUG_HIGH_LEVEL
+          assert(denominator > 0); // check for integer overflow
+#endif
         }
+      }
+      // Check to see if the numerator has gotten down to one, if so bump up the
+      // fraction split
+      if (numerator == 1)
+      {
+        numerator *= MIN_FRACTION_SPLIT;
+        denominator *= MIN_FRACTION_SPLIT;
+#ifdef DEBUG_HIGH_LEVEL
+        assert(denominator > 0); // check for integer overflow
+#endif
       }
     }
 
@@ -15662,14 +15699,24 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(ways > 0);
+      assert(denominator > 0);
 #endif
       // Check to see if we have enough parts in the numerator, if not
       // multiply both numerator and denominator by ways
       // and return one over denominator
       if (ways > numerator)
       {
+        // Check to see if the ways is at least as big as the minimum split factor
+        if (ways < MIN_FRACTION_SPLIT)
+        {
+          ways = MIN_FRACTION_SPLIT;
+        }
         numerator *= ways;
-        denominator *= ways;
+        unsigned new_denom = denominator * ways;
+#ifdef DEBUG_HIGH_LEVEL
+        assert(new_denom > 0); // check for integer overflow
+#endif
+        denominator = new_denom;
       }
 #ifdef DEBUG_HIGH_LEVEL
       assert(numerator >= ways);
