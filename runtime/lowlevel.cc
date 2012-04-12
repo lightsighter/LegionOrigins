@@ -3010,6 +3010,11 @@ namespace RegionRuntime {
 		       old_task, new_task);
 	      task = old_task;
 	    }
+	    if(wait_for.has_triggered()) {
+	      log_task.info("desired event triggered while we were preempted: event=%x/%d",
+			    wait_for.id, wait_for.gen);
+	      break;
+	    }
 #endif
 
 	    // if we get to this point, we're going to sleep because we
