@@ -419,6 +419,7 @@ namespace RegionRuntime {
         { return impl == f.impl; }
       bool operator<(const Future &f) const
         { return impl < f.impl; }
+      Future& operator=(const Future &f);
     public:
       template<typename T> inline T get_result(void);
       inline void get_void_result(void);
@@ -441,6 +442,12 @@ namespace RegionRuntime {
       FutureMap(void);
       FutureMap(const FutureMap &f);
       ~FutureMap(void);
+    public:
+      bool operator==(const FutureMap &f) const
+        { return impl == f.impl; }
+      bool operator<(const FutureMap &f) const
+        { return impl < f.impl; }
+      FutureMap& operator=(const FutureMap &f);
     public:
       template<typename T> inline T get_result(const IndexPoint &p);
       inline void get_void_result(const IndexPoint &p);
