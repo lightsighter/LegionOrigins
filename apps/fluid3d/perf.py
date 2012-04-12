@@ -1,9 +1,12 @@
 #!/usr/bin/env python
 
-import os, re, shutil, subprocess as sp, sys
+import math, os, re, shutil, subprocess as sp, sys
 _root_dir = os.path.abspath(os.path.dirname(__file__))
 sys.path.append(_root_dir)
 from compare import read_file, compare
+
+############################################################
+## Utils
 
 def check_output(command):
     proc = sp.Popen(command, stdout = sp.PIPE)
@@ -17,7 +20,21 @@ def newer (filename1, filename2):
         return True
     return os.path.getmtime(filename1) > os.path.getmtime(filename2)
 
-_parsec_dir = _parsec_mgmt = _parsec_fluid = None
+############################################################
+## Machine Specs
+
+_cpu_count_per_node = 12
+def get_cpu_count_per_node():
+    return _cpu_count_per_node
+
+_node_count = 4
+def get_node_count():
+    return _node_count
+
+############################################################
+## PARSEC
+
+_parsec_dir = _parsec_mgmt = _parsec_fluid_serial = _parsec_fluid_pthreads = None
 def prep_parsec():
     global _parse_dir, _parsec_mgmt, _parsec_fluid_serial, _parsec_fluid_pthreads
     try:
@@ -39,17 +56,17 @@ def prep_parsec():
     _parsec_fluid_pthreads = os.path.join(
         _parsec_dir, 'pkgs', 'apps', 'fluidanimate',
         'inst', 'amd64-linux.gcc-pthreads', 'bin', 'fluidanimate')
-    if (newer(_parsec_fluid_pthreads_src, _parsec_fluid_pthreads) or newer(_parsec_fluid_serial_src, _parsec_fluid_serial)):
+    if (newer(_parsec_fluid_pthreads_src, _parsec_fluid_pthreads) or
+        newer(_parsec_fluid_serial_src, _parsec_fluid_serial)):
         sp.check_call([_parsec_mgmt, '-a', 'fullclean'])
         sp.check_call([_parsec_mgmt, '-a', 'fulluninstall'])
         sp.check_call([_parsec_mgmt, '-a', 'build', '-p', 'fluidanimate', '-c', 'gcc-serial'])
         sp.check_call([_parsec_mgmt, '-a', 'build', '-p', 'fluidanimate', '-c', 'gcc-pthreads'])
         print
 
-def parsec_serial(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None,
-           **_ignored):
+def parsec_serial(steps = 1, input = None, **_ignored):
     return check_output(
-        [_parsec_fluid_serial, str(nbx*nby*nbz), str(steps),
+        [_parsec_fluid_serial, str(1), str(steps),
          str(input)])
 
 def parsec_pthreads(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None,
@@ -57,6 +74,9 @@ def parsec_pthreads(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None,
     return check_output(
         [_parsec_fluid_pthreads, str(nbx*nby*nbz), str(steps),
          str(input)])
+
+############################################################
+## Legion
 
 _legion_fluid = None
 _legion_use_gasnet = True
@@ -70,14 +90,22 @@ def prep_legion():
 def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None,
            legion_logging = 4,
            **_ignored):
+    divisions = nbx*nby*nbz
+    cpu_count = min(divisions, get_cpu_count_per_node())
+    node_count = min(int(math.ceil(float(divisions) / get_cpu_count_per_node())),
+                     get_node_count())
+    print '(%d nodes %d CPUs)' % (node_count, cpu_count),
     return check_output(
-        (['gasnetrun_ibv', '-n', str(1)] if _legion_use_gasnet else []) +
+        (['gasnetrun_ibv', '-n', str(node_count)] if _legion_use_gasnet else []) +
         [_legion_fluid,
          '-ll:csize', '16384', '-ll:gsize', '2000',
-         '-ll:cpu', str(nbx*nby*nbz),
+         '-ll:cpu', str(cpu_count),
          '-level', str(legion_logging),
          '-nbx', str(nbx), '-nby', str(nby), '-nbz', str(nbz), '-s', str(steps),
         ])
+
+############################################################
+## Input
 
 _input_filename = None
 def prep_input():
@@ -88,6 +116,9 @@ def prep_input():
 
 def get_input():
     return _input_filename
+
+############################################################
+## Performance Check
 
 prep = [prep_parsec, prep_legion, prep_input]
 
