@@ -1092,7 +1092,7 @@ namespace RegionRuntime {
       locked_data.valid = true;
       locked_data.region = _region;
       locked_data.offset = _offset;
-      locked_data.offset = _size;
+      locked_data.size = _size;
       locked_data.is_reduction = false;
       locked_data.redopid = 0;
       lock.init(ID(me).convert<Lock>(), ID(me).node());
