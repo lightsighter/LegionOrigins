@@ -890,7 +890,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     FutureImpl::FutureImpl(Event set_e)
-      : set_event(set_e), result(NULL), active(true)
+      : set_event(set_e), result(NULL)
     //--------------------------------------------------------------------------
     {
     }
@@ -906,38 +906,12 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void FutureImpl::reset(void)
-    //--------------------------------------------------------------------------
-    {
-      if (result != NULL)
-      {
-        free(result);
-        result = NULL;
-      }
-      active = false; 
-    }
-
-    //--------------------------------------------------------------------------
-    void FutureImpl::set(Event set_e) 
-    //--------------------------------------------------------------------------
-    {
-      active = true;
-      set_event = set_e;
-    }
-
-    //--------------------------------------------------------------------------
     void FutureImpl::set_result(const void *res, size_t result_size)
     //--------------------------------------------------------------------------
     {
-      // If there is a stale result, free it
-      if (result != NULL)
-      {
-        free(result);
-      }
       result = malloc(result_size); 
 #ifdef DEBUG_HIGH_LEVEL
       assert(!set_event.has_triggered());
-      assert(active);
       if (result_size > 0)
       {
         assert(res != NULL);
@@ -956,7 +930,6 @@ namespace RegionRuntime {
       result = malloc(result_size);
 #ifdef DEBUG_HIGH_LEVEL
       assert(!set_event.has_triggered());
-      assert(active);
       if (result_size > 0)
       {
         assert(result != NULL);
@@ -1002,7 +975,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     FutureMapImpl::FutureMapImpl(Event set_e)
-      : all_set_event(set_e), map_lock(Lock::create_lock()), active(false)
+      : all_set_event(set_e), map_lock(Lock::create_lock())
     //--------------------------------------------------------------------------
     {
     }
@@ -1011,37 +984,23 @@ namespace RegionRuntime {
     FutureMapImpl::~FutureMapImpl(void)
     //--------------------------------------------------------------------------
     {
-    
-    }
-
-    //--------------------------------------------------------------------------
-    void FutureMapImpl::reset(void)
-    //--------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(outstanding_waits.empty()); // We should have seen all of these by now
-#endif
+      // Clear out any data we still have
       for (std::map<IndexPoint,TaskArgument>::const_iterator it = valid_results.begin();
             it != valid_results.end(); it++)
       {
         free(it->second.get_ptr());
       }
-      valid_results.clear();
-      active = false;
-    }
-
-    //--------------------------------------------------------------------------
-    void FutureMapImpl::set(Event set_e)
-    //--------------------------------------------------------------------------
-    {
-      all_set_event = set_e;
-      active = true;
+      // Give our lock back
+      map_lock.destroy_lock(); 
     }
 
     //--------------------------------------------------------------------------
     void FutureMapImpl::set_result(const IndexPoint &point, const void *res, size_t result_size)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!all_set_event.has_triggered());
+#endif
       void *result = malloc(result_size);
       memcpy(result, res, result_size);
       // Get the lock for all the data
@@ -1062,6 +1021,9 @@ namespace RegionRuntime {
     void FutureMapImpl::set_result(size_t point_size, Deserializer &derez)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!all_set_event.has_triggered());
+#endif
       std::vector<int> point(point_size);
       for (unsigned idx = 0; idx < point_size; idx++)
       {
@@ -2108,7 +2070,8 @@ namespace RegionRuntime {
           ready_queue.push_back(desc);
         }
 
-        Future fut(&desc->future);
+        desc->future = new FutureImpl(desc->termination_event);
+        Future fut(desc->future);
         local_proc.spawn(TERMINATION_ID,&fut,sizeof(Future));
       }
       // enable the idle task
@@ -2503,7 +2466,8 @@ namespace RegionRuntime {
       // If its not ready it's registered in the logical tree and someone will
       // notify it and it will add itself to the ready queue
 
-      return Future(&desc->future);
+      desc->future = new FutureImpl(desc->termination_event);
+      return Future(desc->future);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3864,6 +3828,8 @@ namespace RegionRuntime {
       this->cached_size = 0;
       this->mapper = NULL;
       this->mapper_lock = Lock::NO_LOCK;
+      this->future_map = NULL;
+      this->future = NULL;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3956,7 +3922,15 @@ namespace RegionRuntime {
           delete partition_nodes;
           delete instance_infos;
         }
+        // If we have a remote future map free it
+        if (future_map != NULL)
+        {
+          delete future_map;
+        }
       }
+      // It's up to the user to free futures that were handed out
+      future = NULL;
+      future_map = NULL;
       // Zero out the pointers to our maps so we
       // don't accidentally re-used them
       region_nodes = NULL;
@@ -3995,8 +3969,6 @@ namespace RegionRuntime {
       variants = NULL;
       mapper_lock = Lock::NO_LOCK;
       current_lock = context_lock;
-      future.reset();
-      future_map.reset();
       active = false;
       // Increment the generation of this context
       current_gen++;
@@ -4045,8 +4017,6 @@ namespace RegionRuntime {
       orig_ctx = this;
       remote = false;
       termination_event = UserEvent::create_user_event();
-      future.set(termination_event);
-      future_map.set(termination_event);
       // If parent task is not null, share its context lock, otherwise use our own
       if (parent != NULL)
       {
@@ -4881,6 +4851,12 @@ namespace RegionRuntime {
           reg_node->initialize_physical_context(ctx_id);
           reg_node->unpack_physical_state(ctx_id,derez,false/*returning*/,false/*merge*/,*instance_infos);
         }
+      }
+
+      // We're a remote index space so we need a remote future map for storing values
+      if (is_index_space)
+      {
+        future_map = new FutureMapImpl(termination_event);
       }
 
       // Delete our buffer
@@ -6880,7 +6856,7 @@ namespace RegionRuntime {
         // Check to see if we have a reduction to push into the future value 
         if (reduction != NULL)
         {
-          future.set_result(reduction_value,reduction_size);
+          future->set_result(reduction_value,reduction_size);
         }
         // Trigger the termination event indicating that this index space is done
         termination_event.trigger();
@@ -7122,7 +7098,7 @@ namespace RegionRuntime {
       {
         // This is a single non-remote task so
         // we can set the future result directly
-        future.set_result(res,res_size);
+        future->set_result(res,res_size);
       }
 
       // Check to see if there are any child tasks that are yet to be mapped
@@ -7534,7 +7510,9 @@ namespace RegionRuntime {
           rez.serialize<size_t>(result_size);
           rez.serialize(result,result_size);
 
-          // Send this thing back
+          // Send this thing back only need to wait on the remote children event since
+          // we always send one of those back there will always be an event.  Therefore
+          // there's a transitive event
           std::set<Event> wait_on_events;
           wait_on_events.insert(remote_start_event);
           wait_on_events.insert(remote_children_event);
@@ -7999,7 +7977,7 @@ namespace RegionRuntime {
       {
         // Single task 
         // Set the future result
-        future.set_result(derez);
+        future->set_result(derez);
         // No need to propagate information back to the parent, it was done in 
         // unpack_tree_updates
         // We're done now so we can trigger our termination event
@@ -8029,20 +8007,20 @@ namespace RegionRuntime {
           (*instance_infos)[iid]->remove_user(this->unique_id);
         }
         // Now unpack the future map
-        future_map.unpack_future_map(derez);
+        future_map->unpack_future_map(derez);
         // Check to see if this a reduction task, if so reduce all results, otherwise we're done
         if (reduction != NULL)
         {
           // Reduce all our points into the result
-          for (std::map<IndexPoint,TaskArgument>::const_iterator it = future_map.valid_results.begin();
-                it != future_map.valid_results.end(); it++)
+          for (std::map<IndexPoint,TaskArgument>::const_iterator it = future_map->valid_results.begin();
+                it != future_map->valid_results.end(); it++)
           {
             (*reduction)(reduction_value,reduction_size,it->first,it->second.get_ptr(),it->second.get_size());
             // Free the memory for the value since we're about to delete it
             free(it->second.get_ptr());
           }
           // Clear out the results since we're done with them
-          future_map.valid_results.clear();
+          future_map->valid_results.clear();
         }
         // Unserialize the number of remote points and call the finish index space call
         unsigned num_remote_points;
@@ -8295,7 +8273,7 @@ namespace RegionRuntime {
         if (orig_ctx->reduction == NULL)
         {
           // Need to clone this since it's going in the map for a while
-          orig_ctx->future_map.set_result(point,res,res_size);
+          orig_ctx->future_map->set_result(point,res,res_size);
         }
         else
         {
@@ -8306,7 +8284,7 @@ namespace RegionRuntime {
       {
         // Just add it to the argmap, it will be copied out of the arg map before
         // this task is finished and get reclaimed
-        future_map.set_result(point,res,res_size);
+        future_map->set_result(point,res,res_size);
       }
 #ifdef DEBUG_HIGH_LEVEL
       assert(num_local_unfinished > 0);
@@ -8372,7 +8350,7 @@ namespace RegionRuntime {
           }
           buffer_size += (num_references * sizeof(InstanceID));
           // Finally get the size of the arguments to pass back
-          buffer_size += future_map.compute_future_map_size(); 
+          buffer_size += future_map->compute_future_map_size(); 
           // Number of returning points in this slice
           buffer_size += sizeof(unsigned);
 
@@ -8416,7 +8394,7 @@ namespace RegionRuntime {
             }
           }
           // Finally pack the future map to send back
-          future_map.pack_future_map(rez);
+          future_map->pack_future_map(rez);
           // Tell how many points are returning
           rez.serialize<unsigned>(num_local_points);
 

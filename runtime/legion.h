@@ -421,6 +421,7 @@ namespace RegionRuntime {
     public:
       template<typename T> inline T get_result(void);
       inline void get_void_result(void);
+      inline void release(void);
     };
 
     /////////////////////////////////////////////////////////////
@@ -443,6 +444,7 @@ namespace RegionRuntime {
       template<typename T> inline T get_result(const IndexPoint &p);
       inline void get_void_result(const IndexPoint &p);
       inline void wait_all_results(void);
+      inline void release(void);
     };
 
     /////////////////////////////////////////////////////////////
@@ -1124,14 +1126,12 @@ namespace RegionRuntime {
     private:
       Event set_event;
       void *result;
-      bool active;
     protected:
-      friend class HighlevelRuntime;
+      friend class HighLevelRuntime;
       friend class TaskContext;
+      friend class Future;
       FutureImpl(Event set_e = Event::NO_EVENT); 
       ~FutureImpl(void);
-      void reset(void);
-      void set(Event set_e); // Event that will be set when task is finished
       void set_result(const void *res, size_t result_size);
       void set_result(Deserializer &derez);
     public:
@@ -1149,14 +1149,12 @@ namespace RegionRuntime {
       Lock  map_lock;
       std::map<IndexPoint,UserEvent> outstanding_waits;
       std::map<IndexPoint,TaskArgument>  valid_results;
-      bool active;
     protected:
       friend class HighLevelRuntime;
       friend class TaskContext;
+      friend class FutureMap;
       FutureMapImpl(Event set_e = Event::NO_EVENT);
       ~FutureMapImpl(void);
-      void reset(void);
-      void set(Event set_e); // event when index space is finished
       void set_result(const IndexPoint &point, const void *res, size_t result_size);
       void set_result(size_t point_size, Deserializer &derez);
     protected:
@@ -1164,8 +1162,8 @@ namespace RegionRuntime {
       void pack_future_map(Serializer &rez) const;
       void unpack_future_map(Deserializer &derez);
     public:
-      template<typename T> inline T get_result(const IndexPoint &point);
-      inline void get_void_result(const IndexPoint &point);
+      template<typename T> inline T get_result(const IndexPoint &point, bool &empty);
+      inline void get_void_result(const IndexPoint &point, bool &empty);
       inline void wait_all_results(void);
     };
     
@@ -1437,7 +1435,7 @@ namespace RegionRuntime {
       // Barrier event for when all the tasks are ready to run for must parallelism
       Barrier start_index_event; 
       // Result for the index space
-      FutureMapImpl future_map;
+      FutureMapImpl *future_map;
       // Argument map
       ArgumentMap index_arg_map;
       // bool reduction information
@@ -1459,7 +1457,7 @@ namespace RegionRuntime {
       Event remote_children_event; // Event for when the remote children mapped task has run
     protected:
       // Result information
-      FutureImpl future;
+      FutureImpl *future;
       void *result;
       size_t result_size;
       UserEvent termination_event;
@@ -2833,7 +2831,10 @@ namespace RegionRuntime {
     inline T Future::get_result(void)
     //--------------------------------------------------------------------------
     {
-      return impl->get_result<T>();
+      T result = impl->get_result<T>();
+      // Now we can release the future impl
+      release();
+      return result;
     }
 
     //--------------------------------------------------------------------------
@@ -2841,6 +2842,18 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       impl->get_void_result();
+      release();
+    }
+
+    //--------------------------------------------------------------------------
+    inline void Future::release(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(impl != NULL);
+#endif
+      delete impl;
+      impl = NULL;
     }
 
     //--------------------------------------------------------------------------
@@ -2848,14 +2861,10 @@ namespace RegionRuntime {
     inline T FutureImpl::get_result(void)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(active);
-#endif
       if (!set_event.has_triggered())
       {
         set_event.wait();
       }
-      active = false;
       return (*((const T*)result));
     }
 
@@ -2863,14 +2872,10 @@ namespace RegionRuntime {
     inline void FutureImpl::get_void_result(void)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(active);
-#endif
       if (!set_event.has_triggered())
       {
         set_event.wait();
       }
-      active = false;
     }
 
     //--------------------------------------------------------------------------
@@ -2878,14 +2883,25 @@ namespace RegionRuntime {
     inline T FutureMap::get_result(const IndexPoint &point)
     //--------------------------------------------------------------------------
     {
-      return impl->get_result<T>(point);
+      bool empty = false;
+      T result = impl->get_result<T>(point, empty);
+      if (empty)
+      {
+        release();
+      }
+      return result;
     }
 
     //--------------------------------------------------------------------------
     inline void FutureMap::get_void_result(const IndexPoint &point)
     //--------------------------------------------------------------------------
     {
-      impl->get_void_result(point);
+      bool empty = false;
+      impl->get_void_result(point, empty);
+      if (empty)
+      {
+        release();
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -2893,18 +2909,27 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       impl->wait_all_results();
+      release();
+    }
+
+    //--------------------------------------------------------------------------
+    inline void FutureMap::release(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(impl != NULL);
+#endif
+      delete impl;
+      impl = NULL;
     }
 
     //--------------------------------------------------------------------------
     template<typename T>
-    inline T FutureMapImpl::get_result(const IndexPoint &point)
+    inline T FutureMapImpl::get_result(const IndexPoint &point, bool &empty)
     //--------------------------------------------------------------------------
     {
       Event wait_lock = map_lock.lock(0,true/*exclusive*/);
       wait_lock.wait(true/*block*/);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(active);
-#endif
       // Check to see if the result exists yet
       if (valid_results.find(point) != valid_results.end())
       {
@@ -2926,19 +2951,22 @@ namespace RegionRuntime {
       assert(valid_results.find(point) != valid_results.end());  
 #endif
       T result = (*((const T*)valid_results[point]));
+      // Remove the point from the map
+      free(valid_results[point].get_ptr());
+      valid_results.erase(point);
+
+      empty = all_set_event.has_triggered() && valid_results.empty();
+
       map_lock.unlock();
       return result;
     }
 
     //--------------------------------------------------------------------------
-    inline void FutureMapImpl::get_void_result(const IndexPoint &point)
+    inline void FutureMapImpl::get_void_result(const IndexPoint &point, bool &empty)
     //--------------------------------------------------------------------------
     {
       Event wait_lock = map_lock.lock(0,true/*exclusive*/);
       wait_lock.wait(true/*block*/);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(active);
-#endif
       if (valid_results.find(point) != valid_results.end())
       {
         // Release the lock and return
@@ -2952,12 +2980,20 @@ namespace RegionRuntime {
       map_lock.unlock(); 
       wait_event.wait();
       // Once we wake up the value should be there
-#ifdef DEBUG_HIGH_LEVEL
       wait_lock = map_lock.lock(0,true/*exclusive*/); // Need the lock to check this
       wait_lock.wait(true/*block*/);
+#ifdef DEBUG_HIGH_LEVEL
       assert(valid_results.find(point) != valid_results.end());  
-      map_lock.unlock();
 #endif
+      if (valid_results[point].get_ptr() != NULL)
+      {
+        free(valid_results[point].get_ptr());
+      }
+      valid_results.erase(point);
+
+      empty = all_set_event.has_triggered() && valid_results.empty();
+
+      map_lock.unlock();
     }
 
     //--------------------------------------------------------------------------
@@ -3059,8 +3095,9 @@ namespace RegionRuntime {
       // If its not ready it's registered in the logical tree and someone will
       // notify it and it will add itself to the ready queue
 
+      desc->future_map = new FutureMapImpl(desc->termination_event);
       // Return the future map that wraps the future map implementation 
-      return FutureMap(&desc->future_map);
+      return FutureMap(desc->future_map);
     }
 
     //--------------------------------------------------------------------------
@@ -3118,8 +3155,9 @@ namespace RegionRuntime {
       // If its not ready it's registered in the logical tree and someone will
       // notify it and it will add itself to the ready queue
       
+      desc->future = new FutureImpl(desc->termination_event);
       // Return the future where the return value will be set
-      return Future(&desc->future);
+      return Future(desc->future);
     }
 
     //--------------------------------------------------------------------------
