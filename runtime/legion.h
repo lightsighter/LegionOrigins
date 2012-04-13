@@ -1141,6 +1141,11 @@ namespace RegionRuntime {
       SIMULTANEOUS_DEPENDENCE = 4,
     };
 
+    // Copy Directions
+    enum CopyDirection {
+      COPY_DOWN,  // going down or at the same level of the logical region tree (use dst region mask)
+      COPY_UP,    // going back up the logical region tree (use src region mask)
+    };
 
     /////////////////////////////////////////////////////////////
     // Future Implementation
@@ -1997,7 +2002,7 @@ namespace RegionRuntime {
       Event add_user(GeneralizedContext *ctx, unsigned idx, Event precondition);
       void  remove_user(UniqueID uid, unsigned ref = 1);
       // Perform a copy operation from the source info to this info
-      void copy_from(InstanceInfo *src_info, GeneralizedContext *ctx, ReductionOpID redop = 0);
+      void copy_from(InstanceInfo *src_info, GeneralizedContext *ctx, CopyDirection dir, ReductionOpID redop = 0);
       void add_copy_user(UniqueID uid, Event copy_finish, ReductionOpID redop = 0);
       void remove_copy_user(UniqueID uid, unsigned ref = 1);
       // Allow for locking and unlocking of the instance

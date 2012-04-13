@@ -11211,7 +11211,7 @@ namespace RegionRuntime {
         get_physical_locations(ctx, locations, false/*allow up*/,false/*reduction*/); 
         // Select a source instance to perform the copy back from
         InstanceInfo *src_info = select_source_instance(ctx, mapper, locations, target->location, false/*allow up */);
-        target->copy_from(src_info, enclosing);
+        target->copy_from(src_info, enclosing, COPY_UP);
       }
 
       // Now do the local close which will traverse any open subtrees
@@ -11336,7 +11336,7 @@ namespace RegionRuntime {
       for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].reduction_instances.begin();
             it != region_states[ctx].reduction_instances.end(); it++)
       {
-        target->copy_from(it->first, enclosing, region_states[ctx].redop); 
+        target->copy_from(it->first, enclosing, COPY_UP, region_states[ctx].redop); 
         written_to = true;
         // We can also invalidate this if we own it
 #ifndef DISABLE_GC
@@ -11435,7 +11435,7 @@ namespace RegionRuntime {
       // Need to perform a copy, figure out from where
       InstanceInfo *src_info = select_source_instance(ren.ctx_id, ren.mapper, locations, ren.info->location, true/*allow up*/);
       // Now issue the copy operation and update the valid event for the target
-      ren.info->copy_from(src_info, ren.ctx);
+      ren.info->copy_from(src_info, ren.ctx, COPY_DOWN);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -13364,7 +13364,7 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    void InstanceInfo::copy_from(InstanceInfo *src_info, GeneralizedContext *ctx, ReductionOpID redop /*=0*/)
+    void InstanceInfo::copy_from(InstanceInfo *src_info, GeneralizedContext *ctx, CopyDirection dir, ReductionOpID redop /*=0*/)
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -13418,7 +13418,10 @@ namespace RegionRuntime {
         // Perform the copy
         RegionInstance src_copy = src_info->inst;
         // Always give the element mask when making the copy operations just for completeness 
-        Event copy_event = src_copy.copy_to_untyped(this->inst, src_info->handle, copy_precondition);
+        // Figure out the handle based on the direction we're going
+        Event copy_event = src_copy.copy_to_untyped(this->inst, 
+                                                    ((dir==COPY_DOWN) ? this->handle : src_info->handle), 
+                                                    copy_precondition);
 #ifdef TRACE_CAPTURE
         // For trace capture, we'll make sure there is always a unique event id for a copy result
         if (!copy_event.exists())
