@@ -29,24 +29,33 @@ enum PointerLocation {
   BOUNDARY,
 };
 
-template<int DIM>
 struct Cell {
 public:
   float temperature;  // Current value of the solution at this cell
-  // A cell of a coarser level can only have refined child cells or
-  // boundary cells, not both, so we use the same array of pointers
-  // Fields for refinement
-  bool is_refined;
-  unsigned num_boundary;
-  ptr_t<Cell<DIM> > child_cells[POW2(DIM)]; 
+#if SIMULATION_DIM==2
+  float position[2]; // (x,y)
+#else
+  float position[3]; // (x,y,z)
+#endif
+
+  // If a cell is refined keep track of its pointers to
+  // the cells in the level below that are the aggregate.  Similarly
+  // if it is a boundary cell remember the cells above it that are
+  // used to interpolate its value
+#if SIMULATION_DIM==2
+  ptr_t<Cell> across_cells[2][2]; 
+  PointerLocation across_locs[2][2];
+#else // 3 dimensional case
+  ptr_t<Cell> across_cells[2][2][2];
+  PointerLocation across_locs[2][2][2];
+#endif
 };
 
-template<int DIM>
 struct Flux {
 public:
   float flux;
   PointerLocation   locations[2];
-  ptr_t<Cell<DIM> > cell_ptrs[2];
+  ptr_t<Cell> cell_ptrs[2];
 };
 
 struct Level {
