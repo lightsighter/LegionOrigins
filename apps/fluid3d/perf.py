@@ -23,7 +23,7 @@ def newer (filename1, filename2):
 ############################################################
 ## Machine Specs
 
-_cpu_count_per_node = 12
+_cpu_count_per_node = 24
 def get_cpu_count_per_node():
     return _cpu_count_per_node
 
@@ -94,8 +94,6 @@ def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None,
     cpu_count = min(divisions, get_cpu_count_per_node())
     node_count = min(int(math.ceil(float(divisions) / get_cpu_count_per_node())),
                      get_node_count())
-    print '(%d node%s %2d CPU%s)' % (node_count, ' ' if node_count == 1 else 's',
-                                    cpu_count, ' ' if cpu_count == 1 else 's'),
     return check_output(
         (['gasnetrun_ibv', '-n', str(node_count)] if _legion_use_gasnet else []) +
         [_legion_fluid,
@@ -130,7 +128,7 @@ def parse_timing(output):
         return None
     return float(match.group(1))
 
-_baseline = None
+_baseline = []
 def get_baseline():
     return _baseline
 
@@ -139,15 +137,9 @@ def summarize_timing(timing):
         return {'error': 'timing not available'}
     if get_baseline() is None:
         return {'total': '%0.3f s' % timing, 'speedup': None}
-    return {'total': '%0.3f s' % timing, 'speedup': '%0.3f' % (get_baseline() / timing)}
-
-def init_baseline(program, **params):
-    global _baseline
-    output = program(input = get_input(), **params)
-    timing = parse_timing(output)
-    summary = summarize(params, summarize_timing(timing))
-    _baseline = timing
-    print summary
+    return {'total': '%0.3f s' % timing,
+            'speedup': ' / '.join('%0.3f' % (base / timing)
+                                  for base in (get_baseline()))}
 
 def summarize_params(nbx = 1, nby = 1, nbz = 1, steps = 1, **others):
     return '%sx%sx%s (%s step%s)%s' % (
@@ -160,34 +152,45 @@ def summarize(params, results):
         ', '.join(['%s %s' % kv for kv in results.iteritems()])
         )
 
-def perf_check(program, **params):
-    output = program(input = get_input(), **params)
-    timing = parse_timing(output)
+def perf_check(program, reps, **params):
+    timing = min(parse_timing(program(input = get_input(), **params)) for i in xrange(reps))
     summary = summarize(params, summarize_timing(timing))
     print summary
+    return timing
+
+def init_baseline(program, reps, **params):
+    global _baseline
+    timing = perf_check(program, reps, **params)
+    _baseline.append(timing)
+    return timing
 
 _num_steps = 4
+_num_reps = 3
 if __name__ == '__main__':
     for thunk in prep: thunk()
 
     print 'Baseline PARSEC serial:'
-    init_baseline(parsec_serial, nbx = 1, nby = 1, nbz = 1, steps = _num_steps)
+    init_baseline(parsec_serial, _num_reps, nbx = 1, nby = 1, nbz = 1, steps = _num_steps)
     print
 
     print 'PARSEC pthreads:'
-    lsbs = range(6)
-    for lsb in lsbs:
-	nbx = 1 << (lsb/2);
+    init_baseline(parsec_pthreads, _num_reps, nbx = 1, nby = 1, nbz = 1, steps = _num_steps)
+    sizes = range(1, 5)
+    for size in sizes:
+	nbx = 1 << (size/2);
         nby = 1
-	nbz = 1 << (lsb/2);
-        if nbx*nbz != 1 << lsb:
+	nbz = 1 << (size/2);
+        if nbx*nbz != 1 << size:
             nbx *= 2
-        perf_check(parsec_pthreads, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps)
+        perf_check(parsec_pthreads, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps)
     print
 
     print 'Legion:'
-    divs = (1, 2, 4)
-    for nbx in divs:
-        for nby in divs:
-            for nbz in divs:
-                perf_check(legion, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps)
+    init_baseline(legion, _num_reps, nbx = 1, nby = 1, nbz = 1, steps = _num_steps)
+    sizes = range(1, 5)
+    for size in sizes:
+        for sx in xrange(size + 1):
+            for sy in xrange(size - sx + 1):
+                sz = size - sx - sy
+                nbx, nby, nbz = 1 << sx, 1 << sy, 1 << sz
+                perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps)
