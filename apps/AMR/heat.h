@@ -29,13 +29,17 @@ enum PointerLocation {
   BOUNDARY,
 };
 
+struct Flux;
+
 struct Cell {
 public:
   float temperature;  // Current value of the solution at this cell
 #if SIMULATION_DIM==2
   float position[2]; // (x,y)
+  ptr_t<Flux> inx,outx,iny,outy;
 #else
   float position[3]; // (x,y,z)
+  ptr_t<Flux> inx,outx,iny,outy,inz,outz;
 #endif
 
   // If a cell is refined keep track of its pointers to
@@ -60,6 +64,14 @@ public:
 
 struct Level {
 public:
+  // The size of a face for a given level
+  float dx;
+  // The size of the timestep
+  float dt;
+  // Diffusion coefficient
+  float coeff;
+  
+  // Top level regions
   LogicalRegion all_cells;
   LogicalRegion all_fluxes;
 

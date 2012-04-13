@@ -94,16 +94,20 @@ void region_main(const void *args, size_t arglen,
     // Calculate fluxes at each level
     for (int i = 0; i < num_levels; i++)
     {
+      // Pass the value of dx in here
+      TaskArgument dx_arg(&levels[i].dx,sizeof(float));
       FutureMap map = runtime->execute_index_space(ctx, CALC_FLUXES, index_space,
-                      levels[i].calc_fluxes_regions, global_arg, local_args, false/*must*/); 
+                      levels[i].calc_fluxes_regions, dx_arg, local_args, false/*must*/); 
       map.release();
     }
 
     // Advance the time step at each level
     for (int i = 0; i < num_levels; i++)
     {
+      // Pass the values of dx, dt, and coeff here
+      TaskArgument d_args(&levels[i].dx,3*sizeof(float));
       FutureMap map = runtime->execute_index_space(ctx, ADVANCE, index_space,
-                      levels[i].adv_time_step_regions, global_arg, local_args, false/*must*/);
+                      levels[i].adv_time_step_regions, d_args, local_args, false/*must*/);
       map.release();
     }
 
@@ -153,16 +157,30 @@ void region_main(const void *args, size_t arglen,
   }
 }
 
-////////////////////
-// CPU Kernels
-////////////////////
-
+// Helper functions for the kernels
 template<AccessorType AT>
 inline void fill_temps_and_center_2D(float temps[2][2], ptr_t<Cell> sources[2][2], PointerLocation source_locs[2][2],
                           PhysicalRegion<AT> pvt, PhysicalRegion<AT> shr, PhysicalRegion<AT> ghost);
 template<AccessorType AT>
 inline void fill_temps_and_center_3D(float temps[2][2][2], ptr_t<Cell> sources[2][2][2], PointerLocation source_locs[2][2][2],
                           PhysicalRegion<AT> pvt, PhysicalRegion<AT> shr, PhysicalRegion<AT> ghost);
+
+template<AccessorType AT>
+inline float read_temp(ptr_t<Cell> source, PointerLocation source_loc, PhysicalRegion<AT> pvt, PhysicalRegion<AT> shr,
+                       PhysicalRegion<AT> ghost, PhysicalRegion<AT> boundary);
+
+template<AccessorType AT>
+inline float read_temp(ptr_t<Cell> source, PointerLocation loc, PhysicalRegion<AT> pvt, PhysicalRegion<AT> shr);
+
+template<AccessorType AT>
+inline void advance_cells(PhysicalRegion<AT> cells, PhysicalRegion<AT> fluxes, float dx, float dt, float coeff);
+
+template<AccessorType AT>
+inline void average_cells(PhysicalRegion<AT> cells, PhysicalRegion<AT> fine_pvt, PhysicalRegion<AT> fine_shr);
+
+////////////////////
+// CPU Kernels
+////////////////////
 
 template<AccessorType AT, int DIM>
 void interpolate_boundary_task(const void *global_args, size_t global_arglen,
@@ -261,12 +279,28 @@ void calculate_fluxes_task(const void *global_args, size_t global_arglen,
 {
   log_heat(LEVEL_DEBUG,"CPU calculate fluxes for point %d",point[0]);
 #ifndef DISABLE_MATH
+  float dx = *((const float*)global_args);
   PhysicalRegion<AT> fluxes      = regions[0];
   PhysicalRegion<AT> pvt_cells   = regions[1];
   PhysicalRegion<AT> shr_cells   = regions[2];
   PhysicalRegion<AT> ghost_cells = regions[3];
   PhysicalRegion<AT> bound_cells = regions[4];
+  // Iterate over the fluxes and compute the new flux based on the temperature 
+  // of the two neighboring cells
+  PointerIterator *itr = fluxes.iterator();
+  while (itr->has_next())
+  {
+    ptr_t<Flux> flux_ptr = itr->next<Flux>(); 
+    Flux face = fluxes.template read<Flux>(flux_ptr);
 
+    float temp0 = read_temp(face.cell_ptrs[0], face.locations[0], pvt_cells, shr_cells, ghost_cells, bound_cells); 
+    float temp1 = read_temp(face.cell_ptrs[1], face.locations[1], pvt_cells, shr_cells, ghost_cells, bound_cells);
+
+    // Compute the new flux
+    face.flux = (temp1 - temp0) / dx; 
+    fluxes.template write(flux_ptr, face);
+  }
+  delete itr;
 #endif
 }
 
@@ -278,12 +312,18 @@ void advance_time_step_task(const void *global_args, size_t global_arglen,
                             Context ctx, HighLevelRuntime *runtime)
 {
   log_heat(LEVEL_DEBUG,"CPU advance time step for point %d",point[0]);
+  const float *arg_ptr = (const float*)global_args;
+  float dx = arg_ptr[0];
+  float dt = arg_ptr[1];
+  float coeff = arg_ptr[2];
 #ifndef DISABLE_MATH
   PhysicalRegion<AT> fluxes      = regions[0];
   PhysicalRegion<AT> pvt_cells   = regions[1];
   PhysicalRegion<AT> shr_cells   = regions[2];
-  PhysicalRegion<AT> ghost_cells = regions[3];
 
+  // Advance the cells that we own
+  advance_cells(pvt_cells, fluxes, dx, dt, coeff);
+  advance_cells(shr_cells, fluxes, dx, dt, coeff);
 #endif
 }
 
@@ -301,6 +341,9 @@ void restrict_coarse_cells_task(const void *global_args, size_t global_arglen,
   PhysicalRegion<AT> pvt_fine   = regions[2];
   PhysicalRegion<AT> shr_fine   = regions[3];
 
+  // Average the cells that we own
+  average_cells(pvt_coarse, pvt_fine, shr_fine);
+  average_cells(shr_coarse, pvt_fine, shr_fine);
 #endif
 }
 
@@ -398,10 +441,7 @@ void set_region_requirements(std::vector<Level> &levels)
                                                                 READ_WRITE, NO_MEMORY, EXCLUSIVE,
                                                                 levels[i].all_cells));
     levels[i].adv_time_step_regions.push_back(RegionRequirement(levels[i].shr_cells, 0/*identity*/,
-                                                                REDUCE_ID/*redop id*/, NO_MEMORY, SIMULTANEOUS,
-                                                                levels[i].all_cells));
-    levels[i].adv_time_step_regions.push_back(RegionRequirement(levels[i].ghost_cells, 0/*identity*/,
-                                                                REDUCE_ID/*redop id*/, NO_MEMORY, SIMULTANEOUS,
+                                                                READ_WRITE, NO_MEMORY, SIMULTANEOUS,
                                                                 levels[i].all_cells));
     
     // restrict course regions
@@ -606,7 +646,142 @@ inline void fill_temps_and_center_3D(float temps[2][2][2], float center[3], ptr_
   }
 }
 
+template<AccessorType AT>
+inline float read_temp(ptr_t<Cell> source, PointerLocation source_loc, PhysicalRegion<AT> pvt, PhysicalRegion<AT> shr,
+                       PhysicalRegion<AT> ghost, PhysicalRegion<AT> bound)
+{
+  switch (source_loc)
+  {
+    case PVT:
+      {
+        Cell c = pvt.template read<Cell>(source);
+        return c.temperature;
+      }
+    case SHR:
+      {
+        Cell c = shr.template read<Cell>(source);
+        return c.temperature;
+      }
+    case GHOST:
+      {
+        Cell c = ghost.template read<Cell>(source);
+        return c.temperature;
+      }
+    case BOUNDARY:
+      {
+        Cell c = bound.template read<Cell>(source);
+        return c.temperature;
+      }
+    default:
+      assert(false);
+  }
+  return 0.0f;
+}
 
+template<AccessorType AT>
+inline float read_temp(ptr_t<Cell> ptr, PointerLocation loc, PhysicalRegion<AT> pvt, PhysicalRegion<AT> shr)
+{
+  switch (loc)
+  {
+    case PVT:
+      {
+        Cell c = pvt.template read<Cell>(ptr);
+        return c.temperature;
+      }
+    case SHR:
+      {
+        Cell c = shr.template read<Cell>(ptr);
+        return c.temperature;
+      }
+    case GHOST:
+    case BOUNDARY:
+    default:
+      assert(false);
+  }
+  return 0.0f;
+}
+
+template<AccessorType AT>
+inline void advance_cells(PhysicalRegion<AT> cells, PhysicalRegion<AT> fluxes, float dx, float dt, float coeff)
+{
+  PointerIterator *itr = cells.iterator();
+  while (itr->has_next())
+  {
+    ptr_t<Cell> cell_ptr = itr->next<Cell>(); 
+    Cell current = cells.template read<Cell>(cell_ptr);
+
+#if SIMULATION_DIM==2
+    {
+      float inx  = (fluxes.template read<Flux>(current.inx)).flux;
+      float outx = (fluxes.template read<Flux>(current.outx)).flux;
+      float iny  = (fluxes.template read<Flux>(current.iny)).flux;
+      float outy = (fluxes.template read<Flux>(current.outy)).flux;
+
+      float temp_update = coeff * dt * ((inx - outx) + (iny - outy)) / dx;
+
+      current.temperature += temp_update;
+    }
+#else
+    {
+      float inx  = (fluxes.template read<Flux>(current.inx)).flux;
+      float outx = (fluxes.template read<Flux>(current.outx)).flux;
+      float iny  = (fluxes.template read<Flux>(current.iny)).flux;
+      float outy = (fluxes.template read<Flux>(current.outy)).flux;
+      float inz  = (fluxes.template read<Flux>(current.inz)).flux;
+      float outz = (fluxes.template read<Flux>(current.outz)).flux;
+
+      float temp_update = coeff * dt * ((inx - outx) + (iny - outy) + (inz - outz)) / dx;
+
+      current.temperature += temp_update;
+    }
+#endif
+    // write the cell back
+    cells.template write<Cell>(cell_ptr,current);
+  }
+  delete itr;
+}
+
+template<AccessorType AT>
+inline void average_cells(PhysicalRegion<AT> cells, PhysicalRegion<AT> fine_pvt, PhysicalRegion<AT> fine_shr)
+{
+  PointerIterator *itr = cells.iterator();
+  while (itr->has_next())
+  {
+    ptr_t<Cell> cell_ptr = itr->next<Cell>();
+    Cell current = cells.template read<Cell>(cell_ptr);
+#if SIMULATION_DIM == 2
+    {
+      float total_temp = 0.0f;
+      for (int i = 0; i < 2; i++)
+      {
+        for (int j = 0; j < 2; j++)
+        {
+          total_temp += read_temp(current.across_cells[i][j], current.across_locs[i][j], fine_pvt, fine_shr);
+        }
+      }
+      current.temperature = total_temp / 4.0f;
+    }
+#else
+    {
+      float total_temp = 0.0f;
+      for (int i = 0; i < 2; i++)
+      {
+        for (int j = 0; j < 2; j++)
+        {
+          for (int k = 0; k < 2; k++)
+          {
+            total_temp += read_temp(current.across_cells[i][j][k], current.across_locs[i][j][k], fine_pvt, fine_shr);
+          }
+        }
+      }
+      current.temperature = total_temp / 8.0f;
+    }
+#endif
+    // write the cell back
+    cells.template write<Cell>(cell_ptr,current);
+  }
+  delete itr;
+}
 
 // EOF
 
