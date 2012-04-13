@@ -2169,7 +2169,7 @@ namespace RegionRuntime {
 
       // HACK: pad the size by a bit to see if we have people falling off
       //  the end of their allocations
-      size += 1024;
+      size += 0;
 
       for(std::map<off_t, off_t>::iterator it = free_blocks.begin();
 	  it != free_blocks.end();
@@ -2367,6 +2367,8 @@ namespace RegionRuntime {
 	for(int i = 0; i < num_nodes; i++) {
 	  seginfos[i].addr = ((char *)seginfos[i].addr)+lmb_skip;
 	  seginfos[i].size -= lmb_skip;
+	  printf("gasnet segment %d: [%p,%p)\n",
+		 i, seginfos[i].addr, seginfos[i].addr+seginfos[i].size);
 	}
 
 	size = seginfos[0].size * num_nodes;
@@ -4683,7 +4685,8 @@ namespace RegionRuntime {
 		after_copy = Event::Impl::create_event();
 	      ((GPUFBMemory *)tgt_mem)->gpu->copy_to_fb(tgt_data->access_offset,
 							src_ptr,
-							bytes_to_copy,
+							reg_impl->valid_mask,
+							elmt_size,
 							Event::NO_EVENT,
 							after_copy);
 	      return after_copy;
@@ -4761,7 +4764,8 @@ namespace RegionRuntime {
 	      if(!after_copy.exists())
 		after_copy = Event::Impl::create_event();
 	      ((GPUFBMemory *)src_mem)->gpu->copy_from_fb(tgt_ptr, src_data->access_offset,
-							  bytes_to_copy,
+							  reg_impl->valid_mask,
+							  elmt_size,
 							  Event::NO_EVENT,
 							  after_copy);
 	      return after_copy;
@@ -4778,7 +4782,8 @@ namespace RegionRuntime {
 	      ((GPUFBMemory *)src_mem)->gpu->copy_from_fb_generic(tgt_mem,
 								  tgt_data->access_offset,
 								  src_data->access_offset,
-								  bytes_to_copy,
+								  reg_impl->valid_mask,
+								  elmt_size,
 								  Event::NO_EVENT,
 								  after_copy);
 	      return after_copy;
@@ -4796,7 +4801,8 @@ namespace RegionRuntime {
 		after_copy = Event::Impl::create_event();
 	      ((GPUFBMemory *)src_mem)->gpu->copy_within_fb(tgt_data->access_offset,
 							    src_data->access_offset,
-							    bytes_to_copy,
+							    reg_impl->valid_mask,
+							    elmt_size,
 							    Event::NO_EVENT,
 							    after_copy);
 	      return after_copy;
@@ -5448,9 +5454,6 @@ namespace RegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 
-      log_copy.info("copy_to_untyped(%x, %x, %x/%d)",
-		    target.id, region.id, wait_on.id, wait_on.gen);
-
       RegionInstanceUntyped::Impl *src_impl = impl();
       RegionInstanceUntyped::Impl *dst_impl = target.impl();
 
@@ -5458,6 +5461,11 @@ namespace RegionRuntime {
       //  region) of both the src and dst instance's regions
       RegionMetaDataUntyped src_region = StaticAccess<RegionInstanceUntyped::Impl>(src_impl)->region;
       RegionMetaDataUntyped dst_region = StaticAccess<RegionInstanceUntyped::Impl>(dst_impl)->region;
+
+      log_copy.info("copy_to_untyped(%x(%x), %x(%x), %x, %x/%d)",
+		    id, src_region.id,
+		    target.id, dst_region.id, 
+		    region.id, wait_on.id, wait_on.gen);
 
       assert(src_region.impl()->is_parent_of(region));
       assert(dst_region.impl()->is_parent_of(region));

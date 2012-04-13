@@ -45,11 +45,28 @@ namespace RegionRuntime {
 				off_t src_offset, size_t bytes,
 				Event start_event, Event finish_event);
 
+      void copy_to_fb(off_t dst_offset, const void *src,
+		      const ElementMask *mask, size_t elmt_size,
+		      Event start_event, Event finish_event);
+
+      void copy_from_fb(void *dst, off_t src_offset,
+			const ElementMask *mask, size_t elmt_size,
+			Event start_event, Event finish_event);
+
+      void copy_within_fb(off_t dst_offset, off_t src_offset,
+			  const ElementMask *mask, size_t elmt_size,
+			  Event start_event, Event finish_event);
+
       void copy_to_fb_generic(off_t dst_offset, 
 			      Memory::Impl *src_mem, off_t src_offset,
 			      const ElementMask *mask,
 			      size_t elmt_size,
 			      Event start_event, Event finish_event);
+
+      void copy_from_fb_generic(Memory::Impl *dst_mem, off_t dst_offset, 
+				off_t src_offset,
+				const ElementMask *mask, size_t elmt_size,
+				Event start_event, Event finish_event);
 
     public:
       class Internal;

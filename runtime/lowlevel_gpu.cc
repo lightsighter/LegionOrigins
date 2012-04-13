@@ -274,24 +274,56 @@ namespace RegionRuntime {
     public:
       GPUMemcpy(GPUProcessor *_gpu, Event _finish_event,
 		void *_dst, const void *_src, size_t _bytes, cudaMemcpyKind _kind)
-	: GPUJob(_gpu, _finish_event), dst(_dst), src(_src), bytes(_bytes), kind(_kind)
+	: GPUJob(_gpu, _finish_event), dst(_dst), src(_src), 
+	  mask(0), elmt_size(_bytes), kind(_kind)
       {}
+
+      GPUMemcpy(GPUProcessor *_gpu, Event _finish_event,
+		void *_dst, const void *_src, 
+		const ElementMask *_mask, size_t _elmt_size,
+		cudaMemcpyKind _kind)
+	: GPUJob(_gpu, _finish_event), dst(_dst), src(_src),
+	  mask(_mask), elmt_size(_elmt_size), kind(_kind)
+      {}
+
+      void do_span(off_t pos, size_t len)
+      {
+	off_t span_start = pos * elmt_size;
+	size_t span_bytes = len * elmt_size;
+#if 0
+	printf("copying mem:[%p,%p) -> [%p,%p) (pos=%zd, len=%zd)\n",
+	       ((char *)src)+span_start, ((char *)src)+span_start+span_bytes,
+	       ((char *)dst)+span_start, ((char *)dst)+span_start+span_bytes,
+	       pos, len);
+#endif
+	CHECK_CUDART( cudaMemcpy(((char *)dst)+span_start,
+				 ((char *)src)+span_start,
+				 span_bytes, kind) );
+      }
 
       virtual void execute(void)
       {
 	DetailedTimer::ScopedPush sp(TIME_COPY);
 	log_gpu.info("gpu memcpy: dst=%p src=%p bytes=%zd kind=%d",
-		     dst, src, bytes, kind);
+		     dst, src, elmt_size, kind);
+	if(mask) {
+	  ElementMask::forall_ranges(*this, *mask);
+	} else {
+	  do_span(0, 1);
+	}
+#if 0
 	fflush(stdout);
 	CHECK_CUDART( cudaMemcpy(dst, src, bytes, kind) );
+#endif
 	log_gpu.info("gpu memcpy complete: dst=%p src=%p bytes=%zd kind=%d",
-		     dst, src, bytes, kind);
+		     dst, src, elmt_size, kind);
       }
 
     protected:
       void *dst;
       const void *src;
-      size_t bytes;
+      const ElementMask *mask;
+      size_t elmt_size;
       cudaMemcpyKind kind;
     };
 
@@ -318,9 +350,11 @@ namespace RegionRuntime {
 	size_t bytes_done = 0;
 	off_t span_start = pos * elmt_size;
 	size_t span_bytes = len * elmt_size;
+#if 0
 	printf("copying mem:[%zx,%zx) <-> fb:[%p,%p) (pos=%zd, len=%zd)\n",
 	       mem_offset+span_start, mem_offset+span_start+span_bytes,
 	       ((char *)gpu_ptr)+span_start, ((char *)gpu_ptr)+span_start+span_bytes, pos, len);
+#endif
 	while(bytes_done < span_bytes) {
 	  size_t chunk_size = span_bytes - bytes_done;
 	  if(chunk_size > BUFFER_SIZE) chunk_size = BUFFER_SIZE;
@@ -467,6 +501,17 @@ namespace RegionRuntime {
 		     cudaMemcpyHostToDevice))->run_or_wait(start_event);
     }
 
+    void GPUProcessor::copy_to_fb(off_t dst_offset, const void *src,
+				  const ElementMask *mask, size_t elmt_size,
+				  Event start_event, Event finish_event)
+    {
+      (new GPUMemcpy(this, finish_event,
+		     ((char *)internal->fbmem_gpu_base) + (internal->fbmem_reserve + dst_offset),
+		     src,
+		     mask, elmt_size,
+		     cudaMemcpyHostToDevice))->run_or_wait(start_event);
+    }
+
     void GPUProcessor::copy_from_fb(void *dst, off_t src_offset, size_t bytes,
 				    Event start_event, Event finish_event)
     {
@@ -474,6 +519,17 @@ namespace RegionRuntime {
 		     dst,
 		     ((char *)internal->fbmem_gpu_base) + (internal->fbmem_reserve + src_offset),
 		     bytes,
+		     cudaMemcpyDeviceToHost))->run_or_wait(start_event);
+    }
+
+    void GPUProcessor::copy_from_fb(void *dst, off_t src_offset,
+				    const ElementMask *mask, size_t elmt_size,
+				    Event start_event, Event finish_event)
+    {
+      (new GPUMemcpy(this, finish_event,
+		     dst,
+		     ((char *)internal->fbmem_gpu_base) + (internal->fbmem_reserve + src_offset),
+		     mask, elmt_size,
 		     cudaMemcpyDeviceToHost))->run_or_wait(start_event);
     }
 
@@ -485,6 +541,17 @@ namespace RegionRuntime {
 		     ((char *)internal->fbmem_gpu_base) + (internal->fbmem_reserve + dst_offset),
 		     ((char *)internal->fbmem_gpu_base) + (internal->fbmem_reserve + src_offset),
 		     bytes,
+		     cudaMemcpyDeviceToDevice))->run_or_wait(start_event);
+    }
+
+    void GPUProcessor::copy_within_fb(off_t dst_offset, off_t src_offset,
+				      const ElementMask *mask, size_t elmt_size,
+				      Event start_event, Event finish_event)
+    {
+      (new GPUMemcpy(this, finish_event,
+		     ((char *)internal->fbmem_gpu_base) + (internal->fbmem_reserve + dst_offset),
+		     ((char *)internal->fbmem_gpu_base) + (internal->fbmem_reserve + src_offset),
+		     mask, elmt_size,
 		     cudaMemcpyDeviceToDevice))->run_or_wait(start_event);
     }
 
@@ -521,6 +588,19 @@ namespace RegionRuntime {
 			    ((char *)internal->fbmem_gpu_base) + (internal->fbmem_reserve + src_offset),
 			    dst_mem, dst_offset,
 			    bytes,
+			    cudaMemcpyDeviceToHost))->run_or_wait(start_event);
+    }
+
+    void GPUProcessor::copy_from_fb_generic(Memory::Impl *dst_mem, off_t dst_offset, 
+					    off_t src_offset,
+					    const ElementMask *mask,
+					    size_t elmt_size,
+					    Event start_event, Event finish_event)
+    {
+      (new GPUMemcpyGeneric(this, finish_event,
+			    ((char *)internal->fbmem_gpu_base) + (internal->fbmem_reserve + src_offset),
+			    dst_mem, dst_offset,
+			    mask, elmt_size,
 			    cudaMemcpyDeviceToHost))->run_or_wait(start_event);
     }
 

@@ -454,12 +454,18 @@ void update_voltages_task_gpu(const void *global_args, size_t global_arglen,
   CircuitPiece *p = (CircuitPiece*)local_args;
   PhysicalRegion<AT> pvt     = regions[0];
   PhysicalRegion<AT> owned   = regions[1];
-  //PhysicalRegion<AT> locator = regions[2];
+#ifndef USING_SHARED
+  PhysicalRegion<AT> locator = regions[2];
+#endif
 
   update_voltages_gpu(p,
                       pvt.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
                       owned.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
+#ifndef USING_SHARED
+                      locator.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>());
+#else
                       owned.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>());
+#endif
 }
 
 /// Start-up 
@@ -1066,7 +1072,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
           privacy_map[1].insert(wire.out_ptr);
           ghost_node_map[n].insert(wire.out_ptr);
         }
-	printf("wire[%d] = %d -> %d\n", wire_ptr.value, wire.in_ptr.value, wire.out_ptr.value);
+	//printf("wire[%d] = %d -> %d\n", wire_ptr.value, wire.in_ptr.value, wire.out_ptr.value);
         // Write the wire
         wires.write(wire_ptr, wire);
 
