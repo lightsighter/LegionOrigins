@@ -1232,7 +1232,7 @@ void rebuild_reduce(const void *args, size_t arglen,
     base_block.template convert<AccessorArray>().get_instance();
   RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> edges[GHOST_CELLS];
   for(unsigned i = 0; i < GHOST_CELLS; i++) {
-    edge_blocks[i] = regions[i + 2];
+    edge_blocks[i] = regions[i + 1];
     edges[i] = edge_blocks[i].template convert<AccessorArray>().get_instance();
   }
 
@@ -1304,7 +1304,7 @@ void scatter_densities(const void *args, size_t arglen,
     base_block.template convert<AccessorArray>().get_instance();
   RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> edges[GHOST_CELLS];
   for(unsigned i = 0; i < GHOST_CELLS; i++) {
-    edge_blocks[i] = regions[i + 2];
+    edge_blocks[i] = regions[i + 1];
     edges[i] = edge_blocks[i].template convert<AccessorArray>().get_instance();
   }
 
@@ -1445,7 +1445,7 @@ void gather_forces_and_advance(const void *args, size_t arglen,
     base_block.template convert<AccessorArray>().get_instance();
   RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> edges[GHOST_CELLS];
   for(unsigned i = 0; i < GHOST_CELLS; i++) {
-    edge_blocks[i] = regions[i + 2];
+    edge_blocks[i] = regions[i + 1];
     edges[i] = edge_blocks[i].template convert<AccessorArray>().get_instance();
   }
 
