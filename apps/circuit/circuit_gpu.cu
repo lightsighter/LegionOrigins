@@ -69,8 +69,10 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
   {
     ptr_t<CircuitWire> local_ptr;
     local_ptr.value = first.value + tid;
-
+    printf("i am %d (w=%d)\n", tid, local_ptr.value);
     CircuitWire wire = wires.read(local_ptr);
+    printf("nodes[%d] = %d(%d) -> %d(%d)\n",
+	   tid, wire.in_ptr.value, wire.in_loc, wire.out_ptr.value, wire.out_loc);
     CircuitNode in_node = get_node(pvt, owned, ghost, wire.in_loc, wire.in_ptr);
     CircuitNode out_node = get_node(pvt, owned, ghost, wire.out_loc, wire.out_ptr);
 
@@ -122,6 +124,9 @@ void calc_new_currents_gpu(CircuitPiece *p,
 {
   int num_blocks = (p->num_wires+255) >> 8; 
 
+  printf("cnc_gpu(%d, %p, %p, %p, %p, %d)\n",
+	 p->first_wire.value, wires.array_base,
+	 pvt.array_base, owned.array_base, ghost.array_base, flag);
   calc_new_currents_kernel<<<num_blocks,256>>>(p->first_wire,
                                                p->num_wires,
                                                wires, pvt, owned, ghost,

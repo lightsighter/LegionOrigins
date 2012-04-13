@@ -230,6 +230,7 @@ namespace RegionRuntime {
     Logger::Category log_gpu("gpu");
     Logger::Category log_mutex("mutex");
     Logger::Category log_timer("timer");
+    Logger::Category log_region("region");
 
     enum ActiveMessageIDs {
       FIRST_AVAILABLE = 140,
@@ -886,10 +887,22 @@ namespace RegionRuntime {
 	gasnet_hsl_init(&valid_mask_mutex);
 	if(_frozen) {
 	  avail_mask = 0;
+	  locked_data.first_elmt = valid_mask->first_enabled();
+	  locked_data.last_elmt = valid_mask->last_enabled();
+	  log_region.info("subregion %x (of %x) restricted to [%zd,%zd]",
+			  me.id, _parent.id, locked_data.first_elmt,
+			  locked_data.last_elmt);
 	} else {
 	  avail_mask = new ElementMask(_num_elmts);
-	  if(_parent == RegionMetaDataUntyped::NO_REGION)
+	  if(_parent == RegionMetaDataUntyped::NO_REGION) {
 	    avail_mask->enable(0, _num_elmts);
+	    locked_data.first_elmt = 0;
+	    locked_data.last_elmt = _num_elmts - 1;
+	  } else {
+	    StaticAccess<RegionMetaDataUntyped::Impl> pdata(_parent.impl());
+	    locked_data.first_elmt = pdata->first_elmt;
+	    locked_data.last_elmt = pdata->last_elmt;
+	  }
 	}
 	lock.init(ID(me).convert<Lock>(), ID(me).node());
 	lock.set_local_data(&locked_data);
@@ -904,6 +917,8 @@ namespace RegionRuntime {
 	locked_data.frozen = false;
 	locked_data.num_elmts = 0;
 	locked_data.elmt_size = 0;  // automatically ask for shared lock to fill these in?
+	locked_data.first_elmt = 0;
+	locked_data.last_elmt = 0;
 	locked_data.valid_mask_owners = 0;
 	locked_data.avail_mask_owner = -1;
 	lock.init(ID(me).convert<Lock>(), ID(me).node());
@@ -932,14 +947,30 @@ namespace RegionRuntime {
       {
 	StaticAccess<RegionMetaDataUntyped::Impl> data(this);
 	assert(data->num_elmts > 0);
+	size_t elmts = data->last_elmt - data->first_elmt + 1;
 	size_t bytes;
 	if(redop) {
-	  bytes = data->num_elmts * redop->sizeof_rhs;
+	  bytes = elmts * redop->sizeof_rhs;
 	} else {
 	  assert(data->elmt_size > 0);
-	  bytes = data->num_elmts * data->elmt_size;
+	  bytes = elmts * data->elmt_size;
 	}
 	return bytes;
+      }
+
+      off_t instance_adjust(const ReductionOpUntyped *redop = 0)
+      {
+	StaticAccess<RegionMetaDataUntyped::Impl> data(this);
+	assert(data->num_elmts > 0);
+	off_t elmt_adjust = -(off_t)(data->first_elmt);
+	off_t adjust;
+	if(redop) {
+	  adjust = elmt_adjust * redop->sizeof_rhs;
+	} else {
+	  assert(data->elmt_size > 0);
+	  adjust = elmt_adjust * data->elmt_size;
+	}
+	return adjust;
       }
 
       Event request_valid_mask(void)
@@ -979,6 +1010,7 @@ namespace RegionRuntime {
 	RegionMetaDataUntyped parent;
 	bool frozen;
 	size_t num_elmts, elmt_size;
+        size_t first_elmt, last_elmt;
       };
       struct CoherentData : public StaticData {
 	unsigned valid_mask_owners;
@@ -1086,26 +1118,38 @@ namespace RegionRuntime {
       ElementMask avail_elmts, changed_elmts;
     };
 
-    RegionInstanceUntyped::Impl::Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset, size_t _size)
+    RegionInstanceUntyped::Impl::Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset, size_t _size, off_t _adjust)
       : me(_me), memory(_memory)
     {
       locked_data.valid = true;
       locked_data.region = _region;
-      locked_data.offset = _offset;
+      locked_data.alloc_offset = _offset;
+      locked_data.access_offset = _offset + _adjust;
       locked_data.size = _size;
+      
+      StaticAccess<RegionMetaDataUntyped::Impl> rdata(_region.impl());
+      locked_data.first_elmt = rdata->first_elmt;
+      locked_data.last_elmt = rdata->last_elmt;
+
       locked_data.is_reduction = false;
       locked_data.redopid = 0;
       lock.init(ID(me).convert<Lock>(), ID(me).node());
       lock.set_local_data(&locked_data);
     }
 
-    RegionInstanceUntyped::Impl::Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset, size_t _size, ReductionOpID _redopid)
+    RegionInstanceUntyped::Impl::Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset, size_t _size, off_t _adjust, ReductionOpID _redopid)
       : me(_me), memory(_memory)
     {
       locked_data.valid = true;
       locked_data.region = _region;
-      locked_data.offset = _offset;
+      locked_data.alloc_offset = _offset;
+      locked_data.access_offset = _offset + _adjust;
       locked_data.size = _size;
+
+      StaticAccess<RegionMetaDataUntyped::Impl> rdata(_region.impl());
+      locked_data.first_elmt = rdata->first_elmt;
+      locked_data.last_elmt = rdata->last_elmt;
+
       locked_data.is_reduction = true;
       locked_data.redopid = _redopid;
       lock.init(ID(me).convert<Lock>(), ID(me).node());
@@ -1118,8 +1162,11 @@ namespace RegionRuntime {
     {
       locked_data.valid = false;
       locked_data.region = RegionMetaDataUntyped::NO_REGION;
-      locked_data.offset = -1;
+      locked_data.alloc_offset = -1;
+      locked_data.access_offset = -1;
       locked_data.size = 0;
+      locked_data.first_elmt = 0;
+      locked_data.last_elmt = 0;
       lock.init(ID(me).convert<Lock>(), ID(me).node());
       lock.set_local_data(&locked_data);
     }
@@ -2120,6 +2167,10 @@ namespace RegionRuntime {
     {
       AutoHSLLock al(mutex);
 
+      // HACK: pad the size by a bit to see if we have people falling off
+      //  the end of their allocations
+      size += 1024;
+
       for(std::map<off_t, off_t>::iterator it = free_blocks.begin();
 	  it != free_blocks.end();
 	  it++) {
@@ -2193,16 +2244,18 @@ namespace RegionRuntime {
       }
 
       virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
-						    size_t bytes_needed)
+						    size_t bytes_needed,
+						    off_t adjust)
       {
-	return create_instance_local(r, bytes_needed);
+	return create_instance_local(r, bytes_needed, adjust);
       }
 
       virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
 						    size_t bytes_needed,
+						    off_t adjust,
 						    ReductionOpID redopid)
       {
-	return create_instance_local(r, bytes_needed, redopid);
+	return create_instance_local(r, bytes_needed, adjust, redopid);
       }
 
       virtual void destroy_instance(RegionInstanceUntyped i, 
@@ -2254,16 +2307,18 @@ namespace RegionRuntime {
       }
 
       virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
-						    size_t bytes_needed)
+						    size_t bytes_needed,
+						    off_t adjust)
       {
-	return create_instance_remote(r, bytes_needed);
+	return create_instance_remote(r, bytes_needed, adjust);
       }
 
       virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
 						    size_t bytes_needed,
+						    off_t adjust,
 						    ReductionOpID redopid)
       {
-	return create_instance_remote(r, bytes_needed, redopid);
+	return create_instance_remote(r, bytes_needed, adjust, redopid);
       }
 
       virtual void destroy_instance(RegionInstanceUntyped i, 
@@ -2335,23 +2390,25 @@ namespace RegionRuntime {
       }
 
       virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
-						    size_t bytes_needed)
+						    size_t bytes_needed,
+						    off_t adjust)
       {
 	if(gasnet_mynode() == 0) {
-	  return create_instance_local(r, bytes_needed);
+	  return create_instance_local(r, bytes_needed, adjust);
 	} else {
-	  return create_instance_remote(r, bytes_needed);
+	  return create_instance_remote(r, bytes_needed, adjust);
 	}
       }
 
       virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
 						    size_t bytes_needed,
+						    off_t adjust,
 						    ReductionOpID redopid)
       {
 	if(gasnet_mynode() == 0) {
-	  return create_instance_local(r, bytes_needed, redopid);
+	  return create_instance_local(r, bytes_needed, adjust, redopid);
 	} else {
-	  return create_instance_remote(r, bytes_needed, redopid);
+	  return create_instance_remote(r, bytes_needed, adjust, redopid);
 	}
       }
 
@@ -2496,7 +2553,8 @@ namespace RegionRuntime {
     }
 
     RegionInstanceUntyped Memory::Impl::create_instance_local(RegionMetaDataUntyped r,
-							      size_t bytes_needed)
+							      size_t bytes_needed,
+							      off_t adjust)
     {
       off_t inst_offset = alloc_bytes(bytes_needed);
       if (inst_offset < 0)
@@ -2513,7 +2571,7 @@ namespace RegionRuntime {
 
       //RegionMetaDataImpl *r_impl = Runtime::runtime->get_metadata_impl(r);
 
-      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(i, r, me, inst_offset, bytes_needed);
+      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(i, r, me, inst_offset, bytes_needed, adjust);
 
       // find/make an available index to store this in
       unsigned index;
@@ -2542,6 +2600,7 @@ namespace RegionRuntime {
 
     RegionInstanceUntyped Memory::Impl::create_instance_local(RegionMetaDataUntyped r,
 							      size_t bytes_needed,
+							      off_t adjust,
 							      ReductionOpID redopid)
     {
       off_t inst_offset = alloc_bytes(bytes_needed);
@@ -2559,7 +2618,7 @@ namespace RegionRuntime {
 
       //RegionMetaDataImpl *r_impl = Runtime::runtime->get_metadata_impl(r);
 
-      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(i, r, me, inst_offset, bytes_needed,
+      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(i, r, me, inst_offset, bytes_needed, adjust,
 									    redopid);
 
       // find/make an available index to store this in
@@ -2636,6 +2695,7 @@ namespace RegionRuntime {
       Memory m;
       RegionMetaDataUntyped r;
       size_t bytes_needed;
+      off_t adjust;
       bool reduction_instance;
       ReductionOpID redopid;
     };
@@ -2651,11 +2711,13 @@ namespace RegionRuntime {
       CreateInstanceResp resp;
       if(args.reduction_instance)
 	resp.i = args.m.impl()->create_instance(args.r, args.bytes_needed,
+						args.adjust,
 						args.redopid);
       else
-	resp.i = args.m.impl()->create_instance(args.r, args.bytes_needed);
+	resp.i = args.m.impl()->create_instance(args.r, args.bytes_needed,
+						args.adjust);
       //resp.inst_offset = resp.i.impl()->locked_data.offset; // TODO: Static
-      resp.inst_offset = StaticAccess<RegionInstanceUntyped::Impl>(resp.i.impl())->offset;
+      resp.inst_offset = StaticAccess<RegionInstanceUntyped::Impl>(resp.i.impl())->alloc_offset;
       return resp;
     }
 
@@ -2666,18 +2728,20 @@ namespace RegionRuntime {
     Logger::Category log_inst("inst");
 
     RegionInstanceUntyped Memory::Impl::create_instance_remote(RegionMetaDataUntyped r,
-							       size_t bytes_needed)
+							       size_t bytes_needed,
+							       off_t adjust)
     {
       CreateInstanceArgs args;
       args.m = me;
       args.r = r;
       args.bytes_needed = bytes_needed;
+      args.adjust = adjust;
       args.reduction_instance = false;
       args.redopid = 0;
       log_inst(LEVEL_DEBUG, "creating remote instance: node=%d", ID(me).node());
       CreateInstanceResp resp = CreateInstanceMessage::request(ID(me).node(), args);
       log_inst(LEVEL_DEBUG, "created remote instance: inst=%x offset=%zd", resp.i.id, resp.inst_offset);
-      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(resp.i, r, me, resp.inst_offset, bytes_needed);
+      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(resp.i, r, me, resp.inst_offset, bytes_needed, adjust);
       unsigned index = ID(resp.i).index_l();
       // resize array if needed
       if(index >= instances.size()) {
@@ -2695,18 +2759,20 @@ namespace RegionRuntime {
 
     RegionInstanceUntyped Memory::Impl::create_instance_remote(RegionMetaDataUntyped r,
 							       size_t bytes_needed,
+							       off_t adjust,
 							       ReductionOpID redopid)
     {
       CreateInstanceArgs args;
       args.m = me;
       args.r = r;
       args.bytes_needed = bytes_needed;
+      args.adjust = adjust;
       args.reduction_instance = true;
       args.redopid = redopid;
       log_inst(LEVEL_DEBUG, "creating remote instance: node=%d", ID(me).node());
       CreateInstanceResp resp = CreateInstanceMessage::request(ID(me).node(), args);
       log_inst(LEVEL_DEBUG, "created remote instance: inst=%x offset=%zd", resp.i.id, resp.inst_offset);
-      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(resp.i, r, me, resp.inst_offset, bytes_needed);
+      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(resp.i, r, me, resp.inst_offset, bytes_needed, adjust);
       unsigned index = ID(resp.i).index_l();
       // resize array if needed
       if(index >= instances.size()) {
@@ -2798,7 +2864,7 @@ namespace RegionRuntime {
       unsigned index = ID(me).index_l();
       assert(index < instances.size());
       RegionInstanceUntyped::Impl *iimpl = instances[index];
-      free_bytes(iimpl->locked_data.offset, iimpl->locked_data.size);
+      free_bytes(iimpl->locked_data.alloc_offset, iimpl->locked_data.size);
       
       return; // TODO: free up actual instance record?
       ID id(i);
@@ -3846,7 +3912,8 @@ namespace RegionRuntime {
 	new RegionMetaDataUntyped::Impl(r, parent,
 					p_data->num_elmts, 
 					p_data->elmt_size,
-					&mask);
+					&mask,
+					true);  // TODO: actually decide when to safely consider a subregion frozen
       metadatas[index] = impl;
       
       log_meta(LEVEL_INFO, "metadata created: id=%x parent=%x (num_elmts=%zd sizeof=%zd)",
@@ -3881,10 +3948,12 @@ namespace RegionRuntime {
       Memory::Impl *m_impl = Runtime::runtime->get_memory_impl(memory);
 
       size_t inst_bytes = impl()->instance_size();
+      off_t inst_adjust = impl()->instance_adjust();
 
-      RegionInstanceUntyped i = m_impl->create_instance(*this, inst_bytes);
-      log_meta(LEVEL_INFO, "instance created: region=%x memory=%x id=%x bytes=%zd",
-	       this->id, memory.id, i.id, inst_bytes);
+      RegionInstanceUntyped i = m_impl->create_instance(*this, inst_bytes,
+							inst_adjust);
+      log_meta(LEVEL_INFO, "instance created: region=%x memory=%x id=%x bytes=%zd adjust=%zd",
+	       this->id, memory.id, i.id, inst_bytes, inst_adjust);
       return i;
     }
 
@@ -3899,10 +3968,12 @@ namespace RegionRuntime {
       Memory::Impl *m_impl = Runtime::runtime->get_memory_impl(memory);
 
       size_t inst_bytes = impl()->instance_size(redop);
+      off_t inst_adjust = impl()->instance_adjust(redop);
 
-      RegionInstanceUntyped i = m_impl->create_instance(*this, inst_bytes, redopid);
-      log_meta(LEVEL_INFO, "instance created: region=%x memory=%x id=%x bytes=%zd redop=%d",
-	       this->id, memory.id, i.id, inst_bytes, redopid);
+      RegionInstanceUntyped i = m_impl->create_instance(*this, inst_bytes, 
+							inst_adjust, redopid);
+      log_meta(LEVEL_INFO, "instance created: region=%x memory=%x id=%x bytes=%zd adjust=%zd redop=%d",
+	       this->id, memory.id, i.id, inst_bytes, inst_adjust, redopid);
       return i;
     }
 
@@ -3931,11 +4002,23 @@ namespace RegionRuntime {
     const ElementMask &RegionMetaDataUntyped::get_valid_mask(void)
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+      RegionMetaDataUntyped::Impl *r_impl = impl();
+#ifdef COHERENT_BUT_BROKEN_WAY
       // for now, just hand out the valid mask for the master allocator
       //  and hope it's accessible to the caller
-      RegionMetaDataUntyped::Impl *r_impl = impl();
       SharedAccess<RegionMetaDataUntyped::Impl> data(r_impl);
       assert((data->valid_mask_owners >> gasnet_mynode()) & 1);
+#else
+      if(!r_impl->valid_mask_complete) {
+	Event wait_on = r_impl->request_valid_mask();
+	
+	log_copy.info("missing valid mask (%x/%p) - waiting for %x/%d",
+		      id, r_impl->valid_mask,
+		      wait_on.id, wait_on.gen);
+
+	wait_on.wait(true /*blocking*/);
+      }
+#endif
       return *(r_impl->valid_mask);
     }
 
@@ -4298,14 +4381,14 @@ namespace RegionRuntime {
     {
       Memory::Impl *m = Runtime::runtime->get_memory_impl(memory);
       StaticAccess<RegionInstanceUntyped::Impl> data(this);
-      m->get_bytes(data->offset + ptr_value, dst, size);
+      m->get_bytes(data->access_offset + ptr_value, dst, size);
     }
 
     void RegionInstanceUntyped::Impl::put_bytes(off_t ptr_value, const void *src, size_t size)
     {
       Memory::Impl *m = Runtime::runtime->get_memory_impl(memory);
       StaticAccess<RegionInstanceUntyped::Impl> data(this);
-      m->put_bytes(data->offset + ptr_value, src, size);
+      m->put_bytes(data->access_offset + ptr_value, src, size);
     }
 
     /*static*/ const RegionInstanceUntyped RegionInstanceUntyped::NO_INST = RegionInstanceUntyped();
@@ -4558,14 +4641,14 @@ namespace RegionRuntime {
       case Memory::Impl::MKIND_SYSMEM:
       case Memory::Impl::MKIND_ZEROCOPY:
 	{
-	  const void *src_ptr = src_mem->get_direct_ptr(src_data->offset, bytes_to_copy);
+	  const void *src_ptr = src_mem->get_direct_ptr(src_data->access_offset, bytes_to_copy);
 	  assert(src_ptr != 0);
 
 	  switch(tgt_mem->kind) {
 	  case Memory::Impl::MKIND_SYSMEM:
 	  case Memory::Impl::MKIND_ZEROCOPY:
 	    {
-	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->offset, bytes_to_copy);
+	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->access_offset, bytes_to_copy);
 	      assert(tgt_ptr != 0);
 
 	      assert(!redop);
@@ -4579,12 +4662,12 @@ namespace RegionRuntime {
 	  case Memory::Impl::MKIND_GASNET:
 	    {
 	      if(redop) {
-		RangeExecutors::GasnetPutReduce rexec(tgt_mem, tgt_data->offset,
+		RangeExecutors::GasnetPutReduce rexec(tgt_mem, tgt_data->access_offset,
 						      redop, red_fold,
 						      src_ptr, elmt_size);
 		ElementMask::forall_ranges(rexec, *reg_impl->valid_mask);
 	      } else {
-		RangeExecutors::GasnetPut rexec(tgt_mem, tgt_data->offset,
+		RangeExecutors::GasnetPut rexec(tgt_mem, tgt_data->access_offset,
 						src_ptr, elmt_size);
 		ElementMask::forall_ranges(rexec, *reg_impl->valid_mask);
 	      }
@@ -4598,7 +4681,7 @@ namespace RegionRuntime {
 	      assert(!redop);
 	      if(!after_copy.exists())
 		after_copy = Event::Impl::create_event();
-	      ((GPUFBMemory *)tgt_mem)->gpu->copy_to_fb(tgt_data->offset,
+	      ((GPUFBMemory *)tgt_mem)->gpu->copy_to_fb(tgt_data->access_offset,
 							src_ptr,
 							bytes_to_copy,
 							Event::NO_EVENT,
@@ -4619,12 +4702,12 @@ namespace RegionRuntime {
 	  case Memory::Impl::MKIND_SYSMEM:
 	  case Memory::Impl::MKIND_ZEROCOPY:
 	    {
-	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->offset, bytes_to_copy);
+	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->access_offset, bytes_to_copy);
 	      assert(tgt_ptr != 0);
 
 	      assert(!redop);
 	      RangeExecutors::GasnetGet rexec(tgt_ptr, src_mem, 
-					      src_data->offset, elmt_size);
+					      src_data->access_offset, elmt_size);
 	      ElementMask::forall_ranges(rexec, *reg_impl->valid_mask);
 	    }
 	    break;
@@ -4632,8 +4715,8 @@ namespace RegionRuntime {
 	  case Memory::Impl::MKIND_GASNET:
 	    {
 	      assert(!redop);
-	      RangeExecutors::GasnetGetAndPut rexec(tgt_mem, tgt_data->offset,
-						    src_mem, src_data->offset,
+	      RangeExecutors::GasnetGetAndPut rexec(tgt_mem, tgt_data->access_offset,
+						    src_mem, src_data->access_offset,
 						    elmt_size);
 	      ElementMask::forall_ranges(rexec, *reg_impl->valid_mask);
 	    }
@@ -4646,10 +4729,11 @@ namespace RegionRuntime {
 	      //  we don't already have one created
 	      if(!after_copy.exists())
 		after_copy = Event::Impl::create_event();
-	      ((GPUFBMemory *)tgt_mem)->gpu->copy_to_fb_generic(tgt_data->offset,
+	      ((GPUFBMemory *)tgt_mem)->gpu->copy_to_fb_generic(tgt_data->access_offset,
 								src_mem,
-								src_data->offset,
-								bytes_to_copy,
+								src_data->access_offset,
+								reg_impl->valid_mask,
+								elmt_size,
 								Event::NO_EVENT,
 								after_copy);
 	      return after_copy;
@@ -4668,7 +4752,7 @@ namespace RegionRuntime {
 	  case Memory::Impl::MKIND_SYSMEM:
 	  case Memory::Impl::MKIND_ZEROCOPY:
 	    {
-	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->offset, bytes_to_copy);
+	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->access_offset, bytes_to_copy);
 	      assert(tgt_ptr != 0);
 
 	      assert(!redop);
@@ -4676,7 +4760,7 @@ namespace RegionRuntime {
 	      //  we don't already have one created
 	      if(!after_copy.exists())
 		after_copy = Event::Impl::create_event();
-	      ((GPUFBMemory *)src_mem)->gpu->copy_from_fb(tgt_ptr, src_data->offset,
+	      ((GPUFBMemory *)src_mem)->gpu->copy_from_fb(tgt_ptr, src_data->access_offset,
 							  bytes_to_copy,
 							  Event::NO_EVENT,
 							  after_copy);
@@ -4692,8 +4776,8 @@ namespace RegionRuntime {
 	      if(!after_copy.exists())
 		after_copy = Event::Impl::create_event();
 	      ((GPUFBMemory *)src_mem)->gpu->copy_from_fb_generic(tgt_mem,
-								  tgt_data->offset,
-								  src_data->offset,
+								  tgt_data->access_offset,
+								  src_data->access_offset,
 								  bytes_to_copy,
 								  Event::NO_EVENT,
 								  after_copy);
@@ -4710,8 +4794,8 @@ namespace RegionRuntime {
 	      //  we don't already have one created
 	      if(!after_copy.exists())
 		after_copy = Event::Impl::create_event();
-	      ((GPUFBMemory *)src_mem)->gpu->copy_within_fb(tgt_data->offset,
-							    src_data->offset,
+	      ((GPUFBMemory *)src_mem)->gpu->copy_within_fb(tgt_data->access_offset,
+							    src_data->access_offset,
 							    bytes_to_copy,
 							    Event::NO_EVENT,
 							    after_copy);
@@ -4823,14 +4907,14 @@ namespace RegionRuntime {
       case Memory::Impl::MKIND_SYSMEM:
       case Memory::Impl::MKIND_ZEROCOPY:
 	{
-	  const void *src_ptr = src_mem->get_direct_ptr(src_data->offset, bytes_to_copy);
+	  const void *src_ptr = src_mem->get_direct_ptr(src_data->access_offset, bytes_to_copy);
 	  assert(src_ptr != 0);
 
 	  switch(tgt_mem->kind) {
 	  case Memory::Impl::MKIND_SYSMEM:
 	  case Memory::Impl::MKIND_ZEROCOPY:
 	    {
-	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->offset, bytes_to_copy);
+	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->access_offset, bytes_to_copy);
 	      assert(tgt_ptr != 0);
 
 #ifdef USE_MASKED_COPIES
@@ -4889,7 +4973,7 @@ namespace RegionRuntime {
 	  case Memory::Impl::MKIND_GASNET:
 	    {
 #ifdef USE_MASKED_COPIES
-	      RangeExecutors::GasnetPut rexec(tgt_mem, tgt_data->offset,
+	      RangeExecutors::GasnetPut rexec(tgt_mem, tgt_data->access_offset,
 					      src_ptr, elmt_size);
 	      ElementMask::forall_ranges(rexec, *tgt_mask, *src_mask);
 #if 0
@@ -4925,7 +5009,7 @@ namespace RegionRuntime {
 		  // actual copy!
 		  off_t offset = src_pos * elmt_size;
 		  size_t amount = to_copy * elmt_size;
-		  tgt_mem->put_bytes(offset + tgt_data->offset, 
+		  tgt_mem->put_bytes(offset + tgt_data->access_offset, 
 				     ((const char *)src_ptr)+offset,
 				     amount);
 
@@ -4936,7 +5020,7 @@ namespace RegionRuntime {
 		}
 #endif
 #else
-	      tgt_mem->put_bytes(tgt_data->offset, src_ptr, bytes_to_copy);
+	      tgt_mem->put_bytes(tgt_data->access_offset, src_ptr, bytes_to_copy);
 #endif
 	    }
 	    break;
@@ -4947,7 +5031,7 @@ namespace RegionRuntime {
 	      //  we don't already have one created
 	      if(!after_copy.exists())
 		after_copy = Event::Impl::create_event();
-	      ((GPUFBMemory *)tgt_mem)->gpu->copy_to_fb(tgt_data->offset,
+	      ((GPUFBMemory *)tgt_mem)->gpu->copy_to_fb(tgt_data->access_offset,
 							src_ptr,
 							bytes_to_copy,
 							Event::NO_EVENT,
@@ -4968,12 +5052,12 @@ namespace RegionRuntime {
 	  case Memory::Impl::MKIND_SYSMEM:
 	  case Memory::Impl::MKIND_ZEROCOPY:
 	    {
-	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->offset, bytes_to_copy);
+	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->access_offset, bytes_to_copy);
 	      assert(tgt_ptr != 0);
 
 #ifdef USE_MASKED_COPIES
 	      RangeExecutors::GasnetGet rexec(tgt_ptr, src_mem, 
-					      src_data->offset, elmt_size);
+					      src_data->access_offset, elmt_size);
 	      ElementMask::forall_ranges(rexec, *tgt_mask, *src_mask);
 #if 0
 	      ElementMask::Enumerator src_ranges(*src_mask, 0, 1);
@@ -5008,7 +5092,7 @@ namespace RegionRuntime {
 		  // actual copy!
 		  off_t offset = src_pos * elmt_size;
 		  size_t amount = to_copy * elmt_size;
-		  src_mem->get_bytes(offset + src_data->offset, 
+		  src_mem->get_bytes(offset + src_data->access_offset, 
 				     ((char *)tgt_ptr)+offset,
 				     amount);
 
@@ -5019,7 +5103,7 @@ namespace RegionRuntime {
 		}
 #endif
 #else
-	      src_mem->get_bytes(src_data->offset, tgt_ptr, bytes_to_copy);
+	      src_mem->get_bytes(src_data->access_offset, tgt_ptr, bytes_to_copy);
 #endif
 	    }
 	    break;
@@ -5030,8 +5114,8 @@ namespace RegionRuntime {
 	      unsigned char temp_block[BLOCK_SIZE];
 
 #ifdef USE_MASKED_COPIES
-	      RangeExecutors::GasnetGetAndPut rexec(tgt_mem, tgt_data->offset,
-						    src_mem, src_data->offset,
+	      RangeExecutors::GasnetGetAndPut rexec(tgt_mem, tgt_data->access_offset,
+						    src_mem, src_data->access_offset,
 						    elmt_size);
 	      ElementMask::forall_ranges(rexec, *tgt_mask, *src_mask);
 #if 0
@@ -5073,8 +5157,8 @@ namespace RegionRuntime {
 		      size_t chunk_size = amount - bytes_copied;
 		      if(chunk_size > BLOCK_SIZE) chunk_size = BLOCK_SIZE;
 
-		      src_mem->get_bytes(offset + src_data->offset + bytes_copied, temp_block, chunk_size);
-		      tgt_mem->put_bytes(offset + tgt_data->offset + bytes_copied, temp_block, chunk_size);
+		      src_mem->get_bytes(offset + src_data->access_offset + bytes_copied, temp_block, chunk_size);
+		      tgt_mem->put_bytes(offset + tgt_data->access_offset + bytes_copied, temp_block, chunk_size);
 		      bytes_copied += chunk_size;
 		    }
 		  }
@@ -5091,8 +5175,8 @@ namespace RegionRuntime {
 		size_t chunk_size = bytes_to_copy - bytes_copied;
 		if(chunk_size > BLOCK_SIZE) chunk_size = BLOCK_SIZE;
 
-		src_mem->get_bytes(src_data->offset + bytes_copied, temp_block, chunk_size);
-		tgt_mem->put_bytes(tgt_data->offset + bytes_copied, temp_block, chunk_size);
+		src_mem->get_bytes(src_data->access_offset + bytes_copied, temp_block, chunk_size);
+		tgt_mem->put_bytes(tgt_data->access_offset + bytes_copied, temp_block, chunk_size);
 		bytes_copied += chunk_size;
 	      }
 #endif
@@ -5105,9 +5189,9 @@ namespace RegionRuntime {
 	      //  we don't already have one created
 	      if(!after_copy.exists())
 		after_copy = Event::Impl::create_event();
-	      ((GPUFBMemory *)tgt_mem)->gpu->copy_to_fb_generic(tgt_data->offset,
+	      ((GPUFBMemory *)tgt_mem)->gpu->copy_to_fb_generic(tgt_data->access_offset,
 								src_mem,
-								src_data->offset,
+								src_data->access_offset,
 								bytes_to_copy,
 								Event::NO_EVENT,
 								after_copy);
@@ -5127,14 +5211,14 @@ namespace RegionRuntime {
 	  case Memory::Impl::MKIND_SYSMEM:
 	  case Memory::Impl::MKIND_ZEROCOPY:
 	    {
-	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->offset, bytes_to_copy);
+	      void *tgt_ptr = tgt_mem->get_direct_ptr(tgt_data->access_offset, bytes_to_copy);
 	      assert(tgt_ptr != 0);
 
 	      // all GPU operations are deferred, so we need an event if
 	      //  we don't already have one created
 	      if(!after_copy.exists())
 		after_copy = Event::Impl::create_event();
-	      ((GPUFBMemory *)src_mem)->gpu->copy_from_fb(tgt_ptr, src_data->offset,
+	      ((GPUFBMemory *)src_mem)->gpu->copy_from_fb(tgt_ptr, src_data->access_offset,
 							  bytes_to_copy,
 							  Event::NO_EVENT,
 							  after_copy);
@@ -5149,8 +5233,8 @@ namespace RegionRuntime {
 	      if(!after_copy.exists())
 		after_copy = Event::Impl::create_event();
 	      ((GPUFBMemory *)src_mem)->gpu->copy_from_fb_generic(tgt_mem,
-								  tgt_data->offset,
-								  src_data->offset,
+								  tgt_data->access_offset,
+								  src_data->access_offset,
 								  bytes_to_copy,
 								  Event::NO_EVENT,
 								  after_copy);
@@ -5489,14 +5573,14 @@ namespace RegionRuntime {
       // only things in FB and ZC memories can be converted to GPU accessors
       if(m_impl->kind == Memory::Impl::MKIND_SYSMEM) {
 	LocalCPUMemory *lcm = (LocalCPUMemory *)m_impl;
-	char *inst_base = lcm->base + i_data->offset;
+	char *inst_base = lcm->base + i_data->access_offset;
 	RegionInstanceAccessorUntyped<AccessorArray> ria(inst_base);
 	return ria;
       }
 
       if(m_impl->kind == Memory::Impl::MKIND_ZEROCOPY) {
 	GPUZCMemory *zcm = (GPUZCMemory *)m_impl;
-	char *inst_base = zcm->cpu_base + i_data->offset;
+	char *inst_base = zcm->cpu_base + i_data->access_offset;
 	RegionInstanceAccessorUntyped<AccessorArray> ria(inst_base);
 	return ria;
       }
@@ -5534,14 +5618,14 @@ namespace RegionRuntime {
       // only things in FB and ZC memories can be converted to GPU accessors
       if(m_impl->kind == Memory::Impl::MKIND_SYSMEM) {
 	LocalCPUMemory *lcm = (LocalCPUMemory *)m_impl;
-	char *inst_base = lcm->base + i_data->offset;
+	char *inst_base = lcm->base + i_data->access_offset;
 	RegionInstanceAccessorUntyped<AccessorArrayReductionFold> ria(inst_base);
 	return ria;
       }
 
       if(m_impl->kind == Memory::Impl::MKIND_ZEROCOPY) {
 	GPUZCMemory *zcm = (GPUZCMemory *)m_impl;
-	char *inst_base = zcm->cpu_base + i_data->offset;
+	char *inst_base = zcm->cpu_base + i_data->access_offset;
 	RegionInstanceAccessorUntyped<AccessorArrayReductionFold> ria(inst_base);
 	return ria;
       }

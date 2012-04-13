@@ -7,6 +7,7 @@
   cudaError_t ret = (cmd); \
   if(ret != cudaSuccess) { \
     fprintf(stderr, "CUDART: %s = %d (%s)\n", #cmd, ret, cudaGetErrorString(ret)); \
+    assert(0); \
     exit(1); \
   } \
 } while(0)
@@ -299,14 +300,59 @@ namespace RegionRuntime {
       GPUMemcpyGeneric(GPUProcessor *_gpu, Event _finish_event,
 		       void *_gpu_ptr, Memory::Impl *_memory, off_t _mem_offset, size_t _bytes, cudaMemcpyKind _kind)
 	: GPUJob(_gpu, _finish_event), gpu_ptr(_gpu_ptr), memory(_memory),
-	  mem_offset(_mem_offset), bytes(_bytes), kind(_kind)
+	  mem_offset(_mem_offset), mask(0), elmt_size(_bytes), kind(_kind)
       {}
+
+      GPUMemcpyGeneric(GPUProcessor *_gpu, Event _finish_event,
+		       void *_gpu_ptr, Memory::Impl *_memory, off_t _mem_offset,
+		       const ElementMask *_mask, size_t _elmt_size,
+		       cudaMemcpyKind _kind)
+	: GPUJob(_gpu, _finish_event), gpu_ptr(_gpu_ptr), memory(_memory),
+	  mem_offset(_mem_offset), mask(_mask), elmt_size(_elmt_size), kind(_kind)
+      {}
+
+      void do_span(off_t pos, size_t len)
+      {
+	const size_t BUFFER_SIZE = 65536;
+	char buffer[BUFFER_SIZE];
+	size_t bytes_done = 0;
+	off_t span_start = pos * elmt_size;
+	size_t span_bytes = len * elmt_size;
+	printf("copying mem:[%zx,%zx) <-> fb:[%p,%p) (pos=%zd, len=%zd)\n",
+	       mem_offset+span_start, mem_offset+span_start+span_bytes,
+	       ((char *)gpu_ptr)+span_start, ((char *)gpu_ptr)+span_start+span_bytes, pos, len);
+	while(bytes_done < span_bytes) {
+	  size_t chunk_size = span_bytes - bytes_done;
+	  if(chunk_size > BUFFER_SIZE) chunk_size = BUFFER_SIZE;
+
+	  if(kind == cudaMemcpyDeviceToHost) {
+	    CHECK_CUDART( cudaMemcpy(buffer, 
+				     ((char *)gpu_ptr)+span_start+bytes_done, 
+				     chunk_size, kind) );
+	    memory->put_bytes(mem_offset+span_start+bytes_done, 
+			      buffer, chunk_size);
+	  } else {
+	    memory->get_bytes(mem_offset+span_start+bytes_done,
+			      buffer, chunk_size);
+	    CHECK_CUDART( cudaMemcpy(((char *)gpu_ptr)+span_start+bytes_done,
+				     buffer, 
+				     chunk_size, kind) );
+	  }
+	  bytes_done += chunk_size;
+	}
+      }
 
       virtual void execute(void)
       {
 	DetailedTimer::ScopedPush sp(TIME_COPY);
 	log_gpu.info("gpu memcpy generic: gpuptr=%p mem=%x offset=%zd bytes=%zd kind=%d",
-		     gpu_ptr, memory->me.id, mem_offset, bytes, kind);
+		     gpu_ptr, memory->me.id, mem_offset, elmt_size, kind);
+	if(mask) {
+	  ElementMask::forall_ranges(*this, *mask);
+	} else {
+	  do_span(0, 1);
+	}
+#if 0
 	const size_t BUFFER_SIZE = 65536;
 	char buffer[BUFFER_SIZE];
 	size_t bytes_done = 0;
@@ -325,15 +371,17 @@ namespace RegionRuntime {
 	  }
 	  bytes_done += chunk_size;
 	}
+#endif
 	log_gpu.info("gpu memcpy generic done: gpuptr=%p mem=%x offset=%zd bytes=%zd kind=%d",
-		     gpu_ptr, memory->me.id, mem_offset, bytes, kind);
+		     gpu_ptr, memory->me.id, mem_offset, elmt_size, kind);
       }
 
     protected:
       void *gpu_ptr;
       Memory::Impl *memory;
       off_t mem_offset;
-      size_t bytes;
+      const ElementMask *mask;
+      size_t elmt_size;
       cudaMemcpyKind kind;
     };
 
@@ -452,6 +500,19 @@ namespace RegionRuntime {
 			    cudaMemcpyHostToDevice))->run_or_wait(start_event);
     }
 
+    void GPUProcessor::copy_to_fb_generic(off_t dst_offset, 
+					  Memory::Impl *src_mem, off_t src_offset,
+					  const ElementMask *mask, 
+					  size_t elmt_size,
+					  Event start_event, Event finish_event)
+    {
+      (new GPUMemcpyGeneric(this, finish_event,
+			    ((char *)internal->fbmem_gpu_base) + (internal->fbmem_reserve + dst_offset),
+			    src_mem, src_offset,
+			    mask, elmt_size,
+			    cudaMemcpyHostToDevice))->run_or_wait(start_event);
+    }
+
     void GPUProcessor::copy_from_fb_generic(Memory::Impl *dst_mem, off_t dst_offset, 
 					    off_t src_offset, size_t bytes,
 					    Event start_event, Event finish_event)
@@ -515,7 +576,11 @@ namespace RegionRuntime {
 	GPUFBMemory *fbm = (GPUFBMemory *)m_impl;
 	void *base = (((char *)(fbm->gpu->internal->fbmem_gpu_base)) +
 		      fbm->gpu->internal->fbmem_reserve);
-	RegionInstanceAccessorUntyped<AccessorGPU> ria(((char *)base)+(i_data->offset));
+	log_gpu.info("creating gpufb accessor (%p + %zd = %p) (%p)",
+		     base, i_data->access_offset,
+		     ((char *)base)+(i_data->access_offset),
+		     ((char *)base)+(i_data->alloc_offset));
+	RegionInstanceAccessorUntyped<AccessorGPU> ria(((char *)base)+(i_data->access_offset));
 	return ria;
       }
 
@@ -523,7 +588,10 @@ namespace RegionRuntime {
 	GPUZCMemory *zcm = (GPUZCMemory *)m_impl;
 	void *base = (((char *)(zcm->gpu->internal->zcmem_gpu_base)) +
 		      zcm->gpu->internal->zcmem_reserve);
-	RegionInstanceAccessorUntyped<AccessorGPU> ria(((char *)base)+(i_data->offset));
+	log_gpu.info("creating gpuzc accessor (%p + %zd = %p)",
+		     base, i_data->access_offset,
+		     ((char *)base)+(i_data->access_offset));
+	RegionInstanceAccessorUntyped<AccessorGPU> ria(((char *)base)+(i_data->access_offset));
 	return ria;
       }
 
@@ -561,7 +629,10 @@ namespace RegionRuntime {
 	GPUFBMemory *fbm = (GPUFBMemory *)m_impl;
 	void *base = (((char *)(fbm->gpu->internal->fbmem_gpu_base)) +
 		      fbm->gpu->internal->fbmem_reserve);
-	RegionInstanceAccessorUntyped<AccessorGPUReductionFold> ria(((char *)base)+(i_data->offset));
+	log_gpu.info("creating gpufb reduction accessor (%p + %zd = %p)",
+		     base, i_data->access_offset,
+		     ((char *)base)+(i_data->access_offset));
+	RegionInstanceAccessorUntyped<AccessorGPUReductionFold> ria(((char *)base)+(i_data->access_offset));
 	return ria;
       }
 
@@ -569,7 +640,10 @@ namespace RegionRuntime {
 	GPUZCMemory *zcm = (GPUZCMemory *)m_impl;
 	void *base = (((char *)(zcm->gpu->internal->zcmem_gpu_base)) +
 		      zcm->gpu->internal->zcmem_reserve);
-	RegionInstanceAccessorUntyped<AccessorGPUReductionFold> ria(((char *)base)+(i_data->offset));
+	log_gpu.info("creating gpuzc reduction accessor (%p + %zd = %p)",
+		     base, i_data->access_offset,
+		     ((char *)base)+(i_data->access_offset));
+	RegionInstanceAccessorUntyped<AccessorGPUReductionFold> ria(((char *)base)+(i_data->access_offset));
 	return ria;
       }
 

@@ -402,25 +402,31 @@ namespace RegionRuntime {
       RegionAllocatorUntyped create_allocator_local(RegionMetaDataUntyped r,
 						    size_t bytes_needed);
       RegionInstanceUntyped create_instance_local(RegionMetaDataUntyped r,
-						  size_t bytes_needed);
+						  size_t bytes_needed,
+						  off_t adjust);
       RegionInstanceUntyped create_instance_local(RegionMetaDataUntyped r,
 						  size_t bytes_needed,
+						  off_t adjust,
 						  ReductionOpID redopid);
 
       RegionAllocatorUntyped create_allocator_remote(RegionMetaDataUntyped r,
 						     size_t bytes_needed);
       RegionInstanceUntyped create_instance_remote(RegionMetaDataUntyped r,
-						   size_t bytes_needed);
+						   size_t bytes_needed,
+						   off_t adjust);
       RegionInstanceUntyped create_instance_remote(RegionMetaDataUntyped r,
 						   size_t bytes_needed,
+						   off_t adjust,
 						   ReductionOpID redopid);
 
       virtual RegionAllocatorUntyped create_allocator(RegionMetaDataUntyped r,
 						      size_t bytes_needed) = 0;
       virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
-						    size_t bytes_needed) = 0;
+						    size_t bytes_needed,
+						    off_t adjust) = 0;
       virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
 						    size_t bytes_needed,
+						    off_t adjust,
 						    ReductionOpID redopid) = 0;
 
       void destroy_allocator(RegionAllocatorUntyped a, bool local_destroy);
@@ -457,9 +463,9 @@ namespace RegionRuntime {
 
     class RegionInstanceUntyped::Impl {
     public:
-      Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset, size_t _size);
+      Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset, size_t _size, off_t _adjust);
 
-      Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset, size_t _size, ReductionOpID _redopid);
+      Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset, size_t _size, off_t _adjust, ReductionOpID _redopid);
 
       // when we auto-create a remote instance, we don't know region/offset
       Impl(RegionInstanceUntyped _me, Memory _memory);
@@ -485,8 +491,9 @@ namespace RegionRuntime {
       struct StaticData {
 	bool valid;
 	RegionMetaDataUntyped region;
-	off_t offset;
+	off_t alloc_offset, access_offset;
 	size_t size;
+	size_t first_elmt, last_elmt;
 	bool is_reduction;
 	ReductionOpID redopid;
       } locked_data;

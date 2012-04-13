@@ -45,6 +45,12 @@ namespace RegionRuntime {
 				off_t src_offset, size_t bytes,
 				Event start_event, Event finish_event);
 
+      void copy_to_fb_generic(off_t dst_offset, 
+			      Memory::Impl *src_mem, off_t src_offset,
+			      const ElementMask *mask,
+			      size_t elmt_size,
+			      Event start_event, Event finish_event);
+
     public:
       class Internal;
 
@@ -64,16 +70,18 @@ namespace RegionRuntime {
       }
 
       virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
-						    size_t bytes_needed)
+						    size_t bytes_needed,
+						    off_t adjust)
       {
-	return create_instance_local(r, bytes_needed);
+	return create_instance_local(r, bytes_needed, adjust);
       }
 
       virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
 						    size_t bytes_needed,
+						    off_t adjust,
 						    ReductionOpID redopid)
       {
-	return create_instance_local(r, bytes_needed, redopid);
+	return create_instance_local(r, bytes_needed, adjust, redopid);
       }
 
       virtual void destroy_instance(RegionInstanceUntyped i, 
@@ -127,16 +135,18 @@ namespace RegionRuntime {
       }
 
       virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
-						    size_t bytes_needed)
+						    size_t bytes_needed,
+						    off_t adjust)
       {
-	return create_instance_local(r, bytes_needed);
+	return create_instance_local(r, bytes_needed, adjust);
       }
 
       virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
 						    size_t bytes_needed,
+						    off_t adjust,
 						    ReductionOpID redopid)
       {
-	return create_instance_local(r, bytes_needed, redopid);
+	return create_instance_local(r, bytes_needed, adjust, redopid);
       }
 
       virtual void destroy_instance(RegionInstanceUntyped i, 

@@ -194,8 +194,8 @@ namespace RegionRuntime {
       bool is_set(int ptr) const;
       // union/intersect/subtract?
 
-      int first_enabled(void) const;
-      int last_enabled(void) const;
+      int first_enabled(void) const { return first_enabled_elmt; }
+      int last_enabled(void) const { return last_enabled_elmt; }
 
       ElementMask& operator=(const ElementMask &rhs);
 
@@ -479,6 +479,9 @@ namespace RegionRuntime {
 
       template <class REDOP, class T, class RHS>
       void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::apply<false>(((T*)array_base)[ptr.value], newval); }
+
+      template <class T>
+      T &ref(ptr_t<T> ptr) const { return ((T*)array_base)[ptr.value]; }
     };
 
     template <> class RegionInstanceAccessorUntyped<AccessorArrayReductionFold> {
@@ -528,6 +531,10 @@ namespace RegionRuntime {
       template <class REDOP, class T, class RHS>
       __device__ __forceinline__
       void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::apply<false>(((T*)array_base)[ptr.value], newval); }
+
+      template <class T>
+      __device__ __forceinline__
+      T &ref(ptr_t<T> ptr) const { return ((T*)array_base)[ptr.value]; }
 #endif
     };
 
