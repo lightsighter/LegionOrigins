@@ -4,7 +4,7 @@
 
 #include "legion.h"
 
-#define SIMULATION_DIM     2 // Number of dimensions in the simulation
+#define SIMULATION_DIM     3 // Number of dimensions in the simulation
 
 #define POW2(dim)  ((dim==1) ? 2 : (dim==2) ? 4 : 8)
 
@@ -64,16 +64,24 @@ public:
 
 struct Level {
 public:
+  // The next three fields have to be first so
+  // they can be read out and passed as arguments to task calls
   // The size of a face for a given level
   float dx;
   // The size of the timestep
   float dt;
   // Diffusion coefficient
   float coeff;
+
+
   
   // Top level regions
   LogicalRegion all_cells;
   LogicalRegion all_fluxes;
+  // Aggregations of cells
+  LogicalRegion all_private;
+  LogicalRegion all_shared;
+  LogicalRegion all_boundary;
 
   // Partitions for flux calculation and advance
   Partition pvt_cells, shr_cells, ghost_cells, boundary_cells;

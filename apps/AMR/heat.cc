@@ -25,12 +25,14 @@ public:
 };
 
 void parse_input_args(char **argv, int argc, int &num_levels, int &default_num_cells,
-                      std::vector<int> &num_cells, int &steps, int random_seed);
+                      std::vector<int> &num_cells, int &default_divisions,
+                      std::vector<int> &divisions, int &steps, int random_seed);
 
 void initialize_simulation(std::vector<Level> &levels,
                            std::vector<Range> &index_space,
-                           const std::vector<int> &num_cells,
-                           int random_seed);
+                           std::vector<int> &num_cells,
+                           std::vector<int> &divisions,
+                           int random_seed, Context ctx, HighLevelRuntime *runtime);
 
 void set_region_requirements(std::vector<Level> &levels);
 
@@ -41,8 +43,11 @@ void region_main(const void *args, size_t arglen,
 {
   int num_levels = 1;
   int default_num_cells = 64;
+  int default_divisions = 4;
   std::vector<int> num_cells(num_levels);
+  std::vector<int> divisions(num_levels);
   num_cells[0] = default_num_cells;
+  divisions[0] = default_divisions;
   int steps = 2;
   int random_seed = 12345;
   {
@@ -50,7 +55,8 @@ void region_main(const void *args, size_t arglen,
     char **argv = inputs->argv;
     int argc = inputs->argc;
 
-    parse_input_args(argv, argc, num_levels, default_num_cells, num_cells, steps, random_seed);
+    parse_input_args(argv, argc, num_levels, default_num_cells, num_cells, 
+                     default_divisions, divisions, steps, random_seed);
 
     assert(int(num_cells.size()) == num_levels);
 
@@ -58,12 +64,13 @@ void region_main(const void *args, size_t arglen,
     for (int i=0; i<num_levels; i++)
     {
       log_heat(LEVEL_WARNING,"cells per dim on level %d is %d",i,num_cells[i]);
+      log_heat(LEVEL_WARNING,"divisions per dim on level %d is %d",i,divisions[i]);
     }
   }
 
   std::vector<Level> levels;
   std::vector<Range> index_space;
-  initialize_simulation(levels, index_space, num_cells, random_seed); 
+  initialize_simulation(levels, index_space, num_cells, divisions, random_seed, ctx, runtime); 
   
   // Run the simulation 
   printf("Starting main simulation loop\n");
@@ -387,10 +394,75 @@ void registration_func(Machine *machine, HighLevelRuntime *runtime, Processor lo
 
 void initialize_simulation(std::vector<Level> &levels,
                            std::vector<Range> &index_space,
-                           const std::vector<int> &num_cells,
-                           int random_seed)
+                           std::vector<int> &num_cells,
+                           std::vector<int> &divisions,
+                           int random_seed, Context ctx, HighLevelRuntime *runtime)
 {
+  log_heat(LEVEL_WARNING,"Initializing simulation...");
 
+  assert(num_cells.size() == divisions.size());
+
+  levels.resize(num_cells.size());
+
+  // It seems like every simulation ever refines by a factor of 2
+  // otherwise bad things happen
+  const float refinement_ratio= 2.0f;
+  {
+#if SIMULATION_DIM == 2
+    float dimensions[2] = { 1.0f, 1.0f };
+#else
+    float dimensions[3] = { 1.0f, 1.0f, 1.0f };
+#endif
+    // First create each of the region trees
+    for (unsigned i = 0; i < num_cells.size(); i++)
+    {
+      if (num_cells[i] % divisions[i] != 0)
+      {
+        log_heat(LEVEL_ERROR,"%d pieces does not evenly divide %d cells on level %d",divisions[i],num_cells[i],i);
+        exit(1);
+      }
+      int cells_per_piece_side = num_cells[i] / divisions[i];
+      int flux_side = cells_per_piece_side + 1; // one dimension on the flux
+      int private_side = cells_per_piece_side - 2; // one dimension of the private part of a cell
+      // Make the cells for this level
+#if SIMULATION_DIM == 2
+      int total_cells = (num_cells[i] * num_cells[i]) 
+                        + (4 * num_cells[i]);
+      int pieces = divisions[i] * divisions[i];
+      int total_fluxes = (flux_side * flux_side) * pieces;
+#else
+      int total_cells = (num_cells[i] * num_cells[i] * num_cells[i]) 
+                        + (4 * num_cells[i] * num_cells[i])
+                        + (4 * num_cells[i]);
+      int pieces = divisions[i] * divisions[i] * divisions[i];
+      int total_fluxes = (flux_side * flux_side * flux_side) * pieces;
+#endif
+      // Create the top regions 
+      levels[i].all_cells = runtime->create_logical_region(ctx, sizeof(Cell), total_cells);
+      levels[i].all_fluxes = runtime->create_logical_region(ctx, sizeof(Flux), total_fluxes);
+
+      // Inline map these so we can allocate them
+      PhysicalRegion<AccessorGeneric> all_cells = runtime->map_region<AccessorGeneric>(ctx, 
+                                                                        RegionRequirement(levels[i].all_cells,
+                                                                              READ_WRITE, ALLOCABLE, EXCLUSIVE,
+                                                                              levels[i].all_cells));
+      PhysicalRegion<AccessorGeneric> all_fluxes = runtime->map_region<AccessorGeneric>(ctx, 
+                                                                        RegionRequirement(levels[i].all_fluxes,
+                                                                              READ_WRITE, ALLOCABLE, EXCLUSIVE,
+                                                                              levels[i].all_fluxes));
+      all_cells.wait_until_valid();
+      all_fluxes.wait_until_valid();
+      
+      // First allocate cells and create a partition for the all_private, all_shared, and all_boundary cells
+         
+
+      // Unmap our regions
+      runtime->unmap_region(ctx, all_cells);
+      runtime->unmap_region(ctx, all_fluxes);
+    }
+  }
+
+  log_heat(LEVEL_WARNING,"Simulation initialization complete");
 }
 
 void set_region_requirements(std::vector<Level> &levels)
@@ -466,7 +538,8 @@ void set_region_requirements(std::vector<Level> &levels)
 }
 
 void parse_input_args(char **argv, int argc, int &num_levels, int &default_num_cells,
-                      std::vector<int> &num_cells, int &steps, int random_seed)
+                      std::vector<int> &num_cells, int &default_divisions,
+                      std::vector<int> &divisions, int &steps, int random_seed)
 {
   for (int i = 1; i < argc; i++)
   {
@@ -476,17 +549,24 @@ void parse_input_args(char **argv, int argc, int &num_levels, int &default_num_c
       if (new_num_levels > num_levels)
       {
         num_cells.resize(new_num_levels);
+        divisions.resize(new_num_levels);
         for (int i = num_levels; i < new_num_levels; i++)
         {
           num_cells[i] = default_num_cells;
+          divisions[i] = default_divisions;
         }
       }
       num_levels = new_num_levels;
       continue;
     }
-    if (!strcmp(argv[i], "-d"))
+    if (!strcmp(argv[i], "-dc"))
     {
       default_num_cells = atoi(argv[++i]);
+      continue;
+    }
+    if (!strcmp(argv[i], "-dd"))
+    {
+      default_divisions = atoi(argv[++i]);
       continue;
     }
     if (!strcmp(argv[i], "-c"))
@@ -496,13 +576,33 @@ void parse_input_args(char **argv, int argc, int &num_levels, int &default_num_c
       if (level >= num_levels)
       {
         num_cells.resize(level+1);
+        divisions.resize(level+1);
         for (int i = num_levels; i < (level+1); i++)
         {
           num_cells[i] = default_num_cells;
+          divisions[i] = default_divisions;
         }
         num_levels = level+1;
       }
       num_cells[level] = local_num_cells;
+      continue;
+    }
+    if (!strcmp(argv[i], "-p"))
+    {
+      int level = atoi(argv[++i]);
+      int local_num_pieces = atoi(argv[++i]);
+      if (level >= num_levels)
+      {
+        num_cells.resize(level+1);
+        divisions.resize(level+1);
+        for (int i = num_levels; i < (level+1); i++)
+        {
+          num_cells[i] = default_num_cells;
+          divisions[i] = default_divisions;
+        }
+        num_levels = level+1;
+      }
+      divisions[level] = local_num_pieces;
       continue;
     }
     if (!strcmp(argv[i], "-s"))
