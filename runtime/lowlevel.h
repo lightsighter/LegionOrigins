@@ -394,6 +394,8 @@ namespace RegionRuntime {
 
     template <> class RegionInstanceAccessorUntyped<AccessorGeneric> {
     public:
+      explicit RegionInstanceAccessorUntyped(void)
+        : internal_data(NULL) {}
       explicit RegionInstanceAccessorUntyped(void *_internal_data)
 	: internal_data(_internal_data) {}
 
@@ -455,6 +457,8 @@ namespace RegionRuntime {
 
     template <> class RegionInstanceAccessorUntyped<AccessorArray> {
     public:
+      explicit RegionInstanceAccessorUntyped(void)
+        : array_base(NULL) {}
       explicit RegionInstanceAccessorUntyped(void *_array_base)
 	: array_base(_array_base) {}
 
