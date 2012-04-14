@@ -607,7 +607,7 @@ namespace RegionRuntime {
       __device__ __forceinline__
       void reduce(ptr_t<T> ptr, RHS newval) const { 
 #ifdef DEBUG_LOW_LEVEL
-        assert((first_elmt <= ptr.value) && (ptr.value < last_elmt));
+        assert((first_elmt <= ptr.value) && (ptr.value <= last_elmt));
 #endif
         REDOP::fold<false>(((RHS*)array_base)[ptr.value], newval); 
       }
