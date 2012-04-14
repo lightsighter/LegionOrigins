@@ -522,23 +522,55 @@ namespace RegionRuntime {
       { array_base = old.array_base; }
 
       void *array_base;
-
+#ifdef DEBUG_LOW_LEVEL
+      size_t first_elmt;
+      size_t last_elmt;
+#endif
 #ifdef __CUDACC__
       template <class T>
       __device__ __forceinline__
-      T read(ptr_t<T> ptr) const { return ((T*)array_base)[ptr.value]; }
+      T read(ptr_t<T> ptr) const { 
+#ifdef DEBUG_LOW_LEVEL
+        bounds_check(ptr);
+#endif
+        return ((T*)array_base)[ptr.value]; 
+      }
 
       template <class T>
       __device__ __forceinline__
-      void write(ptr_t<T> ptr, T newval) const { ((T*)array_base)[ptr.value] = newval; }
+      void write(ptr_t<T> ptr, T newval) const { 
+#ifdef DEBUG_LOW_LEVEL
+        bounds_check(ptr);
+#endif
+        ((T*)array_base)[ptr.value] = newval; 
+      }
 
       template <class REDOP, class T, class RHS>
       __device__ __forceinline__
-      void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::apply<false>(((T*)array_base)[ptr.value], newval); }
+      void reduce(ptr_t<T> ptr, RHS newval) const { 
+#ifdef DEBUG_LOW_LEVEL
+        bounds_check(ptr);
+#endif
+        REDOP::apply<false>(((T*)array_base)[ptr.value], newval); 
+      }
 
       template <class T>
       __device__ __forceinline__
-      T &ref(ptr_t<T> ptr) const { return ((T*)array_base)[ptr.value]; }
+      T &ref(ptr_t<T> ptr) const { 
+#ifdef DEBUG_LOW_LEVEL
+        bounds_check(ptr);
+#endif
+        return ((T*)array_base)[ptr.value]; 
+      }
+
+#ifdef DEBUG_LOW_LEVEL
+      template <class T>
+      __device__ __forceinline__
+      void bounds_check(ptr_t<T> ptr)
+      {
+        assert((first_elmt <= ptr.value) && (ptr.value <= last_elmt));
+      }
+#endif
 #endif
     };
 
@@ -552,12 +584,20 @@ namespace RegionRuntime {
       { array_base = old.array_base; }
 
       void *array_base;
-
+#ifdef DEBUG_LOW_LEVEL
+      size_t first_elmt;
+      size_t last_elmt;
+#endif
 #ifdef __CUDACC__
       // no read or write on a reduction-fold-only accessor
       template <class REDOP, class T, class RHS>
       __device__ __forceinline__
-      void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::fold<false>(((RHS*)array_base)[ptr.value], newval); }
+      void reduce(ptr_t<T> ptr, RHS newval) const { 
+#ifdef DEBUG_LOW_LEVEL
+        assert((first_elmt <= ptr.value) && (ptr.value < last_elmt));
+#endif
+        REDOP::fold<false>(((RHS*)array_base)[ptr.value], newval); 
+      }
 #endif
     };
 
