@@ -206,6 +206,11 @@ void region_main(const void *args, size_t arglen,
                                           circuit.node_locator));
 #endif
 
+  std::vector<RegionRequirement> sanity_regions;
+  sanity_regions.push_back(RegionRequirement(parts.pvt_wires, 0/*identity*/,
+                                             READ_ONLY, NO_MEMORY,EXCLUSIVE,
+                                             circuit.all_wires));
+
   std::vector<Range> index_space;
   index_space.push_back(Range(0,num_pieces-1,1));
 
@@ -225,22 +230,34 @@ void region_main(const void *args, size_t arglen,
   {
     log_circuit(LEVEL_WARNING,"starting loop %d out of %d", i, num_loops);
 
+    //last = runtime->execute_index_space(ctx, SANITY_CHECK_WIRES, index_space,
+    //                              sanity_regions, global_arg, local_args, false/*must*/);
+    //last.wait_all_results();
     // Calculate new currents
     last = runtime->execute_index_space(ctx, CALC_NEW_CURRENTS, index_space,
                                   cnc_regions, global_arg, local_args, false/*must*/);
-    last.release();
+    last.wait_all_results();
+    
+    last = runtime->execute_index_space(ctx, SANITY_CHECK_WIRES, index_space,
+                                  sanity_regions, global_arg, local_args, false/*must*/);
+    last.wait_all_results();
 
     // Distribute charge
     last = runtime->execute_index_space(ctx, DISTRIBUTE_CHARGE, index_space,
                                   dsc_regions, global_arg, local_args, false/*must*/);
-    last.release();
+    last.wait_all_results();
+
+    //last = runtime->execute_index_space(ctx, SANITY_CHECK_WIRES, index_space,
+    //                              sanity_regions, global_arg, local_args, false/*must*/);
+    //last.wait_all_results();
 
     // Update voltages
     last = runtime->execute_index_space(ctx, UPDATE_VOLTAGES, index_space,
                                   upv_regions, global_arg, local_args, false/*must*/);
     if (i != (num_loops-1))
     {
-      last.release();
+      last.wait_all_results();
+      //last.release();
     }
   }
 
@@ -462,6 +479,20 @@ void update_voltages_task_gpu(const void *global_args, size_t global_arglen,
                       owned.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
                       locator.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>());
 }
+
+template<AccessorType AT>
+void sanity_check_wires_task_gpu(const void *global_args, size_t global_arglen,
+                                 const void *local_args, size_t local_arglen,
+                                 const IndexPoint &point,
+                                 std::vector<PhysicalRegion<AT> > &regions,
+                                 Context ctx, HighLevelRuntime *runtime)
+{
+  log_circuit(LEVEL_DEBUG,"GPU sanity check wires for point %d",point[0]);
+  CircuitPiece *p = (CircuitPiece*)local_args;
+  PhysicalRegion<AT> wires = regions[0];
+
+  sanity_check_wires_gpu(p, wires.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>());
+}
 #endif
 
 /// Start-up 
@@ -489,6 +520,8 @@ int main(int argc, char **argv)
           distribute_charge_task_gpu<AccessorGeneric> >(DISTRIBUTE_CHARGE, Processor::TOC_PROC, "distribute_charge");
   HighLevelRuntime::register_index_task<
           update_voltages_task_gpu<AccessorGeneric> >(UPDATE_VOLTAGES, Processor::TOC_PROC, "update_voltages");
+  HighLevelRuntime::register_index_task<
+          sanity_check_wires_task_gpu<AccessorGeneric> >(SANITY_CHECK_WIRES, Processor::TOC_PROC, "sanity_check_wires");
 #endif
 
   // Register reduction op
@@ -743,6 +776,7 @@ public:
       switch (task->task_id)
       {
         case CALC_NEW_CURRENTS:
+        case SANITY_CHECK_WIRES:
           {
             switch (index)
             {

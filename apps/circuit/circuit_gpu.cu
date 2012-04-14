@@ -117,6 +117,30 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
 #endif
 }
 
+__global__
+void sanity_check_positions(ptr_t<CircuitWire> first,
+                            int num_wires,
+                            GPU_Accessor wires)
+{
+  int tid = blockIdx.x * blockDim.x + threadIdx.x; 
+
+  if (tid < num_wires)
+  {
+    ptr_t<CircuitWire> local_ptr;
+    local_ptr.value = first.value + tid;
+    //if(tid == 0) printf("i am %d (w=%d) %p\n", tid, local_ptr.value, wires.array_base);
+    CircuitWire &wire = wires.ref(local_ptr);
+   
+    assert((wire.in_loc == PRIVATE_PTR) || (wire.in_loc == SHARED_PTR) || (wire.in_loc == GHOST_PTR));
+    assert((wire.out_loc == PRIVATE_PTR) || (wire.out_loc == SHARED_PTR) || (wire.out_loc == GHOST_PTR));
+
+    if (local_ptr.value == 300225)
+    {
+      printf("Wire %d has pointers %d %d at locations %d %d\n",local_ptr.value, wire.in_ptr.value, wire.out_ptr.value, wire.in_loc, wire.out_loc);
+    }
+  }
+}
+
 __host__
 void calc_new_currents_gpu(CircuitPiece *p,
                            GPU_Accessor wires,
@@ -137,10 +161,21 @@ void calc_new_currents_gpu(CircuitPiece *p,
   CUDA_SAFE_CALL(cudaDeviceSynchronize());
 }
 
+__host__
+void sanity_check_wires_gpu(CircuitPiece *p,
+                            GPU_Accessor wires)
+{
+  int num_blocks = (p->num_wires+255) >> 8;
+  sanity_check_positions<<<num_blocks,256>>>(p->first_wire,
+                                             p->num_wires,
+                                             wires);
+  CUDA_SAFE_CALL(cudaDeviceSynchronize());
+}
+
 template<typename REDOP>
 __device__ __forceinline__
 void reduce_local(GPU_Accessor pvt, GPU_Reducer owned, GPU_Reducer ghost,
-                  PointerLocation loc, ptr_t<CircuitNode> ptr, typename REDOP::RHS value)
+                  PointerLocation loc, ptr_t<CircuitNode> ptr, typename REDOP::RHS value, int tid, unsigned wire_ptr)
 {
   switch (loc)
   {
@@ -154,7 +189,7 @@ void reduce_local(GPU_Accessor pvt, GPU_Reducer owned, GPU_Reducer ghost,
       ghost.template reduce<REDOP,CircuitNode,typename REDOP::RHS>(ptr, value);
       break;
     default:
-      printf("Bad pointer location %d at pointer %d\n",loc,ptr.value);
+      printf("Bad pointer location %d at pointer %d for wire %d of thread %d\n", loc, ptr.value, wire_ptr, tid);
       assert(false);
   }
 }
@@ -184,8 +219,8 @@ void distribute_charge_kernel(ptr_t<CircuitWire> first,
     //  printf("in_loc[9999] = %d\n", wire.in_loc);
     //if(wire.out_ptr.value == 9999)
     //  printf("out_loc[9999] = %d\n", wire.out_loc);
-    reduce_local<GPUAccumulateCharge>(pvt, owned, ghost, wire.in_loc, wire.in_ptr, -dt * wire.current[0]);
-    reduce_local<GPUAccumulateCharge>(pvt, owned, ghost, wire.out_loc, wire.out_ptr, dt * wire.current[WIRE_SEGMENTS-1]);
+    reduce_local<GPUAccumulateCharge>(pvt, owned, ghost, wire.in_loc, wire.in_ptr, -dt * wire.current[0], tid, local_ptr.value);
+    reduce_local<GPUAccumulateCharge>(pvt, owned, ghost, wire.out_loc, wire.out_ptr, dt * wire.current[WIRE_SEGMENTS-1], tid, local_ptr.value);
   }
 #endif
 }

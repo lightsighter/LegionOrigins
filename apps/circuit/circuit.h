@@ -21,6 +21,7 @@ enum {
   CALC_NEW_CURRENTS,
   DISTRIBUTE_CHARGE,
   UPDATE_VOLTAGES,
+  SANITY_CHECK_WIRES,
 };
 
 enum {
@@ -94,5 +95,8 @@ void update_voltages_gpu(CircuitPiece *p,
                          GPU_Accessor owned,
                          GPU_Accessor locator,
                          int flag = 0);
+
+void sanity_check_wires_gpu(CircuitPiece *p,
+                            GPU_Accessor wires);
 
 #endif // __CIRCUIT_H__
