@@ -460,7 +460,7 @@ void update_voltages_task_gpu(const void *global_args, size_t global_arglen,
   update_voltages_gpu(p,
                       pvt.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
                       owned.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
-                      locator.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),point[0]);
+                      locator.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>());
 }
 #endif
 

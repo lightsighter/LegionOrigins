@@ -70,7 +70,7 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
     ptr_t<CircuitWire> local_ptr;
     local_ptr.value = first.value + tid;
     //if(tid == 0) printf("i am %d (w=%d)\n", tid, local_ptr.value);
-    CircuitWire wire = wires.read(local_ptr);
+    CircuitWire &wire = wires.ref(local_ptr);
     //if(tid == 0)
     //printf("nodes[%d] = %d(%d) -> %d(%d)\n",
     //   tid, wire.in_ptr.value, wire.in_loc, wire.out_ptr.value, wire.out_loc);
@@ -110,7 +110,7 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
       wire.current[i] = new_i[i];
     for (int i = 0; i < WIRE_SEGMENTS-1; i++)
       wire.voltage[i] = new_v[i+1];
-    wires.write(local_ptr, wire);
+    //wires.write(local_ptr, wire);
   }
 #endif
 }
@@ -132,7 +132,6 @@ void calc_new_currents_gpu(CircuitPiece *p,
                                                p->num_wires,
                                                wires, pvt, owned, ghost,
                                                flag);
-
   CUDA_SAFE_CALL(cudaDeviceSynchronize());
 }
 
@@ -153,6 +152,7 @@ void reduce_local(GPU_Accessor pvt, GPU_Reducer owned, GPU_Reducer ghost,
       ghost.template reduce<REDOP,CircuitNode,typename REDOP::RHS>(ptr, value);
       break;
     default:
+      printf("Bad pointer location %d at pointer %d\n",loc,ptr.value);
       assert(false);
   }
 }
@@ -174,7 +174,7 @@ void distribute_charge_kernel(ptr_t<CircuitWire> first,
     ptr_t<CircuitWire> local_ptr;
     local_ptr.value = first.value + tid;
 
-    CircuitWire wire = wires.read(local_ptr);
+    CircuitWire &wire = wires.ref(local_ptr);
 
     float dt = 1e-6;
 
@@ -197,7 +197,6 @@ void distribute_charge_gpu(CircuitPiece *p,
                            int flag)
 {
   int num_blocks = (p->num_wires+255) >> 8;
-
   distribute_charge_kernel<<<num_blocks,256>>>(p->first_wire,
                                                p->num_wires,
                                                wires, pvt, owned, ghost,
@@ -227,21 +226,22 @@ void update_voltages_kernel(ptr_t<CircuitNode> first,
     {
       bool is_pvt = locator.read(locator_ptr);
       //if(locator_ptr.value == 9999) printf("pvt[9999] = %d\n", is_pvt);
-      CircuitNode cur_node;
       if (is_pvt)
-        cur_node = pvt.read(local_node);
+      {
+        CircuitNode &cur_node = pvt.ref(local_node);
+        // charge adds in, and then some leaks away
+        cur_node.voltage += cur_node.charge / cur_node.capacitance;
+        cur_node.voltage *= (1 - cur_node.leakage);
+        cur_node.charge = 0;
+      }
       else
-        cur_node = owned.read(local_node);
-
-      // charge adds in, and then some leaks away
-      cur_node.voltage += cur_node.charge / cur_node.capacitance;
-      cur_node.voltage *= (1 - cur_node.leakage);
-      cur_node.charge = 0;
-
-      if (is_pvt)
-        pvt.write(local_node, cur_node);
-      else
-        owned.write(local_node, cur_node);
+      {
+        CircuitNode &cur_node = owned.ref(local_node);
+        // charge adds in, and then some leaks away
+        cur_node.voltage += cur_node.charge / cur_node.capacitance;
+        cur_node.voltage *= (1 - cur_node.leakage);
+        cur_node.charge = 0;
+      }
     }
   }
 #endif
