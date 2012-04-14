@@ -516,17 +516,24 @@ namespace RegionRuntime {
     public:
       explicit RegionInstanceAccessorUntyped(void *_array_base)
 	: array_base(_array_base) {}
-
-      // Need copy constructors so we can move things around
-      RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorArray> &old)
-      { array_base = old.array_base; }
-
+      
       void *array_base;
 #ifdef DEBUG_LOW_LEVEL
       size_t first_elmt;
       size_t last_elmt;
 #endif
 #ifdef __CUDACC__
+      // Need copy constructors so we can move things around
+      __host__ __device__
+      RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorGPU> &old)
+      { 
+        array_base = old.array_base; 
+#ifdef DEBUG_LOW_LEVEL
+        first_elmt = old.first_elmt;
+        last_elmt = old.last_elmt;
+#endif
+      }
+
       template <class T>
       __device__ __forceinline__
       T read(ptr_t<T> ptr) const { 
@@ -579,16 +586,22 @@ namespace RegionRuntime {
       explicit RegionInstanceAccessorUntyped(void *_array_base)
 	: array_base(_array_base) {}
 
-      // Need copy constructors so we can move things around
-      RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorArray> &old)
-      { array_base = old.array_base; }
-
       void *array_base;
 #ifdef DEBUG_LOW_LEVEL
       size_t first_elmt;
       size_t last_elmt;
 #endif
 #ifdef __CUDACC__
+      // Need copy constructors so we can move things around
+      __host__ __device__
+      RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorGPUReductionFold> &old)
+      { 
+        array_base = old.array_base; 
+#ifdef DEBUG_LOW_LEVEL
+        first_elmt = old.first_elmt;
+        last_elmt  = old.last_elmt;
+#endif
+      }
       // no read or write on a reduction-fold-only accessor
       template <class REDOP, class T, class RHS>
       __device__ __forceinline__
