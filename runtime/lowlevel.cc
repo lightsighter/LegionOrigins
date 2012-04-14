@@ -2367,8 +2367,8 @@ namespace RegionRuntime {
 	for(int i = 0; i < num_nodes; i++) {
 	  seginfos[i].addr = ((char *)seginfos[i].addr)+lmb_skip;
 	  seginfos[i].size -= lmb_skip;
-	  printf("gasnet segment %d: [%p,%p)\n",
-		 i, seginfos[i].addr, seginfos[i].addr+seginfos[i].size);
+	  //printf("gasnet segment %d: [%p,%p)\n",
+	  //	 i, seginfos[i].addr, ((char*)seginfos[i].addr)+seginfos[i].size);
 	}
 
 	size = seginfos[0].size * num_nodes;
