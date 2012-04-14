@@ -401,6 +401,7 @@ void update_voltages_task(const void *global_args, size_t global_arglen,
 // GPU versions
 /////////////////
 
+#ifndef USING_SHARED
 template<AccessorType AT>
 void calculate_currents_task_gpu(const void *global_args, size_t global_arglen,
                                  const void *local_args, size_t local_arglen,
@@ -454,19 +455,14 @@ void update_voltages_task_gpu(const void *global_args, size_t global_arglen,
   CircuitPiece *p = (CircuitPiece*)local_args;
   PhysicalRegion<AT> pvt     = regions[0];
   PhysicalRegion<AT> owned   = regions[1];
-#ifndef USING_SHARED
   PhysicalRegion<AT> locator = regions[2];
-#endif
 
   update_voltages_gpu(p,
                       pvt.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
                       owned.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),
-#ifndef USING_SHARED
-                      locator.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>());
-#else
-                      owned.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>());
-#endif
+                      locator.get_instance().template convert<RegionRuntime::LowLevel::AccessorGPU>(),point[0]);
 }
+#endif
 
 /// Start-up 
 

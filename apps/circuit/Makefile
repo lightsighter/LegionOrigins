@@ -5,7 +5,7 @@ endif
 
 #Flags for directing the runtime makefile what to include
 DEBUG=1                   # Include debugging symbols
-OUTPUT_LEVEL=LEVEL_DEBUG   # Compile time print level
+OUTPUT_LEVEL=LEVEL_INFO   # Compile time print level
 #SHARED_LOWLEVEL=1	  # Use the shared low level
 #ALT_MAPPERS=1		  # Compile the alternative mappers
 
@@ -23,7 +23,7 @@ GASNET_FLAGS	:=
 LD_FLAGS	:=
 
 ifdef SHARED_LOWLEVEL
-CC_FLAGS	+= -DUSING_SHARED #-DTRACE_CAPTURE
+CC_FLAGS	+= #-DUSING_SHARED #-DTRACE_CAPTURE
 endif
 
 ###########################################################################
