@@ -231,6 +231,7 @@ namespace RegionRuntime {
     Logger::Category log_mutex("mutex");
     Logger::Category log_timer("timer");
     Logger::Category log_region("region");
+    Logger::Category log_malloc("malloc");
 
     enum ActiveMessageIDs {
       FIRST_AVAILABLE = 140,
@@ -2161,12 +2162,18 @@ namespace RegionRuntime {
 				    RemoteMemAllocArgs, off_t,
 				    handle_remote_mem_alloc> RemoteMemAllocMessage;
 
-    Logger::Category log_malloc("malloc");
-
     off_t Memory::Impl::alloc_bytes_local(size_t size)
     {
       AutoHSLLock al(mutex);
 
+      if(alignment > 0) {
+	off_t leftover = size % alignment;
+	if(leftover > 0) {
+	  log_malloc.info("padding allocation from %zd to %zd",
+			  size, size + (alignment - leftover));
+	  size += (alignment - leftover);
+	}
+      }
       // HACK: pad the size by a bit to see if we have people falling off
       //  the end of their allocations
       size += 0;
@@ -2225,7 +2232,7 @@ namespace RegionRuntime {
     class LocalCPUMemory : public Memory::Impl {
     public:
       LocalCPUMemory(Memory _me, size_t _size) 
-	: Memory::Impl(_me, _size, MKIND_SYSMEM)
+	: Memory::Impl(_me, _size, MKIND_SYSMEM, 256)
       {
 	base = new char[_size];
 	log_copy.debug("CPU memory at %p, size = %zd", base, _size);
@@ -2296,7 +2303,7 @@ namespace RegionRuntime {
     class RemoteMemory : public Memory::Impl {
     public:
       RemoteMemory(Memory _me, size_t _size)
-	: Memory::Impl(_me, _size, MKIND_REMOTE)
+	: Memory::Impl(_me, _size, MKIND_REMOTE, 0)
       {
       }
 
@@ -2357,8 +2364,11 @@ namespace RegionRuntime {
 
     class GASNetMemory : public Memory::Impl {
     public:
+      static const size_t MEMORY_STRIDE = 1024;
+
       GASNetMemory(Memory _me, size_t lmb_skip) 
-	: Memory::Impl(_me, 0 /* we'll calculate it below */, MKIND_GASNET)
+	: Memory::Impl(_me, 0 /* we'll calculate it below */, MKIND_GASNET,
+		       MEMORY_STRIDE)
       {
 	num_nodes = gasnet_nodes();
 	seginfos = new gasnet_seginfo_t[num_nodes];
@@ -2372,7 +2382,7 @@ namespace RegionRuntime {
 	}
 
 	size = seginfos[0].size * num_nodes;
-	memory_stride = 1024;
+	memory_stride = MEMORY_STRIDE;
 
 	free_blocks[0] = size;
       }

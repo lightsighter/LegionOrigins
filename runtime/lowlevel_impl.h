@@ -387,8 +387,8 @@ namespace RegionRuntime {
 	MKIND_ZEROCOPY, // CPU memory, pinned for GPU access
       };
 
-      Impl(Memory _me, size_t _size, MemoryKind _kind)
-	: me(_me), size(_size), kind(_kind)
+    Impl(Memory _me, size_t _size, MemoryKind _kind, size_t _alignment)
+      : me(_me), size(_size), kind(_kind), alignment(_alignment)
       {
 	gasnet_hsl_init(&mutex);
       }
@@ -455,6 +455,7 @@ namespace RegionRuntime {
       Memory me;
       size_t size;
       MemoryKind kind;
+      size_t alignment;
       gasnet_hsl_t mutex; // protection for resizing vectors
       std::vector<RegionAllocatorUntyped::Impl *> allocators;
       std::vector<RegionInstanceUntyped::Impl *> instances;

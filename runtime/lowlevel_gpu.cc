@@ -607,7 +607,8 @@ namespace RegionRuntime {
     // framebuffer memory
 
     GPUFBMemory::GPUFBMemory(Memory _me, GPUProcessor *_gpu)
-      : Memory::Impl(_me, _gpu->internal->fbmem_size, MKIND_GPUFB), gpu(_gpu)
+      : Memory::Impl(_me, _gpu->internal->fbmem_size, MKIND_GPUFB, 512),
+	gpu(_gpu)
     {
       free_blocks[0] = size;
     }
@@ -617,7 +618,8 @@ namespace RegionRuntime {
     // zerocopy memory
 
     GPUZCMemory::GPUZCMemory(Memory _me, GPUProcessor *_gpu)
-      : Memory::Impl(_me, _gpu->internal->zcmem_size, MKIND_ZEROCOPY), gpu(_gpu)
+      : Memory::Impl(_me, _gpu->internal->zcmem_size, MKIND_ZEROCOPY, 256),
+	gpu(_gpu)
     {
       cpu_base = (char *)(gpu->get_zcmem_cpu_base());
       free_blocks[0] = size;
