@@ -494,7 +494,7 @@ namespace RegionRuntime {
 	: array_base(_array_base) {}
 
       // Need copy constructors so we can move things around
-      RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorArray> &old)
+      RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorArrayReductionFold> &old)
       { array_base = old.array_base; }
 
       bool operator<(const RegionInstanceAccessorUntyped<AccessorArray> &rhs) const
@@ -578,6 +578,16 @@ namespace RegionRuntime {
         assert((first_elmt <= ptr.value) && (ptr.value <= last_elmt));
       }
 #endif
+#else // __CUDACC__
+
+      RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorGPU> &old)
+      {
+        array_base = old.array_base;
+#ifdef DEBUG_HIGH_LEVEL
+        first_elmt = old.first_elmt;
+        last_elmt  = old.last_elmt;
+#endif
+      }
 #endif
     };
 
@@ -585,6 +595,8 @@ namespace RegionRuntime {
     public:
       explicit RegionInstanceAccessorUntyped(void *_array_base)
 	: array_base(_array_base) {}
+
+      
 
       void *array_base;
 #ifdef DEBUG_LOW_LEVEL
@@ -610,6 +622,15 @@ namespace RegionRuntime {
         assert((first_elmt <= ptr.value) && (ptr.value <= last_elmt));
 #endif
         REDOP::fold<false>(((RHS*)array_base)[ptr.value], newval); 
+      }
+#else // __CUDACC__
+      RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorGPUReductionFold> &old)
+      {
+        array_base = old.array_base;
+#ifdef DEBUG_HIGH_LEVEL
+        first_elmt = old.first_elmt;
+        last_elmt  = old.last_elmt;
+#endif
       }
 #endif
     };
