@@ -123,10 +123,12 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
     }
 
     // Copy everything back
+    if(1) {
     for (int i = 0; i < WIRE_SEGMENTS; i++)
       wire.current[i] = new_i[i];
     for (int i = 0; i < (WIRE_SEGMENTS-1); i++)
       wire.voltage[i] = new_v[i+1];
+    }
     //wires.write(local_ptr, wire);
 
     if(//((local_ptr.value >= 300220) && (local_ptr.value <= 300229)) ||
@@ -304,13 +306,13 @@ void update_voltages_kernel(ptr_t<CircuitNode> first,
 
   if (tid < num_nodes)
   {
-    ptr_t<bool> locator_ptr;
+    ptr_t<int> locator_ptr;
     locator_ptr.value = first.value + tid;
     ptr_t<CircuitNode> local_node;
     local_node.value = first.value + tid;
     // Figure out if this node is pvt or not
     {
-      bool is_pvt = locator.read(locator_ptr);
+      int is_pvt = locator.read(locator_ptr);
       //if(locator_ptr.value == 9999) printf("pvt[9999] = %d\n", is_pvt);
       if (is_pvt)
       {

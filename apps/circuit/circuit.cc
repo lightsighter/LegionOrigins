@@ -149,7 +149,7 @@ void region_main(const void *args, size_t arglen,
     int num_circuit_wires = num_pieces * wires_per_piece;
     circuit.all_nodes = runtime->create_logical_region(ctx,sizeof(CircuitNode), num_circuit_nodes);
     circuit.all_wires = runtime->create_logical_region(ctx,sizeof(CircuitWire), num_circuit_wires);
-    circuit.node_locator = runtime->create_logical_region(ctx, sizeof(bool), num_circuit_nodes);
+    circuit.node_locator = runtime->create_logical_region(ctx, sizeof(int), num_circuit_nodes);
   }
 
   // Load the circuit
@@ -238,6 +238,10 @@ void region_main(const void *args, size_t arglen,
                                   cnc_regions, global_arg, local_args, false/*must*/);
     last.wait_all_results();
     
+    last = runtime->execute_index_space(ctx, SANITY_CHECK_WIRES, index_space,
+                                  sanity_regions, global_arg, local_args, false/*must*/);
+    last.wait_all_results();
+
     last = runtime->execute_index_space(ctx, SANITY_CHECK_WIRES, index_space,
                                   sanity_regions, global_arg, local_args, false/*must*/);
     last.wait_all_results();
@@ -1052,7 +1056,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
         // wires that are non-local
         private_node_map[n].insert(node_ptr);
         privacy_map[0].insert(node_ptr);
-        locator_node_map[n].insert(loc_itr->next<bool>());
+        locator_node_map[n].insert(loc_itr->next<int>());
       }
     }
     delete itr;
@@ -1102,7 +1106,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
           privacy_map[1].insert(wire.out_ptr);
           ghost_node_map[n].insert(wire.out_ptr);
         }
-	//printf("wire[%d] = %d -> %d\n", wire_ptr.value, wire.in_ptr.value, wire.out_ptr.value);
+	printf("host[%d] = %d -> %d\n", wire_ptr.value, wire.in_ptr.value, wire.out_ptr.value);
         // Write the wire
         wires.write(wire_ptr, wire);
 
@@ -1123,17 +1127,17 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
         assert(itr->has_next());
         assert(loc_itr->has_next());
         ptr_t<CircuitNode> node_ptr = itr->next<CircuitNode>();
-        ptr_t<bool> loc_ptr = loc_itr->next<bool>();
+        ptr_t<int> loc_ptr = loc_itr->next<int>();
         if (privacy_map[0].find(node_ptr) == privacy_map[0].end())
         {
           private_node_map[n].erase(node_ptr);
           // node is now shared
           shared_node_map[n].insert(node_ptr);
-          locator.write(loc_ptr,false); // node is shared 
+          locator.write(loc_ptr,(int)false); // node is shared 
         }
         else
         {
-          locator.write(loc_ptr,true); // node is private 
+          locator.write(loc_ptr,(int)true); // node is private 
         }
       }
     }
