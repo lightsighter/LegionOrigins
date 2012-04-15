@@ -230,9 +230,9 @@ void region_main(const void *args, size_t arglen,
   {
     log_circuit(LEVEL_WARNING,"starting loop %d out of %d", i, num_loops);
 
-    //last = runtime->execute_index_space(ctx, SANITY_CHECK_WIRES, index_space,
-    //                              sanity_regions, global_arg, local_args, false/*must*/);
-    //last.wait_all_results();
+    last = runtime->execute_index_space(ctx, SANITY_CHECK_WIRES, index_space,
+                                  sanity_regions, global_arg, local_args, false/*must*/);
+    last.wait_all_results();
     // Calculate new currents
     last = runtime->execute_index_space(ctx, CALC_NEW_CURRENTS, index_space,
                                   cnc_regions, global_arg, local_args, false/*must*/);

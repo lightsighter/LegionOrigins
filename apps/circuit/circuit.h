@@ -48,6 +48,7 @@ struct CircuitWire {
   float current[WIRE_SEGMENTS];
   float capacitance;
   float voltage[WIRE_SEGMENTS-1];
+  float crap, morecrap, evenmorecrap, yetmorecrap, extracrap, lastcrap;
 };
 
 struct Circuit {
