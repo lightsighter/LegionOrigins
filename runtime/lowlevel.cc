@@ -2206,8 +2206,71 @@ namespace RegionRuntime {
 
     void Memory::Impl::free_bytes_local(off_t offset, size_t size)
     {
-      log_malloc.info("ignoring free request: mem=%x offset=%zd size=%zd",
-		      me.id, offset, size);
+      AutoHSLLock al(mutex);
+
+      if(alignment > 0) {
+	off_t leftover = size % alignment;
+	if(leftover > 0) {
+	  log_malloc.info("padding free from %zd to %zd",
+			  size, size + (alignment - leftover));
+	  size += (alignment - leftover);
+	}
+      }
+
+      if(free_blocks.size() > 0) {
+	// find the first existing block that comes _after_ us
+	std::map<off_t, off_t>::iterator after = free_blocks.lower_bound(offset);
+	if(after != free_blocks.end()) {
+	  // found one - is it the first one?
+	  if(after == free_blocks.begin()) {
+	    // yes, so no "before"
+	    assert((offset + (off_t)size) <= after->first); // no overlap!
+	    if((offset + (off_t)size) == after->first) {
+	      // merge the ranges by eating the "after"
+	      size += after->second;
+	      free_blocks.erase(after);
+	    }
+	    free_blocks[offset] = size;
+	  } else {
+	    // no, get range that comes before us too
+	    std::map<off_t, off_t>::iterator before = after; before--;
+
+	    // if we're adjacent to the after, merge with it
+	    assert((offset + (off_t)size) <= after->first); // no overlap!
+	    if((offset + (off_t)size) == after->first) {
+	      // merge the ranges by eating the "after"
+	      size += after->second;
+	      free_blocks.erase(after);
+	    }
+
+	    // if we're adjacent with the before, grow it instead of adding
+	    //  a new range
+	    assert((before->first + before->second) <= offset);
+	    if((before->first + before->second) == offset) {
+	      before->second += size;
+	    } else {
+	      free_blocks[offset] = size;
+	    }
+	  }
+	} else {
+	  // nothing's after us, so just see if we can merge with the range
+	  //  that's before us
+
+	  std::map<off_t, off_t>::iterator before = after; before--;
+
+	  // if we're adjacent with the before, grow it instead of adding
+	  //  a new range
+	  assert((before->first + before->second) <= offset);
+	  if((before->first + before->second) == offset) {
+	    before->second += size;
+	  } else {
+	    free_blocks[offset] = size;
+	  }
+	}
+      } else {
+	// easy case - nothing was free, so now just our block is
+	free_blocks[offset] = size;
+      }
     }
 
     off_t Memory::Impl::alloc_bytes_remote(size_t size)
@@ -2873,7 +2936,7 @@ namespace RegionRuntime {
       log_inst(LEVEL_INFO, "destroying local instance: mem=%x inst=%x", me.id, i.id);
 
       // all we do for now is free the actual data storage
-      unsigned index = ID(me).index_l();
+      unsigned index = ID(i).index_l();
       assert(index < instances.size());
       RegionInstanceUntyped::Impl *iimpl = instances[index];
       free_bytes(iimpl->locked_data.alloc_offset, iimpl->locked_data.size);

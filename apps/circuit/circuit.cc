@@ -1108,7 +1108,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
           privacy_map[1].insert(wire.out_ptr);
           ghost_node_map[n].insert(wire.out_ptr);
         }
-	//printf("host[%d] = %d -> %d\n", wire_ptr.value, wire.in_ptr.value, wire.out_ptr.value);
+
         // Write the wire
         wires.write(wire_ptr, wire);
 
