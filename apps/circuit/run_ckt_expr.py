@@ -110,7 +110,8 @@ def run_simulations():
                                 " cpus and "+str(ng)+"gpus..."                        
                         qsub_command = "qsub -z -l nodes="+str(nn)+",walltime="+walltime+' '+file_name
                         try:
-                            subprocess.check_call([qsub_command],shell=True)
+                            # Apparently qsub doesn't really like check_call
+                            subprocess.call([qsub_command],shell=True)
                             print "qsub launch: SUCCESS!"
                         except:
                             print "qsub launch: FAILURE!" 
