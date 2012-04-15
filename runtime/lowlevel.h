@@ -596,8 +596,6 @@ namespace RegionRuntime {
       explicit RegionInstanceAccessorUntyped(void *_array_base)
 	: array_base(_array_base) {}
 
-      
-
       void *array_base;
 #ifdef DEBUG_LOW_LEVEL
       size_t first_elmt;
