@@ -64,6 +64,7 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
                               GPU_Accessor ghost,
                               int flag)
 {
+  return;
 #ifndef DISABLE_MATH
   int tid = blockIdx.x * blockDim.x + threadIdx.x; 
 
@@ -73,6 +74,16 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
     local_ptr.value = first.value + tid;
     //if(tid == 0) printf("i am %d (w=%d) %p\n", tid, local_ptr.value, wires.array_base);
     CircuitWire &wire = wires.ref(local_ptr);
+    //CircuitWire wire = wires.read(local_ptr);
+    if(//((local_ptr.value >= 300220) && (local_ptr.value <= 300229)) ||
+       //((local_ptr.value >= 299710) && (local_ptr.value <= 299720)) ||
+       (wire.in_loc < 0) || (wire.in_loc > 2) ||
+       (wire.out_loc < 0) || (wire.out_loc > 2) ||
+       (wire.in_ptr.value < ((local_ptr.value/10000)*2500)) ||
+       (wire.in_ptr.value >= (((local_ptr.value/10000)+1)*2500)))
+      printf("wire in[%d] = %d(%d) -> %d(%d)\n",
+	     local_ptr.value, wire.in_ptr.value, wire.in_loc,
+	     wire.out_ptr.value, wire.out_loc);
     //if(tid == 0)
     //  printf("nodes[%d] = %d(%d) -> %d(%d)\n",
     //     tid, wire.in_ptr.value, wire.in_loc, wire.out_ptr.value, wire.out_loc);
@@ -113,6 +124,16 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
     for (int i = 0; i < WIRE_SEGMENTS-1; i++)
       wire.voltage[i] = new_v[i+1];
     //wires.write(local_ptr, wire);
+
+    if(//((local_ptr.value >= 300220) && (local_ptr.value <= 300229)) ||
+       //((local_ptr.value >= 299710) && (local_ptr.value <= 299720)) ||
+       (wire.in_loc < 0) || (wire.in_loc > 2) ||
+       (wire.out_loc < 0) || (wire.out_loc > 2) ||
+       (wire.in_ptr.value < ((local_ptr.value/10000)*2500)) ||
+       (wire.in_ptr.value >= (((local_ptr.value/10000)+1)*2500)))
+      printf("wire out[%d] = %d(%d) -> %d(%d)\n",
+	     local_ptr.value, wire.in_ptr.value, wire.in_loc,
+	     wire.out_ptr.value, wire.out_loc);
   }
 #endif
 }
@@ -129,10 +150,21 @@ void sanity_check_positions(ptr_t<CircuitWire> first,
     ptr_t<CircuitWire> local_ptr;
     local_ptr.value = first.value + tid;
     //if(tid == 0) printf("i am %d (w=%d) %p\n", tid, local_ptr.value, wires.array_base);
-    CircuitWire &wire = wires.ref(local_ptr);
+    //CircuitWire &wire = wires.ref(local_ptr);
+    CircuitWire wire = wires.read(local_ptr);
    
     assert((wire.in_loc == PRIVATE_PTR) || (wire.in_loc == SHARED_PTR) || (wire.in_loc == GHOST_PTR));
     assert((wire.out_loc == PRIVATE_PTR) || (wire.out_loc == SHARED_PTR) || (wire.out_loc == GHOST_PTR));
+
+    if(//((local_ptr.value >= 300220) && (local_ptr.value <= 300229)) ||
+       //((local_ptr.value >= 299710) && (local_ptr.value <= 299720)) ||
+       (wire.in_loc < 0) || (wire.in_loc > 2) ||
+       (wire.out_loc < 0) || (wire.out_loc > 2) ||
+       (wire.in_ptr.value < ((local_ptr.value/10000)*2500)) ||
+       (wire.in_ptr.value >= (((local_ptr.value/10000)+1)*2500)))
+      printf("wire check[%d] = %d(%d) -> %d(%d)\n",
+	     local_ptr.value, wire.in_ptr.value, wire.in_loc,
+	     wire.out_ptr.value, wire.out_loc);
 
     if (local_ptr.value == 300225)
     {
@@ -212,6 +244,15 @@ void distribute_charge_kernel(ptr_t<CircuitWire> first,
     local_ptr.value = first.value + tid;
 
     CircuitWire &wire = wires.ref(local_ptr);
+    if(//((local_ptr.value >= 300220) && (local_ptr.value <= 300229)) ||
+       //((local_ptr.value >= 299710) && (local_ptr.value <= 299720)) ||
+       (wire.in_loc < 0) || (wire.in_loc > 2) ||
+       (wire.out_loc < 0) || (wire.out_loc > 2) ||
+       (wire.in_ptr.value < ((local_ptr.value/10000)*2500)) ||
+       (wire.in_ptr.value >= (((local_ptr.value/10000)+1)*2500)))
+      printf("wire[%d] = %d(%d) -> %d(%d)\n",
+	     local_ptr.value, wire.in_ptr.value, wire.in_loc,
+	     wire.out_ptr.value, wire.out_loc);
 
     float dt = 1e-6;
 
@@ -219,7 +260,10 @@ void distribute_charge_kernel(ptr_t<CircuitWire> first,
     //  printf("in_loc[9999] = %d\n", wire.in_loc);
     //if(wire.out_ptr.value == 9999)
     //  printf("out_loc[9999] = %d\n", wire.out_loc);
-    reduce_local<GPUAccumulateCharge>(pvt, owned, ghost, wire.in_loc, wire.in_ptr, -dt * wire.current[0], tid, local_ptr.value);
+    if(wire.in_ptr.value == 8940) {
+      printf("w[%d] n[%d/%d]\n", local_ptr.value, wire.in_ptr.value, wire.in_loc);
+      reduce_local<GPUAccumulateCharge>(pvt, owned, ghost, wire.in_loc, wire.in_ptr, -dt * wire.current[0], tid, local_ptr.value);
+    }
     reduce_local<GPUAccumulateCharge>(pvt, owned, ghost, wire.out_loc, wire.out_ptr, dt * wire.current[WIRE_SEGMENTS-1], tid, local_ptr.value);
   }
 #endif

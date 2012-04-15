@@ -24,8 +24,9 @@ LD_FLAGS	+= -L$(CUDA)/lib64 -lcudart -lcuda -Xlinker -rpath=$(CUDA)/lib64
 endif
 NVCC_FLAGS	+= -arch=sm_20
 ifdef DEBUG
-#NVCC_FLAGS	+= -g -G
-NVCC_FLAGS	+= -O3
+NVCC_FLAGS      += -DDEBUG_LOW_LEVEL -DDEBUG_HIGH_LEVEL
+NVCC_FLAGS	+= -g -G 
+#NVCC_FLAGS	+= -O3
 else
 NVCC_FLAGS	+= -O3
 endif

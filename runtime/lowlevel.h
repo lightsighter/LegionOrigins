@@ -573,7 +573,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_LOW_LEVEL
       template <class T>
       __device__ __forceinline__
-      void bounds_check(ptr_t<T> ptr)
+      void bounds_check(ptr_t<T> ptr) const
       {
         assert((first_elmt <= ptr.value) && (ptr.value <= last_elmt));
       }
