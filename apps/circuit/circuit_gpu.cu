@@ -44,13 +44,13 @@ CircuitNode& get_node(GPU_Accessor pvt, GPU_Accessor owned, GPU_Accessor ghost,
   switch (loc)
   {
     case PRIVATE_PTR:
-      assert((pvt.first_elmt <= ptr.value) && (ptr.value <= pvt.last_elmt));
+      //assert((pvt.first_elmt <= ptr.value) && (ptr.value <= pvt.last_elmt));
       return pvt.ref(ptr);
     case SHARED_PTR:
-      assert((owned.first_elmt <= ptr.value) && (ptr.value <= owned.last_elmt));
+      //assert((owned.first_elmt <= ptr.value) && (ptr.value <= owned.last_elmt));
       return owned.ref(ptr);
     case GHOST_PTR:
-      assert((ghost.first_elmt <= ptr.value) && (ptr.value <= ghost.last_elmt));
+      //assert((ghost.first_elmt <= ptr.value) && (ptr.value <= ghost.last_elmt));
       return ghost.ref(ptr);
     default:
       assert(false);
@@ -75,18 +75,18 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
     ptr_t<CircuitWire> local_ptr;
     local_ptr.value = first.value + tid;
     //if(tid == 0) printf("i am %d (w=%d) %p\n", tid, local_ptr.value, wires.array_base);
-    assert((wires.first_elmt <= local_ptr.value) && (local_ptr.value <= wires.last_elmt));
+    //assert((wires.first_elmt <= local_ptr.value) && (local_ptr.value <= wires.last_elmt));
     CircuitWire &wire = wires.ref(local_ptr);
     //CircuitWire wire = wires.read(local_ptr);
-    if(//((local_ptr.value >= 300220) && (local_ptr.value <= 300229)) ||
-       //((local_ptr.value >= 299710) && (local_ptr.value <= 299720)) ||
-       (wire.in_loc < 0) || (wire.in_loc > 2) ||
-       (wire.out_loc < 0) || (wire.out_loc > 2) ||
-       (wire.in_ptr.value < ((local_ptr.value/10000)*2500)) ||
-       (wire.in_ptr.value >= (((local_ptr.value/10000)+1)*2500)))
-      printf("wire in[%d] = %d(%d) -> %d(%d)\n",
-	     local_ptr.value, wire.in_ptr.value, wire.in_loc,
-	     wire.out_ptr.value, wire.out_loc);
+    //if(//((local_ptr.value >= 300220) && (local_ptr.value <= 300229)) ||
+    //   //((local_ptr.value >= 299710) && (local_ptr.value <= 299720)) ||
+    //   (wire.in_loc < 0) || (wire.in_loc > 2) ||
+    //   (wire.out_loc < 0) || (wire.out_loc > 2) ||
+    //   (wire.in_ptr.value < ((local_ptr.value/10000)*2500)) ||
+    //   (wire.in_ptr.value >= (((local_ptr.value/10000)+1)*2500)))
+    //  printf("wire in[%d] = %d(%d) -> %d(%d)\n",
+    //	     local_ptr.value, wire.in_ptr.value, wire.in_loc,
+    //	     wire.out_ptr.value, wire.out_loc);
     //if(tid == 0)
     //  printf("nodes[%d] = %d(%d) -> %d(%d)\n",
     //     tid, wire.in_ptr.value, wire.in_loc, wire.out_ptr.value, wire.out_loc);
@@ -131,15 +131,15 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
     }
     //wires.write(local_ptr, wire);
 
-    if(//((local_ptr.value >= 300220) && (local_ptr.value <= 300229)) ||
-       //((local_ptr.value >= 299710) && (local_ptr.value <= 299720)) ||
-       (wire.in_loc < 0) || (wire.in_loc > 2) ||
-       (wire.out_loc < 0) || (wire.out_loc > 2) ||
-       (wire.in_ptr.value < ((local_ptr.value/10000)*2500)) ||
-       (wire.in_ptr.value >= (((local_ptr.value/10000)+1)*2500)))
-      printf("wire out[%d] = %d(%d) -> %d(%d)\n",
-	     local_ptr.value, wire.in_ptr.value, wire.in_loc,
-	     wire.out_ptr.value, wire.out_loc);
+    //if(//((local_ptr.value >= 300220) && (local_ptr.value <= 300229)) ||
+    //   //((local_ptr.value >= 299710) && (local_ptr.value <= 299720)) ||
+    //   (wire.in_loc < 0) || (wire.in_loc > 2) ||
+    //   (wire.out_loc < 0) || (wire.out_loc > 2) ||
+    //   (wire.in_ptr.value < ((local_ptr.value/10000)*2500)) ||
+    //   (wire.in_ptr.value >= (((local_ptr.value/10000)+1)*2500)))
+    //  printf("wire out[%d] = %d(%d) -> %d(%d)\n",
+    //	     local_ptr.value, wire.in_ptr.value, wire.in_loc,
+    //	     wire.out_ptr.value, wire.out_loc);
   }
 #endif
 }
@@ -203,7 +203,7 @@ __host__
 void sanity_check_wires_gpu(CircuitPiece *p,
                             GPU_Accessor wires)
 {
-  printf("Wire bounds are %ld and %ld\n",wires.first_elmt,wires.last_elmt);
+  //printf("Wire bounds are %ld and %ld\n",wires.first_elmt,wires.last_elmt);
   int num_blocks = (p->num_wires+255) >> 8;
   sanity_check_positions<<<num_blocks,256>>>(p->first_wire,
                                              p->num_wires,
@@ -214,7 +214,7 @@ void sanity_check_wires_gpu(CircuitPiece *p,
 template<typename REDOP>
 __device__ __forceinline__
 void reduce_local(GPU_Accessor pvt, GPU_Reducer owned, GPU_Reducer ghost,
-                  PointerLocation loc, ptr_t<CircuitNode> ptr, typename REDOP::RHS value, int tid, unsigned wire_ptr)
+                  PointerLocation loc, ptr_t<CircuitNode> ptr, typename REDOP::RHS value)
 {
   switch (loc)
   {
@@ -228,7 +228,7 @@ void reduce_local(GPU_Accessor pvt, GPU_Reducer owned, GPU_Reducer ghost,
       ghost.template reduce<REDOP,CircuitNode,typename REDOP::RHS>(ptr, value);
       break;
     default:
-      printf("Bad pointer location %d at pointer %d for wire %d of thread %d\n", loc, ptr.value, wire_ptr, tid);
+      printf("Bad pointer location %d at pointer %d\n", loc, ptr.value);
       assert(false);
   }
 }
@@ -251,15 +251,15 @@ void distribute_charge_kernel(ptr_t<CircuitWire> first,
     local_ptr.value = first.value + tid;
 
     CircuitWire &wire = wires.ref(local_ptr);
-    if(//((local_ptr.value >= 300220) && (local_ptr.value <= 300229)) ||
-       //((local_ptr.value >= 299710) && (local_ptr.value <= 299720)) ||
-       (wire.in_loc < 0) || (wire.in_loc > 2) ||
-       (wire.out_loc < 0) || (wire.out_loc > 2) ||
-       (wire.in_ptr.value < ((local_ptr.value/10000)*2500)) ||
-       (wire.in_ptr.value >= (((local_ptr.value/10000)+1)*2500)))
-      printf("wire[%d] = %d(%d) -> %d(%d)\n",
-	     local_ptr.value, wire.in_ptr.value, wire.in_loc,
-	     wire.out_ptr.value, wire.out_loc);
+    //if(//((local_ptr.value >= 300220) && (local_ptr.value <= 300229)) ||
+    //   //((local_ptr.value >= 299710) && (local_ptr.value <= 299720)) ||
+    //   (wire.in_loc < 0) || (wire.in_loc > 2) ||
+    //   (wire.out_loc < 0) || (wire.out_loc > 2) ||
+    //   (wire.in_ptr.value < ((local_ptr.value/10000)*2500)) ||
+    //   (wire.in_ptr.value >= (((local_ptr.value/10000)+1)*2500)))
+    //  printf("wire[%d] = %d(%d) -> %d(%d)\n",
+    //	     local_ptr.value, wire.in_ptr.value, wire.in_loc,
+    //	     wire.out_ptr.value, wire.out_loc);
 
     float dt = DELTAT;
 
@@ -267,11 +267,11 @@ void distribute_charge_kernel(ptr_t<CircuitWire> first,
     //  printf("in_loc[9999] = %d\n", wire.in_loc);
     //if(wire.out_ptr.value == 9999)
     //  printf("out_loc[9999] = %d\n", wire.out_loc);
-    if(wire.in_ptr.value == 8940) {
-      printf("w[%d] n[%d/%d]\n", local_ptr.value, wire.in_ptr.value, wire.in_loc);
-      reduce_local<GPUAccumulateCharge>(pvt, owned, ghost, wire.in_loc, wire.in_ptr, -dt * wire.current[0], tid, local_ptr.value);
-    }
-    reduce_local<GPUAccumulateCharge>(pvt, owned, ghost, wire.out_loc, wire.out_ptr, dt * wire.current[WIRE_SEGMENTS-1], tid, local_ptr.value);
+    //if(wire.in_ptr.value == 8940) {
+      //printf("w[%d] n[%d/%d]\n", local_ptr.value, wire.in_ptr.value, wire.in_loc);
+    reduce_local<GPUAccumulateCharge>(pvt, owned, ghost, wire.in_loc, wire.in_ptr, -dt * wire.current[0]);
+    //}
+    reduce_local<GPUAccumulateCharge>(pvt, owned, ghost, wire.out_loc, wire.out_ptr, dt * wire.current[WIRE_SEGMENTS-1]);
   }
 #endif
 }

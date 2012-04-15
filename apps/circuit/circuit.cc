@@ -230,26 +230,28 @@ void region_main(const void *args, size_t arglen,
   {
     log_circuit(LEVEL_WARNING,"starting loop %d out of %d", i, num_loops);
 
-    last = runtime->execute_index_space(ctx, SANITY_CHECK_WIRES, index_space,
-                                  sanity_regions, global_arg, local_args, false/*must*/);
-    last.wait_all_results();
+    //last = runtime->execute_index_space(ctx, SANITY_CHECK_WIRES, index_space,
+    //                              sanity_regions, global_arg, local_args, false/*must*/);
+    //last.wait_all_results();
     // Calculate new currents
     last = runtime->execute_index_space(ctx, CALC_NEW_CURRENTS, index_space,
                                   cnc_regions, global_arg, local_args, false/*must*/);
-    last.wait_all_results();
+    //last.wait_all_results();
+    last.release();
     
-    last = runtime->execute_index_space(ctx, SANITY_CHECK_WIRES, index_space,
-                                  sanity_regions, global_arg, local_args, false/*must*/);
-    last.wait_all_results();
+    //last = runtime->execute_index_space(ctx, SANITY_CHECK_WIRES, index_space,
+    //                              sanity_regions, global_arg, local_args, false/*must*/);
+    //last.wait_all_results();
 
-    last = runtime->execute_index_space(ctx, SANITY_CHECK_WIRES, index_space,
-                                  sanity_regions, global_arg, local_args, false/*must*/);
-    last.wait_all_results();
+    //last = runtime->execute_index_space(ctx, SANITY_CHECK_WIRES, index_space,
+    //                              sanity_regions, global_arg, local_args, false/*must*/);
+    //last.wait_all_results();
 
     // Distribute charge
     last = runtime->execute_index_space(ctx, DISTRIBUTE_CHARGE, index_space,
                                   dsc_regions, global_arg, local_args, false/*must*/);
-    last.wait_all_results();
+    //last.wait_all_results();
+    last.release();
 
     //last = runtime->execute_index_space(ctx, SANITY_CHECK_WIRES, index_space,
     //                              sanity_regions, global_arg, local_args, false/*must*/);
@@ -260,8 +262,8 @@ void region_main(const void *args, size_t arglen,
                                   upv_regions, global_arg, local_args, false/*must*/);
     if (i != (num_loops-1))
     {
-      last.wait_all_results();
-      //last.release();
+      //last.wait_all_results();
+      last.release();
     }
   }
 
@@ -1106,7 +1108,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
           privacy_map[1].insert(wire.out_ptr);
           ghost_node_map[n].insert(wire.out_ptr);
         }
-	printf("host[%d] = %d -> %d\n", wire_ptr.value, wire.in_ptr.value, wire.out_ptr.value);
+	//printf("host[%d] = %d -> %d\n", wire_ptr.value, wire.in_ptr.value, wire.out_ptr.value);
         // Write the wire
         wires.write(wire_ptr, wire);
 
