@@ -6,7 +6,7 @@ import string
 from getopt import getopt
 
 # For testing file generation
-run_experiments = False 
+run_experiments = True 
 # Use qsub, if not it will get run like a normal shell script
 use_qsub = False
 walltime = "00:10:00"
@@ -28,15 +28,15 @@ zsize = 1536
 fsize = 1024
 csize = 4096 
 gsize = 2000
-# Number of nodes
+# Number of nodes (inclusive)
 node_start = 1
-node_stop  = 1
+node_stop  = 4
 node_step  = 1
-# Number of cpus
+# Number of cpus (inclusive)
 cpu_start = 1
 cpu_stop  = 1
 cpu_step  = 1
-# Number of gpus
+# Number of gpus (inclusive)
 gpu_start = 1
 gpu_stop  = 2
 gpu_step  = 1
@@ -100,7 +100,7 @@ def run_simulations():
                     if use_qsub:
                         print "Launching experiment with qsub for "+bin_name+" on "+str(nn)+" nodes "+str(nc)+ \
                                 " cpus and "+str(ng)+"gpus..."                        
-                        qsub_command = "qsub -l nodes="+str(nn)+",walltime="+walltime+' '+file_name
+                        qsub_command = "qsub -z -l nodes="+str(nn)+",walltime="+walltime+' '+file_name
                         try:
                             subprocess.check_call([qsub_command],shell=True)
                             print "qsub launch: SUCCESS!"
