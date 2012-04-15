@@ -1086,7 +1086,7 @@ static inline int GET_DIR(Block &b, int idz, int idy, int idx)
 }
 
 template<RegionRuntime::LowLevel::AccessorType AT>
-static inline Cell& READ_CELL(Block &b, int cb, int eb, int cz, int cy, int cx,
+static inline Cell& REF_CELL(Block &b, int cb, int eb, int cz, int cy, int cx,
                              RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<AT> &base,
                              RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<AT> (&edge)[GHOST_CELLS])
 {
@@ -1095,6 +1095,19 @@ static inline Cell& READ_CELL(Block &b, int cb, int eb, int cz, int cy, int cx,
     return base.ref(b.cells[cb][cz][cy][cx]);
   } else {
     return edge[dir].ref(b.cells[eb][cz][cy][cx]);
+  }
+}
+
+template<AccessorType AT>
+static inline Cell READ_CELL(Block &b, int cb, int eb, int cz, int cy, int cx,
+                              PhysicalRegion<AT> &base,
+                              PhysicalRegion<AT> (&edge)[GHOST_CELLS])
+{
+  int dir = GET_DIR(b, cz, cy,cx);
+  if(dir == CENTER) {
+    return base.read(b.cells[cb][cz][cy][cx]);
+  } else {
+    return edge[dir].read(b.cells[eb][cz][cy][cx]);
   }
 }
 
@@ -1149,9 +1162,10 @@ void init_and_rebuild(const void *args, size_t arglen,
     //blank.num_particles = 0;
     for(int cz = 0; cz <= (int)b.CELLS_Z + 1; cz++)
       for(int cy = 0; cy <= (int)b.CELLS_Y + 1; cy++)
-        for(int cx = 0; cx <= (int)b.CELLS_X + 1; cx++)
-          READ_CELL(b, cb, eb, cz, cy, cx, dst, edges).num_particles = 0;
-    //WRITE_CELL(b, cb, eb, cz, cy, cx, dst_block, edge_blocks, blank);
+        for(int cx = 0; cx <= (int)b.CELLS_X + 1; cx++) {
+          REF_CELL(b, cb, eb, cz, cy, cx, dst, edges).num_particles = 0;
+          //WRITE_CELL(b, cb, eb, cz, cy, cx, dst_block, edge_blocks, blank);
+        }
   }
 
   // Minimum block sizes
@@ -1196,7 +1210,7 @@ void init_and_rebuild(const void *args, size_t arglen,
           int dy = cy + (dj - cj);
           int dz = cz + (dk - ck);
 
-          Cell &c_dst = READ_CELL(b, cb, eb, dz, dy, dx, dst, edges);
+          Cell &c_dst = REF_CELL(b, cb, eb, dz, dy, dx, dst, edges);
           if(c_dst.num_particles < MAX_PARTICLES) {
             int dp = c_dst.num_particles++;
 
@@ -1248,7 +1262,7 @@ void rebuild_reduce(const void *args, size_t arglen,
         int dy = MOVE_CY(b, cy, REVERSE(dir));
         int dx = MOVE_CX(b, cx, REVERSE(dir));
 
-        Cell &c_src = READ_CELL(b, cb, eb, cz, cy, cx, base, edges);
+        Cell &c_src = REF_CELL(b, cb, eb, cz, cy, cx, base, edges);
         Cell &c_dst = base.ref(b.cells[cb][dz][dy][dx]);
 
         for(unsigned p = 0; p < c_src.num_particles; p++) {
@@ -1314,12 +1328,13 @@ void scatter_densities(const void *args, size_t arglen,
   for(int cz = 1; cz < (int)b.CELLS_Z+1; cz++)
     for(int cy = 1; cy < (int)b.CELLS_Y+1; cy++)
       for(int cx = 1; cx < (int)b.CELLS_X+1; cx++) {
-        Cell &cell = base.ref(b.cells[cb][cz][cy][cx]);
+        //Cell &cell = base.ref(b.cells[cb][cz][cy][cx]);
+        Cell cell = base_block.read(b.cells[cb][cz][cy][cx]);
         for(unsigned p = 0; p < cell.num_particles; p++) {
           cell.density[p] = 0;
           cell.a[p] = externalAcceleration;
         }
-        //base_block.write(b.cells[cb][cz][cy][cx], cell);
+        base_block.write(b.cells[cb][cz][cy][cx], cell);
       }
 
   // now for each cell, look at neighbors and calculate density contributions
@@ -1335,7 +1350,13 @@ void scatter_densities(const void *args, size_t arglen,
   for(int cz = minz; cz <= maxz; cz++)
     for(int cy = miny; cy <= maxy; cy++)
       for(int cx = minx; cx <= maxx; cx++) {
-        Cell &cell = READ_CELL(b, cb, eb, cz, cy, cx, base, edges);
+        // Elliott: set this to 0 or 1 to test read or ref, respectively
+#define ELLIOTT_DEBUG_REF 0
+#if ELLIOTT_DEBUG_REF
+        Cell &cell = REF_CELL(b, cb, eb, cz, cy, cx, base, edges);
+#else
+        Cell cell = READ_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks);
+#endif
         assert(cell.num_particles <= MAX_PARTICLES);
 
         for(int dz = cz - 1; dz <= cz + 1; dz++)
@@ -1348,7 +1369,7 @@ void scatter_densities(const void *args, size_t arglen,
                   (dz < cz || (dz == cz && (dy < cy || (dy == cy && dx < cx)))))
                 continue;
 
-              Cell &c2 = READ_CELL(b, cb, eb, dz, dy, dx, base, edges);
+              Cell &c2 = REF_CELL(b, cb, eb, dz, dy, dx, base, edges);
               assert(c2.num_particles <= MAX_PARTICLES);
 
               // do bidirectional update if other cell is a real cell and it is
@@ -1384,7 +1405,9 @@ void scatter_densities(const void *args, size_t arglen,
           cell.density[p] *= densityCoeff;
         }
 
-        //WRITE_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);
+#if !ELLIOTT_DEBUG_REF
+        WRITE_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);
+#endif
       }
 
   // now turn around and have each edge grab a copy of the boundary real cell
@@ -1465,7 +1488,7 @@ void gather_forces_and_advance(const void *args, size_t arglen,
   for(int cz = minz; cz <= maxz; cz++)
     for(int cy = miny; cy <= maxy; cy++)
       for(int cx = minx; cx <= maxx; cx++) {
-        Cell &cell = READ_CELL(b, cb, eb, cz, cy, cx, base, edges);
+        Cell &cell = REF_CELL(b, cb, eb, cz, cy, cx, base, edges);
         assert(cell.num_particles <= MAX_PARTICLES);
 
         for(int dz = cz - 1; dz <= cz + 1; dz++)
@@ -1478,7 +1501,7 @@ void gather_forces_and_advance(const void *args, size_t arglen,
                   (dz < cz || (dz == cz && (dy < cy || (dy == cy && dx < cx)))))
                 continue;
 
-              Cell &c2 = READ_CELL(b, cb, eb, dz, dy, dx, base, edges);
+              Cell &c2 = REF_CELL(b, cb, eb, dz, dy, dx, base, edges);
               assert(c2.num_particles <= MAX_PARTICLES);
 
               // do bidirectional update if other cell is a real cell and it is
