@@ -43,7 +43,11 @@ gpu_step  = 1
 
 def run_simulations():
     result_dir = home_dir + result_prefix
-    os.mkdir(result_dir)
+    try:
+        os.mkdir(result_dir)
+    except:
+        # Directory already exists, just reuse it
+        pass
     os.chdir(result_dir);
 
     # Make a separate directory for each experiment
@@ -53,7 +57,11 @@ def run_simulations():
                 print "Generating experiment for "+bin_name+" on "+str(nn)+" nodes "+str(nc)+" cpus and "+str(ng)+" gpus"
                 experiment_name = bin_name+"_nodes_"+str(nn)+"_cpu_"+str(nc)+"_gpu_"+str(ng)+"_pieces_"+str(pieces)
                 expr_dir = result_dir+experiment_name
-                os.mkdir(expr_dir)
+                try:
+                    os.mkdir(expr_dir)
+                except:
+                    print "Experiment for "+str(nn)+" nodes "+str(nc)+" cpus and "+str(ng)+" gpus already exists, going to next experiment"
+                    continue
                 os.chdir(expr_dir)
 
                 # Make the simulation file 
