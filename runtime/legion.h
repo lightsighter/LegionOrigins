@@ -3386,6 +3386,7 @@ namespace RegionRuntime {
       result.inline_mapped = inline_mapped;
       result.impl = impl;
       result.idx = idx;
+      result.handle = handle;
       if (valid_allocator)
         result.set_allocator(allocator);
       if (valid_instance)

@@ -6945,6 +6945,13 @@ namespace RegionRuntime {
           remote_copy_instances[idx]->remove_copy_user(unique_id);
         }
         remote_copy_instances.clear();
+        // Also need to free any local copy instances that we might have from performing
+        // sanitization on the region tree before we sent it remotely
+        for (unsigned idx = 0; idx < source_copy_instances.size(); idx++)
+        {
+          source_copy_instances[idx]->remove_copy_user(unique_id);
+        }
+        source_copy_instances.clear();
       }
       else
       {
