@@ -1157,16 +1157,11 @@ void init_and_rebuild(const void *args, size_t arglen,
   log_app.info("In init_and_rebuild() for block %d", b.id);
 
   // start by clearing the particle count on all the destination cells
-  {
-    //Cell blank;
-    //blank.num_particles = 0;
-    for(int cz = 0; cz <= (int)b.CELLS_Z + 1; cz++)
-      for(int cy = 0; cy <= (int)b.CELLS_Y + 1; cy++)
-        for(int cx = 0; cx <= (int)b.CELLS_X + 1; cx++) {
-          REF_CELL(b, cb, eb, cz, cy, cx, dst, edges).num_particles = 0;
-          //WRITE_CELL(b, cb, eb, cz, cy, cx, dst_block, edge_blocks, blank);
-        }
-  }
+  for(int cz = 0; cz <= (int)b.CELLS_Z + 1; cz++)
+    for(int cy = 0; cy <= (int)b.CELLS_Y + 1; cy++)
+      for(int cx = 0; cx <= (int)b.CELLS_X + 1; cx++) {
+        REF_CELL(b, cb, eb, cz, cy, cx, dst, edges).num_particles = 0;
+      }
 
   // Minimum block sizes
   unsigned mbsx = nx / nbx;
@@ -1218,8 +1213,6 @@ void init_and_rebuild(const void *args, size_t arglen,
             c_dst.p[dp] = pos;
             c_dst.hv[dp] = c_src.hv[p];
             c_dst.v[dp] = c_src.v[p];
-
-            //WRITE_CELL(b, cb, eb, cz, dy, dx, dst_block, edge_blocks, c_dst);
           }
         }
       }
@@ -1273,8 +1266,6 @@ void rebuild_reduce(const void *args, size_t arglen,
           c_dst.hv[dp] = c_src.hv[p];
           c_dst.v[dp] = c_src.v[p];
         }
-
-        //base_block.write(b.cells[cb][dz][dy][dx], c_dst);
       }
 
   // now turn around and have each edge grab a copy of the boundary real cell
@@ -1328,13 +1319,11 @@ void scatter_densities(const void *args, size_t arglen,
   for(int cz = 1; cz < (int)b.CELLS_Z+1; cz++)
     for(int cy = 1; cy < (int)b.CELLS_Y+1; cy++)
       for(int cx = 1; cx < (int)b.CELLS_X+1; cx++) {
-        //Cell &cell = base.ref(b.cells[cb][cz][cy][cx]);
-        Cell cell = base_block.read(b.cells[cb][cz][cy][cx]);
+        Cell &cell = base.ref(b.cells[cb][cz][cy][cx]);
         for(unsigned p = 0; p < cell.num_particles; p++) {
           cell.density[p] = 0;
           cell.a[p] = externalAcceleration;
         }
-        base_block.write(b.cells[cb][cz][cy][cx], cell);
       }
 
   // now for each cell, look at neighbors and calculate density contributions
@@ -1350,13 +1339,7 @@ void scatter_densities(const void *args, size_t arglen,
   for(int cz = minz; cz <= maxz; cz++)
     for(int cy = miny; cy <= maxy; cy++)
       for(int cx = minx; cx <= maxx; cx++) {
-        // Elliott: set this to 0 or 1 to test read or ref, respectively
-#define ELLIOTT_DEBUG_REF 0
-#if ELLIOTT_DEBUG_REF
         Cell &cell = REF_CELL(b, cb, eb, cz, cy, cx, base, edges);
-#else
-        Cell cell = READ_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks);
-#endif
         assert(cell.num_particles <= MAX_PARTICLES);
 
         for(int dz = cz - 1; dz <= cz + 1; dz++)
@@ -1369,7 +1352,8 @@ void scatter_densities(const void *args, size_t arglen,
                   (dz < cz || (dz == cz && (dy < cy || (dy == cy && dx < cx)))))
                 continue;
 
-              Cell &c2 = REF_CELL(b, cb, eb, dz, dy, dx, base, edges);
+              //Cell &c2 = REF_CELL(b, cb, eb, dz, dy, dx, base, edges);
+              Cell c2 = READ_CELL(b, cb, eb, dz, dy, dx, base_block, edge_blocks);
               assert(c2.num_particles <= MAX_PARTICLES);
 
               // do bidirectional update if other cell is a real cell and it is
@@ -1394,8 +1378,8 @@ void scatter_densities(const void *args, size_t arglen,
                     c2.density[p2] += tc;
                 }
 
-              //if(update_other)
-              //  WRITE_CELL(b, cb, eb, dz, dy, dx, base_block, edge_blocks, c2);
+              if(update_other)
+                WRITE_CELL(b, cb, eb, dz, dy, dx, base_block, edge_blocks, c2);
             }
 
         // a little offset for every particle once we're done
@@ -1405,9 +1389,6 @@ void scatter_densities(const void *args, size_t arglen,
           cell.density[p] *= densityCoeff;
         }
 
-#if !ELLIOTT_DEBUG_REF
-        WRITE_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);
-#endif
       }
 
   // now turn around and have each edge grab a copy of the boundary real cell
@@ -1501,7 +1482,8 @@ void gather_forces_and_advance(const void *args, size_t arglen,
                   (dz < cz || (dz == cz && (dy < cy || (dy == cy && dx < cx)))))
                 continue;
 
-              Cell &c2 = REF_CELL(b, cb, eb, dz, dy, dx, base, edges);
+              //Cell &c2 = REF_CELL(b, cb, eb, dz, dy, dx, base, edges);
+              Cell c2 = READ_CELL(b, cb, eb, dz, dy, dx, base_block, edge_blocks);
               assert(c2.num_particles <= MAX_PARTICLES);
 
               // do bidirectional update if other cell is a real cell and it is
@@ -1531,8 +1513,8 @@ void gather_forces_and_advance(const void *args, size_t arglen,
                     c2.a[p2] -= acc;
                 }
 
-              //if(update_other)
-              //  WRITE_CELL(b, cb, eb, dz, dy, dx, base_block, edge_blocks, c2);
+              if(update_other)
+                WRITE_CELL(b, cb, eb, dz, dy, dx, base_block, edge_blocks, c2);
             }
 
         // compute collisions for particles near edge of box
@@ -1577,7 +1559,6 @@ void gather_forces_and_advance(const void *args, size_t arglen,
           cell.hv[p] = v_half;
         }
 
-        //WRITE_CELL(b, cb, eb, cz, cy, cx, base_block, edge_blocks, cell);
       }
 
   log_app.info("Done with gather_forces_and_advance() for block %d", b.id);
