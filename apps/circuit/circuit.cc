@@ -158,8 +158,8 @@ void region_main(const void *args, size_t arglen,
                                   wires_per_piece, pct_wire_in_piece, random_seed);
 
   // Start the simulation
-  printf("Starting main simulation loop\n");
   RegionRuntime::LowLevel::DetailedTimer::clear_timers();
+  printf("Starting main simulation loop\n");
   struct timespec ts_start, ts_end;
   clock_gettime(CLOCK_MONOTONIC, &ts_start);
 
