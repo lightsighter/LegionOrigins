@@ -271,22 +271,6 @@ static inline size_t BLOCK_SIZE(const Block &b)
     + sizeof(int)*2 + sizeof(unsigned)*6;
 }
 
-struct TopLevelRegions {
-  LogicalRegion real_cells[2];
-  LogicalRegion edge_cells;
-};
-
-// Data from header in fluid file, needed for determining problem size.
-struct FluidSpec {
-  FluidSpec() : restParticlesPerMeter(0.0), origNumParticles(0) {}
-  FluidSpec(float rPPM, int oNP) : restParticlesPerMeter(rPPM), origNumParticles(oNP) {}
-  float restParticlesPerMeter;
-  int origNumParticles;
-};
-
-FluidSpec load_file_header(const char *fileName);
-
-//const float restParticlesPerMeter = 204.0f;
 const float timeStep = 0.005f;
 const float doubleRestDensity = 2000.f;
 const float kernelRadiusMultiplier = 1.695f;
@@ -296,58 +280,26 @@ const Vec3 externalAcceleration(0.f, -9.8f, 0.f);
 const Vec3 domainMin(-0.065f, -0.08f, -0.065f);
 const Vec3 domainMax(0.065f, 0.1f, 0.065f);
 
-// Configuration parameters for the simulation, vary depending on FluidSpec.
 struct FluidConfig {
+  // Parameters from command line arguments.
+  unsigned numSteps;
+  unsigned nbx, nby, nbz, numBlocks;
+
+  // Parameters of simulation from fluid file header.
+  float restParticlesPerMeter;
+  int origNumParticles;
+
+  // Variables dependent on fluid file headers.
   float h, hSq;
   float densityCoeff, pressureCoeff, viscosityCoeff;
   unsigned nx, ny, nz, numCells;
   Vec3 delta;				// cell dimensions
-  unsigned num_steps;
+
 };
 
-FluidConfig init_config(FluidSpec spec)
-{
-  float &restParticlesPerMeter = spec.restParticlesPerMeter;
-
-  FluidConfig conf;
-  float &h = conf.h, &hSq = conf.hSq;
-  float &densityCoeff = conf.densityCoeff;
-  float &pressureCoeff = conf.pressureCoeff;
-  float &viscosityCoeff = conf.viscosityCoeff;
-  unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz, &numCells = conf.numCells;
-  Vec3 &delta = conf.delta;
-
-  // Simulation parameters
-  h = kernelRadiusMultiplier / restParticlesPerMeter;
-  hSq = h*h;
-  const float pi = 3.14159265358979f;
-  float coeff1 = 315.f / (64.f*pi*pow(h,9.f));
-  float coeff2 = 15.f / (pi*pow(h,6.f));
-  float coeff3 = 45.f / (pi*pow(h,6.f));
-  float particleMass = 0.5f*doubleRestDensity / (restParticlesPerMeter*restParticlesPerMeter*restParticlesPerMeter);
-  densityCoeff = particleMass * coeff1;
-  pressureCoeff = 3.f*coeff2 * 0.5f*stiffness * particleMass;
-  viscosityCoeff = viscosity * coeff3 * particleMass;
-
-  // Simulation grid size
-  Vec3 range = domainMax - domainMin;
-  nx = (int)(range.x / h);
-  ny = (int)(range.y / h);
-  nz = (int)(range.z / h);
-  numCells = nx*ny*nz;
-  delta.x = range.x / nx;
-  delta.y = range.y / ny;
-  delta.z = range.z / nz;
-  assert(delta.x >= h && delta.y >= h && delta.z >= h);
-
-  return conf;
-}
-
-unsigned nbx, nby, nbz, numBlocks;
-
-static inline int MOVE_BX(int x, int dir) { return MOVE_X(x, dir, 0, nbx-1); }
-static inline int MOVE_BY(int y, int dir) { return MOVE_Y(y, dir, 0, nby-1); }
-static inline int MOVE_BZ(int z, int dir) { return MOVE_Z(z, dir, 0, nbz-1); }
+static inline int MOVE_BX(int x, int dir, const FluidConfig &c) { return MOVE_X(x, dir, 0, c.nbx-1); }
+static inline int MOVE_BY(int y, int dir, const FluidConfig &c) { return MOVE_Y(y, dir, 0, c.nby-1); }
+static inline int MOVE_BZ(int z, int dir, const FluidConfig &c) { return MOVE_Z(z, dir, 0, c.nbz-1); }
 static inline int MOVE_CX(const Block &b, int x, int dir) {
 return MOVE_X(x, dir, 0, b.CELLS_X+1);
 }
@@ -436,12 +388,14 @@ public:
   }
 };
 
-static unsigned parse_args(int argc, char **argv)
+static unsigned parse_args(int argc, char **argv, FluidConfig &conf)
 {
-  unsigned num_steps = 4;
-  nbx = 1;
-  nby = 1;
-  nbz = 1;
+  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz, &numBlocks = conf.numBlocks;
+  unsigned &numSteps = conf.numSteps;
+
+  // Default parameter values.
+  numSteps = 4;
+  nbx = nby = nbz = 1;
 
   printf("fluid: %p %d ",argv,argc);
   for (int i = 1; i < argc; i++)
@@ -450,7 +404,7 @@ static unsigned parse_args(int argc, char **argv)
 
   for(int i = 1; i < argc; i++) {
     if(!strcmp(argv[i], "-s")) {
-      num_steps = atoi(argv[++i]);
+      numSteps = atoi(argv[++i]);
       continue;
     }
     
@@ -470,7 +424,46 @@ static unsigned parse_args(int argc, char **argv)
     }
   }
   numBlocks = nbx * nby * nbz;
-  return num_steps;
+  return numSteps;
+}
+
+// Fills in restParticlesPerMeter and origNumParticles from fluid file header.
+static void load_file_header(const char *fileName, FluidConfig &conf);
+
+// Expects restParticlesPerMeter to be filled in from load_file_header.
+static void init_config(FluidConfig &conf)
+{
+  const float &restParticlesPerMeter = conf.restParticlesPerMeter;
+
+  float &h = conf.h, &hSq = conf.hSq;
+  float &densityCoeff = conf.densityCoeff;
+  float &pressureCoeff = conf.pressureCoeff;
+  float &viscosityCoeff = conf.viscosityCoeff;
+  unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz, &numCells = conf.numCells;
+  Vec3 &delta = conf.delta;
+
+  // Simulation parameters
+  h = kernelRadiusMultiplier / restParticlesPerMeter;
+  hSq = h*h;
+  const float pi = 3.14159265358979f;
+  float coeff1 = 315.f / (64.f*pi*pow(h,9.f));
+  float coeff2 = 15.f / (pi*pow(h,6.f));
+  float coeff3 = 45.f / (pi*pow(h,6.f));
+  float particleMass = 0.5f*doubleRestDensity / (restParticlesPerMeter*restParticlesPerMeter*restParticlesPerMeter);
+  densityCoeff = particleMass * coeff1;
+  pressureCoeff = 3.f*coeff2 * 0.5f*stiffness * particleMass;
+  viscosityCoeff = viscosity * coeff3 * particleMass;
+
+  // Simulation grid size
+  Vec3 range = domainMax - domainMin;
+  nx = (int)(range.x / h);
+  ny = (int)(range.y / h);
+  nz = (int)(range.z / h);
+  numCells = nx*ny*nz;
+  delta.x = range.x / nx;
+  delta.y = range.y / ny;
+  delta.z = range.z / nz;
+  assert(delta.x >= h && delta.y >= h && delta.z >= h);
 }
 
 static void get_all_regions(LogicalRegion *ghosts, std::vector<RegionRequirement> &reqs,
@@ -485,6 +478,11 @@ static void get_all_regions(LogicalRegion *ghosts, std::vector<RegionRequirement
   }
 }
 
+struct TopLevelRegions {
+  LogicalRegion real_cells[2];
+  LogicalRegion edge_cells;
+};
+
 template<AccessorType AT>
 void top_level_task(const void *args, size_t arglen,
                     std::vector<PhysicalRegion<AT> > &regions,
@@ -496,14 +494,16 @@ void top_level_task(const void *args, size_t arglen,
   char **argv = inputs->argv;
   int argc = inputs->argc;
 
+  FluidConfig conf;
+  unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
+  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
+
   // parse command line arguments
-  unsigned num_steps = parse_args(argc, argv);
+  parse_args(argc, argv, conf);
 
   // read input file header to get problem size
-  FluidConfig conf = init_config(load_file_header("init.fluid"));
-  unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
-  // Set the number of steps to run
-  conf.num_steps = num_steps;
+  load_file_header("init.fluid", conf);
+  init_config(conf);
 
   // workaround for inability to use a region in task that created it
   // build regions for cells and then do all work in a subtask
@@ -545,26 +545,26 @@ void top_level_task(const void *args, size_t arglen,
   }
 }
 
-static inline int NEIGH_X(int idx, int dir, int cx)
+static inline int NEIGH_X(int idx, int dir, int cx, const FluidConfig &c)
 {
-  return MOVE_BX(idx, dir) == idx ? cx : 1-cx;
+  return MOVE_BX(idx, dir, c) == idx ? cx : 1-cx;
 }
 
-static inline int NEIGH_Y(int idy, int dir, int cy)
+static inline int NEIGH_Y(int idy, int dir, int cy, const FluidConfig &c)
 {
-  return MOVE_BY(idy, dir) == idy ? cy : 1-cy;
+  return MOVE_BY(idy, dir, c) == idy ? cy : 1-cy;
 }
 
-static inline int NEIGH_Z(int idz, int dir, int cz)
+static inline int NEIGH_Z(int idz, int dir, int cz, const FluidConfig &c)
 {
-  return MOVE_BZ(idz, dir) == idz ? cz : 1-cz;
+  return MOVE_BZ(idz, dir, c) == idz ? cz : 1-cz;
 }
 
-static inline int OPPOSITE_DIR(int idz, int idy, int idx, int dir)
+static inline int OPPOSITE_DIR(int idz, int idy, int idx, int dir, const FluidConfig &c)
 {
-  int flipx = MOVE_BX(idx, dir) == idx;
-  int flipy = MOVE_BY(idy, dir) == idy;
-  int flipz = MOVE_BZ(idz, dir) == idz;
+  int flipx = MOVE_BX(idx, dir, c) == idx;
+  int flipy = MOVE_BY(idy, dir, c) == idy;
+  int flipz = MOVE_BZ(idz, dir, c) == idz;
   return REVERSE_SIDES(dir, flipx, flipy, flipz);
 }
 
@@ -581,12 +581,13 @@ void main_task(const void *args, size_t arglen,
     deser.Deserializer::deserialize(tlr);
   }
   unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
+  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz, &numBlocks = conf.numBlocks;
 
   log_app.info("In main_task...");
 
   printf("fluid: cells     = %d (%d x %d x %d)\n", nx*ny*nz, nx, ny, nz);
   printf("fluid: divisions = %d x %d x %d\n", nbx, nby, nbz);
-  printf("fluid: steps     = %d\n", conf.num_steps);
+  printf("fluid: steps     = %d\n", conf.numSteps);
 
   PhysicalRegion<AT> real_cells[2];
   real_cells[0] = regions[0];
@@ -682,11 +683,11 @@ void main_task(const void *args, size_t arglen,
 
         // eight corners
 #define CORNER(dir,ix,iy,iz) do {                                       \
-          unsigned id2 = (MOVE_BZ(idz,dir)*nby + MOVE_BY(idy,dir))*nbx + MOVE_BX(idx,dir); \
+          unsigned id2 = (MOVE_BZ(idz,dir,conf)*nby + MOVE_BY(idy,dir,conf))*nbx + MOVE_BX(idx,dir,conf); \
           ptr_t<Cell> cell = iter->next<Cell>();                        \
           coloring[color + dir].insert(cell);                           \
           blocks[id].cells[0][iz*CZ][iy*CY][ix*CX] = cell;              \
-          blocks[id2].cells[1][NEIGH_Z(idz, dir, iz)*C2Z][NEIGH_Y(idy, dir, iy)*C2Y][NEIGH_X(idx, dir, ix)*C2X] = cell; \
+          blocks[id2].cells[1][NEIGH_Z(idz, dir, iz, conf)*C2Z][NEIGH_Y(idy, dir, iy, conf)*C2Y][NEIGH_X(idx, dir, ix, conf)*C2X] = cell; \
         } while(0)
         CORNER(TOP_FRONT_LEFT,     0, 0, 1);
         CORNER(TOP_FRONT_RIGHT,    1, 0, 1);
@@ -700,12 +701,12 @@ void main_task(const void *args, size_t arglen,
 
         // x-axis edges
 #define XAXIS(dir,iy,iz) do {                                           \
-          unsigned id2 = (MOVE_BZ(idz,dir)*nby + MOVE_BY(idy,dir))*nbx + idx; \
+          unsigned id2 = (MOVE_BZ(idz,dir,conf)*nby + MOVE_BY(idy,dir,conf))*nbx + idx; \
           for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {        \
             ptr_t<Cell> cell = iter->next<Cell>();                      \
             coloring[color + dir].insert(cell);                         \
             blocks[id].cells[0][iz*CZ][iy*CY][cx] = cell;               \
-            blocks[id2].cells[1][NEIGH_Z(idz, dir, iz)*C2Z][NEIGH_Y(idy, dir, iy)*C2Y][cx] = cell; \
+            blocks[id2].cells[1][NEIGH_Z(idz, dir, iz, conf)*C2Z][NEIGH_Y(idy, dir, iy, conf)*C2Y][cx] = cell; \
           }                                                             \
         } while(0)
         XAXIS(TOP_FRONT,    0, 1);
@@ -716,12 +717,12 @@ void main_task(const void *args, size_t arglen,
 
         // y-axis edges
 #define YAXIS(dir,ix,iz) do {                                           \
-          unsigned id2 = (MOVE_BZ(idz,dir)*nby + idy)*nbx + MOVE_BX(idx,dir); \
+          unsigned id2 = (MOVE_BZ(idz,dir,conf)*nby + idy)*nbx + MOVE_BX(idx,dir,conf); \
           for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {        \
             ptr_t<Cell> cell = iter->next<Cell>();                      \
             coloring[color + dir].insert(cell);                         \
             blocks[id].cells[0][iz*CZ][cy][ix*CX] = cell;               \
-            blocks[id2].cells[1][NEIGH_Z(idz, dir, iz)*C2Z][cy][NEIGH_X(idx, dir, ix)*C2X] = cell; \
+            blocks[id2].cells[1][NEIGH_Z(idz, dir, iz, conf)*C2Z][cy][NEIGH_X(idx, dir, ix, conf)*C2X] = cell; \
           }                                                             \
         } while(0)
         YAXIS(TOP_LEFT,     0, 1);
@@ -732,12 +733,12 @@ void main_task(const void *args, size_t arglen,
 
         // z-axis edges
 #define ZAXIS(dir,ix,iy) do {                                           \
-          unsigned id2 = (idz*nby + MOVE_BY(idy,dir))*nbx + MOVE_BX(idx,dir); \
+          unsigned id2 = (idz*nby + MOVE_BY(idy,dir,conf))*nbx + MOVE_BX(idx,dir,conf); \
           for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
             ptr_t<Cell> cell = iter->next<Cell>();                      \
             coloring[color + dir].insert(cell);                         \
             blocks[id].cells[0][cz][iy*CY][ix*CX] = cell;               \
-            blocks[id2].cells[1][cz][NEIGH_Y(idy, dir, iy)*C2Y][NEIGH_X(idx, dir, ix)*C2X] = cell; \
+            blocks[id2].cells[1][cz][NEIGH_Y(idy, dir, iy, conf)*C2Y][NEIGH_X(idx, dir, ix, conf)*C2X] = cell; \
           }                                                             \
         } while(0)
         ZAXIS(FRONT_LEFT,  0, 0);
@@ -748,13 +749,13 @@ void main_task(const void *args, size_t arglen,
 
         // xy-plane edges
 #define XYPLANE(dir,iz) do {                                            \
-          unsigned id2 = (MOVE_BZ(idz,dir)*nby + idy)*nbx + idx;        \
+          unsigned id2 = (MOVE_BZ(idz,dir,conf)*nby + idy)*nbx + idx;   \
           for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {        \
             for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {      \
               ptr_t<Cell> cell = iter->next<Cell>();                    \
               coloring[color + dir].insert(cell);                       \
               blocks[id].cells[0][iz*CZ][cy][cx] = cell;                \
-              blocks[id2].cells[1][NEIGH_Z(idz, dir, iz)*C2Z][cy][cx] = cell; \
+              blocks[id2].cells[1][NEIGH_Z(idz, dir, iz, conf)*C2Z][cy][cx] = cell; \
             }                                                           \
           }                                                             \
         } while(0)
@@ -764,13 +765,13 @@ void main_task(const void *args, size_t arglen,
 
         // xz-plane edges
 #define XZPLANE(dir,iy) do {                                            \
-          unsigned id2 = (idz*nby + MOVE_BY(idy,dir))*nbx + idx;        \
+          unsigned id2 = (idz*nby + MOVE_BY(idy,dir,conf))*nbx + idx;   \
           for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
             for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {      \
               ptr_t<Cell> cell = iter->next<Cell>();                    \
               coloring[color + dir].insert(cell);                       \
               blocks[id].cells[0][cz][iy*CY][cx] = cell;                \
-              blocks[id2].cells[1][cz][NEIGH_Y(idy, dir, iy)*C2Y][cx] = cell; \
+              blocks[id2].cells[1][cz][NEIGH_Y(idy, dir, iy, conf)*C2Y][cx] = cell; \
             }                                                           \
           }                                                             \
         } while(0)
@@ -780,13 +781,13 @@ void main_task(const void *args, size_t arglen,
 
         // yz-plane edges
 #define YZPLANE(dir,ix) do {                                            \
-          unsigned id2 = (idz*nby + idy)*nbx + MOVE_BX(idx,dir);        \
+          unsigned id2 = (idz*nby + idy)*nbx + MOVE_BX(idx,dir,conf);   \
           for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
             for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {      \
               ptr_t<Cell> cell = iter->next<Cell>();                    \
               coloring[color + dir].insert(cell);                       \
               blocks[id].cells[0][cz][cy][ix*CX] = cell;                \
-              blocks[id2].cells[1][cz][cy][NEIGH_X(idx, dir, ix)*C2X] = cell; \
+              blocks[id2].cells[1][cz][cy][NEIGH_X(idx, dir, ix, conf)*C2X] = cell; \
             }                                                           \
           }                                                             \
         } while(0)
@@ -817,10 +818,10 @@ void main_task(const void *args, size_t arglen,
         unsigned id = (idz*nby+idy)*nbx+idx;
 
         for(unsigned dir = 0; dir < GHOST_CELLS; dir++) {
-          unsigned id2 = (MOVE_BZ(idz,dir)*nby + MOVE_BY(idy,dir))*nbx + MOVE_BX(idx,dir); \
+          unsigned id2 = (MOVE_BZ(idz,dir,conf)*nby + MOVE_BY(idy,dir,conf))*nbx + MOVE_BX(idx,dir,conf); \
           LogicalRegion subr = runtime->get_subregion(ctx,edge_part,color+dir);
           blocks[id].edge[0][dir] = subr;
-          blocks[id2].edge[1][OPPOSITE_DIR(idz, idy, idx, dir)] = subr;
+          blocks[id2].edge[1][OPPOSITE_DIR(idz, idy, idx, dir, conf)] = subr;
         }
 
         color += GHOST_CELLS;
@@ -832,7 +833,6 @@ void main_task(const void *args, size_t arglen,
   runtime->unmap_region(ctx, edge_cells);
 
   // Initialize the simulation in buffer 1
-  FluidSpec spec;
   {
     std::vector<RegionRequirement> init_regions;
     //for (unsigned id = 0; id < numBlocks; id++) {
@@ -846,11 +846,12 @@ void main_task(const void *args, size_t arglen,
 
     std::string fileName = "init.fluid";
 
-    unsigned bufsize = sizeof(size_t) + fileName.length();
+    unsigned bufsize = sizeof(FluidConfig) + sizeof(size_t) + fileName.length();
     for (unsigned id = 0; id < numBlocks; id++) {
       bufsize += BLOCK_SIZE(blocks[id]);
     }
     BlockSerializer ser(bufsize);
+    ser.Serializer::serialize(conf);
     for (unsigned id = 0; id < numBlocks; id++) {
       ser.serialize(blocks[id]);
     }
@@ -861,7 +862,7 @@ void main_task(const void *args, size_t arglen,
                                      init_regions,
                                      buffer,
                                      0, 0);
-    spec = f.get_result<FluidSpec>();
+    f.get_void_result();
   }
 
   printf("STARTING MAIN SIMULATION LOOP\n");
@@ -872,7 +873,7 @@ void main_task(const void *args, size_t arglen,
 
   int cur_buffer = 0;  // buffer we're generating on this pass
   // Run the simulation
-  for (unsigned step = 0; step < conf.num_steps; step++)
+  for (unsigned step = 0; step < conf.numSteps; step++)
   {
     for (unsigned id = 0; id < numBlocks; id++)
       blocks[id].cb = cur_buffer;
@@ -1010,7 +1011,7 @@ void main_task(const void *args, size_t arglen,
                                        0, id);
 
       // remember the futures for the last pass so we can wait on them
-      if(step == conf.num_steps - 1)
+      if(step == conf.numSteps - 1)
         futures.push_back(f);
       else
         f.release();
@@ -1053,13 +1054,12 @@ void main_task(const void *args, size_t arglen,
 
     std::string fileName = "output.fluid";
 
-    unsigned bufsize = sizeof(FluidSpec) + sizeof(FluidConfig) + sizeof(int) +
+    unsigned bufsize = sizeof(FluidConfig) + sizeof(int) +
       sizeof(size_t) + fileName.length();
     for (unsigned id = 0; id < numBlocks; id++) {
       bufsize += BLOCK_SIZE(blocks[id]);
     }
     BlockSerializer ser(bufsize);
-    ser.Serializer::serialize(spec);
     ser.Serializer::serialize(conf);
     ser.Serializer::serialize(target_buffer);
     for (unsigned id = 0; id < numBlocks; id++) {
@@ -1124,6 +1124,7 @@ void init_and_rebuild(const void *args, size_t arglen,
     deser.deserialize(b);
   }
   unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
+  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
   Vec3 &delta = conf.delta;
   int cb = b.cb; // current buffer
   int eb = 0; // edge phase for this task is 0
@@ -1285,6 +1286,7 @@ void scatter_densities(const void *args, size_t arglen,
     deser.Deserializer::deserialize(conf);
     deser.deserialize(b);
   }
+  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
   float &hSq = conf.hSq;
   float &densityCoeff = conf.densityCoeff;
   int cb = b.cb; // current buffer
@@ -1419,6 +1421,7 @@ void gather_forces_and_advance(const void *args, size_t arglen,
     deser.Deserializer::deserialize(conf);
     deser.deserialize(b);
   }
+  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
   float &h = conf.h, &hSq = conf.hSq;
   float &pressureCoeff = conf.pressureCoeff;
   float &viscosityCoeff = conf.viscosityCoeff;
@@ -1573,39 +1576,50 @@ static inline int bswap_int32(int x) {
            (((x) & 0x0000ff00) <<  8) | (((x) & 0x000000ff) << 24) );
 }
 
-FluidSpec load_file_header(const char *fileName)
+static void load_file_header(const char *fileName, FluidConfig &conf)
 {
   std::ifstream file(fileName, std::ios::binary);
   assert(file);
 
-  float restParticlesPerMeter;
-  int origNumParticles;
+  float &restParticlesPerMeter = conf.restParticlesPerMeter;
+  int &origNumParticles = conf.origNumParticles;
   file.read((char *)&restParticlesPerMeter, 4);
   file.read((char *)&origNumParticles, 4);
   if(!isLittleEndian()) {
     restParticlesPerMeter = bswap_float(restParticlesPerMeter);
-    origNumParticles          = bswap_int32(origNumParticles);
+    origNumParticles      = bswap_int32(origNumParticles);
   }
-  return FluidSpec(restParticlesPerMeter, origNumParticles);
 }
 
+/*
+ * Expects load_file_header and init_config to have been called on the
+ * incoming FluidConfig already.
+ */
 template<AccessorType AT>
-FluidSpec load_file(const void *args, size_t arglen,
-              std::vector<PhysicalRegion<AT> > &regions,
-              Context ctx, HighLevelRuntime *runtime)
+void load_file(const void *args, size_t arglen,
+               std::vector<PhysicalRegion<AT> > &regions,
+               Context ctx, HighLevelRuntime *runtime)
 {
   std::vector<Block> blocks;
   std::string fileName;
-  blocks.resize(numBlocks);
+  FluidConfig conf;
+  unsigned &numBlocks = conf.numBlocks;
   {
     BlockDeserializer deser(args, arglen);
+    deser.Deserializer::deserialize(conf);
+    blocks.resize(numBlocks);
     for (unsigned i = 0; i < numBlocks; i++) {
       deser.deserialize(blocks[i]);
     }
     deser.deserialize(fileName);
   }
 
-  //PhysicalRegion<AT> real_cells = regions[0];
+  float &restParticlesPerMeter = conf.restParticlesPerMeter;
+  int &origNumParticles = conf.origNumParticles, numParticles;
+  unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
+  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
+  Vec3 &delta = conf.delta;
+
   RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> real_cells =
     regions[0].template convert<AccessorArray>().get_instance();
 
@@ -1624,28 +1638,19 @@ FluidSpec load_file(const void *args, size_t arglen,
             for(unsigned cx = 0; cx < blocks[id].CELLS_X; cx++) {
               Cell &cell = real_cells.ref(blocks[id].cells[b][cz+1][cy+1][cx+1]);
               cell.num_particles = 0;
-              //real_cells.write(blocks[id].cells[b][cz+1][cy+1][cx+1], cell);
             }
       }
 
   std::ifstream file(fileName.c_str(), std::ios::binary);
   assert(file);
 
-  FluidSpec spec;
-  float &restParticlesPerMeter = spec.restParticlesPerMeter;
-  int &origNumParticles = spec.origNumParticles, numParticles;
-
   file.read((char *)&restParticlesPerMeter, 4);
   file.read((char *)&origNumParticles, 4);
   if(!isLittleEndian()) {
     restParticlesPerMeter = bswap_float(restParticlesPerMeter);
-    origNumParticles          = bswap_int32(origNumParticles);
+    origNumParticles      = bswap_int32(origNumParticles);
   }
   numParticles = origNumParticles;
-
-  FluidConfig conf = init_config(spec);
-  unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
-  Vec3 &delta = conf.delta;
 
   // Minimum block sizes
   int mbsx = nx / nbx;
@@ -1733,8 +1738,6 @@ FluidSpec load_file(const void *args, size_t arglen,
                numParticles, origNumParticles - numParticles);
 
   log_app.info("Done loading file.");
-
-  return spec;
 }
 
 template<AccessorType AT>
@@ -1744,12 +1747,11 @@ void save_file(const void *args, size_t arglen,
 {
   std::vector<Block> blocks;
   std::string fileName;
-  int b;
-  FluidSpec spec;
   FluidConfig conf;
+  unsigned &numBlocks = conf.numBlocks;
+  int b;
   {
     BlockDeserializer deser(args, arglen);
-    deser.Deserializer::deserialize(spec);
     deser.Deserializer::deserialize(conf);
     deser.Deserializer::deserialize(b);
 
@@ -1759,11 +1761,11 @@ void save_file(const void *args, size_t arglen,
     }
     deser.deserialize(fileName);
   }
-  float &restParticlesPerMeter = spec.restParticlesPerMeter;
-  int &origNumParticles = spec.origNumParticles;
+  float &restParticlesPerMeter = conf.restParticlesPerMeter;
+  int &origNumParticles = conf.origNumParticles;
   unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
+  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
 
-  //PhysicalRegion<AT> real_cells = regions[0];
   RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> real_cells =
     regions[0].template convert<AccessorArray>().get_instance();
 
@@ -2162,7 +2164,7 @@ int main(int argc, char **argv)
   HighLevelRuntime::register_single_task<gather_densities<AccessorGeneric> >(TASKID_GATHER_DENSITIES,Processor::LOC_PROC,"gather_densities");
   HighLevelRuntime::register_single_task<scatter_forces<AccessorGeneric> >(TASKID_SCATTER_FORCES,Processor::LOC_PROC,"scatter_forces");
   HighLevelRuntime::register_single_task<gather_forces_and_advance<AccessorGeneric> >(TASKID_GATHER_FORCES,Processor::LOC_PROC,"gather_forces");
-  HighLevelRuntime::register_single_task<FluidSpec, load_file<AccessorGeneric> >(TASKID_LOAD_FILE,Processor::LOC_PROC,"load_file");
+  HighLevelRuntime::register_single_task<load_file<AccessorGeneric> >(TASKID_LOAD_FILE,Processor::LOC_PROC,"load_file");
   HighLevelRuntime::register_single_task<save_file<AccessorGeneric> >(TASKID_SAVE_FILE,Processor::LOC_PROC,"save_file");
 
   return HighLevelRuntime::start(argc,argv);
