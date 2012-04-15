@@ -44,10 +44,13 @@ CircuitNode& get_node(GPU_Accessor pvt, GPU_Accessor owned, GPU_Accessor ghost,
   switch (loc)
   {
     case PRIVATE_PTR:
+      assert((pvt.first_elmt <= ptr.value) && (ptr.value <= pvt.last_elmt));
       return pvt.ref(ptr);
     case SHARED_PTR:
+      assert((owned.first_elmt <= ptr.value) && (ptr.value <= owned.last_elmt));
       return owned.ref(ptr);
     case GHOST_PTR:
+      assert((ghost.first_elmt <= ptr.value) && (ptr.value <= ghost.last_elmt));
       return ghost.ref(ptr);
     default:
       assert(false);
@@ -64,7 +67,6 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
                               GPU_Accessor ghost,
                               int flag)
 {
-  return;
 #ifndef DISABLE_MATH
   int tid = blockIdx.x * blockDim.x + threadIdx.x; 
 
@@ -73,6 +75,7 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
     ptr_t<CircuitWire> local_ptr;
     local_ptr.value = first.value + tid;
     //if(tid == 0) printf("i am %d (w=%d) %p\n", tid, local_ptr.value, wires.array_base);
+    assert((wires.first_elmt <= local_ptr.value) && (local_ptr.value <= wires.last_elmt));
     CircuitWire &wire = wires.ref(local_ptr);
     //CircuitWire wire = wires.read(local_ptr);
     if(//((local_ptr.value >= 300220) && (local_ptr.value <= 300229)) ||
@@ -93,12 +96,13 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
     // Solve RLC model iteratively
     float dt = DELTAT;
     const int steps = STEPS;
-    float new_v[WIRE_SEGMENTS+1];
     float new_i[WIRE_SEGMENTS];
+    float new_v[WIRE_SEGMENTS+1];
     for (int i = 0; i < WIRE_SEGMENTS; i++)
       new_i[i] = wire.current[i];
-    for (int i = 0; i < WIRE_SEGMENTS-1; i++)
-      new_v[i] = wire.voltage[i];
+    for (int i = 0; i < (WIRE_SEGMENTS-1); i++)
+      new_v[i+1] = wire.voltage[i];
+    new_v[0] = in_node.voltage;
     new_v[WIRE_SEGMENTS] = out_node.voltage;
 
     for (int j = 0; j < steps; j++)
@@ -112,7 +116,7 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
                     (wire.inductance*(new_i[i] - wire.current[i])/dt)) / wire.resistance;
       }
       // Now update the inter-node voltages
-      for (int i = 0; i < WIRE_SEGMENTS-1; i++)
+      for (int i = 0; i < (WIRE_SEGMENTS-1); i++)
       {
         new_v[i+1] = wire.voltage[i] + dt*(new_i[i] - new_i[i+1]) / wire.capacitance;
       }
@@ -121,7 +125,7 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
     // Copy everything back
     for (int i = 0; i < WIRE_SEGMENTS; i++)
       wire.current[i] = new_i[i];
-    for (int i = 0; i < WIRE_SEGMENTS-1; i++)
+    for (int i = 0; i < (WIRE_SEGMENTS-1); i++)
       wire.voltage[i] = new_v[i+1];
     //wires.write(local_ptr, wire);
 
@@ -150,8 +154,8 @@ void sanity_check_positions(ptr_t<CircuitWire> first,
     ptr_t<CircuitWire> local_ptr;
     local_ptr.value = first.value + tid;
     //if(tid == 0) printf("i am %d (w=%d) %p\n", tid, local_ptr.value, wires.array_base);
-    //CircuitWire &wire = wires.ref(local_ptr);
-    CircuitWire wire = wires.read(local_ptr);
+    CircuitWire &wire = wires.ref(local_ptr);
+    //CircuitWire wire = wires.read(local_ptr);
    
     assert((wire.in_loc == PRIVATE_PTR) || (wire.in_loc == SHARED_PTR) || (wire.in_loc == GHOST_PTR));
     assert((wire.out_loc == PRIVATE_PTR) || (wire.out_loc == SHARED_PTR) || (wire.out_loc == GHOST_PTR));
@@ -197,6 +201,7 @@ __host__
 void sanity_check_wires_gpu(CircuitPiece *p,
                             GPU_Accessor wires)
 {
+  printf("Wire bounds are %ld and %ld\n",wires.first_elmt,wires.last_elmt);
   int num_blocks = (p->num_wires+255) >> 8;
   sanity_check_positions<<<num_blocks,256>>>(p->first_wire,
                                              p->num_wires,
@@ -254,7 +259,7 @@ void distribute_charge_kernel(ptr_t<CircuitWire> first,
 	     local_ptr.value, wire.in_ptr.value, wire.in_loc,
 	     wire.out_ptr.value, wire.out_loc);
 
-    float dt = 1e-6;
+    float dt = DELTAT;
 
     //if(wire.in_ptr.value == 9999)
     //  printf("in_loc[9999] = %d\n", wire.in_loc);
