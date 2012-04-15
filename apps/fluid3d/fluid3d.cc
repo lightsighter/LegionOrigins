@@ -1099,19 +1099,6 @@ static inline Cell& REF_CELL(Block &b, int cb, int eb, int cz, int cy, int cx,
 }
 
 template<AccessorType AT>
-static inline Cell READ_CELL(Block &b, int cb, int eb, int cz, int cy, int cx,
-                              PhysicalRegion<AT> &base,
-                              PhysicalRegion<AT> (&edge)[GHOST_CELLS])
-{
-  int dir = GET_DIR(b, cz, cy,cx);
-  if(dir == CENTER) {
-    return base.read(b.cells[cb][cz][cy][cx]);
-  } else {
-    return edge[dir].read(b.cells[eb][cz][cy][cx]);
-  }
-}
-
-template<AccessorType AT>
 static inline void WRITE_CELL(Block &b, int cb, int eb, int cz, int cy, int cx,
                               PhysicalRegion<AT> &base,
                               PhysicalRegion<AT> (&edge)[GHOST_CELLS], Cell &cell)
@@ -1352,8 +1339,7 @@ void scatter_densities(const void *args, size_t arglen,
                   (dz < cz || (dz == cz && (dy < cy || (dy == cy && dx < cx)))))
                 continue;
 
-              //Cell &c2 = REF_CELL(b, cb, eb, dz, dy, dx, base, edges);
-              Cell c2 = READ_CELL(b, cb, eb, dz, dy, dx, base_block, edge_blocks);
+              Cell &c2 = REF_CELL(b, cb, eb, dz, dy, dx, base, edges);
               assert(c2.num_particles <= MAX_PARTICLES);
 
               // do bidirectional update if other cell is a real cell and it is
@@ -1364,7 +1350,7 @@ void scatter_densities(const void *args, size_t arglen,
               // pairwise across particles - watch out for identical particle case!
               for(unsigned p = 0; p < cell.num_particles; p++)
                 for(unsigned p2 = 0; p2 < c2.num_particles; p2++) {
-                  if((dx == cx) && (dy == cy) && (dz == cz) && (p == p2)) continue;
+                  if((dx == cx) && (dy == cy) && (dz == cz) && (p <= p2)) continue;
 
                   Vec3 pdiff = cell.p[p] - c2.p[p2];
                   float distSq = pdiff.GetLengthSq();
@@ -1377,9 +1363,6 @@ void scatter_densities(const void *args, size_t arglen,
                   if(update_other)
                     c2.density[p2] += tc;
                 }
-
-              if(update_other)
-                WRITE_CELL(b, cb, eb, dz, dy, dx, base_block, edge_blocks, c2);
             }
 
         // a little offset for every particle once we're done
@@ -1482,8 +1465,7 @@ void gather_forces_and_advance(const void *args, size_t arglen,
                   (dz < cz || (dz == cz && (dy < cy || (dy == cy && dx < cx)))))
                 continue;
 
-              //Cell &c2 = REF_CELL(b, cb, eb, dz, dy, dx, base, edges);
-              Cell c2 = READ_CELL(b, cb, eb, dz, dy, dx, base_block, edge_blocks);
+              Cell &c2 = REF_CELL(b, cb, eb, dz, dy, dx, base, edges);
               assert(c2.num_particles <= MAX_PARTICLES);
 
               // do bidirectional update if other cell is a real cell and it is
@@ -1494,7 +1476,7 @@ void gather_forces_and_advance(const void *args, size_t arglen,
               // pairwise across particles - watch out for identical particle case!
               for(unsigned p = 0; p < cell.num_particles; p++)
                 for(unsigned p2 = 0; p2 < c2.num_particles; p2++) {
-                  if((dx == cx) && (dy == cy) && (dz == cz) && (p == p2)) continue;
+                  if((dx == cx) && (dy == cy) && (dz == cz) && (p <= p2)) continue;
 
                   Vec3 disp = cell.p[p] - c2.p[p2];
                   float distSq = disp.GetLengthSq();
@@ -1512,9 +1494,6 @@ void gather_forces_and_advance(const void *args, size_t arglen,
                   if(update_other)
                     c2.a[p2] -= acc;
                 }
-
-              if(update_other)
-                WRITE_CELL(b, cb, eb, dz, dy, dx, base_block, edge_blocks, c2);
             }
 
         // compute collisions for particles near edge of box
