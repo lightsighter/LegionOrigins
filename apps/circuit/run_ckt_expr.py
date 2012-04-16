@@ -8,11 +8,12 @@ from getopt import getopt
 # For testing file generation
 run_experiments = True 
 # Use qsub, if not it will get run like a normal shell script
-use_qsub = False
-walltime = "00:10:00"
+use_qsub = False 
+walltime = "0:20:00"
 
 # Use gasnet or a normal binary
 use_gasnet = True
+use_keeneland = False 
 
 home_dir="/home/mebauer/region/apps/circuit/"
 bin_name = "ckt_sim"
@@ -20,25 +21,26 @@ result_prefix = "results/"
 #Simulation parameters
 npp = 2500
 wpp = 10000 
-pieces = 48
+pieces = 96 
 loops = 10
 level = 3
 # Memory parameters
-zsize = 1536
-fsize = 1024
+zsize = 2048 
+fsize = 2048 
 csize = 4096 
 gsize = 2000
 # Number of nodes (inclusive)
 node_start = 1
 node_stop  = 4
 node_step  = 1
+node_set   = [1,2,4,8,16,32]
 # Number of cpus (inclusive)
 cpu_start = 1
 cpu_stop  = 1
 cpu_step  = 1
 # Number of gpus (inclusive)
-gpu_start = 1
-gpu_stop  = 2
+gpu_start = 3
+gpu_stop  = 3
 gpu_step  = 1
 
 def run_simulations():
@@ -108,7 +110,14 @@ def run_simulations():
                     if use_qsub:
                         print "Launching experiment with qsub for "+bin_name+" on "+str(nn)+" nodes "+str(nc)+ \
                                 " cpus and "+str(ng)+"gpus..."                        
-                        qsub_command = "qsub -z -l nodes="+str(nn)+",walltime="+walltime+' '+file_name
+                        qsub_command = ''
+                        if use_keeneland:
+                            # Always use 12 ppn for keeneland so we get the whole node
+                            "qsub -z -l walltime="+walltime+",nodes="+str(nn)+":m2090:ppn=12:gpus="+str(ng)+":shared "
+                        else:
+                            "qsub -z -l nodes="+str(nn)+",walltime="+walltime+' '
+
+                        qsub_command = qsub_command + file_name
                         try:
                             # Apparently qsub doesn't really like check_call
                             subprocess.call([qsub_command],shell=True)
@@ -116,6 +125,7 @@ def run_simulations():
                         except:
                             print "qsub launch: FAILURE!" 
                     else:
+                        assert not use_keeneland
                         print "Launching experiment for "+bin_name+" on "+str(nn)+" nodes "+str(nc)+ \
                               " cpus and "+str(ng)+" gpus..."
                         try:
