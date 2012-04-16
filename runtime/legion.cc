@@ -10752,18 +10752,21 @@ namespace RegionRuntime {
           assert(!ren.needs_initializing);
 #endif
           // If we're santizing, create instance infos in this region for all the valid
-          // instances of this region
-          std::set<Memory> locations;
-          get_physical_locations(ren.ctx_id,locations,true/*ignore open below*/, false/*reduction*/);
-          for (std::set<Memory>::const_iterator it = locations.begin();
-                it != locations.end(); it++)
+          // instances of this region.  Don't need to do this if we're doing a reduction
+          if (!IS_REDUCE(ren.usage))
           {
-            std::pair<InstanceInfo*,bool> result = find_physical_instance(ren.ctx_id, *it, true/*allow up*/, false/*reduction*/);
-            InstanceInfo *info = result.first;
-            if (info->handle != handle)
+            std::set<Memory> locations;
+            get_physical_locations(ren.ctx_id,locations,true/*ignore open below*/, false/*reduction*/);
+            for (std::set<Memory>::const_iterator it = locations.begin();
+                  it != locations.end(); it++)
             {
-              InstanceInfo *new_info = ren.ctx->create_instance_info(handle,info);
-              update_valid_instances(ren.ctx_id,new_info,false/*writer*/,true/*owned*/);
+              std::pair<InstanceInfo*,bool> result = find_physical_instance(ren.ctx_id, *it, true/*allow up*/, false/*reduction*/);
+              InstanceInfo *info = result.first;
+              if (info->handle != handle)
+              {
+                InstanceInfo *new_info = ren.ctx->create_instance_info(handle,info);
+                update_valid_instances(ren.ctx_id,new_info,false/*writer*/,true/*owned*/);
+              }
             }
           }
           // If we're sanitizing we're done at this point
