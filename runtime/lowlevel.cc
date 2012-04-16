@@ -4054,7 +4054,7 @@ namespace RegionRuntime {
 
     void RegionMetaDataUntyped::destroy_region_untyped(void) const
     {
-      assert(0);
+      //assert(0);
     }
 
     void RegionMetaDataUntyped::destroy_allocator_untyped(RegionAllocatorUntyped allocator) const
