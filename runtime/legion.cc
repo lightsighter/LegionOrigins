@@ -2185,8 +2185,15 @@ namespace RegionRuntime {
         }
 
         desc->future = new FutureImpl(desc->termination_event);
+        // Pack up the future and a pointer to the context so we can deactivate
+        // the task context when we're done.  This will make sure everything gets
+        // cleaned up an will will help us capture any leaks.
         Future fut(desc->future);
-        local_proc.spawn(TERMINATION_ID,&fut,sizeof(Future));
+        size_t buffer_size = sizeof(Future) + sizeof(TaskContext*);
+        Serializer rez(buffer_size);
+        rez.serialize<Future>(fut);
+        rez.serialize<TaskContext*>(desc);
+        local_proc.spawn(TERMINATION_ID,rez.get_buffer(),buffer_size);
       }
       // enable the idle task
       Processor copy = local_proc;
@@ -3538,8 +3545,12 @@ namespace RegionRuntime {
     void HighLevelRuntime::process_termination(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
+      Deserializer derez(args, arglen);
       // Unpack the future from the buffer
-      Future f = *((const Future*)args);
+      Future f;
+      derez.deserialize<Future>(f); 
+      TaskContext *top_ctx;
+      derez.deserialize<TaskContext*>(top_ctx);
       // This will wait until the top level task has finished
       f.get_void_result();
       log_task(LEVEL_SPEW,"Computation has terminated, shutting down high level runtime...");
@@ -3551,6 +3562,11 @@ namespace RegionRuntime {
         // Kill pill
         it->spawn(0,NULL,0);
       }
+      // Clean up the top level context.  First mark it remote so that we delete
+      // all of the data structures that are no longer needed.  This will help us
+      // catch any leaks that might be occuring in the program.
+      top_ctx->remote = true;
+      top_ctx->deactivate();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -11231,8 +11247,7 @@ namespace RegionRuntime {
         for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
               it != region_states[ctx].valid_instances.end(); it++)
         {
-          // Also don't mark invalid the target instance
-          if (it->second && (it->first != target))
+          if (it->second)
           {
             it->first->mark_invalid();
           }
@@ -13154,7 +13169,7 @@ namespace RegionRuntime {
         if (valid || (children > 0) || !users.empty() || !local_frac.is_whole() ||
             !added_users.empty() || !copy_users.empty() || !added_copy_users.empty())
         {
-          log_leak(LEVEL_INFO,"Physical instance %x of logical region %x in memory %x is being leaked",
+          log_leak(LEVEL_WARNING,"Physical instance %x of logical region %x in memory %x is being leaked",
               inst.id, handle.id, location.id);
         }
       }
@@ -15417,6 +15432,11 @@ namespace RegionRuntime {
     void InstanceInfo::garbage_collect(void)
     //-------------------------------------------------------------------------
     {
+      if ((iid == 3 || iid == 73) && !all_children.empty())
+      {
+        InstanceInfo *child = all_children.front();
+        assert(child != NULL);
+      }
       // Check all the conditions for being able to delete the instance
       if (!valid && !remote && !clone && !closing && (children == 0) && local_frac.is_whole() && 
           users.empty() && added_users.empty() && copy_users.empty() && added_copy_users.empty())
