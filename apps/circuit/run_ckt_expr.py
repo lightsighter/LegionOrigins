@@ -8,14 +8,14 @@ from getopt import getopt
 # For testing file generation
 run_experiments = True 
 # Use qsub, if not it will get run like a normal shell script
-use_qsub = False 
+use_qsub = True 
 walltime = "0:20:00"
 
 # Use gasnet or a normal binary
 use_gasnet = True
-use_keeneland = False 
+use_keeneland = True
 
-home_dir="/home/mebauer/region/apps/circuit/"
+home_dir="/nics/d/home/sequoia/mike_legion/region/apps/circuit/"
 bin_name = "ckt_sim"
 result_prefix = "results/"
 #Simulation parameters
@@ -31,7 +31,7 @@ csize = 4096
 gsize = 2000
 # Number of nodes (inclusive)
 node_start = 1
-node_stop  = 4
+node_stop  = 1
 node_step  = 1
 node_set   = [1,2,4,8,16,32]
 # Number of cpus (inclusive)
@@ -39,8 +39,8 @@ cpu_start = 1
 cpu_stop  = 1
 cpu_step  = 1
 # Number of gpus (inclusive)
-gpu_start = 3
-gpu_stop  = 3
+gpu_start = 1
+gpu_stop  = 1
 gpu_step  = 1
 
 def run_simulations():
@@ -113,9 +113,9 @@ def run_simulations():
                         qsub_command = ''
                         if use_keeneland:
                             # Always use 12 ppn for keeneland so we get the whole node
-                            "qsub -z -l walltime="+walltime+",nodes="+str(nn)+":m2090:ppn=12:gpus="+str(ng)+":shared "
+                            qsub_command = qsub_command + "qsub -z -l walltime="+walltime+",nodes="+str(nn)+":m2090:ppn=12:gpus="+str(ng)+":shared "
                         else:
-                            "qsub -z -l nodes="+str(nn)+",walltime="+walltime+' '
+                            qsub_command = qsub_command + "qsub -z -l nodes="+str(nn)+",walltime="+walltime+' '
 
                         qsub_command = qsub_command + file_name
                         try:
