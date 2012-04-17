@@ -1934,7 +1934,7 @@ public:
       m->get_proc_mem_affinity(pmas, proc);
       for (unsigned i = 0; i < pmas.size(); i++)
       {
-        log_mapper.info("Considering Proc:%x (%d) Mem:%x with BW:%d", proc.id, kind, best_mem.id, best_bw);
+        log_mapper.info("Considering Proc:%x (%d) Mem:%x with BW:%d", proc.id, kind, pmas[i].m.id, pmas[i].bandwidth);
         if (pmas[i].bandwidth > best_bw)
         {
           best_bw = pmas[i].bandwidth;
