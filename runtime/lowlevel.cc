@@ -4543,7 +4543,7 @@ namespace RegionRuntime {
 	  size_t byte_count = count * elmt_size;
 	
 	  tgt_mem->put_bytes(tgt_offset + byte_offset,
-			     src_ptr + offset,
+			     src_ptr + byte_offset,
 			     byte_count);
 	}
 
@@ -4603,8 +4603,14 @@ namespace RegionRuntime {
 	  off_t byte_offset = offset * elmt_size;
 	  size_t byte_count = count * elmt_size;
 	
+#if 0
+	  log_copy.debug("gasnet_get [%zx,%zx) -> [%p,%p) (%zd)",
+			 src_offset + byte_offset, src_offset + byte_offset + byte_count,
+			 tgt_ptr + byte_offset, tgt_ptr + offset + byte_count,
+			 byte_count);
+#endif
 	  src_mem->get_bytes(src_offset + byte_offset,
-			     tgt_ptr + offset,
+			     tgt_ptr + byte_offset,
 			     byte_count);
 	}
 
