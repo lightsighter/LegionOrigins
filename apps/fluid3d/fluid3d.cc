@@ -921,7 +921,7 @@ void main_task(const void *args, size_t arglen,
       init_regions.push_back(RegionRequirement(tlr.edge_cells,
                                                READ_WRITE, NO_MEMORY, EXCLUSIVE,
                                                tlr.edge_cells));
-      Future f = runtime->execute_task(ctx, TASKID_LOAD_FILE,
+      Future f = runtime->execute_task(ctx, TASKID_DUMMY_TASK,
                                        init_regions,
                                        TaskArgument(0, 0),
                                        0, 0);
@@ -968,7 +968,7 @@ void main_task(const void *args, size_t arglen,
       init_regions.push_back(RegionRequirement(tlr.edge_cells,
                                                READ_WRITE, NO_MEMORY, EXCLUSIVE,
                                                tlr.edge_cells));
-      Future f = runtime->execute_task(ctx, TASKID_LOAD_FILE,
+      Future f = runtime->execute_task(ctx, TASKID_DUMMY_TASK,
                                        init_regions,
                                        TaskArgument(0, 0),
                                        0, 0);
@@ -1016,7 +1016,7 @@ void main_task(const void *args, size_t arglen,
       init_regions.push_back(RegionRequirement(tlr.edge_cells,
                                                READ_WRITE, NO_MEMORY, EXCLUSIVE,
                                                tlr.edge_cells));
-      Future f = runtime->execute_task(ctx, TASKID_LOAD_FILE,
+      Future f = runtime->execute_task(ctx, TASKID_DUMMY_TASK,
                                        init_regions,
                                        TaskArgument(0, 0),
                                        0, 0);
@@ -1071,7 +1071,7 @@ void main_task(const void *args, size_t arglen,
       init_regions.push_back(RegionRequirement(tlr.edge_cells,
                                                READ_WRITE, NO_MEMORY, EXCLUSIVE,
                                                tlr.edge_cells));
-      Future f = runtime->execute_task(ctx, TASKID_LOAD_FILE,
+      Future f = runtime->execute_task(ctx, TASKID_DUMMY_TASK,
                                        init_regions,
                                        TaskArgument(0, 0),
                                        0, 0);
