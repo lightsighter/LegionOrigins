@@ -1620,8 +1620,7 @@ void load_file(const void *args, size_t arglen,
   unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
   Vec3 &delta = conf.delta;
 
-  RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> real_cells =
-    regions[0].template convert<AccessorArray>().get_instance();
+  PhysicalRegion<AT> real_cells = regions[0];
 
   log_app.info("Loading file \"%s\"...", fileName.c_str());
 
@@ -1636,8 +1635,9 @@ void load_file(const void *args, size_t arglen,
         for(unsigned cz = 0; cz < blocks[id].CELLS_Z; cz++)
           for(unsigned cy = 0; cy < blocks[id].CELLS_Y; cy++)
             for(unsigned cx = 0; cx < blocks[id].CELLS_X; cx++) {
-              Cell &cell = real_cells.ref(blocks[id].cells[b][cz+1][cy+1][cx+1]);
+              Cell cell = real_cells.read(blocks[id].cells[b][cz+1][cy+1][cx+1]);
               cell.num_particles = 0;
+              real_cells.write(blocks[id].cells[b][cz+1][cy+1][cx+1], cell);
             }
       }
 
@@ -1712,7 +1712,7 @@ void load_file(const void *args, size_t arglen,
     int cy = cj - (idy*mbsy + (idy < ovby ? idy : ovby));
     int cz = ck - (idz*mbsz + (idz < ovbz ? idz : ovbz));
 
-    Cell &cell = real_cells.ref(blocks[id].cells[b][cz+1][cy+1][cx+1]);
+    Cell cell = real_cells.read(blocks[id].cells[b][cz+1][cy+1][cx+1]);
 
     unsigned np = cell.num_particles;
     if(np < MAX_PARTICLES) {
@@ -1727,7 +1727,7 @@ void load_file(const void *args, size_t arglen,
       cell.v[np].z = vz;
       ++cell.num_particles;
 
-      //real_cells.write(blocks[id].cells[b][cz+1][cy+1][cx+1], cell);
+      real_cells.write(blocks[id].cells[b][cz+1][cy+1][cx+1], cell);
     } else {
       --numParticles;
     }
@@ -1766,8 +1766,7 @@ void save_file(const void *args, size_t arglen,
   unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
   unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
 
-  RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> real_cells =
-    regions[0].template convert<AccessorArray>().get_instance();
+  PhysicalRegion<AT> real_cells = regions[0];
 
   log_app.info("Saving file \"%s\"...", fileName.c_str());
 
@@ -1820,7 +1819,7 @@ void save_file(const void *args, size_t arglen,
         int cy = cj - (idy*mbsy + (idy < ovby ? idy : ovby));
         int cz = ck - (idz*mbsz + (idz < ovbz ? idz : ovbz));
 
-        Cell &cell = real_cells.ref(blocks[id].cells[b][cz+1][cy+1][cx+1]);
+        Cell cell = real_cells.read(blocks[id].cells[b][cz+1][cy+1][cx+1]);
 
         unsigned np = cell.num_particles;
         for(unsigned p = 0; p < np; ++p) {
@@ -1928,19 +1927,21 @@ public:
 
       Processor::Kind kind = m->get_processor_kind(proc);
 
+      // Elliott: try to avoid 61000000 ("zero-copy memory") ?
       Memory best_mem;
       unsigned best_bw = 0;
       std::vector<Machine::ProcessorMemoryAffinity> pmas;
       m->get_proc_mem_affinity(pmas, proc);
       for (unsigned i = 0; i < pmas.size(); i++)
       {
+        log_mapper.info("Considering Proc:%x (%d) Mem:%x with BW:%d", proc.id, kind, pmas[i].m.id, pmas[i].bandwidth);
         if (pmas[i].bandwidth > best_bw)
         {
           best_bw = pmas[i].bandwidth;
           best_mem = pmas[i].m;
         }
       }
-      log_mapper.info("Proc:%x (%d) Mem:%x\n", proc.id, kind, best_mem.id);
+      log_mapper.info("Proc:%x (%d) Mem:%x with BW:%d", proc.id, kind, best_mem.id, best_bw);
       cpu_mem_pairs[kind].push_back(std::make_pair(proc, best_mem));
     }
 
@@ -1966,7 +1967,7 @@ public:
       }
     }
     global_memory = best_global;
-    log_mapper.info("global memory = %x (%d)\n", global_memory.id, best_count);
+    log_mapper.info("global memory = %x (%d)", global_memory.id, best_count);
   }
 
   virtual bool spawn_child_task(const Task *task)
@@ -2061,7 +2062,8 @@ public:
         default:
           {
             // These are the ghost cells, write them out to global memory 
-            target_ranking.push_back(global_memory);
+            //target_ranking.push_back(global_memory);
+            target_ranking.push_back(cmp.second);
           }
         }
       }
@@ -2078,7 +2080,8 @@ public:
         default:
           {
             // These are the ghose cells, write them out to global memory
-            target_ranking.push_back(global_memory);
+            //target_ranking.push_back(global_memory);
+            target_ranking.push_back(cmp.second);
           }
         }
       }
@@ -2096,7 +2099,8 @@ public:
         default:
           {
             // These are the neighbor cells, try reading them into local memory, otherwise keep them in global
-            target_ranking.push_back(global_memory);
+            //target_ranking.push_back(global_memory);
+            target_ranking.push_back(cmp.second);
           }
         }
       }
@@ -2120,7 +2124,10 @@ public:
                                  std::vector<Memory> &future_ranking)
   {
     log_mapper.info("mapper: ranking copy targets (%p)\n", task);
-    Mapper::rank_copy_targets(task, req, current_instances, future_ranking);
+    //Mapper::rank_copy_targets(task, req, current_instances, future_ranking);
+
+    // Always copy back to GASNET
+    future_ranking.push_back(global_memory);
   }
 
   virtual void select_copy_source(const std::set<Memory> &current_instances,
