@@ -73,6 +73,9 @@ public:
   // Diffusion coefficient
   float coeff;
   
+  // The Index Space for launching tasks
+  std::vector<Range> index_space;
+
   // Top level regions
   LogicalRegion all_cells;
   LogicalRegion all_fluxes;

@@ -29,7 +29,6 @@ void parse_input_args(char **argv, int argc, int &num_levels, int &default_num_c
                       std::vector<int> &divisions, int &steps, int random_seed);
 
 void initialize_simulation(std::vector<Level> &levels,
-                           std::vector<Range> &index_space,
                            std::vector<int> &num_cells,
                            std::vector<int> &divisions,
                            int random_seed, Context ctx, HighLevelRuntime *runtime);
@@ -69,8 +68,7 @@ void region_main(const void *args, size_t arglen,
   }
 
   std::vector<Level> levels;
-  std::vector<Range> index_space;
-  initialize_simulation(levels, index_space, num_cells, divisions, random_seed, ctx, runtime); 
+  initialize_simulation(levels, num_cells, divisions, random_seed, ctx, runtime); 
   
   // Run the simulation 
   printf("Starting main simulation loop\n");
@@ -94,7 +92,7 @@ void region_main(const void *args, size_t arglen,
     // All these are independent so it doesn't matter which order we do them in
     for (int i = 0; i < (num_levels-1); i++)
     {
-      FutureMap map = runtime->execute_index_space(ctx, INTERP_BOUNDARY, index_space,
+      FutureMap map = runtime->execute_index_space(ctx, INTERP_BOUNDARY, levels[i].index_space,
                       levels[i].interp_boundary_regions, global_arg, local_args, false/*must*/);
       map.release();
     }
@@ -104,7 +102,7 @@ void region_main(const void *args, size_t arglen,
     {
       // Pass the value of dx in here
       TaskArgument dx_arg(&levels[i].dx,sizeof(float));
-      FutureMap map = runtime->execute_index_space(ctx, CALC_FLUXES, index_space,
+      FutureMap map = runtime->execute_index_space(ctx, CALC_FLUXES, levels[i].index_space,
                       levels[i].calc_fluxes_regions, dx_arg, local_args, false/*must*/); 
       map.release();
     }
@@ -114,16 +112,23 @@ void region_main(const void *args, size_t arglen,
     {
       // Pass the values of dx, dt, and coeff here
       TaskArgument d_args(&levels[i].dx,3*sizeof(float));
-      FutureMap map = runtime->execute_index_space(ctx, ADVANCE, index_space,
+      FutureMap map = runtime->execute_index_space(ctx, ADVANCE, levels[i].index_space,
                       levels[i].adv_time_step_regions, d_args, local_args, false/*must*/);
-      map.release();
+      if (s == (steps-1))
+      {
+        last_maps.push_back(map);
+      }
+      else
+      {
+        map.release();
+      }
     }
 
     // Restrict the results for coarser regions from finer regions
     // Have to do this bottom up to catch dependences
-    for (int i = (num_levels-1); i >= 0; i--)
+    for (int i = (num_levels-2); i >= 0; i--)
     {
-      FutureMap map = runtime->execute_index_space(ctx, ADVANCE, index_space,
+      FutureMap map = runtime->execute_index_space(ctx, RESTRICT, levels[i].index_space,
                       levels[i].restrict_coarse_regions, global_arg, local_args, false/*must*/);
       if (s == (steps-1))
       {
@@ -413,7 +418,6 @@ void initialize_cells_3D(ptr_t<Cell> &bound, ptr_t<Flux> &flux, int cells_per_pi
                          PhysicalRegion<AccessorGeneric> all_cells, PhysicalRegion<AccessorGeneric> all_fluxes);
 
 void initialize_simulation(std::vector<Level> &levels,
-                           std::vector<Range> &index_space,
                            std::vector<int> &num_cells,
                            std::vector<int> &divisions,
                            int random_seed, Context ctx, HighLevelRuntime *runtime)
@@ -458,6 +462,8 @@ void initialize_simulation(std::vector<Level> &levels,
       int flux_piece = 3 * flux_side * cells_per_piece_side * cells_per_piece_side;
       int total_fluxes = flux_piece * pieces;
 #endif
+      // Set up the index space for this task
+      levels[i].index_space.push_back(Range(0,pieces-1));
       // Create the top regions 
       levels[i].all_cells = runtime->create_logical_region(ctx, sizeof(Cell), total_cells);
       levels[i].all_fluxes = runtime->create_logical_region(ctx, sizeof(Flux), total_fluxes);
@@ -471,6 +477,7 @@ void initialize_simulation(std::vector<Level> &levels,
                                                                         RegionRequirement(levels[i].all_fluxes,
                                                                               READ_WRITE, ALLOCABLE, EXCLUSIVE,
                                                                               levels[i].all_fluxes));
+
       all_cells.wait_until_valid();
       all_fluxes.wait_until_valid();
       
@@ -1046,6 +1053,8 @@ void initialize_cells_2D(ptr_t<Cell> &bound_ptr, ptr_t<Flux> &flux_ptr, int cell
         // Write the flux back
         all_fluxes.write(cell.outy,f);
       }
+      // Write our cell back
+      all_cells.write(cell_ptr,cell);
     }
   }
 }
@@ -1105,7 +1114,7 @@ void set_region_requirements(std::vector<Level> &levels)
                                                                 READ_WRITE, NO_MEMORY, EXCLUSIVE,
                                                                 levels[i].all_cells));
     levels[i].adv_time_step_regions.push_back(RegionRequirement(levels[i].shr_cells, 0/*identity*/,
-                                                                READ_WRITE, NO_MEMORY, SIMULTANEOUS,
+                                                                READ_WRITE, NO_MEMORY, EXCLUSIVE,
                                                                 levels[i].all_cells));
     
     // restrict course regions
