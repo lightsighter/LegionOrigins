@@ -1999,7 +1999,7 @@ namespace RegionRuntime {
         return &no_info;
       }
     protected:
-      Event add_user(GeneralizedContext *ctx, unsigned idx, Event precondition);
+      Event add_user(GeneralizedContext *ctx, unsigned idx, Event precondition, bool check_unresolved = true);
       void  remove_user(UniqueID uid, unsigned ref = 1);
       // Perform a copy operation from the source info to this info
       void copy_from(InstanceInfo *src_info, GeneralizedContext *ctx, CopyDirection dir, ReductionOpID redop = 0);
@@ -3111,16 +3111,13 @@ namespace RegionRuntime {
       //log_task(LEVEL_DEBUG,"Registering new index space task with unique id %d and task id %d with high level runtime on processor %d\n",
       //          unique_id, task_id, local_proc.id);
       TaskContext *desc = get_available_context(false/*new tree*/);
-      // Allocate more space for the context when copying the args
-      void *args_prime = malloc(global_arg.get_size()+sizeof(Context));
-      memcpy(((char*)args_prime)+sizeof(Context), global_arg.get_ptr(), global_arg.get_size());
       {
         Event lock_event = mapping_lock.lock(1,false/*exclusive*/);
         lock_event.wait(true/*block*/);
 #ifdef DEBUG_HIGH_LEVEL
         assert(id < mapper_objects.size());
 #endif
-        desc->initialize_task(ctx, unique_id, task_id, args_prime, global_arg.get_size()+sizeof(Context), 
+        desc->initialize_task(ctx, unique_id, task_id, global_arg.get_ptr(), global_arg.get_size(), 
                               id, tag, mapper_objects[id], mapper_locks[id]);
         mapping_lock.unlock();
       }
@@ -3171,15 +3168,13 @@ namespace RegionRuntime {
       //          unique_id, task_id, local_proc.id);
       TaskContext *desc = get_available_context(false/*new tree*/);
       // Allocate more space for the context when copying the args
-      void *args_prime = malloc(global_arg.get_size()+sizeof(Context));
-      memcpy(((char*)args_prime)+sizeof(Context), global_arg.get_ptr(), global_arg.get_size());
       {
         Event lock_event = mapping_lock.lock(1,false/*exclusive*/);
         lock_event.wait(true/*block*/);
 #ifdef DEBUG_HIGH_LEVEL
       assert(id < mapper_objects.size());
 #endif
-        desc->initialize_task(ctx, unique_id, task_id, args_prime, global_arg.get_size()+sizeof(Context), 
+        desc->initialize_task(ctx, unique_id, task_id, global_arg.get_ptr(), global_arg.get_size(), 
                               id, tag, mapper_objects[id], mapper_locks[id]);
         mapping_lock.unlock();
       }

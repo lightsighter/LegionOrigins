@@ -2167,15 +2167,8 @@ namespace RegionRuntime {
           assert(!mapper_objects.empty());
 #endif
           // Copy the argv into the default arguments
-          size_t default_size = sizeof(Context) + sizeof(InputArgs);
-          void *default_args = malloc(default_size);
-          {
-            char *ptr = (char*)default_args;
-            ptr += sizeof(Context);
-            memcpy(ptr, &HighLevelRuntime::get_input_args(), sizeof(InputArgs));
-          }
-          desc->initialize_task(NULL/*no parent*/,tid, HighLevelRuntime::legion_main_id,default_args,
-                                default_size, 0, 0, mapper_objects[0], mapper_locks[0]);
+          desc->initialize_task(NULL/*no parent*/,tid, HighLevelRuntime::legion_main_id,
+                                &HighLevelRuntime::get_input_args(), sizeof(InputArgs), 0, 0, mapper_objects[0], mapper_locks[0]);
         }
         log_spy(LEVEL_INFO,"Top Task %d %d",desc->unique_id,HighLevelRuntime::legion_main_id);
         // Put this task in the ready queue
@@ -2550,17 +2543,15 @@ namespace RegionRuntime {
       // Get a unique id for the task to use
       UniqueID unique_id = get_unique_task_id();
       TaskContext *desc = get_available_context(false/*new tree*/);
-      // Allocate more space for context
-      void *args_prime = malloc(arg.get_size()+sizeof(Context));
-      memcpy(((char*)args_prime)+sizeof(Context), arg.get_ptr(), arg.get_size());
       {
         AutoLock map_lock(mapping_lock,1,false);
 #ifdef DEBUG_HIGH_LEVEl
         assert(id < mapper_objects.size());
 #endif
-        desc->initialize_task(ctx, unique_id, task_id, args_prime, arg.get_size()+sizeof(Context), 
+        desc->initialize_task(ctx, unique_id, task_id, arg.get_ptr(), arg.get_size(), 
                               id, tag, mapper_objects[id], mapper_locks[id]);
       }
+      
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Registering new single task with unique id %d and task %s (ID %d) with high level runtime on processor %x",
                 unique_id, desc->variants->name, task_id, local_proc.id);
@@ -4137,10 +4128,11 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(variants != NULL);
 #endif
-      // Need our own copy of these
-      args = malloc(_arglen);
-      memcpy(args,_args,_arglen);
-      arglen = _arglen;
+      // Need our own copy of these (add a little bit of extra memory to store the context
+      args = malloc(_arglen + sizeof(Context));
+      // Memcpy offet from the context
+      memcpy(((char*)args)+sizeof(Context),_args,_arglen);
+      arglen = _arglen + sizeof(Context);
       map_id = _map_id;
       tag = _tag;
       orig_proc = local_proc;
@@ -9010,7 +9002,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           Event precondition = 
 #endif
-          clone_inst->add_user(this,idx,Event::NO_EVENT);
+          clone_inst->add_user(this,idx,Event::NO_EVENT,false/*check unresolved*/);
 #ifdef DEBUG_HIGH_LEVEL
 #ifndef TRACE_CAPTURE
           assert(!precondition.exists()); // should be no precondition for using the instance
@@ -13205,7 +13197,7 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    Event InstanceInfo::add_user(GeneralizedContext *ctx, unsigned idx, Event precondition)
+    Event InstanceInfo::add_user(GeneralizedContext *ctx, unsigned idx, Event precondition, bool check_unresolved /*=true*/)
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -13231,14 +13223,17 @@ namespace RegionRuntime {
       // to execute and finish and remove its user information before this task is 
       // mapped, but it is still correct because we'll just be waiting on a task that
       // already executed
-      const std::map<UniqueID,Event> &unresolved = ctx->get_unresolved_dependences(idx);
-      for (std::map<UniqueID,Event>::const_iterator it = unresolved.begin();
-            it != unresolved.end(); it++)
+      if (check_unresolved)
       {
-        // Physical instance can't have a user anywhere
-        if (!has_user(it->first))
+        const std::map<UniqueID,Event> &unresolved = ctx->get_unresolved_dependences(idx);
+        for (std::map<UniqueID,Event>::const_iterator it = unresolved.begin();
+              it != unresolved.end(); it++)
         {
-          wait_on_events.insert(it->second);
+          // Physical instance can't have a user anywhere
+          if (!has_user(it->first))
+          {
+            wait_on_events.insert(it->second);
+          }
         }
       }
 
