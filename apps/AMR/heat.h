@@ -4,7 +4,7 @@
 
 #include "legion.h"
 
-#define SIMULATION_DIM     3 // Number of dimensions in the simulation
+#define SIMULATION_DIM     2 // Number of dimensions in the simulation
 
 #define POW2(dim)  ((dim==1) ? 2 : (dim==2) ? 4 : 8)
 
@@ -72,8 +72,6 @@ public:
   float dt;
   // Diffusion coefficient
   float coeff;
-
-
   
   // Top level regions
   LogicalRegion all_cells;

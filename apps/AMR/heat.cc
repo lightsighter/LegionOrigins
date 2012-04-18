@@ -78,6 +78,7 @@ void region_main(const void *args, size_t arglen,
   struct timespec ts_start, ts_end;
   clock_gettime(CLOCK_MONOTONIC, &ts_start);
 
+#if 1
   set_region_requirements(levels);
 
   TaskArgument global_arg;
@@ -141,6 +142,7 @@ void region_main(const void *args, size_t arglen,
   {
     last_maps[i].wait_all_results();
   }
+#endif
   clock_gettime(CLOCK_MONOTONIC, &ts_end);
 
   log_heat(LEVEL_WARNING,"SUCCESS!");
@@ -392,6 +394,24 @@ void registration_func(Machine *machine, HighLevelRuntime *runtime, Processor lo
   runtime->replace_default_mapper(new HeatMapper(machine, runtime, local));
 }
 
+
+typedef std::vector<std::vector<ptr_t<Cell> > > PtrArray2D;
+typedef std::vector<std::vector<std::vector<ptr_t<Cell> > > > PtrArray3D;
+
+void create_cells_2D(ptr_t<Cell> &pvt, ptr_t<Cell> &shr, int cells_per_piece_side,
+                     PtrArray2D &global, int x, int y);
+
+void initialize_cells_2D(ptr_t<Cell> &bound, ptr_t<Flux> &flux, int cells_per_piece_side, PtrArray2D &global, 
+                         std::set<utptr_t> &ghost_pointers, int x, int y, int max_div, float dx,
+                         PhysicalRegion<AccessorGeneric> all_cells, PhysicalRegion<AccessorGeneric> all_fluxes);
+
+void create_cells_3D(ptr_t<Cell> &pvt, ptr_t<Cell> &shr, int cells_per_piece_side,
+                     PtrArray3D &global, int x, int y, int z);
+
+void initialize_cells_3D(ptr_t<Cell> &bound, ptr_t<Flux> &flux, int cells_per_piece_side, PtrArray3D &global, 
+                         std::set<utptr_t> &ghost_pointers, int x, int y, int z, int max_div, float dx,
+                         PhysicalRegion<AccessorGeneric> all_cells, PhysicalRegion<AccessorGeneric> all_fluxes);
+
 void initialize_simulation(std::vector<Level> &levels,
                            std::vector<Range> &index_space,
                            std::vector<int> &num_cells,
@@ -429,13 +449,14 @@ void initialize_simulation(std::vector<Level> &levels,
       int total_cells = (num_cells[i] * num_cells[i]) 
                         + (4 * num_cells[i]);
       int pieces = divisions[i] * divisions[i];
-      int total_fluxes = (flux_side * flux_side) * pieces;
+      int flux_piece = 2 * flux_side * cells_per_piece_side;
+      int total_fluxes = flux_piece * pieces;
 #else
       int total_cells = (num_cells[i] * num_cells[i] * num_cells[i]) 
-                        + (4 * num_cells[i] * num_cells[i])
-                        + (4 * num_cells[i]);
+                        + (6 * num_cells[i] * num_cells[i]);
       int pieces = divisions[i] * divisions[i] * divisions[i];
-      int total_fluxes = (flux_side * flux_side * flux_side) * pieces;
+      int flux_piece = 3 * flux_side * cells_per_piece_side * cells_per_piece_side;
+      int total_fluxes = flux_piece * pieces;
 #endif
       // Create the top regions 
       levels[i].all_cells = runtime->create_logical_region(ctx, sizeof(Cell), total_cells);
@@ -454,7 +475,292 @@ void initialize_simulation(std::vector<Level> &levels,
       all_fluxes.wait_until_valid();
       
       // First allocate cells and create a partition for the all_private, all_shared, and all_boundary cells
-         
+#if SIMULATION_DIM == 2  
+      int private_piece = (private_side * private_side);
+      int total_private = private_piece * pieces;
+      int shared_piece = (cells_per_piece_side + (cells_per_piece_side-2)) * 2;
+      int total_shared = shared_piece * pieces;
+      int total_bound = num_cells[i] * 4;
+#else
+      int private_piece = (private_side * private_side * private_side);
+      int total_private = private_piece * pieces;
+      int shared_piece = (private_side * private_side)*6/*faces*/ + (private_side)*12/*edges*/ + 8/*corners*/;
+      int total_shared = shared_piece * pieces;
+      int total_bound = (num_cells[i] * num_cells[i]) * 6;
+#endif
+      assert((total_private + total_shared + total_bound) == total_cells);
+      // Allocate each of the parts
+      ptr_t<Cell> start_private = all_cells.alloc<Cell>(total_private);
+      ptr_t<Cell> start_shared  = all_cells.alloc<Cell>(total_shared);
+      ptr_t<Cell> start_bound   = all_cells.alloc<Cell>(total_bound);
+      
+      // Now make all the partitions
+      {
+        std::vector<std::set<std::pair<utptr_t,utptr_t> > > coloring;
+
+        // Private
+        std::set<std::pair<utptr_t,utptr_t> > range_set;
+        utptr_t end;
+        end.value = start_private.value + (total_private-1);
+        range_set.insert(std::pair<utptr_t,utptr_t>(start_private,end));
+        coloring.push_back(range_set);
+
+        // Shared
+        range_set.clear();
+        end.value = start_shared.value + (total_shared-1);
+        range_set.insert(std::pair<utptr_t,utptr_t>(start_shared,end));
+        coloring.push_back(range_set);
+
+        // Bound
+        range_set.clear();
+        end.value = start_bound.value + (total_bound-1);
+        range_set.insert(std::pair<utptr_t,utptr_t>(start_bound,end));
+        coloring.push_back(range_set);
+
+        Partition top_part = runtime->create_partition(ctx, levels[i].all_cells, coloring, true/*disjoint*/);
+        levels[i].all_private = runtime->get_subregion(ctx, top_part, 0);
+        levels[i].all_shared = runtime->get_subregion(ctx, top_part, 1);
+        levels[i].all_boundary = runtime->get_subregion(ctx, top_part, 2);
+      }
+      {
+        // Now create the partitions for each individual piece in the tree  
+        std::vector<std::set<std::pair<utptr_t,utptr_t> > > coloring;
+        // Private
+        ptr_t<Cell> next = start_private;
+        for (int p = 0; p < pieces; p++)
+        {
+          std::set<std::pair<utptr_t,utptr_t> > range_set;
+          ptr_t<Cell> end;
+          end.value = next.value + (private_piece-1);
+          range_set.insert(std::pair<utptr_t,utptr_t>(next, end));
+          coloring.push_back(range_set);
+          next.value = end.value + 1;
+        }
+        levels[i].pvt_cells = runtime->create_partition(ctx, levels[i].all_private, coloring, true/*disjoint*/);
+        assert(next == start_shared);
+
+        // Shared
+        coloring.clear();
+        for (int p = 0; p < pieces; p++)
+        {
+          std::set<std::pair<utptr_t,utptr_t> > range_set;
+          ptr_t<Cell> end;
+          end.value = next.value + (shared_piece-1);
+          range_set.insert(std::pair<utptr_t,utptr_t>(next, end));
+          coloring.push_back(range_set);
+          next.value = end.value + 1;
+        }
+        levels[i].shr_cells = runtime->create_partition(ctx, levels[i].all_shared, coloring, true/*disjoint*/);
+        assert(next == start_bound);
+
+        // Boundary
+        coloring.clear();
+#if SIMULATION_DIM == 2
+        for (int j = 0; j < divisions[i]; j++)
+        {
+          for (int k = 0; k < divisions[i]; k++)
+          {
+            std::set<std::pair<utptr_t,utptr_t> > range_set;
+            ptr_t<Cell> end;
+            if ((j == 0) || (j == (divisions[i]-1)))
+            {
+              if ((k == 0) || (k == divisions[i]-1))
+              {
+                // Corner
+                end.value = next.value + (cells_per_piece_side*2) - 1;
+                range_set.insert(std::pair<utptr_t,utptr_t>(next,end));
+                coloring.push_back(range_set);
+                next.value = end.value + 1;
+              }
+              else
+              {
+                // Side
+                end.value = next.value + (cells_per_piece_side) - 1;
+                range_set.insert(std::pair<utptr_t,utptr_t>(next,end));
+                coloring.push_back(range_set);
+                next.value = end.value + 1;
+              }
+            }
+            else if ((k == 0) || (k == divisions[i]-1))
+            {
+              // Side
+              end.value = next.value + (cells_per_piece_side) - 1;
+              range_set.insert(std::pair<utptr_t,utptr_t>(next,end));
+              coloring.push_back(range_set);
+              next.value = end.value + 1;
+            }
+            else
+            {
+              // Middle (empty)
+              coloring.push_back(range_set);
+            }
+          }
+        }
+#else
+        for (int j = 0; j < divisions[i]; j++)
+        {
+          for (int k = 0; k < divisions[i]; k++)
+          {
+            for (int m = 0; m < divisions[i]; m++)
+            {
+              std::set<std::pair<utptr_t,utptr_t> > range_set;
+              ptr_t<Cell> end;
+              if (((j == 0) || (j == (divisions[i]-1))) &&
+                  ((k == 0) || (k == (divisions[i]-1))) && 
+                  ((m == 0) || (m == (divisions[i]-1))))
+              {
+                // Corner
+                end.value = next.value + (cells_per_piece_side*cells_per_piece_side*3) - 1;
+                range_set.insert(std::pair<utptr_t,utptr_t>(next,end));
+                coloring.push_back(range_set);
+                next.value = end.value + 1;
+              }
+              else if ((((j == 0) || (j == (divisions[i]-1))) && ((k == 0) || (k == (divisions[i]-1)))) ||
+                       (((j == 0) || (j == (divisions[i]-1))) && ((m == 0) || (m == (divisions[i]-1)))) ||
+                       (((k == 0) || (k == (divisions[i]-1))) && ((m == 0) || (m == (divisions[i]-1)))))
+              {
+                // Edge
+                end.value = next.value + (cells_per_piece_side*cells_per_piece_side*2) - 1;
+                range_set.insert(std::pair<utptr_t,utptr_t>(next,end));
+                coloring.push_back(range_set);
+                next.value = end.value + 1;
+              }
+              else if (((j == 0) || (j == (divisions[i]-1))) ||
+                       ((k == 0) || (k == (divisions[i]-1))) ||
+                       ((m == 0) || (m == (divisions[i]-1))))
+              {
+                // Face
+                end.value = next.value + (cells_per_piece_side*cells_per_piece_side) - 1;
+                range_set.insert(std::pair<utptr_t,utptr_t>(next,end));
+                coloring.push_back(range_set);
+                next.value = end.value + 1;
+              }
+              else
+              {
+                // Middle (empty)
+                coloring.push_back(range_set);
+              }
+            }
+          }
+        }
+#endif
+        levels[i].boundary_cells = runtime->create_partition(ctx, levels[i].all_boundary, coloring, true/*disjoint*/);
+        // Sanity check
+        assert(int(next.value - start_private.value) == total_cells);
+      }
+
+      // Also need to partition up the flux region
+      ptr_t<Flux> start_flux = all_fluxes.alloc<Flux>(total_fluxes);
+      {
+        std::vector<std::set<std::pair<utptr_t,utptr_t> > > flux_coloring;
+        ptr_t<Flux> cur_flux = start_flux; 
+        for (int p = 0; p < pieces; p++)
+        {
+          std::set<std::pair<utptr_t,utptr_t> > flux_ranges;
+          ptr_t<Flux> end_flux;
+          end_flux.value = cur_flux.value + flux_piece - 1;
+          flux_ranges.insert(std::pair<utptr_t,utptr_t>(cur_flux,end_flux));
+          flux_coloring.push_back(flux_ranges);
+          cur_flux.value = end_flux.value + 1;
+        }
+        assert(int(cur_flux.value - start_flux.value) == total_fluxes);
+        levels[i].pvt_fluxes = runtime->create_partition(ctx, levels[i].all_fluxes, flux_coloring, true/*disjoint*/);
+      }
+
+      // Now let's hook up all the cell pointers together
+      ptr_t<Cell> cur_private = start_private;
+      ptr_t<Cell> cur_shared  = start_shared;
+      ptr_t<Cell> cur_bound   = start_bound;
+      ptr_t<Flux> cur_flux    = start_flux;
+
+      // Set up some of the physical parameters of the simulation
+      if (i == 0)
+      {
+        levels[i].dx = 1.0f/float(num_cells[i]);
+      }
+      else
+      {
+        levels[i].dx = levels[i-1].dx/refinement_ratio;
+      } 
+      levels[i].coeff = 1.0f;
+#if SIMULATION_DIM == 2
+      {
+        PtrArray2D global_array(num_cells[i]);
+        for (int j = 0; j < num_cells[i]; j++)
+        {
+          global_array[j].resize(num_cells[i]); 
+        }
+        // First create the cells for each chunk
+        for (int j = 0; j < divisions[i]; j++)
+        {
+          for (int k = 0; k < divisions[i]; k++)
+          {
+            create_cells_2D(cur_private, cur_shared, cells_per_piece_side, global_array, j, k);
+          }
+        }
+        // Now pick up all the neighboring pointers (remembering the ghost cell pointers for each piece
+        std::vector<std::set<utptr_t> > ghost_coloring;
+        for (int j = 0; j < divisions[i]; j++)
+        {
+          for (int k = 0; k < divisions[i]; k++)
+          {
+            std::set<utptr_t> ghost_pointers;
+            initialize_cells_2D(cur_bound, cur_flux, cells_per_piece_side, global_array, ghost_pointers,
+                                j, k, divisions[i], levels[i].dx, all_cells, all_fluxes);
+            ghost_coloring.push_back(ghost_pointers);
+          }
+        }
+        // Now build the ghost cell partition
+        levels[i].ghost_cells = runtime->create_partition(ctx, levels[i].all_shared, ghost_coloring, false/*disjoint*/);
+      }
+#else
+      {
+        PtrArray3D global_array(num_cells[i]);
+        for (int j = 0; j < num_cells[i]; j++)
+        {
+          global_array[j].resize(num_cells[i]);
+        }
+        for (int j = 0; j < num_cells[i]; j++)
+        {
+          for (int k = 0; k < num_cells[i]; k++)
+          {
+            global_array[j][k].resize(num_cells[i]); 
+          }
+        }
+        // First create the cells for each piece 
+        for (int j = 0; j < divisions[i]; j++)
+        {
+          for (int k = 0; k < divisions[i]; k++)
+          {
+            for (int m = 0; m < divisions[i]; m++)
+            {
+              create_cells_3D(cur_private, cur_shared, cells_per_piece_side, global_array, j, k, m);
+            }
+          }
+        }
+        // Now pick up all the neighboring pointers (remembering all the ghost cell pointers for each piece)
+        std::vector<std::set<utptr_t> > ghost_coloring;
+        for (int j = 0; j < divisions[i]; j++)
+        {
+          for (int k = 0; k < divisions[i]; k++)
+          {
+            for (int m = 0; m < divisions[i]; m++)
+            {
+              std::set<utptr_t> ghost_pointers;
+              initialize_cells_3D(cur_bound, cur_flux, cells_per_piece_side, global_array, ghost_pointers, 
+                                  j, k, m, divisions[i], levels[i].dx, all_cells, all_fluxes);
+              ghost_coloring.push_back(ghost_pointers);
+            }
+          }
+        }
+        // Now build the ghost cell partition
+        levels[i].ghost_cells = runtime->create_partition(ctx, levels[i].all_shared, ghost_coloring, false/*disjoint*/);
+      }
+#endif
+      assert(int(cur_private.value - start_private.value) == total_private);
+      assert(int(cur_shared.value - start_shared.value) == total_shared);
+      assert(int(cur_bound.value - start_bound.value) == total_bound);
+      assert(int(cur_flux.value - start_flux.value) == total_fluxes);
 
       // Unmap our regions
       runtime->unmap_region(ctx, all_cells);
@@ -462,7 +768,293 @@ void initialize_simulation(std::vector<Level> &levels,
     }
   }
 
+  // Make the time step size the same for all levels, but based on the smallest physical size
+  const float dt = 0.1f * (levels[num_cells.size()-1].dx * levels[num_cells.size()-1].dx);
+  for (unsigned i = 0; i < num_cells.size(); i++)
+  {
+    levels[i].dt = dt;
+  }
+
   log_heat(LEVEL_WARNING,"Simulation initialization complete");
+}
+
+void create_cells_2D(ptr_t<Cell> &pvt, ptr_t<Cell> &shr, int cells_per_piece_side,
+                     PtrArray2D &global, int x, int y)
+{
+  // Global coordinates
+  int global_x = x * cells_per_piece_side;
+  int global_y = y * cells_per_piece_side;
+
+  for (int i = 0; i < cells_per_piece_side; i++)
+  {
+    for (int j = 0; j < cells_per_piece_side; j++)
+    {
+      ptr_t<Cell> next_ptr;
+      if ((i == 0) || (i == cells_per_piece_side-1) ||
+          (j == 0) || (j == cells_per_piece_side-1))
+      {
+        // Take the next shared pointer
+        next_ptr = shr; 
+        shr.value++;
+      }
+      else
+      {
+        // Take the next private pointer
+        next_ptr = pvt;
+        pvt.value++;
+      }
+      // Store the pointer in the global array of pointers
+      global[global_x+i][global_y+j] = next_ptr;
+    }
+  }
+}
+
+void create_cells_3D(ptr_t<Cell> &pvt, ptr_t<Cell> &shr, int cells_per_piece_side,
+                     PtrArray3D &global, int x, int y, int z)
+{
+  // Global coordinates
+  int global_x = x * cells_per_piece_side;
+  int global_y = y * cells_per_piece_side;
+  int global_z = z * cells_per_piece_side;
+
+  for (int i = 0; i < cells_per_piece_side; i++)
+  {
+    for (int j = 0; j < cells_per_piece_side; j++)
+    {
+      for (int k = 0; k < cells_per_piece_side; k++)
+      {
+        ptr_t<Cell> next_ptr;
+        if ((i == 0) || (i == cells_per_piece_side-1) ||
+            (j == 0) || (j == cells_per_piece_side-1) ||
+            (k == 0) || (k == cells_per_piece_side-1))
+        {
+          // Take the next shared pointer
+          next_ptr = shr;
+          shr.value++;
+        }
+        else
+        {
+          next_ptr = pvt;
+          pvt.value++;
+        }
+        // Store the pointer in the global array of pointer
+        global[global_x+i][global_y+j][global_z+k] = next_ptr;
+      }
+    }
+  }
+}
+
+void initialize_cells_2D(ptr_t<Cell> &bound_ptr, ptr_t<Flux> &flux_ptr, int cells_per_piece_side, PtrArray2D &global, 
+                         std::set<utptr_t> &ghost_pointers, int x, int y, int max_div, float dx,
+                         PhysicalRegion<AccessorGeneric> all_cells, PhysicalRegion<AccessorGeneric> all_fluxes)
+{
+  // Global coordinates
+  int max_boundary = max_div * cells_per_piece_side - 1;
+  for (int i = 0; i < cells_per_piece_side; i++)
+  {
+    for (int j = 0; j < cells_per_piece_side; j++)
+    {
+      int global_x = x * cells_per_piece_side + i;
+      int global_y = y * cells_per_piece_side + j;
+
+      ptr_t<Cell> cell_ptr = global[global_x][global_y];
+      Cell cell = all_cells.read(cell_ptr);
+      PointerLocation cell_loc;
+      if ((i == 0) || (i == cells_per_piece_side-1) ||
+          (j == 0) || (j == cells_per_piece_side-1))
+      {
+        cell_loc = SHR;
+      }
+      else
+      {
+        cell_loc = PVT;
+      }
+      // Initialize cell temperature
+      {
+        float x_pos = (float(global_x)+0.5f) * dx - 0.5f;
+        float y_pos = (float(global_y)+0.5f) * dx - 0.5f;
+        float dist = sqrt(x_pos*x_pos + y_pos*y_pos);
+        cell.temperature = 0.5f * (1.0f - tanh((dist-0.2f)/0.025f));
+      }
+      
+      // In-x
+      {
+        cell.inx = flux_ptr;
+        flux_ptr.value++;
+        Flux f = all_fluxes.read(cell.inx);
+        if (global_x == 0)
+        {
+          // The other cell is going to be a boundary cell
+          f.cell_ptrs[0] = bound_ptr; 
+          f.locations[0] = BOUNDARY;
+          bound_ptr.value++;
+          // Update the other cell
+          Cell other = all_cells.read(f.cell_ptrs[0]);
+          other.outx = cell.inx;
+          other.temperature = cell.temperature;
+          all_cells.write(f.cell_ptrs[0],other);
+        }
+        else
+        {
+          f.cell_ptrs[0] = global[global_x-1][global_y]; 
+          // Figure out where the other cell is located
+          if (i == 0)  // ghost
+          {
+            f.locations[0] = GHOST;
+            // Don't need to update the ghost cell's flux
+            // Add this to the list of ghost cell pointers we need
+            ghost_pointers.insert(f.cell_ptrs[0]);
+          }
+          else if ((i == 1) || // shared
+                   (j == 0) || (j == cells_per_piece_side-1))
+          {
+            f.locations[0] = SHR;
+            Cell other = all_cells.read(f.cell_ptrs[0]);
+            other.outx = cell.inx;
+            all_cells.write(f.cell_ptrs[0],other);
+          }
+          else // private
+          {
+            f.locations[0] = PVT;
+            Cell other = all_cells.read(f.cell_ptrs[0]);
+            other.outx = cell.inx;
+            all_cells.write(f.cell_ptrs[0],other);
+          }
+        }
+        // Now do ourselves
+        f.cell_ptrs[1] = cell_ptr;
+        f.locations[1] = cell_loc;
+        f.flux = 1e20f;
+        // Write the flux back
+        all_fluxes.write(cell.inx,f);
+      }
+      
+      // Out-x (only done at the right edge of the piece)
+      if (i == cells_per_piece_side-1)
+      {
+        cell.outx = flux_ptr;
+        flux_ptr.value++;
+        Flux f = all_fluxes.read(cell.outx);
+        f.cell_ptrs[0] = cell_ptr;
+        f.locations[0] = cell_loc;
+        if (global_x == max_boundary)
+        {
+          // Get the next boundary cell
+          f.cell_ptrs[1] = bound_ptr;
+          bound_ptr.value++;
+          f.locations[1] = BOUNDARY;
+          Cell other = all_cells.read(f.cell_ptrs[1]);
+          other.inx = cell.outx;
+          other.temperature = cell.temperature;
+          all_cells.write(f.cell_ptrs[1],other);
+        }
+        else
+        {
+          f.cell_ptrs[1] = global[global_x+1][global_y];
+          // Has to be a ghost cell
+          f.locations[1] = GHOST;
+          // no need to update the ghost cell's flux pointer
+          // Add to the list of ghost pointers we need
+          ghost_pointers.insert(f.cell_ptrs[1]);
+        }
+        f.flux = 1e20f;
+        // Write the flux back
+        all_fluxes.write(cell.outx,f);
+      }
+
+      // In-y
+      {
+        cell.iny = flux_ptr;
+        flux_ptr.value++;
+        Flux f = all_fluxes.read(cell.iny);
+        if (global_y == 0)
+        {
+          // Get the next boundary cell
+          f.cell_ptrs[0] = bound_ptr;
+          bound_ptr.value++;
+          f.locations[0] = BOUNDARY;
+          Cell other = all_cells.read(f.cell_ptrs[0]);
+          other.outy = cell.iny;
+          other.temperature = cell.temperature;
+          all_cells.write(f.cell_ptrs[0],other);
+        }
+        else
+        {
+          f.cell_ptrs[0] = global[global_x][global_y-1];
+          // Figure out where the other cell is
+          if (j == 0) // ghost
+          {
+            f.locations[0] = GHOST;
+            // No need to update the ghost cell's flux
+            // Add it to the list of ghost cell pointers we need
+            ghost_pointers.insert(f.cell_ptrs[0]);
+          }
+          else if ((j == 1) || // shared
+                   (i == 0) || (i == cells_per_piece_side-1))
+          {
+            f.locations[0] = SHR;
+            Cell other = all_cells.read(f.cell_ptrs[0]);
+            other.outy = cell.iny;
+            all_cells.write(f.cell_ptrs[0],other);
+          }
+          else // private
+          {
+            f.locations[0] = PVT;
+            Cell other = all_cells.read(f.cell_ptrs[0]);
+            other.outy = cell.iny;
+            all_cells.write(f.cell_ptrs[0],other);
+          }
+        }
+        // Now do ourselves
+        f.cell_ptrs[1] = cell_ptr;
+        f.locations[1] = cell_loc;
+        f.flux = 1e20f;
+        // Write the flux back
+        all_fluxes.write(cell.iny,f);
+      }
+
+      // Out-y (only done at the top edge of the piece)
+      if (j == cells_per_piece_side-1)
+      {
+        cell.outy = flux_ptr;
+        flux_ptr.value++;
+        Flux f = all_fluxes.read(cell.outy);
+        // Do ourselves first
+        f.cell_ptrs[0] = cell_ptr;
+        f.locations[0] = cell_loc;
+        if (global_y == max_boundary)
+        {
+          // Get the next boundary cell
+          f.cell_ptrs[1] = bound_ptr;
+          bound_ptr.value++;
+          f.locations[1] = BOUNDARY;
+          Cell other = all_cells.read(f.cell_ptrs[1]);
+          other.iny = cell.outy;
+          other.temperature = cell.temperature;
+          all_cells.write(f.cell_ptrs[1],other);
+        }
+        else
+        {
+          // Has to be a ghost cell, no need to update it 
+          f.cell_ptrs[1] = global[global_x][global_y+1];
+          f.locations[1] = GHOST;
+          // No need to update the ghost cell flux
+          // Add it to the list of ghost cell pointers that we need
+          ghost_pointers.insert(f.cell_ptrs[1]);
+        }
+        f.flux = 1e20f;
+        // Write the flux back
+        all_fluxes.write(cell.outy,f);
+      }
+    }
+  }
+}
+
+void initialize_cells_3D(ptr_t<Cell> &bound, ptr_t<Flux> &flux, int cells_per_piece_side, PtrArray3D &global, 
+                         std::set<utptr_t> &ghost_pointers, int x, int y, int z, int max_div, float dx,
+                         PhysicalRegion<AccessorGeneric> all_cells, PhysicalRegion<AccessorGeneric> all_fluxes)
+{
+  assert(false); // TODO: Implement the 3D initialize cells
 }
 
 void set_region_requirements(std::vector<Level> &levels)
@@ -543,7 +1135,7 @@ void parse_input_args(char **argv, int argc, int &num_levels, int &default_num_c
 {
   for (int i = 1; i < argc; i++)
   {
-    if (!strcmp(argv[i], "-l"))
+    if (!strcmp(argv[i], "-l")) // number of levels
     {
       int new_num_levels = atoi(argv[++i]);
       if (new_num_levels > num_levels)
@@ -559,17 +1151,17 @@ void parse_input_args(char **argv, int argc, int &num_levels, int &default_num_c
       num_levels = new_num_levels;
       continue;
     }
-    if (!strcmp(argv[i], "-dc"))
+    if (!strcmp(argv[i], "-dc")) // default number of cells
     {
       default_num_cells = atoi(argv[++i]);
       continue;
     }
-    if (!strcmp(argv[i], "-dd"))
+    if (!strcmp(argv[i], "-dd")) //default divisions
     {
       default_divisions = atoi(argv[++i]);
       continue;
     }
-    if (!strcmp(argv[i], "-c"))
+    if (!strcmp(argv[i], "-c")) // cells on a level: -c level cell_count
     {
       int level = atoi(argv[++i]);
       int local_num_cells = atoi(argv[++i]);
@@ -587,7 +1179,7 @@ void parse_input_args(char **argv, int argc, int &num_levels, int &default_num_c
       num_cells[level] = local_num_cells;
       continue;
     }
-    if (!strcmp(argv[i], "-p"))
+    if (!strcmp(argv[i], "-p")) // pieces on a level: -p level pieces
     {
       int level = atoi(argv[++i]);
       int local_num_pieces = atoi(argv[++i]);
