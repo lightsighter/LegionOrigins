@@ -6,6 +6,8 @@
 #include "lowlevel_gpu.h"
 #endif
 
+#include "lowlevel_dma.h"
+
 GASNETT_THREADKEY_DEFINE(cur_thread);
 GASNETT_THREADKEY_DEFINE(gpu_thread);
 
@@ -872,167 +874,139 @@ namespace RegionRuntime {
 
     static ReductionOpTable reduce_op_table;
 
-    class RegionMetaDataUntyped::Impl {
-    public:
-      Impl(RegionMetaDataUntyped _me, RegionMetaDataUntyped _parent,
-	   size_t _num_elmts, size_t _elmt_size,
-	   const ElementMask *_initial_valid_mask = 0, bool _frozen = false)
-	: me(_me)
-      {
-	locked_data.valid = true;
-	locked_data.parent = _parent;
-	locked_data.frozen = _frozen;
-	locked_data.num_elmts = _num_elmts;
-	locked_data.elmt_size = _elmt_size;
-	locked_data.valid_mask_owners = (1ULL << gasnet_mynode());
-	locked_data.avail_mask_owner = gasnet_mynode();
-	valid_mask = (_initial_valid_mask?
-		        new ElementMask(*_initial_valid_mask) :
-		        new ElementMask(_num_elmts));
-	valid_mask_complete = true;
-	gasnet_hsl_init(&valid_mask_mutex);
-	if(_frozen) {
-	  avail_mask = 0;
-	  locked_data.first_elmt = valid_mask->first_enabled();
-	  locked_data.last_elmt = valid_mask->last_enabled();
-	  log_region.info("subregion %x (of %x) restricted to [%zd,%zd]",
-			  me.id, _parent.id, locked_data.first_elmt,
-			  locked_data.last_elmt);
+    RegionMetaDataUntyped::Impl::Impl(RegionMetaDataUntyped _me, RegionMetaDataUntyped _parent,
+				      size_t _num_elmts, size_t _elmt_size,
+				      const ElementMask *_initial_valid_mask /*= 0*/, bool _frozen /*= false*/)
+      : me(_me)
+    {
+      locked_data.valid = true;
+      locked_data.parent = _parent;
+      locked_data.frozen = _frozen;
+      locked_data.num_elmts = _num_elmts;
+      locked_data.elmt_size = _elmt_size;
+      locked_data.valid_mask_owners = (1ULL << gasnet_mynode());
+      locked_data.avail_mask_owner = gasnet_mynode();
+      valid_mask = (_initial_valid_mask?
+		    new ElementMask(*_initial_valid_mask) :
+		    new ElementMask(_num_elmts));
+      valid_mask_complete = true;
+      gasnet_hsl_init(&valid_mask_mutex);
+      if(_frozen) {
+	avail_mask = 0;
+	locked_data.first_elmt = valid_mask->first_enabled();
+	locked_data.last_elmt = valid_mask->last_enabled();
+	log_region.info("subregion %x (of %x) restricted to [%zd,%zd]",
+			me.id, _parent.id, locked_data.first_elmt,
+			locked_data.last_elmt);
+      } else {
+	avail_mask = new ElementMask(_num_elmts);
+	if(_parent == RegionMetaDataUntyped::NO_REGION) {
+	  avail_mask->enable(0, _num_elmts);
+	  locked_data.first_elmt = 0;
+	  locked_data.last_elmt = _num_elmts - 1;
 	} else {
-	  avail_mask = new ElementMask(_num_elmts);
-	  if(_parent == RegionMetaDataUntyped::NO_REGION) {
-	    avail_mask->enable(0, _num_elmts);
-	    locked_data.first_elmt = 0;
-	    locked_data.last_elmt = _num_elmts - 1;
-	  } else {
-	    StaticAccess<RegionMetaDataUntyped::Impl> pdata(_parent.impl());
-	    locked_data.first_elmt = pdata->first_elmt;
-	    locked_data.last_elmt = pdata->last_elmt;
-	  }
+	  StaticAccess<RegionMetaDataUntyped::Impl> pdata(_parent.impl());
+	  locked_data.first_elmt = pdata->first_elmt;
+	  locked_data.last_elmt = pdata->last_elmt;
 	}
-	lock.init(ID(me).convert<Lock>(), ID(me).node());
-	lock.set_local_data(&locked_data);
       }
+      lock.init(ID(me).convert<Lock>(), ID(me).node());
+      lock.set_local_data(&locked_data);
+    }
 
-      // this version is called when we create a proxy for a remote region
-      Impl(RegionMetaDataUntyped _me)
-	: me(_me)
+    // this version is called when we create a proxy for a remote region
+    RegionMetaDataUntyped::Impl::Impl(RegionMetaDataUntyped _me)
+      : me(_me)
+    {
+      locked_data.valid = false;
+      locked_data.parent = RegionMetaDataUntyped::NO_REGION;
+      locked_data.frozen = false;
+      locked_data.num_elmts = 0;
+      locked_data.elmt_size = 0;  // automatically ask for shared lock to fill these in?
+      locked_data.first_elmt = 0;
+      locked_data.last_elmt = 0;
+      locked_data.valid_mask_owners = 0;
+      locked_data.avail_mask_owner = -1;
+      lock.init(ID(me).convert<Lock>(), ID(me).node());
+      lock.set_local_data(&locked_data);
+      valid_mask = 0;
+      valid_mask_complete = false;
+      gasnet_hsl_init(&valid_mask_mutex);
+    }
+
+    RegionMetaDataUntyped::Impl::~Impl(void)
+    {
+      delete valid_mask;
+    }
+
+    bool RegionMetaDataUntyped::Impl::is_parent_of(RegionMetaDataUntyped other)
+    {
+      while(other != RegionMetaDataUntyped::NO_REGION) {
+	if(other == me) return true;
+	RegionMetaDataUntyped::Impl *other_impl = other.impl();
+	other = StaticAccess<RegionMetaDataUntyped::Impl>(other_impl)->parent;
+      }
+      return false;
+    }
+
+    size_t RegionMetaDataUntyped::Impl::instance_size(const ReductionOpUntyped *redop /*= 0*/)
+    {
+      StaticAccess<RegionMetaDataUntyped::Impl> data(this);
+      assert(data->num_elmts > 0);
+      size_t elmts = data->last_elmt - data->first_elmt + 1;
+      size_t bytes;
+      if(redop) {
+	bytes = elmts * redop->sizeof_rhs;
+      } else {
+	assert(data->elmt_size > 0);
+	bytes = elmts * data->elmt_size;
+      }
+      return bytes;
+    }
+
+    off_t RegionMetaDataUntyped::Impl::instance_adjust(const ReductionOpUntyped *redop /*= 0*/)
+    {
+      StaticAccess<RegionMetaDataUntyped::Impl> data(this);
+      assert(data->num_elmts > 0);
+      off_t elmt_adjust = -(off_t)(data->first_elmt);
+      off_t adjust;
+      if(redop) {
+	adjust = elmt_adjust * redop->sizeof_rhs;
+      } else {
+	assert(data->elmt_size > 0);
+	adjust = elmt_adjust * data->elmt_size;
+      }
+      return adjust;
+    }
+
+    Event RegionMetaDataUntyped::Impl::request_valid_mask(void)
+    {
+      size_t num_elmts = StaticAccess<RegionMetaDataUntyped::Impl>(this)->num_elmts;
+      int valid_mask_owner = -1;
+      
       {
-	locked_data.valid = false;
-	locked_data.parent = RegionMetaDataUntyped::NO_REGION;
-	locked_data.frozen = false;
-	locked_data.num_elmts = 0;
-	locked_data.elmt_size = 0;  // automatically ask for shared lock to fill these in?
-	locked_data.first_elmt = 0;
-	locked_data.last_elmt = 0;
-	locked_data.valid_mask_owners = 0;
-	locked_data.avail_mask_owner = -1;
-	lock.init(ID(me).convert<Lock>(), ID(me).node());
-	lock.set_local_data(&locked_data);
-	valid_mask = 0;
+	AutoHSLLock a(valid_mask_mutex);
+	
+	if(valid_mask != 0) {
+	  // if the mask exists, we've already requested it, so just provide
+	  //  the event that we have
+	  return valid_mask_event;
+	}
+	
+	valid_mask = new ElementMask(num_elmts);
+	valid_mask_owner = ID(me).node(); // a good guess?
+	valid_mask_count = (valid_mask->raw_size() + 2047) >> 11;
 	valid_mask_complete = false;
-	gasnet_hsl_init(&valid_mask_mutex);
+	valid_mask_event = Event::Impl::create_event();
       }
+      
+      ValidMaskRequestArgs args;
+      args.region = me;
+      args.sender = gasnet_mynode();
+      ValidMaskRequestMessage::request(valid_mask_owner, args);
 
-      ~Impl(void)
-      {
-	delete valid_mask;
-      }
-
-      bool is_parent_of(RegionMetaDataUntyped other)
-      {
-	while(other != RegionMetaDataUntyped::NO_REGION) {
-	  if(other == me) return true;
-	  RegionMetaDataUntyped::Impl *other_impl = other.impl();
-	  other = StaticAccess<RegionMetaDataUntyped::Impl>(other_impl)->parent;
-	}
-	return false;
-      }
-
-      size_t instance_size(const ReductionOpUntyped *redop = 0)
-      {
-	StaticAccess<RegionMetaDataUntyped::Impl> data(this);
-	assert(data->num_elmts > 0);
-	size_t elmts = data->last_elmt - data->first_elmt + 1;
-	size_t bytes;
-	if(redop) {
-	  bytes = elmts * redop->sizeof_rhs;
-	} else {
-	  assert(data->elmt_size > 0);
-	  bytes = elmts * data->elmt_size;
-	}
-	return bytes;
-      }
-
-      off_t instance_adjust(const ReductionOpUntyped *redop = 0)
-      {
-	StaticAccess<RegionMetaDataUntyped::Impl> data(this);
-	assert(data->num_elmts > 0);
-	off_t elmt_adjust = -(off_t)(data->first_elmt);
-	off_t adjust;
-	if(redop) {
-	  adjust = elmt_adjust * redop->sizeof_rhs;
-	} else {
-	  assert(data->elmt_size > 0);
-	  adjust = elmt_adjust * data->elmt_size;
-	}
-	return adjust;
-      }
-
-      Event request_valid_mask(void)
-      {
-	size_t num_elmts = StaticAccess<RegionMetaDataUntyped::Impl>(this)->num_elmts;
-	int valid_mask_owner = -1;
-
-	{
-	  AutoHSLLock a(valid_mask_mutex);
-
-	  if(valid_mask != 0) {
-	    // if the mask exists, we've already requested it, so just provide
-	    //  the event that we have
-	    return valid_mask_event;
-	  }
-
-	  valid_mask = new ElementMask(num_elmts);
-	  valid_mask_owner = ID(me).node(); // a good guess?
-	  valid_mask_count = (valid_mask->raw_size() + 2047) >> 11;
-	  valid_mask_complete = false;
-	  valid_mask_event = Event::Impl::create_event();
-	}
-
-	ValidMaskRequestArgs args;
-	args.region = me;
-	args.sender = gasnet_mynode();
-	ValidMaskRequestMessage::request(valid_mask_owner, args);
-
-	return valid_mask_event;
-      }
-
-      RegionMetaDataUntyped me;
-      Lock::Impl lock;
-
-      struct StaticData {
-	bool valid;
-	RegionMetaDataUntyped parent;
-	bool frozen;
-	size_t num_elmts, elmt_size;
-        size_t first_elmt, last_elmt;
-      };
-      struct CoherentData : public StaticData {
-	unsigned valid_mask_owners;
-	int avail_mask_owner;
-      };
-
-      CoherentData locked_data;
-      gasnet_hsl_t valid_mask_mutex;
-      ElementMask *valid_mask;
-      int valid_mask_count;
-      bool valid_mask_complete;
-      Event valid_mask_event;
-      int valid_mask_first, valid_mask_last;
-      bool valid_mask_contig;
-      ElementMask *avail_mask;
-    };
+      return valid_mask_event;
+    }
 
     void handle_valid_mask_request(ValidMaskRequestArgs args)
     {
@@ -2438,7 +2412,7 @@ namespace RegionRuntime {
     public:
       static const size_t MEMORY_STRIDE = 1024;
 
-      GASNetMemory(Memory _me, size_t lmb_skip) 
+      GASNetMemory(Memory _me, size_t size_per_node)
 	: Memory::Impl(_me, 0 /* we'll calculate it below */, MKIND_GASNET,
 		       MEMORY_STRIDE)
       {
@@ -2447,13 +2421,16 @@ namespace RegionRuntime {
 	CHECK_GASNET( gasnet_getSegmentInfo(seginfos, num_nodes) );
 
 	for(int i = 0; i < num_nodes; i++) {
+#ifdef LMBS_AT_BOTTOM
 	  seginfos[i].addr = ((char *)seginfos[i].addr)+lmb_skip;
 	  seginfos[i].size -= lmb_skip;
 	  //printf("gasnet segment %d: [%p,%p)\n",
 	  //	 i, seginfos[i].addr, ((char*)seginfos[i].addr)+seginfos[i].size);
+#endif
+	  assert(seginfos[i].size >= size_per_node);
 	}
 
-	size = seginfos[0].size * num_nodes;
+	size = size_per_node * num_nodes;
 	memory_stride = MEMORY_STRIDE;
 
 	free_blocks[0] = size;
@@ -4775,6 +4752,8 @@ namespace RegionRuntime {
 						       size_t bytes_to_copy,
 						       Event after_copy /*= Event::NO_EVENT*/)
     {
+      //enqueue_dma(src, target, region, elmt_size, bytes_to_copy,
+      //	  Event::NO_EVENT, after_copy);
       DetailedTimer::ScopedPush sp(TIME_COPY);
 
       RegionInstanceUntyped::Impl *src_impl = src.impl();
@@ -6297,7 +6276,7 @@ namespace RegionRuntime {
       Runtime *r = Runtime::runtime = new Runtime;
       r->nodes = new Node[gasnet_nodes()];
       
-      r->global_memory = new GASNetMemory(ID(ID::ID_MEMORY, 0, ID::ID_GLOBAL_MEM, 0).convert<Memory>(), 0);//lmb_size * gasnet_nodes() * 2);
+      r->global_memory = new GASNetMemory(ID(ID::ID_MEMORY, 0, ID::ID_GLOBAL_MEM, 0).convert<Memory>(), gasnet_mem_size_in_mb << 20);
 
       Node *n = &r->nodes[gasnet_mynode()];
 

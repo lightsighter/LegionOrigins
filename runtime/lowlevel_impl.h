@@ -545,6 +545,51 @@ namespace RegionRuntime {
       std::map<Event::gen_t, std::vector<EventWaiter *> > local_waiters; // set of local threads that are waiting on event (keyed by generation)
     };
 
+    class RegionMetaDataUntyped::Impl {
+    public:
+      Impl(RegionMetaDataUntyped _me, RegionMetaDataUntyped _parent,
+	   size_t _num_elmts, size_t _elmt_size,
+	   const ElementMask *_initial_valid_mask = 0, bool _frozen = false);
+
+      // this version is called when we create a proxy for a remote region
+      Impl(RegionMetaDataUntyped _me);
+
+      ~Impl(void);
+
+      bool is_parent_of(RegionMetaDataUntyped other);
+
+      size_t instance_size(const ReductionOpUntyped *redop = 0);
+
+      off_t instance_adjust(const ReductionOpUntyped *redop = 0);
+
+      Event request_valid_mask(void);
+
+      RegionMetaDataUntyped me;
+      Lock::Impl lock;
+
+      struct StaticData {
+	bool valid;
+	RegionMetaDataUntyped parent;
+	bool frozen;
+	size_t num_elmts, elmt_size;
+        size_t first_elmt, last_elmt;
+      };
+      struct CoherentData : public StaticData {
+	unsigned valid_mask_owners;
+	int avail_mask_owner;
+      };
+
+      CoherentData locked_data;
+      gasnet_hsl_t valid_mask_mutex;
+      ElementMask *valid_mask;
+      int valid_mask_count;
+      bool valid_mask_complete;
+      Event valid_mask_event;
+      int valid_mask_first, valid_mask_last;
+      bool valid_mask_contig;
+      ElementMask *avail_mask;
+    };
+
   }; // namespace LowLevel
 }; // namespace RegionRuntime
 

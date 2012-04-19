@@ -40,8 +40,9 @@ struct OutgoingMessage {
   ~OutgoingMessage(void)
   {
     if((payload_mode == PAYLOAD_COPY) || (payload_mode == PAYLOAD_FREE)) {
-      assert(payload_size > 0);
-      free(payload);
+      if(payload_size > 0) {
+	free(payload);
+      }
     }
   }
 
@@ -50,7 +51,7 @@ struct OutgoingMessage {
     if(_payload_mode != PAYLOAD_NONE) {
       payload_mode = _payload_mode;
       payload_size = _payload_size;
-      if(payload_mode == PAYLOAD_COPY) {
+      if(_payload && (payload_mode == PAYLOAD_COPY)) {
 	payload = malloc(payload_size);
 	memcpy(payload, _payload, payload_size);
       } else 
@@ -225,7 +226,7 @@ protected:
   {
     switch(hdr->num_args) {
     case 1:
-      if(hdr->payload_size)
+      if(hdr->payload_mode != PAYLOAD_NONE)
 	gasnet_AMRequestMedium1(peer, hdr->msgid, hdr->payload, hdr->payload_size,
 				hdr->args[0]);
       else
@@ -233,7 +234,7 @@ protected:
       break;
 
     case 2:
-      if(hdr->payload_size)
+      if(hdr->payload_mode != PAYLOAD_NONE)
 	gasnet_AMRequestMedium2(peer, hdr->msgid, hdr->payload, hdr->payload_size,
 				hdr->args[0], hdr->args[1]);
       else
@@ -241,7 +242,7 @@ protected:
       break;
 
     case 3:
-      if(hdr->payload_size)
+      if(hdr->payload_mode != PAYLOAD_NONE)
 	gasnet_AMRequestMedium3(peer, hdr->msgid, hdr->payload, hdr->payload_size,
 				hdr->args[0], hdr->args[1], hdr->args[2]);
       else
@@ -250,7 +251,7 @@ protected:
       break;
 
     case 4:
-      if(hdr->payload_size)
+      if(hdr->payload_mode != PAYLOAD_NONE)
 	gasnet_AMRequestMedium4(peer, hdr->msgid, hdr->payload, hdr->payload_size,
 				hdr->args[0], hdr->args[1], hdr->args[2],
 				hdr->args[3]);
@@ -261,7 +262,7 @@ protected:
       break;
 
     case 5:
-      if(hdr->payload_size)
+      if(hdr->payload_mode != PAYLOAD_NONE)
 	gasnet_AMRequestMedium5(peer, hdr->msgid, hdr->payload, hdr->payload_size,
 				hdr->args[0], hdr->args[1], hdr->args[2],
 				hdr->args[3], hdr->args[4]);
@@ -272,7 +273,7 @@ protected:
       break;
 
     case 6:
-      if(hdr->payload_size)
+      if(hdr->payload_mode != PAYLOAD_NONE)
 	gasnet_AMRequestMedium6(peer, hdr->msgid, hdr->payload, hdr->payload_size,
 				hdr->args[0], hdr->args[1], hdr->args[2],
 				hdr->args[3], hdr->args[4], hdr->args[5]);
@@ -283,7 +284,7 @@ protected:
       break;
 
     case 12:
-      if(hdr->payload_size)
+      if(hdr->payload_mode != PAYLOAD_NONE)
 	gasnet_AMRequestMedium12(peer, hdr->msgid, hdr->payload, hdr->payload_size,
 				 hdr->args[0], hdr->args[1], hdr->args[2],
 				 hdr->args[3], hdr->args[4], hdr->args[5],
