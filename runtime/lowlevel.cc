@@ -55,6 +55,7 @@ GASNETT_THREADKEY_DEFINE(cur_thread);
 // GASnet helper stuff
 #endif
 
+#ifdef OLD_LMB_STUFF
 struct LongMessageBuffer {
   gasnet_hsl_t mutex;
   char *w_bases[2];
@@ -222,6 +223,7 @@ void handle_lmb_flip_ack(FlipLMBAckArgs args)
   lmb->w_avail[args.buffer] = true;
   gasnet_hsl_unlock(&lmb->mutex);
 }
+#endif
 
 // Implementation of Detailed Timer
 namespace RegionRuntime {
@@ -255,6 +257,7 @@ namespace RegionRuntime {
       ROLL_UP_DATA_MSGID,
       CLEAR_TIMER_MSGID,
       DESTROY_INST_MSGID,
+      REMOTE_WRITE_MSGID,
     };
 
     // detailed timer stuff
@@ -426,7 +429,8 @@ namespace RegionRuntime {
         count += 2;
       }
       RollUpDataMessage::request(args.sender, args.rollup_ptr,
-                                 return_data, count*sizeof(double));
+                                 return_data, count*sizeof(double),
+				 PAYLOAD_KEEP);
     }
 
     MultiNodeRollUp::MultiNodeRollUp(std::map<int,double>& _timers)
@@ -449,7 +453,7 @@ namespace RegionRuntime {
 
       // we can look at counter without the lock
       while(count_left > 0)
-        gasnet_AMPoll();
+        do_some_polling();
     }
 
     void MultiNodeRollUp::handle_data(const void *data, size_t datalen)
@@ -561,6 +565,7 @@ namespace RegionRuntime {
 	events.reserve(10000);
 	num_events = 0;
 	locks.reserve(10000);
+	assert(0);
 	num_locks = 0;
       }
 
@@ -801,9 +806,9 @@ namespace RegionRuntime {
     Node::Node(void)
     {
       gasnet_hsl_init(&mutex);
-      events.reserve(10000);
+      events.reserve(100000);
       num_events = 0;
-      locks.reserve(10000);
+      locks.reserve(100000);
       num_locks = 0;
     }
 
@@ -1049,14 +1054,16 @@ namespace RegionRuntime {
       while(mask_len >= (1 << 11)) {
 	ValidMaskDataMessage::request(args.sender, resp_args,
 				      mask_data,
-				      1 << 11);
+				      1 << 11,
+				      PAYLOAD_KEEP);
 	mask_data += 1 << 11;
 	mask_len -= 1 << 11;
 	resp_args.block_id++;
       }
       if(mask_len) {
 	ValidMaskDataMessage::request(args.sender, resp_args,
-				      mask_data, mask_len);
+				      mask_data, mask_len,
+				      PAYLOAD_KEEP);
       }
     }
 
@@ -1748,7 +1755,8 @@ namespace RegionRuntime {
 
       if(grant_target != -1)
 	LockGrantMessage::request(grant_target, g_args,
-				  impl->local_data, impl->local_data_size);
+				  impl->local_data, impl->local_data_size,
+				  PAYLOAD_KEEP);
     }
 
     /*static*/ void /*Lock::Impl::*/handle_lock_release(LockReleaseArgs args)
@@ -1986,7 +1994,8 @@ namespace RegionRuntime {
 
       if(grant_target != -1)
 	LockGrantMessage::request(grant_target, g_args,
-				  local_data, local_data_size);
+				  local_data, local_data_size,
+				  PAYLOAD_KEEP);
 
       for(std::deque<Event>::iterator it = to_wake.begin();
 	  it != to_wake.end();
@@ -3672,7 +3681,7 @@ namespace RegionRuntime {
       //  we wait
       //printf("waiting on event, polling gasnet to hopefully not die\n");
       while(!e->has_triggered(gen)) {
-	gasnet_AMPoll();
+	do_some_polling();
 	//usleep(10000);
       }
       return;
@@ -3720,7 +3729,8 @@ namespace RegionRuntime {
 	msgargs.func_id = func_id;
 	msgargs.start_event = start_event;
 	msgargs.finish_event = finish_event;
-	SpawnTaskMessage::request(ID(me).node(), msgargs, args, arglen);
+	SpawnTaskMessage::request(ID(me).node(), msgargs, args, arglen,
+				  PAYLOAD_COPY);
       }
     };
 
@@ -4503,6 +4513,42 @@ namespace RegionRuntime {
       Event after_copy;
     };
 
+    struct RemoteWriteArgs {
+      Memory mem;
+      off_t offset;
+      Event event;
+    };
+
+    void handle_remote_write(RemoteWriteArgs args,
+			     const void *data, size_t datalen)
+    {
+      Memory::Impl *impl = args.mem.impl();
+
+      log_copy.debug("received remote write request: mem=%x, offset=%zd, size=%zd, event=%x/%d",
+		     args.mem.id, args.offset, datalen,
+		     args.event.id, args.event.gen);
+
+      switch(impl->kind) {
+      case Memory::Impl::MKIND_SYSMEM:
+	{
+	  impl->put_bytes(args.offset, data, datalen);
+	  if(args.event.exists())
+	    args.event.impl()->trigger(args.event.gen,
+				       gasnet_mynode());
+	  break;
+	}
+
+      case Memory::Impl::MKIND_ZEROCOPY:
+      case Memory::Impl::MKIND_GPUFB:
+      default:
+	assert(0);
+      }
+    }
+
+    typedef ActiveMessageMediumNoReply<REMOTE_WRITE_MSGID,
+				       RemoteWriteArgs,
+				       handle_remote_write> RemoteWriteMessage;
+
     namespace RangeExecutors {
       class Memcpy {
       public:
@@ -4656,6 +4702,70 @@ namespace RegionRuntime {
 	size_t elmt_size;
 	char chunk[CHUNK_SIZE];
       };
+
+      class RemoteWrite {
+      public:
+	RemoteWrite(Memory _tgt_mem, off_t _tgt_offset,
+		    const void *_src_ptr, size_t _elmt_size,
+		    Event _event)
+	  : tgt_mem(_tgt_mem), tgt_offset(_tgt_offset),
+	    src_ptr((const char *)_src_ptr), elmt_size(_elmt_size),
+	    event(_event), span_count(0) {}
+
+	void do_span(int offset, int count)
+	{
+	  // if this isn't the first span, push the previous one out before
+	  //  we overwrite it
+	  if(span_count > 0)
+	    really_do_span(false);
+
+	  span_count++;
+	  prev_offset = offset;
+	  prev_count = count;
+	}
+
+	Event finish(void)
+	{
+	  // if we got any spans, the last one is still waiting to go out
+	  if(span_count > 0)
+	    really_do_span(true);
+
+	  return event;
+	}
+
+      protected:
+	void really_do_span(bool last)
+	{
+	  off_t byte_offset = prev_offset * elmt_size;
+	  size_t byte_count = prev_count * elmt_size;
+
+	  // if we don't have an event for our completion, we need one now
+	  if(!event.exists())
+	    event = Event::Impl::create_event();
+
+	  RemoteWriteArgs args;
+	  args.mem = tgt_mem;
+	  args.offset = byte_offset;
+	  if(last)
+	    args.event = event;
+	  else
+	    args.event = Event::NO_EVENT;
+	
+	  RemoteWriteMessage::request(ID(tgt_mem).node(), args,
+				      src_ptr + byte_offset,
+				      byte_count,
+				      PAYLOAD_KEEP);
+	}
+
+	Memory tgt_mem;
+	off_t tgt_offset;
+	const char *src_ptr;
+	size_t elmt_size;
+	Event event;
+	int span_count;
+	int prev_offset, prev_count;
+      };
+
     }; // namespace RangeExecutors
 
     /*static*/ Event RegionInstanceUntyped::Impl::copy(RegionInstanceUntyped src, 
@@ -4771,6 +4881,19 @@ namespace RegionRuntime {
 	      return after_copy;
 	    }
 	    break;
+
+	  case Memory::Impl::MKIND_REMOTE:
+	    {
+	      // use active messages to push data to other node
+	      RangeExecutors::RemoteWrite rexec(tgt_impl->memory,
+						tgt_data->access_offset,
+						src_ptr, elmt_size,
+						after_copy);
+
+	      ElementMask::forall_ranges(rexec, *reg_impl->valid_mask);
+
+	      return rexec.finish();
+	    }
 
 	  default:
 	    assert(0);
@@ -6032,7 +6155,7 @@ namespace RegionRuntime {
     static void *gasnet_poll_thread_loop(void *data)
     {
       while(1) {
-	gasnet_AMPoll();
+	do_some_polling();
 	//usleep(10000);
       }
       return 0;
@@ -6139,8 +6262,10 @@ namespace RegionRuntime {
 
       gasnet_handlerentry_t handlers[128];
       int hcount = 0;
+#ifdef OLD_LMB_STUFF
       hcount += FlipLMBMessage::add_handler_entries(&handlers[hcount]);
       hcount += FlipLMBAckMessage::add_handler_entries(&handlers[hcount]);
+#endif
       hcount += NodeAnnounceMessage::add_handler_entries(&handlers[hcount]);
       hcount += SpawnTaskMessage::add_handler_entries(&handlers[hcount]);
       hcount += LockRequestMessage::add_handler_entries(&handlers[hcount]);
@@ -6158,16 +6283,13 @@ namespace RegionRuntime {
       hcount += RollUpDataMessage::add_handler_entries(&handlers[hcount]);
       hcount += ClearTimerRequestMessage::add_handler_entries(&handlers[hcount]);
       hcount += DestroyInstanceMessage::add_handler_entries(&handlers[hcount]);
+      hcount += RemoteWriteMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage2::add_handler_entries(&handlers[hcount]);
 
-      CHECK_GASNET( gasnet_attach(handlers, hcount, (gasnet_mem_size_in_mb << 20), 0) );
+      init_endpoints(handlers, hcount, gasnet_mem_size_in_mb);
 
-      size_t lmb_size = 16 << 20;
-      init_lmbs(lmb_size);
-
-      pthread_t poll_thread;
-      CHECK_PTHREAD( pthread_create(&poll_thread, 0, gasnet_poll_thread_loop, 0) );
+      start_polling_threads(1);
 	
       //gasnet_seginfo_t seginfos = new gasnet_seginfo_t[num_nodes];
       //CHECK_GASNET( gasnet_getSegmentInfo(seginfos, num_nodes) );
@@ -6175,7 +6297,7 @@ namespace RegionRuntime {
       Runtime *r = Runtime::runtime = new Runtime;
       r->nodes = new Node[gasnet_nodes()];
       
-      r->global_memory = new GASNetMemory(ID(ID::ID_MEMORY, 0, ID::ID_GLOBAL_MEM, 0).convert<Memory>(), lmb_size * gasnet_nodes() * 2);
+      r->global_memory = new GASNetMemory(ID(ID::ID_MEMORY, 0, ID::ID_GLOBAL_MEM, 0).convert<Memory>(), 0);//lmb_size * gasnet_nodes() * 2);
 
       Node *n = &r->nodes[gasnet_mynode()];
 
@@ -6329,11 +6451,13 @@ namespace RegionRuntime {
       // now announce ourselves to everyone else
       for(int i = 0; i < gasnet_nodes(); i++)
 	if(i != gasnet_mynode())
-	  NodeAnnounceMessage::request(i, announce_data, adata, apos*sizeof(unsigned));
+	  NodeAnnounceMessage::request(i, announce_data, 
+				       adata, apos*sizeof(unsigned),
+				       PAYLOAD_COPY);
 
       // wait until we hear from everyone else?
       while(announcements_received < (gasnet_nodes() - 1))
-	gasnet_AMPoll();
+	do_some_polling();
 
       log_annc.info("node %d has received all of its announcements\n", gasnet_mynode());
 

@@ -45,7 +45,7 @@ CC_FLAGS	+= -DCOMPILE_TIME_MIN_LEVEL=$(OUTPUT_LEVEL)
 
 # Set the source files
 ifndef SHARED_LOWLEVEL
-LOW_RUNTIME_SRC	+= $(LG_RT_DIR)/lowlevel.cc $(LG_RT_DIR)/lowlevel_gpu.cc 
+LOW_RUNTIME_SRC	+= $(LG_RT_DIR)/lowlevel.cc $(LG_RT_DIR)/lowlevel_gpu.cc $(LG_RT_DIR)/activemsg.cc
 GPU_RUNTIME_SRC += 
 else
 LOW_RUNTIME_SRC	+= $(LG_RT_DIR)/shared_lowlevel.cc 

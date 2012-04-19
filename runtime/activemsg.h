@@ -10,8 +10,26 @@ GASNETT_THREADKEY_DECLARE(in_handler);
 
 #include "utilities.h"
 
-extern void *get_remote_msgptr(int target, size_t bytes_needed);
-extern void handle_long_msgptr(int source, void *ptr);
+extern void init_endpoints(gasnet_handlerentry_t *handlers, int hcount,
+			   int gasnet_mem_size_in_mb);
+extern void start_polling_threads(int count);
+
+// do a little bit of polling to try to move messages along, but return
+//  to the caller rather than spinning
+extern void do_some_polling(void);
+
+enum { PAYLOAD_NONE, // no payload in packet
+       PAYLOAD_KEEP, // use payload pointer, guaranteed to be stable
+       PAYLOAD_FREE, // take ownership of payload, free when done
+       PAYLOAD_COPY, // make a copy of the payload
+};
+
+extern void enqueue_message(gasnet_node_t target, int msgid,
+			    const void *args, size_t arg_size,
+			    const void *payload, size_t payload_size,
+			    int payload_mode);
+
+extern void handle_long_msgptr(gasnet_node_t source, void *ptr);
 
 template <class T> struct HandlerReplyFuture {
   gasnet_hsl_t mutex;
@@ -275,6 +293,9 @@ class ActiveMessageShortNoReply {
 
   static void request(gasnet_node_t dest, MSGTYPE args)
   {
+    enqueue_message(dest, MSGID, &args, sizeof(MSGTYPE),
+		    0, 0, PAYLOAD_NONE);
+#ifdef OLD_AM_STUFF
 #ifdef CHECK_REENTRANT_MESSAGES
     if(gasnett_threadkey_get(in_handler)) {
       printf("Help!  Message send inside handler!\n");
@@ -289,6 +310,7 @@ class ActiveMessageShortNoReply {
       u.typed = args;
       u.raw.request_short(dest);
     }
+#endif
   }
 
   static int add_handler_entries(gasnet_handlerentry_t *entries)
@@ -304,9 +326,13 @@ class ActiveMessageMediumNoReply {
  public:
   typedef MessageRawArgs<MSGTYPE,MSGID,dummy_short_handler,FNPTR,(sizeof(MSGTYPE)+3)/4> MessageRawArgsType;
 
-  static void request(gasnet_node_t dest, MSGTYPE args, 
-                      const void *data, size_t datalen)
+  static void request(gasnet_node_t dest, const MSGTYPE &args, 
+                      const void *data, size_t datalen,
+		      int payload_mode)
   {
+    enqueue_message(dest, MSGID, &args, sizeof(MSGTYPE),
+		    data, datalen, payload_mode);
+#ifdef OLD_AM_STUFF
     void *dstptr = 0;
     if(datalen > gasnet_AMMaxMedium()) {
       //fprintf(stderr, "DATALEN = %zd (max=%zd)\n", datalen,
@@ -330,6 +356,7 @@ class ActiveMessageMediumNoReply {
       else
 	u.raw.request_medium(dest, data, datalen);
     }
+#endif
   }
 
   static int add_handler_entries(gasnet_handlerentry_t *entries)
