@@ -2181,6 +2181,7 @@ namespace RegionRuntime {
 	Lock get_lock(void);
         void perform_copy_operation(RegionInstanceImpl *target, const ElementMask &src_mask, const ElementMask &dst_mask);
         bool is_reduction(void) const { return reduction; }
+        void* get_base_ptr(void) const { return base_ptr; }
     private:
         class CopyOperation {
         public:
@@ -2556,7 +2557,8 @@ namespace RegionRuntime {
 #ifdef DEBUG_LOW_LEVEL
       assert(!this->is_reduction_only());
 #endif
-      return RegionInstanceAccessorUntyped<AccessorArray>(this->internal_data); 
+      RegionInstanceImpl *impl = (RegionInstanceImpl*)internal_data;
+      return RegionInstanceAccessorUntyped<AccessorArray>(impl->get_base_ptr()); 
     }
 
     ////////////////////////////////////////////////////////
