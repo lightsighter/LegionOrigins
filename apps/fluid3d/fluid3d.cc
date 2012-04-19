@@ -29,6 +29,7 @@ enum {
   TASKID_MAIN_TASK,
   TASKID_LOAD_FILE,
   TASKID_SAVE_FILE,
+  TASKID_DUMMY_TASK,
 };
 
 const unsigned MAX_PARTICLES = 16;
@@ -912,6 +913,22 @@ void main_task(const void *args, size_t arglen,
       f.release();
     }
 
+    // Elliott: hack around deadlock
+#define ELLIOTT_HACK_DEADLOCK 1
+#if ELLIOTT_HACK_DEADLOCK
+    {
+      std::vector<RegionRequirement> init_regions;
+      init_regions.push_back(RegionRequirement(tlr.edge_cells,
+                                               READ_WRITE, NO_MEMORY, EXCLUSIVE,
+                                               tlr.edge_cells));
+      Future f = runtime->execute_task(ctx, TASKID_DUMMY_TASK,
+                                       init_regions,
+                                       TaskArgument(0, 0),
+                                       0, 0);
+      f.release();
+    }
+#endif
+
     // Rebuild reduce (reduction)
     for (unsigned id = 0; id < numBlocks; id++)
     {
@@ -943,6 +960,21 @@ void main_task(const void *args, size_t arglen,
                                        0, id);
       f.release();
     }
+
+    // Elliott: hack around deadlock
+#if ELLIOTT_HACK_DEADLOCK
+    {
+      std::vector<RegionRequirement> init_regions;
+      init_regions.push_back(RegionRequirement(tlr.edge_cells,
+                                               READ_WRITE, NO_MEMORY, EXCLUSIVE,
+                                               tlr.edge_cells));
+      Future f = runtime->execute_task(ctx, TASKID_DUMMY_TASK,
+                                       init_regions,
+                                       TaskArgument(0, 0),
+                                       0, 0);
+      f.release();
+    }
+#endif
 
     // init forces and scatter densities
     for (unsigned id = 0; id < numBlocks; id++)
@@ -976,6 +1008,21 @@ void main_task(const void *args, size_t arglen,
                                        0, id);
       f.release();
     }
+
+    // Elliott: hack around deadlock
+#if ELLIOTT_HACK_DEADLOCK
+    {
+      std::vector<RegionRequirement> init_regions;
+      init_regions.push_back(RegionRequirement(tlr.edge_cells,
+                                               READ_WRITE, NO_MEMORY, EXCLUSIVE,
+                                               tlr.edge_cells));
+      Future f = runtime->execute_task(ctx, TASKID_DUMMY_TASK,
+                                       init_regions,
+                                       TaskArgument(0, 0),
+                                       0, 0);
+      f.release();
+    }
+#endif
 
     // Gather forces and advance
     for (unsigned id = 0; id < numBlocks; id++)
@@ -1016,6 +1063,21 @@ void main_task(const void *args, size_t arglen,
       else
         f.release();
     }
+
+    // Elliott: hack around deadlock
+#if ELLIOTT_HACK_DEADLOCK
+    {
+      std::vector<RegionRequirement> init_regions;
+      init_regions.push_back(RegionRequirement(tlr.edge_cells,
+                                               READ_WRITE, NO_MEMORY, EXCLUSIVE,
+                                               tlr.edge_cells));
+      Future f = runtime->execute_task(ctx, TASKID_DUMMY_TASK,
+                                       init_regions,
+                                       TaskArgument(0, 0),
+                                       0, 0);
+      f.release();
+    }
+#endif
 
     // flip the phase
 #if ENABLE_DOUBLE_BUFFERING
@@ -1881,6 +1943,17 @@ void save_file(const void *args, size_t arglen,
   log_app.info("Done saving file.");
 }
 
+/*
+ * Elliott: A hack to work around deadlocks in the GASNET runtime
+ * caused by copying directly between local memories.
+ */
+template<AccessorType AT>
+void dummy_task(const void *args, size_t arglen,
+               std::vector<PhysicalRegion<AT> > &regions,
+               Context ctx, HighLevelRuntime *runtime)
+{
+}
+
 static bool sort_by_proc_id(const std::pair<Processor,Memory> &a,
                             const std::pair<Processor,Memory> &b)
 {
@@ -1984,6 +2057,7 @@ public:
     case TASKID_MAIN_TASK:
     case TASKID_LOAD_FILE:
     case TASKID_SAVE_FILE:
+    case TASKID_DUMMY_TASK:
       {
         // Put this on the first processor
         return loc_procs[0].first;
@@ -2044,6 +2118,7 @@ public:
     case TASKID_MAIN_TASK:
     case TASKID_LOAD_FILE:
     case TASKID_SAVE_FILE:
+    case TASKID_DUMMY_TASK:
       {
         // Don't care, put it in global memory
         target_ranking.push_back(global_memory);
@@ -2173,6 +2248,7 @@ int main(int argc, char **argv)
   HighLevelRuntime::register_single_task<gather_forces_and_advance<AccessorGeneric> >(TASKID_GATHER_FORCES,Processor::LOC_PROC,"gather_forces");
   HighLevelRuntime::register_single_task<load_file<AccessorGeneric> >(TASKID_LOAD_FILE,Processor::LOC_PROC,"load_file");
   HighLevelRuntime::register_single_task<save_file<AccessorGeneric> >(TASKID_SAVE_FILE,Processor::LOC_PROC,"save_file");
+  HighLevelRuntime::register_single_task<dummy_task<AccessorGeneric> >(TASKID_DUMMY_TASK,Processor::LOC_PROC,"dummy_task");
 
   return HighLevelRuntime::start(argc,argv);
 }
