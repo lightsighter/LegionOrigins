@@ -28,6 +28,41 @@
 enum { MSGID_FLIP_REQ = 254,
        MSGID_FLIP_ACK = 255 };
 
+#ifdef DEBUG_MEM_REUSE
+static int payload_count = 0;
+#endif
+
+static const int DEFERRED_FREE_COUNT = 10;
+gasnet_hsl_t deferred_free_mutex;
+int deferred_free_pos;
+void *deferred_frees[DEFERRED_FREE_COUNT];
+
+void init_deferred_frees(void)
+{
+  gasnet_hsl_init(&deferred_free_mutex);
+  deferred_free_pos = 0;
+  for(int i = 0; i < DEFERRED_FREE_COUNT; i++)
+    deferred_frees[i] = 0;
+}
+
+void deferred_free(void *ptr)
+{
+#ifdef DEBUG_MEM_REUSE
+  printf("%d: deferring free of %p\n", gasnet_mynode(), ptr);
+#endif
+  gasnet_hsl_lock(&deferred_free_mutex);
+  void *oldptr = deferred_frees[deferred_free_pos];
+  deferred_frees[deferred_free_pos] = ptr;
+  deferred_free_pos = (deferred_free_pos + 1) % DEFERRED_FREE_COUNT;
+  gasnet_hsl_unlock(&deferred_free_mutex);
+  if(oldptr) {
+#ifdef DEBUG_MEM_REUSE
+    printf("%d: actual free of %p\n", gasnet_mynode(), oldptr);
+#endif
+    free(oldptr);
+  }
+}
+
 struct OutgoingMessage {
   OutgoingMessage(unsigned _msgid, unsigned _num_args, const void *_args)
     : msgid(_msgid), num_args(_num_args),
@@ -41,7 +76,14 @@ struct OutgoingMessage {
   {
     if((payload_mode == PAYLOAD_COPY) || (payload_mode == PAYLOAD_FREE)) {
       if(payload_size > 0) {
-	free(payload);
+#ifdef DEBUG_MEM_REUSE
+	for(size_t i = 0; i < payload_size >> 2; i++)
+	  ((unsigned *)payload)[i] = ((0xdc + gasnet_mynode()) << 24) + payload_num;
+	//memset(payload, 0xdc+gasnet_mynode(), payload_size);
+	printf("%d: freeing payload %x = [%p, %p)\n",
+	       gasnet_mynode(), payload_num, payload, ((char *)payload) + payload_size);
+#endif
+	deferred_free(payload);
       }
     }
   }
@@ -53,6 +95,12 @@ struct OutgoingMessage {
       payload_size = _payload_size;
       if(_payload && (payload_mode == PAYLOAD_COPY)) {
 	payload = malloc(payload_size);
+#ifdef DEBUG_MEM_REUSE
+	payload_num = __sync_add_and_fetch(&payload_count, 1);
+	printf("%d: copying payload %x = [%p, %p) (%zd)\n",
+	       gasnet_mynode(), payload_num, payload, ((char *)payload) + payload_size,
+	       payload_size);
+#endif
 	memcpy(payload, _payload, payload_size);
       } else 
 	payload = _payload;
@@ -65,6 +113,9 @@ struct OutgoingMessage {
   size_t payload_size;
   int payload_mode;
   int args[16];
+#ifdef DEBUG_MEM_REUSE
+  int payload_num;
+#endif
 };
     
 class ActiveMessageEndpoint {
@@ -117,9 +168,11 @@ public:
 	  out_long_hdrs.pop();
 
 	  gasnet_hsl_unlock(&mutex);
+#ifdef DEBUG_LMB
 	  printf("LMB: sending %zd bytes to node %d, [%p,%p)\n",
 		 hdr->payload_size, peer,
 		 dest_ptr, dest_ptr + hdr->payload_size);
+#endif
 	  send_long(hdr, dest_ptr);
 	  delete hdr;
 	  count++;
@@ -136,9 +189,11 @@ public:
 	  // now let go of the lock and send the flip request
 	  gasnet_hsl_unlock(&mutex);
 
+#ifdef DEBUG_LMB
 	  printf("LMB: flipping buffer %d for node %d, [%p,%p), count=%d\n",
 		 flip_buffer, peer, lmb_w_bases[flip_buffer],
 		 lmb_w_bases[flip_buffer]+LMB_SIZE, flip_count);
+#endif
 
 	  gasnet_AMRequestShort2(peer, MSGID_FLIP_REQ,
 				 flip_buffer, flip_count);
@@ -194,18 +249,22 @@ public:
     }
     assert(r_buffer >= 0);
 
+#ifdef DEBUG_LMB
     printf("LMB: received %p from %d in buffer %d, [%p, %p)\n",
 	   ptr, peer, r_buffer, lmb_r_bases[r_buffer],
 	   lmb_r_bases[r_buffer] + LMB_SIZE);
+#endif
 
     // now take the lock to increment the r_count and decide if we need
     //  to ack (can't actually send it here, so queue it up)
     gasnet_hsl_lock(&mutex);
     lmb_r_counts[r_buffer]++;
     if(lmb_r_counts[r_buffer] == 0) {
+#ifdef DEBUG_LMB
       printf("LMB: acking flip of buffer %d for node %d, [%p,%p)\n",
 	     r_buffer, peer, lmb_r_bases[r_buffer],
 	     lmb_r_bases[r_buffer]+LMB_SIZE);
+#endif
 
       OutgoingMessage *hdr = new OutgoingMessage(MSGID_FLIP_ACK, 1, &r_buffer);
       out_short_hdrs.push(hdr);
@@ -218,16 +277,20 @@ public:
   //  we can ack
   void handle_flip_request(int buffer, int count)
   {
+#ifdef DEBUG_LMB
     printf("LMB: received flip of buffer %d for node %d, [%p,%p), count=%d\n",
 	   buffer, peer, lmb_r_bases[buffer],
 	   lmb_r_bases[buffer]+LMB_SIZE, count);
+#endif
 
     gasnet_hsl_lock(&mutex);
     lmb_r_counts[buffer] -= count;
     if(lmb_r_counts[buffer] == 0) {
+#ifdef DEBUG_LMB
       printf("LMB: acking flip of buffer %d for node %d, [%p,%p)\n",
 	     buffer, peer, lmb_r_bases[buffer],
 	     lmb_r_bases[buffer]+LMB_SIZE);
+#endif
 
       OutgoingMessage *hdr = new OutgoingMessage(MSGID_FLIP_ACK, 1, &buffer);
       out_short_hdrs.push(hdr);
@@ -240,9 +303,11 @@ public:
   //  (don't even need to take the mutex!)
   void handle_flip_ack(int buffer)
   {
+#ifdef DEBUG_LMB
     printf("LMB: received flip ack of buffer %d for node %d, [%p,%p)\n",
 	   buffer, peer, lmb_w_bases[buffer],
 	   lmb_w_bases[buffer]+LMB_SIZE);
+#endif
 
     lmb_w_avail[buffer] = true;
   }
@@ -427,6 +492,8 @@ void init_endpoints(gasnet_handlerentry_t *handlers, int hcount,
       endpoints[i] = new ActiveMessageEndpoint(i, seginfos);
 
   delete[] seginfos;
+
+  init_deferred_frees();
 }
 
 static int num_polling_threads = 0;
