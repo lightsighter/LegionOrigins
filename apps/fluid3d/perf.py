@@ -23,7 +23,7 @@ def newer (filename1, filename2):
 ############################################################
 ## Machine Specs
 
-_cpu_count_per_node = 24
+_cpu_count_per_node = 12
 def get_cpu_count_per_node():
     return _cpu_count_per_node
 
@@ -177,9 +177,9 @@ if __name__ == '__main__':
     init_baseline(parsec_pthreads, _num_reps, nbx = 1, nby = 1, nbz = 1, steps = _num_steps)
     sizes = range(1, 5)
     for size in sizes:
-	nbx = 1 << (size/2);
+        nbx = 1 << (size/2);
         nby = 1
-	nbz = 1 << (size/2);
+        nbz = 1 << (size/2);
         if nbx*nbz != 1 << size:
             nbx *= 2
         perf_check(parsec_pthreads, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps)
@@ -187,10 +187,21 @@ if __name__ == '__main__':
 
     print 'Legion:'
     init_baseline(legion, _num_reps, nbx = 1, nby = 1, nbz = 1, steps = _num_steps)
-    sizes = range(1, 5)
+    sizes = range(1, 8)
     for size in sizes:
-        for sx in xrange(size + 1):
-            for sy in xrange(size - sx + 1):
-                sz = size - sx - sy
-                nbx, nby, nbz = 1 << sx, 1 << sy, 1 << sz
-                perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps)
+        nbx = 1 << (size/2);
+        nby = 1
+        nbz = 1 << (size/2);
+        if nbx*nbz != 1 << size:
+            nbx *= 2
+        perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps)
+    print
+
+    #init_baseline(legion, _num_reps, nbx = 1, nby = 1, nbz = 1, steps = _num_steps)
+    #sizes = range(1, 5)
+    #for size in sizes:
+    #    for sx in xrange(size + 1):
+    #        for sy in xrange(size - sx + 1):
+    #            sz = size - sx - sy
+    #            nbx, nby, nbz = 1 << sx, 1 << sy, 1 << sz
+    #            perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps)
