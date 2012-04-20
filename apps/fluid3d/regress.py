@@ -35,10 +35,10 @@ def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None, output = None,
            **_ignored):
     cmd_out = fresh_file('legion', 'log')
     retcode = call_silently(
-        (['gasnetrun_ibv', '-n', str(1)] if _legion_use_gasnet else []) +
+        (['gasnetrun_ibv', '-n', str(2)] if _legion_use_gasnet else []) +
         [_legion_fluid,
          '-ll:csize', '16384', '-ll:gsize', '2000',
-         '-ll:cpu', str(nbx*nby*nbz),
+         '-ll:cpu', str(nbx*nby*nbz/2),
          '-level', str(legion_logging),
          '-nbx', str(nbx), '-nby', str(nby), '-nbz', str(nbz), '-s', str(steps),
         ],
