@@ -872,7 +872,7 @@ namespace RegionRuntime {
 				       ValidMaskDataArgs,
 				       handle_valid_mask_data> ValidMaskDataMessage;
 
-    static ReductionOpTable reduce_op_table;
+    ReductionOpTable reduce_op_table;
 
     RegionMetaDataUntyped::Impl::Impl(RegionMetaDataUntyped _me, RegionMetaDataUntyped _parent,
 				      size_t _num_elmts, size_t _elmt_size,
@@ -4526,6 +4526,18 @@ namespace RegionRuntime {
 				       RemoteWriteArgs,
 				       handle_remote_write> RemoteWriteMessage;
 
+    void do_remote_write(Memory mem, off_t offset,
+			 const void *data, size_t datalen,
+			 Event event)
+    {
+      RemoteWriteArgs args;
+      args.mem = mem;
+      args.offset = offset;
+      args.event = event;
+      RemoteWriteMessage::request(ID(mem).node(), args,
+				  data, datalen, PAYLOAD_KEEP);
+    }
+
     namespace RangeExecutors {
       class Memcpy {
       public:
@@ -4752,8 +4764,9 @@ namespace RegionRuntime {
 						       size_t bytes_to_copy,
 						       Event after_copy /*= Event::NO_EVENT*/)
     {
-      //enqueue_dma(src, target, region, elmt_size, bytes_to_copy,
-      //	  Event::NO_EVENT, after_copy);
+      return(enqueue_dma(src, target, region, elmt_size, bytes_to_copy,
+			 Event::NO_EVENT, after_copy));
+#ifdef BLAH
       DetailedTimer::ScopedPush sp(TIME_COPY);
 
       RegionInstanceUntyped::Impl *src_impl = src.impl();
@@ -5005,7 +5018,7 @@ namespace RegionRuntime {
       if(after_copy.exists())
 	after_copy.impl()->trigger(after_copy.gen, gasnet_mynode());
       return after_copy;
-
+#endif
 
 #if OLD_COPY_CODE
       DetailedTimer::ScopedPush sp(TIME_COPY);
@@ -6269,6 +6282,10 @@ namespace RegionRuntime {
       init_endpoints(handlers, hcount, gasnet_mem_size_in_mb);
 
       start_polling_threads(1);
+
+      init_dma_handler();
+
+      start_dma_worker_threads(1);
 	
       //gasnet_seginfo_t seginfos = new gasnet_seginfo_t[num_nodes];
       //CHECK_GASNET( gasnet_getSegmentInfo(seginfos, num_nodes) );

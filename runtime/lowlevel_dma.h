@@ -7,7 +7,7 @@ namespace RegionRuntime {
   namespace LowLevel {
     extern void init_dma_handler(void);
 
-    extern void start_worker_threads(int count);
+    extern void start_dma_worker_threads(int count);
 
     extern Event enqueue_dma(RegionInstanceUntyped src, 
 			     RegionInstanceUntyped target,
