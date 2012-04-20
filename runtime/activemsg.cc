@@ -117,7 +117,9 @@ public:
 	  out_long_hdrs.pop();
 
 	  gasnet_hsl_unlock(&mutex);
-
+	  printf("LMB: sending %zd bytes to node %d, [%p,%p)\n",
+		 hdr->payload_size, peer,
+		 dest_ptr, dest_ptr + hdr->payload_size);
 	  send_long(hdr, dest_ptr);
 	  delete hdr;
 	  count++;
@@ -133,6 +135,10 @@ public:
 
 	  // now let go of the lock and send the flip request
 	  gasnet_hsl_unlock(&mutex);
+
+	  printf("LMB: flipping buffer %d for node %d, [%p,%p), count=%d\n",
+		 flip_buffer, peer, lmb_w_bases[flip_buffer],
+		 lmb_w_bases[flip_buffer]+LMB_SIZE, flip_count);
 
 	  gasnet_AMRequestShort2(peer, MSGID_FLIP_REQ,
 				 flip_buffer, flip_count);
@@ -188,11 +194,19 @@ public:
     }
     assert(r_buffer >= 0);
 
+    printf("LMB: received %p from %d in buffer %d, [%p, %p)\n",
+	   ptr, peer, r_buffer, lmb_r_bases[r_buffer],
+	   lmb_r_bases[r_buffer] + LMB_SIZE);
+
     // now take the lock to increment the r_count and decide if we need
     //  to ack (can't actually send it here, so queue it up)
     gasnet_hsl_lock(&mutex);
     lmb_r_counts[r_buffer]++;
     if(lmb_r_counts[r_buffer] == 0) {
+      printf("LMB: acking flip of buffer %d for node %d, [%p,%p)\n",
+	     r_buffer, peer, lmb_r_bases[r_buffer],
+	     lmb_r_bases[r_buffer]+LMB_SIZE);
+
       OutgoingMessage *hdr = new OutgoingMessage(MSGID_FLIP_ACK, 1, &r_buffer);
       out_short_hdrs.push(hdr);
     }
@@ -204,9 +218,17 @@ public:
   //  we can ack
   void handle_flip_request(int buffer, int count)
   {
+    printf("LMB: received flip of buffer %d for node %d, [%p,%p), count=%d\n",
+	   buffer, peer, lmb_r_bases[buffer],
+	   lmb_r_bases[buffer]+LMB_SIZE, count);
+
     gasnet_hsl_lock(&mutex);
     lmb_r_counts[buffer] -= count;
     if(lmb_r_counts[buffer] == 0) {
+      printf("LMB: acking flip of buffer %d for node %d, [%p,%p)\n",
+	     buffer, peer, lmb_r_bases[buffer],
+	     lmb_r_bases[buffer]+LMB_SIZE);
+
       OutgoingMessage *hdr = new OutgoingMessage(MSGID_FLIP_ACK, 1, &buffer);
       out_short_hdrs.push(hdr);
     }
@@ -218,6 +240,10 @@ public:
   //  (don't even need to take the mutex!)
   void handle_flip_ack(int buffer)
   {
+    printf("LMB: received flip ack of buffer %d for node %d, [%p,%p)\n",
+	   buffer, peer, lmb_w_bases[buffer],
+	   lmb_w_bases[buffer]+LMB_SIZE);
+
     lmb_w_avail[buffer] = true;
   }
 

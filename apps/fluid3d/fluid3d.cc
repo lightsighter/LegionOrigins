@@ -914,7 +914,7 @@ void main_task(const void *args, size_t arglen,
     }
 
     // Elliott: hack around deadlock
-#define ELLIOTT_HACK_DEADLOCK 1
+#define ELLIOTT_HACK_DEADLOCK 0
 #if ELLIOTT_HACK_DEADLOCK
     {
       std::vector<RegionRequirement> init_regions;
@@ -1097,6 +1097,7 @@ void main_task(const void *args, size_t arglen,
 		     (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
   printf("ELAPSED TIME = %7.3f s\n", sim_time);
   RegionRuntime::DetailedTimer::report_timers();
+  RegionRuntime::DetailedTimer::clear_timers();
 
   {
 #if ENABLE_DOUBLE_BUFFERING
@@ -1136,6 +1137,7 @@ void main_task(const void *args, size_t arglen,
                                      0, 0);
     f.get_void_result();
   }
+  RegionRuntime::DetailedTimer::report_timers();
 
   log_app.info("all done!");
 }

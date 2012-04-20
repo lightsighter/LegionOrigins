@@ -333,6 +333,7 @@ namespace RegionRuntime {
 			 tgt_ptr + byte_offset, tgt_ptr + offset + byte_count,
 			 byte_count);
 #endif
+	  DetailedTimer::ScopedPush sp(TIME_SYSTEM);
 	  src_mem->get_bytes(src_offset + byte_offset,
 			     tgt_ptr + byte_offset,
 			     byte_count);
@@ -404,6 +405,7 @@ namespace RegionRuntime {
 
 	Event finish(void)
 	{
+	  log_dma.debug("remote write done with %d spans", span_count);
 	  // if we got any spans, the last one is still waiting to go out
 	  if(span_count > 0)
 	    really_do_span(true);
@@ -421,6 +423,7 @@ namespace RegionRuntime {
 	  if(!event.exists())
 	    event = Event::Impl::create_event();
 
+	  DetailedTimer::ScopedPush sp(TIME_SYSTEM);
 	  do_remote_write(tgt_mem, byte_offset,
 			  src_ptr + byte_offset, byte_count,
 			  last ? event : Event::NO_EVENT);
@@ -543,6 +546,8 @@ namespace RegionRuntime {
 
 	      ElementMask::forall_ranges(rexec, *reg_impl->valid_mask);
 
+	      Event finish_event = rexec.finish();
+	      assert(finish_event == after_copy);
 	      return;
 	    }
 
@@ -765,7 +770,7 @@ namespace RegionRuntime {
 		   ready ? "YES" : "NO");
       
       // copy is all ready to go and safe to perform in a handler thread
-      if(ready && r->handler_safe()) {
+      if(0 && ready && r->handler_safe()) {
 	r->perform_dma();
 	//delete r;
 	return after_copy;

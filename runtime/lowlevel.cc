@@ -4530,6 +4530,9 @@ namespace RegionRuntime {
 			 const void *data, size_t datalen,
 			 Event event)
     {
+      log_copy.debug("sending remote write request: mem=%x, offset=%zd, size=%zd, event=%x/%d",
+		     mem.id, offset, datalen,
+		     event.id, event.gen);
       RemoteWriteArgs args;
       args.mem = mem;
       args.offset = offset;
@@ -6281,18 +6284,18 @@ namespace RegionRuntime {
 
       init_endpoints(handlers, hcount, gasnet_mem_size_in_mb);
 
-      start_polling_threads(1);
-
       init_dma_handler();
-
-      start_dma_worker_threads(1);
-	
-      //gasnet_seginfo_t seginfos = new gasnet_seginfo_t[num_nodes];
-      //CHECK_GASNET( gasnet_getSegmentInfo(seginfos, num_nodes) );
 
       Runtime *r = Runtime::runtime = new Runtime;
       r->nodes = new Node[gasnet_nodes()];
       
+      start_polling_threads(1);
+
+      start_dma_worker_threads(10);
+	
+      //gasnet_seginfo_t seginfos = new gasnet_seginfo_t[num_nodes];
+      //CHECK_GASNET( gasnet_getSegmentInfo(seginfos, num_nodes) );
+
       r->global_memory = new GASNetMemory(ID(ID::ID_MEMORY, 0, ID::ID_GLOBAL_MEM, 0).convert<Memory>(), gasnet_mem_size_in_mb << 20);
 
       Node *n = &r->nodes[gasnet_mynode()];

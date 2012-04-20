@@ -158,26 +158,6 @@ template <class MSGTYPE, int MSGID, \
 struct MessageRawArgs<MSGTYPE, MSGID, SHORT_HNDL_PTR, MED_HNDL_PTR, n> { \
   HANDLERARG_DECL_ ## n ; \
 \
-  void request_short(gasnet_node_t dest) \
-  { \
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_SYSTEM);	\
-    MACROPROXY(gasnet_AMRequestShort ## n, dest, MSGID, HANDLERARG_VALS_ ## n); \
-  } \
-\
-  void request_medium(gasnet_node_t dest, \
-		      const void *data, size_t datalen) \
-  { \
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_SYSTEM); \
-    MACROPROXY(gasnet_AMRequestMedium ## n, dest, MSGID, (void *)data, datalen, HANDLERARG_VALS_ ## n); \
-  } \
-\
-  void request_long(gasnet_node_t dest, \
-		    const void *data, size_t datalen, void *dstptr)	\
-  { \
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_SYSTEM); \
-    MACROPROXY(gasnet_AMRequestLong ## n, dest, MSGID, (void *)data, datalen, dstptr, HANDLERARG_VALS_ ## n); \
-  } \
-\
   static void handler_short(gasnet_token_t token, HANDLERARG_PARAMS_ ## n ) \
   { \
     gasnet_node_t src; \
@@ -211,12 +191,6 @@ template <class REQTYPE, int REQID, class RPLTYPE, int RPLID, \
           RPLTYPE (*FNPTR)(REQTYPE), int RPL_N> \
 struct RequestRawArgs<REQTYPE, REQID, RPLTYPE, RPLID, FNPTR, RPL_N, n> { \
   HANDLERARG_DECL_ ## n ; \
-\
-  void request_short(gasnet_node_t dest) \
-  { \
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_SYSTEM); \
-    MACROPROXY(gasnet_AMRequestShort ## n, dest, REQID, HANDLERARG_VALS_ ## n ); \
-  } \
 \
   static void handler_short(gasnet_token_t token, HANDLERARG_PARAMS_ ## n ) \
   { \
@@ -379,6 +353,12 @@ class ActiveMessageShortReply {
   static RPLTYPE request(gasnet_node_t dest, REQTYPE args)
   {
     HandlerReplyFuture<RPLTYPE> future;
+    ArgsWithReplyInfo<REQTYPE,RPLTYPE> args_with_reply;
+    args_with_reply.fptr = &future;
+    args_with_reply.args = args;
+    enqueue_message(dest, REQID, &args_with_reply, sizeof(args_with_reply),
+		    0, 0, PAYLOAD_NONE);
+#ifdef OLD_AM_STUFF
     union {
       ReqRawArgsType raw;
       ArgsWithReplyInfo<REQTYPE,RPLTYPE> typed;
@@ -396,6 +376,7 @@ class ActiveMessageShortReply {
 #endif
       u.raw.request_short(dest);
     }
+#endif
 
     //printf("request sent - waiting for response\n");
     future.wait();
