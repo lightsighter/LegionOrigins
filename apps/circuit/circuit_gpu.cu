@@ -78,15 +78,15 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
     //assert((wires.first_elmt <= local_ptr.value) && (local_ptr.value <= wires.last_elmt));
     CircuitWire &wire = wires.ref(local_ptr);
     //CircuitWire wire = wires.read(local_ptr);
-    if(//((local_ptr.value >= 300220) && (local_ptr.value <= 300229)) ||
+    //if(//((local_ptr.value >= 300220) && (local_ptr.value <= 300229)) ||
        //((local_ptr.value >= 299710) && (local_ptr.value <= 299720)) ||
-       (wire.in_loc < 0) || (wire.in_loc > 2) ||
-       (wire.out_loc < 0) || (wire.out_loc > 2) ||
-       (wire.in_ptr.value < ((local_ptr.value/10000)*2500)) ||
-       (wire.in_ptr.value >= (((local_ptr.value/10000)+1)*2500)))
-      printf("wire in[%d] = %d(%d) -> %d(%d)\n",
-    	     local_ptr.value, wire.in_ptr.value, wire.in_loc,
-    	     wire.out_ptr.value, wire.out_loc);
+    //   (wire.in_loc < 0) || (wire.in_loc > 2) ||
+    //   (wire.out_loc < 0) || (wire.out_loc > 2) ||
+    //   (wire.in_ptr.value < ((local_ptr.value/10000)*2500)) ||
+    //   (wire.in_ptr.value >= (((local_ptr.value/10000)+1)*2500)))
+    //  printf("wire in[%d] = %d(%d) -> %d(%d)\n",
+    //	     local_ptr.value, wire.in_ptr.value, wire.in_loc,
+    //	     wire.out_ptr.value, wire.out_loc);
 
     //if(blockIdx.x == 17)
     //  printf("nodes[%d] = %d(%d) -> %d(%d)\n",
@@ -124,12 +124,10 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
     }
 
     // Copy everything back
-    if(1) {
     for (int i = 0; i < WIRE_SEGMENTS; i++)
       wire.current[i] = new_i[i];
     for (int i = 0; i < (WIRE_SEGMENTS-1); i++)
       wire.voltage[i] = new_v[i+1];
-    }
     //wires.write(local_ptr, wire);
 
     //if(//((local_ptr.value >= 300220) && (local_ptr.value <= 300229)) ||
