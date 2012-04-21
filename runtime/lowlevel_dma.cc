@@ -424,7 +424,7 @@ namespace RegionRuntime {
 	    event = Event::Impl::create_event();
 
 	  DetailedTimer::ScopedPush sp(TIME_SYSTEM);
-	  do_remote_write(tgt_mem, byte_offset,
+	  do_remote_write(tgt_mem, tgt_offset + byte_offset,
 			  src_ptr + byte_offset, byte_count,
 			  last ? event : Event::NO_EVENT);
 	}

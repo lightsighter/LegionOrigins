@@ -1097,7 +1097,6 @@ void main_task(const void *args, size_t arglen,
 		     (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
   printf("ELAPSED TIME = %7.3f s\n", sim_time);
   RegionRuntime::DetailedTimer::report_timers();
-  RegionRuntime::DetailedTimer::clear_timers();
 
   {
 #if ENABLE_DOUBLE_BUFFERING
@@ -1137,7 +1136,6 @@ void main_task(const void *args, size_t arglen,
                                      0, 0);
     f.get_void_result();
   }
-  RegionRuntime::DetailedTimer::report_timers();
 
   log_app.info("all done!");
 }
@@ -1389,6 +1387,7 @@ void scatter_densities(const void *args, size_t arglen,
   int maxx = b.x == nbx-1 ? b.CELLS_X : b.CELLS_X+1;
   int maxy = b.y == nby-1 ? b.CELLS_Y : b.CELLS_Y+1;
   int maxz = b.z == nbz-1 ? b.CELLS_Z : b.CELLS_Z+1;
+
   for(int cz = minz; cz <= maxz; cz++)
     for(int cy = miny; cy <= maxy; cy++)
       for(int cx = minx; cx <= maxx; cx++) {
@@ -1414,6 +1413,7 @@ void scatter_densities(const void *args, size_t arglen,
                 true;//dz < (int)b.CELLS_Z+1 && dy < (int)b.CELLS_Y+1 && dx < (int)b.CELLS_X+1;
 
               // pairwise across particles - watch out for identical particle case!
+
               for(unsigned p = 0; p < cell.num_particles; p++)
                 for(unsigned p2 = 0; p2 < c2.num_particles; p2++) {
                   if((dx == cx) && (dy == cy) && (dz == cz) && (p <= p2)) continue;

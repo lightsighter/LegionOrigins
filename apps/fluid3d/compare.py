@@ -2,6 +2,8 @@
 
 import math, struct, sys
 
+verbose = False
+
 def read_int32(f):
     return struct.unpack('<i', f.read(4))[0]
 
@@ -43,17 +45,25 @@ def compare(parts1, parts2):
         print 'Error: Number of particles differ'
         return
     max_epsilon = {'p': 0, 'hv': 0, 'v': 0}
-    for p1, p2 in zip(parts1['particles'], parts2['particles']):
+    for i, (p1, p2) in enumerate(zip(parts1['particles'], parts2['particles'])):
         for k in p1.iterkeys():
             dist = distance(p1[k], p2[k])
+            if verbose and (dist > 1e-2):
+                print (('Diff: [%d].%s %f (%f,%f,%f) (%f,%f,%f)' %
+                        (i, k, dist, 
+                         p1[k]['x'], p1[k]['y'], p1[k]['z'],
+                         p2[k]['x'], p2[k]['y'], p2[k]['z'])))
             if dist > max_epsilon[k]:
                 max_epsilon[k] = dist
     return max_epsilon
 
 if __name__ == '__main__':
-    if len(sys.argv) != 3:
+    if len(sys.argv) < 3:
         print 'Usage: %s <file1> <file2>' % sys.argv[0]
         sys.exit()
+    if sys.argv[1] == '-v':
+        sys.argv.pop(1)
+        verbose = True
     filename1, filename2 = sys.argv[1], sys.argv[2]
     parts1, parts2 = read_file(filename1), read_file(filename2)
     summarize(filename1, parts1)

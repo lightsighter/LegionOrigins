@@ -30,15 +30,16 @@ def prep_legion():
         sp.check_call(['make'], cwd=_root_dir)
         print
 
-def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None, output = None,
+def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, nodes = 1, cpus = 0,
+           input = None, output = None,
            legion_logging = 1,
            **_ignored):
     cmd_out = fresh_file('legion', 'log')
     retcode = call_silently(
-        (['gasnetrun_ibv', '-n', str(1)] if _legion_use_gasnet else []) +
+        (['gasnetrun_ibv', '-n', str(nodes)] if _legion_use_gasnet else []) +
         [_legion_fluid,
          '-ll:csize', '16384', '-ll:gsize', '2000',
-         '-ll:cpu', str(nbx*nby*nbz),
+         '-ll:cpu', (str(cpus) if cpus else str(nbx*nby*nbz/node)),
          '-level', str(legion_logging),
          '-nbx', str(nbx), '-nby', str(nby), '-nbz', str(nbz), '-s', str(steps),
         ],
@@ -169,7 +170,7 @@ if __name__ == '__main__':
     for nbx in divs:
         for nby in divs:
             for nbz in divs:
-                regress(nbx = nbx, nby = nby, nbz = nbz, steps = 1)
+                if False: regress(nbx = nbx, nby = nby, nbz = nbz, steps = 1)
 
     print
     print "Note: The following are expected to fail, but should NOT crash."
@@ -177,7 +178,7 @@ if __name__ == '__main__':
     for nbx in divs:
         for nby in divs:
             for nbz in divs:
-                regress(nbx = nbx, nby = nby, nbz = nbz, steps = 4)
+                if False: regress(nbx = nbx, nby = nby, nbz = nbz, steps = 4)
 
     prep_input(300)
     prep_solution(300)
@@ -187,4 +188,4 @@ if __name__ == '__main__':
     for nbx in divs:
         for nby in divs:
             for nbz in divs:
-                regress(nbx = nbx, nby = nby, nbz = nbz, steps = 1)
+                regress(nbx = nbx, nby = nby, nbz = nbz, steps = 1, nodes = 2, cpus = 2)

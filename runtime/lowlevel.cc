@@ -4737,7 +4737,7 @@ namespace RegionRuntime {
 
 	  RemoteWriteArgs args;
 	  args.mem = tgt_mem;
-	  args.offset = byte_offset;
+	  args.offset = tgt_offset + byte_offset;
 	  if(last)
 	    args.event = event;
 	  else

@@ -32,7 +32,7 @@ enum { MSGID_FLIP_REQ = 254,
 static int payload_count = 0;
 #endif
 
-static const int DEFERRED_FREE_COUNT = 10;
+static const int DEFERRED_FREE_COUNT = 100;
 gasnet_hsl_t deferred_free_mutex;
 int deferred_free_pos;
 void *deferred_frees[DEFERRED_FREE_COUNT];
