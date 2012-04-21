@@ -34,12 +34,13 @@ def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, nodes = 1, cpus = 0,
            input = None, output = None,
            legion_logging = 1,
            **_ignored):
+    if cpus <= 0: cpus = nbx*nby*nbz/nodes
     cmd_out = fresh_file('legion', 'log')
     retcode = call_silently(
         (['gasnetrun_ibv', '-n', str(nodes)] if _legion_use_gasnet else []) +
         [_legion_fluid,
          '-ll:csize', '16384', '-ll:gsize', '2000',
-         '-ll:cpu', (str(cpus) if cpus else str(nbx*nby*nbz/node)),
+         '-ll:cpu', str(cpus),
          '-level', str(legion_logging),
          '-nbx', str(nbx), '-nby', str(nby), '-nbz', str(nbz), '-s', str(steps),
         ],
@@ -89,8 +90,9 @@ def validate(epsilons):
     return all(map(lambda e: e < _max_epsilon, epsilons.itervalues()))
 
 def summarize_params(nbx = 1, nby = 1, nbz = 1, steps = 1, **others):
-    return '%sx%sx%s (%s step%s)%s' % (
+    return '%sx%sx%s (%s step%s)%s%s' % (
         nbx, nby, nbz, steps, '' if steps == 1 else 's',
+        ' ' if len(others) > 0 else '',
         ', '.join(['%s %s' % kv for kv in others.iteritems()]))
 
 _status_table = [
@@ -170,7 +172,7 @@ if __name__ == '__main__':
     for nbx in divs:
         for nby in divs:
             for nbz in divs:
-                if False: regress(nbx = nbx, nby = nby, nbz = nbz, steps = 1)
+                regress(nbx = nbx, nby = nby, nbz = nbz, steps = 1, nodes = 2)
 
     print
     print "Note: The following are expected to fail, but should NOT crash."
@@ -178,7 +180,7 @@ if __name__ == '__main__':
     for nbx in divs:
         for nby in divs:
             for nbz in divs:
-                if False: regress(nbx = nbx, nby = nby, nbz = nbz, steps = 4)
+                regress(nbx = nbx, nby = nby, nbz = nbz, steps = 4)
 
     prep_input(300)
     prep_solution(300)
@@ -188,4 +190,4 @@ if __name__ == '__main__':
     for nbx in divs:
         for nby in divs:
             for nbz in divs:
-                regress(nbx = nbx, nby = nby, nbz = nbz, steps = 1, nodes = 2, cpus = 2)
+                regress(nbx = nbx, nby = nby, nbz = nbz, steps = 1, nodes = 2)

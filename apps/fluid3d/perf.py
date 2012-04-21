@@ -87,18 +87,16 @@ def prep_legion():
         sp.check_call(['make'], cwd=_root_dir)
         print
 
-def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None,
+def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, nodes = 1, cpus = 0,
+           input = None,
            legion_logging = 4,
            **_ignored):
-    divisions = nbx*nby*nbz
-    cpu_count = min(divisions, get_cpu_count_per_node())
-    node_count = min(int(math.ceil(float(divisions) / get_cpu_count_per_node())),
-                     get_node_count())
+    if cpus <= 0: cpus = nbx*nby*nbz/nodes
     return check_output(
-        (['gasnetrun_ibv', '-n', str(node_count)] if _legion_use_gasnet else []) +
+        (['gasnetrun_ibv', '-n', str(nodes)] if _legion_use_gasnet else []) +
         [_legion_fluid,
          '-ll:csize', '16384', '-ll:gsize', '2000',
-         '-ll:cpu', str(cpu_count),
+         '-ll:cpu', str(cpus),
          '-level', str(legion_logging),
          '-nbx', str(nbx), '-nby', str(nby), '-nbz', str(nbz), '-s', str(steps),
         ])
@@ -107,10 +105,10 @@ def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, input = None,
 ## Input
 
 _input_filename = None
-def prep_input():
+def prep_input(size = 2400):
     global _input_filename
     _input_filename = os.path.join(_root_dir, 'init.fluid')
-    shutil.copyfile(os.path.join(_root_dir, 'in_300K.fluid'),
+    shutil.copyfile(os.path.join(_root_dir, 'in_%dK.fluid' % size),
                     _input_filename)
 
 def get_input():
@@ -142,8 +140,9 @@ def summarize_timing(timing):
                                   for base in (get_baseline()))}
 
 def summarize_params(nbx = 1, nby = 1, nbz = 1, steps = 1, **others):
-    return '%sx%sx%s (%s step%s)%s' % (
+    return '%sx%sx%s (%s step%s)%s%s' % (
         nbx, nby, nbz, steps, '' if steps == 1 else 's',
+        ' ' if len(others) > 0 else '',
         ', '.join(['%s %s' % kv for kv in others.iteritems()]))
 
 def summarize(params, results):
@@ -164,8 +163,8 @@ def init_baseline(program, reps, **params):
     _baseline.append(timing)
     return timing
 
-_num_steps = 4
-_num_reps = 3
+_num_steps = 10
+_num_reps = 1
 if __name__ == '__main__':
     for thunk in prep: thunk()
 
@@ -174,8 +173,7 @@ if __name__ == '__main__':
     print
 
     print 'PARSEC pthreads:'
-    init_baseline(parsec_pthreads, _num_reps, nbx = 1, nby = 1, nbz = 1, steps = _num_steps)
-    sizes = range(1, 5)
+    sizes = range(0, 5)
     for size in sizes:
         nbx = 1 << (size/2);
         nby = 1
@@ -185,23 +183,32 @@ if __name__ == '__main__':
         perf_check(parsec_pthreads, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps)
     print
 
-    print 'Legion:'
-    init_baseline(legion, _num_reps, nbx = 1, nby = 1, nbz = 1, steps = _num_steps)
-    sizes = range(1, 8)
+    print 'Legion 1-node:'
+    sizes = range(0, 5)
     for size in sizes:
-        nbx = 1 << (size/2);
-        nby = 1
-        nbz = 1 << (size/2);
-        if nbx*nbz != 1 << size:
-            nbx *= 2
-        perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps)
+        for sx in xrange(size + 1):
+            for sy in xrange(size - sx + 1):
+                sz = size - sx - sy
+                nbx, nby, nbz = 1 << sx, 1 << sy, 1 << sz
+                perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 1)
     print
 
-    #init_baseline(legion, _num_reps, nbx = 1, nby = 1, nbz = 1, steps = _num_steps)
-    #sizes = range(1, 5)
-    #for size in sizes:
-    #    for sx in xrange(size + 1):
-    #        for sy in xrange(size - sx + 1):
-    #            sz = size - sx - sy
-    #            nbx, nby, nbz = 1 << sx, 1 << sy, 1 << sz
-    #            perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps)
+    print 'Legion 2-nodes:'
+    sizes = range(0, 6)
+    for size in sizes:
+        for sx in xrange(size + 1):
+            for sy in xrange(size - sx + 1):
+                sz = size - sx - sy
+                nbx, nby, nbz = 1 << sx, 1 << sy, 1 << sz
+                perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 2)
+    print
+
+
+    print 'Legion 4-nodes:'
+    sizes = range(0, 7)
+    for size in sizes:
+        for sx in xrange(size + 1):
+            for sy in xrange(size - sx + 1):
+                sz = size - sx - sy
+                nbx, nby, nbz = 1 << sx, 1 << sy, 1 << sz
+                perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 4)
