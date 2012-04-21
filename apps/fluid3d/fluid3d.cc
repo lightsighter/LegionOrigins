@@ -475,6 +475,7 @@ void top_level_task(const void *args, size_t arglen,
     main_regions.push_back(RegionRequirement(tlr.edge_cells,
 					     READ_WRITE, ALLOCABLE, EXCLUSIVE,
 					     tlr.edge_cells));
+  
 
     unsigned bufsize = sizeof(FluidConfig) + sizeof(TopLevelRegions);
     Serializer ser(bufsize);
@@ -876,7 +877,7 @@ void main_task(const void *args, size_t arglen,
                                                tlr.config));
       init_regions.push_back(RegionRequirement(block_regions[id],
                                                READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                               block_regions[id]));
+                                               tlr.blocks));
 
       // read old
       init_regions.push_back(RegionRequirement(block_bases[1 - cur_buffer][id],
@@ -933,7 +934,7 @@ void main_task(const void *args, size_t arglen,
 
       rebuild_regions.push_back(RegionRequirement(block_regions[id],
                                                   READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                                  block_regions[id]));
+                                                  tlr.blocks));
       rebuild_regions.push_back(RegionRequirement(block_bases[cur_buffer][id],
 						  READ_WRITE, NO_MEMORY, EXCLUSIVE,
 						  tlr.real_cells[cur_buffer]));
@@ -986,7 +987,7 @@ void main_task(const void *args, size_t arglen,
                                                   tlr.config));
       density_regions.push_back(RegionRequirement(block_regions[id],
                                                   READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                                  block_regions[id]));
+                                                  tlr.blocks));
       density_regions.push_back(RegionRequirement(block_bases[cur_buffer][id],
 						  READ_WRITE, NO_MEMORY, EXCLUSIVE,
 						  tlr.real_cells[cur_buffer]));
@@ -1041,7 +1042,7 @@ void main_task(const void *args, size_t arglen,
                                                 tlr.config));
       force_regions.push_back(RegionRequirement(block_regions[id],
                                                 READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                                block_regions[id]));
+                                                tlr.blocks));
       force_regions.push_back(RegionRequirement(block_bases[cur_buffer][id],
 						READ_WRITE, NO_MEMORY, EXCLUSIVE,
 						tlr.real_cells[cur_buffer]));
