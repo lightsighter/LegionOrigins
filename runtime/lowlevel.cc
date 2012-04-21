@@ -2408,174 +2408,219 @@ namespace RegionRuntime {
       }
     };
 
-    class GASNetMemory : public Memory::Impl {
-    public:
-      static const size_t MEMORY_STRIDE = 1024;
-
-      GASNetMemory(Memory _me, size_t size_per_node)
-	: Memory::Impl(_me, 0 /* we'll calculate it below */, MKIND_GASNET,
-		       MEMORY_STRIDE)
-      {
-	num_nodes = gasnet_nodes();
-	seginfos = new gasnet_seginfo_t[num_nodes];
-	CHECK_GASNET( gasnet_getSegmentInfo(seginfos, num_nodes) );
-
-	for(int i = 0; i < num_nodes; i++) {
+    GASNetMemory::GASNetMemory(Memory _me, size_t size_per_node)
+      : Memory::Impl(_me, 0 /* we'll calculate it below */, MKIND_GASNET,
+		     MEMORY_STRIDE)
+    {
+      num_nodes = gasnet_nodes();
+      seginfos = new gasnet_seginfo_t[num_nodes];
+      CHECK_GASNET( gasnet_getSegmentInfo(seginfos, num_nodes) );
+      
+      for(int i = 0; i < num_nodes; i++) {
 #ifdef LMBS_AT_BOTTOM
-	  seginfos[i].addr = ((char *)seginfos[i].addr)+lmb_skip;
-	  seginfos[i].size -= lmb_skip;
-	  //printf("gasnet segment %d: [%p,%p)\n",
-	  //	 i, seginfos[i].addr, ((char*)seginfos[i].addr)+seginfos[i].size);
+	seginfos[i].addr = ((char *)seginfos[i].addr)+lmb_skip;
+	seginfos[i].size -= lmb_skip;
+	//printf("gasnet segment %d: [%p,%p)\n",
+	//	 i, seginfos[i].addr, ((char*)seginfos[i].addr)+seginfos[i].size);
 #endif
-	  assert(seginfos[i].size >= size_per_node);
-	}
-
-	size = size_per_node * num_nodes;
-	memory_stride = MEMORY_STRIDE;
-
-	free_blocks[0] = size;
+	assert(seginfos[i].size >= size_per_node);
       }
 
-      virtual ~GASNetMemory(void)
-      {
+      size = size_per_node * num_nodes;
+      memory_stride = MEMORY_STRIDE;
+      
+      free_blocks[0] = size;
+    }
+
+    GASNetMemory::~GASNetMemory(void)
+    {
+    }
+
+    RegionAllocatorUntyped GASNetMemory::create_allocator(RegionMetaDataUntyped r,
+							  size_t bytes_needed)
+    {
+      if(gasnet_mynode() == 0) {
+	return create_allocator_local(r, bytes_needed);
+      } else {
+	return create_allocator_remote(r, bytes_needed);
       }
+    }
 
-      virtual RegionAllocatorUntyped create_allocator(RegionMetaDataUntyped r,
-						      size_t bytes_needed)
-      {
-	if(gasnet_mynode() == 0) {
-	  return create_allocator_local(r, bytes_needed);
-	} else {
-	  return create_allocator_remote(r, bytes_needed);
-	}
+    RegionInstanceUntyped GASNetMemory::create_instance(RegionMetaDataUntyped r,
+							size_t bytes_needed,
+							off_t adjust)
+    {
+      if(gasnet_mynode() == 0) {
+	return create_instance_local(r, bytes_needed, adjust);
+      } else {
+	return create_instance_remote(r, bytes_needed, adjust);
       }
+    }
 
-      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
-						    size_t bytes_needed,
-						    off_t adjust)
-      {
-	if(gasnet_mynode() == 0) {
-	  return create_instance_local(r, bytes_needed, adjust);
-	} else {
-	  return create_instance_remote(r, bytes_needed, adjust);
-	}
+    RegionInstanceUntyped GASNetMemory::create_instance(RegionMetaDataUntyped r,
+							size_t bytes_needed,
+							off_t adjust,
+							ReductionOpID redopid)
+    {
+      if(gasnet_mynode() == 0) {
+	return create_instance_local(r, bytes_needed, adjust, redopid);
+      } else {
+	return create_instance_remote(r, bytes_needed, adjust, redopid);
       }
+    }
 
-      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
-						    size_t bytes_needed,
-						    off_t adjust,
-						    ReductionOpID redopid)
-      {
-	if(gasnet_mynode() == 0) {
-	  return create_instance_local(r, bytes_needed, adjust, redopid);
-	} else {
-	  return create_instance_remote(r, bytes_needed, adjust, redopid);
-	}
+    void GASNetMemory::destroy_instance(RegionInstanceUntyped i, 
+					bool local_destroy)
+    {
+      if(gasnet_mynode() == 0) {
+	destroy_instance_local(i, local_destroy);
+      } else {
+	destroy_instance_remote(i, local_destroy);
       }
+    }
 
-      virtual void destroy_instance(RegionInstanceUntyped i, 
-				    bool local_destroy)
-      {
-	if(gasnet_mynode() == 0) {
-	  destroy_instance_local(i, local_destroy);
-	} else {
-	  destroy_instance_remote(i, local_destroy);
-	}
+    off_t GASNetMemory::alloc_bytes(size_t size)
+    {
+      if(gasnet_mynode() == 0) {
+	return alloc_bytes_local(size);
+      } else {
+	return alloc_bytes_remote(size);
       }
+    }
 
-      virtual off_t alloc_bytes(size_t size)
-      {
-	if(gasnet_mynode() == 0) {
-	  return alloc_bytes_local(size);
-#if 0
-	  // node 0 performs all allocations
-	  for(std::map<off_t, off_t>::iterator it = free_blocks.begin();
-	      it != free_blocks.end();
-	      it++) {
-	    if(it->second == (off_t)size) {
-	      // perfect match
-	      off_t retval = it->first;
-	      free_blocks.erase(it);
-	      return retval;
-	    }
+    void GASNetMemory::free_bytes(off_t offset, size_t size)
+    {
+      if(gasnet_mynode() == 0) {
+	free_bytes_local(offset, size);
+      } else {
+	free_bytes_remote(offset, size);
+      }
+    }
 
-	    if(it->second > (off_t)size) {
-	      // some left over
-	      off_t leftover = it->second - size;
-	      off_t retval = it->first + leftover;
-	      it->second = leftover;
-	      return retval;
-	    }
+    void GASNetMemory::get_bytes(off_t offset, void *dst, size_t size)
+    {
+      char *dst_c = (char *)dst;
+      while(size > 0) {
+	off_t blkid = (offset / memory_stride / num_nodes);
+	off_t node = (offset / memory_stride) % num_nodes;
+	off_t blkoffset = offset % memory_stride;
+	size_t chunk_size = memory_stride - blkoffset;
+	if(chunk_size > size) chunk_size = size;
+	gasnet_get(dst_c, node, ((char *)seginfos[node].addr)+(blkid * memory_stride)+blkoffset, chunk_size);
+	offset += chunk_size;
+	dst_c += chunk_size;
+	size -= chunk_size;
+      }
+    }
+
+    void GASNetMemory::put_bytes(off_t offset, const void *src, size_t size)
+    {
+      char *src_c = (char *)src; // dropping const on purpose...
+      while(size > 0) {
+	off_t blkid = (offset / memory_stride / num_nodes);
+	off_t node = (offset / memory_stride) % num_nodes;
+	off_t blkoffset = offset % memory_stride;
+	size_t chunk_size = memory_stride - blkoffset;
+	if(chunk_size > size) chunk_size = size;
+	gasnet_put(node, ((char *)seginfos[node].addr)+(blkid * memory_stride)+blkoffset, src_c, chunk_size);
+	offset += chunk_size;
+	src_c += chunk_size;
+	size -= chunk_size;
+      }
+    }
+
+    void *GASNetMemory::get_direct_ptr(off_t offset, size_t size)
+    {
+      return 0;  // can't give a pointer to the caller - have to use RDMA
+    }
+
+    void GASNetMemory::get_batch(size_t batch_size,
+				 const off_t *offsets, void * const *dsts, 
+				 const size_t *sizes)
+    {
+#define USE_NBI_ACCESSREGION
+#ifdef USE_NBI_ACCESSREGION
+      gasnet_begin_nbi_accessregion();
+#endif
+
+      for(size_t i = 0; i < batch_size; i++) {
+	off_t offset = offsets[i];
+	char *dst_c = (char *)(dsts[i]);
+	size_t size = sizes[i];
+
+	off_t blkid = (offset / memory_stride / num_nodes);
+	off_t node = (offset / memory_stride) % num_nodes;
+	off_t blkoffset = offset % memory_stride;
+
+	while(size > 0) {
+	  size_t chunk_size = memory_stride - blkoffset;
+	  if(chunk_size > size) chunk_size = size;
+
+	  char *src_c = (((char *)seginfos[node].addr) +
+			 (blkid * memory_stride) + blkoffset);
+	  if(node == gasnet_mynode()) {
+	    memcpy(dst_c, src_c, chunk_size);
+	  } else {
+	    gasnet_get_nbi(dst_c, node, src_c, chunk_size);
 	  }
 
-	  // no blocks large enough - boo hoo
-	  return -1;
-#endif
-	} else {
-	  return alloc_bytes_remote(size);
-#if 0
-	  RemoteMemAllocArgs args;
-	  args.memory = me;
-	  args.size = size;
-	  off_t retval = RemoteMemAllocMessage::request(0, args);
-	  //proff_tf("got: %d\n", retval);
-	  return retval;
-#endif
-	}
-      }
-
-      virtual void free_bytes(off_t offset, size_t size)
-      {
-	if(gasnet_mynode() == 0) {
-	  free_bytes_local(offset, size);
-	} else {
-	  free_bytes_remote(offset, size);
-	}
-      }
-
-      virtual void get_bytes(off_t offset, void *dst, size_t size)
-      {
-	char *dst_c = (char *)dst;
-	while(size > 0) {
-	  off_t blkid = (offset / memory_stride / num_nodes);
-	  off_t node = (offset / memory_stride) % num_nodes;
-	  off_t blkoffset = offset % memory_stride;
-	  size_t chunk_size = memory_stride - blkoffset;
-	  if(chunk_size > size) chunk_size = size;
-	  gasnet_get(dst_c, node, ((char *)seginfos[node].addr)+(blkid * memory_stride)+blkoffset, chunk_size);
-	  offset += chunk_size;
 	  dst_c += chunk_size;
 	  size -= chunk_size;
+	  blkoffset = 0;
+	  node = (node + 1) % num_nodes;
+	  if(node == 0) blkid++;
 	}
       }
 
-      virtual void put_bytes(off_t offset, const void *src, size_t size)
-      {
-	char *src_c = (char *)src; // dropping const on purpose...
+#ifdef USE_NBI_ACCESSREGION
+      gasnet_handle_t handle = gasnet_end_nbi_accessregion();
+
+      gasnet_wait_syncnb(handle);
+#else
+      gasnet_wait_syncnbi_gets();
+#endif
+    }
+
+    void GASNetMemory::put_batch(size_t batch_size,
+				 const off_t *offsets,
+				 const void * const *srcs, 
+				 const size_t *sizes)
+    {
+      gasnet_begin_nbi_accessregion();
+
+      for(size_t i = 0; i < batch_size; i++) {
+	off_t offset = offsets[i];
+	const char *src_c = (char *)(srcs[i]);
+	size_t size = sizes[i];
+
+	off_t blkid = (offset / memory_stride / num_nodes);
+	off_t node = (offset / memory_stride) % num_nodes;
+	off_t blkoffset = offset % memory_stride;
+
 	while(size > 0) {
-	  off_t blkid = (offset / memory_stride / num_nodes);
-	  off_t node = (offset / memory_stride) % num_nodes;
-	  off_t blkoffset = offset % memory_stride;
 	  size_t chunk_size = memory_stride - blkoffset;
 	  if(chunk_size > size) chunk_size = size;
-	  gasnet_put(node, ((char *)seginfos[node].addr)+(blkid * memory_stride)+blkoffset, src_c, chunk_size);
-	  offset += chunk_size;
+
+	  char *dst_c = (((char *)seginfos[node].addr) +
+			 (blkid * memory_stride) + blkoffset);
+	  if(node == gasnet_mynode()) {
+	    memcpy(dst_c, src_c, chunk_size);
+	  } else {
+	    gasnet_put_nbi(node, dst_c, (void *)src_c, chunk_size);
+	  }
+
 	  src_c += chunk_size;
 	  size -= chunk_size;
+	  blkoffset = 0;
+	  node = (node + 1) % num_nodes;
+	  if(node == 0) blkid++;
 	}
       }
 
-      virtual void *get_direct_ptr(off_t offset, size_t size)
-      {
-	return 0;  // can't give a pointer to the caller - have to use RDMA
-      }
+      gasnet_handle_t handle = gasnet_end_nbi_accessregion();
 
-    protected:
-      int num_nodes;
-      off_t memory_stride;
-      gasnet_seginfo_t *seginfos;
-      //std::map<off_t, off_t> free_blocks;
-    };
+      gasnet_wait_syncnb(handle);
+    }
 
     RegionAllocatorUntyped Memory::Impl::create_allocator_local(RegionMetaDataUntyped r,
 								size_t bytes_needed)
@@ -6230,6 +6275,8 @@ namespace RegionRuntime {
       unsigned num_local_cpus = 1;
       unsigned num_local_gpus = 0;
       unsigned cpu_worker_threads = 1;
+      unsigned dma_worker_threads = 1;
+      unsigned active_msg_worker_threads = 1;
 
       for(int i = 1; i < *argc; i++) {
 #define INT_ARG(argname, varname) do { \
@@ -6251,6 +6298,8 @@ namespace RegionRuntime {
 	INT_ARG("-ll:cpu", num_local_cpus);
 	INT_ARG("-ll:gpu", num_local_gpus);
 	INT_ARG("-ll:workers", cpu_worker_threads);
+	INT_ARG("-ll:dma", dma_worker_threads);
+	INT_ARG("-ll:amsg", active_msg_worker_threads);
       }
 
       Logger::init(*argc, (const char **)*argv);
@@ -6289,9 +6338,9 @@ namespace RegionRuntime {
       Runtime *r = Runtime::runtime = new Runtime;
       r->nodes = new Node[gasnet_nodes()];
       
-      start_polling_threads(1);
+      start_polling_threads(active_msg_worker_threads);
 
-      start_dma_worker_threads(10);
+      start_dma_worker_threads(dma_worker_threads);
 	
       //gasnet_seginfo_t seginfos = new gasnet_seginfo_t[num_nodes];
       //CHECK_GASNET( gasnet_getSegmentInfo(seginfos, num_nodes) );

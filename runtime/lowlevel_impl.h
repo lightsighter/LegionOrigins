@@ -462,6 +462,54 @@ namespace RegionRuntime {
       std::map<off_t, off_t> free_blocks;
     };
 
+    class GASNetMemory : public Memory::Impl {
+    public:
+      static const size_t MEMORY_STRIDE = 1024;
+
+      GASNetMemory(Memory _me, size_t size_per_node);
+
+      virtual ~GASNetMemory(void);
+
+      virtual RegionAllocatorUntyped create_allocator(RegionMetaDataUntyped r,
+						      size_t bytes_needed);
+
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed,
+						    off_t adjust);
+
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed,
+						    off_t adjust,
+						    ReductionOpID redopid);
+
+      virtual void destroy_instance(RegionInstanceUntyped i, 
+				    bool local_destroy);
+
+      virtual off_t alloc_bytes(size_t size);
+
+      virtual void free_bytes(off_t offset, size_t size);
+
+      virtual void get_bytes(off_t offset, void *dst, size_t size);
+
+      virtual void put_bytes(off_t offset, const void *src, size_t size);
+
+      virtual void *get_direct_ptr(off_t offset, size_t size);
+
+      void get_batch(size_t batch_size,
+		     const off_t *offsets, void * const *dsts, 
+		     const size_t *sizes);
+
+      void put_batch(size_t batch_size,
+		     const off_t *offsets, const void * const *srcs, 
+		     const size_t *sizes);
+
+    protected:
+      int num_nodes;
+      off_t memory_stride;
+      gasnet_seginfo_t *seginfos;
+      //std::map<off_t, off_t> free_blocks;
+    };
+
     class RegionInstanceUntyped::Impl {
     public:
       Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset, size_t _size, off_t _adjust);

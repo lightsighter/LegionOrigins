@@ -278,6 +278,45 @@ namespace RegionRuntime {
 	size_t elmt_size;
       };
 
+      class GasnetPutBatched {
+      public:
+	GasnetPutBatched(Memory::Impl *_tgt_mem, off_t _tgt_offset,
+			 const void *_src_ptr,
+			 size_t _elmt_size)
+	  : tgt_mem((GASNetMemory *)_tgt_mem), tgt_offset(_tgt_offset),
+	    src_ptr((const char *)_src_ptr), elmt_size(_elmt_size) {}
+
+	void do_span(int offset, int count)
+	{
+	  off_t byte_offset = offset * elmt_size;
+	  size_t byte_count = count * elmt_size;
+	
+	  offsets.push_back(tgt_offset + byte_offset);
+	  srcs.push_back(src_ptr + byte_offset);
+	  sizes.push_back(byte_count);
+	}
+
+	void finish(void)
+	{
+	  if(offsets.size() > 0) {
+	    DetailedTimer::ScopedPush sp(TIME_SYSTEM);
+	    tgt_mem->put_batch(offsets.size(),
+			       &offsets[0],
+			       &srcs[0],
+			       &sizes[0]);
+	  }
+	}
+
+      protected:
+	GASNetMemory *tgt_mem;
+	off_t tgt_offset;
+	const char *src_ptr;
+	size_t elmt_size;
+	std::vector<off_t> offsets;
+	std::vector<const void *> srcs;
+	std::vector<size_t> sizes;
+      };
+
       class GasnetPutReduce : public GasnetPut {
       public:
 	GasnetPutReduce(Memory::Impl *_tgt_mem, off_t _tgt_offset,
@@ -344,6 +383,51 @@ namespace RegionRuntime {
 	Memory::Impl *src_mem;
 	off_t src_offset;
 	size_t elmt_size;
+      };
+
+      class GasnetGetBatched {
+      public:
+	GasnetGetBatched(void *_tgt_ptr,
+			 Memory::Impl *_src_mem, off_t _src_offset,
+			 size_t _elmt_size)
+	  : tgt_ptr((char *)_tgt_ptr), src_mem((GASNetMemory *)_src_mem),
+	    src_offset(_src_offset), elmt_size(_elmt_size) {}
+
+	void do_span(int offset, int count)
+	{
+	  off_t byte_offset = offset * elmt_size;
+	  size_t byte_count = count * elmt_size;
+	
+#if 0
+	  log_copy.debug("gasnet_get [%zx,%zx) -> [%p,%p) (%zd)",
+			 src_offset + byte_offset, src_offset + byte_offset + byte_count,
+			 tgt_ptr + byte_offset, tgt_ptr + offset + byte_count,
+			 byte_count);
+#endif
+	  offsets.push_back(src_offset + byte_offset);
+	  dsts.push_back(tgt_ptr + byte_offset);
+	  sizes.push_back(byte_count);
+	}
+
+	void finish(void)
+	{
+	  if(offsets.size() > 0) {
+	    DetailedTimer::ScopedPush sp(TIME_SYSTEM);
+	    src_mem->get_batch(offsets.size(),
+			       &offsets[0],
+			       &dsts[0],
+			       &sizes[0]);
+	  }
+	}
+
+      protected:
+	char *tgt_ptr;
+	GASNetMemory *src_mem;
+	off_t src_offset;
+	size_t elmt_size;
+	std::vector<off_t> offsets;
+	std::vector<void *> dsts;
+	std::vector<size_t> sizes;
       };
 
       class GasnetGetAndPut {
@@ -512,9 +596,19 @@ namespace RegionRuntime {
 						      src_ptr, elmt_size);
 		ElementMask::forall_ranges(rexec, *reg_impl->valid_mask);
 	      } else {
+#define USE_BATCHED_GASNET_XFERS
+#ifdef USE_BATCHED_GASNET_XFERS
+		RangeExecutors::GasnetPutBatched rexec(tgt_mem, tgt_data->access_offset,
+						       src_ptr, elmt_size);
+#else
 		RangeExecutors::GasnetPut rexec(tgt_mem, tgt_data->access_offset,
 						src_ptr, elmt_size);
+#endif
 		ElementMask::forall_ranges(rexec, *reg_impl->valid_mask);
+
+#ifdef USE_BATCHED_GASNET_XFERS
+		rexec.finish();
+#endif
 	      }
 	    }
 	    break;
@@ -567,9 +661,18 @@ namespace RegionRuntime {
 	      assert(tgt_ptr != 0);
 
 	      assert(!redop);
+#ifdef USE_BATCHED_GASNET_XFERS
+	      RangeExecutors::GasnetGetBatched rexec(tgt_ptr, src_mem, 
+						     src_data->access_offset, elmt_size);
+#else
 	      RangeExecutors::GasnetGet rexec(tgt_ptr, src_mem, 
 					      src_data->access_offset, elmt_size);
+#endif
 	      ElementMask::forall_ranges(rexec, *reg_impl->valid_mask);
+
+#ifdef USE_BATCHED_GASNET_XFERS
+	      rexec.finish();
+#endif
 	    }
 	    break;
 
