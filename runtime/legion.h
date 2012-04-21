@@ -643,13 +643,11 @@ namespace RegionRuntime {
     private:
       void verify_access(unsigned ptr); // For checking access to pointers
     private:
-    public:
       bool valid_allocator;
       bool valid_instance;
       LowLevel::RegionAllocatorUntyped allocator;
       LowLevel::RegionInstanceAccessorUntyped<AT_CONV(AT)> instance;
     protected:
-    public:
       bool valid;
       bool inline_mapped;
       RegionMappingImpl *impl;
