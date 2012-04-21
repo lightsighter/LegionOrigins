@@ -241,6 +241,11 @@ struct BufferRegions {
   LogicalRegion edge_b[GHOST_CELLS]; //   bidirectional exchanges
 };
 
+// This is a hack to allow Blocks to be entirely static. The maximum
+// problem size we happen to be dealing with is 93 x 129 x 93, but you
+// could easily increase this limit to whatever you want.
+const unsigned MAX_CELLS_X = 95, MAX_CELLS_Y = 131, MAX_CELLS_Z = 95;
+
 // two kinds of double-buffering going on here
 // * for the CELLS_X x CELLS_Y x CELLS_Z grid of "real" cells, we have two copies
 //     for double-buffering the simulation
@@ -256,21 +261,11 @@ struct Block {
   LogicalRegion base[2];
   LogicalRegion edge[2][GHOST_CELLS];
   BufferRegions regions[2];
-  std::vector<std::vector<std::vector<ptr_t<Cell> > > > cells[2];
-  int cb;  // which is the current buffer?
+  ptr_t<Cell> cells[2][MAX_CELLS_Z][MAX_CELLS_Y][MAX_CELLS_X];
   int id;
   unsigned x, y, z; // position in block grid
   unsigned CELLS_X, CELLS_Y, CELLS_Z;
 };
-
-// the size of a block for serialization purposes
-static inline size_t BLOCK_SIZE(const Block &b)
-{
-  return sizeof(LogicalRegion)*(2 + 2*GHOST_CELLS)
-    + sizeof(BufferRegions)*2
-    + sizeof(ptr_t<Cell>)*2*(b.CELLS_X+2)*(b.CELLS_Y+2)*(b.CELLS_Z+2)
-    + sizeof(int)*2 + sizeof(unsigned)*6;
-}
 
 const float timeStep = 0.005f;
 const float doubleRestDensity = 2000.f;
@@ -313,31 +308,9 @@ return MOVE_Z(z, dir, 0, b.CELLS_Z+1);
 
 RegionRuntime::Logger::Category log_app("application");
 
-class BlockSerializer : public Serializer {
+class StringSerializer : public Serializer {
 public:
-  BlockSerializer(size_t buffer_size) : Serializer(buffer_size) { }
-  inline void serialize(const Block &block) {
-    Serializer::serialize(block.CELLS_X);
-    Serializer::serialize(block.CELLS_Y);
-    Serializer::serialize(block.CELLS_Z);
-    for (unsigned i = 0; i < 2; i++)
-      Serializer::serialize(block.base[i]);
-    for (unsigned i = 0; i < 2; i++)
-      for (unsigned j = 0; j < GHOST_CELLS; j++)
-        Serializer::serialize(block.edge[i][j]);
-    for (unsigned i = 0; i < 2; i++)
-      Serializer::serialize(block.regions[i]);
-    for (unsigned b = 0; b < 2; b++)
-      for (unsigned cz = 0; cz < block.CELLS_Z+2; cz++)
-        for (unsigned cy = 0; cy < block.CELLS_Y+2; cy++)
-          for (unsigned cx = 0; cx < block.CELLS_X+2; cx++)
-            Serializer::serialize(block.cells[b][cz][cy][cx]);
-    Serializer::serialize(block.cb);
-    Serializer::serialize(block.id);
-    Serializer::serialize(block.x);
-    Serializer::serialize(block.y);
-    Serializer::serialize(block.z);
-  }
+  StringSerializer(size_t buffer_size) : Serializer(buffer_size) { }
   inline void serialize(const std::string &str) {
     const char *c_str = str.c_str();
     size_t len = strlen(c_str);
@@ -346,38 +319,10 @@ public:
   }
 };
 
-class BlockDeserializer : public Deserializer {
+class StringDeserializer : public Deserializer {
 public:
-  BlockDeserializer(const void *buffer, size_t buffer_size)
+  StringDeserializer(const void *buffer, size_t buffer_size)
     : Deserializer(buffer, buffer_size) { }
-  inline void deserialize(Block &block) {
-    Deserializer::deserialize(block.CELLS_X);
-    Deserializer::deserialize(block.CELLS_Y);
-    Deserializer::deserialize(block.CELLS_Z);
-    for (unsigned i = 0; i < 2; i++)
-      Deserializer::deserialize(block.base[i]);
-    for (unsigned i = 0; i < 2; i++)
-      for (unsigned j = 0; j < GHOST_CELLS; j++)
-        Deserializer::deserialize(block.edge[i][j]);
-    for (unsigned i = 0; i < 2; i++)
-      Deserializer::deserialize(block.regions[i]);
-    for (unsigned b = 0; b < 2; b++) {
-      block.cells[b].resize(block.CELLS_Z+2);
-      for (unsigned cz = 0; cz < block.CELLS_Z+2; cz++) {
-        block.cells[b][cz].resize(block.CELLS_Y+2);
-        for (unsigned cy = 0; cy < block.CELLS_Y+2; cy++) {
-          block.cells[b][cz][cy].resize(block.CELLS_X+2);
-          for (unsigned cx = 0; cx < block.CELLS_X+2; cx++)
-            Deserializer::deserialize(block.cells[b][cz][cy][cx]);
-        }
-      }
-    }
-    Deserializer::deserialize(block.cb);
-    Deserializer::deserialize(block.id);
-    Deserializer::deserialize(block.x);
-    Deserializer::deserialize(block.y);
-    Deserializer::deserialize(block.z);
-  }
   inline void deserialize(std::string &str) {
     size_t len;
     Deserializer::deserialize(len);
@@ -480,6 +425,8 @@ static void get_all_regions(LogicalRegion *ghosts, std::vector<RegionRequirement
 }
 
 struct TopLevelRegions {
+  LogicalRegion config;
+  LogicalRegion blocks;
   LogicalRegion real_cells[2];
   LogicalRegion edge_cells;
 };
@@ -510,10 +457,10 @@ void top_level_task(const void *args, size_t arglen,
   // build regions for cells and then do all work in a subtask
   {
     TopLevelRegions tlr;
-    tlr.real_cells[0] = runtime->create_logical_region(ctx, sizeof(Cell),
-                                                       nx*ny*nz);
-    tlr.real_cells[1] = runtime->create_logical_region(ctx, sizeof(Cell),
-                                                       nx*ny*nz);
+    tlr.config = runtime->create_logical_region(ctx, sizeof(FluidConfig), 1);
+    tlr.blocks = runtime->create_logical_region(ctx, sizeof(Block), nbx*nby*nbz);
+    tlr.real_cells[0] = runtime->create_logical_region(ctx, sizeof(Cell), nx*ny*nz);
+    tlr.real_cells[1] = runtime->create_logical_region(ctx, sizeof(Cell), nx*ny*nz);
     unsigned rnx = nx + 2*nbx, rny = ny + 2*nby, rnz = nz + 2*nbz;
     tlr.edge_cells =
       runtime->create_logical_region(ctx, sizeof(Cell),
@@ -522,6 +469,12 @@ void top_level_task(const void *args, size_t arglen,
                                            + 8*nbx*nby*nbz);
 
     std::vector<RegionRequirement> main_regions;
+    main_regions.push_back(RegionRequirement(tlr.config,
+					     READ_WRITE, ALLOCABLE, EXCLUSIVE,
+					     tlr.config));
+    main_regions.push_back(RegionRequirement(tlr.blocks,
+					     READ_WRITE, ALLOCABLE, EXCLUSIVE,
+					     tlr.blocks));
     main_regions.push_back(RegionRequirement(tlr.real_cells[0],
 					     READ_WRITE, ALLOCABLE, EXCLUSIVE,
 					     tlr.real_cells[0]));
@@ -533,7 +486,7 @@ void top_level_task(const void *args, size_t arglen,
 					     tlr.edge_cells));
 
     unsigned bufsize = sizeof(FluidConfig) + sizeof(TopLevelRegions);
-    BlockSerializer ser(bufsize);
+    StringSerializer ser(bufsize);
     ser.Serializer::serialize(conf);
     ser.Serializer::serialize(tlr);
     TaskArgument buffer(ser.get_buffer(), bufsize);
@@ -577,7 +530,7 @@ void main_task(const void *args, size_t arglen,
   FluidConfig conf;
   TopLevelRegions tlr;
   {
-    BlockDeserializer deser(args, arglen);
+    StringDeserializer deser(args, arglen);
     deser.Deserializer::deserialize(conf);
     deser.Deserializer::deserialize(tlr);
   }
@@ -590,10 +543,19 @@ void main_task(const void *args, size_t arglen,
   printf("fluid: divisions = %d x %d x %d\n", nbx, nby, nbz);
   printf("fluid: steps     = %d\n", conf.numSteps);
 
+  PhysicalRegion<AT> config_region = regions[0];
+  PhysicalRegion<AT> blocks_region = regions[1];
   PhysicalRegion<AT> real_cells[2];
-  real_cells[0] = regions[0];
-  real_cells[1] = regions[1];
-  PhysicalRegion<AT> edge_cells = regions[2];
+  real_cells[0] = regions[2];
+  real_cells[1] = regions[3];
+  PhysicalRegion<AT> edge_cells = regions[4];
+
+  // Fill in config region from parameter value
+  ptr_t<FluidConfig> config_ptr = config_region.template alloc<FluidConfig>();
+  config_region.write(config_ptr, conf);
+
+  // Create, initialize, and partition blocks
+  blocks_region.template alloc<Block>(nbx*nby*nbz);
 
   std::vector<Block> blocks;
   blocks.resize(numBlocks);
@@ -609,16 +571,32 @@ void main_task(const void *args, size_t arglen,
         blocks[id].CELLS_X = (nx/nbx) + (nx%nbx > idx ? 1 : 0);
         blocks[id].CELLS_Y = (ny/nby) + (ny%nby > idy ? 1 : 0);
         blocks[id].CELLS_Z = (nz/nbz) + (nz%nbz > idz ? 1 : 0);
-        for (unsigned b = 0; b < 2; b++) {
-          blocks[id].cells[b].resize(blocks[id].CELLS_Z+2);
-          for(unsigned cz = 0; cz < blocks[id].CELLS_Z+2; cz++) {
-            blocks[id].cells[b][cz].resize(blocks[id].CELLS_Y+2);
-            for(unsigned cy = 0; cy < blocks[id].CELLS_Y+2; cy++) {
-              blocks[id].cells[b][cz][cy].resize(blocks[id].CELLS_X+2);
-            }
-          }
-        }
+
+        assert(blocks[id].CELLS_X + 2 <= MAX_CELLS_X);
+        assert(blocks[id].CELLS_Y + 2 <= MAX_CELLS_Y);
+        assert(blocks[id].CELLS_Z + 2 <= MAX_CELLS_Z);
       }
+
+  std::vector<LogicalRegion> block_regions;
+  block_regions.resize(numBlocks);
+  {
+    std::vector<std::set<utptr_t> > coloring;
+    coloring.resize(numBlocks);
+
+    for (unsigned id = 0; id < numBlocks; id++) {
+      ptr_t<Block> block_ptr;
+      block_ptr.value = id;
+      coloring[id].insert(block_ptr);
+    }
+
+    Partition block_part = runtime->create_partition(ctx, tlr.blocks,
+                                                     coloring,
+                                                     true/*disjoint*/);
+
+    for (unsigned id = 0; id < numBlocks; id++) {
+      block_regions[id] = runtime->get_subregion(ctx, block_part, id);
+    }
+  }
 
   // first, do two passes of the "real" cells
   for(int b = 0; b < 2; b++) {
@@ -828,39 +806,41 @@ void main_task(const void *args, size_t arglen,
         color += GHOST_CELLS;
       }
 
-  // Unmap the physical region we intend to pass to children
+  for (unsigned id = 0; id < numBlocks; id++) {
+    ptr_t<Block> block_ptr;
+    block_ptr.value = id;
+    blocks_region.write(block_ptr, blocks[id]);
+  }
+
+  // Unmap the physical regions we intend to pass to children
+  runtime->unmap_region(ctx, config_region);
+  runtime->unmap_region(ctx, blocks_region);
   runtime->unmap_region(ctx, real_cells[0]);
   runtime->unmap_region(ctx, real_cells[1]);
   runtime->unmap_region(ctx, edge_cells);
 
   // Initialize the simulation in buffer 1
   {
-    std::vector<RegionRequirement> init_regions;
-    //for (unsigned id = 0; id < numBlocks; id++) {
-    //  init_regions.push_back(RegionRequirement(blocks[id].base[1],
-    //                                           READ_WRITE, ALLOCABLE, EXCLUSIVE,
-    //                                           tlr.real_cells[1]));
-    //}
-    init_regions.push_back(RegionRequirement(tlr.real_cells[1],
+    std::vector<RegionRequirement> load_regions;
+    load_regions.push_back(RegionRequirement(tlr.config,
+                                             READ_ONLY, NO_MEMORY, EXCLUSIVE,
+                                             tlr.config));
+    load_regions.push_back(RegionRequirement(tlr.blocks,
+                                             READ_ONLY, NO_MEMORY, EXCLUSIVE,
+                                             tlr.blocks));
+    load_regions.push_back(RegionRequirement(tlr.real_cells[1],
                                              READ_WRITE, ALLOCABLE, EXCLUSIVE,
                                              tlr.real_cells[1]));
 
     std::string fileName = "init.fluid";
 
-    unsigned bufsize = sizeof(FluidConfig) + sizeof(size_t) + fileName.length();
-    for (unsigned id = 0; id < numBlocks; id++) {
-      bufsize += BLOCK_SIZE(blocks[id]);
-    }
-    BlockSerializer ser(bufsize);
-    ser.Serializer::serialize(conf);
-    for (unsigned id = 0; id < numBlocks; id++) {
-      ser.serialize(blocks[id]);
-    }
+    unsigned bufsize = sizeof(size_t) + fileName.length();
+    StringSerializer ser(bufsize);
     ser.serialize(fileName);
     TaskArgument buffer(ser.get_buffer(), bufsize);
 
     Future f = runtime->execute_task(ctx, TASKID_LOAD_FILE,
-                                     init_regions,
+                                     load_regions,
                                      buffer,
                                      0, 0);
     f.get_void_result();
@@ -876,15 +856,20 @@ void main_task(const void *args, size_t arglen,
   // Run the simulation
   for (unsigned step = 0; step < conf.numSteps; step++)
   {
-    for (unsigned id = 0; id < numBlocks; id++)
-      blocks[id].cb = cur_buffer;
-
     // Initialize cells
     for (unsigned id = 0; id < numBlocks; id++)
     {
       // init and rebuild reads the real cells from the previous pass and
       //  moves atoms into the real cells for this pass or the edge0 cells
       std::vector<RegionRequirement> init_regions;
+
+
+      init_regions.push_back(RegionRequirement(tlr.config,
+                                               READ_ONLY, NO_MEMORY, EXCLUSIVE,
+                                               tlr.config));
+      init_regions.push_back(RegionRequirement(block_regions[id],
+                                               READ_ONLY, NO_MEMORY, EXCLUSIVE,
+                                               block_regions[id]));
 
       // read old
       init_regions.push_back(RegionRequirement(blocks[id].base[1 - cur_buffer],
@@ -900,10 +885,9 @@ void main_task(const void *args, size_t arglen,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 		      tlr.edge_cells);
 
-      unsigned bufsize = sizeof(FluidConfig) + BLOCK_SIZE(blocks[id]);
-      BlockSerializer ser(bufsize);
-      ser.Serializer::serialize(conf);
-      ser.serialize(blocks[id]);
+      unsigned bufsize = sizeof(int);
+      Serializer ser(bufsize);
+      ser.serialize(cur_buffer);
       TaskArgument buffer(ser.get_buffer(), bufsize);
 
       Future f = runtime->execute_task(ctx, TASKID_INIT_CELLS,
@@ -940,6 +924,9 @@ void main_task(const void *args, size_t arglen,
 
       std::vector<RegionRequirement> rebuild_regions;
 
+      rebuild_regions.push_back(RegionRequirement(block_regions[id],
+                                                  READ_ONLY, NO_MEMORY, EXCLUSIVE,
+                                                  block_regions[id]));
       rebuild_regions.push_back(RegionRequirement(blocks[id].base[cur_buffer],
 						  READ_WRITE, NO_MEMORY, EXCLUSIVE,
 						  tlr.real_cells[cur_buffer]));
@@ -949,9 +936,9 @@ void main_task(const void *args, size_t arglen,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 		      tlr.edge_cells);
 
-      unsigned bufsize = BLOCK_SIZE(blocks[id]);
-      BlockSerializer ser(bufsize);
-      ser.serialize(blocks[id]);
+      unsigned bufsize = sizeof(int);
+      Serializer ser(bufsize);
+      ser.serialize(cur_buffer);
       TaskArgument buffer(ser.get_buffer(), bufsize);
 
       Future f = runtime->execute_task(ctx, TASKID_REBUILD_REDUCE,
@@ -987,6 +974,12 @@ void main_task(const void *args, size_t arglen,
 
       std::vector<RegionRequirement> density_regions;
 
+      density_regions.push_back(RegionRequirement(tlr.config,
+                                                  READ_ONLY, NO_MEMORY, EXCLUSIVE,
+                                                  tlr.config));
+      density_regions.push_back(RegionRequirement(block_regions[id],
+                                                  READ_ONLY, NO_MEMORY, EXCLUSIVE,
+                                                  block_regions[id]));
       density_regions.push_back(RegionRequirement(blocks[id].base[cur_buffer],
 						  READ_WRITE, NO_MEMORY, EXCLUSIVE,
 						  tlr.real_cells[cur_buffer]));
@@ -996,10 +989,9 @@ void main_task(const void *args, size_t arglen,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 		      tlr.edge_cells);
 
-      unsigned bufsize = sizeof(FluidConfig) + BLOCK_SIZE(blocks[id]);
-      BlockSerializer ser(bufsize);
-      ser.Serializer::serialize(conf);
-      ser.serialize(blocks[id]);
+      unsigned bufsize = sizeof(int);
+      Serializer ser(bufsize);
+      ser.serialize(cur_buffer);
       TaskArgument buffer(ser.get_buffer(), bufsize);
 
       Future f = runtime->execute_task(ctx, TASKID_SCATTER_DENSITIES,
@@ -1037,6 +1029,12 @@ void main_task(const void *args, size_t arglen,
 
       std::vector<RegionRequirement> force_regions;
 
+      force_regions.push_back(RegionRequirement(tlr.config,
+                                                READ_ONLY, NO_MEMORY, EXCLUSIVE,
+                                                tlr.config));
+      force_regions.push_back(RegionRequirement(block_regions[id],
+                                                READ_ONLY, NO_MEMORY, EXCLUSIVE,
+                                                block_regions[id]));
       force_regions.push_back(RegionRequirement(blocks[id].base[cur_buffer],
 						READ_WRITE, NO_MEMORY, EXCLUSIVE,
 						tlr.real_cells[cur_buffer]));
@@ -1046,10 +1044,9 @@ void main_task(const void *args, size_t arglen,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 		      tlr.edge_cells);
 
-      unsigned bufsize = sizeof(FluidConfig) + BLOCK_SIZE(blocks[id]);
-      BlockSerializer ser(bufsize);
-      ser.Serializer::serialize(conf);
-      ser.serialize(blocks[id]);
+      unsigned bufsize = sizeof(int);
+      Serializer ser(bufsize);
+      ser.serialize(cur_buffer);
       TaskArgument buffer(ser.get_buffer(), bufsize);
 
       Future f = runtime->execute_task(ctx, TASKID_GATHER_FORCES,
@@ -1104,34 +1101,27 @@ void main_task(const void *args, size_t arglen,
 #else
     int target_buffer = cur_buffer;
 #endif
-    std::vector<RegionRequirement> init_regions;
-    //for (unsigned id = 0; id < numBlocks; id++) {
-    //  init_regions.push_back(RegionRequirement(blocks[id].base[target_buffer],
-    //                                           READ_ONLY, NO_MEMORY, EXCLUSIVE,
-    //                                           tlr.real_cells[target_buffer]));
-    //}
-    init_regions.push_back(RegionRequirement(tlr.real_cells[target_buffer],
+    std::vector<RegionRequirement> save_regions;
+    save_regions.push_back(RegionRequirement(tlr.config,
+                                             READ_ONLY, NO_MEMORY, EXCLUSIVE,
+                                             tlr.config));
+    save_regions.push_back(RegionRequirement(tlr.blocks,
+                                             READ_ONLY, NO_MEMORY, EXCLUSIVE,
+                                             tlr.blocks));
+    save_regions.push_back(RegionRequirement(tlr.real_cells[target_buffer],
                                              READ_ONLY, NO_MEMORY, EXCLUSIVE,
                                              tlr.real_cells[target_buffer]));
 
     std::string fileName = "output.fluid";
 
-    unsigned bufsize = sizeof(FluidConfig) + sizeof(int) +
-      sizeof(size_t) + fileName.length();
-    for (unsigned id = 0; id < numBlocks; id++) {
-      bufsize += BLOCK_SIZE(blocks[id]);
-    }
-    BlockSerializer ser(bufsize);
-    ser.Serializer::serialize(conf);
+    unsigned bufsize = sizeof(int) + sizeof(size_t) + fileName.length();
+    StringSerializer ser(bufsize);
     ser.Serializer::serialize(target_buffer);
-    for (unsigned id = 0; id < numBlocks; id++) {
-      ser.serialize(blocks[id]);
-    }
     ser.serialize(fileName);
     TaskArgument buffer(ser.get_buffer(), bufsize);
 
     Future f = runtime->execute_task(ctx, TASKID_SAVE_FILE,
-                                     init_regions,
+                                     save_regions,
                                      buffer,
                                      0, 0);
     f.get_void_result();
@@ -1173,26 +1163,33 @@ static inline void WRITE_CELL(Block &b, int cb, int eb, int cz, int cy, int cx,
   }
 }
 
+template<AccessorType AT, typename T>
+static T& get_singleton_ref(PhysicalRegion<AT> region)
+{
+  RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> array_accessor =
+    region.template convert<AccessorArray>().get_instance();
+  ptr_t<T> ptr;
+  ptr.value = 0;
+  return array_accessor.ref(ptr);
+}
+
 template<AccessorType AT>
 void init_and_rebuild(const void *args, size_t arglen,
                 std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
-  FluidConfig conf;
-  Block b;
+  int cb;
   {
-    BlockDeserializer deser(args, arglen);
-    deser.Deserializer::deserialize(conf);
-    deser.deserialize(b);
+    Deserializer deser(args, arglen);
+    deser.deserialize(cb);
   }
-  unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
-  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
-  Vec3 &delta = conf.delta;
-  int cb = b.cb; // current buffer
   int eb = 0; // edge phase for this task is 0
+
   // Initialize all the cells and update all our cells
-  PhysicalRegion<AT> src_block = regions[0];
-  PhysicalRegion<AT> dst_block = regions[1];
+  PhysicalRegion<AT> config_region = regions[0];
+  PhysicalRegion<AT> block_region = regions[1];
+  PhysicalRegion<AT> src_block = regions[2];
+  PhysicalRegion<AT> dst_block = regions[3];
   PhysicalRegion<AT> edge_blocks[GHOST_CELLS];
   RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> src =
     src_block.template convert<AccessorArray>().get_instance();
@@ -1200,9 +1197,16 @@ void init_and_rebuild(const void *args, size_t arglen,
     dst_block.template convert<AccessorArray>().get_instance();
   RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> edges[GHOST_CELLS];
   for(unsigned i = 0; i < GHOST_CELLS; i++) {
-    edge_blocks[i] = regions[i + 2];
+    edge_blocks[i] = regions[i + 4];
     edges[i] = edge_blocks[i].template convert<AccessorArray>().get_instance();
   }
+
+  FluidConfig &conf = get_singleton_ref<AT, FluidConfig>(config_region);
+  unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
+  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
+  Vec3 &delta = conf.delta;
+
+  Block &b = get_singleton_ref<AT, Block>(block_region);
 
   log_app.info("In init_and_rebuild() for block %d", b.id);
 
@@ -1275,23 +1279,26 @@ void rebuild_reduce(const void *args, size_t arglen,
                 std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
-  Block b;
+  int cb;
   {
-    BlockDeserializer deser(args, arglen);
-    deser.deserialize(b);
+    Deserializer deser(args, arglen);
+    deser.deserialize(cb);
   }
-  int cb = b.cb; // current buffer
   int eb = 1; // edge phase for this task is 1
+
   // Initialize all the cells and update all our cells
-  PhysicalRegion<AT> base_block = regions[0];
+  PhysicalRegion<AT> block_region = regions[0];
+  PhysicalRegion<AT> base_block = regions[1];
   PhysicalRegion<AT> edge_blocks[GHOST_CELLS];
   RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> base =
     base_block.template convert<AccessorArray>().get_instance();
   RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> edges[GHOST_CELLS];
   for(unsigned i = 0; i < GHOST_CELLS; i++) {
-    edge_blocks[i] = regions[i + 1];
+    edge_blocks[i] = regions[i + 2];
     edges[i] = edge_blocks[i].template convert<AccessorArray>().get_instance();
   }
+
+  Block &b = get_singleton_ref<AT, Block>(block_region);
 
   log_app.info("In rebuild_reduce() for block %d", b.id);
 
@@ -1341,28 +1348,32 @@ void scatter_densities(const void *args, size_t arglen,
                 std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
-  FluidConfig conf;
-  Block b;
+  int cb;
   {
-    BlockDeserializer deser(args, arglen);
-    deser.Deserializer::deserialize(conf);
-    deser.deserialize(b);
+    Deserializer deser(args, arglen);
+    deser.deserialize(cb);
   }
-  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
-  float &hSq = conf.hSq;
-  float &densityCoeff = conf.densityCoeff;
-  int cb = b.cb; // current buffer
   int eb = 0; // edge phase for this task is 0
+
   // Initialize all the cells and update all our cells
-  PhysicalRegion<AT> base_block = regions[0];
+  PhysicalRegion<AT> config_region = regions[0];
+  PhysicalRegion<AT> block_region = regions[1];
+  PhysicalRegion<AT> base_block = regions[2];
   PhysicalRegion<AT> edge_blocks[GHOST_CELLS];
   RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> base =
     base_block.template convert<AccessorArray>().get_instance();
   RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> edges[GHOST_CELLS];
   for(unsigned i = 0; i < GHOST_CELLS; i++) {
-    edge_blocks[i] = regions[i + 1];
+    edge_blocks[i] = regions[i + 3];
     edges[i] = edge_blocks[i].template convert<AccessorArray>().get_instance();
   }
+
+  FluidConfig &conf = get_singleton_ref<AT, FluidConfig>(config_region);
+  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
+  float &hSq = conf.hSq;
+  float &densityCoeff = conf.densityCoeff;
+
+  Block &b = get_singleton_ref<AT, Block>(block_region);
 
   log_app.info("In scatter_densities() for block %d", b.id);
 
@@ -1478,30 +1489,33 @@ void gather_forces_and_advance(const void *args, size_t arglen,
                 std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
-  FluidConfig conf;
-  Block b;
+  int cb;
   {
-    BlockDeserializer deser(args, arglen);
-    deser.Deserializer::deserialize(conf);
-    deser.deserialize(b);
+    Deserializer deser(args, arglen);
+    deser.deserialize(cb);
   }
-  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
-  float &h = conf.h, &hSq = conf.hSq;
-  float &pressureCoeff = conf.pressureCoeff;
-  float &viscosityCoeff = conf.viscosityCoeff;
-
-  int cb = b.cb; // current buffer
   int eb = 1; // edge phase for this task is 1
+
   // Initialize all the cells and update all our cells
-  PhysicalRegion<AT> base_block = regions[0];
+  PhysicalRegion<AT> config_region = regions[0];
+  PhysicalRegion<AT> block_region = regions[1];
+  PhysicalRegion<AT> base_block = regions[2];
   PhysicalRegion<AT> edge_blocks[GHOST_CELLS];
   RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> base =
     base_block.template convert<AccessorArray>().get_instance();
   RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> edges[GHOST_CELLS];
   for(unsigned i = 0; i < GHOST_CELLS; i++) {
-    edge_blocks[i] = regions[i + 1];
+    edge_blocks[i] = regions[i + 3];
     edges[i] = edge_blocks[i].template convert<AccessorArray>().get_instance();
   }
+
+  FluidConfig &conf = get_singleton_ref<AT, FluidConfig>(config_region);
+  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
+  float &h = conf.h, &hSq = conf.hSq;
+  float &pressureCoeff = conf.pressureCoeff;
+  float &viscosityCoeff = conf.viscosityCoeff;
+
+  Block &b = get_singleton_ref<AT, Block>(block_region);
 
   log_app.info("In gather_forces_and_advance() for block %d", b.id);
 
@@ -1664,27 +1678,33 @@ void load_file(const void *args, size_t arglen,
                std::vector<PhysicalRegion<AT> > &regions,
                Context ctx, HighLevelRuntime *runtime)
 {
-  std::vector<Block> blocks;
   std::string fileName;
-  FluidConfig conf;
-  unsigned &numBlocks = conf.numBlocks;
   {
-    BlockDeserializer deser(args, arglen);
-    deser.Deserializer::deserialize(conf);
-    blocks.resize(numBlocks);
-    for (unsigned i = 0; i < numBlocks; i++) {
-      deser.deserialize(blocks[i]);
-    }
+    StringDeserializer deser(args, arglen);
     deser.deserialize(fileName);
   }
 
+  PhysicalRegion<AT> config_region = regions[0];
+  PhysicalRegion<AT> blocks_region = regions[1];
+  PhysicalRegion<AT> real_cells = regions[2];
+  RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> blocks_array =
+    blocks_region.template convert<AccessorArray>().get_instance();
+
+  FluidConfig &conf = get_singleton_ref<AT, FluidConfig>(config_region);
   float &restParticlesPerMeter = conf.restParticlesPerMeter;
   int &origNumParticles = conf.origNumParticles, numParticles;
   unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
   unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
+  unsigned &numBlocks = conf.numBlocks;
   Vec3 &delta = conf.delta;
 
-  PhysicalRegion<AT> real_cells = regions[0];
+  std::vector<Block> blocks;
+  blocks.resize(numBlocks);
+  for (unsigned id = 0; id < numBlocks; id++) {
+    ptr_t<Block> block_ptr;
+    block_ptr.value = id;
+    blocks[id] = blocks_region.read(block_ptr);
+  }
 
   log_app.info("Loading file \"%s\"...", fileName.c_str());
 
@@ -1809,28 +1829,32 @@ void save_file(const void *args, size_t arglen,
 	       std::vector<PhysicalRegion<AT> > &regions,
 	       Context ctx, HighLevelRuntime *runtime)
 {
-  std::vector<Block> blocks;
-  std::string fileName;
-  FluidConfig conf;
-  unsigned &numBlocks = conf.numBlocks;
   int b;
+  std::string fileName;
   {
-    BlockDeserializer deser(args, arglen);
-    deser.Deserializer::deserialize(conf);
+    StringDeserializer deser(args, arglen);
     deser.Deserializer::deserialize(b);
-
-    blocks.resize(numBlocks);
-    for (unsigned i = 0; i < numBlocks; i++) {
-      deser.deserialize(blocks[i]);
-    }
     deser.deserialize(fileName);
   }
+
+  PhysicalRegion<AT> config_region = regions[0];
+  PhysicalRegion<AT> blocks_region = regions[1];
+  PhysicalRegion<AT> real_cells = regions[2];
+
+  FluidConfig conf = get_singleton_ref<AT, FluidConfig>(config_region);
   float &restParticlesPerMeter = conf.restParticlesPerMeter;
   int &origNumParticles = conf.origNumParticles;
   unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
   unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
+  unsigned &numBlocks = conf.numBlocks;
 
-  PhysicalRegion<AT> real_cells = regions[0];
+  std::vector<Block> blocks;
+  blocks.resize(numBlocks);
+  for (unsigned id = 0; id < numBlocks; id++) {
+    ptr_t<Block> block_ptr;
+    block_ptr.value = id;
+    blocks[id] = blocks_region.read(block_ptr);
+  }
 
   log_app.info("Saving file \"%s\"...", fileName.c_str());
 
@@ -2131,6 +2155,8 @@ public:
         switch (idx) { // First two regions should be local to us
         case 0:
         case 1:
+        case 2:
+        case 3:
           {
             // These should go in the local memory
             target_ranking.push_back(cmp.second);
@@ -2138,8 +2164,7 @@ public:
           break;
         default:
           {
-            // These are the ghost cells, write them out to global memory 
-            //target_ranking.push_back(global_memory);
+            // Copy ghost cells into local memory
             target_ranking.push_back(cmp.second);
           }
         }
@@ -2150,14 +2175,16 @@ public:
       {
         switch (idx) {
         case 0:
+        case 1:
+        case 2:
           {
             // Put the owned cells in the local memory
             target_ranking.push_back(cmp.second);
           }
+          break;
         default:
           {
-            // These are the ghose cells, write them out to global memory
-            //target_ranking.push_back(global_memory);
+            // Copy ghost cells into local memory
             target_ranking.push_back(cmp.second);
           }
         }
@@ -2169,6 +2196,7 @@ public:
       {
         switch (idx) {
         case 0:
+        case 1:
           {
             // These are the owned cells, keep them in local memory
             target_ranking.push_back(cmp.second);
