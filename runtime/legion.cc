@@ -1358,7 +1358,8 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void RegionMappingImpl::activate(TaskContext *c, const RegionRequirement &r)
+    void RegionMappingImpl::activate(TaskContext *c, const RegionRequirement &r,
+                                     MapperID _mid, MappingTagID _tag)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1366,6 +1367,8 @@ namespace RegionRuntime {
 #endif
       parent_ctx = c;
       req = r;
+      mid = _mid;
+      tag = _tag;
       unique_id = runtime->get_unique_task_id();
       mapped_event = UserEvent::create_user_event();
       unmapped_event = UserEvent::create_user_event();
@@ -1554,7 +1557,13 @@ namespace RegionRuntime {
         bool war_optimization = true;
         {
           DetailedTimer::ScopedPush sp(TIME_MAPPER);
+          // Little bit of a hack here, temporarily save the parent task's tag and set our own
+          // then restore it after the call
+          MappingTagID parent_tag = parent_ctx->tag;
+          parent_ctx->tag = this->tag;
           mapper->map_task_region(parent_ctx, req, 0/*index*/, sources, locations, war_optimization);
+          // Restore the parent's tag
+          parent_ctx->tag = parent_tag;
         }
         if (!locations.empty())
         {
@@ -2796,11 +2805,12 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     template<>
-    PhysicalRegion<AccessorArray> HighLevelRuntime::map_region(Context ctx, RegionRequirement req)
+    PhysicalRegion<AccessorArray> HighLevelRuntime::map_region(Context ctx, RegionRequirement req,
+                                                               MapperID mid, MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_INLINE_MAP);
-      RegionMappingImpl *impl = get_available_mapping(ctx, req); 
+      RegionMappingImpl *impl = get_available_mapping(ctx, req, mid, tag); 
 
       internal_map_region(ctx, impl);
 
@@ -2809,11 +2819,12 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     template<>
-    PhysicalRegion<AccessorGeneric> HighLevelRuntime::map_region(Context ctx, RegionRequirement req)
+    PhysicalRegion<AccessorGeneric> HighLevelRuntime::map_region(Context ctx, RegionRequirement req,
+                                                                 MapperID mid, MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_INLINE_MAP);
-      RegionMappingImpl *impl = get_available_mapping(ctx, req); 
+      RegionMappingImpl *impl = get_available_mapping(ctx, req, mid, tag); 
 
       internal_map_region(ctx, impl);
       
@@ -3013,7 +3024,8 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    RegionMappingImpl* HighLevelRuntime::get_available_mapping(TaskContext *ctx, const RegionRequirement &req)
+    RegionMappingImpl* HighLevelRuntime::get_available_mapping(TaskContext *ctx, const RegionRequirement &req,
+                                                               MapperID mid, MappingTagID tag)
     //--------------------------------------------------------------------------------------------
     {
       RegionMappingImpl *result;
@@ -3026,7 +3038,7 @@ namespace RegionRuntime {
       {
         result = new RegionMappingImpl(this);
       }
-      result->activate(ctx, req);
+      result->activate(ctx, req, mid, tag);
 
       return result;
     }
@@ -3712,8 +3724,8 @@ namespace RegionRuntime {
 #endif
       // Get the necessary locks on the mapper for this mapping implementation
       AutoLock map_lock(mapping_lock,1,false/*exclusive*/); 
-      AutoLock mapper_lock(mapper_locks[impl->parent_ctx->map_id]);
-      impl->perform_mapping(mapper_objects[impl->parent_ctx->map_id]);
+      AutoLock mapper_lock(mapper_locks[impl->mid]);
+      impl->perform_mapping(mapper_objects[impl->mid]);
     }
 
     //--------------------------------------------------------------------------------------------

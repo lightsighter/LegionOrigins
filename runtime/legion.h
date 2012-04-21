@@ -852,11 +852,11 @@ namespace RegionRuntime {
        * see if the RegionRequirement for that index has already been mapped.
        */
       template<AccessorType AT>
-      PhysicalRegion<AT> map_region(Context ctx, RegionRequirement req);
+      PhysicalRegion<AT> map_region(Context ctx, RegionRequirement req, MapperID id = 0, MappingTagID tag = 0);
       // A shortcut for remapping regions which were arguments to the task
       // by only having to specify the index for the RegionRequirement
       template<AccessorType AT>
-      PhysicalRegion<AT> map_region(Context ctx, unsigned idx);
+      PhysicalRegion<AT> map_region(Context ctx, unsigned idx, MapperID id = 0, MappingTagID tag = 0);
 
       template<AccessorType AT>
       void unmap_region(Context ctx, PhysicalRegion<AT> &region);
@@ -874,7 +874,7 @@ namespace RegionRuntime {
                     std::vector<PhysicalRegion<AccessorGeneric> > &physical_regions);
       const void* get_local_args(Context ctx, IndexPoint &point, size_t &local_size);
     private:
-      RegionMappingImpl* get_available_mapping(TaskContext *ctx, const RegionRequirement &req);
+      RegionMappingImpl* get_available_mapping(TaskContext *ctx, const RegionRequirement &req, MapperID mid, MappingTagID tag);
       DeletionOp*        get_available_deletion(TaskContext *ctx, LogicalRegion handle);
       DeletionOp*        get_available_deletion(TaskContext *ctx, PartitionID pid);
     private:
@@ -1587,6 +1587,8 @@ namespace RegionRuntime {
       UserEvent unmapped_event;
       Lock context_lock;
       UniqueID unique_id;
+      MapperID mid;
+      MappingTagID tag;
     private:
       bool already_chosen;
       InstanceInfo *chosen_info;
@@ -1614,7 +1616,7 @@ namespace RegionRuntime {
       friend class RegionRenamer;
       RegionMappingImpl(HighLevelRuntime *rt); 
       ~RegionMappingImpl(void);
-      void activate(TaskContext *ctx, const RegionRequirement &req);
+      void activate(TaskContext *ctx, const RegionRequirement &req, MapperID mid, MappingTagID tag);
       void deactivate(void);
       void set_target_instance(InstanceInfo *target);
       virtual bool is_context(void) const { return false; }
@@ -3208,7 +3210,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     template<AccessorType AT>
-    PhysicalRegion<AT> HighLevelRuntime::map_region(Context ctx, unsigned idx)
+    PhysicalRegion<AT> HighLevelRuntime::map_region(Context ctx, unsigned idx, MapperID mid, MappingTagID tag)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -3229,7 +3231,7 @@ namespace RegionRuntime {
         return result.convert<AT>();
       }
       // Otherwise, this was unmapped so we have to map it
-      RegionMappingImpl *impl = get_available_mapping(ctx, ctx->regions[idx]);
+      RegionMappingImpl *impl = get_available_mapping(ctx, ctx->regions[idx], mid, tag);
       if (ctx->local_instances[idx] != InstanceInfo::get_no_instance())
       {
         impl->set_target_instance(ctx->local_instances[idx]);
