@@ -235,12 +235,6 @@ public:
   unsigned num_particles;
 };
 
-struct BufferRegions {
-  LogicalRegion base;  // contains owned cells
-  LogicalRegion edge_a[GHOST_CELLS]; // two sub-buffers for ghost cells allows
-  LogicalRegion edge_b[GHOST_CELLS]; //   bidirectional exchanges
-};
-
 // This is a hack to allow Blocks to be entirely static. The maximum
 // problem size we happen to be dealing with is 93 x 129 x 93, but you
 // could easily increase this limit to whatever you want.
@@ -258,9 +252,6 @@ const unsigned MAX_CELLS_X = 95, MAX_CELLS_Y = 131, MAX_CELLS_Z = 95;
 //  only once per simulation iteration, while the phase of the "edge" cells
 //  changes every task
 struct Block {
-  LogicalRegion base[2];
-  LogicalRegion edge[2][GHOST_CELLS];
-  BufferRegions regions[2];
   ptr_t<Cell> cells[2][MAX_CELLS_Z][MAX_CELLS_Y][MAX_CELLS_X];
   int id;
   unsigned x, y, z; // position in block grid
@@ -412,7 +403,7 @@ static void init_config(FluidConfig &conf)
   assert(delta.x >= h && delta.y >= h && delta.z >= h);
 }
 
-static void get_all_regions(LogicalRegion *ghosts, std::vector<RegionRequirement> &reqs,
+static void get_all_regions(std::vector<LogicalRegion> &ghosts, std::vector<RegionRequirement> &reqs,
                             PrivilegeMode access, AllocateMode mem, 
                             CoherenceProperty prop, LogicalRegion parent)
 {
@@ -486,9 +477,9 @@ void top_level_task(const void *args, size_t arglen,
 					     tlr.edge_cells));
 
     unsigned bufsize = sizeof(FluidConfig) + sizeof(TopLevelRegions);
-    StringSerializer ser(bufsize);
-    ser.Serializer::serialize(conf);
-    ser.Serializer::serialize(tlr);
+    Serializer ser(bufsize);
+    ser.serialize(conf);
+    ser.serialize(tlr);
     TaskArgument buffer(ser.get_buffer(), bufsize);
 
     Future f = runtime->execute_task(ctx, TASKID_MAIN_TASK,
@@ -530,9 +521,9 @@ void main_task(const void *args, size_t arglen,
   FluidConfig conf;
   TopLevelRegions tlr;
   {
-    StringDeserializer deser(args, arglen);
-    deser.Deserializer::deserialize(conf);
-    deser.Deserializer::deserialize(tlr);
+    Deserializer deser(args, arglen);
+    deser.deserialize(conf);
+    deser.deserialize(tlr);
   }
   unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
   unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz, &numBlocks = conf.numBlocks;
@@ -550,32 +541,44 @@ void main_task(const void *args, size_t arglen,
   real_cells[1] = regions[3];
   PhysicalRegion<AT> edge_cells = regions[4];
 
+  RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> blocks_accessor =
+    blocks_region.template convert<AccessorArray>().get_instance();
+
   // Fill in config region from parameter value
-  ptr_t<FluidConfig> config_ptr = config_region.template alloc<FluidConfig>();
-  config_region.write(config_ptr, conf);
+  {
+    ptr_t<FluidConfig> config_ptr = config_region.template alloc<FluidConfig>();
+    config_region.write(config_ptr, conf);
+  }
 
   // Create, initialize, and partition blocks
   blocks_region.template alloc<Block>(nbx*nby*nbz);
 
-  std::vector<Block> blocks;
+  std::vector<Block *> blocks;
   blocks.resize(numBlocks);
   for (unsigned idz = 0; idz < nbz; idz++)
     for (unsigned idy = 0; idy < nby; idy++)
       for (unsigned idx = 0; idx < nbx; idx++) {
         unsigned id = (idz*nby+idy)*nbx+idx;
+        ptr_t<Block> block_ptr;
+        block_ptr.value = id;
+        blocks[id] = &blocks_accessor.ref(block_ptr);
 
-        blocks[id].id = id;
-        blocks[id].x = idx;
-        blocks[id].y = idy;
-        blocks[id].z = idz;
-        blocks[id].CELLS_X = (nx/nbx) + (nx%nbx > idx ? 1 : 0);
-        blocks[id].CELLS_Y = (ny/nby) + (ny%nby > idy ? 1 : 0);
-        blocks[id].CELLS_Z = (nz/nbz) + (nz%nbz > idz ? 1 : 0);
+        blocks[id]->id = id;
+        blocks[id]->x = idx;
+        blocks[id]->y = idy;
+        blocks[id]->z = idz;
+        blocks[id]->CELLS_X = (nx/nbx) + (nx%nbx > idx ? 1 : 0);
+        blocks[id]->CELLS_Y = (ny/nby) + (ny%nby > idy ? 1 : 0);
+        blocks[id]->CELLS_Z = (nz/nbz) + (nz%nbz > idz ? 1 : 0);
 
-        assert(blocks[id].CELLS_X + 2 <= MAX_CELLS_X);
-        assert(blocks[id].CELLS_Y + 2 <= MAX_CELLS_Y);
-        assert(blocks[id].CELLS_Z + 2 <= MAX_CELLS_Z);
+        assert(blocks[id]->CELLS_X + 2 <= MAX_CELLS_X);
+        assert(blocks[id]->CELLS_Y + 2 <= MAX_CELLS_Y);
+        assert(blocks[id]->CELLS_Z + 2 <= MAX_CELLS_Z);
       }
+
+  // Elliott: remove
+  //LogicalRegion base[2];
+  //LogicalRegion edge[2][GHOST_CELLS];
 
   std::vector<LogicalRegion> block_regions;
   block_regions.resize(numBlocks);
@@ -592,14 +595,16 @@ void main_task(const void *args, size_t arglen,
     Partition block_part = runtime->create_partition(ctx, tlr.blocks,
                                                      coloring,
                                                      true/*disjoint*/);
-
     for (unsigned id = 0; id < numBlocks; id++) {
       block_regions[id] = runtime->get_subregion(ctx, block_part, id);
     }
   }
 
   // first, do two passes of the "real" cells
+  std::vector<LogicalRegion> block_bases[2];
   for(int b = 0; b < 2; b++) {
+    block_bases[b].resize(numBlocks);
+
     std::vector<std::set<utptr_t> > coloring;
     coloring.resize(numBlocks);
 
@@ -613,12 +618,12 @@ void main_task(const void *args, size_t arglen,
         for (unsigned idx = 0; idx < nbx; idx++) {
           unsigned id = (idz*nby+idy)*nbx+idx;
 
-          for(unsigned cz = 0; cz < blocks[id].CELLS_Z; cz++)
-            for(unsigned cy = 0; cy < blocks[id].CELLS_Y; cy++)
-              for(unsigned cx = 0; cx < blocks[id].CELLS_X; cx++) {
+          for(unsigned cz = 0; cz < blocks[id]->CELLS_Z; cz++)
+            for(unsigned cy = 0; cy < blocks[id]->CELLS_Y; cy++)
+              for(unsigned cx = 0; cx < blocks[id]->CELLS_X; cx++) {
                 ptr_t<Cell> cell = iter->next<Cell>();
                 coloring[id].insert(cell);
-                blocks[id].cells[b][cz+1][cy+1][cx+1] = cell;
+                blocks[id]->cells[b][cz+1][cy+1][cx+1] = cell;
               }
         }
 
@@ -632,7 +637,7 @@ void main_task(const void *args, size_t arglen,
       for (unsigned idy = 0; idy < nby; idy++)
         for (unsigned idx = 0; idx < nbx; idx++) {
           unsigned id = (idz*nby+idy)*nbx+idx;
-          blocks[id].base[b] = runtime->get_subregion(ctx, cell_part, id);
+          block_bases[b][id] = runtime->get_subregion(ctx, cell_part, id);
         }
   }
 
@@ -653,20 +658,20 @@ void main_task(const void *args, size_t arglen,
       for (unsigned idx = 0; idx < nbx; idx++) {
         unsigned id = (idz*nby+idy)*nbx+idx;
 
-#define CX (blocks[id].CELLS_X+1)
-#define CY (blocks[id].CELLS_Y+1)
-#define CZ (blocks[id].CELLS_Z+1)
-#define C2X (blocks[id2].CELLS_X+1)
-#define C2Y (blocks[id2].CELLS_Y+1)
-#define C2Z (blocks[id2].CELLS_Z+1)
+#define CX (blocks[id]->CELLS_X+1)
+#define CY (blocks[id]->CELLS_Y+1)
+#define CZ (blocks[id]->CELLS_Z+1)
+#define C2X (blocks[id2]->CELLS_X+1)
+#define C2Y (blocks[id2]->CELLS_Y+1)
+#define C2Z (blocks[id2]->CELLS_Z+1)
 
         // eight corners
 #define CORNER(dir,ix,iy,iz) do {                                       \
           unsigned id2 = (MOVE_BZ(idz,dir,conf)*nby + MOVE_BY(idy,dir,conf))*nbx + MOVE_BX(idx,dir,conf); \
           ptr_t<Cell> cell = iter->next<Cell>();                        \
           coloring[color + dir].insert(cell);                           \
-          blocks[id].cells[0][iz*CZ][iy*CY][ix*CX] = cell;              \
-          blocks[id2].cells[1][NEIGH_Z(idz, dir, iz, conf)*C2Z][NEIGH_Y(idy, dir, iy, conf)*C2Y][NEIGH_X(idx, dir, ix, conf)*C2X] = cell; \
+          blocks[id]->cells[0][iz*CZ][iy*CY][ix*CX] = cell;              \
+          blocks[id2]->cells[1][NEIGH_Z(idz, dir, iz, conf)*C2Z][NEIGH_Y(idy, dir, iy, conf)*C2Y][NEIGH_X(idx, dir, ix, conf)*C2X] = cell; \
         } while(0)
         CORNER(TOP_FRONT_LEFT,     0, 0, 1);
         CORNER(TOP_FRONT_RIGHT,    1, 0, 1);
@@ -681,11 +686,11 @@ void main_task(const void *args, size_t arglen,
         // x-axis edges
 #define XAXIS(dir,iy,iz) do {                                           \
           unsigned id2 = (MOVE_BZ(idz,dir,conf)*nby + MOVE_BY(idy,dir,conf))*nbx + idx; \
-          for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {        \
+          for(unsigned cx = 1; cx <= blocks[id]->CELLS_X; cx++) {        \
             ptr_t<Cell> cell = iter->next<Cell>();                      \
             coloring[color + dir].insert(cell);                         \
-            blocks[id].cells[0][iz*CZ][iy*CY][cx] = cell;               \
-            blocks[id2].cells[1][NEIGH_Z(idz, dir, iz, conf)*C2Z][NEIGH_Y(idy, dir, iy, conf)*C2Y][cx] = cell; \
+            blocks[id]->cells[0][iz*CZ][iy*CY][cx] = cell;               \
+            blocks[id2]->cells[1][NEIGH_Z(idz, dir, iz, conf)*C2Z][NEIGH_Y(idy, dir, iy, conf)*C2Y][cx] = cell; \
           }                                                             \
         } while(0)
         XAXIS(TOP_FRONT,    0, 1);
@@ -697,11 +702,11 @@ void main_task(const void *args, size_t arglen,
         // y-axis edges
 #define YAXIS(dir,ix,iz) do {                                           \
           unsigned id2 = (MOVE_BZ(idz,dir,conf)*nby + idy)*nbx + MOVE_BX(idx,dir,conf); \
-          for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {        \
+          for(unsigned cy = 1; cy <= blocks[id]->CELLS_Y; cy++) {        \
             ptr_t<Cell> cell = iter->next<Cell>();                      \
             coloring[color + dir].insert(cell);                         \
-            blocks[id].cells[0][iz*CZ][cy][ix*CX] = cell;               \
-            blocks[id2].cells[1][NEIGH_Z(idz, dir, iz, conf)*C2Z][cy][NEIGH_X(idx, dir, ix, conf)*C2X] = cell; \
+            blocks[id]->cells[0][iz*CZ][cy][ix*CX] = cell;               \
+            blocks[id2]->cells[1][NEIGH_Z(idz, dir, iz, conf)*C2Z][cy][NEIGH_X(idx, dir, ix, conf)*C2X] = cell; \
           }                                                             \
         } while(0)
         YAXIS(TOP_LEFT,     0, 1);
@@ -713,11 +718,11 @@ void main_task(const void *args, size_t arglen,
         // z-axis edges
 #define ZAXIS(dir,ix,iy) do {                                           \
           unsigned id2 = (idz*nby + MOVE_BY(idy,dir,conf))*nbx + MOVE_BX(idx,dir,conf); \
-          for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
+          for(unsigned cz = 1; cz <= blocks[id]->CELLS_Z; cz++) {        \
             ptr_t<Cell> cell = iter->next<Cell>();                      \
             coloring[color + dir].insert(cell);                         \
-            blocks[id].cells[0][cz][iy*CY][ix*CX] = cell;               \
-            blocks[id2].cells[1][cz][NEIGH_Y(idy, dir, iy, conf)*C2Y][NEIGH_X(idx, dir, ix, conf)*C2X] = cell; \
+            blocks[id]->cells[0][cz][iy*CY][ix*CX] = cell;               \
+            blocks[id2]->cells[1][cz][NEIGH_Y(idy, dir, iy, conf)*C2Y][NEIGH_X(idx, dir, ix, conf)*C2X] = cell; \
           }                                                             \
         } while(0)
         ZAXIS(FRONT_LEFT,  0, 0);
@@ -729,12 +734,12 @@ void main_task(const void *args, size_t arglen,
         // xy-plane edges
 #define XYPLANE(dir,iz) do {                                            \
           unsigned id2 = (MOVE_BZ(idz,dir,conf)*nby + idy)*nbx + idx;   \
-          for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {        \
-            for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {      \
+          for(unsigned cy = 1; cy <= blocks[id]->CELLS_Y; cy++) {        \
+            for(unsigned cx = 1; cx <= blocks[id]->CELLS_X; cx++) {      \
               ptr_t<Cell> cell = iter->next<Cell>();                    \
               coloring[color + dir].insert(cell);                       \
-              blocks[id].cells[0][iz*CZ][cy][cx] = cell;                \
-              blocks[id2].cells[1][NEIGH_Z(idz, dir, iz, conf)*C2Z][cy][cx] = cell; \
+              blocks[id]->cells[0][iz*CZ][cy][cx] = cell;                \
+              blocks[id2]->cells[1][NEIGH_Z(idz, dir, iz, conf)*C2Z][cy][cx] = cell; \
             }                                                           \
           }                                                             \
         } while(0)
@@ -745,12 +750,12 @@ void main_task(const void *args, size_t arglen,
         // xz-plane edges
 #define XZPLANE(dir,iy) do {                                            \
           unsigned id2 = (idz*nby + MOVE_BY(idy,dir,conf))*nbx + idx;   \
-          for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
-            for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {      \
+          for(unsigned cz = 1; cz <= blocks[id]->CELLS_Z; cz++) {        \
+            for(unsigned cx = 1; cx <= blocks[id]->CELLS_X; cx++) {      \
               ptr_t<Cell> cell = iter->next<Cell>();                    \
               coloring[color + dir].insert(cell);                       \
-              blocks[id].cells[0][cz][iy*CY][cx] = cell;                \
-              blocks[id2].cells[1][cz][NEIGH_Y(idy, dir, iy, conf)*C2Y][cx] = cell; \
+              blocks[id]->cells[0][cz][iy*CY][cx] = cell;                \
+              blocks[id2]->cells[1][cz][NEIGH_Y(idy, dir, iy, conf)*C2Y][cx] = cell; \
             }                                                           \
           }                                                             \
         } while(0)
@@ -761,12 +766,12 @@ void main_task(const void *args, size_t arglen,
         // yz-plane edges
 #define YZPLANE(dir,ix) do {                                            \
           unsigned id2 = (idz*nby + idy)*nbx + MOVE_BX(idx,dir,conf);   \
-          for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
-            for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {      \
+          for(unsigned cz = 1; cz <= blocks[id]->CELLS_Z; cz++) {        \
+            for(unsigned cy = 1; cy <= blocks[id]->CELLS_Y; cy++) {      \
               ptr_t<Cell> cell = iter->next<Cell>();                    \
               coloring[color + dir].insert(cell);                       \
-              blocks[id].cells[0][cz][cy][ix*CX] = cell;                \
-              blocks[id2].cells[1][cz][cy][NEIGH_X(idx, dir, ix, conf)*C2X] = cell; \
+              blocks[id]->cells[0][cz][cy][ix*CX] = cell;                \
+              blocks[id2]->cells[1][cz][cy][NEIGH_X(idx, dir, ix, conf)*C2X] = cell; \
             }                                                           \
           }                                                             \
         } while(0)
@@ -790,6 +795,14 @@ void main_task(const void *args, size_t arglen,
                                                   true/*disjoint*/);
 
   // now go back through and store subregion handles in the right places
+  std::vector<std::vector<LogicalRegion> > block_edges[2];
+  for (unsigned b = 0; b < 2; b++) {
+    block_edges[b].resize(numBlocks);
+    for (unsigned id = 0; id < numBlocks; id++) {
+      block_edges[b][id].resize(GHOST_CELLS);
+    }
+  }
+
   color = 0;
   for (unsigned idz = 0; idz < nbz; idz++)
     for (unsigned idy = 0; idy < nby; idy++)
@@ -799,18 +812,12 @@ void main_task(const void *args, size_t arglen,
         for(unsigned dir = 0; dir < GHOST_CELLS; dir++) {
           unsigned id2 = (MOVE_BZ(idz,dir,conf)*nby + MOVE_BY(idy,dir,conf))*nbx + MOVE_BX(idx,dir,conf); \
           LogicalRegion subr = runtime->get_subregion(ctx,edge_part,color+dir);
-          blocks[id].edge[0][dir] = subr;
-          blocks[id2].edge[1][OPPOSITE_DIR(idz, idy, idx, dir, conf)] = subr;
+          block_edges[0][id][dir] = subr;
+          block_edges[1][id2][OPPOSITE_DIR(idz, idy, idx, dir, conf)] = subr;
         }
 
         color += GHOST_CELLS;
       }
-
-  for (unsigned id = 0; id < numBlocks; id++) {
-    ptr_t<Block> block_ptr;
-    block_ptr.value = id;
-    blocks_region.write(block_ptr, blocks[id]);
-  }
 
   // Unmap the physical regions we intend to pass to children
   runtime->unmap_region(ctx, config_region);
@@ -872,16 +879,16 @@ void main_task(const void *args, size_t arglen,
                                                block_regions[id]));
 
       // read old
-      init_regions.push_back(RegionRequirement(blocks[id].base[1 - cur_buffer],
+      init_regions.push_back(RegionRequirement(block_bases[1 - cur_buffer][id],
 					       READ_ONLY, NO_MEMORY, EXCLUSIVE,
 					       tlr.real_cells[1 - cur_buffer]));
       // write new
-      init_regions.push_back(RegionRequirement(blocks[id].base[cur_buffer],
+      init_regions.push_back(RegionRequirement(block_bases[cur_buffer][id],
 					       READ_WRITE, NO_MEMORY, EXCLUSIVE,
 					       tlr.real_cells[cur_buffer]));
 
       // write edge0
-      get_all_regions(blocks[id].edge[0], init_regions,
+      get_all_regions(block_edges[0][id], init_regions,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 		      tlr.edge_cells);
 
@@ -927,12 +934,12 @@ void main_task(const void *args, size_t arglen,
       rebuild_regions.push_back(RegionRequirement(block_regions[id],
                                                   READ_ONLY, NO_MEMORY, EXCLUSIVE,
                                                   block_regions[id]));
-      rebuild_regions.push_back(RegionRequirement(blocks[id].base[cur_buffer],
+      rebuild_regions.push_back(RegionRequirement(block_bases[cur_buffer][id],
 						  READ_WRITE, NO_MEMORY, EXCLUSIVE,
 						  tlr.real_cells[cur_buffer]));
 
       // write edge1
-      get_all_regions(blocks[id].edge[1], rebuild_regions,
+      get_all_regions(block_edges[1][id], rebuild_regions,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 		      tlr.edge_cells);
 
@@ -980,12 +987,12 @@ void main_task(const void *args, size_t arglen,
       density_regions.push_back(RegionRequirement(block_regions[id],
                                                   READ_ONLY, NO_MEMORY, EXCLUSIVE,
                                                   block_regions[id]));
-      density_regions.push_back(RegionRequirement(blocks[id].base[cur_buffer],
+      density_regions.push_back(RegionRequirement(block_bases[cur_buffer][id],
 						  READ_WRITE, NO_MEMORY, EXCLUSIVE,
 						  tlr.real_cells[cur_buffer]));
 
       // write edge1
-      get_all_regions(blocks[id].edge[0], density_regions,
+      get_all_regions(block_edges[0][id], density_regions,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 		      tlr.edge_cells);
 
@@ -1035,12 +1042,12 @@ void main_task(const void *args, size_t arglen,
       force_regions.push_back(RegionRequirement(block_regions[id],
                                                 READ_ONLY, NO_MEMORY, EXCLUSIVE,
                                                 block_regions[id]));
-      force_regions.push_back(RegionRequirement(blocks[id].base[cur_buffer],
+      force_regions.push_back(RegionRequirement(block_bases[cur_buffer][id],
 						READ_WRITE, NO_MEMORY, EXCLUSIVE,
 						tlr.real_cells[cur_buffer]));
 
       // write edge1
-      get_all_regions(blocks[id].edge[1], force_regions,
+      get_all_regions(block_edges[1][id], force_regions,
 		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 		      tlr.edge_cells);
 
@@ -1687,7 +1694,8 @@ void load_file(const void *args, size_t arglen,
   PhysicalRegion<AT> config_region = regions[0];
   PhysicalRegion<AT> blocks_region = regions[1];
   PhysicalRegion<AT> real_cells = regions[2];
-  RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> blocks_array =
+
+  RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> blocks_accessor =
     blocks_region.template convert<AccessorArray>().get_instance();
 
   FluidConfig &conf = get_singleton_ref<AT, FluidConfig>(config_region);
@@ -1698,12 +1706,12 @@ void load_file(const void *args, size_t arglen,
   unsigned &numBlocks = conf.numBlocks;
   Vec3 &delta = conf.delta;
 
-  std::vector<Block> blocks;
+  std::vector<Block *> blocks;
   blocks.resize(numBlocks);
   for (unsigned id = 0; id < numBlocks; id++) {
     ptr_t<Block> block_ptr;
     block_ptr.value = id;
-    blocks[id] = blocks_region.read(block_ptr);
+    blocks[id] = &blocks_accessor.ref(block_ptr);
   }
 
   log_app.info("Loading file \"%s\"...", fileName.c_str());
@@ -1716,12 +1724,12 @@ void load_file(const void *args, size_t arglen,
       for (unsigned idx = 0; idx < nbx; idx++) {
         unsigned id = (idz*nby+idy)*nbx+idx;
 
-        for(unsigned cz = 0; cz < blocks[id].CELLS_Z; cz++)
-          for(unsigned cy = 0; cy < blocks[id].CELLS_Y; cy++)
-            for(unsigned cx = 0; cx < blocks[id].CELLS_X; cx++) {
-              Cell cell = real_cells.read(blocks[id].cells[b][cz+1][cy+1][cx+1]);
+        for(unsigned cz = 0; cz < blocks[id]->CELLS_Z; cz++)
+          for(unsigned cy = 0; cy < blocks[id]->CELLS_Y; cy++)
+            for(unsigned cx = 0; cx < blocks[id]->CELLS_X; cx++) {
+              Cell cell = real_cells.read(blocks[id]->cells[b][cz+1][cy+1][cx+1]);
               cell.num_particles = 0;
-              real_cells.write(blocks[id].cells[b][cz+1][cy+1][cx+1], cell);
+              real_cells.write(blocks[id]->cells[b][cz+1][cy+1][cx+1], cell);
             }
       }
 
@@ -1796,7 +1804,7 @@ void load_file(const void *args, size_t arglen,
     int cy = cj - (idy*mbsy + (idy < ovby ? idy : ovby));
     int cz = ck - (idz*mbsz + (idz < ovbz ? idz : ovbz));
 
-    Cell cell = real_cells.read(blocks[id].cells[b][cz+1][cy+1][cx+1]);
+    Cell cell = real_cells.read(blocks[id]->cells[b][cz+1][cy+1][cx+1]);
 
     unsigned np = cell.num_particles;
     if(np < MAX_PARTICLES) {
@@ -1811,7 +1819,7 @@ void load_file(const void *args, size_t arglen,
       cell.v[np].z = vz;
       ++cell.num_particles;
 
-      real_cells.write(blocks[id].cells[b][cz+1][cy+1][cx+1], cell);
+      real_cells.write(blocks[id]->cells[b][cz+1][cy+1][cx+1], cell);
     } else {
       --numParticles;
     }
@@ -1841,6 +1849,9 @@ void save_file(const void *args, size_t arglen,
   PhysicalRegion<AT> blocks_region = regions[1];
   PhysicalRegion<AT> real_cells = regions[2];
 
+  RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> blocks_accessor =
+    blocks_region.template convert<AccessorArray>().get_instance();
+
   FluidConfig conf = get_singleton_ref<AT, FluidConfig>(config_region);
   float &restParticlesPerMeter = conf.restParticlesPerMeter;
   int &origNumParticles = conf.origNumParticles;
@@ -1848,12 +1859,12 @@ void save_file(const void *args, size_t arglen,
   unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
   unsigned &numBlocks = conf.numBlocks;
 
-  std::vector<Block> blocks;
+  std::vector<Block *> blocks;
   blocks.resize(numBlocks);
   for (unsigned id = 0; id < numBlocks; id++) {
     ptr_t<Block> block_ptr;
     block_ptr.value = id;
-    blocks[id] = blocks_region.read(block_ptr);
+    blocks[id] = &blocks_accessor.ref(block_ptr);
   }
 
   log_app.info("Saving file \"%s\"...", fileName.c_str());
@@ -1907,7 +1918,7 @@ void save_file(const void *args, size_t arglen,
         int cy = cj - (idy*mbsy + (idy < ovby ? idy : ovby));
         int cz = ck - (idz*mbsz + (idz < ovbz ? idz : ovbz));
 
-        Cell cell = real_cells.read(blocks[id].cells[b][cz+1][cy+1][cx+1]);
+        Cell cell = real_cells.read(blocks[id]->cells[b][cz+1][cy+1][cx+1]);
 
         unsigned np = cell.num_particles;
         for(unsigned p = 0; p < np; ++p) {
@@ -2026,14 +2037,12 @@ public:
 
       Processor::Kind kind = m->get_processor_kind(proc);
 
-      // Elliott: try to avoid 61000000 ("zero-copy memory") ?
       Memory best_mem;
       unsigned best_bw = 0;
       std::vector<Machine::ProcessorMemoryAffinity> pmas;
       m->get_proc_mem_affinity(pmas, proc);
       for (unsigned i = 0; i < pmas.size(); i++)
       {
-        log_mapper.info("Considering Proc:%x (%d) Mem:%x with BW:%d", proc.id, kind, pmas[i].m.id, pmas[i].bandwidth);
         if (pmas[i].bandwidth > best_bw)
         {
           best_bw = pmas[i].bandwidth;
@@ -2141,22 +2150,39 @@ public:
 
     switch (task->task_id) {
     case TOP_LEVEL_TASK_ID:
-    case TASKID_MAIN_TASK:
-    case TASKID_LOAD_FILE:
-    case TASKID_SAVE_FILE:
     case TASKID_DUMMY_TASK:
       {
         // Don't care, put it in global memory
         target_ranking.push_back(global_memory);
+        break;
+      }
+    case TASKID_MAIN_TASK:
+    case TASKID_LOAD_FILE:
+    case TASKID_SAVE_FILE:
+      {
+        switch (idx) {
+        case 0: // config
+        case 1: // blocks
+          {
+            // Put config and blocks in local memory, initially.
+            target_ranking.push_back(cmp.second);
+          }
+          break;
+        default:
+          {
+            // Don't care, put it in global memory
+            target_ranking.push_back(global_memory);
+          }
+        }
       }
       break;
     case TASKID_INIT_CELLS:
       {
-        switch (idx) { // First two regions should be local to us
-        case 0:
-        case 1:
-        case 2:
-        case 3:
+        switch (idx) { // First four regions should be local to us
+        case 0: // config
+        case 1: // blocks
+        case 2: // source cells
+        case 3: // dest cells
           {
             // These should go in the local memory
             target_ranking.push_back(cmp.second);
@@ -2174,9 +2200,9 @@ public:
     case TASKID_SCATTER_FORCES:
       {
         switch (idx) {
-        case 0:
-        case 1:
-        case 2:
+        case 0: // config
+        case 1: // block
+        case 2: // real cells
           {
             // Put the owned cells in the local memory
             target_ranking.push_back(cmp.second);
@@ -2195,12 +2221,13 @@ public:
     case TASKID_GATHER_FORCES:
       {
         switch (idx) {
-        case 0:
-        case 1:
+        case 0: // block
+        case 1: // real cells
           {
             // These are the owned cells, keep them in local memory
             target_ranking.push_back(cmp.second);
           }
+          break;
         default:
           {
             // These are the neighbor cells, try reading them into local memory, otherwise keep them in global
