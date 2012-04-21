@@ -13,17 +13,15 @@
   deletekeywords=float,
 }
 \begin{lstlisting}[float={t},label={lst:code_ex},caption={Circuit Simulation Code Example}]
-struct Node { float charge, capacitance; };
-struct Wire { Node in_node, out_node; float current, ... ; };
-struct Circuit {
-  region   r_all_nodes;
-  region   r_all_wires; };
-
+struct Node { float voltage, new_charge, capacitance; };
+struct Wire<rn> { Node@rn in_node, out_node; float current, ... ; };
+struct Circuit { region   r_all_nodes; /* contains all nodes for the circuit */
+                 region   r_all_wires; /* contains all circuit wires */ };
 struct CircuitPiece {
-  region  rn_pvt, rn_shr, rn_ghost; // private, shared, ghost node regions
-  region  rw_pvt;                   // private wires region };
+  region  rn_pvt, rn_shr, rn_ghost; /* private, shared, ghost node regions */
+  region  rw_pvt;                   /* private wires region */ };
 
-void simulate_circuit(Circuit c) : RWE(c.r_all_nodes,c.r_all_wires)
+void simulate_circuit(Circuit c, float dt) : RWE(c.r_all_nodes,c.r_all_wires)
 {
   // Partition of wires into pieces
   partition<disjoint> p_wires = c.r_all_wires.partition(wire_owner_map); 
@@ -43,18 +41,29 @@ void simulate_circuit(Circuit c) : RWE(c.r_all_nodes,c.r_all_wires)
                   rn_ghost: p_ghost_nodes[i], rw_pvt: p_wires[i] };
   while(!done) {
     spawn (i = 0; i #$<$# MAX_PIECES; i++) calc_new_currents(pieces[i]);
-    spawn (i = 0; i #$<$# MAX_PIECES; i++) distribute_charge(pieces[i]);
+    spawn (i = 0; i #$<$# MAX_PIECES; i++) distribute_charge(pieces[i], dt);
     spawn (i = 0; i #$<$# MAX_PIECES; i++) update_voltages(pieces[i]);
   }
 }
 
-// read info from nodes connected to each wire, update state of wire
-void calc_new_currents(CircuitPiece piece): RWE(piece.rw_pvt),
-                                            ROE(piece.rn_pvt,piece.rn_shr,piece.rn_ghost)
-// current moving through wires redistributes charge between nodes
-void distribute_charge(CircuitPiece piece): ROE(piece.rw_pvt),
-                                            RWE(piece.rn_pvt),
-                                            RdA(piece.rn_shr,piece.rn_ghost)
-// total charge added to a node causes changes in voltage
-void update_voltages(CircuitPiece piece): RWE(piece.rn_pvt,piece.rn_shr)
+void calc_new_currents(CircuitPiece piece):
+        RWE(piece.rw_pvt), ROE(piece.rn_pvt,piece.rn_shr,piece.rn_ghost) {
+  foreach(w : piece.rw_pvt)
+    w->current = (w->in_node->voltage - w->out_node->voltage) / w->resistance;
+}
+
+void distribute_charge(CircuitPiece piece, float dt):
+        ROE(piece.rw_pvt), RdA(piece.rn_pvt, piece.rn_shr,piece.rn_ghost) {
+  foreach(w : piece.rw_pvt) {
+    w->in_node->new_charge += -dt * w->current;
+    w->out_node->new_charge +=  dt * w->current;
+  }
+}
+
+void update_voltages(CircuitPiece piece): RWE(piece.rn_pvt,piece.rn_shr) {
+  foreach(n : piece.rn_pvt, piece.rn_shr) {
+    n->voltage += n->new_charge / n->capacitance;
+    n->new_charge = 0;
+  }
+}
 \end{lstlisting}
