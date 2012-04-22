@@ -191,7 +191,7 @@ void calc_new_currents_gpu(CircuitPiece *p,
                            GPU_Accessor ghost,
                            int flag)
 {
-  RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(TIME_SYSTEM+1);
+  //RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(TIME_SYSTEM+1);
   int num_blocks = (p->num_wires+255) >> 8; 
 
   //printf("cnc_gpu(%d, %p, %p, %p, %p, %d)\n",
@@ -293,7 +293,7 @@ void distribute_charge_gpu(CircuitPiece *p,
                            GPU_Reducer ghost,
                            int flag)
 {
-  RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(TIME_SYSTEM+2);
+  //RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(TIME_SYSTEM+2);
   int num_blocks = (p->num_wires+255) >> 8;
   distribute_charge_kernel<<<num_blocks,256>>>(p->first_wire,
                                                p->num_wires,
@@ -356,7 +356,7 @@ void update_voltages_gpu(CircuitPiece *p,
                          GPU_Accessor locator,
                          int flag)
 {
-  RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(TIME_SYSTEM+3);
+  //RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(TIME_SYSTEM+3);
   int num_blocks = (p->num_nodes+255) >> 8;
 
   update_voltages_kernel<<<num_blocks,256>>>(p->first_node,
