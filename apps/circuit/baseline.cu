@@ -10,7 +10,7 @@
 #include "cuda_runtime.h"
 
 #define WIRE_SEGMENTS 10
-#define STEPS         10000
+#define STEPS         1000
 #define DELTAT        1e-6
 
 #define CUDA_SAFE_CALL(cmd) do {  \
@@ -266,35 +266,73 @@ int main(int argc, char **argv)
   // Copy data down to the device
   CUDA_SAFE_CALL(cudaMemcpy(nodes_d,nodes_h,num_nodes*sizeof(CircuitNode),cudaMemcpyHostToDevice));
   CUDA_SAFE_CALL(cudaMemcpy(wires_d,wires_h,num_wires*sizeof(CircuitWire),cudaMemcpyHostToDevice));
-
+#ifdef DETAILED_TIMING
+  double total_time[3];
+  for (int i = 0; i < 3; i++)
+    total_time[i] = 0.0;
+#endif
   // Run the simulation
   for (int i = 0; i < num_loops; i++)
   {
     // Calc new currents
     {
-      const int num_blocks = (num_wires+255) >> 8;
+#ifdef DETAILED_TIMING
+      struct timespec start, stop;
+      clock_gettime(CLOCK_MONOTONIC, &start); 
+#endif
+      for (int p = 0; p < num_pieces; p++)
+      {
+        const int num_blocks = (wires_per_piece+255) >> 8;
+        calc_new_currents<<<num_blocks,256>>>(&wires_d[p*wires_per_piece],nodes_d,wires_per_piece);
 
-      calc_new_currents<<<num_blocks,256>>>(wires_d,nodes_d,num_wires);
-
-      CUDA_SAFE_CALL(cudaDeviceSynchronize());
+        CUDA_SAFE_CALL(cudaDeviceSynchronize());
+      }
+#ifdef DETAILED_TIMING
+      clock_gettime(CLOCK_MONOTONIC, &stop);
+      total_time[0] += ((1.0 * (stop.tv_sec - start.tv_sec)) +
+                        (1e-9 * (stop.tv_nsec - start.tv_nsec)));
+#endif
     }
 
     // Distribute charge
     {
-      const int num_blocks = (num_wires+255) >> 8;
+      
+#ifdef DETAILED_TIMING
+      struct timespec start, stop;
+      clock_gettime(CLOCK_MONOTONIC, &start);
+#endif
+      for (int p = 0; p < num_pieces; p++)
+      {
+        const int num_blocks = (wires_per_piece+255) >> 8;
+        distribute_charge<<<num_blocks,256>>>(&wires_d[p*wires_per_piece],nodes_d,wires_per_piece);
 
-      distribute_charge<<<num_blocks,256>>>(wires_d,nodes_d,num_wires);
-
-      CUDA_SAFE_CALL(cudaDeviceSynchronize());
+        CUDA_SAFE_CALL(cudaDeviceSynchronize());
+      }
+#ifdef DETAILED_TIMING
+      clock_gettime(CLOCK_MONOTONIC, &stop);
+      total_time[1] += ((1.0 * (stop.tv_sec - start.tv_sec)) +
+                        (1e-9 * (stop.tv_nsec - start.tv_nsec)));
+#endif
     }
 
     // Update voltages
     {
-      const int num_blocks = (num_nodes+255) >> 8;
+#ifdef DETAILED_TIMING
+      struct timespec start, stop;
+      clock_gettime(CLOCK_MONOTONIC, &start);
+#endif
+      for (int p = 0; p < num_pieces; p++)
+      {
+        const int num_blocks = (nodes_per_piece+255) >> 8;
+        update_voltages<<<num_blocks,256>>>(&nodes_d[p*nodes_per_piece],nodes_per_piece);
 
-      update_voltages<<<num_blocks,256>>>(nodes_d,num_nodes);
-
-      CUDA_SAFE_CALL(cudaDeviceSynchronize());
+        CUDA_SAFE_CALL(cudaDeviceSynchronize());
+      }
+#ifdef DETAILED_TIMING
+      clock_gettime(CLOCK_MONOTONIC, &stop);
+      total_time[2] += ((1.0 * (stop.tv_sec - start.tv_sec)) +
+                        (1e-9 * (stop.tv_nsec - start.tv_nsec)));
+#endif
     }
   }
 
@@ -322,6 +360,11 @@ int main(int argc, char **argv)
     // Compute the number of gflops
     double gflops = (1e-9*operations)/sim_time;
     printf("GFLOPS = %7.3f GFLOPS\n", gflops);
+#ifdef DETAILED_TIMING
+    printf("CALC NEW CURRENTS = %7.3f s\n",total_time[0]);
+    printf("DISTRIBUTE CHARGE = %7.3f s\n",total_time[1]);
+    printf("UPDATE VOLTAGES   = %7.3f s\n",total_time[2]);
+#endif
   }
 
   // clean up everything

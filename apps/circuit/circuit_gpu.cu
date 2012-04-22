@@ -91,8 +91,13 @@ void calc_new_currents_kernel(ptr_t<CircuitWire> first,
     //if(blockIdx.x == 17)
     //  printf("nodes[%d] = %d(%d) -> %d(%d)\n",
     //     tid, wire.in_ptr.value, wire.in_loc, wire.out_ptr.value, wire.out_loc);
+#ifndef ALL_PRIVATE
     CircuitNode &in_node = get_node(pvt, owned, ghost, wire.in_loc, wire.in_ptr);
     CircuitNode &out_node = get_node(pvt, owned, ghost, wire.out_loc, wire.out_ptr);
+#else
+    CircuitNode &in_node = pvt.ref(wire.in_ptr);
+    CircuitNode &out_node = pvt.ref(wire.out_ptr);
+#endif
 
     // Solve RLC model iteratively
     float dt = DELTAT;
@@ -186,6 +191,7 @@ void calc_new_currents_gpu(CircuitPiece *p,
                            GPU_Accessor ghost,
                            int flag)
 {
+  RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(TIME_SYSTEM+1);
   int num_blocks = (p->num_wires+255) >> 8; 
 
   //printf("cnc_gpu(%d, %p, %p, %p, %p, %d)\n",
@@ -215,6 +221,7 @@ __device__ __forceinline__
 void reduce_local(GPU_Accessor pvt, GPU_Reducer owned, GPU_Reducer ghost,
                   PointerLocation loc, ptr_t<CircuitNode> ptr, typename REDOP::RHS value)
 {
+#ifndef ALL_PRIVATE
   switch (loc)
   {
     case PRIVATE_PTR:
@@ -230,6 +237,9 @@ void reduce_local(GPU_Accessor pvt, GPU_Reducer owned, GPU_Reducer ghost,
       printf("Bad pointer location %d at pointer %d\n", loc, ptr.value);
       assert(false);
   }
+#else
+  pvt.template reduce<REDOP,CircuitNode,typename REDOP::RHS>(ptr, value);
+#endif
 }
 
 __global__
@@ -283,6 +293,7 @@ void distribute_charge_gpu(CircuitPiece *p,
                            GPU_Reducer ghost,
                            int flag)
 {
+  RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(TIME_SYSTEM+2);
   int num_blocks = (p->num_wires+255) >> 8;
   distribute_charge_kernel<<<num_blocks,256>>>(p->first_wire,
                                                p->num_wires,
@@ -313,7 +324,9 @@ void update_voltages_kernel(ptr_t<CircuitNode> first,
     {
       int is_pvt = locator.read(locator_ptr);
       //if(locator_ptr.value == 9999) printf("pvt[9999] = %d\n", is_pvt);
+#ifndef ALL_PRIVATE
       if (is_pvt)
+#endif
       {
         CircuitNode &cur_node = pvt.ref(local_node);
         // charge adds in, and then some leaks away
@@ -321,6 +334,7 @@ void update_voltages_kernel(ptr_t<CircuitNode> first,
         cur_node.voltage *= (1 - cur_node.leakage);
         cur_node.charge = 0;
       }
+#ifndef ALL_PRIVATE
       else
       {
         CircuitNode &cur_node = owned.ref(local_node);
@@ -329,6 +343,7 @@ void update_voltages_kernel(ptr_t<CircuitNode> first,
         cur_node.voltage *= (1 - cur_node.leakage);
         cur_node.charge = 0;
       }
+#endif
     }
   }
 #endif
@@ -341,6 +356,7 @@ void update_voltages_gpu(CircuitPiece *p,
                          GPU_Accessor locator,
                          int flag)
 {
+  RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(TIME_SYSTEM+3);
   int num_blocks = (p->num_nodes+255) >> 8;
 
   update_voltages_kernel<<<num_blocks,256>>>(p->first_node,
