@@ -104,9 +104,12 @@ void create_blocked_matrix(Context ctx, HighLevelRuntime *runtime,
   matrix.num_row_parts = Q;
   matrix.num_col_parts = P;
 
-  std::vector<std::set<utptr_t> > col_coloring, row_coloring;
+  std::vector<std::set<utptr_t> > col_coloring;
+  std::vector<std::vector<std::set<utptr_t> > > row_coloring;
   col_coloring.resize(matrix.block_cols);
-  row_coloring.resize(matrix.num_row_parts);
+  row_coloring.resize(matrix.block_cols);
+  for(int i = 0; i < matrix.block_cols; i++)
+    row_coloring[i].resize(matrix.num_row_parts);
 
   PhysicalRegion<AT> reg;
   reg = runtime->map_region<AT>(ctx,
@@ -123,7 +126,7 @@ void create_blocked_matrix(Context ctx, HighLevelRuntime *runtime,
 	matrix.blocks[rb][cb] = blkptr;
 
 	col_coloring[cb].insert(blkptr);
-	row_coloring[i].insert(blkptr);
+	row_coloring[cb][i].insert(blkptr);
       }
   runtime->unmap_region(ctx, reg);
 
@@ -137,7 +140,7 @@ void create_blocked_matrix(Context ctx, HighLevelRuntime *runtime,
 							j);
     matrix.row_parts[j] = runtime->create_partition(ctx,
 						    matrix.panel_subregions[j],
-						    row_coloring);
+						    row_coloring[j]);
   }
 
   matrix.index_region = runtime->create_logical_region(ctx,
@@ -1122,30 +1125,108 @@ protected:
 
 public:
   template <AccessorType AT>
-  static void task_entry(const void *global_args, size_t global_arglen,
+  static MatrixBlockRow<NB> task_entry(const void *global_args, size_t global_arglen,
 			 const void *local_args, size_t local_arglen,
 			 const IndexPoint &point,
 			 std::vector<PhysicalRegion<AT> > &regions,
 			 Context ctx, HighLevelRuntime *runtime)
   {
     FactorPanelPieceTask t(ctx, runtime, point[0], (const TaskArgs *)global_args);
-    t.run<AT>(regions);
+    return t.run<AT>(regions);
   }
   
 protected:
   template <AccessorType AT>
-  void run(std::vector<PhysicalRegion<AT> > &regions) const
+  MatrixBlockRow<NB> run(std::vector<PhysicalRegion<AT> > &regions) const
   {
     int j = idx;
 
     printf("factor_piece(yay): k=%d, i=%d, j=%d\n", args->k, args->i, j);
+
+    const BlockedMatrix<NB>& matrix = args->matrix;
+
+    if(args->i > 0) {
+      // did one of our rows win last time?
+      int prev_best_blkrow = (args->prev_best.row_idx / NB);
+      if(prev_best_blkrow % matrix.num_row_parts) {
+	// put the original row there
+	ptr_t<MatrixBlock<NB> > blkptr = matrix.blocks[prev_best_blkrow][args->k];
+        MatrixBlock<NB> blk = regions[REGION_PANEL].read(blkptr);
+	for(int jj = 0; jj < NB; jj++)
+	  blk.data[args->prev_best.row_idx % NB][jj] = args->prev_orig.data[jj];
+	regions[REGION_PANEL].write(blkptr, blk);
+      }
+
+      // now update the rest of our rows
+      for(int blkrow = args->k; blkrow < matrix.block_rows; blkrow++) {
+	// skip rows we don't own
+	if((blkrow % matrix.num_row_parts) != j) continue;
+
+	int rel_start = ((blkrow == args->k) ? args->i : 0);
+	int rel_end = ((blkrow == matrix.block_rows - 1) ?
+ 		         ((matrix.rows - 1) % NB) : 
+		         (NB - 1));
+
+	ptr_t<MatrixBlock<NB> > blkptr = matrix.blocks[blkrow][args->k];
+        MatrixBlock<NB> blk = regions[REGION_PANEL].read(blkptr);
+
+	for(int ii = rel_start; ii <= rel_end; ii++) {
+	  double factor = (blk.data[ii][args->i - 1] / 
+			   args->prev_best.data[args->i - 1]);
+	  assert(fabs(factor) <= 1.0);
+	  for(int jj = 0; jj < NB; jj++)
+	    blk.data[ii][jj] -= factor * args->prev_best.data[jj];
+	}
+
+        regions[REGION_PANEL].write(blkptr, blk);
+      }
+    }
+
+    // on every pass but the last, we need to pick our candidate for best next
+    // row
+    int best_row = -1;
+    if(args->i < NB) {
+      double best_mag = 0.0;
+		      
+      for(int blkrow = args->k; blkrow < matrix.block_rows; blkrow++) {
+	// skip rows we don't own
+	if((blkrow % matrix.num_row_parts) != j) continue;
+
+	int rel_start = ((blkrow == args->k) ? args->i : 0);
+	int rel_end = ((blkrow == matrix.block_rows - 1) ?
+ 		         ((matrix.rows - 1) % NB) : 
+		         (NB - 1));
+
+	ptr_t<MatrixBlock<NB> > blkptr = matrix.blocks[blkrow][args->k];
+        MatrixBlock<NB> blk = regions[REGION_PANEL].read(blkptr);
+
+	for(int ii = rel_start; ii <= rel_end; ii++) {
+	  double mag = fabs(blk.data[ii][args->i]);
+	  if(mag > best_mag) {
+	    best_mag = mag;
+	    best_row = blkrow * NB + ii;
+	  }
+	}
+      }
+    }
+
+    MatrixBlockRow<NB> our_best_row;
+    our_best_row.row_idx = best_row;
+    if(best_row >= 0) {
+      ptr_t<MatrixBlock<NB> > blkptr = matrix.blocks[best_row / NB][args->k];
+      MatrixBlock<NB> blk = regions[REGION_PANEL].read(blkptr);
+
+      for(int jj = 0; jj < NB; jj++)
+	our_best_row.data[jj] = blk.data[best_row % NB][jj];
+    }
+    return our_best_row;
   }
 
 public:
   static void register_task(TaskID desired_task_id = AUTO_GENERATE_ID)
   {
     task_id = HighLevelRuntime::register_index_task
-      <FactorPanelPieceTask::task_entry<AccessorGeneric> >(desired_task_id,
+      <MatrixBlockRow<NB>, FactorPanelPieceTask::task_entry<AccessorGeneric> >(desired_task_id,
 							   Processor::LOC_PROC,
 							   "factor_piece");
   }
@@ -1228,6 +1309,8 @@ protected:
   {
     printf("factor_panel(yay): k=%d\n", args->k);
 
+    const BlockedMatrix<NB>& matrix = args->matrix;
+
     PhysicalRegion<AT> r_panel = regions[REGION_PANEL];
     PhysicalRegion<AT> r_index = regions[REGION_INDEX];
 
@@ -1236,11 +1319,19 @@ protected:
     MatrixBlockRow<NB> prev_orig;
     MatrixBlockRow<NB> prev_best;
 
+    top_blk = r_panel.read(args->matrix.blocks[args->k][args->k]);
+
     runtime->unmap_region(ctx, r_panel);
 
-    for(int i = args->k * NB; 
-	(i <= args->matrix.rows) && (i <= (args->k + 1) * NB); 
+    for(int i = 0; 
+	(i <= NB) && (i <= matrix.rows - (args->k * NB)); 
 	i++) {
+      if(i > 0) {
+	prev_orig.row_idx = args->k * NB + i;
+	for(int jj = 0; jj < NB; jj++)
+	  prev_orig.data[jj] = top_blk.data[i - 1][jj];
+      }
+
       FutureMap fm = FactorPanelPieceTask<NB>::spawn(ctx, runtime,
 						     Range(0, args->matrix.num_row_parts - 1),
 						     args->matrix,
@@ -1248,8 +1339,22 @@ protected:
 						     prev_best,
 						     args->k, i);
 
-      fm.wait_all_results();
+      if(i < NB) {
+	double best_mag = 0;
+	for(int j = 0; j < args->matrix.num_row_parts; j++) {
+	  std::vector<int> pt;
+	  pt.push_back(j);
+	  MatrixBlockRow<NB> part_best = fm.template get_result<MatrixBlockRow<NB> >(pt);
+	  if(fabs(part_best.data[i]) > best_mag) {
+	    best_mag = fabs(part_best.data[i]);
+	    prev_best = part_best;
+	  }
+	}
+	idx_blk.ind[i] = prev_best.row_idx;
+      }
     }
+
+    r_index.write(matrix.index_blocks[args->k], idx_blk);
   }
 
 public:
@@ -1302,7 +1407,6 @@ void factor_matrix(Context ctx, HighLevelRuntime *runtime,
   // factor matrix by repeatedly factoring a panel and updating the
   //   trailing submatrix
   for(int k = 0; k < matrix.block_rows; k++) {
-    break;
     {
       Future f = DumpMatrixTask<NB>::spawn(ctx, runtime, matrix, k * NB);
       f.get_void_result();
