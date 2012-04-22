@@ -393,7 +393,7 @@ namespace RegionRuntime {
     protected:
       gasnet_hsl_t mutex;
       std::map<int,double> *timerp;
-      int count_left;
+      volatile int count_left;
     };
 
     struct RollUpRequestArgs {
@@ -485,21 +485,24 @@ namespace RegionRuntime {
     {
       // TODO: actually incorporate other gasnet nodes!
       // take global mutex because we need to walk the list
-      AutoHSLLock l1(timer_data_mutex);
-      for(std::vector<PerThreadTimerData *>::iterator it = timer_data.begin();
-          it != timer_data.end();
-          it++) {
-        // take each thread's data's lock too
-        AutoHSLLock l2((*it)->mutex);
+      {
+        // Probably best not to be holding this lock when sending an active message
+        AutoHSLLock l1(timer_data_mutex);
+        for(std::vector<PerThreadTimerData *>::iterator it = timer_data.begin();
+            it != timer_data.end();
+            it++) {
+          // take each thread's data's lock too
+          AutoHSLLock l2((*it)->mutex);
 
-        for(std::map<int,double>::iterator it2 = (*it)->timer_accum.begin();
-            it2 != (*it)->timer_accum.end();
-            it2++) {
-          std::map<int,double>::iterator it3 = timers.find(it2->first);
-          if(it3 != timers.end())
-            it3->second += it2->second;
-          else
-            timers.insert(*it2);
+          for(std::map<int,double>::iterator it2 = (*it)->timer_accum.begin();
+              it2 != (*it)->timer_accum.end();
+              it2++) {
+            std::map<int,double>::iterator it3 = timers.find(it2->first);
+            if(it3 != timers.end())
+              it3->second += it2->second;
+            else
+              timers.insert(*it2);
+          }
         }
       }
 
