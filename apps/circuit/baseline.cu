@@ -12,6 +12,7 @@
 #define WIRE_SEGMENTS 10
 #define STEPS         10000
 #define DELTAT        1e-6
+//#define SEPARATE_PIECES
 
 #define CUDA_SAFE_CALL(cmd) do {  \
       cudaError_t ret = (cmd);    \
@@ -280,6 +281,7 @@ int main(int argc, char **argv)
       struct timespec start, stop;
       clock_gettime(CLOCK_MONOTONIC, &start); 
 #endif
+#ifdef SEPARATE_PIECES
       for (int p = 0; p < num_pieces; p++)
       {
         const int num_blocks = (wires_per_piece+255) >> 8;
@@ -287,6 +289,14 @@ int main(int argc, char **argv)
 
         CUDA_SAFE_CALL(cudaDeviceSynchronize());
       }
+#else
+      {
+        const int num_blocks = (num_wires+255) >> 8;
+        calc_new_currents<<<num_blocks,256>>>(wires_d,nodes_d,num_wires);
+
+        CUDA_SAFE_CALL(cudaDeviceSynchronize());
+      }
+#endif
 #ifdef DETAILED_TIMING
       clock_gettime(CLOCK_MONOTONIC, &stop);
       total_time[0] += ((1.0 * (stop.tv_sec - start.tv_sec)) +
@@ -301,6 +311,7 @@ int main(int argc, char **argv)
       struct timespec start, stop;
       clock_gettime(CLOCK_MONOTONIC, &start);
 #endif
+#ifdef SEPARATE_PIECES
       for (int p = 0; p < num_pieces; p++)
       {
         const int num_blocks = (wires_per_piece+255) >> 8;
@@ -308,6 +319,14 @@ int main(int argc, char **argv)
 
         CUDA_SAFE_CALL(cudaDeviceSynchronize());
       }
+#else
+      {
+        const int num_blocks = (num_wires+255) >> 8;
+        distribute_charge<<<num_blocks,256>>>(wires_d,nodes_d,num_wires);
+
+        CUDA_SAFE_CALL(cudaDeviceSynchronize());
+      }
+#endif
 #ifdef DETAILED_TIMING
       clock_gettime(CLOCK_MONOTONIC, &stop);
       total_time[1] += ((1.0 * (stop.tv_sec - start.tv_sec)) +
@@ -321,6 +340,7 @@ int main(int argc, char **argv)
       struct timespec start, stop;
       clock_gettime(CLOCK_MONOTONIC, &start);
 #endif
+#ifdef SEPARATE_PIECES
       for (int p = 0; p < num_pieces; p++)
       {
         const int num_blocks = (nodes_per_piece+255) >> 8;
@@ -328,6 +348,14 @@ int main(int argc, char **argv)
 
         CUDA_SAFE_CALL(cudaDeviceSynchronize());
       }
+#else
+      {
+        const int num_blocks = (num_nodes+255) >> 8;
+        update_voltages<<<num_blocks,256>>>(nodes_d,num_nodes);
+
+        CUDA_SAFE_CALL(cudaDeviceSynchronize());
+      }
+#endif
 #ifdef DETAILED_TIMING
       clock_gettime(CLOCK_MONOTONIC, &stop);
       total_time[2] += ((1.0 * (stop.tv_sec - start.tv_sec)) +
