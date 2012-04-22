@@ -4,9 +4,9 @@ $(error LG_RT_DIR variable is not defined, aborting build)
 endif
 
 #Flags for directing the runtime makefile what to include
-DEBUG=1                   # Include debugging symbols
-OUTPUT_LEVEL=LEVEL_DEBUG # Compile time print level
-#OUTPUT_LEVEL=LEVEL_WARNING # Compile time print level
+#DEBUG=1                   # Include debugging symbols
+#OUTPUT_LEVEL=LEVEL_DEBUG # Compile time print level
+OUTPUT_LEVEL=LEVEL_WARNING # Compile time print level
 #SHARED_LOWLEVEL=1	  # Use the shared low level
 #ALT_MAPPERS=1		  # Compile the alternative mappers
 
@@ -84,6 +84,9 @@ ALL_OBJS	:= $(GEN_OBJS) $(GEN_GPU_OBJS) $(LOW_RUNTIME_OBJS) $(HIGH_RUNTIME_OBJS)
 all:
 	$(MAKE) $(OUTFILE)
 
+baseline:
+	$(NVCC) -o base_sim $(NVCC_FLAGS) baseline.cu
+
 # If we're using the general low-level runtime we have to link with nvcc
 $(OUTFILE) : $(ALL_OBJS)
 	@echo "---> Linking objects into one binary: $(OUTFILE)"
@@ -112,4 +115,4 @@ $(GPU_RUNTIME_OBJS): %.o : %.cu
 	$(NVCC) -o $@ -c $< $(INC_FLAGS) $(NVCC_FLAGS)
 
 clean:
-	@$(RM) -rf $(ALL_OBJS) $(OUTFILE)
+	@$(RM) -rf $(ALL_OBJS) $(OUTFILE) base_sim
