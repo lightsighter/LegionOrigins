@@ -103,31 +103,75 @@ void create_blocked_matrix(Context ctx, HighLevelRuntime *runtime,
 
   matrix.num_row_parts = Q;
   matrix.num_col_parts = P;
+
+  std::vector<std::set<utptr_t> > col_coloring, row_coloring;
+  col_coloring.resize(matrix.block_cols);
+  row_coloring.resize(matrix.num_row_parts);
+
+  PhysicalRegion<AT> reg;
+  reg = runtime->map_region<AT>(ctx,
+				RegionRequirement(matrix.block_region, 
+						  NO_ACCESS, ALLOCABLE, EXCLUSIVE, 
+						  matrix.block_region));
+  reg.wait_until_valid();
+
+  for(int cb = 0; cb < matrix.block_cols; cb++)
+    for(int i = 0; i < matrix.num_row_parts; i++)
+      for(int rb = i; rb < matrix.block_rows; rb += matrix.num_row_parts) {
+	ptr_t<MatrixBlock<NB> > blkptr = reg.template alloc<MatrixBlock<NB> >();
+
+	matrix.blocks[rb][cb] = blkptr;
+
+	col_coloring[cb].insert(blkptr);
+	row_coloring[i].insert(blkptr);
+      }
+  runtime->unmap_region(ctx, reg);
+
   matrix.col_part = runtime->create_partition(ctx,
 					      matrix.block_region,
-					      matrix.block_cols);
+					      col_coloring);
+
   for(int j = 0; j < matrix.block_cols; j++) {
     matrix.panel_subregions[j] = runtime->get_subregion(ctx,
 							matrix.col_part,
 							j);
     matrix.row_parts[j] = runtime->create_partition(ctx,
 						    matrix.panel_subregions[j],
-						    Q);
+						    row_coloring);
   }
 
   matrix.index_region = runtime->create_logical_region(ctx,
 						       sizeof(IndexBlock<NB>),
 						       matrix.block_rows);
 
+  reg = runtime->map_region<AT>(ctx,
+				RegionRequirement(matrix.index_region, 
+						  NO_ACCESS, ALLOCABLE, EXCLUSIVE, 
+						  matrix.index_region));
+  reg.wait_until_valid();
+
+  std::vector<std::set<utptr_t> > idx_coloring;
+  idx_coloring.resize(matrix.block_rows);
+
+  for(int i = 0; i < matrix.block_rows; i++) {
+    ptr_t<IndexBlock<NB> > idxptr = reg.template alloc<IndexBlock<NB> >();
+
+    matrix.index_blocks[i] = idxptr;
+
+    idx_coloring[i].insert(idxptr);
+  }
+  runtime->unmap_region(ctx, reg);
+
   matrix.index_part = runtime->create_partition(ctx,
 						matrix.index_region,
-						matrix.block_rows);
+						idx_coloring);
 }
 
 template <AccessorType AT, int NB>
 void alloc_blocked_matrix(Context ctx, HighLevelRuntime *runtime,
 			  BlockedMatrix<NB>& matrix, PhysicalRegion<AT> reg)
 {
+#if 0
   for(int cb = 0; cb < matrix.block_cols; cb++) {
     int j = cb % matrix.num_col_parts;
 
@@ -139,7 +183,8 @@ void alloc_blocked_matrix(Context ctx, HighLevelRuntime *runtime,
 
       for(int rb = i; rb < matrix.block_rows; rb += matrix.num_row_parts) {
 	ptr_t<MatrixBlock<NB> > bptr = reg.template alloc<MatrixBlock<NB> >();
-	matrix.blocks[i][j] = bptr;
+	matrix.blocks[rb][cb] = bptr;
+	printf("[%d][%d] <- %d\n", rb, cb, bptr.value);
 
 	MatrixBlock<NB> bdata;
 	bdata.block_row = rb;
@@ -165,6 +210,7 @@ void alloc_blocked_matrix(Context ctx, HighLevelRuntime *runtime,
     matrix.index_blocks[rb] = reg.template alloc<IndexBlock<NB> >();
     runtime->unmap_region(ctx, reg);
   }
+#endif
 }
 
 template <int NB>
@@ -218,6 +264,100 @@ protected:
     : ctx(_ctx), runtime(_runtime) {}
 };
 
+template <int NB>
+class DumpMatrixTask : public SingleTask {
+protected:
+  static TaskID task_id;
+
+  struct TaskArgs {
+    BlockedMatrix<NB> matrix;
+    int k;
+
+    TaskArgs(const BlockedMatrix<NB>& _matrix, int _k)
+      : matrix(_matrix), k(_k) {}
+    operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
+  };
+
+  enum {
+    REGION_BLOCKS, // ROE
+    REGION_INDEXS, // ROE
+    NUM_REGIONS
+  };
+
+  const TaskArgs *args;
+
+  DumpMatrixTask(Context _ctx, HighLevelRuntime *_runtime,
+		 const TaskArgs *_args)
+    : SingleTask(_ctx, _runtime), args(_args) {}
+
+public:
+  template <AccessorType AT>
+  static void task_entry(const void *args, size_t arglen,
+			 std::vector<PhysicalRegion<AT> > &regions,
+			 Context ctx, HighLevelRuntime *runtime)
+  {
+    DumpMatrixTask t(ctx, runtime, (const TaskArgs *)args);
+    t.run<AT>(regions);
+  }
+  
+protected:
+  template <AccessorType AT>
+  void run(std::vector<PhysicalRegion<AT> > &regions) const
+  {
+    printf("dump_matrix: k=%d\n", args->k);
+
+    for(int ii = 0; ii < args->matrix.rows; ii++) {
+      printf("%3d: ", ii);
+      if(ii < args->k) {
+	ptr_t<IndexBlock<NB> > idx_ptr = args->matrix.index_blocks[ii / NB];
+	IndexBlock<NB> idx_blk = regions[REGION_INDEXS].read(idx_ptr);
+	printf("%3d", idx_blk.ind[ii % NB]);
+      } else {
+	printf(" - ");
+      }
+      printf(" [");
+      for(int jj = 0; jj < args->matrix.cols; jj++) {
+	ptr_t<MatrixBlock<NB> > blk_ptr = args->matrix.blocks[ii / NB][jj / NB];
+	MatrixBlock<NB> blk = regions[REGION_BLOCKS].read(blk_ptr);
+	printf("  %5.2f", blk.data[ii % NB][jj % NB]);
+      }
+      printf("  ]\n");
+    }
+  }
+
+public:
+  static void register_task(TaskID desired_task_id = AUTO_GENERATE_ID)
+  {
+    task_id = HighLevelRuntime::register_single_task
+      <DumpMatrixTask::task_entry<AccessorGeneric> >(desired_task_id,
+						     Processor::LOC_PROC,
+						     "dump_matrix");
+  }
+
+  static Future spawn(Context ctx, HighLevelRuntime *runtime,
+		      const BlockedMatrix<NB>& matrix, int k)
+  {
+    std::vector<RegionRequirement> reqs;
+    reqs.resize(NUM_REGIONS);
+
+    reqs[REGION_BLOCKS] = RegionRequirement(matrix.block_region,
+					    READ_ONLY, NO_MEMORY, EXCLUSIVE,
+					    matrix.block_region);
+
+    reqs[REGION_INDEXS] = RegionRequirement(matrix.index_region,
+					    READ_ONLY, NO_MEMORY, EXCLUSIVE,
+					    matrix.index_region);
+    
+    // double-check that we were registered properly
+    assert(task_id != 0);
+    Future f = runtime->execute_task(ctx, task_id, reqs,
+				     TaskArgs(matrix, k));
+    return f;
+  }
+};
+
+template <int NB> TaskID DumpMatrixTask<NB>::task_id;
+
 class Index1DTask : public SingleTask {
 protected:
   int idx;
@@ -269,6 +409,18 @@ protected:
   void run(std::vector<PhysicalRegion<AT> > &regions) const
   {
     printf("random_panel(yay): k=%d, idx=%d\n", args->k, idx);
+
+    for(int j = idx; j < args->matrix.block_rows; j += args->matrix.num_row_parts) {
+      ptr_t<MatrixBlock<NB> > blkptr = args->matrix.blocks[j][args->k];
+      printf("[%d][%d] -> %d\n", j, args->k, blkptr.value);
+      MatrixBlock<NB> blk = regions[REGION_PANEL].read(blkptr);
+      blk.block_row = j;
+      blk.block_col = args->k;
+      for(int ii = 0; ii < NB; ii++)
+	for(int jj = 0; jj < NB; jj++)
+	  blk.data[ii][jj] = drand48() - 0.5;
+      regions[REGION_PANEL].write(blkptr, blk);
+    }
   }
 
 public:
@@ -1150,6 +1302,12 @@ void factor_matrix(Context ctx, HighLevelRuntime *runtime,
   // factor matrix by repeatedly factoring a panel and updating the
   //   trailing submatrix
   for(int k = 0; k < matrix.block_rows; k++) {
+    break;
+    {
+      Future f = DumpMatrixTask<NB>::spawn(ctx, runtime, matrix, k * NB);
+      f.get_void_result();
+    }
+
     Future f = FactorPanelTask<NB>::spawn(ctx, runtime,
 					  matrix, k);
 
@@ -1158,6 +1316,11 @@ void factor_matrix(Context ctx, HighLevelRuntime *runtime,
 					      Range(k + 1, matrix.block_cols - 1),
 					      matrix, k);
     fm.wait_all_results();
+  }
+
+  {
+    Future f = DumpMatrixTask<NB>::spawn(ctx, runtime, matrix, matrix.rows);
+    f.get_void_result();
   }
 }
 
@@ -1502,6 +1665,7 @@ int main(int argc, char **argv) {
   FactorPanelPieceTask<1>::register_task();
   FactorPanelTask<1>::register_task();
   UpdatePanelTask<1>::register_task();
+  DumpMatrixTask<1>::register_task();
 #if 0
   HighLevelRuntime::register_single_task
     <fill_top_block_task<AccessorGeneric,1> >(TASKID_FILL_TOP_BLOCK,
