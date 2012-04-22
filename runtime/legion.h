@@ -3003,7 +3003,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(valid_results.find(point) != valid_results.end());  
 #endif
-      T result = (*((const T*)valid_results[point]));
+      T result = (*((const T*)valid_results[point].get_ptr()));
       // Remove the point from the map
       free(valid_results[point].get_ptr());
       valid_results.erase(point);
