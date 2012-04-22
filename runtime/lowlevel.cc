@@ -392,6 +392,7 @@ namespace RegionRuntime {
 
     protected:
       gasnet_hsl_t mutex;
+      gasnett_cond_t condvar;
       std::map<int,double> *timerp;
       int count_left;
     };
@@ -432,13 +433,14 @@ namespace RegionRuntime {
       }
       RollUpDataMessage::request(args.sender, args.rollup_ptr,
                                  return_data, count*sizeof(double),
-				 PAYLOAD_KEEP);
+				 PAYLOAD_COPY);
     }
 
     MultiNodeRollUp::MultiNodeRollUp(std::map<int,double>& _timers)
       : timerp(&_timers)
     {
       gasnet_hsl_init(&mutex);
+      gasnett_cond_init(&condvar);
       count_left = 0;
     }
 
@@ -453,9 +455,15 @@ namespace RegionRuntime {
         if(i != gasnet_mynode())
           RollUpRequestMessage::request(i, args);
 
-      // we can look at counter without the lock
-      while(count_left > 0)
-        do_some_polling();
+      // take the lock so that we can safely sleep until all the responses
+      //  arrive
+      {
+	AutoHSLLock al(mutex);
+
+	if(count_left > 0)
+	  gasnett_cond_wait(&condvar, &mutex.lock);
+      }
+      assert(count_left == 0);
     }
 
     void MultiNodeRollUp::handle_data(const void *data, size_t datalen)
@@ -477,6 +485,8 @@ namespace RegionRuntime {
       }
 
       count_left--;
+      if(count_left == 0)
+	gasnett_cond_signal(&condvar);
     }
 
 #ifdef DETAILED_TIMING
@@ -485,22 +495,24 @@ namespace RegionRuntime {
     {
       // TODO: actually incorporate other gasnet nodes!
       // take global mutex because we need to walk the list
-      AutoHSLLock l1(timer_data_mutex);
-      for(std::vector<PerThreadTimerData *>::iterator it = timer_data.begin();
-          it != timer_data.end();
-          it++) {
-        // take each thread's data's lock too
-        AutoHSLLock l2((*it)->mutex);
+      {
+	AutoHSLLock l1(timer_data_mutex);
+	for(std::vector<PerThreadTimerData *>::iterator it = timer_data.begin();
+	    it != timer_data.end();
+	    it++) {
+	  // take each thread's data's lock too
+	  AutoHSLLock l2((*it)->mutex);
 
-        for(std::map<int,double>::iterator it2 = (*it)->timer_accum.begin();
-            it2 != (*it)->timer_accum.end();
-            it2++) {
-          std::map<int,double>::iterator it3 = timers.find(it2->first);
-          if(it3 != timers.end())
-            it3->second += it2->second;
-          else
-            timers.insert(*it2);
-        }
+	  for(std::map<int,double>::iterator it2 = (*it)->timer_accum.begin();
+	      it2 != (*it)->timer_accum.end();
+	      it2++) {
+	    std::map<int,double>::iterator it3 = timers.find(it2->first);
+	    if(it3 != timers.end())
+	      it3->second += it2->second;
+	    else
+	      timers.insert(*it2);
+	  }
+	}
       }
 
       // get data from other nodes if requested
@@ -2538,11 +2550,11 @@ namespace RegionRuntime {
 				 const off_t *offsets, void * const *dsts, 
 				 const size_t *sizes)
     {
-#define USE_NBI_ACCESSREGION
+#define NO_USE_NBI_ACCESSREGION
 #ifdef USE_NBI_ACCESSREGION
       gasnet_begin_nbi_accessregion();
 #endif
-
+      DetailedTimer::push_timer(10);
       for(size_t i = 0; i < batch_size; i++) {
 	off_t offset = offsets[i];
 	char *dst_c = (char *)(dsts[i]);
@@ -2571,13 +2583,20 @@ namespace RegionRuntime {
 	  if(node == 0) blkid++;
 	}
       }
+      DetailedTimer::pop_timer();
 
 #ifdef USE_NBI_ACCESSREGION
+      DetailedTimer::push_timer(11);
       gasnet_handle_t handle = gasnet_end_nbi_accessregion();
+      DetailedTimer::pop_timer();
 
+      DetailedTimer::push_timer(12);
       gasnet_wait_syncnb(handle);
+      DetailedTimer::pop_timer();
 #else
+      DetailedTimer::push_timer(13);
       gasnet_wait_syncnbi_gets();
+      DetailedTimer::pop_timer();
 #endif
     }
 
@@ -2588,6 +2607,7 @@ namespace RegionRuntime {
     {
       gasnet_begin_nbi_accessregion();
 
+      DetailedTimer::push_timer(14);
       for(size_t i = 0; i < batch_size; i++) {
 	off_t offset = offsets[i];
 	const char *src_c = (char *)(srcs[i]);
@@ -2616,10 +2636,15 @@ namespace RegionRuntime {
 	  if(node == 0) blkid++;
 	}
       }
+      DetailedTimer::pop_timer();
 
+      DetailedTimer::push_timer(15);
       gasnet_handle_t handle = gasnet_end_nbi_accessregion();
+      DetailedTimer::pop_timer();
 
+      DetailedTimer::push_timer(16);
       gasnet_wait_syncnb(handle);
+      DetailedTimer::pop_timer();
     }
 
     RegionAllocatorUntyped Memory::Impl::create_allocator_local(RegionMetaDataUntyped r,
