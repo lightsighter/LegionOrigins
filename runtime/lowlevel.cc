@@ -394,7 +394,7 @@ namespace RegionRuntime {
       gasnet_hsl_t mutex;
       gasnett_cond_t condvar;
       std::map<int,double> *timerp;
-      int count_left;
+      volatile int count_left;
     };
 
     struct RollUpRequestArgs {
@@ -493,7 +493,6 @@ namespace RegionRuntime {
     /*static*/ void DetailedTimer::roll_up_timers(std::map<int, double>& timers,
                                                   bool local_only)
     {
-      // TODO: actually incorporate other gasnet nodes!
       // take global mutex because we need to walk the list
       {
 	AutoHSLLock l1(timer_data_mutex);

@@ -1092,10 +1092,13 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
 
         wire.in_ptr = random_element(private_node_map[n]);
 
+#ifndef ALL_PRIVATE
         if ((100 * drand48()) < pct_wire_in_piece)
+#endif
         {
           wire.out_ptr = random_element(private_node_map[n]);
         }
+#ifndef ALL_PRIVATE
         else
         {
           // pick a random other piece and a node from there
@@ -1108,6 +1111,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
           privacy_map[1].insert(wire.out_ptr);
           ghost_node_map[n].insert(wire.out_ptr);
         }
+#endif
 
         // Write the wire
         wires.write(wire_ptr, wire);
