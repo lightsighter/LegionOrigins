@@ -3710,6 +3710,7 @@ namespace RegionRuntime {
           Event lock_event = queue_lock.lock(0,true/*exclusive*/);
           lock_event.wait(true/*block*/);
         }
+        ready_deletions.clear();
       }
       // Now that we're done, release the lock
       queue_lock.unlock();
