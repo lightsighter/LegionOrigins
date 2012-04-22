@@ -34,7 +34,7 @@ def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, nodes = 1, cpus = 0,
            input = None, output = None,
            legion_logging = 1,
            **_ignored):
-    if cpus <= 0: cpus = nbx*nby*nbz/nodes
+    if cpus <= 0: cpus = max(nbx*nby*nbz/nodes, 1)
     cmd_out = fresh_file('legion', 'log')
     retcode = call_silently(
         (['gasnetrun_ibv', '-n', str(nodes)] if _legion_use_gasnet else []) +
