@@ -25,6 +25,7 @@
 // check this relative to the machine file and the low level runtime
 #define MAX_NUM_PROCS           1024
 
+#define IS_NO_ACCESS(req) ((req).privilege == NO_ACCESS)
 #define IS_READ_ONLY(req) (((req).privilege == NO_ACCESS) || ((req).privilege == READ_ONLY))
 #define HAS_WRITE(req) (((req).privilege == READ_WRITE) || ((req).privilege == REDUCE) || ((req).privilege == WRITE_ONLY))
 #define IS_WRITE(req) (((req).privilege == READ_WRITE) || ((req).privilege == WRITE_ONLY))
@@ -2716,12 +2717,22 @@ namespace RegionRuntime {
       {
         // Compute the element mask for the subregion
         // Get an element mask that is the same size as the parent's
-        LowLevel::ElementMask sub_mask(parent.get_valid_mask().get_num_elmts());
+        const LowLevel::ElementMask &parent_mask = parent.get_valid_mask();
+        LowLevel::ElementMask sub_mask(parent_mask.get_num_elmts());
         // mark each of the elements in the set of pointers as being valid
         const std::set<utptr_t> &pointers = coloring[idx];
         for (std::set<utptr_t>::const_iterator pit = pointers.begin();
               pit != pointers.end(); pit++)
         {
+#ifdef DEBUG_HIGH_LEVEL
+          // Check to make sure the pointer is valid in the parent
+          if (!parent_mask.is_set(pit->value))
+          {
+            log_region(LEVEL_ERROR,"Invalid pointer %d is not a pointer in parent region %x for color %d of partition %d",
+                                    pit->value, parent.id, idx, partition_id);
+            exit(1);
+          }
+#endif
           sub_mask.enable(pit->value);
         }
 
@@ -2753,11 +2764,23 @@ namespace RegionRuntime {
       for (unsigned idx = 0; idx < ranges.size(); idx++)
       {
         // Compute the element mask for the subregion
-        LowLevel::ElementMask sub_mask(parent.get_valid_mask().get_num_elmts());
+        const LowLevel::ElementMask &parent_mask = parent.get_valid_mask();
+        LowLevel::ElementMask sub_mask(parent_mask.get_num_elmts());
         const std::set<std::pair<utptr_t,utptr_t> > &range_set = ranges[idx];
         for (std::set<std::pair<utptr_t,utptr_t> >::const_iterator rit =
               range_set.begin(); rit != range_set.end(); rit++)
         {
+#ifdef DEBUG_HIGH_LEVEL
+          for (unsigned value = rit->first.value; value <= rit->second.value; value++)
+          {
+            if (!parent_mask.is_set(value))
+            {
+              log_region(LEVEL_ERROR,"Invalid pointer %d is not a pointer in parent region %x for color %d of partition %d",
+                                     value, parent.id, idx, partition_id);
+              exit(1);
+            }
+          }
+#endif
           sub_mask.enable(rit->first.value, (rit->second.value - rit->first.value + 1));
         }
 
@@ -5968,13 +5991,13 @@ namespace RegionRuntime {
         handle->get_physical_locations(parent_physical_ctx, sources, true/*recurse*/,IS_REDUCE(regions[idx]));
         std::vector<Memory> locations;
         bool war_optimization = true;
+        bool no_mapping = IS_NO_ACCESS(regions[idx]); 
+        if (!no_mapping)
         {
           DetailedTimer::ScopedPush sp(TIME_MAPPER);
           mapper->map_task_region(this, regions[idx], idx, sources,locations,war_optimization);
         }
-        // Check to make sure there is at least one instance
-        bool no_mapping = false;
-        if (locations.empty())
+        if (!no_mapping && locations.empty())
         {
           log_inst(LEVEL_ERROR,"No memory locations specified by mapper for region %x (idx %d) of task %s",
               regions[idx].handle.region.id, idx, variants->name);
