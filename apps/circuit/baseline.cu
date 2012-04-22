@@ -10,7 +10,7 @@
 #include "cuda_runtime.h"
 
 #define WIRE_SEGMENTS 10
-#define STEPS         1000
+#define STEPS         10000
 #define DELTAT        1e-6
 
 #define CUDA_SAFE_CALL(cmd) do {  \
