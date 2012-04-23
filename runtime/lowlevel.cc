@@ -2176,7 +2176,7 @@ namespace RegionRuntime {
 	assert(!impl->in_use);
 
 	impl->in_use = true;
-	impl->count = 0;  // unlock it
+	impl->count = Impl::ZERO_COUNT;  // unlock it
 
 	log_lock(LEVEL_INFO, "lock reused: lock=%x", impl->me.id);
 	return impl->me;
