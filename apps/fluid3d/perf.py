@@ -194,21 +194,23 @@ if __name__ == '__main__':
     print
 
     print 'Legion 2-nodes:'
-    sizes = range(0, 6)
+    sizes = range(4, 7)
     for size in sizes:
         for sx in xrange(size + 1):
             for sy in xrange(size - sx + 1):
                 sz = size - sx - sy
                 nbx, nby, nbz = 1 << sx, 1 << sy, 1 << sz
-                perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 2)
+                perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 2, cpus = 12)
+                perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 2, cpus = 10)
     print
 
 
     print 'Legion 4-nodes:'
-    sizes = range(0, 7)
+    sizes = range(4, 7)
     for size in sizes:
         for sx in xrange(size + 1):
             for sy in xrange(size - sx + 1):
                 sz = size - sx - sy
                 nbx, nby, nbz = 1 << sx, 1 << sy, 1 << sz
-                perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 4)
+                perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 4, cpus = 12)
+                perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 4, cpus = 10)
