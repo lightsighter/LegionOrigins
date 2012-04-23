@@ -1260,17 +1260,6 @@ void init_and_rebuild(const void *args, size_t arglen,
         REF_CELL(b, cb, eb, cz, cy, cx, dst, edges, block_cell_ptrs).num_particles = 0;
       }
 
-  // Elliott: debug initial particles in source cells
-  for(int cz = 1; cz < (int)b.CELLS_Z + 1; cz++)
-    for(int cy = 1; cy < (int)b.CELLS_Y + 1; cy++)
-      for(int cx = 1; cx < (int)b.CELLS_X + 1; cx++) {
-        Cell cell = src_block.read(get_cell_ptr(b, cb, cz, cy, cx, block_cell_ptrs));
-        printf("cell %d %d %d num_particles %d\n", cx, cy, cz, cell.num_particles);
-        for(unsigned p = 0; p < cell.num_particles; p++) {
-          printf("p %e %e %e d %e\n", cell.p[p].x, cell.p[p].y, cell.p[p].z, cell.density[p]);
-        }
-      }
-
   // Minimum block sizes
   unsigned mbsx = nx / nbx;
   unsigned mbsy = ny / nby;
