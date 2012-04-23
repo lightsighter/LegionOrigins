@@ -481,7 +481,7 @@ namespace RegionRuntime {
     // Events 
     ////////////////////////////////////////////////////////
 
-    /* static */ const Event Event::NO_EVENT = Event();
+    /* static */ const Event Event::NO_EVENT = { 0, 0 };
 
     bool Event::has_triggered(void) const
     {

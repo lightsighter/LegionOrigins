@@ -1314,7 +1314,7 @@ namespace RegionRuntime {
       args.event.impl()->trigger(args.event.gen, args.node);
     }
 
-    /*static*/ const Event Event::NO_EVENT = Event();
+    /*static*/ const Event Event::NO_EVENT = { 0, 0 };
 
     Event::Impl *Event::impl(void) const
     {
