@@ -59,7 +59,7 @@ void deferred_free(void *ptr)
 #ifdef DEBUG_MEM_REUSE
     printf("%d: actual free of %p\n", gasnet_mynode(), oldptr);
 #endif
-    free(oldptr);
+    //free(oldptr);
   }
 }
 
@@ -88,24 +88,7 @@ struct OutgoingMessage {
     }
   }
 
-  void set_payload(void *_payload, size_t _payload_size, int _payload_mode)
-  {
-    if(_payload_mode != PAYLOAD_NONE) {
-      payload_mode = _payload_mode;
-      payload_size = _payload_size;
-      if(_payload && (payload_mode == PAYLOAD_COPY)) {
-	payload = malloc(payload_size);
-#ifdef DEBUG_MEM_REUSE
-	payload_num = __sync_add_and_fetch(&payload_count, 1);
-	printf("%d: copying payload %x = [%p, %p) (%zd)\n",
-	       gasnet_mynode(), payload_num, payload, ((char *)payload) + payload_size,
-	       payload_size);
-#endif
-	memcpy(payload, _payload, payload_size);
-      } else 
-	payload = _payload;
-    }
-  }
+  void set_payload(void *_payload, size_t _payload_size, int _payload_mode);
 
   unsigned msgid;
   unsigned num_args;
@@ -442,6 +425,27 @@ protected:
   int lmb_r_counts[NUM_LMBS];
   bool lmb_w_avail[NUM_LMBS];
 };
+
+void OutgoingMessage::set_payload(void *_payload, size_t _payload_size, int _payload_mode)
+{
+  if(_payload_mode != PAYLOAD_NONE) {
+    assert(_payload_size <= ActiveMessageEndpoint::LMB_SIZE);
+    payload_mode = _payload_mode;
+    payload_size = _payload_size;
+    if(_payload && (payload_mode == PAYLOAD_COPY)) {
+      payload = malloc(payload_size);
+      assert(payload != 0);
+#ifdef DEBUG_MEM_REUSE
+      payload_num = __sync_add_and_fetch(&payload_count, 1);
+      printf("%d: copying payload %x = [%p, %p) (%zd)\n",
+	     gasnet_mynode(), payload_num, payload, ((char *)payload) + payload_size,
+	     payload_size);
+#endif
+      memcpy(payload, _payload, payload_size);
+    } else 
+      payload = _payload;
+  }
+}
 
 static ActiveMessageEndpoint **endpoints;
 
