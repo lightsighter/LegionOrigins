@@ -485,7 +485,7 @@ void top_level_task(const void *args, size_t arglen,
 					     READ_WRITE, ALLOCABLE, EXCLUSIVE,
 					     tlr.real_cells[1]));
     main_regions.push_back(RegionRequirement(tlr.edge_cells,
-					     READ_WRITE, ALLOCABLE, EXCLUSIVE,
+					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
 					     tlr.edge_cells));
 
     for (unsigned id = 0; id < numBlocks; id++) {
@@ -541,6 +541,9 @@ static inline ptr_t<ptr_t<Cell> > get_cell_ptr_ptr(const Block &b, unsigned cb, 
   return result;
 }
 
+// Flag main_task passes to the mapper to request an instance for edge_cells.
+const unsigned REQUEST_INSTANCE = 1;
+
 template<AccessorType AT>
 void main_task(const void *args, size_t arglen,
 	       std::vector<PhysicalRegion<AT> > &regions,
@@ -573,7 +576,7 @@ void main_task(const void *args, size_t arglen,
   PhysicalRegion<AT> real_cells[2];
   real_cells[0] = regions[2];
   real_cells[1] = regions[3];
-  PhysicalRegion<AT> edge_cells = regions[4];
+  //PhysicalRegion<AT> edge_cells = regions[4];
   std::vector<PhysicalRegion<AT> > block_cell_ptrs;
   block_cell_ptrs.resize(numBlocks);
   for (unsigned id = 0; id < numBlocks; id++) {
@@ -672,6 +675,15 @@ void main_task(const void *args, size_t arglen,
 
   // the edge cells work a bit different - we'll create one region, partition
   //  it once, and use each subregion in two places
+  PhysicalRegion<AccessorGeneric> edge_cells =
+    runtime->map_region<AccessorGeneric>(ctx, 
+                                         RegionRequirement(tlr.edge_cells,
+                                                           NO_ACCESS, ALLOCABLE, EXCLUSIVE,
+                                                           tlr.edge_cells),
+                                         0 /* mapper ID */,
+                                         REQUEST_INSTANCE);
+  edge_cells.wait_until_valid();
+
   std::vector<std::set<utptr_t> > coloring;
   coloring.resize(numBlocks * GHOST_CELLS);
 
@@ -2197,7 +2209,6 @@ public:
 
     switch (task->task_id) {
     case TOP_LEVEL_TASK_ID:
-    case TASKID_MAIN_TASK:
     case TASKID_SAVE_FILE:
     case TASKID_DUMMY_TASK:
       {
@@ -2205,6 +2216,27 @@ public:
         target_ranking.push_back(global_memory);
         break;
       }
+    case TASKID_MAIN_TASK:
+      {
+        switch (idx) {
+        case 4: // edge cells
+          {
+            // Don't create an instance until explicitly requested
+            if (task->tag == REQUEST_INSTANCE) {
+              target_ranking.push_back(cmp.second);
+            } else {
+              target_ranking.push_back(Memory::NO_MEMORY);
+            }
+          }
+          break;
+        default:
+          {
+            // Copy anything else into global memory
+            target_ranking.push_back(global_memory);
+          }
+        }
+      }
+      break;
     case TASKID_LOAD_FILE:
       {
         switch (idx) {
