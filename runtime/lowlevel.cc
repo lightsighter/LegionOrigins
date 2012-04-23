@@ -1169,6 +1169,9 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////
     // Events
 
+    /*static*/ Event::Impl *Event::Impl::first_free = 0;
+    /*static*/ gasnet_hsl_t Event::Impl::freelist_mutex = GASNET_HSL_INITIALIZER;
+
     Event::Impl::Impl(void)
     {
       Event bad = { -1, -1 };
@@ -1182,6 +1185,7 @@ namespace RegionRuntime {
       generation = 0;
       gen_subscribed = 0;
       in_use = false;
+      next_free = 0;
       mutex = new gasnet_hsl_t;
       //printf("[%d] MUTEX INIT %p\n", gasnet_mynode(), mutex);
       gasnet_hsl_init(mutex);
@@ -1480,12 +1484,33 @@ namespace RegionRuntime {
 
     /*static*/ Event Event::Impl::create_event(void)
     {
+      DetailedTimer::ScopedPush sp(17);
+      // see if the freelist has an event we can reuse
+      Event::Impl *impl = 0;
+      {
+	AutoHSLLock al(&freelist_mutex);
+	if(first_free) {
+	  impl = first_free;
+	  first_free = impl->next_free;
+	}
+      }
+      if(impl) {
+	assert(!impl->in_use);
+	impl->in_use = true;
+	Event ev = impl->me;
+	ev.gen = impl->generation + 1;
+	//printf("REUSE EVENT %x/%d\n", ev.id, ev.gen);
+	log_event(LEVEL_SPEW, "event reused: event=%x/%d", ev.id, ev.gen);
+	return ev;
+      }
+
       // TODO: figure out if it's safe to iterate over a vector that is
       //  being resized?
       AutoHSLLock a(Runtime::runtime->nodes[gasnet_mynode()].mutex);
 
       std::vector<Event::Impl>& events = Runtime::runtime->nodes[gasnet_mynode()].events;
 
+#ifdef SCAN_FOR_FREE_EVENTS
       // try to find an event we can reuse
       for(std::vector<Event::Impl>::iterator it = events.begin();
 	  it != events.end();
@@ -1505,6 +1530,7 @@ namespace RegionRuntime {
 	  return ev;
 	}
       }
+#endif
 
       // couldn't reuse an event - make a new one
       // TODO: take a lock here!?
@@ -1616,6 +1642,14 @@ namespace RegionRuntime {
 	}
 
 	in_use = false;
+      }
+
+      // if this is one of our events, put ourselves on the free
+      //  list (we don't need our lock for this)
+      if(owner == gasnet_mynode()) {
+	AutoHSLLock al(&freelist_mutex);
+	next_free = first_free;
+	first_free = this;
       }
 
       // now that we've let go of the lock, notify all the waiters who wanted
@@ -2089,13 +2123,15 @@ namespace RegionRuntime {
     // Create a new lock, destroy an existing lock
     /*static*/ Lock Lock::create_lock(void)
     {
-      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+      //DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+      DetailedTimer::ScopedPush sp(18);
       // TODO: figure out if it's safe to iterate over a vector that is
       //  being resized?
       AutoHSLLock a(Runtime::runtime->nodes[gasnet_mynode()].mutex);
 
       std::vector<Lock::Impl>& locks = Runtime::runtime->nodes[gasnet_mynode()].locks;
 
+#ifdef REUSE_LOCKS
       // try to find an lock we can reuse
       for(std::vector<Lock::Impl>::iterator it = locks.begin();
 	  it != locks.end();
@@ -2112,6 +2148,7 @@ namespace RegionRuntime {
 	  return l;
 	}
       }
+#endif
 
       // couldn't reuse an lock - make a new one
       // TODO: take a lock here!?

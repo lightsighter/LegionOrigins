@@ -586,6 +586,9 @@ namespace RegionRuntime {
       unsigned owner;
       Event::gen_t generation, gen_subscribed;
       bool in_use;
+      Event::Impl *next_free;
+      static Event::Impl *first_free;
+      static gasnet_hsl_t freelist_mutex;
 
       gasnet_hsl_t *mutex; // controls which local thread has access to internal data (not runtime-visible event)
 
