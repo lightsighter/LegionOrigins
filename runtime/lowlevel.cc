@@ -260,6 +260,7 @@ namespace RegionRuntime {
       CLEAR_TIMER_MSGID,
       DESTROY_INST_MSGID,
       REMOTE_WRITE_MSGID,
+      DESTROY_LOCK_MSGID,
     };
 
     // detailed timer stuff
@@ -575,9 +576,9 @@ namespace RegionRuntime {
       Node(void)
       {
 	gasnet_hsl_init(&mutex);
-	events.reserve(10000);
+	events.reserve(MAX_LOCAL_EVENTS);
 	num_events = 0;
-	locks.reserve(10000);
+	locks.reserve(MAX_LOCAL_LOCKS);
 	assert(0);
 	num_locks = 0;
       }
@@ -745,6 +746,10 @@ namespace RegionRuntime {
       void *local_data;
       size_t local_data_size;
 
+      static gasnet_hsl_t freelist_mutex;
+      static Lock::Impl *first_free;
+      Lock::Impl *next_free;
+
       Event lock(unsigned new_mode, bool exclusive,
 		 Event after_lock = Event::NO_EVENT);
 
@@ -753,6 +758,8 @@ namespace RegionRuntime {
       void unlock(void);
 
       bool is_locked(unsigned check_mode, bool excl_ok);
+
+      void release_lock(void);
     };
 
     template <class T>
@@ -816,12 +823,15 @@ namespace RegionRuntime {
 
     /*static*/ Runtime *Runtime::runtime = 0;
 
+    static const unsigned MAX_LOCAL_EVENTS = 100000;
+    static const unsigned MAX_LOCAL_LOCKS = 100000;
+
     Node::Node(void)
     {
       gasnet_hsl_init(&mutex);
-      events.reserve(100000);
+      events.reserve(MAX_LOCAL_EVENTS);
       num_events = 0;
-      locks.reserve(100000);
+      locks.reserve(MAX_LOCAL_LOCKS);
       num_locks = 0;
     }
 
@@ -922,6 +932,7 @@ namespace RegionRuntime {
 	}
       }
       lock.init(ID(me).convert<Lock>(), ID(me).node());
+      lock.in_use = true;
       lock.set_local_data(&locked_data);
     }
 
@@ -939,6 +950,7 @@ namespace RegionRuntime {
       locked_data.valid_mask_owners = 0;
       locked_data.avail_mask_owner = -1;
       lock.init(ID(me).convert<Lock>(), ID(me).node());
+      lock.in_use = true;
       lock.set_local_data(&locked_data);
       valid_mask = 0;
       valid_mask_complete = false;
@@ -1127,6 +1139,7 @@ namespace RegionRuntime {
       locked_data.is_reduction = false;
       locked_data.redopid = 0;
       lock.init(ID(me).convert<Lock>(), ID(me).node());
+      lock.in_use = true;
       lock.set_local_data(&locked_data);
     }
 
@@ -1146,6 +1159,7 @@ namespace RegionRuntime {
       locked_data.is_reduction = true;
       locked_data.redopid = _redopid;
       lock.init(ID(me).convert<Lock>(), ID(me).node());
+      lock.in_use = true;
       lock.set_local_data(&locked_data);
     }
 
@@ -1161,6 +1175,7 @@ namespace RegionRuntime {
       locked_data.first_elmt = 0;
       locked_data.last_elmt = 0;
       lock.init(ID(me).convert<Lock>(), ID(me).node());
+      lock.in_use = true;
       lock.set_local_data(&locked_data);
     }
 
@@ -1535,6 +1550,7 @@ namespace RegionRuntime {
       // couldn't reuse an event - make a new one
       // TODO: take a lock here!?
       unsigned index = events.size();
+      assert(index < MAX_LOCAL_EVENTS);
       events.resize(index + 1);
       Event ev = ID(ID::ID_EVENT, gasnet_mynode(), index).convert<Event>();
       events[index].init(ev, gasnet_mynode());
@@ -1693,6 +1709,9 @@ namespace RegionRuntime {
       return Runtime::runtime->get_lock_impl(*this);
     }
 
+    /*static*/ Lock::Impl *Lock::Impl::first_free = 0;
+    /*static*/ gasnet_hsl_t Lock::Impl::freelist_mutex = GASNET_HSL_INITIALIZER;
+
     Lock::Impl::Impl(void)
     {
       init(Lock::NO_LOCK, -1);
@@ -1705,7 +1724,7 @@ namespace RegionRuntime {
       me = _me;
       owner = _init_owner;
       count = ZERO_COUNT;
-      log_lock.debug("count init [%p]=%d", &count, count);
+      log_lock.spew("count init [%p]=%d", &count, count);
       mode = 0;
       in_use = false;
       mutex = new gasnet_hsl_t;
@@ -1743,6 +1762,11 @@ namespace RegionRuntime {
 	  req_forward_target = impl->owner;
 	  break;
 	}
+
+	// it'd be bad if somebody tried to take a lock that had been 
+	//   deleted...  (info is only valid on a lock's home node)
+	assert((ID(impl->me).node() != gasnet_mynode()) ||
+	       impl->in_use);
 
 	// case 2: we're the owner, and nobody is holding the lock, so grant
 	//  it to the (original) requestor
@@ -1840,13 +1864,18 @@ namespace RegionRuntime {
       {
 	AutoHSLLock a(mutex); // hold mutex on lock while we check things
 
+	// it'd be bad if somebody tried to take a lock that had been 
+	//   deleted...  (info is only valid on a lock's home node)
+	assert((ID(me).node() != gasnet_mynode()) ||
+	       in_use);
+
 	if(owner == gasnet_mynode()) {
 	  // case 1: we own the lock
 	  // can we grant it?
 	  if((count == ZERO_COUNT) || ((mode == new_mode) && (mode != MODE_EXCL))) {
 	    mode = new_mode;
 	    count++;
-	    log_lock.debug("count ++(1) [%p]=%d", &count, count);
+	    log_lock.spew("count ++(1) [%p]=%d", &count, count);
 	    got_lock = true;
 	  }
 	} else {
@@ -1858,7 +1887,7 @@ namespace RegionRuntime {
 	    assert(mode != MODE_EXCL);
 	    if(mode == new_mode) {
 	      count++;
-	      log_lock.debug("count ++(2) [%p]=%d", &count, count);
+	      log_lock.spew("count ++(2) [%p]=%d", &count, count);
 	      got_lock = true;
 	    }
 	  }
@@ -1928,14 +1957,14 @@ namespace RegionRuntime {
 	  
 	mode = MODE_EXCL;
 	count = ZERO_COUNT + 1;
-	log_lock.debug("count <-1 [%p]=%d", &count, count);
+	log_lock.spew("count <-1 [%p]=%d", &count, count);
       } else {
 	// pull a whole list of waiters that want to share with the same mode
 	std::map<unsigned, std::deque<Event> >::iterator it = local_waiters.begin();
 	
 	mode = it->first;
 	count = ZERO_COUNT + it->second.size();
-	log_lock.debug("count <-waiters [%p]=%d", &count, count);
+	log_lock.spew("count <-waiters [%p]=%d", &count, count);
 	assert(count > ZERO_COUNT);
 	// grab the list of events wanting to share the lock
 	to_wake.swap(it->second);
@@ -1968,7 +1997,7 @@ namespace RegionRuntime {
 	// if this isn't the last holder of the lock, just decrement count
 	//  and return
 	count--;
-	log_lock.debug("count -- [%p]=%d", &count, count);
+	log_lock.spew("count -- [%p]=%d", &count, count);
 	log_lock(LEVEL_DEBUG, "post-unlock: lock=%x count=%d mode=%d share=%lx wait=%lx",
 		 me.id, count, mode, remote_sharer_mask, remote_waiter_mask);
 	if(count > ZERO_COUNT) break;
@@ -2125,6 +2154,34 @@ namespace RegionRuntime {
     {
       //DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       DetailedTimer::ScopedPush sp(18);
+
+      // see if the freelist has an event we can reuse
+      Lock::Impl *impl = 0;
+      {
+	AutoHSLLock al(&Impl::freelist_mutex);
+	if(Impl::first_free) {
+	  impl = Impl::first_free;
+	  Impl::first_free = impl->next_free;
+	}
+      }
+      if(impl) {
+	AutoHSLLock al(impl->mutex);
+
+	// make sure we still "hold" this lock, and that it's not in use
+	assert(impl->owner == gasnet_mynode());
+	assert(impl->count == 1 + Impl::ZERO_COUNT);
+	assert(impl->mode == Impl::MODE_EXCL);
+	assert(impl->local_waiters.size() == 0);
+	assert(impl->remote_waiter_mask == 0);
+	assert(!impl->in_use);
+
+	impl->in_use = true;
+	impl->count = 0;  // unlock it
+
+	log_lock(LEVEL_INFO, "lock reused: lock=%x", impl->me.id);
+	return impl->me;
+      }
+
       // TODO: figure out if it's safe to iterate over a vector that is
       //  being resized?
       AutoHSLLock a(Runtime::runtime->nodes[gasnet_mynode()].mutex);
@@ -2153,16 +2210,83 @@ namespace RegionRuntime {
       // couldn't reuse an lock - make a new one
       // TODO: take a lock here!?
       unsigned index = locks.size();
+      assert(index < MAX_LOCAL_LOCKS);
       locks.resize(index + 1);
       Lock l = ID(ID::ID_LOCK, gasnet_mynode(), index).convert<Lock>();
       locks[index].init(l, gasnet_mynode());
       locks[index].in_use = true;
       Runtime::runtime->nodes[gasnet_mynode()].num_locks = index + 1;
+      log_lock.info("created new lock: lock=%x", l.id);
       return l;
     }
 
+    void Lock::Impl::release_lock(void)
+    {
+      // take the lock's mutex to sanity check it and clear the in_use field
+      {
+	AutoHSLLock al(mutex);
+
+	// should only get here if the current node holds an exclusive lock
+	assert(owner == gasnet_mynode());
+	assert(count == 1 + ZERO_COUNT);
+	assert(mode == MODE_EXCL);
+	assert(local_waiters.size() == 0);
+	assert(remote_waiter_mask == 0);
+	assert(in_use);
+	
+	in_use = false;
+      }
+      log_lock.info("releasing lock: lock=%x", me.id);
+
+      // now take the freelist mutex to put ourselves on the free list
+      {
+	AutoHSLLock al(freelist_mutex);
+	next_free = first_free;
+	first_free = this;
+      }
+    }
+
+    class DeferredLockDestruction : public Event::Impl::EventWaiter {
+    public:
+      DeferredLockDestruction(Lock _lock) : lock(_lock) {}
+
+      virtual void event_triggered(void)
+      {
+	lock.impl()->release_lock();
+      }
+
+      virtual void print_info(void)
+      {
+	printf("deferred lock destruction: lock=%x\n", lock.id);
+      }
+
+    protected:
+      Lock lock;
+    };
+
+    void handle_destroy_lock(Lock lock)
+    {
+      lock.destroy_lock();
+    }
+
+    typedef ActiveMessageShortNoReply<DESTROY_LOCK_MSGID, Lock,
+				      handle_destroy_lock> DestroyLockMessage;
+
     void Lock::destroy_lock()
     {
+      // a lock has to be destroyed on the node that created it
+      if(ID(*this).node() != gasnet_mynode()) {
+	DestroyLockMessage::request(ID(*this).node(), *this);
+	return;
+      }
+
+      // to destroy a local lock, we first must lock it (exclusively)
+      Event e = lock(0, true);
+      if(e.has_triggered()) {
+	impl()->release_lock();
+      } else {
+	e.impl()->add_waiter(e, new DeferredLockDestruction(*this));
+      }
     }
 
     ///////////////////////////////////////////////////
@@ -3897,6 +4021,7 @@ namespace RegionRuntime {
 	    assert(id.node() != gasnet_mynode());
 
 	    unsigned oldsize = n->locks.size();
+	    assert(oldsize < MAX_LOCAL_LOCKS);
 	    if(index >= oldsize) { // only it's still too small
 	      n->locks.resize(index + 1);
 	      for(unsigned i = oldsize; i <= index; i++)
@@ -6389,6 +6514,7 @@ namespace RegionRuntime {
       hcount += ClearTimerRequestMessage::add_handler_entries(&handlers[hcount]);
       hcount += DestroyInstanceMessage::add_handler_entries(&handlers[hcount]);
       hcount += RemoteWriteMessage::add_handler_entries(&handlers[hcount]);
+      hcount += DestroyLockMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage2::add_handler_entries(&handlers[hcount]);
 

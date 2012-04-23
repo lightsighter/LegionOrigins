@@ -249,6 +249,10 @@ namespace RegionRuntime {
       void *local_data;
       size_t local_data_size;
 
+      static gasnet_hsl_t freelist_mutex;
+      static Lock::Impl *first_free;
+      Lock::Impl *next_free;
+
       Event lock(unsigned new_mode, bool exclusive,
 		 Event after_lock = Event::NO_EVENT);
 
@@ -257,6 +261,8 @@ namespace RegionRuntime {
       void unlock(void);
 
       bool is_locked(unsigned check_mode, bool excl_ok);
+
+      void release_lock(void);
     };
 
     template <class T>

@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include <cmath>
+#include <cstdarg>
 
 #include "legion.h"
 
@@ -20,8 +21,8 @@ namespace Config {
 
 enum {
   TOP_LEVEL_TASK_ID,
-  TASKID_LINPACK_MAIN,
-  TASKID_RAND_MATRIX,
+  //TASKID_LINPACK_MAIN,
+  //TASKID_RAND_MATRIX,
   //TASKID_UPDATE_PANEL,
   //TASKID_FILL_TOP_BLOCK,
   //TASKID_SOLVE_TOP_BLOCK,
@@ -48,12 +49,37 @@ struct MatrixBlock {
 
   // actual data
   double data[NB][NB];  // runtime args say whether this is row-/column-major
+
+  void print(const char *fmt, ...) const {
+    va_list args;
+    va_start(args, fmt);
+    char buffer[80];
+    vsprintf(buffer, fmt, args);
+    va_end(args);
+    printf("blk(%d,%d): state=%d: %s\n", block_row, block_col, state, buffer);
+    for(int i = 0; i < NB; i++) {
+      printf(" [");
+      for(int j = 0; j < NB; j++) printf("  %6.3f", data[i][j]);
+      printf("  ]\n");
+    }
+  }
 };
 
 template <int NB>
 struct MatrixBlockRow {
   int row_idx;
   double data[NB];
+
+  void print(const char *fmt, ...) const {
+    va_list args;
+    va_start(args, fmt);
+    char buffer[80];
+    vsprintf(buffer, fmt, args);
+    va_end(args);
+    printf("row[%d]: %s: [", row_idx, buffer);
+    for(int j = 0; j < NB; j++) printf("  %6.3f", data[j]);
+    printf("  ]\n");
+  }
 };
 
 template <int NB>
@@ -216,6 +242,7 @@ void alloc_blocked_matrix(Context ctx, HighLevelRuntime *runtime,
 #endif
 }
 
+#if 0
 template <int NB>
 struct RandMatrixArgs {
   int i, j;
@@ -252,6 +279,7 @@ void rand_matrix_task(const void *args, size_t arglen,
 
   printf("in rand_matrix(%d,%d)\n", rm_args->i, rm_args->j);
 }
+#endif
 
 static Color colorize_identity_fn(const std::vector<int> &solution)
 {
@@ -1145,15 +1173,31 @@ protected:
 
     const BlockedMatrix<NB>& matrix = args->matrix;
 
+    args->prev_best.print("best");
+    args->prev_orig.print("orig");
+
     if(args->i > 0) {
+      // do we own the top row (which got swapped with the best row)?
+      if((args->k % matrix.num_row_parts) == j) {
+	ptr_t<MatrixBlock<NB> > blkptr = matrix.blocks[args->k][args->k];
+        MatrixBlock<NB> blk = regions[REGION_PANEL].read(blkptr);
+	blk.print("before orig<-best");
+	for(int jj = 0; jj < NB; jj++)
+	  blk.data[args->i - 1][jj] = args->prev_best.data[jj];
+	blk.print("after orig<-best");
+	regions[REGION_PANEL].write(blkptr, blk);
+      }
+
       // did one of our rows win last time?
       int prev_best_blkrow = (args->prev_best.row_idx / NB);
-      if(prev_best_blkrow % matrix.num_row_parts) {
+      if((prev_best_blkrow % matrix.num_row_parts) == j) {
 	// put the original row there
 	ptr_t<MatrixBlock<NB> > blkptr = matrix.blocks[prev_best_blkrow][args->k];
         MatrixBlock<NB> blk = regions[REGION_PANEL].read(blkptr);
+        blk.print("before best<-orig");
 	for(int jj = 0; jj < NB; jj++)
 	  blk.data[args->prev_best.row_idx % NB][jj] = args->prev_orig.data[jj];
+        blk.print("after best<-orig");
 	regions[REGION_PANEL].write(blkptr, blk);
       }
 
@@ -1170,13 +1214,15 @@ protected:
 	ptr_t<MatrixBlock<NB> > blkptr = matrix.blocks[blkrow][args->k];
         MatrixBlock<NB> blk = regions[REGION_PANEL].read(blkptr);
 
+        blk.print("before update");
 	for(int ii = rel_start; ii <= rel_end; ii++) {
 	  double factor = (blk.data[ii][args->i - 1] / 
 			   args->prev_best.data[args->i - 1]);
 	  assert(fabs(factor) <= 1.0);
-	  for(int jj = 0; jj < NB; jj++)
+	  for(int jj = args->i; jj < NB; jj++)
 	    blk.data[ii][jj] -= factor * args->prev_best.data[jj];
 	}
+        blk.print("after update");
 
         regions[REGION_PANEL].write(blkptr, blk);
       }
@@ -1327,9 +1373,31 @@ protected:
 	(i <= NB) && (i <= matrix.rows - (args->k * NB)); 
 	i++) {
       if(i > 0) {
-	prev_orig.row_idx = args->k * NB + i;
+	prev_orig.row_idx = args->k * NB + i - i;
 	for(int jj = 0; jj < NB; jj++)
 	  prev_orig.data[jj] = top_blk.data[i - 1][jj];
+
+	// have to do the panel propagation for the top block here since
+	//  we're keeping our own copy
+	if(prev_best.row_idx > (args->k * NB + i - 1)) {
+	  // a row swap occurred
+	  for(int jj = 0; jj < NB; jj++)
+	    top_blk.data[i - 1][jj] = prev_best.data[jj];
+
+	  int ii = prev_best.row_idx - (args->k * NB);
+	  if(ii < NB) {
+	    // best row also came from the top block
+	    for(int jj = 0; jj < NB; jj++)
+	      top_blk.data[ii][jj] = prev_orig.data[jj];
+	  }
+	}
+
+	// now update the rows below the pivot
+	for(int ii = i; ii < NB; ii++) {
+	  double factor = top_blk.data[ii][i - 1] / prev_best.data[i - 1];
+	  for(int jj = i; jj < NB; jj++)
+	    top_blk.data[ii][jj] -= factor * prev_best.data[jj];
+	}
       }
 
       FutureMap fm = FactorPanelPieceTask<NB>::spawn(ctx, runtime,
@@ -1428,27 +1496,96 @@ void factor_matrix(Context ctx, HighLevelRuntime *runtime,
   }
 }
 
-template<AccessorType AT, int NB>
-void linpack_main(const void *args, size_t arglen,
-		  std::vector<PhysicalRegion<AT> > &regions,
-		  Context ctx, HighLevelRuntime *runtime)
-{
-  BlockedMatrix<NB> &matrix = *(BlockedMatrix<NB> *)args;
+template <int NB>
+class LinpackMainTask : public SingleTask {
+protected:
 
-  runtime->unmap_region<AT>(ctx, regions[0]);
-  runtime->unmap_region<AT>(ctx, regions[1]);
+  static TaskID task_id;
 
-  alloc_blocked_matrix<AT,NB>(ctx, runtime, matrix, regions[0]);
-  //PhysicalRegion<AT> r = regions[0];
+  struct TaskArgs {
+    BlockedMatrix<NB> matrix;
 
-  FutureMap fm = RandomMatrixTask<NB>::spawn(ctx, runtime, 
-					     Range(0, matrix.block_cols - 1),
-					     matrix);
-  fm.wait_all_results();
-  //randomize_matrix<AT,NB>(ctx, runtime, matrix, regions[0]);
+    TaskArgs(const BlockedMatrix<NB>& _matrix)
+      : matrix(_matrix) {}
+    operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
+  };
 
-  factor_matrix<AT,NB>(ctx, runtime, matrix);
-}
+  enum {
+    REGION_BLOCKS,
+    REGION_INDEXS,
+    NUM_REGIONS
+  };
+
+  const TaskArgs *args;
+
+  LinpackMainTask(Context _ctx, HighLevelRuntime *_runtime,
+		  const TaskArgs *_args)
+    : SingleTask(_ctx, _runtime), args(_args) {}
+
+public:
+  template <AccessorType AT>
+  static void task_entry(const void *args, size_t arglen,
+			 std::vector<PhysicalRegion<AT> > &regions,
+			 Context ctx, HighLevelRuntime *runtime)
+  {
+    LinpackMainTask t(ctx, runtime, (const TaskArgs *)args);
+    t.run<AT>(regions);
+  }
+  
+protected:
+  template <AccessorType AT>
+  void run(std::vector<PhysicalRegion<AT> > &regions) const
+  {
+    BlockedMatrix<NB> matrix = args->matrix;
+
+    runtime->unmap_region<AT>(ctx, regions[0]);
+    runtime->unmap_region<AT>(ctx, regions[1]);
+
+    alloc_blocked_matrix<AT,NB>(ctx, runtime, matrix, regions[0]);
+    //PhysicalRegion<AT> r = regions[0];
+
+    FutureMap fm = RandomMatrixTask<NB>::spawn(ctx, runtime, 
+					       Range(0, matrix.block_cols - 1),
+					       matrix);
+    fm.wait_all_results();
+    //randomize_matrix<AT,NB>(ctx, runtime, matrix, regions[0]);
+
+    factor_matrix<AT,NB>(ctx, runtime, matrix);
+  }
+
+public:
+  static void register_task(TaskID desired_task_id = AUTO_GENERATE_ID)
+  {
+    task_id = HighLevelRuntime::register_single_task
+      <LinpackMainTask::task_entry<AccessorGeneric> >(desired_task_id,
+						      Processor::LOC_PROC,
+						      "linpack_main");
+  }
+
+  static Future spawn(Context ctx, HighLevelRuntime *runtime,
+		      const BlockedMatrix<NB>& matrix)
+  {
+    std::vector<RegionRequirement> reqs;
+    reqs.resize(NUM_REGIONS);
+
+    reqs[REGION_BLOCKS] = RegionRequirement(matrix.block_region,
+					    READ_WRITE, ALLOCABLE, EXCLUSIVE,
+					    matrix.block_region);
+    reqs[REGION_INDEXS] = RegionRequirement(matrix.index_region,
+					    READ_WRITE, ALLOCABLE, EXCLUSIVE,
+					    matrix.index_region);
+    
+    // double-check that we were registered properly
+    assert(task_id != 0);
+    Future f = runtime->execute_task(ctx, task_id, reqs,
+				     TaskArgs(matrix),
+				     0, // default mapper,
+				     0);//Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION);
+    return f;
+  }
+};
+
+template <int NB> TaskID LinpackMainTask<NB>::task_id;
 
 // just a wrapper that lets us capture the NB template parameter
 template<AccessorType AT, int NB>
@@ -1460,6 +1597,7 @@ void do_linpack(Context ctx, HighLevelRuntime *runtime)
 			       matrix, 
 			       Config::N, Config::P, Config::Q);
 
+#if 0
   std::vector<RegionRequirement> main_regions;
   main_regions.push_back(RegionRequirement(matrix.block_region,
 					   READ_WRITE, ALLOCABLE, EXCLUSIVE,
@@ -1469,6 +1607,8 @@ void do_linpack(Context ctx, HighLevelRuntime *runtime)
 					   matrix.index_region));
   Future f = runtime->execute_task(ctx, TASKID_LINPACK_MAIN, main_regions,
 				   TaskArgument(&matrix, sizeof(matrix)));
+#endif
+  Future f = LinpackMainTask<NB>::spawn(ctx, runtime, matrix);
   f.get_void_result();
 }
 
@@ -1484,6 +1624,8 @@ void top_level_task(const void *args, size_t arglen,
   switch(Config::NB) {
   case 1:
     do_linpack<AT,1>(ctx, runtime); break;
+  case 2:
+    do_linpack<AT,2>(ctx, runtime); break;
   default:
     assert(0); break;
   }
@@ -1755,11 +1897,12 @@ int main(int argc, char **argv) {
   //task_table[TASKID_INIT_VECTORS] = high_level_index_task_wrapper<init_vectors_task<AccessorGeneric> >;
   //task_table[TASKID_ADD_VECTORS] = high_level_index_task_wrapper<add_vectors_task<AccessorGeneric> >;
   HighLevelRuntime::register_single_task<top_level_task<AccessorGeneric> >(TOP_LEVEL_TASK_ID,Processor::LOC_PROC,"top_level_task");
-  HighLevelRuntime::register_single_task<linpack_main<AccessorGeneric,1> >(TASKID_LINPACK_MAIN,Processor::LOC_PROC,"linpack_main");
-  HighLevelRuntime::register_single_task<rand_matrix_task<AccessorGeneric,1> >(TASKID_RAND_MATRIX,Processor::LOC_PROC,"rand_matrix");
+  //HighLevelRuntime::register_single_task<linpack_main<AccessorGeneric,1> >(TASKID_LINPACK_MAIN,Processor::LOC_PROC,"linpack_main");
+  //HighLevelRuntime::register_single_task<rand_matrix_task<AccessorGeneric,1> >(TASKID_RAND_MATRIX,Processor::LOC_PROC,"rand_matrix");
   //HighLevelRuntime::register_index_task<rowswap_gather_task<AccessorGeneric,1> >(TASKID_ROWSWAP_GATHER,Processor::LOC_PROC,"rowswap_gather");
   //HighLevelRuntime::register_index_task<update_panel_task<AccessorGeneric,1> >(TASKID_UPDATE_PANEL,Processor::LOC_PROC,"update_panel");
 
+  LinpackMainTask<1>::register_task();
   RandomPanelTask<1>::register_task();
   RandomMatrixTask<1>::register_task();
   FillTopBlockTask<1>::register_task();
@@ -1770,6 +1913,18 @@ int main(int argc, char **argv) {
   FactorPanelTask<1>::register_task();
   UpdatePanelTask<1>::register_task();
   DumpMatrixTask<1>::register_task();
+
+  LinpackMainTask<2>::register_task();
+  RandomPanelTask<2>::register_task();
+  RandomMatrixTask<2>::register_task();
+  FillTopBlockTask<2>::register_task();
+  SolveTopBlockTask<2>::register_task();
+  TransposeRowsTask<2>::register_task();
+  UpdateSubmatrixTask<2>::register_task();
+  FactorPanelPieceTask<2>::register_task();
+  FactorPanelTask<2>::register_task();
+  UpdatePanelTask<2>::register_task();
+  DumpMatrixTask<2>::register_task();
 #if 0
   HighLevelRuntime::register_single_task
     <fill_top_block_task<AccessorGeneric,1> >(TASKID_FILL_TOP_BLOCK,

@@ -508,6 +508,15 @@ void top_level_task(const void *args, size_t arglen,
                                      buffer,
 				     0, 0);
     f.get_void_result();
+
+    // destroy regions here
+    runtime->destroy_logical_region(ctx, tlr.config);
+    runtime->destroy_logical_region(ctx, tlr.blocks);
+    for(int i = 0; i < 2; i++)
+      runtime->destroy_logical_region(ctx, tlr.real_cells[i]);
+    runtime->destroy_logical_region(ctx, tlr.edge_cells);
+    for(unsigned id = 0; id < nbx*nby*nbz; id++)
+      runtime->destroy_logical_region(ctx, block_cell_ptrs[id]);
   }
 }
 
@@ -1863,7 +1872,7 @@ void load_file(const void *args, size_t arglen,
     int eck = ck + (midz > ovbz ? midz - ovbz : 0);
     int idz = eck / (mbsz + 1);
 
-    int target_id = (idz*nby+idy)*nbx+idx;
+    unsigned target_id = (idz*nby+idy)*nbx+idx;
 
     if (target_id != id) continue;
 
