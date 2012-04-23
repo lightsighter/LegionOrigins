@@ -205,7 +205,6 @@ if __name__ == '__main__':
                 LMB_SIZE = 4.0
                 ghosts = max([dims[x]*dims[y] for x in xrange(len(dims)) for y in xrange(len(dims)) if x != y]) * 836.0 / 1024 / 1024
                 if ghosts > LMB_SIZE: continue
-                print nbx, nby, nbz
                 perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 2, cpus = 12)
                 perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 2, cpus = 10)
     print
