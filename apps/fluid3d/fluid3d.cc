@@ -2137,7 +2137,6 @@ public:
     switch (task->task_id) {
     case TOP_LEVEL_TASK_ID:
     case TASKID_MAIN_TASK:
-    case TASKID_LOAD_FILE:
     case TASKID_SAVE_FILE:
     case TASKID_DUMMY_TASK:
       {
@@ -2145,6 +2144,7 @@ public:
         return loc_procs[0].first;
       }
       break;
+    case TASKID_LOAD_FILE:
     case TASKID_INIT_CELLS:
     case TASKID_REBUILD_REDUCE:
     case TASKID_SCATTER_DENSITIES:
@@ -2205,6 +2205,26 @@ public:
         target_ranking.push_back(global_memory);
         break;
       }
+    case TASKID_LOAD_FILE:
+      {
+        switch (idx) {
+        case 0: // config
+        case 1: // block
+        case 2: // block cell ptrs
+        case 3: // real cells
+          {
+            // Put the owned cells in the local memory
+            target_ranking.push_back(cmp.second);
+          }
+          break;
+        default:
+          {
+            // Copy anything else into local memory
+            target_ranking.push_back(cmp.second);
+          }
+        }
+      }
+      break;
     case TASKID_INIT_CELLS:
       {
         switch (idx) { // First four regions should be local to us
@@ -2228,7 +2248,6 @@ public:
       break;
     case TASKID_SCATTER_DENSITIES: // Operations which write ghost cells
     case TASKID_SCATTER_FORCES:
-    case TASKID_LOAD_FILE: // (Load doesn't write ghosts but happens to use same set of region)
       {
         switch (idx) {
         case 0: // config
