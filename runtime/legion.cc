@@ -11201,7 +11201,7 @@ namespace RegionRuntime {
           std::set<Memory> locations;
           get_physical_locations(ren.ctx_id,locations,true/*recurse*/,false/*reduction*/);
 #ifdef DEBUG_HIGH_LEVEL
-          assert(!locations.empty());
+          //assert(!locations.empty());
 #endif
           // For each location, make a physical instance here
           for (std::set<Memory>::const_iterator it = locations.begin();
