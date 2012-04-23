@@ -879,8 +879,8 @@ void main_task(const void *args, size_t arglen,
       load_regions.push_back(RegionRequirement(block_cell_ptr_regions[id],
                                                READ_ONLY, NO_MEMORY, EXCLUSIVE,
                                                block_cell_ptr_regions[id]));
-      load_regions.push_back(RegionRequirement(tlr.real_cells[1],
-                                               READ_WRITE, ALLOCABLE, EXCLUSIVE,
+      load_regions.push_back(RegionRequirement(block_bases[1][id],
+                                               READ_WRITE, NO_MEMORY, EXCLUSIVE,
                                                tlr.real_cells[1]));
 
       std::string fileName = "init.fluid";
@@ -894,7 +894,7 @@ void main_task(const void *args, size_t arglen,
       Future f = runtime->execute_task(ctx, TASKID_LOAD_FILE,
                                        load_regions,
                                        buffer,
-                                       0, 0);
+                                       0, id);
       load_futures.push_back(f);
     }
 
