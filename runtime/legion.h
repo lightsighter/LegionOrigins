@@ -1618,7 +1618,7 @@ namespace RegionRuntime {
       ~RegionMappingImpl(void);
       void activate(TaskContext *ctx, const RegionRequirement &req, MapperID mid, MappingTagID tag);
       void deactivate(void);
-      void set_target_instance(InstanceInfo *target);
+      void set_target_instance(InstanceInfo *info);
       virtual bool is_context(void) const { return false; }
       virtual bool is_ready(void) const; // Ready to be mapped
       virtual void notify(void);

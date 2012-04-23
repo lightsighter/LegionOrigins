@@ -1372,6 +1372,7 @@ namespace RegionRuntime {
       tag = _tag;
       unique_id = runtime->get_unique_task_id();
       mapped_event = UserEvent::create_user_event();
+      ready_event = Event::NO_EVENT;
       unmapped_event = UserEvent::create_user_event();
       result = PhysicalRegion<AccessorGeneric>(r.handle.region);
       fast_result = PhysicalRegion<AccessorArray>(r.handle.region);
@@ -1448,7 +1449,11 @@ namespace RegionRuntime {
         req.handle.region.destroy_allocator_untyped(allocator);
       }
       // Relase our use of the physical instance
-      chosen_info->remove_user(this->get_unique_id());
+      if (chosen_info != NULL)
+      {
+        chosen_info->remove_user(this->get_unique_id());
+      }
+      chosen_info = NULL;
 
       map_dependent_tasks.clear();
       unresolved_dependences.clear();
@@ -1472,7 +1477,7 @@ namespace RegionRuntime {
       already_chosen = true;
       chosen_info = target;
     }
-    
+
     //--------------------------------------------------------------------------
     Event RegionMappingImpl::get_termination_event(void) const
     //--------------------------------------------------------------------------
@@ -1544,8 +1549,6 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       parent_ctx->current_taken = true;
 #endif
-      // Mark that the result will be valid when we're done
-      result.valid = true;
       bool needs_initializing = false;
       bool instance_owned = false;
       // Check to see if we already have an instance to use
@@ -1569,78 +1572,138 @@ namespace RegionRuntime {
         if (!locations.empty())
         {
           // We're making our own
-          bool found = false;
-          for (std::vector<Memory>::const_iterator it = locations.begin();
-                it != locations.end(); it++)
+          if (!IS_NO_ACCESS(req))
           {
-            if (!(*it).exists())
+            for (std::vector<Memory>::const_iterator it = locations.begin();
+                  it != locations.end(); it++)
             {
-              log_region(LEVEL_ERROR,"Illegal NO_MEMORY memory specified for inline mapping operation for "
-                  "logical region %x of inline mapping %d of task %s", req.handle.region.id, unique_id, parent_ctx->variants->name);
-              exit(1);
-            }
-            std::pair<InstanceInfo*,bool> result = handle->find_physical_instance(parent_physical_ctx, *it, true/*recurse*/,IS_REDUCE(req));
-            chosen_info = result.first;
-            if (chosen_info == InstanceInfo::get_no_instance())
-            {
-              // We couldn't find a pre-existing instance, try to make one
-              chosen_info = parent_ctx->create_instance_info(req.handle.region,*it,
-                                                            (IS_REDUCE(req) ? req.redop : 0));
+              if (!(*it).exists())
+              {
+                log_region(LEVEL_ERROR,"Illegal NO_MEMORY memory specified for inline mapping operation for "
+                    "logical region %x of inline mapping %d of task %s", req.handle.region.id, unique_id, parent_ctx->variants->name);
+                exit(1);
+              }
+              std::pair<InstanceInfo*,bool> result = handle->find_physical_instance(parent_physical_ctx, *it, true/*recurse*/,IS_REDUCE(req));
+              chosen_info = result.first;
               if (chosen_info == InstanceInfo::get_no_instance())
               {
-                continue;
-              }
-              else
-              {
-                // We made it but it needs to be initialized
-                needs_initializing = true;
-                instance_owned = true;
-              }
-            }
-            else
-            {
-              // Check to make see if they use the same logical region, if not
-              // make a new instance info 
-              if (chosen_info->handle != req.handle.region)
-              {
-                // Make a clone version of the instance info 
-                chosen_info = parent_ctx->create_instance_info(req.handle.region,chosen_info);
-              }
-              instance_owned = result.second;
-            }
-
-            if (IS_REDUCE(req))
-            {
-              // Reductions don't need initializing
-              needs_initializing = false;
-            }
-            else if (IS_WRITE(req))
-            {
-              // Check for any write-after-read dependences
-              if (war_optimization && chosen_info->has_war_dependence(this, 0))
-              {
-#ifdef DEBUG_HIGH_LEVEL
-                assert(!needs_initializing);
-#endif
-                // Try creating a new physical instance in the same location as the previous
-                InstanceInfo *new_info = create_instance_info(req.handle.region, chosen_info->location, 0/*redop*/);
-                if (new_info != InstanceInfo::get_no_instance())
+                // We couldn't find a pre-existing instance, try to make one
+                chosen_info = parent_ctx->create_instance_info(req.handle.region,*it,
+                                                              (IS_REDUCE(req) ? req.redop : 0));
+                if (chosen_info == InstanceInfo::get_no_instance())
                 {
-                  chosen_info = new_info;
+                  continue;
+                }
+                else
+                {
+                  // We made it but it needs to be initialized
                   needs_initializing = true;
                   instance_owned = true;
                 }
               }
+              else
+              {
+                // Check to make see if they use the same logical region, if not
+                // make a new instance info 
+                if (chosen_info->handle != req.handle.region)
+                {
+                  // Make a clone version of the instance info 
+                  chosen_info = parent_ctx->create_instance_info(req.handle.region,chosen_info);
+                }
+                instance_owned = result.second;
+              }
+
+              if (IS_REDUCE(req))
+              {
+                // Reductions don't need initializing
+                needs_initializing = false;
+              }
+              else if (IS_WRITE(req))
+              {
+                // Check for any write-after-read dependences
+                if (war_optimization && chosen_info->has_war_dependence(this, 0))
+                {
+#ifdef DEBUG_HIGH_LEVEL
+                  assert(!needs_initializing);
+#endif
+                  // Try creating a new physical instance in the same location as the previous
+                  InstanceInfo *new_info = create_instance_info(req.handle.region, chosen_info->location, 0/*redop*/);
+                  if (new_info != InstanceInfo::get_no_instance())
+                  {
+                    chosen_info = new_info;
+                    needs_initializing = true;
+                    instance_owned = true;
+                  }
+                }
+              }
             }
-            found = true;
-            break;
+            if (chosen_info == NULL)
+            {
+              log_inst(LEVEL_ERROR,"Unable to find or create physical instance for mapping "
+              "region %x of task %s (ID %d) with unique id %d",req.handle.region.id,
+              parent_ctx->variants->name,parent_ctx->task_id,parent_ctx->unique_id);
+              exit(1);
+            }
+            result.set_instance(chosen_info->inst.get_accessor_untyped());
+#ifdef DEBUG_HIGH_LEVEL
+            log_region(LEVEL_DEBUG,"Mapping inline region %x of task %s (ID %d) (unique id %d) to "
+                    "physical instance %x of logical region %x in memory %x",req.handle.region.id,
+                    parent_ctx->variants->name, parent_ctx->task_id,parent_ctx->unique_id,
+                    chosen_info->iid,chosen_info->handle.id,chosen_info->location.id);
+            assert(chosen_info != InstanceInfo::get_no_instance());
+#endif
+            RegionRenamer namer(parent_physical_ctx,this,chosen_info,mapper,needs_initializing,instance_owned);
+#ifdef DEBUG_HIGH_LEVEL
+            bool trace_result = 
+#endif
+            compute_region_trace(namer.trace,req.parent,chosen_info->handle);
+#ifdef DEBUG_HIGH_LEVEL
+            if (!trace_result)
+            {
+              log_task(LEVEL_ERROR,"Failure in computing region trace for inline mapping operation");
+              exit(1);
+            }
+#endif
+            // Inject the request to register this physical instance
+            // starting from the parent region's logical node
+            RegionNode *top = (*region_nodes)[req.parent];
+            Event precondition = top->register_physical_instance(namer,Event::NO_EVENT);
+            // Check to see if we need this region in atomic mode
+            if (IS_ATOMIC(req))
+            {
+              precondition = chosen_info->lock_instance(precondition);
+              // Also issue the unlock now contingent on the unmap event
+              chosen_info->unlock_instance(unmapped_event);
+            }
+            // Set the ready event to be the resulting precondition
+            ready_event = precondition;
           }
-          if (!found)
+          // Also check to see where to make the allocator if necessary
+          if (req.alloc != NO_MEMORY)
           {
-            log_inst(LEVEL_ERROR,"Unable to find or create physical instance for mapping "
-                "region %x of task %s (ID %d) with unique id %d",req.handle.region.id,
-                parent_ctx->variants->name,parent_ctx->task_id,parent_ctx->unique_id);
-            exit(1);
+            for (std::vector<Memory>::const_iterator it = locations.begin();
+                  it != locations.end(); it++)
+            {
+              if (!(*it).exists())
+              {
+                log_region(LEVEL_ERROR,"Illegal NO_MEMORY memory specified for inline mapping operation for "
+                    "logical region %x of inline mapping %d of task %s", req.handle.region.id, unique_id, parent_ctx->variants->name);
+                exit(1);
+              }
+              allocator = req.handle.region.create_allocator_untyped(*it);
+              if (allocator.exists())
+              {
+                break;
+              }
+            }
+            if (!allocator.exists())
+            {
+              log_inst(LEVEL_ERROR,"Unable to make allocator for instance %x of region %x "
+                " in memory %x for region mapping", chosen_info->inst.id, chosen_info->handle.id,
+                chosen_info->location.id);
+              exit(1);
+            }
+            result.set_allocator(allocator);
           }
         }
         else
@@ -1651,58 +1714,12 @@ namespace RegionRuntime {
           exit(1);
         }
       }
-#ifdef DEBUG_HIGH_LEVEL
-      log_region(LEVEL_DEBUG,"Mapping inline region %x of task %s (ID %d) (unique id %d) to "
-              "physical instance %x of logical region %x in memory %x",req.handle.region.id,
-              parent_ctx->variants->name, parent_ctx->task_id,parent_ctx->unique_id,
-              chosen_info->iid,chosen_info->handle.id,chosen_info->location.id);
-      assert(chosen_info != InstanceInfo::get_no_instance());
-#endif
-      // Check to see if we need to make an allocator too
-      if (req.alloc != NO_MEMORY)
-      {
-        // We need to make an allocator for this region
-        allocator = req.handle.region.create_allocator_untyped(chosen_info->location);
-        if (!allocator.exists())
-        {
-          log_inst(LEVEL_ERROR,"Unable to make allocator for instance %x of region %x "
-            " in memory %x for region mapping", chosen_info->inst.id, chosen_info->handle.id,
-            chosen_info->location.id);
-          exit(1);
-        }
-        result.set_allocator(allocator);
-      }
-      // Set the instance
-      result.set_instance(chosen_info->inst.get_accessor_untyped());
-      RegionRenamer namer(parent_physical_ctx,this,chosen_info,mapper,needs_initializing,instance_owned);
-#ifdef DEBUG_HIGH_LEVEL
-      bool trace_result = 
-#endif
-      compute_region_trace(namer.trace,req.parent,chosen_info->handle);
-#ifdef DEBUG_HIGH_LEVEL
-      if (!trace_result)
-      {
-        log_task(LEVEL_ERROR,"Failure in computing region trace for inline mapping operation");
-        exit(1);
-      }
-#endif
-
-      // Inject the request to register this physical instance
-      // starting from the parent region's logical node
-      RegionNode *top = (*region_nodes)[req.parent];
-      Event precondition = top->register_physical_instance(namer,Event::NO_EVENT);
-      // Check to see if we need this region in atomic mode
-      if (IS_ATOMIC(req))
-      {
-        precondition = chosen_info->lock_instance(precondition);
-        // Also issue the unlock now contingent on the unmap event
-        chosen_info->unlock_instance(unmapped_event);
-      }
-      // Set the ready event to be the resulting precondition
-      ready_event = precondition;
+      
 #ifdef DEBUG_HIGH_LEVEL
       log_spy(LEVEL_INFO,"Mapping Performed %d %x %d %x %d",unique_id,ready_event.id,ready_event.gen,unmapped_event.id,unmapped_event.gen); 
 #endif
+      // Mark that the result is valid now that we're done
+      result.valid = true;
       mapped = true;
       // We're done mapping, so trigger the mapping event
       mapped_event.trigger();
@@ -5991,13 +6008,12 @@ namespace RegionRuntime {
         handle->get_physical_locations(parent_physical_ctx, sources, true/*recurse*/,IS_REDUCE(regions[idx]));
         std::vector<Memory> locations;
         bool war_optimization = true;
-        bool no_mapping = IS_NO_ACCESS(regions[idx]); 
-        if (!no_mapping)
         {
           DetailedTimer::ScopedPush sp(TIME_MAPPER);
           mapper->map_task_region(this, regions[idx], idx, sources,locations,war_optimization);
         }
-        if (!no_mapping && locations.empty())
+        bool no_mapping = false;
+        if (locations.empty())
         {
           log_inst(LEVEL_ERROR,"No memory locations specified by mapper for region %x (idx %d) of task %s",
               regions[idx].handle.region.id, idx, variants->name);
@@ -6012,7 +6028,7 @@ namespace RegionRuntime {
           }
         }
         // Check to see if the user actually wants an instance
-        if (!no_mapping)
+        if (!no_mapping && !IS_NO_ACCESS(regions[idx]))
         {
           bool instance_owned = false;
           // We're making our own
@@ -6147,6 +6163,44 @@ namespace RegionRuntime {
           }
           // We have an unmapped child region
           this->unmapped++;
+        }
+        // Also check to see if we need to create an allocator for this instance
+        if (regions[idx].alloc != NO_MEMORY)
+        {
+          if (!no_mapping)
+          {
+            bool alloc_made = false;
+            for (std::vector<Memory>::const_iterator it = locations.begin();
+                  it != locations.end(); it++)
+            {
+              RegionAllocator alloc = regions[idx].handle.region.create_allocator_untyped(*it);
+              if (alloc != RegionAllocator::NO_ALLOC)
+              {
+                alloc_made = true; 
+                allocators.push_back(alloc);
+                break;
+              }
+            }
+            if (!alloc_made)
+            {
+              log_inst(LEVEL_ERROR,"Unable to create allocator for region %x (index %d) of task "
+                                   "%s (ID %d) with unique id %d",regions[idx].handle.region.id,
+                                   idx, this->variants->name, this->task_id, this->unique_id);
+              exit(1);
+            }
+          }
+          else
+          {
+            log_inst(LEVEL_ERROR,"Illegal request for no-mapping when requesting an allocator "
+                                 "for region %x (index %d) for task %s (ID %d) with unique id %d",
+                                 regions[idx].handle.region.id,idx,this->variants->name,this->task_id,this->unique_id);
+            exit(1);
+          }
+        }
+        else
+        {
+          // No need to make an allocator, just push back a NO_ALLOC
+          allocators.push_back(RegionAllocator::NO_ALLOC);
         }
       }
       // We've created all the region instances, now issue all the events for the task
@@ -7240,13 +7294,10 @@ namespace RegionRuntime {
         // Check to see if they asked for an allocator
         if (regions[idx].alloc != NO_MEMORY)
         {
-          allocators.push_back(regions[idx].handle.region.create_allocator_untyped(
-                                physical_instances[idx]->location));
-          reg.set_allocator(allocators.back());
-        }
-        else
-        {
-          allocators.push_back(RegionAllocator::NO_ALLOC);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(allocators[idx].exists());
+#endif
+          reg.set_allocator(allocators[idx]);
         }
         result_regions.push_back(reg);
       }
