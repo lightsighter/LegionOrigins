@@ -7330,12 +7330,12 @@ namespace RegionRuntime {
         PhysicalRegion<AccessorGeneric> reg(idx, regions[idx].handle.region);
 
         // check to see if they asked for a physical instance
-        if (physical_instances[idx] != InstanceInfo::get_no_instance())
+        if (local_instances[idx] != InstanceInfo::get_no_instance())
         {
 #ifdef DEBUG_HIGH_LEVEL
-          assert(physical_mapped[idx]);
+          assert(local_instances[idx]);
 #endif
-          reg.set_instance(physical_instances[idx]->inst.get_accessor_untyped());
+          reg.set_instance(local_instances[idx]->inst.get_accessor_untyped());
         }
         // Check to see if they asked for an allocator
         if (regions[idx].alloc != NO_MEMORY)
