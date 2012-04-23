@@ -5999,6 +5999,27 @@ namespace RegionRuntime {
           chosen_ctx.push_back(ctx_id);
           // Get the wait on event for this region
           wait_on_events.insert(pre_mapped_regions[idx].ready_event);
+          // Check to see if we wanted an allocator
+          if (regions[idx].alloc != NO_MEMORY)
+          {
+            // If this was a premapped region we definitely have an instance
+            // so make an allocator in the same memory
+            RegionAllocator alloc = regions[idx].handle.region.create_allocator_untyped(
+                                              pre_mapped_regions[idx].info->location);
+#ifdef DEBUG_HIGH_LEVEL
+            if (!alloc.exists())
+            {
+              log_inst(LEVEL_ERROR,"Unable to create allocator for region %x (idx %d) of task %s that was premapped",
+                                    regions[idx].handle.region.id, idx, variants->name);
+              exit(1);
+            }
+#endif
+            allocators.push_back(alloc);
+          }
+          else
+          {
+            allocators.push_back(RegionAllocator::NO_ALLOC);
+          }
           // Continue on to the next region
           continue;
         }
@@ -6255,6 +6276,7 @@ namespace RegionRuntime {
 
 #ifdef DEBUG_HIGH_LEVEL
       assert(physical_instances.size() == regions.size());
+      assert(allocators.size() == regions.size());
 #endif
       
       // We only need to do the return of our information if we're not in an index
