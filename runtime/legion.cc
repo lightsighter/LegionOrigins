@@ -13240,10 +13240,10 @@ namespace RegionRuntime {
     {
       // If we're the original version of the instance info then delete the lock
       // Do this in garbage collection instead
-      //if (!remote && !clone && (parent == NULL) && (this != InstanceInfo::get_no_instance()))
-      //{
-      //  inst_lock.destroy_lock();
-      //}
+      if (!remote && /*!clone &&*/ (parent == NULL) && (this != InstanceInfo::get_no_instance()))
+      {
+        inst_lock.destroy_lock();
+      }
 #ifdef DEBUG_HIGH_LEVEL
 #ifndef DISABLE_GC 
       // If this is the owner we should have deleted the instance by now
@@ -15538,9 +15538,9 @@ namespace RegionRuntime {
           // If all that is true, we can delete the instance
           handle.destroy_instance_untyped(inst);
           // Also destroy the lock
-          inst_lock.destroy_lock();
+          //inst_lock.destroy_lock();
           // Write over the lock so we don't accidentally try to double free
-          inst_lock = Lock::NO_LOCK;
+          //inst_lock = Lock::NO_LOCK;
         }
         else
         {
