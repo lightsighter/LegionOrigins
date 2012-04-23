@@ -14131,6 +14131,10 @@ namespace RegionRuntime {
       assert(!collected);
       // Should only be returned once
       assert(!returned);
+      // Should never return cloned instances
+      // Note if it was a clone instance and we sent it remotely to a child
+      // task we didn't send the clone flag so it wouldn't be marked as a clone remotely
+      assert(!clone);
 #endif
       rez.serialize<InstanceID>(iid);
       rez.serialize<bool>(remote);
