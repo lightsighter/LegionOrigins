@@ -16,6 +16,7 @@ namespace Config {
   int NB = 1;
   int P = 2;
   int Q = 2;
+  int seed = 12345;
   bool args_read = false;
 };
 
@@ -87,6 +88,17 @@ struct IndexBlock {
   int block_num;
 
   int ind[NB];
+
+  void print(const char *fmt, ...) const {
+    va_list args;
+    va_start(args, fmt);
+    char buffer[80];
+    vsprintf(buffer, fmt, args);
+    va_end(args);
+    printf("idx[%d]: %s: [", block_num, buffer);
+    for(int j = 0; j < NB; j++) printf("  %d(%d)", ind[j], ind[j]-block_num*NB);
+    printf("  ]\n");
+  }
 };
 
 const int MAX_BLOCKS = 16;
@@ -448,8 +460,16 @@ protected:
       blk.block_row = j;
       blk.block_col = args->k;
       for(int ii = 0; ii < NB; ii++)
-	for(int jj = 0; jj < NB; jj++)
-	  blk.data[ii][jj] = drand48() - 0.5;
+	for(int jj = 0; jj < NB; jj++) {
+	  unsigned short seed[3];
+	  seed[0] = 12345; // TODO: use command-line argument
+	  seed[1] = blk.block_row * NB + ii;
+	  seed[2] = blk.block_col * NB + jj;
+	  erand48(seed); // scramble the seed a little
+	  erand48(seed);
+	  erand48(seed);
+	  blk.data[ii][jj] = erand48(seed) - 0.5;
+	}
       regions[REGION_PANEL].write(blkptr, blk);
     }
   }
@@ -597,15 +617,18 @@ protected:
   struct TaskArgs {
     BlockedMatrix<NB> matrix;
     int k, j;
+    ptr_t<MatrixBlock<NB> > topblk_ptr;
 
-    TaskArgs(const BlockedMatrix<NB>& _matrix, int _k, int _j)
-      : matrix(_matrix), k(_k), j(_j) {}
+    TaskArgs(const BlockedMatrix<NB>& _matrix, int _k, int _j,
+	     ptr_t<MatrixBlock<NB> > _topblk_ptr)
+      : matrix(_matrix), k(_k), j(_j), topblk_ptr(_topblk_ptr) {}
     operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
   };
 
   enum {
-    REGION_PANEL, // ROE
-    REGION_TOPBLK,
+    REGION_PANEL,  // RWE
+    REGION_TOPBLK, // RWE
+    REGION_INDEX,  // ROE
     NUM_REGIONS
   };
 
@@ -631,8 +654,53 @@ protected:
   {
     printf("fill_top_block(yay): k=%d, j=%d\n", args->k, args->j);
 
+    const BlockedMatrix<NB>& matrix = args->matrix;
+
     PhysicalRegion<AT> r_panel = regions[REGION_PANEL];
     PhysicalRegion<AT> r_topblk = regions[REGION_TOPBLK];
+    PhysicalRegion<AT> r_index = regions[REGION_INDEX];
+
+    ptr_t<IndexBlock<NB> > ind_ptr = matrix.index_blocks[args->k];
+    IndexBlock<NB> ind_blk = r_index.read(ind_ptr);
+    ind_blk.print("ftb ind blk");
+
+    ptr_t<MatrixBlock<NB> > orig_ptr = matrix.blocks[args->k][args->j];
+    MatrixBlock<NB> orig_blk = r_panel.read(orig_ptr);
+
+    MatrixBlock<NB> top_blk;
+    top_blk.block_col = orig_blk.block_col;
+    top_blk.block_row = orig_blk.block_row;
+
+    // for each row, figure out which original row ends up there - if that
+    //   row isn't in the top block, then put the row that will be swapped
+    //   with that lower row
+    for(int ii = 0; ii < NB; ii++) {
+      int src = ind_blk.ind[ii];
+      assert(src >= ((args->k * NB) + ii));
+      for(int kk = ii - 1; kk >= 0; kk--)
+	if(src == ind_blk.ind[kk]) {
+	  src = kk + (args->k * NB);
+	  break;
+	}
+      printf("topblk row %d gets data from %d\n", ii, src);
+
+      if(src < ((args->k + 1) * NB)) {
+	printf("local source\n");
+	for(int jj = 0; jj < NB; jj++)
+	  top_blk.data[ii][jj] = orig_blk.data[src - args->k * NB][jj];
+      } else {
+	printf("remote source - figuring out which data it wants in the swap\n");
+	int src2 = src;
+	for(int kk = NB - 1; kk >= 0; kk--)
+	  if(ind_blk.ind[kk] == src2)
+	    src2 = kk + (args->k * NB);
+	printf("remote row %d wants data from %d, so put that in %d\n", src, src2, ii);
+	assert(src2 != src);
+	for(int jj = 0; jj < NB; jj++)
+	  top_blk.data[ii][jj] = orig_blk.data[src2 - args->k * NB][jj];
+      }
+    }
+    r_topblk.write(args->topblk_ptr, top_blk);
   }
 
 public:
@@ -647,7 +715,8 @@ public:
   static Future spawn(Context ctx, HighLevelRuntime *runtime,
 		      const BlockedMatrix<NB>& matrix, int k, int j,
 		      LogicalRegion topblk_region,
-		      ptr_t<MatrixBlock<NB> > topblk_ptr)
+		      ptr_t<MatrixBlock<NB> > topblk_ptr,
+		      LogicalRegion index_subregion)
   {
     int owner_part = k % matrix.num_row_parts;
 
@@ -655,22 +724,26 @@ public:
     reqs.resize(NUM_REGIONS);
 
     LogicalRegion panel_subregion = runtime->get_subregion(ctx,
-							   matrix.row_parts[k],
+							   matrix.row_parts[j],
 							   owner_part);
     reqs[REGION_PANEL] = RegionRequirement(panel_subregion,
 					   READ_ONLY, NO_MEMORY, EXCLUSIVE,
 					   runtime->get_subregion(ctx,
 								  matrix.col_part,
-								  k));
+								  j));
 
     reqs[REGION_TOPBLK] = RegionRequirement(topblk_region,
 					    READ_WRITE, NO_MEMORY, EXCLUSIVE,
 					    topblk_region);
     
+    reqs[REGION_INDEX] = RegionRequirement(index_subregion,
+					   READ_ONLY, NO_MEMORY, EXCLUSIVE,
+					   index_subregion);
+
     // double-check that we were registered properly
     assert(task_id != 0);
     Future f = runtime->execute_task(ctx, task_id, reqs,
-				     TaskArgs(matrix, k, j));
+				     TaskArgs(matrix, k, j, topblk_ptr));
     return f;
   }
 };
@@ -1038,7 +1111,8 @@ protected:
 
     Future f2 = FillTopBlockTask<NB>::spawn(ctx, runtime,
 					    args->matrix, args->k, j,
-					    temp_region, temp_ptr);
+					    temp_region, temp_ptr,
+					    args->index_subregion);
     f2.get_void_result();
     //fill_top_block<AT,NB>(ctx, runtime, args->matrix, args->k, j, temp_region, temp_ptr);
 
@@ -1368,6 +1442,10 @@ protected:
     top_blk = r_panel.read(args->matrix.blocks[args->k][args->k]);
 
     runtime->unmap_region(ctx, r_panel);
+
+    idx_blk.block_num = args->k;
+    for(int i = 0; i < NB; i++)
+      idx_blk.ind[i] = -1;
 
     for(int i = 0; 
 	(i <= NB) && (i <= matrix.rows - (args->k * NB)); 
