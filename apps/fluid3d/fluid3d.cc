@@ -537,7 +537,7 @@ static inline int OPPOSITE_DIR(int idz, int idy, int idx, int dir, const FluidCo
 static inline ptr_t<ptr_t<Cell> > get_cell_ptr_ptr(const Block &b, unsigned cb, unsigned cz, unsigned cy, unsigned cx)
 {
   ptr_t<ptr_t<Cell> > result;
-  result.value = ((cb*b.CELLS_Z + cz)*b.CELLS_Y + cy)*b.CELLS_X + cx;
+  result.value = ((cb*(b.CELLS_Z+2) + cz)*(b.CELLS_Y+2) + cy)*(b.CELLS_X+2) + cx;
   return result;
 }
 
