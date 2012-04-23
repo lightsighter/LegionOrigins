@@ -1791,7 +1791,7 @@ void load_file(const void *args, size_t arglen,
   float &restParticlesPerMeter = conf.restParticlesPerMeter;
   int &origNumParticles = conf.origNumParticles, numParticles;
   unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
-  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz, &numBlocks = conf.numBlocks;
+  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
   Vec3 &delta = conf.delta;
 
   Block &b = get_array_ref<AT, Block>(block_region, id);
