@@ -479,10 +479,10 @@ void top_level_task(const void *args, size_t arglen,
 					     READ_WRITE, ALLOCABLE, EXCLUSIVE,
 					     tlr.blocks));
     main_regions.push_back(RegionRequirement(tlr.real_cells[0],
-					     READ_WRITE, ALLOCABLE, EXCLUSIVE,
+					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
 					     tlr.real_cells[0]));
     main_regions.push_back(RegionRequirement(tlr.real_cells[1],
-					     READ_WRITE, ALLOCABLE, EXCLUSIVE,
+					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
 					     tlr.real_cells[1]));
     main_regions.push_back(RegionRequirement(tlr.edge_cells,
 					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
@@ -573,15 +573,37 @@ void main_task(const void *args, size_t arglen,
 
   PhysicalRegion<AT> config_region = regions[0];
   PhysicalRegion<AT> blocks_region = regions[1];
-  PhysicalRegion<AT> real_cells[2];
-  real_cells[0] = regions[2];
-  real_cells[1] = regions[3];
+  // These will be mapped inline
+  //real_cells[0] = regions[2];
+  //real_cells[1] = regions[3];
   //PhysicalRegion<AT> edge_cells = regions[4];
   std::vector<PhysicalRegion<AT> > block_cell_ptrs;
   block_cell_ptrs.resize(numBlocks);
   for (unsigned id = 0; id < numBlocks; id++) {
     block_cell_ptrs[id] = regions[5 + id];
   }
+
+  // Create allocable instances for regions which received no mappings
+  PhysicalRegion<AccessorGeneric> real_cells[2];
+  real_cells[0] =
+    runtime->map_region<AccessorGeneric>(ctx, RegionRequirement(tlr.real_cells[0],
+                                                                NO_ACCESS, ALLOCABLE, EXCLUSIVE,
+                                                                tlr.real_cells[0]),
+                            0 /* mapper ID */, REQUEST_INSTANCE);
+  real_cells[1] =
+    runtime->map_region<AccessorGeneric>(ctx, RegionRequirement(tlr.real_cells[1],
+                                                                NO_ACCESS, ALLOCABLE, EXCLUSIVE,
+                                                                tlr.real_cells[1]),
+                            0 /* mapper ID */, REQUEST_INSTANCE);
+  PhysicalRegion<AccessorGeneric> edge_cells =
+    runtime->map_region<AccessorGeneric>(ctx, RegionRequirement(tlr.edge_cells,
+                                                                NO_ACCESS, ALLOCABLE, EXCLUSIVE,
+                                                                tlr.edge_cells),
+                            0 /* mapper ID */, REQUEST_INSTANCE);
+  real_cells[0].wait_until_valid();
+  real_cells[1].wait_until_valid();
+  edge_cells.wait_until_valid();
+
 
   // Fill in config region from parameter value
   {
@@ -675,15 +697,6 @@ void main_task(const void *args, size_t arglen,
 
   // the edge cells work a bit different - we'll create one region, partition
   //  it once, and use each subregion in two places
-  PhysicalRegion<AccessorGeneric> edge_cells =
-    runtime->map_region<AccessorGeneric>(ctx, 
-                                         RegionRequirement(tlr.edge_cells,
-                                                           NO_ACCESS, ALLOCABLE, EXCLUSIVE,
-                                                           tlr.edge_cells),
-                                         0 /* mapper ID */,
-                                         REQUEST_INSTANCE);
-  edge_cells.wait_until_valid();
-
   std::vector<std::set<utptr_t> > coloring;
   coloring.resize(numBlocks * GHOST_CELLS);
 
@@ -2219,6 +2232,8 @@ public:
     case TASKID_MAIN_TASK:
       {
         switch (idx) {
+        case 2: // real cell [0]
+        case 3: // real cells [1]
         case 4: // edge cells
           {
             // Don't create an instance until explicitly requested
