@@ -50,6 +50,8 @@ namespace RegionRuntime {
 
       static const Event NO_EVENT;
 
+      Event(void) : id(0), gen(0) { }
+
       bool exists(void) const { return id != 0; }
 
       // test whether an event has triggered without waiting
