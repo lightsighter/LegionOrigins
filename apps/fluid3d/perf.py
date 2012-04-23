@@ -190,7 +190,7 @@ if __name__ == '__main__':
             for sy in xrange(size - sx + 1):
                 sz = size - sx - sy
                 nbx, nby, nbz = 1 << sx, 1 << sy, 1 << sz
-                perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 1)
+                #perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 1)
     print
 
     print 'Legion 2-nodes:'
@@ -200,6 +200,12 @@ if __name__ == '__main__':
             for sy in xrange(size - sx + 1):
                 sz = size - sx - sy
                 nbx, nby, nbz = 1 << sx, 1 << sy, 1 << sz
+                # estimate max ghost cell region size and avoid running any over LMB_SIZE
+                dims = (93 / nbx, 129 / nby, 93 / nbz)
+                LMB_SIZE = 4.0
+                ghosts = max([dims[x]*dims[y] for x in xrange(len(dims)) for y in xrange(len(dims)) if x != y]) * 836.0 / 1024 / 1024
+                if ghosts > LMB_SIZE: continue
+                print nbx, nby, nbz
                 perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 2, cpus = 12)
                 perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 2, cpus = 10)
     print
@@ -212,5 +218,10 @@ if __name__ == '__main__':
             for sy in xrange(size - sx + 1):
                 sz = size - sx - sy
                 nbx, nby, nbz = 1 << sx, 1 << sy, 1 << sz
+                # estimate max ghost cell region size and avoid running any over LMB_SIZE
+                dims = (93 / nbx, 129 / nby, 93 / nbz)
+                LMB_SIZE = 4.0
+                ghosts = max([dims[x]*dims[y] for x in xrange(len(dims)) for y in xrange(len(dims)) if x != y]) * 836.0 / 1024 / 1024
+                if ghosts > LMB_SIZE: continue
                 perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 4, cpus = 12)
                 perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 4, cpus = 10)
