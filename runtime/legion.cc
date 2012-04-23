@@ -1549,6 +1549,8 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       parent_ctx->current_taken = true;
 #endif
+      // Mark that the result is valid when we're done
+      result.valid = true;
       bool needs_initializing = false;
       bool instance_owned = false;
       // Check to see if we already have an instance to use
@@ -1718,8 +1720,6 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       log_spy(LEVEL_INFO,"Mapping Performed %d %x %d %x %d",unique_id,ready_event.id,ready_event.gen,unmapped_event.id,unmapped_event.gen); 
 #endif
-      // Mark that the result is valid now that we're done
-      result.valid = true;
       mapped = true;
       // We're done mapping, so trigger the mapping event
       mapped_event.trigger();
