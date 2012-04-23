@@ -867,34 +867,41 @@ void main_task(const void *args, size_t arglen,
 
   // Initialize the simulation in buffer 1
   {
-    std::vector<RegionRequirement> load_regions;
-    load_regions.push_back(RegionRequirement(tlr.config,
-                                             READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                             tlr.config));
-    load_regions.push_back(RegionRequirement(tlr.blocks,
-                                             READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                             tlr.blocks));
-    load_regions.push_back(RegionRequirement(tlr.real_cells[1],
-                                             READ_WRITE, ALLOCABLE, EXCLUSIVE,
-                                             tlr.real_cells[1]));
+    std::list<Future> load_futures;
     for (unsigned id = 0; id < numBlocks; id++) {
+      std::vector<RegionRequirement> load_regions;
+      load_regions.push_back(RegionRequirement(tlr.config,
+                                               READ_ONLY, NO_MEMORY, EXCLUSIVE,
+                                               tlr.config));
+      load_regions.push_back(RegionRequirement(block_regions[id],
+                                               READ_ONLY, NO_MEMORY, EXCLUSIVE,
+                                               tlr.blocks));
       load_regions.push_back(RegionRequirement(block_cell_ptr_regions[id],
                                                READ_ONLY, NO_MEMORY, EXCLUSIVE,
                                                block_cell_ptr_regions[id]));
+      load_regions.push_back(RegionRequirement(tlr.real_cells[1],
+                                               READ_WRITE, ALLOCABLE, EXCLUSIVE,
+                                               tlr.real_cells[1]));
+
+      std::string fileName = "init.fluid";
+
+      unsigned bufsize = sizeof(unsigned) + sizeof(size_t) + fileName.length();
+      StringSerializer ser(bufsize);
+      ser.Serializer::serialize(id);
+      ser.serialize(fileName);
+      TaskArgument buffer(ser.get_buffer(), bufsize);
+
+      Future f = runtime->execute_task(ctx, TASKID_LOAD_FILE,
+                                       load_regions,
+                                       buffer,
+                                       0, 0);
+      load_futures.push_back(f);
     }
 
-    std::string fileName = "init.fluid";
-
-    unsigned bufsize = sizeof(size_t) + fileName.length();
-    StringSerializer ser(bufsize);
-    ser.serialize(fileName);
-    TaskArgument buffer(ser.get_buffer(), bufsize);
-
-    Future f = runtime->execute_task(ctx, TASKID_LOAD_FILE,
-                                     load_regions,
-                                     buffer,
-                                     0, 0);
-    f.get_void_result();
+    while(load_futures.size() > 0) {
+      load_futures.front().get_void_result();
+      load_futures.pop_front();
+    }
   }
 
   printf("STARTING MAIN SIMULATION LOOP\n");
@@ -1251,6 +1258,17 @@ void init_and_rebuild(const void *args, size_t arglen,
     for(int cy = 0; cy <= (int)b.CELLS_Y + 1; cy++)
       for(int cx = 0; cx <= (int)b.CELLS_X + 1; cx++) {
         REF_CELL(b, cb, eb, cz, cy, cx, dst, edges, block_cell_ptrs).num_particles = 0;
+      }
+
+  // Elliott: debug initial particles in source cells
+  for(int cz = 1; cz < (int)b.CELLS_Z + 1; cz++)
+    for(int cy = 1; cy < (int)b.CELLS_Y + 1; cy++)
+      for(int cx = 1; cx < (int)b.CELLS_X + 1; cx++) {
+        Cell cell = src_block.read(get_cell_ptr(b, cb, cz, cy, cx, block_cell_ptrs));
+        printf("cell %d %d %d num_particles %d\n", cx, cy, cz, cell.num_particles);
+        for(unsigned p = 0; p < cell.num_particles; p++) {
+          printf("p %e %e %e d %e\n", cell.p[p].x, cell.p[p].y, cell.p[p].z, cell.density[p]);
+        }
       }
 
   // Minimum block sizes
@@ -1729,58 +1747,42 @@ void load_file(const void *args, size_t arglen,
                std::vector<PhysicalRegion<AT> > &regions,
                Context ctx, HighLevelRuntime *runtime)
 {
+  unsigned id;
   std::string fileName;
   {
     StringDeserializer deser(args, arglen);
+    deser.Deserializer::deserialize(id);
     deser.deserialize(fileName);
   }
 
   PhysicalRegion<AT> config_region = regions[0];
-  ptr_t<FluidConfig> config_ptr;
-  config_ptr.value = 0;
-  FluidConfig conf = config_region.read(config_ptr);
-  unsigned &numBlocks = conf.numBlocks;
+  PhysicalRegion<AT> block_region = regions[1];
+  PhysicalRegion<AT> block_cell_ptrs_region = regions[2];
+  PhysicalRegion<AT> real_cells_region = regions[3];
+  RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> block_cell_ptrs =
+    block_cell_ptrs_region.template convert<AccessorArray>().get_instance();
+  RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> real_cells =
+    real_cells_region.template convert<AccessorArray>().get_instance();
 
-  PhysicalRegion<AT> blocks_region = regions[1];
-  PhysicalRegion<AT> real_cells = regions[2];
-  std::vector<PhysicalRegion<AT> > block_cell_ptrs;
-  block_cell_ptrs.resize(numBlocks);
-  for (unsigned id = 0; id < numBlocks; id++) {
-    block_cell_ptrs[id] = regions[3 + id];
-  }
-
+  FluidConfig conf = get_singleton_ref<AT, FluidConfig>(config_region);
   float &restParticlesPerMeter = conf.restParticlesPerMeter;
   int &origNumParticles = conf.origNumParticles, numParticles;
   unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
-  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
+  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz, &numBlocks = conf.numBlocks;
   Vec3 &delta = conf.delta;
 
-  std::vector<Block> blocks;
-  blocks.resize(numBlocks);
-  for (unsigned id = 0; id < numBlocks; id++) {
-    ptr_t<Block> block_ptr;
-    block_ptr.value = id;
-    blocks[id] = blocks_region.read(block_ptr);
-  }
+  Block &b = get_array_ref<AT, Block>(block_region, id);
 
   log_app.info("Loading file \"%s\"...", fileName.c_str());
 
-  const int b = 1;
+  const int cb = 1;
 
   // Clear all cells
-  for (unsigned idz = 0; idz < nbz; idz++)
-    for (unsigned idy = 0; idy < nby; idy++)
-      for (unsigned idx = 0; idx < nbx; idx++) {
-        unsigned id = (idz*nby+idy)*nbx+idx;
-
-        for(unsigned cz = 0; cz < blocks[id].CELLS_Z; cz++)
-          for(unsigned cy = 0; cy < blocks[id].CELLS_Y; cy++)
-            for(unsigned cx = 0; cx < blocks[id].CELLS_X; cx++) {
-              ptr_t<Cell> cell_ptr = block_cell_ptrs[id].read(get_cell_ptr_ptr(blocks[id], b, cz+1, cy+1, cx+1));
-              Cell cell = real_cells.read(cell_ptr);
-              cell.num_particles = 0;
-              real_cells.write(cell_ptr, cell);
-            }
+  for(unsigned cz = 0; cz < b.CELLS_Z; cz++)
+    for(unsigned cy = 0; cy < b.CELLS_Y; cy++)
+      for(unsigned cx = 0; cx < b.CELLS_X; cx++) {
+        Cell &cell = real_cells.ref(get_cell_ptr(b, cb, cz+1, cy+1, cx+1, block_cell_ptrs));
+        cell.num_particles = 0;
       }
 
   std::ifstream file(fileName.c_str(), std::ios::binary);
@@ -1847,15 +1849,16 @@ void load_file(const void *args, size_t arglen,
     int eck = ck + (midz > ovbz ? midz - ovbz : 0);
     int idz = eck / (mbsz + 1);
 
-    int id = (idz*nby+idy)*nbx+idx;
+    int target_id = (idz*nby+idy)*nbx+idx;
+
+    if (target_id != id) continue;
 
     // Local cell coordinates
     int cx = ci - (idx*mbsx + (idx < ovbx ? idx : ovbx));
     int cy = cj - (idy*mbsy + (idy < ovby ? idy : ovby));
     int cz = ck - (idz*mbsz + (idz < ovbz ? idz : ovbz));
 
-    ptr_t<Cell> cell_ptr = block_cell_ptrs[id].read(get_cell_ptr_ptr(blocks[id], b, cz+1, cy+1, cx+1));
-    Cell cell = real_cells.read(cell_ptr);
+    Cell &cell = real_cells.ref(get_cell_ptr(b, cb, cz+1, cy+1, cx+1, block_cell_ptrs));
 
     unsigned np = cell.num_particles;
     if(np < MAX_PARTICLES) {
@@ -1869,8 +1872,6 @@ void load_file(const void *args, size_t arglen,
       cell.v[np].y = vy;
       cell.v[np].z = vz;
       ++cell.num_particles;
-
-      real_cells.write(cell_ptr, cell);
     } else {
       --numParticles;
     }
@@ -2208,7 +2209,6 @@ public:
     switch (task->task_id) {
     case TOP_LEVEL_TASK_ID:
     case TASKID_MAIN_TASK:
-    case TASKID_LOAD_FILE:
     case TASKID_SAVE_FILE:
     case TASKID_DUMMY_TASK:
       {
@@ -2239,6 +2239,7 @@ public:
       break;
     case TASKID_SCATTER_DENSITIES: // Operations which write ghost cells
     case TASKID_SCATTER_FORCES:
+    case TASKID_LOAD_FILE: // (Load doesn't write ghosts but happens to use same set of region)
       {
         switch (idx) {
         case 0: // config
