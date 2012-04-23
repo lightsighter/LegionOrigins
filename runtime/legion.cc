@@ -2243,6 +2243,32 @@ namespace RegionRuntime {
             it != available_maps.end(); it++)
         delete *it;
       available_maps.clear();
+
+      // Clean up the low-level locks that we own
+#if 0
+#ifdef DEBUG_HIGH_LEVEL
+      assert(mapper_objects.size() == mapper_locks.size());
+#endif
+      for (unsigned i=0; i < mapper_objects.size(); i++)
+      {
+        if (mapper_objects[i] != NULL)
+        {
+          delete mapper_objects[i];
+#ifdef DEBUG_HIGH_LEVEL
+          assert(mapper_locks[i].exists());
+#endif
+          mapper_locks[i].destroy_lock();
+        }
+      }
+      mapper_objects.clear();
+      mapper_locks.clear();
+      mapping_lock.destroy_lock();
+      queue_lock.destroy_lock();
+      available_lock.destroy_lock();
+      unique_lock.destroy_lock();
+      stealing_lock.destroy_lock();
+      thieving_lock.destroy_lock();
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -6006,14 +6032,12 @@ namespace RegionRuntime {
             // so make an allocator in the same memory
             RegionAllocator alloc = regions[idx].handle.region.create_allocator_untyped(
                                               pre_mapped_regions[idx].info->location);
-#ifdef DEBUG_HIGH_LEVEL
             if (!alloc.exists())
             {
               log_inst(LEVEL_ERROR,"Unable to create allocator for region %x (idx %d) of task %s that was premapped",
                                     regions[idx].handle.region.id, idx, variants->name);
               exit(1);
             }
-#endif
             allocators.push_back(alloc);
           }
           else
@@ -13222,7 +13246,7 @@ namespace RegionRuntime {
     
     //-------------------------------------------------------------------------
     InstanceInfo::InstanceInfo(InstanceID id, LogicalRegion r, Memory m,
-                RegionInstance i, bool rem, InstanceInfo *par, bool open, bool c /*= false*/) :
+                RegionInstance i, bool rem, InstanceInfo *par, bool open, bool c /*= false*/, bool unpacking /*= false*/) :
       iid(id), handle(r), location(m), inst(i), valid(false), remote(rem), open_child(open), 
       clone(c), children(0), collected(false), returned(false), 
       local_frac(Fraction()), parent(par), closing(false)
@@ -13233,25 +13257,27 @@ namespace RegionRuntime {
       assert(location.exists());
       assert(inst.exists());
 #endif
-      if (parent != NULL)
+      // Only fill in these fields if we're not unpacking
+      if (!unpacking)
       {
-        parent->add_child(this, open_child);
-        inst_lock = parent->inst_lock;
-        // set our valid event to be the parent's valid event 
-        valid_event = parent->valid_event;
-      }
-      else
-      {
-        // if we're not remote, we're the first instance so make the lock
-        if (!remote)
+        if (parent != NULL)
         {
-          inst_lock = Lock::create_lock();
+          parent->add_child(this, open_child);
+          inst_lock = parent->inst_lock;
+          // set our valid event to be the parent's valid event 
+          valid_event = parent->valid_event;
         }
         else
         {
-          inst_lock = Lock::NO_LOCK; // this will get filled in later by the unpack
+          inst_lock = Lock::create_lock();
+          // our valid event is currently the no event
+          valid_event = Event::NO_EVENT;
         }
-        // our valid event is currently the no event
+      }
+      else
+      {
+        // We're unpacking so these fields will get filled in later
+        inst_lock = Lock::NO_LOCK;
         valid_event = Event::NO_EVENT;
       }
     }
@@ -14009,7 +14035,8 @@ namespace RegionRuntime {
       bool open_child;
       derez.deserialize<bool>(open_child);
       // This is an open child otherwise it would never have been sent remotely
-      InstanceInfo *result_info = new InstanceInfo(iid,handle,location,inst,true/*remote*/,parent,open_child/*open*/);
+      InstanceInfo *result_info = new InstanceInfo(iid,handle,location,inst,true/*remote*/,
+                                                   parent,open_child/*open*/,false/*clone*/,true/*unpacking*/);
 
       derez.deserialize<Event>(result_info->valid_event);
       derez.deserialize<Lock>(result_info->inst_lock);
@@ -14326,14 +14353,16 @@ namespace RegionRuntime {
         InstanceInfo *result_info;
         if (parent_iid == 0)
         {
-          result_info = new InstanceInfo(iid, handle, location, inst, false/*remote*/,NULL/*no parent*/,open_child);
+          result_info = new InstanceInfo(iid, handle, location, inst, false/*remote*/,NULL/*no parent*/,
+                                         open_child, false/*clone*/, true/*unpacking*/);
         }
         else
         {
 #ifdef DEBUG_HIGH_LEVEL
           assert(infos->find(parent_iid) != infos->end());
 #endif
-          result_info = new InstanceInfo(iid, handle, location, inst, false/*remote*/,(*infos)[parent_iid],open_child);
+          result_info = new InstanceInfo(iid, handle, location, inst, false/*remote*/,(*infos)[parent_iid],
+                                         open_child, false/*clone*/, true/*unpacking*/);
         }
         // Set the local fraction from above
         result_info->local_frac = local_frac;

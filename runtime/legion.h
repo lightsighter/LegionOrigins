@@ -1986,8 +1986,8 @@ namespace RegionRuntime {
       const RegionInstance inst;
     public:
       InstanceInfo(void);
-      InstanceInfo(InstanceID id, LogicalRegion r, Memory m,
-            RegionInstance i, bool rem, InstanceInfo *par, bool open, bool clone = false);
+      InstanceInfo(InstanceID id, LogicalRegion r, Memory m, RegionInstance i, 
+                   bool rem, InstanceInfo *par, bool open, bool clone = false, bool unpacking = false);
       ~InstanceInfo(void);
     protected:
       friend class TaskContext;
