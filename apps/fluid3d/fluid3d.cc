@@ -2206,7 +2206,7 @@ public:
         // Distribute these over all CPUs
         //log_mapper.info("mapping task %d with tag %d to processor %x",task->task_id,
         //                task->tag, loc_procs[task->tag % loc_procs.size()].first.id);
-        return loc_procs[task->tag % loc_procs.size()].first;
+        return loc_procs[(task->tag % (loc_procs.size() - 1)) + 1].first;
         //return loc_procs[0].first;
       }
       break;
@@ -2244,7 +2244,28 @@ public:
     int idx = index; 
     log_mapper.info("func_id=%d map_tag=%d region_index=%d", task->task_id, task->tag, idx);
     std::vector< std::pair<Processor, Memory> >& loc_procs = cpu_mem_pairs[Processor::LOC_PROC];
-    std::pair<Processor, Memory> cmp = loc_procs[task->tag % loc_procs.size()];
+
+    int proc_id = 0;
+    switch (task->task_id) {
+    case TOP_LEVEL_TASK_ID:
+    case TASKID_MAIN_TASK:
+    case TASKID_SAVE_FILE:
+    case TASKID_DUMMY_TASK:
+      proc_id = 0;
+      break;
+    case TASKID_LOAD_FILE:
+    case TASKID_INIT_CELLS:
+    case TASKID_REBUILD_REDUCE:
+    case TASKID_SCATTER_DENSITIES:
+    case TASKID_GATHER_DENSITIES:
+    case TASKID_SCATTER_FORCES:
+    case TASKID_GATHER_FORCES:
+      proc_id = (task->tag % (loc_procs.size() - 1)) + 1;
+      break;
+    default:
+      assert(false);
+    }
+    std::pair<Processor, Memory> cmp = loc_procs[proc_id];
 
     switch (task->task_id) {
     case TOP_LEVEL_TASK_ID:
@@ -2253,8 +2274,8 @@ public:
       {
         // Don't care, put it in global memory
         target_ranking.push_back(global_memory);
-        break;
       }
+      break;
     case TASKID_MAIN_TASK:
       {
         switch (idx) {
