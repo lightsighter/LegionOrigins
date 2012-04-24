@@ -97,8 +97,13 @@ def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, nodes = 1, cpus = 0,
         [_legion_fluid,
          '-ll:csize', '16384', '-ll:gsize', '2000',
          '-ll:cpu', str(cpus),
+         # Low-level message threads
+         '-ll:dma', str(2), '-ll:amsg', str(2), '-ll:senders',
+         # High-level scheduler look-ahead
+         '-hl:sched', str(2*nbx*nby*nbz),
          '-level', str(legion_logging),
          '-nbx', str(nbx), '-nby', str(nby), '-nbz', str(nbz), '-s', str(steps),
+         '-input', str(input),
         ])
 
 ############################################################
@@ -107,9 +112,7 @@ def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, nodes = 1, cpus = 0,
 _input_filename = None
 def prep_input(size = 2400):
     global _input_filename
-    _input_filename = os.path.join(_root_dir, 'init.fluid')
-    shutil.copyfile(os.path.join(_root_dir, 'in_%dK.fluid' % size),
-                    _input_filename)
+    _input_filename = os.path.join(_root_dir, 'in_%dK.fluid' % size)
 
 def get_input():
     return _input_filename
@@ -186,11 +189,12 @@ if __name__ == '__main__':
     print 'Legion 1-node:'
     sizes = range(0, 5)
     for size in sizes:
-        for sx in xrange(size + 1):
-            for sy in xrange(size - sx + 1):
-                sz = size - sx - sy
-                nbx, nby, nbz = 1 << sx, 1 << sy, 1 << sz
-                #perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 1)
+        nbx = 1 << (size/2);
+        nby = 1
+        nbz = 1 << (size/2);
+        if nbx*nbz != 1 << size:
+            nbx *= 2
+        perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 1)
     print
 
     print 'Legion 2-nodes:'
@@ -205,7 +209,6 @@ if __name__ == '__main__':
                 LMB_SIZE = 4.0
                 ghosts = max([dims[x]*dims[y] for x in xrange(len(dims)) for y in xrange(len(dims)) if x != y]) * 836.0 / 1024 / 1024
                 if ghosts > LMB_SIZE: continue
-                perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 2, cpus = 12)
                 perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 2, cpus = 10)
     print
 
@@ -222,5 +225,4 @@ if __name__ == '__main__':
                 LMB_SIZE = 4.0
                 ghosts = max([dims[x]*dims[y] for x in xrange(len(dims)) for y in xrange(len(dims)) if x != y]) * 836.0 / 1024 / 1024
                 if ghosts > LMB_SIZE: continue
-                perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 4, cpus = 12)
                 perf_check(legion, _num_reps, nbx = nbx, nby = nby, nbz = nbz, steps = _num_steps, nodes = 4, cpus = 10)

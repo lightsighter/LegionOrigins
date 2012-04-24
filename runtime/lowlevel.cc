@@ -1499,7 +1499,7 @@ namespace RegionRuntime {
 
     /*static*/ Event Event::Impl::create_event(void)
     {
-      DetailedTimer::ScopedPush sp(17);
+      //DetailedTimer::ScopedPush sp(17);
       // see if the freelist has an event we can reuse
       Event::Impl *impl = 0;
       {
@@ -2152,8 +2152,8 @@ namespace RegionRuntime {
     // Create a new lock, destroy an existing lock
     /*static*/ Lock Lock::create_lock(void)
     {
-      //DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
-      DetailedTimer::ScopedPush sp(18);
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+      //DetailedTimer::ScopedPush sp(18);
 
       // see if the freelist has an event we can reuse
       Lock::Impl *impl = 0;
@@ -6463,6 +6463,7 @@ namespace RegionRuntime {
       unsigned cpu_worker_threads = 1;
       unsigned dma_worker_threads = 1;
       unsigned active_msg_worker_threads = 1;
+      bool     active_msg_sender_threads = false;
 
       for(int i = 1; i < *argc; i++) {
 #define INT_ARG(argname, varname) do { \
@@ -6486,6 +6487,7 @@ namespace RegionRuntime {
 	INT_ARG("-ll:workers", cpu_worker_threads);
 	INT_ARG("-ll:dma", dma_worker_threads);
 	INT_ARG("-ll:amsg", active_msg_worker_threads);
+        BOOL_ARG("-ll:senders", active_msg_sender_threads);
       }
 
       Logger::init(*argc, (const char **)*argv);
@@ -6528,6 +6530,9 @@ namespace RegionRuntime {
       start_polling_threads(active_msg_worker_threads);
 
       start_dma_worker_threads(dma_worker_threads);
+
+      if (active_msg_sender_threads)
+        start_sending_threads();
 	
       //gasnet_seginfo_t seginfos = new gasnet_seginfo_t[num_nodes];
       //CHECK_GASNET( gasnet_getSegmentInfo(seginfos, num_nodes) );

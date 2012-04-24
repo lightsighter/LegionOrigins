@@ -40,7 +40,7 @@ const unsigned GHOST_CELLS = 26;
 // PARSEC does not double buffer. That is, PARSEC performs the first
 // step of the computation over and over. However, double buffering
 // has a potential performance impact, so we need both.
-#define ENABLE_DOUBLE_BUFFERING 1
+#define ENABLE_DOUBLE_BUFFERING 0
 
 enum { // don't change the order of these!  needs to be symmetric
   TOP_FRONT_LEFT = 0,
@@ -261,10 +261,12 @@ const Vec3 externalAcceleration(0.f, -9.8f, 0.f);
 const Vec3 domainMin(-0.065f, -0.08f, -0.065f);
 const Vec3 domainMax(0.065f, 0.1f, 0.065f);
 
+const size_t MAX_FILENAME = 256;
 struct FluidConfig {
   // Parameters from command line arguments.
   unsigned numSteps;
   unsigned nbx, nby, nbz, numBlocks;
+  char inFilename[MAX_FILENAME], outFilename[MAX_FILENAME];
 
   // Parameters of simulation from fluid file header.
   float restParticlesPerMeter;
@@ -293,40 +295,17 @@ return MOVE_Z(z, dir, 0, b.CELLS_Z+1);
 
 RegionRuntime::Logger::Category log_app("application");
 
-class StringSerializer : public Serializer {
-public:
-  StringSerializer(size_t buffer_size) : Serializer(buffer_size) { }
-  inline void serialize(const std::string &str) {
-    const char *c_str = str.c_str();
-    size_t len = strlen(c_str);
-    Serializer::serialize(len);
-    Serializer::serialize(c_str, len);
-  }
-};
-
-class StringDeserializer : public Deserializer {
-public:
-  StringDeserializer(const void *buffer, size_t buffer_size)
-    : Deserializer(buffer, buffer_size) { }
-  inline void deserialize(std::string &str) {
-    size_t len;
-    Deserializer::deserialize(len);
-    char *buffer = (char *)malloc(len);
-    assert(buffer);
-    Deserializer::deserialize(buffer, len);
-    str = std::string(buffer, len);
-    free(buffer);
-  }
-};
-
 static unsigned parse_args(int argc, char **argv, FluidConfig &conf)
 {
   unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz, &numBlocks = conf.numBlocks;
   unsigned &numSteps = conf.numSteps;
+  char (&inFilename)[256] = conf.inFilename, (&outFilename)[256] = conf.outFilename;
 
   // Default parameter values.
   numSteps = 4;
   nbx = nby = nbz = 1;
+  strcpy(inFilename, "init.fluid");
+  strcpy(outFilename, "");
 
   printf("fluid: %p %d ",argv,argc);
   for (int i = 1; i < argc; i++)
@@ -351,6 +330,18 @@ static unsigned parse_args(int argc, char **argv, FluidConfig &conf)
 
     if(!strcmp(argv[i], "-nbz")) {
       nbz = atoi(argv[++i]);
+      continue;
+    }
+
+    if(!strcmp(argv[i], "-input")) {
+      strncpy(inFilename, argv[++i], MAX_FILENAME);
+      inFilename[MAX_FILENAME-1] = '\0';
+      continue;
+    }
+
+    if(!strcmp(argv[i], "-output")) {
+      strncpy(outFilename, argv[++i], MAX_FILENAME);
+      outFilename[MAX_FILENAME-1] = '\0';
       continue;
     }
   }
@@ -431,12 +422,13 @@ void top_level_task(const void *args, size_t arglen,
   unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
   unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
   unsigned &numBlocks = conf.numBlocks;
+  char (&inFilename)[256] = conf.inFilename;
 
   // parse command line arguments
   parse_args(argc, argv, conf);
 
   // read input file header to get problem size
-  load_file_header("init.fluid", conf);
+  load_file_header(inFilename, conf);
   init_config(conf);
 
   // workaround for inability to use a region in task that created it
@@ -573,6 +565,7 @@ void main_task(const void *args, size_t arglen,
   }
   unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
   unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
+  char (&outFilename)[256] = conf.outFilename;
 
   log_app.info("In main_task...");
 
@@ -917,12 +910,9 @@ void main_task(const void *args, size_t arglen,
                                                READ_WRITE, NO_MEMORY, EXCLUSIVE,
                                                tlr.real_cells[1]));
 
-      std::string fileName = "init.fluid";
-
-      unsigned bufsize = sizeof(unsigned) + sizeof(size_t) + fileName.length();
-      StringSerializer ser(bufsize);
-      ser.Serializer::serialize(id);
-      ser.serialize(fileName);
+      unsigned bufsize = sizeof(unsigned);
+      Serializer ser(bufsize);
+      ser.serialize(id);
       TaskArgument buffer(ser.get_buffer(), bufsize);
 
       Future f = runtime->execute_task(ctx, TASKID_LOAD_FILE,
@@ -949,7 +939,8 @@ void main_task(const void *args, size_t arglen,
   for (unsigned step = 0; step < conf.numSteps; step++)
   {
     // Initialize cells
-    for (unsigned id = 0; id < numBlocks; id++)
+    //for (unsigned id = 0; id < numBlocks; id++)
+    for (int id = (numBlocks-1); id >= 0; id--)
     {
       // init and rebuild reads the real cells from the previous pass and
       //  moves atoms into the real cells for this pass or the edge0 cells
@@ -994,7 +985,8 @@ void main_task(const void *args, size_t arglen,
     }
 
     // Rebuild reduce (reduction)
-    for (unsigned id = 0; id < numBlocks; id++)
+    //for (unsigned id = 0; id < numBlocks; id++)
+    for (int id = (numBlocks-1); id >= 0; id--)
     {
       // rebuild reduce reads the cells provided by neighbors, incorporates
       //  them into its own cells, and puts copies of those boundary cells into
@@ -1033,7 +1025,8 @@ void main_task(const void *args, size_t arglen,
     }
 
     // init forces and scatter densities
-    for (unsigned id = 0; id < numBlocks; id++)
+    //for (unsigned id = 0; id < numBlocks; id++)
+    for (int id = (numBlocks-1); id >= 0; id--)
     {
       // this step looks at positions in real and edge cells and updates
       // densities for all owned particles - boundary real cells are copied to
@@ -1075,7 +1068,8 @@ void main_task(const void *args, size_t arglen,
     }
 
     // Gather forces and advance
-    for (unsigned id = 0; id < numBlocks; id++)
+    //for (unsigned id = 0; id < numBlocks; id++)
+    for (int id = (numBlocks-1); id >= 0; id--)
     {
       // this is very similar to scattering of density - basically just 
       //  different math, and a different edge phase
@@ -1142,7 +1136,7 @@ void main_task(const void *args, size_t arglen,
   printf("ELAPSED TIME = %7.3f s\n", sim_time);
   RegionRuntime::DetailedTimer::report_timers();
 
-  {
+  if (outFilename[0] != '\0') {
 #if ENABLE_DOUBLE_BUFFERING
     int target_buffer = 1 - cur_buffer;
 #else
@@ -1164,12 +1158,9 @@ void main_task(const void *args, size_t arglen,
                                                block_cell_ptr_regions[id]));
     }
 
-    std::string fileName = "output.fluid";
-
-    unsigned bufsize = sizeof(int) + sizeof(size_t) + fileName.length();
-    StringSerializer ser(bufsize);
-    ser.Serializer::serialize(target_buffer);
-    ser.serialize(fileName);
+    unsigned bufsize = sizeof(int);
+    Serializer ser(bufsize);
+    ser.serialize(target_buffer);
     TaskArgument buffer(ser.get_buffer(), bufsize);
 
     Future f = runtime->execute_task(ctx, TASKID_SAVE_FILE,
@@ -1250,6 +1241,10 @@ void init_and_rebuild(const void *args, size_t arglen,
                 std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
+#ifdef TIME_STAMPS
+  RegionRuntime::TimeStamp total_stamp("Init and Rebuild total: ",true);
+  RegionRuntime::TimeStamp start_stamp("Init and Rebuild start: ",false);
+#endif
   int cb;
   unsigned bid;
   {
@@ -1349,6 +1344,9 @@ void init_and_rebuild(const void *args, size_t arglen,
       }
 
   log_app.info("Done with init_and_rebuild() for block %d", b.id);
+#ifdef TIME_STAMPS
+  RegionRuntime::TimeStamp finish_stamp("Init and Rebuild stop: ",false);
+#endif
 }
 
 template<AccessorType AT>
@@ -1356,6 +1354,10 @@ void rebuild_reduce(const void *args, size_t arglen,
                 std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
+#ifdef TIME_STAMPS
+  RegionRuntime::TimeStamp total_stamp("Rebuild Reduce total: ",true);
+  RegionRuntime::TimeStamp start_stamp("Rebuild Reduce start: ",false);
+#endif
   int cb;
   unsigned bid;
   {
@@ -1423,6 +1425,9 @@ void rebuild_reduce(const void *args, size_t arglen,
       }
 
   log_app.info("Done with rebuild_reduce() for block %d", b.id);
+#ifdef TIME_STAMPS
+  RegionRuntime::TimeStamp stop_stamp("Rebuild Reduce stop ",false);
+#endif
 }
 
 template<AccessorType AT>
@@ -1430,6 +1435,10 @@ void scatter_densities(const void *args, size_t arglen,
                 std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
+#ifdef TIME_STAMPS
+  RegionRuntime::TimeStamp total_stamp("Scatter Densities total: ",true);
+  RegionRuntime::TimeStamp start_stamp("Scatter Densities start: ",false);
+#endif
   int cb;
   unsigned bid;
   {
@@ -1554,6 +1563,9 @@ void scatter_densities(const void *args, size_t arglen,
       }
 
   log_app.info("Done with scatter_densities() for block %d", b.id);
+#ifdef TIME_STAMPS
+  RegionRuntime::TimeStamp stop_stamp("Scatter Densities stop ",false);
+#endif
 }
 
 template<AccessorType AT>
@@ -1576,6 +1588,10 @@ void gather_forces_and_advance(const void *args, size_t arglen,
                 std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
+#ifdef TIME_STAMPS
+  RegionRuntime::TimeStamp total_stamp("Gather Forces total: ",true);
+  RegionRuntime::TimeStamp start_stamp("Gather Forces start: ",false);
+#endif
   int cb;
   unsigned bid;
   {
@@ -1714,6 +1730,9 @@ void gather_forces_and_advance(const void *args, size_t arglen,
       }
 
   log_app.info("Done with gather_forces_and_advance() for block %d", b.id);
+#ifdef TIME_STAMPS
+  RegionRuntime::TimeStamp stop_stamp("Gather Forces stop ",false);
+#endif
 }
 
 static inline int isLittleEndian() {
@@ -1771,11 +1790,9 @@ void load_file(const void *args, size_t arglen,
                Context ctx, HighLevelRuntime *runtime)
 {
   unsigned id;
-  std::string fileName;
   {
-    StringDeserializer deser(args, arglen);
-    deser.Deserializer::deserialize(id);
-    deser.deserialize(fileName);
+    Deserializer deser(args, arglen);
+    deser.deserialize(id);
   }
 
   PhysicalRegion<AT> config_region = regions[0];
@@ -1793,10 +1810,11 @@ void load_file(const void *args, size_t arglen,
   unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
   unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
   Vec3 &delta = conf.delta;
+  char (&inFilename)[256] = conf.inFilename;
 
   Block &b = get_array_ref<AT, Block>(block_region, id);
 
-  log_app.info("Loading file \"%s\"...", fileName.c_str());
+  log_app.info("Loading file \"%s\"...", inFilename);
 
   const int cb = 1;
 
@@ -1808,7 +1826,7 @@ void load_file(const void *args, size_t arglen,
         cell.num_particles = 0;
       }
 
-  std::ifstream file(fileName.c_str(), std::ios::binary);
+  std::ifstream file(inFilename, std::ios::binary);
   assert(file);
 
   file.read((char *)&restParticlesPerMeter, 4);
@@ -1913,11 +1931,9 @@ void save_file(const void *args, size_t arglen,
 	       Context ctx, HighLevelRuntime *runtime)
 {
   int b;
-  std::string fileName;
   {
-    StringDeserializer deser(args, arglen);
-    deser.Deserializer::deserialize(b);
-    deser.deserialize(fileName);
+    Deserializer deser(args, arglen);
+    deser.deserialize(b);
   }
 
   PhysicalRegion<AT> config_region = regions[0];
@@ -1938,6 +1954,7 @@ void save_file(const void *args, size_t arglen,
   int &origNumParticles = conf.origNumParticles;
   unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
   unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
+  char (&outFilename)[256] = conf.outFilename;
 
   std::vector<Block> blocks;
   blocks.resize(numBlocks);
@@ -1947,9 +1964,9 @@ void save_file(const void *args, size_t arglen,
     blocks[id] = blocks_region.read(block_ptr);
   }
 
-  log_app.info("Saving file \"%s\"...", fileName.c_str());
+  log_app.info("Saving file \"%s\"...", outFilename);
 
-  std::ofstream file(fileName.c_str(), std::ios::binary);
+  std::ofstream file(outFilename, std::ios::binary);
   assert(file);
 
   if(!isLittleEndian()) {
