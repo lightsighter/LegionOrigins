@@ -306,6 +306,22 @@ namespace RegionRuntime {
                                   bool &enable_WAR_optimization)
     //--------------------------------------------------------------------------------------------
     {
+      if(task->tag == MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION) {
+	log_mapper(LEVEL_INFO, "Mapping tag requests no mapping for tasks regions");
+	target_ranking.push_back(Memory::NO_MEMORY);
+	enable_WAR_optimization = false;
+	return;
+      }
+
+      log_mapper(LEVEL_INFO, "Region=%d tag=%d",
+		 req.handle.region.id, req.tag);
+      if(req.tag == MAPTAG_DEFAULT_MAPPER_NOMAP_REGION) {
+	log_mapper(LEVEL_INFO, "Mapping tag requests no mapping for region %d", req.handle.region.id);
+	target_ranking.push_back(Memory::NO_MEMORY);
+	enable_WAR_optimization = false;
+	return;
+      }
+
       log_mapper(LEVEL_SPEW,"Map task region in default mapper for region %d of task %s (ID %d) "
           "(unique id %d) on processor %x",req.handle.region.id, task->variants->name, 
           task->task_id, task->unique_id, local_proc.id);

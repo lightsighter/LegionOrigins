@@ -1311,7 +1311,7 @@ class Linpack {
 						  ArgumentMap(),
 						  false,
 						  0, // default mapper,
-						  Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION);
+						  0); //Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION);
       return fm;
     }
   };
@@ -1567,9 +1567,18 @@ class Linpack {
       MatrixBlockRow prev_orig;
       MatrixBlockRow prev_best;
 
-      top_blk = r_panel.read(matrix.blocks[args->k][args->k]);
+      LogicalRegion subpanel_region = runtime->get_subregion(ctx,
+							     matrix.row_parts[args->k],
+							     (args->k % matrix.num_row_parts));
+      PhysicalRegion<AT> r_subpanel = runtime->map_region<AT>(ctx,
+							      RegionRequirement(subpanel_region,
+										READ_ONLY, NO_MEMORY, EXCLUSIVE,
+										matrix.panel_subregions[args->k]));
+      r_subpanel.wait_until_valid();
+	
+      top_blk = r_subpanel.read(matrix.blocks[args->k][args->k]);
 
-      runtime->unmap_region(ctx, r_panel);
+      runtime->unmap_region(ctx, r_subpanel);
 
       idx_blk.block_num = args->k;
       for(int i = 0; i < NB; i++)
@@ -1665,9 +1674,11 @@ class Linpack {
 							      matrix.topblk_part,
 							      k);
 
+      printf("requesting nomap for region %d\n", panel_subregion.id);
       reqs[REGION_PANEL] = RegionRequirement(panel_subregion,
 					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
-					     matrix.block_region);
+					     matrix.block_region,
+					     Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_REGION);
 
       reqs[REGION_INDEX] = RegionRequirement(index_subregion,
 					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
@@ -1682,7 +1693,7 @@ class Linpack {
       Future f = runtime->execute_task(ctx, task_id, reqs,
 				       TaskArgs(matrixptr, k),
 				       0, // default mapper,
-				       Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION);
+				       0); //Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION);
       return f;
     }
   };

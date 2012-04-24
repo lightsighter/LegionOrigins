@@ -464,9 +464,10 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     RegionRequirement::RegionRequirement(LogicalRegion _handle, PrivilegeMode _priv,
                                         AllocateMode _alloc, CoherenceProperty _prop,
-                                        LogicalRegion _parent, bool _verified)
+                                        LogicalRegion _parent,
+					 MappingTagID _tag, bool _verified)
       : privilege(_priv), alloc(_alloc), prop(_prop), parent(_parent),
-        redop(0), verified(_verified), func_type(SINGULAR_FUNC)
+        redop(0), tag(_tag), verified(_verified), func_type(SINGULAR_FUNC)
     //--------------------------------------------------------------------------
     { 
 #ifdef DEBUG_HIGH_LEVEL
@@ -482,9 +483,9 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     RegionRequirement::RegionRequirement(Partition pid, ColorizeID _colorize,
                 PrivilegeMode _priv, AllocateMode _alloc, CoherenceProperty _prop,
-                LogicalRegion _parent, bool _verified)
+                LogicalRegion _parent, MappingTagID _tag, bool _verified)
       : privilege(_priv), alloc(_alloc), prop(_prop), parent(_parent),
-        redop(0), verified(_verified), func_type(EXECUTABLE_FUNC),
+        redop(0), tag(_tag), verified(_verified), func_type(EXECUTABLE_FUNC),
         colorize(_colorize) 
     //--------------------------------------------------------------------------
     { 
@@ -502,9 +503,9 @@ namespace RegionRuntime {
     RegionRequirement::RegionRequirement(Partition pid, 
                   const std::map<IndexPoint,Color> &map, PrivilegeMode _priv,
                   AllocateMode _alloc, CoherenceProperty _prop, 
-                  LogicalRegion _parent, bool _verified)
+                  LogicalRegion _parent, MappingTagID _tag, bool _verified)
       : privilege(_priv), alloc(_alloc), prop(_prop), parent(_parent),
-        redop(0), verified(_verified), func_type(MAPPED_FUNC), color_map(map)
+        redop(0), tag(_tag), verified(_verified), func_type(MAPPED_FUNC), color_map(map)
     //--------------------------------------------------------------------------
     { 
 #ifdef DEBUG_HIGH_LEVEL
@@ -520,9 +521,9 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     RegionRequirement::RegionRequirement(PartitionID pid, ColorizeID _colorize,
                 PrivilegeMode _priv, AllocateMode _alloc, CoherenceProperty _prop,
-                LogicalRegion _parent, bool _verified)
+                LogicalRegion _parent, MappingTagID _tag, bool _verified)
       : privilege(_priv), alloc(_alloc), prop(_prop), parent(_parent),
-        redop(0), verified(_verified), func_type(EXECUTABLE_FUNC),
+        redop(0), tag(_tag), verified(_verified), func_type(EXECUTABLE_FUNC),
         colorize(_colorize) 
     //--------------------------------------------------------------------------
     { 
@@ -540,9 +541,9 @@ namespace RegionRuntime {
     RegionRequirement::RegionRequirement(PartitionID pid, 
                   const std::map<IndexPoint,Color> &map, PrivilegeMode _priv,
                   AllocateMode _alloc, CoherenceProperty _prop, 
-                  LogicalRegion _parent, bool _verified)
+                  LogicalRegion _parent, MappingTagID _tag, bool _verified)
       : privilege(_priv), alloc(_alloc), prop(_prop), parent(_parent),
-        redop(0), verified(_verified), func_type(MAPPED_FUNC), color_map(map)
+        redop(0), tag(_tag), verified(_verified), func_type(MAPPED_FUNC), color_map(map)
     //--------------------------------------------------------------------------
     { 
 #ifdef DEBUG_HIGH_LEVEL
@@ -558,9 +559,9 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     RegionRequirement::RegionRequirement(LogicalRegion _handle, ReductionOpID op,
                                     AllocateMode _alloc, CoherenceProperty _prop, 
-                                    LogicalRegion _parent, bool _verified)
+                                    LogicalRegion _parent, MappingTagID _tag, bool _verified)
       : privilege(REDUCE), alloc(_alloc), prop(_prop), parent(_parent),
-        redop(op), verified(_verified), func_type(SINGULAR_FUNC)
+        redop(op), tag(_tag), verified(_verified), func_type(SINGULAR_FUNC)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -576,9 +577,9 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     RegionRequirement::RegionRequirement(Partition pid, ColorizeID _colorize,
                         ReductionOpID op, AllocateMode _alloc, CoherenceProperty _prop,
-                        LogicalRegion _parent, bool _verified)
+                        LogicalRegion _parent, MappingTagID _tag, bool _verified)
       : privilege(REDUCE), alloc(_alloc), prop(_prop), parent(_parent),
-        redop(op), verified(_verified), func_type(EXECUTABLE_FUNC), colorize(_colorize)
+        redop(op), tag(_tag), verified(_verified), func_type(EXECUTABLE_FUNC), colorize(_colorize)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -594,9 +595,9 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     RegionRequirement::RegionRequirement(Partition pid, const std::map<IndexPoint,Color> &map,
                         ReductionOpID op, AllocateMode _alloc, CoherenceProperty _prop,
-                        LogicalRegion _parent, bool _verified)
+                        LogicalRegion _parent, MappingTagID _tag, bool _verified)
       : privilege(REDUCE), alloc(_alloc), prop(_prop), parent(_parent),
-        redop(op), verified(_verified), func_type(MAPPED_FUNC), color_map(map)
+        redop(op), tag(_tag), verified(_verified), func_type(MAPPED_FUNC), color_map(map)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -612,9 +613,9 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     RegionRequirement::RegionRequirement(PartitionID pid, ColorizeID _colorize,
                         ReductionOpID op, AllocateMode _alloc, CoherenceProperty _prop,
-                        LogicalRegion _parent, bool _verified)
+                        LogicalRegion _parent, MappingTagID _tag, bool _verified)
       : privilege(REDUCE), alloc(_alloc), prop(_prop), parent(_parent),
-        redop(op), verified(_verified), func_type(EXECUTABLE_FUNC), colorize(_colorize)
+        redop(op), tag(_tag), verified(_verified), func_type(EXECUTABLE_FUNC), colorize(_colorize)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -630,9 +631,9 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     RegionRequirement::RegionRequirement(PartitionID pid, const std::map<IndexPoint,Color> &map,
                         ReductionOpID op, AllocateMode _alloc, CoherenceProperty _prop,
-                        LogicalRegion _parent, bool _verified)
+                        LogicalRegion _parent, MappingTagID _tag, bool _verified)
       : privilege(REDUCE), alloc(_alloc), prop(_prop), parent(_parent),
-        redop(op), verified(_verified), func_type(MAPPED_FUNC), color_map(map)
+        redop(op), tag(_tag), verified(_verified), func_type(MAPPED_FUNC), color_map(map)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -658,6 +659,7 @@ namespace RegionRuntime {
       prop = rhs.prop;
       parent = rhs.parent;
       redop = rhs.redop;
+      tag = rhs.tag;
       verified = rhs.verified;
       func_type = rhs.func_type;
       switch (func_type)
@@ -695,6 +697,7 @@ namespace RegionRuntime {
       result += sizeof(CoherenceProperty);
       result += sizeof(LogicalRegion);
       result += sizeof(ReductionOpID);
+      result += sizeof(MappingTagID);
       result += sizeof(bool);
       result += sizeof(ColoringType);
       switch (func_type)
@@ -736,6 +739,7 @@ namespace RegionRuntime {
       rez.serialize<CoherenceProperty>(prop);
       rez.serialize<LogicalRegion>(parent);
       rez.serialize<ReductionOpID>(redop);
+      rez.serialize<MappingTagID>(tag);
       rez.serialize<bool>(verified);
       rez.serialize<ColoringType>(func_type);
       switch (func_type)
@@ -784,6 +788,7 @@ namespace RegionRuntime {
       derez.deserialize<CoherenceProperty>(prop);
       derez.deserialize<LogicalRegion>(parent);
       derez.deserialize<ReductionOpID>(redop);
+      derez.deserialize<MappingTagID>(tag);
       derez.deserialize<bool>(verified);
       derez.deserialize<ColoringType>(func_type);
       switch (func_type)
@@ -6831,7 +6836,7 @@ namespace RegionRuntime {
                 PartitionNode *part_node = (*partition_nodes)[regions[idx].handle.partition];
                 LogicalRegion handle = part_node->get_subregion(needed_color);
                 clone->regions[idx] = RegionRequirement(handle,regions[idx].privilege,regions[idx].alloc,
-                                                        regions[idx].prop,regions[idx].parent,true);
+                                                        regions[idx].prop,regions[idx].parent,0,true);
                 break;
               }
             case MAPPED_FUNC:
@@ -6844,7 +6849,7 @@ namespace RegionRuntime {
                 PartitionNode *part_node = (*partition_nodes)[regions[idx].handle.partition]; 
                 LogicalRegion handle = part_node->get_subregion(needed_color);
                 clone->regions[idx] = RegionRequirement(handle,regions[idx].privilege,regions[idx].alloc,
-                                                        regions[idx].prop,regions[idx].parent,true);
+                                                        regions[idx].prop,regions[idx].parent,0,true);
                 break;
               }
             default:

@@ -475,6 +475,7 @@ namespace RegionRuntime {
       CoherenceProperty prop;
       LogicalRegion     parent;
       ReductionOpID     redop;
+      MappingTagID      tag;
       bool verified; // has this been verified already
       ColoringType      func_type; // how to interpret the handle
       ColorizeID        colorize; // coloring function if this is a partition
@@ -484,50 +485,58 @@ namespace RegionRuntime {
       // Create a requirement for a single region
       RegionRequirement(LogicalRegion _handle, PrivilegeMode _priv,
                         AllocateMode _alloc, CoherenceProperty _prop,
-                        LogicalRegion _parent, bool _verified = false);
+                        LogicalRegion _parent,
+			MappingTagID _tag = 0, bool _verified = false);
       // Create a requirement for a partition with the colorize
       // function describing how to map points in the index space
       // to colors for logical subregions in the partition
       RegionRequirement(Partition pid, ColorizeID _colorize,
                         PrivilegeMode _priv,
                         AllocateMode _alloc, CoherenceProperty _prop,
-                        LogicalRegion _parent, bool _verified = false);
+                        LogicalRegion _parent,
+			MappingTagID _tag = 0, bool _verified = false);
       
       RegionRequirement(Partition pid, const std::map<IndexPoint,Color> &map,
                         PrivilegeMode _priv, AllocateMode _alloc,
                         CoherenceProperty _prop, LogicalRegion _parent,
-                        bool _verified = false);
+                        MappingTagID _tag = 0, bool _verified = false);
 
       // These are around for backwards compatability
       RegionRequirement(PartitionID pid, ColorizeID _colorize,
                         PrivilegeMode _priv,
                         AllocateMode _alloc, CoherenceProperty _prop,
-                        LogicalRegion _parent, bool _verified = false);
+                        LogicalRegion _parent,
+			MappingTagID _tag = 0, bool _verified = false);
       
       RegionRequirement(PartitionID pid, const std::map<IndexPoint,Color> &map,
                         PrivilegeMode _priv, AllocateMode _alloc,
                         CoherenceProperty _prop, LogicalRegion _parent,
-                        bool _verified = false);
+                        MappingTagID _tag = 0, bool _verified = false);
       
       // Corresponding region requirements for reductions
       // Notice you pass a ReductionOpID instead of a Privilege
       RegionRequirement(LogicalRegion _handle, ReductionOpID op,
                         AllocateMode _alloc, CoherenceProperty _prop,
-                        LogicalRegion _parent, bool _verified = false);
+                        LogicalRegion _parent,
+			MappingTagID _tag = 0, bool _verified = false);
       RegionRequirement(Partition pid, ColorizeID _colorize,
                         ReductionOpID op, AllocateMode _alloc, CoherenceProperty _prop,
-                        LogicalRegion _parent, bool _verified = false);
+                        LogicalRegion _parent,
+			MappingTagID _tag = 0, bool _verified = false);
       RegionRequirement(Partition pid, const std::map<IndexPoint,Color> &map,
                         ReductionOpID op, AllocateMode _alloc, CoherenceProperty _prop,
-                        LogicalRegion _parent, bool _verified = false);
+                        LogicalRegion _parent,
+			MappingTagID _tag = 0, bool _verified = false);
 
       // These are around for backwards compatability
       RegionRequirement(PartitionID pid, ColorizeID _colorize,
                         ReductionOpID op, AllocateMode _alloc, CoherenceProperty _prop,
-                        LogicalRegion _parent, bool _verified = false);
+                        LogicalRegion _parent,
+			MappingTagID _tag = 0, bool _verified = false);
       RegionRequirement(PartitionID pid, const std::map<IndexPoint,Color> &map,
                         ReductionOpID op, AllocateMode _alloc, CoherenceProperty _prop,
-                        LogicalRegion _parent, bool _verified = false);
+                        LogicalRegion _parent,
+			MappingTagID _tag = 0, bool _verified = false);
     public:
       bool operator==(const RegionRequirement &req) const
         { return (handle.partition == req.handle.partition) && (privilege == req.privilege)
@@ -976,6 +985,7 @@ namespace RegionRuntime {
       // a handful of bit-packed hints that should be respected by a default
       //  mapper (but not necessarily custom mappers)
       enum {
+	MAPTAG_DEFAULT_MAPPER_NOMAP_REGION   = (1U << 0),
 	MAPTAG_DEFAULT_MAPPER_NOMAP_REGION_0 = (1U << 0),
 	MAPTAG_DEFAULT_MAPPER_NOMAP_REGION_1 = (1U << 1),
 	MAPTAG_DEFAULT_MAPPER_NOMAP_REGION_2 = (1U << 2),

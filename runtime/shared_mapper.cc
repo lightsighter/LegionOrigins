@@ -126,6 +126,13 @@ namespace RegionRuntime {
 	return;
       }
 
+      if(req->tag == MAPTAG_DEFAULT_MAPPER_NOMAP_REGION) {
+	log_mapper(LEVEL_INFO, "Mapping tag requests no mapping for region %d", req.handle.region);
+	target_ranking.push_back(Memory::NO_MEMORY);
+	enable_WAR_optimization = false;
+	return;
+      }
+
       // Try putting it in the local memory, if that doesn't work, try the global memory
       Memory local = { local_proc.id + 1 };
       Memory global = { 1 };
