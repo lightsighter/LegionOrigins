@@ -552,11 +552,6 @@ namespace RegionRuntime {
       size_t compute_size(void) const;
       void pack_requirement(Serializer &rez) const;
       void unpack_requirement(Deserializer &derez);
-    protected:
-      friend class InstanceInfo;
-      static size_t compute_simple_size(void);
-      void pack_simple(Serializer &rez) const;
-      void unpack_simple(Deserializer &derez);
     };
 
     /////////////////////////////////////////////////////////////
