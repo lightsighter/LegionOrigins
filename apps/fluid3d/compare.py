@@ -19,10 +19,10 @@ def read_particle(f):
 def read_file(filename):
     content = {}
     f = open(filename, 'rb')
-        content['rest_particles_per_meter'] = read_float32(f)
-        content['orig_num_particles'] = read_int32(f)
-        content['particles'] = [read_particle(f)
-                                for p in xrange(content['orig_num_particles'])]
+    content['rest_particles_per_meter'] = read_float32(f)
+    content['orig_num_particles'] = read_int32(f)
+    content['particles'] = [read_particle(f)
+                            for p in xrange(content['orig_num_particles'])]
     f.close()
     return content
 
