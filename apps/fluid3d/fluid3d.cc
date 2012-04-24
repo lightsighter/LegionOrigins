@@ -40,7 +40,7 @@ const unsigned GHOST_CELLS = 26;
 // PARSEC does not double buffer. That is, PARSEC performs the first
 // step of the computation over and over. However, double buffering
 // has a potential performance impact, so we need both.
-#define ENABLE_DOUBLE_BUFFERING 1
+#define ENABLE_DOUBLE_BUFFERING 0
 
 enum { // don't change the order of these!  needs to be symmetric
   TOP_FRONT_LEFT = 0,
@@ -949,7 +949,8 @@ void main_task(const void *args, size_t arglen,
   for (unsigned step = 0; step < conf.numSteps; step++)
   {
     // Initialize cells
-    for (unsigned id = 0; id < numBlocks; id++)
+    //for (unsigned id = 0; id < numBlocks; id++)
+    for (int id = (numBlocks-1); id >= 0; id--)
     {
       // init and rebuild reads the real cells from the previous pass and
       //  moves atoms into the real cells for this pass or the edge0 cells
@@ -994,7 +995,8 @@ void main_task(const void *args, size_t arglen,
     }
 
     // Rebuild reduce (reduction)
-    for (unsigned id = 0; id < numBlocks; id++)
+    //for (unsigned id = 0; id < numBlocks; id++)
+    for (int id = (numBlocks-1); id >= 0; id--)
     {
       // rebuild reduce reads the cells provided by neighbors, incorporates
       //  them into its own cells, and puts copies of those boundary cells into
@@ -1033,7 +1035,8 @@ void main_task(const void *args, size_t arglen,
     }
 
     // init forces and scatter densities
-    for (unsigned id = 0; id < numBlocks; id++)
+    //for (unsigned id = 0; id < numBlocks; id++)
+    for (int id = (numBlocks-1); id >= 0; id--)
     {
       // this step looks at positions in real and edge cells and updates
       // densities for all owned particles - boundary real cells are copied to
@@ -1075,7 +1078,8 @@ void main_task(const void *args, size_t arglen,
     }
 
     // Gather forces and advance
-    for (unsigned id = 0; id < numBlocks; id++)
+    //for (unsigned id = 0; id < numBlocks; id++)
+    for (int id = (numBlocks-1); id >= 0; id--)
     {
       // this is very similar to scattering of density - basically just 
       //  different math, and a different edge phase
@@ -1250,6 +1254,10 @@ void init_and_rebuild(const void *args, size_t arglen,
                 std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
+#ifdef TIME_STAMPS
+  RegionRuntime::TimeStamp total_stamp("Init and Rebuild total: ",true);
+  RegionRuntime::TimeStamp start_stamp("Init and Rebuild start: ",false);
+#endif
   int cb;
   unsigned bid;
   {
@@ -1349,6 +1357,9 @@ void init_and_rebuild(const void *args, size_t arglen,
       }
 
   log_app.info("Done with init_and_rebuild() for block %d", b.id);
+#ifdef TIME_STAMPS
+  RegionRuntime::TimeStamp finish_stamp("Init and Rebuild stop: ",false);
+#endif
 }
 
 template<AccessorType AT>
@@ -1356,6 +1367,10 @@ void rebuild_reduce(const void *args, size_t arglen,
                 std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
+#ifdef TIME_STAMPS
+  RegionRuntime::TimeStamp total_stamp("Rebuild Reduce total: ",true);
+  RegionRuntime::TimeStamp start_stamp("Rebuild Reduce start: ",false);
+#endif
   int cb;
   unsigned bid;
   {
@@ -1423,6 +1438,9 @@ void rebuild_reduce(const void *args, size_t arglen,
       }
 
   log_app.info("Done with rebuild_reduce() for block %d", b.id);
+#ifdef TIME_STAMPS
+  RegionRuntime::TimeStamp stop_stamp("Rebuild Reduce stop ",false);
+#endif
 }
 
 template<AccessorType AT>
@@ -1430,6 +1448,10 @@ void scatter_densities(const void *args, size_t arglen,
                 std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
+#ifdef TIME_STAMPS
+  RegionRuntime::TimeStamp total_stamp("Scatter Densities total: ",true);
+  RegionRuntime::TimeStamp start_stamp("Scatter Densities start: ",false);
+#endif
   int cb;
   unsigned bid;
   {
@@ -1554,6 +1576,9 @@ void scatter_densities(const void *args, size_t arglen,
       }
 
   log_app.info("Done with scatter_densities() for block %d", b.id);
+#ifdef TIME_STAMPS
+  RegionRuntime::TimeStamp stop_stamp("Scatter Densities stop ",false);
+#endif
 }
 
 template<AccessorType AT>
@@ -1576,6 +1601,10 @@ void gather_forces_and_advance(const void *args, size_t arglen,
                 std::vector<PhysicalRegion<AT> > &regions,
                 Context ctx, HighLevelRuntime *runtime)
 {
+#ifdef TIME_STAMPS
+  RegionRuntime::TimeStamp total_stamp("Gather Forces total: ",true);
+  RegionRuntime::TimeStamp start_stamp("Gather Forces start: ",false);
+#endif
   int cb;
   unsigned bid;
   {
@@ -1714,6 +1743,9 @@ void gather_forces_and_advance(const void *args, size_t arglen,
       }
 
   log_app.info("Done with gather_forces_and_advance() for block %d", b.id);
+#ifdef TIME_STAMPS
+  RegionRuntime::TimeStamp stop_stamp("Gather Forces stop ",false);
+#endif
 }
 
 static inline int isLittleEndian() {
