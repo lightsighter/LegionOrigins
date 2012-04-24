@@ -2256,7 +2256,9 @@ public:
         default:
           {
             // Copy anything else into global memory
-            target_ranking.push_back(global_memory);
+            //target_ranking.push_back(global_memory);
+            // Keep cell pointers in local memory
+            target_ranking.push_back(cmp.second);
           }
         }
       }
