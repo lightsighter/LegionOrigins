@@ -97,6 +97,10 @@ def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, nodes = 1, cpus = 0,
         [_legion_fluid,
          '-ll:csize', '16384', '-ll:gsize', '2000',
          '-ll:cpu', str(cpus),
+         # Low-level message threads
+         '-ll:dma', str(2), '-ll:amsg', str(2), '-ll:senders',
+         # High-level scheduler look-ahead
+         '-hl:sched', str(2*nbx*nby*nbz),
          '-level', str(legion_logging),
          '-nbx', str(nbx), '-nby', str(nby), '-nbz', str(nbz), '-s', str(steps),
          '-input', str(input),
