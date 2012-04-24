@@ -1,9 +1,13 @@
 #!/usr/bin/env python
 
-import math, numpy, os, matplotlib.pyplot as plt, re, shutil, subprocess as sp, sys
+import math, numpy, os, re, shutil, subprocess as sp, sys
 _root_dir = os.path.abspath(os.path.dirname(__file__))
 sys.path.append(_root_dir)
 from compare import read_file, compare
+
+want_plot = False
+if want_plot:
+    import matplotlib.pyplot as plt
 
 ############################################################
 ## Utils
@@ -198,7 +202,6 @@ if __name__ == '__main__':
         'l4-8', 'l4-10', 'l4-12',
         'l8-8', 'l8-10', 'l8-12',
         ])
-    want_plot = False
 
     if 'p1' in sizes:
         print 'Baseline PARSEC serial:'
