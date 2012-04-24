@@ -13,6 +13,7 @@ GASNETT_THREADKEY_DECLARE(in_handler);
 extern void init_endpoints(gasnet_handlerentry_t *handlers, int hcount,
 			   int gasnet_mem_size_in_mb);
 extern void start_polling_threads(int count);
+extern void start_sending_threads(void);
 
 // do a little bit of polling to try to move messages along, but return
 //  to the caller rather than spinning

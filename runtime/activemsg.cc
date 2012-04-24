@@ -5,6 +5,7 @@
 #include <gasnet_tools.h>
 
 #include "activemsg.h"
+#include "utilities.h"
 
 #include <queue>
 #include <cassert>
@@ -110,6 +111,7 @@ public:
     : peer(_peer)
   {
     gasnet_hsl_init(&mutex);
+    gasnett_cond_init(&cond);
 
     cur_write_lmb = 0;
     cur_write_offset = 0;
@@ -123,7 +125,7 @@ public:
     }
   }
 
-  int push_messages(int max_to_send = 0)
+  int push_messages(int max_to_send = 0, bool wait = false)
   {
     int count = 0;
 
@@ -199,6 +201,11 @@ public:
 	continue;
       }
 
+      // Couldn't do anything so if we were told to wait, goto sleep
+      if (wait)
+      {
+        gasnett_cond_wait(&cond, &mutex.lock);
+      }
       // if we get here, we didn't find anything to do, so break out of loop
       //  after releasing the lock
       gasnet_hsl_unlock(&mutex);
@@ -217,6 +224,8 @@ public:
       out_long_hdrs.push(hdr);
     else
       out_short_hdrs.push(hdr);
+    // Signal in case there is a sleeping sender
+    gasnett_cond_signal(&cond);
 
     gasnet_hsl_unlock(&mutex);
   }
@@ -251,6 +260,8 @@ public:
 
       OutgoingMessage *hdr = new OutgoingMessage(MSGID_FLIP_ACK, 1, &r_buffer);
       out_short_hdrs.push(hdr);
+      // wake up a sender
+      gasnett_cond_signal(&cond);
     }
     gasnet_hsl_unlock(&mutex);
   }
@@ -277,6 +288,8 @@ public:
 
       OutgoingMessage *hdr = new OutgoingMessage(MSGID_FLIP_ACK, 1, &buffer);
       out_short_hdrs.push(hdr);
+      // Wake up a sender
+      gasnett_cond_signal(&cond);
     }
     gasnet_hsl_unlock(&mutex);
   }
@@ -293,11 +306,16 @@ public:
 #endif
 
     lmb_w_avail[buffer] = true;
+    // wake up a sender in case we had messages waiting for free space
+    gasnet_hsl_lock(&mutex);
+    gasnett_cond_signal(&cond);
+    gasnet_hsl_unlock(&mutex);
   }
 
 protected:
   void send_short(OutgoingMessage *hdr)
   {
+    RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(TIME_AM);
     switch(hdr->num_args) {
     case 1:
       if(hdr->payload_mode != PAYLOAD_NONE)
@@ -380,6 +398,7 @@ protected:
   
   void send_long(OutgoingMessage *hdr, void *dest_ptr)
   {
+    RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(TIME_AM);
     switch(hdr->num_args) {
     case 1:
       gasnet_AMRequestLong1(peer, hdr->msgid, 
@@ -415,6 +434,7 @@ protected:
   gasnet_node_t peer;
   
   gasnet_hsl_t mutex;
+  gasnett_cond_t cond;
   std::queue<OutgoingMessage *> out_short_hdrs;
   std::queue<OutgoingMessage *> out_long_hdrs;
 
@@ -502,6 +522,8 @@ void init_endpoints(gasnet_handlerentry_t *handlers, int hcount,
 
 static int num_polling_threads = 0;
 static pthread_t *polling_threads = 0;
+static int num_sending_threads = 0;
+static pthread_t *sending_threads = 0;
 
 // do a little bit of polling to try to move messages along, but return
 //  to the caller rather than spinning
@@ -535,6 +557,27 @@ void start_polling_threads(int count)
   for(int i = 0; i < count; i++)
     CHECK_PTHREAD( pthread_create(&polling_threads[i], 0, 
 				  gasnet_poll_thread_loop, 0) );
+}
+
+static void* sender_thread_loop(void *index)
+{
+  long idx = (long)index;
+  while (1) {
+    endpoints[idx]->push_messages(10000,true);
+  }
+}
+
+void start_sending_threads(void)
+{
+  num_sending_threads = gasnet_nodes();
+  sending_threads = new pthread_t[num_sending_threads];
+
+  for (int i = 0; i < gasnet_nodes(); i++)
+  {
+    if (i == gasnet_mynode()) continue;
+    CHECK_PTHREAD( pthread_create(&sending_threads[i], 0,
+                                  sender_thread_loop, (void*)i));
+  }
 }
 	
 void enqueue_message(gasnet_node_t target, int msgid,
