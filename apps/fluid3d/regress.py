@@ -43,18 +43,15 @@ def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, nodes = 1, cpus = 0,
          '-ll:cpu', str(cpus),
          '-level', str(legion_logging),
          '-nbx', str(nbx), '-nby', str(nby), '-nbz', str(nbz), '-s', str(steps),
+         '-input', str(input), '-output', str(output),
         ],
         cmd_out)
-    shutil.copyfile(os.path.join(_root_dir, 'output.fluid'),
-                    output)
     return (retcode, cmd_out)
 
 _input_filename = None
 def prep_input(size = 5):
     global _input_filename
-    _input_filename = os.path.join(_root_dir, 'init.fluid')
-    shutil.copyfile(os.path.join(_root_dir, 'in_%dK.fluid' % size),
-                    _input_filename)
+    _input_filename = os.path.join(_root_dir, 'in_%dK.fluid' % size)
 
 def get_input():
     return _input_filename
