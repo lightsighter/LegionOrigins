@@ -14,6 +14,8 @@
 #include <map>
 #include <vector>
 
+#include <time.h>
+
 // outside of namespace because 50-letter-long enums are annoying
 enum {
   TIME_NONE,
@@ -23,6 +25,7 @@ enum {
   TIME_LOW_LEVEL,
   TIME_MAPPER,
   TIME_SYSTEM,
+  TIME_AM,
 };
 
 // widget for generating debug/info messages
@@ -282,6 +285,48 @@ namespace RegionRuntime {
   };
 
   /**
+   * Have a way of making timesteps for global timing
+   */
+  class TimeStamp {
+  private:
+    const char *print_message;
+    struct timespec spec;
+    bool diff;
+  public:
+    TimeStamp(const char *message, bool difference)
+      : print_message(message), diff(difference)
+    { 
+      if (difference)
+      {
+        clock_gettime(CLOCK_MONOTONIC, &spec); 
+      }
+      else
+      {
+        clock_gettime(CLOCK_MONOTONIC, &spec); 
+        // Give the time in s
+        double time = 1e6 * (spec.tv_sec) + 1e-3 * (spec.tv_nsec);
+        printf("%s %7.6f\n", message, time); //spec.tv_nsec);
+      }
+    }
+    ~TimeStamp(void)
+    {
+      if (diff)
+      {
+        struct timespec stop;
+        clock_gettime(CLOCK_MONOTONIC, &stop);
+        double time = get_diff_us(spec, stop);
+        printf("%s %7.3f us\n", print_message, time);
+      }
+    }
+  private:
+    double get_diff_us(struct timespec &start, struct timespec &stop)
+    {
+      return (1e6 * (stop.tv_sec - spec.tv_sec) + 
+              1e-3 * (stop.tv_nsec - spec.tv_nsec));
+    }
+  };
+
+  /**
    * A timer class for doing detailed timing analysis of applications
    * Implementation is specific to low level runtimes
    */
@@ -325,6 +370,8 @@ namespace RegionRuntime {
             return "MAPPER";
           case TIME_SYSTEM:
             return "SYSTEM";
+          case TIME_AM:
+            return "ACTV_MESG";
           default:
             break;
         }
