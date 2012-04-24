@@ -2226,10 +2226,6 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       log_task(LEVEL_DEBUG,"Shutting down high level runtime on processor %x", local_proc.id);
-      // Go through and delete all the mapper objects
-      for (unsigned int i=0; i<mapper_objects.size(); i++)
-        if (mapper_objects[i] != NULL) delete mapper_objects[i];
-
       {
         AutoLock ctx_lock(available_lock);
         for (std::list<TaskContext*>::iterator it = available_contexts.begin();
@@ -2244,8 +2240,7 @@ namespace RegionRuntime {
         delete *it;
       available_maps.clear();
 
-      // Clean up the low-level locks that we own
-#if 0
+      // Clean up mapper objects and all the low-level locks that we own
 #ifdef DEBUG_HIGH_LEVEL
       assert(mapper_objects.size() == mapper_locks.size());
 #endif
@@ -2254,6 +2249,7 @@ namespace RegionRuntime {
         if (mapper_objects[i] != NULL)
         {
           delete mapper_objects[i];
+          mapper_objects[i] = NULL;
 #ifdef DEBUG_HIGH_LEVEL
           assert(mapper_locks[i].exists());
 #endif
@@ -2268,7 +2264,6 @@ namespace RegionRuntime {
       unique_lock.destroy_lock();
       stealing_lock.destroy_lock();
       thieving_lock.destroy_lock();
-#endif
     }
 
     //--------------------------------------------------------------------------------------------
