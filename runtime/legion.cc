@@ -4178,6 +4178,8 @@ namespace RegionRuntime {
       variants = NULL;
       mapper_lock = Lock::NO_LOCK;
       current_lock = context_lock;
+      individual_term_event.id = 0;
+      individual_term_event.gen = 0;
       active = false;
       // Increment the generation of this context
       current_gen++;
@@ -4226,6 +4228,8 @@ namespace RegionRuntime {
       parent_ctx = parent;
       orig_ctx = this;
       remote = false;
+      individual_term_event.id = 0;
+      individual_term_event.gen = 0;
       termination_event = UserEvent::create_user_event();
       // If parent task is not null, share its context lock, otherwise use our own
       if (parent != NULL)
@@ -4955,6 +4959,8 @@ namespace RegionRuntime {
       remote_start_event = Event::NO_EVENT;
       remote_children_event = Event::NO_EVENT;
       derez.deserialize<UserEvent>(termination_event);
+      individual_term_event.id = 0;
+      individual_term_event.gen = 0;
       // Make the current lock the given context lock
       current_lock = context_lock;
 #ifdef DEBUG_HIGH_LEVEL
@@ -6173,6 +6179,7 @@ namespace RegionRuntime {
               // Also issue the unlock operation when the task is done, tee hee :)
               info->unlock_instance(get_termination_event());
             }
+            printf("Adding precondition %d %d %d %d %d\n",precondition.id,precondition.gen,idx,task_id,unique_id);
             wait_on_events.insert(precondition);
             found = true;
             break;
@@ -9353,7 +9360,7 @@ namespace RegionRuntime {
     Event TaskContext::get_individual_term_event(void) const
     //--------------------------------------------------------------------------------------------
     {
-      if (is_index_space)
+      if (is_index_space && individual_term_event.exists())
       {
         return individual_term_event; 
       }
