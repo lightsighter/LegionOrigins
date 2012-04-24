@@ -6179,7 +6179,6 @@ namespace RegionRuntime {
               // Also issue the unlock operation when the task is done, tee hee :)
               info->unlock_instance(get_termination_event());
             }
-            printf("Adding precondition %d %d %d %d %d\n",precondition.id,precondition.gen,idx,task_id,unique_id);
             wait_on_events.insert(precondition);
             found = true;
             break;
