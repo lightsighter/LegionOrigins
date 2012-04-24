@@ -12,7 +12,7 @@ using namespace RegionRuntime::HighLevel;
 RegionRuntime::Logger::Category log_app("application");
 
 namespace Config {
-  int N = 4;
+  int N = 8;
   int NB = 1;
   int P = 2;
   int Q = 2;
@@ -122,6 +122,9 @@ struct BlockedMatrix {
 
   LogicalRegion index_region;
   Partition index_part;
+
+  LogicalRegion topblk_region;
+  Partition topblk_part;
 };
 
 template <AccessorType AT, int NB>
@@ -206,6 +209,32 @@ void create_blocked_matrix(Context ctx, HighLevelRuntime *runtime,
   matrix.index_part = runtime->create_partition(ctx,
 						matrix.index_region,
 						idx_coloring);
+
+  matrix.topblk_region = runtime->create_logical_region(ctx,
+							sizeof(MatrixBlock<NB>),
+							matrix.block_rows);
+
+  reg = runtime->map_region<AT>(ctx,
+				RegionRequirement(matrix.topblk_region, 
+						  NO_ACCESS, ALLOCABLE, EXCLUSIVE, 
+						  matrix.topblk_region));
+  reg.wait_until_valid();
+
+  std::vector<std::set<utptr_t> > topblk_coloring;
+  topblk_coloring.resize(matrix.block_rows);
+
+  for(int i = 0; i < matrix.block_rows; i++) {
+    ptr_t<MatrixBlock<NB> > topptr = reg.template alloc<MatrixBlock<NB> >();
+
+    matrix.top_blocks[i] = topptr;
+
+    topblk_coloring[i].insert(topptr);
+  }
+  runtime->unmap_region(ctx, reg);
+
+  matrix.topblk_part = runtime->create_partition(ctx,
+						 matrix.topblk_region,
+						 topblk_coloring);
 }
 
 template <AccessorType AT, int NB>
@@ -674,7 +703,8 @@ protected:
     // for each row, figure out which original row ends up there - if that
     //   row isn't in the top block, then put the row that will be swapped
     //   with that lower row
-    for(int ii = 0; ii < NB; ii++) {
+    int blkstart = args->k * NB;
+    for(int ii = 0; (ii < NB) && (ii < (matrix.rows - blkstart)); ii++) {
       int src = ind_blk.ind[ii];
       assert(src >= ((args->k * NB) + ii));
       for(int kk = ii - 1; kk >= 0; kk--)
@@ -759,9 +789,11 @@ protected:
   struct TaskArgs {
     BlockedMatrix<NB> matrix;
     int k, j;
+    ptr_t<MatrixBlock<NB> > topblk_ptr;
 
-    TaskArgs(const BlockedMatrix<NB>& _matrix, int _k, int _j)
-      : matrix(_matrix), k(_k), j(_j) {}
+    TaskArgs(const BlockedMatrix<NB>& _matrix, int _k, int _j,
+	     ptr_t<MatrixBlock<NB> > _topblk_ptr)
+      : matrix(_matrix), k(_k), j(_j), topblk_ptr(_topblk_ptr) {}
     operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
   };
 
@@ -796,9 +828,65 @@ protected:
   {
     printf("transpose_rows(yay): k=%d, j=%d, idx=%d\n", args->k, args->j, idx);
 
+    const BlockedMatrix<NB>& matrix = args->matrix;
+
     PhysicalRegion<AT> r_panel = regions[REGION_PANEL];
     PhysicalRegion<AT> r_topblk = regions[REGION_TOPBLK];
     PhysicalRegion<AT> r_index = regions[REGION_INDEX];
+
+    ptr_t<IndexBlock<NB> > ind_ptr = matrix.index_blocks[args->k];
+    IndexBlock<NB> ind_blk = r_index.read(ind_ptr);
+    ind_blk.print("tpr ind blk");
+
+    PhysicalRegion<AccessorArray> r_panel_array = r_panel.template convert<AccessorArray>();
+
+    PhysicalRegion<AccessorArray> r_topblk_array = r_topblk.template convert<AccessorArray>();
+    MatrixBlock<NB>& topblk = r_topblk_array.get_instance().ref(args->topblk_ptr);
+
+    // look through the indices and find any row that we own that isn't in the
+    //   top block - for each of those rows, figure out which row in the top
+    //   block we want to swap with
+    int blkstart = args->k * NB;
+    for(int ii = 0; (ii < NB) && (ii < (matrix.rows - blkstart)); ii++) {
+      int rowblk = ind_blk.ind[ii] / NB;
+      assert(rowblk >= args->k);
+      if(((rowblk % matrix.num_row_parts) != idx) || (rowblk == args->k))
+	continue;
+
+      printf("row %d belongs to us\n", ind_blk.ind[ii]);
+
+      // data in the top block has been reordered so that the data we want
+      //  is in the location that will hold the data we have now, which is
+      //  the first swap done using our location
+      bool dup_found = false;
+      for(int kk = 0; kk < ii; kk++)
+	if(ind_blk.ind[kk] == ind_blk.ind[ii]) {
+	  dup_found = true;
+	  break;
+	}
+      if(dup_found) {
+	printf("duplicate for row %d - skipping\n", ind_blk.ind[ii]);
+	continue;
+      }
+
+      printf("swapping row %d with topblk row %d (%d)\n",
+	     ind_blk.ind[ii], ii + (args->k * NB), ii);
+
+      MatrixBlock<NB>& pblk = r_panel_array.get_instance().ref(matrix.blocks[rowblk][args->j]);
+
+      topblk.print("top before");
+      pblk.print("pblk before");
+      double *trow = topblk.data[ii];
+      double *prow = pblk.data[ind_blk.ind[ii] - rowblk * NB];
+
+      for(int jj = 0; jj < NB; jj++) {
+	double tmp = trow[jj];
+	trow[jj] = prow[jj];
+	prow[jj] = tmp;
+      }
+      topblk.print("top after");
+      pblk.print("pblk after");
+    }
   }
 
 public:
@@ -846,7 +934,8 @@ public:
 						task_id,
 						index_space,
 						reqs,
-						TaskArgs(matrix, k, j),
+						TaskArgs(matrix, k, j,
+							 topblk_ptr),
 						ArgumentMap(),
 						false);
     return fm;
@@ -864,9 +953,11 @@ protected:
   struct TaskArgs {
     BlockedMatrix<NB> matrix;
     int k, j;
+    ptr_t<MatrixBlock<NB> > topblk_ptr;
 
-    TaskArgs(const BlockedMatrix<NB>& _matrix, int _k, int _j)
-      : matrix(_matrix), k(_k), j(_j) {}
+    TaskArgs(const BlockedMatrix<NB>& _matrix, int _k, int _j,
+	     ptr_t<MatrixBlock<NB> > _topblk_ptr)
+      : matrix(_matrix), k(_k), j(_j), topblk_ptr(_topblk_ptr) {}
     operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
   };
 
@@ -901,9 +992,42 @@ protected:
   {
     printf("update_submatrix(yay): k=%d, j=%d, idx=%d\n", args->k, args->j, idx);
 
+    const BlockedMatrix<NB>& matrix = args->matrix;
+
     PhysicalRegion<AT> r_panel = regions[REGION_PANEL];
     PhysicalRegion<AT> r_topblk = regions[REGION_TOPBLK];
     PhysicalRegion<AT> r_lpanel = regions[REGION_LPANEL];
+
+    MatrixBlock<NB> topblk = r_topblk.read(args->topblk_ptr);
+    topblk.print("B in");
+
+    // special case - if we own the top block, need to write that back
+    if((args->k % matrix.num_row_parts) == idx)
+      r_panel.write(matrix.blocks[args->k][args->j], topblk);
+
+    // for leading submatrices, that's ALL we do
+    if(args->j < args->k)
+      return;
+
+    for(int i = args->k + 1; i < matrix.block_rows; i++) {
+      if((i % matrix.num_row_parts) != idx) continue;
+
+      MatrixBlock<NB> lpblk = r_lpanel.read(matrix.blocks[i][args->k]);
+      MatrixBlock<NB> pblk = r_panel.read(matrix.blocks[i][args->j]);
+
+      lpblk.print("A(%d) in", i);
+      pblk.print("C(%d) in", i);
+
+      // DGEMM
+      for(int x = 0; x < NB; x++)
+	for(int y = 0; y < NB; y++)
+	  for(int z = 0; z < NB; z++)
+	    pblk.data[x][y] -= lpblk.data[x][z] * topblk.data[z][y];
+
+      pblk.print("C(%d) out", i);
+
+      r_panel.write(matrix.blocks[i][args->j], pblk);
+    }
   }
 
 public:
@@ -952,7 +1076,8 @@ public:
 						task_id,
 						index_space,
 						reqs,
-						TaskArgs(matrix, k, j),
+						TaskArgs(matrix, k, j,
+							 topblk_ptr),
 						ArgumentMap(),
 						false);
     return fm;
@@ -970,10 +1095,18 @@ protected:
   struct TaskArgs {
     BlockedMatrix<NB> matrix;
     int k, j;
+    ptr_t<MatrixBlock<NB> > topblk_ptr;
 
-    TaskArgs(const BlockedMatrix<NB>& _matrix, int _k, int _j)
-      : matrix(_matrix), k(_k), j(_j) {}
+    TaskArgs(const BlockedMatrix<NB>& _matrix, int _k, int _j,
+	     ptr_t<MatrixBlock<NB> > _topblk_ptr)
+      : matrix(_matrix), k(_k), j(_j), topblk_ptr(_topblk_ptr) {}
     operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
+  };
+
+  enum {
+    REGION_TOPBLK, // RWE
+    REGION_L1BLK,  // ROE
+    NUM_REGIONS
   };
 
   const TaskArgs *args;
@@ -997,6 +1130,32 @@ protected:
   void run(std::vector<PhysicalRegion<AT> > &regions) const
   {
     printf("solve_top_block(yay): k=%d, j=%d\n", args->k, args->j);
+
+    if(args->j < args->k) {
+      printf("skipping solve for leading submatrix");
+      return;
+    }
+
+    const BlockedMatrix<NB>& matrix = args->matrix;
+
+    PhysicalRegion<AT> r_topblk = regions[REGION_TOPBLK];
+    PhysicalRegion<AT> r_l1blk = regions[REGION_L1BLK];
+
+    MatrixBlock<NB> topblk = r_topblk.read(args->topblk_ptr);
+    MatrixBlock<NB> l1blk = r_l1blk.read(matrix.top_blocks[args->k]);
+
+    l1blk.print("solve l1");
+    topblk.print("solve top in");
+
+    // triangular solve (left, lower, unit-diagonal)
+    for(int x = 0; x < NB; x++)
+      for(int y = x + 1; y < NB; y++)
+	for(int z = 0; z < NB; z++)
+	  topblk.data[y][z] -= l1blk.data[y][x] * topblk.data[x][z];
+
+    topblk.print("solve top out");
+
+    r_topblk.write(args->topblk_ptr, topblk);
   }
 
 public:
@@ -1013,27 +1172,24 @@ public:
 		      LogicalRegion topblk_region,
 		      ptr_t<MatrixBlock<NB> > topblk_ptr)
   {
-    int owner_part = k % matrix.num_row_parts;
-
     std::vector<RegionRequirement> reqs;
-    LogicalRegion panel_subregion = runtime->get_subregion(ctx,
-							   matrix.row_parts[k],
-							   owner_part);
+    reqs.resize(NUM_REGIONS);
 
-    reqs.push_back(RegionRequirement(panel_subregion,
-				     READ_ONLY, NO_MEMORY, EXCLUSIVE,
-				     runtime->get_subregion(ctx,
-							    matrix.col_part,
-							    k)));
+    reqs[REGION_TOPBLK] = RegionRequirement(topblk_region,
+					    READ_WRITE, NO_MEMORY, EXCLUSIVE,
+					    topblk_region);
 
-    reqs.push_back(RegionRequirement(topblk_region,
-				     READ_WRITE, NO_MEMORY, EXCLUSIVE,
-				     topblk_region));
+    LogicalRegion l1blk_subregion = runtime->get_subregion(ctx,
+							   matrix.topblk_part,
+							   k);
+    reqs[REGION_L1BLK] = RegionRequirement(l1blk_subregion,
+					   READ_ONLY, NO_MEMORY, EXCLUSIVE,
+					   l1blk_subregion);
     
     // double-check that we were registered properly
     assert(task_id != 0);
     Future f = runtime->execute_task(ctx, task_id, reqs,
-				     TaskArgs(matrix, k, j));
+				     TaskArgs(matrix, k, j, topblk_ptr));
     return f;
   }
 };
@@ -1061,6 +1217,7 @@ protected:
     REGION_PANEL,  // RWE
     REGION_LPANEL, // ROE
     REGION_INDEX,  // ROE
+    REGION_L1BLK,  // ROE
     NUM_REGIONS
   };
 
@@ -1094,6 +1251,7 @@ protected:
     runtime->unmap_region(ctx, regions[REGION_PANEL]);
     runtime->unmap_region(ctx, regions[REGION_LPANEL]);
     runtime->unmap_region(ctx, regions[REGION_INDEX]);
+    runtime->unmap_region(ctx, regions[REGION_L1BLK]);
 
     LogicalRegion temp_region = runtime->create_logical_region(ctx,
 							       sizeof(MatrixBlock<NB>),
@@ -1176,6 +1334,13 @@ public:
 					   READ_ONLY, NO_MEMORY, EXCLUSIVE,
 					   matrix.index_region);
 
+    LogicalRegion topblk_subregion = runtime->get_subregion(ctx,
+							    matrix.topblk_part,
+							    k);
+    reqs[REGION_L1BLK] = RegionRequirement(topblk_subregion,
+					   READ_ONLY, NO_MEMORY, EXCLUSIVE,
+					   matrix.topblk_region);
+    
     // double-check that we were registered properly
     assert(task_id != 0);
     FutureMap fm = runtime->execute_index_space(ctx, 
@@ -1293,6 +1458,7 @@ protected:
 	  double factor = (blk.data[ii][args->i - 1] / 
 			   args->prev_best.data[args->i - 1]);
 	  assert(fabs(factor) <= 1.0);
+	  blk.data[ii][args->i - 1] = factor;
 	  for(int jj = args->i; jj < NB; jj++)
 	    blk.data[ii][jj] -= factor * args->prev_best.data[jj];
 	}
@@ -1404,6 +1570,7 @@ protected:
   enum {
     REGION_PANEL, // RWE
     REGION_INDEX, // RWE
+    REGION_TOPBLK, // RWE
     NUM_REGIONS
   };
 
@@ -1433,6 +1600,7 @@ protected:
 
     PhysicalRegion<AT> r_panel = regions[REGION_PANEL];
     PhysicalRegion<AT> r_index = regions[REGION_INDEX];
+    PhysicalRegion<AT> r_topblk = regions[REGION_TOPBLK];
 
     IndexBlock<NB> idx_blk;
     MatrixBlock<NB> top_blk;
@@ -1473,6 +1641,7 @@ protected:
 	// now update the rows below the pivot
 	for(int ii = i; ii < NB; ii++) {
 	  double factor = top_blk.data[ii][i - 1] / prev_best.data[i - 1];
+	  top_blk.data[ii][i - 1] = factor;
 	  for(int jj = i; jj < NB; jj++)
 	    top_blk.data[ii][jj] -= factor * prev_best.data[jj];
 	}
@@ -1501,6 +1670,8 @@ protected:
     }
 
     r_index.write(matrix.index_blocks[args->k], idx_blk);
+
+    r_topblk.write(matrix.top_blocks[args->k], top_blk);
   }
 
 public:
@@ -1525,6 +1696,9 @@ public:
     LogicalRegion index_subregion = runtime->get_subregion(ctx,
 							   matrix.index_part,
 							   k);
+    LogicalRegion topblk_subregion = runtime->get_subregion(ctx,
+							    matrix.topblk_part,
+							    k);
 
     reqs[REGION_PANEL] = RegionRequirement(panel_subregion,
 					   READ_WRITE, NO_MEMORY, EXCLUSIVE,
@@ -1533,6 +1707,10 @@ public:
     reqs[REGION_INDEX] = RegionRequirement(index_subregion,
 					   READ_WRITE, NO_MEMORY, EXCLUSIVE,
 					   matrix.index_region);
+    
+    reqs[REGION_TOPBLK] = RegionRequirement(topblk_subregion,
+					    READ_WRITE, NO_MEMORY, EXCLUSIVE,
+					    matrix.topblk_region);
     
     // double-check that we were registered properly
     assert(task_id != 0);
@@ -1561,11 +1739,23 @@ void factor_matrix(Context ctx, HighLevelRuntime *runtime,
     Future f = FactorPanelTask<NB>::spawn(ctx, runtime,
 					  matrix, k);
 
+#define ROWSWAP_BOTTOM_LEFT
+#ifdef ROWSWAP_BOTTOM_LEFT
+    if(k) {
+      FutureMap fm = UpdatePanelTask<NB>::spawn(ctx, runtime,
+						Range(0, k - 1),
+						matrix, k);
+      fm.wait_all_results();
+    }
+#endif
+
     // updates of trailing panels launched as index space
-    FutureMap fm = UpdatePanelTask<NB>::spawn(ctx, runtime,
-					      Range(k + 1, matrix.block_cols - 1),
-					      matrix, k);
-    fm.wait_all_results();
+    if((k + 1) <= (matrix.block_cols - 1)) {
+      FutureMap fm = UpdatePanelTask<NB>::spawn(ctx, runtime,
+						Range(k + 1, matrix.block_cols - 1),
+						matrix, k);
+      fm.wait_all_results();
+    }
   }
 
   {
@@ -1591,6 +1781,7 @@ protected:
   enum {
     REGION_BLOCKS,
     REGION_INDEXS,
+    REGION_TOPBLKS,
     NUM_REGIONS
   };
 
@@ -1618,6 +1809,7 @@ protected:
 
     runtime->unmap_region<AT>(ctx, regions[0]);
     runtime->unmap_region<AT>(ctx, regions[1]);
+    runtime->unmap_region<AT>(ctx, regions[2]);
 
     alloc_blocked_matrix<AT,NB>(ctx, runtime, matrix, regions[0]);
     //PhysicalRegion<AT> r = regions[0];
@@ -1652,6 +1844,9 @@ public:
     reqs[REGION_INDEXS] = RegionRequirement(matrix.index_region,
 					    READ_WRITE, ALLOCABLE, EXCLUSIVE,
 					    matrix.index_region);
+    reqs[REGION_TOPBLKS] = RegionRequirement(matrix.topblk_region,
+					     READ_WRITE, ALLOCABLE, EXCLUSIVE,
+					     matrix.topblk_region);
     
     // double-check that we were registered properly
     assert(task_id != 0);
@@ -1704,6 +1899,8 @@ void top_level_task(const void *args, size_t arglen,
     do_linpack<AT,1>(ctx, runtime); break;
   case 2:
     do_linpack<AT,2>(ctx, runtime); break;
+  case 3:
+    do_linpack<AT,3>(ctx, runtime); break;
   default:
     assert(0); break;
   }
@@ -2003,6 +2200,18 @@ int main(int argc, char **argv) {
   FactorPanelTask<2>::register_task();
   UpdatePanelTask<2>::register_task();
   DumpMatrixTask<2>::register_task();
+
+  LinpackMainTask<3>::register_task();
+  RandomPanelTask<3>::register_task();
+  RandomMatrixTask<3>::register_task();
+  FillTopBlockTask<3>::register_task();
+  SolveTopBlockTask<3>::register_task();
+  TransposeRowsTask<3>::register_task();
+  UpdateSubmatrixTask<3>::register_task();
+  FactorPanelPieceTask<3>::register_task();
+  FactorPanelTask<3>::register_task();
+  UpdatePanelTask<3>::register_task();
+  DumpMatrixTask<3>::register_task();
 #if 0
   HighLevelRuntime::register_single_task
     <fill_top_block_task<AccessorGeneric,1> >(TASKID_FILL_TOP_BLOCK,
