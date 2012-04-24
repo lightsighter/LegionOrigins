@@ -92,15 +92,18 @@ def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, nodes = 1, cpus = 0,
            legion_logging = 4,
            **_ignored):
     if cpus <= 0: cpus = nbx*nby*nbz/nodes + 1
+    gasnet_runner = []
+    if _legion_use_gasnet: gasnet_runner = ['gasnetrun_ibv', '-n', str(nodes)]
+    lowlevel_threads = []
+    if _legion_use_gasnet and nodes > 1: lowlevel_threads = ['-ll:dma', str(2), '-ll:amsg', str(2), '-ll:senders',]
     return check_output(
-        (['gasnetrun_ibv', '-n', str(nodes)] if _legion_use_gasnet else []) +
+        gasnet_runner +
         [_legion_fluid,
          '-ll:csize', '16384', '-ll:gsize', '2000',
          '-ll:cpu', str(cpus),
         ] +
          # Low-level message threads
-        (['-ll:dma', str(2), '-ll:amsg', str(2), '-ll:senders',]
-         if _legion_use_gasnet and nodes > 1 else []) +
+        lowlevel_threads +
          # High-level scheduler look-ahead
         ['-hl:sched', str(2*nbx*nby*nbz),
          '-level', str(legion_logging),
@@ -144,11 +147,17 @@ def summarize_timing(timing):
             'speedup': ' / '.join('%0.3f' % (base / timing)
                                   for base in (get_baseline()))}
 
+def plural(n):
+    if n == 1:
+        return ''
+    return 's'
+
 def summarize_params(nbx = 1, nby = 1, nbz = 1, steps = 1, **others):
+    spacer = ''
+    if len(others) > 0: spacer = ' '
     return '%sx%sx%s (%s step%s)%s%s' % (
-        nbx, nby, nbz, steps, '' if steps == 1 else 's',
-        ' ' if len(others) > 0 else '',
-        ', '.join(['%s %s' % kv for kv in others.iteritems()]))
+        nbx, nby, nbz, steps, plural(steps),
+        spacer, ', '.join(['%s %s' % kv for kv in others.iteritems()]))
 
 def summarize(params, results):
     return '%s ==> %s' % (
