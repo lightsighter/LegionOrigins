@@ -565,7 +565,7 @@ void main_task(const void *args, size_t arglen,
   }
   unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
   unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
-  char (&inFilename)[256] = conf.inFilename, (&outFilename)[256] = conf.outFilename;
+  char (&outFilename)[256] = conf.outFilename;
 
   log_app.info("In main_task...");
 
