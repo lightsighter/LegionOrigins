@@ -2226,10 +2226,6 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       log_task(LEVEL_DEBUG,"Shutting down high level runtime on processor %x", local_proc.id);
-      // Go through and delete all the mapper objects
-      for (unsigned int i=0; i<mapper_objects.size(); i++)
-        if (mapper_objects[i] != NULL) delete mapper_objects[i];
-
       {
         AutoLock ctx_lock(available_lock);
         for (std::list<TaskContext*>::iterator it = available_contexts.begin();
@@ -2244,8 +2240,7 @@ namespace RegionRuntime {
         delete *it;
       available_maps.clear();
 
-      // Clean up the low-level locks that we own
-#if 0
+      // Clean up mapper objects and all the low-level locks that we own
 #ifdef DEBUG_HIGH_LEVEL
       assert(mapper_objects.size() == mapper_locks.size());
 #endif
@@ -2254,6 +2249,7 @@ namespace RegionRuntime {
         if (mapper_objects[i] != NULL)
         {
           delete mapper_objects[i];
+          mapper_objects[i] = NULL;
 #ifdef DEBUG_HIGH_LEVEL
           assert(mapper_locks[i].exists());
 #endif
@@ -2268,7 +2264,6 @@ namespace RegionRuntime {
       unique_lock.destroy_lock();
       stealing_lock.destroy_lock();
       thieving_lock.destroy_lock();
-#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4178,6 +4173,8 @@ namespace RegionRuntime {
       variants = NULL;
       mapper_lock = Lock::NO_LOCK;
       current_lock = context_lock;
+      individual_term_event.id = 0;
+      individual_term_event.gen = 0;
       active = false;
       // Increment the generation of this context
       current_gen++;
@@ -4226,6 +4223,8 @@ namespace RegionRuntime {
       parent_ctx = parent;
       orig_ctx = this;
       remote = false;
+      individual_term_event.id = 0;
+      individual_term_event.gen = 0;
       termination_event = UserEvent::create_user_event();
       // If parent task is not null, share its context lock, otherwise use our own
       if (parent != NULL)
@@ -4955,6 +4954,8 @@ namespace RegionRuntime {
       remote_start_event = Event::NO_EVENT;
       remote_children_event = Event::NO_EVENT;
       derez.deserialize<UserEvent>(termination_event);
+      individual_term_event.id = 0;
+      individual_term_event.gen = 0;
       // Make the current lock the given context lock
       current_lock = context_lock;
 #ifdef DEBUG_HIGH_LEVEL
@@ -9353,7 +9354,7 @@ namespace RegionRuntime {
     Event TaskContext::get_individual_term_event(void) const
     //--------------------------------------------------------------------------------------------
     {
-      if (is_index_space)
+      if (is_index_space && individual_term_event.exists())
       {
         return individual_term_event; 
       }
