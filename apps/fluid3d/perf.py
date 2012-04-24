@@ -12,7 +12,16 @@ if want_plot:
 ############################################################
 ## Utils
 
+def check_call(command):
+    assert command is not None
+    proc = sp.Popen(command)
+    retcode = proc.wait()
+    assert retcode == 0
+    return retcode
+    
+
 def check_output(command):
+    assert command is not None
     proc = sp.Popen(command, stdout = sp.PIPE)
     (out, err) = proc.communicate()
     return out
@@ -62,10 +71,10 @@ def prep_parsec():
         'inst', 'amd64-linux.gcc-pthreads', 'bin', 'fluidanimate')
     if (newer(_parsec_fluid_pthreads_src, _parsec_fluid_pthreads) or
         newer(_parsec_fluid_serial_src, _parsec_fluid_serial)):
-        sp.check_call([_parsec_mgmt, '-a', 'fullclean'])
-        sp.check_call([_parsec_mgmt, '-a', 'fulluninstall'])
-        sp.check_call([_parsec_mgmt, '-a', 'build', '-p', 'fluidanimate', '-c', 'gcc-serial'])
-        sp.check_call([_parsec_mgmt, '-a', 'build', '-p', 'fluidanimate', '-c', 'gcc-pthreads'])
+        check_call([_parsec_mgmt, '-a', 'fullclean'])
+        check_call([_parsec_mgmt, '-a', 'fulluninstall'])
+        check_call([_parsec_mgmt, '-a', 'build', '-p', 'fluidanimate', '-c', 'gcc-serial'])
+        check_call([_parsec_mgmt, '-a', 'build', '-p', 'fluidanimate', '-c', 'gcc-pthreads'])
         print
 
 def parsec_serial(steps = 1, input = None, **_ignored):
@@ -88,7 +97,7 @@ def prep_legion():
     global _legion_fluid
     _legion_fluid = os.path.join(_root_dir, 'fluid3d')
     if sp.call(['make', '--question', '--silent'], cwd=_root_dir) != 0:
-        sp.check_call(['make'], cwd=_root_dir)
+        check_call(['make'], cwd=_root_dir)
         print
 
 def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, nodes = 1, cpus = 0,
