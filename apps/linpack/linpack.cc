@@ -56,6 +56,44 @@ public:
   }
 };
 
+template <AccessorType AT>
+class ScopedMapping {
+public:
+  ScopedMapping(Context _ctx, HighLevelRuntime *_runtime,
+		const RegionRequirement &req, bool wait = false)
+    : ctx(_ctx), runtime(_runtime)
+  {
+    reg = runtime->map_region<AT>(ctx, req);
+
+    if(wait) {
+      reg.wait_until_valid();
+      valid = true;
+    } else {
+      valid = false;
+    }
+  }
+
+  ~ScopedMapping(void)
+  {
+    runtime->unmap_region(ctx, reg);
+  }
+
+  PhysicalRegion<AT> *operator->(void)
+  {
+    if(!valid) {
+      reg.wait_until_valid();
+      valid = true;
+    }
+    return &reg;
+  }
+
+protected:
+  Context ctx;
+  HighLevelRuntime *runtime;
+  PhysicalRegion<AT> reg;
+  bool valid;
+};
+
 class SingleTask {
 protected:
   Context ctx;
@@ -187,24 +225,23 @@ class Linpack {
     for(int i = 0; i < matrix.block_cols; i++)
       row_coloring[i].resize(matrix.num_row_parts);
 
-    PhysicalRegion<AT> reg;
-    reg = runtime->map_region<AT>(ctx,
-				  RegionRequirement(matrix.block_region, 
-						    NO_ACCESS, ALLOCABLE, EXCLUSIVE, 
-						    matrix.block_region));
-    reg.wait_until_valid();
+    {
+      ScopedMapping<AT> reg(ctx, runtime,
+			    RegionRequirement(matrix.block_region, 
+					      NO_ACCESS, ALLOCABLE, EXCLUSIVE, 
+					      matrix.block_region));
     
-    for(int cb = 0; cb < matrix.block_cols; cb++)
-      for(int i = 0; i < matrix.num_row_parts; i++)
-	for(int rb = i; rb < matrix.block_rows; rb += matrix.num_row_parts) {
-	  ptr_t<MatrixBlock> blkptr = reg.template alloc<MatrixBlock>();
+      for(int cb = 0; cb < matrix.block_cols; cb++)
+	for(int i = 0; i < matrix.num_row_parts; i++)
+	  for(int rb = i; rb < matrix.block_rows; rb += matrix.num_row_parts) {
+	    ptr_t<MatrixBlock> blkptr = reg->template alloc<MatrixBlock>();
 
-	  matrix.blocks[rb][cb] = blkptr;
-
-	  col_coloring[cb].insert(blkptr);
+	    matrix.blocks[rb][cb] = blkptr;
+	    
+	    col_coloring[cb].insert(blkptr);
 	  row_coloring[cb][i].insert(blkptr);
-	}
-    runtime->unmap_region(ctx, reg);
+	  }
+    }
 
     matrix.col_part = runtime->create_partition(ctx,
 						matrix.block_region,
@@ -222,59 +259,66 @@ class Linpack {
     matrix.index_region = runtime->create_logical_region(ctx,
 							 sizeof(IndexBlock),
 							 matrix.block_rows);
+    {
+      ScopedMapping<AT> reg(ctx, runtime,
+			    RegionRequirement(matrix.index_region, 
+					      NO_ACCESS, ALLOCABLE, EXCLUSIVE, 
+					      matrix.index_region));
 
-    reg = runtime->map_region<AT>(ctx,
-				  RegionRequirement(matrix.index_region, 
-						    NO_ACCESS, ALLOCABLE, EXCLUSIVE, 
-						    matrix.index_region));
-    reg.wait_until_valid();
+      std::vector<std::set<utptr_t> > idx_coloring;
+      idx_coloring.resize(matrix.block_rows);
 
-    std::vector<std::set<utptr_t> > idx_coloring;
-    idx_coloring.resize(matrix.block_rows);
+      for(int i = 0; i < matrix.block_rows; i++) {
+	ptr_t<IndexBlock> idxptr = reg->template alloc<IndexBlock>();
 
-    for(int i = 0; i < matrix.block_rows; i++) {
-      ptr_t<IndexBlock> idxptr = reg.template alloc<IndexBlock>();
+	matrix.index_blocks[i] = idxptr;
 
-      matrix.index_blocks[i] = idxptr;
+	idx_coloring[i].insert(idxptr);
+      }
 
-      idx_coloring[i].insert(idxptr);
+      matrix.index_part = runtime->create_partition(ctx,
+						    matrix.index_region,
+						    idx_coloring);
     }
-    runtime->unmap_region(ctx, reg);
-
-    matrix.index_part = runtime->create_partition(ctx,
-						  matrix.index_region,
-						  idx_coloring);
 
     matrix.topblk_region = runtime->create_logical_region(ctx,
 							  sizeof(MatrixBlock),
 							  matrix.block_rows);
 
-    reg = runtime->map_region<AT>(ctx,
-				  RegionRequirement(matrix.topblk_region, 
-						    NO_ACCESS, ALLOCABLE, EXCLUSIVE, 
-						    matrix.topblk_region));
-    reg.wait_until_valid();
+    {
+      ScopedMapping<AT> reg(ctx, runtime,
+			    RegionRequirement(matrix.topblk_region, 
+					      NO_ACCESS, ALLOCABLE, EXCLUSIVE, 
+					      matrix.topblk_region));
 
-    std::vector<std::set<utptr_t> > topblk_coloring;
-    topblk_coloring.resize(matrix.block_rows);
+      std::vector<std::set<utptr_t> > topblk_coloring;
+      topblk_coloring.resize(matrix.block_rows);
+      
+      for(int i = 0; i < matrix.block_rows; i++) {
+	ptr_t<MatrixBlock> topptr = reg->template alloc<MatrixBlock>();
 
-    for(int i = 0; i < matrix.block_rows; i++) {
-      ptr_t<MatrixBlock> topptr = reg.template alloc<MatrixBlock>();
+	matrix.top_blocks[i] = topptr;
 
-      matrix.top_blocks[i] = topptr;
+	topblk_coloring[i].insert(topptr);
+      }
 
-      topblk_coloring[i].insert(topptr);
+      matrix.topblk_part = runtime->create_partition(ctx,
+						     matrix.topblk_region,
+						     topblk_coloring);
     }
-    runtime->unmap_region(ctx, reg);
-
-    matrix.topblk_part = runtime->create_partition(ctx,
-						   matrix.topblk_region,
-						   topblk_coloring);
 
     for(int i = 0; i < matrix.block_rows; i++)
       matrix.topblk_subregions[i] = runtime->get_subregion(ctx,
 							   matrix.topblk_part,
 							   i);
+  }
+
+  static void destroy_blocked_matrix(Context ctx, HighLevelRuntime *runtime,
+				     BlockedMatrix& matrix)
+  {
+    runtime->destroy_logical_region(ctx, matrix.block_region);
+    runtime->destroy_logical_region(ctx, matrix.index_region);
+    runtime->destroy_logical_region(ctx, matrix.topblk_region);
   }
 
   class DumpMatrixTask : public SingleTask {
@@ -448,7 +492,7 @@ class Linpack {
       task_id = HighLevelRuntime::register_index_task
 	<RandomPanelTask::task_entry<AccessorGeneric> >(desired_task_id,
 							Processor::LOC_PROC,
-							"random_matrix");
+							"random_panel");
     }
     
     static FutureMap spawn(Context ctx, HighLevelRuntime *runtime,
@@ -530,8 +574,11 @@ class Linpack {
       printf("random_matrix(yay): idx=%d\n", idx);
 
       const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
-      
+
+#define NOMAP_INDEX_SPACES
+#ifndef NOMAP_INDEX_SPACES
       runtime->unmap_region(ctx, regions[REGION_PANEL]);
+#endif
       
       FutureMap fm = RandomPanelTask::spawn(ctx, runtime,
 					    Range(0, matrix.num_row_parts - 1),
@@ -566,7 +613,12 @@ class Linpack {
       reqs[REGION_PANEL] = RegionRequirement(matrix.col_part.id,
 					     COLORID_IDENTITY,
 					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
-					     matrix.block_region);
+					     matrix.block_region,
+#ifdef NOMAP_INDEX_SPACES
+					     Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_REGION);
+#else
+                                             0);
+#endif
       
       ArgumentMap arg_map;
 
@@ -1203,24 +1255,24 @@ class Linpack {
       const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
 
       // we don't use the regions ourselves
+#ifndef NOMAP_INDEX_SPACES
       runtime->unmap_region(ctx, regions[REGION_PANEL]);
       runtime->unmap_region(ctx, regions[REGION_LPANEL]);
       runtime->unmap_region(ctx, regions[REGION_INDEX]);
       runtime->unmap_region(ctx, regions[REGION_L1BLK]);
+#endif
 
       LogicalRegion temp_region = runtime->create_logical_region(ctx,
 								 sizeof(MatrixBlock),
 								 1);
-      PhysicalRegion<AT> temp_phys = runtime->map_region<AT>(ctx,
-							     RegionRequirement(temp_region,
-									       NO_ACCESS,
-									       ALLOCABLE,
-									       EXCLUSIVE,
-									       temp_region));
-      temp_phys.wait_until_valid();
-
-      ptr_t<MatrixBlock> temp_ptr = temp_phys.template alloc<MatrixBlock>();
-      runtime->unmap_region(ctx, temp_phys);
+      ptr_t<MatrixBlock> temp_ptr;
+      {
+	ScopedMapping<AT> reg(ctx, runtime,
+			      RegionRequirement(temp_region,
+						NO_ACCESS, ALLOCABLE, EXCLUSIVE,
+						temp_region));
+	temp_ptr = reg->template alloc<MatrixBlock>();
+      }
 
       Future f2 = FillTopBlockTask::spawn(ctx, runtime,
 					  matrix, args->matrixptr, args->k, j,
@@ -1278,27 +1330,47 @@ class Linpack {
       reqs[REGION_PANEL] = RegionRequirement(matrix.col_part.id,
 					     COLORID_IDENTITY,
 					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
-					     matrix.block_region);
+					     matrix.block_region,
+#ifdef NOMAP_INDEX_SPACES
+					     Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_REGION);
+#else
+                                             0);
+#endif
 
       LogicalRegion panel_subregion = runtime->get_subregion(ctx,
 							     matrix.col_part,
 							     k);
       reqs[REGION_LPANEL] = RegionRequirement(panel_subregion,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      matrix.block_region);
+					      matrix.block_region,
+#ifdef NOMAP_INDEX_SPACES
+					     Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_REGION);
+#else
+                                             0);
+#endif
 
       LogicalRegion index_subregion = runtime->get_subregion(ctx,
 							     matrix.index_part,
 							     k);
       reqs[REGION_INDEX] = RegionRequirement(index_subregion,
 					     READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					     matrix.index_region);
+					     matrix.index_region,
+#ifdef NOMAP_INDEX_SPACES
+					     Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_REGION);
+#else
+                                             0);
+#endif
 
       LogicalRegion topblk_subregion = matrix.topblk_subregions[k];
 
       reqs[REGION_L1BLK] = RegionRequirement(topblk_subregion,
 					     READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					     matrix.topblk_region);
+					     matrix.topblk_region,
+#ifdef NOMAP_INDEX_SPACES
+					     Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_REGION);
+#else
+                                             0);
+#endif
     
       // double-check that we were registered properly
       assert(task_id != 0);
@@ -1570,15 +1642,14 @@ class Linpack {
       LogicalRegion subpanel_region = runtime->get_subregion(ctx,
 							     matrix.row_parts[args->k],
 							     (args->k % matrix.num_row_parts));
-      PhysicalRegion<AT> r_subpanel = runtime->map_region<AT>(ctx,
-							      RegionRequirement(subpanel_region,
-										READ_ONLY, NO_MEMORY, EXCLUSIVE,
-										matrix.panel_subregions[args->k]));
-      r_subpanel.wait_until_valid();
+      {
+	ScopedMapping<AT> reg(ctx, runtime,
+			      RegionRequirement(subpanel_region,
+						READ_ONLY, NO_MEMORY, EXCLUSIVE,
+						matrix.panel_subregions[args->k]));
 	
-      top_blk = r_subpanel.read(matrix.blocks[args->k][args->k]);
-
-      runtime->unmap_region(ctx, r_subpanel);
+	top_blk = reg->read(matrix.blocks[args->k][args->k]);
+      }
 
       idx_blk.block_num = args->k;
       for(int i = 0; i < NB; i++)
@@ -1783,9 +1854,6 @@ class Linpack {
     void run(std::vector<PhysicalRegion<AT> > &regions) const
     {
       PhysicalRegion<AT> r_matrix = regions[REGION_MATRIX];
-      runtime->unmap_region<AT>(ctx, regions[1]);
-      runtime->unmap_region<AT>(ctx, regions[2]);
-      runtime->unmap_region<AT>(ctx, regions[3]);
 
       const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
 
@@ -1819,14 +1887,17 @@ class Linpack {
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
 					      matrixptr.region);
       reqs[REGION_BLOCKS] = RegionRequirement(matrix.block_region,
-					      READ_WRITE, ALLOCABLE, EXCLUSIVE,
-					      matrix.block_region);
+					      READ_WRITE, NO_MEMORY, EXCLUSIVE,
+					      matrix.block_region,
+					      Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_REGION);
       reqs[REGION_INDEXS] = RegionRequirement(matrix.index_region,
-					      READ_WRITE, ALLOCABLE, EXCLUSIVE,
-					      matrix.index_region);
+					      READ_WRITE, NO_MEMORY, EXCLUSIVE,
+					      matrix.index_region,
+					      Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_REGION);
       reqs[REGION_TOPBLKS] = RegionRequirement(matrix.topblk_region,
-					       READ_WRITE, ALLOCABLE, EXCLUSIVE,
-					       matrix.topblk_region);
+					       READ_WRITE, NO_MEMORY, EXCLUSIVE,
+					       matrix.topblk_region,
+					       Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_REGION);
 
       // double-check that we were registered properly
       assert(task_id != 0);
@@ -1860,6 +1931,7 @@ public:
   {
     LogicalRegion matrix_region = runtime->create_logical_region(ctx,
 								 sizeof(BlockedMatrix),
+
 								 1);
     PhysicalRegion<AT> reg = runtime->map_region<AT>(ctx,
 						     RegionRequirement(matrix_region,
@@ -1880,6 +1952,8 @@ public:
 
     Future f = LinpackMainTask::spawn(ctx, runtime, matrix, matrixptr);
     f.get_void_result();
+
+    destroy_blocked_matrix(ctx, runtime, matrix);
   }
 
 };

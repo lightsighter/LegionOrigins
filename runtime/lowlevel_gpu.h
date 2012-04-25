@@ -9,7 +9,8 @@ namespace RegionRuntime {
   namespace LowLevel {
     class GPUProcessor : public Processor::Impl {
     public:
-      GPUProcessor(Processor _me, int _gpu_index, size_t _zcmem_size, size_t _fbmem_size);
+      GPUProcessor(Processor _me, int _gpu_index, Processor _util,
+		   size_t _zcmem_size, size_t _fbmem_size);
 
       ~GPUProcessor(void);
 
