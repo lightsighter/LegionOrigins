@@ -2119,6 +2119,38 @@ T prioritieze_pick(const std::vector<T> &vec, T choice1, T choice2, T base)
   return base;
 }
 
+// Run main in a separate thread? This will cannibalize 1 thread from
+// the rest of the computation.
+#ifndef MAP_MAIN_SEPARATELY
+#define MAP_MAIN_SEPARATELY 1
+#endif
+static inline int get_proc_id_for_task(int task_id, int tag, int num_procs)
+{
+  switch (task_id) {
+  case TOP_LEVEL_TASK_ID:
+  case TASKID_MAIN_TASK:
+  case TASKID_SAVE_FILE:
+  case TASKID_DUMMY_TASK:
+    return 0;
+  case TASKID_LOAD_FILE:
+  case TASKID_INIT_CELLS:
+  case TASKID_REBUILD_REDUCE:
+  case TASKID_SCATTER_DENSITIES:
+  case TASKID_GATHER_DENSITIES:
+  case TASKID_SCATTER_FORCES:
+  case TASKID_GATHER_FORCES:
+    if (num_procs == 1)
+      return 0;
+#if MAP_MAIN_SEPARATELY
+    return (tag % (num_procs - 1)) + 1;
+#else
+    return (tag % (num_procs - 1)) + 1;
+#endif
+  default:
+    assert(false);
+  }
+}
+
 class FluidMapper : public Mapper {
 public:
   std::map<Processor::Kind, std::vector<std::pair<Processor, Memory> > > cpu_mem_pairs;
@@ -2185,39 +2217,7 @@ public:
   {
     std::vector<std::pair<Processor,Memory> > &loc_procs = cpu_mem_pairs[Processor::LOC_PROC];
 
-    switch (task->task_id) {
-    case TOP_LEVEL_TASK_ID:
-    case TASKID_MAIN_TASK:
-    case TASKID_SAVE_FILE:
-    case TASKID_DUMMY_TASK:
-      {
-        // Put this on the first processor
-        return loc_procs[0].first;
-      }
-      break;
-    case TASKID_LOAD_FILE:
-    case TASKID_INIT_CELLS:
-    case TASKID_REBUILD_REDUCE:
-    case TASKID_SCATTER_DENSITIES:
-    case TASKID_GATHER_DENSITIES:
-    case TASKID_SCATTER_FORCES:
-    case TASKID_GATHER_FORCES:
-      {
-        // Distribute these over all CPUs
-        //log_mapper.info("mapping task %d with tag %d to processor %x",task->task_id,
-        //                task->tag, loc_procs[task->tag % loc_procs.size()].first.id);
-        if (loc_procs.size() == 1) {
-          return loc_procs[0].first;
-        } else {
-          return loc_procs[(task->tag % (loc_procs.size() - 1)) + 1].first;
-        }
-      }
-      break;
-    default:
-      log_mapper.info("failed to map task %d", task->task_id);
-      assert(false);
-    }
-    return Processor::NO_PROC;
+    return loc_procs[get_proc_id_for_task(task->task_id, task->tag, loc_procs.size())].first;
   }
 
   virtual Processor target_task_steal(const std::set<Processor> &blacklisted)
@@ -2248,30 +2248,7 @@ public:
     log_mapper.info("func_id=%d map_tag=%d region_index=%d", task->task_id, task->tag, idx);
     std::vector< std::pair<Processor, Memory> >& loc_procs = cpu_mem_pairs[Processor::LOC_PROC];
 
-    int proc_id = 0;
-    switch (task->task_id) {
-    case TOP_LEVEL_TASK_ID:
-    case TASKID_MAIN_TASK:
-    case TASKID_SAVE_FILE:
-    case TASKID_DUMMY_TASK:
-      proc_id = 0;
-      break;
-    case TASKID_LOAD_FILE:
-    case TASKID_INIT_CELLS:
-    case TASKID_REBUILD_REDUCE:
-    case TASKID_SCATTER_DENSITIES:
-    case TASKID_GATHER_DENSITIES:
-    case TASKID_SCATTER_FORCES:
-    case TASKID_GATHER_FORCES:
-      if (loc_procs.size() == 1) {
-        proc_id = 0;
-      } else {
-        proc_id = (task->tag % (loc_procs.size() - 1)) + 1;
-      }
-      break;
-    default:
-      assert(false);
-    }
+    int proc_id = get_proc_id_for_task(task->task_id, task->tag, loc_procs.size());
     std::pair<Processor, Memory> cmp = loc_procs[proc_id];
 
     switch (task->task_id) {

@@ -1433,6 +1433,7 @@ namespace RegionRuntime {
       GenerationID current_gen;
     public:
       const ContextID ctx_id;
+      bool top_level_task;
     protected:
       // Partial unpack information so we don't have to unpack everything and repack it all the time
       bool partially_unpacked;
