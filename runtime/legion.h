@@ -2100,6 +2100,7 @@ namespace RegionRuntime {
       unsigned children; // if the instance is remote this doesn't matter, children will add themselves when returned
       bool collected; // Whether this instance has been collected
       bool returned; // If this instance has been sent back already
+      Fraction<long> remote_frac; // The remote fraction we are from somewhere else
       Fraction<long> local_frac; // Fraction of this instance info that is local to here (will be 1 when can be collected)
       InstanceInfo *parent;
       Event valid_event;

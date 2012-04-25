@@ -13438,7 +13438,7 @@ namespace RegionRuntime {
       iid(0), handle(LogicalRegion::NO_REGION), location(Memory::NO_MEMORY),
       inst(RegionInstance::NO_INST), valid(false), remote(false), 
       open_child(false), clone(false), children(0),
-      collected(false), returned(false), local_frac(Fraction<long>()), 
+      collected(false), returned(false), remote_frac(Fraction<long>()), local_frac(Fraction<long>()), 
       parent(NULL), valid_event(Event::NO_EVENT), inst_lock(Lock::NO_LOCK), closing(false)
     //-------------------------------------------------------------------------
     {
@@ -13449,7 +13449,7 @@ namespace RegionRuntime {
                 RegionInstance i, bool rem, InstanceInfo *par, bool open, bool c /*= false*/, bool unpacking /*= false*/) :
       iid(id), handle(r), location(m), inst(i), valid(false), remote(rem), open_child(open), 
       clone(c), children(0), collected(false), returned(false), 
-      local_frac(Fraction<long>()), parent(par), closing(false)
+      remote_frac(Fraction<long>()), local_frac(Fraction<long>()), parent(par), closing(false)
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL 
@@ -13500,7 +13500,7 @@ namespace RegionRuntime {
       // If this is the owner we should have deleted the instance by now
       if (!remote && !clone && (parent == NULL))
       {
-        if (valid || (children > 0) || !users.empty() || !local_frac.is_whole() ||
+        if (valid || (children > 0) || !users.empty() || !local_frac.is_whole() || !remote_frac.is_whole() ||
             !added_users.empty() || !copy_users.empty() || !added_copy_users.empty())
         {
           log_leak(LEVEL_WARNING,"Physical instance %x of logical region %x in memory %x is being leaked",
@@ -13512,6 +13512,9 @@ namespace RegionRuntime {
       {
         assert(returned);
       }
+      // The local fraction should always be whole when we delete this 
+      // (i.e. everything that got sent remotely came back eventually)
+      assert(local_frac.is_whole());
 #endif
     }
 
@@ -14246,9 +14249,10 @@ namespace RegionRuntime {
       derez.deserialize<Event>(result_info->valid_event);
       derez.deserialize<Lock>(result_info->inst_lock);
       derez.deserialize<bool>(result_info->valid);
-      derez.deserialize<Fraction<long> >(result_info->local_frac);
+      // Unpack into the remote fraction
+      derez.deserialize<Fraction<long> >(result_info->remote_frac);
       // Scale the fraction by the split factor
-      result_info->local_frac.divide(split_factor);
+      result_info->remote_frac.divide(split_factor);
 
       // Put all the users in the base users since this is remote
       size_t num_users;
@@ -14290,7 +14294,7 @@ namespace RegionRuntime {
       result += sizeof(bool); // remote returning or escaping
       result += sizeof(bool); // open child
       result += sizeof(bool); // valid
-      result += sizeof(Fraction<long>); // local_frac
+      result += sizeof(Fraction<long>); // remote_frac 
       if (remote)
       {
         result += sizeof(Event); // valid event
@@ -14395,7 +14399,7 @@ namespace RegionRuntime {
       rez.serialize<bool>(remote);
       rez.serialize<bool>(open_child);
       rez.serialize<bool>(valid);
-      rez.serialize<Fraction<long> >(local_frac);
+      rez.serialize<Fraction<long> >(remote_frac); // Send back the remote fraction
       if (remote)
       {
         rez.serialize<Event>(valid_event);
@@ -14546,7 +14550,7 @@ namespace RegionRuntime {
         bool valid;
         derez.deserialize<bool>(valid);
         Fraction<long> local_frac;
-        derez.deserialize<Fraction<long> >(local_frac);
+        derez.deserialize<Fraction<long> >(local_frac); // unpacking the remote fraction coming back
         // This instance better not exist in the list of instance infos
 #ifdef DEBUG_HIGH_LEVEL
         assert(infos->find(iid) == infos->end());
@@ -14705,7 +14709,7 @@ namespace RegionRuntime {
       Fraction<long> returning_frac;
       derez.deserialize<Fraction<long> >(returning_frac);
       // Add the returning frac back to our current frac
-      local_frac.add(returning_frac);
+      local_frac.add(returning_frac); // add back into the remote fraction
 
       Event new_valid_event;
       derez.deserialize<Event>(new_valid_event);
@@ -15836,7 +15840,8 @@ namespace RegionRuntime {
     //-------------------------------------------------------------------------
     {
       // Check all the conditions for being able to delete the instance
-      if (!valid && !remote && !clone && !closing && (children == 0) && local_frac.is_whole() && 
+      if (!valid && !remote && !clone && !closing && (children == 0) && 
+          local_frac.is_whole() && remote_frac.is_whole() && // both fractions must be whole to garbage collect
           users.empty() && added_users.empty() && copy_users.empty() && added_copy_users.empty())
       {
 #ifdef DEBUG_HIGH_LEVEL
