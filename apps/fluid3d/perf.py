@@ -184,6 +184,7 @@ def plot(nums, title):
 _num_steps = 100
 _num_reps = 1
 if __name__ == '__main__':
+    os.chdir(_root_dir)
     for thunk in prep: thunk()
 
     sizes = set([
