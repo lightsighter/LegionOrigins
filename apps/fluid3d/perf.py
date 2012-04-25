@@ -1,9 +1,18 @@
 #!/usr/bin/env python
 
-import math, os, re, shutil, subprocess as sp, sys
+# Notes:
+#   PLEASE use Python >= 2.6.
+#   Torque will copy your script, so customize _root_dir appropriately.
+
 _root_dir = os.path.abspath(os.path.dirname(__file__))
+
+import math, numpy, os, re, shutil, subprocess as sp, sys
 sys.path.append(_root_dir)
 from compare import read_file, compare
+
+want_plot = False
+if want_plot:
+    import matplotlib.pyplot as plt
 
 ############################################################
 ## Utils
@@ -91,16 +100,18 @@ def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, nodes = 1, cpus = 0,
            input = None,
            legion_logging = 4,
            **_ignored):
-    if cpus <= 0: cpus = nbx*nby*nbz/nodes
+    if cpus <= 0: cpus = nbx*nby*nbz/nodes + 1
     return check_output(
         (['gasnetrun_ibv', '-n', str(nodes)] if _legion_use_gasnet else []) +
         [_legion_fluid,
          '-ll:csize', '16384', '-ll:gsize', '2000',
          '-ll:cpu', str(cpus),
+        ] +
          # Low-level message threads
-         '-ll:dma', str(2), '-ll:amsg', str(2), '-ll:senders',
+        (['-ll:dma', str(2), '-ll:amsg', str(2), '-ll:senders',]
+         if _legion_use_gasnet and nodes > 1 else []) +
          # High-level scheduler look-ahead
-         '-hl:sched', str(2*nbx*nby*nbz),
+        ['-hl:sched', str(2*nbx*nby*nbz),
          '-level', str(legion_logging),
          '-nbx', str(nbx), '-nby', str(nby), '-nbz', str(nbz), '-s', str(steps),
          '-input', str(input),
@@ -166,14 +177,205 @@ def init_baseline(program, reps, **params):
     _baseline.append(timing)
     return timing
 
-_num_steps = 10
+def plot(nums, title):
+    plt.figure()
+    plt.hist(nums, facecolor='green', alpha=0.75)
+    plt.xlabel('Run Time (s)')
+    plt.ylabel('Count')
+    plt.title(title)
+    plt.axis([0, 100, 0, 10])
+    plt.grid(True)
+
+_num_steps = 100
 _num_reps = 1
 if __name__ == '__main__':
     for thunk in prep: thunk()
 
-    print 'Baseline PARSEC serial:'
-    init_baseline(parsec_serial, _num_reps, nbx = 1, nby = 1, nbz = 1, steps = _num_steps)
-    print
+    sizes = set([
+        'p1', 'p8', 'p16',
+        'l1-8', 'l1-12',
+        'l2-8', 'l2-10', 'l2-12',
+        'l4-8', 'l4-10', 'l4-12',
+        'l8-8', 'l8-10', 'l8-12',
+        ])
+
+    if 'p1' in sizes:
+        print 'Baseline PARSEC serial:'
+        init_baseline(parsec_serial, _num_reps, nbx = 1, nby = 1, nbz = 1, steps = _num_steps)
+        print
+
+    if 'p8' in sizes:
+        print 'Parsec 8-cpu:'
+        parsec8_timings = []
+        for i in xrange(20):
+            parsec8_timings.append(perf_check(parsec_pthreads, _num_reps, nbx = 4, nby = 1, nbz = 2, steps = _num_steps, nodes = 1))
+        print 'Mean:', numpy.average(parsec8_timings)
+        print 'Median:', numpy.median(parsec8_timings)
+        print 'Mean (minus top and bottom 2):', numpy.average(sorted(parsec8_timings)[2:-2])
+        print parsec8_timings
+        print
+
+    if 'p16' in sizes:
+        print 'Parsec 16-cpu:'
+        parsec16_timings = []
+        for i in xrange(20):
+            parsec16_timings.append(perf_check(parsec_pthreads, _num_reps, nbx = 4, nby = 1, nbz = 4, steps = _num_steps, nodes = 1))
+        print 'Mean:', numpy.average(parsec16_timings)
+        print 'Median:', numpy.median(parsec16_timings)
+        print 'Mean (minus top and bottom 2):', numpy.average(sorted(parsec16_timings)[2:-2])
+        print parsec16_timings
+        print
+
+    if 'l1-8' in sizes:
+        print 'Legion 1-node 8-cpu:'
+        legion1_8_timings = []
+        for i in xrange(20):
+            timing = perf_check(legion, _num_reps, nbx = 4, nby = 1, nbz = 2, steps = _num_steps, nodes = 1, cpus = 9)
+            if timing is not None: legion1_8_timings.append(timing)
+        print 'Mean:', numpy.average(legion1_8_timings)
+        print 'Median:', numpy.median(legion1_8_timings)
+        print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion1_8_timings)[2:-2])
+        print legion1_8_timings
+        print
+
+    if 'l1-12' in sizes:
+        print 'Legion 1-node 12-cpu:'
+        legion1_12_timings = []
+        for i in xrange(20):
+            timing = perf_check(legion, _num_reps, nbx = 4, nby = 1, nbz = 4, steps = _num_steps, nodes = 1, cpus = 13)
+            if timing is not None: legion1_12_timings.append(timing)
+        print 'Mean:', numpy.average(legion1_12_timings)
+        print 'Median:', numpy.median(legion1_12_timings)
+        print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion1_12_timings)[2:-2])
+        print legion1_12_timings
+        print
+
+    if 'l2-8' in sizes:
+        print 'Legion 2-node 8-cpu:'
+        legion2_8_timings = []
+        for i in xrange(20):
+            timing = perf_check(legion, _num_reps, nbx = 4, nby = 1, nbz = 4, steps = _num_steps, nodes = 2, cpus = 9)
+            if timing is not None: legion2_8_timings.append(timing)
+        print 'Mean:', numpy.average(legion2_8_timings)
+        print 'Median:', numpy.median(legion2_8_timings)
+        print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion2_8_timings)[2:-2])
+        print legion2_8_timings
+        print
+
+    if 'l2-10' in sizes:
+        print 'Legion 2-node 10-cpu:'
+        legion2_10_timings = []
+        for i in xrange(20):
+            timing = perf_check(legion, _num_reps, nbx = 8, nby = 1, nbz = 4, steps = _num_steps, nodes = 2, cpus = 11)
+            if timing is not None: legion2_10_timings.append(timing)
+        print 'Mean:', numpy.average(legion2_10_timings)
+        print 'Median:', numpy.median(legion2_10_timings)
+        print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion2_10_timings)[2:-2])
+        print legion2_10_timings
+        print
+
+    if 'l2-12' in sizes:
+        print 'Legion 2-node 12-cpu:'
+        legion2_12_timings = []
+        for i in xrange(20):
+            timing = perf_check(legion, _num_reps, nbx = 8, nby = 1, nbz = 4, steps = _num_steps, nodes = 2, cpus = 13)
+            if timing is not None: legion2_12_timings.append(timing)
+        print 'Mean:', numpy.average(legion2_12_timings)
+        print 'Median:', numpy.median(legion2_12_timings)
+        print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion2_12_timings)[2:-2])
+        print legion2_12_timings
+        print
+
+    if 'l4-8' in sizes:
+        print 'Legion 4-node 8-cpu:'
+        legion4_8_timings = []
+        for i in xrange(20):
+            timing = perf_check(legion, _num_reps, nbx = 8, nby = 1, nbz = 4, steps = _num_steps, nodes = 4, cpus = 9)
+            if timing is not None: legion4_8_timings.append(timing)
+        print 'Mean:', numpy.average(legion4_8_timings)
+        print 'Median:', numpy.median(legion4_8_timings)
+        print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion4_8_timings)[2:-2])
+        print legion4_8_timings
+        print
+
+    if 'l4-10' in sizes:
+        print 'Legion 4-node 10-cpu:'
+        legion4_10_timings = []
+        for i in xrange(20):
+            timing = perf_check(legion, _num_reps, nbx = 8, nby = 1, nbz = 8, steps = _num_steps, nodes = 4, cpus = 11)
+            if timing is not None: legion4_10_timings.append(timing)
+        print 'Mean:', numpy.average(legion4_10_timings)
+        print 'Median:', numpy.median(legion4_10_timings)
+        print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion4_10_timings)[2:-2])
+        print legion4_10_timings
+        print
+
+    if 'l4-12' in sizes:
+        print 'Legion 4-node 12-cpu:'
+        legion4_12_timings = []
+        for i in xrange(20):
+            timing = perf_check(legion, _num_reps, nbx = 8, nby = 1, nbz = 8, steps = _num_steps, nodes = 4, cpus = 13)
+            if timing is not None: legion4_12_timings.append(timing)
+        print 'Mean:', numpy.average(legion4_12_timings)
+        print 'Median:', numpy.median(legion4_12_timings)
+        print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion4_12_timings)[2:-2])
+        print legion4_12_timings
+        print
+
+    if 'l8-8' in sizes:
+        print 'Legion 8-node 8-cpu:'
+        legion8_8_timings = []
+        for i in xrange(20):
+            timing = perf_check(legion, _num_reps, nbx = 8, nby = 1, nbz = 8, steps = _num_steps, nodes = 8, cpus = 9)
+            if timing is not None: legion8_8_timings.append(timing)
+        print 'Mean:', numpy.average(legion8_8_timings)
+        print 'Median:', numpy.median(legion8_8_timings)
+        print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion8_8_timings)[2:-2])
+        print legion8_8_timings
+        print
+
+    if 'l8-10' in sizes:
+        print 'Legion 8-node 10-cpu:'
+        legion8_10_timings = []
+        for i in xrange(20):
+            timing = perf_check(legion, _num_reps, nbx = 16, nby = 1, nbz = 8, steps = _num_steps, nodes = 8, cpus = 11)
+            if timing is not None: legion8_10_timings.append(timing)
+        print 'Mean:', numpy.average(legion8_10_timings)
+        print 'Median:', numpy.median(legion8_10_timings)
+        print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion8_10_timings)[2:-2])
+        print legion8_10_timings
+        print
+
+    if 'l8-12' in sizes:
+        print 'Legion 8-node 12-cpu:'
+        legion8_12_timings = []
+        for i in xrange(20):
+            timing = perf_check(legion, _num_reps, nbx = 16, nby = 1, nbz = 8, steps = _num_steps, nodes = 8, cpus = 13)
+            if timing is not None: legion8_12_timings.append(timing)
+        print 'Mean:', numpy.average(legion8_12_timings)
+        print 'Median:', numpy.median(legion8_12_timings)
+        print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion8_12_timings)[2:-2])
+        print legion8_12_timings
+        print
+
+    if want_plot:
+        if 'p8' in sizes:    plot(parsec8_timings, 'Histogram of PARSEC on 8 CPUs')
+        if 'p16' in sizes:   plot(parsec16_timings, 'Histogram of PARSEC on 16 CPUs')
+        if 'l1-8' in sizes:  plot(legion1_8_timings, 'Histogram of Legion on 1 Nodes 8 CPUs')
+        if 'l1-12' in sizes: plot(legion1_12_timings, 'Histogram of Legion on 1 Nodes 12 CPUs')
+        if 'l2-8' in sizes:  plot(legion2_8_timings, 'Histogram of Legion on 2 Nodes 8 CPUs')
+        if 'l2-10' in sizes: plot(legion2_10_timings, 'Histogram of Legion on 2 Nodes 10 CPUs')
+        if 'l2-12' in sizes: plot(legion2_12_timings, 'Histogram of Legion on 2 Nodes 12 CPUs')
+        if 'l4-8' in sizes:  plot(legion4_8_timings, 'Histogram of Legion on 4 Nodes 8 CPUs')
+        if 'l4-10' in sizes: plot(legion4_10_timings, 'Histogram of Legion on 4 Nodes 10 CPUs')
+        if 'l4-12' in sizes: plot(legion4_12_timings, 'Histogram of Legion on 4 Nodes 12 CPUs')
+        if 'l8-8' in sizes:  plot(legion8_8_timings, 'Histogram of Legion on 8 Nodes 8 CPUs')
+        if 'l8-10' in sizes: plot(legion8_10_timings, 'Histogram of Legion on 8 Nodes 10 CPUs')
+        if 'l8-12' in sizes: plot(legion8_12_timings, 'Histogram of Legion on 8 Nodes 12 CPUs')
+        plt.show()
+
+    print 'KILL ME NOW PLEASE'
+    sys.exit()
 
     print 'PARSEC pthreads:'
     sizes = range(0, 5)
