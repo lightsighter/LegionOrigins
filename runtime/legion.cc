@@ -2194,6 +2194,7 @@ namespace RegionRuntime {
       {
         log_task(LEVEL_SPEW,"Issuing legion main task on processor %x",local_proc.id);
         TaskContext *desc = get_available_context(true/*new tree*/);
+        desc->top_level_task = true;
         UniqueID tid = get_unique_task_id();
         {
           // Hold the mapping lock when reading the mapper information
@@ -2217,10 +2218,9 @@ namespace RegionRuntime {
         // the task context when we're done.  This will make sure everything gets
         // cleaned up an will will help us capture any leaks.
         Future fut(desc->future);
-        size_t buffer_size = sizeof(Future) + sizeof(TaskContext*);
+        size_t buffer_size = sizeof(Future);
         Serializer rez(buffer_size);
         rez.serialize<Future>(fut);
-        rez.serialize<TaskContext*>(desc);
         local_proc.spawn(TERMINATION_ID,rez.get_buffer(),buffer_size);
       }
       // enable the idle task
@@ -3621,8 +3621,6 @@ namespace RegionRuntime {
       // Unpack the future from the buffer
       Future f;
       derez.deserialize<Future>(f); 
-      TaskContext *top_ctx;
-      derez.deserialize<TaskContext*>(top_ctx);
       // This will wait until the top level task has finished
       f.get_void_result();
       log_task(LEVEL_SPEW,"Computation has terminated, shutting down high level runtime...");
@@ -3634,11 +3632,6 @@ namespace RegionRuntime {
         // Kill pill
         it->spawn(0,NULL,0);
       }
-      // Clean up the top level context.  First mark it remote so that we delete
-      // all of the data structures that are no longer needed.  This will help us
-      // catch any leaks that might be occuring in the program.
-      top_ctx->remote = true;
-      top_ctx->deactivate();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4015,7 +4008,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     TaskContext::TaskContext(Processor p, HighLevelRuntime *r, ContextID id)
-      : runtime(r), active(false), current_gen(0), ctx_id(id),  
+      : runtime(r), active(false), current_gen(0), ctx_id(id), top_level_task(false), 
         reduction(NULL), reduction_value(NULL), reduction_size(0), 
         local_proc(p), result(NULL), result_size(0), 
         region_nodes(NULL), partition_nodes(NULL), instance_infos(NULL),
@@ -4100,7 +4093,7 @@ namespace RegionRuntime {
         reduction_value = NULL;
         reduction_size = 0;
       }
-      if (remote)
+      if (remote || top_level_task)
       {
         if (!is_index_space || slice_owner)
         {
@@ -11759,6 +11752,10 @@ namespace RegionRuntime {
       for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
             it != region_states[ctx].valid_instances.end(); it++)
       {
+        // close up this instance so it can be collected
+        it->first->mark_begin_close();
+        it->first->force_closed();
+        it->first->mark_finish_close();
         if (it->second)
         {
           it->first->mark_invalid();
@@ -11767,6 +11764,9 @@ namespace RegionRuntime {
       for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].reduction_instances.begin();
             it != region_states[ctx].reduction_instances.end(); it++)
       {
+        it->first->mark_begin_close();
+        it->first->force_closed();
+        it->first->mark_finish_close();
         if (it->second)
         {
           it->first->mark_invalid();
@@ -13505,6 +13505,12 @@ namespace RegionRuntime {
         {
           log_leak(LEVEL_WARNING,"Physical instance %x of logical region %x in memory %x is being leaked",
               inst.id, handle.id, location.id);
+          for (std::list<InstanceInfo*>::const_iterator it = all_children.begin();
+                it != all_children.end(); it++)
+          {
+            InstanceInfo *child = *it;
+            assert(!child->collected);
+          }
         }
       }
 #endif
