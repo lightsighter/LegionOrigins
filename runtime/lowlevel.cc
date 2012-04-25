@@ -3605,6 +3605,8 @@ namespace RegionRuntime {
 	    
 	    if(last) {
 	      proc->disable_idle_task();
+	      if(proc->util_proc)
+		proc->util_proc->wait_for_shutdown();
 
 	      // let go of the lock while we call the init task
 	      Processor::TaskIDTable::iterator it = task_id_table.find(Processor::TASK_ID_PROCESSOR_SHUTDOWN);
@@ -3979,6 +3981,8 @@ namespace RegionRuntime {
 	// we spend most of our life with the utility processor's lock (or
 	//   waiting for it) - we only drop it when we have work to do
 	gasnet_hsl_lock(&proc->mutex);
+	log_util.info("utility worker thread started, proc=%x", proc->me.id);
+
 	while(!proc->shutdown_requested) {
 	  // try to run tasks from the runnable queue
 	  while(proc->tasks.size() > 0) {
@@ -4025,12 +4029,20 @@ namespace RegionRuntime {
 	  }
 	  
 	  // if we really have nothing to do, it's ok to go to sleep
-	  if((proc->tasks.size() == 0) && (proc->idle_procs.size() == 0)) {
+	  if((proc->tasks.size() == 0) && (proc->idle_procs.size() == 0) &&
+	     !proc->shutdown_requested) {
 	    log_util.info("utility thread going to sleep");
 	    gasnett_cond_wait(&proc->condvar, &proc->mutex.lock);
 	    log_util.info("utility thread awake again");
 	  }
 	}
+
+	log_util.info("utility worker thread shutting down, proc=%x", proc->me.id);
+	proc->threads.erase(this);
+	if(proc->threads.size() == 0)
+	  proc->run_counter->decrement();
+	gasnett_cond_broadcast(&proc->condvar);
+	gasnet_hsl_unlock(&proc->mutex);
       }
 
       UtilityProcessor *proc;
@@ -4114,6 +4126,20 @@ namespace RegionRuntime {
       AutoHSLLock al(mutex);
 
       idle_procs.erase(proc);
+    }
+
+    void UtilityProcessor::wait_for_shutdown(void)
+    {
+      AutoHSLLock al(mutex);
+
+      if(threads.size() == 0) return;
+
+      log_util.info("thread waiting for utility proc %x threads to shut down",
+		    me.id);
+      while(threads.size() > 0)
+	gasnett_cond_wait(&condvar, &mutex.lock);
+
+      log_util.info("thread resuming - utility proc has shut down");
     }
 
     struct SpawnTaskArgs {

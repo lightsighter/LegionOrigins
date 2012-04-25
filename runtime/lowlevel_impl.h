@@ -416,6 +416,8 @@ namespace RegionRuntime {
       void enable_idle_task(Processor::Impl *proc);
       void disable_idle_task(Processor::Impl *proc);
 
+      void wait_for_shutdown(void);
+
       class UtilityThread;
       class UtilityTask;
 
