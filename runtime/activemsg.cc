@@ -565,6 +565,7 @@ static void* sender_thread_loop(void *index)
   while (1) {
     endpoints[idx]->push_messages(10000,true);
   }
+  return 0;
 }
 
 void start_sending_threads(void)
