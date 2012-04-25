@@ -3216,6 +3216,7 @@ namespace RegionRuntime {
     }
 
     Logger::Category log_task("task");
+    Logger::Category log_util("util");
 
     class LocalProcessor : public Processor::Impl {
     public:
@@ -3226,7 +3227,8 @@ namespace RegionRuntime {
 	     Processor::TaskFuncID _func_id,
 	     const void *_args, size_t _arglen,
 	     Event _finish_event)
-	  : proc(_proc), func_id(_func_id), arglen(_arglen), finish_event(_finish_event)
+	  : proc(_proc), func_id(_func_id), arglen(_arglen),
+	    finish_event(_finish_event)
 	{
 	  if(arglen) {
 	    args = malloc(arglen);
@@ -3241,7 +3243,7 @@ namespace RegionRuntime {
 	  if(args) free(args);
 	}
 
-	void run(void)
+	void run(Processor actual_proc = Processor::NO_PROC)
 	{
 	  Processor::TaskFuncPtr fptr = task_id_table[func_id];
 	  char argstr[100];
@@ -3251,7 +3253,7 @@ namespace RegionRuntime {
 	  if(arglen > 40) strcpy(argstr+80, "...");
 	  log_task(((func_id == 3) ? LEVEL_SPEW : LEVEL_DEBUG), 
 		   "task start: %d (%p) (%s)", func_id, fptr, argstr);
-	  (*fptr)(args, arglen, proc->me);
+	  (*fptr)(args, arglen, (actual_proc.exists() ? actual_proc : proc->me));
 	  log_task(((func_id == 3) ? LEVEL_SPEW : LEVEL_DEBUG), 
 		   "task end: %d (%p) (%s)", func_id, fptr, argstr);
 	  if(finish_event.exists())
@@ -3505,6 +3507,50 @@ namespace RegionRuntime {
 	    assert(me->task == 0);
 	    me->task = proc->select_task();
 
+	    // if a util proc doesn't have anything to do, check to see if
+	    //  any of the procs it's servicing want their idle task run
+	    if(!me->task && (proc->kind == Processor::UTIL_PROC)) {
+	      // duplicate the set of idle-call-able procs
+	      gasnet_hsl_lock(&proc->idle_proc_mutex);
+	      std::set<LocalProcessor *> idle_procs_copy = proc->idle_procs;
+	      gasnet_hsl_unlock(&proc->idle_proc_mutex);
+
+	      bool did_any_idle_tasks = false;
+	      for(std::set<LocalProcessor *>::iterator it = idle_procs_copy.begin();
+		  it != idle_procs_copy.end();
+		  it++) {
+		LocalProcessor *idle_proc = *it;
+		// make sure the processor has been initialized
+		if(!idle_proc->init_done) {
+		  log_util.info("processor %x still initializing - skipping",
+				idle_proc->me.id);
+		  continue;
+		}
+		// make sure the idle task for that processor isn't running
+		gasnet_hsl_lock(&idle_proc->mutex);
+		bool in_idle = idle_proc->in_idle_task;
+		idle_proc->in_idle_task = true;
+		gasnet_hsl_unlock(&idle_proc->mutex);
+		if(in_idle) {
+		  log_util.info("processor %x is already running idle task - skipping", idle_proc->me.id);
+		  continue;
+		}
+		did_any_idle_tasks = true;
+		// call the idle proc, giving it the name of the proc who we're
+		//  calling it for
+		log_util.info("calling idle proc for %x (on %x)",
+			      idle_proc->me.id, proc->me.id);
+		proc->idle_task->run(idle_proc->me);
+		log_util.info("returning from idle proc for %x (on %x)",
+			      idle_proc->me.id, proc->me.id);
+		gasnet_hsl_lock(&idle_proc->mutex);
+		idle_proc->in_idle_task = false;
+		gasnet_hsl_unlock(&idle_proc->mutex);
+	      }
+	      
+	      if(did_any_idle_tasks) continue;
+	    }
+
 	    // didn't get one?  sleep until somebody assigns one to us
 	    if(!me->task) {
 	      me->state = STATE_IDLE;
@@ -3644,14 +3690,19 @@ namespace RegionRuntime {
       };
 
       LocalProcessor(Processor _me, int _core_id, 
+		     Processor::Kind _kind = Processor::LOC_PROC,
+		     Processor _util = Processor::NO_PROC,
 		     int _total_threads = 1, int _max_active_threads = 1)
-	: Processor::Impl(_me, Processor::LOC_PROC), core_id(_core_id),
+	: Processor::Impl(_me, _kind, _util), core_id(_core_id),
 	  total_threads(_total_threads),
 	  active_thread_count(0), max_active_threads(_max_active_threads),
 	  init_done(false), shutdown_requested(false), in_idle_task(false),
-	  idle_task_enabled(true)
+	  idle_task_enabled(_util == Processor::NO_PROC)
       {
         gasnet_hsl_init(&mutex);
+
+	gasnet_hsl_init(&idle_proc_mutex);
+	gasnett_cond_init(&idle_proc_condvar);
 
 	// if a processor-idle task is in the table, make a Task object for it
 	Processor::TaskIDTable::iterator it = task_id_table.find(Processor::TASK_ID_PROCESSOR_IDLE);
@@ -3663,6 +3714,19 @@ namespace RegionRuntime {
       ~LocalProcessor(void)
       {
 	delete idle_task;
+      }
+
+      void add_real_proc(LocalProcessor *new_proc)
+      {
+	log_util.info("proc %x made utility proc for %x",
+		      me.id, new_proc->me.id);
+	assert(new_proc->kind != Processor::UTIL_PROC);
+	assert(new_proc->util == me);
+
+	// real proc shouldn't have idle task enabled, since we're doing that
+	bool is_idle = new_proc->is_idle_task_enabled();
+	assert(!is_idle);
+	idle_procs.insert(new_proc);
       }
 
       void start_worker_threads(void)
@@ -3823,16 +3887,48 @@ namespace RegionRuntime {
 
       virtual void enable_idle_task(void)
       {
-	log_task.info("idle task enabled for processor %x", me.id);
-	idle_task_enabled = true;
-	// TODO: wake up thread if we're called from another thread
+	if(util.exists()) {
+	  log_task.info("idle task enabled for processor %x on util proc %x",
+			me.id, util.id);
+
+	  {
+	    LocalProcessor *uimpl = (LocalProcessor *)(util.impl());
+	    AutoHSLLock al(uimpl->idle_proc_mutex);
+	    uimpl->idle_procs.insert(this);
+	    // signal that we added something to the list
+	    gasnett_cond_signal(&uimpl->idle_proc_condvar);
+	  }
+	} else {
+	  log_task.info("idle task enabled for processor %x", me.id);
+	  idle_task_enabled = true;
+	  // TODO: wake up thread if we're called from another thread
+	}
       }
 
       virtual void disable_idle_task(void)
       {
-	//log_task.info("idle task NOT disabled for processor %x", me.id);
-	log_task.info("idle task disabled for processor %x", me.id);
-	idle_task_enabled = false;
+	if(util.exists()) {
+	  log_task.info("idle task disabled for processor %x on util proc %x",
+			me.id, util.id);
+
+	  {
+	    LocalProcessor *uimpl = (LocalProcessor *)(util.impl());
+	    AutoHSLLock al(uimpl->idle_proc_mutex);
+	    uimpl->idle_procs.erase(this);
+	  }
+	} else {
+	  if(kind == Processor::UTIL_PROC) {
+	    log_util.spew("idle task NOT disabled for utility processor %x", me.id);
+	  } else {
+	    log_task.info("idle task disabled for processor %x", me.id);
+	    idle_task_enabled = false;
+	  }
+	}
+      }
+
+      virtual bool is_idle_task_enabled(void)
+      {
+	return idle_task_enabled;
       }
 
     protected:
@@ -3847,6 +3943,9 @@ namespace RegionRuntime {
       bool init_done, shutdown_requested, in_idle_task;
       Task *idle_task;
       bool idle_task_enabled;
+      gasnet_hsl_t idle_proc_mutex;
+      gasnett_cond_t idle_proc_condvar;
+      std::set<LocalProcessor *> idle_procs;
     };
 
     struct SpawnTaskArgs {
@@ -3913,8 +4012,8 @@ namespace RegionRuntime {
 
     class RemoteProcessor : public Processor::Impl {
     public:
-      RemoteProcessor(Processor _me, Processor::Kind _kind)
-	: Processor::Impl(_me, _kind)
+      RemoteProcessor(Processor _me, Processor::Kind _kind, Processor _util)
+	: Processor::Impl(_me, _kind, _util)
       {
       }
 
@@ -3955,8 +4054,8 @@ namespace RegionRuntime {
 
     Processor Processor::get_utility_processor(void) const
     {
-      // TODO: Implement this
-      return *this;
+      Processor u = impl()->util;
+      return(u.exists() ? u : *this);
     }
 
     void Processor::enable_idle_task(void)
@@ -6294,8 +6393,10 @@ namespace RegionRuntime {
 	    Processor p = id.convert<Processor>();
 	    assert(id.index() < annc_data.num_procs);
 	    Processor::Kind kind = (Processor::Kind)(*cur++);
+	    ID util_id(*cur++);
+	    Processor util = util_id.convert<Processor>();
 	    if(remote) {
-	      RemoteProcessor *proc = new RemoteProcessor(p, kind);
+	      RemoteProcessor *proc = new RemoteProcessor(p, kind, util);
 	      Runtime::runtime->nodes[ID(p).node()].processors[ID(p).index()] = proc;
 	    }
 	  }
@@ -6387,18 +6488,10 @@ namespace RegionRuntime {
       return 0;
     }
 
-    // Small hack for tracking the local cpu procs and gpu procs
-    static std::set<LocalProcessor*>& get_local_cpu_procs_set(void)
-    {
-      static std::set<LocalProcessor*> local_cpus;
-      return local_cpus;
-    } 
+    static std::vector<LocalProcessor *> local_cpus;
+    static std::vector<LocalProcessor *> local_util_procs;
 #ifdef USE_GPU
-    static std::set<GPUProcessor*>& get_local_gpu_procs_set(void)
-    {
-      static std::set<GPUProcessor*> local_gpus;
-      return local_gpus;
-    }
+    static std::vector<GPUProcessor *> local_gpus;
 #endif
 
     static Machine *the_machine = 0;
@@ -6460,6 +6553,7 @@ namespace RegionRuntime {
       size_t fb_mem_size_in_mb = 256;
       unsigned num_local_cpus = 1;
       unsigned num_local_gpus = 0;
+      unsigned num_util_procs = 0;
       unsigned cpu_worker_threads = 1;
       unsigned dma_worker_threads = 1;
       unsigned active_msg_worker_threads = 1;
@@ -6484,6 +6578,7 @@ namespace RegionRuntime {
 	INT_ARG("-ll:zsize", zc_mem_size_in_mb);
 	INT_ARG("-ll:cpu", num_local_cpus);
 	INT_ARG("-ll:gpu", num_local_gpus);
+	INT_ARG("-ll:util", num_util_procs);
 	INT_ARG("-ll:workers", cpu_worker_threads);
 	INT_ARG("-ll:dma", dma_worker_threads);
 	INT_ARG("-ll:amsg", active_msg_worker_threads);
@@ -6547,24 +6642,47 @@ namespace RegionRuntime {
       unsigned apos = 0;
 
       announce_data.node_id = gasnet_mynode();
-      announce_data.num_procs = num_local_cpus + num_local_gpus;
+      announce_data.num_procs = num_local_cpus + num_local_gpus + num_util_procs;
       announce_data.num_memories = (1 + 2 * num_local_gpus);
 
-      // create local processors
-      std::set<LocalProcessor *> &local_cpu_procs = get_local_cpu_procs_set();
+      // create utility processors (if any)
+      for(unsigned i = 0; i < num_util_procs; i++) {
+	LocalProcessor *up = new LocalProcessor(ID(ID::ID_PROCESSOR, 
+						   gasnet_mynode(), 
+						   n->processors.size()).convert<Processor>(), 
+						0, 
+						Processor::UTIL_PROC,
+						Processor::NO_PROC,
+						cpu_worker_threads, 
+						1);
+	n->processors.push_back(up);
+	local_util_procs.push_back(up);
+	adata[apos++] = NODE_ANNOUNCE_PROC;
+	adata[apos++] = up->me.id;
+	adata[apos++] = Processor::UTIL_PROC;
+	adata[apos++] = up->util.id;
+      }
 
+      // create local processors
       for(unsigned i = 0; i < num_local_cpus; i++) {
 	LocalProcessor *lp = new LocalProcessor(ID(ID::ID_PROCESSOR, 
 						   gasnet_mynode(), 
 						   n->processors.size()).convert<Processor>(), 
 						i, 
+						Processor::LOC_PROC,
+						(num_util_procs ?
+						   local_util_procs[i % num_util_procs]->me :
+						   Processor::NO_PROC),
 						cpu_worker_threads, 
 						1); // HLRT not thread-safe yet
+	if(num_util_procs > 0)
+	  local_util_procs[i % num_util_procs]->add_real_proc(lp);
 	n->processors.push_back(lp);
-	local_cpu_procs.insert(lp);
+	local_cpus.push_back(lp);
 	adata[apos++] = NODE_ANNOUNCE_PROC;
 	adata[apos++] = lp->me.id;
 	adata[apos++] = Processor::LOC_PROC;
+	adata[apos++] = lp->util.id;
 	//local_procs[i]->start();
 	//machine->add_processor(new LocalProcessor(local_procs[i]));
       }
@@ -6584,8 +6702,27 @@ namespace RegionRuntime {
 	cpumem = 0;
 
       // list affinities between local CPUs / memories
-      for(std::set<LocalProcessor *>::iterator it = local_cpu_procs.begin();
-	  it != local_cpu_procs.end();
+      for(std::vector<LocalProcessor *>::iterator it = local_util_procs.begin();
+	  it != local_util_procs.end();
+	  it++) {
+	if(cpu_mem_size_in_mb > 0) {
+	  adata[apos++] = NODE_ANNOUNCE_PMA;
+	  adata[apos++] = (*it)->me.id;
+	  adata[apos++] = cpumem->me.id;
+	  adata[apos++] = 100;  // "large" bandwidth
+	  adata[apos++] = 1;    // "small" latency
+	}
+
+	adata[apos++] = NODE_ANNOUNCE_PMA;
+	adata[apos++] = (*it)->me.id;
+	adata[apos++] = r->global_memory->me.id;
+	adata[apos++] = 10;  // "lower" bandwidth
+	adata[apos++] = 50;    // "higher" latency
+      }
+
+      // list affinities between local CPUs / memories
+      for(std::vector<LocalProcessor *>::iterator it = local_cpus.begin();
+	  it != local_cpus.end();
 	  it++) {
 	if(cpu_mem_size_in_mb > 0) {
 	  adata[apos++] = NODE_ANNOUNCE_PMA;
@@ -6611,8 +6748,6 @@ namespace RegionRuntime {
       }
 
 #ifdef USE_GPU
-      std::set<GPUProcessor *> &local_gpu_procs = get_local_gpu_procs_set();
-
       if(num_local_gpus > 0) {
 	for(unsigned i = 0; i < num_local_gpus; i++) {
 	  Processor p = ID(ID::ID_PROCESSOR, 
@@ -6620,14 +6755,26 @@ namespace RegionRuntime {
 			   n->processors.size()).convert<Processor>();
 	  //printf("GPU's ID is %x\n", p.id);
  	  GPUProcessor *gp = new GPUProcessor(p, i,
+#ifdef UTIL_PROCS_FOR_GPU
+					      (num_util_procs ?
+					         local_util_procs[i % num_util_procs]->me :
+					         Processor::NO_PROC),
+#else
+					      Processor::NO_PROC,
+#endif
 					      zc_mem_size_in_mb << 20,
 					      fb_mem_size_in_mb << 20);
+#ifdef UTIL_PROCS_FOR_GPU
+	  if(num_util_procs > 0)
+	    local_util_procs[i % num_util_procs]->add_real_proc(gp);
+#endif
 	  n->processors.push_back(gp);
-	  local_gpu_procs.insert(gp);
+	  local_gpus.push_back(gp);
 
 	  adata[apos++] = NODE_ANNOUNCE_PROC;
 	  adata[apos++] = p.id;
 	  adata[apos++] = Processor::TOC_PROC;
+	  adata[apos++] = gp->util.id;
 
 	  Memory m = ID(ID::ID_MEMORY,
 			gasnet_mynode(),
@@ -6664,8 +6811,8 @@ namespace RegionRuntime {
 	  adata[apos++] = 200;
 
 	  // ZC also accessible to all the local CPUs
-	  for(std::set<LocalProcessor *>::iterator it = local_cpu_procs.begin();
-	      it != local_cpu_procs.end();
+	  for(std::vector<LocalProcessor *>::iterator it = local_cpus.begin();
+	      it != local_cpus.end();
 	      it++) {
 	    adata[apos++] = NODE_ANNOUNCE_PMA;
 	    adata[apos++] = (*it)->me.id;
@@ -6821,16 +6968,19 @@ namespace RegionRuntime {
       // now that we've got the machine description all set up, we can start
       //  the worker threads for local processors, which'll probably ask the
       //  high-level runtime to set itself up
-      std::set<LocalProcessor*> &local_cpu_procs = get_local_cpu_procs_set();
-      for(std::set<LocalProcessor *>::iterator it = local_cpu_procs.begin();
-	  it != local_cpu_procs.end();
+      for(std::vector<LocalProcessor *>::iterator it = local_util_procs.begin();
+	  it != local_util_procs.end();
+	  it++)
+	(*it)->start_worker_threads();
+
+      for(std::vector<LocalProcessor *>::iterator it = local_cpus.begin();
+	  it != local_cpus.end();
 	  it++)
 	(*it)->start_worker_threads();
 
 #ifdef USE_GPU
-      std::set<GPUProcessor*> &local_gpu_procs = get_local_gpu_procs_set();
-      for(std::set<GPUProcessor *>::iterator it = local_gpu_procs.begin();
-	  it != local_gpu_procs.end();
+      for(std::vector<GPUProcessor *>::iterator it = local_gpus.begin();
+	  it != local_gpus.end();
 	  it++)
 	(*it)->start_worker_thread();
 #endif

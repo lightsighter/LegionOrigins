@@ -2187,9 +2187,12 @@ namespace RegionRuntime {
 
       // If this is the first processor, launch the legion main task on this processor
       const std::set<Processor> &all_procs = machine->get_all_processors();
-      if (local_proc == (*(all_procs.begin())))
+      std::set<Processor>::const_iterator first_cpu = all_procs.begin();
+      while(machine->get_processor_kind(*first_cpu) != Processor::LOC_PROC)
+	first_cpu++;
+      if (local_proc == (*first_cpu))
       {
-        log_task(LEVEL_SPEW,"Issuing region main task on processor %x",local_proc.id);
+        log_task(LEVEL_SPEW,"Issuing legion main task on processor %x",local_proc.id);
         TaskContext *desc = get_available_context(true/*new tree*/);
         UniqueID tid = get_unique_task_id();
         {

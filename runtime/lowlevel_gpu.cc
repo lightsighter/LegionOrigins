@@ -419,9 +419,9 @@ namespace RegionRuntime {
       cudaMemcpyKind kind;
     };
 
-    GPUProcessor::GPUProcessor(Processor _me, int _gpu_index, 
+    GPUProcessor::GPUProcessor(Processor _me, int _gpu_index, Processor _util,
 	     size_t _zcmem_size, size_t _fbmem_size)
-      : Processor::Impl(_me, Processor::TOC_PROC)
+      : Processor::Impl(_me, Processor::TOC_PROC, _util)
     {
       internal = new GPUProcessor::Internal;
       internal->gpu = this;

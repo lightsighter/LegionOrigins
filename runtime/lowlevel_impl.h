@@ -355,8 +355,8 @@ namespace RegionRuntime {
 
     class Processor::Impl {
     public:
-      Impl(Processor _me, Processor::Kind _kind)
-	: me(_me), kind(_kind), run_counter(0) {}
+      Impl(Processor _me, Processor::Kind _kind, Processor _util = Processor::NO_PROC)
+	: me(_me), kind(_kind), util(_util), run_counter(0) {}
 
       void run(Atomic<int> *_run_counter)
       {
@@ -376,10 +376,12 @@ namespace RegionRuntime {
 
       virtual void enable_idle_task(void) { assert(0); }
       virtual void disable_idle_task(void) { assert(0); }
+      virtual bool is_idle_task_enabled(void) { return(false); }
 
     public:
       Processor me;
       Processor::Kind kind;
+      Processor util;
       Atomic<int> *run_counter;
     };
 
