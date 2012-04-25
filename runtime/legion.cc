@@ -9882,6 +9882,9 @@ namespace RegionRuntime {
       for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
             it != region_states[ctx].valid_instances.end(); it++)
       {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(it->first->valid);
+#endif
         rez.serialize<InstanceID>(it->first->iid);
         rez.serialize<bool>(it->second);
       }
@@ -10219,10 +10222,10 @@ namespace RegionRuntime {
                 it != new_valid.end(); it++)
           {
             InstanceInfo *info = inst_map[it->first];
-#ifdef DEBUG_HIGH_LEVEL
-            assert(info->valid); 
-#endif
             region_states[ctx].valid_instances[info] = it->second;
+            // Note we need to mark this instance valid if it isn't already
+            // since valid isn't one of the fields moved around by the instance info
+            info->mark_valid();
           }
         }
       }
@@ -14841,14 +14844,22 @@ namespace RegionRuntime {
       for (std::list<InstanceInfo*>::iterator it = open_children.begin();
             it != open_children.end(); /*nothing*/)
       {
-        if ((*it)->find_dependences_below(wait_on_events, usage))
+        // Pull it off the list no matter what so no one can
+        // invalidate our iterator
+        InstanceInfo *child = *it;
+        it = open_children.erase(it);
+        if (child->find_dependences_below(wait_on_events, usage))
         {
-          InstanceInfo *child = *it;
-          it = open_children.erase(it);
-          child->close_child();
+          if (!child->collected)
+          {
+            child->close_child();
+          }
         }
         else
         {
+          // Otherwise put the child back on the list and update
+          // our iterator
+          it = open_children.insert(it, child);
           it++;
         }
       }
@@ -14870,14 +14881,20 @@ namespace RegionRuntime {
       for (std::list<InstanceInfo*>::iterator it = open_children.begin();
             it != open_children.end(); /*nothing*/)
       {
-        if ((*it)->find_dependences_below(wait_on_events, writer, redop))
+        // Pull it off the list no matter what so no one can invalidate our iterator
+        InstanceInfo *child = *it;
+        it = open_children.erase(it);
+        if (child->find_dependences_below(wait_on_events, writer, redop))
         {
-          InstanceInfo *child = *it;
-          it = open_children.erase(it);
-          child->close_child();
+          if (!child->collected)
+          {
+            child->close_child();
+          }
         }
         else
         {
+          // Otherwise put the child back on the list and update our iterator
+          it = open_children.insert(it, child);
           it++;
         }
       }
@@ -15538,6 +15555,14 @@ namespace RegionRuntime {
       all_children.push_back(child);
       if (open)
       {
+#ifdef DEBUG_HIGH_LEVEL
+        // Should only ever be one of these on the list at a time
+        for (std::list<InstanceInfo*>::const_iterator it = open_children.begin();
+              it != open_children.end(); it++)
+        {
+          assert((*it) != child);
+        }
+#endif
         open_children.push_back(child);
       }
     }
