@@ -1,7 +1,12 @@
-#!/usr/bin/python26 -u
+#!/usr/bin/env python
+
+# Notes:
+#   PLEASE use Python >= 2.6.
+#   Torque will copy your script, so customize _root_dir appropriately.
+
+_root_dir = os.path.abspath(os.path.dirname(__file__))
 
 import math, numpy, os, re, shutil, subprocess as sp, sys
-_root_dir = '/home/eslaught/legion/apps/fluid3d' #os.path.abspath(os.path.dirname(__file__))
 sys.path.append(_root_dir)
 from compare import read_file, compare
 
