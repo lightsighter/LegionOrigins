@@ -103,8 +103,8 @@ def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, nodes = 1, cpus = 0,
     return check_output(
         (['gasnetrun_ibv', '-n', str(nodes)] if _legion_use_gasnet else []) +
         [_legion_fluid,
-         # HACK: Exactly how does gsize need to change with increasing nodes?
-         '-ll:csize', str(16384), '-ll:gsize', (str(2000) if nodes < 8 else str(1800)),
+         # The upper limit for gsize is 2048 - 2*num_nodes*LMB_SIZE(in MB) .
+         '-ll:csize', str(16384), '-ll:gsize', str(1000)
          '-ll:cpu', str(cpus),
         ] +
          # Low-level message threads
