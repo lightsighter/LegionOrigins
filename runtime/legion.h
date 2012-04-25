@@ -113,7 +113,7 @@ namespace RegionRuntime {
     class EscapedCopier;
     class RegionUsage;
     class LogicalUser;
-    class Fraction;
+    template<typename T> class Fraction;
 
     // Some typedefs
     typedef LowLevel::Machine Machine;
@@ -1935,27 +1935,28 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
     // Fraction 
     /////////////////////////////////////////////////////////////
+    template<typename T>
     class Fraction {
     public:
       Fraction(void);
-      Fraction(unsigned num, unsigned denom);
-      Fraction(const Fraction &f);
+      Fraction(T num, T denom);
+      Fraction(const Fraction<T> &f);
     public:
-      void divide(unsigned factor);
-      void add(const Fraction &rhs);
-      void subtract(const Fraction &rhs);
+      void divide(T factor);
+      void add(const Fraction<T> &rhs);
+      void subtract(const Fraction<T> &rhs);
       // Return a fraction that can be taken from this fraction 
       // such that it leaves at least 1/ways parts local after (ways-1) portions
       // are taken from this instance
-      Fraction get_part(unsigned ways);
+      Fraction<T> get_part(T ways);
     public:
       bool is_whole(void) const;
       bool is_empty(void) const;
     public:
-      Fraction& operator=(const Fraction &rhs);
+      Fraction<T>& operator=(const Fraction<T> &rhs);
     private:
-      unsigned numerator;
-      unsigned denominator;
+      T numerator;
+      T denominator;
     };
 
     /////////////////////////////////////////////////////////////
@@ -2040,9 +2041,9 @@ namespace RegionRuntime {
       // This is all ancestor regions and all children (since we need to prevent garbage collection)
       void get_needed_instances_returning(std::vector<InstanceInfo*> &needed_instances);
       // Operations for packing return information for instance infos
-      Fraction get_subtract_frac(unsigned ways);
+      Fraction<long> get_subtract_frac(unsigned ways);
       size_t compute_info_size(void) const;
-      void pack_instance_info(Serializer &rez, const Fraction &to_take);
+      void pack_instance_info(Serializer &rez, const Fraction<long> &to_take);
       static void unpack_instance_info(Deserializer &derez, std::map<InstanceID,InstanceInfo*> *infos, unsigned split_factor);
       // Operations for packing return information for instance infos
       // Note for packing return infos we have to return all the added references even if they aren't in the context
@@ -2099,7 +2100,7 @@ namespace RegionRuntime {
       unsigned children; // if the instance is remote this doesn't matter, children will add themselves when returned
       bool collected; // Whether this instance has been collected
       bool returned; // If this instance has been sent back already
-      Fraction local_frac; // Fraction of this instance info that is local to here (will be 1 when can be collected)
+      Fraction<long> local_frac; // Fraction of this instance info that is local to here (will be 1 when can be collected)
       InstanceInfo *parent;
       Event valid_event;
       Lock inst_lock;
