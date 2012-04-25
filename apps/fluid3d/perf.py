@@ -1,7 +1,7 @@
-#!/usr/bin/env python26
+#!/usr/bin/python26 -u
 
 import math, numpy, os, re, shutil, subprocess as sp, sys
-_root_dir = os.path.abspath(os.path.dirname(__file__))
+_root_dir = '/home/eslaught/legion/apps/fluid3d' #os.path.abspath(os.path.dirname(__file__))
 sys.path.append(_root_dir)
 from compare import read_file, compare
 
@@ -184,7 +184,6 @@ def plot(nums, title):
 _num_steps = 100
 _num_reps = 1
 if __name__ == '__main__':
-    os.chdir(_root_dir)
     for thunk in prep: thunk()
 
     sizes = set([
@@ -215,7 +214,7 @@ if __name__ == '__main__':
         print 'Parsec 16-cpu:'
         parsec16_timings = []
         for i in xrange(20):
-            parsec16_timings.append(perf_check(parsec_pthreads, _num_reps, nbx = 4, nby = 1, nbz = 2, steps = _num_steps, nodes = 1))
+            parsec16_timings.append(perf_check(parsec_pthreads, _num_reps, nbx = 4, nby = 1, nbz = 4, steps = _num_steps, nodes = 1))
         print 'Mean:', numpy.average(parsec16_timings)
         print 'Median:', numpy.median(parsec16_timings)
         print 'Mean (minus top and bottom 2):', numpy.average(sorted(parsec16_timings)[2:-2])
