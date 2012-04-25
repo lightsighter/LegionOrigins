@@ -103,12 +103,16 @@ def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, nodes = 1, cpus = 0,
     return check_output(
         (['gasnetrun_ibv', '-n', str(nodes)] if _legion_use_gasnet else []) +
         [_legion_fluid,
-         '-ll:csize', '16384', '-ll:gsize', '2000',
+         # HACK: Exactly how does gsize need to change with increasing nodes?
+         '-ll:csize', str(16384), '-ll:gsize', (str(2000) if nodes < 8 else str(1800)),
          '-ll:cpu', str(cpus),
         ] +
          # Low-level message threads
-        (['-ll:dma', str(2), '-ll:amsg', str(2), '-ll:senders',]
+        (['-ll:dma', str(2), '-ll:amsg', str(2),]
          if _legion_use_gasnet and nodes > 1 else []) +
+         # HACK: Turn off -ll:senders with 4 or more nodes
+        (['-ll:senders']
+         if _legion_use_gasnet and nodes > 1 and nodes < 4 else []) +
          # High-level scheduler look-ahead
         ['-hl:sched', str(2*nbx*nby*nbz),
          '-level', str(legion_logging),
@@ -191,7 +195,7 @@ def plot(nums, title):
 def run_parsec(cpus, reps, steps):
     print 'PARSEC pthreads (%d cpu%s)' % (cpus, plural(cpus))
 
-    size = cpus
+    size = int(math.ceil(math.log(cpus, 2)))
     nbx = 1 << (size/2)
     nby = 1
     nbz = 1 << (size/2)
@@ -221,10 +225,16 @@ def run_legion(nodes, cpus, reps, steps):
     if nbx*nbz != 1 << size:
         nbx *= 2
 
+    if cpus == 1:
+        actual_cpus = cpus
+    else:
+        # add 1 for utility process
+        actual_cpus = cpus + 1
+
     timings = []
     for i in xrange(reps):
         timing = perf_check(legion, 1, nbx = nbx, nby = nby, nbz = nbz,
-                            steps = steps, nodes = nodes, cpus = cpus + 1)
+                            steps = steps, nodes = nodes, cpus = actual_cpus)
         if timing is not None: timings.append(timing)
     print 'Mean: %.3f' % numpy.average(timings)
     print 'Median: %.3f' % numpy.median(timings)

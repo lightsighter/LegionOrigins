@@ -142,6 +142,7 @@ namespace RegionRuntime {
       enum Kind {
 	TOC_PROC, // Throughput core
 	LOC_PROC, // Latency core
+	UTIL_PROC, // Utility core
       };
 
 
