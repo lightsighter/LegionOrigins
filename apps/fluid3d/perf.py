@@ -204,7 +204,7 @@ def run_parsec(cpus, reps, steps):
         if timing is not None: timings.append(timing)
     print 'Mean: %.3f' % numpy.average(timings)
     print 'Median: %.3f' % numpy.median(timings)
-    print 'Mean (minus top and bottom 1): %.3f' % numpy.average(sorted(timings)[2:-2])
+    print 'Mean (minus top and bottom 2): %.3f' % numpy.average(sorted(timings)[2:-2])
     print 'Raw: %s' % timings
     print
     if want_plot:
@@ -228,7 +228,7 @@ def run_legion(nodes, cpus, reps, steps):
         if timing is not None: timings.append(timing)
     print 'Mean: %.3f' % numpy.average(timings)
     print 'Median: %.3f' % numpy.median(timings)
-    print 'Mean (minus top and bottom 1): %.3f' % numpy.average(sorted(timings)[2:-2])
+    print 'Mean (minus top and bottom 2): %.3f' % numpy.average(sorted(timings)[2:-2])
     print 'Raw: %s' % timings
     print
     if want_plot:
@@ -236,7 +236,7 @@ def run_legion(nodes, cpus, reps, steps):
              (nodes, plural(nodes), cpus, plural(cpus)))
 
 _num_steps = 100
-_num_reps = 20
+_num_reps = 10
 if __name__ == '__main__':
     for thunk in prep: thunk()
 
