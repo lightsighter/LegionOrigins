@@ -2122,7 +2122,7 @@ T prioritieze_pick(const std::vector<T> &vec, T choice1, T choice2, T base)
 // Run main in a separate thread? This will cannibalize 1 thread from
 // the rest of the computation.
 #ifndef MAP_MAIN_SEPARATELY
-#define MAP_MAIN_SEPARATELY 1
+#define MAP_MAIN_SEPARATELY 0
 #endif
 static inline int get_proc_id_for_task(int task_id, int tag, int num_procs)
 {
@@ -2139,12 +2139,12 @@ static inline int get_proc_id_for_task(int task_id, int tag, int num_procs)
   case TASKID_GATHER_DENSITIES:
   case TASKID_SCATTER_FORCES:
   case TASKID_GATHER_FORCES:
+#if MAP_MAIN_SEPARATELY
     if (num_procs == 1)
       return 0;
-#if MAP_MAIN_SEPARATELY
     return (tag % (num_procs - 1)) + 1;
 #else
-    return (tag % (num_procs - 1)) + 1;
+    return tag % num_procs;
 #endif
   default:
     assert(false);
