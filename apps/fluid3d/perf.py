@@ -1,7 +1,12 @@
-#!/usr/bin/env python26
+#!/usr/bin/env python
+
+# Notes:
+#   PLEASE use Python >= 2.6.
+#   Torque will copy your script, so customize _root_dir appropriately.
+
+_root_dir = os.path.abspath(os.path.dirname(__file__))
 
 import math, numpy, os, re, shutil, subprocess as sp, sys
-_root_dir = os.path.abspath(os.path.dirname(__file__))
 sys.path.append(_root_dir)
 from compare import read_file, compare
 
@@ -184,7 +189,6 @@ def plot(nums, title):
 _num_steps = 100
 _num_reps = 1
 if __name__ == '__main__':
-    os.chdir(_root_dir)
     for thunk in prep: thunk()
 
     sizes = set([
@@ -208,18 +212,18 @@ if __name__ == '__main__':
         print 'Mean:', numpy.average(parsec8_timings)
         print 'Median:', numpy.median(parsec8_timings)
         print 'Mean (minus top and bottom 2):', numpy.average(sorted(parsec8_timings)[2:-2])
-        print parsec8_timing
+        print parsec8_timings
         print
 
     if 'p16' in sizes:
         print 'Parsec 16-cpu:'
         parsec16_timings = []
         for i in xrange(20):
-            parsec16_timings.append(perf_check(parsec_pthreads, _num_reps, nbx = 4, nby = 1, nbz = 2, steps = _num_steps, nodes = 1))
+            parsec16_timings.append(perf_check(parsec_pthreads, _num_reps, nbx = 4, nby = 1, nbz = 4, steps = _num_steps, nodes = 1))
         print 'Mean:', numpy.average(parsec16_timings)
         print 'Median:', numpy.median(parsec16_timings)
         print 'Mean (minus top and bottom 2):', numpy.average(sorted(parsec16_timings)[2:-2])
-        print parsec16_timing
+        print parsec16_timings
         print
 
     if 'l1-8' in sizes:
@@ -231,7 +235,7 @@ if __name__ == '__main__':
         print 'Mean:', numpy.average(legion1_8_timings)
         print 'Median:', numpy.median(legion1_8_timings)
         print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion1_8_timings)[2:-2])
-        print legion1_8_timing
+        print legion1_8_timings
         print
 
     if 'l1-12' in sizes:
@@ -243,7 +247,7 @@ if __name__ == '__main__':
         print 'Mean:', numpy.average(legion1_12_timings)
         print 'Median:', numpy.median(legion1_12_timings)
         print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion1_12_timings)[2:-2])
-        print legion1_12_timing
+        print legion1_12_timings
         print
 
     if 'l2-8' in sizes:
@@ -255,7 +259,7 @@ if __name__ == '__main__':
         print 'Mean:', numpy.average(legion2_8_timings)
         print 'Median:', numpy.median(legion2_8_timings)
         print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion2_8_timings)[2:-2])
-        print legion2_8_timing
+        print legion2_8_timings
         print
 
     if 'l2-10' in sizes:
@@ -267,7 +271,7 @@ if __name__ == '__main__':
         print 'Mean:', numpy.average(legion2_10_timings)
         print 'Median:', numpy.median(legion2_10_timings)
         print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion2_10_timings)[2:-2])
-        print legion2_10_timing
+        print legion2_10_timings
         print
 
     if 'l2-12' in sizes:
@@ -279,7 +283,7 @@ if __name__ == '__main__':
         print 'Mean:', numpy.average(legion2_12_timings)
         print 'Median:', numpy.median(legion2_12_timings)
         print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion2_12_timings)[2:-2])
-        print legion2_12_timing
+        print legion2_12_timings
         print
 
     if 'l4-8' in sizes:
@@ -291,7 +295,7 @@ if __name__ == '__main__':
         print 'Mean:', numpy.average(legion4_8_timings)
         print 'Median:', numpy.median(legion4_8_timings)
         print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion4_8_timings)[2:-2])
-        print legion4_8_timing
+        print legion4_8_timings
         print
 
     if 'l4-10' in sizes:
@@ -303,7 +307,7 @@ if __name__ == '__main__':
         print 'Mean:', numpy.average(legion4_10_timings)
         print 'Median:', numpy.median(legion4_10_timings)
         print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion4_10_timings)[2:-2])
-        print legion4_10_timing
+        print legion4_10_timings
         print
 
     if 'l4-12' in sizes:
@@ -315,7 +319,7 @@ if __name__ == '__main__':
         print 'Mean:', numpy.average(legion4_12_timings)
         print 'Median:', numpy.median(legion4_12_timings)
         print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion4_12_timings)[2:-2])
-        print legion4_12_timing
+        print legion4_12_timings
         print
 
     if 'l8-8' in sizes:
@@ -327,7 +331,7 @@ if __name__ == '__main__':
         print 'Mean:', numpy.average(legion8_8_timings)
         print 'Median:', numpy.median(legion8_8_timings)
         print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion8_8_timings)[2:-2])
-        print legion8_8_timing
+        print legion8_8_timings
         print
 
     if 'l8-10' in sizes:
@@ -339,7 +343,7 @@ if __name__ == '__main__':
         print 'Mean:', numpy.average(legion8_10_timings)
         print 'Median:', numpy.median(legion8_10_timings)
         print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion8_10_timings)[2:-2])
-        print legion8_10_timing
+        print legion8_10_timings
         print
 
     if 'l8-12' in sizes:
@@ -351,7 +355,7 @@ if __name__ == '__main__':
         print 'Mean:', numpy.average(legion8_12_timings)
         print 'Median:', numpy.median(legion8_12_timings)
         print 'Mean (minus top and bottom 2):', numpy.average(sorted(legion8_12_timings)[2:-2])
-        print legion8_12_timing
+        print legion8_12_timings
         print
 
     if want_plot:
