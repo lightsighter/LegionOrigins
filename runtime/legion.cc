@@ -1428,9 +1428,11 @@ namespace RegionRuntime {
         }
 #endif
       }
+#ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Map %d Parent %d",unique_id,c->get_unique_id());
       log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle %x Parent %x Privilege %d Coherence %d",
           parent_ctx->unique_id,unique_id,0,r.handle.region.id,r.parent.id,r.privilege,r.prop);
+#endif
     }
 
     //--------------------------------------------------------------------------
@@ -1723,7 +1725,9 @@ namespace RegionRuntime {
       }
       
 #ifdef DEBUG_HIGH_LEVEL
+#ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Mapping Performed %d %x %d %x %d",unique_id,ready_event.id,ready_event.gen,unmapped_event.id,unmapped_event.gen); 
+#endif
 #endif
       mapped = true;
       // We're done mapping, so trigger the mapping event
@@ -1764,7 +1768,9 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(idx == 0);
 #endif
+#ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Mapping Dependence %d %d %d %d %d %d",parent_ctx->unique_id,target.uid,target.idx,unique_id,idx,dtype);
+#endif
       if (target.ctx->add_waiting_dependence(this, target))
       {
         remaining_notifications++;
@@ -2206,7 +2212,9 @@ namespace RegionRuntime {
           desc->initialize_task(NULL/*no parent*/,tid, HighLevelRuntime::legion_main_id,
                                 &HighLevelRuntime::get_input_args(), sizeof(InputArgs), 0, 0, mapper_objects[0], mapper_locks[0]);
         }
+#ifndef LOG_EVENT_ONLY
         log_spy(LEVEL_INFO,"Top Task %d %d",desc->unique_id,HighLevelRuntime::legion_main_id);
+#endif
         // Put this task in the ready queue
         {
           AutoLock q_lock(queue_lock);
@@ -2649,7 +2657,9 @@ namespace RegionRuntime {
         (LogicalRegion)LowLevel::RegionMetaDataUntyped::create_region_untyped(num_elmts,elmt_size);
       log_region(LEVEL_DEBUG,"Creating logical region %x in task %s (ID %d)",
                   region.id,ctx->variants->name,ctx->unique_id);
+#ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Region %x",region.id);
+#endif
 
       // Make the context aware of the logical region
       ctx->create_region(region);
@@ -2726,7 +2736,9 @@ namespace RegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_PARTITION);
 
       PartitionID partition_id = get_unique_partition_id();
+#ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Partition %d Parent %x Disjoint %d",partition_id,parent.id,true);
+#endif
 
       std::vector<LogicalRegion> children(num_subregions);
       // Create all of the subregions
@@ -2739,7 +2751,9 @@ namespace RegionRuntime {
         //log_region(LEVEL_DEBUG,"Creating subregion %d of region %d in task %d\n",
         //            child_region.id, parent.id, ctx->unique_id);
         children[idx] = child_region;
+#ifndef LOG_EVENT_ONLY
         log_spy(LEVEL_INFO,"Region %x Parent %d",child_region.id,partition_id);
+#endif
       }
 
       ctx->create_partition(partition_id, parent, true/*disjoint*/, children);
@@ -2756,7 +2770,9 @@ namespace RegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_PARTITION);
 
       PartitionID partition_id = get_unique_partition_id();
+#ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Partition %d Parent %x Disjoint %d",partition_id,parent.id,disjoint);
+#endif
 
       std::vector<LogicalRegion> children(coloring.size());
       for (unsigned idx = 0; idx < coloring.size(); idx++)
@@ -2787,7 +2803,9 @@ namespace RegionRuntime {
         //log_region(LEVEL_DEBUG,"Creating subregion %d of region %d in task %d\n",
         //            child_region.id, parent.id, ctx->unique_id);
         children[idx] = child_region;
+#ifndef LOG_EVENT_ONLY
         log_spy(LEVEL_INFO,"Region %x Parent %d",child_region.id,partition_id);
+#endif
       }
 
       ctx->create_partition(partition_id, parent, disjoint, children);
@@ -2804,7 +2822,9 @@ namespace RegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_PARTITION);
 
       PartitionID partition_id = get_unique_partition_id();
+#ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Partition %d Parent %x Disjoint %d",partition_id,parent.id,disjoint);
+#endif
 
       std::vector<LogicalRegion> children(ranges.size());
       for (unsigned idx = 0; idx < ranges.size(); idx++)
@@ -2835,7 +2855,9 @@ namespace RegionRuntime {
         //log_region(LEVEL_DEBUG,"Creating subregion %d of region %d in task %d\n",
         //            child_region.id, parent.id, ctx->unique_id);
         children[idx] = child_region;
+#ifndef LOG_EVENT_ONLY
         log_spy(LEVEL_INFO,"Region %x Parent %d",child_region.id,partition_id);
+#endif
       }
 
       ctx->create_partition(partition_id, parent, disjoint, children);
@@ -4457,6 +4479,7 @@ namespace RegionRuntime {
       }
 
       // All debugging printing below here
+#ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Task %d %s Task ID %d Parent Context %d",unique_id,variants->name,task_id,parent_ctx->unique_id);
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
@@ -4481,6 +4504,7 @@ namespace RegionRuntime {
             assert(false);
         }
       }
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -7095,7 +7119,9 @@ namespace RegionRuntime {
       // Check to see if we've seen responses from all of the index space
       if (frac_index_space.first == frac_index_space.second)
       { 
+#ifndef LOG_EVENT_ONLY
         log_spy(LEVEL_INFO,"Index Space %d Context %d Size %d",unique_id,parent_ctx->unique_id,num_total_points);
+#endif
         // Check to see if we mapped all the regions for this index space, if so notify our dependences
 #ifdef DEBUG_HIGH_LEVEL
         assert(map_dependent_tasks.size() == regions.size());
@@ -8308,7 +8334,10 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           assert(idx < regions.size());
 #endif
-          bool merge = IS_READ_ONLY(regions[idx]) || IS_REDUCE(regions[idx]);
+          //bool merge = IS_READ_ONLY(regions[idx]) || IS_REDUCE(regions[idx]);
+          // We should always be merging for instance spaces since they
+          // should be able to map in parallel
+          bool merge = true;
           (*region_nodes)[handle]->unpack_physical_state(get_enclosing_physical_context(idx),
               derez, true/*returning*/, merge, *instance_infos, this->unique_id);
         }
@@ -9592,8 +9621,10 @@ namespace RegionRuntime {
         exit(1);
       }
 #endif
+#ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Mapping Dependence %d %d %d %d %d %d",
                           parent_ctx->unique_id,target.uid,target.idx,unique_id,idx,dtype);
+#endif
       bool new_dep = target.ctx->add_waiting_dependence(this,target);
       if (new_dep)
       {
@@ -10277,6 +10308,7 @@ namespace RegionRuntime {
 #endif
             if (region_states[ctx].valid_instances.find(inst_map[iid]) == region_states[ctx].valid_instances.end())
             {
+              inst_map[iid]->mark_valid();
               // Add it to the list of valid instances
               region_states[ctx].valid_instances.insert(
                   std::pair<InstanceInfo*,bool>(inst_map[iid],owner));
@@ -10331,9 +10363,8 @@ namespace RegionRuntime {
                 it != new_valid.end(); it++)
           {
             InstanceInfo *info = inst_map[it->first];
-#ifdef DEBUG_HIGH_LEVEL
-            assert(info->valid);
-#endif
+            // Mark that it is now valid
+            info->mark_valid();
             region_states[ctx].valid_instances[info] = it->second;
           }
         }
@@ -14299,7 +14330,7 @@ namespace RegionRuntime {
       result += sizeof(InstanceID); // our iid
       result += sizeof(bool); // remote returning or escaping
       result += sizeof(bool); // open child
-      result += sizeof(bool); // valid
+      //result += sizeof(bool); // valid
       result += sizeof(Fraction<long>); // remote_frac 
       if (remote)
       {
@@ -14404,7 +14435,7 @@ namespace RegionRuntime {
       rez.serialize<InstanceID>(iid);
       rez.serialize<bool>(remote);
       rez.serialize<bool>(open_child);
-      rez.serialize<bool>(valid);
+      //rez.serialize<bool>(valid);
       rez.serialize<Fraction<long> >(remote_frac); // Send back the remote fraction
       if (remote)
       {
@@ -14553,8 +14584,8 @@ namespace RegionRuntime {
       {
         bool open_child;
         derez.deserialize<bool>(open_child);
-        bool valid;
-        derez.deserialize<bool>(valid);
+        //bool valid;
+        //derez.deserialize<bool>(valid);
         Fraction<long> local_frac;
         derez.deserialize<Fraction<long> >(local_frac); // unpacking the remote fraction coming back
         // This instance better not exist in the list of instance infos
@@ -14585,7 +14616,7 @@ namespace RegionRuntime {
         }
         // Set the local fraction from above
         result_info->local_frac = local_frac;
-        result_info->valid = valid;
+        //result_info->valid = valid;
         derez.deserialize<Event>(result_info->valid_event);
         derez.deserialize<Lock>(result_info->inst_lock);
         size_t num_users;
@@ -14699,9 +14730,9 @@ namespace RegionRuntime {
 #endif
       bool new_open_child;
       derez.deserialize<bool>(new_open_child);
-      bool new_valid;
-      derez.deserialize<bool>(new_valid);
-      valid = valid || new_valid;
+      //bool new_valid;
+      //derez.deserialize<bool>(new_valid);
+      //valid = valid || new_valid;
 #ifdef DEBUG_HIGH_LEVEL
       // This should always be true.  If we were closed remotely, our parent
       // instance should have unpacked us first and realized that we were
