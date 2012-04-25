@@ -1501,7 +1501,7 @@ class Linpack {
       // row
       int best_row = -1;
       if(args->i < NB) {
-	double best_mag = 0.0;
+	double best_mag = -1.0;
 		      
 	for(int blkrow = args->k; blkrow < matrix.block_rows; blkrow++) {
 	  // skip rows we don't own
@@ -1695,7 +1695,7 @@ class Linpack {
 						   args->k, i);
 
 	if(i < NB) {
-	  double best_mag = 0;
+	  double best_mag = -1.0;
 	  for(int j = 0; j < matrix.num_row_parts; j++) {
 	    std::vector<int> pt;
 	    pt.push_back(j);

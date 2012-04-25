@@ -4168,6 +4168,8 @@ namespace RegionRuntime {
       enclosing_ctx.clear();
       chosen_ctx.clear();
       source_copy_instances.clear();
+      escaped_users.clear();
+      escaped_copies.clear();
       remote_copy_instances.clear();
       region_nodes = NULL;
       partition_nodes = NULL;
@@ -4821,7 +4823,7 @@ namespace RegionRuntime {
             if (actually_needed.find(*it) == actually_needed.end())
             {
               // Get the fraction for this instance
-              Fraction to_take = (*it)->get_subtract_frac(num_copies);
+              Fraction<long> to_take = (*it)->get_subtract_frac(num_copies);
               (*it)->pack_instance_info(rez,to_take);
               actually_needed.insert(*it);
             }
@@ -6326,6 +6328,31 @@ namespace RegionRuntime {
           size_t buffer_size = sizeof(Processor) + sizeof(Context) + sizeof(bool);
           buffer_size += (regions.size() * (sizeof(InstanceID) + sizeof(bool)));
           std::set<InstanceInfo*> returning_infos;
+          // ORDER IS IMPORTANT WHEN SENDING BACK INSTANCE INFOS
+          std::vector<InstanceInfo*> required_infos;
+          // If everything was mapped, send back all the remote instance infos so that
+          // garbage collection can happen and avoid the race on returned instances
+          if (unmapped == 0)
+          {
+            for (std::map<InstanceID,InstanceInfo*>::const_iterator it = instance_infos->begin();
+                  it != instance_infos->end(); it++)
+            {
+              if (it->second->remote && !it->second->returned)
+              {
+                it->second->get_needed_instances_returning(required_infos);
+              }
+            }
+            for (std::vector<InstanceInfo*>::const_iterator it = required_infos.begin();
+                  it != required_infos.end(); it++)
+            {
+              if (returning_infos.find(*it) == returning_infos.end())
+              {
+                buffer_size += (*it)->compute_return_info_size();
+                returning_infos.insert(*it);
+              }
+            }
+          }
+
           buffer_size += sizeof(size_t); // number of returning infos
           for (std::vector<InstanceInfo*>::const_iterator it = physical_instances.begin();
                 it != physical_instances.end(); it++)
@@ -6335,6 +6362,7 @@ namespace RegionRuntime {
             {
               buffer_size += (*it)->compute_return_info_size();
               returning_infos.insert(*it);
+              required_infos.push_back(*it);
             }
           }
           buffer_size += sizeof(size_t);
@@ -6346,31 +6374,10 @@ namespace RegionRuntime {
             {
               buffer_size += (*it)->compute_return_info_size();
               returning_infos.insert(*it);
+              required_infos.push_back(*it);
             }
           }
-          // If everything was mapped, send back all the remote instance infos so that
-          // garbage collection can happen and avoid the race on returned instances
-          if (unmapped == 0)
-          {
-            std::vector<InstanceInfo*> required_instances;
-            for (std::map<InstanceID,InstanceInfo*>::const_iterator it = instance_infos->begin();
-                  it != instance_infos->end(); it++)
-            {
-              if (it->second->remote && !it->second->returned)
-              {
-                it->second->get_needed_instances_returning(required_instances);
-              }
-            }
-            for (std::vector<InstanceInfo*>::const_iterator it = required_instances.begin();
-                  it != required_instances.end(); it++)
-            {
-              if (returning_infos.find(*it) == returning_infos.end())
-              {
-                buffer_size += (*it)->compute_return_info_size();
-                returning_infos.insert(*it);
-              }
-            }
-          }
+
           Serializer rez(buffer_size);
           // Write in the target processor
           rez.serialize<Processor>(orig_proc);
@@ -6378,11 +6385,21 @@ namespace RegionRuntime {
           rez.serialize<bool>(is_index_space); // false
           // First pack the instance infos
           rez.serialize<size_t>(returning_infos.size());
-          for (std::set<InstanceInfo*>::const_iterator it = returning_infos.begin();
-                it != returning_infos.end(); it++)
+          // ORDER IS IMPORTANT WHEN SENDING THINGS BACK
+          for (std::vector<InstanceInfo*>::const_iterator it = required_infos.begin();
+                it != required_infos.end(); it++)
           {
+            // Make sure we haven't sent it back already
+            std::set<InstanceInfo*>::iterator finder = returning_infos.find(*it);
+            if (finder != returning_infos.end())
+            {
               (*it)->pack_return_info(rez);
+              returning_infos.erase(finder);
+            }
           }
+#ifdef DEBUG_HIGH_LEVEL
+          assert(returning_infos.empty()); // Should be empty again when we finish
+#endif
           // Now pack the region IDs
 #ifdef DEBUG_HIGH_LEVEL
           assert(regions.size() == physical_instances.size());
@@ -6468,8 +6485,38 @@ namespace RegionRuntime {
           buffer_size += (num_local_points * regions.size() * (sizeof(InstanceID) + sizeof(bool))); // returning users
           buffer_size += sizeof(size_t); // returning infos size
           std::set<InstanceInfo*> returning_infos;
+          // ORDER IS IMPORTANT WHEN SENDING BACK INSTANCE INFOS
+          std::vector<InstanceInfo*> required_infos;
           // Remember if everything is mapped
           unsigned unmapped_total = this->unmapped;
+          for (std::vector<TaskContext*>::const_iterator it = sibling_tasks.begin();
+                it != sibling_tasks.end(); it++)
+          {
+            unmapped_total += (*it)->unmapped;
+          }
+          // Check to see if everyone mapped everything, if they didn't
+          // we have to send it back all our remote instances immediately
+          // to avoid any races on returning infos
+          if (unmapped_total == 0)
+          {
+            for (std::map<InstanceID,InstanceInfo*>::const_iterator it = instance_infos->begin();
+                  it != instance_infos->end(); it++)
+            {
+              if (it->second->remote && !it->second->returned)
+              {
+                it->second->get_needed_instances_returning(required_infos);
+              }
+            }
+            for (std::vector<InstanceInfo*>::const_iterator it = required_infos.begin();
+                  it != required_infos.end(); it++)
+            {
+              if (returning_infos.find(*it) == returning_infos.end())
+              {
+                buffer_size += (*it)->compute_return_info_size();
+                returning_infos.insert(*it);
+              }
+            }
+          }
           // Iterate over our children looking for things we have to send back
           for (std::vector<TaskContext*>::const_iterator it = sibling_tasks.begin();
                 it != sibling_tasks.end(); it++)
@@ -6484,9 +6531,9 @@ namespace RegionRuntime {
               {
                 buffer_size += (*it)->physical_instances[idx]->compute_return_info_size();
                 returning_infos.insert((*it)->physical_instances[idx]);
+                required_infos.push_back((*it)->physical_instances[idx]);
               }
             }
-            unmapped_total += (*it)->unmapped;
           }
 #ifdef DEBUG_HIGH_LEVEL
           assert(physical_instances.size() == regions.size());
@@ -6499,6 +6546,7 @@ namespace RegionRuntime {
             {
               buffer_size += physical_instances[idx]->compute_return_info_size();
               returning_infos.insert(physical_instances[idx]);
+              required_infos.push_back(physical_instances[idx]);
             }
           }
           // We also need to send back all the source copy users
@@ -6511,6 +6559,7 @@ namespace RegionRuntime {
             {
               buffer_size += (*it)->compute_return_info_size();
               returning_infos.insert(*it);
+              required_infos.push_back(*it);
             }
           }
           for (std::vector<TaskContext*>::const_iterator sit = sibling_tasks.begin();
@@ -6524,34 +6573,11 @@ namespace RegionRuntime {
               {
                 buffer_size += (*it)->compute_return_info_size();
                 returning_infos.insert(*it);
+                required_infos.push_back(*it);
               }
             }
           }
           buffer_size += (num_source_users * sizeof(InstanceID));
-          // Check to see if everyone mapped everything, if they did
-          // we have to send it back all our remote instances immediately
-          // to avoid any races on returning infos
-          if (unmapped_total == 0)
-          {
-            std::vector<InstanceInfo*> required_instances;
-            for (std::map<InstanceID,InstanceInfo*>::const_iterator it = instance_infos->begin();
-                  it != instance_infos->end(); it++)
-            {
-              if (it->second->remote && !it->second->returned)
-              {
-                it->second->get_needed_instances_returning(required_instances);
-              }
-            }
-            for (std::vector<InstanceInfo*>::const_iterator it = required_instances.begin();
-                  it != required_instances.end(); it++)
-            {
-              if (returning_infos.find(*it) == returning_infos.end())
-              {
-                buffer_size += (*it)->compute_return_info_size();
-                returning_infos.insert(*it);
-              }
-            }
-          }
 
           // Now package everything up and send it back
           Serializer rez(buffer_size);
@@ -6563,11 +6589,20 @@ namespace RegionRuntime {
 
           // First pack the returning infos
           rez.serialize<size_t>(returning_infos.size());
-          for (std::set<InstanceInfo*>::const_iterator it = returning_infos.begin();
-                it != returning_infos.end(); it++)
+          // ORDER IS IMPORTANT WHEN SENDING BACK INSTANCE INFOS
+          for (std::vector<InstanceInfo*>::const_iterator it = required_infos.begin();
+                it != required_infos.end(); it++)
           {
-            (*it)->pack_return_info(rez);
+            std::set<InstanceInfo*>::iterator finder = returning_infos.find(*it);
+            if (finder != returning_infos.end())
+            {
+              (*it)->pack_return_info(rez);
+              returning_infos.erase(finder);
+            }
           }
+#ifdef DEBUG_HIGH_LEVEL
+          assert(returning_infos.empty());
+#endif
 
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
@@ -7075,9 +7110,11 @@ namespace RegionRuntime {
 #endif
         this->unmapped = 0;
         this->mapped = false;
+        physical_mapped.resize(regions.size());
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
           // Check to see if all the tasks in the index space mapped the region
+          // or if it was a premapped region in which case we're already done
           if (mapped_physical_instances[idx] == num_total_points)
           {
             for (std::set<GeneralizedContext*>::const_iterator it =
@@ -7087,10 +7124,27 @@ namespace RegionRuntime {
               (*it)->notify();
             }
             map_dependent_tasks[idx].clear();
+            physical_mapped[idx] = true;
+          }
+          // Handle the case of pre-mapped regions
+          else if (pre_mapped_regions.find(idx) != pre_mapped_regions.end())
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            assert(mapped_physical_instances[idx] == 0);
+#endif
+            for (std::set<GeneralizedContext*>::const_iterator it =
+                  map_dependent_tasks[idx].begin(); it !=
+                  map_dependent_tasks[idx].end(); it++)
+            {
+              (*it)->notify();
+            }
+            map_dependent_tasks[idx].clear();
+            physical_mapped[idx] = true;
           }
           else
           {
             this->unmapped++;
+            physical_mapped[idx] = false;
           }
         }
         // If we've mapped all the instances, notify that we are done mapping
@@ -7126,11 +7180,13 @@ namespace RegionRuntime {
             mapped_physical_instances[idx] += mapped_counts[idx];
           }
           // If we're now done with this region, notify the tasks waiting on it
-          if ((mapped_physical_instances[idx] == num_total_points) &&
-              !map_dependent_tasks[idx].empty())
+          if ((mapped_physical_instances[idx] == num_total_points)) 
           {
 #ifdef DEBUG_HIGH_LEVEL
-            assert(this->unmapped > 0);
+            if (!physical_mapped[idx])
+            {
+              assert(this->unmapped > 0);
+            }
 #endif
             // Notify all our waiters
             for (std::set<GeneralizedContext*>::const_iterator it = map_dependent_tasks[idx].begin();
@@ -7139,7 +7195,11 @@ namespace RegionRuntime {
               (*it)->notify();
             }
             map_dependent_tasks[idx].clear();
-            this->unmapped--;
+            if (!physical_mapped[idx])
+            {
+              physical_mapped[idx] = true;
+              this->unmapped--;
+            }
           }
 #ifdef DEBUG_HIGH_LEVEL
           assert(mapped_physical_instances[idx] <= num_total_points);
@@ -7667,11 +7727,20 @@ namespace RegionRuntime {
 
             // Now do the instances
             rez.serialize<size_t>(actual_instances.size());
-            for (std::set<InstanceInfo*>::const_iterator it = actual_instances.begin();
-                  it != actual_instances.end(); it++)
+            // ORDER IS IMPORTANT WHEN SENDING BACK INSTANCE INFOS!
+            for (std::vector<InstanceInfo*>::const_iterator it = required_instances.begin();
+                  it != required_instances.end(); it++)
             {
-              (*it)->pack_return_info(rez);
+              std::set<InstanceInfo*>::iterator finder = actual_instances.find(*it);
+              if (finder != actual_instances.end())
+              {
+                (*it)->pack_return_info(rez);
+                actual_instances.erase(finder);
+              }
             }
+#ifdef DEBUG_HIGH_LEVEL
+            assert(actual_instances.empty());
+#endif
 
             pack_tree_updates(rez,region_tree_updates);
             
@@ -8234,12 +8303,6 @@ namespace RegionRuntime {
         assert(is_index_space);
         assert(index_owner);
 #endif
-        // Keep track of the added mappings
-        std::vector<unsigned> mapped_counts(regions.size());
-        for (unsigned idx = 0; idx < regions.size(); idx++)
-        {
-          mapped_counts[idx] = 0;
-        }
         // Now we can upack the physical states 
         size_t num_phy_states;
         derez.deserialize<size_t>(num_phy_states);
@@ -8255,13 +8318,17 @@ namespace RegionRuntime {
           bool merge = IS_READ_ONLY(regions[idx]) || IS_REDUCE(regions[idx]);
           (*region_nodes)[handle]->unpack_physical_state(get_enclosing_physical_context(idx),
               derez, true/*returning*/, merge, *instance_infos, this->unique_id);
-          // Also update the mapping count for this index
-          mapped_counts[idx]++;
         }
         // Also unpack the create regions' state
         for (unsigned idx = 0; idx < created.size(); idx++)
         {
           (*region_nodes)[created[idx]]->unpack_physical_state(outermost,derez,false/*returning*/,false/*merge*/,*instance_infos);
+        }
+        // Unapck the added mappings
+        std::vector<unsigned> mapped_counts(regions.size());
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          derez.deserialize<unsigned>(mapped_counts[idx]);
         }
         // Unpack the number of points from this index space slice
         unsigned num_remote_points;
@@ -8504,6 +8571,8 @@ namespace RegionRuntime {
               buffer_size += (*it)->compute_return_info_size(escaped_users,escaped_copies);
             }
           }
+          // Pack up the number of points that have been mapped for each region as well
+          buffer_size += (regions.size() * sizeof(unsigned));
           // Also include the number of local points
           buffer_size += sizeof(unsigned);
           
@@ -8515,11 +8584,20 @@ namespace RegionRuntime {
 
           // Now the physical instances that need to be packed
           rez.serialize<size_t>(actual_instances.size());
-          for (std::set<InstanceInfo*>::const_iterator it = actual_instances.begin();
-                it != actual_instances.end(); it++)
+          // ORDER IS IMPORTANT WHEN SENDING BACK INSTANCE INFOS
+          for (std::vector<InstanceInfo*>::const_iterator it = required_instances.begin();
+                it != required_instances.end(); it++)
           {
-            (*it)->pack_return_info(rez);
+            std::set<InstanceInfo*>::iterator finder = actual_instances.find(*it);
+            if (finder != actual_instances.end())
+            {
+              (*it)->pack_return_info(rez);
+              actual_instances.erase(finder);
+            }
           }
+#ifdef DEBUG_HIGH_LEVEL
+          assert(actual_instances.empty());
+#endif
 
           // Now pack the physical region tree updates
           pack_tree_updates(rez, region_tree_updates);
@@ -8540,6 +8618,30 @@ namespace RegionRuntime {
           {
             (*region_nodes)[it->first]->pack_physical_state(it->second,rez);
           }
+
+          // Compute the number of mapped points (i.e. no mappings that
+          // can now be considered mapped)
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            unsigned int map_count = 0;
+            // Ourself first
+            if ((physical_instances[idx] == InstanceInfo::get_no_instance()) &&
+                (pre_mapped_regions.find(idx) == pre_mapped_regions.end()))
+            {
+              map_count++;
+            }
+            for (std::vector<TaskContext*>::const_iterator it = sibling_tasks.begin();
+                  it != sibling_tasks.end(); it++)
+            {
+              if (((*it)->physical_instances[idx] == InstanceInfo::get_no_instance()) &&
+                  (pre_mapped_regions.find(idx) == pre_mapped_regions.end()))
+              {
+                map_count++;
+              }
+            }
+            rez.serialize<unsigned>(map_count);
+          }
+
           rez.serialize<unsigned>(num_local_points);
 
           // Send this thing to hell, ahem, back to the original processor
@@ -8589,10 +8691,19 @@ namespace RegionRuntime {
           {
             for (unsigned idx = 0; idx < regions.size(); idx++)
             {
-              if ((*it)->physical_instances[idx] == InstanceInfo::get_no_instance())
+              if (((*it)->physical_instances[idx] == InstanceInfo::get_no_instance()) &&
+                  (pre_mapped_regions.find(idx) == pre_mapped_regions.end()))
               {
                 mapped_counts[idx]++;
               }
+            }
+          }
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            if ((physical_instances[idx] == InstanceInfo::get_no_instance()) &&
+                (pre_mapped_regions.find(idx) == pre_mapped_regions.end()))
+            {
+              mapped_counts[idx]++;
             }
           }
           // Check to see if we're done
@@ -10227,10 +10338,10 @@ namespace RegionRuntime {
                 it != new_valid.end(); it++)
           {
             InstanceInfo *info = inst_map[it->first];
+#ifdef DEBUG_HIGH_LEVEL
+            assert(info->valid);
+#endif
             region_states[ctx].valid_instances[info] = it->second;
-            // Note we need to mark this instance valid if it isn't already
-            // since valid isn't one of the fields moved around by the instance info
-            info->mark_valid();
           }
         }
       }
@@ -13327,7 +13438,7 @@ namespace RegionRuntime {
       iid(0), handle(LogicalRegion::NO_REGION), location(Memory::NO_MEMORY),
       inst(RegionInstance::NO_INST), valid(false), remote(false), 
       open_child(false), clone(false), children(0),
-      collected(false), returned(false), local_frac(Fraction()), 
+      collected(false), returned(false), local_frac(Fraction<long>()), 
       parent(NULL), valid_event(Event::NO_EVENT), inst_lock(Lock::NO_LOCK), closing(false)
     //-------------------------------------------------------------------------
     {
@@ -13338,7 +13449,7 @@ namespace RegionRuntime {
                 RegionInstance i, bool rem, InstanceInfo *par, bool open, bool c /*= false*/, bool unpacking /*= false*/) :
       iid(id), handle(r), location(m), inst(i), valid(false), remote(rem), open_child(open), 
       clone(c), children(0), collected(false), returned(false), 
-      local_frac(Fraction()), parent(par), closing(false)
+      local_frac(Fraction<long>()), parent(par), closing(false)
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL 
@@ -13346,12 +13457,15 @@ namespace RegionRuntime {
       assert(location.exists());
       assert(inst.exists());
 #endif
+      if (parent != NULL)
+      {
+        parent->add_child(this, open_child);
+      }
       // Only fill in these fields if we're not unpacking
       if (!unpacking)
       {
         if (parent != NULL)
         {
-          parent->add_child(this, open_child);
           inst_lock = parent->inst_lock;
           // set our valid event to be the parent's valid event 
           valid_event = parent->valid_event;
@@ -13978,7 +14092,7 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    Fraction InstanceInfo::get_subtract_frac(unsigned ways)
+    Fraction<long> InstanceInfo::get_subtract_frac(unsigned ways)
     //-------------------------------------------------------------------------
     {
       return local_frac.get_part(ways);
@@ -13988,6 +14102,9 @@ namespace RegionRuntime {
     size_t InstanceInfo::compute_info_size(void) const
     //-------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!collected);
+#endif
       size_t result = 0;
       // Send everything
       result += sizeof(InstanceID);
@@ -13999,7 +14116,7 @@ namespace RegionRuntime {
       result += sizeof(Event); // valid event
       result += sizeof(Lock); // lock
       result += sizeof(bool); // valid
-      result += sizeof(Fraction);
+      result += sizeof(Fraction<long>);
       // Only send the epoch users, the remote version won't be able to garbage collect anyway
       // No need to send the number of children since we can't garbage collect remotely anyway
       result += sizeof(size_t); // num users + num added users
@@ -14010,13 +14127,12 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    void InstanceInfo::pack_instance_info(Serializer &rez, const Fraction &to_take)
+    void InstanceInfo::pack_instance_info(Serializer &rez, const Fraction<long> &to_take)
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!collected);
 #endif
-
       // Subtract the fraction that we're taking
       local_frac.subtract(to_take);
 
@@ -14036,7 +14152,7 @@ namespace RegionRuntime {
       rez.serialize<Event>(valid_event);
       rez.serialize<Lock>(inst_lock);
       rez.serialize<bool>(valid);
-      rez.serialize<Fraction>(to_take);
+      rez.serialize<Fraction<long> >(to_take);
       
       rez.serialize<size_t>(epoch_users.size());
       for (std::set<UniqueID>::const_iterator it = epoch_users.begin();
@@ -14130,7 +14246,7 @@ namespace RegionRuntime {
       derez.deserialize<Event>(result_info->valid_event);
       derez.deserialize<Lock>(result_info->inst_lock);
       derez.deserialize<bool>(result_info->valid);
-      derez.deserialize<Fraction>(result_info->local_frac);
+      derez.deserialize<Fraction<long> >(result_info->local_frac);
       // Scale the fraction by the split factor
       result_info->local_frac.divide(split_factor);
 
@@ -14173,7 +14289,8 @@ namespace RegionRuntime {
       result += sizeof(InstanceID); // our iid
       result += sizeof(bool); // remote returning or escaping
       result += sizeof(bool); // open child
-      result += sizeof(Fraction); // local_frac
+      result += sizeof(bool); // valid
+      result += sizeof(Fraction<long>); // local_frac
       if (remote)
       {
         result += sizeof(Event); // valid event
@@ -14277,7 +14394,8 @@ namespace RegionRuntime {
       rez.serialize<InstanceID>(iid);
       rez.serialize<bool>(remote);
       rez.serialize<bool>(open_child);
-      rez.serialize<Fraction>(local_frac);
+      rez.serialize<bool>(valid);
+      rez.serialize<Fraction<long> >(local_frac);
       if (remote)
       {
         rez.serialize<Event>(valid_event);
@@ -14425,8 +14543,10 @@ namespace RegionRuntime {
       {
         bool open_child;
         derez.deserialize<bool>(open_child);
-        Fraction local_frac;
-        derez.deserialize<Fraction>(local_frac);
+        bool valid;
+        derez.deserialize<bool>(valid);
+        Fraction<long> local_frac;
+        derez.deserialize<Fraction<long> >(local_frac);
         // This instance better not exist in the list of instance infos
 #ifdef DEBUG_HIGH_LEVEL
         assert(infos->find(iid) == infos->end());
@@ -14455,6 +14575,7 @@ namespace RegionRuntime {
         }
         // Set the local fraction from above
         result_info->local_frac = local_frac;
+        result_info->valid = valid;
         derez.deserialize<Event>(result_info->valid_event);
         derez.deserialize<Lock>(result_info->inst_lock);
         size_t num_users;
@@ -14531,6 +14652,9 @@ namespace RegionRuntime {
         }
         // Add it to the infos
         (*infos)[iid] = result_info;
+#ifdef DEBUG_HIGH_LEVEL
+        result_info->sanity_check(true);
+#endif
         return result_info;
       }
       else
@@ -14540,6 +14664,9 @@ namespace RegionRuntime {
         assert(infos->find(iid) != infos->end());
 #endif
         (*infos)[iid]->merge_instance_info(derez);
+#ifdef DEBUG_HIGH_LEVEL
+        (*infos)[iid]->sanity_check(true);
+#endif
         return (*infos)[iid];
       }
     }
@@ -14549,12 +14676,22 @@ namespace RegionRuntime {
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      if (returned)
-        printf("%x\n",handle.id);
       assert(!returned);
+      assert(!collected);
+      {
+        InstanceInfo *tpar = parent;
+        while (tpar != NULL)
+        {
+          assert(!tpar->collected);
+          tpar = tpar->parent;
+        }
+      }
 #endif
       bool new_open_child;
       derez.deserialize<bool>(new_open_child);
+      bool new_valid;
+      derez.deserialize<bool>(new_valid);
+      valid = valid || new_valid;
 #ifdef DEBUG_HIGH_LEVEL
       // This should always be true.  If we were closed remotely, our parent
       // instance should have unpacked us first and realized that we were
@@ -14565,8 +14702,8 @@ namespace RegionRuntime {
       assert((new_open_child == open_child) || (!open_child && new_open_child));
 #endif
 
-      Fraction returning_frac;
-      derez.deserialize<Fraction>(returning_frac);
+      Fraction<long> returning_frac;
+      derez.deserialize<Fraction<long> >(returning_frac);
       // Add the returning frac back to our current frac
       local_frac.add(returning_frac);
 
@@ -15445,6 +15582,9 @@ namespace RegionRuntime {
       {
         parent->get_needed_above_outgoing(needed_instances);
       }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!collected);
+#endif
       needed_instances.push_back(this);
     }
 
@@ -15454,6 +15594,9 @@ namespace RegionRuntime {
     {
       if (!skip_local)
       {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!collected);
+#endif
         needed_instances.push_back(this);
       }
       // Only need to get open children outoing
@@ -15476,6 +15619,9 @@ namespace RegionRuntime {
       // only add this if it hasn't already been returned
       if (!returned)
       {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!collected);
+#endif
         needed_instances.push_back(this);
       }
     }
@@ -15487,6 +15633,9 @@ namespace RegionRuntime {
       // only return this if it hasn't been returned already
       if (!skip_local && !returned)
       {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!collected);
+#endif
         needed_instances.push_back(this);
       }
       // Need all children returning
@@ -15714,6 +15863,40 @@ namespace RegionRuntime {
       }
     }
 
+    //-------------------------------------------------------------------------
+    void InstanceInfo::sanity_check(bool child_collected)
+    //-------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      if (!child_collected)
+      {
+        assert(children > 0);
+      }
+      assert(all_children.size() == children);
+      if (collected)
+      {
+        assert(child_collected);
+        assert(children==0);
+        assert(!valid);
+        assert(!clone);
+        assert(!remote);
+        assert(!returned);
+      }
+      else
+      {
+        for (std::list<InstanceInfo*>::const_iterator it = open_children.begin();
+              it != open_children.end(); it++)
+        {
+          assert((*it)->open_child);
+        }
+      }
+      if (parent != NULL)
+      {
+        parent->sanity_check(collected);
+      }
+#endif
+    }
+
     ///////////////////////////////////////////
     // Escaped User 
     ///////////////////////////////////////////
@@ -15821,14 +16004,16 @@ namespace RegionRuntime {
     // in the task tree as well as potentially large numbers of task calls at
     // each node.  However, we'll assume that the tree is not very deep.
     //-------------------------------------------------------------------------
-    Fraction::Fraction(void)
+    template<typename T>
+    Fraction<T>::Fraction(void)
       : numerator(256), denominator(256)
     //-------------------------------------------------------------------------
     {
     }
 
     //-------------------------------------------------------------------------
-    Fraction::Fraction(unsigned num, unsigned denom)
+    template<typename T>
+    Fraction<T>::Fraction(T num, T denom)
       : numerator(num), denominator(denom)
     //-------------------------------------------------------------------------
     {
@@ -15838,7 +16023,8 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    Fraction::Fraction(const Fraction &f)
+    template<typename T>
+    Fraction<T>::Fraction(const Fraction<T> &f)
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -15849,14 +16035,15 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    void Fraction::divide(unsigned factor)
+    template<typename T>
+    void Fraction<T>::divide(T factor)
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(factor != 0);
       assert(denominator > 0);
 #endif
-      unsigned new_denom = denominator * factor;
+      T new_denom = denominator * factor;
 #ifdef DEBUG_HIGH_LEVEL
       assert(new_denom > 0); // check for integer overflow
 #endif
@@ -15864,7 +16051,8 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    void Fraction::add(const Fraction &rhs)
+    template<typename T>
+    void Fraction<T>::add(const Fraction<T> &rhs)
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -15881,13 +16069,13 @@ namespace RegionRuntime {
         if ((denominator % rhs.denominator) == 0)
         {
           // Our denominator is bigger
-          unsigned factor = denominator/rhs.denominator; 
+          T factor = denominator/rhs.denominator; 
           numerator += (rhs.numerator*factor);
         }
         else if ((rhs.denominator % denominator) == 0)
         {
           // Rhs denominator is bigger
-          unsigned factor = rhs.denominator/denominator;
+          T factor = rhs.denominator/denominator;
           numerator = (numerator*factor) + rhs.numerator;
           denominator *= factor;
 #ifdef DEBUG_HIGH_LEVEL
@@ -15897,8 +16085,8 @@ namespace RegionRuntime {
         else
         {
           // One denominator is not divisible by the other, compute a common denominator
-          unsigned lhs_num = numerator * rhs.denominator;
-          unsigned rhs_num = rhs.numerator * denominator;
+          T lhs_num = numerator * rhs.denominator;
+          T rhs_num = rhs.numerator * denominator;
           numerator = lhs_num + rhs_num;
           denominator *= rhs.denominator;
 #ifdef DEBUG_HIGH_LEVEL
@@ -15912,7 +16100,8 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    void Fraction::subtract(const Fraction &rhs)
+    template<typename T>
+    void Fraction<T>::subtract(const Fraction<T> &rhs)
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -15930,7 +16119,7 @@ namespace RegionRuntime {
         if ((denominator % rhs.denominator) == 0)
         {
           // Our denominator is bigger
-          unsigned factor = denominator/rhs.denominator;
+          T factor = denominator/rhs.denominator;
 #ifdef DEBUG_HIGH_LEVEL
           assert(numerator >= (rhs.numerator*factor));
 #endif
@@ -15939,7 +16128,7 @@ namespace RegionRuntime {
         else if ((rhs.denominator % denominator) == 0)
         {
           // Rhs denominator is bigger
-          unsigned factor = rhs.denominator/denominator;
+          T factor = rhs.denominator/denominator;
 #ifdef DEBUG_HIGH_LEVEL
           assert((numerator*factor) >= rhs.numerator);
 #endif
@@ -15952,8 +16141,8 @@ namespace RegionRuntime {
         else
         {
           // One denominator is not divisible by the other, compute a common denominator
-          unsigned lhs_num = numerator * rhs.denominator;
-          unsigned rhs_num = rhs.numerator * denominator;
+          T lhs_num = numerator * rhs.denominator;
+          T rhs_num = rhs.numerator * denominator;
 #ifdef DEBUG_HIGH_LEVEL
           assert(lhs_num >= rhs_num);
 #endif
@@ -15977,7 +16166,8 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    Fraction Fraction::get_part(unsigned ways)
+    template<typename T>
+    Fraction<T> Fraction<T>::get_part(T ways)
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -15995,7 +16185,7 @@ namespace RegionRuntime {
           ways = MIN_FRACTION_SPLIT;
         }
         numerator *= ways;
-        unsigned new_denom = denominator * ways;
+        T new_denom = denominator * ways;
 #ifdef DEBUG_HIGH_LEVEL
         assert(new_denom > 0); // check for integer overflow
 #endif
@@ -16008,21 +16198,24 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    bool Fraction::is_whole(void) const
+    template<typename T>
+    bool Fraction<T>::is_whole(void) const
     //-------------------------------------------------------------------------
     {
       return (numerator == denominator);
     }
 
     //-------------------------------------------------------------------------
-    bool Fraction::is_empty(void) const
+    template<typename T>
+    bool Fraction<T>::is_empty(void) const
     //-------------------------------------------------------------------------
     {
       return (numerator == 0);
     }
 
     //-------------------------------------------------------------------------
-    Fraction& Fraction::operator=(const Fraction &rhs)
+    template<typename T>
+    Fraction<T>& Fraction<T>::operator=(const Fraction<T> &rhs)
     //-------------------------------------------------------------------------
     {
       numerator = rhs.numerator;
