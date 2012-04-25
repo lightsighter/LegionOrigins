@@ -104,7 +104,7 @@ def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, nodes = 1, cpus = 0,
         (['gasnetrun_ibv', '-n', str(nodes)] if _legion_use_gasnet else []) +
         [_legion_fluid,
          # The upper limit for gsize is 2048 - 2*num_nodes*LMB_SIZE(in MB) .
-         '-ll:csize', str(16384), '-ll:gsize', str(1000)
+         '-ll:csize', str(16384), '-ll:gsize', str(1000),
          '-ll:cpu', str(cpus),
         ] +
          # Low-level message threads
