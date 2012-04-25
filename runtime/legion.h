@@ -2089,6 +2089,8 @@ namespace RegionRuntime {
       void start_new_epoch(std::set<Event> &wait_on_events);
       // Check to see if we can garbage collect this instance
       void garbage_collect(void);
+      // A sanity check for debugging purposes
+      void sanity_check(bool child_collected);
     private:
       bool valid; // Currently a valid instance in the physical region tree
       bool remote;

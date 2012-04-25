@@ -6325,6 +6325,31 @@ namespace RegionRuntime {
           size_t buffer_size = sizeof(Processor) + sizeof(Context) + sizeof(bool);
           buffer_size += (regions.size() * (sizeof(InstanceID) + sizeof(bool)));
           std::set<InstanceInfo*> returning_infos;
+          // ORDER IS IMPORTANT WHEN SENDING BACK INSTANCE INFOS
+          std::vector<InstanceInfo*> required_infos;
+          // If everything was mapped, send back all the remote instance infos so that
+          // garbage collection can happen and avoid the race on returned instances
+          if (unmapped == 0)
+          {
+            for (std::map<InstanceID,InstanceInfo*>::const_iterator it = instance_infos->begin();
+                  it != instance_infos->end(); it++)
+            {
+              if (it->second->remote && !it->second->returned)
+              {
+                it->second->get_needed_instances_returning(required_infos);
+              }
+            }
+            for (std::vector<InstanceInfo*>::const_iterator it = required_infos.begin();
+                  it != required_infos.end(); it++)
+            {
+              if (returning_infos.find(*it) == returning_infos.end())
+              {
+                buffer_size += (*it)->compute_return_info_size();
+                returning_infos.insert(*it);
+              }
+            }
+          }
+
           buffer_size += sizeof(size_t); // number of returning infos
           for (std::vector<InstanceInfo*>::const_iterator it = physical_instances.begin();
                 it != physical_instances.end(); it++)
@@ -6334,6 +6359,7 @@ namespace RegionRuntime {
             {
               buffer_size += (*it)->compute_return_info_size();
               returning_infos.insert(*it);
+              required_infos.push_back(*it);
             }
           }
           buffer_size += sizeof(size_t);
@@ -6345,31 +6371,10 @@ namespace RegionRuntime {
             {
               buffer_size += (*it)->compute_return_info_size();
               returning_infos.insert(*it);
+              required_infos.push_back(*it);
             }
           }
-          // If everything was mapped, send back all the remote instance infos so that
-          // garbage collection can happen and avoid the race on returned instances
-          if (unmapped == 0)
-          {
-            std::vector<InstanceInfo*> required_instances;
-            for (std::map<InstanceID,InstanceInfo*>::const_iterator it = instance_infos->begin();
-                  it != instance_infos->end(); it++)
-            {
-              if (it->second->remote && !it->second->returned)
-              {
-                it->second->get_needed_instances_returning(required_instances);
-              }
-            }
-            for (std::vector<InstanceInfo*>::const_iterator it = required_instances.begin();
-                  it != required_instances.end(); it++)
-            {
-              if (returning_infos.find(*it) == returning_infos.end())
-              {
-                buffer_size += (*it)->compute_return_info_size();
-                returning_infos.insert(*it);
-              }
-            }
-          }
+
           Serializer rez(buffer_size);
           // Write in the target processor
           rez.serialize<Processor>(orig_proc);
@@ -6377,11 +6382,21 @@ namespace RegionRuntime {
           rez.serialize<bool>(is_index_space); // false
           // First pack the instance infos
           rez.serialize<size_t>(returning_infos.size());
-          for (std::set<InstanceInfo*>::const_iterator it = returning_infos.begin();
-                it != returning_infos.end(); it++)
+          // ORDER IS IMPORTANT WHEN SENDING THINGS BACK
+          for (std::vector<InstanceInfo*>::const_iterator it = required_infos.begin();
+                it != required_infos.end(); it++)
           {
+            // Make sure we haven't sent it back already
+            std::set<InstanceInfo*>::iterator finder = returning_infos.find(*it);
+            if (finder != returning_infos.end())
+            {
               (*it)->pack_return_info(rez);
+              returning_infos.erase(finder);
+            }
           }
+#ifdef DEBUG_HIGH_LEVEL
+          assert(returning_infos.empty()); // Should be empty again when we finish
+#endif
           // Now pack the region IDs
 #ifdef DEBUG_HIGH_LEVEL
           assert(regions.size() == physical_instances.size());
@@ -6467,8 +6482,38 @@ namespace RegionRuntime {
           buffer_size += (num_local_points * regions.size() * (sizeof(InstanceID) + sizeof(bool))); // returning users
           buffer_size += sizeof(size_t); // returning infos size
           std::set<InstanceInfo*> returning_infos;
+          // ORDER IS IMPORTANT WHEN SENDING BACK INSTANCE INFOS
+          std::vector<InstanceInfo*> required_infos;
           // Remember if everything is mapped
           unsigned unmapped_total = this->unmapped;
+          for (std::vector<TaskContext*>::const_iterator it = sibling_tasks.begin();
+                it != sibling_tasks.end(); it++)
+          {
+            unmapped_total += (*it)->unmapped;
+          }
+          // Check to see if everyone mapped everything, if they didn't
+          // we have to send it back all our remote instances immediately
+          // to avoid any races on returning infos
+          if (unmapped_total == 0)
+          {
+            for (std::map<InstanceID,InstanceInfo*>::const_iterator it = instance_infos->begin();
+                  it != instance_infos->end(); it++)
+            {
+              if (it->second->remote && !it->second->returned)
+              {
+                it->second->get_needed_instances_returning(required_infos);
+              }
+            }
+            for (std::vector<InstanceInfo*>::const_iterator it = required_infos.begin();
+                  it != required_infos.end(); it++)
+            {
+              if (returning_infos.find(*it) == returning_infos.end())
+              {
+                buffer_size += (*it)->compute_return_info_size();
+                returning_infos.insert(*it);
+              }
+            }
+          }
           // Iterate over our children looking for things we have to send back
           for (std::vector<TaskContext*>::const_iterator it = sibling_tasks.begin();
                 it != sibling_tasks.end(); it++)
@@ -6483,9 +6528,9 @@ namespace RegionRuntime {
               {
                 buffer_size += (*it)->physical_instances[idx]->compute_return_info_size();
                 returning_infos.insert((*it)->physical_instances[idx]);
+                required_infos.push_back((*it)->physical_instances[idx]);
               }
             }
-            unmapped_total += (*it)->unmapped;
           }
 #ifdef DEBUG_HIGH_LEVEL
           assert(physical_instances.size() == regions.size());
@@ -6498,6 +6543,7 @@ namespace RegionRuntime {
             {
               buffer_size += physical_instances[idx]->compute_return_info_size();
               returning_infos.insert(physical_instances[idx]);
+              required_infos.push_back(physical_instances[idx]);
             }
           }
           // We also need to send back all the source copy users
@@ -6510,6 +6556,7 @@ namespace RegionRuntime {
             {
               buffer_size += (*it)->compute_return_info_size();
               returning_infos.insert(*it);
+              required_infos.push_back(*it);
             }
           }
           for (std::vector<TaskContext*>::const_iterator sit = sibling_tasks.begin();
@@ -6523,34 +6570,11 @@ namespace RegionRuntime {
               {
                 buffer_size += (*it)->compute_return_info_size();
                 returning_infos.insert(*it);
+                required_infos.push_back(*it);
               }
             }
           }
           buffer_size += (num_source_users * sizeof(InstanceID));
-          // Check to see if everyone mapped everything, if they did
-          // we have to send it back all our remote instances immediately
-          // to avoid any races on returning infos
-          if (unmapped_total == 0)
-          {
-            std::vector<InstanceInfo*> required_instances;
-            for (std::map<InstanceID,InstanceInfo*>::const_iterator it = instance_infos->begin();
-                  it != instance_infos->end(); it++)
-            {
-              if (it->second->remote && !it->second->returned)
-              {
-                it->second->get_needed_instances_returning(required_instances);
-              }
-            }
-            for (std::vector<InstanceInfo*>::const_iterator it = required_instances.begin();
-                  it != required_instances.end(); it++)
-            {
-              if (returning_infos.find(*it) == returning_infos.end())
-              {
-                buffer_size += (*it)->compute_return_info_size();
-                returning_infos.insert(*it);
-              }
-            }
-          }
 
           // Now package everything up and send it back
           Serializer rez(buffer_size);
@@ -6562,11 +6586,20 @@ namespace RegionRuntime {
 
           // First pack the returning infos
           rez.serialize<size_t>(returning_infos.size());
-          for (std::set<InstanceInfo*>::const_iterator it = returning_infos.begin();
-                it != returning_infos.end(); it++)
+          // ORDER IS IMPORTANT WHEN SENDING BACK INSTANCE INFOS
+          for (std::vector<InstanceInfo*>::const_iterator it = required_infos.begin();
+                it != required_infos.end(); it++)
           {
-            (*it)->pack_return_info(rez);
+            std::set<InstanceInfo*>::iterator finder = returning_infos.find(*it);
+            if (finder != returning_infos.end())
+            {
+              (*it)->pack_return_info(rez);
+              returning_infos.erase(finder);
+            }
           }
+#ifdef DEBUG_HIGH_LEVEL
+          assert(returning_infos.empty());
+#endif
 
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
@@ -7666,11 +7699,20 @@ namespace RegionRuntime {
 
             // Now do the instances
             rez.serialize<size_t>(actual_instances.size());
-            for (std::set<InstanceInfo*>::const_iterator it = actual_instances.begin();
-                  it != actual_instances.end(); it++)
+            // ORDER IS IMPORTANT WHEN SENDING BACK INSTANCE INFOS!
+            for (std::vector<InstanceInfo*>::const_iterator it = required_instances.begin();
+                  it != required_instances.end(); it++)
             {
-              (*it)->pack_return_info(rez);
+              std::set<InstanceInfo*>::iterator finder = actual_instances.find(*it);
+              if (finder != actual_instances.end())
+              {
+                (*it)->pack_return_info(rez);
+                actual_instances.erase(finder);
+              }
             }
+#ifdef DEBUG_HIGH_LEVEL
+            assert(actual_instances.empty());
+#endif
 
             pack_tree_updates(rez,region_tree_updates);
             
@@ -8514,11 +8556,20 @@ namespace RegionRuntime {
 
           // Now the physical instances that need to be packed
           rez.serialize<size_t>(actual_instances.size());
-          for (std::set<InstanceInfo*>::const_iterator it = actual_instances.begin();
-                it != actual_instances.end(); it++)
+          // ORDER IS IMPORTANT WHEN SENDING BACK INSTANCE INFOS
+          for (std::vector<InstanceInfo*>::const_iterator it = required_instances.begin();
+                it != required_instances.end(); it++)
           {
-            (*it)->pack_return_info(rez);
+            std::set<InstanceInfo*>::iterator finder = actual_instances.find(*it);
+            if (finder != actual_instances.end())
+            {
+              (*it)->pack_return_info(rez);
+              actual_instances.erase(finder);
+            }
           }
+#ifdef DEBUG_HIGH_LEVEL
+          assert(actual_instances.empty());
+#endif
 
           // Now pack the physical region tree updates
           pack_tree_updates(rez, region_tree_updates);
@@ -10226,10 +10277,10 @@ namespace RegionRuntime {
                 it != new_valid.end(); it++)
           {
             InstanceInfo *info = inst_map[it->first];
+#ifdef DEBUG_HIGH_LEVEL
+            assert(info->valid);
+#endif
             region_states[ctx].valid_instances[info] = it->second;
-            // Note we need to mark this instance valid if it isn't already
-            // since valid isn't one of the fields moved around by the instance info
-            info->mark_valid();
           }
         }
       }
@@ -13345,12 +13396,15 @@ namespace RegionRuntime {
       assert(location.exists());
       assert(inst.exists());
 #endif
+      if (parent != NULL)
+      {
+        parent->add_child(this, open_child);
+      }
       // Only fill in these fields if we're not unpacking
       if (!unpacking)
       {
         if (parent != NULL)
         {
-          parent->add_child(this, open_child);
           inst_lock = parent->inst_lock;
           // set our valid event to be the parent's valid event 
           valid_event = parent->valid_event;
@@ -13987,6 +14041,9 @@ namespace RegionRuntime {
     size_t InstanceInfo::compute_info_size(void) const
     //-------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!collected);
+#endif
       size_t result = 0;
       // Send everything
       result += sizeof(InstanceID);
@@ -14015,7 +14072,6 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!collected);
 #endif
-
       // Subtract the fraction that we're taking
       local_frac.subtract(to_take);
 
@@ -14172,6 +14228,7 @@ namespace RegionRuntime {
       result += sizeof(InstanceID); // our iid
       result += sizeof(bool); // remote returning or escaping
       result += sizeof(bool); // open child
+      result += sizeof(bool); // valid
       result += sizeof(Fraction); // local_frac
       if (remote)
       {
@@ -14276,6 +14333,7 @@ namespace RegionRuntime {
       rez.serialize<InstanceID>(iid);
       rez.serialize<bool>(remote);
       rez.serialize<bool>(open_child);
+      rez.serialize<bool>(valid);
       rez.serialize<Fraction>(local_frac);
       if (remote)
       {
@@ -14424,6 +14482,8 @@ namespace RegionRuntime {
       {
         bool open_child;
         derez.deserialize<bool>(open_child);
+        bool valid;
+        derez.deserialize<bool>(valid);
         Fraction local_frac;
         derez.deserialize<Fraction>(local_frac);
         // This instance better not exist in the list of instance infos
@@ -14454,6 +14514,7 @@ namespace RegionRuntime {
         }
         // Set the local fraction from above
         result_info->local_frac = local_frac;
+        result_info->valid = valid;
         derez.deserialize<Event>(result_info->valid_event);
         derez.deserialize<Lock>(result_info->inst_lock);
         size_t num_users;
@@ -14530,6 +14591,9 @@ namespace RegionRuntime {
         }
         // Add it to the infos
         (*infos)[iid] = result_info;
+#ifdef DEBUG_HIGH_LEVEL
+        result_info->sanity_check(true);
+#endif
         return result_info;
       }
       else
@@ -14539,6 +14603,9 @@ namespace RegionRuntime {
         assert(infos->find(iid) != infos->end());
 #endif
         (*infos)[iid]->merge_instance_info(derez);
+#ifdef DEBUG_HIGH_LEVEL
+        (*infos)[iid]->sanity_check(true);
+#endif
         return (*infos)[iid];
       }
     }
@@ -14548,12 +14615,22 @@ namespace RegionRuntime {
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      if (returned)
-        printf("%x\n",handle.id);
       assert(!returned);
+      assert(!collected);
+      {
+        InstanceInfo *tpar = parent;
+        while (tpar != NULL)
+        {
+          assert(!tpar->collected);
+          tpar = tpar->parent;
+        }
+      }
 #endif
       bool new_open_child;
       derez.deserialize<bool>(new_open_child);
+      bool new_valid;
+      derez.deserialize<bool>(new_valid);
+      valid = valid || new_valid;
 #ifdef DEBUG_HIGH_LEVEL
       // This should always be true.  If we were closed remotely, our parent
       // instance should have unpacked us first and realized that we were
@@ -15444,6 +15521,9 @@ namespace RegionRuntime {
       {
         parent->get_needed_above_outgoing(needed_instances);
       }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!collected);
+#endif
       needed_instances.push_back(this);
     }
 
@@ -15453,6 +15533,9 @@ namespace RegionRuntime {
     {
       if (!skip_local)
       {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!collected);
+#endif
         needed_instances.push_back(this);
       }
       // Only need to get open children outoing
@@ -15475,6 +15558,9 @@ namespace RegionRuntime {
       // only add this if it hasn't already been returned
       if (!returned)
       {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!collected);
+#endif
         needed_instances.push_back(this);
       }
     }
@@ -15486,6 +15572,9 @@ namespace RegionRuntime {
       // only return this if it hasn't been returned already
       if (!skip_local && !returned)
       {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!collected);
+#endif
         needed_instances.push_back(this);
       }
       // Need all children returning
@@ -15711,6 +15800,40 @@ namespace RegionRuntime {
           parent->remove_child(this);
         }
       }
+    }
+
+    //-------------------------------------------------------------------------
+    void InstanceInfo::sanity_check(bool child_collected)
+    //-------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      if (!child_collected)
+      {
+        assert(children > 0);
+      }
+      assert(all_children.size() == children);
+      if (collected)
+      {
+        assert(child_collected);
+        assert(children==0);
+        assert(!valid);
+        assert(!clone);
+        assert(!remote);
+        assert(!returned);
+      }
+      else
+      {
+        for (std::list<InstanceInfo*>::const_iterator it = open_children.begin();
+              it != open_children.end(); it++)
+        {
+          assert((*it)->open_child);
+        }
+      }
+      if (parent != NULL)
+      {
+        parent->sanity_check(collected);
+      }
+#endif
     }
 
     ///////////////////////////////////////////
