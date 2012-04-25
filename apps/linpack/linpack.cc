@@ -692,6 +692,7 @@ class Linpack {
 
       ptr_t<MatrixBlock> orig_ptr = matrix.blocks[args->k][args->j];
       MatrixBlock orig_blk = r_panel.read(orig_ptr);
+      orig_blk.print("orig topblk");
 
       MatrixBlock top_blk;
       top_blk.block_col = orig_blk.block_col;
@@ -841,6 +842,7 @@ class Linpack {
       
       PhysicalRegion<AccessorArray> r_topblk_array = r_topblk.template convert<AccessorArray>();
       MatrixBlock& topblk = r_topblk_array.get_instance().ref(args->topblk_ptr);
+      assert((topblk.block_row != 0) || (topblk.block_col != 0));
 
       // look through the indices and find any row that we own that isn't in the
       //   top block - for each of those rows, figure out which row in the top
@@ -1954,6 +1956,8 @@ public:
     f.get_void_result();
 
     destroy_blocked_matrix(ctx, runtime, matrix);
+
+    runtime->destroy_logical_region(ctx, matrix_region);
   }
 
 };
