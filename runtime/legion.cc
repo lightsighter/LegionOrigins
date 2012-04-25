@@ -11456,8 +11456,11 @@ namespace RegionRuntime {
               }
               region_states[ctx].open_physical.clear();
               region_states[ctx].open_state = PART_NOT_OPEN;
-              // Close up the instance
-              target->force_closed();
+              // Close up the instance if we're not targeting a no-instance
+              if (target != InstanceInfo::get_no_instance())
+              {
+                target->force_closed();
+              }
             }
             break;
           }
