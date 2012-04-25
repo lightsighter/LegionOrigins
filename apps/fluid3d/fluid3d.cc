@@ -2206,8 +2206,11 @@ public:
         // Distribute these over all CPUs
         //log_mapper.info("mapping task %d with tag %d to processor %x",task->task_id,
         //                task->tag, loc_procs[task->tag % loc_procs.size()].first.id);
-        return loc_procs[(task->tag % (loc_procs.size() - 1)) + 1].first;
-        //return loc_procs[0].first;
+        if (loc_procs.size() == 1) {
+          return loc_procs[0].first;
+        } else {
+          return loc_procs[(task->tag % (loc_procs.size() - 1)) + 1].first;
+        }
       }
       break;
     default:
@@ -2260,7 +2263,11 @@ public:
     case TASKID_GATHER_DENSITIES:
     case TASKID_SCATTER_FORCES:
     case TASKID_GATHER_FORCES:
-      proc_id = (task->tag % (loc_procs.size() - 1)) + 1;
+      if (loc_procs.size() == 1) {
+        proc_id = 0;
+      } else {
+        proc_id = (task->tag % (loc_procs.size() - 1)) + 1;
+      }
       break;
     default:
       assert(false);
