@@ -25,6 +25,7 @@ GASNETT_THREADKEY_DECLARE(cur_thread);
 
 #include <vector>
 #include <deque>
+#include <queue>
 #include <set>
 #include <list>
 #include <map>
@@ -353,10 +354,12 @@ namespace RegionRuntime {
 
     extern Processor::TaskIDTable task_id_table;
 
+    class UtilityProcessor;
+
     class Processor::Impl {
     public:
       Impl(Processor _me, Processor::Kind _kind, Processor _util = Processor::NO_PROC)
-	: me(_me), kind(_kind), util(_util), run_counter(0) {}
+	: me(_me), kind(_kind), util(_util), util_proc(0), run_counter(0) {}
 
       void run(Atomic<int> *_run_counter)
       {
@@ -374,6 +377,8 @@ namespace RegionRuntime {
 	  run_counter->decrement();
       }
 
+      void set_utility_processor(UtilityProcessor *_util_proc);
+
       virtual void enable_idle_task(void) { assert(0); }
       virtual void disable_idle_task(void) { assert(0); }
       virtual bool is_idle_task_enabled(void) { return(false); }
@@ -382,7 +387,56 @@ namespace RegionRuntime {
       Processor me;
       Processor::Kind kind;
       Processor util;
+      UtilityProcessor *util_proc;
       Atomic<int> *run_counter;
+    };
+    
+    class PreemptableThread {
+    public:
+      PreemptableThread(void) {}
+      virtual ~PreemptableThread(void) {}
+
+      virtual void sleep_on_event(Event wait_for, bool block = false) = 0;
+    };
+
+    class UtilityProcessor : public Processor::Impl {
+    public:
+      UtilityProcessor(Processor _me, int _num_worker_threads = 1);
+      virtual ~UtilityProcessor(void);
+
+      void start_worker_threads(void);
+
+      virtual void spawn_task(Processor::TaskFuncID func_id,
+			      const void *args, size_t arglen,
+			      //std::set<RegionInstanceUntyped> instances_needed,
+			      Event start_event, Event finish_event);
+
+      void request_shutdown(void);
+
+      void enable_idle_task(Processor::Impl *proc);
+      void disable_idle_task(Processor::Impl *proc);
+
+      class UtilityThread;
+      class UtilityTask;
+
+    protected:
+      //friend class UtilityThread;
+      //friend class UtilityTask;
+
+      void enqueue_runnable_task(UtilityTask *task);
+
+      int num_worker_threads;
+      bool shutdown_requested;
+
+      gasnet_hsl_t mutex;
+      gasnett_cond_t condvar;
+
+      UtilityTask *idle_task;
+
+      std::set<UtilityThread *> threads;
+      std::queue<UtilityTask *> tasks;
+      std::set<Processor::Impl *> idle_procs;
+      std::set<Processor::Impl *> procs_in_idle_task;
     };
 
     class Memory::Impl {

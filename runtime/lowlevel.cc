@@ -3218,6 +3218,19 @@ namespace RegionRuntime {
     Logger::Category log_task("task");
     Logger::Category log_util("util");
 
+    void Processor::Impl::set_utility_processor(UtilityProcessor *_util_proc)
+    {
+      if(is_idle_task_enabled()) {
+	log_util.info("delegating idle task handling for %x to %x",
+		      me.id, util.id);
+	disable_idle_task();
+	_util_proc->enable_idle_task(this);
+      }
+
+      util_proc = _util_proc;
+      util = util_proc->me;
+    }
+
     class LocalProcessor : public Processor::Impl {
     public:
       // simple task object keeps a copy of args
@@ -3486,6 +3499,7 @@ namespace RegionRuntime {
 	      // now we can set 'init_done', and signal anybody who managed to
 	      //  get themselves onto the thread list in the meantime
 	      proc->init_done = true;
+	      proc->enable_idle_task();
 	      if(wait_for_init_done)
 		for(std::set<Thread *>::iterator it = proc->all_threads.begin();
 		    it != proc->all_threads.end();
@@ -3506,50 +3520,6 @@ namespace RegionRuntime {
 	    // pick a task, if we're allowed to (i.e. not at active thread limit)
 	    assert(me->task == 0);
 	    me->task = proc->select_task();
-
-	    // if a util proc doesn't have anything to do, check to see if
-	    //  any of the procs it's servicing want their idle task run
-	    if(!me->task && (proc->kind == Processor::UTIL_PROC)) {
-	      // duplicate the set of idle-call-able procs
-	      gasnet_hsl_lock(&proc->idle_proc_mutex);
-	      std::set<LocalProcessor *> idle_procs_copy = proc->idle_procs;
-	      gasnet_hsl_unlock(&proc->idle_proc_mutex);
-
-	      bool did_any_idle_tasks = false;
-	      for(std::set<LocalProcessor *>::iterator it = idle_procs_copy.begin();
-		  it != idle_procs_copy.end();
-		  it++) {
-		LocalProcessor *idle_proc = *it;
-		// make sure the processor has been initialized
-		if(!idle_proc->init_done) {
-		  log_util.info("processor %x still initializing - skipping",
-				idle_proc->me.id);
-		  continue;
-		}
-		// make sure the idle task for that processor isn't running
-		gasnet_hsl_lock(&idle_proc->mutex);
-		bool in_idle = idle_proc->in_idle_task;
-		idle_proc->in_idle_task = true;
-		gasnet_hsl_unlock(&idle_proc->mutex);
-		if(in_idle) {
-		  log_util.info("processor %x is already running idle task - skipping", idle_proc->me.id);
-		  continue;
-		}
-		did_any_idle_tasks = true;
-		// call the idle proc, giving it the name of the proc who we're
-		//  calling it for
-		log_util.info("calling idle proc for %x (on %x)",
-			      idle_proc->me.id, proc->me.id);
-		proc->idle_task->run(idle_proc->me);
-		log_util.info("returning from idle proc for %x (on %x)",
-			      idle_proc->me.id, proc->me.id);
-		gasnet_hsl_lock(&idle_proc->mutex);
-		idle_proc->in_idle_task = false;
-		gasnet_hsl_unlock(&idle_proc->mutex);
-	      }
-	      
-	      if(did_any_idle_tasks) continue;
-	    }
 
 	    // didn't get one?  sleep until somebody assigns one to us
 	    if(!me->task) {
@@ -3634,6 +3604,8 @@ namespace RegionRuntime {
 	    bool last = proc->all_threads.size() == 0;
 	    
 	    if(last) {
+	      proc->disable_idle_task();
+
 	      // let go of the lock while we call the init task
 	      Processor::TaskIDTable::iterator it = task_id_table.find(Processor::TASK_ID_PROCESSOR_SHUTDOWN);
 	      if(it != task_id_table.end()) {
@@ -3690,19 +3662,14 @@ namespace RegionRuntime {
       };
 
       LocalProcessor(Processor _me, int _core_id, 
-		     Processor::Kind _kind = Processor::LOC_PROC,
-		     Processor _util = Processor::NO_PROC,
 		     int _total_threads = 1, int _max_active_threads = 1)
-	: Processor::Impl(_me, _kind, _util), core_id(_core_id),
+	: Processor::Impl(_me, Processor::LOC_PROC), core_id(_core_id),
 	  total_threads(_total_threads),
 	  active_thread_count(0), max_active_threads(_max_active_threads),
 	  init_done(false), shutdown_requested(false), in_idle_task(false),
-	  idle_task_enabled(_util == Processor::NO_PROC)
+	  idle_task_enabled(false)
       {
         gasnet_hsl_init(&mutex);
-
-	gasnet_hsl_init(&idle_proc_mutex);
-	gasnett_cond_init(&idle_proc_condvar);
 
 	// if a processor-idle task is in the table, make a Task object for it
 	Processor::TaskIDTable::iterator it = task_id_table.find(Processor::TASK_ID_PROCESSOR_IDLE);
@@ -3714,19 +3681,6 @@ namespace RegionRuntime {
       ~LocalProcessor(void)
       {
 	delete idle_task;
-      }
-
-      void add_real_proc(LocalProcessor *new_proc)
-      {
-	log_util.info("proc %x made utility proc for %x",
-		      me.id, new_proc->me.id);
-	assert(new_proc->kind != Processor::UTIL_PROC);
-	assert(new_proc->util == me);
-
-	// real proc shouldn't have idle task enabled, since we're doing that
-	bool is_idle = new_proc->is_idle_task_enabled();
-	assert(!is_idle);
-	idle_procs.insert(new_proc);
       }
 
       void start_worker_threads(void)
@@ -3887,18 +3841,13 @@ namespace RegionRuntime {
 
       virtual void enable_idle_task(void)
       {
-	if(util.exists()) {
+	if(util_proc) {
 	  log_task.info("idle task enabled for processor %x on util proc %x",
 			me.id, util.id);
 
-	  {
-	    LocalProcessor *uimpl = (LocalProcessor *)(util.impl());
-	    AutoHSLLock al(uimpl->idle_proc_mutex);
-	    uimpl->idle_procs.insert(this);
-	    // signal that we added something to the list
-	    gasnett_cond_signal(&uimpl->idle_proc_condvar);
-	  }
+	  util_proc->enable_idle_task(this);
 	} else {
+	  assert(kind != Processor::UTIL_PROC);
 	  log_task.info("idle task enabled for processor %x", me.id);
 	  idle_task_enabled = true;
 	  // TODO: wake up thread if we're called from another thread
@@ -3907,22 +3856,14 @@ namespace RegionRuntime {
 
       virtual void disable_idle_task(void)
       {
-	if(util.exists()) {
+	if(util_proc) {
 	  log_task.info("idle task disabled for processor %x on util proc %x",
 			me.id, util.id);
 
-	  {
-	    LocalProcessor *uimpl = (LocalProcessor *)(util.impl());
-	    AutoHSLLock al(uimpl->idle_proc_mutex);
-	    uimpl->idle_procs.erase(this);
-	  }
+	  util_proc->disable_idle_task(this);
 	} else {
-	  if(kind == Processor::UTIL_PROC) {
-	    log_util.spew("idle task NOT disabled for utility processor %x", me.id);
-	  } else {
-	    log_task.info("idle task disabled for processor %x", me.id);
-	    idle_task_enabled = false;
-	  }
+	  log_task.info("idle task disabled for processor %x", me.id);
+	  idle_task_enabled = false;
 	}
       }
 
@@ -3943,10 +3884,237 @@ namespace RegionRuntime {
       bool init_done, shutdown_requested, in_idle_task;
       Task *idle_task;
       bool idle_task_enabled;
-      gasnet_hsl_t idle_proc_mutex;
-      gasnett_cond_t idle_proc_condvar;
-      std::set<LocalProcessor *> idle_procs;
     };
+
+    class UtilityProcessor::UtilityTask : public Event::Impl::EventWaiter {
+    public:
+      UtilityTask(UtilityProcessor *_proc,
+		  Processor::TaskFuncID _func_id,
+		  const void *_args, size_t _arglen,
+		  Event _finish_event)
+	: proc(_proc), func_id(_func_id), arglen(_arglen),
+	  finish_event(_finish_event)
+      {
+	if(arglen) {
+	  args = malloc(arglen);
+	  memcpy(args, _args, arglen);
+	} else {
+	  args = 0;
+	}
+      }
+
+      virtual ~UtilityTask(void)
+      {
+	if(args) free(args);
+      }
+
+      virtual void event_triggered(void)
+      {
+	proc->enqueue_runnable_task(this);
+      }
+
+      virtual void print_info(void)
+      {
+	printf("utility thread for processor %x", proc->me.id);
+      }
+
+      void run(Processor actual_proc = Processor::NO_PROC)
+      {
+	if(func_id == 0) {
+	  log_task.info("shutdown requested");
+	  proc->request_shutdown();
+	  return;
+	}
+	Processor::TaskFuncPtr fptr = task_id_table[func_id];
+	char argstr[100];
+	argstr[0] = 0;
+	for(size_t i = 0; (i < arglen) && (i < 40); i++)
+	  sprintf(argstr+2*i, "%02x", ((unsigned char *)args)[i]);
+	if(arglen > 40) strcpy(argstr+80, "...");
+	log_task(((func_id == 3) ? LEVEL_SPEW : LEVEL_DEBUG), 
+		 "task start: %d (%p) (%s)", func_id, fptr, argstr);
+	(*fptr)(args, arglen, (actual_proc.exists() ? actual_proc : proc->me));
+	log_task(((func_id == 3) ? LEVEL_SPEW : LEVEL_DEBUG), 
+		 "task end: %d (%p) (%s)", func_id, fptr, argstr);
+	if(finish_event.exists())
+	  finish_event.impl()->trigger(finish_event.gen, gasnet_mynode());
+      }
+
+      UtilityProcessor *proc;
+      Processor::TaskFuncID func_id;
+      void *args;
+      size_t arglen;
+      Event finish_event;
+    };
+
+    class UtilityProcessor::UtilityThread : public PreemptableThread {
+    public:
+      UtilityThread(UtilityProcessor *_proc)
+	: proc(_proc) {}
+
+      virtual ~UtilityThread(void) {}
+
+      static void *thread_entry(void *data)
+      {
+	((UtilityThread *)data)->thread_main();
+	return 0;
+      }
+
+      void start(void)
+      {
+	pthread_attr_t attr;
+	CHECK_PTHREAD( pthread_attr_init(&attr) );
+	CHECK_PTHREAD( pthread_create(&thread, &attr, &thread_entry, (void *)this) );
+	CHECK_PTHREAD( pthread_attr_destroy(&attr) );
+      }
+
+      void sleep_on_event(Event wait_for, bool block = false)
+      {
+	assert(0);
+      }
+
+    protected:
+      void thread_main(void)
+      {
+	// we spend most of our life with the utility processor's lock (or
+	//   waiting for it) - we only drop it when we have work to do
+	gasnet_hsl_lock(&proc->mutex);
+	while(!proc->shutdown_requested) {
+	  // try to run tasks from the runnable queue
+	  while(proc->tasks.size() > 0) {
+	    UtilityTask *task = proc->tasks.front();
+	    proc->tasks.pop();
+	    gasnet_hsl_unlock(&proc->mutex);
+	    log_util.info("running task %p in utility thread", task);
+	    task->run();
+	    delete task;
+	    log_util.info("done with task %p in utility thread", task);
+	    gasnet_hsl_lock(&proc->mutex);
+	  }
+
+	  // run some/all of the idle tasks for idle processors
+	  // the set can change, so grab a copy, then let go of the lock
+	  //  while we walk the list - for each item, retake the lock to
+	  //  see if it's still on the list and make sure nobody else is
+	  //  running it
+	  if(proc->idle_procs.size() > 0) {
+	    std::set<Processor::Impl *> copy_of_idle_procs = proc->idle_procs;
+
+	    for(std::set<Processor::Impl *>::iterator it = copy_of_idle_procs.begin();
+		it != copy_of_idle_procs.end();
+		it++) {
+	      Processor::Impl *idle_proc = *it;
+	      // for each item on the list, run the idle task as long as:
+	      //  1) it's still in the idle proc set, and
+	      //  2) somebody else isn't already running its idle task
+	      bool ok_to_run = ((proc->idle_procs.count(idle_proc) > 0) &&
+				(proc->procs_in_idle_task.count(idle_proc) == 0));
+	      if(ok_to_run) {
+		proc->procs_in_idle_task.insert(idle_proc);
+		gasnet_hsl_unlock(&proc->mutex);
+
+		// run the idle task on behalf of the idle proc
+		log_util.info("running idle task for %x", idle_proc->me.id);
+		proc->idle_task->run(idle_proc->me);
+		log_util.info("done with idle task for %x", idle_proc->me.id);
+
+		gasnet_hsl_lock(&proc->mutex);
+		proc->procs_in_idle_task.erase(idle_proc);
+	      }
+	    }
+	  }
+	  
+	  // if we really have nothing to do, it's ok to go to sleep
+	  if((proc->tasks.size() == 0) && (proc->idle_procs.size() == 0)) {
+	    log_util.info("utility thread going to sleep");
+	    gasnett_cond_wait(&proc->condvar, &proc->mutex.lock);
+	    log_util.info("utility thread awake again");
+	  }
+	}
+      }
+
+      UtilityProcessor *proc;
+      pthread_t thread;
+    };
+
+    UtilityProcessor::UtilityProcessor(Processor _me,
+				       int _num_worker_threads /*= 1*/)
+      : Processor::Impl(_me, Processor::UTIL_PROC, Processor::NO_PROC),
+	num_worker_threads(_num_worker_threads)
+    {
+      gasnet_hsl_init(&mutex);
+      gasnett_cond_init(&condvar);
+
+      Processor::TaskIDTable::iterator it = task_id_table.find(Processor::TASK_ID_PROCESSOR_IDLE);
+      idle_task = ((it != task_id_table.end()) ?
+		     new UtilityTask(this, 
+				     Processor::TASK_ID_PROCESSOR_IDLE, 
+				     0, 0, Event::NO_EVENT) :
+		     0);
+    }
+
+    UtilityProcessor::~UtilityProcessor(void)
+    {
+      if(idle_task)
+	delete idle_task;
+    }
+
+    void UtilityProcessor::start_worker_threads(void)
+    {
+      for(int i = 0; i < num_worker_threads; i++) {
+	UtilityThread *t = new UtilityThread(this);
+	threads.insert(t);
+	t->start();
+      }
+    }
+
+    void UtilityProcessor::request_shutdown(void)
+    {
+      // set the flag first
+      shutdown_requested = true;
+
+      // now take the mutex so we can wake up anybody who is still asleep
+      AutoHSLLock al(mutex);
+      gasnett_cond_broadcast(&condvar);
+    }
+
+    /*virtual*/ void UtilityProcessor::spawn_task(Processor::TaskFuncID func_id,
+						  const void *args, size_t arglen,
+						  //std::set<RegionInstanceUntyped> instances_needed,
+						  Event start_event, Event finish_event)
+    {
+      UtilityTask *task = new UtilityTask(this, func_id, args, arglen,
+					  finish_event);
+      if(start_event.has_triggered()) {
+	enqueue_runnable_task(task);
+      } else {
+	start_event.impl()->add_waiter(start_event, task);
+      }
+    }
+
+    void UtilityProcessor::enqueue_runnable_task(UtilityTask *task)
+    {
+      AutoHSLLock al(mutex);
+
+      tasks.push(task);
+      gasnett_cond_signal(&condvar);
+    }
+
+    void UtilityProcessor::enable_idle_task(Processor::Impl *proc)
+    {
+      AutoHSLLock al(mutex);
+
+      assert(proc != 0);
+      idle_procs.insert(proc);
+      gasnett_cond_signal(&condvar);
+    }
+     
+    void UtilityProcessor::disable_idle_task(Processor::Impl *proc)
+    {
+      AutoHSLLock al(mutex);
+
+      idle_procs.erase(proc);
+    }
 
     struct SpawnTaskArgs {
       Processor proc;
@@ -6489,7 +6657,7 @@ namespace RegionRuntime {
     }
 
     static std::vector<LocalProcessor *> local_cpus;
-    static std::vector<LocalProcessor *> local_util_procs;
+    static std::vector<UtilityProcessor *> local_util_procs;
 #ifdef USE_GPU
     static std::vector<GPUProcessor *> local_gpus;
 #endif
@@ -6545,6 +6713,8 @@ namespace RegionRuntime {
 
       //GASNetNode::my_node = new GASNetNode(argc, argv, this);
       CHECK_GASNET( gasnet_init(argc, argv) );
+
+      gasnet_set_waitmode(GASNET_WAIT_BLOCK);
 
       // low-level runtime parameters
       size_t gasnet_mem_size_in_mb = 256;
@@ -6647,14 +6817,10 @@ namespace RegionRuntime {
 
       // create utility processors (if any)
       for(unsigned i = 0; i < num_util_procs; i++) {
-	LocalProcessor *up = new LocalProcessor(ID(ID::ID_PROCESSOR, 
-						   gasnet_mynode(), 
-						   n->processors.size()).convert<Processor>(), 
-						0, 
-						Processor::UTIL_PROC,
-						Processor::NO_PROC,
-						cpu_worker_threads, 
-						1);
+	UtilityProcessor *up = new UtilityProcessor(ID(ID::ID_PROCESSOR, 
+						       gasnet_mynode(), 
+						       n->processors.size()).convert<Processor>());
+
 	n->processors.push_back(up);
 	local_util_procs.push_back(up);
 	adata[apos++] = NODE_ANNOUNCE_PROC;
@@ -6669,14 +6835,10 @@ namespace RegionRuntime {
 						   gasnet_mynode(), 
 						   n->processors.size()).convert<Processor>(), 
 						i, 
-						Processor::LOC_PROC,
-						(num_util_procs ?
-						   local_util_procs[i % num_util_procs]->me :
-						   Processor::NO_PROC),
 						cpu_worker_threads, 
 						1); // HLRT not thread-safe yet
 	if(num_util_procs > 0)
-	  local_util_procs[i % num_util_procs]->add_real_proc(lp);
+	  lp->set_utility_processor(local_util_procs[i % num_util_procs]);
 	n->processors.push_back(lp);
 	local_cpus.push_back(lp);
 	adata[apos++] = NODE_ANNOUNCE_PROC;
@@ -6702,7 +6864,7 @@ namespace RegionRuntime {
 	cpumem = 0;
 
       // list affinities between local CPUs / memories
-      for(std::vector<LocalProcessor *>::iterator it = local_util_procs.begin();
+      for(std::vector<UtilityProcessor *>::iterator it = local_util_procs.begin();
 	  it != local_util_procs.end();
 	  it++) {
 	if(cpu_mem_size_in_mb > 0) {
@@ -6968,7 +7130,7 @@ namespace RegionRuntime {
       // now that we've got the machine description all set up, we can start
       //  the worker threads for local processors, which'll probably ask the
       //  high-level runtime to set itself up
-      for(std::vector<LocalProcessor *>::iterator it = local_util_procs.begin();
+      for(std::vector<UtilityProcessor *>::iterator it = local_util_procs.begin();
 	  it != local_util_procs.end();
 	  it++)
 	(*it)->start_worker_threads();
