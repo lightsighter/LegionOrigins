@@ -169,15 +169,9 @@ if __name__ == '__main__':
     for nbx in divs:
         for nby in divs:
             for nbz in divs:
-                regress(nbx = nbx, nby = nby, nbz = nbz, steps = 1, nodes = 2)
-
-    print
-    print "Note: The following are expected to fail, but should NOT crash."
-    divs = (1, 2)
-    for nbx in divs:
-        for nby in divs:
-            for nbz in divs:
-                regress(nbx = nbx, nby = nby, nbz = nbz, steps = 4)
+                regress(nbx = nbx, nby = nby, nbz = nbz, steps = 1, nodes = 1)
+                if (nbx*nby*nbz % 2) == 0:
+                    regress(nbx = nbx, nby = nby, nbz = nbz, steps = 1, nodes = 2)
 
     prep_input(300)
     prep_solution(300)

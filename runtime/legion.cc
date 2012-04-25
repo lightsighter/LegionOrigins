@@ -8206,6 +8206,8 @@ namespace RegionRuntime {
         {
           if (physical_instances[idx] == InstanceInfo::get_no_instance())
           {
+            // Mark that this region has been mapped now
+            physical_mapped[idx] = true;
             for (std::set<GeneralizedContext*>::const_iterator it = map_dependent_tasks[idx].begin();
                   it != map_dependent_tasks[idx].end(); it++)
             {
