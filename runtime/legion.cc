@@ -4165,6 +4165,8 @@ namespace RegionRuntime {
       enclosing_ctx.clear();
       chosen_ctx.clear();
       source_copy_instances.clear();
+      escaped_users.clear();
+      escaped_copies.clear();
       remote_copy_instances.clear();
       region_nodes = NULL;
       partition_nodes = NULL;
