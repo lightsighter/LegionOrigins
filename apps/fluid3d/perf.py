@@ -248,23 +248,26 @@ if __name__ == '__main__':
     for thunk in prep: thunk()
 
     parsec_sizes = (
-        1, 2, 4, 8, 16,
+        4, 8, 16,
         )
     legion_sizes = (
-        (1, 1), (1, 2), (1, 4), (1, 8), (1, 12),
+        (1, 4), (1, 8), (1, 12, (4, 1, 3)),
         (2, 8), (2, 10, (4, 1, 5)), (2, 12, (4, 1, 6)),
         (4, 8), (4, 10, (4, 1, 10)), (4, 12, (4, 1, 12)),
         (8, 8), (8, 10, (8, 1, 10)), (8, 12, (8, 1, 12)),
         )
 
-    if 1 in parsec_sizes:
-        print 'Baseline PARSEC serial:'
-        init_baseline(parsec_serial, _num_reps, nbx = 1, nby = 1, nbz = 1, steps = _num_steps)
-        print
+    print 'Baseline PARSEC serial:'
+    init_baseline(parsec_serial, _num_reps, nbx = 1, nby = 1, nbz = 1, steps = _num_steps)
+    print
 
+    run_parsec(1, 3, _num_steps)
+    run_parsec(2, 5, _num_steps)
     for size in parsec_sizes:
         run_parsec(size, _num_reps, _num_steps)
 
+    run_legion(1, 1, 3, _num_steps)
+    run_legion(1, 2, 5, _num_steps)
     for size in legion_sizes:
         divs = None
         if len(size) >= 3:
