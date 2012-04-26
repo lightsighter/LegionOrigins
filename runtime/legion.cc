@@ -4892,14 +4892,19 @@ namespace RegionRuntime {
           // If this is an index space and it has a premapped region, don't pack it
           if (is_index_space && (pre_mapped_regions.find(idx) != pre_mapped_regions.end()))
           {
+            log_region(LEVEL_DEBUG,"Region index %d was premapped for task %s",idx,variants->name); 
             continue;
           }
           if (is_index_space && (regions[idx].func_type != SINGULAR_FUNC))
           {
+            log_region(LEVEL_DEBUG,"Partition index %d is being packagaed up from context %d for task %s",
+                                    idx, get_enclosing_physical_context(idx), variants->name);
             (*partition_nodes)[regions[idx].handle.partition]->parent->pack_physical_state(get_enclosing_physical_context(idx),rez);
           }
           else
           {
+            log_region(LEVEL_DEBUG,"Region index %d is being packaged up from context %d for task %s",
+                                    idx, get_enclosing_physical_context(idx), variants->name);
             (*region_nodes)[regions[idx].handle.region]->pack_physical_state(get_enclosing_physical_context(idx),rez);
           }
         }
@@ -6187,8 +6192,8 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
             assert(trace_result);
 #endif
-            log_region(LEVEL_DEBUG,"Physical tree traversal for region %x (index %d) in context %d",
-                info->handle.id, idx, parent_physical_ctx);
+            log_region(LEVEL_DEBUG,"Physical tree traversal for region %x (index %d) of (remote %d) %s in context %d",
+                info->handle.id, idx, remote, variants->name, parent_physical_ctx);
             // Inject the request to register this physical instance
             // starting from the parent region's logical node
             RegionNode *top = (*region_nodes)[regions[idx].parent];
@@ -7417,8 +7422,8 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
             assert(trace_result);
 #endif
-            log_region(LEVEL_DEBUG,"Physical tree traversal for region %x (index %d) in context %d",
-                info->handle.id, idx, parent_physical_ctx);
+            log_region(LEVEL_DEBUG,"Physical tree traversal for region %x (index %d) of (remote %d) %s in context %d",
+                info->handle.id, idx, remote, variants->name, parent_physical_ctx);
             // Inject the request to register this physical instance
             // starting from the parent region's logical node
             RegionNode *top = (*region_nodes)[regions[idx].parent];
@@ -8095,6 +8100,8 @@ namespace RegionRuntime {
             physical_mapped.push_back(true/*mapped*/);
             // Update the valid instances of this region
             ContextID enclosing_ctx = get_enclosing_physical_context(idx);
+            log_region(LEVEL_DEBUG,"Updating valid instances for region %d (index %d) of task %s in context %d",
+                        regions[idx].handle.region.id, idx, variants->name, enclosing_ctx);
             if (IS_READ_ONLY(regions[idx]) || IS_WRITE(regions[idx]))
             {
               (*region_nodes)[info->handle]->update_valid_instances(enclosing_ctx,info,IS_WRITE(regions[idx]),owned);
@@ -8184,6 +8191,8 @@ namespace RegionRuntime {
               assert(instance_infos->find(iid) != instance_infos->end());
 #endif
               InstanceInfo *info = (*instance_infos)[iid];    
+              log_region(LEVEL_DEBUG,"Updating valid instances for region %d (index %d) of index space %s in context %d",
+                          regions[idx].handle.region.id, idx, variants->name, enclosing_ctx);
               if (is_write || is_read_only)
               {
                 // Update the valid instances
@@ -8277,6 +8286,8 @@ namespace RegionRuntime {
         {
           if (physical_instances[idx] == InstanceInfo::get_no_instance())
           {
+            log_region(LEVEL_DEBUG,"Unpacking returning task state for region index %d of task %s in context %d",
+                                  idx, variants->name, get_enclosing_physical_context(idx));
             bool merge = IS_READ_ONLY(regions[idx]) || IS_REDUCE(regions[idx]);
             (*region_nodes)[regions[idx].handle.region]->unpack_physical_state(
                       get_enclosing_physical_context(idx),derez,
@@ -8335,10 +8346,12 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           assert(idx < regions.size());
 #endif
-          //bool merge = IS_READ_ONLY(regions[idx]) || IS_REDUCE(regions[idx]);
+          log_region(LEVEL_DEBUG,"Unpacking returning task state for region index %d of task %s in context %d",
+                                  idx, variants->name, get_enclosing_physical_context(idx));
+          bool merge = IS_READ_ONLY(regions[idx]) || IS_REDUCE(regions[idx]);
           // We should always be merging for instance spaces since they
           // should be able to map in parallel
-          bool merge = true;
+          //bool merge = true;
           (*region_nodes)[handle]->unpack_physical_state(get_enclosing_physical_context(idx),
               derez, true/*returning*/, merge, *instance_infos, this->unique_id);
         }
@@ -9424,7 +9437,7 @@ namespace RegionRuntime {
     {
       TaskContext *ctx = this;
       // If this is an index space, switch it over to the slice_owner context
-      if (is_index_space)
+      if (is_index_space && !slice_owner)
       {
         ctx = this->orig_ctx;
       }
