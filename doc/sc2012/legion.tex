@@ -90,55 +90,47 @@ In this paper we describe Legion, a parallel programming system based
 on using {\em logical regions} to describe the organization of data.
 A logical region names a set of objects.  Logical regions are first
 class values in Legion, and in particular may be passed as arguments
-to functions that access the data in those regions, providing locality
+to distinguished functions called {\em tasks} that access the data in those regions, providing locality
 information.  Logical regions may be {\em partitioned} into (usually)
 disjoint {\em subregions}, providing information for determining independence of computations.  Furthermore,
 computations access logical regions with particular {\em privileges} (e.g., {\em
   read-only} and {\em read-write}, among others) 
 and {\em coherence} (e.g., {\em exclusive access} and {\em atomic access}, among others).
+Priveleges express how a task may use its region arguments, providing data dependence information
+that is used to guide the extraction of parallelism (e.g., if two tasks access the same region with
+{\em read-only} priveleges the two tasks can potentially be run in parallel), and coherence annotations
+express the required semantics of concurrent accesses to the region.  For example, if tasks $x$ and $y$ access region $r$
+with {\em exclusive} access, then the effects of $x$ and $y$ on $r$ are guaranteed to be the same as if they had executed
+in the sequential order expressed by the program; on the other hand, if the tasks access $r$ with {\em atomic} coherence, then 
+Legion guarantees only  atomicity of the tasks with respect to $r$: either $x$ appears to run entirely before $y$ or vice versa.
 
-We begin with an extended example of a Legion program in Section~\ref{sec:ex}.
-Each subsequent section describes a level in the Legion programming
-system from the application down to the machine:
+To introduce the programming model, we begin with an extended example of a circuit simulation programmed in Legion
+in Section~\ref{sec:ex}. This example illustrates regions, tasks, permissions/coherence properties, the interactions
+between them, and how these building blocks are assembled into a realistic Legion program.   Subsequent sections each
+describe a contribution in the implementation and evaluation of Legion: 
  
 \begin{itemize}
 
-\item We summarize Legion's static type system (Section~\ref{sec:type}), which serves two primary
-  purposes.  First, pointers to regions are checked
-  statically, eliminating the need for expensive runtime checks.
-  Second, the invariant that a function $f$ accesses only
-  regions passed as arguments to $f$, or subregions of those regions, is enforced.
-  This property guarantees the Legion implementation can rely on
-  preservation of independence---if two functions are passed disjoint
-  region arguments, their computations access disjoint
-data.  
+\item We define a {\em software out-of order processor}, or SOOP, for scheduling tasks with region arguments in a manner
+analogous to how out-of-order hardware schedulers process instructions with register arguments.  In addition to pipelining
+the scheduling of tasks over several stages, our SOOP is also hierarchical and can extract nested parallelism (because tasks may recursively spawn subtasks) as well as concurrent and distributed across the machine (Section~\ref{sec:soop}). 
 
-\item We describe the execution semantics for Legion and show that
-analyzing region dependencies within a single function is sufficient to 
-guarantee that a Legion execution preserves sequential program
-behavior if regions are accessed with the strongest (exclusive)
-coherence privilege (Section~\ref{sec:exec}).  This local scheduling property is central to 
-the scalability of Legion on distributed memory machines.
+\item A crucial part of orchestrating a program's execution is how
+tasks are assigned (or {\em mapped}) to processors and how regions are
+mapped to specific memory units within the machine.  Often there is
+application-specific information that, if exploited, results in better
+mappings than a generic, one-size-fits-all mapping strategy.  We describe
+a {\em mapping interface} that allows programmers to give the SOOP a specification
+of how to map tasks and regions.  This mapping API is carefully defined so that
+any use-defined mapping strategy can only affect the performance of applications,
+not their correctness.  Thus, user mappings only affect the time and resources required
+to run the program and cannot change the program's output (Section~\ref{sec:mapping}).
 
-\item We describe the design and implementation of the Legion {\em high-level runtime}
-system (Section~\ref{sec:highlevel}), which performs scheduling of {\em tasks} (functions to be executed in parallel)
-and implements each logical region as one or more {\em physical regions}.
-The high-level runtime's scheduling algorithm is analogous to an out-of-order processor,
-but works at the granularity of the tasks and regions in a function body rather than the instructions and registers
-in a code block.  We describe the stages of the task execution pipeline, and how the high-level runtime coordinates parallel
-scheduling decisions across the machine.  We also present the {\em mapping} interface, an API for incorporating
-application-specific knowledge into the high-level runtime's decisions.
+\item We present the results of experiments on four applications: fluid-flow on a regular grid,
+a three-level AMR code solving a simple heat transfer equation, a circuit simulation,
+and LINPACK.  We run each of these four codes and best available reference versions on three different
+clusters of multicore processors with attached GPUs: a small cluster of our own, a medium-sized cluster designed for visualization applications, and up to half of the Keeneland supercomputer (Section~\ref{sec:results}).
 
-\item We describe the design and implementation of the Legion {\em low-level runtime} (Section~\ref{sec:lowlevel}),
-a portability layer designed to abstract a wide variety of hardware, including multicore chips, clusters, and accelerators
-such as GPUs. 
-
-\item We present the results of experiments on two applications running on a cluster of multicore processors with
-attached GPUs (Section~\ref{sec:exp}).  The applications are both irregular and illustrate the capability of Legion to 
-exploit locality and independence on such platforms.
-Running on a 4 node cluster with 8 total GPUs 
-and 4 levels of memory hierarchy, our implementation of Legion 
-achieves up to 5.9X speedup over a single CPU-GPU node on these applications.
 
 \end{itemize}
 %\input{circuit}
