@@ -363,6 +363,7 @@ namespace RegionRuntime {
         {
           std::vector<Machine::MemoryMemoryAffinity> affinities;
           int size = machine->get_mem_mem_affinity(affinities, *it, dst);
+	  log_mapper(LEVEL_SPEW,"memory %x has %d affinities", it->id, size);
           if (size > 0)
           {
             if (!found)
@@ -385,7 +386,12 @@ namespace RegionRuntime {
         if (!found)
         {
           // This is the multi-hop copy because none of the memories had an affinity
-          assert(false);
+	  // SJT: just send the first one
+	  if(current_instances.size() > 0) {
+	    chosen_src = *(current_instances.begin());
+	  } else {
+	    assert(false);
+	  }
         }
       }
     }
