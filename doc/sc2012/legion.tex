@@ -1,6 +1,6 @@
-\documentclass{IEEEtran}
+\documentclass[conference]{IEEEtran}
 
-\bibliographystyle{plainnat}
+\bibliographystyle{IEEEtran}
 \usepackage{amsmath,amsthm}
 \usepackage{listings}
 \usepackage{tikz}
@@ -28,49 +28,119 @@
 \pdfpageheight=11in
 
 \title{Legion: Expressing Locality and Independence with Logical Regions}
-\author{Author names omitted}
-%\numberofauthors{4}
-%\author{
-%\alignauthor
-%Michael Bauer \\
-%\email{mebauer@cs.stanford.edu}
-%\alignauthor
-%Sean Treichler \\
-%\email{sjt@cs.stanford.edu}
-%\alignauthor
-%Elliott Slaughter \\
-%\email{slaughter@cs.stanford.edu}
-%\alignauthor
-%Alex Aiken \\
+\author{
+\IEEEauthorblockN{Michael Bauer\IEEEauthorrefmark{1},
+%\authorinfo(Stanford University, email: \mbox{mebauer@cs.stanford.edu}
+Sean Treichler\IEEEauthorrefmark{1}, 
+%\authorinfo(Stanford University, email: \mbox{sjt@cs.stanford.edu}
+Elliott Slaughter\IEEEauthorrefmark{1}, 
+% \authorinfo(Stanford University, email: \mbox{slaughter@cs.stanford.edu}
+Alex Aiken\IEEEauthorrefmark{1}  
+%\authorinfo(Stanford University, email: \mbox{aiken@cs.stanford.edu}
 %\email{aiken@cs.stanford.edu}
-%}
+}
+\IEEEauthorblockA{
+\IEEEauthorrefmark{1}{Computer Science Department, Stanford University}
+}
+}
 
 \maketitle
 
 
 \begin{abstract}
-%As transistor counts have continued to scale with Moore's Law, computer
-%architectures are becoming increasingly parallel to avoid fundamental
-%physical limitations.  
-Modern parallel architectures have both
-heterogeneous processors and deep, complex memory hierarchies.  
-%New
-%programming abstractions are required to grant programmers the power
-%to leverage these architectures.  With this problem in mind 
-We present Legion, 
-a programming model, type system, and runtime for programming these machines.
-Legion is organized around {\em logical regions}, which express both locality and independence of program data.  
-Legion also enables explicit, programmer controlled movement of data through
-the memory hierarchy and placement of tasks based on locality information
-via a novel mapping interface.  Running on a 4 node cluster with 8 total GPUs 
-and 4 levels of memory hierarchy, our implementation of Legion 
-achieves up to 5.9X speedup over a single CPU-GPU node on real-world applications.
+Modern parallel architectures have both heterogeneous processors and
+deep, complex memory hierarchies.  We present Legion, a programming
+model and runtime system for achieving high performance on these
+machines.  Legion is organized around {\em logical regions}, which
+express both locality and independence of program data and {\em
+  tasks}, functions that perform computations on regions.  We describe
+a runtime system that dynamically extracts parallelism from
+Legion programs, using a distributed, parallel scheduling algorithm
+that identifies both independent tasks and nested parallelism.  Legion
+also enables explicit, programmer controlled movement of data through
+the memory hierarchy and placement of tasks based on locality
+information via a novel mapping interface.  We evaluate our Legion
+implementation using four applications: fluid-flow on a regular grid,
+a three-level AMR code solving a simple heat transfer equation, a circuit simulation,
+and LINPACK.
+%Running on a 4 node cluster with 8 total GPUs 
+%and 4 levels of memory hierarchy, our implementation of Legion 
+%achieves up to 5.9X speedup over a single CPU-GPU node on real-world applications.
 \end{abstract}
 
 \section{Introduction}
 \label{sect:intro}
-Put intro text here \cite{Fatahalian06}
+%Put intro text here \cite{Fatahalian06}
 
+Modern parallel machines are increasingly complex, with deep,
+distributed memory hierarchies and heterogeneous processing units.  On
+these architectures, it is crucial for performance that the programmer
+and the compiler be able to reason about {\em locality} (data resident
+close to computation that uses it) and {\em independence} (computations
+operating on disjoint data).  Most contemporary
+languages have no facilities for the programmer to express locality
+and independence.  The few languages that do focus primarily on
+array-based locality \cite{Fatahalian06,CHAPEL04,UPC99} and 
+avoid irregular pointer data structures.
+%encode such structures in arrays, which 
+%data structures encoded in arrays which are impossible for compilers
+%and runtime systems to reason about with regard to locality and independence.
+
+In this paper we describe Legion, a parallel programming system based
+on using {\em logical regions} to describe the organization of data.
+A logical region names a set of objects.  Logical regions are first
+class values in Legion, and in particular may be passed as arguments
+to functions that access the data in those regions, providing locality
+information.  Logical regions may be {\em partitioned} into (usually)
+disjoint {\em subregions}, providing information for determining independence of computations.  Furthermore,
+computations access logical regions with particular {\em privileges} (e.g., {\em
+  read-only} and {\em read-write}, among others) 
+and {\em coherence} (e.g., {\em exclusive access} and {\em atomic access}, among others).
+
+We begin with an extended example of a Legion program in Section~\ref{sec:ex}.
+Each subsequent section describes a level in the Legion programming
+system from the application down to the machine:
+ 
+\begin{itemize}
+
+\item We summarize Legion's static type system (Section~\ref{sec:type}), which serves two primary
+  purposes.  First, pointers to regions are checked
+  statically, eliminating the need for expensive runtime checks.
+  Second, the invariant that a function $f$ accesses only
+  regions passed as arguments to $f$, or subregions of those regions, is enforced.
+  This property guarantees the Legion implementation can rely on
+  preservation of independence---if two functions are passed disjoint
+  region arguments, their computations access disjoint
+data.  
+
+\item We describe the execution semantics for Legion and show that
+analyzing region dependencies within a single function is sufficient to 
+guarantee that a Legion execution preserves sequential program
+behavior if regions are accessed with the strongest (exclusive)
+coherence privilege (Section~\ref{sec:exec}).  This local scheduling property is central to 
+the scalability of Legion on distributed memory machines.
+
+\item We describe the design and implementation of the Legion {\em high-level runtime}
+system (Section~\ref{sec:highlevel}), which performs scheduling of {\em tasks} (functions to be executed in parallel)
+and implements each logical region as one or more {\em physical regions}.
+The high-level runtime's scheduling algorithm is analogous to an out-of-order processor,
+but works at the granularity of the tasks and regions in a function body rather than the instructions and registers
+in a code block.  We describe the stages of the task execution pipeline, and how the high-level runtime coordinates parallel
+scheduling decisions across the machine.  We also present the {\em mapping} interface, an API for incorporating
+application-specific knowledge into the high-level runtime's decisions.
+
+\item We describe the design and implementation of the Legion {\em low-level runtime} (Section~\ref{sec:lowlevel}),
+a portability layer designed to abstract a wide variety of hardware, including multicore chips, clusters, and accelerators
+such as GPUs. 
+
+\item We present the results of experiments on two applications running on a cluster of multicore processors with
+attached GPUs (Section~\ref{sec:exp}).  The applications are both irregular and illustrate the capability of Legion to 
+exploit locality and independence on such platforms.
+Running on a 4 node cluster with 8 total GPUs 
+and 4 levels of memory hierarchy, our implementation of Legion 
+achieves up to 5.9X speedup over a single CPU-GPU node on these applications.
+
+\end{itemize}
 %\input{circuit}
 \input{code_ex}
 %\input{part_fig}
