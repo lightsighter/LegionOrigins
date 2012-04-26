@@ -108,11 +108,11 @@ def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, nodes = 1, cpus = 0,
          '-ll:cpu', str(cpus),
         ] +
          # Low-level message threads
-        (['-ll:dma', str(2), '-ll:amsg', str(2),]
+        (['-ll:dma', str(2), '-ll:amsg', str(2), '-ll:util', str(1)]
          if _legion_use_gasnet and nodes > 1 else []) +
          # HACK: Turn off -ll:senders with 4 or more nodes
-        (['-ll:senders']
-         if _legion_use_gasnet and nodes > 1 and nodes < 4 else []) +
+         #(['-ll:senders']
+         #if _legion_use_gasnet and nodes > 1 and nodes < 4 else []) +
          # High-level scheduler look-ahead
         ['-hl:sched', str(2*nbx*nby*nbz),
          '-level', str(legion_logging),
@@ -208,28 +208,26 @@ def run_parsec(cpus, reps, steps):
         if timing is not None: timings.append(timing)
     print 'Mean: %.3f' % numpy.average(timings)
     print 'Median: %.3f' % numpy.median(timings)
-    print 'Mean (minus top and bottom 2): %.3f' % numpy.average(sorted(timings)[2:-2])
     print 'Raw: %s' % timings
     print
     if want_plot:
         plot(timings, 'Histogram of PARSEC on %d CPU%s' % (cpus, plural(cpus)))
 
-def run_legion(nodes, cpus, reps, steps):
+def run_legion(nodes, cpus, reps, steps, divs = None):
     print 'Legion (%d node%s %d cpu%s)' % (nodes, plural(nodes),
                                            cpus, plural(cpus))
 
-    size = int(math.ceil(math.log(nodes*cpus, 2)))
-    nbx = 1 << (size/2)
-    nby = 1
-    nbz = 1 << (size/2)
-    if nbx*nbz != 1 << size:
-        nbx *= 2
-
-    if cpus == 1:
-        actual_cpus = cpus
+    if divs is None:
+        size = int(math.ceil(math.log(nodes*cpus, 2)))
+        nbx = 1 << (size/2)
+        nby = 1
+        nbz = 1 << (size/2)
+        if nbx*nbz != 1 << size:
+            nbx *= 2
     else:
-        # add 1 for utility process
-        actual_cpus = cpus + 1
+        nbx, nby, nbz = divs
+
+    actual_cpus = cpus
 
     timings = []
     for i in xrange(reps):
@@ -238,38 +236,43 @@ def run_legion(nodes, cpus, reps, steps):
         if timing is not None: timings.append(timing)
     print 'Mean: %.3f' % numpy.average(timings)
     print 'Median: %.3f' % numpy.median(timings)
-    print 'Mean (minus top and bottom 2): %.3f' % numpy.average(sorted(timings)[2:-2])
     print 'Raw: %s' % timings
     print
     if want_plot:
         plot(timings, 'Histogram of Legion on %d Node%s %d CPU%s' %
              (nodes, plural(nodes), cpus, plural(cpus)))
 
-_num_steps = 100
+_num_steps = 10
 _num_reps = 10
 if __name__ == '__main__':
     for thunk in prep: thunk()
 
     parsec_sizes = (
-        1, 2, 4, 8, 16,
+        4, 8, 16,
         )
     legion_sizes = (
-        (1, 1), (1, 2), (1, 4), (1, 8), (1, 12),
-        (2, 8), (2, 10), (2, 12),
-        (4, 8), (4, 10), (4, 12),
-        (8, 8), (8, 10), (8, 12),
+        (1, 4), (1, 8), (1, 12, (4, 1, 3)),
+        (2, 8), (2, 10, (4, 1, 5)), (2, 12, (4, 1, 6)),
+        (4, 8), (4, 10, (4, 1, 10)), (4, 12, (4, 1, 12)),
+        (8, 8), (8, 10, (8, 1, 10)), (8, 12, (8, 1, 12)),
         )
 
-    if 1 in parsec_sizes:
-        print 'Baseline PARSEC serial:'
-        init_baseline(parsec_serial, _num_reps, nbx = 1, nby = 1, nbz = 1, steps = _num_steps)
-        print
+    print 'Baseline PARSEC serial:'
+    init_baseline(parsec_serial, _num_reps, nbx = 1, nby = 1, nbz = 1, steps = _num_steps)
+    print
 
+    run_parsec(1, 3, _num_steps)
+    run_parsec(2, 5, _num_steps)
     for size in parsec_sizes:
         run_parsec(size, _num_reps, _num_steps)
 
+    run_legion(1, 1, 3, _num_steps)
+    run_legion(1, 2, 5, _num_steps)
     for size in legion_sizes:
-        run_legion(size[0], size[1], _num_reps, _num_steps)
+        divs = None
+        if len(size) >= 3:
+            divs = size[2]
+        run_legion(size[0], size[1], _num_reps, _num_steps, divs)
 
     if want_plot:
         plt.show()

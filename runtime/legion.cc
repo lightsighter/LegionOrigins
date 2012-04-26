@@ -7524,6 +7524,23 @@ namespace RegionRuntime {
         future->set_result(res,res_size);
       }
 
+#ifdef DEBUG_HIGH_LEVEL
+      assert(physical_regions.size() == regions.size());
+#endif
+      // Reclaim the allocators that we used for this task
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        // Make sure that they are still valid!
+        // Don't double free allocators
+        if (allocators[idx].exists())
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(physical_regions[idx].valid_allocator);
+#endif
+          regions[idx].handle.region.destroy_allocator_untyped(allocators[idx]);
+        }
+      }
+
       // Check to see if there are any child tasks that are yet to be mapped
       std::set<Event> map_events;
       for (std::vector<TaskContext*>::const_iterator it = child_tasks.begin();
@@ -7547,23 +7564,6 @@ namespace RegionRuntime {
         // Launch the task to handle all the children being mapped on the utility processor
         Processor utility = local_proc.get_utility_processor();
         utility.spawn(CHILDREN_MAPPED_ID,rez.get_buffer(),buffer_size,Event::merge_events(map_events));
-      }
-
-#ifdef DEBUG_HIGH_LEVEL
-      assert(physical_regions.size() == regions.size());
-#endif
-      // Reclaim the allocators that we used for this task
-      for (unsigned idx = 0; idx < regions.size(); idx++)
-      {
-        // Make sure that they are still valid!
-        // Don't double free allocators
-        if (allocators[idx].exists())
-        {
-#ifdef DEBUG_HIGH_LEVEL
-          assert(physical_regions[idx].valid_allocator);
-#endif
-          regions[idx].handle.region.destroy_allocator_untyped(allocators[idx]);
-        }
       }
     }
 
