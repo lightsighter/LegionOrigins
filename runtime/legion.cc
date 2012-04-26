@@ -7465,6 +7465,7 @@ namespace RegionRuntime {
 
       // Release all our copy references
       {
+        AutoLock ctx_lock(current_lock);
         for (std::vector<InstanceInfo*>::const_iterator it = source_copy_instances.begin();
               it != source_copy_instances.end(); it++)
         {
