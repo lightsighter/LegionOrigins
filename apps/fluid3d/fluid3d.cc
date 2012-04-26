@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstdlib>
 #include <cmath>
+#include <cassert>
 
 // cstdint complains about C++11 support?
 #include <stdint.h>
@@ -261,11 +262,17 @@ const Vec3 externalAcceleration(0.f, -9.8f, 0.f);
 const Vec3 domainMin(-0.065f, -0.08f, -0.065f);
 const Vec3 domainMax(0.065f, 0.1f, 0.065f);
 
+const unsigned MAX_SPLITS = 16;
+
 const size_t MAX_FILENAME = 256;
 struct FluidConfig {
   // Parameters from command line arguments.
   unsigned numSteps;
   unsigned nbx, nby, nbz, numBlocks;
+  int balance;
+  int splitx[MAX_SPLITS + 1];
+  int splity[MAX_SPLITS + 1];
+  int splitz[MAX_SPLITS + 1];
   char inFilename[MAX_FILENAME], outFilename[MAX_FILENAME];
 
   // Parameters of simulation from fluid file header.
@@ -304,8 +311,9 @@ static unsigned parse_args(int argc, char **argv, FluidConfig &conf)
   // Default parameter values.
   numSteps = 4;
   nbx = nby = nbz = 1;
+  conf.balance = 0;
   strcpy(inFilename, "init.fluid");
-  strcpy(outFilename, "");
+  strcpy(outFilename, "output.fluid");
 
   printf("fluid: %p %d ",argv,argc);
   for (int i = 1; i < argc; i++)
@@ -342,6 +350,11 @@ static unsigned parse_args(int argc, char **argv, FluidConfig &conf)
     if(!strcmp(argv[i], "-output")) {
       strncpy(outFilename, argv[++i], MAX_FILENAME);
       outFilename[MAX_FILENAME-1] = '\0';
+      continue;
+    }
+
+    if(!strcmp(argv[i], "-balance")) {
+      conf.balance = atoi(argv[++i]);
       continue;
     }
   }
@@ -386,6 +399,25 @@ static void init_config(FluidConfig &conf)
   delta.y = range.y / ny;
   delta.z = range.z / nz;
   assert(delta.x >= h && delta.y >= h && delta.z >= h);
+  
+  // default splits are the same way that original PARSEC does it
+  int xstep = nx / conf.nbx;
+  unsigned xextra = nx % conf.nbx;
+  conf.splitx[0] = 0;
+  for(unsigned i = 0; i < conf.nbx; i++)
+    conf.splitx[i + 1] = conf.splitx[i] + xstep + ((i < xextra) ? 1 : 0);
+
+  int ystep = ny / conf.nby;
+  unsigned yextra = ny % conf.nby;
+  conf.splity[0] = 0;
+  for(unsigned i = 0; i < conf.nby; i++)
+    conf.splity[i + 1] = conf.splity[i] + ystep + ((i < yextra) ? 1 : 0);
+
+  int zstep = nz / conf.nbz;
+  unsigned zextra = nz % conf.nbz;
+  conf.splitz[0] = 0;
+  for(unsigned i = 0; i < conf.nbz; i++)
+    conf.splitz[i + 1] = conf.splitz[i] + zstep + ((i < zextra) ? 1 : 0);
 }
 
 static void get_all_regions(std::vector<LogicalRegion> &ghosts, std::vector<RegionRequirement> &reqs,
@@ -406,6 +438,8 @@ struct TopLevelRegions {
   LogicalRegion real_cells[2];
   LogicalRegion edge_cells;
 };
+
+void analyze_particle_distribution(FluidConfig& conf);
 
 template<AccessorType AT>
 void top_level_task(const void *args, size_t arglen,
@@ -431,6 +465,9 @@ void top_level_task(const void *args, size_t arglen,
   load_file_header(inFilename, conf);
   init_config(conf);
 
+  if(conf.balance)
+    analyze_particle_distribution(conf);
+
   // workaround for inability to use a region in task that created it
   // build regions for cells and then do all work in a subtask
   {
@@ -453,9 +490,12 @@ void top_level_task(const void *args, size_t arglen,
         for (unsigned idx = 0; idx < nbx; idx++) {
           unsigned id = (idz*nby+idy)*nbx+idx;
 
-          unsigned CELLS_X = (nx/nbx) + (nx%nbx > idx ? 1 : 0);
-          unsigned CELLS_Y = (ny/nby) + (ny%nby > idy ? 1 : 0);
-          unsigned CELLS_Z = (nz/nbz) + (nz%nbz > idz ? 1 : 0);
+	  unsigned CELLS_X = (conf.splitx[idx+1] - conf.splitx[idx]);
+	  unsigned CELLS_Y = (conf.splity[idy+1] - conf.splity[idy]);
+	  unsigned CELLS_Z = (conf.splitz[idz+1] - conf.splitz[idz]);
+          //assert(CELLS_X == (nx/nbx) + (nx%nbx > idx ? 1 : 0));
+          //assert(CELLS_Y == (ny/nby) + (ny%nby > idy ? 1 : 0));
+          //assert(CELLS_Z == (nz/nbz) + (nz%nbz > idz ? 1 : 0));
 
           block_cell_ptrs[id] =
             runtime->create_logical_region(ctx, sizeof(ptr_t<Cell>),
@@ -627,9 +667,12 @@ void main_task(const void *args, size_t arglen,
         blocks[id].x = idx;
         blocks[id].y = idy;
         blocks[id].z = idz;
-        blocks[id].CELLS_X = (nx/nbx) + (nx%nbx > idx ? 1 : 0);
-        blocks[id].CELLS_Y = (ny/nby) + (ny%nby > idy ? 1 : 0);
-        blocks[id].CELLS_Z = (nz/nbz) + (nz%nbz > idz ? 1 : 0);
+	blocks[id].CELLS_X = (conf.splitx[idx+1] - conf.splitx[idx]);
+	blocks[id].CELLS_Y = (conf.splity[idy+1] - conf.splity[idy]);
+	blocks[id].CELLS_Z = (conf.splitz[idz+1] - conf.splitz[idz]);
+        //assert(blocks[id].CELLS_X == (nx/nbx) + (nx%nbx > idx ? 1 : 0));
+	//assert(blocks[id].CELLS_Y == (ny/nby) + (ny%nby > idy ? 1 : 0));
+	//assert(blocks[id].CELLS_Z == (nz/nbz) + (nz%nbz > idz ? 1 : 0));
 
         block_cell_ptrs[id].template alloc<Block>(2*(blocks[id].CELLS_X + 2)*
                                                   (blocks[id].CELLS_Y + 2)*
@@ -742,6 +785,7 @@ void main_task(const void *args, size_t arglen,
         // x-axis edges
 #define XAXIS(dir,iy,iz) do {                                           \
           unsigned id2 = (MOVE_BZ(idz,dir,conf)*nby + MOVE_BY(idy,dir,conf))*nbx + idx; \
+          assert(blocks[id].CELLS_X == blocks[id2].CELLS_X); \
           for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {        \
             ptr_t<Cell> cell = iter->next<Cell>();                      \
             coloring[color + dir].insert(cell);                         \
@@ -758,6 +802,7 @@ void main_task(const void *args, size_t arglen,
         // y-axis edges
 #define YAXIS(dir,ix,iz) do {                                           \
           unsigned id2 = (MOVE_BZ(idz,dir,conf)*nby + idy)*nbx + MOVE_BX(idx,dir,conf); \
+          assert(blocks[id].CELLS_Y == blocks[id2].CELLS_Y); \
           for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {        \
             ptr_t<Cell> cell = iter->next<Cell>();                      \
             coloring[color + dir].insert(cell);                         \
@@ -774,6 +819,7 @@ void main_task(const void *args, size_t arglen,
         // z-axis edges
 #define ZAXIS(dir,ix,iy) do {                                           \
           unsigned id2 = (idz*nby + MOVE_BY(idy,dir,conf))*nbx + MOVE_BX(idx,dir,conf); \
+          assert(blocks[id].CELLS_Z == blocks[id2].CELLS_Z); \
           for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
             ptr_t<Cell> cell = iter->next<Cell>();                      \
             coloring[color + dir].insert(cell);                         \
@@ -790,6 +836,8 @@ void main_task(const void *args, size_t arglen,
         // xy-plane edges
 #define XYPLANE(dir,iz) do {                                            \
           unsigned id2 = (MOVE_BZ(idz,dir,conf)*nby + idy)*nbx + idx;   \
+          assert(blocks[id].CELLS_X == blocks[id2].CELLS_X); \
+          assert(blocks[id].CELLS_Y == blocks[id2].CELLS_Y); \
           for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {        \
             for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {      \
               ptr_t<Cell> cell = iter->next<Cell>();                    \
@@ -806,6 +854,8 @@ void main_task(const void *args, size_t arglen,
         // xz-plane edges
 #define XZPLANE(dir,iy) do {                                            \
           unsigned id2 = (idz*nby + MOVE_BY(idy,dir,conf))*nbx + idx;   \
+          assert(blocks[id].CELLS_X == blocks[id2].CELLS_X); \
+          assert(blocks[id].CELLS_Z == blocks[id2].CELLS_Z); \
           for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
             for(unsigned cx = 1; cx <= blocks[id].CELLS_X; cx++) {      \
               ptr_t<Cell> cell = iter->next<Cell>();                    \
@@ -822,6 +872,8 @@ void main_task(const void *args, size_t arglen,
         // yz-plane edges
 #define YZPLANE(dir,ix) do {                                            \
           unsigned id2 = (idz*nby + idy)*nbx + MOVE_BX(idx,dir,conf);   \
+          assert(blocks[id].CELLS_Y == blocks[id2].CELLS_Y); \
+          assert(blocks[id].CELLS_Z == blocks[id2].CELLS_Z); \
           for(unsigned cz = 1; cz <= blocks[id].CELLS_Z; cz++) {        \
             for(unsigned cy = 1; cy <= blocks[id].CELLS_Y; cy++) {      \
               ptr_t<Cell> cell = iter->next<Cell>();                    \
@@ -1184,6 +1236,12 @@ template<RegionRuntime::LowLevel::AccessorType AT>
 static inline ptr_t<Cell>& get_cell_ptr(Block &b, int cb, int cz, int cy, int cx,
                                         RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<AT> &block_cell_ptrs)
 {
+#if 0
+  ptr_t<ptr_t<Cell> > pp = get_cell_ptr_ptr(b, cb, cz, cy, cx);
+  ptr_t<Cell> p = block_cell_ptrs.ref(pp);
+  printf("gcp(%d,%d,%d,%d,%d,%d,%d) = %d\n",
+	 b.x, b.y, b.z, cb, cx, cy, cz, p.value);
+#endif
   return block_cell_ptrs.ref(get_cell_ptr_ptr(b, cb, cz, cy, cx));
 }
 
@@ -1275,7 +1333,7 @@ void init_and_rebuild(const void *args, size_t arglen,
 
   FluidConfig &conf = get_singleton_ref<AT, FluidConfig>(config_region);
   unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
-  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
+  //unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
   Vec3 &delta = conf.delta;
 
   Block &b = get_array_ref<AT, Block>(block_region, bid);
@@ -1289,6 +1347,7 @@ void init_and_rebuild(const void *args, size_t arglen,
         REF_CELL(b, cb, eb, cz, cy, cx, dst, edges, block_cell_ptrs).num_particles = 0;
       }
 
+#if 0
   // Minimum block sizes
   unsigned mbsx = nx / nbx;
   unsigned mbsy = ny / nby;
@@ -1298,6 +1357,7 @@ void init_and_rebuild(const void *args, size_t arglen,
   unsigned ovbx = nx % nbx;
   unsigned ovby = ny % nby;
   unsigned ovbz = nz % nbz;
+#endif
 
   // now go through each source cell and move particles that have wandered too
   //  far
@@ -1306,6 +1366,7 @@ void init_and_rebuild(const void *args, size_t arglen,
       for(int cx = 1; cx < (int)b.CELLS_X + 1; cx++) {
         // don't need to macro-ize this because it's known to be a real cell
         Cell &c_src = src.ref(get_cell_ptr(b, 1-cb, cz, cy, cx, block_cell_ptrs));
+	assert(c_src.num_particles <= MAX_PARTICLES);
         for(unsigned p = 0; p < c_src.num_particles; p++) {
           Vec3 pos = c_src.p[p];
 
@@ -1319,9 +1380,14 @@ void init_and_rebuild(const void *args, size_t arglen,
           if(dk < 0) dk = 0; else if(dk > (int)(nz-1)) dk = nz-1;
 
           // Global src coordinates
+#if 0
           int ci = cx + (b.x*mbsx + (b.x < ovbx ? b.x : ovbx)) - 1;
           int cj = cy + (b.y*mbsy + (b.y < ovby ? b.y : ovby)) - 1;
           int ck = cz + (b.z*mbsz + (b.z < ovbz ? b.z : ovbz)) - 1;
+#endif
+	  int ci = cx + conf.splitx[b.x] - 1;
+	  int cj = cy + conf.splity[b.y] - 1;
+	  int ck = cz + conf.splitz[b.z] - 1;
 
           // Assume particles move no more than one block per timestep
           if(di - ci < -1) di = ci - 1; else if(di - ci > 1) di = ci + 1;
@@ -1780,6 +1846,107 @@ static void load_file_header(const char *fileName, FluidConfig &conf)
   }
 }
 
+static int read_int(std::ifstream& i)
+{
+  int val;
+  i.read((char *)&val, 4);
+  if(!isLittleEndian())
+    val = bswap_int32(val);
+  return val;
+}
+
+static float read_float(std::ifstream& i)
+{
+  float val;
+  i.read((char *)&val, 4);
+  if(!isLittleEndian())
+    val = bswap_float(val);
+  return val;
+}
+
+static void split_evenly(int pieces, int total,
+			 const std::vector<int>& buckets,
+			 int *splits)
+{
+  splits[0] = 0;
+  splits[pieces] = buckets.size();
+
+  int cum = 0;
+  int pos = 1;
+  for(size_t i = 0; (i < buckets.size()) && (pos < pieces); i++) {
+    cum += buckets[i];
+    if((cum * pieces) >= (pos * total))
+      splits[pos++] = i + 1;
+  }
+}
+
+void analyze_particle_distribution(FluidConfig& conf)
+{
+  std::ifstream file(conf.inFilename, std::ios::binary);
+  assert(file);
+
+  /*float restParticlesPerMeter =*/ read_float(file);
+  int origNumParticles = read_int(file);
+  
+  std::vector<int> hist_x(conf.nx, 0);
+  std::vector<int> hist_y(conf.ny, 0);
+  std::vector<int> hist_z(conf.nz, 0);
+
+  for(int i = 0; i < origNumParticles; ++i) {
+    float px = read_float(file);
+    float py = read_float(file);
+    float pz = read_float(file);
+    char junk[24];
+    file.read(junk, 24);
+
+    // Global cell coordinates
+    int ci = (int)((px - domainMin.x) / conf.delta.x);
+    int cj = (int)((py - domainMin.y) / conf.delta.y);
+    int ck = (int)((pz - domainMin.z) / conf.delta.z);
+
+    if(ci < 0) ci = 0; else if(ci > (int)(conf.nx-1)) ci = conf.nx-1;
+    if(cj < 0) cj = 0; else if(cj > (int)(conf.ny-1)) cj = conf.ny-1;
+    if(ck < 0) ck = 0; else if(ck > (int)(conf.nz-1)) ck = conf.nz-1;
+
+    hist_x[ci]++;
+    hist_y[cj]++;
+    hist_z[ck]++;
+  }
+
+  split_evenly(conf.nbx, origNumParticles, hist_x, conf.splitx);
+  split_evenly(conf.nby, origNumParticles, hist_y, conf.splity);
+  split_evenly(conf.nbz, origNumParticles, hist_z, conf.splitz);
+
+  printf("X splits:");
+  for(unsigned i = 0; i <= conf.nbx; i++) printf(" %d", conf.splitx[i]);
+  printf("\n");
+
+  printf("Y splits:");
+  for(unsigned i = 0; i <= conf.nby; i++) printf(" %d", conf.splity[i]);
+  printf("\n");
+
+  printf("Z splits:");
+  for(unsigned i = 0; i <= conf.nbz; i++) printf(" %d", conf.splitz[i]);
+  printf("\n");
+
+#if 0
+  printf("X histogram\n");
+  for(unsigned i = 0; i < conf.nx; i++)
+    printf("%3d: %6d  %8.4f\n", i, hist_x[i], 100.0 * hist_x[i] * conf.nx / numParticles);
+  printf("\n");
+
+  printf("Y histogram\n");
+  for(unsigned i = 0; i < conf.ny; i++)
+    printf("%3d: %6d  %8.4f\n", i, hist_y[i], 100.0 * hist_y[i] * conf.ny / numParticles);
+  printf("\n");
+
+  printf("Z histogram\n");
+  for(unsigned i = 0; i < conf.nz; i++)
+    printf("%3d: %6d  %8.4f\n", i, hist_z[i], 100.0 * hist_z[i] * conf.nz / numParticles);
+  printf("\n");
+#endif
+}
+
 /*
  * Expects load_file_header and init_config to have been called on the
  * incoming FluidConfig already.
@@ -1808,7 +1975,7 @@ void load_file(const void *args, size_t arglen,
   float &restParticlesPerMeter = conf.restParticlesPerMeter;
   int &origNumParticles = conf.origNumParticles, numParticles;
   unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
-  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
+  unsigned &nbx = conf.nbx, &nby = conf.nby;//, &nbz = conf.nbz;
   Vec3 &delta = conf.delta;
   char (&inFilename)[256] = conf.inFilename;
 
@@ -1837,6 +2004,7 @@ void load_file(const void *args, size_t arglen,
   }
   numParticles = origNumParticles;
 
+#if 0
   // Minimum block sizes
   int mbsx = nx / nbx;
   int mbsy = ny / nby;
@@ -1846,6 +2014,7 @@ void load_file(const void *args, size_t arglen,
   int ovbx = nx % nbx;
   int ovby = ny % nby;
   int ovbz = nz % nbz;
+#endif
 
   float px, py, pz, hvx, hvy, hvz, vx, vy, vz;
   for(int i = 0; i < origNumParticles; ++i) {
@@ -1880,24 +2049,18 @@ void load_file(const void *args, size_t arglen,
     if(ck < 0) ck = 0; else if(ck > (int)(nz-1)) ck = nz-1;
 
     // Block coordinates and id
-    int midx = ci / (mbsx + 1) + 1;
-    int eci = ci + (midx > ovbx ? midx - ovbx : 0);
-    int idx = eci / (mbsx + 1);
-    int midy = cj / (mbsy + 1) + 1;
-    int ecj = cj + (midy > ovby ? midy - ovby : 0);
-    int idy = ecj / (mbsy + 1);
-    int midz = ck / (mbsz + 1) + 1;
-    int eck = ck + (midz > ovbz ? midz - ovbz : 0);
-    int idz = eck / (mbsz + 1);
+    int idx = 0; while(ci >= conf.splitx[idx+1]) idx++;
+    int idy = 0; while(cj >= conf.splity[idy+1]) idy++;
+    int idz = 0; while(ck >= conf.splitz[idz+1]) idz++;
 
     unsigned target_id = (idz*nby+idy)*nbx+idx;
 
     if (target_id != id) continue;
 
     // Local cell coordinates
-    int cx = ci - (idx*mbsx + (idx < ovbx ? idx : ovbx));
-    int cy = cj - (idy*mbsy + (idy < ovby ? idy : ovby));
-    int cz = ck - (idz*mbsz + (idz < ovbz ? idz : ovbz));
+    int cx = ci - conf.splitx[idx];
+    int cy = cj - conf.splity[idy];
+    int cz = ck - conf.splitz[idz];
 
     Cell &cell = real_cells.ref(get_cell_ptr(b, cb, cz+1, cy+1, cx+1, block_cell_ptrs));
 
@@ -1953,7 +2116,7 @@ void save_file(const void *args, size_t arglen,
   float &restParticlesPerMeter = conf.restParticlesPerMeter;
   int &origNumParticles = conf.origNumParticles;
   unsigned &nx = conf.nx, &ny = conf.ny, &nz = conf.nz;
-  unsigned &nbx = conf.nbx, &nby = conf.nby, &nbz = conf.nbz;
+  unsigned &nbx = conf.nbx, &nby = conf.nby;//, &nbz = conf.nbz;
   char (&outFilename)[256] = conf.outFilename;
 
   std::vector<Block> blocks;
@@ -1982,6 +2145,7 @@ void save_file(const void *args, size_t arglen,
     file.write((char *)&origNumParticles,      4);
   }
 
+#if 0
   // Minimum block sizes
   int mbsx = nx / nbx;
   int mbsy = ny / nby;
@@ -1991,12 +2155,14 @@ void save_file(const void *args, size_t arglen,
   int ovbx = nx % nbx;
   int ovby = ny % nby;
   int ovbz = nz % nbz;
+#endif
 
   int numParticles = 0;
   for(int ck = 0; ck < (int)nz; ck++)
     for(int cj = 0; cj < (int)ny; cj++)
       for(int ci = 0; ci < (int)nx; ci++) {
 
+#if 0
         // Block coordinates and id
         int midx = ci / (mbsx + 1) + 1;
         int eci = ci + (midx > ovbx ? midx - ovbx : 0);
@@ -2014,6 +2180,17 @@ void save_file(const void *args, size_t arglen,
         int cx = ci - (idx*mbsx + (idx < ovbx ? idx : ovbx));
         int cy = cj - (idy*mbsy + (idy < ovby ? idy : ovby));
         int cz = ck - (idz*mbsz + (idz < ovbz ? idz : ovbz));
+#endif
+	// Block coordinates and id
+	int idx = 0; while(ci >= conf.splitx[idx+1]) idx++;
+	int idy = 0; while(cj >= conf.splity[idy+1]) idy++;
+	int idz = 0; while(ck >= conf.splitz[idz+1]) idz++;
+
+        int id = (idz*nby+idy)*nbx+idx;
+
+	int cx = ci - conf.splitx[idx];
+	int cy = cj - conf.splity[idy];
+	int cz = ck - conf.splitz[idz];
 
         ptr_t<Cell> cell_ptr = block_cell_ptrs[id].read(get_cell_ptr_ptr(blocks[id], b, cz+1, cy+1, cx+1));
         Cell cell = real_cells.read(cell_ptr);
@@ -2217,6 +2394,10 @@ public:
   {
     std::vector<std::pair<Processor,Memory> > &loc_procs = cpu_mem_pairs[Processor::LOC_PROC];
 
+    log_mapper(LEVEL_SPEW,"selected proc=%x (mem=%x) for task %p",
+	       loc_procs[get_proc_id_for_task(task->task_id, task->tag, loc_procs.size())].first.id,
+	       loc_procs[get_proc_id_for_task(task->task_id, task->tag, loc_procs.size())].second.id,
+	       task);
     return loc_procs[get_proc_id_for_task(task->task_id, task->tag, loc_procs.size())].first;
   }
 
