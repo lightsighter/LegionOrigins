@@ -104,15 +104,15 @@ def legion(nbx = 1, nby = 1, nbz = 1, steps = 1, nodes = 1, cpus = 0,
         (['gasnetrun_ibv', '-n', str(nodes)] if _legion_use_gasnet else []) +
         [_legion_fluid,
          # The upper limit for gsize is 2048 - 2*num_nodes*LMB_SIZE(in MB) .
-         '-ll:csize', str(16384), '-ll:gsize', str(1000),
+         '-ll:csize', str(8000), '-ll:gsize', str(1000),
          '-ll:cpu', str(cpus),
         ] +
          # Low-level message threads
-        (['-ll:dma', str(2), '-ll:amsg', str(2), '-ll:util', str(1)]
+        (['-ll:dma', str(2), '-ll:amsg', str(2)]
          if _legion_use_gasnet and nodes > 1 else []) +
-         # HACK: Turn off -ll:senders with 4 or more nodes
-         #(['-ll:senders']
-         #if _legion_use_gasnet and nodes > 1 and nodes < 4 else []) +
+         # Utility thread
+        (['-ll:util', str(1)]
+         if nodes > 1 or cpus > 1 else []) +
          # High-level scheduler look-ahead
         ['-hl:sched', str(2*nbx*nby*nbz),
          '-level', str(legion_logging),
