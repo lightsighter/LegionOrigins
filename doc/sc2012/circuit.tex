@@ -45,7 +45,7 @@ Wires are simply partitioned in {\tt MAX\_PIECES} subregions (line 20).
 The nodes are first partitioned into 
 {\em private} and {\em shared} nodes (line 21).  Private nodes
 are touched by a single task in a phase, while shared nodes may
-be referenced by multiple tasks in a phase.  The thick lines in figure \ref{sfig:part_fig:pvs}
+be referenced by multiple tasks in a phase.  The thick lines in Figure~\ref{sfig:part_fig:pvs}
 show how the nodes in a small graph might be partitioned into three subsets.  Gray
 nodes are shared and black nodes are private.  Note that
 this partition is disjoint since each node has one color.
@@ -108,7 +108,7 @@ parallel execution, nor is there synchronization required between the
 passes.  Both the fact that the tasks can be run in parallel within a pass
 and the required inter-pass dependencies are determined automatically
 by the Legion runtime based on the region access annotations on the task declarations
-(see Section~\ref{subsec:cirdependence}).
+(see Section~\ref{sec:soop}).
 
 %The declarations for the three subtasks are shown on lines 42-51.  
 The  {\tt calc\_new\_currents} task reads and writes the wires subregion, 
