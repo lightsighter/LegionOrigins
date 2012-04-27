@@ -1,10 +1,8 @@
 \section{Example: Circuit Simulator}
 \label{sec:ex}
 
-In this section we give an overview of Legion using an example.
 Listing~\ref{lst:code_ex} shows code for an electrical
-circuit simulation, which illustrates the core features of the programming model.
-
+circuit simulation, which illustrates the core features of the Legion programming model.
 The circuit simulation takes a collection of
 of wires and nodes where wires meet.  
 The simulation repeatedly updates
@@ -60,7 +58,7 @@ respectively.
 
 We partition the shared nodes a second time using a
 different coloring into the sets of ghost nodes for each task.  This 
-partition is noteworthy because the subregions are {\em not} disjoint:
+partition is noteworthy because the subregions are not disjoint:
 ghost nodes may be read by multiple tasks, and thus a node $n$  may belong 
 to more than one ghost region, which corresponds to $n$ being assigned
 more than one color by the coloring {\tt node\_neighbor\_map}.
@@ -168,12 +166,20 @@ The two basic data types in the circuit simulation are {\tt Node}s and
 {\tt Wire}s declared on lines 1 and 2 of Listing~\ref{lst:code_ex}.
 As is standard in region-based systems, allocating a {\tt Node}, {\tt
   Wire}, or any value in the heap requires naming the logical region
-in which the value is allocated.  Furthermore, pointers to heap values
-declare the region to which they point.  For example, the definition
-of {\tt Wire} is parameterized on the region {\tt rn} to which the
-{\tt Node} pointers in fields {\tt in\_nodes} and {\tt out\_nodes}
-point, which guarantees that the two endpoints of a wire are always in
-the same region.
+in which the value is allocated.  For example, {\tt new Node@r} returns
+a reference to a new value of {\tt Node} type in region {\tt r}.  
+Listing~\ref{lst:code_ex} illustrates one way of constructing partitioned
+data structures in Legion: populate a region with data (using {\tt new}) and then partition it
+into subregions.  Legion also supports partitioning an empty region into subregions
+and then allocating data in the subregions; we use both approaches in our
+application discussed in Section~\ref{sec:ex}.
+
+
+Pointers to region values declare the region to which they point.  For
+example, the definition of {\tt Wire} is parameterized on the region
+{\tt rn} to which the {\tt Node} pointers in fields {\tt in\_nodes}
+and {\tt out\_nodes} point, which guarantees that the two endpoints of
+a wire are always in the same region.
 
 Regions are first-class values in Legion and can be stored in heap
 data structures.  For example, a {\tt Circuit} (defined on line 3)
@@ -181,6 +187,8 @@ holds the regions hold all nodes and wires of the circuit and a {\tt
   CircuitPiece} (defined on line 4) hold pointers to the private,
 shared, and ghost nodes as well as the private wires of its piece of
 the circuit.
+
+
 
 
 

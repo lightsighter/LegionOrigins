@@ -73,12 +73,14 @@ and LINPACK.
 %Put intro text here \cite{Fatahalian06}
 
 Modern parallel machines are increasingly complex, with deep,
-distributed memory hierarchies and heterogeneous processing units.  On
-these architectures, it is crucial for performance that the programmer
+distributed memory hierarchies and heterogeneous processing units.  Because the
+costs of communication within these architectures vary by several orders of magnitude, 
+the penalty for mistakes in the placement of data or computation is very poor performance.  Thus,
+to achieve high performance it is crucial that the programmer
 and the compiler be able to reason about {\em locality} (data resident
 close to computation that uses it) and {\em independence} (computations
-operating on disjoint data).  Most contemporary
-languages have no facilities for the programmer to express locality
+operating on disjoint data, and therefore not requiring communication and able to be placed in possibly distant parts of the machine).  Most contemporary
+programming systems have no facilities for the programmer to express locality
 and independence.  The few languages that do focus primarily on
 array-based locality \cite{Fatahalian06,CHAPEL04,UPC99} and 
 avoid irregular pointer data structures.
@@ -97,27 +99,38 @@ information for determining independence of computations.
 Furthermore, computations access logical regions with particular {\em
   privileges} (e.g., {\em read-only} and {\em read-write}, among
 others) and {\em coherence} (e.g., {\em exclusive access} and {\em
-  atomic access}, among others).  Priveleges express how a task may
-use its region arguments, providing data dependence information that
-is used to guide the extraction of parallelism (e.g., if two tasks
-access the region $r$with {\em read-only} priveleges the two tasks
-can potentially be run in parallel, at least with respect to $r$),
-and coherence properties express the required semantics of concurrent
+  atomic access}, among others).  Priveleges express how a task may use
+its region arguments, providing data dependence information that
+is used to guide the extraction of parallelism.  For example, if two tasks
+access the same region with {\em read-only} privileges the two tasks
+can potentially be run in parallel.
+Coherence properties express the required semantics of concurrent
 accesses to the region.  For example, if tasks $x$ and $y$ access
-region $r$ with {\em exclusive} access, then the effects of $x$ and
+region $r$ with {\em exclusive} access, then Legion guarantees that the effects of $x$ and
 $y$ on $r$ are guaranteed to be the same as if they had executed in
-the sequential order expressed by the program; on the other hand, if
+the sequential order expressed by the program. On the other hand, if
 the tasks access $r$ with {\em atomic} coherence, then Legion
 guarantees only atomicity of the tasks with respect to $r$: either $x$
 appears to run entirely before $y$ or vice versa.
 
+Legion programs are written using logical regions, each of which
+has one or more {\em physical instances} when the program executes.  Often
+logical regions correspond to a single physical instance, but there are common situations
+in which it is desirable to have multiple physical copies of a logical region's
+contents in different parts of the machine (e.g., to duplicate and distribute read-only
+data) or even to have physical instances of a logical region that temporarily diverge
+in their contents (e.g., to keep an old copy of a region to break a write-after-read dependency, or to 
+allow independent, local reductions that are later combined).
+
 To introduce the programming model, we begin with an extended example
-of a circuit simulation programmed in Legion in
+of a circuit simulation in
 Section~\ref{sec:ex}. This example illustrates regions, tasks,
 permissions and coherence properties, the interactions between them,
 and how these building blocks are assembled into a Legion
 program.  Subsequent sections each describe a contribution in the
 implementation and evaluation of Legion:
+
+\input{code_ex}
  
 \begin{itemize}
 
@@ -131,7 +144,7 @@ implementation and evaluation of Legion:
   (Section~\ref{sec:soop}).
 
 \item A crucial part of orchestrating a program's execution is how
-tasks are assigned (or {\em mapped}) to processors and how regions are
+tasks are assigned (or {\em mapped}) to processors and how physical instances of logical regions are
 mapped to specific memory units within the machine.  Often there is
 application-specific information that, if exploited, results in better
 mappings than a generic, one-size-fits-all mapping strategy.  We describe
@@ -153,7 +166,7 @@ to run the program and cannot change the program's output (Section~\ref{sec:mapp
 
 
 \end{itemize}
-\input{code_ex}
+
 \input{circuit}
 \input{part_fig}
 \input{soop}
