@@ -1,0 +1,222 @@
+\section{Example: Circuit Simulator}
+\label{sec:ex}
+
+%\include{code_ex}
+
+In this section we give an informal overview of Legion through an example.
+Listing~\ref{lst:code_ex} shows code for an electrical
+circuit simulation, which illustrates the core features of the programming model.
+
+The circuit simulation takes a collection of
+of wires and nodes where wires meet.  
+The simulation repeatedly updates
+currents, distributes charges, and updates voltages for as many
+time steps as the simulation demands.  We first
+describe the partitioning of regions in Section~\ref{subsec:partitioning}
+and then describe the data type declarations 
+and the constraints they enforce 
+in Section~\ref{subsec:datatypes}.
+
+\subsection{Regions and Partitions}
+\label{subsec:partitioning}
+
+Line 18 declares the main simulator function, which takes a {\tt
+Circuit} to be simulated.  This function specifies the regions it 
+accesses and the {\em privileges} and {\em coherence} it requires of those regions.
+In this case, the {\tt RWE} annotation specifies that the function
+accesses the regions {\tt c.r\_all\_nodes} and {\tt c.r\_all\_wires}
+with read-write privileges and {\em exclusive} coherence (i.e., no other
+function can access the regions concurrently).  The simulation 
+reads and writes all nodes and wires, and it must be done
+with exclusive access to ensure correct results.  Privileges specify what
+the function can do with the regions; coherence specifies what other
+functions can do with the regions concurrently.  Functions that
+declare their accessed regions, privileges, and coherence are called {\em tasks}
+and are the unit of parallel execution in Legion.
+
+Lines 19-27 are responsible for partitioning the circuit into {\tt MAX\_PIECES}
+pieces that can be worked on in parallel.  To partition a region, we
+provide a {\em coloring}, which is a relation between the elements
+of a region and a set of colors.  A {\em partition} is an object which given
+a coloring and a region $r$ contains for each color $c$ a {\em subregion} of $r$
+containing all the elements of $r$ colored $c$.
+
+Wires are simply partitioned in {\tt MAX\_PIECES} subregions (line 20).  
+The nodes are first partitioned into 
+{\em private} and {\em shared} nodes (line 21).  Private nodes
+are touched by a single task in a phase, while shared nodes may
+be referenced by multiple tasks in a phase.  The thick lines in figure \ref{sfig:part_fig:pvs}
+show how the nodes in a small graph might be partitioned into three subsets.  Gray
+nodes are shared and black nodes are private.  Note that
+this partition is disjoint since each node has one color.
+%Our current implementation uses small
+%integers or booleans for the names of colors, but any enumerable set would be
+%fine.  The coloring relation need not be total - it can leave out some elements entirely.  And although it is not required to be injective (it can map a single
+%element to multiple colors), the fact that injective mappings will always
+%result in disjoint subregions makes them strongly encouraged (when possible).
+%Our example uses four colorings to create circuit partitions.
+
+We next further partition the private and shared subregions into {\tt
+MAX\_PIECES} disjoint subregions each (lines 23-24); one subregion of the private and shared node partitions
+is shown in Figures~\ref{sfig:part_fig:p_i} and \ref{sfig:part_fig:s_i} respectively.  
+We partition the shared nodes again
+into the sets of ghost nodes for each task.  Since ghost nodes may be read by multiple tasks,
+nodes may be colored multiple times and the ghost regions are not disjoint; one of the ghost subregions is shown in Figure~\ref{sfig:part_fig:g_i}.
+Figure~\ref{sfig:part_fig:tree} shows the final hierarchy of node partitions.  The $*$ symbol indicates a partition is 
+disjoint.
+
+%(These subsets are hopefully reasonably compact, but the correctness
+%of the simulation is not dependent on that.)  
+%Once the subsets are known, the \emph{node\_owner\_map} is created by assigning
+%each node the color corresponding to its subset.  The 
+%\emph{wire\_owner\_map} assigns each wire to the same subset as its ``in\_node''.
+%The \emph{node\_nghbr\_map} maps a node to color(s) of all wires that 
+%connect to it.  Finally, the \emph{node\_sharing\_map} is derived from the
+%\emph{node\_nghbr\_map}, with a node colored ``true'' if any colors other than 
+%its own were used, and ``false'' if the only wires that connect to a node are
+%in the same piece.
+%Figure~\ref{fig:part_fig} shows how the partitions are defined.
+
+%Line 19 uses the \emph{wire\_owner\_map} to partition the wires region of the
+%circuit into a subregion for each piece, but the partitioning of the nodes is
+%more complicated due to the sharing that is necessary between the pieces.
+%First, the \emph{node\_sharing\_map} is used to create two subregions: $p\_nodes\_pvs[false]$ contains all the nodes that are private to some piece (i.e. will
+%never be needed for the computations in any other piece), while $p\_nodes\_pvs[true]$ contains nodes that will be accessed by multiple pieces' computations.
+%Each of these subregions is then partitioned using the $node\_owner\_map$ to
+%create the subregions owned by each computation.  These are the $p_i$ and $s_i$
+%subregions, shown in Figures \ref{sfig:part_fig:p_i} and \ref{sfig:part_fig:s_i}.  Finally, the $g_i$ subregions (shown in Figure~\ref{sfig:part_fig:g_i}) are
+%created using the $node\_nghbr\_map$ to 
+%create subregions that include the ``ghost'' nodes needed to perform each
+%piece's calculations.
+
+%With the partitioning operations completed, the various subregions are
+%recorded in an array of {\tt CircuitPiece} structures.  Lines 32-33 fill in multiple
+%fields of a {\tt CircuitPiece} at once.  The need for such a statement will be described in detail in 
+%section \ref{subsec:datatypes}.
+
+%Because a region relationship can have
+%fields with types that refer its own fields' values, it is often not possible
+%to assign fields one at a time without violating the type checking rules.
+%The simultaneous assignment operator asks the type checker only to make sure
+%that the fields in the structure would have the right (self-referential) types
+%after all the fields have been changed.
+
+Lines 36-40 form the bulk of the actual simulation, performing three passes
+over the circuit in each iteration.  Each pass loops over an array of pieces (constructed on lines 30-34 from the partitions),
+spawning a task for each piece.   There are no explicit requests for
+parallel execution, nor is there synchronization required between the
+passes.  Both the fact that the tasks can be run in parallel within a pass
+and the required inter-pass dependencies are determined automatically
+by the Legion runtime based on the region access annotations on the task declarations
+(see Section~\ref{subsec:cirdependence}).
+
+%The declarations for the three subtasks are shown on lines 42-51.  
+The  {\tt calc\_new\_currents} task reads and writes the wires subregion, 
+the nodes subregion, and the ghost node region for its piece.
+The {\tt distribute\_charge} subtask is a different phase that reads the piece's 
+wires subregion and updates all nodes those wires touch.  However,
+rather than requesting the ability to read and write the nodes (which would
+require serialization of these tasks for correctness), the task declares that
+it will use reorderable {\em reduction} operations and that the coherence requirement
+is {\em atomic} rather than exclusive access. The final task is 
+{\tt update\_voltages}, which writes the shared and private nodes for a piece
+and reads the results of the previous task's reductions.
+
+  
+%Since the wire subregions are known to be disjoint,
+%the write sets of invocations of $calc\_new\_currents$ do not overlap, and can
+%therefore be safely run in parallel.
+
+
+%As long as the
+%runtime can guarantee to apply the reductions from multiple subtasks safely, it
+%can run the subtasks themselves in parallel.  Each invocation of 
+%$distribute\_charge$ will be delayed until the corresponding invocation of 
+%$calc\_new\_currents$ has completed due to the read-after-write dependency on
+%the corresponding wire subregion.  However, despite the apparent 
+%write-after-read anti-dependency on the ghost node regions, $distribute\_charge$
+%tasks will generally not have to wait on the the completion of the other
+%$calc\_new\_current$ tasks.  If there is sufficient memory available to make
+%two copies of those nodes, the runtime can allow $distribute\_charge$ tasks to
+%start calculating a new version of the nodes while older $calc\_new\_currents$
+%tasks are still referring to the older version, all completely transparently to
+%the application code.
+
+%Again, the disjointness of the $p_i$ and $s_i$
+%node subregions allows the runtime to safely run these tasks in parallel.  In
+%this case, the runtime does wait for the completion of all the tasks in the 
+%previous pass.  The read-after-write dependence on the $p_i$ is a guaranteed
+%conflict, but there is also potential overlap between the $s_i$ subregions
+%being reduced to in the previous pass and the $g_i$ subregions being accessed
+%in this pass.  Although not every pair of $s_i$ and $g_j$ conflict, the
+%runtime knows that they were created from two independent partitioning
+%operations and guarantees correctness by conservatively assuming they might
+%conflict.
+
+
+\subsection{Data Types and Constraints}
+\label{subsec:datatypes}
+The two basic data types are {\tt Node}s and {\tt Wire}s.
+{\tt Node}s are linked in circular lists.
+The simulation relies on different lists being in different
+regions, so the {\tt Node} definition on line 1 is parameterized by a region
+{\tt rn}.  The {\tt next} field of a $\tt Node \langle rn \rangle$ has
+type $\tt Node \langle rn \rangle \mbox{\tt @} rn$, which means the field points
+to an object in region {\tt rn} of type $\tt Node \langle rn \rangle$, 
+implying that all nodes of the list are in region {\tt rn}.
+
+{\tt Wire}s are similar, except that a wire refers to two nodes to
+which it is electrically connected.  The two {\tt Node}s are in region {\tt rn},
+but they may point to {\tt Node}s in a different region {\tt rn2}.  
+This is a common pattern in Legion code, and
+arises when a constraint needs to be placed on the objects directly
+referenced, and a second (presumably weaker) constraint on objects
+that are indirectly reached through the direct pointers.
+
+In cases where we need to create compound data structures with types whose
+region parameters are self-referential we declare a {\em region relationship}.
+A region relationship is a structure with named fields, 
+except that any region fields can be used in the type declarations
+for other fields.  Lines 4-9 declare the region relationship {\tt Circuit}.
+In {\tt Circuit} the region {\tt r\_all\_nodes} contains {\tt
+Node}s that point only into region {\tt r\_all\_nodes}, guaranteeing that
+all {\tt Node}s are in region {\tt r\_all\_nodes}.  (Note that regions are
+declared with the single data type they can contain.)  Similarly, the
+type of the wire region's element not only guarantees that every wire
+in the circuit is in the wire region, but also guarantees that every
+node referred to by any wire is in the circuit's node region.
+
+Since a region relationship can have
+fields with types that refer to its own fields' regions, it is often not possible
+to assign fields one at a time without violating the type checking rules.
+The simultaneous assignment operator asks the type checker only to ensure
+that fields have the correct types after all the fields are updated.  In
+many cases, the target type also tries to describe tighter constraints on
+the region parameters used for field types.  The {\tt region\_cast} operator
+allows the programmer to assert the correctness of this transformation, which
+can be verified with a linear scan over the elements of a region.
+Lines 32-34 illustrate a simultaneous
+assignment to update a {\tt CircuitPiece} region relationship.
+
+The last type definition is for the pieces into which the circuit is partitioned.
+The original node and wire regions are specified as parameters, and the
+four kinds of subregions that are created are made fields of the
+{\tt CircuitPiece} (lines 10-17).  This declaration also illustrates {\em subregion constraints}
+placed on the three region fields stating the region fields must be subregions of the 
+node and wire regions provided as parameters (line 16).  Since the simulation 
+iterates over the nodes owned by a {\tt CircuitPiece}, the parameterization of the {\tt rn\_pvt} (private nodes),
+{\tt rn\_shr} (shared nodes), and {\tt first\_node} fields constrains the linked list of
+nodes to reside entirely in those two regions.  The linked list of wires is
+similarly constrained, and the wire's node pointers are constrained to fall
+into one of the three subregions.
+% defined in the {\tt CircuitPiece}.  
+Finally,
+the use of {\tt rn} for {\tt rn\_ghost}'s parameter and the second parameter
+in the wire type places no constraints on which nodes a ghost node might point
+to.
+
+
+%\include{part_fig}
+
+%\include{code_ex}
+%\include{part_fig}
