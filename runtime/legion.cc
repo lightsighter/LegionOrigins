@@ -1442,33 +1442,37 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(active);
 #endif
-      // Mark that the region has been unmapped
-      unmapped_event.trigger();
-      // Free the instances that we are no longer using
-      for (std::vector<InstanceInfo*>::const_iterator it = source_copy_instances.begin();
-            it != source_copy_instances.end(); it++)
+      // Need to hold the current lock to update our state
       {
-        (*it)->remove_copy_user(this->get_unique_id());
-      }
-      // If we had an allocator release it
-      if (allocator != RegionAllocator::NO_ALLOC)
-      {
-        req.handle.region.destroy_allocator_untyped(allocator);
-      }
-      // Relase our use of the physical instance
-      if (chosen_info != NULL)
-      {
-        chosen_info->remove_user(this->get_unique_id());
-      }
-      chosen_info = NULL;
+        AutoLock cur_lock(context_lock);
+        // Mark that the region has been unmapped
+        unmapped_event.trigger();
+        // Free the instances that we are no longer using
+        for (std::vector<InstanceInfo*>::const_iterator it = source_copy_instances.begin();
+              it != source_copy_instances.end(); it++)
+        {
+          (*it)->remove_copy_user(this->get_unique_id());
+        }
+        // If we had an allocator release it
+        if (allocator != RegionAllocator::NO_ALLOC)
+        {
+          req.handle.region.destroy_allocator_untyped(allocator);
+        }
+        // Relase our use of the physical instance
+        if (chosen_info != NULL)
+        {
+          chosen_info->remove_user(this->get_unique_id());
+        }
+        chosen_info = NULL;
 
-      map_dependent_tasks.clear();
-      unresolved_dependences.clear();
-      source_copy_instances.clear();
-      active = false;
+        map_dependent_tasks.clear();
+        unresolved_dependences.clear();
+        source_copy_instances.clear();
+        active = false;
 
-      // Update the generation
-      current_gen++;
+        // Update the generation
+        current_gen++;
+      }
       // Put this back on this list of free mapping implementations for the runtime
       runtime->free_mapping(this);
     }
@@ -4083,6 +4087,12 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(active);
 #endif
+      {
+        // Hold the current context lock when doing this
+        AutoLock cur_lock(current_lock);
+        // Increment the generation of this context
+        current_gen++;
+      }
       // Free the arg space
       if (args != NULL)
       {
@@ -4201,8 +4211,6 @@ namespace RegionRuntime {
       individual_term_event.id = 0;
       individual_term_event.gen = 0;
       active = false;
-      // Increment the generation of this context
-      current_gen++;
       // Tell the runtime this context is free again
       runtime->free_context(this);
     }
@@ -9819,7 +9827,8 @@ namespace RegionRuntime {
       }
       if (!enumerated)
       {
-        log_task(LEVEL_WARNING,"Task point for index space task %s hasn't been enumerated yet, results are undefined.",variants->name);
+        log_task(LEVEL_ERROR,"Task point for index space task %s hasn't been enumerated yet, results are undefined.",variants->name);
+        exit(1);
       }
 #endif
       return index_point;
