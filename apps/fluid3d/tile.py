@@ -64,12 +64,14 @@ def mul(v, s):
 
 def scale(factor):
     def _scale(particle):
-        return particle
+        return dict([(k, mul(v, factor)) for k, v in particle.iteritems()])
     return _scale
 
-def translate(x, y, z):
+def translate(offset):
     def _translate(particle):
-        return particle
+        result = {'v': particle['v'], 'hv': particle['hv']}
+        result['p'] = add(particle['p'], offset)
+        return result
     return _translate
 
 _domain_min = {'x': -0.065, 'y': -0.08, 'z': -0.065}
@@ -80,17 +82,17 @@ def tile(original):
     result['rest_particles_per_meter'] = original['rest_particles_per_meter'] * 2.0
     result['orig_num_particles'] = original['orig_num_particles'] * 8
     # this'll make a smaller copy, but still centered on the center
-    shrunk = map(translate(_center['x'], _center['y'], _center['z']),
+    shrunk = map(translate(_center),
                  map(scale(0.5),
-                     map(translate(-_center['x'], -_center['y'], -_center['z']),
+                     map(translate(neg(_center)),
                          original['particles'])))
     # tile each of the 8 copies
     parts = []
-    offset = mul(sub(_domain_max, _domain_min), 0.5)
+    offset = mul(sub(_domain_max, _domain_min), 0.25)
     for x in (-offset['x'], offset['x']):
         for y in (-offset['y'], offset['y']):
             for z in (-offset['z'], offset['z']):
-                parts.extend(map(translate(x, y, z), shrunk))
+                parts.extend(map(translate({'x': x, 'y': y, 'z': z}), shrunk))
     result['particles'] = parts
     return result
 
