@@ -10,6 +10,7 @@
 using namespace RegionRuntime::HighLevel;
 
 RegionRuntime::Logger::Category log_app("application");
+RegionRuntime::Logger::Category log_mapper("mapper");
 
 namespace Config {
   int N = 8;
@@ -32,13 +33,302 @@ enum {
 };
 
 enum {
-  COLORID_IDENTITY = 1,
+  COLORID_IDENTITY = 0,
 };
 
+// some tags used by the linpack mapper
+enum {
+  LMAP_PICK_CPU_BASE = 0x100000,
+  LMAP_PICK_CPU_END  = 0x1FFFFF,
+
+  LMAP_PICK_GPU_BASE = 0x200000,
+  LMAP_PICK_GPU_END  = 0x2FFFFF,
+
+  LMAP_IDXCOL_MODE   = 0x010000,
+  LMAP_IDXROW_MODE   = 0x020000,
+
+  LMAP_PLACE_GASNET  = 0x300000,
+  LMAP_PLACE_SYSMEM,
+  LMAP_PLACE_ZCMEM,
+  LMAP_PLACE_FBMEM,
+  LMAP_PLACE_NONE,
+};
+
+class LinpackMapper : public Mapper {
+public:
+  struct CPUProcInfo {
+    CPUProcInfo(Processor _cpu) : cpu(_cpu) {}
+    Processor cpu;
+    std::vector<Processor> gpus;
+    Memory sysmem;
+    std::vector<Memory> zcmems;
+    Memory gasnet;
+  };
+
+  struct GPUProcInfo {
+    GPUProcInfo(Processor _gpu) : gpu(_gpu) {}
+    Processor gpu;
+    std::vector<Processor> cpus;
+    Memory fbmem;
+    Memory zcmem;
+  };
+
+  std::map<Processor, CPUProcInfo> cpu_procs;
+  std::map<Processor, GPUProcInfo> gpu_procs;
+  std::vector<Processor> cpu_list, gpu_list;
+
+  LinpackMapper(Machine *m, HighLevelRuntime *r, Processor p)
+    : Mapper(m, r, p)
+  {
+    const std::set<Processor> &all_procs = m->get_all_processors(); 
+    for (std::set<Processor>::const_iterator it = all_procs.begin();
+          it != all_procs.end(); it++)
+    {
+      Processor::Kind k = m->get_processor_kind(*it);
+      if (k == Processor::LOC_PROC)
+      {
+	cpu_list.push_back(*it);
+	cpu_procs.insert(std::pair<Processor, CPUProcInfo>(*it, CPUProcInfo(*it)));
+      }
+      else if (k == Processor::TOC_PROC)
+      {
+	gpu_list.push_back(*it);
+	gpu_procs.insert(std::pair<Processor, GPUProcInfo>(*it, GPUProcInfo(*it)));
+      }
+    }
+
+    // get GPU memories first
+    std::map<Memory, Processor> zcmem_map;
+    for(std::map<Processor, GPUProcInfo>::iterator it = gpu_procs.begin();
+	it != gpu_procs.end();
+	it++) {
+      std::vector<ProcessorMemoryAffinity> result;
+      m->get_proc_mem_affinity(result, it->first);
+      for(std::vector<ProcessorMemoryAffinity>::iterator it2 = result.begin();
+	  it2 != result.end();
+	  it2++) {
+	// terribly fragile...
+	switch(it2->bandwidth) {
+	case 200: // hard-coded value for fb
+	  it->second.fbmem = it2->m;
+	  break;
+
+	case 20: // hard-coded value for zc
+	  it->second.zcmem = it2->m;
+	  zcmem_map[it2->m] = it->first;
+	  break;
+
+	default:
+	  assert(0);
+	}
+      }
+    }
+
+    // now do CPUs, and figure out cpu<->gpu affinity via zcmems
+    for(std::map<Processor, CPUProcInfo>::iterator it = cpu_procs.begin();
+	it != cpu_procs.end();
+	it++) {
+      std::vector<ProcessorMemoryAffinity> result;
+      m->get_proc_mem_affinity(result, it->first);
+      for(std::vector<ProcessorMemoryAffinity>::iterator it2 = result.begin();
+	  it2 != result.end();
+	  it2++) {
+	// terribly fragile...
+	switch(it2->bandwidth) {
+	case 100: // hard-coded value for sysmem
+	  it->second.sysmem = it2->m;
+	  break;
+
+	case 10: // hard-coded value for gasnet
+	  it->second.gasnet = it2->m;
+	  break;
+
+	case 40: // hard-coded value for zcmem (from cpu)
+	  it->second.zcmems.push_back(it2->m);
+	  {
+	    Processor gpu = zcmem_map[it2->m];
+	    assert(gpu.exists());
+	    it->second.gpus.push_back(gpu);
+	    gpu_procs.find(gpu)->second.cpus.push_back(it->first);
+	  }
+	  break;
+
+	default:
+	  assert(0);
+	}
+      }
+    }
+
+    // now print some stuff out:
+#ifdef DEBUG_MACHINE_LAYOUT
+    for(std::map<Processor, CPUProcInfo>::iterator it = cpu_procs.begin();
+	it != cpu_procs.end();
+	it++) {
+      CPUProcInfo &info = it->second;
+      printf("CPU: %x sysmem=%x gasnet=%x, gpus=",
+	     info.cpu.id, info.sysmem.id, info.gasnet.id);
+      for(unsigned i = 0; i < info.gpus.size(); i++)
+	printf("%x/%x ", info.gpus[i].id, info.zcmems[i].id);
+      printf("\n");
+    }
+    for(std::map<Processor, GPUProcInfo>::iterator it = gpu_procs.begin();
+	it != gpu_procs.end();
+	it++) {
+      GPUProcInfo &info = it->second;
+      printf("GPU: %x fbmem=%x zcmem=%x, cpus=",
+	     info.gpu.id, info.fbmem.id, info.zcmem.id);
+      for(unsigned i = 0; i < info.cpus.size(); i++)
+	printf("%x ", info.cpus[i].id);
+      printf("\n");
+    }
+#endif
+  }
+
+public:
+  virtual bool spawn_child_task(const Task *task)
+  {
+    if (task->task_id == TOP_LEVEL_TASK_ID)
+    {
+      return false;
+    }
+    return true;
+  }
+
+  static int calculate_index_space_tag(int tag, int index)
+  {
+    if(tag & LMAP_IDXCOL_MODE) {
+      int num_rowparts = (tag >> 8) & 0xFF;
+      tag = (tag & 0xFFF000FF) + (index * num_rowparts);
+      return tag;
+    }
+    if(tag & LMAP_IDXROW_MODE) {
+      tag = (tag & 0xFFF0FFFF) + index;
+      return tag;
+    }
+    assert(0);
+    return tag;
+  }
+
+  Processor pick_processor(int tag)
+  {
+    if((tag >= LMAP_PICK_CPU_BASE) && (tag <= LMAP_PICK_CPU_END)) {
+      Processor gpu = gpu_list[(tag - LMAP_PICK_CPU_BASE) % gpu_list.size()];
+      Processor cpu = gpu_procs.find(gpu)->second.cpus[0];
+      log_mapper.info("chosing CPU %x", cpu.id);
+      return cpu;
+    }
+
+    if((tag >= LMAP_PICK_GPU_BASE) && (tag <= LMAP_PICK_GPU_END)) {
+      Processor gpu = gpu_list[(tag - LMAP_PICK_GPU_BASE) % gpu_list.size()];
+      log_mapper.info("chosing GPU %x", gpu.id);
+      return gpu;
+    }
+
+    assert(0);
+    return Processor::NO_PROC;
+  }
+
+  virtual Processor select_initial_processor(const Task *task)
+  {
+    if (task->task_id == TOP_LEVEL_TASK_ID)
+    {
+      return local_proc;
+    }
+
+    // everything other than the top level should be tagged appropriately
+    int tag;
+    log_mapper.info("selecting processor for task: %s, tag=%x",
+		    task->variants->name, task->tag);
+    assert(!task->is_index_space);
+    if(task->is_index_space) {
+      const IndexPoint &point = task->get_index_point();
+      tag = calculate_index_space_tag(task->tag, point[0]);
+      log_mapper.info("tag remapped to %x", tag);
+    } else {
+      tag = task->tag;
+    }
+
+    return pick_processor(tag);
+  }
+
+  virtual void split_index_space(const Task *task, 
+				 const std::vector<Range> &index_space,
+				 std::vector<RangeSplit> &chunks)
+  {
+    log_mapper.info("selecting processor for index space task: %s[%d,%d], tag=%x",
+		    task->variants->name, index_space[0].start, index_space[0].stop, task->tag);
+    assert(index_space.size() == 1);
+    for(int pt = index_space[0].start; pt <= index_space[0].stop; pt++) {
+      int tag = calculate_index_space_tag(task->tag, pt);
+      Processor p = pick_processor(tag);
+      log_mapper.info("point (%d) tag remapped to %x -> %x", pt, tag, p.id);
+      std::vector<Range> r;
+      r.push_back(Range(pt, pt));
+      chunks.push_back(RangeSplit(r, p, false));
+    }
+  }
+
+  virtual Processor target_task_steal(const std::set<Processor> &blacklisted)
+  {
+    // No stealing
+    return Processor::NO_PROC;
+  }
+
+  virtual void permit_task_steal( Processor thief, const std::vector<const Task*> &tasks,
+                                  std::set<const Task*> &to_steal)
+  {
+    // Do nothing
+  }
+
+  Memory pick_region_memory(const Task *task, const RegionRequirement &req)
+  {
+    switch(req.tag) {
+    case LMAP_PLACE_NONE:
+      return Memory::NO_MEMORY;
+      break;
+
+    case LMAP_PLACE_GASNET:
+      if(proc_kind == Processor::LOC_PROC)
+	return cpu_procs.find(local_proc)->second.gasnet;
+      else
+	return cpu_procs.find(gpu_procs.find(local_proc)->second.cpus[0])->second.gasnet;
+      break;
+
+    case LMAP_PLACE_SYSMEM:
+      if(proc_kind == Processor::LOC_PROC)
+	return cpu_procs.find(local_proc)->second.sysmem;
+      else
+	return cpu_procs.find(gpu_procs.find(local_proc)->second.cpus[0])->second.sysmem;
+      break;
+
+    default:
+      assert(0);
+    }
+  }
+
+  virtual void map_task_region(const Task *task, const RegionRequirement &req, unsigned index,
+                               const std::set<Memory> &current_instances,
+                               std::vector<Memory> &target_ranking,
+                               bool &enable_WAR_optimization)
+  {
+    log_mapper.info("mapper: mapping region for task (%p,%p) region=%x", task, &req, req.parent.id);
+    int idx = index; 
+    log_mapper.info("func_id=%d map_tag=%x req_tag=%x region_index=%d", task->task_id, task->tag, req.tag, idx);
+
+    Memory m = pick_region_memory(task, req);
+    log_mapper.info("chose %x", m.id);
+
+    target_ranking.push_back(m);
+    enable_WAR_optimization = true;
+  }
+};
+
+#if 0
 static Color colorize_identity_fn(const std::vector<int> &solution)
 {
   return solution[0];
 }
+#endif
 
 template <class T>
 struct fatptr_t {
@@ -200,6 +490,32 @@ class Linpack {
     LogicalRegion topblk_subregions[MAX_BLOCKS];
   };
 
+  static inline MappingTagID LMAP_PICK_CPU(const BlockedMatrix& matrix,
+					   int rowpart_id, int col_num)
+  {
+    return(LMAP_PICK_CPU_BASE + rowpart_id + (col_num * matrix.num_row_parts));
+  }
+
+  static inline MappingTagID LMAP_PICK_CPU_IDXCOL(const BlockedMatrix& matrix,
+						  int rowpart_id)
+  {
+    return(LMAP_PICK_CPU_BASE + rowpart_id +
+	   (LMAP_IDXCOL_MODE + (matrix.num_row_parts << 8)));
+  }
+
+  static inline MappingTagID LMAP_PICK_CPU_IDXROW(const BlockedMatrix& matrix,
+						  int col_num)
+  {
+    return(LMAP_PICK_CPU_BASE + (col_num * matrix.num_row_parts) +
+	   LMAP_IDXROW_MODE);
+  }
+
+  static inline MappingTagID LMAP_PICK_GPU(const BlockedMatrix& matrix,
+					   int rowpart_id, int col_num)
+  {
+    return(LMAP_PICK_GPU_BASE + rowpart_id + (col_num * matrix.num_row_parts));
+  }
+
   template <AccessorType AT>
   static void create_blocked_matrix(Context ctx, HighLevelRuntime *runtime,
 				    BlockedMatrix& matrix,
@@ -229,7 +545,8 @@ class Linpack {
       ScopedMapping<AT> reg(ctx, runtime,
 			    RegionRequirement(matrix.block_region, 
 					      NO_ACCESS, ALLOCABLE, EXCLUSIVE, 
-					      matrix.block_region));
+					      matrix.block_region,
+					      LMAP_PLACE_SYSMEM));
     
       for(int cb = 0; cb < matrix.block_cols; cb++)
 	for(int i = 0; i < matrix.num_row_parts; i++)
@@ -263,7 +580,8 @@ class Linpack {
       ScopedMapping<AT> reg(ctx, runtime,
 			    RegionRequirement(matrix.index_region, 
 					      NO_ACCESS, ALLOCABLE, EXCLUSIVE, 
-					      matrix.index_region));
+					      matrix.index_region,
+					      LMAP_PLACE_SYSMEM));
 
       std::vector<std::set<utptr_t> > idx_coloring;
       idx_coloring.resize(matrix.block_rows);
@@ -289,7 +607,8 @@ class Linpack {
       ScopedMapping<AT> reg(ctx, runtime,
 			    RegionRequirement(matrix.topblk_region, 
 					      NO_ACCESS, ALLOCABLE, EXCLUSIVE, 
-					      matrix.topblk_region));
+					      matrix.topblk_region,
+					      LMAP_PLACE_SYSMEM));
 
       std::vector<std::set<utptr_t> > topblk_coloring;
       topblk_coloring.resize(matrix.block_rows);
@@ -402,20 +721,24 @@ class Linpack {
 
       reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      matrixptr.region);
+					      matrixptr.region,
+					      LMAP_PLACE_SYSMEM);
 
       reqs[REGION_BLOCKS] = RegionRequirement(matrix.block_region,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      matrix.block_region);
+					      matrix.block_region,
+					      LMAP_PLACE_SYSMEM);
       
       reqs[REGION_INDEXS] = RegionRequirement(matrix.index_region,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      matrix.index_region);
+					      matrix.index_region,
+					      LMAP_PLACE_SYSMEM);
     
       // double-check that we were registered properly
       assert(task_id != 0);
       Future f = runtime->execute_task(ctx, task_id, reqs,
-				       TaskArgs(matrixptr, k));
+				       TaskArgs(matrixptr, k),
+				       0, LMAP_PICK_CPU(matrix, 0, 0));
       return f;
     }
   };
@@ -509,12 +832,14 @@ class Linpack {
       
       reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      matrixptr.region);
+					      matrixptr.region,
+					      LMAP_PLACE_SYSMEM);
 
       reqs[REGION_PANEL] = RegionRequirement(matrix.row_parts[k].id,
 					     COLORID_IDENTITY,
 					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
-					     matrix.panel_subregions[k]);
+					     matrix.panel_subregions[k],
+					     LMAP_PLACE_SYSMEM);
       
       ArgumentMap arg_map;
       
@@ -526,7 +851,8 @@ class Linpack {
 						  reqs,
 						  TaskArgs(matrixptr, k),
 						  ArgumentMap(),
-						  false);
+						  false,
+						  0, LMAP_PICK_CPU_IDXROW(matrix, k));
       return fm;
     }
   };
@@ -608,16 +934,17 @@ class Linpack {
       
       reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      matrixptr.region);
+					      matrixptr.region,
+					      LMAP_PLACE_SYSMEM);
 
       reqs[REGION_PANEL] = RegionRequirement(matrix.col_part.id,
 					     COLORID_IDENTITY,
 					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
 					     matrix.block_region,
-#ifdef NOMAP_INDEX_SPACES
+#ifdef USING_DEFAULT_MAPPER
 					     Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_REGION);
 #else
-                                             0);
+					     LMAP_PLACE_NONE);
 #endif
       
       ArgumentMap arg_map;
@@ -630,7 +957,8 @@ class Linpack {
 						  reqs,
 						  TaskArgs(matrixptr),
 						  ArgumentMap(),
-						  false);
+						  false,
+						  0, LMAP_PICK_CPU_IDXCOL(matrix, 0));
       return fm;
     }
   };
@@ -754,7 +1082,8 @@ class Linpack {
       
       reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      matrixptr.region);
+					      matrixptr.region,
+					      LMAP_PLACE_SYSMEM);
 
       LogicalRegion panel_subregion = runtime->get_subregion(ctx,
 							     matrix.row_parts[j],
@@ -763,20 +1092,25 @@ class Linpack {
 					     READ_ONLY, NO_MEMORY, EXCLUSIVE,
 					     runtime->get_subregion(ctx,
 								    matrix.col_part,
-								    j));
+								    j),
+					     LMAP_PLACE_SYSMEM);
       
       reqs[REGION_TOPBLK] = RegionRequirement(topblk_region,
 					      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-					      topblk_region);
+					      topblk_region,
+					      LMAP_PLACE_GASNET);
       
       reqs[REGION_INDEX] = RegionRequirement(index_subregion,
 					     READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					     index_subregion);
+					     index_subregion,
+					     LMAP_PLACE_SYSMEM);
       
       // double-check that we were registered properly
       assert(task_id != 0);
       Future f = runtime->execute_task(ctx, task_id, reqs,
-				       TaskArgs(matrixptr, k, j, topblk_ptr));
+				       TaskArgs(matrixptr, k, j, topblk_ptr),
+				       0,
+				       LMAP_PICK_CPU(matrix, k, j));
       return f;
     }
   };
@@ -839,9 +1173,13 @@ class Linpack {
       ind_blk.print("tpr ind blk");
 
       PhysicalRegion<AccessorArray> r_panel_array = r_panel.template convert<AccessorArray>();
-      
+
+#ifdef TOPBLK_USES_REF      
       PhysicalRegion<AccessorArray> r_topblk_array = r_topblk.template convert<AccessorArray>();
       MatrixBlock& topblk = r_topblk_array.get_instance().ref(args->topblk_ptr);
+#else
+      MatrixBlock topblk = r_topblk.read(args->topblk_ptr);
+#endif
       assert((topblk.block_row != 0) || (topblk.block_col != 0));
 
       // look through the indices and find any row that we own that isn't in the
@@ -885,9 +1223,19 @@ class Linpack {
 	  trow[jj] = prow[jj];
 	  prow[jj] = tmp;
 	}
+#ifndef TOPBLK_USES_REF
+	r_topblk.write_partial(args->topblk_ptr,
+			       ((char *)trow)-((char *)&topblk),
+			       trow,
+			       NB * sizeof(double));
+#endif
 	topblk.print("top after");
 	pblk.print("pblk after");
       }
+#ifndef TOPBLK_USES_REF      
+      MatrixBlock topblk2 = r_topblk.read(args->topblk_ptr);
+      topblk2.print("top recheck");
+#endif
     }
     
   public:
@@ -915,22 +1263,26 @@ class Linpack {
       
       reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      matrixptr.region);
+					      matrixptr.region,
+					      LMAP_PLACE_SYSMEM);
 
       reqs[REGION_PANEL] = RegionRequirement(matrix.row_parts[j].id,
 					     COLORID_IDENTITY,
 					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
 					     runtime->get_subregion(ctx,
 								    matrix.col_part,
-								    j));
+								    j),
+					     LMAP_PLACE_SYSMEM);
       
       reqs[REGION_TOPBLK] = RegionRequirement(topblk_region,
 					      READ_WRITE, NO_MEMORY, RELAXED,
-					      topblk_region);
+					      topblk_region,
+					      LMAP_PLACE_GASNET);
       
       reqs[REGION_INDEX] = RegionRequirement(index_subregion,
 					     READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					     index_subregion);
+					     index_subregion,
+					     LMAP_PLACE_SYSMEM);
       
       ArgumentMap arg_map;
       
@@ -943,7 +1295,9 @@ class Linpack {
 						  TaskArgs(matrixptr, k, j,
 							   topblk_ptr),
 						  ArgumentMap(),
-						  false);
+						  false,
+						  0,
+						  LMAP_PICK_CPU_IDXROW(matrix, j));
       return fm;
     }
   };
@@ -1057,26 +1411,29 @@ class Linpack {
 
       reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      matrixptr.region);
+					      matrixptr.region,
+					      LMAP_PLACE_SYSMEM);
 
       reqs[REGION_PANEL] = RegionRequirement(matrix.row_parts[j].id,
 					     COLORID_IDENTITY,
 					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
 					     runtime->get_subregion(ctx,
 								    matrix.col_part,
-								    j));
+								    j),
+					     LMAP_PLACE_SYSMEM);
 
       reqs[REGION_TOPBLK] = RegionRequirement(topblk_region,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      topblk_region);
-
+					      topblk_region,
+					      LMAP_PLACE_SYSMEM);
 
       reqs[REGION_LPANEL] = RegionRequirement(matrix.row_parts[k].id,
 					      COLORID_IDENTITY,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
 					      runtime->get_subregion(ctx,
 								     matrix.col_part,
-								     k));
+								     k),
+					      LMAP_PLACE_SYSMEM);
 
       // double-check that we were registered properly
       assert(task_id != 0);
@@ -1087,7 +1444,9 @@ class Linpack {
 						  TaskArgs(matrixptr, k, j,
 							   topblk_ptr),
 						  ArgumentMap(),
-						  false);
+						  false,
+						  0,
+						  LMAP_PICK_CPU_IDXROW(matrix, j));
       return fm;
     }
   };
@@ -1183,22 +1542,27 @@ class Linpack {
 
       reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      matrixptr.region);
+					      matrixptr.region,
+					      LMAP_PLACE_SYSMEM);
 
       reqs[REGION_TOPBLK] = RegionRequirement(topblk_region,
 					      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-					      topblk_region);
+					      topblk_region,
+					      LMAP_PLACE_SYSMEM);
 
       LogicalRegion l1blk_subregion = matrix.topblk_subregions[k];
 
       reqs[REGION_L1BLK] = RegionRequirement(l1blk_subregion,
 					     READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					     l1blk_subregion);
+					     l1blk_subregion,
+					     LMAP_PLACE_SYSMEM);
     
       // double-check that we were registered properly
       assert(task_id != 0);
       Future f = runtime->execute_task(ctx, task_id, reqs,
-				       TaskArgs(matrixptr, k, j, topblk_ptr));
+				       TaskArgs(matrixptr, k, j, topblk_ptr),
+				       0,
+				       LMAP_PICK_CPU(matrix, k, j));
       return f;
     }
   };
@@ -1272,7 +1636,8 @@ class Linpack {
 	ScopedMapping<AT> reg(ctx, runtime,
 			      RegionRequirement(temp_region,
 						NO_ACCESS, ALLOCABLE, EXCLUSIVE,
-						temp_region));
+						temp_region,
+						LMAP_PLACE_SYSMEM));
 	temp_ptr = reg->template alloc<MatrixBlock>();
       }
 
@@ -1327,17 +1692,14 @@ class Linpack {
 
       reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      matrixptr.region);
+					      matrixptr.region,
+					      LMAP_PLACE_SYSMEM);
 
       reqs[REGION_PANEL] = RegionRequirement(matrix.col_part.id,
 					     COLORID_IDENTITY,
 					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
 					     matrix.block_region,
-#ifdef NOMAP_INDEX_SPACES
-					     Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_REGION);
-#else
-                                             0);
-#endif
+					     LMAP_PLACE_NONE);
 
       LogicalRegion panel_subregion = runtime->get_subregion(ctx,
 							     matrix.col_part,
@@ -1345,11 +1707,7 @@ class Linpack {
       reqs[REGION_LPANEL] = RegionRequirement(panel_subregion,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
 					      matrix.block_region,
-#ifdef NOMAP_INDEX_SPACES
-					     Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_REGION);
-#else
-                                             0);
-#endif
+					      LMAP_PLACE_NONE);
 
       LogicalRegion index_subregion = runtime->get_subregion(ctx,
 							     matrix.index_part,
@@ -1357,22 +1715,14 @@ class Linpack {
       reqs[REGION_INDEX] = RegionRequirement(index_subregion,
 					     READ_ONLY, NO_MEMORY, EXCLUSIVE,
 					     matrix.index_region,
-#ifdef NOMAP_INDEX_SPACES
-					     Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_REGION);
-#else
-                                             0);
-#endif
+					     LMAP_PLACE_NONE);
 
       LogicalRegion topblk_subregion = matrix.topblk_subregions[k];
 
       reqs[REGION_L1BLK] = RegionRequirement(topblk_subregion,
 					     READ_ONLY, NO_MEMORY, EXCLUSIVE,
 					     matrix.topblk_region,
-#ifdef NOMAP_INDEX_SPACES
-					     Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_REGION);
-#else
-                                             0);
-#endif
+					     LMAP_PLACE_NONE);
     
       // double-check that we were registered properly
       assert(task_id != 0);
@@ -1385,7 +1735,7 @@ class Linpack {
 						  ArgumentMap(),
 						  false,
 						  0, // default mapper,
-						  0); //Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION);
+						  LMAP_PICK_CPU_IDXCOL(matrix, k));
       return fm;
     }
   };
@@ -1564,12 +1914,14 @@ class Linpack {
 
       reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      matrixptr.region);
+					      matrixptr.region,
+					      LMAP_PLACE_SYSMEM);
 
       reqs[REGION_PANEL] = RegionRequirement(matrix.row_parts[k].id,
 					     COLORID_IDENTITY,
 					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
-					     matrix.panel_subregions[k]);
+					     matrix.panel_subregions[k],
+					     LMAP_PLACE_SYSMEM);
 
       // double-check that we were registered properly
       assert(task_id != 0);
@@ -1581,7 +1933,8 @@ class Linpack {
 							   prev_orig, prev_best,
 							   k, i),
 						  ArgumentMap(),
-						  false);
+						  false,
+						  0, LMAP_PICK_CPU_IDXROW(matrix, k));
       return fm;
     }
   };
@@ -1648,7 +2001,8 @@ class Linpack {
 	ScopedMapping<AT> reg(ctx, runtime,
 			      RegionRequirement(subpanel_region,
 						READ_ONLY, NO_MEMORY, EXCLUSIVE,
-						matrix.panel_subregions[args->k]));
+						matrix.panel_subregions[args->k],
+						LMAP_PLACE_SYSMEM));
 	
 	top_blk = reg->read(matrix.blocks[args->k][args->k]);
       }
@@ -1735,7 +2089,8 @@ class Linpack {
 
       reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      matrixptr.region);
+					      matrixptr.region,
+					      LMAP_PLACE_SYSMEM);
 
       LogicalRegion panel_subregion = runtime->get_subregion(ctx,
 							     matrix.col_part,
@@ -1751,22 +2106,24 @@ class Linpack {
       reqs[REGION_PANEL] = RegionRequirement(panel_subregion,
 					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
 					     matrix.block_region,
-					     Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_REGION);
+					     LMAP_PLACE_NONE);
 
       reqs[REGION_INDEX] = RegionRequirement(index_subregion,
 					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
-					     matrix.index_region);
+					     matrix.index_region,
+					     LMAP_PLACE_SYSMEM);
     
       reqs[REGION_TOPBLK] = RegionRequirement(topblk_subregion,
 					      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-					      matrix.topblk_region);
+					      matrix.topblk_region,
+					      LMAP_PLACE_SYSMEM);
     
       // double-check that we were registered properly
       assert(task_id != 0);
       Future f = runtime->execute_task(ctx, task_id, reqs,
 				       TaskArgs(matrixptr, k),
 				       0, // default mapper,
-				       0); //Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION);
+				       LMAP_PICK_CPU(matrix, k, k));
       return f;
     }
   };
@@ -1887,26 +2244,30 @@ class Linpack {
 
       reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      matrixptr.region);
+					      matrixptr.region,
+					      LMAP_PLACE_SYSMEM);
+
       reqs[REGION_BLOCKS] = RegionRequirement(matrix.block_region,
 					      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 					      matrix.block_region,
-					      Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_REGION);
+					      LMAP_PLACE_NONE);
+
       reqs[REGION_INDEXS] = RegionRequirement(matrix.index_region,
 					      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 					      matrix.index_region,
-					      Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_REGION);
+					      LMAP_PLACE_NONE);
+
       reqs[REGION_TOPBLKS] = RegionRequirement(matrix.topblk_region,
 					       READ_WRITE, NO_MEMORY, EXCLUSIVE,
 					       matrix.topblk_region,
-					       Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_REGION);
+					       LMAP_PLACE_NONE);
 
       // double-check that we were registered properly
       assert(task_id != 0);
       Future f = runtime->execute_task(ctx, task_id, reqs,
 				       TaskArgs(matrixptr),
 				       0, // default mapper,
-				       0);//Mapper::MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION);
+				       LMAP_PICK_CPU(matrix, 0, 0));
       return f;
     }
   };
@@ -1938,7 +2299,8 @@ public:
     PhysicalRegion<AT> reg = runtime->map_region<AT>(ctx,
 						     RegionRequirement(matrix_region,
 								       READ_WRITE, ALLOCABLE, EXCLUSIVE,
-								       matrix_region));
+								       matrix_region,
+								       LMAP_PLACE_SYSMEM));
     reg.wait_until_valid();
 
     fatptr_t<BlockedMatrix> matrixptr(matrix_region,
@@ -1980,13 +2342,49 @@ template <int NB> TaskID Linpack<NB>::LinpackMainTask::task_id;
   _op_(3) \
   _op_(4) \
 
+
+static void parse_args(int argc,char **argv)
+{
+  for (int i = 1; i < argc; i++) {
+    if(!strcmp(argv[i], "-N")) {
+      Config::N = atoi(argv[++i]);
+      continue;
+    }
+
+    if(!strcmp(argv[i], "-NB")) {
+      Config::NB = atoi(argv[++i]);
+      continue;
+    }
+
+    if(!strcmp(argv[i], "-P")) {
+      Config::P = atoi(argv[++i]);
+      continue;
+    }
+
+    if(!strcmp(argv[i], "-Q")) {
+      Config::Q = atoi(argv[++i]);
+      continue;
+    }
+
+    if(!strcmp(argv[i], "-seed")) {
+      Config::seed = atoi(argv[++i]);
+      continue;
+    }
+  }
+  Config::args_read = true;
+
+  printf("linpack: N=%d NB=%d P=%d Q=%d seed=%d\n", 
+	 Config::N, Config::NB, Config::P, Config::Q, Config::seed);
+}
+
 template<AccessorType AT>
 void top_level_task(const void *args, size_t arglen,
 		    std::vector<PhysicalRegion<AT> > &regions,
-		    Context ctx, HighLevelRuntime *runtime) {
+		    Context ctx, HighLevelRuntime *runtime)
+{
+  InputArgs *inputs = (InputArgs*)args;
 
-  while (!Config::args_read)
-    usleep(1000);
+  parse_args(inputs->argc, inputs->argv);
 
   // big switch on the NB parameter - better pick one we've template-expanded!
   switch(Config::NB) {
@@ -2244,10 +2642,13 @@ void add_vectors_task(const void *global_args, size_t global_arglen,
 }
 #endif
 
-void create_mappers(Machine *machine, HighLevelRuntime *runtime,
-                    Processor local)
+void registration_func(Machine *machine, HighLevelRuntime *runtime, Processor local)
 {
-  runtime->add_colorize_function(COLORID_IDENTITY, colorize_identity_fn);
+#ifdef USING_SHARED
+  //runtime->replace_default_mapper(new SharedMapper(machine, runtime, local));
+#else
+  runtime->replace_default_mapper(new LinpackMapper(machine, runtime, local));
+#endif
 }
 
 int main(int argc, char **argv) {
@@ -2283,38 +2684,7 @@ int main(int argc, char **argv) {
 
   //HighLevelRuntime::register_runtime_tasks(task_table);
   HighLevelRuntime::set_top_level_task_id(TOP_LEVEL_TASK_ID);
-  HighLevelRuntime::set_registration_callback(create_mappers);
-
-  for (int i = 1; i < argc; i++) {
-    if(!strcmp(argv[i], "-N")) {
-      Config::N = atoi(argv[++i]);
-      continue;
-    }
-
-    if(!strcmp(argv[i], "-NB")) {
-      Config::NB = atoi(argv[++i]);
-      continue;
-    }
-
-    if(!strcmp(argv[i], "-P")) {
-      Config::P = atoi(argv[++i]);
-      continue;
-    }
-
-    if(!strcmp(argv[i], "-Q")) {
-      Config::Q = atoi(argv[++i]);
-      continue;
-    }
-
-    if(!strcmp(argv[i], "-seed")) {
-      Config::seed = atoi(argv[++i]);
-      continue;
-    }
-  }
-  Config::args_read = true;
-
-  printf("linpack: N=%d NB=%d P=%d Q=%d seed=%d\n", 
-	 Config::N, Config::NB, Config::P, Config::Q, Config::seed);
+  HighLevelRuntime::set_registration_callback(registration_func);
 
   return HighLevelRuntime::start(argc, argv);
 }

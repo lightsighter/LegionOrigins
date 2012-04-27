@@ -6247,14 +6247,14 @@ namespace RegionRuntime {
 					       elmt_size, bytes_to_copy);
     }
 
-    void RegionInstanceAccessorUntyped<AccessorGeneric>::get_untyped(unsigned ptr_value, void *dst, size_t size) const
+    void RegionInstanceAccessorUntyped<AccessorGeneric>::get_untyped(off_t byte_offset, void *dst, size_t size) const
     {
-      ((RegionInstanceUntyped::Impl *)internal_data)->get_bytes(ptr_value, dst, size);
+      ((RegionInstanceUntyped::Impl *)internal_data)->get_bytes(byte_offset, dst, size);
     }
 
-    void RegionInstanceAccessorUntyped<AccessorGeneric>::put_untyped(unsigned ptr_value, const void *src, size_t size) const
+    void RegionInstanceAccessorUntyped<AccessorGeneric>::put_untyped(off_t byte_offset, const void *src, size_t size) const
     {
-      ((RegionInstanceUntyped::Impl *)internal_data)->put_bytes(ptr_value, src, size);
+      ((RegionInstanceUntyped::Impl *)internal_data)->put_bytes(byte_offset, src, size);
     }
 
     bool RegionInstanceAccessorUntyped<AccessorGeneric>::is_reduction_only(void) const

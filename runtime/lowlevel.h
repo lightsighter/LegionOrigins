@@ -413,8 +413,8 @@ namespace RegionRuntime {
 
       void *internal_data;
 
-      void get_untyped(unsigned ptr_value, void *dst, size_t size) const;
-      void put_untyped(unsigned ptr_value, const void *src, size_t size) const;
+      void get_untyped(off_t byte_offset, void *dst, size_t size) const;
+      void put_untyped(off_t byte_offset, const void *src, size_t size) const;
 
       template <class T>
       T read(ptr_t<T> ptr) const
@@ -424,10 +424,22 @@ namespace RegionRuntime {
 	}
 
       template <class T>
+      void read_partial(ptr_t<T> ptr, off_t offset, void *dst, size_t size) const
+	{
+	  get_untyped(ptr.value*sizeof(T) + offset, dst, size);
+	}
+
+      template <class T>
       void write(ptr_t<T> ptr, T newval) const
 	{
 	  assert(!is_reduction_only());
 	  put_untyped(ptr.value*sizeof(T), &newval, sizeof(T));
+	}
+
+      template <class T>
+      void write_partial(ptr_t<T> ptr, off_t offset, const void *src, size_t size) const
+	{
+	  put_untyped(ptr.value*sizeof(T) + offset, src, size);
 	}
 
       template <class REDOP, class T, class RHS>
@@ -643,6 +655,12 @@ namespace RegionRuntime {
 
       ET read(ptr_t<ET> ptr) const { return ria.read(ptr); }
       void write(ptr_t<ET> ptr, ET newval) const { ria.write(ptr, newval); }
+
+      void read_partial(ptr_t<ET> ptr, off_t offset, void *dst, size_t size) const
+      { ria.read_partial(ptr, offset, dst, size); }
+
+      void write_partial(ptr_t<ET> ptr, off_t offset, const void *src, size_t size) const
+      { ria.write_partial(ptr, offset, src, size); }
 
       template <class REDOP, class RHS>
       void reduce(ptr_t<ET> ptr, RHS newval) const { ria.template reduce<REDOP>(ptr, newval); }
