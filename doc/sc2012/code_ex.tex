@@ -12,7 +12,7 @@
   morekeywords={region,coloring,partition,spawn,disjoint,aliased},
   deletekeywords=float,
 }
-\begin{lstlisting}[float={t},label={lst:code_ex},caption={Circuit Simulation Code Example}]
+\begin{lstlisting}[float={t},label={lst:code_ex},caption={Circuit simulation.}]
 struct Node { float voltage, new_charge, capacitance; };
 struct Wire<rn> { Node@rn in_node, out_node; float current, ... ; };
 struct Circuit { region   r_all_nodes; /* contains all nodes for the circuit */
@@ -23,16 +23,20 @@ struct CircuitPiece {
 
 void simulate_circuit(Circuit c, float dt) : RWE(c.r_all_nodes,c.r_all_wires)
 {
-  // Partition of wires into pieces
+  // The construction of the colorings is not shown.  The colorings wire_owner_map,
+  // node_owner_map, and node_neighbor_map have MAX_PIECES colors 
+  // 0..MAX_PIECES #$-$# 1. The coloring node_sharing map has two colors 0 and 1.
+  //
+  // Partition of wires into MAX_PIECES pieces
   partition<disjoint> p_wires = c.r_all_wires.partition(wire_owner_map); 
   // Partition nodes into two parts for all-private vs. all-shared
   partition<disjoint> p_nodes_pvs = c.r_all_nodes.partition(node_sharing map);
 
-  // Partition all-private into separate circuit pieces
+  // Partition all-private into MAX_PIECES disjoint circuit pieces
   partition<disjoint> p_pvt_nodes = p_nodes_pvs[0].partition(node_owner_map);
-  // Partition all-shared into separate circuit pieces
+  // Partition all-shared into MAX_PIECES disjoint circuit pieces
   partition<disjoint> p_shr_nodes = p_nodes_pvs[1].partition(node_owner_map);
-  // Partition all-shared into ghost regions which may be aliased
+  // Partition all-shared into MAX_PIECES ghost regions, which may be aliased
   partition<aliased> p_ghost_nodes = p_nodes_pvs[1].partition(node_neighbor_map);
 
   CircuitPiece pieces[MAX_PIECES];
@@ -49,21 +53,21 @@ void simulate_circuit(Circuit c, float dt) : RWE(c.r_all_nodes,c.r_all_wires)
 void calc_new_currents(CircuitPiece piece):
         RWE(piece.rw_pvt), ROE(piece.rn_pvt,piece.rn_shr,piece.rn_ghost) {
   foreach(w : piece.rw_pvt)
-    w->current = (w->in_node->voltage - w->out_node->voltage) / w->resistance;
+    w#$\rightarrow$#current = (w#$\rightarrow$#in_node#$\rightarrow$#voltage - w#$\rightarrow$#out_node#$\rightarrow$#voltage) / w#$\rightarrow$#resistance;
 }
 
 void distribute_charge(CircuitPiece piece, float dt):
         ROE(piece.rw_pvt), RdA(piece.rn_pvt, piece.rn_shr,piece.rn_ghost) {
   foreach(w : piece.rw_pvt) {
-    w->in_node->new_charge += -dt * w->current;
-    w->out_node->new_charge +=  dt * w->current;
+    w#$\rightarrow$#in_node#$\rightarrow$#new_charge += -dt * w#$\rightarrow$#current;
+    w#$\rightarrow$#out_node#$\rightarrow$#new_charge +=  dt * w#$\rightarrow$#current;
   }
 }
 
 void update_voltages(CircuitPiece piece): RWE(piece.rn_pvt,piece.rn_shr) {
   foreach(n : piece.rn_pvt, piece.rn_shr) {
-    n->voltage += n->new_charge / n->capacitance;
-    n->new_charge = 0;
+    n#$\rightarrow$#voltage += n#$\rightarrow$#new_charge / n#$\rightarrow$#capacitance;
+    n#$\rightarrow$#new_charge = 0;
   }
 }
 \end{lstlisting}

@@ -52,7 +52,7 @@ Modern parallel architectures have both heterogeneous processors and
 deep, complex memory hierarchies.  We present Legion, a programming
 model and runtime system for achieving high performance on these
 machines.  Legion is organized around {\em logical regions}, which
-express both locality and independence of program data and {\em
+express both locality and independence of program data, and {\em
   tasks}, functions that perform computations on regions.  We describe
 a runtime system that dynamically extracts parallelism from
 Legion programs, using a distributed, parallel scheduling algorithm
@@ -61,7 +61,7 @@ also enables explicit, programmer controlled movement of data through
 the memory hierarchy and placement of tasks based on locality
 information via a novel mapping interface.  We evaluate our Legion
 implementation using four applications: fluid-flow on a regular grid,
-a three-level AMR code solving a simple heat transfer equation, a circuit simulation,
+a three-level AMR code solving a standard heat diffusion equation, a circuit simulation,
 and LINPACK.
 %Running on a 4 node cluster with 8 total GPUs 
 %and 4 levels of memory hierarchy, our implementation of Legion 
@@ -90,30 +90,45 @@ In this paper we describe Legion, a parallel programming system based
 on using {\em logical regions} to describe the organization of data.
 A logical region names a set of objects.  Logical regions are first
 class values in Legion, and in particular may be passed as arguments
-to distinguished functions called {\em tasks} that access the data in those regions, providing locality
-information.  Logical regions may be {\em partitioned} into (usually)
-disjoint {\em subregions}, providing information for determining independence of computations.  Furthermore,
-computations access logical regions with particular {\em privileges} (e.g., {\em
-  read-only} and {\em read-write}, among others) 
-and {\em coherence} (e.g., {\em exclusive access} and {\em atomic access}, among others).
-Priveleges express how a task may use its region arguments, providing data dependence information
-that is used to guide the extraction of parallelism (e.g., if two tasks access the same region with
-{\em read-only} priveleges the two tasks can potentially be run in parallel), and coherence annotations
-express the required semantics of concurrent accesses to the region.  For example, if tasks $x$ and $y$ access region $r$
-with {\em exclusive} access, then the effects of $x$ and $y$ on $r$ are guaranteed to be the same as if they had executed
-in the sequential order expressed by the program; on the other hand, if the tasks access $r$ with {\em atomic} coherence, then 
-Legion guarantees only  atomicity of the tasks with respect to $r$: either $x$ appears to run entirely before $y$ or vice versa.
+to distinguished functions called {\em tasks} that access the data in
+those regions, providing locality information.  Logical regions may be
+{\em partitioned} into (usually) disjoint {\em subregions}, providing
+information for determining independence of computations.
+Furthermore, computations access logical regions with particular {\em
+  privileges} (e.g., {\em read-only} and {\em read-write}, among
+others) and {\em coherence} (e.g., {\em exclusive access} and {\em
+  atomic access}, among others).  Priveleges express how a task may
+use its region arguments, providing data dependence information that
+is used to guide the extraction of parallelism (e.g., if two tasks
+access the region $r$with {\em read-only} priveleges the two tasks
+can potentially be run in parallel, at least with respect to $r$),
+and coherence properties express the required semantics of concurrent
+accesses to the region.  For example, if tasks $x$ and $y$ access
+region $r$ with {\em exclusive} access, then the effects of $x$ and
+$y$ on $r$ are guaranteed to be the same as if they had executed in
+the sequential order expressed by the program; on the other hand, if
+the tasks access $r$ with {\em atomic} coherence, then Legion
+guarantees only atomicity of the tasks with respect to $r$: either $x$
+appears to run entirely before $y$ or vice versa.
 
-To introduce the programming model, we begin with an extended example of a circuit simulation programmed in Legion
-in Section~\ref{sec:ex}. This example illustrates regions, tasks, permissions/coherence properties, the interactions
-between them, and how these building blocks are assembled into a realistic Legion program.   Subsequent sections each
-describe a contribution in the implementation and evaluation of Legion: 
+To introduce the programming model, we begin with an extended example
+of a circuit simulation programmed in Legion in
+Section~\ref{sec:ex}. This example illustrates regions, tasks,
+permissions and coherence properties, the interactions between them,
+and how these building blocks are assembled into a Legion
+program.  Subsequent sections each describe a contribution in the
+implementation and evaluation of Legion:
  
 \begin{itemize}
 
-\item We define a {\em software out-of order processor}, or SOOP, for scheduling tasks with region arguments in a manner
-analogous to how out-of-order hardware schedulers process instructions with register arguments.  In addition to pipelining
-the scheduling of tasks over several stages, our SOOP is also hierarchical and can extract nested parallelism (because tasks may recursively spawn subtasks) as well as concurrent and distributed across the machine (Section~\ref{sec:soop}). 
+\item We define a {\em software out-of-order processor}, or SOOP, for
+  scheduling tasks with region arguments in a manner analogous to how
+  out-of-order hardware schedulers process instructions with register
+  arguments.  In addition to pipelining the execution of tasks over
+  several stages, our SOOP is hierarchical and naturally extracts nested
+  parallelism (because tasks may recursively spawn subtasks) as well
+  as concurrent and distributed across the machine
+  (Section~\ref{sec:soop}).
 
 \item A crucial part of orchestrating a program's execution is how
 tasks are assigned (or {\em mapped}) to processors and how regions are
@@ -121,38 +136,39 @@ mapped to specific memory units within the machine.  Often there is
 application-specific information that, if exploited, results in better
 mappings than a generic, one-size-fits-all mapping strategy.  We describe
 a {\em mapping interface} that allows programmers to give the SOOP a specification
-of how to map tasks and regions.  This mapping API is carefully defined so that
-any use-defined mapping strategy can only affect the performance of applications,
+of how to map tasks and regions for a specific application, or even part of an
+application.  This mapping API is carefully defined so that
+any user-supplied mapping strategy can only affect the performance of applications,
 not their correctness.  Thus, user mappings only affect the time and resources required
 to run the program and cannot change the program's output (Section~\ref{sec:mapping}).
 
-\item We present the results of experiments on four applications: fluid-flow on a regular grid,
-a three-level AMR code solving a simple heat transfer equation, a circuit simulation,
-and LINPACK.  We run each of these four codes and best available reference versions on three different
-clusters of multicore processors with attached GPUs: a small cluster of our own, a medium-sized cluster designed for visualization applications, and up to half of the Keeneland supercomputer (Section~\ref{sec:results}).
+\item We present the results of experiments on four applications:
+  fluid-flow on a regular grid, a three-level AMR code solving a
+  standard heat diffusion equation, a circuit simulation, and LINPACK.
+  We run each of these four codes and best available reference
+  versions on three different clusters of multicore processors with
+  attached GPUs: a small cluster of our own (4 nodes with 2 6-core CPUs and 2 GPUs per node), a medium-sized cluster
+  designed for visualization applications (10 nodes with 2 6-core CPUs and 5 GPUs per node), and up to a third of the
+  Keeneland supercomputer (32 nodes, 2 6-core CPUs and 3 GPUs per node, see Section~\ref{sec:exp}).
 
 
 \end{itemize}
-%\input{circuit}
 \input{code_ex}
-%\input{part_fig}
+\input{circuit}
+\input{part_fig}
+\input{soop}
+\input{mapping}
+\input{experiments}
+\input{related}
+\input{conclusion}
 
-%\input{type_system}
-%\input{exec}
 
-%\input{highlevel}
 %\input{mapping_fig}
 
-%\input{lowlevel}
-%\input{experiments}
-%\input{related}
-%\input{conclusion}
+
 
 \bibstyle{IEEEtran}
-{
-\tiny
 \bibliography{bibliography}
-}
 
 \end{document}
 
