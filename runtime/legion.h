@@ -1322,7 +1322,7 @@ namespace RegionRuntime {
     protected:
       // functions for reusing task descriptions
       bool activate(bool new_tree);
-      void deactivate(void);
+      void deactivate(bool need_lock);
     protected:
       void initialize_task(TaskContext *parent, UniqueID unique_id, 
                             Processor::TaskFuncID task_id, void *args, size_t arglen,
@@ -1623,7 +1623,7 @@ namespace RegionRuntime {
       RegionMappingImpl(HighLevelRuntime *rt); 
       ~RegionMappingImpl(void);
       void activate(TaskContext *ctx, const RegionRequirement &req, MapperID mid, MappingTagID tag);
-      void deactivate(void);
+      void deactivate(bool need_lock);
       void set_target_instance(InstanceInfo *info);
       virtual bool is_context(void) const { return false; }
       virtual bool is_ready(void) const; // Ready to be mapped

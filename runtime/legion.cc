@@ -1436,7 +1436,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void RegionMappingImpl::deactivate(void)
+    void RegionMappingImpl::deactivate(bool need_lock)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1444,7 +1444,11 @@ namespace RegionRuntime {
 #endif
       // Need to hold the current lock to update our state
       {
-        AutoLock cur_lock(context_lock);
+        if (need_lock)
+        {
+          Event lock_event = context_lock.lock(0,true/*exclusive*/);
+          lock_event.wait(true/*block*/);
+        }
         // Mark that the region has been unmapped
         unmapped_event.trigger();
         // Free the instances that we are no longer using
@@ -1472,6 +1476,11 @@ namespace RegionRuntime {
 
         // Update the generation
         current_gen++;
+
+        if (need_lock)
+        {
+          context_lock.unlock();
+        }
       }
       // Put this back on this list of free mapping implementations for the runtime
       runtime->free_mapping(this);
@@ -2957,7 +2966,7 @@ namespace RegionRuntime {
       {
         log_region(LEVEL_DEBUG,"Unmapping region %x in task %s (ID %d)",
                   region.impl->req.handle.region.id, ctx->variants->name, ctx->unique_id);
-        region.impl->deactivate();
+        region.impl->deactivate(true/*need lock*/);
       }
       else
       {
@@ -2979,7 +2988,7 @@ namespace RegionRuntime {
       {
         log_region(LEVEL_DEBUG,"Unmapping region %x in task %s (ID %d)",
                   region.impl->req.handle.region.id, ctx->variants->name, ctx->unique_id);   
-        region.impl->deactivate();
+        region.impl->deactivate(true/*need lock*/);
       }
       else
       {
@@ -3368,7 +3377,7 @@ namespace RegionRuntime {
             {
               // No longer any versions of this task to keep locally
               // Return the context to the free list
-              ctx->deactivate();
+              ctx->deactivate(true/*need lock*/);
             }
           }
           else // doesn't need split
@@ -3573,7 +3582,7 @@ namespace RegionRuntime {
           // If they are remote, deactivate the instance
           // If it's not remote, its parent will deactivate it
           if ((*it)->remote)
-            (*it)->deactivate();
+            (*it)->deactivate(true/*need lock*/);
         }
       }
     }
@@ -4081,16 +4090,22 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void TaskContext::deactivate(void)
+    void TaskContext::deactivate(bool need_lock)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(active);
 #endif
+      if (need_lock)
       {
         // Hold the current context lock when doing this
         AutoLock cur_lock(current_lock);
         // Increment the generation of this context
+        current_gen++;
+      }
+      else
+      {
+        // already holding the lock
         current_gen++;
       }
       // Free the arg space
@@ -8034,13 +8049,13 @@ namespace RegionRuntime {
       for (std::vector<TaskContext*>::const_iterator it = child_tasks.begin();
             it != child_tasks.end(); it++)
       {
-        (*it)->deactivate();
+        (*it)->deactivate(acquire_lock);
       }  
 
       // If we're remote and not an index space deactivate ourselves
       if (remote && !is_index_space)
       {
-        this->deactivate();
+        this->deactivate(acquire_lock);
         return;
       }
       // Index space tasks get reclaimed at the end of 'local_finish' which is why we wait until
@@ -8947,11 +8962,11 @@ namespace RegionRuntime {
         for (std::vector<TaskContext*>::const_iterator it = sibling_tasks.begin();
               it != sibling_tasks.end(); it++)
         {
-          (*it)->deactivate();
+          (*it)->deactivate(false/*need lock*/);
         }
         if (!index_owner)
         {
-          this->deactivate();
+          this->deactivate(false/*need lock*/);
         }
       }
 #ifdef DEBUG_HIGH_LEVEL
