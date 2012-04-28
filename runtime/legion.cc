@@ -11901,13 +11901,10 @@ namespace RegionRuntime {
               if (target != InstanceInfo::get_no_instance())
               {
                 target_owned = true;
-                // Check to see if this is write-only, if so then there is
-                // no need to make a copy from anywhere, otherwise make the copy
-                if (!IS_WRITE_ONLY(ren.usage))
-                {
-                  // We just created an instance so we need to initialize it
-                  initialize_instance(ren, locations);
-                }
+                // Now we need to initialize the instance with current data
+                InstanceInfo *src_info = select_source_instance(ren.ctx_id, ren.mapper, locations, target->location, true/*allow up*/);
+                // Issue the copy operation
+                target->copy_from(src_info, ren.ctx, COPY_DOWN);
                 break;
               }
             }
