@@ -75,7 +75,7 @@ and LINPACK.
 Modern parallel machines are increasingly complex, with deep,
 distributed memory hierarchies and heterogeneous processing units.  Because the
 costs of communication within these architectures vary by several orders of magnitude, 
-the penalty for mistakes in the placement of data or computation is very poor performance.  Thus,
+the penalty for mistakes in the placement of data or computation is usually very poor performance.  Thus,
 to achieve high performance it is crucial that the programmer
 and the compiler be able to reason about {\em locality} (data resident
 close to computation that uses it) and {\em independence} (computations
@@ -102,25 +102,23 @@ others) and {\em coherence} (e.g., {\em exclusive access} and {\em
   atomic access}, among others).  Priveleges express how a task may use
 its region arguments, providing data dependence information that
 is used to guide the extraction of parallelism.  For example, if two tasks
-access the same region with {\em read-only} privileges the two tasks
+access the same region with read-only privileges the two tasks
 can potentially be run in parallel.
 Coherence properties express the required semantics of concurrent
 accesses to the region.  For example, if tasks $x$ and $y$ access
 region $r$ with {\em exclusive} access, then Legion guarantees that the effects of $x$ and
-$y$ on $r$ are guaranteed to be the same as if they had executed in
+$y$ on $r$ are the same as if they had executed in
 the sequential order expressed by the program. On the other hand, if
 the tasks access $r$ with {\em atomic} coherence, then Legion
-guarantees only atomicity of the tasks with respect to $r$: either $x$
+guarantees only atomicity of the tasks with respect to $r$: either task $x$
 appears to run entirely before $y$ or vice versa.
 
 Legion programs are written using logical regions, each of which
 has one or more {\em physical instances} when the program executes.  Often
-logical regions correspond to a single physical instance, but there are common situations
-in which it is desirable to have multiple physical copies of a logical region's
-contents in different parts of the machine (e.g., to duplicate and distribute read-only
-data) or even to have physical instances of a logical region that temporarily diverge
-in their contents (e.g., to keep an old copy of a region to break a write-after-read dependency, or to 
-allow independent, local reductions that are later combined).
+logical regions correspond to a single physical instance, but it is also common and useful
+to have multiple physical copies of a logical region's contents in different parts of the machine 
+to duplicate and distribute read-only data, to keep an old copy of a region to break a 
+write-after-read dependency, or to allow independent, local reductions that are later combined.
 
 To introduce the programming model, we begin with an extended example
 of a circuit simulation in
@@ -140,8 +138,16 @@ implementation and evaluation of Legion:
   arguments.  In addition to pipelining the execution of tasks over
   several stages, our SOOP is hierarchical and naturally extracts nested
   parallelism (because tasks may recursively spawn subtasks) as well
-  as concurrent and distributed across the machine
-  (Section~\ref{sec:soop}).
+  as concurrent and distributed across the machine (Section~\ref{sec:soop}).
+
+\item We describe a {\em deferred execution} model that extracts parallelism
+even from highly irregular, unbalanced computations.  Instead of blocking,
+an operation $o$ that cannot immediately execute because it is dependent
+on some other operation $o'$ waits on an event that occurs when $o'$ completes.
+Events can be created for the completion of any operation in Legion, and 
+the scheduler can build long chains of deferred operations.  In Section~\ref{sec:exp}
+we show that dataflow-like deferred execution gives us a significant performance improvement
+over builk synchronous global synchronization primitives such as barriers.
 
 \item A crucial part of orchestrating a program's execution is how
 tasks are assigned (or {\em mapped}) to processors and how physical instances of logical regions are
@@ -154,6 +160,7 @@ application.  This mapping API is carefully defined so that
 any user-supplied mapping strategy can only affect the performance of applications,
 not their correctness.  Thus, user mappings only affect the time and resources required
 to run the program and cannot change the program's output (Section~\ref{sec:mapping}).
+
 
 \item We present the results of experiments on four applications:
   fluid-flow on a regular grid, a three-level AMR code solving a
