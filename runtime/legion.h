@@ -631,6 +631,7 @@ namespace RegionRuntime {
       template<typename T> inline void     free(ptr_t<T> ptr,unsigned count = 1);
       template<typename T> inline T        read(ptr_t<T> ptr);
       template<typename T> inline void     write(ptr_t<T> ptr, T newval);
+      template<typename T> inline T&       ref(ptr_t<T> ptr);
       template<typename T> inline void     read_partial(ptr_t<T> ptr, off_t offset, void *dst, size_t size);
       template<typename T> inline void     write_partial(ptr_t<T> ptr, off_t offset, const void *src, size_t size);
       template<typename T, typename REDOP, typename RHS> inline void reduce(ptr_t<T> ptr, RHS newval);
@@ -3354,6 +3355,18 @@ namespace RegionRuntime {
       verify_access(ptr.value);
 #endif
       static_cast<LowLevel::RegionInstanceAccessor<T,AT_CONV(AT)> >(instance).write(ptr,newval); 
+    }
+
+    //--------------------------------------------------------------------------
+    template<AccessorType AT> template<typename T>
+    inline T& PhysicalRegion<AT>::ref(ptr_t<T> ptr)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(valid);
+      verify_access(ptr.value);
+#endif
+      return static_cast<LowLevel::RegionInstanceAccessor<T,AT_CONV(AT)> >(instance).ref(ptr); 
     }
 
     //--------------------------------------------------------------------------

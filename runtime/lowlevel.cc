@@ -3282,192 +3282,201 @@ namespace RegionRuntime {
 
       // simple thread object just has a task field that you can set and 
       //  wake up to run
-      class Thread : public Event::Impl::EventWaiter {
+      class Thread : public PreemptableThread {
       public:
-	enum State { STATE_INIT, STATE_START, STATE_IDLE, STATE_RUN, STATE_SUSPEND };
+	class EventStackEntry : public Event::Impl::EventWaiter {
+	public:
+	  EventStackEntry(Thread *_thread, Event _event, EventStackEntry *_next)
+	    : thread(_thread), event(_event), next(_next), triggered(false) {}
 
-	Thread(LocalProcessor *_proc) : proc(_proc), task(0), state(STATE_INIT)
+	  void add_waiter(void)
+	  {
+	    log_task.info("thread %p registering a listener on event %x/%d",
+			  thread, event.id, event.gen);
+	    if(event.has_triggered())
+	      triggered = true;
+	    else
+	      event.impl()->add_waiter(event, this);
+	  }
+
+	  virtual void event_triggered(void)
+	  {
+	    log_task.info("thread %p notified for event %x/%d",
+			  thread, event.id, event.gen);
+	    triggered = true;
+
+	    // now take the thread's (really the processor's) lock and see if
+	    //  this thread is asleep on this event - if so, make him 
+	    //  resumable and possibly restart him (or somebody else)
+	    AutoHSLLock al(thread->proc->mutex);
+
+	    if(thread->event_stack == this) {
+	      if(thread->state == STATE_PREEMPTABLE) {
+		thread->state = STATE_RESUMABLE;
+		thread->proc->preemptable_threads.remove(thread);
+		thread->proc->resumable_threads.push_back(thread);
+		thread->proc->start_some_threads();
+	      }
+
+	      if(thread->state == STATE_BLOCKED) {
+		thread->state = STATE_RESUMABLE;
+		thread->proc->resumable_threads.push_back(thread);
+		thread->proc->start_some_threads();
+	      }
+	    }
+	  }
+
+	  virtual void print_info(void)
+	  {
+	    printf("thread %p waiting on %x/%d\n",
+		   thread, event.id, event.gen);
+	  }
+
+	  Thread *thread;
+	  Event event;
+	  EventStackEntry *next;
+	  bool triggered;
+	};
+
+      public:
+	enum State { STATE_INIT, STATE_INIT_WAIT, STATE_START, STATE_IDLE, 
+		     STATE_RUN, STATE_SUSPEND, STATE_PREEMPTABLE,
+		     STATE_BLOCKED, STATE_RESUMABLE };
+
+	LocalProcessor *proc;
+	State state;
+	EventStackEntry *event_stack;
+	gasnett_cond_t condvar;
+
+	Thread(LocalProcessor *_proc) 
+	  : proc(_proc), state(STATE_INIT), event_stack(0)
 	{
 	  gasnett_cond_init(&condvar);
 	}
 
 	~Thread(void) {}
 
-	void start(void) {
-	  state = STATE_START;
-
-	  pthread_attr_t attr;
-	  CHECK_PTHREAD( pthread_attr_init(&attr) );
-	  CHECK_PTHREAD( pthread_create(&thread, &attr, &thread_main, (void *)this) );
-	  CHECK_PTHREAD( pthread_attr_destroy(&attr) );
-	}
-
-	void set_task_and_wake(Task *new_task)
+	virtual void sleep_on_event(Event wait_for, bool block = false)
 	{
-	  // assumes proc's mutex already held
-	  assert(new_task);
-	  task = new_task;
-	  gasnett_cond_signal(&condvar);
-	}
+	  // create an entry to go on our event stack (on our stack)
+	  EventStackEntry entry(this, wait_for, event_stack);
+	  event_stack = &entry;
 
-	void resume_task(void)
-	{
-	  // assumes proc's mutex already held
-	  state = STATE_RUN;
-	  gasnett_cond_signal(&condvar);
-	}
+	  entry.add_waiter();
 
-	virtual void event_triggered(void)
-	{
-	  AutoHSLLock a(proc->mutex);
+	  // now take the processor lock that controls everything and see
+	  //  what we can do while we're waiting
+	  {
+	    AutoHSLLock al(proc->mutex);
 
-	  // check for the instant trigger guard - if it's still set, the
-	  //  thread didn't go to sleep yet, so just clear the guard rather
-	  //  than moving the thread to the resumable list
-	  if(instant_trigger_guard) {
-	    instant_trigger_guard = false;
-	  } else {
-	    log_task.debug("thread now resumable: thread=%p, state=%d", this, state);
-	    if(state == STATE_SUSPEND) {
-	      proc->preemptable_threads.remove(this);
-	      proc->resumable_threads.push_back(this);
-	      proc->start_some_threads();
-	    }
-	  }
-	}
+	    log_task.info("thread %p (proc %x) needs to sleep on event %x/%d",
+			  this, proc->me.id, wait_for.id, wait_for.gen);
+	    
+	    assert(state == STATE_RUN);
 
-	virtual void print_info(void)
-	{
-	  printf("running task: func=%d proc=%x finish=%x/%d\n",
-		 task->func_id, task->proc->me.id, task->finish_event.id,
-		 task->finish_event.gen);
-	}
+	    // loop until our event has triggered
+	    while(!entry.triggered) {
+	      // first step - if some other thread is resumable, give up
+	      //   our spot and let him run
+	      if(proc->resumable_threads.size() > 0) {
+		Thread *resumee = proc->resumable_threads.front();
+		proc->resumable_threads.pop_front();
+		assert(resumee->state == STATE_RESUMABLE);
 
-	void sleep_on_event(Event wait_for, bool block = false)
-	{
-	  // if we're going to wait, see if there's something useful
-	  //  we can do in the meantime
-	  log_task(LEVEL_DEBUG, "thread needs to wait on event: event=%x/%d",
-		   wait_for.id, wait_for.gen);
-	  for(int pass = 1; !wait_for.has_triggered(); pass++) {
-#define MULTIPLE_TASKS_PER_THREAD	  
-#ifdef MULTIPLE_TASKS_PER_THREAD	  
-	    while(!block) {
-	      AutoHSLLock a(proc->mutex);
+		log_task.info("waiting thread %p yielding to thread %p for proc %x",
+			      this, resumee, proc->me.id);
 
-	      proc->active_thread_count--;
-	      Task *new_task = proc->select_task();
-	      if(!new_task) {
-		proc->active_thread_count++; //put count back (we'll dec below)
-		break;  // nope, have to sleep
+		resumee->state = STATE_RUN;
+		gasnett_cond_signal(&resumee->condvar);
+
+		proc->preemptable_threads.push_back(this);
+		state = STATE_PREEMPTABLE;
+		gasnett_cond_wait(&condvar, &proc->mutex.lock);
+		assert(state == STATE_RUN);
+		continue;
 	      }
 
-	      Task *old_task = task;
-	      log_task(LEVEL_SPEW, "thread task swap: old=%p new=%p",
-		       old_task, new_task);
-	      task = new_task;
+	      // plan B - if there's a ready task, we can run it while
+	      //   we're waiting (unless 'block' is set)
+	      if(!block && (proc->ready_tasks.size() > 0)) {
+		Task *newtask = proc->ready_tasks.front();
+		proc->ready_tasks.pop_front();
+		
+		log_task.info("thread %p (proc %x) running task %p instead of sleeping",
+			      this, proc->me.id, newtask);
 
-	      // run task (without lock)
-	      gasnet_hsl_unlock(&proc->mutex);
-	      task->run();
-	      gasnet_hsl_lock(&proc->mutex);
+		al.release();
+		newtask->run();
+		al.reacquire();
 
-	      // TODO: delete task?
-	      if(task == proc->idle_task) {
-		log_task(LEVEL_SPEW, "thread returned from idle task: proc=%x", proc->me.id);
+		log_task.info("thread %p (proc %x) done with inner task %p, back to waiting on %x/%d",
+			      this, proc->me.id, newtask, wait_for.id, wait_for.gen);
+
+		delete newtask;
+		continue;
+	      }
+
+	      // plan C - run the idle task if it's enabled and nobody else
+	      //  is currently running it
+	      if(!block && proc->idle_task_enabled && 
+		 proc->idle_task && !proc->in_idle_task) {
+		log_task.info("thread %p (proc %x) running idle task instead of sleeping",
+			      this, proc->me.id);
+
+		proc->in_idle_task = true;
+		
+		al.release();
+		proc->idle_task->run();
+		al.reacquire();
+
 		proc->in_idle_task = false;
+
+		log_task.info("thread %p (proc %x) done with idle task, back to waiting on %x/%d",
+			      this, proc->me.id, wait_for.id, wait_for.gen);
+
+		continue;
 	      }
-
-	      log_task(LEVEL_SPEW, "thread returning to old task: old=%p new=%p",
-		       old_task, new_task);
-	      task = old_task;
-	    }
-	    if(wait_for.has_triggered()) {
-	      log_task.info("desired event triggered while we were preempted: event=%x/%d",
-			    wait_for.id, wait_for.gen);
-	      break;
-	    }
-#endif
-
-	    // if we get to this point, we're going to sleep because we
-	    //  don't have anything immediately to do - we'll wake up either
-	    //  when our event has triggered, or (if !block) when some new
-	    //  task becomes runnable
-
-	    // icky race conditions here - once we add ourselves as a waiter, 
-	    //  the trigger could come right away (and need the lock), so we
-	    //  have to set a flag (also save the event ID we're waiting on
-	    //  for debug goodness), then add a waiter to the event and THEN
-	    //  take our own lock and see if we still need to sleep
-	    instant_trigger_guard = true;
-	    suspend_event = wait_for;
-	  
-	    // only add a waiter on the first pass
-	    if(pass == 1)
-	      wait_for.impl()->add_waiter(wait_for, this);
-
-	    {
-	      AutoHSLLock a(proc->mutex);
-
-	      if(instant_trigger_guard) {
-		// guard is still active, so we can safely sleep
-		instant_trigger_guard = false;
-
-		// NOTE: while tempting, it's not OK to check the event's
-		//  triggeredness again here - it can result in an event_triggered()
-		//  sent to us without us going to sleep, which would be bad
-		log_task(LEVEL_DEBUG, "thread sleeping on event: thread=%p event=%x/%d",
-			 this, wait_for.id, wait_for.gen);
-		// decrement the active thread count (check to see if somebody
-		//  else can run)
-		proc->active_thread_count--;
-		log_task(LEVEL_SPEW, "ATC = %d", proc->active_thread_count);
-		proc->start_some_threads();
-
-		if((proc->active_thread_count == 0) &&
-		   (proc->avail_threads.size() == 0) &&
-		   (proc->ready_tasks.size() > 0)) 
-		  log_task(LEVEL_INFO, "warning: all threads for proc=%x sleeping with tasks ready", proc->me.id);
-
-		// now sleep on our condition variable - we'll wake up after
-		//  we've been moved to the resumable list and chosen from there
-		state = STATE_SUSPEND;
-		if(!block) {
-		  log_task(LEVEL_INFO, "putting thread on pre-emptable list");
-		  proc->preemptable_threads.push_back(this);
-		}
-		fflush(stdout);
-		do {
-		  // guard against spurious wakeups
-		  gasnett_cond_wait(&condvar, &proc->mutex.lock);
-		} while(state == STATE_SUSPEND);
-		if(wait_for.has_triggered()) {
-		  log_task(LEVEL_DEBUG, "thread done sleeping on event: thread=%p event=%x/%d",
-			   this, wait_for.id, wait_for.gen);
-		} else {
-		  log_task(LEVEL_DEBUG, "thread awake but event still not ready: thread=%p event=%x/%d",
-			   this, wait_for.id, wait_for.gen);
-		}
+	
+	      // plan D - no ready tasks, no resumable tasks, no idle task,
+	      //   so go to sleep, putting ourselves on the preemptable queue
+	      //   if !block
+	      if(block) {
+		log_task.info("thread %p (proc %x) blocked on event %x/%d",
+			      this, proc->me.id, wait_for.id, wait_for.gen);
+		state = STATE_BLOCKED;
 	      } else {
-		log_task(LEVEL_DEBUG, "thread got instant trigger on event: thread=%p event=%x/%d",
-			 this, wait_for.id, wait_for.gen);
+		log_task.info("thread %p (proc %x) sleeping (preemptable) on event %x/%d",
+			      this, proc->me.id, wait_for.id, wait_for.gen);
+		state = STATE_PREEMPTABLE;
+		proc->preemptable_threads.push_back(this);
 	      }
+	      proc->active_thread_count--;
+	      gasnett_cond_wait(&condvar, &proc->mutex.lock);
+	      log_task.info("thread %p (proc %x) awake",
+			    this, proc->me.id);
+	      assert(state == STATE_RUN);
 	    }
+
+	    log_task.info("thread %p (proc %x) done sleeping on event %x/%d",
+			  this, proc->me.id, wait_for.id, wait_for.gen);
 	  }
+
+	  assert(event_stack == &entry);
+	  event_stack = entry.next;
 	}
 
-	static void *thread_main(void *args)
+	virtual void thread_main(void)
 	{
-	  Thread *me = (Thread *)args;
-
 	  // first thing - take the lock and set our status
-	  me->state = STATE_IDLE;
+	  state = STATE_IDLE;
 
-	  // stuff our pointer into TLS so Event::wait can find it
-	  gasnett_threadkey_set(cur_thread, me);
-
-	  LocalProcessor *proc = me->proc;
 	  log_task(LEVEL_DEBUG, "worker thread ready: proc=%x", proc->me.id);
+
+	  // we spend what looks like our whole life holding the processor
+	  //  lock - we explicitly let go when we run tasks and implicitly
+	  //  when we wait on our condvar
+	  AutoHSLLock al(proc->mutex);
+
 	  // add ourselves to the processor's thread list - if we're the first
 	  //  we're responsible for calling the proc init task
 	  {
@@ -3475,12 +3484,10 @@ namespace RegionRuntime {
 	    //  but the high level expects it to be this way
 	    bool wait_for_init_done = false;
 
-	    AutoHSLLock a(proc->mutex);
-
 	    bool first = proc->all_threads.size() == 0;
-	    proc->all_threads.insert(me);
+	    proc->all_threads.insert(this);
+	    proc->active_thread_count++;
 
-	    
 	    if(first) {
 	      // let go of the lock while we call the init task
 	      Processor::TaskIDTable::iterator it = task_id_table.find(Processor::TASK_ID_PROCESSOR_INIT);
@@ -3496,142 +3503,120 @@ namespace RegionRuntime {
 		log_task(LEVEL_INFO, "no processor init task: proc=%x", proc->me.id);
 	      }
 
-	      // now we can set 'init_done', and signal anybody who managed to
-	      //  get themselves onto the thread list in the meantime
+	      // now we can set 'init_done', and signal anybody who is in the
+	      //  INIT_WAIT state
 	      proc->init_done = true;
 	      proc->enable_idle_task();
-	      if(wait_for_init_done)
-		for(std::set<Thread *>::iterator it = proc->all_threads.begin();
-		    it != proc->all_threads.end();
-		    it++)
+	      for(std::set<Thread *>::iterator it = proc->all_threads.begin();
+		  it != proc->all_threads.end();
+		  it++)
+		if((*it)->state == STATE_INIT_WAIT) {
+		  (*it)->state = STATE_IDLE;
 		  gasnett_cond_signal(&((*it)->condvar));
+		}
 	    } else {
 	      // others just wait until 'init_done' becomes set
-	      while(wait_for_init_done && !proc->init_done) {
+	      if(wait_for_init_done && !proc->init_done) {
 		log_task(LEVEL_INFO, "waiting for processor init to complete");
-		gasnett_cond_wait(&me->condvar, &proc->mutex.lock);
+		state = STATE_INIT_WAIT;
+		gasnett_cond_wait(&condvar, &proc->mutex.lock);
 	      }
 	    }
+
+	    state = STATE_IDLE;
+	    proc->active_thread_count--;
 	  }
 
 	  while(!proc->shutdown_requested) {
-	    AutoHSLLock a(proc->mutex);
-
-	    // pick a task, if we're allowed to (i.e. not at active thread limit)
-	    assert(me->task == 0);
-	    me->task = proc->select_task();
-
-	    // didn't get one?  sleep until somebody assigns one to us
-	    if(!me->task) {
-	      me->state = STATE_IDLE;
-	      proc->avail_threads.push_back(me);
-	      log_task(LEVEL_DEBUG, "no task for thread, sleeping: proc=%x thread=%p",
-		       proc->me.id, me);
-	      gasnett_cond_wait(&me->condvar, &proc->mutex.lock);
-
-	      // when we wake up, expect to have a task
-	      assert(me->task != 0);
-              // check to see if the task we've been given is a shutdown task, if so breakout
-              if (me->task->func_id == 0)
-              {
-                assert(proc->shutdown_requested);
-                // set the state up and break out of the loop
-                me->state = STATE_RUN;
-                me->task = 0;
-                break;
-              }
-	    }
-#if 0
-	    // see if there's work sitting around (and we're allowed to 
-	    //  start running) - if not, sleep until somebody assigns us work
-	    if((proc->ready_tasks.size() > 0) &&
-	       (proc->active_thread_count < proc->max_active_threads)) {
-	      me->task = proc->ready_tasks.front();
+	    // first priority - try to run a task if one is available and
+	    //   we're not at the active thread count limit
+	    if((proc->active_thread_count < proc->max_active_threads) &&
+	       (proc->ready_tasks.size() > 0)) {
+	      Task *newtask = proc->ready_tasks.front();
 	      proc->ready_tasks.pop_front();
+
+	      log_task.info("thread running ready task %p for proc %x",
+			    newtask, proc->me.id);
 	      proc->active_thread_count++;
-	      log_task(LEVEL_SPEW, "ATC = %d", proc->active_thread_count);
-	      log_task(LEVEL_DEBUG, "thread claiming ready task: proc=%x task=%p thread=%p", proc->me.id, me->task, me);
-	    } else {
-	      // we're idle - see if somebody else is already calling the
-	      //  idle task (or if we're at the limit of active threads
-	      if(proc->idle_task && !proc->in_idle_task && proc->idle_task_enabled &&
-		 (proc->active_thread_count < proc->max_active_threads)) {
-		proc->in_idle_task = true;
-		proc->active_thread_count++;
-		log_task(LEVEL_SPEW, "ATC = %d", proc->active_thread_count);
-		log_task(LEVEL_SPEW, "thread calling idle task: proc=%x", proc->me.id);
-		me->task = proc->idle_task;
-	      } else {
-		me->state = STATE_IDLE;
-		proc->avail_threads.push_back(me);
-		log_task(LEVEL_DEBUG, "no task for thread, sleeping: proc=%x thread=%p",
-			 proc->me.id, me);
-		gasnett_cond_wait(&me->condvar, &proc->mutex.lock);
+	      state = STATE_RUN;
 
-		// when we wake up, expect to have a task
-		assert(me->task != 0);
-	      }
+	      // drop processor lock while we run the task
+	      al.release();
+	      newtask->run();
+	      al.reacquire();
+
+	      state = STATE_IDLE;
+	      proc->active_thread_count--;
+	      log_task.info("thread finished running task %p for proc %x",
+			    newtask, proc->me.id);
+	      delete newtask;
+	      continue;
 	    }
-#endif
 
-	    me->state = STATE_RUN;
+	    // next idea - try to run the idle task
+	    if((proc->active_thread_count < proc->max_active_threads) &&
+	       proc->idle_task_enabled && 
+	       proc->idle_task && !proc->in_idle_task) {
+	      log_task.info("thread %p (proc %x) running idle task",
+			    this, proc->me.id);
 
-	    // release lock while task is running
-	    gasnet_hsl_unlock(&proc->mutex);
-	    
-	    me->task->run();
+	      proc->in_idle_task = true;
+	      proc->active_thread_count++;
+	      state = STATE_RUN;
+		
+	      al.release();
+	      proc->idle_task->run();
+	      al.reacquire();
 
-	    // retake lock, decrement active thread count
-	    gasnet_hsl_lock(&proc->mutex);
-
-	    // TODO: delete task?
-	    if(me->task == proc->idle_task) {
-	      log_task(LEVEL_SPEW, "thread returned from idle task: proc=%x", proc->me.id);
 	      proc->in_idle_task = false;
-	    }
-	    me->task = 0;
+	      proc->active_thread_count--;
+	      state = STATE_IDLE;
 
-	    proc->active_thread_count--;
-	    log_task(LEVEL_SPEW, "ATC = %d", proc->active_thread_count);
+	      log_task.info("thread %p (proc %x) done with idle task",
+			    this, proc->me.id);
+
+	      continue;
+	    }
+
+	    // out of ideas, go to sleep
+	    log_task.info("thread %p (proc %x) has no work - sleeping",
+			  this, proc->me.id);
+	    proc->avail_threads.push_back(this);
+
+	    gasnett_cond_wait(&condvar, &proc->mutex.lock);
+
+	    log_task.info("thread %p (proc %x) awake and looking for work",
+			  this, proc->me.id);
 	  }
 
-	  {
-	    AutoHSLLock a(proc->mutex);
-
-	    // take ourselves off the list of threads - if we're the last
-	    //  call a shutdown task, if one is registered
-	    proc->all_threads.erase(me);
-	    bool last = proc->all_threads.size() == 0;
+	  // shutdown requested...
+	  
+	  // take ourselves off the list of threads - if we're the last
+	  //  call a shutdown task, if one is registered
+	  proc->all_threads.erase(this);
+	  bool last = proc->all_threads.size() == 0;
 	    
-	    if(last) {
-	      proc->disable_idle_task();
-	      if(proc->util_proc)
-		proc->util_proc->wait_for_shutdown();
+	  if(last) {
+	    proc->disable_idle_task();
+	    if(proc->util_proc)
+	      proc->util_proc->wait_for_shutdown();
 
-	      // let go of the lock while we call the init task
-	      Processor::TaskIDTable::iterator it = task_id_table.find(Processor::TASK_ID_PROCESSOR_SHUTDOWN);
-	      if(it != task_id_table.end()) {
-		log_task(LEVEL_INFO, "calling processor shutdown task: proc=%x", proc->me.id);
-		gasnet_hsl_unlock(&proc->mutex);
-		(it->second)(0, 0, proc->me);
-		gasnet_hsl_lock(&proc->mutex);
-		log_task(LEVEL_INFO, "finished processor shutdown task: proc=%x", proc->me.id);
-		proc->finished();
-	      }
+	    // let go of the lock while we call the init task
+	    Processor::TaskIDTable::iterator it = task_id_table.find(Processor::TASK_ID_PROCESSOR_SHUTDOWN);
+	    if(it != task_id_table.end()) {
+	      log_task(LEVEL_INFO, "calling processor shutdown task: proc=%x", proc->me.id);
+
+	      al.release();
+	      (it->second)(0, 0, proc->me);
+	      al.reacquire();
+
+	      log_task(LEVEL_INFO, "finished processor shutdown task: proc=%x", proc->me.id);
+	      proc->finished();
 	    }
 	  }
-	  log_task(LEVEL_DEBUG, "worker thread terminating: proc=%x", proc->me.id);
-	  return 0;
-	}
 
-      public:
-	LocalProcessor *proc;
-	Task *task;
-	State state;
-	pthread_t thread;
-	gasnett_cond_t condvar;
-	bool instant_trigger_guard;
-	Event suspend_event;
+	  log_task(LEVEL_DEBUG, "worker thread terminating: proc=%x", proc->me.id);
+	}
       };
 
       class DeferredTaskSpawn : public Event::Impl::EventWaiter {
@@ -3692,7 +3677,7 @@ namespace RegionRuntime {
 	for(int i = 0; i < total_threads; i++) {
 	  Thread *t = new Thread(this);
 	  log_task(LEVEL_DEBUG, "creating worker thread : proc=%x thread=%p", me.id, t);
-	  t->start();
+	  t->start_thread();
 	}
       }
 
@@ -3710,46 +3695,44 @@ namespace RegionRuntime {
             Thread *thread = avail_threads.front();
             avail_threads.pop_front();
             log_task(LEVEL_DEBUG, "waking thread to shutdown: proc=%x task=%p thread=%p", me.id, task, thread);
-            thread->set_task_and_wake(task);
+	    gasnett_cond_signal(&thread->condvar);
+            //thread->set_task_and_wake(task);
           }
 	  return;
 	}
 
-	// do we have an available thread that can run this task right now?
-	if((avail_threads.size() > 0) &&
-	   (active_thread_count < max_active_threads)) {
-	  Thread *thread = avail_threads.front();
-	  avail_threads.pop_front();
-	  active_thread_count++;
-	  log_task(LEVEL_SPEW, "ATC = %d", active_thread_count);
-	  log_task(LEVEL_DEBUG, "assigning new task to thread: proc=%x task=%p thread=%p", me.id, task, thread);
-	  thread->set_task_and_wake(task);
-	} else {
-	  // no?  just stuff it on ready list
-	  log_task(LEVEL_DEBUG, "no thread available for new task: proc=%x task=%p", me.id, task);
-	  ready_tasks.push_back(task);
+	// push the task onto the ready task list and then see if we can
+	//  start a thread to run it
+	ready_tasks.push_back(task);
 
-	  // if there are any pre-emptable threads, move one to the resumable
-	  //  list and it might be able to grab this task and run it
-	  if(preemptable_threads.size() > 0) {
-	    Thread *thread = preemptable_threads.front();
-	    preemptable_threads.pop_front();
-	    assert(thread->state == Thread::STATE_SUSPEND);
+	log_task.info("pushing ready task %p onto list for proc %x (active=%d, idle=%zd, preempt=%zd)",
+		      task, me.id, active_thread_count,
+		      avail_threads.size(), preemptable_threads.size());
 
-	    if(active_thread_count < max_active_threads) {
-	      log_task(LEVEL_INFO, "waking up preemptable thread: thread=%p", thread);
+	if(active_thread_count < max_active_threads) {
+	  if(avail_threads.size() > 0) {
+	    // take a thread and start him - up to him to run this task or not
+	    Thread *t = avail_threads.front();
+	    avail_threads.pop_front();
+	    assert(t->state == Thread::STATE_IDLE);
+	    log_task.info("waking up thread %p to handle new task", t);
+	    gasnett_cond_signal(&t->condvar);
+	  } else
+	    if(preemptable_threads.size() > 0) {
+	      Thread *t = preemptable_threads.front();
+	      preemptable_threads.pop_front();
+	      assert(t->state == Thread::STATE_PREEMPTABLE);
+	      t->state = Thread::STATE_RUN;
 	      active_thread_count++;
-	      log_task(LEVEL_SPEW, "ATC = %d", active_thread_count);
-	      thread->resume_task();
+	      log_task.info("preempting thread %p to handle new task", t);
+	      gasnett_cond_signal(&t->condvar);
 	    } else {
-	      log_task(LEVEL_INFO, "making preemptable thread resumable: thread=%p", thread);
-	      
-	      resumable_threads.push_back(thread);
+	      log_task.info("no threads avialable to run new task %p", task);
 	    }
-	  }
 	}
       }
 
+#if 0
       // picks a task (if available/allowed) for a thread to run
       Task *select_task(void)
       {
@@ -3775,6 +3758,7 @@ namespace RegionRuntime {
 	// nope, nothing to do
 	return 0;
       }
+#endif
 
       // see if there are resumable threads and/or new tasks to run, respecting
       //  the available thread and runnable thread limits
@@ -3788,9 +3772,11 @@ namespace RegionRuntime {
 	  resumable_threads.pop_front();
 	  active_thread_count++;
 	  log_task(LEVEL_SPEW, "ATC = %d", active_thread_count);
-	  t->resume_task();
+	  assert(t->state == Thread::STATE_RESUMABLE);
+	  t->state = Thread::STATE_RUN;
+	  gasnett_cond_signal(&t->condvar);
 	}
-
+#if 0
 	// if slots are still available, start new tasks
 	while((active_thread_count < max_active_threads) &&
 	      (ready_tasks.size() > 0) &&
@@ -3817,6 +3803,7 @@ namespace RegionRuntime {
 	  active_thread_count++;
 	  thr->set_task_and_wake(idle_task);
 	}
+#endif
       }
 
       virtual void spawn_task(Processor::TaskFuncID func_id,
@@ -3949,13 +3936,50 @@ namespace RegionRuntime {
       Event finish_event;
     };
 
+    void PreemptableThread::start_thread(void)
+    {
+      pthread_attr_t attr;
+      CHECK_PTHREAD( pthread_attr_init(&attr) );
+      CHECK_PTHREAD( pthread_create(&thread, &attr, &thread_entry, (void *)this) );
+      CHECK_PTHREAD( pthread_attr_destroy(&attr) );
+    }
+
+    GASNETT_THREADKEY_DEFINE(cur_preemptable_thread);
+
+    /*static*/ bool PreemptableThread::preemptable_sleep(Event wait_for,
+							 bool block /*= false*/)
+    {
+      // check TLS to see if we're really a preemptable thread
+      void *tls_val = gasnett_threadkey_get(cur_preemptable_thread);
+      if(!tls_val) return false;
+
+      PreemptableThread *me = (PreemptableThread *)tls_val;
+
+      me->sleep_on_event(wait_for, block);
+      return true;
+    }
+    
+    /*static*/ void *PreemptableThread::thread_entry(void *data)
+    {
+      PreemptableThread *me = (PreemptableThread *)data;
+
+      // set up TLS variable so we can remember who we are way down the call
+      //  stack
+      gasnett_threadkey_set(cur_preemptable_thread, me);
+
+      // and then just call the virtual thread_main
+      me->thread_main();
+
+      return 0;
+    }
+
     class UtilityProcessor::UtilityThread : public PreemptableThread {
     public:
       UtilityThread(UtilityProcessor *_proc)
 	: proc(_proc) {}
 
       virtual ~UtilityThread(void) {}
-
+#if 0
       static void *thread_entry(void *data)
       {
 	((UtilityThread *)data)->thread_main();
@@ -3969,7 +3993,7 @@ namespace RegionRuntime {
 	CHECK_PTHREAD( pthread_create(&thread, &attr, &thread_entry, (void *)this) );
 	CHECK_PTHREAD( pthread_attr_destroy(&attr) );
       }
-
+#endif
       void sleep_on_event(Event wait_for, bool block = false)
       {
 	assert(0);
@@ -4076,7 +4100,7 @@ namespace RegionRuntime {
       for(int i = 0; i < num_worker_threads; i++) {
 	UtilityThread *t = new UtilityThread(this);
 	threads.insert(t);
-	t->start();
+	t->start_thread();
       }
     }
 
@@ -4161,9 +4185,14 @@ namespace RegionRuntime {
       // waiting on an event does not count against the low level's time
       DetailedTimer::ScopedPush sp2(TIME_NONE);
 
+      // are we a thread that knows how to do something useful while waiting?
+      if(PreemptableThread::preemptable_sleep(*this, block))
+	return;
+
       // figure out which thread we are - better be a local CPU thread!
       void *ptr = gasnett_threadkey_get(cur_thread);
       if(ptr != 0) {
+	assert(0);
 	LocalProcessor::Thread *thr = (LocalProcessor::Thread *)ptr;
 	thr->sleep_on_event(*this, block);
 	return;
@@ -4171,6 +4200,7 @@ namespace RegionRuntime {
       // maybe a GPU thread?
       ptr = gasnett_threadkey_get(gpu_thread);
       if(ptr != 0) {
+	assert(0);
 	//printf("oh, good - we're a gpu thread - we'll spin for now\n");
 	//printf("waiting for %x/%d\n", id, gen);
 	while(!e->has_triggered(gen)) usleep(1000);
@@ -6672,15 +6702,6 @@ namespace RegionRuntime {
     typedef ActiveMessageMediumNoReply<NODE_ANNOUNCE_MSGID,
 				       Machine::NodeAnnounceData,
 				       node_announce_handler> NodeAnnounceMessage;
-
-    static void *gasnet_poll_thread_loop(void *data)
-    {
-      while(1) {
-	do_some_polling();
-	//usleep(10000);
-      }
-      return 0;
-    }
 
     static std::vector<LocalProcessor *> local_cpus;
     static std::vector<UtilityProcessor *> local_util_procs;

@@ -655,6 +655,7 @@ namespace RegionRuntime {
 
       ET read(ptr_t<ET> ptr) const { return ria.read(ptr); }
       void write(ptr_t<ET> ptr, ET newval) const { ria.write(ptr, newval); }
+      ET& ref(ptr_t<ET> ptr) const { return ria.ref(ptr); }
 
       void read_partial(ptr_t<ET> ptr, off_t offset, void *dst, size_t size) const
       { ria.read_partial(ptr, offset, dst, size); }

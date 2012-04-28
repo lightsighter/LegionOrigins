@@ -375,6 +375,21 @@ protected:
 			       hdr->args[3], hdr->args[4], hdr->args[5]);
       break;
 
+    case 10:
+      if(hdr->payload_mode != PAYLOAD_NONE)
+	gasnet_AMRequestMedium10(peer, hdr->msgid, hdr->payload, hdr->payload_size,
+				 hdr->args[0], hdr->args[1], hdr->args[2],
+				 hdr->args[3], hdr->args[4], hdr->args[5],
+				 hdr->args[6], hdr->args[7], hdr->args[8],
+				 hdr->args[9]);
+      else
+	gasnet_AMRequestShort10(peer, hdr->msgid,
+				hdr->args[0], hdr->args[1], hdr->args[2],
+				hdr->args[3], hdr->args[4], hdr->args[5],
+				hdr->args[6], hdr->args[7], hdr->args[8],
+				hdr->args[9]);
+      break;
+
     case 12:
       if(hdr->payload_mode != PAYLOAD_NONE)
 	gasnet_AMRequestMedium12(peer, hdr->msgid, hdr->payload, hdr->payload_size,

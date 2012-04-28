@@ -56,7 +56,7 @@ namespace RegionRuntime {
 
     class AutoHSLLock {
     public:
-      AutoHSLLock(gasnet_hsl_t &mutex) : mutexp(&mutex) 
+      AutoHSLLock(gasnet_hsl_t &mutex) : mutexp(&mutex), held(true)
       { 
 	log_mutex(LEVEL_SPEW, "MUTEX LOCK IN %p", mutexp);
 	//printf("[%d] MUTEX LOCK IN %p\n", gasnet_mynode(), mutexp);
@@ -64,7 +64,7 @@ namespace RegionRuntime {
 	log_mutex(LEVEL_SPEW, "MUTEX LOCK HELD %p", mutexp);
 	//printf("[%d] MUTEX LOCK HELD %p\n", gasnet_mynode(), mutexp);
       }
-      AutoHSLLock(gasnet_hsl_t *_mutexp) : mutexp(_mutexp) 
+      AutoHSLLock(gasnet_hsl_t *_mutexp) : mutexp(_mutexp), held(true)
       { 
 	log_mutex(LEVEL_SPEW, "MUTEX LOCK IN %p", mutexp);
 	//printf("[%d] MUTEX LOCK IN %p\n", gasnet_mynode(), mutexp);
@@ -73,13 +73,27 @@ namespace RegionRuntime {
 	//printf("[%d] MUTEX LOCK HELD %p\n", gasnet_mynode(), mutexp);
       }
       ~AutoHSLLock(void) 
-      { 
-	gasnet_hsl_unlock(mutexp);
+      {
+	if(held)
+	  gasnet_hsl_unlock(mutexp);
 	log_mutex(LEVEL_SPEW, "MUTEX LOCK OUT %p", mutexp);
 	//printf("[%d] MUTEX LOCK OUT %p\n", gasnet_mynode(), mutexp);
       }
+      void release(void)
+      {
+	assert(held);
+	gasnet_hsl_unlock(mutexp);
+	held = false;
+      }
+      void reacquire(void)
+      {
+	assert(!held);
+	gasnet_hsl_lock(mutexp);
+	held = true;
+      }
     protected:
       gasnet_hsl_t *mutexp;
+      bool held;
     };
 
     // for each of the ID-based runtime objects, we're going to have an
@@ -396,7 +410,18 @@ namespace RegionRuntime {
       PreemptableThread(void) {}
       virtual ~PreemptableThread(void) {}
 
+      void start_thread(void);
+
+      static bool preemptable_sleep(Event wait_for, bool block = false);
+
+    protected:
+      static void *thread_entry(void *data);
+
+      virtual void thread_main(void) = 0;
+
       virtual void sleep_on_event(Event wait_for, bool block = false) = 0;
+
+      pthread_t thread;
     };
 
     class UtilityProcessor : public Processor::Impl {

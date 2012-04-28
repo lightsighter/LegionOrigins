@@ -12,15 +12,6 @@ using namespace RegionRuntime::HighLevel;
 RegionRuntime::Logger::Category log_app("application");
 RegionRuntime::Logger::Category log_mapper("mapper");
 
-namespace Config {
-  int N = 8;
-  int NB = 1;
-  int P = 2;
-  int Q = 2;
-  int seed = 12345;
-  bool args_read = false;
-};
-
 enum {
   TOP_LEVEL_TASK_ID,
   //TASKID_LINPACK_MAIN,
@@ -212,8 +203,12 @@ public:
   Processor pick_processor(int tag)
   {
     if((tag >= LMAP_PICK_CPU_BASE) && (tag <= LMAP_PICK_CPU_END)) {
+#ifdef CHOOSE_CPU_BY_GPU
       Processor gpu = gpu_list[(tag - LMAP_PICK_CPU_BASE) % gpu_list.size()];
       Processor cpu = gpu_procs.find(gpu)->second.cpus[0];
+#else
+      Processor cpu = cpu_list[(tag - LMAP_PICK_CPU_BASE) % cpu_list.size()];
+#endif
       log_mapper.info("chosing CPU %x", cpu.id);
       return cpu;
     }
@@ -409,9 +404,11 @@ protected:
 template <int NB>
 class Linpack {
   struct MatrixBlock {
+#ifdef BLOCK_LOCATIONS
     // useful debug info
     int block_col, block_row;
     int state;
+#endif
 
     // actual data
     double data[NB][NB];  // runtime args say whether this is row-/column-major
@@ -422,7 +419,11 @@ class Linpack {
       char buffer[80];
       vsprintf(buffer, fmt, args);
       va_end(args);
+#ifdef BLOCK_LOCATIONS
       printf("blk(%d,%d): state=%d: %s\n", block_row, block_col, state, buffer);
+#else
+      printf("blk: %s\n", buffer);
+#endif
       for(int i = 0; i < NB; i++) {
 	printf(" [");
 	for(int j = 0; j < NB; j++) printf("  %6.3f", data[i][j]);
@@ -448,8 +449,9 @@ class Linpack {
   };
 
   struct IndexBlock {
+#ifdef BLOCK_LOCATIONS
     int block_num;
-
+#endif
     int ind[NB];
 
     void print(const char *fmt, ...) const {
@@ -458,17 +460,26 @@ class Linpack {
       char buffer[80];
       vsprintf(buffer, fmt, args);
       va_end(args);
+#ifdef BLOCK_LOCATIONS
       printf("idx[%d]: %s: [", block_num, buffer);
       for(int j = 0; j < NB; j++) printf("  %d(%d)", ind[j], ind[j]-block_num*NB);
+#else
+      printf("idx: %s: [", buffer);
+      for(int j = 0; j < NB; j++) printf("  %d", ind[j]);
+#endif
       printf("  ]\n");
     }
   };
 
-  static const int MAX_BLOCKS = 16;
-  static const int MAX_COLPARTS = 8;
-  static const int MAX_ROWPARTS = 8;
+  static const int MAX_BLOCKS = 512;
+  //static const int MAX_COLPARTS = 8;
+  //static const int MAX_ROWPARTS = 8;
 
   struct BlockedMatrix {
+    // configuration stuff
+    int N, P, Q, seed;
+    bool dump_all, dump_final, update_trailing, bulk_sync;
+
     int rows, cols;
     int block_rows, block_cols;
     ptr_t<MatrixBlock> blocks[MAX_BLOCKS][MAX_BLOCKS];
@@ -516,23 +527,90 @@ class Linpack {
     return(LMAP_PICK_GPU_BASE + rowpart_id + (col_num * matrix.num_row_parts));
   }
 
+  static void parse_args(int argc, const char **argv,
+			 BlockedMatrix& matrix)
+  {
+    // defaults
+    matrix.N = 8;
+    matrix.P = 2;
+    matrix.Q = 2;
+    matrix.seed = 12345;
+    matrix.dump_all = false;
+    matrix.dump_final = false;
+    matrix.update_trailing = false;
+    matrix.bulk_sync = false;
+
+    for (int i = 1; i < argc; i++) {
+      if(!strcmp(argv[i], "-N")) {
+	matrix.N = atoi(argv[++i]);
+	continue;
+      }
+
+      /* NB read earlier
+      if(!strcmp(argv[i], "-NB")) {
+	matrix.NB = atoi(argv[++i]);
+	continue;
+      }*/
+      
+      if(!strcmp(argv[i], "-P")) {
+	matrix.P = atoi(argv[++i]);
+	continue;
+      }
+      
+      if(!strcmp(argv[i], "-Q")) {
+	matrix.Q = atoi(argv[++i]);
+	continue;
+      }
+      
+      if(!strcmp(argv[i], "-seed")) {
+	matrix.seed = atoi(argv[++i]);
+	continue;
+      }
+
+      if(!strcmp(argv[i], "-all")) {
+	matrix.dump_all = (atoi(argv[++i]) != 0);
+	continue;
+      }
+
+      if(!strcmp(argv[i], "-final")) {
+	matrix.dump_final = (atoi(argv[++i]) != 0);
+	continue;
+      }
+
+      if(!strcmp(argv[i], "-trail")) {
+	matrix.update_trailing = (atoi(argv[++i]) != 0);
+	continue;
+      }
+
+      if(!strcmp(argv[i], "-sync")) {
+	matrix.bulk_sync = (atoi(argv[++i]) != 0);
+	continue;
+      }
+    }
+
+    log_app.info("linpack: N=%d NB=%d P=%d Q=%d seed=%d\n", 
+		 matrix.N, NB, matrix.P, matrix.Q, matrix.seed);
+}
+
   template <AccessorType AT>
   static void create_blocked_matrix(Context ctx, HighLevelRuntime *runtime,
 				    BlockedMatrix& matrix,
-				    int N, int P, int Q)
+				    int argc, const char **argv)
   {
-    matrix.rows = N;
-    matrix.cols = N + 1;
-    matrix.block_rows = (N + NB - 1) / NB;
-    matrix.block_cols = N/NB + 1;
+    parse_args(argc, argv, matrix);
+
+    matrix.rows = matrix.N;
+    matrix.cols = matrix.N + 1;
+    matrix.block_rows = (matrix.N + NB - 1) / NB;
+    matrix.block_cols = matrix.N/NB + 1;
 
     matrix.block_region = runtime->create_logical_region(ctx,
 							 sizeof(MatrixBlock),
 							 (matrix.block_rows *
 							  matrix.block_cols));
 
-    matrix.num_row_parts = Q;
-    matrix.num_col_parts = P;
+    matrix.num_row_parts = matrix.Q;
+    matrix.num_col_parts = matrix.P;
 
     std::vector<std::set<utptr_t> > col_coloring;
     std::vector<std::vector<std::set<utptr_t> > > row_coloring;
@@ -784,28 +862,41 @@ class Linpack {
     template <AccessorType AT>
     void run(std::vector<PhysicalRegion<AT> > &regions) const
     {
-      printf("random_panel(yay): k=%d, idx=%d\n", args->k, idx);
+      log_app.info("random_panel(yay): k=%d, idx=%d\n", args->k, idx);
 
       const BlockedMatrix &matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
       
+      PhysicalRegion<AccessorArray> r_panel = regions[REGION_PANEL].template convert<AccessorArray>();
+
       for(int j = idx; j < matrix.block_rows; j += matrix.num_row_parts) {
 	ptr_t<MatrixBlock> blkptr = matrix.blocks[j][args->k];
-	printf("[%d][%d] -> %d\n", j, args->k, blkptr.value);
-	MatrixBlock blk = regions[REGION_PANEL].read(blkptr);
-	blk.block_row = j;
-	blk.block_col = args->k;
+	MatrixBlock& blk = r_panel.ref(blkptr);
+	int block_row = j;
+	int block_col = args->k;
+#ifdef BLOCK_LOCATIONS
+	blk.block_row = block_row;
+	blk.block_col = block_col;
+#endif
 	for(int ii = 0; ii < NB; ii++)
 	  for(int jj = 0; jj < NB; jj++) {
+#ifdef WORLDS_WORST_RANDOM_MATRIX_GENERATOR
 	    unsigned short seed[3];
-	    seed[0] = Config::seed;
-	    seed[1] = blk.block_row * NB + ii;
-	    seed[2] = blk.block_col * NB + jj;
-	    erand48(seed); // scramble the seed a little
-	    erand48(seed);
-	    erand48(seed);
+	    seed[0] = matrix.seed;
+	    seed[1] = block_row * NB + ii;
+	    seed[2] = block_col * NB + jj;
+	    for(int z = 0; z < 10; z++)
+	      erand48(seed); // scramble the seed a little
 	    blk.data[ii][jj] = erand48(seed) - 0.5;
+#endif
+	    unsigned x0 = 0x53873289 + (block_row * NB + ii);
+	    unsigned x1 = 0x93027    + (block_col * NB + jj);
+	    for(int z = 0; z < 3; z++) {
+	      x1 ^= (x0 << 7) | (x0 >> 25);
+	      x0 += 0x899123 * x1 + 9 + matrix.seed;
+	    }
+	    double f = ((x0 ^ x1) / 4294967296.0) - 0.5;
+	    blk.data[ii][jj] = f;
 	  }
-	regions[REGION_PANEL].write(blkptr, blk);
       }
     }
     
@@ -897,15 +988,10 @@ class Linpack {
     template <AccessorType AT>
     void run(std::vector<PhysicalRegion<AT> > &regions) const
     {
-      printf("random_matrix(yay): idx=%d\n", idx);
+      log_app.info("random_matrix(yay): idx=%d\n", idx);
 
       const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
 
-#define NOMAP_INDEX_SPACES
-#ifndef NOMAP_INDEX_SPACES
-      runtime->unmap_region(ctx, regions[REGION_PANEL]);
-#endif
-      
       FutureMap fm = RandomPanelTask::spawn(ctx, runtime,
 					    Range(0, matrix.num_row_parts - 1),
 					    matrix, args->matrixptr, idx);
@@ -1006,25 +1092,31 @@ class Linpack {
     template <AccessorType AT>
     void run(std::vector<PhysicalRegion<AT> > &regions) const
     {
-      printf("fill_top_block(yay): k=%d, j=%d\n", args->k, args->j);
+      log_app.info("fill_top_block(yay): k=%d, j=%d\n", args->k, args->j);
 
       const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
 
-      PhysicalRegion<AT> r_panel = regions[REGION_PANEL];
-      PhysicalRegion<AT> r_topblk = regions[REGION_TOPBLK];
-      PhysicalRegion<AT> r_index = regions[REGION_INDEX];
+      PhysicalRegion<AccessorArray> r_panel = regions[REGION_PANEL].template convert<AccessorArray>();
+      PhysicalRegion<AccessorArray> r_topblk = regions[REGION_TOPBLK].template convert<AccessorArray>();
+      PhysicalRegion<AccessorArray> r_index = regions[REGION_INDEX].template convert<AccessorArray>();
 
       ptr_t<IndexBlock> ind_ptr = matrix.index_blocks[args->k];
-      IndexBlock ind_blk = r_index.read(ind_ptr);
+      IndexBlock& ind_blk = r_index.ref(ind_ptr);
+#ifdef DEBUG_MATH
       ind_blk.print("ftb ind blk");
+#endif
 
       ptr_t<MatrixBlock> orig_ptr = matrix.blocks[args->k][args->j];
-      MatrixBlock orig_blk = r_panel.read(orig_ptr);
+      MatrixBlock& orig_blk = r_panel.ref(orig_ptr);
+#ifdef DEBUG_MATH
       orig_blk.print("orig topblk");
+#endif
 
-      MatrixBlock top_blk;
+      MatrixBlock& top_blk = r_topblk.ref(args->topblk_ptr);
+#ifdef BLOCK_LOCATIONS
       top_blk.block_col = orig_blk.block_col;
       top_blk.block_row = orig_blk.block_row;
+#endif
 
       // for each row, figure out which original row ends up there - if that
       //   row isn't in the top block, then put the row that will be swapped
@@ -1038,25 +1130,32 @@ class Linpack {
 	    src = kk + (args->k * NB);
 	    break;
 	  }
+#ifdef DEBUG_TRANSPOSE
 	printf("topblk row %d gets data from %d\n", ii, src);
+#endif
 	
 	if(src < ((args->k + 1) * NB)) {
+#ifdef DEBUG_TRANSPOSE
 	  printf("local source\n");
+#endif
 	  for(int jj = 0; jj < NB; jj++)
 	    top_blk.data[ii][jj] = orig_blk.data[src - args->k * NB][jj];
 	} else {
+#ifdef DEBUG_TRANSPOSE
 	  printf("remote source - figuring out which data it wants in the swap\n");
+#endif
 	  int src2 = src;
 	  for(int kk = NB - 1; kk >= 0; kk--)
 	    if(ind_blk.ind[kk] == src2)
 	      src2 = kk + (args->k * NB);
+#ifdef DEBUG_TRANSPOSE
 	  printf("remote row %d wants data from %d, so put that in %d\n", src, src2, ii);
+#endif
 	  assert(src2 != src);
 	  for(int jj = 0; jj < NB; jj++)
 	    top_blk.data[ii][jj] = orig_blk.data[src2 - args->k * NB][jj];
 	}
       }
-      r_topblk.write(args->topblk_ptr, top_blk);
     }
     
   public:
@@ -1098,7 +1197,7 @@ class Linpack {
       reqs[REGION_TOPBLK] = RegionRequirement(topblk_region,
 					      READ_WRITE, NO_MEMORY, EXCLUSIVE,
 					      topblk_region,
-					      LMAP_PLACE_GASNET);
+					      LMAP_PLACE_SYSMEM);
       
       reqs[REGION_INDEX] = RegionRequirement(index_subregion,
 					     READ_ONLY, NO_MEMORY, EXCLUSIVE,
@@ -1160,27 +1259,32 @@ class Linpack {
     template <AccessorType AT>
     void run(std::vector<PhysicalRegion<AT> > &regions) const
     {
-      printf("transpose_rows(yay): k=%d, j=%d, idx=%d\n", args->k, args->j, idx);
+      log_app.info("transpose_rows(yay): k=%d, j=%d, idx=%d\n", args->k, args->j, idx);
       
       const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
 
-      PhysicalRegion<AT> r_panel = regions[REGION_PANEL];
+      PhysicalRegion<AccessorArray> r_panel = regions[REGION_PANEL].template convert<AccessorArray>();
+#ifdef TOPBLK_USES_REF      
+      PhysicalRegion<AccessorArray> r_topblk = regions[REGION_TOPBLK].template convert<AccessorArray>();
+#else
       PhysicalRegion<AT> r_topblk = regions[REGION_TOPBLK];
-      PhysicalRegion<AT> r_index = regions[REGION_INDEX];
+#endif
+      PhysicalRegion<AccessorArray> r_index = regions[REGION_INDEX].template convert<AccessorArray>();
       
       ptr_t<IndexBlock> ind_ptr = matrix.index_blocks[args->k];
-      IndexBlock ind_blk = r_index.read(ind_ptr);
+      IndexBlock& ind_blk = r_index.ref(ind_ptr);
+#ifdef DEBUG_MATH
       ind_blk.print("tpr ind blk");
-
-      PhysicalRegion<AccessorArray> r_panel_array = r_panel.template convert<AccessorArray>();
+#endif
 
 #ifdef TOPBLK_USES_REF      
-      PhysicalRegion<AccessorArray> r_topblk_array = r_topblk.template convert<AccessorArray>();
-      MatrixBlock& topblk = r_topblk_array.get_instance().ref(args->topblk_ptr);
+      MatrixBlock& topblk = r_topblk.ref(args->topblk_ptr);
 #else
       MatrixBlock topblk = r_topblk.read(args->topblk_ptr);
 #endif
+#ifdef BLOCK_LOCATIONS
       assert((topblk.block_row != 0) || (topblk.block_col != 0));
+#endif
 
       // look through the indices and find any row that we own that isn't in the
       //   top block - for each of those rows, figure out which row in the top
@@ -1192,7 +1296,9 @@ class Linpack {
 	if(((rowblk % matrix.num_row_parts) != idx) || (rowblk == args->k))
 	  continue;
 	
+#ifdef DEBUG_TRANSPOSE
 	printf("row %d belongs to us\n", ind_blk.ind[ii]);
+#endif
 	
 	// data in the top block has been reordered so that the data we want
 	//  is in the location that will hold the data we have now, which is
@@ -1204,17 +1310,23 @@ class Linpack {
 	    break;
 	  }
 	if(dup_found) {
+#ifdef DEBUG_TRANSPOSE
 	  printf("duplicate for row %d - skipping\n", ind_blk.ind[ii]);
+#endif
 	  continue;
 	}
 	
+#ifdef DEBUG_TRANSPOSE
 	printf("swapping row %d with topblk row %d (%d)\n",
 	       ind_blk.ind[ii], ii + (args->k * NB), ii);
+#endif
 	
-	MatrixBlock& pblk = r_panel_array.get_instance().ref(matrix.blocks[rowblk][args->j]);
+	MatrixBlock& pblk = r_panel.ref(matrix.blocks[rowblk][args->j]);
 	
+#ifdef DEBUG_MATH
 	topblk.print("top before");
 	pblk.print("pblk before");
+#endif
 	double *trow = topblk.data[ii];
 	double *prow = pblk.data[ind_blk.ind[ii] - rowblk * NB];
 	
@@ -1229,12 +1341,16 @@ class Linpack {
 			       trow,
 			       NB * sizeof(double));
 #endif
+#ifdef DEBUG_MATH
 	topblk.print("top after");
 	pblk.print("pblk after");
+#endif
       }
 #ifndef TOPBLK_USES_REF      
+#ifdef DEBUG_MATH
       MatrixBlock topblk2 = r_topblk.read(args->topblk_ptr);
       topblk2.print("top recheck");
+#endif
 #endif
     }
     
@@ -1347,16 +1463,18 @@ class Linpack {
     template <AccessorType AT>
     void run(std::vector<PhysicalRegion<AT> > &regions) const
     {
-      printf("update_submatrix(yay): k=%d, j=%d, idx=%d\n", args->k, args->j, idx);
+      log_app.info("update_submatrix(yay): k=%d, j=%d, idx=%d\n", args->k, args->j, idx);
       
       const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
 
-      PhysicalRegion<AT> r_panel = regions[REGION_PANEL];
-      PhysicalRegion<AT> r_topblk = regions[REGION_TOPBLK];
-      PhysicalRegion<AT> r_lpanel = regions[REGION_LPANEL];
+      PhysicalRegion<AccessorArray> r_panel = regions[REGION_PANEL].template convert<AccessorArray>();
+      PhysicalRegion<AccessorArray> r_topblk = regions[REGION_TOPBLK].template convert<AccessorArray>();
+      PhysicalRegion<AccessorArray> r_lpanel = regions[REGION_LPANEL].template convert<AccessorArray>();
       
-      MatrixBlock topblk = r_topblk.read(args->topblk_ptr);
+      MatrixBlock& topblk = r_topblk.ref(args->topblk_ptr);
+#ifdef DEBUG_MATH
       topblk.print("B in");
+#endif
       
       // special case - if we own the top block, need to write that back
       if((args->k % matrix.num_row_parts) == idx)
@@ -1369,11 +1487,13 @@ class Linpack {
       for(int i = args->k + 1; i < matrix.block_rows; i++) {
 	if((i % matrix.num_row_parts) != idx) continue;
 	
-	MatrixBlock lpblk = r_lpanel.read(matrix.blocks[i][args->k]);
-	MatrixBlock pblk = r_panel.read(matrix.blocks[i][args->j]);
+	MatrixBlock& lpblk = r_lpanel.ref(matrix.blocks[i][args->k]);
+	MatrixBlock& pblk = r_panel.ref(matrix.blocks[i][args->j]);
 	
+#ifdef DEBUG_MATH
 	lpblk.print("A(%d) in", i);
 	pblk.print("C(%d) in", i);
+#endif
 	
 	// DGEMM
 	for(int x = 0; x < NB; x++)
@@ -1381,9 +1501,9 @@ class Linpack {
 	    for(int z = 0; z < NB; z++)
 	      pblk.data[x][y] -= lpblk.data[x][z] * topblk.data[z][y];
 	
+#ifdef DEBUG_MATH
 	pblk.print("C(%d) out", i);
-	
-	r_panel.write(matrix.blocks[i][args->j], pblk);
+#endif
       }
     }
     
@@ -1493,23 +1613,25 @@ class Linpack {
     template <AccessorType AT>
     void run(std::vector<PhysicalRegion<AT> > &regions) const
     {
-      printf("solve_top_block(yay): k=%d, j=%d\n", args->k, args->j);
+      log_app.info("solve_top_block(yay): k=%d, j=%d\n", args->k, args->j);
 
       if(args->j < args->k) {
-	printf("skipping solve for leading submatrix");
+	//printf("skipping solve for leading submatrix\n");
 	return;
       }
 
       const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
 
-      PhysicalRegion<AT> r_topblk = regions[REGION_TOPBLK];
-      PhysicalRegion<AT> r_l1blk = regions[REGION_L1BLK];
+      PhysicalRegion<AccessorArray> r_topblk = regions[REGION_TOPBLK].template convert<AccessorArray>();
+      PhysicalRegion<AccessorArray> r_l1blk = regions[REGION_L1BLK].template convert<AccessorArray>();
 
-      MatrixBlock topblk = r_topblk.read(args->topblk_ptr);
-      MatrixBlock l1blk = r_l1blk.read(matrix.top_blocks[args->k]);
+      MatrixBlock& topblk = r_topblk.ref(args->topblk_ptr);
+      MatrixBlock& l1blk = r_l1blk.ref(matrix.top_blocks[args->k]);
 
+#ifdef DEBUG_MATH
       l1blk.print("solve l1");
       topblk.print("solve top in");
+#endif
 
       // triangular solve (left, lower, unit-diagonal)
       for(int x = 0; x < NB; x++)
@@ -1517,9 +1639,9 @@ class Linpack {
 	  for(int z = 0; z < NB; z++)
 	    topblk.data[y][z] -= l1blk.data[y][x] * topblk.data[x][z];
 
+#ifdef DEBUG_MATH
       topblk.print("solve top out");
-
-      r_topblk.write(args->topblk_ptr, topblk);
+#endif
     }
 
   public:
@@ -1616,17 +1738,9 @@ class Linpack {
     {
       int j = idx;
 
-      printf("update_panel(yay): k=%d, j=%d, idx=%d\n", args->k, j, idx);
+      log_app.info("update_panel(yay): k=%d, j=%d, idx=%d\n", args->k, j, idx);
 
       const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
-
-      // we don't use the regions ourselves
-#ifndef NOMAP_INDEX_SPACES
-      runtime->unmap_region(ctx, regions[REGION_PANEL]);
-      runtime->unmap_region(ctx, regions[REGION_LPANEL]);
-      runtime->unmap_region(ctx, regions[REGION_INDEX]);
-      runtime->unmap_region(ctx, regions[REGION_L1BLK]);
-#endif
 
       LogicalRegion temp_region = runtime->create_logical_region(ctx,
 								 sizeof(MatrixBlock),
@@ -1789,36 +1903,48 @@ class Linpack {
     {
       int j = idx;
 
-      printf("factor_piece(yay): k=%d, i=%d, j=%d\n", args->k, args->i, j);
+      log_app.info("factor_piece(yay): k=%d, i=%d, j=%d\n", args->k, args->i, j);
 
       const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
 
+#ifdef DEBUG_MATH
       args->prev_best.print("best");
       args->prev_orig.print("orig");
+#endif
+
+      PhysicalRegion<AccessorArray> r_panel = regions[REGION_PANEL].template convert<AccessorArray>();
 
       if(args->i > 0) {
 	// do we own the top row (which got swapped with the best row)?
 	if((args->k % matrix.num_row_parts) == j) {
 	  ptr_t<MatrixBlock> blkptr = matrix.blocks[args->k][args->k];
-	  MatrixBlock blk = regions[REGION_PANEL].read(blkptr);
+	  MatrixBlock& blk = r_panel.ref(blkptr);
+#ifdef DEBUG_MATH
 	  blk.print("before orig<-best");
+#endif
 	  for(int jj = 0; jj < NB; jj++)
 	    blk.data[args->i - 1][jj] = args->prev_best.data[jj];
+#ifdef DEBUG_MATH
 	  blk.print("after orig<-best");
-	  regions[REGION_PANEL].write(blkptr, blk);
+#endif
 	}
 
 	// did one of our rows win last time?
+	assert((args->prev_best.row_idx >= 0) &&
+	       (args->prev_best.row_idx < matrix.rows));
 	int prev_best_blkrow = (args->prev_best.row_idx / NB);
 	if((prev_best_blkrow % matrix.num_row_parts) == j) {
 	  // put the original row there
 	  ptr_t<MatrixBlock> blkptr = matrix.blocks[prev_best_blkrow][args->k];
-	  MatrixBlock blk = regions[REGION_PANEL].read(blkptr);
+	  MatrixBlock& blk = r_panel.ref(blkptr);
+#ifdef DEBUG_MATH
 	  blk.print("before best<-orig");
+#endif
 	  for(int jj = 0; jj < NB; jj++)
 	    blk.data[args->prev_best.row_idx % NB][jj] = args->prev_orig.data[jj];
+#ifdef DEBUG_MATH
 	  blk.print("after best<-orig");
-	  regions[REGION_PANEL].write(blkptr, blk);
+#endif
 	}
 
 	// now update the rest of our rows
@@ -1832,9 +1958,11 @@ class Linpack {
 		         (NB - 1));
 
 	  ptr_t<MatrixBlock> blkptr = matrix.blocks[blkrow][args->k];
-	  MatrixBlock blk = regions[REGION_PANEL].read(blkptr);
+	  MatrixBlock& blk = r_panel.ref(blkptr);
 
+#ifdef DEBUG_MATH
 	  blk.print("before update");
+#endif
 	  for(int ii = rel_start; ii <= rel_end; ii++) {
 	    double factor = (blk.data[ii][args->i - 1] / 
 			     args->prev_best.data[args->i - 1]);
@@ -1843,9 +1971,9 @@ class Linpack {
 	    for(int jj = args->i; jj < NB; jj++)
 	      blk.data[ii][jj] -= factor * args->prev_best.data[jj];
 	  }
+#ifdef DEBUG_MATH
 	  blk.print("after update");
-
-	  regions[REGION_PANEL].write(blkptr, blk);
+#endif
 	}
       }
 
@@ -1865,7 +1993,7 @@ class Linpack {
 		         (NB - 1));
 
 	  ptr_t<MatrixBlock> blkptr = matrix.blocks[blkrow][args->k];
-	  MatrixBlock blk = regions[REGION_PANEL].read(blkptr);
+	  MatrixBlock& blk = r_panel.ref(blkptr);
 
 	  for(int ii = rel_start; ii <= rel_end; ii++) {
 	    double mag = fabs(blk.data[ii][args->i]);
@@ -1881,7 +2009,7 @@ class Linpack {
       our_best_row.row_idx = best_row;
       if(best_row >= 0) {
 	ptr_t<MatrixBlock> blkptr = matrix.blocks[best_row / NB][args->k];
-	MatrixBlock blk = regions[REGION_PANEL].read(blkptr);
+	MatrixBlock& blk = r_panel.ref(blkptr);
 
 	for(int jj = 0; jj < NB; jj++)
 	  our_best_row.data[jj] = blk.data[best_row % NB][jj];
@@ -1981,7 +2109,7 @@ class Linpack {
     template <AccessorType AT>
     void run(std::vector<PhysicalRegion<AT> > &regions) const
     {
-      printf("factor_panel(yay): k=%d\n", args->k);
+      log_app.info("factor_panel(yay): k=%d\n", args->k);
 
       const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
 
@@ -2007,7 +2135,9 @@ class Linpack {
 	top_blk = reg->read(matrix.blocks[args->k][args->k]);
       }
 
+#ifdef BLOCK_LOCATIONS
       idx_blk.block_num = args->k;
+#endif
       for(int i = 0; i < NB; i++)
 	idx_blk.ind[i] = -1;
 
@@ -2056,11 +2186,24 @@ class Linpack {
 	    std::vector<int> pt;
 	    pt.push_back(j);
 	    MatrixBlockRow part_best = fm.template get_result<MatrixBlockRow>(pt);
+	    if(part_best.row_idx == -1) continue;
+	    assert((part_best.row_idx >= 0) && 
+		   (part_best.row_idx < matrix.rows));
+#ifdef DEBUG_MATH
+	    printf("part_best: k=%d i=%d j=%d idx=%d val=%f\n",
+		   args->k, i, j, part_best.row_idx, part_best.data[i]);
+#endif
 	    if(fabs(part_best.data[i]) > best_mag) {
 	      best_mag = fabs(part_best.data[i]);
 	      prev_best = part_best;
 	    }
 	  }
+#ifdef DEBUG_MATH
+	  printf("all_best: k=%d i=%d idx=%d val=%f\n",
+		 args->k, i, prev_best.row_idx, prev_best.data[i]);
+#endif
+	  assert((prev_best.row_idx >= 0) && 
+		 (prev_best.row_idx < matrix.rows));
 	  idx_blk.ind[i] = prev_best.row_idx;
 	}
       }
@@ -2102,7 +2245,6 @@ class Linpack {
 							      matrix.topblk_part,
 							      k);
 
-      printf("requesting nomap for region %d\n", panel_subregion.id);
       reqs[REGION_PANEL] = RegionRequirement(panel_subregion,
 					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
 					     matrix.block_region,
@@ -2136,7 +2278,7 @@ class Linpack {
     // factor matrix by repeatedly factoring a panel and updating the
     //   trailing submatrix
     for(int k = 0; k < matrix.block_rows; k++) {
-      {
+      if(matrix.dump_all) {
 	Future f = DumpMatrixTask::spawn(ctx, runtime, matrix, 
 					 matrixptr, k * NB);
 	f.get_void_result();
@@ -2145,15 +2287,12 @@ class Linpack {
       Future f = FactorPanelTask::spawn(ctx, runtime,
 					matrix, matrixptr, k);
       
-#define ROWSWAP_BOTTOM_LEFT
-#ifdef ROWSWAP_BOTTOM_LEFT
-      if(k) {
+      if(matrix.update_trailing && (k > 0)) {
 	FutureMap fm = UpdatePanelTask::spawn(ctx, runtime,
 					      Range(0, k - 1),
 					      matrix, matrixptr, k);
 	fm.wait_all_results();
       }
-#endif
       
       // updates of trailing panels launched as index space
       if((k + 1) <= (matrix.block_cols - 1)) {
@@ -2164,7 +2303,7 @@ class Linpack {
       }
     }
     
-    {
+    if(matrix.dump_final || matrix.dump_all) {
       Future f = DumpMatrixTask::spawn(ctx, runtime, matrix,
 				       matrixptr, matrix.rows);
       f.get_void_result();
@@ -2223,7 +2362,19 @@ class Linpack {
       fm.wait_all_results();
       //randomize_matrix<AT,NB>(ctx, runtime, matrix, regions[0]);
 
+      printf("STARTING MAIN SIMULATION LOOP\n");
+      struct timespec ts_start, ts_end;
+      clock_gettime(CLOCK_MONOTONIC, &ts_start);
+      RegionRuntime::DetailedTimer::clear_timers();
+
       factor_matrix<AT>(ctx, runtime, matrix, args->matrixptr);
+
+      clock_gettime(CLOCK_MONOTONIC, &ts_end);
+
+      double sim_time = ((1.0 * (ts_end.tv_sec - ts_start.tv_sec)) +
+			 (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
+      printf("ELAPSED TIME = %7.3f s\n", sim_time);
+      RegionRuntime::DetailedTimer::report_timers();
     }
 
   public:
@@ -2290,7 +2441,8 @@ public:
 
   // just a wrapper that lets us capture the NB template parameter
   template<AccessorType AT>
-  static void do_linpack(Context ctx, HighLevelRuntime *runtime)
+  static void do_linpack(Context ctx, HighLevelRuntime *runtime,
+			 int argc, const char **argv)
   {
     LogicalRegion matrix_region = runtime->create_logical_region(ctx,
 								 sizeof(BlockedMatrix),
@@ -2308,11 +2460,18 @@ public:
 
     create_blocked_matrix<AT>(ctx, runtime,
 			      matrixptr.get_ref(reg),
-			      Config::N, Config::P, Config::Q);
+			      argc, argv);
 
     // not a reference!
     BlockedMatrix matrix = matrixptr.get_ref(reg);
     runtime->unmap_region(ctx, reg);
+
+#define PREMAP_MATRIX_REGION
+#ifdef PREMAP_MATRIX_REGION
+    //std::vector<PhysicalRegion<AT> > premaps;
+    //for(int j = 
+    //
+#endif 
 
     Future f = LinpackMainTask::spawn(ctx, runtime, matrix, matrixptr);
     f.get_void_result();
@@ -2341,41 +2500,12 @@ template <int NB> TaskID Linpack<NB>::LinpackMainTask::task_id;
   _op_(2) \
   _op_(3) \
   _op_(4) \
+  _op_(8) \
+  _op_(16) \
+  _op_(32) \
+  _op_(64) \
+  _op_(128) \
 
-
-static void parse_args(int argc,char **argv)
-{
-  for (int i = 1; i < argc; i++) {
-    if(!strcmp(argv[i], "-N")) {
-      Config::N = atoi(argv[++i]);
-      continue;
-    }
-
-    if(!strcmp(argv[i], "-NB")) {
-      Config::NB = atoi(argv[++i]);
-      continue;
-    }
-
-    if(!strcmp(argv[i], "-P")) {
-      Config::P = atoi(argv[++i]);
-      continue;
-    }
-
-    if(!strcmp(argv[i], "-Q")) {
-      Config::Q = atoi(argv[++i]);
-      continue;
-    }
-
-    if(!strcmp(argv[i], "-seed")) {
-      Config::seed = atoi(argv[++i]);
-      continue;
-    }
-  }
-  Config::args_read = true;
-
-  printf("linpack: N=%d NB=%d P=%d Q=%d seed=%d\n", 
-	 Config::N, Config::NB, Config::P, Config::Q, Config::seed);
-}
 
 template<AccessorType AT>
 void top_level_task(const void *args, size_t arglen,
@@ -2384,263 +2514,22 @@ void top_level_task(const void *args, size_t arglen,
 {
   InputArgs *inputs = (InputArgs*)args;
 
-  parse_args(inputs->argc, inputs->argv);
+  // most args will be parsed later, but we need to pick out an NB value now
+  int NB = 1; // default
+
+  for(int i = 0; i < inputs->argc; i++)
+    if(!strcmp(inputs->argv[i], "-NB"))
+      NB = atoi(inputs->argv[++i]);
 
   // big switch on the NB parameter - better pick one we've template-expanded!
-  switch(Config::NB) {
-#define CALL_LINPACK(nb) case nb: Linpack<nb>::do_linpack<AT>(ctx, runtime); break;
+  switch(NB) {
+#define CALL_LINPACK(nb) case nb: Linpack<nb>::do_linpack<AT>(ctx, runtime, inputs->argc, (const char **)(inputs->argv)); break;
     VARIANTS(CALL_LINPACK)
 #undef CALL_LINPACK
   default:
-    assert(0); break;
+    assert(0 == "no variant available for chosen NB"); break;
   }
 }
-
-#if 0  
-}
-
-static unsigned* get_num_blocks(void)
-{
-  static unsigned num_blocks = 64;
-  return &num_blocks;
-}
-
-enum {
-  TASKID_MAIN = TASK_ID_AVAILABLE,
-  TASKID_INIT_VECTORS,
-  TASKID_ADD_VECTORS,
-};
-
-#define BLOCK_SIZE 256
-
-struct Entry {
-  float v;
-};
-
-struct Block {
-  float alpha;
-  LogicalRegion r_x, r_y, r_z;
-  ptr_t<Entry> entry_x[BLOCK_SIZE], entry_y[BLOCK_SIZE], entry_z[BLOCK_SIZE];
-  unsigned id;
-};
-
-// computes z = alpha * x + y
-struct VectorRegions {
-  unsigned num_elems;
-  float alpha;
-  LogicalRegion r_x, r_y, r_z;
-};
-
-float get_rand_float() {
-  return (((float)2*rand()-RAND_MAX)/((float)RAND_MAX));
-}
-
-template<AccessorType AT>
-void top_level_task(const void *args, size_t arglen,
-		    const std::vector<PhysicalRegion<AT> > &regions,
-		    Context ctx, HighLevelRuntime *runtime) {
-  //while (!Config::args_read)
-  //  usleep(1000);
-
-  VectorRegions vr;
-  vr.num_elems = *get_num_blocks() * BLOCK_SIZE;
-  vr.r_x = runtime->create_logical_region(ctx, sizeof(float), vr.num_elems);
-  vr.r_y = runtime->create_logical_region(ctx, sizeof(float), vr.num_elems);
-  vr.r_z = runtime->create_logical_region(ctx, sizeof(float), vr.num_elems);
-
-  std::vector<RegionRequirement> main_regions;
-  main_regions.push_back(RegionRequirement(vr.r_x, READ_WRITE, ALLOCABLE, EXCLUSIVE, vr.r_x));
-  main_regions.push_back(RegionRequirement(vr.r_y, READ_WRITE, ALLOCABLE, EXCLUSIVE, vr.r_y));
-  main_regions.push_back(RegionRequirement(vr.r_z, READ_WRITE, ALLOCABLE, EXCLUSIVE, vr.r_z));
-
-  Future f = runtime->execute_task(ctx, TASKID_MAIN, main_regions,
-				   TaskArgument(&vr, sizeof(VectorRegions)));
-  f.get_void_result();
-}
-
-template<AccessorType AT>
-void main_task(const void *args, size_t arglen,
-	       const std::vector<PhysicalRegion<AT> > &regions,
-	       Context ctx, HighLevelRuntime *runtime) {
-  VectorRegions *vr = (VectorRegions *)args;
-  PhysicalRegion<AT> r_x = regions[0];
-  PhysicalRegion<AT> r_y = regions[1];
-  PhysicalRegion<AT> r_z = regions[2];
-
-  vr->alpha = get_rand_float();
-  printf("alpha: %f\n", vr->alpha);
-
-  // Allocating space in the regions
-  std::vector<Block> blocks(*get_num_blocks());
-  std::vector<std::set<utptr_t> > color_x(*get_num_blocks());
-  std::vector<std::set<utptr_t> > color_y(*get_num_blocks());
-  std::vector<std::set<utptr_t> > color_z(*get_num_blocks());
-  for (unsigned i = 0; i < *get_num_blocks(); i++) {
-    blocks[i].alpha = vr->alpha;
-    blocks[i].id = i;
-    for (unsigned j = 0; j < BLOCK_SIZE; j++) {
-      ptr_t<Entry> entry_x = r_x.template alloc<Entry>();
-      blocks[i].entry_x[j] = entry_x;
-      color_x[i].insert(entry_x);
-      
-      ptr_t<Entry> entry_y = r_y.template alloc<Entry>();
-      blocks[i].entry_y[j] = entry_y;
-      color_y[i].insert(entry_y);
-
-      ptr_t<Entry> entry_z = r_z.template alloc<Entry>();
-      blocks[i].entry_z[j] = entry_z;
-      color_z[i].insert(entry_z);
-    }
-  }
-
-  // Partitioning the regions
-  Partition p_x = runtime->create_partition(ctx, vr->r_x, color_x, true);
-  Partition p_y = runtime->create_partition(ctx, vr->r_y, color_y, true);
-  Partition p_z = runtime->create_partition(ctx, vr->r_z, color_z, true);
-  for (unsigned i = 0; i < *get_num_blocks(); i++) {
-    blocks[i].r_x = runtime->get_subregion(ctx, p_x, i);
-    blocks[i].r_y = runtime->get_subregion(ctx, p_y, i);
-    blocks[i].r_z = runtime->get_subregion(ctx, p_z, i);
-  }
-
-  // Constructing index space
-  std::vector<Range> index_space;
-  index_space.push_back(Range(0, *get_num_blocks()-1));
-
-  // Argument map
-  ArgumentMap arg_map;
-  for (unsigned i = 0; i < *get_num_blocks(); i++) {
-    IndexPoint index; index.push_back(i);
-    arg_map[index] = TaskArgument(&(blocks[i]), sizeof(Block));
-  }
-
-  // Color map
-  std::map<IndexPoint, Color> color_map;
-  for (unsigned i = 0; i < *get_num_blocks(); i++) {
-    IndexPoint index; index.push_back(i);
-    color_map[index] = i;
-  }
-
-  // Empty global argument
-  TaskArgument global(NULL, 0);
-
-  // Regions for init task
-  std::vector<RegionRequirement> init_regions;
-  init_regions.push_back(RegionRequirement(p_x.id, color_map, WRITE_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_x));
-  init_regions.push_back(RegionRequirement(p_y.id, color_map, WRITE_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_y));
-
-  // unmap the parent regions that we might use
-  runtime->unmap_region(ctx, r_x);
-  runtime->unmap_region(ctx, r_y);
-
-  // Launch init task
-  FutureMap init_f =
-    runtime->execute_index_space(ctx, TASKID_INIT_VECTORS, index_space,
-				 init_regions, global, arg_map, false);
-  //init_f.wait_all_results();
-
-  printf("STARTING MAIN SIMULATION LOOP\n");
-  struct timespec ts_start, ts_end;
-  clock_gettime(CLOCK_MONOTONIC, &ts_start);
-  RegionRuntime::DetailedTimer::clear_timers();
-
-  // Regions for add task
-  std::vector<RegionRequirement> add_regions;
-  add_regions.push_back(RegionRequirement(p_x.id, color_map, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_x));
-  add_regions.push_back(RegionRequirement(p_y.id, color_map, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_y));
-  add_regions.push_back(RegionRequirement(p_z.id, color_map, WRITE_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_z));
-
-  // Unmap the regions that haven't already been unmapped
-  runtime->unmap_region(ctx, r_z);
-
-  // Launch add task
-  FutureMap add_f =
-    runtime->execute_index_space(ctx, TASKID_ADD_VECTORS, index_space,
-                                 add_regions, global, arg_map, false);
-  //add_f.wait_all_results();
-
-  // Print results
-  clock_gettime(CLOCK_MONOTONIC, &ts_end);
-  double sim_time = ((1.0 * (ts_end.tv_sec - ts_start.tv_sec)) +
-                     (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
-  printf("ELAPSED TIME = %7.3f s\n", sim_time);
-  RegionRuntime::DetailedTimer::report_timers();
-
-  // Validate the results
-  {
-    PhysicalRegion<AccessorGeneric> reg_x =
-      runtime->map_region<AccessorGeneric>(ctx, RegionRequirement(vr->r_x,READ_ONLY,NO_MEMORY,EXCLUSIVE,vr->r_x));
-    PhysicalRegion<AccessorGeneric> reg_y =
-      runtime->map_region<AccessorGeneric>(ctx, RegionRequirement(vr->r_y,READ_ONLY,NO_MEMORY,EXCLUSIVE,vr->r_y));
-    PhysicalRegion<AccessorGeneric> reg_z = 
-      runtime->map_region<AccessorGeneric>(ctx, RegionRequirement(vr->r_z,READ_ONLY,NO_MEMORY,EXCLUSIVE,vr->r_z));
-    reg_x.wait_until_valid();
-    reg_y.wait_until_valid();
-    reg_z.wait_until_valid();
-
-    for (unsigned i = 0; i < *get_num_blocks(); i++) {
-      for (unsigned j = 0; j < BLOCK_SIZE; j++) {
-        ptr_t<Entry> entry_x = blocks[i].entry_x[j];
-        ptr_t<Entry> entry_y = blocks[i].entry_y[j];
-        ptr_t<Entry> entry_z = blocks[i].entry_z[j];
-
-        Entry x_val = reg_x.read(entry_x);
-        Entry y_val = reg_x.read(entry_y);
-        Entry z_val = reg_z.read(entry_z);
-        float compute = vr->alpha * x_val.v + y_val.v;
-        if (z_val.v != compute)
-        {
-          printf("Failure at %d of block %d.  Expected %f but received %f\n",
-              j, i, z_val.v, compute);
-          break;
-        }
-      }
-    }
-  }
-}
-
-template<AccessorType AT>
-void init_vectors_task(const void *global_args, size_t global_arglen,
-                       const void *local_args, size_t local_arglen,
-                       const IndexPoint &point,
-                       const std::vector<PhysicalRegion<AT> > &regions,
-                       Context ctx, HighLevelRuntime *runtime) {
-  Block *block = (Block *)local_args;
-  PhysicalRegion<AT> r_x = regions[0];
-  PhysicalRegion<AT> r_y = regions[1];
-
-  for (unsigned i = 0; i < BLOCK_SIZE; i++) {
-    Entry entry_x;
-    entry_x.v = get_rand_float();
-    r_x.write(block->entry_x[i], entry_x);
-
-    Entry entry_y;
-    entry_y.v = get_rand_float();
-    r_y.write(block->entry_y[i], entry_y);
-  }
-}
-
-template<AccessorType AT>
-void add_vectors_task(const void *global_args, size_t global_arglen,
-                      const void *local_args, size_t local_arglen,
-                      const IndexPoint &point,
-                      const std::vector<PhysicalRegion<AT> > &regions,
-                      Context ctx, HighLevelRuntime *runtime) {
-  Block *block = (Block *)local_args;
-  PhysicalRegion<AT> r_x = regions[0];
-  PhysicalRegion<AT> r_y = regions[1];
-  PhysicalRegion<AT> r_z = regions[2];
-
-  for (unsigned i = 0; i < BLOCK_SIZE; i++) {
-    float x = r_x.read(block->entry_x[i]).v;
-    float y = r_y.read(block->entry_y[i]).v;
-    
-    Entry entry_z;
-    entry_z.v = block->alpha * x + y;
-    r_z.write(block->entry_z[i], entry_z);
-  }
-}
-#endif
 
 void registration_func(Machine *machine, HighLevelRuntime *runtime, Processor local)
 {
