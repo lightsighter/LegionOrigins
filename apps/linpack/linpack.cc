@@ -4,8 +4,21 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdarg>
+#include <mkl.h>
+#include <mkl_cblas.h>
 
 #include "legion.h"
+
+#define NO_DEBUG_MATH
+#define NO_DEBUG_TRANSPOSE
+#define NO_DEBUG_DTRSM
+#define NO_DEBUG_DGEMM
+
+#ifdef DEBUG_MATH
+#define DEBUG_TRANSPOSE
+#define DEBUG_DTRSM
+#define DEBUG_DGEMM
+#endif
 
 using namespace RegionRuntime::HighLevel;
 
@@ -479,6 +492,7 @@ class Linpack {
     // configuration stuff
     int N, P, Q, seed;
     bool dump_all, dump_final, update_trailing, bulk_sync;
+    bool use_blas;
 
     int rows, cols;
     int block_rows, block_cols;
@@ -538,7 +552,8 @@ class Linpack {
     matrix.dump_all = false;
     matrix.dump_final = false;
     matrix.update_trailing = false;
-    matrix.bulk_sync = false;
+    matrix.bulk_sync = true;
+    matrix.use_blas = true;
 
     for (int i = 1; i < argc; i++) {
       if(!strcmp(argv[i], "-N")) {
@@ -584,6 +599,11 @@ class Linpack {
 
       if(!strcmp(argv[i], "-sync")) {
 	matrix.bulk_sync = (atoi(argv[++i]) != 0);
+	continue;
+      }
+
+      if(!strcmp(argv[i], "-blas")) {
+	matrix.use_blas = (atoi(argv[++i]) != 0);
 	continue;
       }
     }
@@ -1128,7 +1148,8 @@ class Linpack {
 	for(int kk = ii - 1; kk >= 0; kk--)
 	  if(src == ind_blk.ind[kk]) {
 	    src = kk + (args->k * NB);
-	    break;
+	    // keep going - an earlier row swap could have pushed data down
+	    //  into the row we just matched
 	  }
 #ifdef DEBUG_TRANSPOSE
 	printf("topblk row %d gets data from %d\n", ii, src);
@@ -1138,8 +1159,12 @@ class Linpack {
 #ifdef DEBUG_TRANSPOSE
 	  printf("local source\n");
 #endif
-	  for(int jj = 0; jj < NB; jj++)
-	    top_blk.data[ii][jj] = orig_blk.data[src - args->k * NB][jj];
+	  if(matrix.use_blas) {
+	    cblas_dcopy(NB, orig_blk.data[src - args->k * NB], 1, top_blk.data[ii], 1);
+	  } else {
+	    for(int jj = 0; jj < NB; jj++)
+	      top_blk.data[ii][jj] = orig_blk.data[src - args->k * NB][jj];
+	  }
 	} else {
 #ifdef DEBUG_TRANSPOSE
 	  printf("remote source - figuring out which data it wants in the swap\n");
@@ -1152,8 +1177,12 @@ class Linpack {
 	  printf("remote row %d wants data from %d, so put that in %d\n", src, src2, ii);
 #endif
 	  assert(src2 != src);
-	  for(int jj = 0; jj < NB; jj++)
-	    top_blk.data[ii][jj] = orig_blk.data[src2 - args->k * NB][jj];
+	  if(matrix.use_blas) {
+	    cblas_dcopy(NB, orig_blk.data[src2 - args->k * NB], 1, top_blk.data[ii], 1);
+	  } else {
+	    for(int jj = 0; jj < NB; jj++)
+	      top_blk.data[ii][jj] = orig_blk.data[src2 - args->k * NB][jj];
+	  }
 	}
       }
     }
@@ -1330,10 +1359,14 @@ class Linpack {
 	double *trow = topblk.data[ii];
 	double *prow = pblk.data[ind_blk.ind[ii] - rowblk * NB];
 	
-	for(int jj = 0; jj < NB; jj++) {
-	  double tmp = trow[jj];
-	  trow[jj] = prow[jj];
-	  prow[jj] = tmp;
+	if(matrix.use_blas) {
+	  cblas_dswap(NB, trow, 1, prow, 1);
+	} else {
+	  for(int jj = 0; jj < NB; jj++) {
+	    double tmp = trow[jj];
+	    trow[jj] = prow[jj];
+	    prow[jj] = tmp;
+	  }
 	}
 #ifndef TOPBLK_USES_REF
 	r_topblk.write_partial(args->topblk_ptr,
@@ -1418,6 +1451,16 @@ class Linpack {
     }
   };
 
+  // return the first row number that's == my_row_part (mod num_row_parts)
+  static inline int first_blkrow(int from, int num_row_parts, int my_row_part)
+  {
+    int extra = (from + num_row_parts - my_row_part) % num_row_parts;
+    if(extra)
+      return(from + num_row_parts - extra);
+    else
+      return(from);
+  }
+
   class UpdateSubmatrixTask : public Index1DTask {
   protected:
     static TaskID task_id;
@@ -1484,26 +1527,72 @@ class Linpack {
       if(args->j < args->k)
 	return;
       
-      for(int i = args->k + 1; i < matrix.block_rows; i++) {
-	if((i % matrix.num_row_parts) != idx) continue;
+      // figure the first rowblock in the submatrix that belongs to us -
+      //  early out if we're out of work
+      int start = first_blkrow(args->k + 1, matrix.num_row_parts, idx);
+      if(start >= matrix.block_rows)
+	return;
+
+      if(matrix.use_blas) {
+	MatrixBlock *aptr = &r_lpanel.ref(matrix.blocks[start][args->k]);
+	MatrixBlock *cptr = &r_panel.ref(matrix.blocks[start][args->j]);
+	int count = 1;
+#ifdef DEBUG_MATH
+	aptr->print("A(%d) in", start);
+	cptr->print("C(%d) in", start);
+#endif
+
+	// scan through the rest and make sure they're contiguous
+	for(int i = start + matrix.num_row_parts; 
+	    i < matrix.block_rows; 
+	    i += matrix.num_row_parts) {
+	  MatrixBlock *aptr2 = &r_lpanel.ref(matrix.blocks[i][args->k]);
+	  MatrixBlock *cptr2 = &r_panel.ref(matrix.blocks[i][args->j]);
+	  assert(aptr2 == (aptr + count));
+	  assert(cptr2 == (cptr + count));
+	  count++;
+#ifdef DEBUG_MATH
+	  aptr2->print("A(%d) in", i);
+	  cptr2->print("C(%d) in", i);
+#endif
+	}
+
+	// now one big dgemm call
+	cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+		    NB * count /*M*/, NB /*N*/, NB /*K*/,
+		    -1.0, aptr->data[0], NB, topblk.data[0], NB,
+		    1.0, cptr->data[0], NB);
+
+#ifdef DEBUG_MATH
+	for(int i = start; i < matrix.block_rows; i += matrix.num_row_parts) {
+	  MatrixBlock& pblk = r_panel.ref(matrix.blocks[i][args->j]);
+	  pblk.print("C(%d) out", i);
+	}
+#endif
+      } else {
+	// slow but debuggable way
+	for(int i = start; i < matrix.block_rows; i += matrix.num_row_parts) {
+	  if((i % matrix.num_row_parts) != idx)
+	    assert(0);
 	
-	MatrixBlock& lpblk = r_lpanel.ref(matrix.blocks[i][args->k]);
-	MatrixBlock& pblk = r_panel.ref(matrix.blocks[i][args->j]);
+	  MatrixBlock& lpblk = r_lpanel.ref(matrix.blocks[i][args->k]);
+	  MatrixBlock& pblk = r_panel.ref(matrix.blocks[i][args->j]);
 	
 #ifdef DEBUG_MATH
-	lpblk.print("A(%d) in", i);
-	pblk.print("C(%d) in", i);
+	  lpblk.print("A(%d) in", i);
+	  pblk.print("C(%d) in", i);
 #endif
-	
-	// DGEMM
-	for(int x = 0; x < NB; x++)
-	  for(int y = 0; y < NB; y++)
-	    for(int z = 0; z < NB; z++)
-	      pblk.data[x][y] -= lpblk.data[x][z] * topblk.data[z][y];
+	  
+	  // DGEMM
+	  for(int x = 0; x < NB; x++)
+	    for(int y = 0; y < NB; y++)
+	      for(int z = 0; z < NB; z++)
+		pblk.data[x][y] -= lpblk.data[x][z] * topblk.data[z][y];
 	
 #ifdef DEBUG_MATH
-	pblk.print("C(%d) out", i);
+	  pblk.print("C(%d) out", i);
 #endif
+	}
       }
     }
     
@@ -1628,18 +1717,25 @@ class Linpack {
       MatrixBlock& topblk = r_topblk.ref(args->topblk_ptr);
       MatrixBlock& l1blk = r_l1blk.ref(matrix.top_blocks[args->k]);
 
-#ifdef DEBUG_MATH
+#ifdef DEBUG_DTRSM
       l1blk.print("solve l1");
       topblk.print("solve top in");
 #endif
 
-      // triangular solve (left, lower, unit-diagonal)
-      for(int x = 0; x < NB; x++)
-	for(int y = x + 1; y < NB; y++)
-	  for(int z = 0; z < NB; z++)
-	    topblk.data[y][z] -= l1blk.data[y][x] * topblk.data[x][z];
+      if(matrix.use_blas) {
+	cblas_dtrsm(CblasRowMajor, CblasLeft, CblasLower, CblasNoTrans,
+		    CblasUnit, NB, NB, 1.0,
+		    l1blk.data[0], NB,
+		    topblk.data[0], NB);
+      } else {
+	// triangular solve (left, lower, unit-diagonal)
+	for(int x = 0; x < NB; x++)
+	  for(int y = x + 1; y < NB; y++)
+	    for(int z = 0; z < NB; z++)
+	      topblk.data[y][z] -= l1blk.data[y][x] * topblk.data[x][z];
+      }
 
-#ifdef DEBUG_MATH
+#ifdef DEBUG_DTRSM
       topblk.print("solve top out");
 #endif
     }
@@ -1759,7 +1855,11 @@ class Linpack {
 					  matrix, args->matrixptr, args->k, j,
 					  temp_region, temp_ptr,
 					  args->index_subregion);
-      f2.get_void_result();
+      if(matrix.bulk_sync)
+	f2.get_void_result();
+      else
+	f2.release();
+
       //fill_top_block<AT,NB>(ctx, runtime, args->matrix, args->k, j, temp_region, temp_ptr);
 
       FutureMap fm = TransposeRowsTask::spawn(ctx, runtime,
@@ -1767,18 +1867,28 @@ class Linpack {
 					      matrix, args->matrixptr, args->k, j, 
 					      temp_region, temp_ptr,
 					      args->index_subregion);
-      fm.wait_all_results();
+      if(matrix.bulk_sync)
+	fm.wait_all_results();
+      else
+	fm.release();
   
       Future f = SolveTopBlockTask::spawn(ctx, runtime,
 					  matrix, args->matrixptr, args->k, j,
 					  temp_region, temp_ptr);
-      f.get_void_result();
+      if(matrix.bulk_sync)
+	f.get_void_result();
+      else
+	f.release();
       //solve_top_block<AT,NB>(ctx, runtime, args->matrix, args->k, j, temp_region, temp_ptr);
 
       FutureMap fm2 = UpdateSubmatrixTask::spawn(ctx, runtime,
 						 Range(0, matrix.num_row_parts - 1),
 						 matrix, args->matrixptr, args->k, j,
 						 temp_region, temp_ptr);
+      if(matrix.bulk_sync)
+	fm2.wait_all_results();
+      else
+	fm2.release();
       //update_submatrix<AT,NB>(ctx, runtime, args->matrix, args->k, j, temp_region, temp_ptr);
     
       runtime->destroy_logical_region(ctx, temp_region);
@@ -1914,6 +2024,39 @@ class Linpack {
 
       PhysicalRegion<AccessorArray> r_panel = regions[REGION_PANEL].template convert<AccessorArray>();
 
+      int start = first_blkrow(args->k, matrix.num_row_parts, j);
+      if(start >= matrix.block_rows) {
+	// we don't even own any rows, so quit
+	MatrixBlockRow dummy;
+	dummy.row_idx = -1;
+	return dummy;
+      }
+
+      // both the update and the scan want to see one big block of data for
+      //  the blas version, so figure that out here
+      double *pptr = 0;
+      int row_count = 0;
+      if(matrix.use_blas) {
+	pptr = r_panel.ref(matrix.blocks[start][args->k]).data[0];
+	row_count = 0;
+	for(int i = start; i < matrix.block_rows; i += matrix.num_row_parts) {
+	  double *pptr2 = r_panel.ref(matrix.blocks[i][args->k]).data[0];
+	  assert(pptr2 == (pptr + (NB * row_count)));
+
+	  // last block might not have NB rows
+	  if(i < (matrix.block_rows - 1))
+	    row_count += NB;
+	  else
+	    row_count += ((matrix.rows - 1) % NB) + 1;
+
+	  // first block skips any rows we've already factored
+	  if(i == args->k) {
+	    pptr += args->i * NB;
+	    row_count -= args->i;
+	  }
+	}
+      }
+
       if(args->i > 0) {
 	// do we own the top row (which got swapped with the best row)?
 	if((args->k % matrix.num_row_parts) == j) {
@@ -1922,8 +2065,12 @@ class Linpack {
 #ifdef DEBUG_MATH
 	  blk.print("before orig<-best");
 #endif
-	  for(int jj = 0; jj < NB; jj++)
-	    blk.data[args->i - 1][jj] = args->prev_best.data[jj];
+	  if(matrix.use_blas) {
+	    cblas_dcopy(NB, args->prev_best.data, 1, blk.data[args->i - 1], 1);
+	  } else {
+	    for(int jj = 0; jj < NB; jj++)
+	      blk.data[args->i - 1][jj] = args->prev_best.data[jj];
+	  }
 #ifdef DEBUG_MATH
 	  blk.print("after orig<-best");
 #endif
@@ -1940,40 +2087,65 @@ class Linpack {
 #ifdef DEBUG_MATH
 	  blk.print("before best<-orig");
 #endif
-	  for(int jj = 0; jj < NB; jj++)
-	    blk.data[args->prev_best.row_idx % NB][jj] = args->prev_orig.data[jj];
+	  if(matrix.use_blas) {
+	    cblas_dcopy(NB, args->prev_orig.data, 1, blk.data[args->prev_best.row_idx % NB], 1);
+	  } else {
+	    for(int jj = 0; jj < NB; jj++)
+	      blk.data[args->prev_best.row_idx % NB][jj] = args->prev_orig.data[jj];
+	  }
 #ifdef DEBUG_MATH
 	  blk.print("after best<-orig");
 #endif
 	}
 
 	// now update the rest of our rows
-	for(int blkrow = args->k; blkrow < matrix.block_rows; blkrow++) {
-	  // skip rows we don't own
-	  if((blkrow % matrix.num_row_parts) != j) continue;
+	if(matrix.use_blas) {
+	  double factor = 1.0 / args->prev_best.data[args->i - 1];
 
-	  int rel_start = ((blkrow == args->k) ? args->i : 0);
-	  int rel_end = ((blkrow == matrix.block_rows - 1) ?
- 		         ((matrix.rows - 1) % NB) : 
-		         (NB - 1));
+	  assert(pptr != 0);
+	  
+	  if(row_count > 0) {
+	    // divide the diagonal element out of the column below
+	    cblas_dscal(row_count, factor, pptr + (args->i - 1), NB);
 
-	  ptr_t<MatrixBlock> blkptr = matrix.blocks[blkrow][args->k];
-	  MatrixBlock& blk = r_panel.ref(blkptr);
-
-#ifdef DEBUG_MATH
-	  blk.print("before update");
-#endif
-	  for(int ii = rel_start; ii <= rel_end; ii++) {
-	    double factor = (blk.data[ii][args->i - 1] / 
-			     args->prev_best.data[args->i - 1]);
-	    assert(fabs(factor) <= 1.0);
-	    blk.data[ii][args->i - 1] = factor;
-	    for(int jj = args->i; jj < NB; jj++)
-	      blk.data[ii][jj] -= factor * args->prev_best.data[jj];
+	    if(args->i < NB)
+	      // now an outer product (i.e. dgemm with k=1) to update the stuff
+	      //  below and right of the diagonal element
+	      cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+			  row_count, NB - args->i, 1,
+			  -1.0, pptr + (args->i - 1), NB,
+			  args->prev_best.data + args->i, NB,
+			  1.0, pptr + args->i, NB);
 	  }
+	} else {
+	  for(int blkrow = start; blkrow < matrix.block_rows; blkrow += matrix.num_row_parts) {
+	    // skip rows we don't own
+	    if((blkrow % matrix.num_row_parts) != j)
+	      assert(0);
+	    
+	    int rel_start = ((blkrow == args->k) ? args->i : 0);
+	    int rel_end = ((blkrow == matrix.block_rows - 1) ?
+			   ((matrix.rows - 1) % NB) : 
+			   (NB - 1));
+	    
+	    ptr_t<MatrixBlock> blkptr = matrix.blocks[blkrow][args->k];
+	    MatrixBlock& blk = r_panel.ref(blkptr);
+	    
 #ifdef DEBUG_MATH
-	  blk.print("after update");
+	    blk.print("before update");
 #endif
+	    for(int ii = rel_start; ii <= rel_end; ii++) {
+	      double factor = (blk.data[ii][args->i - 1] / 
+			       args->prev_best.data[args->i - 1]);
+	      assert(fabs(factor) <= 1.0);
+	      blk.data[ii][args->i - 1] = factor;
+	      for(int jj = args->i; jj < NB; jj++)
+		blk.data[ii][jj] -= factor * args->prev_best.data[jj];
+	    }
+#ifdef DEBUG_MATH
+	    blk.print("after update");
+#endif
+	  }
 	}
       }
 
@@ -1981,25 +2153,45 @@ class Linpack {
       // row
       int best_row = -1;
       if(args->i < NB) {
-	double best_mag = -1.0;
+	if(matrix.use_blas) {
+	  assert(pptr != 0);
+	  assert(row_count > 0);
+
+	  best_row = cblas_idamax(row_count, pptr + args->i, NB);
+	  assert((best_row >= 0) && (best_row < row_count));
+
+	  // have to map this back to the original row index
+	  if((args->k % matrix.num_row_parts) == j)
+	    best_row += args->i; // now it's relative to the start of our first
+	                         // block
+
+	  int br_blocks = best_row / NB;
+	  int br_offset = best_row % NB;
+
+	  // our blocks are spaced apart by num_row_parts*NB rows
+	  best_row = ((NB * (start + (br_blocks * matrix.num_row_parts))) +
+		      br_offset);
+	} else {
+	  double best_mag = -1.0;
 		      
-	for(int blkrow = args->k; blkrow < matrix.block_rows; blkrow++) {
-	  // skip rows we don't own
-	  if((blkrow % matrix.num_row_parts) != j) continue;
+	  for(int blkrow = args->k; blkrow < matrix.block_rows; blkrow++) {
+	    // skip rows we don't own
+	    if((blkrow % matrix.num_row_parts) != j) continue;
 
-	  int rel_start = ((blkrow == args->k) ? args->i : 0);
-	  int rel_end = ((blkrow == matrix.block_rows - 1) ?
- 		         ((matrix.rows - 1) % NB) : 
-		         (NB - 1));
+	    int rel_start = ((blkrow == args->k) ? args->i : 0);
+	    int rel_end = ((blkrow == matrix.block_rows - 1) ?
+			   ((matrix.rows - 1) % NB) : 
+			   (NB - 1));
 
-	  ptr_t<MatrixBlock> blkptr = matrix.blocks[blkrow][args->k];
-	  MatrixBlock& blk = r_panel.ref(blkptr);
+	    ptr_t<MatrixBlock> blkptr = matrix.blocks[blkrow][args->k];
+	    MatrixBlock& blk = r_panel.ref(blkptr);
 
-	  for(int ii = rel_start; ii <= rel_end; ii++) {
-	    double mag = fabs(blk.data[ii][args->i]);
-	    if(mag > best_mag) {
-	      best_mag = mag;
-	      best_row = blkrow * NB + ii;
+	    for(int ii = rel_start; ii <= rel_end; ii++) {
+	      double mag = fabs(blk.data[ii][args->i]);
+	      if(mag > best_mag) {
+		best_mag = mag;
+		best_row = blkrow * NB + ii;
+	      }
 	    }
 	  }
 	}
@@ -2011,8 +2203,12 @@ class Linpack {
 	ptr_t<MatrixBlock> blkptr = matrix.blocks[best_row / NB][args->k];
 	MatrixBlock& blk = r_panel.ref(blkptr);
 
-	for(int jj = 0; jj < NB; jj++)
-	  our_best_row.data[jj] = blk.data[best_row % NB][jj];
+	if(matrix.use_blas) {
+	  cblas_dcopy(NB, blk.data[best_row % NB], 1, our_best_row.data, 1);
+	} else {
+	  for(int jj = 0; jj < NB; jj++)
+	    our_best_row.data[jj] = blk.data[best_row % NB][jj];
+	}
       }
       return our_best_row;
     }
@@ -2146,30 +2342,55 @@ class Linpack {
 	  i++) {
 	if(i > 0) {
 	  prev_orig.row_idx = args->k * NB + i - i;
-	  for(int jj = 0; jj < NB; jj++)
-	    prev_orig.data[jj] = top_blk.data[i - 1][jj];
+	  if(matrix.use_blas) {
+	    cblas_dcopy(NB, top_blk.data[i - 1], 1, prev_orig.data, 1);
+	  } else {
+	    for(int jj = 0; jj < NB; jj++)
+	      prev_orig.data[jj] = top_blk.data[i - 1][jj];
+	  }
 
 	  // have to do the panel propagation for the top block here since
 	  //  we're keeping our own copy
 	  if(prev_best.row_idx > (args->k * NB + i - 1)) {
 	    // a row swap occurred
-	    for(int jj = 0; jj < NB; jj++)
-	      top_blk.data[i - 1][jj] = prev_best.data[jj];
+	    if(matrix.use_blas) {
+	      cblas_dcopy(NB, prev_best.data, 1, top_blk.data[i - 1], 1);
+	    } else {
+	      for(int jj = 0; jj < NB; jj++)
+		top_blk.data[i - 1][jj] = prev_best.data[jj];
+	    }
 
 	    int ii = prev_best.row_idx - (args->k * NB);
 	    if(ii < NB) {
 	      // best row also came from the top block
-	      for(int jj = 0; jj < NB; jj++)
-		top_blk.data[ii][jj] = prev_orig.data[jj];
+	      if(matrix.use_blas) {
+		cblas_dcopy(NB, prev_orig.data, 1, top_blk.data[ii], 1);
+	      } else {
+		for(int jj = 0; jj < NB; jj++)
+		  top_blk.data[ii][jj] = prev_orig.data[jj];
+	      }
 	    }
 	  }
 
-	  // now update the rows below the pivot
-	  for(int ii = i; ii < NB; ii++) {
-	    double factor = top_blk.data[ii][i - 1] / prev_best.data[i - 1];
-	    top_blk.data[ii][i - 1] = factor;
-	    for(int jj = i; jj < NB; jj++)
-	      top_blk.data[ii][jj] -= factor * prev_best.data[jj];
+	  // now update the rows below the pivot (if any)
+	  if(i < NB) {
+	    if(matrix.use_blas) {
+	      double factor = 1.0 / prev_best.data[i - 1];
+
+	      cblas_dscal(NB - i, factor, &top_blk.data[i][i - 1], NB);
+	      cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+			  NB - i, NB - i, 1,
+			  -1.0, &top_blk.data[i][i - 1], NB,
+			  &prev_best.data[i], NB,
+			  1.0, &top_blk.data[i][i], NB);
+	    } else {
+	      for(int ii = i; ii < NB; ii++) {
+		double factor = top_blk.data[ii][i - 1] / prev_best.data[i - 1];
+		top_blk.data[ii][i - 1] = factor;
+		for(int jj = i; jj < NB; jj++)
+		  top_blk.data[ii][jj] -= factor * prev_best.data[jj];
+	      }
+	    }
 	  }
 	}
 
@@ -2286,12 +2507,20 @@ class Linpack {
       
       Future f = FactorPanelTask::spawn(ctx, runtime,
 					matrix, matrixptr, k);
+      if(matrix.bulk_sync)
+	f.get_void_result();
+      else
+	f.release();
       
       if(matrix.update_trailing && (k > 0)) {
 	FutureMap fm = UpdatePanelTask::spawn(ctx, runtime,
 					      Range(0, k - 1),
 					      matrix, matrixptr, k);
-	fm.wait_all_results();
+	if(matrix.bulk_sync ||
+	   ((k == (matrix.block_rows - 1)) && (k == (matrix.block_cols - 1))))
+	  fm.wait_all_results();
+	else
+	  fm.release();
       }
       
       // updates of trailing panels launched as index space
@@ -2299,7 +2528,11 @@ class Linpack {
 	FutureMap fm = UpdatePanelTask::spawn(ctx, runtime,
 					      Range(k + 1, matrix.block_cols - 1),
 					      matrix, matrixptr, k);
-	fm.wait_all_results();
+	if(matrix.bulk_sync ||
+	   ((k == (matrix.block_rows - 1)) && (k != (matrix.block_cols - 1))))
+	  fm.wait_all_results();
+	else
+	  fm.release();
       }
     }
     
@@ -2374,6 +2607,12 @@ class Linpack {
       double sim_time = ((1.0 * (ts_end.tv_sec - ts_start.tv_sec)) +
 			 (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
       printf("ELAPSED TIME = %7.3f s\n", sim_time);
+
+      double ops_performed = (4.0 * matrix.N * matrix.N * matrix.N
+			      +3.0 * matrix.N * matrix.N
+			      - matrix.N) / 6.0;
+      double gflops = (1e-9 * ops_performed) / sim_time;
+      printf("GFLOPS = %5.1f\n", gflops);
       RegionRuntime::DetailedTimer::report_timers();
     }
 
@@ -2541,6 +2780,8 @@ void registration_func(Machine *machine, HighLevelRuntime *runtime, Processor lo
 }
 
 int main(int argc, char **argv) {
+  mkl_set_dynamic(0);
+  mkl_set_num_threads(1);
   srand(time(NULL));
 
   //Processor::TaskIDTable task_table;

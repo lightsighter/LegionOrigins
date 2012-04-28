@@ -26,6 +26,14 @@ ifdef SHARED_LOWLEVEL
 	CC_FLAGS += -DUSE_LINPACK_SHARED
 endif
 
+ifndef MKL
+MKL	= /usr/local/mkl_10.3.7.256
+endif
+CC_FLAGS	+= -I$(MKL)/mkl/include
+LD_FLAGS	+= -L$(MKL)/lib/intel64 -Xlinker -rpath=$(MKL)/lib/intel64
+LD_FLAGS        += -L$(MKL)/mkl/lib/intel64 -Xlinker -rpath=$(MKL)/mkl/lib/intel64
+LD_FLAGS	+= -lmkl_intel_lp64 -lmkl_intel_thread -lmkl_core -liomp5
+
 ###########################################################################
 #
 #   Don't change anything below here
