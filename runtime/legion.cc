@@ -1561,7 +1561,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void RegionMappingImpl::perform_mapping(Mapper *mapper)
+    void RegionMappingImpl::perform_mapping(void)
     //--------------------------------------------------------------------------
     {
       // Need to hold the context lock to do this mapping
@@ -1582,12 +1582,14 @@ namespace RegionRuntime {
         std::vector<Memory> locations;
         bool war_optimization = true;
         {
+          // Get the lock from the parent
+          AutoLock mapper_lock(parent_ctx->mapper_lock);
           DetailedTimer::ScopedPush sp(TIME_MAPPER);
           // Little bit of a hack here, temporarily save the parent task's tag and set our own
           // then restore it after the call
           MappingTagID parent_tag = parent_ctx->tag;
           parent_ctx->tag = this->tag;
-          mapper->map_task_region(parent_ctx, req, 0/*index*/, sources, locations, war_optimization);
+          parent_ctx->mapper->map_task_region(parent_ctx, req, 0/*index*/, sources, locations, war_optimization);
           // Restore the parent's tag
           parent_ctx->tag = parent_tag;
         }
@@ -1674,7 +1676,7 @@ namespace RegionRuntime {
                     chosen_info->iid,chosen_info->handle.id,chosen_info->location.id);
             assert(chosen_info != InstanceInfo::get_no_instance());
 #endif
-            RegionRenamer namer(parent_physical_ctx,this,chosen_info,mapper,needs_initializing,instance_owned);
+            RegionRenamer namer(parent_physical_ctx,this,chosen_info,parent_ctx->mapper,needs_initializing,instance_owned);
 #ifdef DEBUG_HIGH_LEVEL
             bool trace_result = 
 #endif
@@ -3820,10 +3822,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(impl->is_ready());
 #endif
-      // Get the necessary locks on the mapper for this mapping implementation
-      AutoLock map_lock(mapping_lock,1,false/*exclusive*/); 
-      AutoLock mapper_lock(mapper_locks[impl->mid]);
-      impl->perform_mapping(mapper_objects[impl->mid]);
+      impl->perform_mapping();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4225,6 +4224,7 @@ namespace RegionRuntime {
       current_lock = context_lock;
       individual_term_event.id = 0;
       individual_term_event.gen = 0;
+      unmapped = 0;
       active = false;
       // Tell the runtime this context is free again
       runtime->free_context(this);
@@ -7571,15 +7571,17 @@ namespace RegionRuntime {
 
       // Check to see if there are any child tasks that are yet to be mapped
       std::set<Event> map_events;
-      for (std::vector<TaskContext*>::const_iterator it = child_tasks.begin();
-            it != child_tasks.end(); it++)
       {
-        if (!((*it)->mapped))
+        // Need to hold the context lock when iterating over the child tasks
+        AutoLock cur_lock(current_lock);
+        for (std::vector<TaskContext*>::const_iterator it = child_tasks.begin();
+              it != child_tasks.end(); it++)
         {
           map_events.insert((*it)->map_event);
         }
       }
-      if (map_events.empty())
+      Event wait_on_event = Event::merge_events(map_events);
+      if (!wait_on_event.exists())
       {
         children_mapped();
       }
@@ -7591,7 +7593,7 @@ namespace RegionRuntime {
         rez.serialize<Context>(this);
         // Launch the task to handle all the children being mapped on the utility processor
         Processor utility = local_proc.get_utility_processor();
-        utility.spawn(CHILDREN_MAPPED_ID,rez.get_buffer(),buffer_size,Event::merge_events(map_events));
+        utility.spawn(CHILDREN_MAPPED_ID,rez.get_buffer(),buffer_size,wait_on_event);
       }
     }
 
@@ -7651,7 +7653,7 @@ namespace RegionRuntime {
         // copy operations to restore data to the physical instances
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
-          // Check to see if we promised a physical instance
+          // Check to see if we promised a physical instance and it wasn't read-only
           if (local_instances[idx] != InstanceInfo::get_no_instance())
           {
             // If we're still the owner, remove ourselves from the list of users
@@ -7664,12 +7666,24 @@ namespace RegionRuntime {
               local_instances[idx]->epoch_users.erase(this->unique_id);
 #endif
             }
-            AutoLock map_lock(mapper_lock);
-            RegionNode *top = (*region_nodes)[regions[idx].handle.region];
-            top->close_physical_tree(chosen_ctx[idx],local_instances[idx],this,mapper,false/*leave open*/);
-            local_instances[idx]->mark_begin_close();
-            cleanup_events.insert(local_instances[idx]->force_closed());
-            local_instances[idx]->mark_finish_close();
+            if (IS_READ_ONLY(regions[idx]))
+            {
+              RegionNode *top = (*region_nodes)[regions[idx].handle.region];
+              // Don't give a mapper since we shouldn't be doing any copies
+              top->close_physical_tree(chosen_ctx[idx],local_instances[idx],this,NULL,false/*leave open*/);
+              local_instances[idx]->mark_begin_close();
+              local_instances[idx]->force_closed();
+              local_instances[idx]->mark_finish_close();
+            }
+            else
+            {
+              AutoLock map_lock(mapper_lock);
+              RegionNode *top = (*region_nodes)[regions[idx].handle.region];
+              top->close_physical_tree(chosen_ctx[idx],local_instances[idx],this,mapper,false/*leave open*/);
+              local_instances[idx]->mark_begin_close();
+              cleanup_events.insert(local_instances[idx]->force_closed());
+              local_instances[idx]->mark_finish_close();
+            }
           }
         }
         
@@ -9377,7 +9391,7 @@ namespace RegionRuntime {
           assert(instance_infos->find(clone_iid) == instance_infos->end());
 #endif
           (*instance_infos)[clone_iid] = clone_inst;
-          log_inst(LEVEL_DEBUG,"Creating clone physical instance %x of logical region %x in memory %x",
+          log_inst(LEVEL_DEBUG,"Creating clone instance info of physical instance %x of logical region %x in memory %x",
             clone_inst->inst.id, clone_inst->handle.id, clone_inst->location.id);
 
           // Update our local information
@@ -9399,7 +9413,7 @@ namespace RegionRuntime {
           // from the parent task's context
           if (IS_READ_ONLY(regions[idx]) || IS_WRITE(regions[idx]))
           {
-            reg->update_valid_instances(chosen_ctx[idx], clone_inst, true/*writer*/, true/*owner*/);
+            reg->update_valid_instances(chosen_ctx[idx], clone_inst, IS_WRITE(regions[idx])/*writer*/, true/*owner*/);
           }
           else
           {
@@ -14466,6 +14480,8 @@ namespace RegionRuntime {
       // Note if it was a clone instance and we sent it remotely to a child
       // task we didn't send the clone flag so it wouldn't be marked as a clone remotely
       assert(!clone);
+      // We should have a whole local piece here before we can be returned
+      assert(local_frac.is_whole());
 #endif
       rez.serialize<InstanceID>(iid);
       rez.serialize<bool>(remote);

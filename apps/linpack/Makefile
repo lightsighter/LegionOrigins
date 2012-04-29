@@ -4,7 +4,7 @@ $(error LG_RT_DIR variable is not defined, aborting build)
 endif
 
 #Flags for directing the runtime makefile what to include
-DEBUG=1                   # Include debugging symbols
+#DEBUG=1                   # Include debugging symbols
 OUTPUT_LEVEL=LEVEL_DEBUG  # Compile time print level
 #SHARED_LOWLEVEL=1	  # Use the shared low level
 #ALT_MAPPERS=1		  # Include the alternative mappers
@@ -17,7 +17,7 @@ GEN_GPU_SRC	:=		# .cu files
 
 # You can modify these variables, some will be appended to by the runtime makefile
 INC_FLAGS	:=
-CC_FLAGS	:= 
+CC_FLAGS	:= -DDETAILED_TIMING
 NVCC_FLAGS	:=
 GASNET_FLAGS	:=
 LD_FLAGS	:=
@@ -25,6 +25,14 @@ LD_FLAGS	:=
 ifdef SHARED_LOWLEVEL
 	CC_FLAGS += -DUSE_LINPACK_SHARED
 endif
+
+ifndef MKL
+MKL	= /usr/local/mkl_10.3.7.256
+endif
+CC_FLAGS	+= -I$(MKL)/mkl/include
+LD_FLAGS	+= -L$(MKL)/lib/intel64 -Xlinker -rpath=$(MKL)/lib/intel64
+LD_FLAGS        += -L$(MKL)/mkl/lib/intel64 -Xlinker -rpath=$(MKL)/mkl/lib/intel64
+LD_FLAGS	+= -lmkl_intel_lp64 -lmkl_intel_thread -lmkl_core -liomp5
 
 ###########################################################################
 #

@@ -3996,7 +3996,11 @@ namespace RegionRuntime {
 #endif
       void sleep_on_event(Event wait_for, bool block = false)
       {
-	assert(0);
+	while(!wait_for.has_triggered()) {
+	  log_util.info("utility thread polling on event %x/%d",
+			wait_for.id, wait_for.gen);
+	  usleep(1000);
+	}
       }
 
     protected:
@@ -7233,11 +7237,11 @@ namespace RegionRuntime {
   // Implementation of logger for low level runtime
   /*static*/ void Logger::logvprintf(LogLevel level, int category, const char *fmt, va_list args)
   {
-    char buffer[200];
+    char buffer[1000];
     sprintf(buffer, "[%d - %lx] {%d}{%s}: ",
             gasnet_mynode(), pthread_self(), level, Logger::get_categories_by_id()[category].c_str());
     int len = strlen(buffer);
-    vsnprintf(buffer+len, 199-len, fmt, args);
+    vsnprintf(buffer+len, 999-len, fmt, args);
     strcat(buffer, "\n");
     fflush(stdout);
     fputs(buffer, stderr);
