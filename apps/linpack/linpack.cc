@@ -56,6 +56,9 @@ enum {
   LMAP_PLACE_ZCMEM,
   LMAP_PLACE_FBMEM,
   LMAP_PLACE_NONE,
+
+  LMAP_PLACE_ATSYS_BASE = 0x400000,
+  LMAP_PLACE_ATSYS_END  = 0x4FFFFF,
 };
 
 class LinpackMapper : public Mapper {
@@ -310,6 +313,8 @@ public:
       break;
 
     default:
+      if((req.tag >= LMAP_PLACE_ATSYS_BASE) && (req.tag <= LMAP_PLACE_ATSYS_END))
+	return cpu_procs.find(cpu_list[(req.tag - LMAP_PLACE_ATSYS_BASE) % cpu_list.size()])->second.sysmem;
       assert(0);
     }
   }
@@ -320,6 +325,11 @@ public:
                                bool &enable_WAR_optimization)
   {
     log_mapper.info("mapper: mapping region for task (%p,%p) region=%x", task, &req, req.parent.id);
+    log_mapper.info("current instances = %zd", current_instances.size());
+    for(std::set<Memory>::const_iterator it = current_instances.begin();
+	it != current_instances.end();
+	it++)
+      log_mapper.info("  instance = %x", it->id);
     int idx = index; 
     log_mapper.info("func_id=%d map_tag=%x req_tag=%x region_index=%d", task->task_id, task->tag, req.tag, idx);
 
@@ -539,6 +549,12 @@ class Linpack {
 					   int rowpart_id, int col_num)
   {
     return(LMAP_PICK_GPU_BASE + rowpart_id + (col_num * matrix.num_row_parts));
+  }
+
+  static inline MappingTagID LMAP_PLACE_ATSYS(const BlockedMatrix& matrix,
+					      int rowpart_id, int col_num)
+  {
+    return(LMAP_PLACE_ATSYS_BASE + rowpart_id + (col_num * matrix.num_row_parts));
   }
 
   static void parse_args(int argc, const char **argv,
@@ -1010,7 +1026,14 @@ class Linpack {
     {
       log_app.info("random_matrix(yay): idx=%d\n", idx);
 
-      const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
+      ScopedMapping<AccessorArray> r_matrix(ctx, runtime,
+				RegionRequirement(args->matrixptr.region,
+						  READ_ONLY, NO_MEMORY, EXCLUSIVE, 
+						  args->matrixptr.region,
+						  LMAP_PLACE_SYSMEM));
+
+      const BlockedMatrix& matrix = r_matrix->ref(args->matrixptr.ptr);
+      //const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
 
       FutureMap fm = RandomPanelTask::spawn(ctx, runtime,
 					    Range(0, matrix.num_row_parts - 1),
@@ -1041,7 +1064,8 @@ class Linpack {
       reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
 					      matrixptr.region,
-					      LMAP_PLACE_SYSMEM);
+					      LMAP_PLACE_NONE);
+					      //LMAP_PLACE_SYSMEM);
 
       reqs[REGION_PANEL] = RegionRequirement(matrix.col_part.id,
 					     COLORID_IDENTITY,
@@ -1836,7 +1860,13 @@ class Linpack {
 
       log_app.info("update_panel(yay): k=%d, j=%d, idx=%d\n", args->k, j, idx);
 
-      const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
+      ScopedMapping<AccessorArray> r_matrix(ctx, runtime,
+				RegionRequirement(args->matrixptr.region,
+						  READ_ONLY, NO_MEMORY, EXCLUSIVE, 
+						  args->matrixptr.region,
+						  LMAP_PLACE_SYSMEM));
+
+      const BlockedMatrix& matrix = r_matrix->ref(args->matrixptr.ptr);
 
       LogicalRegion temp_region = runtime->create_logical_region(ctx,
 								 sizeof(MatrixBlock),
@@ -1917,7 +1947,7 @@ class Linpack {
       reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
 					      matrixptr.region,
-					      LMAP_PLACE_SYSMEM);
+					      LMAP_PLACE_NONE);
 
       reqs[REGION_PANEL] = RegionRequirement(matrix.col_part.id,
 					     COLORID_IDENTITY,
@@ -2307,7 +2337,13 @@ class Linpack {
     {
       log_app.info("factor_panel(yay): k=%d\n", args->k);
 
-      const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
+      ScopedMapping<AccessorArray> r_matrix(ctx, runtime,
+				RegionRequirement(args->matrixptr.region,
+						  READ_ONLY, NO_MEMORY, EXCLUSIVE, 
+						  args->matrixptr.region,
+						  LMAP_PLACE_SYSMEM));
+
+      const BlockedMatrix& matrix = r_matrix->ref(args->matrixptr.ptr);
 
       PhysicalRegion<AT> r_panel = regions[REGION_PANEL];
       PhysicalRegion<AT> r_index = regions[REGION_INDEX];
@@ -2454,7 +2490,7 @@ class Linpack {
       reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
 					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
 					      matrixptr.region,
-					      LMAP_PLACE_SYSMEM);
+					      LMAP_PLACE_NONE);
 
       LogicalRegion panel_subregion = runtime->get_subregion(ctx,
 							     matrix.col_part,
@@ -2588,6 +2624,22 @@ class Linpack {
 
       const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
 
+#define PREMAP_MATRIX_REGION
+#ifdef PREMAP_MATRIX_REGION
+      std::vector<PhysicalRegion<AT> > premaps;
+      for(int i = 0; i < matrix.block_cols; i++)
+	for(int j = 0; j < matrix.num_row_parts; j++)
+	  premaps.push_back(runtime->map_region<AT>(ctx,
+						    RegionRequirement(args->matrixptr.region,
+								      READ_ONLY, NO_MEMORY, EXCLUSIVE,
+								      args->matrixptr.region,
+								      LMAP_PLACE_ATSYS(matrix, j, i))));
+      for(size_t i = 0; i < premaps.size(); i++)
+	premaps[i].wait_until_valid();
+      //for(int j = 
+      //
+#endif 
+
       FutureMap fm = RandomMatrixTask::spawn(ctx, runtime, 
 					     Range(0, matrix.block_cols - 1),
 					     matrix,
@@ -2614,6 +2666,11 @@ class Linpack {
       double gflops = (1e-9 * ops_performed) / sim_time;
       printf("GFLOPS = %5.1f\n", gflops);
       RegionRuntime::DetailedTimer::report_timers();
+
+#ifdef PREMAP_MATRIX_REGION
+      for(size_t i = 0; i < premaps.size(); i++)
+	runtime->unmap_region(ctx, premaps[i]);
+#endif
     }
 
   public:
@@ -2704,13 +2761,6 @@ public:
     // not a reference!
     BlockedMatrix matrix = matrixptr.get_ref(reg);
     runtime->unmap_region(ctx, reg);
-
-#define PREMAP_MATRIX_REGION
-#ifdef PREMAP_MATRIX_REGION
-    //std::vector<PhysicalRegion<AT> > premaps;
-    //for(int j = 
-    //
-#endif 
 
     Future f = LinpackMainTask::spawn(ctx, runtime, matrix, matrixptr);
     f.get_void_result();
