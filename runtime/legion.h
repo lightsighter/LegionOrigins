@@ -940,18 +940,31 @@ namespace RegionRuntime {
       const Processor::Kind proc_kind;
       Machine *const machine;
       std::vector<Mapper*> mapper_objects;
+#ifdef LOW_LEVEL_LOCKS
       std::vector<Lock> mapper_locks;
-      Lock mapping_lock; // Protect mapping data structures
+      Lock mapping_lock;
+#else
+      std::vector<ImmovableLock> mapper_locks;
+      ImmovableLock mapping_lock; // Protect mapping data structures
+#endif
       // Colorize Functions
       std::vector<ColorizeFnptr> colorize_functions;
       // Task Contexts
       bool idle_task_enabled; // Keep track if the idle task enabled or not
       std::vector<TaskContext*> mapping_queue; // tasks that need to be mapped (IN ORDER!)
       std::list<TaskContext*> ready_queue; // Tasks ready to be mapped/stolen
-      Lock queue_lock; // Protect ready and waiting queues and idle_task_enabled
+#ifdef LOW_LEVEL_LOCKS
+      Lock queue_lock;
+#else
+      ImmovableLock queue_lock; // Protect ready and waiting queues and idle_task_enabled
+#endif
       unsigned total_contexts;
       std::list<TaskContext*> available_contexts; // open task descriptions
-      Lock available_lock; // Protect available contexts
+#ifdef LOW_LEVEL_LOCKS
+      Lock available_lock;
+#else
+      ImmovableLock available_lock; // Protect available contexts
+#endif
       // Region Mappings 
       std::vector<RegionMappingImpl*> ready_maps;
       std::list<RegionMappingImpl*> available_maps;
@@ -959,7 +972,11 @@ namespace RegionRuntime {
       std::vector<DeletionOp*> ready_deletions;
       std::list<DeletionOp*> available_deletions;
       // Keep track of how to do partition numbering
-      Lock unique_lock; // Make sure all unique values are actually unique
+#ifdef LOW_LEVEL_LOCKS
+      Lock unique_lock;
+#else
+      ImmovableLock unique_lock; // Make sure all unique values are actually unique
+#endif
       PartitionID next_partition_id; // The next partition id for this instance (unique)
       UniqueID next_task_id; // Give all tasks a unique id for debugging purposes
       InstanceID next_instance_id;
@@ -967,9 +984,14 @@ namespace RegionRuntime {
       // Information for stealing
       const unsigned int max_outstanding_steals;
       std::map<MapperID,std::set<Processor> > outstanding_steals;
-      Lock stealing_lock;
       std::multimap<MapperID,Processor> failed_thiefs;
-      Lock thieving_lock;
+#ifdef LOW_LEVEL_LOCKS
+      Lock stealing_lock;
+      Lock theiving_lock;
+#else
+      ImmovableLock stealing_lock;
+      ImmovableLock thieving_lock;
+#endif
       // There is a partial ordering on all the locks in the high level runtime
       // Here are the edges in the lock dependency graph (guarantee no deadlocks)
       // stealing_lock -> mapping_lock
@@ -1333,7 +1355,13 @@ namespace RegionRuntime {
     protected:
       void initialize_task(TaskContext *parent, UniqueID unique_id, 
                             Processor::TaskFuncID task_id, void *args, size_t arglen,
-                            MapperID map_id, MappingTagID tag, Mapper *mapper, Lock map_lock);
+                            MapperID map_id, MappingTagID tag, Mapper *mapper, 
+#ifdef LOW_LEVEL_LOCKS
+                            Lock map_lock
+#else
+                            ImmovableLock map_lock
+#endif
+                                                    );
       template<typename CT>
       void set_index_space(const std::vector<CT> &index_space, const ArgumentMap &_map, bool must);
       void set_regions(const std::vector<RegionRequirement> &regions, bool all_same);
@@ -1448,7 +1476,11 @@ namespace RegionRuntime {
       size_t cached_size;
     protected:
       Mapper *mapper;
+#ifdef LOW_LEVEL_LOCKS
       Lock mapper_lock;
+#else
+      ImmovableLock mapper_lock;
+#endif
     protected:
       // Status information
       bool chosen; // Mapper been invoked
@@ -1574,8 +1606,13 @@ namespace RegionRuntime {
       // that have no overlap on their region trees will have different locks and can operate in
       // parallel.  Each new task therefore takes its parent task's lock until it gets moved to a
       // remote node in which case, it will get its own lock (separate copy of the region tree).
+#ifdef LOW_LEVEL_LOCKS
       const Lock context_lock;
       Lock       current_lock;
+#else
+      const ImmovableLock context_lock;
+      ImmovableLock       current_lock;
+#endif
 #ifdef DEBUG_HIGH_LEVEL
       bool       current_taken; //used for checking if the current lock is held at a given point
 #endif
@@ -1597,7 +1634,11 @@ namespace RegionRuntime {
       UserEvent mapped_event;
       Event ready_event;
       UserEvent unmapped_event;
+#ifdef LOW_LEVEL_LOCKS
       Lock context_lock;
+#else
+      ImmovableLock context_lock;
+#endif
       UniqueID unique_id;
       MapperID mid;
       MappingTagID tag;
@@ -1671,7 +1712,11 @@ namespace RegionRuntime {
       ContextID physical_ctx;
       unsigned remaining_notifications;
       UniqueID unique_id;
+#ifdef LOW_LEVEL_LOCKS
       Lock current_lock;
+#else
+      ImmovableLock current_lock;
+#endif
       bool active;
       bool performed; // to avoid race conditions, its possible this can be played twice
       GenerationID current_gen;
@@ -3130,8 +3175,12 @@ namespace RegionRuntime {
       //          unique_id, task_id, local_proc.id);
       TaskContext *desc = get_available_context(false/*new tree*/);
       {
+#ifdef LOW_LEVEL_LOCKS
         Event lock_event = mapping_lock.lock(1,false/*exclusive*/);
         lock_event.wait(true/*block*/);
+#else
+        mapping_lock.lock();
+#endif
 #ifdef DEBUG_HIGH_LEVEL
         assert(id < mapper_objects.size());
 #endif
@@ -3190,8 +3239,12 @@ namespace RegionRuntime {
       TaskContext *desc = get_available_context(false/*new tree*/);
       // Allocate more space for the context when copying the args
       {
+#ifdef LOW_LEVEL_LOCKS
         Event lock_event = mapping_lock.lock(1,false/*exclusive*/);
         lock_event.wait(true/*block*/);
+#else
+        mapping_lock.lock();
+#endif
 #ifdef DEBUG_HIGH_LEVEL
       assert(id < mapper_objects.size());
 #endif
