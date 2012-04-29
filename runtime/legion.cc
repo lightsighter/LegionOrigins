@@ -14477,6 +14477,8 @@ namespace RegionRuntime {
       // Note if it was a clone instance and we sent it remotely to a child
       // task we didn't send the clone flag so it wouldn't be marked as a clone remotely
       assert(!clone);
+      // We should have a whole local piece here before we can be returned
+      assert(local_frac.is_whole());
 #endif
       rez.serialize<InstanceID>(iid);
       rez.serialize<bool>(remote);
