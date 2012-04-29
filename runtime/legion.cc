@@ -9413,7 +9413,7 @@ namespace RegionRuntime {
           // from the parent task's context
           if (IS_READ_ONLY(regions[idx]) || IS_WRITE(regions[idx]))
           {
-            reg->update_valid_instances(chosen_ctx[idx], clone_inst, true/*writer*/, true/*owner*/);
+            reg->update_valid_instances(chosen_ctx[idx], clone_inst, IS_WRITE(regions[idx])/*writer*/, true/*owner*/);
           }
           else
           {
