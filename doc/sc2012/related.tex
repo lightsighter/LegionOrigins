@@ -2,11 +2,11 @@
 \section{Related Work}
 \label{sec:related}
 
-Legion is an outgrowth of previous work on Sequoia, a locality-aware programming language capable
+Legion began as an outgrowth of Sequoia, a locality-aware programming language capable
 of expressing computations in deep memory hierarchies
 \cite{Fatahalian06}.  Sequoia is a special case of the Legion
 programming model in which only arrays can be recursively partitioned,
-all access is exclusiv, there is a static mapping of tasks and data on to the machine (though
+all access is exclusive, there is a static mapping of tasks and data on to the machine (though
 extensions to Sequoia make this mapping more dynamic \cite{BCSA11}) and, most fundamentally, the decomposition of tasks and the decomposition
 of data is one-to-one.  Legion generalizes the Sequoia model by allowing for
 partitioning of pointer data structures through regions, enabling dynamic mappings through
@@ -48,17 +48,17 @@ that, like Legion, uses regions to express locality and does
 dependence analysis at the granularity of conflicts on region
 arguments to functions \cite{Bocchino09}.  As the name suggests, one
 of the primary goals of DPJ is to provide a programming model that
-guarantees determinism while also providing supporting parallelism.
+guarantees determinism while also supporting parallelism.
 As a result the programming model is more restrictive than Legion, as
 there is no notion of weaker coherence properties of regions than
 exclusive access (which is essential to determinism).  DPJ can express
 the populate-then-partition style of using regions, but not the
 partition-then-populate; overall, the language is more static, and
-thus provides more guarantees and less flexibility than Legion.  Most
-significantly, however, DPJ efforts have so far focused on JVM
-implementations on on shared memory machines; there is nothing
-corresponding to our distributed software out-of-order processor or
-the mapping interface.
+thus provides more guarantees and less flexibility than Legion.  
+DPJ efforts have so far focused on JVM implementations on shared memory machines.
+There have also been several other recent efforts that propose task schedulers
+based on dynamic detection of memory conflicts, but these also have assumed
+underlying shared memory hardware \cite{VTN11,Tzenakis12,EYJD12}.
 
 SPMD languages such as Titanium \cite{TIT98} and UPC \cite{UPC99} have
 mechanisms for describing array partitions in distributed memories.
@@ -73,10 +73,11 @@ runtime system \cite{GASNET07}.
 
 
 In previous programming systems regions have primarily been used as a construct for
-describing memory management schemes \cite{REAPS02}\cite{RC01}  
-or for enforcing safety policies \cite{CYCLONE01}.  In all cases, regions had
+describing memory management schemes \cite{REAPS02,RC01}  
+or for enforcing safety policies \cite{CYCLONE01}.  We follow \cite{RC01} in Legion's
+decision to make regions first class.  In these works, however, regions have
 memory layout implications.  Logical regions in Legion enable the programmer to
-describe locality and independence without any memory layout implications.
+describe locality independent of memory layout.
 
 %Marino introduces a generic flow-insensitive type-effect system capable of verifying 
 %accesses to statically tagged locations of memory \cite{PRIVLIGES09}.  Legion's programming
