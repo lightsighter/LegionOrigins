@@ -1631,7 +1631,7 @@ namespace RegionRuntime {
       virtual bool is_context(void) const { return false; }
       virtual bool is_ready(void) const; // Ready to be mapped
       virtual void notify(void);
-      void perform_mapping(Mapper *m); // (thread-safe)
+      void perform_mapping(void); // (thread-safe)
       virtual void add_source_physical_instance(InstanceInfo *info);
       virtual UniqueID get_unique_id(void) const { return unique_id; }
       virtual GenerationID get_generation(void) const { return current_gen; }
