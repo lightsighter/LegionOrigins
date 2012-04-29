@@ -987,7 +987,7 @@ namespace RegionRuntime {
       std::multimap<MapperID,Processor> failed_thiefs;
 #ifdef LOW_LEVEL_LOCKS
       Lock stealing_lock;
-      Lock theiving_lock;
+      Lock thieving_lock;
 #else
       ImmovableLock stealing_lock;
       ImmovableLock thieving_lock;

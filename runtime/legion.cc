@@ -2334,7 +2334,9 @@ namespace RegionRuntime {
           delete mapper_objects[i];
           mapper_objects[i] = NULL;
 #ifdef DEBUG_HIGH_LEVEL
+#ifdef LOW_LEVEL_LOCKS
           assert(mapper_locks[i].exists());
+#endif
 #endif
 #ifdef LOW_LEVEL_LOCKS
           mapper_locks[i].destroy_lock();
@@ -4497,7 +4499,9 @@ namespace RegionRuntime {
       sanitized = false;
 #ifdef DEBUG_HIGH_LEVEL
       assert(_mapper != NULL);
+#ifdef LOW_LEVEL_LOCKS
       assert(_map_lock.exists());
+#endif
 #endif
       mapper = _mapper;
       mapper_lock = _map_lock;
