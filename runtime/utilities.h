@@ -13,7 +13,7 @@
 
 #include <map>
 #include <vector>
-
+#include <pthread.h>
 #include <time.h>
 
 // outside of namespace because 50-letter-long enums are annoying
@@ -325,6 +325,62 @@ namespace RegionRuntime {
               1e-3 * (stop.tv_nsec - spec.tv_nsec));
     }
   };
+
+#ifdef DEBUG_LOW_LEVEL
+#define PTHREAD_SAFE_CALL(cmd)			\
+	{					\
+		int ret = (cmd);		\
+		if (ret != 0) {			\
+			fprintf(stderr,"PTHREAD error: %s = %d (%s)\n", #cmd, ret, strerror(ret));	\
+			assert(false);		\
+		}				\
+	}
+#else
+#define PTHREAD_SAFE_CALL(cmd)			\
+	(cmd);
+#endif
+  /**
+   * A blocking lock that cannot be moved between nodes
+   */
+  class ImmovableLock {
+  public:
+    ImmovableLock(bool initialize = false) : mutex(NULL) { 
+      if (initialize)
+       init(); 
+    }
+    ImmovableLock(const ImmovableLock &other) : mutex(other.mutex) { }
+  public:
+    void init(void) {
+      mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
+      PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
+    }
+    void destroy(void) { 
+      PTHREAD_SAFE_CALL(pthread_mutex_destroy(mutex));
+      free(mutex);
+      mutex = NULL;
+    }
+    void clear(void) {
+      mutex = NULL;
+    }
+  public:
+    void lock(void) {
+      PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
+    }
+    void unlock(void) {
+      PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
+    }
+  public:
+    bool operator<(const ImmovableLock &rhs) const
+    { return (mutex < rhs.mutex); }
+    bool operator==(const ImmovableLock &rhs) const
+    { return (mutex == rhs.mutex); }
+    ImmovableLock& operator=(const ImmovableLock &rhs)
+    { mutex = rhs.mutex; return *this; }
+  private:
+    pthread_mutex_t *mutex;
+  };
+
+#undef PTHREAD_SAFE_CALL
 
   /**
    * A timer class for doing detailed timing analysis of applications

@@ -5794,8 +5794,8 @@ namespace RegionRuntime {
 #endif
       }
       // We're done sending chunks remotely, now handle our local chunks
-      for (typename std::vector<CT>::const_iterator it = chunks.begin();
-            it != chunks.end(); it++)
+      for (typename std::vector<CT>::const_reverse_iterator it = chunks.rbegin();
+            it != chunks.rend(); it++)
       {
         if (it->p == local_proc)
         {
