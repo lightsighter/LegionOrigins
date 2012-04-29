@@ -1,20 +1,72 @@
 \section{The Software Out-of-Order Processor}
 \label{sec:soop}
 
+There are two major challenges in implementing an efficient task
+scheduler for Legion:
+\begin{itemize}
+\item  For correctness, Legion must guarantee that every pair of {\em dependent} tasks is executed 
+in sequential order.
+
+\item Legion must deal with and, to
+  the extent possible, hide the extremely long latencies associated
+  with machines that have both distributed memory and many levels of
+  memory hierarchy.
+\end{itemize}
+We use three techniques to deal with these problems:
+\begin{itemize}
+\item Nested tasks (subtasks) enjoy an isolation property that allows Legion
+to avoid comparing all pairs of tasks for dependences.
+Specifically, the only tasks that need to be checked for dependences 
+are the immediate subtasks of a common
+parent task (see Section~\ref{sec:exec}).
+
+\item Legion uses a {\em deferred execution model} that decouples the issuing
+of operations from when operations are performed.  Issued operations wait for other operations on
+which they are dependent to complete before executing.  For example, Legion may issue a copy
+operation to move the results of a task $a$ to the place where a task $b$ will take the copied data as
+an argument.  Tasks $a$ and $b$ and the copy can all be issued, but the copy will not start until
+task $a$ completes and task $b$ will not start until the copy completes.
+
+\item Legion uses a {\em  software out-of-order processor}, or SOOP, to schedule tasks.  The SOOP 
+is distributed and concurrent, and also extracts nested parallelism from subtasks.
+\end{itemize}
+Legion's SOOP has a five stage pipeline that  decouples the management of resources from actual
+task execution.  The five stages are: dependence analysis (Section~\ref{sec:dep}),
+distribution (Section~\ref{sec:dist}),
+mapping (Section~\ref{sec:map}),
+execution (Section~\ref{sec:exec}),
+and clean-up (Section~\ref{sec:clean}).
+We discuss each in turn.
+
 \input{mapping_fig}
 
 \subsection{Depedence Analysis}
-
+\label{sec:dep}
+{\small
+\begin{tabular}{c|cccc}
+             & Exclusive & Atomic   & Simultaneous & Relaxed \\
+\midrule
+Exclusive    & Dep & Dep & Dep & Dep \\ 
+Atomic       & Dep & Same & Cont & Cont \\
+Simultaneous & Dep & Cont & Same & None \\
+Relaxed      & Dep & Cont & None & None \\
+\end{tabular}
+}
 
 \subsection{Distribution}
-
+\label{sec:dist}
 
 \subsection{Mapping}
-
+\label{sec:map}
 
 \subsection{Execution}
+\label{sec:exec}
 
+\begin{figure}
+\includegraphics[scale=0.48]{figs/CircuitMem.pdf}
+\caption{Tasks and data for the circuit simulation on a cluster of GPUs.}
+\end{figure}
 
 \subsection{Clean-Up}
-
+\label{sec:clean}
 
