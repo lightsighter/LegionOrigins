@@ -1,10 +1,10 @@
 \def\partitiontree{
 %\draw[step=0.5,gray,very thin] (0,0) grid (8,5);
 
-\node(top) at (3.5,4.5) { $all{\_}nodes$ };
+\node(top) at (3.5,4.5) { $r{\_}all{\_}nodes$ };
 
-\node(pvsf) at (2,2.5) { $pvs[0]$ };
-\node(pvst) at (5,2.5) { $pvs[1]$ };
+\node(pvsf) at (1.9,2.5) { $p{\_}nodes{\_}pvs[0]$ };
+\node(pvst) at (5.1,2.5) { $p{\_}nodes{\_}pvs[1]$ };
 
 \node(p0) at (0.7,0.5) { $p_0$ };
 \node(p1) at (1.2,0.5) { $p_1$ };
@@ -111,82 +111,30 @@
 
 \begin{figure}[t]
   \centering
-\subfigure[partitioning tree]{
+\subfigure[Region tree.]{
 \label{sfig:part_fig:tree}
 \begin{tikzpicture}[scale=0.8]
 \partitiontree
 \end{tikzpicture}
 }
 
-  \subfigure[$pvs$]{
+  \subfigure[$p\_nodes\_pvs$]{
 \label{sfig:part_fig:pvs}
-\begin{tikzpicture}
-  [scale=0.5, cn/.style={circle,draw,inner sep=0,minimum size=2mm},
-   p0/.style={fill},
-   p1/.style={fill},
-   p2/.style={fill},
-   s0/.style={fill=lightgray},
-   s1/.style={fill=lightgray},
-   s2/.style={fill=lightgray},
-   g0/.style={},
-   p2p/.style={very thin},
-   p2s/.style={very thin},
-   s2s/.style={very thin}]
-\partitiongraph
-\end{tikzpicture}
+\includegraphics[scale=0.67]{figs/Private_vs_Shared.pdf}
 }
   \subfigure[$p_i$]{
 \label{sfig:part_fig:p_i}
-\begin{tikzpicture}
-  [scale=0.5, cn/.style={circle,draw,inner sep=0,minimum size=2mm},
-   p0/.style={fill},
-   p1/.style={},
-   p2/.style={},
-   s0/.style={},
-   s1/.style={},
-   s2/.style={},
-   g0/.style={},
-   p2p/.style={very thin},
-   p2s/.style={very thin},
-   s2s/.style={very thin}]
-\partitiongraph
-\end{tikzpicture}
+\includegraphics[scale=0.67]{figs/Private_Local.pdf}
 }
   \subfigure[$s_i$]{
 \label{sfig:part_fig:s_i}
-\begin{tikzpicture}
-  [scale=0.5, cn/.style={circle,draw,inner sep=0,minimum size=2mm},
-   p0/.style={},
-   p1/.style={},
-   p2/.style={},
-   s0/.style={fill},
-   s1/.style={},
-   s2/.style={},
-   g0/.style={},
-   p2p/.style={very thin},
-   p2s/.style={very thin},
-   s2s/.style={very thin}]
-\partitiongraph
-\end{tikzpicture}
+\includegraphics[scale=0.67]{figs/Shared_Local.pdf}
 }
   \subfigure[$g_i$]{
 \label{sfig:part_fig:g_i}
-\begin{tikzpicture}
-  [scale=0.5, cn/.style={circle,draw,inner sep=0,minimum size=2mm},
-   p0/.style={},
-   p1/.style={},
-   p2/.style={},
-   s0/.style={fill},
-   s1/.style={},
-   s2/.style={},
-   g0/.style={fill},
-   p2p/.style={very thin},
-   p2s/.style={very thin},
-   s2s/.style={very thin}]
-\partitiongraph
-\end{tikzpicture}
+\includegraphics[scale=0.67]{figs/Ghost_Local.pdf}
 }
   \label{fig:part_fig}
-  \caption{Partitions of $r{\_}all{\_}nodes$}
+  \caption{Partitions of $r{\_}all{\_}nodes$.}
 %  \caption[My caption
 \end{figure}

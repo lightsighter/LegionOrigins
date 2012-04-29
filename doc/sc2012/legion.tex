@@ -10,6 +10,7 @@
 \usepackage{booktabs}
 \usepackage{dcolumn}
 \usepackage{cancel}
+\usepackage{graphics}
 
 \newcommand{\infrule}[2]{\displaystyle\frac{\displaystyle\strut{#1}}{\displaystyle\strut {#2}}}
 \newcommand{\deref}{\ast}
@@ -76,10 +77,11 @@ Modern parallel machines are increasingly complex, with deep,
 distributed memory hierarchies and heterogeneous processing units.  Because the
 costs of communication within these architectures vary by several orders of magnitude, 
 the penalty for mistakes in the placement of data or computation is usually very poor performance.  Thus,
-to achieve high performance it is crucial that the programmer
+to achieve good performance it is crucial that the programmer
 and the compiler be able to reason about {\em locality} (data resident
 close to computation that uses it) and {\em independence} (computations
-operating on disjoint data, and therefore not requiring communication and able to be placed in possibly distant parts of the machine).  Most contemporary
+operating on disjoint data, and therefore not requiring communication and able to be placed in possibly distant parts of the machine).  
+Most contemporary
 programming systems have no facilities for the programmer to express locality
 and independence.  The few languages that do focus primarily on
 array-based locality \cite{Fatahalian06,CHAPEL04,UPC99} and 
@@ -99,19 +101,18 @@ information for determining independence of computations.
 Furthermore, computations access logical regions with particular {\em
   privileges} (e.g., {\em read-only} and {\em read-write}, among
 others) and {\em coherence} (e.g., {\em exclusive access} and {\em
-  atomic access}, among others).  Priveleges express how a task may use
+  atomic access}, among others).  Privileges express how a task may use
 its region arguments, providing data dependence information that
 is used to guide the extraction of parallelism.  For example, if two tasks
 access the same region with read-only privileges the two tasks
 can potentially be run in parallel.
 Coherence properties express the required semantics of concurrent
-accesses to the region.  For example, if tasks $x$ and $y$ access
-region $r$ with {\em exclusive} access, then Legion guarantees that the effects of $x$ and
-$y$ on $r$ are the same as if they had executed in
-the sequential order expressed by the program. On the other hand, if
+accesses to the region.  For example, if the program executes $f_1(r); f_2(r)$ and tasks $f_1$
+and $f_2$ both require {\em exclusive} access to region $r$, then Legion guarantees that 
+$f_1(r)$ completes before $f_2(r)$ begins.   On the other hand, if
 the tasks access $r$ with {\em atomic} coherence, then Legion
-guarantees only atomicity of the tasks with respect to $r$: either task $x$
-appears to run entirely before $y$ or vice versa.
+guarantees only atomicity of the tasks with respect to $r$: either task $f_1(r)$
+appears to run entirely before $f_2(r)$ or vice versa.
 
 Legion programs are written using logical regions, each of which
 has one or more {\em physical instances} when the program executes.  Often
@@ -135,41 +136,43 @@ implementation and evaluation of Legion:
 \item We define a {\em software out-of-order processor}, or SOOP, for
   scheduling tasks with region arguments in a manner analogous to how
   out-of-order hardware schedulers process instructions with register
-  arguments.  In addition to pipelining the execution of tasks over
-  several stages, our SOOP is hierarchical and naturally extracts nested
-  parallelism (because tasks may recursively spawn subtasks) as well
-  as concurrent and distributed across the machine (Section~\ref{sec:soop}).
+  arguments (Section~\ref{sec:soop}).  In addition to pipelining the execution of tasks over
+  several stages, our SOOP is concurrent and distributed across the machine and is
+  also hierarchical and naturally extracts nested
+  parallelism (because tasks may recursively spawn subtasks).
 
-\item We describe a {\em deferred execution} model that extracts parallelism
+
+\item We use a {\em deferred execution} model that extracts parallelism
 even from highly irregular, unbalanced computations.  Instead of blocking,
 an operation $o$ that cannot immediately execute because it is dependent
 on some other operation $o'$ waits on an event that occurs when $o'$ completes.
 Events can be created for the completion of any operation in Legion, and 
 the scheduler can build long chains of deferred operations.  In Section~\ref{sec:exp}
 we show that dataflow-like deferred execution gives us a significant performance improvement
-over builk synchronous global synchronization primitives such as barriers.
+over bulk synchronous global synchronization primitives such as barriers.
 
-\item A crucial part of orchestrating a program's execution is how
+\item A central part of orchestrating a program's execution is how
 tasks are assigned (or {\em mapped}) to processors and how physical instances of logical regions are
-mapped to specific memory units within the machine.  Often there is
+mapped to specific memory units within the machine  (Section~\ref{sec:mapping}).  Often there is
 application-specific information that, if exploited, results in better
 mappings than a generic, one-size-fits-all mapping strategy.  We describe
 a {\em mapping interface} that allows programmers to give the SOOP a specification
 of how to map tasks and regions for a specific application, or even part of an
 application.  This mapping API is carefully defined so that
 any user-supplied mapping strategy can only affect the performance of applications,
-not their correctness.  Thus, user mappings only affect the time and resources required
-to run the program and cannot change the program's output (Section~\ref{sec:mapping}).
+not their correctness.  
+%Thus, user mappings only affect the time and resources required
+%to run the program and cannot change the program's output.
 
 
 \item We present the results of experiments on four applications:
   fluid-flow on a regular grid, a three-level AMR code solving a
-  standard heat diffusion equation, a circuit simulation, and LINPACK.
+  standard heat diffusion equation, a circuit simulation, and LINPACK (Section~\ref{sec:exp}).
   We run each of these four codes and best available reference
   versions on three different clusters of multicore processors with
   attached GPUs: a small cluster of our own (4 nodes with 2 6-core CPUs and 2 GPUs per node), a medium-sized cluster
   designed for visualization applications (10 nodes with 2 6-core CPUs and 5 GPUs per node), and up to a third of the
-  Keeneland supercomputer (32 nodes, 2 6-core CPUs and 3 GPUs per node, see Section~\ref{sec:exp}).
+  Keeneland supercomputer (32 nodes, 2 6-core CPUs and 3 GPUs per node)
 
 
 \end{itemize}

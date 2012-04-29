@@ -16,7 +16,7 @@ and then describe the data type declarations in Section~\ref{subsec:datatypes}.
 
 Line 9 declares the main simulator function, which takes a {\tt
 Circuit} to be simulated.  This function specifies the regions it 
-accesses and the {\em privileges} and {\em coherence} it requires of those regions.
+accesses and the privileges and coherence it requires of those regions.
 In this case, the {\tt RWE} annotation specifies that the function
 accesses the regions {\tt c.r\_all\_nodes} and {\tt c.r\_all\_wires}
 with read-write privileges and {\em exclusive} coherence (i.e., no other
@@ -40,8 +40,8 @@ The nodes are first partitioned into
 {\em private} and {\em shared} nodes (line 21).  Private nodes
 are touched by a single task in a phase, while shared nodes may
 be referenced by multiple tasks in a phase.  The thick lines in Figure~\ref{sfig:part_fig:pvs}
-show how the nodes in a small graph might be partitioned into three subsets.  Gray
-nodes are shared and black nodes are private.  Note that
+show how the nodes in a small graph might be partitioned into three subsets.  Orange
+nodes are shared and blue nodes are private.  Note that
 this partition is disjoint since each node has one color.
 %Our current implementation uses small
 %integers or booleans for the names of colors, but any enumerable set would be
@@ -51,8 +51,8 @@ this partition is disjoint since each node has one color.
 %Our example uses four colorings to create circuit partitions.
 
 We next further partition the private and shared subregions into {\tt
-  MAX\_PIECES} disjoint subregions each (lines 20-23); one subregion
-of the private and shared node partitions is shown in
+  MAX\_PIECES} disjoint subregions each (lines 20-23); the private and shared node subregions
+for the upper-left patch of the graph is shown in
 Figures~\ref{sfig:part_fig:p_i} and \ref{sfig:part_fig:s_i}
 respectively.  
 
@@ -62,7 +62,8 @@ partition is noteworthy because the subregions are not disjoint:
 ghost nodes may be read by multiple tasks, and thus a node $n$  may belong 
 to more than one ghost region, which corresponds to $n$ being assigned
 more than one color by the coloring {\tt node\_neighbor\_map}.
-One of the ghost subregions is shown in Figure~\ref{sfig:part_fig:g_i}.
+The ghost subregion for the upper left patch of the graph
+ is shown in Figure~\ref{sfig:part_fig:g_i}.
 
 Figure~\ref{sfig:part_fig:tree} shows the final hierarchy of node
 partitions;  the $*$ symbol indicates a partition is disjoint. This
@@ -165,15 +166,15 @@ and reads the results of the previous task's reductions.
 The two basic data types in the circuit simulation are {\tt Node}s and
 {\tt Wire}s declared on lines 1 and 2 of Listing~\ref{lst:code_ex}.
 As is standard in region-based systems, allocating a {\tt Node}, {\tt
-  Wire}, or any value in the heap requires naming the logical region
+  Wire}, or any value in the heap requires naming the region
 in which the value is allocated.  For example, {\tt new Node@r} returns
 a reference to a new value of {\tt Node} type in region {\tt r}.  
 Listing~\ref{lst:code_ex} illustrates one way of constructing partitioned
-data structures in Legion: populate a region with data (using {\tt new}) and then partition it
-into subregions.  Legion also supports partitioning an empty region into subregions
-and then allocating data in the subregions; we use both approaches in our
-application discussed in Section~\ref{sec:ex}.
-
+data structures in Legion: populate a region with data (using {\tt new}, note the allocation
+of the data is omitted from the example) and then partition it
+into subregions.  One can also first partition an empty region into subregions
+and then allocate data in the subregions. We use both approaches in our
+applications discussed in Section~\ref{sec:exp}.
 
 Pointers to region values declare the region to which they point.  For
 example, the definition of {\tt Wire} is parameterized on the region
@@ -183,9 +184,9 @@ a wire are always in the same region.
 
 Regions are first-class values in Legion and can be stored in heap
 data structures.  For example, a {\tt Circuit} (defined on line 3)
-holds the regions hold all nodes and wires of the circuit and a {\tt
+holds the regions for all nodes and wires of the circuit and a {\tt
   CircuitPiece} (defined on line 4) hold pointers to the private,
-shared, and ghost nodes as well as the private wires of its piece of
+shared, and ghost node regions as well as the private wires regions of its piece of
 the circuit.
 
 
