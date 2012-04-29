@@ -70,17 +70,31 @@ namespace RegionRuntime {
     // the object goes out of scope
     class AutoLock {
     private:
-      Lock lock;
+      const bool is_low;
+      Lock low_lock;
+      ImmovableLock immov_lock;
     public:
       AutoLock(Lock l, unsigned mode = 0, bool exclusive = true, Event wait_on = Event::NO_EVENT)
-        : lock(l)
+        : is_low(true), low_lock(l)
       {
         Event lock_event = l.lock(mode,exclusive,wait_on);
         lock_event.wait(true/*block*/);
       }
-      ~AutoLock()
+      AutoLock(ImmovableLock l)
+        : is_low(false), immov_lock(l)
       {
-        lock.unlock();
+        l.lock();
+      }
+      ~AutoLock(void)
+      {
+        if (is_low)
+        {
+          low_lock.unlock();
+        }
+        else
+        {
+          immov_lock.unlock();
+        }
       }
     };
 
@@ -1447,8 +1461,12 @@ namespace RegionRuntime {
       {
         if (need_lock)
         {
+#ifdef LOW_LEVEL_LOCKS
           Event lock_event = context_lock.lock(0,true/*exclusive*/);
           lock_event.wait(true/*block*/);
+#else
+          context_lock.lock();
+#endif
         }
         // Mark that the region has been unmapped
         unmapped_event.trigger();
@@ -1946,7 +1964,11 @@ namespace RegionRuntime {
       handle = LogicalRegion::NO_REGION;
       parent_ctx = NULL;
       active = false;
+#ifdef LOW_LEVEL_LOCKS
       current_lock = Lock::NO_LOCK;
+#else
+      current_lock.clear();
+#endif
       current_gen++;
       runtime->free_deletion(this);
     }
@@ -1957,8 +1979,12 @@ namespace RegionRuntime {
     {
       if (acquire_lock)
       {
+#ifdef LOW_LEVEL_LOCKS
         Event lock_event = current_lock.lock(0,true/*exclusive*/);
         lock_event.wait(true/*block*/);
+#else
+        current_lock.lock();
+#endif
       }
 #ifdef DEBUG_HIGH_LEVEL
       assert(active);
@@ -2139,7 +2165,11 @@ namespace RegionRuntime {
     HighLevelRuntime::HighLevelRuntime(LowLevel::Machine *m, Processor local)
       : local_proc(local), proc_kind (m->get_processor_kind(local)), machine(m),
       mapper_objects(std::vector<Mapper*>(DEFAULT_MAPPER_SLOTS)), 
+#ifdef LOW_LEVEL_LOCKS
       mapper_locks(std::vector<Lock>(DEFAULT_MAPPER_SLOTS)),
+#else
+      mapper_locks(std::vector<ImmovableLock>(DEFAULT_MAPPER_SLOTS)),
+#endif
       unique_stride(m->get_all_processors().size()),
       max_outstanding_steals (m->get_all_processors().size()-1)
     //--------------------------------------------------------------------------------------------
@@ -2172,10 +2202,15 @@ namespace RegionRuntime {
       for (unsigned int i=0; i<mapper_objects.size(); i++)
       {
         mapper_objects[i] = NULL;
+#ifdef LOW_LEVEL_LOCKS
         mapper_locks[i] = Lock::NO_LOCK;
+#else
+        mapper_locks[i].clear();
+#endif
         outstanding_steals[i] = std::set<Processor>();
       }
       mapper_objects[0] = new Mapper(machine,this,local_proc);
+#ifdef LOW_LEVEL_LOCKS
       mapper_locks[0] = Lock::create_lock();
 
       // Initialize our locks
@@ -2185,9 +2220,21 @@ namespace RegionRuntime {
       this->available_lock= Lock::create_lock();
       this->stealing_lock = Lock::create_lock();
       this->thieving_lock = Lock::create_lock();
+#else
+      mapper_locks[0].init();
+      
+      this->unique_lock.init();
+      this->mapping_lock.init();
+      this->queue_lock.init();
+      this->available_lock.init();
+      this->stealing_lock.init();
+      this->thieving_lock.init();
+#endif
 #ifdef DEBUG_HIGH_LEVEL
+#ifdef LOW_LEVEL_LOCKS
       assert(unique_lock.exists() && mapping_lock.exists() && queue_lock.exists() &&
               available_lock.exists() && stealing_lock.exists() && thieving_lock.exists());
+#endif
 #endif
 
       // Create some tasks contexts 
@@ -2220,7 +2267,11 @@ namespace RegionRuntime {
         UniqueID tid = get_unique_task_id();
         {
           // Hold the mapping lock when reading the mapper information
+#ifdef LOW_LEVEL_LOCKS
           AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
+#else
+          AutoLock map_lock(mapping_lock);
+#endif
 #ifdef DEBUG_HIGH_LEVEL
           assert(!mapper_objects.empty());
 #endif
@@ -2283,19 +2334,34 @@ namespace RegionRuntime {
           delete mapper_objects[i];
           mapper_objects[i] = NULL;
 #ifdef DEBUG_HIGH_LEVEL
+#ifdef LOW_LEVEL_LOCKS
           assert(mapper_locks[i].exists());
 #endif
+#endif
+#ifdef LOW_LEVEL_LOCKS
           mapper_locks[i].destroy_lock();
+#else
+          mapper_locks[i].destroy();
+#endif
         }
       }
       mapper_objects.clear();
       mapper_locks.clear();
+#ifdef LOW_LEVEL_LOCKS
       mapping_lock.destroy_lock();
       queue_lock.destroy_lock();
       available_lock.destroy_lock();
       unique_lock.destroy_lock();
       stealing_lock.destroy_lock();
       thieving_lock.destroy_lock();
+#else
+      mapping_lock.destroy();
+      queue_lock.destroy();
+      available_lock.destroy();
+      unique_lock.destroy();
+      stealing_lock.destroy();
+      thieving_lock.destroy();
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2624,7 +2690,11 @@ namespace RegionRuntime {
       UniqueID unique_id = get_unique_task_id();
       TaskContext *desc = get_available_context(false/*new tree*/);
       {
+#ifdef LOW_LEVEL_LOCKS
         AutoLock map_lock(mapping_lock,1,false);
+#else
+        AutoLock map_lock(mapping_lock);
+#endif
 #ifdef DEBUG_HIGH_LEVEl
         assert(id < mapper_objects.size());
 #endif
@@ -3022,16 +3092,26 @@ namespace RegionRuntime {
         for (unsigned int i=old_size; i<(id+1); i++)
         {
           mapper_objects[i] = NULL;
+#ifdef LOW_LEVEL_LOCKS
           mapper_locks[i] = Lock::NO_LOCK;
+#else
+          mapper_locks[i].clear();
+#endif
           outstanding_steals[i] = std::set<Processor>();
         }
       } 
 #ifdef DEBUG_HIGH_LEVEL
       assert(id < mapper_objects.size());
       assert(mapper_objects[id] == NULL);
+#ifdef LOW_LEVEL_LOCKS
       assert(!mapper_locks[id].exists());
 #endif
+#endif
+#ifdef LOW_LEVEL_LOCKS
       mapper_locks[id] = Lock::create_lock();
+#else
+      mapper_locks[id].init();
+#endif
       AutoLock mapper_lock(mapper_locks[id]);
       mapper_objects[id] = m;
     }
@@ -3354,7 +3434,11 @@ namespace RegionRuntime {
         ctx->unpack_task(derez);
         {
           // Update the tasks mapper information 
+#ifdef LOW_LEVEL_LOCKS
           AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
+#else
+          AutoLock map_lock(mapping_lock);
+#endif
           ctx->mapper = mapper_objects[ctx->map_id];
           ctx->mapper_lock = mapper_locks[ctx->map_id];
         }
@@ -3479,7 +3563,11 @@ namespace RegionRuntime {
           if (!mapper_tasks.empty())
           {
             // Need read-only access to the mapper vector to access the mapper objects
+#ifdef LOW_LEVEL_LOCKS
             AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
+#else
+            AutoLock map_lock(mapping_lock);
+#endif
             // Also need exclusive access to the mapper itself
             AutoLock mapper_lock(mapper_locks[stealer]);
             DetailedTimer::ScopedPush sp(TIME_MAPPER);
@@ -3522,16 +3610,25 @@ namespace RegionRuntime {
       if (!stolen.empty())
       {
         // Get all the locks up front
+#ifdef LOW_LEVEL_LOCKS
         std::set<Lock>     held_ctx_locks;
+#else
+        std::set<ImmovableLock> held_ctx_locks;
+#endif
         for (std::set<TaskContext*>::const_iterator it = stolen.begin();
               it != stolen.end(); it++)
         {
           // Also get the context lock
           if (held_ctx_locks.find((*it)->current_lock) == held_ctx_locks.end())
           {
+#ifdef LOW_LEVEL_LOCKS
             Event lock_event = (*it)->current_lock.lock(0,true/*exclusive*/);
             held_ctx_locks.insert((*it)->current_lock);
             lock_event.wait(true/*block*/);
+#else
+            held_ctx_locks.insert((*it)->current_lock);
+            (*it)->current_lock.lock();
+#endif
           }
 #ifdef DEBUG_HIGH_LEVEL
           (*it)->current_taken = true;
@@ -3570,11 +3667,20 @@ namespace RegionRuntime {
         }
 #endif
         // Release all the locks we no longer need
-        for (std::set<Lock>::const_iterator it = held_ctx_locks.begin();
+#ifdef LOW_LEVEL_LOCKS
+        for (std::set<Lock>::iterator it = held_ctx_locks.begin();
               it != held_ctx_locks.end(); it++)
         {
           (*it).unlock();
         }
+#else
+        for (std::set<ImmovableLock>::iterator it = held_ctx_locks.begin();
+              it != held_ctx_locks.end(); it++)
+        {
+          ImmovableLock copy = (*it);
+          copy.unlock();
+        }
+#endif
 
         // Delete any remote tasks that we will no longer have a reference to
         for (std::set<TaskContext*>::iterator it = stolen.begin();
@@ -3720,8 +3826,12 @@ namespace RegionRuntime {
       // First try launching from the ready queue
 
       // Get the lock for the ready queue lock in exclusive mode
+#ifdef LOW_LEVEL_LOCKS
       Event lock_event = queue_lock.lock(0,true);
       lock_event.wait(true/*block*/);
+#else
+      queue_lock.lock();
+#endif
       log_task(LEVEL_DEBUG,"Running scheduler on processor %x with %ld tasks in ready queue and idle task enabled %d",
               local_proc.id, ready_queue.size(), idle_task_enabled);
 
@@ -3746,8 +3856,12 @@ namespace RegionRuntime {
           perform_maps_and_deletions();
         }
         // Need to acquire the lock for the next time we go around the loop
+#ifdef LOW_LEVEL_LOCKS
         lock_event = queue_lock.lock(0,true/*exclusive*/);
         lock_event.wait(true/*block*/);
+#else
+        queue_lock.lock();
+#endif
       }
       // Check to see if have any remaining work in our queues, 
       // if not, then disable the idle task
@@ -3776,8 +3890,12 @@ namespace RegionRuntime {
     {
       // Only hold the queue lock when touching the queues
       {
+#ifdef LOW_LEVEL_LOCKS
         Event lock_event = queue_lock.lock(0,true/*exclusive*/);
         lock_event.wait(true/*block*/);
+#else
+        queue_lock.lock();
+#endif
       }
       // Check any of the mapping operations that we need to perform to
       // see if they are ready to be performed.  If so we can just perform them here
@@ -3792,8 +3910,12 @@ namespace RegionRuntime {
 #endif
           perform_region_mapping(mapping);
           // Get the lock back
+#ifdef LOW_LEVEL_LOCKS
           Event lock_event = queue_lock.lock(0,true/*exclusive*/);
           lock_event.wait(true/*block*/);
+#else
+          queue_lock.lock();
+#endif
         }
         // Now we can clear the list of maps since they've all been performed
         ready_maps.clear();
@@ -3813,8 +3935,12 @@ namespace RegionRuntime {
           // We can also deactivate the deletion now that we know it is done
           op->deactivate();
           // Reacquire the queue lock
+#ifdef LOW_LEVEL_LOCKS
           Event lock_event = queue_lock.lock(0,true/*exclusive*/);
           lock_event.wait(true/*block*/);
+#else
+          queue_lock.lock();
+#endif
         }
         ready_deletions.clear();
       }
@@ -3874,7 +4000,11 @@ namespace RegionRuntime {
       bool spawn = false;
       {
         // Need to acquire the locks for the mapper array and the mapper
+#ifdef LOW_LEVEL_LOCKS
         AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
+#else
+        AutoLock map_lock(mapping_lock);
+#endif
         AutoLock mapper_lock(mapper_locks[ctx->map_id]);
         {
           DetailedTimer::ScopedPush sp(TIME_MAPPER);
@@ -3995,7 +4125,11 @@ namespace RegionRuntime {
         // First get the stealing lock, then get the lock for the map vector
         AutoLock steal_lock(stealing_lock);
         // Only need this lock in read-only mode
+#ifdef LOW_LEVEL_LOCKS
         AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
+#else
+        AutoLock map_lock(mapping_lock);
+#endif
         for (unsigned i=0; i<mapper_objects.size(); i++)
         {
           // If no mapper, or mapper has exceeded maximum outstanding steal requests
@@ -4099,7 +4233,11 @@ namespace RegionRuntime {
         reduction(NULL), reduction_value(NULL), reduction_size(0), 
         local_proc(p), result(NULL), result_size(0), 
         region_nodes(NULL), partition_nodes(NULL), instance_infos(NULL),
+#ifdef LOW_LEVEL_LOCKS
         context_lock(Lock::create_lock())
+#else
+        context_lock(ImmovableLock(true/*make*/))    
+#endif
     //--------------------------------------------------------------------------------------------
     {
       this->args = NULL;
@@ -4110,7 +4248,11 @@ namespace RegionRuntime {
       this->partially_unpacked = false;
       this->cached_size = 0;
       this->mapper = NULL;
+#ifdef LOW_LEVEL_LOCKS
       this->mapper_lock = Lock::NO_LOCK;
+#else
+      this->mapper_lock.clear();
+#endif
       this->future_map = NULL;
       this->future = NULL;
     }
@@ -4119,8 +4261,13 @@ namespace RegionRuntime {
     TaskContext::~TaskContext(void)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef LOW_LEVEL_LOCKS
       Lock copy = context_lock;
       copy.destroy_lock();
+#else
+      ImmovableLock copy = context_lock;
+      copy.destroy();
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4273,7 +4420,11 @@ namespace RegionRuntime {
       reduction = NULL;
       mapper = NULL;
       variants = NULL;
+#ifdef LOW_LEVEL_LOCKS
       mapper_lock = Lock::NO_LOCK;
+#else
+      mapper_lock.clear();
+#endif
       current_lock = context_lock;
       individual_term_event.id = 0;
       individual_term_event.gen = 0;
@@ -4286,7 +4437,13 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     void TaskContext::initialize_task(TaskContext *parent, UniqueID _unique_id, 
                                       Processor::TaskFuncID _task_id, void *_args, size_t _arglen,
-                                      MapperID _map_id, MappingTagID _tag, Mapper *_mapper, Lock _map_lock)
+                                      MapperID _map_id, MappingTagID _tag, Mapper *_mapper, 
+#ifdef LOW_LEVEL_LOCKS
+                                      Lock _map_lock
+#else
+                                      ImmovableLock _map_lock
+#endif
+                                      )
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -4342,7 +4499,9 @@ namespace RegionRuntime {
       sanitized = false;
 #ifdef DEBUG_HIGH_LEVEL
       assert(_mapper != NULL);
+#ifdef LOW_LEVEL_LOCKS
       assert(_map_lock.exists());
+#endif
 #endif
       mapper = _mapper;
       mapper_lock = _map_lock;
@@ -5635,8 +5794,8 @@ namespace RegionRuntime {
 #endif
       }
       // We're done sending chunks remotely, now handle our local chunks
-      for (typename std::vector<CT>::const_iterator it = chunks.begin();
-            it != chunks.end(); it++)
+      for (typename std::vector<CT>::const_reverse_iterator it = chunks.rbegin();
+            it != chunks.rend(); it++)
       {
         if (it->p == local_proc)
         {
@@ -7970,8 +8129,12 @@ namespace RegionRuntime {
 #endif
       if (acquire_lock)
       {
+#ifdef LOW_LEVEL_LOCKS
         Event lock_event = current_lock.lock(0,true/*exclusive*/,Event::NO_EVENT);
         lock_event.wait(true/*block*/);
+#else
+        current_lock.lock();
+#endif
 #ifdef DEBUG_HIGH_LEVEL
         current_taken = true;
 #endif
@@ -10043,13 +10206,14 @@ namespace RegionRuntime {
     size_t RegionNode::compute_physical_state_size(ContextID ctx, std::vector<InstanceInfo*> &needed, bool returning)
     //--------------------------------------------------------------------------------------------
     {
+      RegionState &region_state = region_states[ctx];
       size_t result = 0;
       result += sizeof(LogicalRegion); // handle
       result += sizeof(size_t); // num open partitions
-      result += (region_states[ctx].open_physical.size() * sizeof(PartitionID));
+      result += (region_state.open_physical.size() * sizeof(PartitionID));
       result += sizeof(size_t); // num valid instances
       result += sizeof(size_t); // num reduction instances
-      result += (region_states[ctx].valid_instances.size() * (sizeof(InstanceID) + sizeof(bool)));
+      result += (region_state.valid_instances.size() * (sizeof(InstanceID) + sizeof(bool)));
       result += sizeof(PartState);
       result += sizeof(DataState);
       result += sizeof(ReductionOpID);
@@ -10058,13 +10222,13 @@ namespace RegionRuntime {
       if (!returning)
       {
         // outgoing
-        for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
-              it != region_states[ctx].valid_instances.end(); it++)
+        for (std::map<InstanceInfo*,bool>::const_iterator it = region_state.valid_instances.begin();
+              it != region_state.valid_instances.end(); it++)
         {
           it->first->get_needed_instances_outgoing(needed);
         }
-        for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].reduction_instances.begin();
-              it != region_states[ctx].reduction_instances.end(); it++)
+        for (std::map<InstanceInfo*,bool>::const_iterator it = region_state.reduction_instances.begin();
+              it != region_state.reduction_instances.end(); it++)
         {
           it->first->get_needed_instances_outgoing(needed);
         }
@@ -10072,20 +10236,20 @@ namespace RegionRuntime {
       else
       {
         // returning
-        for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
-              it != region_states[ctx].valid_instances.end(); it++)
+        for (std::map<InstanceInfo*,bool>::const_iterator it = region_state.valid_instances.begin();
+              it != region_state.valid_instances.end(); it++)
         {
           it->first->get_needed_instances_returning(needed);
         }
-        for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].reduction_instances.begin();
-              it != region_states[ctx].reduction_instances.end(); it++)
+        for (std::map<InstanceInfo*,bool>::const_iterator it = region_state.reduction_instances.begin();
+              it != region_state.reduction_instances.end(); it++)
         {
           it->first->get_needed_instances_returning(needed);
         }
       }
       // for each of the open partitions add their state
-      for (std::set<PartitionID>::const_iterator it = region_states[ctx].open_physical.begin();
-            it != region_states[ctx].open_physical.end(); it++)
+      for (std::set<PartitionID>::const_iterator it = region_state.open_physical.begin();
+            it != region_state.open_physical.end(); it++)
       {
         result += partitions[*it]->compute_physical_state_size(ctx,needed,returning);
       }
@@ -10096,21 +10260,22 @@ namespace RegionRuntime {
     void RegionNode::pack_physical_state(ContextID ctx, Serializer &rez)
     //--------------------------------------------------------------------------------------------
     {
+      RegionState &region_state = region_states[ctx];
       rez.serialize<LogicalRegion>(handle); // this is for a sanity check
-      rez.serialize<PartState>(region_states[ctx].open_state);
-      rez.serialize<DataState>(region_states[ctx].data_state);
-      rez.serialize<ReductionOpID>(region_states[ctx].redop);
-      rez.serialize<PartitionID>(region_states[ctx].exclusive_part);
+      rez.serialize<PartState>(region_state.open_state);
+      rez.serialize<DataState>(region_state.data_state);
+      rez.serialize<ReductionOpID>(region_state.redop);
+      rez.serialize<PartitionID>(region_state.exclusive_part);
 
-      rez.serialize<size_t>(region_states[ctx].open_physical.size());
-      for (std::set<PartitionID>::const_iterator it = region_states[ctx].open_physical.begin();
-            it != region_states[ctx].open_physical.end(); it++)
+      rez.serialize<size_t>(region_state.open_physical.size());
+      for (std::set<PartitionID>::const_iterator it = region_state.open_physical.begin();
+            it != region_state.open_physical.end(); it++)
       {
         rez.serialize<PartitionID>(*it);
       }
-      rez.serialize<size_t>(region_states[ctx].valid_instances.size());
-      for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
-            it != region_states[ctx].valid_instances.end(); it++)
+      rez.serialize<size_t>(region_state.valid_instances.size());
+      for (std::map<InstanceInfo*,bool>::const_iterator it = region_state.valid_instances.begin();
+            it != region_state.valid_instances.end(); it++)
       {
 #ifdef DEBUG_HIGH_LEVEL
         assert(it->first->valid);
@@ -10118,17 +10283,17 @@ namespace RegionRuntime {
         rez.serialize<InstanceID>(it->first->iid);
         rez.serialize<bool>(it->second);
       }
-      rez.serialize<size_t>(region_states[ctx].reduction_instances.size());
-      for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].reduction_instances.begin();
-            it != region_states[ctx].reduction_instances.end(); it++)
+      rez.serialize<size_t>(region_state.reduction_instances.size());
+      for (std::map<InstanceInfo*,bool>::const_iterator it = region_state.reduction_instances.begin();
+            it != region_state.reduction_instances.end(); it++)
       {
         rez.serialize<InstanceID>(it->first->iid);
         rez.serialize<bool>(it->second);
       }
 
       // Serialize each of the open sub partitions
-      for (std::set<PartitionID>::const_iterator it = region_states[ctx].open_physical.begin();
-            it != region_states[ctx].open_physical.end(); it++)
+      for (std::set<PartitionID>::const_iterator it = region_state.open_physical.begin();
+            it != region_state.open_physical.end(); it++)
       {
         partitions[*it]->pack_physical_state(ctx,rez);
       }
@@ -10145,6 +10310,7 @@ namespace RegionRuntime {
       assert(handle_check == handle);
 #endif
       std::set<PartitionID> new_open;
+      RegionState &region_state = region_states[ctx]; 
       // Returning open partitions
       if (returning)
       {
@@ -10174,16 +10340,16 @@ namespace RegionRuntime {
             new_open.insert(pid);
           }
           // Check our current state
-          switch (region_states[ctx].open_state)
+          switch (region_state.open_state)
           {
             case PART_NOT_OPEN:
               {
                 // Easy case, just make the returning set the current set
-                region_states[ctx].open_state = new_open_state;
+                region_state.open_state = new_open_state;
                 
-                region_states[ctx].redop = new_redop;
-                region_states[ctx].exclusive_part = new_exclusive_part;
-                region_states[ctx].open_physical = new_open;
+                region_state.redop = new_redop;
+                region_state.exclusive_part = new_exclusive_part;
+                region_state.open_physical = new_open;
                 break;
               }
             case PART_READ_ONLY:
@@ -10191,7 +10357,7 @@ namespace RegionRuntime {
                 if (new_open_state == PART_READ_ONLY)
                 {
                   // Just add our open partitions to the list of open and we're done
-                  region_states[ctx].open_physical.insert(new_open.begin(),new_open.end());
+                  region_state.open_physical.insert(new_open.begin(),new_open.end());
                 }
                 else if (new_open_state == PART_NOT_OPEN)
                 {
@@ -10225,18 +10391,18 @@ namespace RegionRuntime {
                     {
                       // Better only be one open partition and better be the same partition
                       if ((new_open.size() == 1) &&
-                          (*(new_open.begin()) == region_states[ctx].exclusive_part))
+                          (*(new_open.begin()) == region_state.exclusive_part))
                       {
                         // We're still good
                       }
                       else
                       {
                         // Check to see if they both have the same reduction op going on
-                        if ((new_redop != 0) && (new_redop == region_states[ctx].redop))
+                        if ((new_redop != 0) && (new_redop == region_state.redop))
                         {
                           // Move everything into a reduction state
-                          region_states[ctx].open_state = PART_REDUCE;
-                          region_states[ctx].open_physical.insert(new_exclusive_part);
+                          region_state.open_state = PART_REDUCE;
+                          region_state.open_physical.insert(new_exclusive_part);
                         }
                         else
                         {
@@ -10249,22 +10415,22 @@ namespace RegionRuntime {
                     }
                   case PART_REDUCE:
                     {
-                      if (region_states[ctx].exclusive_part != new_exclusive_part)
+                      if (region_state.exclusive_part != new_exclusive_part)
                       {
                         log_tree(LEVEL_ERROR,"Tree merge error: non-matching exclusive partitions %d and %d for reduction %d. "
-                            "This is a runtime bug.",region_states[ctx].exclusive_part,new_exclusive_part,new_redop);
+                            "This is a runtime bug.",region_state.exclusive_part,new_exclusive_part,new_redop);
                         exit(1);
                       }
-                      if ((region_states[ctx].redop != 0) && (region_states[ctx].redop != new_redop))
+                      if ((region_state.redop != 0) && (region_state.redop != new_redop))
                       {
                         log_tree(LEVEL_ERROR,"Tree merge error: incompatible reduction ops %d and %d. This is a runtime bug.",
-                            region_states[ctx].redop,new_redop);
+                            region_state.redop,new_redop);
                         exit(1);
                       }
                       // Set the reduction op, update the state
-                      region_states[ctx].redop = new_redop; 
-                      region_states[ctx].open_state = PART_REDUCE;
-                      region_states[ctx].open_physical.insert(new_open.begin(),new_open.end());
+                      region_state.redop = new_redop; 
+                      region_state.open_state = PART_REDUCE;
+                      region_state.open_physical.insert(new_open.begin(),new_open.end());
                       break;
                     }
                   default:
@@ -10293,20 +10459,20 @@ namespace RegionRuntime {
                   case PART_EXCLUSIVE:
                     {
                       // Better match the current exclusive part
-                      if (region_states[ctx].exclusive_part != new_exclusive_part)
+                      if (region_state.exclusive_part != new_exclusive_part)
                       {
                         log_tree(LEVEL_ERROR,"Tree merge error: trying to merge incompatible exclusive partitions %d and %d in reduce mode. "
-                            "This is a runtime bug.",region_states[ctx].exclusive_part,new_exclusive_part);
+                            "This is a runtime bug.",region_state.exclusive_part,new_exclusive_part);
                         exit(1);
                       }
                       break;
                     }
                   case PART_REDUCE:
                     {
-                      if (region_states[ctx].redop != new_redop)
+                      if (region_state.redop != new_redop)
                       {
                         log_tree(LEVEL_ERROR,"Tree merge error: trying to merge incompatible reduction ops %d and %d. "
-                            "This is a runtime bug.",region_states[ctx].redop,new_redop);
+                            "This is a runtime bug.",region_state.redop,new_redop);
                         exit(1);
                       }
                       break;
@@ -10320,19 +10486,19 @@ namespace RegionRuntime {
               assert(false);
           }
           // Merge the data state for everyone
-          if (region_states[ctx].data_state == DATA_CLEAN)
+          if (region_state.data_state == DATA_CLEAN)
           {
-            region_states[ctx].data_state = new_data_state;
+            region_state.data_state = new_data_state;
           }
           // Otherwise its already dirty and it can't get any dirtier
         }
         else
         {
           // We're not merging update all the states and invalidate all the partitions that are no longer open
-          derez.deserialize<PartState>(region_states[ctx].open_state);
-          derez.deserialize<DataState>(region_states[ctx].data_state);
-          derez.deserialize<ReductionOpID>(region_states[ctx].redop);
-          derez.deserialize<PartitionID>(region_states[ctx].exclusive_part);
+          derez.deserialize<PartState>(region_state.open_state);
+          derez.deserialize<DataState>(region_state.data_state);
+          derez.deserialize<ReductionOpID>(region_state.redop);
+          derez.deserialize<PartitionID>(region_state.exclusive_part);
 
           size_t num_open;
           derez.deserialize<size_t>(num_open);
@@ -10344,8 +10510,8 @@ namespace RegionRuntime {
           }
           
           // Go through and invalidate all the ones that are no longer open
-          for (std::set<PartitionID>::const_iterator it = region_states[ctx].open_physical.begin();
-                it != region_states[ctx].open_physical.end(); it++)
+          for (std::set<PartitionID>::const_iterator it = region_state.open_physical.begin();
+                it != region_state.open_physical.end(); it++)
           {
             if (new_open.find(*it) == new_open.end())
             {
@@ -10355,16 +10521,16 @@ namespace RegionRuntime {
           }
 
           // Now we're dont we can just set the set of open partitions
-          region_states[ctx].open_physical = new_open;
+          region_state.open_physical = new_open;
         }
       }
       else
       {
         // Not returning, just write into everything
-        derez.deserialize<PartState>(region_states[ctx].open_state);
-        derez.deserialize<DataState>(region_states[ctx].data_state);
-        derez.deserialize<ReductionOpID>(region_states[ctx].redop);
-        derez.deserialize<PartitionID>(region_states[ctx].exclusive_part);
+        derez.deserialize<PartState>(region_state.open_state);
+        derez.deserialize<DataState>(region_state.data_state);
+        derez.deserialize<ReductionOpID>(region_state.redop);
+        derez.deserialize<PartitionID>(region_state.exclusive_part);
 
         size_t num_open;
         derez.deserialize<size_t>(num_open);
@@ -10372,9 +10538,9 @@ namespace RegionRuntime {
         {
           PartitionID pid;
           derez.deserialize<PartitionID>(pid);
-          region_states[ctx].open_physical.insert(pid);
+          region_state.open_physical.insert(pid);
         }
-        new_open = region_states[ctx].open_physical;
+        new_open = region_state.open_physical;
       }
       // Returning Valid Instances
       if (returning)
@@ -10396,11 +10562,11 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
             assert(inst_map.find(iid) != inst_map.end());
 #endif
-            if (region_states[ctx].valid_instances.find(inst_map[iid]) == region_states[ctx].valid_instances.end())
+            if (region_state.valid_instances.find(inst_map[iid]) == region_state.valid_instances.end())
             {
               inst_map[iid]->mark_valid();
               // Add it to the list of valid instances
-              region_states[ctx].valid_instances.insert(
+              region_state.valid_instances.insert(
                   std::pair<InstanceInfo*,bool>(inst_map[iid],owner));
             }
           }
@@ -10424,8 +10590,8 @@ namespace RegionRuntime {
           }
           // Now check to see which of our instances are no longer valid, make sure none of
           // them share the same user id
-          for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
-                it != region_states[ctx].valid_instances.end(); it++)
+          for (std::map<InstanceInfo*,bool>::const_iterator it = region_state.valid_instances.begin();
+                it != region_state.valid_instances.end(); it++)
           {
             if (new_valid.find(it->first->iid) == new_valid.end())
             {
@@ -10448,14 +10614,14 @@ namespace RegionRuntime {
             }
           }
           // Now make our new set of valid instances
-          region_states[ctx].valid_instances.clear();
+          region_state.valid_instances.clear();
           for (std::map<InstanceID,bool>::const_iterator it = new_valid.begin();
                 it != new_valid.end(); it++)
           {
             InstanceInfo *info = inst_map[it->first];
             // Mark that it is now valid
             info->mark_valid();
-            region_states[ctx].valid_instances[info] = it->second;
+            region_state.valid_instances[info] = it->second;
           }
         }
       }
@@ -10477,7 +10643,7 @@ namespace RegionRuntime {
           assert(info->valid);
 #endif
           // Just put this into the set of valid instances
-          region_states[ctx].valid_instances.insert(
+          region_state.valid_instances.insert(
               std::pair<InstanceInfo*,bool>(info,owner));
         }
       }
@@ -10497,10 +10663,10 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
             assert(inst_map.find(iid) != inst_map.end());
 #endif
-            if (region_states[ctx].reduction_instances.find(inst_map[iid]) == region_states[ctx].reduction_instances.end())
+            if (region_state.reduction_instances.find(inst_map[iid]) == region_state.reduction_instances.end())
             {
               // Add it to the set of reduction instances
-              region_states[ctx].reduction_instances.insert(
+              region_state.reduction_instances.insert(
                   std::pair<InstanceInfo*,bool>(inst_map[iid],owner));
             }
           }
@@ -10522,8 +10688,8 @@ namespace RegionRuntime {
             new_reduc[iid] = owner;
           }
           // Check to see which of our instances are no longer valid
-          for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].reduction_instances.begin();
-                it != region_states[ctx].reduction_instances.end(); it++)
+          for (std::map<InstanceInfo*,bool>::const_iterator it = region_state.reduction_instances.begin();
+                it != region_state.reduction_instances.end(); it++)
           {
             if (new_reduc.find(it->first->iid) == new_reduc.end())
             {
@@ -10544,7 +10710,7 @@ namespace RegionRuntime {
             }
           }
           // Now make the new set of reduction instances
-          region_states[ctx].reduction_instances.clear();
+          region_state.reduction_instances.clear();
           for (std::map<InstanceID,bool>::const_iterator it = new_reduc.begin();
                 it != new_reduc.end(); it++)
           {
@@ -10552,7 +10718,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
             assert(info->valid);
 #endif
-            region_states[ctx].reduction_instances[info] = it->second;
+            region_state.reduction_instances[info] = it->second;
           }
         }
       }
@@ -10569,7 +10735,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           assert(inst_map.find(iid) != inst_map.end());
 #endif
-          region_states[ctx].reduction_instances.insert(
+          region_state.reduction_instances.insert(
               std::pair<InstanceInfo*,bool>(inst_map[iid],owner));
         }
       }
@@ -10591,11 +10757,12 @@ namespace RegionRuntime {
       {
         region_states[ctx] = RegionState();
       }
-      region_states[ctx].logical_state = PART_NOT_OPEN;
-      region_states[ctx].open_logical.clear();
-      region_states[ctx].active_users.clear();
-      region_states[ctx].closed_users.clear();
-      region_states[ctx].logop = 0;
+      RegionState &region_state = region_states[ctx];
+      region_state.logical_state = PART_NOT_OPEN;
+      region_state.open_logical.clear();
+      region_state.active_users.clear();
+      region_state.closed_users.clear();
+      region_state.logop = 0;
 
       for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
             it != partitions.end(); it++)
@@ -10613,6 +10780,7 @@ namespace RegionRuntime {
       assert(dep.trace.back() == handle.id);
       assert(dep.parent->ctx_id == dep.ctx_id);
 #endif
+      RegionState &region_state = region_states[dep.ctx_id];
       // Check to see if we've arrived at our destination
       if (dep.trace.size() == 1)
       {
@@ -10623,8 +10791,8 @@ namespace RegionRuntime {
         // can remove it from the list since we dominate it
         unsigned mapping_dependence_count = 0;
         for (std::list<LogicalUser>::const_iterator it = 
-              region_states[dep.ctx_id].active_users.begin(); it !=
-              region_states[dep.ctx_id].active_users.end(); it++)
+              region_state.active_users.begin(); it !=
+              region_state.active_users.end(); it++)
         {
           if (perform_dependence_check(*it,dep))
           {
@@ -10634,33 +10802,33 @@ namespace RegionRuntime {
         // If we dominated all the previous active users, we can move all the active users
         // to the set of closed users, otherwise we have to register the closed users as
         // mapping dependences
-        if (mapping_dependence_count == region_states[dep.ctx_id].active_users.size())
+        if (mapping_dependence_count == region_state.active_users.size())
         {
-          region_states[dep.ctx_id].closed_users = region_states[dep.ctx_id].active_users;
-          region_states[dep.ctx_id].active_users.clear();
+          region_state.closed_users = region_state.active_users;
+          region_state.active_users.clear();
         }
         else
         {
           // We didn't dominate everyone, add the closed users to our mapping dependence
           for (std::list<LogicalUser>::const_iterator it = 
-                region_states[dep.ctx_id].closed_users.begin(); it !=
-                region_states[dep.ctx_id].closed_users.end(); it++)
+                region_state.closed_users.begin(); it !=
+                region_state.closed_users.end(); it++)
           {
             perform_dependence_check(*it,dep);
           }
         }
         // Add ourselves to the list of active users
-        region_states[dep.ctx_id].active_users.push_back(dep.user);
+        region_state.active_users.push_back(dep.user);
 
         // We've arrived at the region we were targetting
         // First check to see if there are any open partitions below us that we need to close
         const RegionUsage &req = dep.user.usage;
-        switch (region_states[dep.ctx_id].logical_state)
+        switch (region_state.logical_state)
         {
           case PART_NOT_OPEN:
             {
 #ifdef DEBUG_HIGH_LEVEL
-              assert(region_states[dep.ctx_id].open_logical.empty());
+              assert(region_state.open_logical.empty());
 #endif
               // No need to do anything here
               break;
@@ -10670,14 +10838,14 @@ namespace RegionRuntime {
               // No need to close up any tasks in read only mode
               if (!IS_READ_ONLY(req))
               {
-                for (std::set<PartitionID>::const_iterator it = region_states[dep.ctx_id].open_logical.begin();
-                      it != region_states[dep.ctx_id].open_logical.end(); it++)
+                for (std::set<PartitionID>::const_iterator it = region_state.open_logical.begin();
+                      it != region_state.open_logical.end(); it++)
                 {
                   partitions[*it]->close_logical_tree(dep,true/*register dependence*/,
-                                                      region_states[dep.ctx_id].closed_users, false/*closing part*/);
+                                                      region_state.closed_users, false/*closing part*/);
                 }
-                region_states[dep.ctx_id].open_logical.clear();
-                region_states[dep.ctx_id].logical_state = PART_NOT_OPEN;
+                region_state.open_logical.clear();
+                region_state.logical_state = PART_NOT_OPEN;
               }
               break;
             }
@@ -10685,30 +10853,30 @@ namespace RegionRuntime {
             {
               // Definitely need to close this up
 #ifdef DEBUG_HIGH_LEVEL
-              assert(region_states[dep.ctx_id].open_logical.size() == 1);
+              assert(region_state.open_logical.size() == 1);
 #endif
-              partitions[*(region_states[dep.ctx_id].open_logical.begin())]
+              partitions[*(region_state.open_logical.begin())]
                 ->close_logical_tree(dep,true/*register dependences*/,
-                                      region_states[dep.ctx_id].closed_users, false/*closing part*/);
-              region_states[dep.ctx_id].open_logical.clear();
-              region_states[dep.ctx_id].logical_state = PART_NOT_OPEN;
-              region_states[dep.ctx_id].logop = 0; // No more open reductions
+                                      region_state.closed_users, false/*closing part*/);
+              region_state.open_logical.clear();
+              region_state.logical_state = PART_NOT_OPEN;
+              region_state.logop = 0; // No more open reductions
               break;
             }
           case PART_REDUCE:
             {
               // Close up unless this is a reduction of the same kind that is open below
-              if (!(IS_REDUCE(req) && (region_states[dep.ctx_id].logop == req.redop)))
+              if (!(IS_REDUCE(req) && (region_state.logop == req.redop)))
               {
-                for (std::set<PartitionID>::const_iterator it = region_states[dep.ctx_id].open_logical.begin();
-                      it != region_states[dep.ctx_id].open_logical.end(); it++)
+                for (std::set<PartitionID>::const_iterator it = region_state.open_logical.begin();
+                      it != region_state.open_logical.end(); it++)
                 {
                   partitions[*it]->close_logical_tree(dep,true/*register dependence*/,
-                                                      region_states[dep.ctx_id].closed_users, false/*closing part*/);
+                                                      region_state.closed_users, false/*closing part*/);
                 }
-                region_states[dep.ctx_id].open_logical.clear();
-                region_states[dep.ctx_id].logical_state = PART_NOT_OPEN;
-                region_states[dep.ctx_id].logop = 0; // No more open reductions
+                region_state.open_logical.clear();
+                region_state.logical_state = PART_NOT_OPEN;
+                region_state.logop = 0; // No more open reductions
               }
               break;
             }
@@ -10724,38 +10892,38 @@ namespace RegionRuntime {
         PartitionID pid = (PartitionID)dep.trace.back();
         // Not where we want to be yet, check for any dependences and continue the traversal
         for (std::list<LogicalUser>::const_iterator it = 
-            region_states[dep.ctx_id].active_users.begin(); it != region_states[dep.ctx_id].active_users.end(); it++)
+            region_state.active_users.begin(); it != region_state.active_users.end(); it++)
         {
           perform_dependence_check(*it, dep);
         }
         // Also need to register any closed users as mapping dependences
         for (std::list<LogicalUser>::const_iterator it =
-              region_states[dep.ctx_id].closed_users.begin(); it != region_states[dep.ctx_id].closed_users.end(); it++)
+              region_state.closed_users.begin(); it != region_state.closed_users.end(); it++)
         {
           perform_dependence_check(*it, dep);
         }
         const RegionUsage &req = dep.user.usage;
-        switch (region_states[dep.ctx_id].logical_state)
+        switch (region_state.logical_state)
         {
           case PART_NOT_OPEN:
             {
 #ifdef DEBUG_HIGH_LEVEL
-              assert(region_states[dep.ctx_id].open_logical.empty());
+              assert(region_state.open_logical.empty());
 #endif
               // The partition we want is not open, open it in the right mode and continue the traversal
-              region_states[dep.ctx_id].open_logical.insert(pid);
+              region_state.open_logical.insert(pid);
               if (IS_READ_ONLY(req))
               {
-                region_states[dep.ctx_id].logical_state = PART_READ_ONLY;
+                region_state.logical_state = PART_READ_ONLY;
               }
               else if (IS_WRITE(req))
               {
-                region_states[dep.ctx_id].logical_state = PART_EXCLUSIVE;
+                region_state.logical_state = PART_EXCLUSIVE;
               }
               else if (IS_REDUCE(req))
               {
-                region_states[dep.ctx_id].logical_state = PART_EXCLUSIVE;
-                region_states[dep.ctx_id].logop = req.redop;
+                region_state.logical_state = PART_EXCLUSIVE;
+                region_state.logop = req.redop;
               }
               // Open the partition that we want
               partitions[pid]->open_logical_tree(dep);
@@ -10767,11 +10935,11 @@ namespace RegionRuntime {
               if (IS_READ_ONLY(req))
               {
                 // See if the partition is already open
-                if (region_states[dep.ctx_id].open_logical.find(pid) == 
-                    region_states[dep.ctx_id].open_logical.end())
+                if (region_state.open_logical.find(pid) == 
+                    region_state.open_logical.end())
                 {
                   // Not open yet, so open it
-                  region_states[dep.ctx_id].open_logical.insert(pid);
+                  region_state.open_logical.insert(pid);
                   partitions[pid]->open_logical_tree(dep);
                 }
                 else
@@ -10785,8 +10953,8 @@ namespace RegionRuntime {
                 // Need this partition in exclusive mode, close up all but the one
                 // we need to go down
                 bool already_open = false;
-                for (std::set<PartitionID>::const_iterator it = region_states[dep.ctx_id].open_logical.begin();
-                      it != region_states[dep.ctx_id].open_logical.end(); it++)
+                for (std::set<PartitionID>::const_iterator it = region_state.open_logical.begin();
+                      it != region_state.open_logical.end(); it++)
                 {
                   if (pid == *it)
                   {
@@ -10799,25 +10967,25 @@ namespace RegionRuntime {
                     // to be resolved by doing down a different partition, we still need to register them
                     // as mapping dependences
                     partitions[*it]->close_logical_tree(dep,true/*register dependences*/,
-                                                        region_states[dep.ctx_id].closed_users,false/*closing part*/);
+                                                        region_state.closed_users,false/*closing part*/);
                   }
                 }
                 // Update our state and then continue the traversal
-                region_states[dep.ctx_id].open_logical.clear();
-                region_states[dep.ctx_id].open_logical.insert(pid);
+                region_state.open_logical.clear();
+                region_state.open_logical.insert(pid);
                 // Capture the reduction op if we're doing a reduction
                 if (IS_REDUCE(req))
                 {
                   // Also close up the one that we're about to go down since we'll have dependences on that too
                   partitions[pid]->close_logical_tree(dep,true/*register dependences*/,
-                                                      region_states[dep.ctx_id].closed_users,false/*closing part*/);
-                  region_states[dep.ctx_id].logop = req.redop;
-                  region_states[dep.ctx_id].logical_state = PART_EXCLUSIVE;
+                                                      region_state.closed_users,false/*closing part*/);
+                  region_state.logop = req.redop;
+                  region_state.logical_state = PART_EXCLUSIVE;
                   partitions[pid]->open_logical_tree(dep);
                 }
                 else
                 {
-                  region_states[dep.ctx_id].logical_state = PART_EXCLUSIVE;
+                  region_state.logical_state = PART_EXCLUSIVE;
                   if (already_open)
                   {
                     partitions[pid]->register_logical_region(dep);
@@ -10833,14 +11001,14 @@ namespace RegionRuntime {
           case PART_EXCLUSIVE:
             {
 #ifdef DEBUG_HIGH_LEVEL
-              assert(region_states[dep.ctx_id].open_logical.size() == 1);
+              assert(region_state.open_logical.size() == 1);
 #endif
               // Check to see if the partition that we want is open
-              if (pid == *(region_states[dep.ctx_id].open_logical.begin()))
+              if (pid == *(region_state.open_logical.begin()))
               {
                 if (IS_REDUCE(req))
                 {
-                  region_states[dep.ctx_id].logop = req.redop;
+                  region_state.logop = req.redop;
                 }
                 // Same partition, continue the traversal
                 partitions[pid]->register_logical_region(dep);
@@ -10848,28 +11016,28 @@ namespace RegionRuntime {
               else
               {
                 // This is a partition other than the one we want, close it up and open the new one
-                PartitionID other = *(region_states[dep.ctx_id].open_logical.begin());
+                PartitionID other = *(region_state.open_logical.begin());
                 partitions[other]->close_logical_tree(dep,true/*register dependences*/,
-                                                      region_states[dep.ctx_id].closed_users,false/*closing part*/);
+                                                      region_state.closed_users,false/*closing part*/);
                 // Update our state to match
-                region_states[dep.ctx_id].open_logical.clear();
-                region_states[dep.ctx_id].open_logical.insert(pid);
+                region_state.open_logical.clear();
+                region_state.open_logical.insert(pid);
                 // If our new partition is read only, mark it as such, otherwise state is the same
                 if (IS_READ_ONLY(req))
                 {
-                  region_states[dep.ctx_id].logical_state = PART_READ_ONLY;
+                  region_state.logical_state = PART_READ_ONLY;
                 } 
                 else if (IS_REDUCE(req))
                 {
                   // If our reduction was already present, put it in reduction mode
                   // otherwise keep it in exclusive mode
-                  if (req.redop == (region_states[dep.ctx_id].logop))
+                  if (req.redop == (region_state.logop))
                   {
-                    region_states[dep.ctx_id].logical_state = PART_REDUCE;
+                    region_state.logical_state = PART_REDUCE;
                   }
                   else
                   {
-                    region_states[dep.ctx_id].logop = req.redop;
+                    region_state.logop = req.redop;
                   }
                 }
                 partitions[pid]->open_logical_tree(dep);
@@ -10881,31 +11049,31 @@ namespace RegionRuntime {
               // If read-only or read-write, we'll definitely need to close this up
               // or if it is a different kind of reduction we have to do the same
               if (IS_READ_ONLY(req) || IS_WRITE(req) ||
-                  (IS_REDUCE(req) && (req.redop != region_states[dep.ctx_id].logop)))
+                  (IS_REDUCE(req) && (req.redop != region_state.logop)))
               {
                 // close up all the open partitions and then descend down the one we want
-                for (std::set<PartitionID>::const_iterator it = region_states[dep.ctx_id].open_logical.begin();
-                      it != region_states[dep.ctx_id].open_logical.end(); it++)
+                for (std::set<PartitionID>::const_iterator it = region_state.open_logical.begin();
+                      it != region_state.open_logical.end(); it++)
                 {
                   partitions[*it]->close_logical_tree(dep,true/*register dependences*/,
-                                                      region_states[dep.ctx_id].closed_users,false/*closing part*/);
+                                                      region_state.closed_users,false/*closing part*/);
                 }
-                region_states[dep.ctx_id].open_logical.clear();
-                region_states[dep.ctx_id].open_logical.insert(pid);
+                region_state.open_logical.clear();
+                region_state.open_logical.insert(pid);
                 if (IS_READ_ONLY(req))
                 {
-                  region_states[dep.ctx_id].logical_state = PART_READ_ONLY;
-                  region_states[dep.ctx_id].logop = 0;
+                  region_state.logical_state = PART_READ_ONLY;
+                  region_state.logop = 0;
                 }
                 else if (IS_WRITE(req))
                 {
-                  region_states[dep.ctx_id].logical_state = PART_EXCLUSIVE;
-                  region_states[dep.ctx_id].logop = 0;
+                  region_state.logical_state = PART_EXCLUSIVE;
+                  region_state.logop = 0;
                 }
                 else
                 {
                   // Reduction, just update the reduction op
-                  region_states[dep.ctx_id].logop = req.redop;
+                  region_state.logop = req.redop;
                 }
                 partitions[pid]->open_logical_tree(dep);
               }
@@ -10913,15 +11081,15 @@ namespace RegionRuntime {
               {
                 // This is the same kind of reduction
 #ifdef DEBUG_HIGH_LEVEL
-                assert(IS_REDUCE(req) && (req.redop == region_states[dep.ctx_id].logop));
+                assert(IS_REDUCE(req) && (req.redop == region_state.logop));
 #endif
                 {
                   // check to see if the partition we want is already open 
-                  if (region_states[dep.ctx_id].open_logical.find(pid) ==
-                      region_states[dep.ctx_id].open_logical.end())
+                  if (region_state.open_logical.find(pid) ==
+                      region_state.open_logical.end())
                   {
                     // Not open yet
-                    region_states[dep.ctx_id].open_logical.insert(pid);
+                    region_state.open_logical.insert(pid);
                     partitions[pid]->open_logical_tree(dep);
                   }
                   else
@@ -10943,21 +11111,22 @@ namespace RegionRuntime {
     void RegionNode::open_logical_tree(DependenceDetector &dep)
     //--------------------------------------------------------------------------------------------
     {
+      RegionState &region_state = region_states[dep.ctx_id];
 #ifdef DEBUG_HIGH_LEVEL
       assert(!dep.trace.empty());
       assert(dep.trace.back() == handle.id);
-      assert(region_states[dep.ctx_id].logical_state == PART_NOT_OPEN);
-      assert(region_states[dep.ctx_id].active_users.empty());
-      assert(region_states[dep.ctx_id].closed_users.empty());
-      assert(region_states[dep.ctx_id].open_logical.empty());
-      assert(region_states[dep.ctx_id].logop == 0);
+      assert(region_state.logical_state == PART_NOT_OPEN);
+      assert(region_state.active_users.empty());
+      assert(region_state.closed_users.empty());
+      assert(region_state.open_logical.empty());
+      assert(region_state.logop == 0);
       assert(dep.parent->ctx_id == dep.ctx_id);
 #endif
       // check to see if we've arrived at the region that we want
       if (dep.trace.size() == 1)
       {
         // We've arrived, register that we are now a user of this physical instance
-        region_states[dep.ctx_id].active_users.push_back(dep.user);
+        region_state.active_users.push_back(dep.user);
       }
       else
       { 
@@ -10967,11 +11136,11 @@ namespace RegionRuntime {
         const RegionUsage &req = dep.user.usage;
         if (IS_READ_ONLY(req))
         {
-          region_states[dep.ctx_id].logical_state = PART_READ_ONLY;
+          region_state.logical_state = PART_READ_ONLY;
         }
         else if (IS_WRITE(req))
         {
-          region_states[dep.ctx_id].logical_state = PART_EXCLUSIVE;
+          region_state.logical_state = PART_EXCLUSIVE;
         }
         else
         {
@@ -10980,10 +11149,10 @@ namespace RegionRuntime {
 #endif
           // Open in exclusive but mark that there's a reduction going on below,
           // we'll use this to know when we need to go into reduction mode
-          region_states[dep.ctx_id].logical_state = PART_EXCLUSIVE;
-          region_states[dep.ctx_id].logop = req.redop;
+          region_state.logical_state = PART_EXCLUSIVE;
+          region_state.logop = req.redop;
         }
-        region_states[dep.ctx_id].open_logical.insert(pid);
+        region_state.open_logical.insert(pid);
         partitions[pid]->open_logical_tree(dep);
       }
     }
@@ -10993,13 +11162,14 @@ namespace RegionRuntime {
                                         std::list<LogicalUser> &closed, bool closing_part)
     //--------------------------------------------------------------------------------------------
     {
+      RegionState &region_state = region_states[dep.ctx_id];
       // First check to see if we have any open partitions to close
-      switch (region_states[dep.ctx_id].logical_state)
+      switch (region_state.logical_state)
       {
         case PART_NOT_OPEN:
           {
 #ifdef DEBUG_HIGH_LEVEL
-            assert(region_states[dep.ctx_id].open_logical.empty());
+            assert(region_state.open_logical.empty());
 #endif
             // Nothing to do here
             break;
@@ -11007,32 +11177,32 @@ namespace RegionRuntime {
         case PART_REDUCE:
           {
             // Same as read-only, so just remove the reduction-op and fall through
-            region_states[dep.ctx_id].logop = 0;
+            region_state.logop = 0;
           }
         case PART_READ_ONLY:
           {
             // Close up all our lower levels, no need to register dependences since read only
-            for (std::set<PartitionID>::const_iterator it = region_states[dep.ctx_id].open_logical.begin();
-                  it != region_states[dep.ctx_id].open_logical.end(); it++)
+            for (std::set<PartitionID>::const_iterator it = region_state.open_logical.begin();
+                  it != region_state.open_logical.end(); it++)
             {
               partitions[*it]->close_logical_tree(dep,true/*register dependences*/,closed, closing_part);
             }
-            region_states[dep.ctx_id].open_logical.clear();
-            region_states[dep.ctx_id].logical_state = PART_NOT_OPEN;
+            region_state.open_logical.clear();
+            region_state.logical_state = PART_NOT_OPEN;
             break;
           }
         case PART_EXCLUSIVE:
           {
 #ifdef DEBUG_HIGH_LEVEL
-            assert(region_states[dep.ctx_id].open_logical.size() == 1);
+            assert(region_state.open_logical.size() == 1);
             assert(register_dependences); // If this is open, we should be registering dependences
             // Note: that the converse is not true
 #endif
-            partitions[*(region_states[dep.ctx_id].open_logical.begin())]
+            partitions[*(region_state.open_logical.begin())]
               ->close_logical_tree(dep,true/*register dependences*/,closed, closing_part);
-            region_states[dep.ctx_id].open_logical.clear();
-            region_states[dep.ctx_id].logical_state = PART_NOT_OPEN;
-            region_states[dep.ctx_id].logop = 0; // No more open reductions
+            region_state.open_logical.clear();
+            region_state.logical_state = PART_NOT_OPEN;
+            region_state.logop = 0; // No more open reductions
             break;
           }
         default:
@@ -11044,8 +11214,8 @@ namespace RegionRuntime {
         // Everything here is a mapping dependence since we will be copying from these
         // regions back into their parent regions
         for (std::list<LogicalUser>::const_iterator it = 
-            region_states[dep.ctx_id].active_users.begin(); it !=
-            region_states[dep.ctx_id].active_users.end(); it++)
+            region_state.active_users.begin(); it !=
+            region_state.active_users.end(); it++)
         {
           // Special case for when closing a partition, if we are already a user then we
           // can ignore it because have over-approximated our set of regions by saying we're using a partition
@@ -11059,33 +11229,34 @@ namespace RegionRuntime {
         }
       }
       // Clear out our active users
-      region_states[dep.ctx_id].active_users.clear();
+      region_state.active_users.clear();
       // We can also clear out the closed users, note that we don't need to worry
       // about recording dependences on the closed users, because all the active tasks
       // have dependences on them
-      region_states[dep.ctx_id].closed_users.clear();
+      region_state.closed_users.clear();
     }
 
     //--------------------------------------------------------------------------------------------
     void RegionNode::register_deletion(ContextID ctx, DeletionOp *op)
     //--------------------------------------------------------------------------------------------
     {
+      RegionState &region_state = region_states[ctx];
       // Register dependences on all the users
       for (std::list<LogicalUser>::const_iterator it = 
-            region_states[ctx].active_users.begin(); it !=
-            region_states[ctx].active_users.end(); it++)
+            region_state.active_users.begin(); it !=
+            region_state.active_users.end(); it++)
       {
         op->add_mapping_dependence(0/*idx*/, *it, TRUE_DEPENDENCE);
       }
       for (std::list<LogicalUser>::const_iterator it = 
-            region_states[ctx].closed_users.begin(); it !=
-            region_states[ctx].closed_users.end(); it++)
+            region_state.closed_users.begin(); it !=
+            region_state.closed_users.end(); it++)
       {
         op->add_mapping_dependence(0/*idx*/, *it, TRUE_DEPENDENCE);
       }
       // Traverse any open partitions 
-      for (std::set<PartitionID>::const_iterator it = region_states[ctx].open_logical.begin();
-            it != region_states[ctx].open_logical.end(); it++)
+      for (std::set<PartitionID>::const_iterator it = region_state.open_logical.begin();
+            it != region_state.open_logical.end(); it++)
       {
         partitions[*it]->register_deletion(ctx, op);
       }
@@ -11100,13 +11271,14 @@ namespace RegionRuntime {
       {
         region_states[ctx] = RegionState();
       }
-      region_states[ctx].open_physical.clear();
-      region_states[ctx].valid_instances.clear();
-      region_states[ctx].reduction_instances.clear();
-      region_states[ctx].exclusive_part = 0;
-      region_states[ctx].open_state = PART_NOT_OPEN;
-      region_states[ctx].data_state = DATA_CLEAN;
-      region_states[ctx].redop = 0;
+      RegionState &region_state = region_states[ctx];
+      region_state.open_physical.clear();
+      region_state.valid_instances.clear();
+      region_state.reduction_instances.clear();
+      region_state.exclusive_part = 0;
+      region_state.open_state = PART_NOT_OPEN;
+      region_state.data_state = DATA_CLEAN;
+      region_state.redop = 0;
       // Initialize the sub regions
       for (std::map<PartitionID,PartitionNode*>::const_iterator it = partitions.begin();
             it != partitions.end(); it++)
@@ -11119,12 +11291,13 @@ namespace RegionRuntime {
     void RegionNode::get_physical_locations(ContextID ctx, std::set<Memory> &locations, bool recurse, bool reduction)
     //--------------------------------------------------------------------------------------------
     {
+      RegionState &region_state = region_states[ctx];
       if (!reduction)
       {
         // Add any physical instances that we have to the list of locations
         for (std::map<InstanceInfo*,bool>::const_iterator it = 
-              region_states[ctx].valid_instances.begin(); it !=
-              region_states[ctx].valid_instances.end(); it++)
+              region_state.valid_instances.begin(); it !=
+              region_state.valid_instances.end(); it++)
         {
 #ifdef DEBUG_HIGH_LEVEL
           //if (it->second)
@@ -11138,8 +11311,8 @@ namespace RegionRuntime {
       else
       {
         for (std::map<InstanceInfo*,bool>::const_iterator it =
-              region_states[ctx].reduction_instances.begin(); it !=
-              region_states[ctx].reduction_instances.end(); it++)
+              region_state.reduction_instances.begin(); it !=
+              region_state.reduction_instances.end(); it++)
         {
           locations.insert(it->first->location);
         }
@@ -11147,13 +11320,13 @@ namespace RegionRuntime {
       // Check to see if we have any exclusive open partitions if we do,
       // then there are no valid instances.  This is only true for the
       // initial region we check.
-      if (!reduction && !recurse && region_states[ctx].open_state == PART_EXCLUSIVE)
+      if (!reduction && !recurse && region_state.open_state == PART_EXCLUSIVE)
       {
         return;
       }
       // If we are still clean we can see valid physical instances above us too!
       // Go up the tree looking for any valid physical instances until we get to the top
-      if (((region_states[ctx].data_state == DATA_CLEAN) || reduction) && 
+      if (((region_state.data_state == DATA_CLEAN) || reduction) && 
           (parent != NULL))
       {
         parent->parent->get_physical_locations(ctx,locations,true/*recurse*/,reduction);
@@ -11168,6 +11341,7 @@ namespace RegionRuntime {
       assert(ren.trace.back() == handle.id);
       assert(!ren.trace.empty());
 #endif
+      RegionState &region_state = region_states[ren.ctx_id];
       // This is a multi-step algorithm.
       // 1. Descend down to the logical region for the physical instance we are targeting.  If
       //    we find any open parts of the tree which we depend on, close them up.
@@ -11214,8 +11388,8 @@ namespace RegionRuntime {
         {
           // Check to see if there is a reduction already in progress
           // that is not our reduction
-          if ((region_states[ren.ctx_id].redop != req.redop) && 
-              (region_states[ren.ctx_id].redop != 0))
+          if ((region_state.redop != req.redop) && 
+              (region_state.redop != 0))
           {
             // If there is a reduction that is not the same, close everything up to a target instance
             // and then make us the new reduction users
@@ -11225,13 +11399,13 @@ namespace RegionRuntime {
             update_valid_instances(ren.ctx_id, target, true/*writer*/,target_owned);
             close_local_tree(ren.ctx_id, target, ren.ctx, ren.mapper, false/*leave open*/);
 #ifdef DEBUG_HIGH_LEVEL
-            assert(region_states[ren.ctx_id].reduction_instances.empty());
+            assert(region_state.reduction_instances.empty());
 #endif
           }
           // Note we don't have to close up any open partitions since we're the only
           // valid reducer at this point
           // Now we're the current user, record that we're using the region
-          region_states[ren.ctx_id].redop = req.redop;
+          region_state.redop = req.redop;
           precondition = ren.info->add_user(ren.ctx, ren.idx, precondition);
           update_reduction_instances(ren.ctx_id, ren.info, ren.owned);
           return precondition;
@@ -11271,30 +11445,30 @@ namespace RegionRuntime {
         const RegionUsage &req = ren.usage;
         ren.trace.pop_back();
         // We're not there yet
-        switch (region_states[ren.ctx_id].open_state)
+        switch (region_state.open_state)
         {
           case PART_NOT_OPEN:
             {
 #ifdef DEBUG_HIGH_LEVEL
-              assert(region_states[ren.ctx_id].open_physical.empty());
+              assert(region_state.open_physical.empty());
 #endif
               if (IS_READ_ONLY(req))
               {
-                region_states[ren.ctx_id].open_state = PART_READ_ONLY;
+                region_state.open_state = PART_READ_ONLY;
               }
               else if (IS_WRITE(req) || IS_REDUCE(req))
               {
-                region_states[ren.ctx_id].open_state = PART_EXCLUSIVE;
-                region_states[ren.ctx_id].exclusive_part = (PartitionID)ren.trace.back();
+                region_state.open_state = PART_EXCLUSIVE;
+                region_state.exclusive_part = (PartitionID)ren.trace.back();
                 // If a reduce mark that we're the user
                 if (IS_REDUCE(req))
                 {
-                  region_states[ren.ctx_id].redop = req.redop;
+                  region_state.redop = req.redop;
                 }
               }
               // Add the partition that we're going down and return the resulting event
               PartitionID pid = (PartitionID)ren.trace.back();
-              region_states[ren.ctx_id].open_physical.insert(pid); 
+              region_state.open_physical.insert(pid); 
 #ifdef DEBUG_HIGH_LEVEL
               assert(partitions.find(pid) != partitions.end());
 #endif
@@ -11309,11 +11483,11 @@ namespace RegionRuntime {
                 // If it's read only, just open the new partition in read only mode also
                 // and continue
                 // Check to see if it's already open
-                if (region_states[ren.ctx_id].open_physical.find(pid) == 
-                    region_states[ren.ctx_id].open_physical.end())
+                if (region_state.open_physical.find(pid) == 
+                    region_state.open_physical.end())
                 {
                   // Add it to the list of read-only open partitions and open it
-                  region_states[ren.ctx_id].open_physical.insert(pid);
+                  region_state.open_physical.insert(pid);
                   return partitions[pid]->open_physical_tree(ren, precondition);
                 }
                 else
@@ -11328,8 +11502,8 @@ namespace RegionRuntime {
                 // There's no need to keep the instances around since the write/reduction is going to
                 // invalidate the data in any other open partitions
                 bool already_open = false;
-                for (std::set<PartitionID>::const_iterator it = region_states[ren.ctx_id].open_physical.begin();
-                      it != region_states[ren.ctx_id].open_physical.end(); it++)
+                for (std::set<PartitionID>::const_iterator it = region_state.open_physical.begin();
+                      it != region_state.open_physical.end(); it++)
                 {
                   if ((*it) == pid)
                   {
@@ -11343,11 +11517,11 @@ namespace RegionRuntime {
                   }
                 }
                 // clear the list of open partitions and mark that this is now exclusive
-                region_states[ren.ctx_id].open_physical.clear();
-                region_states[ren.ctx_id].open_physical.insert(pid);
+                region_state.open_physical.clear();
+                region_state.open_physical.insert(pid);
                 // Mark that this is open for exclusive
-                region_states[ren.ctx_id].open_state = PART_EXCLUSIVE;
-                region_states[ren.ctx_id].exclusive_part = pid;
+                region_state.open_state = PART_EXCLUSIVE;
+                region_state.exclusive_part = pid;
                 if (IS_REDUCE(req))
                 {
                   // For the reduction, also close up the read-only part since we won't 
@@ -11356,7 +11530,7 @@ namespace RegionRuntime {
                                                         ren.ctx, ren.mapper,false/*leave open*/);
                   already_open = false;
                   // Mark that we're a reduction below here
-                  region_states[ren.ctx_id].redop = req.redop;
+                  region_state.redop = req.redop;
                 }
                 if (already_open)
                 {
@@ -11377,10 +11551,10 @@ namespace RegionRuntime {
               if (IS_READ_ONLY(req) || IS_WRITE(req))
               {
 #ifdef DEBUG_HIGH_LEVEL
-                assert(region_states[ren.ctx_id].open_physical.size() == 1);
+                assert(region_state.open_physical.size() == 1);
 #endif
                 // Check to see if it is the same partition that we need
-                PartitionID current = region_states[ren.ctx_id].exclusive_part;
+                PartitionID current = region_state.exclusive_part;
                 if (current == ren.trace.back())
                 {
                   // Same partition, continue on down the tree
@@ -11398,18 +11572,18 @@ namespace RegionRuntime {
                   update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
                   close_local_tree(ren.ctx_id, target, ren.ctx, ren.mapper, IS_READ_ONLY(req));
                   PartitionID pid = (PartitionID)ren.trace.back();
-                  region_states[ren.ctx_id].open_physical.insert(pid);
+                  region_state.open_physical.insert(pid);
                   // Figure out which state the partition should be put in
                   if (IS_READ_ONLY(req))
                   {
-                    region_states[ren.ctx_id].open_state = PART_READ_ONLY;
-                    region_states[ren.ctx_id].exclusive_part = 0;
+                    region_state.open_state = PART_READ_ONLY;
+                    region_state.exclusive_part = 0;
                     return partitions[pid]->open_physical_tree(ren, precondition);
                   }
                   else
                   {
-                    region_states[ren.ctx_id].open_state = PART_EXCLUSIVE;
-                    region_states[ren.ctx_id].exclusive_part = pid;
+                    region_state.open_state = PART_EXCLUSIVE;
+                    region_state.exclusive_part = pid;
                     return partitions[pid]->open_physical_tree(ren, precondition);
                   }
                 }
@@ -11417,12 +11591,12 @@ namespace RegionRuntime {
               else if (IS_REDUCE(req))
               {
                 // Check to see if it is the same partition that we need 
-                PartitionID current = region_states[ren.ctx_id].exclusive_part;
+                PartitionID current = region_state.exclusive_part;
                 if (current == ren.trace.back())
                 {
                   // Mark that we're a reducer below, its ok if someone else was
                   // already a reducer here because they are also below and we'll find them
-                  region_states[ren.ctx_id].redop = req.redop;
+                  region_state.redop = req.redop;
                   // Everything stays in exclusive mode and everything is good
                   return partitions[current]->register_physical_instance(ren, precondition);
                 }
@@ -11430,12 +11604,12 @@ namespace RegionRuntime {
                 {
                   PartitionID pid = (PartitionID)ren.trace.back();
                   // check to see if they are the same reducer
-                  if (region_states[ren.ctx_id].redop == req.redop)
+                  if (region_state.redop == req.redop)
                   {
                     // Same reducer register that there is an extra partition open
                     // in reduce mode
-                    region_states[ren.ctx_id].open_state = PART_REDUCE;
-                    region_states[ren.ctx_id].open_physical.insert(pid);
+                    region_state.open_state = PART_REDUCE;
+                    region_state.open_physical.insert(pid);
                     return partitions[pid]->open_physical_tree(ren, precondition);
                   }
                   else
@@ -11447,8 +11621,8 @@ namespace RegionRuntime {
                     update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
                     close_local_tree(ren.ctx_id, target, ren.ctx, ren.mapper, false/*leave_open*/);
                     // Mark that we're the new user and stays in exclusive mode
-                    region_states[ren.ctx_id].exclusive_part = pid;
-                    region_states[ren.ctx_id].open_physical.insert(pid);
+                    region_state.exclusive_part = pid;
+                    region_state.open_physical.insert(pid);
                     return partitions[pid]->open_physical_tree(ren, precondition);
                   }
                 }
@@ -11459,7 +11633,7 @@ namespace RegionRuntime {
             {
               // There should be at least two open partitions here for this to happen
 #ifdef DEBUG_HIGH_LEVEL
-              assert(region_states[ren.ctx_id].open_physical.size() > 1);
+              assert(region_state.open_physical.size() > 1);
 #endif
               // No matter what the case, this will require us to create an instance here
               // that encapsulates the results of all the reductions
@@ -11474,18 +11648,18 @@ namespace RegionRuntime {
                 // Update the valid instances
                 update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
                 close_local_tree(ren.ctx_id, target, ren.ctx, ren.mapper,false/*leave open*/);
-                region_states[ren.ctx_id].open_physical.clear();
+                region_state.open_physical.clear();
                 PartitionID pid = (PartitionID)ren.trace.back();
-                region_states[ren.ctx_id].open_physical.insert(pid);
+                region_state.open_physical.insert(pid);
                 if (IS_READ_ONLY(req))
                 {
-                  region_states[ren.ctx_id].open_state = PART_READ_ONLY;
-                  region_states[ren.ctx_id].exclusive_part = 0;
+                  region_state.open_state = PART_READ_ONLY;
+                  region_state.exclusive_part = 0;
                 }
                 else
                 {
-                  region_states[ren.ctx_id].open_state = PART_EXCLUSIVE;
-                  region_states[ren.ctx_id].exclusive_part = pid;
+                  region_state.open_state = PART_EXCLUSIVE;
+                  region_state.exclusive_part = pid;
                 }
                 return partitions[pid]->open_physical_tree(ren, precondition);
               }
@@ -11493,14 +11667,14 @@ namespace RegionRuntime {
               {
                 PartitionID pid = (PartitionID)ren.trace.back();
                 // Check to see if we're the same reducer
-                if (region_states[ren.ctx_id].redop == req.redop)
+                if (region_state.redop == req.redop)
                 {
                   // Check to see if it is one of the partitions we already have open for
                   // reductions, if not open a new one
-                  if (region_states[ren.ctx_id].open_physical.find(pid) ==
-                      region_states[ren.ctx_id].open_physical.end())
+                  if (region_state.open_physical.find(pid) ==
+                      region_state.open_physical.end())
                   {
-                    region_states[ren.ctx_id].open_physical.insert(pid);
+                    region_state.open_physical.insert(pid);
                     return partitions[pid]->open_physical_tree(ren, precondition);
                   }
                   else
@@ -11517,10 +11691,10 @@ namespace RegionRuntime {
                   update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
                   close_local_tree(ren.ctx_id, target, ren.ctx, ren.mapper, false/*leave open*/);
                   // Mark that we're the new user, and put it in exclusive mode
-                  region_states[ren.ctx_id].open_physical.insert(pid);
-                  region_states[ren.ctx_id].exclusive_part = pid;
-                  region_states[ren.ctx_id].open_state = PART_EXCLUSIVE;
-                  region_states[ren.ctx_id].redop = req.redop;
+                  region_state.open_physical.insert(pid);
+                  region_state.exclusive_part = pid;
+                  region_state.open_state = PART_EXCLUSIVE;
+                  region_state.redop = req.redop;
                   return partitions[pid]->open_physical_tree(ren, precondition);
                 }
               }
@@ -11539,14 +11713,15 @@ namespace RegionRuntime {
     Event RegionNode::open_physical_tree(RegionRenamer &ren, Event precondition)
     //--------------------------------------------------------------------------------------------
     {
+      RegionState &region_state = region_states[ren.ctx_id];
 #ifdef DEBUG_HIGH_LEVEL
-      assert(region_states[ren.ctx_id].valid_instances.empty());
-      assert(region_states[ren.ctx_id].reduction_instances.empty());
-      assert(region_states[ren.ctx_id].data_state == DATA_CLEAN);
-      assert(region_states[ren.ctx_id].open_state == PART_NOT_OPEN);
-      assert(region_states[ren.ctx_id].open_physical.empty());
-      assert(region_states[ren.ctx_id].exclusive_part == 0);
-      assert(region_states[ren.ctx_id].redop == 0);
+      assert(region_state.valid_instances.empty());
+      assert(region_state.reduction_instances.empty());
+      assert(region_state.data_state == DATA_CLEAN);
+      assert(region_state.open_state == PART_NOT_OPEN);
+      assert(region_state.open_physical.empty());
+      assert(region_state.exclusive_part == 0);
+      assert(region_state.redop == 0);
 #endif
       if (ren.trace.size() == 1)
       {
@@ -11580,7 +11755,7 @@ namespace RegionRuntime {
           // Check to see if we're a reduction
           if (IS_REDUCE(req))
           {
-            region_states[ren.ctx_id].redop = req.redop;
+            region_state.redop = req.redop;
             precondition = ren.info->add_user(ren.ctx, ren.idx, precondition);
             update_reduction_instances(ren.ctx_id, ren.info, ren.owned);
             return precondition;
@@ -11622,21 +11797,21 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(partitions.find(pid) != partitions.end());
 #endif
-        region_states[ren.ctx_id].open_physical.insert(pid);
+        region_state.open_physical.insert(pid);
         // Update our state
         const RegionUsage &req = ren.usage;
         if (IS_WRITE(req) || IS_REDUCE(req))
         {
-          region_states[ren.ctx_id].open_state = PART_EXCLUSIVE;
-          region_states[ren.ctx_id].exclusive_part = pid;
+          region_state.open_state = PART_EXCLUSIVE;
+          region_state.exclusive_part = pid;
           if (IS_REDUCE(req))
           {
-            region_states[ren.ctx_id].redop = req.redop;
+            region_state.redop = req.redop;
           }
         }
         else
         {
-          region_states[ren.ctx_id].open_state = PART_READ_ONLY;
+          region_state.open_state = PART_READ_ONLY;
         }
         // The data at this region is clean because there is no data
         return partitions[pid]->open_physical_tree(ren,precondition); 
@@ -11648,6 +11823,7 @@ namespace RegionRuntime {
                               GeneralizedContext *enclosing, Mapper *mapper, bool leave_open)
     //--------------------------------------------------------------------------------------------
     {
+      RegionState &region_state = region_states[ctx];
       // First check to see if the target has the same logical region as us, if not get the
       // instance info for this region, or create a new once
       if ((target != InstanceInfo::get_no_instance()) && (target->handle != this->handle))
@@ -11663,7 +11839,7 @@ namespace RegionRuntime {
         
       }
 
-      if (region_states[ctx].data_state == DATA_DIRTY)
+      if (region_state.data_state == DATA_DIRTY)
       {
 #ifdef DEBUG_HIGH_LEVEL
         assert(target != InstanceInfo::get_no_instance());
@@ -11683,8 +11859,8 @@ namespace RegionRuntime {
       if (!leave_open)
       {
 #ifndef DISABLE_GC
-        for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
-              it != region_states[ctx].valid_instances.end(); it++)
+        for (std::map<InstanceInfo*,bool>::const_iterator it = region_state.valid_instances.begin();
+              it != region_state.valid_instances.end(); it++)
         {
           if (it->second)
           {
@@ -11692,10 +11868,10 @@ namespace RegionRuntime {
           }
         }
 #endif
-        region_states[ctx].valid_instances.clear();
+        region_state.valid_instances.clear();
       }
       // No matter what, all this data is now clean since it has been copied back
-      region_states[ctx].data_state = DATA_CLEAN;
+      region_state.data_state = DATA_CLEAN;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -11703,18 +11879,19 @@ namespace RegionRuntime {
                         GeneralizedContext *enclosing, Mapper *mapper, bool leave_open)
     //--------------------------------------------------------------------------------------------
     {
+      RegionState &region_state = region_states[ctx];
       if (target != InstanceInfo::get_no_instance())
       {
         target->mark_begin_close();
       }
       bool written_to = false;
       // See if we have any partitions to close
-      switch (region_states[ctx].open_state)
+      switch (region_state.open_state)
       {
         case PART_NOT_OPEN:
           {
 #ifdef DEBUG_HIGH_LEVEL
-            assert(region_states[ctx].open_physical.empty());
+            assert(region_state.open_physical.empty());
 #endif
             // Don't need to do anything
             break;
@@ -11722,25 +11899,25 @@ namespace RegionRuntime {
         case PART_EXCLUSIVE:
           {
 #ifdef DEBUG_HIGH_LEVEL
-            assert(region_states[ctx].open_physical.size() == 1);
+            assert(region_state.open_physical.size() == 1);
 #endif
             // Close up the open partition 
-            PartitionID pid = *(region_states[ctx].open_physical.begin());
+            PartitionID pid = *(region_state.open_physical.begin());
             partitions[pid]->close_physical_tree(ctx,target,enclosing,mapper,leave_open);
             target->force_closed();
             written_to = true;
             if (!leave_open)
             {
-              region_states[ctx].open_physical.clear();
-              region_states[ctx].open_state = PART_NOT_OPEN;
+              region_state.open_physical.clear();
+              region_state.open_state = PART_NOT_OPEN;
             }
             else
             {
               // Otherwise keep around the things that are open
-              region_states[ctx].open_state = PART_READ_ONLY;
+              region_state.open_state = PART_READ_ONLY;
             }
             // No longer an exclusive part
-            region_states[ctx].exclusive_part = 0;
+            region_state.exclusive_part = 0;
             break;
           }
         case PART_READ_ONLY:
@@ -11750,14 +11927,14 @@ namespace RegionRuntime {
             {
               // Close up all the open partitions, pass no instance as the target
               // since there should be no copies
-              for (std::set<PartitionID>::iterator it = region_states[ctx].open_physical.begin();
-                    it != region_states[ctx].open_physical.end(); it++)
+              for (std::set<PartitionID>::iterator it = region_state.open_physical.begin();
+                    it != region_state.open_physical.end(); it++)
               {
                 partitions[*it]->close_physical_tree(ctx, InstanceInfo::get_no_instance(),
                                                       enclosing, mapper, leave_open);
               }
-              region_states[ctx].open_physical.clear();
-              region_states[ctx].open_state = PART_NOT_OPEN;
+              region_state.open_physical.clear();
+              region_state.open_state = PART_NOT_OPEN;
               // Close up the instance if we're not targeting a no-instance
               if (target != InstanceInfo::get_no_instance())
               {
@@ -11770,25 +11947,25 @@ namespace RegionRuntime {
           {
             // Always close up the possible exclusive partition first in case it has dirty
             // data not from a reduction
-            PartitionID current = region_states[ctx].exclusive_part;
+            PartitionID current = region_state.exclusive_part;
 #ifdef DEBUG_HIGH_LEVEL
             assert(current != 0);
-            assert(region_states[ctx].open_physical.find(current) !=
-                    region_states[ctx].open_physical.end());
+            assert(region_state.open_physical.find(current) !=
+                    region_state.open_physical.end());
 #endif
             partitions[current]->close_physical_tree(ctx,target,enclosing,mapper,leave_open);
-            region_states[ctx].open_physical.erase(current);
+            region_state.open_physical.erase(current);
             written_to = true;
             // Now do the rest of the open partitions
-            for (std::set<PartitionID>::const_iterator it = region_states[ctx].open_physical.begin();
-                  it != region_states[ctx].open_physical.end(); it++)
+            for (std::set<PartitionID>::const_iterator it = region_state.open_physical.begin();
+                  it != region_state.open_physical.end(); it++)
             {
               // These won't contain any dirty data, so no need to keep them open
               partitions[*it]->close_physical_tree(ctx,target,enclosing,mapper,false/*leave open*/);
             }
-            region_states[ctx].open_physical.clear();
-            region_states[ctx].exclusive_part = 0;
-            region_states[ctx].open_state = PART_NOT_OPEN;
+            region_state.open_physical.clear();
+            region_state.exclusive_part = 0;
+            region_state.open_state = PART_NOT_OPEN;
             // Close up the instance
             target->force_closed(); 
             break;
@@ -11797,10 +11974,10 @@ namespace RegionRuntime {
           assert(false);
       }
       // Now issue copy backs for each of our reduction instances
-      for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].reduction_instances.begin();
-            it != region_states[ctx].reduction_instances.end(); it++)
+      for (std::map<InstanceInfo*,bool>::const_iterator it = region_state.reduction_instances.begin();
+            it != region_state.reduction_instances.end(); it++)
       {
-        target->copy_from(it->first, enclosing, COPY_UP, region_states[ctx].redop); 
+        target->copy_from(it->first, enclosing, COPY_UP, region_state.redop); 
         written_to = true;
         // We can also invalidate this if we own it
 #ifndef DISABLE_GC
@@ -11810,8 +11987,8 @@ namespace RegionRuntime {
         }
 #endif
       }
-      region_states[ctx].reduction_instances.clear();
-      region_states[ctx].redop = 0;
+      region_state.reduction_instances.clear();
+      region_state.redop = 0;
 
       if (target != InstanceInfo::get_no_instance())
       {
@@ -11825,9 +12002,10 @@ namespace RegionRuntime {
     void RegionNode::invalidate_physical_tree(ContextID ctx)
     //--------------------------------------------------------------------------------------------
     {
+      RegionState &region_state = region_states[ctx];
       // Do this reverse up, invalidate children first and then invalidate ourselves.  This
       // way the garbage collector will have the best chance at reclaiming the physical instances
-      switch (region_states[ctx].open_state)
+      switch (region_state.open_state)
       {
         case PART_NOT_OPEN:
           {
@@ -11837,32 +12015,32 @@ namespace RegionRuntime {
         case PART_EXCLUSIVE:
           {
 #ifdef DEBUG_HIGH_LEVEL
-            assert(region_states[ctx].open_physical.size() == 1);
+            assert(region_state.open_physical.size() == 1);
 #endif
             // Close up the open partition
-            PartitionID pid = *(region_states[ctx].open_physical.begin());
+            PartitionID pid = *(region_state.open_physical.begin());
             partitions[pid]->invalidate_physical_tree(ctx);
-            region_states[ctx].open_physical.clear();
-            region_states[ctx].open_state = PART_NOT_OPEN;
-            region_states[ctx].exclusive_part = 0;
-            region_states[ctx].redop = 0;
+            region_state.open_physical.clear();
+            region_state.open_state = PART_NOT_OPEN;
+            region_state.exclusive_part = 0;
+            region_state.redop = 0;
             break;
           }
         case PART_REDUCE:
           {
-            region_states[ctx].exclusive_part = 0;
-            region_states[ctx].redop = 0;
+            region_state.exclusive_part = 0;
+            region_state.redop = 0;
             // Fall through to read-only since we do all the same stuff
           }
         case PART_READ_ONLY:
           {
-            for (std::set<PartitionID>::const_iterator it = region_states[ctx].open_physical.begin();
-                  it != region_states[ctx].open_physical.end(); it++)
+            for (std::set<PartitionID>::const_iterator it = region_state.open_physical.begin();
+                  it != region_state.open_physical.end(); it++)
             {
               partitions[*it]->invalidate_physical_tree(ctx);
             }
-            region_states[ctx].open_physical.clear();
-            region_states[ctx].open_state = PART_NOT_OPEN;
+            region_state.open_physical.clear();
+            region_state.open_state = PART_NOT_OPEN;
             break;
           }
         default:
@@ -11870,8 +12048,8 @@ namespace RegionRuntime {
       }
 #ifndef DISABLE_GC
       // Now we can invalidate our own instances
-      for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
-            it != region_states[ctx].valid_instances.end(); it++)
+      for (std::map<InstanceInfo*,bool>::const_iterator it = region_state.valid_instances.begin();
+            it != region_state.valid_instances.end(); it++)
       {
         // close up this instance so it can be collected
         it->first->mark_begin_close();
@@ -11882,8 +12060,8 @@ namespace RegionRuntime {
           it->first->mark_invalid();
         }
       }
-      for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].reduction_instances.begin();
-            it != region_states[ctx].reduction_instances.end(); it++)
+      for (std::map<InstanceInfo*,bool>::const_iterator it = region_state.reduction_instances.begin();
+            it != region_state.reduction_instances.end(); it++)
       {
         it->first->mark_begin_close();
         it->first->force_closed();
@@ -11894,9 +12072,9 @@ namespace RegionRuntime {
         }
       }
 #endif
-      region_states[ctx].valid_instances.clear();
-      region_states[ctx].reduction_instances.clear();
-      region_states[ctx].data_state = DATA_CLEAN;
+      region_state.valid_instances.clear();
+      region_state.reduction_instances.clear();
+      region_state.data_state = DATA_CLEAN;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -12011,13 +12189,14 @@ namespace RegionRuntime {
                                             bool check_overwrite /* = false*/, UniqueID uid /*= 0*/)
     //--------------------------------------------------------------------------------------------
     {
+      RegionState &region_state = region_states[ctx];
 #ifdef DEBUG_HIGH_LEVEL
       assert(info != InstanceInfo::get_no_instance());
       // This should always hold, if not something is wrong somewhere else
       assert(info->handle == handle); 
 #endif
       // If this instance isn't already a valid instance, mark that it will now be valid
-      if (own && region_states[ctx].valid_instances.find(info) == region_states[ctx].valid_instances.end())
+      if (own && region_state.valid_instances.find(info) == region_state.valid_instances.end())
       {
         info->mark_valid();
       }
@@ -12029,8 +12208,8 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           assert(uid != 0);
 #endif
-          for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
-                it != region_states[ctx].valid_instances.end(); it++)
+          for (std::map<InstanceInfo*,bool>::const_iterator it = region_state.valid_instances.begin();
+                it != region_state.valid_instances.end(); it++)
           {
             if (it->first == info)
             {
@@ -12048,8 +12227,8 @@ namespace RegionRuntime {
         }
         // Mark any instance infos that we own to be invalid
 #ifndef DISABLE_GC 
-        for (std::map<InstanceInfo*,bool>::const_iterator it = region_states[ctx].valid_instances.begin();
-              it != region_states[ctx].valid_instances.end(); it++)
+        for (std::map<InstanceInfo*,bool>::const_iterator it = region_state.valid_instances.begin();
+              it != region_state.valid_instances.end(); it++)
         {
           if (it->first == info)
             continue;
@@ -12058,20 +12237,21 @@ namespace RegionRuntime {
         }
 #endif
         // Clear the list
-        region_states[ctx].valid_instances.clear();
+        region_state.valid_instances.clear();
         // Mark that we wrote the data
-        region_states[ctx].data_state = DATA_DIRTY;
+        region_state.data_state = DATA_DIRTY;
       }
       // Now add this instance to the list of valid instances
       // The only time that we don't own a valid instance is when it is inserted directly at
       // the start of a task from a parent context, see initialize_region_tree_contexts
-      region_states[ctx].valid_instances.insert(std::pair<InstanceInfo*,bool>(info,own));
+      region_state.valid_instances.insert(std::pair<InstanceInfo*,bool>(info,own));
     }
 
     //--------------------------------------------------------------------------------------------
     void RegionNode::update_reduction_instances(ContextID ctx, InstanceInfo *info, bool owned)
     //--------------------------------------------------------------------------------------------
     {
+      RegionState &region_state = region_states[ctx];
 #ifdef DEBUG_HIGH_LEVEL
       assert(info != InstanceInfo::get_no_instance());
       // This should always hold, if not something is wrong somewhere else
@@ -12079,23 +12259,24 @@ namespace RegionRuntime {
       // This only needs to be true if we are the owner
 #endif
       // If we didn't own this previously, mark that it will now be valid
-      if (owned && region_states[ctx].reduction_instances.find(info) == region_states[ctx].reduction_instances.end())
+      if (owned && region_state.reduction_instances.find(info) == region_state.reduction_instances.end())
       {
         info->mark_valid();
       }
-      region_states[ctx].reduction_instances.insert(std::pair<InstanceInfo*,bool>(info,owned));
+      region_state.reduction_instances.insert(std::pair<InstanceInfo*,bool>(info,owned));
     }
 
     //--------------------------------------------------------------------------------------------
     std::pair<InstanceInfo*,bool> RegionNode::find_physical_instance(ContextID ctx, Memory m, bool recurse, bool reduction)
     //--------------------------------------------------------------------------------------------
     {
+      RegionState &region_state = region_states[ctx];
       if (!reduction)
       {
         // Check to see if we have any valid physical instances that we can use 
         for (std::map<InstanceInfo*,bool>::const_iterator it = 
-              region_states[ctx].valid_instances.begin(); it !=
-              region_states[ctx].valid_instances.end(); it++)
+              region_state.valid_instances.begin(); it !=
+              region_state.valid_instances.end(); it++)
         {
 #ifdef DEBUG_HIGH_LEVEL
           //if (it->second)
@@ -12110,8 +12291,8 @@ namespace RegionRuntime {
       else
       {
         for (std::map<InstanceInfo*,bool>::const_iterator it = 
-              region_states[ctx].reduction_instances.begin(); it !=
-              region_states[ctx].reduction_instances.end(); it++)
+              region_state.reduction_instances.begin(); it !=
+              region_state.reduction_instances.end(); it++)
         {
           if (it->first->location == m)
           {
@@ -12120,13 +12301,13 @@ namespace RegionRuntime {
         }
       }
       // Check to see if we are allowed to continue up the tree
-      if (!reduction && !recurse && (region_states[ctx].open_state == PART_EXCLUSIVE))
+      if (!reduction && !recurse && (region_state.open_state == PART_EXCLUSIVE))
       {
         return std::pair<InstanceInfo*,bool>(InstanceInfo::get_no_instance(),false);
       }
       // We can only go up the tree if we are clean or we are a reduction
       // If we didn't find anything, go up the tree
-      if (((region_states[ctx].data_state == DATA_CLEAN) || reduction) &&
+      if (((region_state.data_state == DATA_CLEAN) || reduction) &&
           (parent != NULL))
       {
         return parent->parent->find_physical_instance(ctx, m, true/*recurse*/, reduction);
@@ -12291,16 +12472,17 @@ namespace RegionRuntime {
     size_t PartitionNode::compute_physical_state_size(ContextID ctx, std::vector<InstanceInfo*> &needed, bool returning)
     //--------------------------------------------------------------------------------------------
     {
+      PartitionState &partition_state = partition_states[ctx];
       size_t result = 0;
       result += sizeof(PartitionID);
       result += sizeof(RegState);
       result += sizeof(LogicalRegion);
       result += sizeof(ReductionOpID);
       result += sizeof(size_t); // num open physical
-      result += (partition_states[ctx].open_physical.size() * sizeof(LogicalRegion));
+      result += (partition_state.open_physical.size() * sizeof(LogicalRegion));
       // Compute the size of all the regions open below
-      for (std::set<LogicalRegion>::const_iterator it = partition_states[ctx].open_physical.begin();
-            it != partition_states[ctx].open_physical.end(); it++)
+      for (std::set<LogicalRegion>::const_iterator it = partition_state.open_physical.begin();
+            it != partition_state.open_physical.end(); it++)
       {
         result += children[*it]->compute_physical_state_size(ctx, needed, returning); 
       }
@@ -12311,19 +12493,20 @@ namespace RegionRuntime {
     void PartitionNode::pack_physical_state(ContextID ctx, Serializer &rez)
     //--------------------------------------------------------------------------------------------
     {
+      PartitionState &partition_state = partition_states[ctx];
       rez.serialize<PartitionID>(pid);
-      rez.serialize<RegState>(partition_states[ctx].physical_state);
-      rez.serialize<LogicalRegion>(partition_states[ctx].exclusive_reg);
-      rez.serialize<ReductionOpID>(partition_states[ctx].redop);
+      rez.serialize<RegState>(partition_state.physical_state);
+      rez.serialize<LogicalRegion>(partition_state.exclusive_reg);
+      rez.serialize<ReductionOpID>(partition_state.redop);
 
-      rez.serialize<size_t>(partition_states[ctx].open_physical.size());
-      for (std::set<LogicalRegion>::const_iterator it = partition_states[ctx].open_physical.begin();
-             it != partition_states[ctx].open_physical.end(); it++)
+      rez.serialize<size_t>(partition_state.open_physical.size());
+      for (std::set<LogicalRegion>::const_iterator it = partition_state.open_physical.begin();
+             it != partition_state.open_physical.end(); it++)
       {
         rez.serialize<LogicalRegion>(*it);
       }
-      for (std::set<LogicalRegion>::const_iterator it = partition_states[ctx].open_physical.begin();
-            it != partition_states[ctx].open_physical.end(); it++)
+      for (std::set<LogicalRegion>::const_iterator it = partition_state.open_physical.begin();
+            it != partition_state.open_physical.end(); it++)
       {
         children[*it]->pack_physical_state(ctx,rez);
       }
@@ -12334,6 +12517,7 @@ namespace RegionRuntime {
         std::map<InstanceID,InstanceInfo*> &inst_map, UniqueID uid /*=0*/)
     //--------------------------------------------------------------------------------------------
     {
+      PartitionState &partition_state = partition_states[ctx];
       PartitionID check_pid;
       derez.deserialize<PartitionID>(check_pid);
 #ifdef DEBUG_HIGH_LEVEL
@@ -12350,13 +12534,13 @@ namespace RegionRuntime {
             RegState new_physical_state;
             derez.deserialize<RegState>(new_physical_state);
             // If they're the same, we're done, if they're different, mark as exclusive (i.e. bottom)
-            if (new_physical_state != partition_states[ctx].physical_state)
+            if (new_physical_state != partition_state.physical_state)
             {
-              partition_states[ctx].physical_state = REG_OPEN_EXCLUSIVE;
+              partition_state.physical_state = REG_OPEN_EXCLUSIVE;
             }
             // Unpack everything else
-            derez.deserialize<LogicalRegion>(partition_states[ctx].exclusive_reg);
-            derez.deserialize<ReductionOpID>(partition_states[ctx].redop);
+            derez.deserialize<LogicalRegion>(partition_state.exclusive_reg);
+            derez.deserialize<ReductionOpID>(partition_state.redop);
             size_t num_open;
             derez.deserialize<size_t>(num_open);
             for (unsigned idx = 0; idx < num_open; idx++)
@@ -12365,9 +12549,9 @@ namespace RegionRuntime {
               derez.deserialize<LogicalRegion>(child);
               new_open.insert(child);
               // If it wasn't there before, add it
-              if (partition_states[ctx].open_physical.find(child) == partition_states[ctx].open_physical.end())
+              if (partition_state.open_physical.find(child) == partition_state.open_physical.end())
               {
-                partition_states[ctx].open_physical.insert(child);
+                partition_state.open_physical.insert(child);
               }
             }
           }
@@ -12387,15 +12571,15 @@ namespace RegionRuntime {
               derez.deserialize<LogicalRegion>(child);
               new_open.insert(child);
             } 
-            switch (partition_states[ctx].physical_state)
+            switch (partition_state.physical_state)
             {
               case REG_NOT_OPEN:
                 {
                   // Just assign it and we're done
-                  partition_states[ctx].physical_state = new_physical_state;
-                  partition_states[ctx].exclusive_reg = new_exclusive_reg;
-                  partition_states[ctx].redop = new_redop;
-                  partition_states[ctx].open_physical = new_open;
+                  partition_state.physical_state = new_physical_state;
+                  partition_state.exclusive_reg = new_exclusive_reg;
+                  partition_state.redop = new_redop;
+                  partition_state.open_physical = new_open;
                   break;
                 }
               case REG_OPEN_READ_ONLY:
@@ -12413,20 +12597,20 @@ namespace RegionRuntime {
                         "This is a runtime bug.",new_physical_state);
                     exit(1);
                   }
-                  partition_states[ctx].open_physical.insert(new_open.begin(),new_open.end());
+                  partition_state.open_physical.insert(new_open.begin(),new_open.end());
                   break;
                 }
               case REG_OPEN_EXCLUSIVE:
                 {
                   if (new_physical_state == REG_OPEN_EXCLUSIVE)
                   {
-                    if (new_exclusive_reg != partition_states[ctx].exclusive_reg)
+                    if (new_exclusive_reg != partition_state.exclusive_reg)
                     {
                       // Check to see if they have the same reduction op, in which case it's a reduction, otherwise its an error
-                      if ((new_redop != 0) && (new_redop == partition_states[ctx].redop))
+                      if ((new_redop != 0) && (new_redop == partition_state.redop))
                       {
-                        partition_states[ctx].physical_state = REG_OPEN_REDUCE;
-                        partition_states[ctx].open_physical.insert(new_exclusive_reg);
+                        partition_state.physical_state = REG_OPEN_REDUCE;
+                        partition_state.open_physical.insert(new_exclusive_reg);
                       }
                       else
                       {
@@ -12440,15 +12624,15 @@ namespace RegionRuntime {
                   }
                   else if (new_physical_state == REG_OPEN_REDUCE)
                   {
-                    if (new_exclusive_reg != partition_states[ctx].exclusive_reg)
+                    if (new_exclusive_reg != partition_state.exclusive_reg)
                     {
                       log_tree(LEVEL_ERROR,"Tree merging error: merging incompatbile exclusive aliased partition with reduce partition. "
                           "This is a runtime bug.");
                       exit(1);
                     }
-                    partition_states[ctx].physical_state = new_physical_state;
-                    partition_states[ctx].redop = new_redop;
-                    partition_states[ctx].open_physical.insert(new_open.begin(),new_open.end());
+                    partition_state.physical_state = new_physical_state;
+                    partition_state.redop = new_redop;
+                    partition_state.open_physical.insert(new_open.begin(),new_open.end());
                   }
                   else if (new_physical_state == REG_NOT_OPEN)
                   {
@@ -12468,7 +12652,7 @@ namespace RegionRuntime {
                 {
                   if (new_physical_state == REG_OPEN_EXCLUSIVE)
                   {
-                    if (new_exclusive_reg != partition_states[ctx].exclusive_reg)
+                    if (new_exclusive_reg != partition_state.exclusive_reg)
                     {
                       log_tree(LEVEL_ERROR,"Tree merge error: merging exclusive partition into reduce partition with different exclusives. "
                           "This is a runtime bug.");
@@ -12477,13 +12661,13 @@ namespace RegionRuntime {
                   }
                   else if (new_physical_state == REG_OPEN_REDUCE)
                   {
-                    if (new_redop != partition_states[ctx].redop)
+                    if (new_redop != partition_state.redop)
                     {
                       log_tree(LEVEL_ERROR,"Tree merge error: merging incompatible reductions in aliased partition. "
                           "This is a runtime bug.");
                       exit(1);
                     }
-                    partition_states[ctx].open_physical.insert(new_open.begin(),new_open.end());
+                    partition_state.open_physical.insert(new_open.begin(),new_open.end());
                   }
                   else if (new_physical_state == REG_NOT_OPEN)
                   {
@@ -12505,9 +12689,9 @@ namespace RegionRuntime {
         }
         else
         {
-          derez.deserialize<RegState>(partition_states[ctx].physical_state);
-          derez.deserialize<LogicalRegion>(partition_states[ctx].exclusive_reg);
-          derez.deserialize<ReductionOpID>(partition_states[ctx].redop);
+          derez.deserialize<RegState>(partition_state.physical_state);
+          derez.deserialize<LogicalRegion>(partition_state.exclusive_reg);
+          derez.deserialize<ReductionOpID>(partition_state.redop);
           // Check to see if there are any regions that were open that are no longer open
           // and if so invalidate them
           size_t num_open;
@@ -12520,8 +12704,8 @@ namespace RegionRuntime {
           }
           // Go through our currently open children and see if there are 
           // any that are no longer open, if so invalidate them
-          for (std::set<LogicalRegion>::const_iterator it = partition_states[ctx].open_physical.begin();
-                it != partition_states[ctx].open_physical.end(); it++)
+          for (std::set<LogicalRegion>::const_iterator it = partition_state.open_physical.begin();
+                it != partition_state.open_physical.end(); it++)
           {
             if (new_open.find(*it) == new_open.end())
             {
@@ -12530,14 +12714,14 @@ namespace RegionRuntime {
             }
           }
           // Set our new set of open regions
-          partition_states[ctx].open_physical = new_open;
+          partition_state.open_physical = new_open;
         }
       }
       else
       {
-        derez.deserialize<RegState>(partition_states[ctx].physical_state);
-        derez.deserialize<LogicalRegion>(partition_states[ctx].exclusive_reg);
-        derez.deserialize<ReductionOpID>(partition_states[ctx].redop);
+        derez.deserialize<RegState>(partition_state.physical_state);
+        derez.deserialize<LogicalRegion>(partition_state.exclusive_reg);
+        derez.deserialize<ReductionOpID>(partition_state.redop);
         // Not returning, just open and do the standard thing
         size_t num_open;
         derez.deserialize<size_t>(num_open);
@@ -12545,9 +12729,9 @@ namespace RegionRuntime {
         {
           LogicalRegion child;
           derez.deserialize<LogicalRegion>(child);
-          partition_states[ctx].open_physical.insert(child);
+          partition_state.open_physical.insert(child);
         }
-        new_open = partition_states[ctx].open_physical;
+        new_open = partition_state.open_physical;
       }
       
       // Iterate over the newly opened ones in case we merged
@@ -12566,12 +12750,13 @@ namespace RegionRuntime {
       {
         partition_states[ctx] = PartitionState();
       }
-      partition_states[ctx].logical_state = REG_NOT_OPEN;
-      partition_states[ctx].logical_states.clear();
-      partition_states[ctx].active_users.clear();
-      partition_states[ctx].closed_users.clear();
-      partition_states[ctx].open_logical.clear();
-      partition_states[ctx].logop = 0;
+      PartitionState &partition_state = partition_states[ctx];
+      partition_state.logical_state = REG_NOT_OPEN;
+      partition_state.logical_states.clear();
+      partition_state.active_users.clear();
+      partition_state.closed_users.clear();
+      partition_state.open_logical.clear();
+      partition_state.logop = 0;
       // Also initialize any children
       for (std::map<LogicalRegion,RegionNode*>::const_iterator it = children.begin();
             it != children.end(); it++)
@@ -12584,35 +12769,36 @@ namespace RegionRuntime {
     void PartitionNode::register_logical_region(DependenceDetector &dep)
     //--------------------------------------------------------------------------------------------
     {
+      PartitionState &partition_state = partition_states[dep.ctx_id];
       // Check to see if we have arrived at the partition that we want
       if (dep.trace.size() == 1)
       {
         unsigned mapping_dependence_count = 0;
         // First update the set of active tasks and register dependences
         for (std::list<LogicalUser>::const_iterator it = 
-              partition_states[dep.ctx_id].active_users.begin(); it !=
-              partition_states[dep.ctx_id].active_users.end(); it++)
+              partition_state.active_users.begin(); it !=
+              partition_state.active_users.end(); it++)
         {
           perform_dependence_check(*it, dep);
         }
         // if we dominated all the active tasks, move them to the closed set and start a new active set
         // otherwise we have to register the closed tasks as mapping dependences
-        if (mapping_dependence_count == partition_states[dep.ctx_id].active_users.size())
+        if (mapping_dependence_count == partition_state.active_users.size())
         {
-          partition_states[dep.ctx_id].closed_users = partition_states[dep.ctx_id].active_users;
-          partition_states[dep.ctx_id].active_users.clear();
+          partition_state.closed_users = partition_state.active_users;
+          partition_state.active_users.clear();
         }
         else
         {
           for (std::list<LogicalUser>::const_iterator it = 
-                partition_states[dep.ctx_id].closed_users.begin(); it !=
-                partition_states[dep.ctx_id].closed_users.end(); it++)
+                partition_state.closed_users.begin(); it !=
+                partition_state.closed_users.end(); it++)
           {
             perform_dependence_check(*it, dep);
           } 
         }
         // Add ourselves as an active users
-        partition_states[dep.ctx_id].active_users.push_back(dep.user);
+        partition_state.active_users.push_back(dep.user);
 
         const RegionUsage &req = dep.user.usage;
         if (disjoint)
@@ -12620,7 +12806,7 @@ namespace RegionRuntime {
           // There are two optimized cases for disjoint: if everyone is read-only or if every one is doing
           // the same reduction then we don't have to close everything up, otherwise we just close up all
           // the open partitions below
-          switch (partition_states[dep.ctx_id].logical_state)
+          switch (partition_state.logical_state)
           {
             case REG_NOT_OPEN:
               {
@@ -12640,32 +12826,32 @@ namespace RegionRuntime {
               }
             case REG_OPEN_EXCLUSIVE:
               {
-                for (std::set<LogicalRegion>::const_iterator it = partition_states[dep.ctx_id].open_logical.begin();
-                        it != partition_states[dep.ctx_id].open_logical.end(); it++)
+                for (std::set<LogicalRegion>::const_iterator it = partition_state.open_logical.begin();
+                        it != partition_state.open_logical.end(); it++)
                 {
                   children[*it]->close_logical_tree(dep,true/*register dependences*/,
-                                                    partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
+                                                    partition_state.closed_users, true/*closing partition*/);
                 }
-                partition_states[dep.ctx_id].open_logical.clear();
-                partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
-                partition_states[dep.ctx_id].logop = 0;
+                partition_state.open_logical.clear();
+                partition_state.logical_state = REG_NOT_OPEN;
+                partition_state.logop = 0;
                 break;
               }
             case REG_OPEN_REDUCE:
               {
                 // If we're doing the same kind of reduction then no need to close everything up,
                 // otherwise we need to close up all the open partitions
-                if (!IS_REDUCE(req) || (req.redop != partition_states[dep.ctx_id].logop))
+                if (!IS_REDUCE(req) || (req.redop != partition_state.logop))
                 {
-                  for (std::set<LogicalRegion>::const_iterator it = partition_states[dep.ctx_id].open_logical.begin();
-                        it != partition_states[dep.ctx_id].open_logical.end(); it++)
+                  for (std::set<LogicalRegion>::const_iterator it = partition_state.open_logical.begin();
+                        it != partition_state.open_logical.end(); it++)
                   {
                     children[*it]->close_logical_tree(dep,true/*register dependences*/,
-                                                      partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
+                                                      partition_state.closed_users, true/*closing partition*/);
                   }
-                  partition_states[dep.ctx_id].open_logical.clear();
-                  partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
-                  partition_states[dep.ctx_id].logop = 0;
+                  partition_state.open_logical.clear();
+                  partition_state.logical_state = REG_NOT_OPEN;
+                  partition_state.logop = 0;
                 }
                 break;
               }
@@ -12676,7 +12862,7 @@ namespace RegionRuntime {
         else
         {
           // Aliased partition
-          switch (partition_states[dep.ctx_id].logical_state)
+          switch (partition_state.logical_state)
           {
             case REG_NOT_OPEN:
               {
@@ -12689,15 +12875,15 @@ namespace RegionRuntime {
                 // otherwise we need to close up all the open regions
                 if (!IS_READ_ONLY(req))
                 {
-                  for (std::set<LogicalRegion>::const_iterator it = partition_states[dep.ctx_id].open_logical.begin();
-                        it != partition_states[dep.ctx_id].open_logical.end(); it++)
+                  for (std::set<LogicalRegion>::const_iterator it = partition_state.open_logical.begin();
+                        it != partition_state.open_logical.end(); it++)
                   {
                     children[*it]->close_logical_tree(dep,true/*register dependences*/,
-                                                      partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
+                                                      partition_state.closed_users, true/*closing partition*/);
                   }
-                  partition_states[dep.ctx_id].open_logical.clear();
-                  partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
-                  partition_states[dep.ctx_id].logop = 0;
+                  partition_state.open_logical.clear();
+                  partition_state.logical_state = REG_NOT_OPEN;
+                  partition_state.logop = 0;
                 }
                 break;
               }
@@ -12705,31 +12891,31 @@ namespace RegionRuntime {
               {
                 // Definitely need to close up the open region 
 #ifdef DEBUG_HIGH_LEVEL
-                assert(partition_states[dep.ctx_id].open_logical.size() == 1);
+                assert(partition_state.open_logical.size() == 1);
 #endif
-                LogicalRegion open = *(partition_states[dep.ctx_id].open_logical.begin());
+                LogicalRegion open = *(partition_state.open_logical.begin());
                 children[open]->close_logical_tree(dep,true/*register dependences*/,
-                                                    partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
-                partition_states[dep.ctx_id].open_logical.clear();
-                partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
-                partition_states[dep.ctx_id].logop = 0;
+                                                    partition_state.closed_users, true/*closing partition*/);
+                partition_state.open_logical.clear();
+                partition_state.logical_state = REG_NOT_OPEN;
+                partition_state.logop = 0;
                 break;
               }
             case REG_OPEN_REDUCE:
               {
                 // If we're in reduce mode and this is a reduciton of the same kind we can leave it open,
                 // otherwise we need to close up the open regions
-                if (!IS_REDUCE(req) || (req.redop != partition_states[dep.ctx_id].logop))
+                if (!IS_REDUCE(req) || (req.redop != partition_state.logop))
                 {
-                  for (std::set<LogicalRegion>::const_iterator it = partition_states[dep.ctx_id].open_logical.begin();
-                        it != partition_states[dep.ctx_id].open_logical.end(); it++)
+                  for (std::set<LogicalRegion>::const_iterator it = partition_state.open_logical.begin();
+                        it != partition_state.open_logical.end(); it++)
                   {
                     children[*it]->close_logical_tree(dep,true/*register dependences*/,
-                                                      partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
+                                                      partition_state.closed_users, true/*closing partition*/);
                   }
-                  partition_states[dep.ctx_id].open_logical.clear();
-                  partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
-                  partition_states[dep.ctx_id].logop = 0;
+                  partition_state.open_logical.clear();
+                  partition_state.logical_state = REG_NOT_OPEN;
+                  partition_state.logop = 0;
                 }
                 break;
               }
@@ -12745,8 +12931,8 @@ namespace RegionRuntime {
         LogicalRegion log = { dep.trace.back() };
         // Check for any dependences on current active users
         for (std::list<LogicalUser>::const_iterator it = 
-              partition_states[dep.ctx_id].active_users.begin(); it !=
-              partition_states[dep.ctx_id].active_users.end(); it++)
+              partition_state.active_users.begin(); it !=
+              partition_state.active_users.end(); it++)
         {
           // Special case for partitions only, check to see if the task we are a part of is already
           // an active user of this partition, if so there is no need to continue the travesal as
@@ -12763,8 +12949,8 @@ namespace RegionRuntime {
         // Check to see if we have any closed users to wait for
         {
           for (std::list<LogicalUser>::const_iterator it = 
-                partition_states[dep.ctx_id].closed_users.begin(); it !=
-                partition_states[dep.ctx_id].closed_users.end(); it++)
+                partition_state.closed_users.begin(); it !=
+                partition_state.closed_users.end(); it++)
           {
             perform_dependence_check(*it, dep);
           }
@@ -12780,22 +12966,22 @@ namespace RegionRuntime {
           // mode will act as bottom which just means we don't know and therefore have to
           // close everthing up below.
           const RegionUsage &req = dep.user.usage;
-          switch (partition_states[dep.ctx_id].logical_state)
+          switch (partition_state.logical_state)
           {
             case REG_NOT_OPEN:
               {
                 if (IS_READ_ONLY(req))
                 {
-                  partition_states[dep.ctx_id].logical_state = REG_OPEN_READ_ONLY;
+                  partition_state.logical_state = REG_OPEN_READ_ONLY;
                 }
                 else if (IS_REDUCE(req))
                 {
-                  partition_states[dep.ctx_id].logical_state = REG_OPEN_REDUCE;
-                  partition_states[dep.ctx_id].logop = req.redop;
+                  partition_state.logical_state = REG_OPEN_REDUCE;
+                  partition_state.logop = req.redop;
                 }
                 else
                 {
-                  partition_states[dep.ctx_id].logical_state = REG_OPEN_EXCLUSIVE;
+                  partition_state.logical_state = REG_OPEN_EXCLUSIVE;
                 }
                 break;
               }
@@ -12804,7 +12990,7 @@ namespace RegionRuntime {
                 if (!IS_READ_ONLY(req))
                 {
                   // Not everything is read-only any more, back to exclusive
-                  partition_states[dep.ctx_id].logical_state = REG_OPEN_EXCLUSIVE;
+                  partition_state.logical_state = REG_OPEN_EXCLUSIVE;
                 }
                 break;
               }
@@ -12815,21 +13001,21 @@ namespace RegionRuntime {
               }
             case REG_OPEN_REDUCE:
               {
-                if (!IS_REDUCE(req) || (req.redop != partition_states[dep.ctx_id].logop))
+                if (!IS_REDUCE(req) || (req.redop != partition_state.logop))
                 {
                   // Not everything is an open reduction anymore
-                  partition_states[dep.ctx_id].logical_state = REG_OPEN_EXCLUSIVE;
+                  partition_state.logical_state = REG_OPEN_EXCLUSIVE;
                 }
                 break;
               }
             default:
               assert(false);
           }
-          if (partition_states[dep.ctx_id].open_logical.find(log) ==
-              partition_states[dep.ctx_id].open_logical.end())
+          if (partition_state.open_logical.find(log) ==
+              partition_state.open_logical.end())
           {
             // Not open yet, so open it and continue the traversal
-            partition_states[dep.ctx_id].open_logical.insert(log);
+            partition_state.open_logical.insert(log);
             children[log]->open_logical_tree(dep);
           }
           else
@@ -12842,31 +13028,31 @@ namespace RegionRuntime {
         {
           const RegionUsage &req = dep.user.usage;
           // Aliased partition, check to see which mode it is open in
-          switch (partition_states[dep.ctx_id].logical_state)
+          switch (partition_state.logical_state)
           {
             case REG_NOT_OPEN:
               {
 #ifdef DEBUG_HIGH_LEVEL
-                assert(partition_states[dep.ctx_id].open_logical.empty());
+                assert(partition_state.open_logical.empty());
 #endif
                 // Open the partition in the right mode
                 if (IS_READ_ONLY(req))
                 {
-                  partition_states[dep.ctx_id].logical_state = REG_OPEN_READ_ONLY;
+                  partition_state.logical_state = REG_OPEN_READ_ONLY;
                 }
                 else if (IS_WRITE(req))
                 {
-                  partition_states[dep.ctx_id].logical_state = REG_OPEN_EXCLUSIVE;
+                  partition_state.logical_state = REG_OPEN_EXCLUSIVE;
                 }
                 else
                 {
 #ifdef DEBUG_HIGH_LEVEL
                   assert(IS_REDUCE(req));
 #endif
-                  partition_states[dep.ctx_id].logical_state = REG_OPEN_EXCLUSIVE;
-                  partition_states[dep.ctx_id].logop = req.redop;
+                  partition_state.logical_state = REG_OPEN_EXCLUSIVE;
+                  partition_state.logop = req.redop;
                 }
-                partition_states[dep.ctx_id].open_logical.insert(log);
+                partition_state.open_logical.insert(log);
                 children[log]->open_logical_tree(dep);
                 break;
               }
@@ -12875,11 +13061,11 @@ namespace RegionRuntime {
                 if (IS_READ_ONLY(req))
                 {
                   // Just another read, check to see if the one we want is already open
-                  if (partition_states[dep.ctx_id].open_logical.find(log) ==
-                      partition_states[dep.ctx_id].open_logical.end())
+                  if (partition_state.open_logical.find(log) ==
+                      partition_state.open_logical.end())
                   {
                     // not open yet, open it
-                    partition_states[dep.ctx_id].open_logical.insert(log);
+                    partition_state.open_logical.insert(log);
                     children[log]->open_logical_tree(dep);
                   }
                   else
@@ -12892,20 +13078,20 @@ namespace RegionRuntime {
                 {
                   // Either a write or a reduce, either way we need to close it up
                   for (std::set<LogicalRegion>::const_iterator it = 
-                        partition_states[dep.ctx_id].open_logical.begin(); it !=
-                        partition_states[dep.ctx_id].open_logical.end(); it++)
+                        partition_state.open_logical.begin(); it !=
+                        partition_state.open_logical.end(); it++)
                   {
                     // Close it up
                     children[*it]->close_logical_tree(dep, true/*register dependences*/,
-                                                      partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
+                                                      partition_state.closed_users, true/*closing partition*/);
                   }
-                  partition_states[dep.ctx_id].open_logical.clear();
-                  partition_states[dep.ctx_id].open_logical.insert(log);
+                  partition_state.open_logical.clear();
+                  partition_state.open_logical.insert(log);
                   // Regardless of whether this is write or a reduce, open in exclusive mode
-                  partition_states[dep.ctx_id].logical_state = REG_OPEN_EXCLUSIVE;
+                  partition_state.logical_state = REG_OPEN_EXCLUSIVE;
                   if (IS_REDUCE(req))
                   {
-                    partition_states[dep.ctx_id].logop = req.redop;
+                    partition_state.logop = req.redop;
                   }
                   // Open up the one we want
                   children[log]->open_logical_tree(dep);
@@ -12915,14 +13101,14 @@ namespace RegionRuntime {
             case REG_OPEN_EXCLUSIVE:
               {
 #ifdef DEBUG_HIGH_LEVEL
-                assert(partition_states[dep.ctx_id].open_logical.size() == 1);
+                assert(partition_state.open_logical.size() == 1);
 #endif
                 // Check to see if the region we want to visit is the same
-                if (log == *(partition_states[dep.ctx_id].open_logical.begin()))
+                if (log == *(partition_state.open_logical.begin()))
                 {
                   if (IS_REDUCE(req))
                   {
-                    partition_states[dep.ctx_id].logop = req.redop; 
+                    partition_state.logop = req.redop; 
                   }
                   // They are the same, continue the traversal
                   children[log]->register_logical_region(dep);
@@ -12930,27 +13116,27 @@ namespace RegionRuntime {
                 else
                 {
                   // Different, close up the open one and open the one that we want
-                  LogicalRegion other = *(partition_states[dep.ctx_id].open_logical.begin());
+                  LogicalRegion other = *(partition_state.open_logical.begin());
                   children[other]->close_logical_tree(dep,true/*register dependences*/,
-                                                      partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
-                  partition_states[dep.ctx_id].open_logical.clear();
-                  partition_states[dep.ctx_id].open_logical.insert(log);
+                                                      partition_state.closed_users, true/*closing partition*/);
+                  partition_state.open_logical.clear();
+                  partition_state.open_logical.insert(log);
                   // If the new region is read-only change our state
                   if (IS_READ_ONLY(req))
                   {
-                    partition_states[dep.ctx_id].logical_state = REG_OPEN_READ_ONLY;
+                    partition_state.logical_state = REG_OPEN_READ_ONLY;
                   }
                   else if (IS_REDUCE(req))
                   {
                     // Check to see if our reduction was already going on, if so put it in reduce mode
                     // otherwise just keep it in exclusive mode
-                    if (req.redop == partition_states[dep.ctx_id].logop)
+                    if (req.redop == partition_state.logop)
                     {
-                      partition_states[dep.ctx_id].logical_state = REG_OPEN_REDUCE;
+                      partition_state.logical_state = REG_OPEN_REDUCE;
                     }
                     else
                     {
-                      partition_states[dep.ctx_id].logop = req.redop;
+                      partition_state.logop = req.redop;
                     }
                   }
                   // Open the one we want
@@ -12962,49 +13148,49 @@ namespace RegionRuntime {
               {
                 // If it is a read, a write, or a different kind of reduction we have to close it
                 if (IS_READ_ONLY(req) || IS_WRITE(req) || 
-                    (IS_REDUCE(req) && (req.redop != partition_states[dep.ctx_id].logop)))
+                    (IS_REDUCE(req) && (req.redop != partition_state.logop)))
                 {
                   // Need to close up all the open regions and then re-open in the right mode
                   for (std::set<LogicalRegion>::const_iterator it = 
-                        partition_states[dep.ctx_id].open_logical.begin(); it !=
-                        partition_states[dep.ctx_id].open_logical.end(); it++)
+                        partition_state.open_logical.begin(); it !=
+                        partition_state.open_logical.end(); it++)
                   {
                     children[*it]->close_logical_tree(dep, true/*register dependences*/,
-                                                      partition_states[dep.ctx_id].closed_users, true/*closing partition*/);
+                                                      partition_state.closed_users, true/*closing partition*/);
                   }
-                  partition_states[dep.ctx_id].open_logical.clear();
-                  partition_states[dep.ctx_id].open_logical.insert(log);
+                  partition_state.open_logical.clear();
+                  partition_state.open_logical.insert(log);
                   if (IS_READ_ONLY(req))
                   {
-                    partition_states[dep.ctx_id].logical_state = REG_OPEN_READ_ONLY; 
-                    partition_states[dep.ctx_id].logop = 0;
+                    partition_state.logical_state = REG_OPEN_READ_ONLY; 
+                    partition_state.logop = 0;
                   }
                   else if (IS_WRITE(req))
                   {
-                    partition_states[dep.ctx_id].logical_state = REG_OPEN_EXCLUSIVE;
-                    partition_states[dep.ctx_id].logop = 0;
+                    partition_state.logical_state = REG_OPEN_EXCLUSIVE;
+                    partition_state.logop = 0;
                   }
                   else
                   {
 #ifdef DEBUG_HIGH_LEVEL
                     assert(IS_REDUCE(req));
 #endif
-                    partition_states[dep.ctx_id].logical_state = REG_OPEN_REDUCE;
-                    partition_states[dep.ctx_id].logop = req.redop;
+                    partition_state.logical_state = REG_OPEN_REDUCE;
+                    partition_state.logop = req.redop;
                   }
                   children[log]->open_logical_tree(dep);
                 }
                 else
                 {
 #ifdef DEBUG_HIGH_LEVEL
-                  assert(IS_REDUCE(req) && (req.redop == partition_states[dep.ctx_id].logop));
+                  assert(IS_REDUCE(req) && (req.redop == partition_state.logop));
 #endif
                   // Same kind of reduction, see if the region we want is already open
                   // if not open it
-                  if (partition_states[dep.ctx_id].open_logical.find(log) ==
-                      partition_states[dep.ctx_id].open_logical.end())
+                  if (partition_state.open_logical.find(log) ==
+                      partition_state.open_logical.end())
                   {
-                    partition_states[dep.ctx_id].open_logical.insert(log);
+                    partition_state.open_logical.insert(log);
                     children[log]->open_logical_tree(dep);
                   }
                   else
@@ -13026,20 +13212,21 @@ namespace RegionRuntime {
     void PartitionNode::open_logical_tree(DependenceDetector &dep)
     //--------------------------------------------------------------------------------------------
     {
+      PartitionState &partition_state = partition_states[dep.ctx_id];
 #ifdef DEBUG_HIGH_LEVEL
       assert(!dep.trace.empty());
       assert(dep.trace.back() == pid);
-      assert(partition_states[dep.ctx_id].open_logical.empty());
-      assert(partition_states[dep.ctx_id].active_users.empty());
-      assert(partition_states[dep.ctx_id].closed_users.empty());
-      assert(partition_states[dep.ctx_id].logop == 0);
+      assert(partition_state.open_logical.empty());
+      assert(partition_state.active_users.empty());
+      assert(partition_state.closed_users.empty());
+      assert(partition_state.logop == 0);
       assert(dep.parent->ctx_id == dep.ctx_id);
 #endif
       // Check to see if we have arrived
       if (dep.trace.size() == 1)
       {
         // We've arrived, add ourselves to the list of active tasks
-        partition_states[dep.ctx_id].active_users.push_back(dep.user);
+        partition_state.active_users.push_back(dep.user);
       }
       else
       {
@@ -13051,19 +13238,19 @@ namespace RegionRuntime {
         {
           if (IS_READ_ONLY(req))
           {
-            partition_states[dep.ctx_id].logical_state = REG_OPEN_READ_ONLY;
+            partition_state.logical_state = REG_OPEN_READ_ONLY;
           }
           else if (IS_REDUCE(req))
           {
-            partition_states[dep.ctx_id].logical_state = REG_OPEN_REDUCE;
-            partition_states[dep.ctx_id].logop = req.redop;
+            partition_state.logical_state = REG_OPEN_REDUCE;
+            partition_state.logop = req.redop;
           }
           else
           {
-            partition_states[dep.ctx_id].logical_state = REG_OPEN_EXCLUSIVE;
+            partition_state.logical_state = REG_OPEN_EXCLUSIVE;
           }
           // Open our region and continue 
-          partition_states[dep.ctx_id].open_logical.insert(log);
+          partition_state.open_logical.insert(log);
           children[log]->open_logical_tree(dep);
         }
         else
@@ -13071,11 +13258,11 @@ namespace RegionRuntime {
           // Open the region in the right mode
           if (IS_READ_ONLY(req))
           {
-            partition_states[dep.ctx_id].logical_state = REG_OPEN_READ_ONLY;
+            partition_state.logical_state = REG_OPEN_READ_ONLY;
           }
           else if (IS_WRITE(req))
           {
-            partition_states[dep.ctx_id].logical_state = REG_OPEN_EXCLUSIVE;
+            partition_state.logical_state = REG_OPEN_EXCLUSIVE;
           }
           else
           {
@@ -13084,10 +13271,10 @@ namespace RegionRuntime {
 #endif
             // Open this in exclusive mode, but mark that there is a reduction
             // going on below which will allow us to go into reduce mode later
-            partition_states[dep.ctx_id].logical_state = REG_OPEN_EXCLUSIVE;
-            partition_states[dep.ctx_id].logop = req.redop;
+            partition_state.logical_state = REG_OPEN_EXCLUSIVE;
+            partition_state.logop = req.redop;
           }
-          partition_states[dep.ctx_id].open_logical.insert(log);
+          partition_state.open_logical.insert(log);
           children[log]->open_logical_tree(dep);
         }
       }
@@ -13098,24 +13285,25 @@ namespace RegionRuntime {
                    std::list<LogicalUser> &closed, bool closing_part)
     //--------------------------------------------------------------------------------------------
     {
+      PartitionState &partition_state = partition_states[dep.ctx_id];
       // Close out all our open partitions, regardless of whether we are disjoint or not
-      for (std::set<LogicalRegion>::const_iterator it = partition_states[dep.ctx_id].open_logical.begin();
-            it != partition_states[dep.ctx_id].open_logical.end(); it++)
+      for (std::set<LogicalRegion>::const_iterator it = partition_state.open_logical.begin();
+            it != partition_state.open_logical.end(); it++)
       {
         children[*it]->close_logical_tree(dep,true/*register dependences*/,closed, closing_part);
       }
       // Clear out the list of open regions since they are all close now
-      partition_states[dep.ctx_id].open_logical.clear();
-      partition_states[dep.ctx_id].logical_state = REG_NOT_OPEN;
-      partition_states[dep.ctx_id].logop = 0;
+      partition_state.open_logical.clear();
+      partition_state.logical_state = REG_NOT_OPEN;
+      partition_state.logop = 0;
       // Now register any dependences we might have
       if (register_dependences)
       {
         // Everything here is a mapping dependence since we will be copying from these regions
         // back into their parent regions
         for (std::list<LogicalUser>::const_iterator it = 
-              partition_states[dep.ctx_id].active_users.begin(); it !=
-              partition_states[dep.ctx_id].active_users.end(); it++)
+              partition_state.active_users.begin(); it !=
+              partition_state.active_users.end(); it++)
         {
           perform_dependence_check(*it, dep);
           // Also put them on the closed list
@@ -13123,33 +13311,34 @@ namespace RegionRuntime {
         }
       }
       // Clear out the list of active users
-      partition_states[dep.ctx_id].active_users.clear();
+      partition_state.active_users.clear();
       // We can also clear out the closed users, note that we don't need to worry
       // about recording dependences on the closed users, because all the active tasks
       // have dependences on them
-      partition_states[dep.ctx_id].closed_users.clear();
+      partition_state.closed_users.clear();
     }
 
     //--------------------------------------------------------------------------------------------
     void PartitionNode::register_deletion(ContextID ctx, DeletionOp *op)
     //--------------------------------------------------------------------------------------------
     {
+      PartitionState &partition_state = partition_states[ctx];
       // Register dependences on any users
       for (std::list<LogicalUser>::const_iterator it = 
-            partition_states[ctx].active_users.begin(); it !=
-            partition_states[ctx].active_users.end(); it++)
+            partition_state.active_users.begin(); it !=
+            partition_state.active_users.end(); it++)
       {
         op->add_mapping_dependence(0/*idx*/, *it, TRUE_DEPENDENCE);
       }
       for (std::list<LogicalUser>::const_iterator it = 
-            partition_states[ctx].closed_users.begin(); it !=
-            partition_states[ctx].closed_users.end(); it++)
+            partition_state.closed_users.begin(); it !=
+            partition_state.closed_users.end(); it++)
       {
         op->add_mapping_dependence(0/*idx*/, *it, TRUE_DEPENDENCE);
       }
       // Continue the traversal on any open regions
-      for (std::set<LogicalRegion>::const_iterator it = partition_states[ctx].open_logical.begin();
-            it != partition_states[ctx].open_logical.end(); it++)
+      for (std::set<LogicalRegion>::const_iterator it = partition_state.open_logical.begin();
+            it != partition_state.open_logical.end(); it++)
       {
         children[*it]->register_deletion(ctx, op);
       }
@@ -13163,11 +13352,11 @@ namespace RegionRuntime {
       {
         partition_states[ctx] = PartitionState();
       }
-
-      partition_states[ctx].physical_state = REG_NOT_OPEN;
-      partition_states[ctx].open_physical.clear();
-      partition_states[ctx].exclusive_reg = LogicalRegion::NO_REGION;
-      partition_states[ctx].redop = 0;
+      PartitionState &partition_state = partition_states[ctx];
+      partition_state.physical_state = REG_NOT_OPEN;
+      partition_state.open_physical.clear();
+      partition_state.exclusive_reg = LogicalRegion::NO_REGION;
+      partition_state.redop = 0;
 
       for (std::map<LogicalRegion,RegionNode*>::const_iterator it = children.begin();
             it != children.end(); it++)
@@ -13180,6 +13369,7 @@ namespace RegionRuntime {
     Event PartitionNode::register_physical_instance(RegionRenamer &ren, Event precondition)
     //--------------------------------------------------------------------------------------------
     {
+      PartitionState &partition_state = partition_states[ren.ctx_id];
 #ifdef DEBUG_HIGH_LEVEL
       assert(!ren.trace.empty());
       assert(ren.trace.back() == pid);
@@ -13192,46 +13382,46 @@ namespace RegionRuntime {
       {
         // Check to see if it's already open, if not open it,
         // otherwise continue the traversal
-        if (partition_states[ren.ctx_id].open_physical.find(log) !=
-            partition_states[ren.ctx_id].open_physical.end())
+        if (partition_state.open_physical.find(log) !=
+            partition_state.open_physical.end())
         {
           return children[log]->register_physical_instance(ren, precondition);
         }
         else
         {
-          partition_states[ren.ctx_id].open_physical.insert(log);
+          partition_state.open_physical.insert(log);
           return children[log]->open_physical_tree(ren, precondition);
         }
       }
       else // Aliased partition
       {
-        switch (partition_states[ren.ctx_id].physical_state)
+        switch (partition_state.physical_state)
         {
           case REG_NOT_OPEN:
             {
 #ifdef DEBUG_HIGH_LEVEL
-              assert(partition_states[ren.ctx_id].open_physical.empty());
+              assert(partition_state.open_physical.empty());
 #endif
               if (IS_READ_ONLY(req))
               {
-                partition_states[ren.ctx_id].physical_state = REG_OPEN_READ_ONLY;
+                partition_state.physical_state = REG_OPEN_READ_ONLY;
               }
               else if (IS_WRITE(req))
               {
-                partition_states[ren.ctx_id].physical_state = REG_OPEN_EXCLUSIVE;
-                partition_states[ren.ctx_id].exclusive_reg = log;
+                partition_state.physical_state = REG_OPEN_EXCLUSIVE;
+                partition_state.exclusive_reg = log;
               }
               else if (IS_REDUCE(req))
               {
-                partition_states[ren.ctx_id].physical_state = REG_OPEN_EXCLUSIVE;
-                partition_states[ren.ctx_id].exclusive_reg = log;
-                partition_states[ren.ctx_id].redop = req.redop;
+                partition_state.physical_state = REG_OPEN_EXCLUSIVE;
+                partition_state.exclusive_reg = log;
+                partition_state.redop = req.redop;
               }
               else
               {
                 assert(false);
               }
-              partition_states[ren.ctx_id].open_physical.insert(log);
+              partition_state.open_physical.insert(log);
               return children[log]->open_physical_tree(ren, precondition);
             }
           case REG_OPEN_READ_ONLY:
@@ -13239,15 +13429,15 @@ namespace RegionRuntime {
               if (IS_READ_ONLY(req))
               {
                 // Check to see if it is already open
-                if (partition_states[ren.ctx_id].open_physical.find(log) !=
-                    partition_states[ren.ctx_id].open_physical.end())
+                if (partition_state.open_physical.find(log) !=
+                    partition_state.open_physical.end())
                 {
                   // Already open, continue traversing
                   return children[log]->register_physical_instance(ren, precondition);
                 }
                 else
                 {
-                  partition_states[ren.ctx_id].open_physical.insert(log);
+                  partition_state.open_physical.insert(log);
                   return children[log]->open_physical_tree(ren, precondition);
                 }
               }
@@ -13256,8 +13446,8 @@ namespace RegionRuntime {
                 // Close up all the open partitions except the one we want
                 bool already_open = false;
                 // We can pass the no instance since these are all ready only
-                for (std::set<LogicalRegion>::iterator it = partition_states[ren.ctx_id].open_physical.begin();
-                      it != partition_states[ren.ctx_id].open_physical.end(); it++)
+                for (std::set<LogicalRegion>::iterator it = partition_state.open_physical.begin();
+                      it != partition_state.open_physical.end(); it++)
                 {
                   if ((*it) == log)
                   {
@@ -13270,13 +13460,13 @@ namespace RegionRuntime {
                                                         ren.ctx, ren.mapper, false/*leave open*/);
                   }
                 }
-                partition_states[ren.ctx_id].open_physical.clear();
-                partition_states[ren.ctx_id].open_physical.insert(log);
-                partition_states[ren.ctx_id].physical_state = REG_OPEN_EXCLUSIVE;
-                partition_states[ren.ctx_id].exclusive_reg = log;
+                partition_state.open_physical.clear();
+                partition_state.open_physical.insert(log);
+                partition_state.physical_state = REG_OPEN_EXCLUSIVE;
+                partition_state.exclusive_reg = log;
                 if (IS_REDUCE(req))
                 {
-                  partition_states[ren.ctx_id].redop = req.redop;
+                  partition_state.redop = req.redop;
                 }
                 if (already_open)
                 {
@@ -13292,12 +13482,12 @@ namespace RegionRuntime {
           case REG_OPEN_EXCLUSIVE:
             {
 #ifdef DEBUG_HIGH_LEVEL
-              assert(partition_states[ren.ctx_id].open_physical.size() == 1);
-              assert(partition_states[ren.ctx_id].open_physical.find(partition_states[ren.ctx_id].exclusive_reg) !=
-                      partition_states[ren.ctx_id].open_physical.end());
+              assert(partition_state.open_physical.size() == 1);
+              assert(partition_state.open_physical.find(partition_state.exclusive_reg) !=
+                      partition_state.open_physical.end());
 #endif
               // Check to see if they are the same instance
-              if (partition_states[ren.ctx_id].exclusive_reg == log)
+              if (partition_state.exclusive_reg == log)
               {
                 // Same instance continue the traversal
                 if (IS_REDUCE(req))
@@ -13305,7 +13495,7 @@ namespace RegionRuntime {
                   // If reduction, update the reduce op 
                   // This is is safe, even if we overwrite a prior reduction because
                   // we'll find it as we go down the tree
-                  partition_states[ren.ctx_id].redop = req.redop;
+                  partition_state.redop = req.redop;
                 }
                 // This is the same instance continue the traversal
                 return children[log]->register_physical_instance(ren, precondition);
@@ -13326,22 +13516,22 @@ namespace RegionRuntime {
                   parent->update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
                   close_physical_tree(ren.ctx_id, target, ren.ctx, ren.mapper, IS_READ_ONLY(req)/*leave open*/);
                   // Update the state of this partition
-                  partition_states[ren.ctx_id].open_physical.insert(log);
+                  partition_state.open_physical.insert(log);
                   if (IS_READ_ONLY(req))
                   {
-                    partition_states[ren.ctx_id].physical_state = REG_OPEN_READ_ONLY;
-                    partition_states[ren.ctx_id].exclusive_reg = LogicalRegion::NO_REGION;
-                    partition_states[ren.ctx_id].redop = 0;
+                    partition_state.physical_state = REG_OPEN_READ_ONLY;
+                    partition_state.exclusive_reg = LogicalRegion::NO_REGION;
+                    partition_state.redop = 0;
                     return children[log]->register_physical_instance(ren, precondition);
                   }
                   else
                   {
                     // Stays in exclusive mode
-                    partition_states[ren.ctx_id].physical_state = REG_OPEN_EXCLUSIVE;
-                    partition_states[ren.ctx_id].exclusive_reg = log;
+                    partition_state.physical_state = REG_OPEN_EXCLUSIVE;
+                    partition_state.exclusive_reg = log;
                     if (IS_REDUCE(req))
                     {
-                      partition_states[ren.ctx_id].redop = req.redop;
+                      partition_state.redop = req.redop;
                     }
                     // Open up the region and return
                     return children[log]->open_physical_tree(ren, precondition);
@@ -13350,13 +13540,13 @@ namespace RegionRuntime {
                 else // Reduction in exclusive mode down different open region
                 {
                   // Check to see if there is already a reducer operating in the exclusive partition
-                  if ((partition_states[ren.ctx_id].redop == 0) || 
-                      (partition_states[ren.ctx_id].redop == req.redop))
+                  if ((partition_state.redop == 0) || 
+                      (partition_state.redop == req.redop))
                   {
                     // No reduction or same reduction
-                    partition_states[ren.ctx_id].redop = req.redop;
-                    partition_states[ren.ctx_id].physical_state = REG_OPEN_REDUCE;
-                    partition_states[ren.ctx_id].open_physical.insert(log);
+                    partition_state.redop = req.redop;
+                    partition_state.physical_state = REG_OPEN_REDUCE;
+                    partition_state.open_physical.insert(log);
                     return children[log]->open_physical_tree(ren, precondition);
                   }
                   else
@@ -13371,10 +13561,10 @@ namespace RegionRuntime {
                     parent->update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
                     close_physical_tree(ren.ctx_id, target, ren.ctx, ren.mapper, false/*leave open*/);
                     // Partition stays in exclusive mode
-                    partition_states[ren.ctx_id].physical_state = REG_OPEN_EXCLUSIVE;
-                    partition_states[ren.ctx_id].open_physical.insert(log);
-                    partition_states[ren.ctx_id].exclusive_reg = log;
-                    partition_states[ren.ctx_id].redop = req.redop;
+                    partition_state.physical_state = REG_OPEN_EXCLUSIVE;
+                    partition_state.open_physical.insert(log);
+                    partition_state.exclusive_reg = log;
+                    partition_state.redop = req.redop;
                     return children[log]->open_physical_tree(ren, precondition);
                   }
                 }
@@ -13394,36 +13584,36 @@ namespace RegionRuntime {
                 parent->update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
                 close_physical_tree(ren.ctx_id, target, ren.ctx, ren.mapper, IS_READ_ONLY(req));
                 // Update the state of the partition
-                partition_states[ren.ctx_id].open_physical.insert(log);
+                partition_state.open_physical.insert(log);
                 if (IS_READ_ONLY(req))
                 {
-                  partition_states[ren.ctx_id].physical_state = REG_OPEN_READ_ONLY;
-                  partition_states[ren.ctx_id].exclusive_reg = LogicalRegion::NO_REGION;
-                  partition_states[ren.ctx_id].redop = 0;
+                  partition_state.physical_state = REG_OPEN_READ_ONLY;
+                  partition_state.exclusive_reg = LogicalRegion::NO_REGION;
+                  partition_state.redop = 0;
                   return children[log]->register_physical_instance(ren, precondition);
                 }
                 else
                 {
-                  partition_states[ren.ctx_id].physical_state = REG_OPEN_EXCLUSIVE;
-                  partition_states[ren.ctx_id].exclusive_reg = log;
-                  partition_states[ren.ctx_id].redop = 0;
+                  partition_state.physical_state = REG_OPEN_EXCLUSIVE;
+                  partition_state.exclusive_reg = log;
+                  partition_state.redop = 0;
                   return children[log]->open_physical_tree(ren, precondition);
                 }
               }
               else // another reduction
               {
                 // Are they the same reduction
-                if (partition_states[ren.ctx_id].redop == req.redop)
+                if (partition_state.redop == req.redop)
                 {
                   // Already open?                  
-                  if (partition_states[ren.ctx_id].open_physical.find(log) !=
-                      partition_states[ren.ctx_id].open_physical.end())
+                  if (partition_state.open_physical.find(log) !=
+                      partition_state.open_physical.end())
                   {
                     return children[log]->register_physical_instance(ren, precondition);
                   }
                   else
                   {
-                    partition_states[ren.ctx_id].open_physical.insert(log);
+                    partition_state.open_physical.insert(log);
                     return children[log]->open_physical_tree(ren, precondition);
                   }
                 }
@@ -13438,10 +13628,10 @@ namespace RegionRuntime {
                   parent->update_valid_instances(ren.ctx_id, target, true/*writer*/, target_owned);
                   close_physical_tree(ren.ctx_id, target, ren.ctx, ren.mapper, false/*leave open*/);
                   // Partition stays in exclusive mode
-                  partition_states[ren.ctx_id].physical_state = REG_OPEN_EXCLUSIVE;
-                  partition_states[ren.ctx_id].open_physical.insert(log);
-                  partition_states[ren.ctx_id].exclusive_reg = log;
-                  partition_states[ren.ctx_id].redop = req.redop;
+                  partition_state.physical_state = REG_OPEN_EXCLUSIVE;
+                  partition_state.open_physical.insert(log);
+                  partition_state.exclusive_reg = log;
+                  partition_state.redop = req.redop;
                   return children[log]->open_physical_tree(ren, precondition);
                 }
               }
@@ -13459,10 +13649,11 @@ namespace RegionRuntime {
     Event PartitionNode::open_physical_tree(RegionRenamer &ren, Event precondition)
     //--------------------------------------------------------------------------------------------
     {
+      PartitionState &partition_state = partition_states[ren.ctx_id];
 #ifdef DEBUG_HIGH_LEVEL
       assert(ren.trace.size() > 1);
       assert(ren.trace.back() == pid);
-      assert(partition_states[ren.ctx_id].open_physical.empty());
+      assert(partition_state.open_physical.empty());
 #endif
       ren.trace.pop_back(); 
       LogicalRegion log = { ren.trace.back() };
@@ -13471,19 +13662,19 @@ namespace RegionRuntime {
         const RegionUsage &req = ren.usage;
         if (IS_READ_ONLY(req))
         {
-          partition_states[ren.ctx_id].physical_state = REG_OPEN_READ_ONLY;
+          partition_state.physical_state = REG_OPEN_READ_ONLY;
         }
         else
         {
-          partition_states[ren.ctx_id].physical_state = REG_OPEN_EXCLUSIVE;
-          partition_states[ren.ctx_id].exclusive_reg = log;
+          partition_state.physical_state = REG_OPEN_EXCLUSIVE;
+          partition_state.exclusive_reg = log;
           if (IS_REDUCE(req))
           {
-            partition_states[ren.ctx_id].redop = req.redop;
+            partition_state.redop = req.redop;
           }
         }
       }
-      partition_states[ren.ctx_id].open_physical.insert(log);
+      partition_state.open_physical.insert(log);
 #ifdef DEBUG_HIGH_LEVEL
       assert(children.find(log) != children.end());
 #endif
@@ -13496,27 +13687,28 @@ namespace RegionRuntime {
                                         GeneralizedContext *enclosing, Mapper *mapper, bool leave_open)
     //--------------------------------------------------------------------------------------------
     {
+      PartitionState &partition_state = partition_states[ctx];
       // Close up all the open regions
-      for (std::set<LogicalRegion>::iterator it = partition_states[ctx].open_physical.begin();
-            it != partition_states[ctx].open_physical.end(); it++)
+      for (std::set<LogicalRegion>::iterator it = partition_state.open_physical.begin();
+            it != partition_state.open_physical.end(); it++)
       {
         children[*it]->close_physical_tree(ctx, info, enclosing, mapper, leave_open);  
       }
       if (!leave_open)
       {
-        partition_states[ctx].open_physical.clear();
+        partition_state.open_physical.clear();
       }
       if (!disjoint)
       {
-        partition_states[ctx].exclusive_reg = LogicalRegion::NO_REGION;
-        partition_states[ctx].redop = 0;
+        partition_state.exclusive_reg = LogicalRegion::NO_REGION;
+        partition_state.redop = 0;
         if (!leave_open)
         {
-          partition_states[ctx].physical_state = REG_NOT_OPEN;
+          partition_state.physical_state = REG_NOT_OPEN;
         }
         else
         {
-          partition_states[ctx].physical_state = REG_OPEN_READ_ONLY;
+          partition_state.physical_state = REG_OPEN_READ_ONLY;
         }
       }
     }
@@ -13525,16 +13717,17 @@ namespace RegionRuntime {
     void PartitionNode::invalidate_physical_tree(ContextID ctx)
     //--------------------------------------------------------------------------------------------
     {
+      PartitionState &partition_state = partition_states[ctx];
       // Invalidate all the open regions
-      for (std::set<LogicalRegion>::const_iterator it = partition_states[ctx].open_physical.begin();
-            it != partition_states[ctx].open_physical.end(); it++)
+      for (std::set<LogicalRegion>::const_iterator it = partition_state.open_physical.begin();
+            it != partition_state.open_physical.end(); it++)
       {
         children[*it]->invalidate_physical_tree(ctx);
       }
-      partition_states[ctx].open_physical.clear();
-      partition_states[ctx].physical_state = REG_NOT_OPEN;
-      partition_states[ctx].exclusive_reg = LogicalRegion::NO_REGION;
-      partition_states[ctx].redop = 0;
+      partition_state.open_physical.clear();
+      partition_state.physical_state = REG_NOT_OPEN;
+      partition_state.exclusive_reg = LogicalRegion::NO_REGION;
+      partition_state.redop = 0;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -15193,30 +15386,33 @@ namespace RegionRuntime {
       {
         DependenceType dtype;
         Event term_event;
-        if (users.find(*it) != users.end())
+        std::map<UniqueID,UserTask>::const_iterator finder = users.find(*it);
+        if (finder != users.end())
         {
-          dtype = check_dependence_type(users[*it].usage,usage);
-          term_event = users[*it].term_event;
+          dtype = check_dependence_type(finder->second.usage,usage);
+          term_event = finder->second.term_event;
         }
         else
         {
+          finder = added_users.find(*it);
 #ifndef TRACE_CAPTURE
 #ifdef DEBUG_HIGH_LEVEL
-          assert(added_users.find(*it) != added_users.end());
+          assert(finder != added_users.end());
 #endif
-          dtype = check_dependence_type(added_users[*it].usage,usage);
-          term_event = added_users[*it].term_event;
+          dtype = check_dependence_type(finder->second.usage,usage);
+          term_event = finder->second.term_event;
 #else
-          if (added_users.find(*it) != added_users.end())
+          if (finder != added_users.end())
           {
-            dtype = check_dependence_type(added_users[*it].usage,usage);
-            term_event = added_users[*it].term_event;
+            dtype = check_dependence_type(finder->second.usage,usage);
+            term_event = finder->second.term_event;
           }
           else
           {
-            assert(removed_users.find(*it) != removed_users.end());
-            dtype = check_dependence_type(removed_users[*it].usage,usage);
-            term_event = removed_users[*it].term_event;
+            finder = removed_users.find(*it);
+            assert(finder != removed_users.end());
+            dtype = check_dependence_type(finder->second.usage,usage);
+            term_event = finder->second.term_event;
           }
 #endif
         }
@@ -15249,26 +15445,29 @@ namespace RegionRuntime {
         for (std::set<UniqueID>::const_iterator it = epoch_copy_users.begin();
               it != epoch_copy_users.end(); it++)
         {
-          if (copy_users.find(*it) != copy_users.end())
+          std::map<UniqueID,CopyUser>::const_iterator finder = copy_users.find(*it);
+          if (finder != copy_users.end())
           {
-            wait_on_events.insert(copy_users[*it].term_event);  
+            wait_on_events.insert(finder->second.term_event);  
           }
           else
           {
+            finder = added_copy_users.find(*it);
 #ifndef TRACE_CAPTURE
 #ifdef DEBUG_HIGH_LEVEL
-            assert(added_copy_users.find(*it) != added_copy_users.end()); 
+            assert(finder != added_copy_users.end()); 
 #endif
-            wait_on_events.insert(added_copy_users[*it].term_event);
+            wait_on_events.insert(finder->second.term_event);
 #else
-            if (added_copy_users.find(*it) != added_copy_users.end())
+            if (finder != added_copy_users.end())
             {
-              wait_on_events.insert(added_copy_users[*it].term_event);
+              wait_on_events.insert(finder->second.term_event);
             }
             else
             {
-              assert(removed_copy_users.find(*it) != removed_copy_users.end());
-              wait_on_events.insert(removed_copy_users[*it].term_event);
+              finder = removed_copy_users.find(*it);
+              assert(finder != removed_copy_users.end());
+              wait_on_events.insert(finder->second.term_event);
             }
 #endif
           }
@@ -15280,11 +15479,12 @@ namespace RegionRuntime {
         for (std::set<UniqueID>::const_iterator it = epoch_copy_users.begin();
               it != epoch_copy_users.end(); it++)
         {
-          if (copy_users.find(*it) != copy_users.end())
+          std::map<UniqueID,CopyUser>::const_iterator finder = copy_users.find(*it);
+          if (finder != copy_users.end())
           {
-            if (copy_users[*it].redop != usage.redop)
+            if (finder->second.redop != usage.redop)
             {
-              wait_on_events.insert(copy_users[*it].term_event);  
+              wait_on_events.insert(finder->second.term_event);  
             }
             else
             {
@@ -15293,24 +15493,25 @@ namespace RegionRuntime {
           }
           else
           {
+            finder = added_copy_users.find(*it);
 #ifndef TRACE_CAPTURE
 #ifdef DEBUG_HIGH_LEVEL
-            assert(added_copy_users.find(*it) != added_copy_users.end()); 
+            assert(finder != added_copy_users.end()); 
 #endif
-            if (added_copy_users[*it].redop != usage.redop)
+            if (finder->second.redop != usage.redop)
             {
-              wait_on_events.insert(added_copy_users[*it].term_event);
+              wait_on_events.insert(finder->second.term_event);
             }
             else
             {
               all_dominated = false;
             }
 #else
-            if (added_copy_users.find(*it) != added_copy_users.end())
+            if (finder != added_copy_users.end())
             {
-              if (added_copy_users[*it].redop != usage.redop)
+              if (finder->second.redop != usage.redop)
               {
-                wait_on_events.insert(added_copy_users[*it].term_event);
+                wait_on_events.insert(finder->second.term_event);
               }
               else
               {
@@ -15319,10 +15520,11 @@ namespace RegionRuntime {
             }
             else
             {
-              assert(removed_copy_users.find(*it) != removed_copy_users.end());
-              if (removed_copy_users[*it].redop != usage.redop)
+              finder = removed_copy_users.find(*it);
+              assert(finder != removed_copy_users.end());
+              if (finder->second.redop != usage.redop)
               {
-                wait_on_events.insert(removed_copy_users[*it].term_event);
+                wait_on_events.insert(finder->second.term_event);
               }
             }
 #endif
@@ -15336,11 +15538,12 @@ namespace RegionRuntime {
         for (std::set<UniqueID>::const_iterator it = epoch_copy_users.begin();
               it != epoch_copy_users.end(); it++)
         {
-          if (copy_users.find(*it) != copy_users.end())
+          std::map<UniqueID,CopyUser>::const_iterator finder = copy_users.find(*it);
+          if (finder != copy_users.end())
           {
-            if (copy_users[*it].redop != 0)
+            if (finder->second.redop != 0)
             {
-              wait_on_events.insert(copy_users[*it].term_event);
+              wait_on_events.insert(finder->second.term_event);
             }
             else
             {
@@ -15349,24 +15552,25 @@ namespace RegionRuntime {
           }
           else
           {
+            finder = added_copy_users.find(*it);
 #ifndef TRACE_CAPTURE
 #ifdef DEBUG_HIGH_LEVEL
-            assert(added_copy_users.find(*it) != added_copy_users.end());
+            assert(finder != added_copy_users.end());
 #endif
-            if (added_copy_users[*it].redop != 0)
+            if (finder->second.redop != 0)
             {
-              wait_on_events.insert(added_copy_users[*it].term_event);
+              wait_on_events.insert(finder->second.term_event);
             }
             else
             {
               all_dominated = false;
             }
 #else
-            if (added_copy_users.find(*it) != added_copy_users.end())
+            if (finder != added_copy_users.end())
             {
-              if (added_copy_users[*it].redop != 0)
+              if (finder->second.redop != 0)
               {
-                wait_on_events.insert(added_copy_users[*it].term_event);
+                wait_on_events.insert(finder->second.term_event);
               }
               else
               {
@@ -15375,10 +15579,11 @@ namespace RegionRuntime {
             }
             else
             {
-              assert(removed_copy_users.find(*it) != removed_copy_users.end());
-              if (removed_copy_users[*it].redop != 0)
+              finder = removed_copy_users.find(*it);
+              assert(finder != removed_copy_users.end());
+              if (finder->second.redop != 0)
               {
-                wait_on_events.insert(removed_copy_users[*it].term_event);
+                wait_on_events.insert(finder->second.term_event);
               }
             }
 #endif
@@ -15401,26 +15606,29 @@ namespace RegionRuntime {
         for (std::set<UniqueID>::const_iterator it = epoch_users.begin();
               it != epoch_users.end(); it++)
         {
-          if (users.find(*it) != users.end())
+          std::map<UniqueID,UserTask>::const_iterator finder = users.find(*it);
+          if (finder != users.end())
           {
-            wait_on_events.insert(users[*it].term_event);
+            wait_on_events.insert(finder->second.term_event);
           }
           else
           {
+            finder = added_users.find(*it);
 #ifndef TRACE_CAPTURE
 #ifdef DEBUG_HIGH_LEVEL
-            assert(added_users.find(*it) != added_users.end());
+            assert(finder != added_users.end());
 #endif
-            wait_on_events.insert(added_users[*it].term_event);
+            wait_on_events.insert(finder->second.term_event);
 #else
-            if (added_users.find(*it) != added_users.end())
+            if (finder != added_users.end())
             {
-              wait_on_events.insert(added_users[*it].term_event);
+              wait_on_events.insert(finder->second.term_event);
             }
             else
             {
-              assert(removed_users.find(*it) != removed_users.end());
-              wait_on_events.insert(removed_users[*it].term_event);
+              finder = removed_users.find(*it);
+              assert(finder != removed_users.end());
+              wait_on_events.insert(finder->second.term_event);
             }
 #endif
           }
@@ -15428,26 +15636,29 @@ namespace RegionRuntime {
         for (std::set<UniqueID>::const_iterator it = epoch_copy_users.begin();
               it != epoch_copy_users.end(); it++)
         {
-          if (copy_users.find(*it) != copy_users.end())
+          std::map<UniqueID,CopyUser>::const_iterator finder = copy_users.find(*it);
+          if (finder != copy_users.end())
           {
-            wait_on_events.insert(copy_users[*it].term_event);
+            wait_on_events.insert(finder->second.term_event);
           }
           else
           {
+            finder = added_copy_users.find(*it);
 #ifndef TRACE_CAPTURE
 #ifdef DEBUG_HIGH_LEVEL
-            assert(added_copy_users.find(*it) != added_copy_users.end());
+            assert(finder != added_copy_users.end());
 #endif
-            wait_on_events.insert(added_copy_users[*it].term_event);
+            wait_on_events.insert(finder->second.term_event);
 #else
-            if (added_copy_users.find(*it) != added_copy_users.end())
+            if (finder != added_copy_users.end())
             {
-              wait_on_events.insert(added_copy_users[*it].term_event);
+              wait_on_events.insert(finder->second.term_event);
             }
             else
             {
-              assert(removed_copy_users.find(*it) != removed_copy_users.end());
-              wait_on_events.insert(removed_copy_users[*it].term_event);
+              finder = removed_copy_users.find(*it);
+              assert(finder != removed_copy_users.end());
+              wait_on_events.insert(finder->second.term_event);
             }
 #endif
           }
@@ -15463,55 +15674,58 @@ namespace RegionRuntime {
         for (std::set<UniqueID>::const_iterator it = epoch_users.begin();
               it != epoch_users.end(); it++)
         {
-          if (users.find(*it) != users.end())
+          std::map<UniqueID,UserTask>::const_iterator finder = users.find(*it);
+          if (finder != users.end())
           {
             // don't need to wait for other reducers to finish
-            if (IS_REDUCE(users[*it].usage) &&
-                (users[*it].usage.redop == redop))
+            if (IS_REDUCE(finder->second.usage) &&
+                (finder->second.usage.redop == redop))
             {
               all_dominated = false;
             }
             else
             {
-              wait_on_events.insert(users[*it].term_event);
+              wait_on_events.insert(finder->second.term_event);
             }
           }
           else
           {
+            finder = added_users.find(*it);
 #ifndef TRACE_CAPTURE
 #ifdef DEBUG_HIGH_LEVEL
-            assert(added_users.find(*it) != added_users.end());
+            assert(finder != added_users.end());
 #endif
-            if (IS_REDUCE(added_users[*it].usage) &&
-                (added_users[*it].usage.redop != redop))
+            if (IS_REDUCE(finder->second.usage) &&
+                (finder->second.usage.redop != redop))
             {
               all_dominated = false;
             }
             else
             {
-              wait_on_events.insert(added_users[*it].term_event);
+              wait_on_events.insert(finder->second.term_event);
             }
 #else
-            if (added_users.find(*it) != added_users.end())
+            if (finder != added_users.end())
             {
-              if (IS_REDUCE(added_users[*it].usage) &&
-                  (added_users[*it].usage.redop == redop))
+              if (IS_REDUCE(finder->second.usage) &&
+                  (finder->second.usage.redop == redop))
               {
                 all_dominated = false;
               }
               else
               {
-                wait_on_events.insert(added_users[*it].term_event);
+                wait_on_events.insert(finder->second.term_event);
               }
             }
             else
             {
-              assert(removed_users.find(*it) != removed_users.end());
+              finder = removed_users.find(*it);
+              assert(finder != removed_users.end());
               // All dominated is still true here since this was in the removed users set
-              if (!IS_REDUCE(removed_users[*it].usage) &&
-                  (removed_users[*it].usage.redop != redop))
+              if (!IS_REDUCE(finder->second.usage) &&
+                  (finder->second.usage.redop != redop))
               {
-                wait_on_events.insert(removed_users[*it].term_event);
+                wait_on_events.insert(finder->second.term_event);
               }
             }
 #endif
@@ -15520,49 +15734,52 @@ namespace RegionRuntime {
         for (std::set<UniqueID>::const_iterator it = epoch_copy_users.begin();
               it != epoch_copy_users.end(); it++)
         {
-          if (copy_users.find(*it) != copy_users.end())
+          std::map<UniqueID,CopyUser>::const_iterator finder = copy_users.find(*it);
+          if (finder != copy_users.end())
           {
-            if (copy_users[*it].redop == redop)
+            if (finder->second.redop == redop)
             {
               all_dominated = false;
             }
             else
             {
-              wait_on_events.insert(copy_users[*it].term_event);
+              wait_on_events.insert(finder->second.term_event);
             }
           }
           else
           {
+            finder = added_copy_users.find(*it);
 #ifndef TRACE_CAPTURE
 #ifdef DEBUG_HIGH_LEVEL
-            assert(added_copy_users.find(*it) != added_copy_users.end());
+            assert(finder != added_copy_users.end());
 #endif
-            if (added_copy_users[*it].redop == redop)
+            if (finder->second.redop == redop)
             {
               all_dominated = false;
             }
             else
             {
-              wait_on_events.insert(added_copy_users[*it].term_event);
+              wait_on_events.insert(finder->second.term_event);
             }
 #else
-            if (added_copy_users.find(*it) != added_copy_users.end())
+            if (finder != added_copy_users.end())
             {
-              if (added_copy_users[*it].redop == redop)
+              if (finder->second.redop == redop)
               {
                 all_dominated = false;
               }
               else
               {
-                wait_on_events.insert(added_copy_users[*it].term_event);
+                wait_on_events.insert(finder->second.term_event);
               }
             }
             else
             {
-              assert(removed_copy_users.find(*it) != removed_copy_users.end());
-              if (!removed_copy_users[*it].redop == redop)
+              finder = removed_copy_users.find(*it);
+              assert(finder != removed_copy_users.end());
+              if (!finder->second.redop == redop)
               {
-                wait_on_events.insert(removed_copy_users[*it].term_event);
+                wait_on_events.insert(finder->second.term_event);
               }
             }
 #endif
@@ -15579,11 +15796,12 @@ namespace RegionRuntime {
         for (std::set<UniqueID>::const_iterator it = epoch_users.begin();
               it != epoch_users.end(); it++)
         {
-          if (users.find(*it) != users.end())
+          std::map<UniqueID,UserTask>::const_iterator finder = users.find(*it);
+          if (finder != users.end())
           {
-            if (HAS_WRITE(users[*it].usage))
+            if (HAS_WRITE(finder->second.usage))
             {
-              wait_on_events.insert(users[*it].term_event);
+              wait_on_events.insert(finder->second.term_event);
             }
             else
             {
@@ -15592,24 +15810,25 @@ namespace RegionRuntime {
           }
           else
           {
+            finder = added_users.find(*it);
 #ifndef TRACE_CAPTURE
 #ifdef DEBUG_HIGH_LEVEL
-            assert(added_users.find(*it) != added_users.end());
+            assert(finder != added_users.end());
 #endif
-            if (HAS_WRITE(added_users[*it].usage))
+            if (HAS_WRITE(finder->second.usage))
             {
-              wait_on_events.insert(added_users[*it].term_event);
+              wait_on_events.insert(finder->second.term_event);
             }
             else
             {
               all_dominated = false;
             }
 #else
-            if (added_users.find(*it) != added_users.end())
+            if (finder != added_users.end())
             {
-              if (HAS_WRITE(added_users[*it].usage))
+              if (HAS_WRITE(finder->second.usage))
               {
-                wait_on_events.insert(added_users[*it].term_event);
+                wait_on_events.insert(finder->second.term_event);
               }
               else
               {
@@ -15618,10 +15837,11 @@ namespace RegionRuntime {
             }
             else
             {
-              assert(removed_users.find(*it) != removed_users.end());
-              if (HAS_WRITE(removed_users[*it].usage))
+              finder = removed_users.find(*it);
+              assert(finder != removed_users.end());
+              if (HAS_WRITE(finder->second.usage))
               {
-                wait_on_events.insert(removed_users[*it].term_event);
+                wait_on_events.insert(finder->second.term_event);
               }
               else
               {
