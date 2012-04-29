@@ -36,6 +36,7 @@
 #define IS_SIMULT(req) ((req).prop == SIMULTANEOUS)
 #define IS_RELAXED(req) ((req).prop == RELAXED)
 
+#define NO_INSTANCE_LOCKS
 
 namespace RegionRuntime {
   namespace HighLevel {
@@ -2637,23 +2638,26 @@ namespace RegionRuntime {
 #endif
       desc->set_regions(regions, true/*check same*/);
       // Check if we want to spawn this task 
-      check_spawn_task(desc);
+      //check_spawn_task(desc);
       // Don't free memory as the task becomes the owner
 
       // Register the task with the parent (performs dependence analysis)
-      ctx->register_child_task(desc);
+      //ctx->register_child_task(desc);
 
       // Figure out where to put this task
-      if (desc->is_ready())
-      {
+      //if (desc->is_ready())
+      //{
         // Figure out where to place this task
         // If local put it in the ready queue (otherwise it's already been sent away)
-        if (target_task(desc))
-        {
-          add_to_ready_queue(desc);
-        }
+      //  if (target_task(desc))
+      //  {
+      //    add_to_ready_queue(desc);
+      //  }
         // No need to reclaim the context, the parent context has a pointer to reclaim later
-      }
+      //}
+
+      enqueue_task(desc);
+
       // If its not ready it's registered in the logical tree and someone will
       // notify it and it will add itself to the ready queue
 
@@ -3706,6 +3710,8 @@ namespace RegionRuntime {
     void HighLevelRuntime::process_schedule_request(void)
     //--------------------------------------------------------------------------------------------
     {
+      // Perform dependence analysis on all tasks that were enqueued since the last time we were awake
+      perform_dependence_analysis();
       // Perform maps and deletions to make sure as many tasks are awake as possible
       perform_maps_and_deletions();
       // Launch up to max_tasks_per_schedule_request tasks, either from the ready queue, or
@@ -3746,7 +3752,8 @@ namespace RegionRuntime {
       // Check to see if have any remaining work in our queues, 
       // if not, then disable the idle task
       if (ready_queue.empty() &&
-          ready_maps.empty() && ready_deletions.empty())
+          ready_maps.empty() && ready_deletions.empty() &&
+          mapping_queue.empty())
       {
         idle_task_enabled = false;
         Processor copy = local_proc;
@@ -3813,6 +3820,41 @@ namespace RegionRuntime {
       }
       // Now that we're done, release the lock
       queue_lock.unlock();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::perform_dependence_analysis(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      std::vector<TaskContext*> enqueued_tasks;
+      {
+        // Empty the current mapping queue
+        AutoLock q_lock(queue_lock);
+        enqueued_tasks = mapping_queue;
+        // Clear out the mapping queue
+        mapping_queue.clear();
+      }
+      for (std::vector<TaskContext*>::const_iterator it = enqueued_tasks.begin();
+            it != enqueued_tasks.end(); it++)
+      {
+        // Check for whether the task should be sapwned
+        check_spawn_task(*it);
+
+        // Register the context with its parent
+        (*it)->parent_ctx->register_child_task(*it);
+
+        // Figure out if this task is runnable
+        if ((*it)->is_ready())
+        {
+          // Figure out where to place this task
+          if (target_task(*it))
+          {
+            // Decided to keep it local, put it on the ready queue
+            add_to_ready_queue(*it);
+          }
+        }
+        // Otherwise, someone else will wake it up
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4034,6 +4076,17 @@ namespace RegionRuntime {
         // Erase all the failed theives
         failed_thiefs.erase(failed_thiefs.lower_bound(map_id),failed_thiefs.upper_bound(map_id));
       }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::enqueue_task(TaskContext *ctx)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Take the queue lock
+      AutoLock q_lock(queue_lock);
+      mapping_queue.push_back(ctx);
+      Processor copy = local_proc;
+      copy.enable_idle_task();
     }
 
     /////////////////////////////////////////////////////////////
@@ -4263,7 +4316,6 @@ namespace RegionRuntime {
       stealable = false;
       steal_count = 0;
       chosen = false;
-      mapped = false;
       unmapped = 0;
       map_event = UserEvent::create_user_event();
       is_index_space = false; // Not unless someone tells us it is later
@@ -4304,6 +4356,12 @@ namespace RegionRuntime {
         region_nodes = parent->region_nodes;
         partition_nodes = parent->partition_nodes;
         instance_infos = parent->instance_infos;
+      }
+      // Add this to the list of tasks in the parent's context
+      // we can do this without a lock since this is the only way for this to happen
+      if (!top_level_task)
+      {
+        parent->child_tasks.push_back(this);
       }
     }
 
@@ -5699,7 +5757,8 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       current_taken = true;
 #endif
-      child_tasks.push_back(child);
+      // Moving to initialize task
+      //child_tasks.push_back(child);
 
       // Now register each of the child task's region dependences
       for (unsigned idx = 0; idx < child->regions.size(); idx++)
@@ -6475,14 +6534,6 @@ namespace RegionRuntime {
           Processor utility = orig_proc.get_utility_processor();
           this->remote_start_event = utility.spawn(NOTIFY_START_ID, rez.get_buffer(), buffer_size);
           // Remote notify task will trigger the mapping event
-          if (unmapped == 0)
-          {
-            this->mapped = true;
-          }
-          else
-          {
-            this->mapped = false;
-          }
         }
         else
         {
@@ -6507,7 +6558,6 @@ namespace RegionRuntime {
           if (unmapped == 0)
           {
             this->map_event.trigger();
-            this->mapped = true;
           }
         }
       }
@@ -6696,14 +6746,6 @@ namespace RegionRuntime {
           // Send this back on the utility processor
           Processor utility = orig_proc.get_utility_processor();
           this->remote_start_event = utility.spawn(NOTIFY_START_ID, rez.get_buffer(), buffer_size);
-          if (unmapped_total == 0)
-          {
-            this->mapped = true;
-          }
-          else
-          {
-            this->mapped = false;
-          }
         }
         else // not remote, should be index space
         {
@@ -6741,22 +6783,11 @@ namespace RegionRuntime {
 #endif
           // Now call the start index space function to notify ourselves that we've started
           orig_ctx->index_space_start(denominator, num_local_points, mapped_physical_instances, !index_owner/*update*/);
-          if (unmapped == 0)
-          {
-            this->mapped = true;
-          }
         }
       }
       else // part of index space but not slice owner
       {
-        if (unmapped == 0)
-        {
-          this->mapped = true;
-        }
-        else
-        {
-          this->mapped = false;
-        }
+        // Do nothing
       }
 #ifdef DEBUG_HIGH_LEVEL
       current_taken = false;
@@ -7026,7 +7057,6 @@ namespace RegionRuntime {
 #endif
       clone->chosen = true;
       clone->stealable = this->stealable;
-      clone->mapped = false;
       clone->unmapped = 0;
       clone->map_event = this->map_event;
       clone->termination_event = this->termination_event;
@@ -7156,7 +7186,6 @@ namespace RegionRuntime {
         assert(mapped_physical_instances.size() == regions.size());
 #endif
         this->unmapped = 0;
-        this->mapped = false;
         physical_mapped.resize(regions.size());
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
@@ -7197,7 +7226,6 @@ namespace RegionRuntime {
         // If we've mapped all the instances, notify that we are done mapping
         if (this->unmapped == 0)
         {
-          this->mapped = true;
           map_event.trigger();
         }
       }
@@ -7216,6 +7244,7 @@ namespace RegionRuntime {
       // Check to see if we're done
       // First see if all the slices have started the index space, if they haven't we can't check
       // any counts yet
+      bool need_trigger = false;
       if ((num_unmapped_points == 0) && (frac_index_space.first == frac_index_space.second))
       {
         // We've seen all the slices, see if we've done any/all of our mappings
@@ -7246,6 +7275,7 @@ namespace RegionRuntime {
             {
               physical_mapped[idx] = true;
               this->unmapped--;
+              need_trigger = true;
             }
           }
 #ifdef DEBUG_HIGH_LEVEL
@@ -7253,12 +7283,11 @@ namespace RegionRuntime {
 #endif
         }
         // Are we done with mapping all the regions?
-        if (!this->mapped)
+        if (need_trigger)
         {
 #ifdef DEBUG_HIGH_LEVEL
           assert(this->unmapped == 0); // We better be done mapping at this point
 #endif
-          this->mapped = true;
           this->map_event.trigger();
         }
         // We can also free all the remote copy instances since all the tasks of the index
@@ -7492,6 +7521,8 @@ namespace RegionRuntime {
 #endif
 
       // Release all our copy references
+      // Moved to children_mapped so we don't have to take the lock
+#if 0
       {
         AutoLock ctx_lock(current_lock);
         for (std::vector<InstanceInfo*>::const_iterator it = source_copy_instances.begin();
@@ -7501,6 +7532,7 @@ namespace RegionRuntime {
         }
         source_copy_instances.clear();
       }
+#endif
       
       // Get the set of physical regions for the task
       for (unsigned idx = 0; idx < regions.size(); idx++)
@@ -7620,6 +7652,16 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         current_taken = true;
 #endif
+        // Remove all our source copy instances here
+        {
+          for (std::vector<InstanceInfo*>::const_iterator it = source_copy_instances.begin();
+              it != source_copy_instances.end(); it++)
+          {
+            (*it)->remove_copy_user(this->unique_id);
+          }
+          source_copy_instances.clear();
+        }
+
         // Perform any deletions that haven't already been performed
         // Do this early to get the garbage collector going and to
         // remove things that don't need to be sent back
@@ -7643,7 +7685,6 @@ namespace RegionRuntime {
               it != child_tasks.end(); it++)
         {
 #ifdef DEBUG_HIGH_LEVEL
-          assert((*it)->mapped);
           assert((*it)->get_termination_event().exists());
 #endif
           cleanup_events.insert((*it)->get_termination_event());
@@ -7756,7 +7797,7 @@ namespace RegionRuntime {
             // Get the required infos for all the remote instances that need to be returned
             // Only need to do this if we aren't fully mapped otherwise it happened 
             // already in map and launch task
-            if (!this->mapped)
+            if (unmapped > 0) 
             {
               for (std::map<InstanceID,InstanceInfo*>::const_iterator it = instance_infos->begin();
                     it != instance_infos->end(); it++)
@@ -7865,7 +7906,6 @@ namespace RegionRuntime {
             // Check to see if we had any unmapped regions in which case we can now trigger that we've been mapped
             if (unmapped > 0)
             {
-              mapped = true;
               map_event.trigger();
             }
           }
@@ -7902,13 +7942,13 @@ namespace RegionRuntime {
         // Release the context lock when it goes out of scope
       }
 
-      if (cleanup_events.empty())
-      {
+      //if (cleanup_events.empty())
+      //{
         // We already hold the current context lock so we don't need to get it
         // when we call the finish task
-        finish_task(true/*acquire lock*/);
-      }
-      else
+      //  finish_task(true/*acquire lock*/);
+      //}
+      //else
       {
         size_t buffer_size = sizeof(Processor) + sizeof(Context);
         Serializer rez(buffer_size);
@@ -8186,7 +8226,6 @@ namespace RegionRuntime {
 #endif
         if (unmapped == 0)
         {
-          mapped = true;
           map_event.trigger();
         }
       }
@@ -8355,7 +8394,6 @@ namespace RegionRuntime {
         // If we had any unmapped children indicate that we are now mapped
         if (unmapped > 0)
         {
-          mapped = true;
           map_event.trigger();
         }
         // Also free any copy source copy instances since we know that we're done with them
@@ -8619,7 +8657,7 @@ namespace RegionRuntime {
           // Send back the set of all instance infos that are remote and haven't been sent back
           // or are local and haven't been collected.  Only need to do this if it didn't happen
           // in map_and_launch already when all the tasks were mapped
-          if (!this->mapped)
+          if (unmapped > 0)
           {
             for (std::map<InstanceID,InstanceInfo*>::const_iterator it = instance_infos->begin();
                   it != instance_infos->end(); it++)
@@ -10549,9 +10587,9 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       // Check to make sure we have enough contexts
-      if (region_states.size() <= ctx)
+      if (region_states.find(ctx) == region_states.end())
       {
-        region_states.resize(ctx+1);
+        region_states[ctx] = RegionState();
       }
       region_states[ctx].logical_state = PART_NOT_OPEN;
       region_states[ctx].open_logical.clear();
@@ -11058,9 +11096,9 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       // Check to see if we have the size
-      if (region_states.size() <= ctx)
+      if (region_states.find(ctx) == region_states.end())
       {
-        region_states.resize(ctx+1);
+        region_states[ctx] = RegionState();
       }
       region_states[ctx].open_physical.clear();
       region_states[ctx].valid_instances.clear();
@@ -12524,9 +12562,9 @@ namespace RegionRuntime {
     void PartitionNode::initialize_logical_context(ContextID ctx)
     //--------------------------------------------------------------------------------------------
     {
-      if (partition_states.size() <= ctx)
+      if (partition_states.find(ctx) == partition_states.end())
       {
-        partition_states.resize(ctx+1);
+        partition_states[ctx] = PartitionState();
       }
       partition_states[ctx].logical_state = REG_NOT_OPEN;
       partition_states[ctx].logical_states.clear();
@@ -13121,9 +13159,9 @@ namespace RegionRuntime {
     void PartitionNode::initialize_physical_context(ContextID ctx)
     //--------------------------------------------------------------------------------------------
     {
-      if (partition_states.size() <= ctx)
+      if (partition_states.find(ctx) == partition_states.end())
       {
-        partition_states.resize(ctx+1);
+        partition_states[ctx] = PartitionState();
       }
 
       partition_states[ctx].physical_state = REG_NOT_OPEN;
@@ -13552,7 +13590,11 @@ namespace RegionRuntime {
         }
         else
         {
+#ifndef NO_INSTANCE_LOCKS
           inst_lock = Lock::create_lock();
+#else
+          inst_lock = Lock::NO_LOCK;
+#endif
           // our valid event is currently the no event
           valid_event = Event::NO_EVENT;
         }
@@ -13573,7 +13615,9 @@ namespace RegionRuntime {
       // Do this in garbage collection instead
       if (!remote && /*!clone &&*/ (parent == NULL) && (this != InstanceInfo::get_no_instance()))
       {
+#ifndef NO_INSTANCE_LOCKS
         inst_lock.destroy_lock();
+#endif
       }
 #ifdef DEBUG_HIGH_LEVEL
 #ifndef DISABLE_GC 
@@ -14221,6 +14265,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!collected);
+      assert(!returned);
 #endif
       // Subtract the fraction that we're taking
       local_frac.subtract(to_take);

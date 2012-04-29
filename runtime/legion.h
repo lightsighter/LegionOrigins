@@ -918,13 +918,16 @@ namespace RegionRuntime {
       // Where the magic happens!
       void process_schedule_request(void); 
       void perform_maps_and_deletions(void); 
+      void perform_dependence_analysis(void);
       void perform_region_mapping(RegionMappingImpl *impl);
+      void enqueue_task(TaskContext *ctx); // enqueue the task on the mapping queue
       void check_spawn_task(TaskContext *ctx); // set the spawn parameter
       bool target_task(TaskContext *ctx); // Select a target processor, return true if local 
       // Need to hold queue lock prior to calling split task
       bool split_task(TaskContext *ctx, unsigned ways); // Return true if still local
       void issue_steal_requests(void);
       void advertise(MapperID map_id); // Advertise work when we have it for a given mapper
+      
     private:
       // Static variables
       static HighLevelRuntime *runtime_map;
@@ -943,6 +946,7 @@ namespace RegionRuntime {
       std::vector<ColorizeFnptr> colorize_functions;
       // Task Contexts
       bool idle_task_enabled; // Keep track if the idle task enabled or not
+      std::vector<TaskContext*> mapping_queue; // tasks that need to be mapped (IN ORDER!)
       std::list<TaskContext*> ready_queue; // Tasks ready to be mapped/stolen
       Lock queue_lock; // Protect ready and waiting queues and idle_task_enabled
       unsigned total_contexts;
@@ -1449,7 +1453,6 @@ namespace RegionRuntime {
       // Status information
       bool chosen; // Mapper been invoked
       bool stealable; // Can be stolen
-      bool mapped;
       unsigned unmapped; // Track the number of unmapped regions we need to get from our child tasks
       UserEvent map_event; // Event triggered when the task is mapped
       // Mappable is true when remaining events==0
@@ -1841,7 +1844,7 @@ namespace RegionRuntime {
       const unsigned depth;
       PartitionNode *const parent;
       std::map<PartitionID,PartitionNode*> partitions;
-      std::vector<RegionState> region_states; // indexed by ctx_id
+      std::map<ContextID,RegionState> region_states; // indexed by ctx_id
       bool added; // track whether this is a new node
       bool delete_handle; // for knowing when to delete the region meta data
     };
@@ -1932,7 +1935,7 @@ namespace RegionRuntime {
       const bool disjoint;
       std::map<Color,LogicalRegion> color_map;
       std::map<LogicalRegion,RegionNode*> children;
-      std::vector<PartitionState> partition_states;
+      std::map<ContextID,PartitionState> partition_states;
       bool added; // track whether this is a new node
     };
 
@@ -3139,22 +3142,25 @@ namespace RegionRuntime {
       desc->set_regions(regions, false/*all same*/);
       desc->set_index_space<CT>(index_space, arg_map, must);
       // Check if we want to spawn this task
-      check_spawn_task(desc);
+      //check_spawn_task(desc);
       // Don't free memory as the task becomes the owner
 
       // Register the task with the parent (performs dependence analysis)
-      ctx->register_child_task(desc);
+      //ctx->register_child_task(desc);
 
       // Figure out where to put this task
-      if (desc->is_ready())
-      {
+      //if (desc->is_ready())
+      //{
         // Figure out where to place this task
         // If local put it in the ready queue (otherwise it's already been sent away)
-        if (target_task(desc))
-        {
-          add_to_ready_queue(desc); 
-        }
-      }
+      //  if (target_task(desc))
+      //  {
+      //    add_to_ready_queue(desc); 
+      //  }
+      //}
+
+      enqueue_task(desc);
+
       // If its not ready it's registered in the logical tree and someone will
       // notify it and it will add itself to the ready queue
 
@@ -3197,24 +3203,26 @@ namespace RegionRuntime {
       desc->set_index_space<CT>(index_space, arg_map, must);
       desc->set_reduction(reduction, initial_value);
       // Check if we want to spawn this task
-      check_spawn_task(desc);
+      //check_spawn_task(desc);
       // Don't free memory as the task becomes the owner
 
       // Register the task with the parent (performs dependence analysis)
-      ctx->register_child_task(desc);
+      //ctx->register_child_task(desc);
 
       // Figure out where to put this task
-      if (desc->is_ready())
-      {
+      //if (desc->is_ready())
+      //{
         // Figure out where to place this task
         // If local put it in the ready queue (otherwise it's already been sent away)
-        if (target_task(desc))
-        {
-          add_to_ready_queue(desc); 
-        }
-      }
+      //  if (target_task(desc))
+      //  {
+      //    add_to_ready_queue(desc); 
+      //  }
+      //}
       // If its not ready it's registered in the logical tree and someone will
       // notify it and it will add itself to the ready queue
+
+      enqueue_task(desc);
       
       desc->future = new FutureImpl(desc->termination_event);
       // Return the future where the return value will be set
