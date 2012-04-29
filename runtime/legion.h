@@ -1449,7 +1449,7 @@ namespace RegionRuntime {
       // Status information
       bool chosen; // Mapper been invoked
       bool stealable; // Can be stolen
-      bool mapped; // Mapped to a specific processor
+      bool mapped;
       unsigned unmapped; // Track the number of unmapped regions we need to get from our child tasks
       UserEvent map_event; // Event triggered when the task is mapped
       // Mappable is true when remaining events==0

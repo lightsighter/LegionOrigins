@@ -4224,6 +4224,7 @@ namespace RegionRuntime {
       current_lock = context_lock;
       individual_term_event.id = 0;
       individual_term_event.gen = 0;
+      unmapped = 0;
       active = false;
       // Tell the runtime this context is free again
       runtime->free_context(this);
@@ -7570,15 +7571,17 @@ namespace RegionRuntime {
 
       // Check to see if there are any child tasks that are yet to be mapped
       std::set<Event> map_events;
-      for (std::vector<TaskContext*>::const_iterator it = child_tasks.begin();
-            it != child_tasks.end(); it++)
       {
-        if (!((*it)->mapped))
+        // Need to hold the context lock when iterating over the child tasks
+        AutoLock cur_lock(current_lock);
+        for (std::vector<TaskContext*>::const_iterator it = child_tasks.begin();
+              it != child_tasks.end(); it++)
         {
           map_events.insert((*it)->map_event);
         }
       }
-      if (map_events.empty())
+      Event wait_on_event = Event::merge_events(map_events);
+      if (!wait_on_event.exists())
       {
         children_mapped();
       }
@@ -7590,7 +7593,7 @@ namespace RegionRuntime {
         rez.serialize<Context>(this);
         // Launch the task to handle all the children being mapped on the utility processor
         Processor utility = local_proc.get_utility_processor();
-        utility.spawn(CHILDREN_MAPPED_ID,rez.get_buffer(),buffer_size,Event::merge_events(map_events));
+        utility.spawn(CHILDREN_MAPPED_ID,rez.get_buffer(),buffer_size,wait_on_event);
       }
     }
 
