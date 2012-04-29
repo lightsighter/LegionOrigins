@@ -630,7 +630,7 @@ namespace RegionRuntime {
       template<typename T> inline ptr_t<T> alloc(unsigned count = 1);
       template<typename T> inline void     free(ptr_t<T> ptr,unsigned count = 1);
       template<typename T> inline T        read(ptr_t<T> ptr);
-      template<typename T> inline void     write(ptr_t<T> ptr, T newval);
+      template<typename T> inline void     write(ptr_t<T> ptr, const T& newval);
       template<typename T> inline T&       ref(ptr_t<T> ptr);
       template<typename T> inline void     read_partial(ptr_t<T> ptr, off_t offset, void *dst, size_t size);
       template<typename T> inline void     write_partial(ptr_t<T> ptr, off_t offset, const void *src, size_t size);
@@ -2322,7 +2322,11 @@ namespace RegionRuntime {
       // Invoke the task with the given context
       T return_value;
       {
+#ifdef PER_KERNEL_TIMING
+	DetailedTimer::ScopedPush sp(100 + ctx->task_id);
+#else
 	DetailedTimer::ScopedPush sp(TIME_KERNEL);
+#endif
 	return_value = (*TASK_PTR)((const void*)arg_ptr, arglen, regions, ctx, runtime);
       }
 
@@ -2352,7 +2356,11 @@ namespace RegionRuntime {
       
       // Invoke the task with the given context
       {
+#ifdef PER_KERNEL_TIMING
+	DetailedTimer::ScopedPush sp(100 + ctx->task_id);
+#else
 	DetailedTimer::ScopedPush sp(TIME_KERNEL);
+#endif
 	(*TASK_PTR)((const void*)arg_ptr, arglen, regions, ctx, runtime);
       }
 
@@ -2406,14 +2414,22 @@ namespace RegionRuntime {
           fast_regions.push_back(it->convert<AccessorArray>());
         }
 	{
+#ifdef PER_KERNEL_TIMING
+	  DetailedTimer::ScopedPush sp(100 + ctx->task_id);
+#else
 	  DetailedTimer::ScopedPush sp(TIME_KERNEL);
+#endif
 	  return_value = (*FAST_TASK_PTR)((const void*)arg_ptr, arglen, fast_regions, ctx, runtime);
 	}
       }
       else
       {
 	{
+#ifdef PER_KERNEL_TIMING
+	  DetailedTimer::ScopedPush sp(100 + ctx->task_id);
+#else
 	  DetailedTimer::ScopedPush sp(TIME_KERNEL);
+#endif
 	  return_value = (*SLOW_TASK_PTR)((const void *)arg_ptr, arglen, regions, ctx, runtime);
 	}
       }
@@ -2466,13 +2482,21 @@ namespace RegionRuntime {
           fast_regions.push_back(it->convert<AccessorArray>());
         }
 	{
+#ifdef PER_KERNEL_TIMING
+	  DetailedTimer::ScopedPush sp(100 + ctx->task_id);
+#else
 	  DetailedTimer::ScopedPush sp(TIME_KERNEL);
+#endif
 	  (*FAST_TASK_PTR)((const void*)arg_ptr, arglen, fast_regions, ctx, runtime);
 	}
       }
       else
       {
+#ifdef PER_KERNEL_TIMING
+	DetailedTimer::ScopedPush sp(100 + ctx->task_id);
+#else
 	DetailedTimer::ScopedPush sp(TIME_KERNEL);
+#endif
         (*SLOW_TASK_PTR)((const void *)arg_ptr, arglen, regions, ctx, runtime);
       }
 
@@ -2509,7 +2533,11 @@ namespace RegionRuntime {
       // Invoke the task with the given context
       T return_value;
       {
+#ifdef PER_KERNEL_TIMING
+	DetailedTimer::ScopedPush sp(100 + ctx->task_id);
+#else
 	DetailedTimer::ScopedPush sp(TIME_KERNEL);
+#endif
 	return_value = (*TASK_PTR)((const void*)arg_ptr, arglen, local_args, local_size, point, regions, ctx, runtime);
       }
 
@@ -2544,7 +2572,11 @@ namespace RegionRuntime {
       
       // Invoke the task with the given context
       {
+#ifdef PER_KERNEL_TIMING
+	DetailedTimer::ScopedPush sp(100 + ctx->task_id);
+#else
 	DetailedTimer::ScopedPush sp(TIME_KERNEL);
+#endif
 	(*TASK_PTR)((const void*)arg_ptr, arglen, local_args, local_size, point, regions, ctx, runtime);
       }
 
@@ -2599,14 +2631,22 @@ namespace RegionRuntime {
           fast_regions.push_back(it->convert<AccessorArray>());
         }
 	{
+#ifdef PER_KERNEL_TIMING
+	  DetailedTimer::ScopedPush sp(100 + ctx->task_id);
+#else
 	  DetailedTimer::ScopedPush sp(TIME_KERNEL);
+#endif
 	  return_value = (*FAST_TASK_PTR)((const void*)arg_ptr, arglen, local_args, local_size, point, fast_regions, ctx, runtime);
 	}
       }
       else
       {
 	{
+#ifdef PER_KERNEL_TIMING
+	  DetailedTimer::ScopedPush sp(100 + ctx->task_id);
+#else
 	  DetailedTimer::ScopedPush sp(TIME_KERNEL);
+#endif
 	  return_value = (*SLOW_TASK_PTR)((const void *)arg_ptr, arglen, local_args, local_size, point, regions, ctx, runtime);
 	}
       }
@@ -2661,13 +2701,21 @@ namespace RegionRuntime {
           fast_regions.push_back(it->convert<AccessorArray>());
         }
 	{
+#ifdef PER_KERNEL_TIMING
+	  DetailedTimer::ScopedPush sp(100 + ctx->task_id);
+#else
 	  DetailedTimer::ScopedPush sp(TIME_KERNEL);
+#endif
 	  (*FAST_TASK_PTR)((const void*)arg_ptr, arglen, local_args, local_size, point, fast_regions, ctx, runtime);
 	}
       }
       else
       {
+#ifdef PER_KERNEL_TIMING
+	DetailedTimer::ScopedPush sp(100 + ctx->task_id);
+#else
 	DetailedTimer::ScopedPush sp(TIME_KERNEL);
+#endif
         (*SLOW_TASK_PTR)((const void *)arg_ptr, arglen, local_args, local_size, point, regions, ctx, runtime);
       }
 
@@ -3355,7 +3403,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     template<AccessorType AT> template<typename T>
-    inline void PhysicalRegion<AT>::write(ptr_t<T> ptr, T newval)
+    inline void PhysicalRegion<AT>::write(ptr_t<T> ptr, const T& newval)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
