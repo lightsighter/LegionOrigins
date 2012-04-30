@@ -7592,7 +7592,7 @@ namespace RegionRuntime {
         }
         else
         {
-          all_mapped = true;
+          all_mapped = false;
         }
       }
 
