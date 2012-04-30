@@ -921,7 +921,7 @@ namespace RegionRuntime {
       void perform_dependence_analysis(void);
       void perform_region_mapping(RegionMappingImpl *impl);
       void enqueue_task(TaskContext *ctx); // enqueue the task on the mapping queue
-      void check_spawn_task(TaskContext *ctx); // set the spawn parameter
+      void check_spawn_and_map_local(TaskContext *ctx); // set the spawn parameter
       bool target_task(TaskContext *ctx); // Select a target processor, return true if local 
       // Need to hold queue lock prior to calling split task
       bool split_task(TaskContext *ctx, unsigned ways); // Return true if still local
@@ -1047,6 +1047,16 @@ namespace RegionRuntime {
        * can be run in parallel with the parent task
        */
       virtual bool spawn_child_task(const Task *task);
+
+      /**
+       * Return a boolean whether this task should be mapped locally.
+       * If it is chosen to be local, the task will map locally prior to 
+       * being moved to another processor. Note that marking that a task
+       * should be mapped locally will disable the effect of spawn_child_task
+       * and the task will not be stealable, because it will be mapped by
+       * the mapper with the intention of running on a specific processor.
+       */
+      virtual bool map_task_locally(const Task *task);
 
       /**
        * Select a target processor for running this task.  Note this doesn't
@@ -1411,8 +1421,9 @@ namespace RegionRuntime {
                               const std::vector<unsigned> &mapped_counts, bool update); 
       void index_space_mapped(unsigned num_remote_points, const std::vector<unsigned> &mapped_counts);
       void index_space_finished(unsigned num_remote_points);
-      // Check to see whether the index space needs to pre-map any regions
-      void index_space_premap(void);
+      // Check to see whether there are any regions that need to be premapped
+      void pre_map_regions(bool need_lock);
+      void pre_map_region(unsigned idx);
     protected:
       // functions for updating logical region trees
       void create_region(LogicalRegion handle); // (thread-safe)
@@ -1485,6 +1496,7 @@ namespace RegionRuntime {
       // Status information
       bool chosen; // Mapper been invoked
       bool stealable; // Can be stolen
+      bool local_map;
       unsigned unmapped; // Track the number of unmapped regions we need to get from our child tasks
       UserEvent map_event; // Event triggered when the task is mapped
       // Mappable is true when remaining events==0
@@ -1531,7 +1543,8 @@ namespace RegionRuntime {
       size_t reduction_size;
       // Track our sibling tasks on the same node so we can know when to deactivate them
       std::vector<TaskContext*> sibling_tasks;
-      // Pre-mapped instances for writes to individual logical regions
+      // Pre-mapped instances for writes to individual logical regions of index spaces
+      // and also for tasks that request to be mapped locally
       std::map<unsigned/*idx*/,PreMappedRegion> pre_mapped_regions;
     protected:
       TaskContext *parent_ctx; // The parent task on the originating processor
