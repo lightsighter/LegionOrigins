@@ -6286,6 +6286,29 @@ namespace RegionRuntime {
 	return after_copy;
       }
 
+      // another interesting case: if the destination is remote, and the source
+      //  is gasnet, then the destination can read the source itself
+      if((src_mem->kind == Memory::Impl::MKIND_GASNET) &&
+	 (dst_mem->kind == Memory::Impl::MKIND_REMOTE)) {
+	unsigned delegate = ID(dst_impl->memory).node();
+	assert(delegate != gasnet_mynode());
+
+	log_copy.info("passsing the buck to node %d for %x->%x copy",
+		      delegate, src_mem->me.id, dst_mem->me.id);
+	Event after_copy = Event::Impl::create_event();
+	RemoteCopyArgs args;
+	args.source = *this;
+	args.target = target;
+	args.region = region;
+	args.elmt_size = elmt_size;
+	args.bytes_to_copy = bytes_to_copy;
+	args.before_copy = wait_on;
+	args.after_copy = after_copy;
+	RemoteCopyMessage::request(delegate, args);
+	
+	return after_copy;
+      }
+
       if(!wait_on.has_triggered()) {
 	Event after_copy = Event::Impl::create_event();
 	log_copy.debug("copy deferred: %x (%d) -> %x (%d), wait=%x/%d after=%x/%d", id, src_mem->kind, target.id, dst_mem->kind, wait_on.id, wait_on.gen, after_copy.id, after_copy.gen);

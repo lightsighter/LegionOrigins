@@ -7,6 +7,7 @@
 #include <mkl.h>
 #include <mkl_cblas.h>
 #include <sched.h>
+#include <queue>
 
 #include "legion.h"
 
@@ -60,6 +61,7 @@ enum {
   LMAP_PLACE_FBMEM,
   LMAP_PLACE_NONE,
   LMAP_INLINE        = 0x600000,
+  LMAP_MAP_LOCAL    = 0x1000000,
 
   LMAP_PLACE_ATSYS_BASE = 0x400000,
   LMAP_PLACE_ATSYS_END  = 0x4FFFFF,
@@ -224,6 +226,12 @@ public:
 
   virtual bool map_task_locally(const Task *task)
   {
+    // only tasks flagged as needing to be mapped locally will be
+    if(task->tag & LMAP_MAP_LOCAL)
+      return true;
+
+    return false;
+#if 0
     // the top level task and any task that goes to the scheduler cpu are
     //  not mapped locally
     if((task->task_id == TOP_LEVEL_TASK_ID) ||
@@ -232,6 +240,7 @@ public:
 
     // everything else is mapped locally for Linpack
     return true;
+#endif
   }
 
   static int calculate_index_space_tag(int tag, int index)
@@ -254,6 +263,9 @@ public:
 
   Processor pick_processor(int tag)
   {
+    if(tag & LMAP_MAP_LOCAL)
+      tag -= LMAP_MAP_LOCAL;
+
     if(tag == LMAP_PICK_SCHED)
       return sched_list[0];
 
@@ -396,7 +408,7 @@ public:
     log_mapper.info("chose %x", m.id);
 
     target_ranking.push_back(m);
-    enable_WAR_optimization = true;
+    enable_WAR_optimization = false; //true;
   }
 };
 
@@ -578,6 +590,7 @@ class Linpack {
 
     LogicalRegion index_region;
     Partition index_part;
+    LogicalRegion index_subregions[MAX_BLOCKS];
 
     LogicalRegion topblk_region;
     Partition topblk_part;
@@ -783,6 +796,11 @@ class Linpack {
 						    matrix.index_region,
 						    idx_coloring);
     }
+
+    for(int i = 0; i < matrix.block_rows; i++)
+      matrix.index_subregions[i] = runtime->get_subregion(ctx,
+							  matrix.index_part,
+							  i);
 
     matrix.topblk_region = runtime->create_logical_region(ctx,
 							  sizeof(MatrixBlock),
@@ -1309,14 +1327,12 @@ class Linpack {
 					      matrixptr.region,
 					      LMAP_PLACE_SYSMEM);
 
-      LogicalRegion panel_subregion = runtime->get_subregion(ctx,
-							     matrix.row_parts[j],
-							     owner_part);
-      reqs[REGION_PANEL] = RegionRequirement(panel_subregion,
+      LogicalRegion subpanel = runtime->get_subregion(ctx,
+						      matrix.row_parts[j],
+						      owner_part);
+      reqs[REGION_PANEL] = RegionRequirement(subpanel,
 					     READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					     runtime->get_subregion(ctx,
-								    matrix.col_part,
-								    j),
+					     matrix.panel_subregions[j],
 					     LMAP_PLACE_SYSMEM);
       
       reqs[REGION_TOPBLK] = RegionRequirement(topblk_region,
@@ -1334,23 +1350,23 @@ class Linpack {
       Future f = runtime->execute_task(ctx, task_id, reqs,
 				       TaskArgs(matrixptr, k, j, topblk_ptr),
 				       0,
-				       LMAP_PICK_CPU(matrix, k, j));
+				       LMAP_MAP_LOCAL | LMAP_PICK_CPU(matrix, owner_part, j));
       return f;
     }
   };
 
-  class TransposeRowsTask : public Index1DTask {
+  class TransposeRowsTask : public SingleTask {
   protected:
     static TaskID task_id;
 
     struct TaskArgs {
       fatptr_t<BlockedMatrix> matrixptr;
-      int k, j;
+      int k, j, rp;
       ptr_t<MatrixBlock> topblk_ptr;
       
-      TaskArgs(fatptr_t<BlockedMatrix> _matrixptr, int _k, int _j,
+      TaskArgs(fatptr_t<BlockedMatrix> _matrixptr, int _k, int _j, int _rp,
 	       ptr_t<MatrixBlock> _topblk_ptr)
-	: matrixptr(_matrixptr), k(_k), j(_j), topblk_ptr(_topblk_ptr) {}
+	: matrixptr(_matrixptr), k(_k), j(_j), rp(_rp), topblk_ptr(_topblk_ptr) {}
       operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
     };
     
@@ -1364,19 +1380,17 @@ class Linpack {
 
     const TaskArgs *args;
     
-    TransposeRowsTask(Context _ctx, HighLevelRuntime *_runtime, int _idx,
+    TransposeRowsTask(Context _ctx, HighLevelRuntime *_runtime,
 		      const TaskArgs *_args)
-      : Index1DTask(_ctx, _runtime, _idx), args(_args) {}
+      : SingleTask(_ctx, _runtime), args(_args) {}
     
   public:
     template <AccessorType AT>
-    static void task_entry(const void *global_args, size_t global_arglen,
-			   const void *local_args, size_t local_arglen,
-			   const IndexPoint &point,
+    static void task_entry(const void *args, size_t arglen,
 			   std::vector<PhysicalRegion<AT> > &regions,
 			   Context ctx, HighLevelRuntime *runtime)
     {
-      TransposeRowsTask t(ctx, runtime, point[0], (const TaskArgs *)global_args);
+      TransposeRowsTask t(ctx, runtime, (const TaskArgs *)args);
       t.run<AT>(regions);
     }
     
@@ -1384,6 +1398,8 @@ class Linpack {
     template <AccessorType AT>
     void run(std::vector<PhysicalRegion<AT> > &regions) const
     {
+      int idx = args->rp;
+
       log_app.info("transpose_rows(id=%d): k=%d, j=%d, idx=%d\n", task_id, args->k, args->j, idx);
       
       const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
@@ -1498,64 +1514,68 @@ class Linpack {
   public:
     static void register_task(TaskID desired_task_id = AUTO_GENERATE_ID)
     {
-      task_id = HighLevelRuntime::register_index_task
+      task_id = HighLevelRuntime::register_single_task
 	<TransposeRowsTask::task_entry<AccessorGeneric> >(desired_task_id,
 							  Processor::LOC_PROC,
 							  "transpose_rows");
     }
     
-    static FutureMap spawn(Context ctx, HighLevelRuntime *runtime,
-			   const Range &range,
-			   const BlockedMatrix& matrix,
-			   fatptr_t<BlockedMatrix> matrixptr, int k, int j,
-			   LogicalRegion topblk_region,
-			   ptr_t<MatrixBlock> topblk_ptr,
-			   LogicalRegion index_subregion)
+    static void spawn(Context ctx, HighLevelRuntime *runtime,
+		      const Range &range,
+		      const BlockedMatrix& matrix,
+		      fatptr_t<BlockedMatrix> matrixptr, int k, int j,
+		      LogicalRegion topblk_region,
+		      ptr_t<MatrixBlock> topblk_ptr,
+		      LogicalRegion index_subregion,
+		      bool sync)
     {
-      std::vector<Range> index_space;
-      index_space.push_back(range);
+      std::queue<Future> futures;
+      for(int rp = range.start; rp <= range.stop; rp += range.stride) {
+	std::vector<RegionRequirement> reqs;
+	reqs.resize(NUM_REGIONS);
       
-      std::vector<RegionRequirement> reqs;
-      reqs.resize(NUM_REGIONS);
-      
-      reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
-					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      matrixptr.region,
-					      LMAP_PLACE_SYSMEM);
+	reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
+						READ_ONLY, NO_MEMORY, EXCLUSIVE,
+						matrixptr.region,
+						LMAP_PLACE_SYSMEM);
 
-      reqs[REGION_PANEL] = RegionRequirement(matrix.row_parts[j].id,
-					     COLORID_IDENTITY,
-					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
-					     runtime->get_subregion(ctx,
-								    matrix.col_part,
-								    j),
-					     LMAP_PLACE_SYSMEM);
+	LogicalRegion subpanel = runtime->get_subregion(ctx,
+							matrix.row_parts[j],
+							rp);
+	reqs[REGION_PANEL] = RegionRequirement(subpanel,
+					       READ_WRITE, NO_MEMORY, EXCLUSIVE,
+					       matrix.panel_subregions[j],
+					       LMAP_PLACE_SYSMEM);
       
-      reqs[REGION_TOPBLK] = RegionRequirement(topblk_region,
-					      READ_WRITE, NO_MEMORY, RELAXED,
-					      topblk_region,
-					      LMAP_PLACE_GASNET);
+	reqs[REGION_TOPBLK] = RegionRequirement(topblk_region,
+						READ_WRITE, NO_MEMORY, RELAXED,
+						topblk_region,
+						LMAP_PLACE_GASNET);
       
-      reqs[REGION_INDEX] = RegionRequirement(index_subregion,
-					     READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					     index_subregion,
-					     LMAP_PLACE_SYSMEM);
+	reqs[REGION_INDEX] = RegionRequirement(index_subregion,
+					       READ_ONLY, NO_MEMORY, EXCLUSIVE,
+					       index_subregion,
+					       LMAP_PLACE_SYSMEM);
       
-      ArgumentMap arg_map;
-      
-      // double-check that we were registered properly
-      assert(task_id != 0);
-      FutureMap fm = runtime->execute_index_space(ctx, 
-						  task_id,
-						  index_space,
-						  reqs,
-						  TaskArgs(matrixptr, k, j,
-							   topblk_ptr),
-						  ArgumentMap(),
-						  false,
-						  0,
-						  LMAP_PICK_CPU_IDXROW(matrix, j));
-      return fm;
+	// double-check that we were registered properly
+	assert(task_id != 0);
+	Future f = runtime->execute_task(ctx, 
+					 task_id,
+					 reqs,
+					 TaskArgs(matrixptr, k, j, rp,
+						  topblk_ptr),
+					 0,
+					 LMAP_MAP_LOCAL | LMAP_PICK_CPU(matrix, rp, j));
+	if(sync)
+	  futures.push(f);
+	else
+	  f.release();
+      }
+
+      while(futures.size() > 0) {
+	futures.front().get_void_result();
+	futures.pop();
+      }
     }
   };
 
@@ -1569,18 +1589,18 @@ class Linpack {
       return(from);
   }
 
-  class UpdateSubmatrixTask : public Index1DTask {
+  class UpdateSubmatrixTask : public SingleTask {
   protected:
     static TaskID task_id;
 
     struct TaskArgs {
       fatptr_t<BlockedMatrix> matrixptr;
-      int k, j;
+      int k, j, rp;
       ptr_t<MatrixBlock> topblk_ptr;
       
-      TaskArgs(fatptr_t<BlockedMatrix> _matrixptr, int _k, int _j,
+      TaskArgs(fatptr_t<BlockedMatrix> _matrixptr, int _k, int _j, int _rp,
 	       ptr_t<MatrixBlock> _topblk_ptr)
-	: matrixptr(_matrixptr), k(_k), j(_j), topblk_ptr(_topblk_ptr) {}
+	: matrixptr(_matrixptr), k(_k), j(_j), rp(_rp), topblk_ptr(_topblk_ptr) {}
       operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
     };
 
@@ -1594,19 +1614,17 @@ class Linpack {
 
     const TaskArgs *args;
 
-    UpdateSubmatrixTask(Context _ctx, HighLevelRuntime *_runtime, int _idx,
+    UpdateSubmatrixTask(Context _ctx, HighLevelRuntime *_runtime,
 			const TaskArgs *_args)
-      : Index1DTask(_ctx, _runtime, _idx), args(_args) {}
+      : SingleTask(_ctx, _runtime), args(_args) {}
 
   public:
     template <AccessorType AT>
-    static void task_entry(const void *global_args, size_t global_arglen,
-			   const void *local_args, size_t local_arglen,
-			   const IndexPoint &point,
+    static void task_entry(const void *args, size_t arglen,
 			   std::vector<PhysicalRegion<AT> > &regions,
 			   Context ctx, HighLevelRuntime *runtime)
     {
-      UpdateSubmatrixTask t(ctx, runtime, point[0], (const TaskArgs *)global_args);
+      UpdateSubmatrixTask t(ctx, runtime, (const TaskArgs *)args);
       t.run<AT>(regions);
     }
     
@@ -1614,6 +1632,8 @@ class Linpack {
     template <AccessorType AT>
     void run(std::vector<PhysicalRegion<AT> > &regions) const
     {
+      int idx = args->rp;
+
       log_app.info("update_submatrix(id=%d): k=%d, j=%d, idx=%d\n", task_id, args->k, args->j, idx);
       
       const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
@@ -1709,64 +1729,70 @@ class Linpack {
   public:
     static void register_task(TaskID desired_task_id = AUTO_GENERATE_ID)
     {
-      task_id = HighLevelRuntime::register_index_task
+      task_id = HighLevelRuntime::register_single_task
 	<UpdateSubmatrixTask::task_entry<AccessorGeneric> >(desired_task_id,
 							    Processor::LOC_PROC,
 							    "update_submatrix");
     }
 
-    static FutureMap spawn(Context ctx, HighLevelRuntime *runtime,
-			   const Range &range,
-			   const BlockedMatrix& matrix,
-			   fatptr_t<BlockedMatrix> matrixptr, int k, int j,
-			   LogicalRegion topblk_region,
-			   ptr_t<MatrixBlock> topblk_ptr)
+    static void spawn(Context ctx, HighLevelRuntime *runtime,
+		      const Range &range,
+		      const BlockedMatrix& matrix,
+		      fatptr_t<BlockedMatrix> matrixptr, int k, int j,
+		      LogicalRegion topblk_region,
+		      ptr_t<MatrixBlock> topblk_ptr,
+		      bool sync)
     {
-      std::vector<Range> index_space;
-      index_space.push_back(range);
+      std::queue<Future> futures;
+      for(int rp = range.start; rp <= range.stop; rp += range.stride) {
+	std::vector<RegionRequirement> reqs;
+	reqs.resize(NUM_REGIONS);
 
-      std::vector<RegionRequirement> reqs;
-      reqs.resize(NUM_REGIONS);
+	reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
+						READ_ONLY, NO_MEMORY, EXCLUSIVE,
+						matrixptr.region,
+						LMAP_PLACE_SYSMEM);
 
-      reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
-					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      matrixptr.region,
-					      LMAP_PLACE_SYSMEM);
+	LogicalRegion subpanel = runtime->get_subregion(ctx,
+							matrix.row_parts[j],
+							rp);
+	reqs[REGION_PANEL] = RegionRequirement(subpanel,
+					       READ_WRITE, NO_MEMORY, EXCLUSIVE,
+					       matrix.panel_subregions[j],
+					       LMAP_PLACE_SYSMEM);
 
-      reqs[REGION_PANEL] = RegionRequirement(matrix.row_parts[j].id,
-					     COLORID_IDENTITY,
-					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
-					     runtime->get_subregion(ctx,
-								    matrix.col_part,
-								    j),
-					     LMAP_PLACE_SYSMEM);
+	reqs[REGION_TOPBLK] = RegionRequirement(topblk_region,
+						READ_ONLY, NO_MEMORY, EXCLUSIVE,
+						topblk_region,
+						LMAP_PLACE_SYSMEM);
 
-      reqs[REGION_TOPBLK] = RegionRequirement(topblk_region,
-					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      topblk_region,
-					      LMAP_PLACE_SYSMEM);
+	LogicalRegion l_subpanel = runtime->get_subregion(ctx,
+							  matrix.row_parts[k],
+							  rp);
+	reqs[REGION_LPANEL] = RegionRequirement(l_subpanel,
+						READ_ONLY, NO_MEMORY, EXCLUSIVE,
+						matrix.panel_subregions[k],
+						LMAP_PLACE_SYSMEM);
 
-      reqs[REGION_LPANEL] = RegionRequirement(matrix.row_parts[k].id,
-					      COLORID_IDENTITY,
-					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      runtime->get_subregion(ctx,
-								     matrix.col_part,
-								     k),
-					      LMAP_PLACE_SYSMEM);
+	// double-check that we were registered properly
+	assert(task_id != 0);
+	Future f = runtime->execute_task(ctx, 
+					 task_id,
+					 reqs,
+					 TaskArgs(matrixptr, k, j, rp,
+						  topblk_ptr),
+					 0,
+					 LMAP_MAP_LOCAL | LMAP_PICK_CPU(matrix, rp, j));
+	if(sync)
+	  futures.push(f);
+	else
+	  f.release();
+      }
 
-      // double-check that we were registered properly
-      assert(task_id != 0);
-      FutureMap fm = runtime->execute_index_space(ctx, 
-						  task_id,
-						  index_space,
-						  reqs,
-						  TaskArgs(matrixptr, k, j,
-							   topblk_ptr),
-						  ArgumentMap(),
-						  false,
-						  0,
-						  LMAP_PICK_CPU_IDXROW(matrix, j));
-      return fm;
+      while(futures.size() > 0) {
+	futures.front().get_void_result();
+	futures.pop();
+      }
     }
   };
 
@@ -1892,24 +1918,23 @@ class Linpack {
       Future f = runtime->execute_task(ctx, task_id, reqs,
 				       TaskArgs(matrixptr, k, j, topblk_ptr),
 				       0,
-				       LMAP_PICK_CPU(matrix, k, j));
+				       LMAP_MAP_LOCAL | LMAP_PICK_CPU(matrix, k, j));
       return f;
     }
   };
 
-  class UpdatePanelTask : public Index1DTask {
+  class UpdatePanelTask : public SingleTask {
   protected:
 
     static TaskID task_id;
 
     struct TaskArgs {
       fatptr_t<BlockedMatrix> matrixptr;
-      int k;
-      LogicalRegion index_subregion;
+      int k, j;
+      //LogicalRegion index_subregion;
 
-      TaskArgs(fatptr_t<BlockedMatrix> _matrixptr, int _k,
-	       LogicalRegion _index_subregion)
-	: matrixptr(_matrixptr), k(_k), index_subregion(_index_subregion) {}
+      TaskArgs(fatptr_t<BlockedMatrix> _matrixptr, int _k, int _j)
+	: matrixptr(_matrixptr), k(_k), j(_j) {}
       operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
     };
 
@@ -1924,19 +1949,17 @@ class Linpack {
 
     const TaskArgs *args;
 
-    UpdatePanelTask(Context _ctx, HighLevelRuntime *_runtime, int _idx,
+    UpdatePanelTask(Context _ctx, HighLevelRuntime *_runtime,
 		    const TaskArgs *_args)
-      : Index1DTask(_ctx, _runtime, _idx), args(_args) {}
+      : SingleTask(_ctx, _runtime), args(_args) {}
 
   public:
     template <AccessorType AT>
-    static void task_entry(const void *global_args, size_t global_arglen,
-			   const void *local_args, size_t local_arglen,
-			   const IndexPoint &point,
+    static void task_entry(const void *args, size_t arglen,
 			   std::vector<PhysicalRegion<AT> > &regions,
 			   Context ctx, HighLevelRuntime *runtime)
     {
-      UpdatePanelTask t(ctx, runtime, point[0], (const TaskArgs *)global_args);
+      UpdatePanelTask t(ctx, runtime, (const TaskArgs *)args);
       t.run<AT>(regions);
     }
   
@@ -1944,9 +1967,9 @@ class Linpack {
     template <AccessorType AT>
     void run(std::vector<PhysicalRegion<AT> > &regions) const
     {
-      int j = idx;
+      int j = args->j;
 
-      log_app.info("update_panel(id=%d): k=%d, j=%d, idx=%d\n", task_id, args->k, j, idx);
+      log_app.info("update_panel(id=%d): k=%d, j=%d\n", task_id, args->k, j);
 
       ScopedMapping<AccessorArray> r_matrix(ctx, runtime,
 				RegionRequirement(args->matrixptr.region,
@@ -1972,7 +1995,8 @@ class Linpack {
       Future f2 = FillTopBlockTask::spawn(ctx, runtime,
 					  matrix, args->matrixptr, args->k, j,
 					  temp_region, temp_ptr,
-					  args->index_subregion);
+					  matrix.index_subregions[args->k]);
+
       if(matrix.bulk_sync)
 	f2.get_void_result();
       else
@@ -1980,15 +2004,12 @@ class Linpack {
 
       //fill_top_block<AT,NB>(ctx, runtime, args->matrix, args->k, j, temp_region, temp_ptr);
 
-      FutureMap fm = TransposeRowsTask::spawn(ctx, runtime,
-					      Range(0, matrix.num_row_parts - 1),
-					      matrix, args->matrixptr, args->k, j, 
-					      temp_region, temp_ptr,
-					      args->index_subregion);
-      if(matrix.bulk_sync)
-	fm.wait_all_results();
-      else
-	fm.release();
+      TransposeRowsTask::spawn(ctx, runtime,
+			       Range(0, matrix.num_row_parts - 1),
+			       matrix, args->matrixptr, args->k, j, 
+			       temp_region, temp_ptr,
+			       matrix.index_subregions[args->k],
+			       matrix.bulk_sync);
   
       Future f = SolveTopBlockTask::spawn(ctx, runtime,
 					  matrix, args->matrixptr, args->k, j,
@@ -1999,15 +2020,11 @@ class Linpack {
 	f.release();
       //solve_top_block<AT,NB>(ctx, runtime, args->matrix, args->k, j, temp_region, temp_ptr);
 
-      FutureMap fm2 = UpdateSubmatrixTask::spawn(ctx, runtime,
-						 Range(0, matrix.num_row_parts - 1),
-						 matrix, args->matrixptr, args->k, j,
-						 temp_region, temp_ptr);
-      if(matrix.bulk_sync)
-	fm2.wait_all_results();
-      else
-	fm2.release();
-      //update_submatrix<AT,NB>(ctx, runtime, args->matrix, args->k, j, temp_region, temp_ptr);
+      UpdateSubmatrixTask::spawn(ctx, runtime,
+				 Range(0, matrix.num_row_parts - 1),
+				 matrix, args->matrixptr, args->k, j,
+				 temp_region, temp_ptr,
+				 matrix.bulk_sync);
     
       runtime->destroy_logical_region(ctx, temp_region);
     }
@@ -2015,90 +2032,85 @@ class Linpack {
   public:
     static void register_task(TaskID desired_task_id = AUTO_GENERATE_ID)
     {
-      task_id = HighLevelRuntime::register_index_task
+      task_id = HighLevelRuntime::register_single_task
 	<UpdatePanelTask::task_entry<AccessorGeneric> >(desired_task_id,
 							Processor::LOC_PROC,
 							"update_panel");
     }
 
-    static FutureMap spawn(Context ctx, HighLevelRuntime *runtime,
-			   const Range &range,
-			   const BlockedMatrix& matrix,
-			   fatptr_t<BlockedMatrix> matrixptr, int k)
+    static void spawn(Context ctx, HighLevelRuntime *runtime,
+		      const Range &range,
+		      const BlockedMatrix& matrix,
+		      fatptr_t<BlockedMatrix> matrixptr, int k,
+		      bool sync)
     {
-      std::vector<Range> index_space;
-      index_space.push_back(range);
+      std::queue<Future> futures;
+      for(int j = range.start; j <= range.stop; j += range.stride) {
+	std::vector<RegionRequirement> reqs;
+	reqs.resize(NUM_REGIONS);
 
-      std::vector<RegionRequirement> reqs;
-      reqs.resize(NUM_REGIONS);
+	reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
+						READ_ONLY, NO_MEMORY, EXCLUSIVE,
+						matrixptr.region,
+						LMAP_PLACE_NONE);
 
-      reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
-					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      matrixptr.region,
-					      LMAP_PLACE_NONE);
+	reqs[REGION_PANEL] = RegionRequirement(matrix.panel_subregions[j],
+					       READ_WRITE, NO_MEMORY, EXCLUSIVE,
+					       matrix.block_region,
+					       LMAP_PLACE_NONE);
 
-      reqs[REGION_PANEL] = RegionRequirement(matrix.col_part.id,
-					     COLORID_IDENTITY,
-					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
-					     matrix.block_region,
-					     LMAP_PLACE_NONE);
+	reqs[REGION_LPANEL] = RegionRequirement(matrix.panel_subregions[k],
+						READ_ONLY, NO_MEMORY, EXCLUSIVE,
+						matrix.block_region,
+						LMAP_PLACE_NONE);
 
-      LogicalRegion panel_subregion = runtime->get_subregion(ctx,
-							     matrix.col_part,
-							     k);
-      reqs[REGION_LPANEL] = RegionRequirement(panel_subregion,
-					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      matrix.block_region,
-					      LMAP_PLACE_NONE);
+	reqs[REGION_INDEX] = RegionRequirement(matrix.index_subregions[k],
+					       READ_ONLY, NO_MEMORY, EXCLUSIVE,
+					       matrix.index_region,
+					       LMAP_PLACE_NONE);
 
-      LogicalRegion index_subregion = runtime->get_subregion(ctx,
-							     matrix.index_part,
-							     k);
-      reqs[REGION_INDEX] = RegionRequirement(index_subregion,
-					     READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					     matrix.index_region,
-					     LMAP_PLACE_NONE);
-
-      LogicalRegion topblk_subregion = matrix.topblk_subregions[k];
-
-      reqs[REGION_L1BLK] = RegionRequirement(topblk_subregion,
-					     READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					     matrix.topblk_region,
-					     LMAP_PLACE_NONE);
+	reqs[REGION_L1BLK] = RegionRequirement(matrix.topblk_subregions[k],
+					       READ_ONLY, NO_MEMORY, EXCLUSIVE,
+					       matrix.topblk_region,
+					       LMAP_PLACE_NONE);
     
-      // double-check that we were registered properly
-      assert(task_id != 0);
-      FutureMap fm = runtime->execute_index_space(ctx, 
-						  task_id,
-						  index_space,
-						  reqs,
-						  TaskArgs(matrixptr, k,
-							   index_subregion),
-						  ArgumentMap(),
-						  false,
-						  0, // default mapper,
-						  LMAP_PICK_SCHED);
+	// double-check that we were registered properly
+	assert(task_id != 0);
+	Future f = runtime->execute_task(ctx, 
+					 task_id,
+					 reqs,
+					 TaskArgs(matrixptr, k, j), 
+					 0, // default mapper,
+					 LMAP_PICK_SCHED);
 						  //LMAP_PICK_CPU_IDXCOL(matrix, k));
-      return fm;
+	if(sync)
+	  futures.push(f);
+	else
+	  f.release();
+      }
+
+      while(futures.size() > 0) {
+	futures.front().get_void_result();
+	futures.pop();
+      }
     }
   };
 
-  class FactorPanelPieceTask : public Index1DTask {
+  class FactorPanelPieceTask : public SingleTask {
   protected:
-
     static TaskID task_id;
 
     struct TaskArgs {
       fatptr_t<BlockedMatrix> matrixptr;
       MatrixBlockRow prev_orig, prev_best;
-      int k, i;
+      int k, i, rp;
 
       TaskArgs(fatptr_t<BlockedMatrix> _matrixptr, 
 	       const MatrixBlockRow& _prev_orig,
 	       const MatrixBlockRow& _prev_best,
-	       int _k, int _i)
+	       int _k, int _i, int _rp)
 	: matrixptr(_matrixptr), prev_orig(_prev_orig), prev_best(_prev_best), 
-	  k(_k), i(_i) {}
+	  k(_k), i(_i), rp(_rp) {}
       operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
     };
 
@@ -2110,19 +2122,17 @@ class Linpack {
 
     const TaskArgs *args;
 
-    FactorPanelPieceTask(Context _ctx, HighLevelRuntime *_runtime, int _idx,
+    FactorPanelPieceTask(Context _ctx, HighLevelRuntime *_runtime,
 			 const TaskArgs *_args)
-      : Index1DTask(_ctx, _runtime, _idx), args(_args) {}
+      : SingleTask(_ctx, _runtime), args(_args) {}
 
   public:
     template <AccessorType AT>
-    static MatrixBlockRow task_entry(const void *global_args, size_t global_arglen,
-				     const void *local_args, size_t local_arglen,
-				     const IndexPoint &point,
+    static MatrixBlockRow task_entry(const void *args, size_t arglen,
 				     std::vector<PhysicalRegion<AT> > &regions,
 				     Context ctx, HighLevelRuntime *runtime)
     {
-      FactorPanelPieceTask t(ctx, runtime, point[0], (const TaskArgs *)global_args);
+      FactorPanelPieceTask t(ctx, runtime, (const TaskArgs *)args);
       return t.run<AT>(regions);
     }
   
@@ -2130,7 +2140,7 @@ class Linpack {
     template <AccessorType AT>
     MatrixBlockRow run(std::vector<PhysicalRegion<AT> > &regions) const
     {
-      int j = idx;
+      int j = args->rp;
 
       log_app.info("factor_piece(id=%d): k=%d, i=%d, j=%d\n", task_id, args->k, args->i, j);
 
@@ -2274,7 +2284,7 @@ class Linpack {
       // on every pass but the last, we need to pick our candidate for best next
       // row
       int best_row = -1;
-      if(args->i < NB) {
+      if((args->i < NB) && ((args->k * NB + args->i) < matrix.rows)) {
 	if(matrix.use_blas) {
 	  assert(pptr != 0);
 	  assert(row_count > 0);
@@ -2338,50 +2348,50 @@ class Linpack {
   public:
     static void register_task(TaskID desired_task_id = AUTO_GENERATE_ID)
     {
-      task_id = HighLevelRuntime::register_index_task
+      task_id = HighLevelRuntime::register_single_task
 	<MatrixBlockRow, FactorPanelPieceTask::task_entry<AccessorGeneric> >(desired_task_id,
 									     Processor::LOC_PROC,
 									     "factor_piece");
     }
 
-    static FutureMap spawn(Context ctx, HighLevelRuntime *runtime,
-			   const Range &range,
-			   const BlockedMatrix& matrix, 
-			   fatptr_t<BlockedMatrix> matrixptr, 
-			   const MatrixBlockRow& prev_orig,
-			   const MatrixBlockRow& prev_best,
-			   int k, int i)
+    static void spawn(Context ctx, HighLevelRuntime *runtime,
+		      const Range &range,
+		      const BlockedMatrix& matrix, 
+		      fatptr_t<BlockedMatrix> matrixptr, 
+		      const MatrixBlockRow& prev_orig,
+		      const MatrixBlockRow& prev_best,
+		      int k, int i,
+		      std::vector<Future>& futures)
     {
-      std::vector<Range> index_space;
-      index_space.push_back(range);
+      futures.resize(range.stop + 1);
+      for(int rp = range.start; rp <= range.stop; rp += range.stride) {
+	std::vector<RegionRequirement> reqs;
+	reqs.resize(NUM_REGIONS);
+	
+	reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
+						READ_ONLY, NO_MEMORY, EXCLUSIVE,
+						matrixptr.region,
+						LMAP_PLACE_SYSMEM);
 
-      std::vector<RegionRequirement> reqs;
-      reqs.resize(NUM_REGIONS);
+	LogicalRegion subpanel = runtime->get_subregion(ctx,
+							matrix.row_parts[k],
+							rp);
+	reqs[REGION_PANEL] = RegionRequirement(subpanel,
+					       READ_WRITE, NO_MEMORY, EXCLUSIVE,
+					       matrix.panel_subregions[k],
+					       LMAP_PLACE_SYSMEM);
 
-      reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
-					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					      matrixptr.region,
-					      LMAP_PLACE_SYSMEM);
-
-      reqs[REGION_PANEL] = RegionRequirement(matrix.row_parts[k].id,
-					     COLORID_IDENTITY,
-					     READ_WRITE, NO_MEMORY, EXCLUSIVE,
-					     matrix.panel_subregions[k],
-					     LMAP_PLACE_SYSMEM);
-
-      // double-check that we were registered properly
-      assert(task_id != 0);
-      FutureMap fm = runtime->execute_index_space(ctx, 
-						  task_id,
-						  index_space,
-						  reqs,
-						  TaskArgs(matrixptr, 
-							   prev_orig, prev_best,
-							   k, i),
-						  ArgumentMap(),
-						  false,
-						  0, LMAP_PICK_CPU_IDXROW(matrix, k));
-      return fm;
+	// double-check that we were registered properly
+	assert(task_id != 0);
+	futures[rp] = runtime->execute_task(ctx, 
+					    task_id,
+					    reqs,
+					    TaskArgs(matrixptr, 
+						     prev_orig, prev_best,
+						     k, i, rp),
+					    0, 
+					    LMAP_MAP_LOCAL | LMAP_PICK_CPU(matrix, rp, k));
+      }
     }
   };
 
@@ -2524,19 +2534,19 @@ class Linpack {
 	  }
 	}
 
-	FutureMap fm = FactorPanelPieceTask::spawn(ctx, runtime,
-						   Range(0, matrix.num_row_parts - 1),
-						   matrix, args->matrixptr,
-						   prev_orig,
-						   prev_best,
-						   args->k, i);
+	std::vector<Future> futures;
+	FactorPanelPieceTask::spawn(ctx, runtime,
+				    Range(0, matrix.num_row_parts - 1),
+				    matrix, args->matrixptr,
+				    prev_orig,
+				    prev_best,
+				    args->k, i,
+				    futures);
 
 	if(i < NB) {
 	  double best_mag = -1.0;
 	  for(int j = 0; j < matrix.num_row_parts; j++) {
-	    std::vector<int> pt;
-	    pt.push_back(j);
-	    MatrixBlockRow part_best = fm.template get_result<MatrixBlockRow>(pt);
+	    MatrixBlockRow part_best = futures[j].template get_result<MatrixBlockRow>();
 	    if(part_best.row_idx == -1) continue;
 	    assert((part_best.row_idx >= 0) && 
 		   (part_best.row_idx < matrix.rows));
@@ -2644,14 +2654,10 @@ class Linpack {
 	f.release();
       
       if(matrix.update_trailing && (k > 0)) {
-	FutureMap fm = UpdatePanelTask::spawn(ctx, runtime,
-					      Range(0, k - 1),
-					      matrix, matrixptr, k);
-	if(matrix.bulk_sync ||
-	   ((k == (matrix.block_rows - 1)) && (k == (matrix.block_cols - 1))))
-	  fm.wait_all_results();
-	else
-	  fm.release();
+	UpdatePanelTask::spawn(ctx, runtime,
+			       Range(0, k - 1),
+			       matrix, matrixptr, k,
+			       matrix.bulk_sync);
       }
       
       // updates of trailing panels launched as index space
@@ -2661,14 +2667,12 @@ class Linpack {
 	int range_end = (matrix.only_crit ?
 			   k + 1 :
 			   matrix.block_cols - 1);
-	FutureMap fm = UpdatePanelTask::spawn(ctx, runtime,
-					      Range(k + 1, range_end),
-					      matrix, matrixptr, k);
-	if(matrix.bulk_sync ||
-	   ((k == (matrix.block_rows - 1)) && (k != (matrix.block_cols - 1))))
-	  fm.wait_all_results();
-	else
-	  fm.release();
+	UpdatePanelTask::spawn(ctx, runtime,
+			       Range(k + 1, range_end),
+			       matrix, matrixptr, k,
+			       (matrix.bulk_sync ||
+				((k == (matrix.block_rows - 1)) && 
+				 (k != (matrix.block_cols - 1)))));
       }
     }
     
