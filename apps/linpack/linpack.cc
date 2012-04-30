@@ -6,6 +6,7 @@
 #include <cstdarg>
 #include <mkl.h>
 #include <mkl_cblas.h>
+#include <sched.h>
 
 #include "legion.h"
 
@@ -48,6 +49,8 @@ enum {
   LMAP_PICK_GPU_BASE = 0x200000,
   LMAP_PICK_GPU_END  = 0x2FFFFF,
 
+  LMAP_PICK_SCHED    = 0x500000,
+
   LMAP_IDXCOL_MODE   = 0x010000,
   LMAP_IDXROW_MODE   = 0x020000,
 
@@ -56,6 +59,7 @@ enum {
   LMAP_PLACE_ZCMEM,
   LMAP_PLACE_FBMEM,
   LMAP_PLACE_NONE,
+  LMAP_INLINE        = 0x600000,
 
   LMAP_PLACE_ATSYS_BASE = 0x400000,
   LMAP_PLACE_ATSYS_END  = 0x4FFFFF,
@@ -82,11 +86,18 @@ public:
 
   std::map<Processor, CPUProcInfo> cpu_procs;
   std::map<Processor, GPUProcInfo> gpu_procs;
-  std::vector<Processor> cpu_list, gpu_list;
+  std::vector<Processor> cpu_list, gpu_list, sched_list;
+  int sched_local_id;
+
+  bool is_sched_processor(Processor p)
+  {
+    return((((int)p.id) & 0xffff) == sched_local_id);
+  }
 
   LinpackMapper(Machine *m, HighLevelRuntime *r, Processor p)
     : Mapper(m, r, p)
   {
+    sched_local_id = -1;
     const std::set<Processor> &all_procs = m->get_all_processors(); 
     for (std::set<Processor>::const_iterator it = all_procs.begin();
           it != all_procs.end(); it++)
@@ -94,7 +105,16 @@ public:
       Processor::Kind k = m->get_processor_kind(*it);
       if (k == Processor::LOC_PROC)
       {
-	cpu_list.push_back(*it);
+	// terrible hack - take the first processor we see from each node
+	//  and use it as a scheduling processor
+	if(sched_local_id == -1)
+	  sched_local_id = it->id & 0xffff;
+	if(is_sched_processor(*it)) {
+	  log_mapper.info("processor %x hijacked for scheduling", it->id);
+	  sched_list.push_back(*it);
+	} else {
+	  cpu_list.push_back(*it);
+	}
 	cpu_procs.insert(std::pair<Processor, CPUProcInfo>(*it, CPUProcInfo(*it)));
       }
       else if (k == Processor::TOC_PROC)
@@ -152,7 +172,7 @@ public:
 
 	case 40: // hard-coded value for zcmem (from cpu)
 	  it->second.zcmems.push_back(it2->m);
-	  {
+	  if(!is_sched_processor(it->first)) {
 	    Processor gpu = zcmem_map[it2->m];
 	    assert(gpu.exists());
 	    it->second.gpus.push_back(gpu);
@@ -167,6 +187,7 @@ public:
     }
 
     // now print some stuff out:
+#define NO_DEBUG_MACHINE_LAYOUT
 #ifdef DEBUG_MACHINE_LAYOUT
     for(std::map<Processor, CPUProcInfo>::iterator it = cpu_procs.begin();
 	it != cpu_procs.end();
@@ -201,8 +222,23 @@ public:
     return true;
   }
 
+  virtual bool map_task_locally(const Task *task)
+  {
+    // the top level task and any task that goes to the scheduler cpu are
+    //  not mapped locally
+    if((task->task_id == TOP_LEVEL_TASK_ID) ||
+       (task->tag == LMAP_PICK_SCHED))
+      return false;
+
+    // everything else is mapped locally for Linpack
+    return true;
+  }
+
   static int calculate_index_space_tag(int tag, int index)
   {
+    if(tag == LMAP_PICK_SCHED)
+      return tag;
+
     if(tag & LMAP_IDXCOL_MODE) {
       int num_rowparts = (tag >> 8) & 0xFF;
       tag = (tag & 0xFFF000FF) + (index * num_rowparts);
@@ -218,6 +254,9 @@ public:
 
   Processor pick_processor(int tag)
   {
+    if(tag == LMAP_PICK_SCHED)
+      return sched_list[0];
+
     if((tag >= LMAP_PICK_CPU_BASE) && (tag <= LMAP_PICK_CPU_END)) {
 #ifdef CHOOSE_CPU_BY_GPU
       Processor gpu = gpu_list[(tag - LMAP_PICK_CPU_BASE) % gpu_list.size()];
@@ -293,23 +332,43 @@ public:
 
   Memory pick_region_memory(const Task *task, const RegionRequirement &req)
   {
+    // we're sometimes mapping stuff destined for other processors, so make
+    //  sure we have the right reference point
+    Processor p;
+    if(task->tag == LMAP_INLINE) {
+      // on an inline mapping, we use the local processor
+      p = local_proc;
+    } else {
+      int tag;
+      if(task->is_index_space) {
+	const IndexPoint &point = task->get_index_point();
+	tag = calculate_index_space_tag(task->tag, point[0]);
+	log_mapper.info("tag remapped to %x", tag);
+      } else {
+	tag = task->tag;
+      }
+
+      p = pick_processor(tag);
+      log_mapper.info("performing mapping relative to processor %x", p.id);
+    }
+
     switch(req.tag) {
     case LMAP_PLACE_NONE:
       return Memory::NO_MEMORY;
       break;
 
     case LMAP_PLACE_GASNET:
-      if(proc_kind == Processor::LOC_PROC)
-	return cpu_procs.find(local_proc)->second.gasnet;
+      if(1 || proc_kind == Processor::LOC_PROC)
+	return cpu_procs.find(p)->second.gasnet;
       else
-	return cpu_procs.find(gpu_procs.find(local_proc)->second.cpus[0])->second.gasnet;
+	return cpu_procs.find(gpu_procs.find(p)->second.cpus[0])->second.gasnet;
       break;
 
     case LMAP_PLACE_SYSMEM:
-      if(proc_kind == Processor::LOC_PROC)
-	return cpu_procs.find(local_proc)->second.sysmem;
+      if(1 || proc_kind == Processor::LOC_PROC)
+	return cpu_procs.find(p)->second.sysmem;
       else
-	return cpu_procs.find(gpu_procs.find(local_proc)->second.cpus[0])->second.sysmem;
+	return cpu_procs.find(gpu_procs.find(p)->second.cpus[0])->second.sysmem;
       break;
 
     default:
@@ -371,7 +430,7 @@ public:
 		const RegionRequirement &req, bool wait = false)
     : ctx(_ctx), runtime(_runtime)
   {
-    reg = runtime->map_region<AT>(ctx, req);
+    reg = runtime->map_region<AT>(ctx, req, 0, LMAP_INLINE);
 
     if(wait) {
       reg.wait_until_valid();
@@ -502,7 +561,7 @@ class Linpack {
     // configuration stuff
     int N, P, Q, seed;
     bool dump_all, dump_final, update_trailing, bulk_sync;
-    bool use_blas;
+    bool use_blas, skip_math, only_crit;
 
     int rows, cols;
     int block_rows, block_cols;
@@ -570,6 +629,8 @@ class Linpack {
     matrix.update_trailing = false;
     matrix.bulk_sync = true;
     matrix.use_blas = true;
+    matrix.only_crit = false;
+    matrix.skip_math = false;
 
     for (int i = 1; i < argc; i++) {
       if(!strcmp(argv[i], "-N")) {
@@ -620,6 +681,16 @@ class Linpack {
 
       if(!strcmp(argv[i], "-blas")) {
 	matrix.use_blas = (atoi(argv[++i]) != 0);
+	continue;
+      }
+
+      if(!strcmp(argv[i], "-skip")) {
+	matrix.skip_math = (atoi(argv[++i]) != 0);
+	continue;
+      }
+
+      if(!strcmp(argv[i], "-crit")) {
+	matrix.only_crit = (atoi(argv[++i]) != 0);
 	continue;
       }
     }
@@ -898,7 +969,7 @@ class Linpack {
     template <AccessorType AT>
     void run(std::vector<PhysicalRegion<AT> > &regions) const
     {
-      log_app.info("random_panel(yay): k=%d, idx=%d\n", args->k, idx);
+      log_app.info("random_panel(id=%d): k=%d, idx=%d\n", task_id, args->k, idx);
 
       const BlockedMatrix &matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
       
@@ -1024,7 +1095,7 @@ class Linpack {
     template <AccessorType AT>
     void run(std::vector<PhysicalRegion<AT> > &regions) const
     {
-      log_app.info("random_matrix(yay): idx=%d\n", idx);
+      log_app.info("random_matrix(id=%d): idx=%d\n", task_id, idx);
 
       ScopedMapping<AccessorArray> r_matrix(ctx, runtime,
 				RegionRequirement(args->matrixptr.region,
@@ -1088,7 +1159,8 @@ class Linpack {
 						  TaskArgs(matrixptr),
 						  ArgumentMap(),
 						  false,
-						  0, LMAP_PICK_CPU_IDXCOL(matrix, 0));
+						  0, LMAP_PICK_SCHED);
+						  //0, LMAP_PICK_CPU_IDXCOL(matrix, 0));
       return fm;
     }
   };
@@ -1100,10 +1172,10 @@ class Linpack {
     struct TaskArgs {
       fatptr_t<BlockedMatrix> matrixptr;
       int k, j;
-      ptr_t<MatrixBlock > topblk_ptr;
+      ptr_t<MatrixBlock> topblk_ptr;
       
       TaskArgs(fatptr_t<BlockedMatrix> _matrixptr, int _k, int _j,
-	       ptr_t<MatrixBlock > _topblk_ptr)
+	       ptr_t<MatrixBlock> _topblk_ptr)
 	: matrixptr(_matrixptr), k(_k), j(_j), topblk_ptr(_topblk_ptr) {}
       operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
     };
@@ -1136,7 +1208,7 @@ class Linpack {
     template <AccessorType AT>
     void run(std::vector<PhysicalRegion<AT> > &regions) const
     {
-      log_app.info("fill_top_block(yay): k=%d, j=%d\n", args->k, args->j);
+      log_app.info("fill_top_block(id=%d): k=%d, j=%d\n", task_id, args->k, args->j);
 
       const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
 
@@ -1312,7 +1384,7 @@ class Linpack {
     template <AccessorType AT>
     void run(std::vector<PhysicalRegion<AT> > &regions) const
     {
-      log_app.info("transpose_rows(yay): k=%d, j=%d, idx=%d\n", args->k, args->j, idx);
+      log_app.info("transpose_rows(id=%d): k=%d, j=%d, idx=%d\n", task_id, args->k, args->j, idx);
       
       const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
 
@@ -1333,7 +1405,7 @@ class Linpack {
 #ifdef TOPBLK_USES_REF      
       MatrixBlock& topblk = r_topblk.ref(args->topblk_ptr);
 #else
-      MatrixBlock topblk = r_topblk.read(args->topblk_ptr);
+      //MatrixBlock topblk;// = r_topblk.read(args->topblk_ptr);
 #endif
 #ifdef BLOCK_LOCATIONS
       assert((topblk.block_row != 0) || (topblk.block_col != 0));
@@ -1375,14 +1447,24 @@ class Linpack {
 #endif
 	
 	MatrixBlock& pblk = r_panel.ref(matrix.blocks[rowblk][args->j]);
+
+#ifdef TOPBLK_USES_REF	
+	double *trow = topblk.data[ii];
+#else
+	double trow[NB];  // will be read/written from real topblk below
+	if(1)
+	r_topblk.read_partial(args->topblk_ptr,
+			      offsetof(MatrixBlock, data) + (ii * NB * sizeof(double)),
+			      //((char *)trow)-((char *)&topblk),
+			      trow,
+			      NB * sizeof(double));
+#endif
+	double *prow = pblk.data[ind_blk.ind[ii] - rowblk * NB];
 	
 #ifdef DEBUG_MATH
 	topblk.print("top before");
 	pblk.print("pblk before");
 #endif
-	double *trow = topblk.data[ii];
-	double *prow = pblk.data[ind_blk.ind[ii] - rowblk * NB];
-	
 	if(matrix.use_blas) {
 	  cblas_dswap(NB, trow, 1, prow, 1);
 	} else {
@@ -1393,8 +1475,10 @@ class Linpack {
 	  }
 	}
 #ifndef TOPBLK_USES_REF
+	if(1)
 	r_topblk.write_partial(args->topblk_ptr,
-			       ((char *)trow)-((char *)&topblk),
+			       offsetof(MatrixBlock, data) + (ii * NB * sizeof(double)),
+			       //((char *)trow)-((char *)&topblk),
 			       trow,
 			       NB * sizeof(double));
 #endif
@@ -1530,7 +1614,7 @@ class Linpack {
     template <AccessorType AT>
     void run(std::vector<PhysicalRegion<AT> > &regions) const
     {
-      log_app.info("update_submatrix(yay): k=%d, j=%d, idx=%d\n", args->k, args->j, idx);
+      log_app.info("update_submatrix(id=%d): k=%d, j=%d, idx=%d\n", task_id, args->k, args->j, idx);
       
       const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
 
@@ -1582,10 +1666,11 @@ class Linpack {
 	}
 
 	// now one big dgemm call
-	cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-		    NB * count /*M*/, NB /*N*/, NB /*K*/,
-		    -1.0, aptr->data[0], NB, topblk.data[0], NB,
-		    1.0, cptr->data[0], NB);
+	if(!matrix.skip_math)
+	  cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+		      NB * count /*M*/, NB /*N*/, NB /*K*/,
+		      -1.0, aptr->data[0], NB, topblk.data[0], NB,
+		      1.0, cptr->data[0], NB);
 
 #ifdef DEBUG_MATH
 	for(int i = start; i < matrix.block_rows; i += matrix.num_row_parts) {
@@ -1608,10 +1693,11 @@ class Linpack {
 #endif
 	  
 	  // DGEMM
-	  for(int x = 0; x < NB; x++)
-	    for(int y = 0; y < NB; y++)
-	      for(int z = 0; z < NB; z++)
-		pblk.data[x][y] -= lpblk.data[x][z] * topblk.data[z][y];
+	  if(!matrix.skip_math)
+	    for(int x = 0; x < NB; x++)
+	      for(int y = 0; y < NB; y++)
+		for(int z = 0; z < NB; z++)
+		  pblk.data[x][y] -= lpblk.data[x][z] * topblk.data[z][y];
 	
 #ifdef DEBUG_MATH
 	  pblk.print("C(%d) out", i);
@@ -1726,7 +1812,7 @@ class Linpack {
     template <AccessorType AT>
     void run(std::vector<PhysicalRegion<AT> > &regions) const
     {
-      log_app.info("solve_top_block(yay): k=%d, j=%d\n", args->k, args->j);
+      log_app.info("solve_top_block(id=%d): k=%d, j=%d\n", task_id, args->k, args->j);
 
       if(args->j < args->k) {
 	//printf("skipping solve for leading submatrix\n");
@@ -1747,16 +1833,18 @@ class Linpack {
 #endif
 
       if(matrix.use_blas) {
-	cblas_dtrsm(CblasRowMajor, CblasLeft, CblasLower, CblasNoTrans,
-		    CblasUnit, NB, NB, 1.0,
-		    l1blk.data[0], NB,
-		    topblk.data[0], NB);
+	if(!matrix.skip_math)
+	  cblas_dtrsm(CblasRowMajor, CblasLeft, CblasLower, CblasNoTrans,
+		      CblasUnit, NB, NB, 1.0,
+		      l1blk.data[0], NB,
+		      topblk.data[0], NB);
       } else {
 	// triangular solve (left, lower, unit-diagonal)
-	for(int x = 0; x < NB; x++)
-	  for(int y = x + 1; y < NB; y++)
-	    for(int z = 0; z < NB; z++)
-	      topblk.data[y][z] -= l1blk.data[y][x] * topblk.data[x][z];
+	if(!matrix.skip_math)
+	  for(int x = 0; x < NB; x++)
+	    for(int y = x + 1; y < NB; y++)
+	      for(int z = 0; z < NB; z++)
+		topblk.data[y][z] -= l1blk.data[y][x] * topblk.data[x][z];
       }
 
 #ifdef DEBUG_DTRSM
@@ -1858,7 +1946,7 @@ class Linpack {
     {
       int j = idx;
 
-      log_app.info("update_panel(yay): k=%d, j=%d, idx=%d\n", args->k, j, idx);
+      log_app.info("update_panel(id=%d): k=%d, j=%d, idx=%d\n", task_id, args->k, j, idx);
 
       ScopedMapping<AccessorArray> r_matrix(ctx, runtime,
 				RegionRequirement(args->matrixptr.region,
@@ -1989,7 +2077,8 @@ class Linpack {
 						  ArgumentMap(),
 						  false,
 						  0, // default mapper,
-						  LMAP_PICK_CPU_IDXCOL(matrix, k));
+						  LMAP_PICK_SCHED);
+						  //LMAP_PICK_CPU_IDXCOL(matrix, k));
       return fm;
     }
   };
@@ -2043,7 +2132,7 @@ class Linpack {
     {
       int j = idx;
 
-      log_app.info("factor_piece(yay): k=%d, i=%d, j=%d\n", args->k, args->i, j);
+      log_app.info("factor_piece(id=%d): k=%d, i=%d, j=%d\n", task_id, args->k, args->i, j);
 
       const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
 
@@ -2136,16 +2225,18 @@ class Linpack {
 	  
 	  if(row_count > 0) {
 	    // divide the diagonal element out of the column below
-	    cblas_dscal(row_count, factor, pptr + (args->i - 1), NB);
+	    if(!matrix.skip_math)
+	      cblas_dscal(row_count, factor, pptr + (args->i - 1), NB);
 
 	    if(args->i < NB)
 	      // now an outer product (i.e. dgemm with k=1) to update the stuff
 	      //  below and right of the diagonal element
-	      cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-			  row_count, NB - args->i, 1,
-			  -1.0, pptr + (args->i - 1), NB,
-			  args->prev_best.data + args->i, NB,
-			  1.0, pptr + args->i, NB);
+	      if(!matrix.skip_math)
+		cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+			    row_count, NB - args->i, 1,
+			    -1.0, pptr + (args->i - 1), NB,
+			    args->prev_best.data + args->i, NB,
+			    1.0, pptr + args->i, NB);
 	  }
 	} else {
 	  for(int blkrow = start; blkrow < matrix.block_rows; blkrow += matrix.num_row_parts) {
@@ -2164,14 +2255,15 @@ class Linpack {
 #ifdef DEBUG_MATH
 	    blk.print("before update");
 #endif
-	    for(int ii = rel_start; ii <= rel_end; ii++) {
-	      double factor = (blk.data[ii][args->i - 1] / 
-			       args->prev_best.data[args->i - 1]);
-	      assert(fabs(factor) <= 1.0);
-	      blk.data[ii][args->i - 1] = factor;
-	      for(int jj = args->i; jj < NB; jj++)
-		blk.data[ii][jj] -= factor * args->prev_best.data[jj];
-	    }
+	    if(!matrix.skip_math)
+	      for(int ii = rel_start; ii <= rel_end; ii++) {
+		double factor = (blk.data[ii][args->i - 1] / 
+				 args->prev_best.data[args->i - 1]);
+		assert(fabs(factor) <= 1.0);
+		blk.data[ii][args->i - 1] = factor;
+		for(int jj = args->i; jj < NB; jj++)
+		  blk.data[ii][jj] -= factor * args->prev_best.data[jj];
+	      }
 #ifdef DEBUG_MATH
 	    blk.print("after update");
 #endif
@@ -2335,7 +2427,7 @@ class Linpack {
     template <AccessorType AT>
     void run(std::vector<PhysicalRegion<AT> > &regions) const
     {
-      log_app.info("factor_panel(yay): k=%d\n", args->k);
+      log_app.info("factor_panel(id=%d): k=%d\n", task_id, args->k);
 
       ScopedMapping<AccessorArray> r_matrix(ctx, runtime,
 				RegionRequirement(args->matrixptr.region,
@@ -2345,12 +2437,11 @@ class Linpack {
 
       const BlockedMatrix& matrix = r_matrix->ref(args->matrixptr.ptr);
 
-      PhysicalRegion<AT> r_panel = regions[REGION_PANEL];
-      PhysicalRegion<AT> r_index = regions[REGION_INDEX];
-      PhysicalRegion<AT> r_topblk = regions[REGION_TOPBLK];
+      PhysicalRegion<AccessorArray> r_index = regions[REGION_INDEX].template convert<AccessorArray>();
+      PhysicalRegion<AccessorArray> r_topblk = regions[REGION_TOPBLK].template convert<AccessorArray>();
 
-      IndexBlock idx_blk;
-      MatrixBlock top_blk;
+      IndexBlock& idx_blk = r_index.ref(matrix.index_blocks[args->k]);
+      MatrixBlock& top_blk = r_topblk.ref(matrix.top_blocks[args->k]);
       MatrixBlockRow prev_orig;
       MatrixBlockRow prev_best;
 
@@ -2413,19 +2504,22 @@ class Linpack {
 	    if(matrix.use_blas) {
 	      double factor = 1.0 / prev_best.data[i - 1];
 
-	      cblas_dscal(NB - i, factor, &top_blk.data[i][i - 1], NB);
-	      cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-			  NB - i, NB - i, 1,
-			  -1.0, &top_blk.data[i][i - 1], NB,
-			  &prev_best.data[i], NB,
-			  1.0, &top_blk.data[i][i], NB);
-	    } else {
-	      for(int ii = i; ii < NB; ii++) {
-		double factor = top_blk.data[ii][i - 1] / prev_best.data[i - 1];
-		top_blk.data[ii][i - 1] = factor;
-		for(int jj = i; jj < NB; jj++)
-		  top_blk.data[ii][jj] -= factor * prev_best.data[jj];
+	      if(!matrix.skip_math) {
+		cblas_dscal(NB - i, factor, &top_blk.data[i][i - 1], NB);
+		cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+			    NB - i, NB - i, 1,
+			    -1.0, &top_blk.data[i][i - 1], NB,
+			    &prev_best.data[i], NB,
+			    1.0, &top_blk.data[i][i], NB);
 	      }
+	    } else {
+	      if(!matrix.skip_math)
+		for(int ii = i; ii < NB; ii++) {
+		  double factor = top_blk.data[ii][i - 1] / prev_best.data[i - 1];
+		  top_blk.data[ii][i - 1] = factor;
+		  for(int jj = i; jj < NB; jj++)
+		    top_blk.data[ii][jj] -= factor * prev_best.data[jj];
+		}
 	    }
 	  }
 	}
@@ -2465,9 +2559,9 @@ class Linpack {
 	}
       }
 
-      r_index.write(matrix.index_blocks[args->k], idx_blk);
+      //r_index.write(matrix.index_blocks[args->k], idx_blk);
 
-      r_topblk.write(matrix.top_blocks[args->k], top_blk);
+      //r_topblk.write(matrix.top_blocks[args->k], top_blk);
     }
 
   public:
@@ -2522,7 +2616,8 @@ class Linpack {
       Future f = runtime->execute_task(ctx, task_id, reqs,
 				       TaskArgs(matrixptr, k),
 				       0, // default mapper,
-				       LMAP_PICK_CPU(matrix, k, k));
+				       LMAP_PICK_SCHED);
+				       //LMAP_PICK_CPU(matrix, k, k));
       return f;
     }
   };
@@ -2561,8 +2656,13 @@ class Linpack {
       
       // updates of trailing panels launched as index space
       if((k + 1) <= (matrix.block_cols - 1)) {
+	// if we're only doing the critical path, just do the first panel to
+	//  the right
+	int range_end = (matrix.only_crit ?
+			   k + 1 :
+			   matrix.block_cols - 1);
 	FutureMap fm = UpdatePanelTask::spawn(ctx, runtime,
-					      Range(k + 1, matrix.block_cols - 1),
+					      Range(k + 1, range_end),
 					      matrix, matrixptr, k);
 	if(matrix.bulk_sync ||
 	   ((k == (matrix.block_rows - 1)) && (k != (matrix.block_cols - 1))))
@@ -2633,7 +2733,8 @@ class Linpack {
 						    RegionRequirement(args->matrixptr.region,
 								      READ_ONLY, NO_MEMORY, EXCLUSIVE,
 								      args->matrixptr.region,
-								      LMAP_PLACE_ATSYS(matrix, j, i))));
+								      LMAP_PLACE_ATSYS(matrix, j, i)),
+						    0, LMAP_INLINE));
       for(size_t i = 0; i < premaps.size(); i++)
 	premaps[i].wait_until_valid();
       //for(int j = 
@@ -2664,7 +2765,10 @@ class Linpack {
 			      +3.0 * matrix.N * matrix.N
 			      - matrix.N) / 6.0;
       double gflops = (1e-9 * ops_performed) / sim_time;
-      printf("GFLOPS = %5.1f\n", gflops);
+      // check the config to see if the number we're reporting is meaningful
+      bool valid_result = (!matrix.update_trailing && !matrix.skip_math &&
+			   !matrix.only_crit);
+      printf("GFLOPS = %5.1f%s\n", gflops, (valid_result ? "" : " *BOGUS*"));
       RegionRuntime::DetailedTimer::report_timers();
 
 #ifdef PREMAP_MATRIX_REGION
@@ -2714,7 +2818,8 @@ class Linpack {
       Future f = runtime->execute_task(ctx, task_id, reqs,
 				       TaskArgs(matrixptr),
 				       0, // default mapper,
-				       LMAP_PICK_CPU(matrix, 0, 0));
+				       LMAP_PICK_SCHED);
+				       //LMAP_PICK_CPU(matrix, 0, 0));
       return f;
     }
   };
@@ -2748,7 +2853,8 @@ public:
 						     RegionRequirement(matrix_region,
 								       READ_WRITE, ALLOCABLE, EXCLUSIVE,
 								       matrix_region,
-								       LMAP_PLACE_SYSMEM));
+								       LMAP_PLACE_SYSMEM),
+						     0, LMAP_INLINE);
     reg.wait_until_valid();
 
     fatptr_t<BlockedMatrix> matrixptr(matrix_region,
@@ -2794,6 +2900,9 @@ template <int NB> TaskID Linpack<NB>::LinpackMainTask::task_id;
   _op_(32) \
   _op_(64) \
   _op_(128) \
+  _op_(256) \
+  _op_(512) \
+  _op_(1024) \
 
 
 template<AccessorType AT>
@@ -2822,16 +2931,61 @@ void top_level_task(const void *args, size_t arglen,
 
 void registration_func(Machine *machine, HighLevelRuntime *runtime, Processor local)
 {
+  cpu_set_t cset;
+  sched_getaffinity(0, sizeof(cset), &cset);
+  int count = CPU_COUNT(&cset);
+  printf("Our CPUs:");
+  for(int i = 0; count && (i < CPU_SETSIZE); i++)
+    if(CPU_ISSET(i, &cset)) {
+      printf(" %d", i);
+      count--;
+    }
+  printf("\n");
 #ifdef USING_SHARED
   //runtime->replace_default_mapper(new SharedMapper(machine, runtime, local));
 #else
-  runtime->replace_default_mapper(new LinpackMapper(machine, runtime, local));
+
+  LinpackMapper* mapper = new LinpackMapper(machine, runtime, local);
+
+  if((machine->get_processor_kind(local) == Processor::LOC_PROC) &&
+     !mapper->is_sched_processor(local)) {
+    printf("non-sched CPU task - changing cpu mask\n");
+
+    CPU_ZERO(&cset);
+    for(int i = 0; i < 2; i++)
+      for(int j = 3; j < 6; j++)
+	CPU_SET(i*6+j, &cset);
+    sched_setaffinity(0, sizeof(cset), &cset);
+
+    mkl_set_dynamic(0);
+    mkl_set_num_threads(6);
+  }
+
+  runtime->replace_default_mapper(mapper);
 #endif
 }
 
 int main(int argc, char **argv) {
-  mkl_set_dynamic(0);
-  mkl_set_num_threads(1);
+  //mkl_set_dynamic(0);
+  //mkl_set_num_threads(4);
+
+  cpu_set_t cset;
+  sched_getaffinity(0, sizeof(cset), &cset);
+  int count = CPU_COUNT(&cset);
+  printf("Our CPUs:");
+  for(int i = 0; count && (i < CPU_SETSIZE); i++)
+    if(CPU_ISSET(i, &cset)) {
+      printf(" %d", i);
+      count--;
+    }
+  printf("\n");
+
+  CPU_ZERO(&cset);
+  for(int i = 0; i < 4; i++)
+    for(int j = 0; j < 3; j++)
+      CPU_SET(i*6+j, &cset);
+  sched_setaffinity(0, sizeof(cset), &cset);
+
   srand(time(NULL));
 
   //Processor::TaskIDTable task_table;

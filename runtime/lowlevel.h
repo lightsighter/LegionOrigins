@@ -430,7 +430,7 @@ namespace RegionRuntime {
 	}
 
       template <class T>
-      void write(ptr_t<T> ptr, T newval) const
+      void write(ptr_t<T> ptr, const T& newval) const
 	{
 	  assert(!is_reduction_only());
 	  put_untyped(ptr.value*sizeof(T), &newval, sizeof(T));
@@ -492,7 +492,7 @@ namespace RegionRuntime {
       T read(ptr_t<T> ptr) const { return ((T*)array_base)[ptr.value]; }
 
       template <class T>
-      void write(ptr_t<T> ptr, T newval) const { ((T*)array_base)[ptr.value] = newval; }
+      void write(ptr_t<T> ptr, const T& newval) const { ((T*)array_base)[ptr.value] = newval; }
 
       template <class REDOP, class T, class RHS>
       void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::apply<false>(((T*)array_base)[ptr.value], newval); }
@@ -558,7 +558,7 @@ namespace RegionRuntime {
 
       template <class T>
       __device__ __forceinline__
-      void write(ptr_t<T> ptr, T newval) const { 
+      void write(ptr_t<T> ptr, const T& newval) const { 
 #ifdef DEBUG_LOW_LEVEL
         bounds_check(ptr);
 #endif
@@ -654,7 +654,7 @@ namespace RegionRuntime {
       RegionInstanceAccessorUntyped<AT> ria;
 
       ET read(ptr_t<ET> ptr) const { return ria.read(ptr); }
-      void write(ptr_t<ET> ptr, ET newval) const { ria.write(ptr, newval); }
+      void write(ptr_t<ET> ptr, const ET& newval) const { ria.write(ptr, newval); }
       ET& ref(ptr_t<ET> ptr) const { return ria.ref(ptr); }
 
       void read_partial(ptr_t<ET> ptr, off_t offset, void *dst, size_t size) const
@@ -683,7 +683,7 @@ namespace RegionRuntime {
       RegionInstanceAccessorUntyped<AccessorGPU> ria;
 
       __device__ ET read(ptr_t<ET> ptr) const { return ria.read(ptr); }
-      __device__ void write(ptr_t<ET> ptr, ET newval) const { ria.write(ptr, newval); }
+      __device__ void write(ptr_t<ET> ptr, const ET& newval) const { ria.write(ptr, newval); }
 
       //template <class REDOP, class RHS>
       //void reduce(ptr_t<ET> ptr, RHS newval) const { ria.template reduce<REDOP>(ptr, newval); }
