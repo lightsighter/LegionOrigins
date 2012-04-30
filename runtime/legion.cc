@@ -8633,7 +8633,8 @@ namespace RegionRuntime {
         // Unpack them into the enclosing context since that is where the information needs to go
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
-          if (physical_instances[idx] == InstanceInfo::get_no_instance())
+          if ((physical_instances[idx] == InstanceInfo::get_no_instance()) &&
+              (pre_mapped_regions.find(idx) == pre_mapped_regions.end()))
           {
             log_region(LEVEL_DEBUG,"Unpacking returning task state for region index %d of task %s in context %d",
                                   idx, variants->name, get_enclosing_physical_context(idx));
