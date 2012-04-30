@@ -7999,7 +7999,8 @@ namespace RegionRuntime {
 #endif
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
-            if (physical_instances[idx] == InstanceInfo::get_no_instance())
+            if ((physical_instances[idx] == InstanceInfo::get_no_instance()) &&
+                (pre_mapped_regions.find(idx) == pre_mapped_regions.end()))
             {
 #ifdef DEBUG_HIGH_LEVEL
               assert(!physical_mapped[idx]);
@@ -8026,7 +8027,8 @@ namespace RegionRuntime {
             std::vector<InstanceInfo*> required_instances;
             for (unsigned idx = 0; idx < regions.size(); idx++)
             {
-              if (physical_instances[idx] == InstanceInfo::get_no_instance())
+              if (physical_instances[idx] == InstanceInfo::get_no_instance() &&
+                  (pre_mapped_regions.find(idx) == pre_mapped_regions.end()))
               {
                 buffer_size += (*region_nodes)[regions[idx].handle.region]->
                                 compute_physical_state_size(ctx_id,required_instances,true/*returning*/);
@@ -8109,7 +8111,8 @@ namespace RegionRuntime {
             // The physical states for the regions that were unmapped
             for (unsigned idx = 0; idx < regions.size(); idx++)
             {
-              if (physical_instances[idx] == InstanceInfo::get_no_instance())
+              if ((physical_instances[idx] == InstanceInfo::get_no_instance()) &&
+                  (pre_mapped_regions.find(idx) == pre_mapped_regions.end()))
               {
                 (*region_nodes)[regions[idx].handle.region]->pack_physical_state(ctx_id,rez); 
               }
