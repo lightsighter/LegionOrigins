@@ -9914,7 +9914,13 @@ namespace RegionRuntime {
         // perform any premappings
         // note we don't need to take the context lock here because someone
         // else is already holding it if they are notifying us
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = true; // this is true because someone has to be holding the context lock to call notify
+#endif
         pre_map_regions(false/*need lock*/);
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = false;
+#endif
         // then add ourselves to the ready queue
         runtime->add_to_ready_queue(this);
       }
