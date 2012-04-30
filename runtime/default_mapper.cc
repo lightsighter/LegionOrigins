@@ -131,6 +131,15 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    bool Mapper::map_task_locally(const Task *task)
+    //--------------------------------------------------------------------------------------------
+    {
+      log_mapper(LEVEL_SPEW,"Map task locally for task %s (ID %d in default mapper on processor %x",
+          task->variants->name, task->task_id, local_proc.id);
+      return false;
+    }
+
+    //--------------------------------------------------------------------------------------------
     Processor Mapper::select_initial_processor(const Task *task)
     //--------------------------------------------------------------------------------------------
     {

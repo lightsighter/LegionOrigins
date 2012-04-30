@@ -3963,8 +3963,8 @@ namespace RegionRuntime {
       for (std::vector<TaskContext*>::const_iterator it = enqueued_tasks.begin();
             it != enqueued_tasks.end(); it++)
       {
-        // Check for whether the task should be sapwned
-        check_spawn_task(*it);
+        // Check for whether the task should be sapwned and mapped local 
+        check_spawn_and_map_local(*it);
 
         // Register the context with its parent
         (*it)->parent_ctx->register_child_task(*it);
@@ -3972,6 +3972,9 @@ namespace RegionRuntime {
         // Figure out if this task is runnable
         if ((*it)->is_ready())
         {
+          // Check for premapped regions, if this doesn't happen here, it
+          // happens in when the task is notified and added to the ready queue
+          (*it)->pre_map_regions(true/*need lock*/);
           // Figure out where to place this task
           if (target_task(*it))
           {
@@ -3994,10 +3997,11 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::check_spawn_task(TaskContext *ctx)
+    void HighLevelRuntime::check_spawn_and_map_local(TaskContext *ctx)
     //--------------------------------------------------------------------------------------------
     {
       bool spawn = false;
+      bool map_local = false;
       {
         // Need to acquire the locks for the mapper array and the mapper
 #ifdef LOW_LEVEL_LOCKS
@@ -4009,10 +4013,13 @@ namespace RegionRuntime {
         {
           DetailedTimer::ScopedPush sp(TIME_MAPPER);
           spawn = mapper_objects[ctx->map_id]->spawn_child_task(ctx);
+          map_local = mapper_objects[ctx->map_id]->map_task_locally(ctx);
         }
       }
       // Update the value in the context
-      ctx->stealable = spawn;
+      // A task is only stealable if it is spawned and not going to be mapped locally
+      ctx->stealable = spawn && !map_local;
+      ctx->local_map = map_local;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4070,8 +4077,6 @@ namespace RegionRuntime {
       }
       else // This is an index space of tasks
       {
-        // Check whether this index space needs to pre-map any of its tasks
-        task->index_space_premap();
         // Need to hold the queue lock before calling split task
         // to maintain partial order on lock acquires
         AutoLock ready_queue_lock(queue_lock);
@@ -4473,6 +4478,7 @@ namespace RegionRuntime {
       stealable = false;
       steal_count = 0;
       chosen = false;
+      local_map = false;
       unmapped = 0;
       map_event = UserEvent::create_user_event();
       is_index_space = false; // Not unless someone tells us it is later
@@ -4962,9 +4968,6 @@ namespace RegionRuntime {
         }
         // Now compute the size for each of the pre-mapped region instances
         result += sizeof(size_t); // num premapped
-#ifdef DEBUG_HIGH_LEVEL
-        assert(is_index_space || pre_mapped_regions.empty());
-#endif
         for (std::map<unsigned,PreMappedRegion>::const_iterator it = pre_mapped_regions.begin();
               it != pre_mapped_regions.end(); it++)
         {
@@ -4976,7 +4979,7 @@ namespace RegionRuntime {
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
           // If it was premapped there is no need to send the region tree
-          if (is_index_space && (pre_mapped_regions.find(idx) != pre_mapped_regions.end()))
+          if (pre_mapped_regions.find(idx) != pre_mapped_regions.end())
           {
             // no need to pack this tree
             continue;
@@ -5130,7 +5133,7 @@ namespace RegionRuntime {
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
           // If this is an index space and it has a premapped region, don't pack it
-          if (is_index_space && (pre_mapped_regions.find(idx) != pre_mapped_regions.end()))
+          if (pre_mapped_regions.find(idx) != pre_mapped_regions.end())
           {
             log_region(LEVEL_DEBUG,"Region index %d was premapped for task %s",idx,variants->name); 
             continue;
@@ -5295,9 +5298,6 @@ namespace RegionRuntime {
       {
         size_t num_premapped;
         derez.deserialize<size_t>(num_premapped);
-#ifdef DEBUG_HIGH_LEVEL
-        assert(is_index_space || (num_premapped == 0));
-#endif
         for (unsigned idx = 0; idx < num_premapped; idx++)
         {
           unsigned map_idx;
@@ -5317,7 +5317,7 @@ namespace RegionRuntime {
       // unpack the physical state for each of the trees
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        if (is_index_space && (pre_mapped_regions.find(idx) != pre_mapped_regions.end()))
+        if (pre_mapped_regions.find(idx) != pre_mapped_regions.end())
         {
           continue;
         }
@@ -5744,6 +5744,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       bool has_local = false;
+      bool has_recurse = false;
       std::vector<T> local_space;
       bool split = false;
       // Compute the new fraction of work that everyone will have
@@ -5788,68 +5789,115 @@ namespace RegionRuntime {
             Processor utility = it->p.get_utility_processor();
             utility.spawn(ENQUEUE_TASK_ID,rez.get_buffer(),buffer_size);
           }
+          else
+          {
+            if (it->recurse)
+            {
+              has_recurse = true;
+            }
+          }
         }
 #ifdef DEBUG_HIGH_LEVEL
         current_taken = false;
 #endif
       }
       // We're done sending chunks remotely, now handle our local chunks
-      for (typename std::vector<CT>::const_reverse_iterator it = chunks.rbegin();
-            it != chunks.rend(); it++)
+      // Two algorithms for whether there are any recursive calls or not
+      if (has_recurse)
       {
-        if (it->p == local_proc)
+        for (typename std::vector<CT>::const_iterator it = chunks.begin();
+              it != chunks.end(); it++)
         {
-          if (has_local)
+          if (it->p == local_proc)
           {
-            if (it->recurse)
+            if (has_local)
             {
-              set_space<T>(it->space); 
-              bool still_local = runtime->split_task(this, ways);
-              if (still_local)
+              if (it->recurse)
               {
-                // Set fields and then clone the context
+                set_space<T>(it->space); 
+                bool still_local = runtime->split_task(this, ways);
+                if (still_local)
+                {
+                  // Set fields and then clone the context
+                  this->need_split = false;
+                  TaskContext *clone = runtime->get_available_context(false/*new tree*/);
+                  clone_index_space_task(clone,true/*slice*/);
+                  clone->set_space<T>(this->get_space<T>());
+                  // Put it in the ready queue
+                  // Needed to own queue lock before calling split_task which
+                  // is the only task that calls this task
+                  runtime->add_to_ready_queue(clone,false/*need lock*/);
+                }
+              }
+              else
+              {
                 this->need_split = false;
+                // Clone it and put it in the ready queue
                 TaskContext *clone = runtime->get_available_context(false/*new tree*/);
                 clone_index_space_task(clone,true/*slice*/);
-                clone->set_space<T>(this->get_space<T>());
-                // Put it in the ready queue
-                // Needed to own queue lock before calling split_task which
-                // is the only task that calls this task
+                clone->set_space<T>(it->space);
+                // Put it in the ready queue (see note about lock above)
                 runtime->add_to_ready_queue(clone,false/*need lock*/);
               }
             }
             else
             {
-              this->need_split = false;
-              // Clone it and put it in the ready queue
-              TaskContext *clone = runtime->get_available_context(false/*new tree*/);
-              clone_index_space_task(clone,true/*slice*/);
-              clone->set_space<T>(it->space);
-              // Put it in the ready queue (see note about lock above)
-              runtime->add_to_ready_queue(clone,false/*need lock*/);
-            }
-          }
-          else
-          {
-            // Haven't allocated this context to anyone yet, so put the chunk in this context 
-            if (it->recurse)
-            {
-              set_space<T>(it->space);
-              bool still_local = runtime->split_task(this, ways);
-              if (still_local)
+              // Haven't allocated this context to anyone yet, so put the chunk in this context 
+              if (it->recurse)
+              {
+                set_space<T>(it->space);
+                bool still_local = runtime->split_task(this, ways);
+                if (still_local)
+                {
+                  // Store in local variables so we can continue cloning this context
+                  has_local = true;
+                  local_space = get_space<T>();
+                  split = false;
+                }
+              }
+              else
               {
                 // Store in local variables so we can continue cloning this context
                 has_local = true;
-                local_space = get_space<T>();
-                split = false;
+                local_space = it->space;
+                split = it->recurse;
               }
             }
-            else
+          }
+        }
+      }
+      else // No recursive calls
+      {
+        int index = -1;
+        for (int idx = (chunks.size()-1); idx >= 0; idx--)
+        {
+          if (chunks[idx].p == local_proc)
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            assert(!chunks[idx].recurse);
+#endif
+            has_local = true;
+            local_space = chunks[idx].space;
+            split = false;
+            index = idx;
+            break;
+          }
+        }
+        if (index != -1)
+        {
+          for (int idx = 0; idx < index; idx++)
+          {
+            if (chunks[idx].p == local_proc)
             {
-              // Store in local variables so we can continue cloning this context
-              has_local = true;
-              local_space = it->space;
-              split = it->recurse;
+#ifdef DEBUG_HIGH_LEVEL
+              assert(!chunks[idx].recurse);
+#endif
+              this->need_split = false;
+              TaskContext *clone = runtime->get_available_context(false/*new tree*/);
+              clone_index_space_task(clone,true/*slice*/);
+              clone->set_space<T>(chunks[idx].space);
+              // Put it in the ready queue (see note about lock above)
+              runtime->add_to_ready_queue(clone,false/*need lock*/);
             }
           }
         }
@@ -6280,7 +6328,7 @@ namespace RegionRuntime {
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
         // If this is an index space, check to see if we have pre-mapped the region
-        if (is_index_space && (pre_mapped_regions.find(idx) != pre_mapped_regions.end()))
+        if (pre_mapped_regions.find(idx) != pre_mapped_regions.end())
         {
           // This region has been pre-mapped, so we don't need to do anything here
 #ifdef DEBUG_HIGH_LEVEL
@@ -6714,7 +6762,8 @@ namespace RegionRuntime {
               }
             }
           }
-          if (unmapped == 0)
+          // Don't trigger if we were locally mapped in which case we are done
+          if (!local_map && (unmapped == 0))
           {
             this->map_event.trigger();
           }
@@ -7383,7 +7432,7 @@ namespace RegionRuntime {
           }
         }
         // If we've mapped all the instances, notify that we are done mapping
-        if (this->unmapped == 0)
+        if (!local_map && (this->unmapped == 0))
         {
           map_event.trigger();
         }
@@ -7446,6 +7495,7 @@ namespace RegionRuntime {
         {
 #ifdef DEBUG_HIGH_LEVEL
           assert(this->unmapped == 0); // We better be done mapping at this point
+          assert(!local_map); // local map events should all have come back as being mapped in index_space_start
 #endif
           this->map_event.trigger();
         }
@@ -7505,168 +7555,218 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void TaskContext::index_space_premap(void)
+    void TaskContext::pre_map_regions(bool need_lock)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(is_index_space);
-      assert(!enumerated);
+      assert(!is_index_space || !enumerated);
 #endif
-      // Need the lock in case we need to do any premappings
-      AutoLock ctx_lock(current_lock);
+      if (need_lock)
+      {
+#ifdef LOW_LEVEL_LOCKS
+        Event lock_event = current_lock.lock(0,true/*exclusive*/);
+        lock_event.wait(true/*block*/);
+#else
+        current_lock.lock();
+#endif
 #ifdef DEBUG_HIGH_LEVEL
-      current_taken = true;
+        current_taken = true;
 #endif
+      }
 
-      // Iterate through the region requirements looking for logical regions that are writes
+      bool all_mapped = true;
+
+      // If we were directed to do a local mapping, map all the regions
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        if ((regions[idx].func_type == SINGULAR_FUNC) &&
-            IS_WRITE(regions[idx]))
+        // Determine whether or not this region must be premapped
+        // Index spaces with writes a single region must be premapped
+        bool required = is_index_space && (regions[idx].func_type == SINGULAR_FUNC) && IS_WRITE(regions[idx]);
+        if (local_map)
         {
-          // Then we need to pre-map this region
-          ContextID parent_physical_ctx = get_enclosing_physical_context(idx);
-          std::set<Memory> sources;
-          RegionNode *handle = (*region_nodes)[regions[idx].handle.region];
-          handle->get_physical_locations(parent_physical_ctx, sources, true/*recurse*/,IS_REDUCE(regions[idx]));
-          std::vector<Memory> locations;
-          bool war_optimization = true;
+          pre_map_region(idx);
+        }
+        else if (required)
+        {
+          pre_map_region(idx);
+        }
+        else
+        {
+          all_mapped = true;
+        }
+      }
+
+      // Note this also catches the case where all the regions are pre-mapped
+      // for an index space even when they weren't asked to be but only out
+      // of necessity.  In this case trigger the map event and mark that the
+      // task was mapped locally.
+      if (all_mapped)
+      {
+        map_event.trigger();
+        local_map = true;
+      }
+
+      if (need_lock)
+      {
+        current_lock.unlock();
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = false;
+#endif
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::pre_map_region(unsigned idx)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+#endif
+      // Then we need to pre-map this region
+      ContextID parent_physical_ctx = get_enclosing_physical_context(idx);
+      std::set<Memory> sources;
+      RegionNode *handle = (*region_nodes)[regions[idx].handle.region];
+      handle->get_physical_locations(parent_physical_ctx, sources, true/*recurse*/,IS_REDUCE(regions[idx]));
+      std::vector<Memory> locations;
+      bool war_optimization = true;
+      {
+        DetailedTimer::ScopedPush sp(TIME_MAPPER);
+        mapper->map_task_region(this, regions[idx], idx, sources,locations,war_optimization);
+      }
+      // Check to make sure there is at least one instance
+      if (locations.empty())
+      {
+        log_inst(LEVEL_ERROR,"No memory locations specified by mapper for region %x (idx %d) of task %s",
+            regions[idx].handle.region.id, idx, variants->name);
+        exit(1);
+      }
+      else 
+      {
+        Memory first = locations.front();
+        if (!first.exists())
+        {
+          log_inst(LEVEL_ERROR,"Illegal no-mapping operation for a pre-map region.  Region %x (idx %d) of task %s is a pre-map "
+              "region and must pre-map a physical instance",
+              regions[idx].handle.region.id, idx, variants->name);
+          exit(1);
+        }
+      }
+      // We're definitely making our own instance
+      bool instance_owned = false;
+      bool found = false;
+      for (std::vector<Memory>::const_iterator it = locations.begin();
+            it != locations.end(); it++)
+      {
+        std::pair<InstanceInfo*,bool> result = handle->find_physical_instance(parent_physical_ctx,*it,
+                                                              true/*recurse*/,IS_REDUCE(regions[idx]));
+        InstanceInfo *info = result.first;
+        bool needs_initializing = false;
+        if (info == InstanceInfo::get_no_instance())
+        {
+          // We couldn't find a pre-existing instance, try to make one
+          info = create_instance_info(regions[idx].handle.region, *it,
+                                      (IS_REDUCE(regions[idx]) ? regions[idx].redop : 0));
+          if (info == InstanceInfo::get_no_instance())
           {
-            DetailedTimer::ScopedPush sp(TIME_MAPPER);
-            mapper->map_task_region(this, regions[idx], idx, sources,locations,war_optimization);
-          }
-          // Check to make sure there is at least one instance
-          if (locations.empty())
-          {
-            log_inst(LEVEL_ERROR,"No memory locations specified by mapper for region %x (idx %d) of task %s",
-                regions[idx].handle.region.id, idx, variants->name);
-            exit(1);
+            // Couldn't make it, try the next location
+            continue;
           }
           else
           {
-            Memory first = locations.front();
-            if (!first.exists())
-            {
-              log_inst(LEVEL_ERROR,"Illegal no-mapping operation.  Region %x (idx %d) of task %s is a shared writer "
-                  "region an index space task and must pre-map a physical instance",
-                  regions[idx].handle.region.id, idx, variants->name);
-              exit(1);
-            }
-          }
-          // We're definitely making our own instance
-          bool instance_owned = false;
-          bool found = false;
-          for (std::vector<Memory>::const_iterator it = locations.begin();
-                it != locations.end(); it++)
-          {
-            std::pair<InstanceInfo*,bool> result = handle->find_physical_instance(parent_physical_ctx,*it,
-                                                                  true/*recurse*/,IS_REDUCE(regions[idx]));
-            InstanceInfo *info = result.first;
-            bool needs_initializing = false;
-            if (info == InstanceInfo::get_no_instance())
-            {
-              // We couldn't find a pre-existing instance, try to make one
-              info = create_instance_info(regions[idx].handle.region, *it,
-                                          (IS_REDUCE(regions[idx]) ? regions[idx].redop : 0));
-              if (info == InstanceInfo::get_no_instance())
-              {
-                // Couldn't make it, try the next location
-                continue;
-              }
-              else
-              {
-                // We made it, but it needs to be initialized
-                needs_initializing = true;
-                instance_owned = true;
-              }
-            }
-            else
-            {
-              // Check to see if we need a new instance info to match the logical region we want
-              if (info->handle != regions[idx].handle.region)
-              {
-                // Need to make a new instance info for the logical region we want
-                info = create_instance_info(regions[idx].handle.region, info);
-              }
-              instance_owned = result.second;
-            }
-#ifdef DEBUG_HIGH_LEVEL
-            assert(info != InstanceInfo::get_no_instance());
-#endif
-            if (IS_REDUCE(regions[idx]))
-            {
-              // Reductions don't need to be initialized
-              needs_initializing = false;
-            }
-            else if (IS_WRITE(regions[idx]))
-            {
-              // Check for any Write-After-Read dependences
-              if (war_optimization && info->has_war_dependence(this,idx))
-              {
-#ifdef DEBUG_HIGH_LEVEL
-                assert(!needs_initializing); // shouldn't have war conflict if we have a new instance
-#endif
-                // Try creating a new physical instance in the same location as the previous 
-                InstanceInfo *new_info = create_instance_info(regions[idx].handle.region, info->location, 0/*redop*/);
-                if (new_info != InstanceInfo::get_no_instance())
-                {
-                  // We successfully made it, so update the meta infromation
-                  info = new_info;
-                  needs_initializing = true;
-                  instance_owned = true;
-                }
-              }
-            }
-#ifdef DEBUG_HIGH_LEVEL
-            log_inst(LEVEL_DEBUG,"Pre-Mapping region %x (idx %d) of task %s (ID %d) (unique id %d) to physical "
-                "instance %x of logical region %x in memory %x",regions[idx].handle.region.id,idx,
-                variants->name, task_id,
-                unique_id,info->iid,info->handle.id,info->location.id);
-#endif
-            // Perform the trace to get the ready event
-            RegionRenamer namer(parent_physical_ctx,idx,this,info,mapper,needs_initializing,instance_owned);
-            // Compute the region trace to the logical region we want
-#ifdef DEBUG_HIGH_LEVEL
-            bool trace_result = 
-#endif
-            compute_region_trace(namer.trace,regions[idx].parent,regions[idx].handle.region);
-#ifdef DEBUG_HIGH_LEVEL
-            assert(trace_result);
-#endif
-            log_region(LEVEL_DEBUG,"Physical tree traversal for region %x (index %d) of (remote %d) %s in context %d",
-                info->handle.id, idx, remote, variants->name, parent_physical_ctx);
-            // Inject the request to register this physical instance
-            // starting from the parent region's logical node
-            RegionNode *top = (*region_nodes)[regions[idx].parent];
-            Event precondition = top->register_physical_instance(namer,Event::NO_EVENT);
-            // Check to see if we need this region in atomic mode
-            if (IS_ATOMIC(regions[idx]))
-            {
-              // Acquire the lock before doing anything for this region
-              precondition = info->lock_instance(precondition);
-              // Also issue the unlock operation when the task is done, tee hee :)
-              info->unlock_instance(get_termination_event());
-            }
-            // Create pre-mapped region
-            PreMappedRegion pre_map;
-            pre_map.info = info;
-            pre_map.ready_event = precondition;
-            pre_mapped_regions.insert(std::pair<unsigned,PreMappedRegion>(idx, pre_map)); 
-            found = true;
-            break;
-          }
-          if (!found)
-          {
-            log_inst(LEVEL_ERROR,"Unable to find or create physical instance for pre-map of region %x"
-                " (index %d) of task %s (ID %d) with unique id %d",regions[idx].handle.region.id,
-                idx,this->variants->name,this->task_id,this->unique_id);
-            exit(1);
+            // We made it, but it needs to be initialized
+            needs_initializing = true;
+            instance_owned = true;
           }
         }
-      }
+        else
+        {
+          // Check to see if we need a new instance info to match the logical region we want
+          if (info->handle != regions[idx].handle.region)
+          {
+            // Need to make a new instance info for the logical region we want
+            info = create_instance_info(regions[idx].handle.region, info);
+          }
+          instance_owned = result.second;
+        }
 #ifdef DEBUG_HIGH_LEVEL
-      current_taken = false;
+        assert(info != InstanceInfo::get_no_instance());
 #endif
+        if (IS_REDUCE(regions[idx]))
+        {
+          // Reductions don't need to be initialized
+          needs_initializing = false;
+        }
+        else if (IS_WRITE(regions[idx]))
+        {
+          // Check for any Write-After-Read dependences
+          if (war_optimization && info->has_war_dependence(this,idx))
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            assert(!needs_initializing); // shouldn't have war conflict if we have a new instance
+#endif
+            // Try creating a new physical instance in the same location as the previous 
+            InstanceInfo *new_info = create_instance_info(regions[idx].handle.region, info->location, 0/*redop*/);
+            if (new_info != InstanceInfo::get_no_instance())
+            {
+              // We successfully made it, so update the meta infromation
+              info = new_info;
+              needs_initializing = true;
+              instance_owned = true;
+            }
+          }
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        log_inst(LEVEL_DEBUG,"Pre-Mapping region %x (idx %d) of task %s (ID %d) (unique id %d) to physical "
+            "instance %x of logical region %x in memory %x",regions[idx].handle.region.id,idx,
+            variants->name, task_id,
+            unique_id,info->iid,info->handle.id,info->location.id);
+#endif
+        // Perform the trace to get the ready event
+        RegionRenamer namer(parent_physical_ctx,idx,this,info,mapper,needs_initializing,instance_owned);
+        // Compute the region trace to the logical region we want
+#ifdef DEBUG_HIGH_LEVEL
+        bool trace_result = 
+#endif
+        compute_region_trace(namer.trace,regions[idx].parent,regions[idx].handle.region);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(trace_result);
+#endif
+        log_region(LEVEL_DEBUG,"Physical tree traversal for region %x (index %d) of (remote %d) %s in context %d",
+            info->handle.id, idx, remote, variants->name, parent_physical_ctx);
+        // Inject the request to register this physical instance
+        // starting from the parent region's logical node
+        RegionNode *top = (*region_nodes)[regions[idx].parent];
+        Event precondition = top->register_physical_instance(namer,Event::NO_EVENT);
+        // Check to see if we need this region in atomic mode
+        if (IS_ATOMIC(regions[idx]))
+        {
+          // Acquire the lock before doing anything for this region
+          precondition = info->lock_instance(precondition);
+          // Also issue the unlock operation when the task is done, tee hee :)
+          info->unlock_instance(get_termination_event());
+        }
+        // Create pre-mapped region
+        PreMappedRegion pre_map;
+        pre_map.info = info;
+        pre_map.ready_event = precondition;
+        pre_mapped_regions.insert(std::pair<unsigned,PreMappedRegion>(idx, pre_map)); 
+        found = true;
+        break;
+      }
+      if (!found)
+      {
+        log_inst(LEVEL_ERROR,"Unable to find or create physical instance for pre-map of region %x"
+            " (index %d) of task %s (ID %d) with unique id %d",regions[idx].handle.region.id,
+            idx,this->variants->name,this->task_id,this->unique_id);
+        exit(1);
+      }
+      // Notify any dependent tasks that this region has been mapped
+      for (std::set<GeneralizedContext*>::iterator it = map_dependent_tasks[idx].begin();
+            it != map_dependent_tasks[idx].end(); it++)
+      {
+        (*it)->notify();
+      }
+      map_dependent_tasks[idx].clear();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -8063,7 +8163,7 @@ namespace RegionRuntime {
               }
             }
             // Check to see if we had any unmapped regions in which case we can now trigger that we've been mapped
-            if (unmapped > 0)
+            if (!local_map && (unmapped > 0))
             {
               map_event.trigger();
             }
@@ -8354,10 +8454,15 @@ namespace RegionRuntime {
               (*region_nodes)[info->handle]->update_reduction_instances(enclosing_ctx,info,owned);
             }
             // Now notify all the tasks waiting on this region that it is valid
-            for (std::set<GeneralizedContext*>::const_iterator it = map_dependent_tasks[idx].begin();
-                  it != map_dependent_tasks[idx].end(); it++)
+            // Only do this if the task wasn't mapped locally, if it was mapped locally this
+            // has already been done
+            if (!local_map)
             {
-              (*it)->notify();
+              for (std::set<GeneralizedContext*>::const_iterator it = map_dependent_tasks[idx].begin();
+                    it != map_dependent_tasks[idx].end(); it++)
+              {
+                (*it)->notify();
+              }
             }
           }
           else
@@ -8387,7 +8492,9 @@ namespace RegionRuntime {
         assert(physical_instances.size() == regions.size());
         assert(physical_instances.size() == physical_mapped.size());
 #endif
-        if (unmapped == 0)
+        // Only trigger if it wasn't mapped locally and count has gone to zero
+        // If it was mapped locally then we already triggered it
+        if (!local_map && (unmapped == 0))
         {
           map_event.trigger();
         }
@@ -8555,7 +8662,8 @@ namespace RegionRuntime {
           }
         }
         // If we had any unmapped children indicate that we are now mapped
-        if (unmapped > 0)
+        // Only trigger if not local mapped which is done early
+        if (!local_map && (unmapped > 0))
         {
           map_event.trigger();
         }
@@ -9560,7 +9668,7 @@ namespace RegionRuntime {
         // Check to see if the physical context needs to be initialized for a new region
         // could have been a pre-mapped region as well
         if ((physical_instances[idx] != InstanceInfo::get_no_instance()) ||
-            (is_index_space && (pre_mapped_regions.find(idx) != pre_mapped_regions.end())))
+            (pre_mapped_regions.find(idx) != pre_mapped_regions.end()))
         {
 #ifdef DEBUG_HIGH_LEVEL
           assert(physical_mapped[idx]);
@@ -9799,6 +9907,11 @@ namespace RegionRuntime {
       remaining_notifications--;
       if (remaining_notifications == 0)
       {
+        // perform any premappings
+        // note we don't need to take the context lock here because someone
+        // else is already holding it if they are notifying us
+        pre_map_regions(false/*need lock*/);
+        // then add ourselves to the ready queue
         runtime->add_to_ready_queue(this);
       }
     }
