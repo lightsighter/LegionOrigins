@@ -354,6 +354,8 @@ namespace RegionRuntime {
       TaskArgument(void) : args(NULL), arglen(0) { }
       TaskArgument(const void *arg, size_t argsize)
         : args(const_cast<void*>(arg)), arglen(argsize) { }
+      TaskArgument(const TaskArgument &rhs)
+        : args(rhs.args), arglen(rhs.arglen) { }
     public:
       inline size_t get_size(void) const { return arglen; }
       inline void*  get_ptr(void) const { return args; }
@@ -362,6 +364,12 @@ namespace RegionRuntime {
         { return args == arg.args; }
       bool operator<(const TaskArgument &arg) const
         { return args < arg.args; }
+      TaskArgument& operator=(const TaskArgument &rhs)
+      {
+        args = rhs.args;
+        arglen = rhs.arglen;
+        return *this;
+      }
     private:
       void *args;
       size_t arglen;
