@@ -5744,6 +5744,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       bool has_local = false;
+      bool has_recurse = false;
       std::vector<T> local_space;
       bool split = false;
       // Compute the new fraction of work that everyone will have
@@ -5788,68 +5789,115 @@ namespace RegionRuntime {
             Processor utility = it->p.get_utility_processor();
             utility.spawn(ENQUEUE_TASK_ID,rez.get_buffer(),buffer_size);
           }
+          else
+          {
+            if (it->recurse)
+            {
+              has_recurse = true;
+            }
+          }
         }
 #ifdef DEBUG_HIGH_LEVEL
         current_taken = false;
 #endif
       }
       // We're done sending chunks remotely, now handle our local chunks
-      for (typename std::vector<CT>::const_reverse_iterator it = chunks.rbegin();
-            it != chunks.rend(); it++)
+      // Two algorithms for whether there are any recursive calls or not
+      if (has_recurse)
       {
-        if (it->p == local_proc)
+        for (typename std::vector<CT>::const_iterator it = chunks.begin();
+              it != chunks.end(); it++)
         {
-          if (has_local)
+          if (it->p == local_proc)
           {
-            if (it->recurse)
+            if (has_local)
             {
-              set_space<T>(it->space); 
-              bool still_local = runtime->split_task(this, ways);
-              if (still_local)
+              if (it->recurse)
               {
-                // Set fields and then clone the context
+                set_space<T>(it->space); 
+                bool still_local = runtime->split_task(this, ways);
+                if (still_local)
+                {
+                  // Set fields and then clone the context
+                  this->need_split = false;
+                  TaskContext *clone = runtime->get_available_context(false/*new tree*/);
+                  clone_index_space_task(clone,true/*slice*/);
+                  clone->set_space<T>(this->get_space<T>());
+                  // Put it in the ready queue
+                  // Needed to own queue lock before calling split_task which
+                  // is the only task that calls this task
+                  runtime->add_to_ready_queue(clone,false/*need lock*/);
+                }
+              }
+              else
+              {
                 this->need_split = false;
+                // Clone it and put it in the ready queue
                 TaskContext *clone = runtime->get_available_context(false/*new tree*/);
                 clone_index_space_task(clone,true/*slice*/);
-                clone->set_space<T>(this->get_space<T>());
-                // Put it in the ready queue
-                // Needed to own queue lock before calling split_task which
-                // is the only task that calls this task
+                clone->set_space<T>(it->space);
+                // Put it in the ready queue (see note about lock above)
                 runtime->add_to_ready_queue(clone,false/*need lock*/);
               }
             }
             else
             {
-              this->need_split = false;
-              // Clone it and put it in the ready queue
-              TaskContext *clone = runtime->get_available_context(false/*new tree*/);
-              clone_index_space_task(clone,true/*slice*/);
-              clone->set_space<T>(it->space);
-              // Put it in the ready queue (see note about lock above)
-              runtime->add_to_ready_queue(clone,false/*need lock*/);
-            }
-          }
-          else
-          {
-            // Haven't allocated this context to anyone yet, so put the chunk in this context 
-            if (it->recurse)
-            {
-              set_space<T>(it->space);
-              bool still_local = runtime->split_task(this, ways);
-              if (still_local)
+              // Haven't allocated this context to anyone yet, so put the chunk in this context 
+              if (it->recurse)
+              {
+                set_space<T>(it->space);
+                bool still_local = runtime->split_task(this, ways);
+                if (still_local)
+                {
+                  // Store in local variables so we can continue cloning this context
+                  has_local = true;
+                  local_space = get_space<T>();
+                  split = false;
+                }
+              }
+              else
               {
                 // Store in local variables so we can continue cloning this context
                 has_local = true;
-                local_space = get_space<T>();
-                split = false;
+                local_space = it->space;
+                split = it->recurse;
               }
             }
-            else
+          }
+        }
+      }
+      else // No recursive calls
+      {
+        int index = -1;
+        for (int idx = (chunks.size()-1); idx >= 0; idx--)
+        {
+          if (chunks[idx].p == local_proc)
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            assert(!chunks[idx].recurse);
+#endif
+            has_local = true;
+            local_space = chunks[idx].space;
+            split = false;
+            index = idx;
+            break;
+          }
+        }
+        if (index != -1)
+        {
+          for (int idx = 0; idx < index; idx++)
+          {
+            if (chunks[idx].p == local_proc)
             {
-              // Store in local variables so we can continue cloning this context
-              has_local = true;
-              local_space = it->space;
-              split = it->recurse;
+#ifdef DEBUG_HIGH_LEVEL
+              assert(!chunks[idx].recurse);
+#endif
+              this->need_split = false;
+              TaskContext *clone = runtime->get_available_context(false/*new tree*/);
+              clone_index_space_task(clone,true/*slice*/);
+              clone->set_space<T>(chunks[idx].space);
+              // Put it in the ready queue (see note about lock above)
+              runtime->add_to_ready_queue(clone,false/*need lock*/);
             }
           }
         }
