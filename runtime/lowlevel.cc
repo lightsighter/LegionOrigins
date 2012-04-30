@@ -3359,10 +3359,10 @@ namespace RegionRuntime {
 	virtual void sleep_on_event(Event wait_for, bool block = false)
 	{
 	  // create an entry to go on our event stack (on our stack)
-	  EventStackEntry entry(this, wait_for, event_stack);
-	  event_stack = &entry;
+	  EventStackEntry *entry = new EventStackEntry(this, wait_for, event_stack);
+	  event_stack = entry;
 
-	  entry.add_waiter();
+	  entry->add_waiter();
 
 	  // now take the processor lock that controls everything and see
 	  //  what we can do while we're waiting
@@ -3375,7 +3375,7 @@ namespace RegionRuntime {
 	    assert(state == STATE_RUN);
 
 	    // loop until our event has triggered
-	    while(!entry.triggered) {
+	    while(!entry->triggered) {
 	      // first step - if some other thread is resumable, give up
 	      //   our spot and let him run
 	      if(proc->resumable_threads.size() > 0) {
@@ -3461,8 +3461,9 @@ namespace RegionRuntime {
 			  this, proc->me.id, wait_for.id, wait_for.gen);
 	  }
 
-	  assert(event_stack == &entry);
-	  event_stack = entry.next;
+	  assert(event_stack == entry);
+	  event_stack = entry->next;
+	  delete entry;
 	}
 
 	virtual void thread_main(void)
@@ -3999,7 +4000,7 @@ namespace RegionRuntime {
 	while(!wait_for.has_triggered()) {
 	  log_util.info("utility thread polling on event %x/%d",
 			wait_for.id, wait_for.gen);
-	  usleep(1000);
+	  //usleep(1000);
 	}
       }
 
@@ -5091,12 +5092,33 @@ namespace RegionRuntime {
       log_copy.debug("sending remote write request: mem=%x, offset=%zd, size=%zd, event=%x/%d",
 		     mem.id, offset, datalen,
 		     event.id, event.gen);
-      RemoteWriteArgs args;
-      args.mem = mem;
-      args.offset = offset;
-      args.event = event;
-      RemoteWriteMessage::request(ID(mem).node(), args,
-				  data, datalen, PAYLOAD_KEEP);
+      const size_t MAX_SEND_SIZE = 4 << 20; // should be <= LMB_SIZE
+      if(datalen > MAX_SEND_SIZE) {
+	log_copy.info("breaking large send into pieces");
+	const char *pos = (const char *)data;
+	RemoteWriteArgs args;
+	args.mem = mem;
+	args.offset = offset;
+	args.event = Event::NO_EVENT;
+	while(datalen > MAX_SEND_SIZE) {
+	  RemoteWriteMessage::request(ID(mem).node(), args,
+				      pos, MAX_SEND_SIZE, PAYLOAD_KEEP);
+	  args.offset += MAX_SEND_SIZE;
+	  pos += MAX_SEND_SIZE;
+	  datalen -= MAX_SEND_SIZE;
+	}
+	// last send includes the trigger event
+	args.event = event;
+	RemoteWriteMessage::request(ID(mem).node(), args,
+				    pos, datalen, PAYLOAD_KEEP);
+      } else {
+	RemoteWriteArgs args;
+	args.mem = mem;
+	args.offset = offset;
+	args.event = event;
+	RemoteWriteMessage::request(ID(mem).node(), args,
+				    data, datalen, PAYLOAD_KEEP);
+      }
     }
 
     namespace RangeExecutors {
@@ -6246,6 +6268,29 @@ namespace RegionRuntime {
 	// plan B: if one side is remote, try delegating to the node
 	//  that owns the other side of the copy
 	unsigned delegate = ID(src_impl->memory).node();
+	assert(delegate != gasnet_mynode());
+
+	log_copy.info("passsing the buck to node %d for %x->%x copy",
+		      delegate, src_mem->me.id, dst_mem->me.id);
+	Event after_copy = Event::Impl::create_event();
+	RemoteCopyArgs args;
+	args.source = *this;
+	args.target = target;
+	args.region = region;
+	args.elmt_size = elmt_size;
+	args.bytes_to_copy = bytes_to_copy;
+	args.before_copy = wait_on;
+	args.after_copy = after_copy;
+	RemoteCopyMessage::request(delegate, args);
+	
+	return after_copy;
+      }
+
+      // another interesting case: if the destination is remote, and the source
+      //  is gasnet, then the destination can read the source itself
+      if((src_mem->kind == Memory::Impl::MKIND_GASNET) &&
+	 (dst_mem->kind == Memory::Impl::MKIND_REMOTE)) {
+	unsigned delegate = ID(dst_impl->memory).node();
 	assert(delegate != gasnet_mynode());
 
 	log_copy.info("passsing the buck to node %d for %x->%x copy",

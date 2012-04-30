@@ -23,10 +23,10 @@ enum {
 };
 
 enum PointerLocation {
-  PVT,
-  SHR,
-  GHOST,
-  BOUNDARY,
+  PVT = 0,
+  SHR = 1,
+  GHOST = 2,
+  BOUNDARY = 3,
 };
 
 struct Flux;
@@ -80,6 +80,10 @@ public:
   float dt;
   // Diffusion coefficient
   float coeff;
+  // The level of this level
+  int level;
+  // Divisions
+  int divisions;
   // Offsets for computing global cell locations (same in all dimensions)
   float offset;
   
@@ -106,10 +110,9 @@ public:
   // Partition of pvt, shared, and ghost that are sources for interpolation
   // for the level below
   Partition pvt_interp, shr_interp, ghost_interp;
-  // Partitions of boundary cells for interpolation from the level above
-  Partition interp_boundary_above;
 
   std::vector<std::vector<RegionRequirement> > interp_boundary_regions;
+  std::vector<MappingTagID> interp_tags;
   std::vector<RegionRequirement> calc_fluxes_regions;
   std::vector<RegionRequirement> adv_time_step_regions;
   std::vector<std::vector<RegionRequirement> > restrict_coarse_regions;

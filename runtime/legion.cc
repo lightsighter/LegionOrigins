@@ -7592,7 +7592,7 @@ namespace RegionRuntime {
         }
         else
         {
-          all_mapped = true;
+          all_mapped = false;
         }
       }
 
@@ -7999,7 +7999,8 @@ namespace RegionRuntime {
 #endif
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
-            if (physical_instances[idx] == InstanceInfo::get_no_instance())
+            if ((physical_instances[idx] == InstanceInfo::get_no_instance()) &&
+                (pre_mapped_regions.find(idx) == pre_mapped_regions.end()))
             {
 #ifdef DEBUG_HIGH_LEVEL
               assert(!physical_mapped[idx]);
@@ -8026,7 +8027,8 @@ namespace RegionRuntime {
             std::vector<InstanceInfo*> required_instances;
             for (unsigned idx = 0; idx < regions.size(); idx++)
             {
-              if (physical_instances[idx] == InstanceInfo::get_no_instance())
+              if (physical_instances[idx] == InstanceInfo::get_no_instance() &&
+                  (pre_mapped_regions.find(idx) == pre_mapped_regions.end()))
               {
                 buffer_size += (*region_nodes)[regions[idx].handle.region]->
                                 compute_physical_state_size(ctx_id,required_instances,true/*returning*/);
@@ -8109,7 +8111,8 @@ namespace RegionRuntime {
             // The physical states for the regions that were unmapped
             for (unsigned idx = 0; idx < regions.size(); idx++)
             {
-              if (physical_instances[idx] == InstanceInfo::get_no_instance())
+              if ((physical_instances[idx] == InstanceInfo::get_no_instance()) &&
+                  (pre_mapped_regions.find(idx) == pre_mapped_regions.end()))
               {
                 (*region_nodes)[regions[idx].handle.region]->pack_physical_state(ctx_id,rez); 
               }
@@ -8630,7 +8633,8 @@ namespace RegionRuntime {
         // Unpack them into the enclosing context since that is where the information needs to go
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
-          if (physical_instances[idx] == InstanceInfo::get_no_instance())
+          if ((physical_instances[idx] == InstanceInfo::get_no_instance()) &&
+              (pre_mapped_regions.find(idx) == pre_mapped_regions.end()))
           {
             log_region(LEVEL_DEBUG,"Unpacking returning task state for region index %d of task %s in context %d",
                                   idx, variants->name, get_enclosing_physical_context(idx));
@@ -9910,7 +9914,13 @@ namespace RegionRuntime {
         // perform any premappings
         // note we don't need to take the context lock here because someone
         // else is already holding it if they are notifying us
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = true; // this is true because someone has to be holding the context lock to call notify
+#endif
         pre_map_regions(false/*need lock*/);
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = false;
+#endif
         // then add ourselves to the ready queue
         runtime->add_to_ready_queue(this);
       }
