@@ -57,7 +57,7 @@ void region_main(const void *args, size_t arglen,
   divisions[0] = 16;
   divisions[1] = 4;
   divisions[2] = 4;
-  int steps = 2;
+  int steps = 20;
   int random_seed = 12345;
   {
     InputArgs *inputs = (InputArgs*) args;
