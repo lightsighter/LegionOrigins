@@ -45,7 +45,7 @@ void region_main(const void *args, size_t arglen,
                  Context ctx, HighLevelRuntime *runtime)
 {
   int num_levels = 3;
-  int default_num_cells = 32;
+  int default_num_cells = 1024;
   int default_divisions = 4;
   std::vector<int> num_cells(num_levels);
   std::vector<int> divisions(num_levels);
@@ -54,6 +54,9 @@ void region_main(const void *args, size_t arglen,
     num_cells[i] = default_num_cells;
     divisions[i] = default_divisions;
   }
+  divisions[0] = 16;
+  divisions[1] = 4;
+  divisions[2] = 4;
   int steps = 2;
   int random_seed = 12345;
   {
@@ -86,7 +89,13 @@ void region_main(const void *args, size_t arglen,
 #if 1
   set_region_requirements(levels);
 
-  TaskArgument global_arg;
+  std::vector<TaskArgument> global_args(num_levels);
+  for (int i = 0; i < num_levels; i++)
+  {
+    levels[i].level = i;
+    levels[i].divisions = divisions[i];
+    global_args[i] = TaskArgument(&levels[i].dx,3*sizeof(float)+2*sizeof(int));
+  }
   ArgumentMap  local_args;
 
   std::vector<FutureMap> last_maps;
@@ -98,32 +107,49 @@ void region_main(const void *args, size_t arglen,
 
     // Interpolate boundary conditions
     // All these are independent so it doesn't matter which order we do them in
-    for (int i = 1; i < num_levels-1; i++)
+    // No need to interp the boundary cells on the first loop
+    // This will allow our mapper to get the right choice of mappings
+    if (s > 0)
     {
-      for (unsigned j = 0; j < levels[i].interp_boundary_regions.size(); j++)
+      for (int i = 1; i < num_levels-1; i++)
       {
-        Future f = runtime->execute_task(ctx, INTERP_BOUNDARY, levels[i].interp_boundary_regions[j], global_arg);
-        f.release();
+        for (unsigned j = 0; j < levels[i].interp_boundary_regions.size(); j++)
+        {
+          Future f = runtime->execute_task(ctx, INTERP_BOUNDARY, levels[i].interp_boundary_regions[j], global_args[i],0/*mapper id*/
+#ifndef SHARED_LOWLEVEL
+                                                                                                        ,levels[i].interp_tags[j]/*tag*/
+#endif
+              );
+          f.release();
+        }
       }
     }
 
-    // Calculate fluxes at each level
-    for (int i = 0; i < num_levels; i++)
+    // Calculate fluxes at each level (reverse order so mapper can map bottom up)
+    //for (int i = 0; i < num_levels; i++)
+    for (int i = (num_levels-1); i >= 0; i--)
     {
       // Pass the value of dx in here
-      TaskArgument dx_arg(&levels[i].dx,sizeof(float));
       FutureMap map = runtime->execute_index_space(ctx, CALC_FLUXES, levels[i].index_space,
-                      levels[i].calc_fluxes_regions, dx_arg, local_args, false/*must*/); 
-      map.release();
+                      levels[i].calc_fluxes_regions, global_args[i], local_args, false/*must*/); 
+      // If this is the first loop we need to wait for these things to happen in order
+      // so that the mapper gets everything right
+      if (s == 0)
+      {
+        map.wait_all_results();
+      }
+      else
+      {
+        map.release();
+      }
     }
 
     // Advance the time step at each level
-    for (int i = 0; i < num_levels; i++)
+    for (int i = (num_levels-1); i >= 0; i--)
     {
       // Pass the values of dx, dt, and coeff here
-      TaskArgument d_args(&levels[i].dx,3*sizeof(float));
       FutureMap map = runtime->execute_index_space(ctx, ADVANCE, levels[i].index_space,
-                      levels[i].adv_time_step_regions, d_args, local_args, false/*must*/);
+                      levels[i].adv_time_step_regions, global_args[i], local_args, false/*must*/);
       if (s == (steps-1))
       {
         last_maps.push_back(map);
@@ -140,7 +166,11 @@ void region_main(const void *args, size_t arglen,
     {
       for (unsigned j = 0; j < levels[i].restrict_coarse_regions.size(); j++)
       {
-        Future f = runtime->execute_task(ctx, RESTRICT, levels[i].restrict_coarse_regions[j], global_arg);
+        Future f = runtime->execute_task(ctx, RESTRICT, levels[i].restrict_coarse_regions[j], global_args[i], 0/*mapper id*/
+#ifndef SHARED_LOWLEVEL
+                                                                                              ,j+1/*tag*/
+#endif
+            );
         if (s == (steps-1))
         {
           last_futures.push_back(f);
@@ -228,6 +258,7 @@ inline void average_cells(PhysicalRegion<AccessorArray> &cells, std::vector<Arra
 // CPU Kernels
 ////////////////////
 
+#ifndef FAST_PATH
 template<int DIM>
 void interpolate_boundary_task(const void *args, size_t arglen,
                                std::vector<PhysicalRegion<AccessorGeneric> > &regions,
@@ -235,78 +266,89 @@ void interpolate_boundary_task(const void *args, size_t arglen,
 {
   log_heat(LEVEL_DEBUG,"CPU interpolate boundaries task");
 #ifndef DISABLE_MATH
-  PhysicalRegion<AccessorGeneric> fine_boundary  = regions[0];
   // Iterate over the fine-grained boundary cells and 
   // for each one do the interpolation from the cells above
-  PointerIterator *itr = fine_boundary.iterator();
-  while (itr->has_next())
+  // The first three regions are the pvt, shared, and ghost regions for this piece
+  assert(regions.size() > 3);
+  for (unsigned i = 3; i < regions.size(); i++)
   {
-    ptr_t<Cell> bound_ptr = itr->next<Cell>();
-    Cell boundary_cell = fine_boundary.read<Cell>(bound_ptr);
+    PhysicalRegion<AccessorGeneric> fine_boundary = regions[i];
+    PointerIterator *itr = fine_boundary.iterator();
+    while (itr->has_next())
+    {
+      ptr_t<Cell> bound_ptr = itr->next<Cell>();
+      Cell boundary_cell = fine_boundary.read<Cell>(bound_ptr);
 #if SIMULATION_DIM==2
-    {
-      float temps[2][2];
-      float center[DIM];
-      fill_temps_and_center_2D(temps, center, boundary_cell.across_cells, boundary_cell.across_index_loc,
-                        regions);
-      boundary_cell.temperature = compute_average_temp_2D(temps, center, boundary_cell.position);
-      fine_boundary.write<Cell>(bound_ptr, boundary_cell);
-    }
+      {
+        float temps[2][2];
+        float center[DIM];
+        fill_temps_and_center_2D(temps, center, boundary_cell.across_cells, boundary_cell.across_index_loc,
+                          regions);
+        boundary_cell.temperature = compute_average_temp_2D(temps, center, boundary_cell.position);
+        fine_boundary.write<Cell>(bound_ptr, boundary_cell);
+      }
 #else
-    {
-      float temps[2][2][2];
-      float center[DIM];
-      fill_temps_and_center_3D(temps, center, boundary_cell.across_cells, boundary_cell.across_index_loc,
-                        regions);
-      // compute the new temperature and write the position back
-      boundary_cell.temperature = compute_average_temp_3D(temps, center, boundary_cell.position);
-      fine_boundary.write<Cell>(bound_ptr, boundary_cell);
-    }
+      {
+        float temps[2][2][2];
+        float center[DIM];
+        fill_temps_and_center_3D(temps, center, boundary_cell.across_cells, boundary_cell.across_index_loc,
+                          regions);
+        // compute the new temperature and write the position back
+        boundary_cell.temperature = compute_average_temp_3D(temps, center, boundary_cell.position);
+        fine_boundary.write<Cell>(bound_ptr, boundary_cell);
+      }
 #endif
+    }
+    delete itr;
   }
-  delete itr;
 #endif
 }
-
+#else
 template<int DIM>
 void interpolate_boundary_task(const void *args, size_t arglen,
-                               std::vector<PhysicalRegion<AccessorArray> > &regions,
+                               std::vector<PhysicalRegion<AccessorGeneric> > &regions,
                                Context ctx, HighLevelRuntime *runtime)
 {
+  //RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(20);
   log_heat(LEVEL_DEBUG,"CPU interpolate boundaries FAST task");
 #ifndef DISABLE_MATH
   std::vector<ArrayAccessor> fast_regions(regions.size());
   for (unsigned idx = 0; idx < regions.size(); idx++)
   {
-    fast_regions[idx] = regions[idx].get_instance();
+    fast_regions[idx] = regions[idx].convert<AccessorArray>().get_instance();
   }
-  ArrayAccessor fine_boundary = fast_regions[0];
-  PointerIterator *itr = regions[0].iterator();
-  while (itr->has_next())
+  assert(regions.size() > 3);
+  for (unsigned i = 3; i < regions.size(); i++)
   {
-    ptr_t<Cell> bound_ptr = itr->next<Cell>();
-    Cell &boundary_cell = fine_boundary.ref<Cell>(bound_ptr);
+    ArrayAccessor fine_boundary = fast_regions[i];
+    PointerIterator *itr = regions[i].iterator();
+    while (itr->has_next())
+    {
+      ptr_t<Cell> bound_ptr = itr->next<Cell>();
+      Cell &boundary_cell = fine_boundary.ref<Cell>(bound_ptr);
 #if SIMULATION_DIM==2
-    {
-      float temps[2][2];
-      float center[DIM];
-      fill_temps_and_center_2D(temps, center, boundary_cell.across_cells, boundary_cell.across_index_loc, fast_regions);
-      boundary_cell.temperature = compute_average_temp_2D(temps, center, boundary_cell.position);
-    }
+      {
+        float temps[2][2];
+        float center[DIM];
+        fill_temps_and_center_2D(temps, center, boundary_cell.across_cells, boundary_cell.across_index_loc, fast_regions);
+        boundary_cell.temperature = compute_average_temp_2D(temps, center, boundary_cell.position);
+      }
 #else
-    {
-      float temps[2][2][2];
-      float center[DIM];
-      fill_temps_and_center_3D(temps, center, boundary_cell.across_cells, boundary_cell.across_index_loc, fast_regions);
-      boundary_cell.temperature = compute_average_temp_3D(temps, center, boundary_cell.position);
-    }
+      {
+        float temps[2][2][2];
+        float center[DIM];
+        fill_temps_and_center_3D(temps, center, boundary_cell.across_cells, boundary_cell.across_index_loc, fast_regions);
+        boundary_cell.temperature = compute_average_temp_3D(temps, center, boundary_cell.position);
+      }
 #endif
+    }
+    delete itr;
   }
-  delete itr;
 #endif
 }
+#endif
 
-
+#ifndef FAST_PATH
 template<int DIM>
 void calculate_fluxes_task(const void *global_args, size_t global_arglen,
                            const void *local_args, size_t local_arglen,
@@ -340,22 +382,23 @@ void calculate_fluxes_task(const void *global_args, size_t global_arglen,
   delete itr;
 #endif
 }
-
+#else
 template<int DIM>
 void calculate_fluxes_task(const void *global_args, size_t global_arglen,
                            const void *local_args, size_t local_arglen,
                            const IndexPoint &point,
-                           std::vector<PhysicalRegion<AccessorArray> > &regions,
+                           std::vector<PhysicalRegion<AccessorGeneric> > &regions,
                            Context ctx, HighLevelRuntime *runtime)
 {
+  //RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(21);
   log_heat(LEVEL_DEBUG, "CPU calculate fluxes FAST for point %d", point[0]);
 #ifndef DISABLE_MATH
   float dx = *((const float*)global_args);
-  ArrayAccessor fluxes      = regions[0].get_instance();
-  ArrayAccessor pvt_cells   = regions[1].get_instance();
-  ArrayAccessor shr_cells   = regions[2].get_instance();
-  ArrayAccessor ghost_cells = regions[3].get_instance();
-  ArrayAccessor bound_cells = regions[4].get_instance();
+  ArrayAccessor fluxes      = regions[0].convert<AccessorArray>().get_instance();
+  ArrayAccessor pvt_cells   = regions[1].convert<AccessorArray>().get_instance();
+  ArrayAccessor shr_cells   = regions[2].convert<AccessorArray>().get_instance();
+  ArrayAccessor ghost_cells = regions[3].convert<AccessorArray>().get_instance();
+  ArrayAccessor bound_cells = regions[4].convert<AccessorArray>().get_instance();
   // Iterate over the fluxes and compute the new flux based on the temperature
   // of the two neighboring cells
   PointerIterator *itr = regions[0].iterator();
@@ -372,7 +415,9 @@ void calculate_fluxes_task(const void *global_args, size_t global_arglen,
   delete itr;
 #endif
 }
+#endif
 
+#ifndef FAST_PATH
 template<int DIM>
 void advance_time_step_task(const void *global_args, size_t global_arglen,
                             const void *local_args, size_t local_arglen,
@@ -395,30 +440,33 @@ void advance_time_step_task(const void *global_args, size_t global_arglen,
   advance_cells(shr_cells, fluxes, dx, dt, coeff);
 #endif
 }
-
+#else
 template<int DIM>
 void advance_time_step_task(const void *global_args, size_t global_arglen,
                             const void *local_args, size_t local_arglen,
                             const IndexPoint &point,
-                            std::vector<PhysicalRegion<AccessorArray> > &regions,
+                            std::vector<PhysicalRegion<AccessorGeneric> > &regions,
                             Context ctx, HighLevelRuntime *runtime)
 {
+  //RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(22);
   log_heat(LEVEL_DEBUG,"CPU advance time step FAST for point %d",point[0]);
   const float *arg_ptr = (const float*)global_args;
   float dx = arg_ptr[0];
   float dt = arg_ptr[1];
   float coeff = arg_ptr[2];
 #ifndef DISABLE_MATH
-  PhysicalRegion<AccessorArray> fluxes    = regions[0];
-  PhysicalRegion<AccessorArray> pvt_cells = regions[1];
-  PhysicalRegion<AccessorArray> shr_cells = regions[2];
+  PhysicalRegion<AccessorArray> fluxes    = regions[0].convert<AccessorArray>();
+  PhysicalRegion<AccessorArray> pvt_cells = regions[1].convert<AccessorArray>();
+  PhysicalRegion<AccessorArray> shr_cells = regions[2].convert<AccessorArray>();
 
   // Advance the cells that we own
   advance_cells(pvt_cells, fluxes, dx, dt, coeff);
   advance_cells(shr_cells, fluxes, dx, dt, coeff);
 #endif
 }
+#endif
 
+#ifndef FAST_PATH
 template<int DIM>
 void restrict_coarse_cells_task(const void *args, size_t arglen,
                                 std::vector<PhysicalRegion<AccessorGeneric> > &regions,
@@ -434,24 +482,28 @@ void restrict_coarse_cells_task(const void *args, size_t arglen,
   average_cells(shr_coarse, regions);
 #endif
 }
-
+#else
 template<int DIM>
 void restrict_coarse_cells_task(const void *args, size_t arglen,
-                                std::vector<PhysicalRegion<AccessorArray> > &regions,
+                                std::vector<PhysicalRegion<AccessorGeneric> > &regions,
                                 Context ctx, HighLevelRuntime *runtime)
 {
+  //RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(23);
   log_heat(LEVEL_DEBUG,"CPU restrict coarse cells FAST");
 #ifndef DISABLE_MATH
   std::vector<ArrayAccessor> fast_regions(regions.size());
   for (unsigned idx = 0; idx < regions.size(); idx++)
   {
-    fast_regions[idx] = regions[idx].get_instance();
+    fast_regions[idx] = regions[idx].convert<AccessorArray>().get_instance();
   }
 
-  average_cells(regions[0], fast_regions);
-  average_cells(regions[1], fast_regions);
+  PhysicalRegion<AccessorArray> fast0 = regions[0].convert<AccessorArray>();
+  PhysicalRegion<AccessorArray> fast1 = regions[1].convert<AccessorArray>();
+  average_cells(fast0, fast_regions);
+  average_cells(fast1, fast_regions);
 #endif
 }
+#endif
 
 void registration_func(Machine *machine, HighLevelRuntime *runtime, Processor local);
 
@@ -463,13 +515,13 @@ int main(int argc, char **argv)
   HighLevelRuntime::register_single_task<
         region_main<AccessorGeneric, SIMULATION_DIM> >(REGION_MAIN, Processor::LOC_PROC, "region_main");
 #ifdef FAST_PATH
-  HighLevelRuntime::register_single_task<interpolate_boundary_task<SIMULATION_DIM>,
+  HighLevelRuntime::register_single_task<
         interpolate_boundary_task<SIMULATION_DIM> >(INTERP_BOUNDARY,Processor::LOC_PROC, "interp_boundary");
-  HighLevelRuntime::register_index_task<calculate_fluxes_task<SIMULATION_DIM>,
+  HighLevelRuntime::register_index_task<
         calculate_fluxes_task<SIMULATION_DIM> >(CALC_FLUXES, Processor::LOC_PROC, "calc_fluxes");
-  HighLevelRuntime::register_index_task<advance_time_step_task<SIMULATION_DIM>,
+  HighLevelRuntime::register_index_task<
         advance_time_step_task<SIMULATION_DIM> >(ADVANCE, Processor::LOC_PROC, "advance");
-  HighLevelRuntime::register_single_task<restrict_coarse_cells_task<SIMULATION_DIM>,
+  HighLevelRuntime::register_single_task<
         restrict_coarse_cells_task<SIMULATION_DIM> >(RESTRICT, Processor::LOC_PROC, "restrict");
 #else
   HighLevelRuntime::register_single_task<
@@ -493,13 +545,436 @@ public:
   HeatMapper(Machine *m, HighLevelRuntime *rt, Processor local)
     : Mapper(m, rt, local)
   {
+    const std::set<Processor> &all_procs = m->get_all_processors();
+    for (std::set<Processor>::const_iterator it = all_procs.begin();
+          it != all_procs.end(); it++)
+    {
+      Processor::Kind k = m->get_processor_kind(*it);
+      if (k == Processor::LOC_PROC)
+      {
+        cpu_procs.push_back(*it);
+        // For each CPU processor get its system memory
+        std::vector<ProcessorMemoryAffinity> result;
+        m->get_proc_mem_affinity(result, *it);
+        assert(result.size() > 0);
+        Memory sys_mem = result[0].m; 
+        unsigned bandwidth = result[0].bandwidth;
+        for (unsigned i = 1; i < result.size(); i++)
+        {
+          if (result[i].bandwidth > bandwidth)
+          {
+            sys_mem = result[i].m;
+            bandwidth = result[i].bandwidth;
+          }
+        }
+        system_memories[*it] = sys_mem;
+      }
+    }
 
+    // Now find our specific memories
+    if (proc_kind == Processor::LOC_PROC)
+    {
+      unsigned num_mem = memory_stack.size();
+      assert(num_mem >= 2);
+      gasnet_mem = memory_stack[num_mem-1];
+      {
+        std::vector<ProcessorMemoryAffinity> result;
+        m->get_proc_mem_affinity(result, local_proc, gasnet_mem);
+        assert(result.size() == 1);
+        log_heat.debug("CPU %x mapper has gasnet memory %x with "
+            "bandwidth %u and latency %u",local_proc.id, gasnet_mem.id,
+            result[0].bandwidth, result[0].latency);
+      }
+      system_mem = memory_stack[0];
+      {
+        std::vector<ProcessorMemoryAffinity> result;
+        m->get_proc_mem_affinity(result, local_proc, system_mem);
+        assert(result.size() == 1);
+        log_heat.debug("CPU %x mapper has system memory %x with "
+            "bandwidth %u and latency %u",local_proc.id, gasnet_mem.id,
+            result[0].bandwidth, result[0].latency);
+      }
+    }
+
+    // Initialize our data structures
+    loc_initialized.resize(8);
+    id_locations.resize(8);
+    boxes.resize(8);
+    for (int i = 0; i < 8; i++)
+    {
+      loc_initialized[i] = false;
+    }
+
+    for (unsigned idx = 0; idx < cpu_procs.size(); idx++)
+    {
+      grids_per_proc[cpu_procs[idx]] = 0; 
+    }
   }
+
+  virtual bool spawn_child_task(const Task *task)
+  {
+    if (task->task_id == REGION_MAIN)
+    {
+      return false;
+    }
+    return true;
+  }
+
+  virtual bool map_task_locally(const Task *task)
+  {
+    if ((task->task_id == INTERP_BOUNDARY) ||
+        (task->task_id == RESTRICT))
+    {
+      return true;
+    }
+    return false;
+  }
+
+  virtual Processor select_initial_processor(const Task *task)
+  {
+    switch (task->task_id)
+    {
+      case REGION_MAIN:
+        {
+          return local_proc;
+        }
+      case INTERP_BOUNDARY:
+        {
+          int level = *((int*)(((char*)task->args)+sizeof(Context)+3*sizeof(float)));
+          int idx = task->tag;
+          assert((1 <= level) && (level <= 2));
+          assert(idx < int(id_locations[level-1].size()));
+          return id_locations[level-1][idx].p;
+        }
+      case CALC_FLUXES:
+        {
+          // index space
+          assert(false);
+          break;
+        }
+      case ADVANCE:
+        {
+          // index space
+          assert(false);
+        }
+      case RESTRICT:
+        {
+          int level = *((int*)(((char*)task->args)+sizeof(Context)+3*sizeof(float)));
+          int idx = task->tag - 1;
+          assert((1 <= level) && (level <= 2));
+          assert(idx < int(id_locations[level-1].size()));
+          return id_locations[level-1][idx].p;
+        }
+      default:
+        assert(false);
+    }
+    return Processor::NO_PROC;
+  }
+
+  virtual void permit_task_steal(Processor thief, const std::vector<const Task*> &tasks,
+                                 std::set<const Task*> &to_steal)
+  {
+    // Do nothing
+  }
+
+  virtual void map_task_region(const Task *task, const RegionRequirement &req, unsigned index,
+                               const std::set<Memory> &current_instances,
+                               std::vector<Memory> &target_ranking,
+                               bool &enable_WAR_optimization)
+  {
+    enable_WAR_optimization = false;
+    switch (task->task_id)
+    {
+      case REGION_MAIN:
+        {
+          if (task->tag == 1)
+          {
+            target_ranking.push_back(system_mem);
+          }
+          else if (task->tag == 2)
+          {
+            target_ranking.push_back(gasnet_mem);
+          }
+          else
+          {
+            assert(false);
+          }
+          break;
+        }
+      case INTERP_BOUNDARY:
+        {
+          // Figure out which processor this is going to
+          int level = *((int*)(((char*)task->args)+sizeof(Context)+3*sizeof(float)));
+          int idx = task->tag;
+          Memory m = system_memories[id_locations[level-1][idx].p];
+          // Put everything in system memory
+          target_ranking.push_back(m);
+          break;
+        }
+      case CALC_FLUXES:
+        {
+          // Put everything in system memory
+          target_ranking.push_back(system_mem);
+          break;
+        }
+      case ADVANCE:
+        {
+          // Everything better have been mapped previously by here
+          target_ranking.push_back(system_mem);
+          break;
+        }
+      case RESTRICT:
+        {
+          int level = *((int*)(((char*)task->args)+sizeof(Context)+3*sizeof(float)));
+          int idx = task->tag - 1;
+          Memory m = system_memories[id_locations[level-1][idx].p];
+          target_ranking.push_back(m);
+          break;
+        }
+      default:
+        assert(false);
+    }
+  }
+
+  virtual void rank_copy_targets(const Task *task, const RegionRequirement &req,
+                                  const std::set<Memory> &current_instances,
+                                  std::vector<Memory> &future_ranking)
+  {
+    // Put any close operations back into gasnet memory
+    future_ranking.push_back(gasnet_mem);
+  }
+
+  Processor get_min_grid_proc(void)
+  {
+    unsigned min_count = 1677216;
+    Processor result = Processor::NO_PROC;
+    assert(grids_per_proc.size() > 0);
+    for (std::map<Processor,unsigned>::const_iterator it = grids_per_proc.begin();
+          it != grids_per_proc.end(); it++)
+    {
+      if (it->second < min_count)
+      {
+        min_count = it->second;
+        result = it->first;
+      }
+    }
+    assert(result.exists());
+    return result;
+  }
+
+  void update_proc_count(Processor p)
+  {
+    assert(grids_per_proc.find(p) != grids_per_proc.end());
+    grids_per_proc[p]++;
+  }
+
+  virtual void split_index_space(const Task *task, const std::vector<Range> &index_space,
+                                  std::vector<RangeSplit> &chunks)
+  {
+    int level = *((int*)(((char*)task->args)+sizeof(Context)+3*sizeof(float))); 
+    assert((0 <= level) && (level < int(loc_initialized.size())));
+    if (loc_initialized[level])
+    {
+      chunks = id_locations[level];
+    }
+    else
+    {
+      int divisions = *((int*)(((char*)task->args)+sizeof(Context)+3*sizeof(float)+sizeof(int)));
+      assert(index_space.size() == 1);
+      // Need to figure out how to distribute things based on the level
+      if (level == 2)
+      {
+        assert(divisions==4);
+        //printf("Level 2\n");
+        // Bottom level, distribute modulo the number of processors 
+        for (int idx = index_space[0].start; idx <= index_space[0].stop; idx += index_space[0].stride)
+        {
+          std::vector<Range> point;
+          point.push_back(Range(idx,idx,1));
+          int x = idx%divisions;
+          int y = idx/divisions;
+          int px = (x/2)*(divisions/2) + (y/2);
+          Processor p = cpu_procs[px % cpu_procs.size()];
+          chunks.push_back(RangeSplit(point, p, false/*recurse*/));
+          id_locations[level].push_back(chunks.back());
+          update_proc_count(p);
+          boxes[level][idx] = Box(0.375f+(idx%divisions)*(0.25f/(1.0f*divisions)),
+                                  0.375f+((idx%divisions)+1)*(0.25f/(1.0f*divisions)),
+                                  0.375f+(idx/divisions)*(0.25f/(1.0f*divisions)),
+                                  0.375f+((idx/divisions)+1)*(0.25f/(1.0f*divisions)));
+        }
+        loc_initialized[level] = true;
+      }
+      else if (level == 1)
+      {
+        //printf("Level 1\n");
+        for (int idx = index_space[0].start; idx <= index_space[0].stop; idx += index_space[0].stride)
+        {
+          Box local(0.25f + (idx%divisions)*(0.5f/(1.0f*divisions)),
+                    0.25f + ((idx%divisions)+1)*(0.5f/(1.0f*divisions)),
+                    0.25f + (idx/divisions)*(0.5f/(1.0f*divisions)),
+                    0.25f + ((idx/divisions)+1)*(0.5f/(1.0f*divisions)));
+          boxes[level][idx] = local;
+          // Iterate over all the boxes from the level below
+          int overlap = -1;
+          for (std::map<unsigned,Box>::iterator it = boxes[level+1].begin();
+                it != boxes[level+1].end(); it++)
+          {
+            if (local.contains(it->second))
+            {
+              //printf("Box %d from level %d contains box %d from level %d\n",
+              //        idx, level, it->first, level+1);
+              if (overlap != -1)
+              {
+                assert(id_locations[level+1][overlap].p == id_locations[level+1][it->first].p);
+              }
+              else
+              {
+                overlap = it->first;
+              }
+            }
+          }
+          // Check to see if it overlapped
+          if (overlap != -1)
+          {
+            // Get the processor from below
+            Processor p = id_locations[level+1][overlap].p;
+            std::vector<Range> point;
+            point.push_back(Range(idx,idx,1));
+            chunks.push_back(RangeSplit(point,p,false/*recurse*/));
+            id_locations[level].push_back(chunks.back());
+            update_proc_count(p);
+          }
+          else
+          {
+            // Otherwise pick a processor from one of the ones not being used
+            Processor p = get_min_grid_proc();
+            std::vector<Range> point;
+            point.push_back(Range(idx,idx,1));
+            chunks.push_back(RangeSplit(point,p,false/*recurse*/));
+            id_locations[level].push_back(chunks.back());
+            update_proc_count(p);
+          }
+        }
+        loc_initialized[level] = true;
+      }
+      else if (level == 0)
+      {
+        //printf("Level 0\n");
+        for (int idx = index_space[0].start; idx <= index_space[0].stop; idx += index_space[0].stride)
+        {
+          Box local(0.0f + (idx%divisions)*(1.0f/(1.0f*divisions)),
+                    0.0f + ((idx%divisions)+1)*(1.0f/(1.0f*divisions)),
+                    0.0f + (idx/divisions)*(1.0f/(1.0f*divisions)),
+                    0.0f + ((idx/divisions)+1)*(1.0f/(1.0f*divisions)));
+          boxes[level][idx] = local;
+          // Iterate over all the boxes from the level below
+          int overlap = -1;
+          for (std::map<unsigned,Box>::iterator it = boxes[level+1].begin();
+                it != boxes[level+1].end(); it++)
+          {
+            if (local.contains(it->second))
+            {
+              overlap = it->first;
+              //printf("Box %d from level %d contains box %d from level %d\n",
+              //        idx, level, it->first, level+1);
+            }
+          }
+          // Check to see if it overlapped
+          if (overlap != -1)
+          {
+            // Get the processor from below
+            Processor p = id_locations[level+1][overlap].p;
+            std::vector<Range> point;
+            point.push_back(Range(idx,idx,1));
+            chunks.push_back(RangeSplit(point,p,false/*recurse*/));
+            id_locations[level].push_back(chunks.back());
+            update_proc_count(p);
+          }
+          else
+          {
+            // Otherwise pick a processor from one of the ones not being used
+            Processor p = get_min_grid_proc();
+            std::vector<Range> point;
+            point.push_back(Range(idx,idx,1));
+            chunks.push_back(RangeSplit(point,p,false/*recurse*/));
+            id_locations[level].push_back(chunks.back());
+            update_proc_count(p);
+          }
+        }
+        loc_initialized[level] = true;
+      }
+      else
+      {
+        assert(false);
+      }
+    }
+  }
+private:
+  struct Box {
+  public:
+    Box(void)
+    {
+      lower[0] = 0.0f;
+      lower[1] = 0.0f;
+      upper[0] = 0.0f;
+      upper[1] = 0.0f;
+    }
+    Box(const Box &other)
+    {
+      lower[0] = other.lower[0];
+      lower[1] = other.lower[1];
+      upper[0] = other.upper[0];
+      upper[1] = other.upper[1];
+    }
+    Box(float low_x,float high_x,float low_y,float high_y)
+    {
+      lower[0] = low_x;
+      lower[1] = low_y;
+      upper[0] = high_x;
+      upper[1] = high_y;
+      //printf("Box (%f,%f) (%f,%f)\n",lower[0],lower[1],upper[0],upper[1]);
+    }
+    float lower[2];
+    float upper[2];
+  public:
+    bool contains(Box &other)
+    {
+      if ((lower[0] <= other.lower[0]) &&
+          (lower[1] <= other.lower[1]) &&
+          (other.upper[0] <= upper[0]) &&
+          (other.upper[1] <= upper[1]))
+      {
+        return true;
+      }
+      return false;
+    }
+  public:
+    Box& operator=(const Box &rhs)
+    {
+      lower[0] = rhs.lower[0];
+      lower[1] = rhs.lower[1];
+      upper[0] = rhs.upper[0];
+      upper[1] = rhs.upper[1];
+      return *this;
+    }
+  };
+private:
+  std::vector<Processor> cpu_procs;
+  std::map<Processor,Memory> system_memories;
+  Memory gasnet_mem;
+  Memory system_mem;
+  std::vector<std::vector<RangeSplit> > id_locations;
+  std::vector<bool> loc_initialized;
+  std::vector<std::map<unsigned,Box> > boxes;
+  std::map<Processor,unsigned> grids_per_proc;
 };
 
 void registration_func(Machine *machine, HighLevelRuntime *runtime, Processor local)
 {
+#ifndef USING_SHARED 
   runtime->replace_default_mapper(new HeatMapper(machine, runtime, local));
+#endif
 }
 
 
@@ -542,6 +1017,8 @@ void initialize_simulation(std::vector<Level> &levels,
   assert(num_cells.size() == divisions.size());
 
   levels.resize(num_cells.size());
+  for (unsigned i = 0; i < levels.size(); i++)
+    levels[i].level = i;
 
   // It seems like every simulation ever refines by a factor of 2
   // otherwise bad things happen
@@ -598,11 +1075,11 @@ void initialize_simulation(std::vector<Level> &levels,
       PhysicalRegion<AccessorGeneric> all_cells = runtime->map_region<AccessorGeneric>(ctx, 
                                                                         RegionRequirement(levels[i].all_cells,
                                                                               READ_WRITE, ALLOCABLE, EXCLUSIVE,
-                                                                              levels[i].all_cells));
+                                                                              levels[i].all_cells),0,1);
       PhysicalRegion<AccessorGeneric> all_fluxes = runtime->map_region<AccessorGeneric>(ctx, 
                                                                         RegionRequirement(levels[i].all_fluxes,
                                                                               READ_WRITE, ALLOCABLE, EXCLUSIVE,
-                                                                              levels[i].all_fluxes));
+                                                                              levels[i].all_fluxes),0,1);
 
       all_cells.wait_until_valid();
       all_fluxes.wait_until_valid();
@@ -916,7 +1393,7 @@ void initialize_simulation(std::vector<Level> &levels,
         PhysicalRegion<AccessorGeneric> cells_above = runtime->map_region<AccessorGeneric>(ctx, 
                                                                         RegionRequirement(levels[i-1].all_cells,
                                                                           READ_WRITE, NO_MEMORY, EXCLUSIVE,
-                                                                          levels[i-1].all_cells));
+                                                                          levels[i-1].all_cells), 0, 1);
         cells_above.wait_until_valid();
 #if SIMULATION_DIM==2
         {
@@ -950,6 +1427,20 @@ void initialize_simulation(std::vector<Level> &levels,
       runtime->unmap_region(ctx, all_cells);
       runtime->unmap_region(ctx, all_fluxes);
     }
+  }
+  // Map everything back into gasnet memory once we're done
+  for (unsigned i = 0; i < num_cells.size(); i++)
+  {
+    PhysicalRegion<AccessorGeneric> gcells = 
+        runtime->map_region<AccessorGeneric>(ctx, RegionRequirement(levels[i].all_cells,
+                                                  READ_WRITE,NO_MEMORY,EXCLUSIVE,levels[i].all_cells), 0, 2);
+    PhysicalRegion<AccessorGeneric> gfluxes =
+        runtime->map_region<AccessorGeneric>(ctx, RegionRequirement(levels[i].all_fluxes,
+                                                  READ_WRITE,NO_MEMORY,EXCLUSIVE,levels[i].all_fluxes), 0, 2);
+    gcells.wait_until_valid();
+    runtime->unmap_region(ctx, gcells);
+    gfluxes.wait_until_valid();
+    runtime->unmap_region(ctx, gfluxes);
   }
 
   // Make the time step size the same for all levels, but based on the smallest physical size
@@ -1035,6 +1526,7 @@ void initialize_cells_2D(ptr_t<Cell> &bound_ptr, ptr_t<Flux> &flux_ptr, int cell
 {
   // Global coordinates
   int max_boundary = divisions * cells_per_piece_side - 1;
+
   for (int i = 0; i < cells_per_piece_side; i++)
   {
     for (int j = 0; j < cells_per_piece_side; j++)
@@ -1087,7 +1579,7 @@ void initialize_cells_2D(ptr_t<Cell> &bound_ptr, ptr_t<Flux> &flux_ptr, int cell
           other.position[1] = cell.position[1];
           all_cells.write(f.cell_ptrs[0],other);
           // Add the pointer to the list of boundary pointer cells
-          boundary[(i/cells_per_piece_side)*divisions+(j/cells_per_piece_side)].push_back(f.cell_ptrs[0]);
+          boundary[x*divisions+y].push_back(f.cell_ptrs[0]);
         }
         else
         {
@@ -1146,7 +1638,7 @@ void initialize_cells_2D(ptr_t<Cell> &bound_ptr, ptr_t<Flux> &flux_ptr, int cell
           other.position[1] = cell.position[1];
           all_cells.write(f.cell_ptrs[1],other);
           // Add the pointer to the list of boundary pointer cells
-          boundary[(i/cells_per_piece_side)*divisions+(j/cells_per_piece_side)].push_back(f.cell_ptrs[1]);
+          boundary[x*divisions+y].push_back(f.cell_ptrs[1]);
         }
         else
         {
@@ -1181,7 +1673,7 @@ void initialize_cells_2D(ptr_t<Cell> &bound_ptr, ptr_t<Flux> &flux_ptr, int cell
           other.position[1] = cell.position[1] - dx;
           all_cells.write(f.cell_ptrs[0],other);
           // Add the pointer to the list of boundary pointer cells
-          boundary[(i/cells_per_piece_side)*divisions+(j/cells_per_piece_side)].push_back(f.cell_ptrs[0]);
+          boundary[x*divisions+y].push_back(f.cell_ptrs[0]);
         }
         else
         {
@@ -1238,10 +1730,10 @@ void initialize_cells_2D(ptr_t<Cell> &bound_ptr, ptr_t<Flux> &flux_ptr, int cell
           other.temperature = cell.temperature;
           other.loc = BOUNDARY;
           other.position[0] = cell.position[0];
-          other.position[1] = cell.position[1] - dx;
+          other.position[1] = cell.position[1] + dx;
           all_cells.write(f.cell_ptrs[1],other);
           // Add the pointer to the list of boundary pointer cells
-          boundary[(i/cells_per_piece_side)*divisions+(j/cells_per_piece_side)].push_back(f.cell_ptrs[1]);
+          boundary[x*divisions+y].push_back(f.cell_ptrs[1]);
         }
         else
         {
@@ -1381,17 +1873,17 @@ void initialize_restrict_pointers_2D(PhysicalRegion<AccessorGeneric> cells_above
           restrict_regions.push_back(RegionRequirement(index_regions[piece_idx][idx], READ_ONLY,
                                                        NO_MEMORY, EXCLUSIVE, level_below.all_cells));
         }
-        // Add this to the set of restrict coares regions for the level below
+        // Add this to the set of restrict coarse regions for the level below
         level_below.restrict_coarse_regions.push_back(restrict_regions);
       }
     }
   }
 }
 
-ptr_t<Cell> get_above_index_2D(std::vector<LogicalRegion> &index_regions,
-                               int above_x, int above_y, PhysicalRegion<AccessorGeneric> cells_above,
+ptr_t<Cell> get_above_index_2D(int above_x, int above_y, PhysicalRegion<AccessorGeneric> cells_above,
                                Level &level_above, PtrArray2D &ptrs_above,
-                               HighLevelRuntime *runtime, Context ctx, unsigned &res_index)
+                               HighLevelRuntime *runtime, Context ctx, unsigned &loc,
+                               int target_above_piece)
 {
   assert((above_x>=0) && (above_x < int(ptrs_above.size())));
   assert((above_y>=0) && (above_y < int(ptrs_above[above_x].size())));
@@ -1401,37 +1893,16 @@ ptr_t<Cell> get_above_index_2D(std::vector<LogicalRegion> &index_regions,
   int y_piece_above = int(floor((cell_above.position[1] - level_above.offset)/level_above.px));
   int piece_above = x_piece_above * level_above.pieces_per_dim + y_piece_above;
   assert((piece_above>=0) && (piece_above < int(level_above.num_pieces)));
-  LogicalRegion reg_above;
-  if (cell_above.loc == PVT)
+  if (piece_above == target_above_piece)
   {
-    reg_above = runtime->get_subregion(ctx, level_above.pvt_cells, piece_above);
+    loc = cell_above.loc;
   }
   else
   {
     assert(cell_above.loc == SHR);
-    reg_above = runtime->get_subregion(ctx, level_above.shr_cells, piece_above);
+    // shared of another piece, and therefore in our ghost
+    loc = GHOST;
   }
-  int index = -1;
-  {
-    // Find the index for this region in the above piece's list
-    // of needed regions from below.  If it isn't there add it to the list
-    for (unsigned idx = 0; idx < index_regions.size(); idx++)
-    {
-      if (index_regions[idx] == reg_above)
-      {
-        index = idx;
-        break;
-      }
-    }
-    if (index == -1)
-    {
-      index = index_regions.size();
-      index_regions.push_back(reg_above);
-    }
-  }
-  assert(index >= 0);
-  // Add one to the index since the first region will always be the boundary region
-  res_index = index + 1;
   return ptr_above;
 }
 
@@ -1441,10 +1912,19 @@ void initialize_boundary_interp_pointers_2D(PhysicalRegion<AccessorGeneric> cell
                                             PtrArray2D &ptrs_above, PtrArray2D &bound_ptrs_below,
                                             HighLevelRuntime *runtime, Context ctx)
 {
-  std::vector<std::vector<LogicalRegion> > index_regions(level_below.num_pieces);
+  // for each piece above, keep a list of the boundary regions from the level below
+  // that will be updated by that piece
+  std::map<unsigned/*above piece*/,std::set<LogicalRegion> > interp_reqs;
   // Iterate over the lower pieces and get the corresponding regions above that are needed 
   for (unsigned lower_piece = 0; lower_piece < level_below.num_pieces; lower_piece++)
   {
+    std::vector<int> pieces_above_needed;
+    std::vector<std::set<utptr_t> > sub_boundary_coloring;
+    if (bound_ptrs_below[lower_piece].empty())
+    {
+      //printf("Boundary region for piece %d in level %d is empty\n",lower_piece,level_below.level);
+      continue;
+    }
     for (unsigned bound_idx = 0; bound_idx < bound_ptrs_below[lower_piece].size(); bound_idx++)
     {
       ptr_t<Cell> bound_ptr = bound_ptrs_below[lower_piece][bound_idx];
@@ -1456,6 +1936,26 @@ void initialize_boundary_interp_pointers_2D(PhysicalRegion<AccessorGeneric> cell
       assert((above_y>=0) && (above_y < int(ptrs_above[above_x].size())));
       ptr_t<Cell> ptr_above = ptrs_above[above_x][above_y];
       Cell cell_above = cells_above.read(ptr_above); 
+      int x_piece_above = int(floor((cell_above.position[0] - level_above.offset)/level_above.px));
+      int y_piece_above = int(floor((cell_above.position[1] - level_above.offset)/level_above.px));
+      int piece_above = x_piece_above * level_above.pieces_per_dim + y_piece_above;
+      // Check to see if we're already using this piece or not
+      int index = -1;
+      for (unsigned idx = 0; idx < pieces_above_needed.size(); idx++)
+      {
+        if (pieces_above_needed[idx] == piece_above)
+        {
+          index = idx;
+          break;
+        }
+      }
+      if (index == -1)
+      {
+        index = pieces_above_needed.size();
+        pieces_above_needed.push_back(piece_above);
+        sub_boundary_coloring.push_back(std::set<utptr_t>());
+      }
+      sub_boundary_coloring[index].insert(bound_ptr);
       // Now we need to figure out which of the four quadrants we're in the above cell so
       // we can know which other cells to get from the high-level
       if (bound_cell.position[0] < cell_above.position[0])
@@ -1464,50 +1964,50 @@ void initialize_boundary_interp_pointers_2D(PhysicalRegion<AccessorGeneric> cell
         {
           // Lower-Left of above cell (above is upper right)
           unsigned loc;
-          bound_cell.across_cells[0] = get_above_index_2D(index_regions[lower_piece],
+          bound_cell.across_cells[0] = get_above_index_2D(
                                                           above_x-1,above_y-1,cells_above,
                                                           level_above, ptrs_above, runtime,
-                                                          ctx, loc);
+                                                          ctx, loc, piece_above);
           bound_cell.across_index_loc[0] = loc;
-          bound_cell.across_cells[1] = get_above_index_2D(index_regions[lower_piece],
+          bound_cell.across_cells[1] = get_above_index_2D(
                                                            above_x-1,above_y, cells_above,
                                                            level_above, ptrs_above, runtime,
-                                                           ctx, loc);
+                                                           ctx, loc, piece_above);
           bound_cell.across_index_loc[1] = loc;
-          bound_cell.across_cells[2] = get_above_index_2D(index_regions[lower_piece],
+          bound_cell.across_cells[2] = get_above_index_2D(
                                                            above_x,above_y-1,cells_above,
                                                            level_above, ptrs_above, runtime,
-                                                           ctx, loc);
+                                                           ctx, loc, piece_above);
           bound_cell.across_index_loc[2] = loc;
-          bound_cell.across_cells[3] = get_above_index_2D(index_regions[lower_piece],
+          bound_cell.across_cells[3] = get_above_index_2D(
                                                            above_x,above_y,cells_above,
                                                            level_above,ptrs_above,runtime,
-                                                           ctx, loc);
+                                                           ctx, loc, piece_above);
           bound_cell.across_index_loc[3] = loc;
         }
         else
         {
           // Upper-Left of above cell (above is lower right)
           unsigned loc;
-          bound_cell.across_cells[0] = get_above_index_2D(index_regions[lower_piece],
+          bound_cell.across_cells[0] = get_above_index_2D(
                                                           above_x-1,above_y,cells_above,
                                                           level_above, ptrs_above, runtime,
-                                                          ctx, loc);
+                                                          ctx, loc, piece_above);
           bound_cell.across_index_loc[0] = loc;
-          bound_cell.across_cells[1] = get_above_index_2D(index_regions[lower_piece],
+          bound_cell.across_cells[1] = get_above_index_2D(
                                                            above_x-1,above_y+1, cells_above,
                                                            level_above, ptrs_above, runtime,
-                                                           ctx, loc);
+                                                           ctx, loc, piece_above);
           bound_cell.across_index_loc[1] = loc;
-          bound_cell.across_cells[2] = get_above_index_2D(index_regions[lower_piece],
+          bound_cell.across_cells[2] = get_above_index_2D(
                                                            above_x,above_y,cells_above,
                                                            level_above, ptrs_above, runtime,
-                                                           ctx, loc);
+                                                           ctx, loc, piece_above);
           bound_cell.across_index_loc[2] = loc;
-          bound_cell.across_cells[3] = get_above_index_2D(index_regions[lower_piece],
+          bound_cell.across_cells[3] = get_above_index_2D(
                                                            above_x,above_y+1,cells_above,
                                                            level_above,ptrs_above,runtime,
-                                                           ctx, loc);
+                                                           ctx, loc, piece_above);
           bound_cell.across_index_loc[3] = loc;
         }
       }
@@ -1517,57 +2017,123 @@ void initialize_boundary_interp_pointers_2D(PhysicalRegion<AccessorGeneric> cell
         {
           // Lower-Right of above cell (above is upper left)
           unsigned loc;
-          bound_cell.across_cells[0] = get_above_index_2D(index_regions[lower_piece],
+          bound_cell.across_cells[0] = get_above_index_2D(
                                                           above_x-1,above_y,cells_above,
                                                           level_above, ptrs_above, runtime,
-                                                          ctx, loc);
+                                                          ctx, loc, piece_above);
           bound_cell.across_index_loc[0] = loc;
-          bound_cell.across_cells[1] = get_above_index_2D(index_regions[lower_piece],
+          bound_cell.across_cells[1] = get_above_index_2D(
                                                            above_x,above_y, cells_above,
                                                            level_above, ptrs_above, runtime,
-                                                           ctx, loc);
+                                                           ctx, loc, piece_above);
           bound_cell.across_index_loc[1] = loc;
-          bound_cell.across_cells[2] = get_above_index_2D(index_regions[lower_piece],
+          bound_cell.across_cells[2] = get_above_index_2D(
                                                            above_x-1,above_y+1,cells_above,
                                                            level_above, ptrs_above, runtime,
-                                                           ctx, loc);
+                                                           ctx, loc, piece_above);
           bound_cell.across_index_loc[2] = loc;
-          bound_cell.across_cells[3] = get_above_index_2D(index_regions[lower_piece],
+          bound_cell.across_cells[3] = get_above_index_2D(
                                                            above_x,above_y+1,cells_above,
                                                            level_above,ptrs_above,runtime,
-                                                           ctx, loc);
+                                                           ctx, loc, piece_above);
           bound_cell.across_index_loc[3] = loc;
         }
         else
         {
           // Upper-Right of above cell (above is lower left)
           unsigned loc;
-          bound_cell.across_cells[0] = get_above_index_2D(index_regions[lower_piece],
+          bound_cell.across_cells[0] = get_above_index_2D(
                                                           above_x,above_y,cells_above,
                                                           level_above, ptrs_above, runtime,
-                                                          ctx, loc);
+                                                          ctx, loc, piece_above);
           bound_cell.across_index_loc[0] = loc;
-          bound_cell.across_cells[1] = get_above_index_2D(index_regions[lower_piece],
+          bound_cell.across_cells[1] = get_above_index_2D(
                                                            above_x,above_y+1, cells_above,
                                                            level_above, ptrs_above, runtime,
-                                                           ctx, loc);
+                                                           ctx, loc, piece_above);
           bound_cell.across_index_loc[1] = loc;
-          bound_cell.across_cells[2] = get_above_index_2D(index_regions[lower_piece],
+          bound_cell.across_cells[2] = get_above_index_2D(
                                                            above_x+1,above_y,cells_above,
                                                            level_above, ptrs_above, runtime,
-                                                           ctx, loc);
+                                                           ctx, loc, piece_above);
           bound_cell.across_index_loc[2] = loc;
-          bound_cell.across_cells[3] = get_above_index_2D(index_regions[lower_piece],
+          bound_cell.across_cells[3] = get_above_index_2D(
                                                            above_x+1,above_y+1,cells_above,
                                                            level_above,ptrs_above,runtime,
-                                                           ctx, loc);
+                                                           ctx, loc, piece_above);
           bound_cell.across_index_loc[3] = loc;
         }
       }
       // Write the bound cell back
       cells_below.write(bound_ptr,bound_cell);
     }
+    // check to see how many pieces from the level above we need
+    if (pieces_above_needed.size() == 0)
+    {
+      continue;
+    }
+    else if (pieces_above_needed.size() == 1)
+    {
+      int piece_above = pieces_above_needed[0];
+      LogicalRegion bound = runtime->get_subregion(ctx, level_below.boundary_cells, lower_piece);
+      //printf("Lower boundary %d in level %d needs piece %d in level %d\n",
+      //          lower_piece, level_below.level, piece_above, level_above.level);
+      // Add this boundary region to the list of regions that need to be
+      // interpolated by the piece above
+      if (interp_reqs.find(piece_above) == interp_reqs.end())
+      {
+        interp_reqs[piece_above] = std::set<LogicalRegion>();
+        interp_reqs[piece_above].insert(bound);
+      }
+      else
+      {
+        // Shouldn't be in there yet
+        assert(interp_reqs[piece_above].find(bound) == interp_reqs[piece_above].end());
+        interp_reqs[piece_above].insert(bound);
+      }
+    }
+    else
+    {
+      LogicalRegion bound = runtime->get_subregion(ctx, level_below.boundary_cells, lower_piece);
+      // This boundary region needed multiple pieces above, partition it up so each subregion
+      // goes to a different piece
+      Partition bound_part = runtime->create_partition(ctx, bound, sub_boundary_coloring, true/*disjoint*/);
+      // Pull out the subregions and add them to the right pieces in the above level
+      for (unsigned idx = 0; idx < pieces_above_needed.size(); idx++)
+      {
+        if (interp_reqs.find(pieces_above_needed[idx]) == interp_reqs.end())
+        {
+          interp_reqs[pieces_above_needed[idx]] = std::set<LogicalRegion>();
+        }
+        interp_reqs[pieces_above_needed[idx]].insert(runtime->get_subregion(ctx, bound_part, idx));
+        //printf("Lower boundary %d in level %d split for piece %d in level %d\n",
+        //       lower_piece, level_below.level, pieces_above_needed[idx], level_above.level);
+      }
+    }
   }
+  // Now for each of the pieces needed above, go through and get their regions in read-only mode
+  // followed by all their boundary regions to update in read-write mode
+  for (std::map<unsigned,std::set<LogicalRegion> >::iterator it = interp_reqs.begin();
+        it != interp_reqs.end(); it++)
+  {
+    std::vector<RegionRequirement> interp_regions;
+    LogicalRegion pvt = runtime->get_subregion(ctx, level_above.pvt_cells, it->first);
+    LogicalRegion shr = runtime->get_subregion(ctx, level_above.shr_cells, it->first);
+    LogicalRegion ghost = runtime->get_subregion(ctx, level_above.ghost_cells, it->first);
+    interp_regions.push_back(RegionRequirement(pvt, READ_ONLY, NO_MEMORY, EXCLUSIVE, level_above.all_cells));
+    interp_regions.push_back(RegionRequirement(shr, READ_ONLY, NO_MEMORY, EXCLUSIVE, level_above.all_cells));
+    interp_regions.push_back(RegionRequirement(ghost, READ_ONLY, NO_MEMORY, EXCLUSIVE, level_above.all_cells));
+    // Now add all the boundary cells
+    for (std::set<LogicalRegion>::iterator low_it = it->second.begin();
+          low_it != it->second.end(); low_it++)
+    {
+      interp_regions.push_back(RegionRequirement(*low_it, READ_WRITE, NO_MEMORY, EXCLUSIVE, level_below.all_cells));
+    }
+    level_below.interp_boundary_regions.push_back(interp_regions);
+    level_below.interp_tags.push_back(it->first);
+  }
+
+#if 0
   // Now fill in the region requirements for all of the interp regions
   for (unsigned i = 0; i < level_above.pieces_per_dim; i++)
   {
@@ -1592,6 +2158,7 @@ void initialize_boundary_interp_pointers_2D(PhysicalRegion<AccessorGeneric> cell
       }
     }
   }
+#endif
 }
 
 void set_region_requirements(std::vector<Level> &levels)
