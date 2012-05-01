@@ -418,7 +418,7 @@ void calculate_fluxes_task(const void *global_args, size_t global_arglen,
   ptr_t<Flux> fp;
   Flux *face;
   //shared(fluxes,flux_ptr,dx,pvt_cells,shr_cells,ghost_cells,bound_cells)
-//#pragma omp parallel for default(shared) private(i,fp,face,temp0,temp1) schedule(static,32)
+#pragma omp parallel for default(shared) private(i,fp,face,temp0,temp1) schedule(static,32)
   for (i = 0; i<num_fluxes; i++)
   {
     fp.value = flux_ptr.value+i;
