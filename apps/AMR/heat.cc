@@ -2623,23 +2623,19 @@ inline float read_temp(ptr_t<Cell> source, PointerLocation source_loc,
   {
     case PVT:
       {
-        Cell &c = pvt.ref<Cell>(source);
-        return c.temperature;
+        return pvt.ref<Cell>(source).temperature;
       }
     case SHR:
       {
-        Cell &c = shr.ref<Cell>(source);
-        return c.temperature;
+        return shr.ref<Cell>(source).temperature;
       }
     case GHOST:
       {
-        Cell &c = ghost.ref<Cell>(source);
-        return c.temperature;
+        return ghost.ref<Cell>(source).temperature;
       }
     case BOUNDARY:
       {
-        Cell &c = bound.ref<Cell>(source);
-        return c.temperature;
+        return bound.ref<Cell>(source).temperature;
       }
     default:
       assert(false);
