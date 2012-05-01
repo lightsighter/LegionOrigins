@@ -28,6 +28,10 @@ public:
   template<bool EXCLUSIVE> static void fold(RHS &rhs1, RHS rhs2);
 };
 
+enum {
+  BOUNDARY_TAG = 1,
+};
+
 void parse_input_args(char **argv, int argc, int &num_levels, int &default_num_cells,
                       std::vector<int> &num_cells, int &default_divisions,
                       std::vector<int> &divisions, int &steps, int random_seed);
@@ -45,7 +49,7 @@ void region_main(const void *args, size_t arglen,
                  Context ctx, HighLevelRuntime *runtime)
 {
   int num_levels = 3;
-  int default_num_cells = 1024;
+  int default_num_cells = 4096;
   int default_divisions = 4;
   std::vector<int> num_cells(num_levels);
   std::vector<int> divisions(num_levels);
@@ -54,7 +58,7 @@ void region_main(const void *args, size_t arglen,
     num_cells[i] = default_num_cells;
     divisions[i] = default_divisions;
   }
-  divisions[0] = 16;
+  divisions[0] = 8;
   divisions[1] = 4;
   divisions[2] = 4;
   int steps = 20;
@@ -79,6 +83,20 @@ void region_main(const void *args, size_t arglen,
 
   std::vector<Level> levels;
   initialize_simulation(levels, num_cells, divisions, random_seed, ctx, runtime); 
+
+  set_region_requirements(levels);
+
+  // Move everything into everyone's local memories
+  for (int i = (num_cells.size()-1); i >= 0; i--)
+  {
+    levels[i].level = i;
+    levels[i].divisions = divisions[i];
+    TaskArgument global_arg(&levels[i].dx,3*sizeof(float)+6*sizeof(int));
+    ArgumentMap local_args;
+    FutureMap map = runtime->execute_index_space(ctx, INIT_TASK, levels[i].index_space,
+                      levels[i].calc_fluxes_regions, global_arg, local_args, false/*must*/);
+    map.wait_all_results();
+  }
   
   // Run the simulation 
   printf("Starting main simulation loop\n");
@@ -87,14 +105,10 @@ void region_main(const void *args, size_t arglen,
   clock_gettime(CLOCK_MONOTONIC, &ts_start);
 
 #if 1
-  set_region_requirements(levels);
-
   std::vector<TaskArgument> global_args(num_levels);
   for (int i = 0; i < num_levels; i++)
   {
-    levels[i].level = i;
-    levels[i].divisions = divisions[i];
-    global_args[i] = TaskArgument(&levels[i].dx,3*sizeof(float)+2*sizeof(int));
+    global_args[i] = TaskArgument(&levels[i].dx,3*sizeof(float)+6*sizeof(int));
   }
   ArgumentMap  local_args;
 
@@ -134,14 +148,7 @@ void region_main(const void *args, size_t arglen,
                       levels[i].calc_fluxes_regions, global_args[i], local_args, false/*must*/); 
       // If this is the first loop we need to wait for these things to happen in order
       // so that the mapper gets everything right
-      if (s == 0)
-      {
-        map.wait_all_results();
-      }
-      else
-      {
-        map.release();
-      }
+      map.release();
     }
 
     // Advance the time step at each level
@@ -166,7 +173,8 @@ void region_main(const void *args, size_t arglen,
     {
       for (unsigned j = 0; j < levels[i].restrict_coarse_regions.size(); j++)
       {
-        Future f = runtime->execute_task(ctx, RESTRICT, levels[i].restrict_coarse_regions[j], global_args[i], 0/*mapper id*/
+        Future f = runtime->execute_task(ctx, RESTRICT, levels[i].restrict_coarse_regions[j], levels[i].restrict_args[j], 
+                                                                                              0/*mapper id*/
 #ifndef SHARED_LOWLEVEL
                                                                                               ,j+1/*tag*/
 #endif
@@ -248,11 +256,12 @@ inline void advance_cells(PhysicalRegion<AccessorGeneric> cells, PhysicalRegion<
                           float dx, float dt, float coeff);
 
 inline void advance_cells(PhysicalRegion<AccessorArray> &cells, PhysicalRegion<AccessorArray> &fluxes,
-                          float dx, float dt, float coeff);
+                          float dx, float dt, float coeff, ptr_t<Cell> &cell_ptr, int num_cells);
 
 inline void average_cells(PhysicalRegion<AccessorGeneric> cells, std::vector<PhysicalRegion<AccessorGeneric> > &regions);
 
-inline void average_cells(PhysicalRegion<AccessorArray> &cells, std::vector<ArrayAccessor> &fast_regions);
+inline void average_cells(PhysicalRegion<AccessorArray> &cells, std::vector<ArrayAccessor> &fast_regions,
+                          ptr_t<Cell> &cell_ptr, int num_cells);
 
 ////////////////////
 // CPU Kernels
@@ -309,7 +318,7 @@ void interpolate_boundary_task(const void *args, size_t arglen,
                                std::vector<PhysicalRegion<AccessorGeneric> > &regions,
                                Context ctx, HighLevelRuntime *runtime)
 {
-  //RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(20);
+  RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(20);
   log_heat(LEVEL_DEBUG,"CPU interpolate boundaries FAST task");
 #ifndef DISABLE_MATH
   std::vector<ArrayAccessor> fast_regions(regions.size());
@@ -390,10 +399,11 @@ void calculate_fluxes_task(const void *global_args, size_t global_arglen,
                            std::vector<PhysicalRegion<AccessorGeneric> > &regions,
                            Context ctx, HighLevelRuntime *runtime)
 {
-  //RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(21);
+  RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(21);
   log_heat(LEVEL_DEBUG, "CPU calculate fluxes FAST for point %d", point[0]);
 #ifndef DISABLE_MATH
   float dx = *((const float*)global_args);
+  int num_fluxes = *((int*)(((char*)global_args)+3*sizeof(float)+2*sizeof(int)));
   ArrayAccessor fluxes      = regions[0].convert<AccessorArray>().get_instance();
   ArrayAccessor pvt_cells   = regions[1].convert<AccessorArray>().get_instance();
   ArrayAccessor shr_cells   = regions[2].convert<AccessorArray>().get_instance();
@@ -401,18 +411,25 @@ void calculate_fluxes_task(const void *global_args, size_t global_arglen,
   ArrayAccessor bound_cells = regions[4].convert<AccessorArray>().get_instance();
   // Iterate over the fluxes and compute the new flux based on the temperature
   // of the two neighboring cells
-  PointerIterator *itr = regions[0].iterator();
-  while (itr->has_next())
+  ptr_t<Flux> flux_ptr;
+  flux_ptr.value = point[0]*num_fluxes;
+  int i;
+  float temp0,temp1;
+  ptr_t<Flux> fp;
+  Flux *face;
+  //shared(fluxes,flux_ptr,dx,pvt_cells,shr_cells,ghost_cells,bound_cells)
+//#pragma omp parallel for default(shared) private(face,temp0,temp1) schedule(static,32)
+  for (i = 0; i<num_fluxes; i++)
   {
-    Flux &face = fluxes.ref<Flux>(itr->next<Flux>());
+    fp.value = flux_ptr.value+i;
+    face = &fluxes.ref<Flux>(flux_ptr);
 
-    float temp0 = read_temp(face.cell_ptrs[0], face.locations[0], pvt_cells, shr_cells, ghost_cells, bound_cells);
-    float temp1 = read_temp(face.cell_ptrs[1], face.locations[1], pvt_cells, shr_cells, ghost_cells, bound_cells);
+    temp0 = read_temp(face->cell_ptrs[0], face->locations[0], pvt_cells, shr_cells, ghost_cells, bound_cells);
+    temp1 = read_temp(face->cell_ptrs[1], face->locations[1], pvt_cells, shr_cells, ghost_cells, bound_cells);
 
     // Compute the new flux
-    face.flux = (temp1 - temp0) / dx;
+    face->flux = (temp1 - temp0) / dx;
   }
-  delete itr;
 #endif
 }
 #endif
@@ -448,20 +465,27 @@ void advance_time_step_task(const void *global_args, size_t global_arglen,
                             std::vector<PhysicalRegion<AccessorGeneric> > &regions,
                             Context ctx, HighLevelRuntime *runtime)
 {
-  //RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(22);
+  RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(22);
   log_heat(LEVEL_DEBUG,"CPU advance time step FAST for point %d",point[0]);
   const float *arg_ptr = (const float*)global_args;
   float dx = arg_ptr[0];
   float dt = arg_ptr[1];
   float coeff = arg_ptr[2];
+  const int *size_ptr = (const int*)(((char*)global_args)+3*sizeof(float)+3*sizeof(int));
+  int num_private = size_ptr[0];
+  int num_shared = size_ptr[1];
+  int shared_offset = size_ptr[2];
 #ifndef DISABLE_MATH
   PhysicalRegion<AccessorArray> fluxes    = regions[0].convert<AccessorArray>();
   PhysicalRegion<AccessorArray> pvt_cells = regions[1].convert<AccessorArray>();
   PhysicalRegion<AccessorArray> shr_cells = regions[2].convert<AccessorArray>();
 
   // Advance the cells that we own
-  advance_cells(pvt_cells, fluxes, dx, dt, coeff);
-  advance_cells(shr_cells, fluxes, dx, dt, coeff);
+  ptr_t<Cell> private_ptr, shared_ptr;
+  private_ptr.value = point[0]*num_private;
+  shared_ptr.value = shared_offset + point[0]*num_shared;
+  advance_cells(pvt_cells, fluxes, dx, dt, coeff, private_ptr, num_private);
+  advance_cells(shr_cells, fluxes, dx, dt, coeff, shared_ptr, num_shared);
 #endif
 }
 #endif
@@ -488,7 +512,7 @@ void restrict_coarse_cells_task(const void *args, size_t arglen,
                                 std::vector<PhysicalRegion<AccessorGeneric> > &regions,
                                 Context ctx, HighLevelRuntime *runtime)
 {
-  //RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(23);
+  RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(23);
   log_heat(LEVEL_DEBUG,"CPU restrict coarse cells FAST");
 #ifndef DISABLE_MATH
   std::vector<ArrayAccessor> fast_regions(regions.size());
@@ -497,13 +521,33 @@ void restrict_coarse_cells_task(const void *args, size_t arglen,
     fast_regions[idx] = regions[idx].convert<AccessorArray>().get_instance();
   }
 
-  PhysicalRegion<AccessorArray> fast0 = regions[0].convert<AccessorArray>();
-  PhysicalRegion<AccessorArray> fast1 = regions[1].convert<AccessorArray>();
-  average_cells(fast0, fast_regions);
-  average_cells(fast1, fast_regions);
+  const int *arg_ptr = (const int*)(((char*)args)+3*sizeof(float));
+  int num_private = arg_ptr[3];
+  int num_shared = arg_ptr[4];
+  int shared_offset = arg_ptr[5];
+  int point = arg_ptr[6];
+
+  ptr_t<Cell> private_ptr, shared_ptr;
+  private_ptr.value = point * num_private;
+  shared_ptr.value = shared_offset + point * num_shared;
+
+  PhysicalRegion<AccessorArray> fast_pvt = regions[0].convert<AccessorArray>();
+  PhysicalRegion<AccessorArray> fast_shr = regions[1].convert<AccessorArray>();
+
+  average_cells(fast_pvt, fast_regions, private_ptr, num_private);
+  average_cells(fast_shr, fast_regions, shared_ptr, num_shared);
 #endif
 }
 #endif
+
+void initialization_task(   const void *global_args, size_t global_arglen,
+                            const void *local_args, size_t local_arglen,
+                            const IndexPoint &point,
+                            std::vector<PhysicalRegion<AccessorGeneric> > &regions,
+                            Context ctx, HighLevelRuntime *runtime)
+{
+  log_heat(LEVEL_DEBUG,"Initialization task for point %d",point[0]);
+}
 
 void registration_func(Machine *machine, HighLevelRuntime *runtime, Processor local);
 
@@ -514,6 +558,8 @@ int main(int argc, char **argv)
 
   HighLevelRuntime::register_single_task<
         region_main<AccessorGeneric, SIMULATION_DIM> >(REGION_MAIN, Processor::LOC_PROC, "region_main");
+  HighLevelRuntime::register_index_task<
+        initialization_task>(INIT_TASK, Processor::LOC_PROC, "init_task");
 #ifdef FAST_PATH
   HighLevelRuntime::register_single_task<
         interpolate_boundary_task<SIMULATION_DIM> >(INTERP_BOUNDARY,Processor::LOC_PROC, "interp_boundary");
@@ -591,7 +637,7 @@ public:
         m->get_proc_mem_affinity(result, local_proc, system_mem);
         assert(result.size() == 1);
         log_heat.debug("CPU %x mapper has system memory %x with "
-            "bandwidth %u and latency %u",local_proc.id, gasnet_mem.id,
+            "bandwidth %u and latency %u",local_proc.id, system_mem.id,
             result[0].bandwidth, result[0].latency);
       }
     }
@@ -609,6 +655,15 @@ public:
     {
       grids_per_proc[cpu_procs[idx]] = 0; 
     }
+  }
+
+  virtual ~HeatMapper(void) 
+  {
+    //for (std::map<Processor,unsigned>::const_iterator it = grids_per_proc.begin();
+    //      it != grids_per_proc.end(); it++)
+    //{
+    //  log_heat(LEVEL_WARNING,"Processor %x had %d grids",it->first.id,it->second);
+    //}
   }
 
   virtual bool spawn_child_task(const Task *task)
@@ -646,12 +701,8 @@ public:
           assert(idx < int(id_locations[level-1].size()));
           return id_locations[level-1][idx].p;
         }
+      case INIT_TASK:
       case CALC_FLUXES:
-        {
-          // index space
-          assert(false);
-          break;
-        }
       case ADVANCE:
         {
           // index space
@@ -711,6 +762,7 @@ public:
           target_ranking.push_back(m);
           break;
         }
+      case INIT_TASK:
       case CALC_FLUXES:
         {
           // Put everything in system memory
@@ -740,8 +792,15 @@ public:
                                   const std::set<Memory> &current_instances,
                                   std::vector<Memory> &future_ranking)
   {
-    // Put any close operations back into gasnet memory
-    future_ranking.push_back(gasnet_mem);
+    if (req.tag == BOUNDARY_TAG)
+    {
+      future_ranking.push_back(system_mem);
+    }
+    else
+    {
+      // Put any close operations back into gasnet memory
+      future_ranking.push_back(gasnet_mem);
+    }
   }
 
   Processor get_min_grid_proc(void)
@@ -784,17 +843,25 @@ public:
       // Need to figure out how to distribute things based on the level
       if (level == 2)
       {
-        assert(divisions==4);
         //printf("Level 2\n");
         // Bottom level, distribute modulo the number of processors 
         for (int idx = index_space[0].start; idx <= index_space[0].stop; idx += index_space[0].stride)
         {
           std::vector<Range> point;
           point.push_back(Range(idx,idx,1));
-          int x = idx%divisions;
-          int y = idx/divisions;
-          int px = (x/2)*(divisions/2) + (y/2);
-          Processor p = cpu_procs[px % cpu_procs.size()];
+          Processor p;
+          if (divisions == 2)
+          {
+            p = cpu_procs[idx % cpu_procs.size()];
+          }
+          else
+          {
+            assert(divisions == 4);
+            int x = idx%divisions;
+            int y = idx/divisions;
+            int px = (x/2)*(divisions/2) + (y/2);
+            p = cpu_procs[px % cpu_procs.size()];
+          }
           chunks.push_back(RangeSplit(point, p, false/*recurse*/));
           id_locations[level].push_back(chunks.back());
           update_proc_count(p);
@@ -1067,6 +1134,7 @@ void initialize_simulation(std::vector<Level> &levels,
       levels[i].cells_per_piece_side = cells_per_piece_side;
       levels[i].pieces_per_dim = divisions[i];
       levels[i].num_pieces = pieces;
+      levels[i].num_fluxes = flux_piece;
       // Create the top regions 
       levels[i].all_cells = runtime->create_logical_region(ctx, sizeof(Cell), total_cells);
       levels[i].all_fluxes = runtime->create_logical_region(ctx, sizeof(Flux), total_fluxes);
@@ -1098,6 +1166,9 @@ void initialize_simulation(std::vector<Level> &levels,
       int total_shared = shared_piece * pieces;
       int total_bound = (num_cells[i] * num_cells[i]) * 6;
 #endif
+      levels[i].num_private = private_piece;
+      levels[i].num_shared = shared_piece;
+      levels[i].shared_offset = total_private;
       assert((total_private + total_shared + total_bound) == total_cells);
       // Allocate each of the parts
       ptr_t<Cell> start_private = all_cells.alloc<Cell>(total_private);
@@ -1428,7 +1499,7 @@ void initialize_simulation(std::vector<Level> &levels,
       runtime->unmap_region(ctx, all_fluxes);
     }
   }
-  // Map everything back into gasnet memory once we're done
+#if 1
   for (unsigned i = 0; i < num_cells.size(); i++)
   {
     PhysicalRegion<AccessorGeneric> gcells = 
@@ -1442,7 +1513,8 @@ void initialize_simulation(std::vector<Level> &levels,
     gfluxes.wait_until_valid();
     runtime->unmap_region(ctx, gfluxes);
   }
-
+#endif
+  
   // Make the time step size the same for all levels, but based on the smallest physical size
   const float dt = 0.1f * (levels[num_cells.size()-1].dx * levels[num_cells.size()-1].dx);
   for (unsigned i = 0; i < num_cells.size(); i++)
@@ -1875,6 +1947,11 @@ void initialize_restrict_pointers_2D(PhysicalRegion<AccessorGeneric> cells_above
         }
         // Add this to the set of restrict coarse regions for the level below
         level_below.restrict_coarse_regions.push_back(restrict_regions);
+        int *args = (int*)malloc(3*sizeof(float) + 7*sizeof(int));
+        memcpy(args, &level_below.dx, 3*sizeof(float)+3*sizeof(int));
+        memcpy(&(args[6]), &level_above.num_private, 3*sizeof(int));
+        args[9] = piece_idx;
+        level_below.restrict_args.push_back(TaskArgument(args,3*sizeof(float)+7*sizeof(int)));
       }
     }
   }
@@ -2182,7 +2259,7 @@ void set_region_requirements(std::vector<Level> &levels)
                                                               levels[i].all_cells));
     levels[i].calc_fluxes_regions.push_back(RegionRequirement(levels[i].boundary_cells, 0/*identity*/,
                                                               READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                                              levels[i].all_cells));
+                                                              levels[i].all_cells, BOUNDARY_TAG));
     
     // advance time step 
     levels[i].adv_time_step_regions.push_back(RegionRequirement(levels[i].pvt_fluxes, 0/*identity*/,
@@ -2617,24 +2694,30 @@ inline void advance_cells(PhysicalRegion<AccessorGeneric> cells, PhysicalRegion<
 }
 
 inline void advance_cells(PhysicalRegion<AccessorArray> &cells, PhysicalRegion<AccessorArray> &fluxes,
-                          float dx, float dt, float coeff)
+                          float dx, float dt, float coeff, ptr_t<Cell> &cell_ptr, int num_cells)
 {
   ArrayAccessor cell_acc = cells.get_instance();
   ArrayAccessor flux_acc = fluxes.get_instance();
 
-  PointerIterator *itr = cells.iterator();
-  while (itr->has_next())
+  float inx, iny, outx, outy;
+  ptr_t<Cell> local_ptr;
+  Cell *current;
+  int i;
+  //shared(cell_acc,flux_acc,cell_ptr,coeff,dt,dx)
+//#pragma omp parallel for default(shared) private(current,inx,outx,iny,outy,local_ptr) schedule(static,32)
+  for (i = 0; i < num_cells; i++)
   {
-    Cell &current = cell_acc.ref<Cell>(itr->next<Cell>());
+    local_ptr.value = cell_ptr.value + i;
+    current = &cell_acc.ref<Cell>(local_ptr);
 
 #if SIMULATION_DIM==2
     {
-      float inx  = flux_acc.ref<Flux>(current.inx).flux;
-      float outx = flux_acc.ref<Flux>(current.outx).flux;
-      float iny  = flux_acc.ref<Flux>(current.iny).flux;
-      float outy = flux_acc.ref<Flux>(current.outy).flux;
+      inx  = flux_acc.ref<Flux>(current->inx).flux;
+      outx = flux_acc.ref<Flux>(current->outx).flux;
+      iny  = flux_acc.ref<Flux>(current->iny).flux;
+      outy = flux_acc.ref<Flux>(current->outy).flux;
 
-      current.temperature += (coeff * dt * ((inx - outx) + (iny - outy)) / dx);
+      current->temperature += (coeff * dt * ((inx - outx) + (iny - outy)) / dx);
     }
 #else
     {
@@ -2689,22 +2772,30 @@ inline void average_cells(PhysicalRegion<AccessorGeneric> cells,
 }
 
 inline void average_cells(PhysicalRegion<AccessorArray> &cells,
-                          std::vector<ArrayAccessor> &fast_regions)
+                          std::vector<ArrayAccessor> &fast_regions,
+                          ptr_t<Cell> &cell_ptr, int num_cells)
 {
   ArrayAccessor cell_acc = cells.get_instance();
-  PointerIterator *itr = cells.iterator();
-  while (itr->has_next())
+  int idx;
+  ptr_t<Cell> local_ptr;
+  Cell *current;
+  float total_temp;
+  int i;
+  //shared(cell_acc,cell_ptr,fast_regions) 
+//#pragma omp parallel for default(shared) private(i,current,total_temp,local_ptr) schedule(static,32)
+  for (idx = 0; idx < num_cells; idx++)
   {
-    Cell &current = cell_acc.ref<Cell>(itr->next<Cell>());
+    local_ptr.value = cell_ptr.value + idx;
+    current = &cell_acc.ref<Cell>(local_ptr);
 #if SIMULATION_DIM==2
-    if (current.num_below > 0)
+    if (current->num_below > 0)
     {
-      float total_temp = 0.0f;
-      for (int i = 0; i < 4; i++)
+      total_temp = 0.0f;
+      for (i = 0; i < 4; i++)
       {
-        total_temp += (fast_regions[current.across_index_loc[i]].ref(current.across_cells[i])).temperature;
+        total_temp += (fast_regions[current->across_index_loc[i]].ref(current->across_cells[i])).temperature;
       }
-      current.temperature = total_temp / 4.0f;
+      current->temperature = total_temp / 4.0f;
     }
 #else
     if (current.num_below > 0)
@@ -2718,7 +2809,6 @@ inline void average_cells(PhysicalRegion<AccessorArray> &cells,
     }
 #endif
   }
-  delete itr;
 }
 
 // EOF
