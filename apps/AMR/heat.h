@@ -123,6 +123,7 @@ public:
   std::vector<RegionRequirement> calc_fluxes_regions;
   std::vector<RegionRequirement> adv_time_step_regions;
   std::vector<std::vector<RegionRequirement> > restrict_coarse_regions;
+  std::vector<MappingTagID> restrict_tags;
   std::vector<TaskArgument> restrict_args;
 };
 

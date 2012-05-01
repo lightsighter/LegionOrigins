@@ -58,9 +58,9 @@ void region_main(const void *args, size_t arglen,
     num_cells[i] = default_num_cells;
     divisions[i] = default_divisions;
   }
-  divisions[0] = 8;
-  divisions[1] = 4;
-  divisions[2] = 4;
+  divisions[0] = 4;
+  divisions[1] = 2;
+  divisions[2] = 2;
   int steps = 20;
   int random_seed = 12345;
   {
@@ -89,8 +89,6 @@ void region_main(const void *args, size_t arglen,
   // Move everything into everyone's local memories
   for (int i = (num_cells.size()-1); i >= 0; i--)
   {
-    levels[i].level = i;
-    levels[i].divisions = divisions[i];
     TaskArgument global_arg(&levels[i].dx,3*sizeof(float)+6*sizeof(int));
     ArgumentMap local_args;
     FutureMap map = runtime->execute_index_space(ctx, INIT_TASK, levels[i].index_space,
@@ -131,7 +129,7 @@ void region_main(const void *args, size_t arglen,
         {
           Future f = runtime->execute_task(ctx, INTERP_BOUNDARY, levels[i].interp_boundary_regions[j], global_args[i],0/*mapper id*/
 #ifndef SHARED_LOWLEVEL
-                                                                                                        ,levels[i].interp_tags[j]/*tag*/
+                                                                                                  ,levels[i].interp_tags[j]/*tag*/
 #endif
               );
           f.release();
@@ -176,7 +174,7 @@ void region_main(const void *args, size_t arglen,
         Future f = runtime->execute_task(ctx, RESTRICT, levels[i].restrict_coarse_regions[j], levels[i].restrict_args[j], 
                                                                                               0/*mapper id*/
 #ifndef SHARED_LOWLEVEL
-                                                                                              ,j+1/*tag*/
+                                                                                              ,levels[i].restrict_tags[j]/*tag*/
 #endif
             );
         if (s == (steps-1))
@@ -711,7 +709,7 @@ public:
       case RESTRICT:
         {
           int level = *((int*)(((char*)task->args)+sizeof(Context)+3*sizeof(float)));
-          int idx = task->tag - 1;
+          int idx = task->tag;
           assert((1 <= level) && (level <= 2));
           assert(idx < int(id_locations[level-1].size()));
           return id_locations[level-1][idx].p;
@@ -778,7 +776,7 @@ public:
       case RESTRICT:
         {
           int level = *((int*)(((char*)task->args)+sizeof(Context)+3*sizeof(float)));
-          int idx = task->tag - 1;
+          int idx = task->tag;
           Memory m = system_memories[id_locations[level-1][idx].p];
           target_ranking.push_back(m);
           break;
@@ -843,6 +841,7 @@ public:
       // Need to figure out how to distribute things based on the level
       if (level == 2)
       {
+        log_heat(LEVEL_DEBUG,"Level 2 has %d divisions",divisions);
         //printf("Level 2\n");
         // Bottom level, distribute modulo the number of processors 
         for (int idx = index_space[0].start; idx <= index_space[0].stop; idx += index_space[0].stride)
@@ -861,6 +860,7 @@ public:
             int y = idx/divisions;
             int px = (x/2)*(divisions/2) + (y/2);
             p = cpu_procs[px % cpu_procs.size()];
+            log_heat(LEVEL_DEBUG,"Mapping task %d at level 2 to processor %x",idx,p.id);
           }
           chunks.push_back(RangeSplit(point, p, false/*recurse*/));
           id_locations[level].push_back(chunks.back());
@@ -874,6 +874,7 @@ public:
       }
       else if (level == 1)
       {
+        log_heat(LEVEL_DEBUG,"Level 1 has %d divisions",divisions);
         //printf("Level 1\n");
         for (int idx = index_space[0].start; idx <= index_space[0].stop; idx += index_space[0].stride)
         {
@@ -911,6 +912,7 @@ public:
             chunks.push_back(RangeSplit(point,p,false/*recurse*/));
             id_locations[level].push_back(chunks.back());
             update_proc_count(p);
+            log_heat(LEVEL_DEBUG,"Mapping task %d at level 1 to processor %x",idx,p.id);
           }
           else
           {
@@ -921,12 +923,14 @@ public:
             chunks.push_back(RangeSplit(point,p,false/*recurse*/));
             id_locations[level].push_back(chunks.back());
             update_proc_count(p);
+            log_heat(LEVEL_DEBUG,"Mapping task %d at level 1 to processor %x",idx,p.id);
           }
         }
         loc_initialized[level] = true;
       }
       else if (level == 0)
       {
+        log_heat(LEVEL_DEBUG,"Level 0 has %d divisions",divisions);
         //printf("Level 0\n");
         for (int idx = index_space[0].start; idx <= index_space[0].stop; idx += index_space[0].stride)
         {
@@ -942,9 +946,16 @@ public:
           {
             if (local.contains(it->second))
             {
-              overlap = it->first;
               //printf("Box %d from level %d contains box %d from level %d\n",
               //        idx, level, it->first, level+1);
+              if (overlap != -1)
+              {
+                assert(id_locations[level+1][overlap].p == id_locations[level+1][it->first].p);
+              }
+              else
+              {
+                overlap = it->first;
+              }
             }
           }
           // Check to see if it overlapped
@@ -957,6 +968,7 @@ public:
             chunks.push_back(RangeSplit(point,p,false/*recurse*/));
             id_locations[level].push_back(chunks.back());
             update_proc_count(p);
+            log_heat(LEVEL_DEBUG,"Mapping task %d at level 0 to processor %x",idx,p.id);
           }
           else
           {
@@ -967,6 +979,7 @@ public:
             chunks.push_back(RangeSplit(point,p,false/*recurse*/));
             id_locations[level].push_back(chunks.back());
             update_proc_count(p);
+            log_heat(LEVEL_DEBUG,"Mapping task %d at level 0 to processor %x",idx,p.id);
           }
         }
         loc_initialized[level] = true;
@@ -1130,6 +1143,8 @@ void initialize_simulation(std::vector<Level> &levels,
       int total_fluxes = flux_piece * pieces;
 #endif
       // Set up the index space for this task
+      levels[i].level = i;
+      levels[i].divisions = divisions[i];
       levels[i].index_space.push_back(Range(0,pieces-1));
       levels[i].cells_per_piece_side = cells_per_piece_side;
       levels[i].pieces_per_dim = divisions[i];
@@ -1952,6 +1967,7 @@ void initialize_restrict_pointers_2D(PhysicalRegion<AccessorGeneric> cells_above
         memcpy(&(args[6]), &level_above.num_private, 3*sizeof(int));
         args[9] = piece_idx;
         level_below.restrict_args.push_back(TaskArgument(args,3*sizeof(float)+7*sizeof(int)));
+        level_below.restrict_tags.push_back(piece_idx);
       }
     }
   }
