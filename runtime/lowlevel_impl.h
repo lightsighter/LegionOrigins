@@ -219,12 +219,13 @@ namespace RegionRuntime {
 
     struct ElementMaskImpl {
       //int count, offset;
-      int dummy;
-      unsigned bits[0];
+      typedef unsigned long long uint64;
+      uint64_t dummy;
+      uint64_t bits[0];
 
       static size_t bytes_needed(off_t offset, off_t count)
       {
-	size_t need = sizeof(ElementMaskImpl) + (((count + 31) >> 5) << 2);
+	size_t need = sizeof(ElementMaskImpl) + (((count + 63) >> 6) << 3);
 	return need;
       }
 	

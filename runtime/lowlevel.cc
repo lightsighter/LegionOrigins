@@ -4695,8 +4695,8 @@ namespace RegionRuntime {
 	//printf("ENABLE %p %d %d %d %x\n", raw_data, offset, start, count, impl->bits[0]);
 	int pos = start - first_element;
 	for(int i = 0; i < count; i++) {
-	  unsigned *ptr = &(impl->bits[pos >> 5]);
-	  *ptr |= (1U << (pos & 0x1f));
+	  uint64_t *ptr = &(impl->bits[pos >> 6]);
+	  *ptr |= (1ULL << (pos & 0x3f));
 	  pos++;
 	}
 	//printf("ENABLED %p %d %d %d %x\n", raw_data, offset, start, count, impl->bits[0]);
@@ -4706,11 +4706,11 @@ namespace RegionRuntime {
 
 	int pos = start - first_element;
 	for(int i = 0; i < count; i++) {
-	  off_t ofs = offset + ((pos >> 5) << 2);
-	  unsigned val;
+	  off_t ofs = offset + ((pos >> 6) << 3);
+	  uint64_t val;
 	  m_impl->get_bytes(ofs, &val, sizeof(val));
 	  //printf("ENABLED(2) %d,  %x\n", ofs, val);
-	  val |= (1U << (pos & 0x1f));
+	  val |= (1ULL << (pos & 0x3f));
 	  m_impl->put_bytes(ofs, &val, sizeof(val));
 	  pos++;
 	}
@@ -4729,8 +4729,8 @@ namespace RegionRuntime {
 	ElementMaskImpl *impl = (ElementMaskImpl *)raw_data;
 	int pos = start - first_element;
 	for(int i = 0; i < count; i++) {
-	  unsigned *ptr = &(impl->bits[pos >> 5]);
-	  *ptr &= ~(1U << (pos & 0x1f));
+	  uint64_t *ptr = &(impl->bits[pos >> 6]);
+	  *ptr &= ~(1ULL << (pos & 0x3f));
 	  pos++;
 	}
       } else {
@@ -4739,11 +4739,11 @@ namespace RegionRuntime {
 
 	int pos = start - first_element;
 	for(int i = 0; i < count; i++) {
-	  off_t ofs = offset + ((pos >> 5) << 2);
-	  unsigned val;
+	  off_t ofs = offset + ((pos >> 6) << 3);
+	  uint64_t val;
 	  m_impl->get_bytes(ofs, &val, sizeof(val));
 	  //printf("DISABLED(2) %d,  %x\n", ofs, val);
-	  val &= ~(1U << (pos & 0x1f));
+	  val &= ~(1ULL << (pos & 0x3f));
 	  m_impl->put_bytes(ofs, &val, sizeof(val));
 	  pos++;
 	}
@@ -4764,7 +4764,7 @@ namespace RegionRuntime {
 	for(int pos = first_enabled_elmt; pos <= num_elements - count; pos++) {
 	  int run = 0;
 	  while(1) {
-	    unsigned bit = ((impl->bits[pos >> 5] >> (pos & 0x1f))) & 1;
+	    uint64_t bit = ((impl->bits[pos >> 6] >> (pos & 0x3f))) & 1;
 	    if(bit != 1) break;
 	    pos++; run++;
 	    if(run >= count) return pos - run;
@@ -4776,10 +4776,10 @@ namespace RegionRuntime {
 	for(int pos = first_enabled_elmt; pos <= num_elements - count; pos++) {
 	  int run = 0;
 	  while(1) {
-	    off_t ofs = offset + ((pos >> 5) << 2);
-	    unsigned val;
+	    off_t ofs = offset + ((pos >> 6) << 3);
+	    uint64_t val;
 	    m_impl->get_bytes(ofs, &val, sizeof(val));
-	    unsigned bit = (val >> (pos & 0x1f)) & 1;
+	    uint64_t bit = (val >> (pos & 0x3f)) & 1;
 	    if(bit != 1) break;
 	    pos++; run++;
 	    if(run >= count) return pos - run;
@@ -4796,7 +4796,7 @@ namespace RegionRuntime {
 	for(int pos = 0; pos <= num_elements - count; pos++) {
 	  int run = 0;
 	  while(1) {
-	    unsigned bit = ((impl->bits[pos >> 5] >> (pos & 0x1f))) & 1;
+	    uint64_t bit = ((impl->bits[pos >> 6] >> (pos & 0x3f))) & 1;
 	    if(bit != 0) break;
 	    pos++; run++;
 	    if(run >= count) return pos - run;
@@ -4849,31 +4849,61 @@ namespace RegionRuntime {
       if(mask.raw_data != 0) {
 	ElementMaskImpl *impl = (ElementMaskImpl *)(mask.raw_data);
 
-	// scan until we find a bit set with the right polarity
-	while(pos < mask.num_elements) {
-	  int bit = ((impl->bits[pos >> 5] >> (pos & 0x1f))) & 1;
-	  if(bit != polarity) {
-	    pos++;
-	    continue;
-	  }
+	// are we already off the end?
+	if(pos >= mask.num_elements)
+	  return false;
 
-	  // ok, found one bit with the right polarity - now see how many
-	  //  we have in a row
-	  position = pos++;
-	  while(pos < mask.num_elements) {
-	    int bit = ((impl->bits[pos >> 5] >> (pos & 0x1f))) & 1;
-	    if(bit != polarity) break;
-	    pos++;
+	// fetch first value and see if we have any bits set
+	int idx = pos >> 6;
+	uint64_t bits = impl->bits[idx];
+	if(!polarity) bits = ~bits;
+
+	// for the first one, we may have bits to ignore at the start
+	if(pos & 0x3f)
+	  bits &= ((1ULL << (pos & 0x3f)) - 1);
+
+	// skip over words that are all zeros
+	while(!bits) {
+	  idx++;
+	  if((idx << 6) >= mask.num_elements) {
+	    pos = mask.num_elements; // so we don't scan again
+	    return false;
 	  }
-	  // we get here either because we found the end of the run or we 
-	  //  hit the end of the mask
-	  length = pos - position;
-	  return true;
+	  bits = impl->bits[idx];
+	  if(!polarity) bits = ~bits;
 	}
 
-	// if we fall off the end, there's no more ranges to enumerate
-	return false;
+	// if we get here, we've got at least one good bit
+	int extra = __builtin_ctzll(bits);
+	assert(extra < 64);
+	position = (idx << 6) + extra;
+	
+	// now we're going to turn it around and scan ones
+	if(extra)
+	  bits |= ((1ULL << extra) - 1);
+	bits = ~bits;
+
+	while(!bits) {
+	  idx++;
+	  // did our 1's take us right to the end?
+	  if((idx << 6) >= mask.num_elements) {
+	    pos = mask.num_elements; // so we don't scan again
+	    length = mask.num_elements - position;
+	    return true;
+	  }
+	  bits = ~impl->bits[idx]; // note the inversion
+	  if(!polarity) bits = ~bits;
+	}
+
+	// if we get here, we got to the end of the 1's
+	int extra2 = __builtin_ctzll(bits);
+	pos = (idx << 6) + extra2;
+	if(pos >= mask.num_elements)
+	  pos = mask.num_elements;
+	length = pos - position;
+	return true;
       } else {
+	assert(0);
 	Memory::Impl *m_impl = mask.memory.impl();
 
 	// scan until we find a bit set with the right polarity
