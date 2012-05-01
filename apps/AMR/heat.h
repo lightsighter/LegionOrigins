@@ -12,6 +12,7 @@ using namespace RegionRuntime::HighLevel;
 
 enum {
   REGION_MAIN,
+  INIT_TASK,
   INTERP_BOUNDARY,
   CALC_FLUXES,
   ADVANCE,
@@ -84,6 +85,12 @@ public:
   int level;
   // Divisions
   int divisions;
+  // Number of fluxes in each grid at this level
+  int num_fluxes;
+  // Number of private cells
+  int num_private;
+  int num_shared;
+  int shared_offset;
   // Offsets for computing global cell locations (same in all dimensions)
   float offset;
   
@@ -116,6 +123,7 @@ public:
   std::vector<RegionRequirement> calc_fluxes_regions;
   std::vector<RegionRequirement> adv_time_step_regions;
   std::vector<std::vector<RegionRequirement> > restrict_coarse_regions;
+  std::vector<TaskArgument> restrict_args;
 };
 
 

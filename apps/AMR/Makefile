@@ -21,7 +21,8 @@ INC_FLAGS	:=
 CC_FLAGS	:= -DDETAILED_TIMING
 NVCC_FLAGS	:=
 GASNET_FLAGS	:=
-LD_FLAGS	:=
+LD_FLAGS	:= 
+# -fopenmp -lgomp
 
 ###########################################################################
 #
