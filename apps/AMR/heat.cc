@@ -245,8 +245,9 @@ inline float read_temp(ptr_t<Cell> source, PointerLocation source_loc,
                        PhysicalRegion<AccessorGeneric> pvt, PhysicalRegion<AccessorGeneric> shr,
                        PhysicalRegion<AccessorGeneric> ghost, PhysicalRegion<AccessorGeneric> boundary);
 
-inline float read_temp(ptr_t<Cell> source, PointerLocation source_loc,
-                       ArrayAccessor &pvt, ArrayAccessor &shr, ArrayAccessor &ghost, ArrayAccessor &boundary);
+inline float read_temp(const ptr_t<Cell> &source, const PointerLocation &source_loc,
+                       const ArrayAccessor &pvt, const ArrayAccessor &shr, 
+                       const ArrayAccessor &ghost, const ArrayAccessor &boundary);
 
 inline float read_temp(ptr_t<Cell> source, PointerLocation loc, 
                        PhysicalRegion<AccessorGeneric> pvt, PhysicalRegion<AccessorGeneric> shr);
@@ -2616,8 +2617,9 @@ inline float read_temp(ptr_t<Cell> source, PointerLocation source_loc,
   return 0.0f;
 }
 
-inline float read_temp(ptr_t<Cell> source, PointerLocation source_loc,
-                       ArrayAccessor &pvt, ArrayAccessor &shr, ArrayAccessor &ghost, ArrayAccessor &bound)
+inline float read_temp(const ptr_t<Cell> &source, const PointerLocation &source_loc,
+                       const ArrayAccessor &pvt, const ArrayAccessor &shr, 
+                       const ArrayAccessor &ghost, const ArrayAccessor &bound)
 {
   switch (source_loc)
   {
