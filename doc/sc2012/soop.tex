@@ -4,7 +4,7 @@
 There are two major challenges in implementing an efficient task
 scheduler for Legion:
 \begin{itemize}
-\item  For correctness, Legion must guarantee that every pair of {\em dependent} tasks is serialized in the correct order.
+\item  For correctness, Legion must guarantee that every pair of {\em dependent} tasks is serialized in program order.
 
 \item For performance, Legion must hide the extremely long latencies associated
   with machines that have both distributed memory and many levels of
@@ -12,28 +12,31 @@ scheduler for Legion:
 \end{itemize}
 Our scheduler uses three techniques to achieve both correctness and high performance:
 \begin{itemize}
-\item Subtasks enjoy an isolation property that allows Legion
-to avoid comparing all pairs of tasks for dependences.
-Specifically, the only tasks that need to be checked for dependences 
-are the immediate subtasks of a common
-parent task (see Section~\ref{sec:exec}).
-
-\item Legion uses a {\em deferred execution model} that decouples the issuing
-of operations from when operations are performed.  Issued operations wait for other operations on
-which they are dependent to complete before executing.  For example, Legion may issue a copy
-operation to move the results of a task $a$ to the place where a task $b$ will take the copied data as
-an argument.  Tasks $a$ and $b$ and the copy can all be issued, but the copy will not start until
-task $a$ completes and task $b$ will not start until the copy completes.
+\item If it were necessary to compare all pairs of tasks for dependences that alone
+would be a serial bottleneck in all but the simplest Legion programs.  Fortunately,
+subtasks enjoy an isolation property that allows Legion to check only task siblings for dependences
+(see Section~\ref{sec:dep}).
 
 \item Legion uses a {\em  software out-of-order processor}, or SOOP, to schedule tasks.  The SOOP 
-is distributed and concurrent, and also extracts nested parallelism from subtasks.
+is pipelined and distributed, and also extracts nested parallelism from subtasks.
+
+\item Legion uses a {\em deferred execution model} that decouples the issuing
+of operations from when operations are performed.  An issued operation waits for other operations on
+which it is dependent to complete before executing, but a waiting operation does not cause the SOOP
+to block, allowing Legion to perform other useful work while the operation is pending.  
+
+%  For example, Legion may issue a copy
+%operation to move the results of a task $a$ to the place where a task $b$ will take the copied data as
+%an argument.  Tasks $a$ and $b$ and the copy can all be issued, but the copy will not start until
+%task $a$ completes and task $b$ will not start until the copy completes.
+
 \end{itemize}
 
-During execution of a Legion program, each processor runs its own instance of the Legion SOOP.
-A processor's SOOP is the Legion runtime system for that processor and handles all requests
-for Legion services from tasks executing on the processor.
-Legion's SOOP has a five stage pipeline that  separates the management of system resources from actual
-task execution.  The five stages are: dependence analysis (Section~\ref{sec:dep}),
+Each processor in the machine runs an instance of the SOOP, which handles all requests
+for Legion services from tasks executing on the processor.  The SOOP is analagous to the out-of-order
+instruction scheduler in superscalar processors, but working at the granularity of tasks and their region
+arguments instead of instructions and their register arguments.
+Legion's SOOP has a five stage pipeline: dependence analysis (Section~\ref{sec:dep}),
 distribution (Section~\ref{sec:dist}),
 mapping (Section~\ref{sec:map}),
 execution (Section~\ref{sec:exec}),
@@ -46,12 +49,24 @@ We discuss each in turn.
 \label{sec:dep}
 
 
-When a Legion task runs, it may spawn new subtasks to be executed.
-Each subtask is {\em registered} with the local SOOP in sequential execution
-order, which records the subtask's logical region arguments and associated privileges and coherence properties.  If two subtasks work on indepedent data Legion can schedule
-them to out of order, in parallel.  Thus, the first stage in the
-execution of a task is dependence analysis between tasks.
+When a Legion task runs, it may spawn new subtasks to be executed.  We refer to the
+subtasks as {\em children} of the {\em parent} task.  The children of a parent task
+are {\em siblings} of each other.
 
+When a parent task spawns a child task, the child is {\em registered} with the SOOP 
+on which the parent is executing; registration records the subtask's logical region
+arguments and associated privileges and coherence properties.
+Children are registered in the sequential execution order in which the parent task
+spawns them.
+
+If two children have a dependence between their region arguments, the
+SOOP will schedule them to run serially to preserve the program's
+sequential semantics.  If two child tasks have no dependence then
+Legion can schedule them to execute out of order, in parallel.  Thus,
+the first stage in the execution of a task is dependence analysis
+between tasks.
+
+\subsubsection{Dependences}
 Conceptually, detecting dependences between a newly registered task $t$ and a previous task 
 $t'$ requires comparing the two sets of logical regions accessed.  For each logical region used by
 $t'$ that may overlap with a logical region used by $t$, the privileges
@@ -69,9 +84,10 @@ Relaxed      & Dep & Cont & None & None \\
 \end{tabular}
 }
 
-An {\tt Dep} entry indicates dependence while {\tt None}
+A {\tt Dep} entry indicates dependence while {\tt None}
 indicates independence.  A {\tt Same} entry is a dependence unless the two tasks
-use the same {\em physical region}.  Finally, a {\tt Cont} entry
+use the same physical instance of the logical region.\footnote{For example, if two tasks wish to acess the region with atomic coherence, then if they are working on the same physical copy of the data atomicity can be guaranteed using, e.g., locking.  If they are working on different copies of the data then the only safe execution strategy for Legion is to serialize the two tasks.}
+A {\tt Cont} entry
 indicates a dependence unless a single writer is using the
 atomic coherence mode.  When a dependence is detected, the new task
 waits for the older task to complete before it begins execution.
@@ -85,7 +101,33 @@ simultaneously (i.e., shared memory semantics).  With relaxed coherence,
 a task may or may not observe updates to the logical region by other tasks executing at
 the same time.
 
-% *****  isolation, efficient data structure ******
+
+\subsubsection{Isolation}
+The reader may wonder why we only compare sibling tasks for
+dependences: can't arbitrary pairs of tasks have dependences?  The
+answer is ``yes'', but the following lemma shows that
+any non-sibling tasks are always detected first as a dependence between
+siblings that are registered earlier in execution!
+\begin{lemma}
+\label{lem:isolation}
+\rm
+Let $t_1$ and $t_2$ be two distinct, non-sibling tasks other than the root task with parents $p_1$ and $p_2$, respectively.
+If $t_1$ and $t_2$ have a dependence, then $p_1$ and $p_2$ have a dependence.
+\end{lemma}
+\begin{proof}
+Recall from Section~\ref{sec:ex} that the parents' region arguments include the children's region arguments and have
+only more permissions.
+\end{proof}
+Lemma~\ref{lem:isolation} justifies checking dependences only between sibling tasks, because any dependences between 
+arbitrary tasks are detected first between children of the tasks' least common ancestor.  Legion
+guarantees that all dependence analysis is performed for all children of a task $t$ on the instance of the SOOP where $t$
+runs, which by Lemma~\ref{lem:isolation} is sufficient to detect all required dependences across all tasks.
+
+\subsubsection{Efficient Dependence Analysis}
+
+
+
+
 
 To detect dependencies efficiently, the high-level runtime maintains a
 local region forest (recall Section~\ref{sec:exec}) for each task.  The
