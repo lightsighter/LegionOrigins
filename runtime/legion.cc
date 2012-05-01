@@ -3972,9 +3972,6 @@ namespace RegionRuntime {
         // Figure out if this task is runnable
         if ((*it)->is_ready())
         {
-          // Check for premapped regions, if this doesn't happen here, it
-          // happens in when the task is notified and added to the ready queue
-          (*it)->pre_map_regions(true/*need lock*/);
           // Figure out where to place this task
           if (target_task(*it))
           {
@@ -4026,6 +4023,8 @@ namespace RegionRuntime {
     bool HighLevelRuntime::target_task(TaskContext *task)
     //--------------------------------------------------------------------------------------------
     {
+      // Premap the regions
+      task->pre_map_regions(true/*need lock*/);
       // Mark that we've done selecting/splitting for this task
       task->chosen = true;
       // This is a single task
@@ -9911,16 +9910,6 @@ namespace RegionRuntime {
       remaining_notifications--;
       if (remaining_notifications == 0)
       {
-        // perform any premappings
-        // note we don't need to take the context lock here because someone
-        // else is already holding it if they are notifying us
-#ifdef DEBUG_HIGH_LEVEL
-        current_taken = true; // this is true because someone has to be holding the context lock to call notify
-#endif
-        pre_map_regions(false/*need lock*/);
-#ifdef DEBUG_HIGH_LEVEL
-        current_taken = false;
-#endif
         // then add ourselves to the ready queue
         runtime->add_to_ready_queue(this);
       }
