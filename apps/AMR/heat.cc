@@ -424,8 +424,43 @@ void calculate_fluxes_task(const void *global_args, size_t global_arglen,
     fp.value = flux_ptr.value+i;
     face = &fluxes.ref<Flux>(fp);
 
-    temp0 = read_temp(face->cell_ptrs[0], face->locations[0], pvt_cells, shr_cells, ghost_cells, bound_cells);
-    temp1 = read_temp(face->cell_ptrs[1], face->locations[1], pvt_cells, shr_cells, ghost_cells, bound_cells);
+    // Inlining myself because gcc is dumb
+    switch (face->locations[0])
+    {
+      case PVT:
+        temp0 = pvt_cells.ref<Cell>(face->cell_ptrs[0]).temperature;
+        break;
+      case SHR:
+        temp0 = shr_cells.ref<Cell>(face->cell_ptrs[0]).temperature;
+        break;
+      case GHOST:
+        temp0 = ghost_cells.ref<Cell>(face->cell_ptrs[0]).temperature;
+        break;
+      case BOUNDARY:
+        temp0 = bound_cells.ref<Cell>(face->cell_ptrs[0]).temperature;
+        break;
+      default:
+        assert(false);
+    }
+    switch (face->locations[1])
+    {
+      case PVT:
+        temp1 = pvt_cells.ref<Cell>(face->cell_ptrs[1]).temperature;
+        break;
+      case SHR:
+        temp1 = shr_cells.ref<Cell>(face->cell_ptrs[1]).temperature;
+        break;
+      case GHOST:
+        temp1 = ghost_cells.ref<Cell>(face->cell_ptrs[1]).temperature;
+        break;
+      case BOUNDARY:
+        temp1 = bound_cells.ref<Cell>(face->cell_ptrs[1]).temperature;
+        break;
+      default:
+        assert(false);
+    } 
+    //temp0 = read_temp(face->cell_ptrs[0], face->locations[0], pvt_cells, shr_cells, ghost_cells, bound_cells);
+    //temp1 = read_temp(face->cell_ptrs[1], face->locations[1], pvt_cells, shr_cells, ghost_cells, bound_cells);
 
     // Compute the new flux
     face->flux = (temp1 - temp0) / dx;
