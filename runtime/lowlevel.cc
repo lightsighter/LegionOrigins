@@ -4860,7 +4860,7 @@ namespace RegionRuntime {
 
 	// for the first one, we may have bits to ignore at the start
 	if(pos & 0x3f)
-	  bits &= ((1ULL << (pos & 0x3f)) - 1);
+	  bits &= ~((1ULL << (pos & 0x3f)) - 1);
 
 	// skip over words that are all zeros
 	while(!bits) {
