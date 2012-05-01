@@ -416,11 +416,11 @@ void calculate_fluxes_task(const void *global_args, size_t global_arglen,
   ptr_t<Flux> fp;
   Flux *face;
   //shared(fluxes,flux_ptr,dx,pvt_cells,shr_cells,ghost_cells,bound_cells)
-//#pragma omp parallel for default(shared) private(face,temp0,temp1) schedule(static,32)
+#pragma omp parallel for default(shared) private(fp,face,temp0,temp1) schedule(static,32)
   for (i = 0; i<num_fluxes; i++)
   {
     fp.value = flux_ptr.value+i;
-    face = &fluxes.ref<Flux>(flux_ptr);
+    face = &fluxes.ref<Flux>(fp);
 
     temp0 = read_temp(face->cell_ptrs[0], face->locations[0], pvt_cells, shr_cells, ghost_cells, bound_cells);
     temp1 = read_temp(face->cell_ptrs[1], face->locations[1], pvt_cells, shr_cells, ghost_cells, bound_cells);
@@ -2720,7 +2720,7 @@ inline void advance_cells(PhysicalRegion<AccessorArray> &cells, PhysicalRegion<A
   Cell *current;
   int i;
   //shared(cell_acc,flux_acc,cell_ptr,coeff,dt,dx)
-//#pragma omp parallel for default(shared) private(current,inx,outx,iny,outy,local_ptr) schedule(static,32)
+#pragma omp parallel for default(shared) private(current,inx,outx,iny,outy,local_ptr) schedule(static,32)
   for (i = 0; i < num_cells; i++)
   {
     local_ptr.value = cell_ptr.value + i;
@@ -2798,7 +2798,7 @@ inline void average_cells(PhysicalRegion<AccessorArray> &cells,
   float total_temp;
   int i;
   //shared(cell_acc,cell_ptr,fast_regions) 
-//#pragma omp parallel for default(shared) private(i,current,total_temp,local_ptr) schedule(static,32)
+#pragma omp parallel for default(shared) private(i,current,total_temp,local_ptr) schedule(static,32)
   for (idx = 0; idx < num_cells; idx++)
   {
     local_ptr.value = cell_ptr.value + idx;
