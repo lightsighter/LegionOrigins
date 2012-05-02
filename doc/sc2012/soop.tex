@@ -12,8 +12,8 @@ scheduler for Legion:
 \end{itemize}
 Our scheduler uses three techniques to achieve both correctness and high performance:
 \begin{itemize}
-\item If it were necessary to compare all pairs of tasks for dependences that alone
-would be a serial bottleneck in all but the simplest Legion programs.  Fortunately,
+\item If it were necessary to compare all pairs of tasks for dependences that 
+would be a bottleneck in most Legion programs.  Fortunately,
 subtasks enjoy an isolation property that allows Legion to check only task siblings for dependences
 (see Section~\ref{sec:dep}).
 
@@ -41,7 +41,7 @@ distribution (Section~\ref{sec:dist}),
 mapping (Section~\ref{sec:map}),
 execution (Section~\ref{sec:exec}),
 and clean-up (Section~\ref{sec:clean}).
-We discuss each in turn.
+We discuss each stage in turn.
 
 \input{mapping_fig}
 
@@ -51,23 +51,29 @@ We discuss each in turn.
 
 When a Legion task runs, it may spawn new subtasks to be executed.  We refer to the
 subtasks as {\em children} of the {\em parent} task.  The children of a parent task
-are {\em siblings} of each other.
+are {\em siblings} of each other.  A task always executes on a single processor, but
+its subtasks may execute elsewhere.
 
-When a parent task spawns a child task, the child is {\em registered} with the SOOP 
-on which the parent is executing; registration records the subtask's logical region
-arguments and associated privileges and coherence properties.
-Children are registered in the sequential execution order in which the parent task
-spawns them.
+When a parent task spawns a child task, the child is {\em registered}
+with the SOOP on the processor where the parent is executing;
+registration records the subtask's logical region arguments and
+associated privileges and coherence properties.  Children are
+registered in the sequential execution order in which the parent task
+spawns them and enqueued for dependence analysis.  For example, in the
+circuit simulation in Listing~\ref{lst:code_ex}, the three spawn
+statements on lines 32-34 register will register all of the three
+kinds of subtasks (in program order) on the processor where {\tt
+simulate\_circuit} executes.
 
 If two children have a dependence between their region arguments, the
 SOOP will schedule them to run serially to preserve the program's
 sequential semantics.  If two child tasks have no dependence then
 Legion can schedule them to execute out of order, in parallel.  Thus,
-the first stage in the execution of a task is dependence analysis
-between tasks.
+the first stage in the execution of a task is dependence analysis on
+the logical regins used by tasks.
 
 \subsubsection{Dependences}
-Detecting dependences between a newly registered task $t$ and a previous task 
+Detecting dependences between a newly registered task $t$ and a previously registered task 
 $t'$ requires comparing the two sets of logical regions accessed.  For each logical region used by
 $t'$ that may overlap with a logical region used by $t$, the privileges
 and coherence modes are compared to determine whether a dependence exists.  If
@@ -109,65 +115,97 @@ the same time.
 
 \subsubsection{Isolation}
 
-\begin{figure}
-\centering
-\begin{tikzpicture}
-\node(top) at (3.5,3.5) { $p$ };
-
-\node(s1) at (1.9,2.5) { $s1$ };
-\node(s2) at (5.1,2.5) { $s2$ };
-
-\node(m1) at (1.9,1.5) { $\ldots$ };
-\node(m2) at (5.1,1.5) { $\ldots$ };
-\node(t1) at (1.9,0.5) { $t_1$ };
-\node(t2) at (5.1,0.5) { $t_2$ };
-
-\draw
-  (top.south) edge (s1.north)
-  (s2.north) edge (top.south)
-  (m1.north) edge (s1.south)
-  (m2.north) edge (s2.south)
-  (t1.north) edge (m1.south)
-  (t2.north) edge (m2.south)
-  ;
-
-\draw[dashed]
-  (t1.east) edge (t2.west)
-  (s1.east) edge (s2.west)
-  ;
-
-\end{tikzpicture}
-\caption{Dependence between tasks implies a dependence between siblings of the least common ancestor.}
-\label{fig:independence}
-\end{figure}
+%
+%\begin{figure}
+%
+%\centering
+%\begin{tikzpicture}
+%\node(top) at (3.5,3.5) { $p$ };
+%
+%\node(s1) at (1.9,2.5) { $s1$ };
+%\node(s2) at (5.1,2.5) { $s2$ };
+%
+%\node(m1) at (1.9,1.5) { $\ldots$ };
+%\node(m2) at (5.1,1.5) { $\ldots$ };
+%\node(t1) at (1.9,0.5) { $t_1$ };
+%\node(t2) at (5.1,0.5) { $t_2$ };
+%
+%\draw
+%  (top.south) edge (s1.north)
+%  (s2.north) edge (top.south)
+%  (m1.north) edge (s1.south)
+%  (m2.north) edge (s2.south)
+%  (t1.north) edge (m1.south)
+%  (t2.north) edge (m2.south)
+%  ;
+%
+%\draw[dashed]
+%  (t1.east) edge (t2.west)
+%  (s1.east) edge (s2.west)
+%  ;
+%
+%\end{tikzpicture}
+%\caption{Dependence between tasks implies a dependence between siblings of the least common ancestor.}
+%\label{fig:independence}
+%\end{figure}
 
 The reader may wonder why we only compare sibling tasks for
 dependences: can't arbitrary pairs of tasks have dependences?  The
-answer is ``yes'', but the following lemma shows that
-any non-sibling tasks are always detected first as a dependence between
-siblings that are registered earlier in execution.
-\begin{lemma}
-\label{lem:isolation}
+answer is ``yes'', but the following observation shows why it is sufficient
+to check only sibling tasks for dependences.
+\begin{observation}
+\label{obs:isolation}
 \rm
-Let $t_1$ and $t_2$ be two distinct, non-sibling tasks other than the root task, let $p$ be the least
-common ancestor task of $t_1$ and $t_2$, and let $s_1$ and $s_2$ be the sibling children of $p$ 
-that are ancestors of $t_1$ and $t_2$, respectively.
-If $t_1$ and $t_2$ have a dependence, then $s_1$ and $s_2$ have a dependence.
-\end{lemma}
-\begin{proof}
-Recall from Section~\ref{sec:ex} that a task's parent, takes region arguments that include the children's region arguments and have only more permissions.  The same is true of any ancestor of a task.
-\end{proof}
-Lemma~\ref{lem:isolation} is illustrated in Figure~\ref{fig:isolation}:
-if arbitrary tasks $t_1$ and $t_2$ have a dependence, then, because tasks always work on a subset
-of the data passed to their parents, two siblings $s_1$ and $s_2$ of the task's
-least common ancestor also have a dependence.  Since $s_1$ and $s_2$ are issued earlier in the program
-execution than $t_1$ and $t_2$, $s_1$ and $s_2$ are serialized by the SOOP and the dependence between
-$t_1$ and $t_2$ is observed.   Note that Lemma~\ref{lem:isolation} also guarantees a dual independence property: if two sibling tasks $s_1$ and $s_2$ have no dependence, then there can never be a dependence between the descendants of $s_1$ and the descendants of $s_2$.
+Let $t_1$ and $t_2$ be two sibling tasks with no dependence.  Then no subtask of $t_1$ has a dependence with any subtask
+of $t_2$.
+\end{observation}
+Recall from Section~\ref{sec:ex} that a subtasks can only access subregions of their parent task's region arguments (and with fewer
+privileges).  Thus if the regions used by $t_1$ and $t_2$ do not overlap, the regions used by any subtasks of $t_1$ cannot
+overlap with the regions used by any subtask of $t_2$.  In the case where the regions used by $t_1$ and $t_2$ do overlap
+but there is no dependence because the regions are used with simultaneous or relaxed coherence, then by definition there is no dependence between the subtasks.
 
 \subsubsection{Efficient Dependence Analysis}
 
+Consider the first two subtasks spawned on line 32 of the circuit
+simulation in Listing~\ref{lst:code_ex}, {\tt
+calc\_new\_currents(pieces[0])} and {\tt
+calc\_new\_currents(pieces[1])}.  The first of these tasks reads and
+writes the private wires subregion {\tt pieces[0].rw\_pvt} in
+exclusive mode, and reads in exclusive mode the node subregions {\tt
+pieces[0].rn\_pvt}, {\tt pieces[0].rn\_shr}, and {\tt
+pieces[0].rn\_ghost} (see line 39).  The second subtask must be
+checked against the first for any dependences; the second subtask uses
+{\tt pieces[1].rw\_pvt} (read/write exclusive) and {\tt
+pieces[1].rn\_pvt}, {\tt pieces[1].rn\_shr}, and {\tt pieces[1].rn\_ghost} (read-only exclusive).
+Recall the region tree in Figure~\ref{sfig:part_fig:tree}.  We reason about the dependences as follows:
+\begin{enumerate}
+\item {\tt pieces[0].rw\_pvt} and {\tt pieces[1].rw\_pvt} do not overlap as they are subregions of a disjoint partition.
+\item {\tt pieces[0].rn\_pvt} and {\tt pieces[1].rn\_pvt} do not overlap for the same reason.
+\item {\tt pieces[0].rn\_shr} and {\tt pieces[1].rn\_shr} do not overlap, also for the same reason.
+\item {\tt pieces[0].rn\_ghost} may overlap with {\tt pieces[1].rn\_shr}, because they are in two different
+  partitions of the same region.
+\item {\tt pieces[0].rn\_shr} and {\tt pieces[1].rn\_ghost} may overlap because they are in two different
+  partitions of the same region.
+\item {\tt pieces[0].rn\_ghost} may overlap with {\tt pieces[1].rn\_ghost} because they are in different subregions of
+a non-disjoint, or {\em aliased}, partition.
+\item All the remaining pairs of regions used by the two tasks (e.g., {\tt pieces[0].rw\_pvt} and {\tt pieces[1].rn\_pvt})
+do not overlap because they are in different region trees and have no common region ancestor.
+\end{enumerate}
+Cases 4-6 indicate a possible dependence, however in each case the regions are accessed with only read privileges and
+so no dependence exists.  Thus, these two subtasks are independent.
 
-
+A closer look at this example shows that whether there is overlap
+between two regions $r_1$ and $r_2$ can be determined by examining
+their least common ancestor $\lca{r_1}{r_2}$ in the region tree.  Note
+that the region tree alternates between regions and partitions at each
+level.  That is, regions are always children of partitions and
+partitions are always children of regions in the region tree.  There
+are four cases.  If $\lca{r_1}{r_2}$ either does not exist (the regions
+are in different region trees) or is a disjoint partition, then $r_1$
+and $r_2$ are guaranteed to be disjoint.  If $\lca{r_1}{r_2}$ is an
+aliased partition or a region (because $r_1$ and $r_2$ are in
+different partitions of the region, as in cases 4 and 5
+above), then $r_1$ and $r_2$ may not be disjoint.
 
 
 To detect dependencies efficiently, the high-level runtime maintains a
