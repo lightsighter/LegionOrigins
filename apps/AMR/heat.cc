@@ -2357,11 +2357,19 @@ void parse_input_args(char **argv, int argc, int &num_levels, int &default_num_c
     if (!strcmp(argv[i], "-dc")) // default number of cells
     {
       default_num_cells = atoi(argv[++i]);
+      for (int i = 0; i < num_levels; i++)
+      {
+        num_cells[i] = default_num_cells;
+      }
       continue;
     }
     if (!strcmp(argv[i], "-dd")) //default divisions
     {
       default_divisions = atoi(argv[++i]);
+      for (int i = 0; i < num_divisions; i++)
+      {
+        divisions[i] = default_divisions;
+      }
       continue;
     }
     if (!strcmp(argv[i], "-c")) // cells on a level: -c level cell_count
