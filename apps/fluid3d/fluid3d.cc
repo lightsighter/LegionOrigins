@@ -313,7 +313,7 @@ static unsigned parse_args(int argc, char **argv, FluidConfig &conf)
   nbx = nby = nbz = 1;
   conf.balance = 0;
   strcpy(inFilename, "init.fluid");
-  strcpy(outFilename, "output.fluid");
+  strcpy(outFilename, "");
 
   printf("fluid: %p %d ",argv,argc);
   for (int i = 1; i < argc; i++)

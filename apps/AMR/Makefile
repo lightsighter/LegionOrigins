@@ -18,10 +18,10 @@ GEN_GPU_SRC	:=		# .cu files
 
 # You can modify these variables, some will be appended to by the runtime makefile
 INC_FLAGS	:=
-CC_FLAGS	:= -DDETAILED_TIMING
+CC_FLAGS	:= -fopenmp -DDETAILED_TIMING
 NVCC_FLAGS	:=
 GASNET_FLAGS	:=
-LD_FLAGS	:= 
+LD_FLAGS	:= -lgomp
 # -fopenmp -lgomp
 
 ###########################################################################

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <time.h>
+#include "omp.h"
 
 #include "heat.h"
 #include "alt_mappers.h"
@@ -58,9 +59,9 @@ void region_main(const void *args, size_t arglen,
     num_cells[i] = default_num_cells;
     divisions[i] = default_divisions;
   }
-  divisions[0] = 8;
-  divisions[1] = 4;
-  divisions[2] = 4;
+  divisions[0] = 4;
+  divisions[1] = 2;
+  divisions[2] = 2;
   int steps = 20;
   int random_seed = 12345;
   {
@@ -89,8 +90,6 @@ void region_main(const void *args, size_t arglen,
   // Move everything into everyone's local memories
   for (int i = (num_cells.size()-1); i >= 0; i--)
   {
-    levels[i].level = i;
-    levels[i].divisions = divisions[i];
     TaskArgument global_arg(&levels[i].dx,3*sizeof(float)+6*sizeof(int));
     ArgumentMap local_args;
     FutureMap map = runtime->execute_index_space(ctx, INIT_TASK, levels[i].index_space,
@@ -131,7 +130,7 @@ void region_main(const void *args, size_t arglen,
         {
           Future f = runtime->execute_task(ctx, INTERP_BOUNDARY, levels[i].interp_boundary_regions[j], global_args[i],0/*mapper id*/
 #ifndef SHARED_LOWLEVEL
-                                                                                                        ,levels[i].interp_tags[j]/*tag*/
+                                                                                                  ,levels[i].interp_tags[j]/*tag*/
 #endif
               );
           f.release();
@@ -176,7 +175,7 @@ void region_main(const void *args, size_t arglen,
         Future f = runtime->execute_task(ctx, RESTRICT, levels[i].restrict_coarse_regions[j], levels[i].restrict_args[j], 
                                                                                               0/*mapper id*/
 #ifndef SHARED_LOWLEVEL
-                                                                                              ,j+1/*tag*/
+                                                                                              ,levels[i].restrict_tags[j]/*tag*/
 #endif
             );
         if (s == (steps-1))
@@ -247,7 +246,8 @@ inline float read_temp(ptr_t<Cell> source, PointerLocation source_loc,
                        PhysicalRegion<AccessorGeneric> ghost, PhysicalRegion<AccessorGeneric> boundary);
 
 inline float read_temp(ptr_t<Cell> source, PointerLocation source_loc,
-                       ArrayAccessor &pvt, ArrayAccessor &shr, ArrayAccessor &ghost, ArrayAccessor &boundary);
+                       ArrayAccessor &pvt, ArrayAccessor &shr, 
+                       ArrayAccessor &ghost, ArrayAccessor &boundary);
 
 inline float read_temp(ptr_t<Cell> source, PointerLocation loc, 
                        PhysicalRegion<AccessorGeneric> pvt, PhysicalRegion<AccessorGeneric> shr);
@@ -418,14 +418,52 @@ void calculate_fluxes_task(const void *global_args, size_t global_arglen,
   ptr_t<Flux> fp;
   Flux *face;
   //shared(fluxes,flux_ptr,dx,pvt_cells,shr_cells,ghost_cells,bound_cells)
-//#pragma omp parallel for default(shared) private(face,temp0,temp1) schedule(static,32)
+#pragma omp parallel for default(shared) private(i,fp,face,temp0,temp1) schedule(static,32)
   for (i = 0; i<num_fluxes; i++)
   {
     fp.value = flux_ptr.value+i;
-    face = &fluxes.ref<Flux>(flux_ptr);
+    face = &fluxes.ref<Flux>(fp);
 
+#if 0
+    // Inlining myself because gcc is dumb
+    switch (face->locations[0])
+    {
+      case PVT:
+        temp0 = pvt_cells.ref<Cell>(face->cell_ptrs[0]).temperature;
+        break;
+      case SHR:
+        temp0 = shr_cells.ref<Cell>(face->cell_ptrs[0]).temperature;
+        break;
+      case GHOST:
+        temp0 = ghost_cells.ref<Cell>(face->cell_ptrs[0]).temperature;
+        break;
+      case BOUNDARY:
+        temp0 = bound_cells.ref<Cell>(face->cell_ptrs[0]).temperature;
+        break;
+      default:
+        assert(false);
+    }
+    switch (face->locations[1])
+    {
+      case PVT:
+        temp1 = pvt_cells.ref<Cell>(face->cell_ptrs[1]).temperature;
+        break;
+      case SHR:
+        temp1 = shr_cells.ref<Cell>(face->cell_ptrs[1]).temperature;
+        break;
+      case GHOST:
+        temp1 = ghost_cells.ref<Cell>(face->cell_ptrs[1]).temperature;
+        break;
+      case BOUNDARY:
+        temp1 = bound_cells.ref<Cell>(face->cell_ptrs[1]).temperature;
+        break;
+      default:
+        assert(false);
+    } 
+#else
     temp0 = read_temp(face->cell_ptrs[0], face->locations[0], pvt_cells, shr_cells, ghost_cells, bound_cells);
     temp1 = read_temp(face->cell_ptrs[1], face->locations[1], pvt_cells, shr_cells, ghost_cells, bound_cells);
+#endif
 
     // Compute the new flux
     face->flux = (temp1 - temp0) / dx;
@@ -711,7 +749,7 @@ public:
       case RESTRICT:
         {
           int level = *((int*)(((char*)task->args)+sizeof(Context)+3*sizeof(float)));
-          int idx = task->tag - 1;
+          int idx = task->tag;
           assert((1 <= level) && (level <= 2));
           assert(idx < int(id_locations[level-1].size()));
           return id_locations[level-1][idx].p;
@@ -778,7 +816,7 @@ public:
       case RESTRICT:
         {
           int level = *((int*)(((char*)task->args)+sizeof(Context)+3*sizeof(float)));
-          int idx = task->tag - 1;
+          int idx = task->tag;
           Memory m = system_memories[id_locations[level-1][idx].p];
           target_ranking.push_back(m);
           break;
@@ -843,6 +881,7 @@ public:
       // Need to figure out how to distribute things based on the level
       if (level == 2)
       {
+        log_heat(LEVEL_DEBUG,"Level 2 has %d divisions",divisions);
         //printf("Level 2\n");
         // Bottom level, distribute modulo the number of processors 
         for (int idx = index_space[0].start; idx <= index_space[0].stop; idx += index_space[0].stride)
@@ -861,6 +900,7 @@ public:
             int y = idx/divisions;
             int px = (x/2)*(divisions/2) + (y/2);
             p = cpu_procs[px % cpu_procs.size()];
+            log_heat(LEVEL_DEBUG,"Mapping task %d at level 2 to processor %x",idx,p.id);
           }
           chunks.push_back(RangeSplit(point, p, false/*recurse*/));
           id_locations[level].push_back(chunks.back());
@@ -874,6 +914,7 @@ public:
       }
       else if (level == 1)
       {
+        log_heat(LEVEL_DEBUG,"Level 1 has %d divisions",divisions);
         //printf("Level 1\n");
         for (int idx = index_space[0].start; idx <= index_space[0].stop; idx += index_space[0].stride)
         {
@@ -911,6 +952,7 @@ public:
             chunks.push_back(RangeSplit(point,p,false/*recurse*/));
             id_locations[level].push_back(chunks.back());
             update_proc_count(p);
+            log_heat(LEVEL_DEBUG,"Mapping task %d at level 1 to processor %x",idx,p.id);
           }
           else
           {
@@ -921,12 +963,14 @@ public:
             chunks.push_back(RangeSplit(point,p,false/*recurse*/));
             id_locations[level].push_back(chunks.back());
             update_proc_count(p);
+            log_heat(LEVEL_DEBUG,"Mapping task %d at level 1 to processor %x",idx,p.id);
           }
         }
         loc_initialized[level] = true;
       }
       else if (level == 0)
       {
+        log_heat(LEVEL_DEBUG,"Level 0 has %d divisions",divisions);
         //printf("Level 0\n");
         for (int idx = index_space[0].start; idx <= index_space[0].stop; idx += index_space[0].stride)
         {
@@ -942,9 +986,16 @@ public:
           {
             if (local.contains(it->second))
             {
-              overlap = it->first;
               //printf("Box %d from level %d contains box %d from level %d\n",
               //        idx, level, it->first, level+1);
+              if (overlap != -1)
+              {
+                assert(id_locations[level+1][overlap].p == id_locations[level+1][it->first].p);
+              }
+              else
+              {
+                overlap = it->first;
+              }
             }
           }
           // Check to see if it overlapped
@@ -957,6 +1008,7 @@ public:
             chunks.push_back(RangeSplit(point,p,false/*recurse*/));
             id_locations[level].push_back(chunks.back());
             update_proc_count(p);
+            log_heat(LEVEL_DEBUG,"Mapping task %d at level 0 to processor %x",idx,p.id);
           }
           else
           {
@@ -967,6 +1019,7 @@ public:
             chunks.push_back(RangeSplit(point,p,false/*recurse*/));
             id_locations[level].push_back(chunks.back());
             update_proc_count(p);
+            log_heat(LEVEL_DEBUG,"Mapping task %d at level 0 to processor %x",idx,p.id);
           }
         }
         loc_initialized[level] = true;
@@ -1130,6 +1183,8 @@ void initialize_simulation(std::vector<Level> &levels,
       int total_fluxes = flux_piece * pieces;
 #endif
       // Set up the index space for this task
+      levels[i].level = i;
+      levels[i].divisions = divisions[i];
       levels[i].index_space.push_back(Range(0,pieces-1));
       levels[i].cells_per_piece_side = cells_per_piece_side;
       levels[i].pieces_per_dim = divisions[i];
@@ -1952,6 +2007,7 @@ void initialize_restrict_pointers_2D(PhysicalRegion<AccessorGeneric> cells_above
         memcpy(&(args[6]), &level_above.num_private, 3*sizeof(int));
         args[9] = piece_idx;
         level_below.restrict_args.push_back(TaskArgument(args,3*sizeof(float)+7*sizeof(int)));
+        level_below.restrict_tags.push_back(piece_idx);
       }
     }
   }
@@ -2301,11 +2357,19 @@ void parse_input_args(char **argv, int argc, int &num_levels, int &default_num_c
     if (!strcmp(argv[i], "-dc")) // default number of cells
     {
       default_num_cells = atoi(argv[++i]);
+      for (int i = 0; i < num_levels; i++)
+      {
+        num_cells[i] = default_num_cells;
+      }
       continue;
     }
     if (!strcmp(argv[i], "-dd")) //default divisions
     {
       default_divisions = atoi(argv[++i]);
+      for (int i = 0; i < num_levels; i++)
+      {
+        divisions[i] = default_divisions;
+      }
       continue;
     }
     if (!strcmp(argv[i], "-c")) // cells on a level: -c level cell_count
@@ -2600,7 +2664,8 @@ inline float read_temp(ptr_t<Cell> source, PointerLocation source_loc,
 }
 
 inline float read_temp(ptr_t<Cell> source, PointerLocation source_loc,
-                       ArrayAccessor &pvt, ArrayAccessor &shr, ArrayAccessor &ghost, ArrayAccessor &bound)
+                       ArrayAccessor &pvt, ArrayAccessor &shr, 
+                       ArrayAccessor &ghost, ArrayAccessor &bound)
 {
   switch (source_loc)
   {
@@ -2704,7 +2769,7 @@ inline void advance_cells(PhysicalRegion<AccessorArray> &cells, PhysicalRegion<A
   Cell *current;
   int i;
   //shared(cell_acc,flux_acc,cell_ptr,coeff,dt,dx)
-//#pragma omp parallel for default(shared) private(current,inx,outx,iny,outy,local_ptr) schedule(static,32)
+#pragma omp parallel for default(shared) private(i,current,inx,outx,iny,outy,local_ptr) schedule(static,32)
   for (i = 0; i < num_cells; i++)
   {
     local_ptr.value = cell_ptr.value + i;
@@ -2782,7 +2847,7 @@ inline void average_cells(PhysicalRegion<AccessorArray> &cells,
   float total_temp;
   int i;
   //shared(cell_acc,cell_ptr,fast_regions) 
-//#pragma omp parallel for default(shared) private(i,current,total_temp,local_ptr) schedule(static,32)
+#pragma omp parallel for default(shared) private(idx,i,current,total_temp,local_ptr) schedule(static,32)
   for (idx = 0; idx < num_cells; idx++)
   {
     local_ptr.value = cell_ptr.value + idx;
