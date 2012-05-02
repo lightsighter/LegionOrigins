@@ -1566,7 +1566,7 @@ void initialize_simulation(std::vector<Level> &levels,
       runtime->unmap_region(ctx, all_fluxes);
     }
   }
-#if 1
+#if 0
   for (unsigned i = 0; i < num_cells.size(); i++)
   {
     PhysicalRegion<AccessorGeneric> gcells = 
