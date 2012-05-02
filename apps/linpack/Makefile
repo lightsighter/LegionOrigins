@@ -13,8 +13,8 @@ OUTPUT_LEVEL=LEVEL_DEBUG  # Compile time print level
 # Put the binary file name here
 OUTFILE		:= linpack
 # List all the application source files here
-GEN_SRC		:= linpack.cc	# .cc files
-GEN_GPU_SRC	:=		# .cu files
+GEN_SRC		:= linpack.cc fermi_dgemm.cc	# .cc files
+GEN_GPU_SRC	:= gpu_kernels.cu		# .cu files
 
 # You can modify these variables, some will be appended to by the runtime makefile
 INC_FLAGS	:=
