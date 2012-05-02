@@ -43,8 +43,6 @@ execution (Section~\ref{sec:exec}),
 and clean-up (Section~\ref{sec:clean}).
 We discuss each stage in turn.
 
-\input{mapping_fig}
-
 \subsection{Depedence Analysis}
 \label{sec:dep}
 
@@ -150,16 +148,16 @@ the same time.
 %\end{figure}
 
 The reader may wonder why we only compare sibling tasks for
-dependences: can't arbitrary pairs of tasks have dependences?  The
-answer is ``yes'', but the following observation shows why it is sufficient
-to check only sibling tasks for dependences.
+dependences when presumably arbitrary pairs of tasks may be dependent. 
+The following observation shows why dependence analysis can be limited to
+sibling tasks.
 \begin{observation}
 \label{obs:isolation}
 \rm
 Let $t_1$ and $t_2$ be two sibling tasks with no dependence.  Then no subtask of $t_1$ has a dependence with any subtask
 of $t_2$.
 \end{observation}
-Recall from Section~\ref{sec:ex} that a subtasks can only access subregions of their parent task's region arguments (and with fewer
+Recall from Section~\ref{sec:ex} that subtasks only access subregions of their parent task's region arguments (and with fewer
 privileges).  Thus if the regions used by $t_1$ and $t_2$ do not overlap, the regions used by any subtasks of $t_1$ cannot
 overlap with the regions used by any subtask of $t_2$.  In the case where the regions used by $t_1$ and $t_2$ do overlap
 but there is no dependence because the regions are used with simultaneous or relaxed coherence, then by definition there is no dependence between the subtasks.
@@ -177,7 +175,7 @@ pieces[0].rn\_ghost} (see line 39).  The second subtask must be
 checked against the first for any dependences; the second subtask uses
 {\tt pieces[1].rw\_pvt} (read/write exclusive) and {\tt
 pieces[1].rn\_pvt}, {\tt pieces[1].rn\_shr}, and {\tt pieces[1].rn\_ghost} (read-only exclusive).
-Recall the region tree in Figure~\ref{sfig:part_fig:tree}.  We reason about the dependences as follows:
+It may be helpful to refer to the region tree for nodes in Figure~\ref{sfig:part_fig:tree} (recall that the wires region tree consists of a single disjoint partition).  We reason about the dependences as follows:
 \begin{enumerate}
 \item {\tt pieces[0].rw\_pvt} and {\tt pieces[1].rw\_pvt} do not overlap as they are subregions of a disjoint partition.
 \item {\tt pieces[0].rn\_pvt} and {\tt pieces[1].rn\_pvt} do not overlap for the same reason.
@@ -191,14 +189,13 @@ a non-disjoint, or {\em aliased}, partition.
 \item All the remaining pairs of regions used by the two tasks (e.g., {\tt pieces[0].rw\_pvt} and {\tt pieces[1].rn\_pvt})
 do not overlap because they are in different region trees and have no common region ancestor.
 \end{enumerate}
-Cases 4-6 indicate a possible dependence, however in each case the regions are accessed with only read privileges and
-so no dependence exists.  Thus, these two subtasks are independent.
+Cases 4-6 indicate a possible dependence, however in each case the regions are accessed with only read privileges.  Thus, these two subtasks are independent.
 
 A closer look at this example shows that whether there is overlap
 between two regions $r_1$ and $r_2$ can be determined by examining
 their least common ancestor $\lca{r_1}{r_2}$ in the region tree.  Note
-that the region tree alternates between regions and partitions at each
-level.  That is, regions are always children of partitions and
+that the region tree alternates between regions and partitions:
+regions are always children of partitions and
 partitions are always children of regions in the region tree.  There
 are four cases.  If $\lca{r_1}{r_2}$ either does not exist (the regions
 are in different region trees) or is a disjoint partition, then $r_1$
@@ -207,54 +204,105 @@ aliased partition or a region (because $r_1$ and $r_2$ are in
 different partitions of the region, as in cases 4 and 5
 above), then $r_1$ and $r_2$ may not be disjoint.
 
+Consider the subtasks {\tt distribute\_charge(pieces[0],dt)} and
+{\tt update\_voltages[1]} in Listing~\ref{lst:code_ex}.  The former task
+uses region {\tt pieces[0].rn\_ghost} and the latter uses region {\tt pieces[1].rn\_shr}.
+The least common ancestor is the region of all shared nodes {\tt p\_nodes\_pvs[1]},
+so these two regions are not disjoint.  Since both tasks write their respective subregions,
+there is a dependence and the {\tt update\_voltages} task can only run after the
+{\tt distribute\_charges} task has completed.  There is an important additional piece 
+of information, as well.  Because the {\tt update\_voltages} task possibly reads the values
+written by the {\tt distribute\_charges} task, the updates done by {\tt distribute\_charges} must
+be reconciled on least common ancestor region {\tt p\_nodes\_pvs[1]}; our depedence analysis
+tracks this information as well.
 
-To detect dependencies efficiently, the high-level runtime maintains a
-local region forest (recall Section~\ref{sec:exec}) for each task.  The
-root regions are the task's region arguments, and the forest includes
-all partitions and subregions created within the task.  To perform
-dependence detection on a region $r$, the runtime first finds a root
-region $r'$ such that $r \rleq r'$.  The runtime then walks the region
-forest from $r'$ to $r$.  Each region $r''$ on the path contains a
-list $L$ of registered tasks using $r''$, and potential dependencies
-are discovered by comparing privileges and coherence modes with the
-tasks in $L$.
+We can now describe the algorithm for the dependence analysis phase of
+the SOOP.  The SOOP maintains a local region forest for each task $t$,
+the roots of which are $t$'s region arguments and including all
+partitions and subregions used within the task.  Dependence analysis
+decorates the region tree with the subtasks of $t$, maintaining the
+following invariant. Let $r'$ be a region argument to subtask $t'$,
+and let $R$ be the set of regions $r''$ such that $r''$ is an argument
+to a task $t''$ registered after $t'$ and $t''$ depends on $t'$ because
+of overlap between $r''$ and $r'$.  Then $t'$ is listed on the region that
+is the least common ancestor of the set $R \cup \{r'\}$.
 
-The runtime next checks if a partition of $r''$ is {\em open}.  An
-open partition indicates that there are active tasks using subregions
-of $r''$.  No more than one partition of a node can be open
-at any time.  If the open partition is is along the path to $r$,
-traversal continues.  If the open partition lies along another
-path the runtime must {\em close} the currently active partition because it cannot guarantee
-disjointness with the region the new task wishes to access.  To close a
-partition, the runtime finds all active tasks in that
-subtree and considers them all dependencies for the new task.
-With the previously active partition closed, the runtime can
-then open the desired partition and traverse further down the tree as
-needed.
+We can identify all dependences between sibling tasks and place tasks
+in the correct place in the region tree in amortized time ${\cal O}(nd)$,
+where $n$ is the total number of region arguments to tasks and $d$ is the depth
+of the region tree.  For region $r'$ an argument of task $t'$, the analysis
+walks the unique path in the region forest from a root to $r'$.  For each node $m$
+on the walk from the root to $r'$ the following actions are taken:
+\begin{itemize}
+\item Assume $m$ is a region with multiple child partitions, and let $m'$ be the child on the
+path to $r'$.  Any task in a subtree of $m$ other than $m'$ may conflict with $t'$; these tasks
+are all moved to $m$.
 
-When the runtime traverses an open partition, its behavior depends on the kind
-of partition being traversed.  If the partition is disjoint, no other subregion
-can overlap with the target region, so the state of other subregions is
-ignored.  However, if the partition is not disjoint, any
-of subregion could overlap with the desired subregion, so
-the runtime must close all open subregions (recording new dependencies
-as it does so) before continuing the traversal.
+\item Assume $m$ is a non-disjoint partition, and let $m'$ be the child on the
+path to $r'$.  Any task in a subtree of $m$ other than $m'$ may conflict with $t'$; these tasks
+are all moved to $m$.
 
-After the runtime reaches the target logical region, it performs dependence
-checks against any active tasks listed for that region.  If a dependence is
-discovered, it is added to the current task's dependence list.  It can then
-be removed from the region tree's active task list, as the current task (which
-will be pushed onto the active task list) {\em dominates} the previous task.
-In a case where the new task has dependencies with all existing active tasks
-for the target node, that whole list is replaced by a single entry for the
-new task.
+\item Assume $m$ is a disjoint partition, and let $m'$ be the child on the
+path to $r'$.  No tasks in a subtree of $m$ other than $m'$ can conflict wtih $t'$; we simply move
+on to $m'$.
 
+\item Assume $m = r'$.  In this case any dependent tasks in $r'$'s subtree must be moved to $r'$.
+\end{itemize}
 
+\begin{figure*}
+\centering
+\subfigure[Two independent {\tt calc\_new\_currents} tasks.]{
+\label{fig:depexamp:a}
+}
+\subfigure[A {\tt distribute\_charge} task depends on the previous two.]{
+\label{fig:depexamp:b}
+}
+\subfigure[An {\tt update\_voltages} task depends on the previous one.]{
+\label{fig:depexamp:c}
+}
+\label{fig:depexamp}
+\caption{Dependence analysis examples from {\tt circuit\_simulation}.}
+\end{figure*}
+
+Thus, there are two parts to depedence analysis of a region argument
+$r'$ to a task: the walk from a region root to $r'$ and the off-path work
+to move dependent tasks to the least common ancestor on the path.
+Clearly the walk to $r'$ is bounded by the depth of the region tree.
+The off-path work can be made efficient by maintaining at each node a
+record of which subtrees have tasks in them and with what priveleges,
+enabling the off-path search to traverse directly and only to
+dependent tasks.  The off-path work is proportional to how far a task
+is moved back up the region tree.  Thus, for each region argument a
+task is initially placed at some depth in the tree and subsequently
+only moved up towards the root, so the overall work is (amortized)
+${\cal O}(nd)$.  In practice, we have found this level of efficiency,
+where dependence analysis is linear in the number of region arguments (and not
+the square) and proportional to the depth of the region tree (and not its size)
+to be very important in keeping the overhead of the SOOP low.
+
+We now illustrate dependence analysis using the four tasks discussed
+above.  Many more tasks are executed by the circuit simulation in Listing~\ref{lst:code_ex},
+but this subset illustrates the important
+points. Figure~\ref{fig:depexamp} shows the node region tree in three
+stages.  In Figure~\ref{fig:depexamp:a}, the two tasks
+{\tt calc\_new\_currents(pieces[0])} ($c_0$) and {\tt
+    calc\_new\_currents(pieces[1])} ($c_1$) have been placed on their region arguments,
+  which determines these two tasks are independent.
+Next, in Figure~\ref{fig:depexamp:b}, the task {\tt distribute\_charge(pieces[0],dt)} ($d_0$)
+has dependences with both $c_0$ and $c_1$ caused by possible overlap between the pieces of the
+shared node partition and the ghost node partition, so both $c_0$ and $c_1$ are moved to
+the {\tt p\_nodes\_pvs[1]} region.  Finally, the task {\tt update\_voltages[1]} ($u_1$) causes
+$d_0$ to also be moved to {\tt p\_nodes\_pvs[1]} for essentially the same reason; the final
+state of the node region tree is shown in Figure~\ref{fig:depexamp:c}.
+  
 \subsection{Distribution}
 \label{sec:dist}
 
 \subsection{Mapping}
 \label{sec:map}
+
+\input{mapping_fig}
+
 
 \subsection{Execution}
 \label{sec:exec}
