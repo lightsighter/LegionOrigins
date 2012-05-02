@@ -418,7 +418,7 @@ void calculate_fluxes_task(const void *global_args, size_t global_arglen,
   ptr_t<Flux> fp;
   Flux *face;
   //shared(fluxes,flux_ptr,dx,pvt_cells,shr_cells,ghost_cells,bound_cells)
-//#pragma omp parallel for default(shared) private(i,fp,face,temp0,temp1) schedule(static,32)
+#pragma omp parallel for default(shared) private(i,fp,face,temp0,temp1) schedule(static,32)
   for (i = 0; i<num_fluxes; i++)
   {
     fp.value = flux_ptr.value+i;
@@ -2357,11 +2357,19 @@ void parse_input_args(char **argv, int argc, int &num_levels, int &default_num_c
     if (!strcmp(argv[i], "-dc")) // default number of cells
     {
       default_num_cells = atoi(argv[++i]);
+      for (int i = 0; i < num_levels; i++)
+      {
+        num_cells[i] = default_num_cells;
+      }
       continue;
     }
     if (!strcmp(argv[i], "-dd")) //default divisions
     {
       default_divisions = atoi(argv[++i]);
+      for (int i = 0; i < num_levels; i++)
+      {
+        divisions[i] = default_divisions;
+      }
       continue;
     }
     if (!strcmp(argv[i], "-c")) // cells on a level: -c level cell_count
