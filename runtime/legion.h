@@ -3277,12 +3277,13 @@ namespace RegionRuntime {
       //  }
       //}
 
-      enqueue_task(desc);
+      // create the future BEFORE we enqueue it
+      desc->future_map = new FutureMapImpl(desc->termination_event);
 
       // If its not ready it's registered in the logical tree and someone will
       // notify it and it will add itself to the ready queue
+      enqueue_task(desc);
 
-      desc->future_map = new FutureMapImpl(desc->termination_event);
       // Return the future map that wraps the future map implementation 
       return FutureMap(desc->future_map);
     }
@@ -3341,12 +3342,14 @@ namespace RegionRuntime {
       //    add_to_ready_queue(desc); 
       //  }
       //}
+
+      // create the future BEFORE we enqueue it
+      desc->future = new FutureImpl(desc->termination_event);
+
       // If its not ready it's registered in the logical tree and someone will
       // notify it and it will add itself to the ready queue
-
       enqueue_task(desc);
       
-      desc->future = new FutureImpl(desc->termination_event);
       // Return the future where the return value will be set
       return Future(desc->future);
     }
