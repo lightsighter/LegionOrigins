@@ -1183,6 +1183,116 @@ class Linpack {
     }
   };
 
+  class ExtractTopBlockTask : public SingleTask {
+  protected:
+    static TaskID task_id;
+
+    struct TaskArgs {
+      fatptr_t<BlockedMatrix> matrixptr;
+      int k;
+      
+      TaskArgs(fatptr_t<BlockedMatrix> _matrixptr, int _k)
+	: matrixptr(_matrixptr), k(_k) {}
+      operator TaskArgument(void) { return TaskArgument(this, sizeof(*this)); }
+    };
+    
+    enum {
+      REGION_MATRIX, // ROE
+      REGION_PANEL,  // ROE
+      REGION_TOPBLK, // RWE
+      NUM_REGIONS
+    };
+    
+    const TaskArgs *args;
+    
+    ExtractTopBlockTask(Context _ctx, HighLevelRuntime *_runtime,
+		     const TaskArgs *_args)
+      : SingleTask(_ctx, _runtime), args(_args) {}
+    
+  public:
+    template <AccessorType AT>
+    static void task_entry(const void *args, size_t arglen,
+			   std::vector<PhysicalRegion<AT> > &regions,
+			   Context ctx, HighLevelRuntime *runtime)
+    {
+      ExtractTopBlockTask t(ctx, runtime, (const TaskArgs *)args);
+      t.run<AT>(regions);
+    }
+  
+  protected:
+    template <AccessorType AT>
+    void run(std::vector<PhysicalRegion<AT> > &regions) const
+    {
+      log_app.info("extract_top_block(id=%d): k=%d\n", task_id, args->k);
+
+      PhysicalRegion<AccessorArray> r_panel = regions[REGION_PANEL].template convert<AccessorArray>();
+      PhysicalRegion<AccessorArray> r_topblk = regions[REGION_TOPBLK].template convert<AccessorArray>();
+
+      const BlockedMatrix& matrix = args->matrixptr.get_ref(regions[REGION_MATRIX]);
+
+      const MatrixBlock& src = r_panel.ref(matrix.blocks[args->k][args->k]);
+      MatrixBlock& dst = r_topblk.ref(matrix.top_blocks[args->k]);
+
+      dst = src;
+    }
+
+  public:
+    static void register_task(TaskID desired_task_id = AUTO_GENERATE_ID)
+    {
+      task_id = HighLevelRuntime::register_single_task
+	<ExtractTopBlockTask::task_entry<AccessorGeneric> >(desired_task_id,
+							    Processor::LOC_PROC,
+							    "extract_topblk");
+    }
+
+    static Future spawn(Context ctx, HighLevelRuntime *runtime,
+			const BlockedMatrix& matrix,
+			fatptr_t<BlockedMatrix> matrixptr, int k)
+    {
+      std::vector<RegionRequirement> reqs;
+      reqs.resize(NUM_REGIONS);
+
+      reqs[REGION_MATRIX] = RegionRequirement(matrixptr.region,
+					      READ_ONLY, NO_MEMORY, EXCLUSIVE,
+					      matrixptr.region,
+					      LMAP_PLACE_SYSMEM);
+
+      LogicalRegion panel_subregion = runtime->get_subregion(ctx,
+							     matrix.col_part,
+							     k);
+      LogicalRegion index_subregion = runtime->get_subregion(ctx,
+							     matrix.index_part,
+							     k);
+      LogicalRegion topblk_subregion = runtime->get_subregion(ctx,
+							      matrix.topblk_part,
+							      k);
+
+      LogicalRegion subpanel = runtime->get_subregion(ctx,
+						      matrix.row_parts[k],
+						      k % matrix.num_row_parts);
+
+      reqs[REGION_PANEL] = RegionRequirement(subpanel,
+					     READ_ONLY, NO_MEMORY, EXCLUSIVE,
+					     matrix.block_region,
+					     LMAP_PLACE_SYSMEM);
+
+      reqs[REGION_TOPBLK] = RegionRequirement(matrix.topblk_subregions[k],
+					      READ_WRITE, NO_MEMORY, EXCLUSIVE,
+					      matrix.topblk_region,
+					      LMAP_PLACE_SYSMEM);
+    
+      // double-check that we were registered properly
+      assert(task_id != 0);
+      Future f = runtime->execute_task(ctx, task_id, reqs,
+				       TaskArgs(matrixptr, k),
+				       0, // default mapper,
+				       LMAP_PICK_CPU(matrix,
+						     k % matrix.num_row_parts,
+						     k));
+      return f;
+    }
+  };
+
   class FillTopBlockTask : public SingleTask {
   protected:
     static TaskID task_id;
@@ -2455,6 +2565,7 @@ class Linpack {
       MatrixBlockRow prev_orig;
       MatrixBlockRow prev_best;
 
+#ifdef FACTOR_PANEL_EXTRACTS_TOPBLK
       LogicalRegion subpanel_region = runtime->get_subregion(ctx,
 							     matrix.row_parts[args->k],
 							     (args->k % matrix.num_row_parts));
@@ -2467,6 +2578,7 @@ class Linpack {
 	
 	top_blk = reg->read(matrix.blocks[args->k][args->k]);
       }
+#endif
 
 #ifdef BLOCK_LOCATIONS
       idx_blk.block_num = args->k;
@@ -2645,6 +2757,13 @@ class Linpack {
 					 matrixptr, k * NB);
 	f.get_void_result();
       }
+
+      Future fp = ExtractTopBlockTask::spawn(ctx, runtime,
+					     matrix, matrixptr, k);
+      if(matrix.bulk_sync)
+	fp.get_void_result();
+      else
+	fp.release();
       
       Future f = FactorPanelTask::spawn(ctx, runtime,
 					matrix, matrixptr, k);
@@ -2838,6 +2957,7 @@ public:
     SolveTopBlockTask::register_task();
     TransposeRowsTask::register_task();
     UpdateSubmatrixTask::register_task();
+    ExtractTopBlockTask::register_task();
     FactorPanelPieceTask::register_task();
     FactorPanelTask::register_task();
     UpdatePanelTask::register_task();
@@ -2890,6 +3010,7 @@ template <int NB> TaskID Linpack<NB>::TransposeRowsTask::task_id;
 template <int NB> TaskID Linpack<NB>::UpdateSubmatrixTask::task_id;
 template <int NB> TaskID Linpack<NB>::SolveTopBlockTask::task_id;
 template <int NB> TaskID Linpack<NB>::UpdatePanelTask::task_id;
+template <int NB> TaskID Linpack<NB>::ExtractTopBlockTask::task_id;
 template <int NB> TaskID Linpack<NB>::FactorPanelPieceTask::task_id;
 template <int NB> TaskID Linpack<NB>::FactorPanelTask::task_id;
 template <int NB> TaskID Linpack<NB>::LinpackMainTask::task_id;

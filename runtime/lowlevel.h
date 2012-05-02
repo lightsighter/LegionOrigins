@@ -538,6 +538,7 @@ namespace RegionRuntime {
 #ifdef __CUDACC__
       // Need copy constructors so we can move things around
       __host__ __device__
+#endif
       RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorGPU> &old)
       { 
         array_base = old.array_base; 
@@ -547,6 +548,15 @@ namespace RegionRuntime {
 #endif
       }
 
+      template <class T>
+      T *gpu_ptr(ptr_t<T> ptr) const {
+#ifdef DEBUG_LOW_LEVEL
+        bounds_check(ptr);
+#endif
+	return &((T*)array_base)[ptr.value];
+      }
+
+#ifdef __CUDACC__
       template <class T>
       __device__ __forceinline__
       T read(ptr_t<T> ptr) const { 
@@ -582,24 +592,16 @@ namespace RegionRuntime {
 #endif
         return ((T*)array_base)[ptr.value]; 
       }
+#endif
 
 #ifdef DEBUG_LOW_LEVEL
       template <class T>
+#ifdef __CUDACC__
       __device__ __forceinline__
+#endif
       void bounds_check(ptr_t<T> ptr) const
       {
         assert((first_elmt <= ptr.value) && (ptr.value <= last_elmt));
-      }
-#endif
-#else // __CUDACC__
-
-      RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorGPU> &old)
-      {
-        array_base = old.array_base;
-#ifdef DEBUG_HIGH_LEVEL
-        first_elmt = old.first_elmt;
-        last_elmt  = old.last_elmt;
-#endif
       }
 #endif
     };

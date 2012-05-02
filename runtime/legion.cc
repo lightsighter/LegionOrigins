@@ -2726,12 +2726,13 @@ namespace RegionRuntime {
         // No need to reclaim the context, the parent context has a pointer to reclaim later
       //}
 
-      enqueue_task(desc);
+      // create the future BEFORE we enqueue it
+      desc->future = new FutureImpl(desc->termination_event);
 
       // If its not ready it's registered in the logical tree and someone will
       // notify it and it will add itself to the ready queue
+      enqueue_task(desc);
 
-      desc->future = new FutureImpl(desc->termination_event);
       return Future(desc->future);
     }
 
@@ -4385,6 +4386,7 @@ namespace RegionRuntime {
       {
         delete future_map;
       }
+      future = NULL;
       future_map = NULL;
       // Zero out the pointers to our maps so we
       // don't accidentally re-used them
@@ -8787,10 +8789,16 @@ namespace RegionRuntime {
         // Free any references that we had to regions
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
+          assert(((physical_instances[idx] == InstanceInfo::get_no_instance()) ||
+		  (pre_mapped_regions.find(idx) == pre_mapped_regions.end())));
           if (physical_instances[idx] != InstanceInfo::get_no_instance())
           {
             physical_instances[idx]->remove_user(this->unique_id);
           }
+	  if (pre_mapped_regions.find(idx) != pre_mapped_regions.end())
+	  {
+	    pre_mapped_regions[idx].info->remove_user(this->unique_id);
+	  }
         }
       }
       else
@@ -13984,15 +13992,21 @@ namespace RegionRuntime {
       // true dependences between the current users and the new user
       std::set<Event> wait_on_events;
       
+      const RegionUsage &usage = ctx->get_usage(idx);
+      if(find_dependences_below(wait_on_events, usage)) {
+	// find dependences says all previous users are dominated by us
+	start_new_epoch(wait_on_events);
+	wait_on_events.clear();
+	wait_on_events.insert(valid_event);
+      }
+
+      find_dependences_above(wait_on_events, usage, true/*skip first*/);
+
       // Add the precondition
       if (precondition.exists())
       {
         wait_on_events.insert(precondition);
       }
-
-      const RegionUsage &usage = ctx->get_usage(idx);
-      find_dependences_below(wait_on_events, usage);
-      find_dependences_above(wait_on_events, usage, true/*skip first*/);
 
       // Also check the unresolved dependences to see if any possible unresolved
       // dependences are using this instance in which case we can avoid the dependence

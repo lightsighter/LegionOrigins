@@ -843,7 +843,7 @@ public:
 
   Processor get_min_grid_proc(void)
   {
-    unsigned min_count = 1677216;
+    unsigned min_count = 16777216;
     Processor result = Processor::NO_PROC;
     assert(grids_per_proc.size() > 0);
     for (std::map<Processor,unsigned>::const_iterator it = grids_per_proc.begin();
@@ -1292,23 +1292,43 @@ void initialize_simulation(std::vector<Level> &levels,
         // Boundary
         coloring.clear();
 #if SIMULATION_DIM == 2
-        for (int j = 0; j < divisions[i]; j++)
+        // Handle the special case of having only a single block in a level
+        if (divisions[i] == 1)
         {
-          for (int k = 0; k < divisions[i]; k++)
+          std::set<std::pair<utptr_t,utptr_t> > range_set;
+          ptr_t<Cell> end; 
+          end.value = next.value + (4*cells_per_piece_side-4);
+          range_set.insert(std::pair<utptr_t,utptr_t>(next,end));
+          next.value = end.value + 1;
+        }
+        else
+        {
+          for (int j = 0; j < divisions[i]; j++)
           {
-            std::set<std::pair<utptr_t,utptr_t> > range_set;
-            ptr_t<Cell> end;
-            if ((j == 0) || (j == (divisions[i]-1)))
+            for (int k = 0; k < divisions[i]; k++)
             {
-              if ((k == 0) || (k == divisions[i]-1))
+              std::set<std::pair<utptr_t,utptr_t> > range_set;
+              ptr_t<Cell> end;
+              if ((j == 0) || (j == (divisions[i]-1)))
               {
-                // Corner
-                end.value = next.value + (cells_per_piece_side*2) - 1;
-                range_set.insert(std::pair<utptr_t,utptr_t>(next,end));
-                coloring.push_back(range_set);
-                next.value = end.value + 1;
+                if ((k == 0) || (k == divisions[i]-1))
+                {
+                  // Corner
+                  end.value = next.value + (cells_per_piece_side*2) - 1;
+                  range_set.insert(std::pair<utptr_t,utptr_t>(next,end));
+                  coloring.push_back(range_set);
+                  next.value = end.value + 1;
+                }
+                else
+                {
+                  // Side
+                  end.value = next.value + (cells_per_piece_side) - 1;
+                  range_set.insert(std::pair<utptr_t,utptr_t>(next,end));
+                  coloring.push_back(range_set);
+                  next.value = end.value + 1;
+                }
               }
-              else
+              else if ((k == 0) || (k == divisions[i]-1))
               {
                 // Side
                 end.value = next.value + (cells_per_piece_side) - 1;
@@ -1316,19 +1336,11 @@ void initialize_simulation(std::vector<Level> &levels,
                 coloring.push_back(range_set);
                 next.value = end.value + 1;
               }
-            }
-            else if ((k == 0) || (k == divisions[i]-1))
-            {
-              // Side
-              end.value = next.value + (cells_per_piece_side) - 1;
-              range_set.insert(std::pair<utptr_t,utptr_t>(next,end));
-              coloring.push_back(range_set);
-              next.value = end.value + 1;
-            }
-            else
-            {
-              // Middle (empty)
-              coloring.push_back(range_set);
+              else
+              {
+                // Middle (empty)
+                coloring.push_back(range_set);
+              }
             }
           }
         }
@@ -1554,7 +1566,7 @@ void initialize_simulation(std::vector<Level> &levels,
       runtime->unmap_region(ctx, all_fluxes);
     }
   }
-#if 1
+#if 0
   for (unsigned i = 0; i < num_cells.size(); i++)
   {
     PhysicalRegion<AccessorGeneric> gcells = 
