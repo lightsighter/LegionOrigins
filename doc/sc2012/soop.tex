@@ -294,9 +294,36 @@ shared node partition and the ghost node partition, so both $c_0$ and $c_1$ are 
 the {\tt p\_nodes\_pvs[1]} region.  Finally, the task {\tt update\_voltages[1]} ($u_1$) causes
 $d_0$ to also be moved to {\tt p\_nodes\_pvs[1]} for essentially the same reason; the final
 state of the node region tree is shown in Figure~\ref{fig:depexamp:c}.
-  
+
+
 \subsection{Distribution}
 \label{sec:dist}
+
+Once task $t$'s dependences have been analyzed, the distribution phase
+determines on which processor $t$ will run.  Subsequently the
+mapping phase chooses the physical instances of its logical
+regions that $t$ will use.  However, in choosing the processor and
+physical instances for $t$, it is helpful to know the processors and
+physical instances used by the tasks $t$ depends on---and not just for
+performance, but for correctness.  Thus, the first step in
+distribution is that $t$ waits for all tasks on which $t$ depends to
+map; nothing happens to $t$ during this time.  Once $t$'s mapping
+dependences are satisfied, $t$ is ready to be mapped and places
+itself in the mapping queue.
+
+Once in the mapping queue, SOOPs on other processors in the system may
+ask to steal $t$ from its home SOOP.  The home SOOP may decline the
+request, but if the request is granted, task $t$ along with a copy of
+$t$'s region forest is sent to the remote SOOP.  If $t$ has not been
+stolen when it reaches the head of the queue, the SOOP decides whether
+to execute $t$ on the local processor or send it to another processor.
+
+Thus, task distribution to processors in Legion is both ``pull'' (stealing) and ``push''.
+The various policies (whether steal requests are granted, when to send
+a task to another processor and which processor to send it to, and when to
+try to steal tasks from other SOOPs) are part of the {\em mapping interface}
+and can be defined by the user (see Section~\ref{sec:mapping}).
+
 
 \subsection{Mapping}
 \label{sec:map}
