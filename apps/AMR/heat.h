@@ -8,6 +8,8 @@
 
 #define POW2(dim)  ((dim==1) ? 2 : (dim==2) ? 4 : 8)
 
+#define COARSENING  32 
+
 using namespace RegionRuntime::HighLevel;
 
 enum {
@@ -34,7 +36,11 @@ struct Flux;
 
 struct Cell {
 public:
-  float temperature;  // Current value of the solution at this cell
+#ifdef COARSENING
+  float temperature[COARSENING][COARSENING];  // Current value of the solution at this cell
+#else
+  float temperature;
+#endif
 #if SIMULATION_DIM==2
   float position[2]; // (x,y)
   ptr_t<Flux> inx,outx,iny,outy;
@@ -66,7 +72,11 @@ public:
 
 struct Flux {
 public:
+#ifdef COARSENING
+  float flux[COARSENING];
+#else
   float flux;
+#endif
   PointerLocation   locations[2];
   ptr_t<Cell> cell_ptrs[2];
 };

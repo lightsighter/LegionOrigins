@@ -19,6 +19,7 @@ RegionRuntime::Logger::Category log_heat("heat");
 
 typedef RegionRuntime::LowLevel::RegionInstanceAccessorUntyped<RegionRuntime::LowLevel::AccessorArray> ArrayAccessor;
 
+#ifndef COARSENING
 class FluxReducer {
 public:
   typedef Cell  LHS;
@@ -28,6 +29,7 @@ public:
   template<bool EXCLUSIVE> static void apply(LHS &lhs, RHS rhs);
   template<bool EXCLUSIVE> static void fold(RHS &rhs1, RHS rhs2);
 };
+#endif
 
 enum {
   BOUNDARY_TAG = 1,
@@ -50,7 +52,7 @@ void region_main(const void *args, size_t arglen,
                  Context ctx, HighLevelRuntime *runtime)
 {
   int num_levels = 3;
-  int default_num_cells = 4096;
+  int default_num_cells = 128;
   int default_divisions = 4;
   std::vector<int> num_cells(num_levels);
   std::vector<int> divisions(num_levels);
@@ -267,6 +269,7 @@ inline void average_cells(PhysicalRegion<AccessorArray> &cells, std::vector<Arra
 // CPU Kernels
 ////////////////////
 
+#ifndef COARSENING
 #ifndef FAST_PATH
 template<int DIM>
 void interpolate_boundary_task(const void *args, size_t arglen,
@@ -577,6 +580,410 @@ void restrict_coarse_cells_task(const void *args, size_t arglen,
 #endif
 }
 #endif
+#else // COARSENING
+template<int DIM, int COARSE>
+void interpolate_boundary_task(const void *args, size_t arglen,
+                               std::vector<PhysicalRegion<AccessorGeneric> > &regions,
+                               Context ctx, HighLevelRuntime *runtime)
+{
+  //RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(20);
+  log_heat(LEVEL_DEBUG,"CPU interpolate boundaries FAST COARSE task");
+#ifndef DISABLE_MATH
+  std::vector<ArrayAccessor> fast_regions(regions.size());
+  for (unsigned idx = 0; idx < regions.size(); idx++)
+  {
+    fast_regions[idx] = regions[idx].convert<AccessorArray>().get_instance();
+  }
+  assert(regions.size() > 3);
+  for (unsigned i = 3; i < regions.size(); i++)
+  {
+    ArrayAccessor fine_boundary = fast_regions[i];
+    PointerIterator *itr = regions[i].iterator();
+    while (itr->has_next())
+    {
+      ptr_t<Cell> bound_ptr = itr->next<Cell>();
+      Cell &boundary_cell = fine_boundary.ref<Cell>(bound_ptr);
+      float temps[2][2];
+      float center[DIM];
+      for (int y = 0; y < COARSE; y++)
+      {
+        for (int i = 0; i < 2; i++)
+        {
+          center[i] = 0.0f;
+        }
+        for (int i = 0; i < 2; i++)
+        {
+          for (int j = 0; j < 2; j++)
+          {
+            Cell &c = fast_regions[boundary_cell.across_index_loc[i*2+j]].template ref<Cell>(boundary_cell.across_cells[i*2+j]);
+            temps[i][j] = c.temperature[0][y];
+            center[0] += c.position[0];
+            center[1] += c.position[1];
+          }
+        }
+        boundary_cell.temperature[0][y] = compute_average_temp_2D(temps, center, boundary_cell.position);
+      }
+    }
+    delete itr;
+  }
+#endif
+}
+
+template<int DIM, int COARSE>
+void calculate_fluxes_task(const void *global_args, size_t global_arglen,
+                           const void *local_args, size_t local_arglen,
+                           const IndexPoint &point,
+                           std::vector<PhysicalRegion<AccessorGeneric> > &regions,
+                           Context ctx, HighLevelRuntime *runtime)
+{
+  log_heat(LEVEL_DEBUG, "CPU calculate fluxes FAST COARSE for point %d", point[0]);
+#ifndef DISABLE_MATH
+  float dx = *((const float*)global_args);
+  int num_fluxes = *((int*)(((char*)global_args)+3*sizeof(float)+2*sizeof(int)));
+  ArrayAccessor fluxes      = regions[0].convert<AccessorArray>().get_instance();
+  ArrayAccessor pvt_cells   = regions[1].convert<AccessorArray>().get_instance();
+  ArrayAccessor shr_cells   = regions[2].convert<AccessorArray>().get_instance();
+  ArrayAccessor ghost_cells = regions[3].convert<AccessorArray>().get_instance();
+  ArrayAccessor bound_cells = regions[4].convert<AccessorArray>().get_instance();
+  // Iterate over the fluxes and compute the new flux based on the temperature
+  // of the two neighboring cells
+  ptr_t<Flux> flux_ptr;
+  flux_ptr.value = point[0]*num_fluxes;
+  int i,j;
+  float temp0,temp1;
+  ptr_t<Flux> fp;
+  Flux *face;
+  for (i = 0; i < num_fluxes; i++)
+  {
+    fp.value = flux_ptr.value+i;
+    face = &fluxes.ref<Flux>(fp);
+    for (j = 0; j < COARSE; j++)
+    {
+      switch (face->locations[0])
+      {
+        case PVT:
+          temp0 = pvt_cells.ref<Cell>(face->cell_ptrs[0]).temperature[0][j];
+          break;
+        case SHR:
+          temp0 = shr_cells.ref<Cell>(face->cell_ptrs[0]).temperature[0][j];
+          break;
+        case GHOST:
+          temp0 = ghost_cells.ref<Cell>(face->cell_ptrs[0]).temperature[0][j];
+          break;
+        case BOUNDARY:
+          temp0 = bound_cells.ref<Cell>(face->cell_ptrs[0]).temperature[0][j];
+          break;
+        default:
+          assert(false);
+      }
+      switch (face->locations[1])
+      {
+        case PVT:
+          temp1 = pvt_cells.ref<Cell>(face->cell_ptrs[1]).temperature[0][j];
+          break;
+        case SHR:
+          temp1 = shr_cells.ref<Cell>(face->cell_ptrs[1]).temperature[0][j];
+          break;
+        case GHOST:
+          temp1 = ghost_cells.ref<Cell>(face->cell_ptrs[1]).temperature[0][j];
+          break;
+        case BOUNDARY:
+          temp1 = bound_cells.ref<Cell>(face->cell_ptrs[1]).temperature[0][j];
+          break;
+        default:
+          assert(false);
+      } 
+      face->flux[j] = (temp1 - temp0) / (dx / float(COARSE));
+    }
+  }
+#endif
+}
+
+template<int DIM, int COARSE>
+void advance_time_step_task(const void *global_args, size_t global_arglen,
+                            const void *local_args, size_t local_arglen,
+                            const IndexPoint &point,
+                            std::vector<PhysicalRegion<AccessorGeneric> > &regions,
+                            Context ctx, HighLevelRuntime *runtime)
+{
+  log_heat(LEVEL_DEBUG,"CPU advance time step FAST COARSE for point %d",point[0]);
+  const float *arg_ptr = (const float*)global_args;
+  float dx = arg_ptr[0];
+  float dt = arg_ptr[1];
+  float coeff = arg_ptr[2];
+  const int *size_ptr = (const int*)(((char*)global_args)+3*sizeof(float)+3*sizeof(int));
+  int num_private = size_ptr[0];
+  int num_shared = size_ptr[1];
+  int shared_offset = size_ptr[2];
+#ifndef DISABLE_MATH
+  PhysicalRegion<AccessorArray> fluxes    = regions[0].convert<AccessorArray>();
+  PhysicalRegion<AccessorArray> pvt_cells = regions[1].convert<AccessorArray>();
+  PhysicalRegion<AccessorArray> shr_cells = regions[2].convert<AccessorArray>();
+
+  // Advance the cells that we own
+  ptr_t<Cell> private_ptr, shared_ptr;
+  private_ptr.value = point[0]*num_private;
+  shared_ptr.value = shared_offset + point[0]*num_shared;
+
+  ArrayAccessor flux_acc = fluxes.get_instance();
+  {
+    ArrayAccessor cell_acc = pvt_cells.get_instance();
+    Flux *inx, *iny, *outx, *outy;
+    ptr_t<Cell> local_ptr;
+    Cell *current;
+    int i, j; 
+    for (i = 0; i < num_private; i++)
+    {
+      local_ptr.value = private_ptr.value + i;
+      current = &cell_acc.ref<Cell>(local_ptr);
+      inx = &flux_acc.ref<Flux>(current->inx);
+      outx = &flux_acc.ref<Flux>(current->outx);
+      iny = &flux_acc.ref<Flux>(current->iny);
+      outy = &flux_acc.ref<Flux>(current->outy);
+      for (j = 0; j < COARSE; j++)
+      {
+        current->temperature[0][j] += (coeff * dt * inx->flux[j] / (dx / float(COARSE)));
+        current->temperature[COARSE-1][j] -= (coeff * dt * outx->flux[j] / (dx / float(COARSE)));
+        current->temperature[j][0] += (coeff * dt * iny->flux[j] / (dx / float(COARSE)));
+        current->temperature[j][COARSE-1] -= (coeff * dt * outy->flux[j] / (dx / float(COARSE)));
+      }
+      // Now update all the internal cells fluxes
+      for (int x = 0; x < COARSE-1; x++)
+      {
+        for (int y = 0; y < COARSE-1; y++)
+        {
+          float deltax = (coeff * dt * (current->temperature[x+1][y] - current->temperature[x][y]) / (dx / float(COARSE)));
+          float deltay = (coeff * dt * (current->temperature[x][y+1] - current->temperature[x][y]) / (dx / float(COARSE)));
+          current->temperature[x][y] -= (deltax + deltay);
+          current->temperature[x+1][y] += deltax;
+          current->temperature[x][y+1] += deltay;
+        }
+      }
+    }
+  }
+  {
+    ArrayAccessor cell_acc = shr_cells.get_instance();
+    Flux *inx, *iny, *outx, *outy;
+    ptr_t<Cell> local_ptr;
+    Cell *current;
+    int i, j; 
+    for (i = 0; i < num_shared; i++)
+    {
+      local_ptr.value = shared_ptr.value + i;
+      current = &cell_acc.ref<Cell>(local_ptr);
+      inx = &flux_acc.ref<Flux>(current->inx);
+      outx = &flux_acc.ref<Flux>(current->outx);
+      iny = &flux_acc.ref<Flux>(current->iny);
+      outy = &flux_acc.ref<Flux>(current->outy);
+      for (j = 0; j < COARSE; j++)
+      {
+        current->temperature[0][j] += (coeff * dt * inx->flux[j] / (dx / float(COARSE)));
+        current->temperature[COARSE-1][j] -= (coeff * dt * outx->flux[j] / (dx / float(COARSE)));
+        current->temperature[j][0] += (coeff * dt * iny->flux[j] / (dx / float(COARSE)));
+        current->temperature[j][COARSE-1] -= (coeff * dt * outy->flux[j] / (dx / float(COARSE)));
+      }
+      // Now update all the internal cells fluxes
+      for (int x = 0; x < COARSE-1; x++)
+      {
+        for (int y = 0; y < COARSE-1; y++)
+        {
+          float deltax = (coeff * dt * (current->temperature[x+1][y] - current->temperature[x][y]) / (dx / float(COARSE)));
+          float deltay = (coeff * dt * (current->temperature[x][y+1] - current->temperature[x][y]) / (dx / float(COARSE)));
+          current->temperature[x][y] -= (deltax + deltay);
+          current->temperature[x+1][y] += deltax;
+          current->temperature[x][y+1] += deltay;
+        }
+      }
+    }
+  }
+#endif
+}
+
+template<int DIM, int COARSE>
+void restrict_coarse_cells_task(const void *args, size_t arglen,
+                                std::vector<PhysicalRegion<AccessorGeneric> > &regions,
+                                Context ctx, HighLevelRuntime *runtime)
+{
+  log_heat(LEVEL_DEBUG,"CPU restrict coarse cells FAST COARSE");
+#ifndef DISABLE_MATH
+  std::vector<ArrayAccessor> fast_regions(regions.size());
+  for (unsigned idx = 0; idx < regions.size(); idx++)
+  {
+    fast_regions[idx] = regions[idx].convert<AccessorArray>().get_instance();
+  }
+
+  const int *arg_ptr = (const int*)(((char*)args)+3*sizeof(float));
+  int num_private = arg_ptr[3];
+  int num_shared = arg_ptr[4];
+  int shared_offset = arg_ptr[5];
+  int point = arg_ptr[6];
+
+  ptr_t<Cell> private_ptr, shared_ptr;
+  private_ptr.value = point * num_private;
+  shared_ptr.value = shared_offset + point * num_shared;
+
+  PhysicalRegion<AccessorArray> fast_pvt = regions[0].convert<AccessorArray>();
+  PhysicalRegion<AccessorArray> fast_shr = regions[1].convert<AccessorArray>();
+
+  {
+    ArrayAccessor cell_acc = fast_pvt.get_instance();
+    int idx;
+    ptr_t<Cell> local_ptr;
+    Cell *current;
+    for (idx = 0; idx < num_private; idx++)
+    {
+      local_ptr.value = private_ptr.value + idx;
+      current = &cell_acc.ref<Cell>(local_ptr);
+      if (current->num_below > 0)
+      {
+        Cell &zero = fast_regions[current->across_index_loc[0]].ref(current->across_cells[0]);
+        for (int x = 0; x < (COARSE/2); x++)
+        {
+          for (int y = 0; y < (COARSE/2); y++)
+          {
+            current->temperature[x][y] = 0.0f;
+            for (int i = 0; i < 2; i++)
+            {
+              for (int j = 0; j < 2; j++)
+              {
+                current->temperature[x][y] += zero.temperature[2*x+i][2*y+j];
+              }
+            }
+            current->temperature[x][y] /= 4.0f;
+          }
+        }
+        Cell &one = fast_regions[current->across_index_loc[1]].ref(current->across_cells[1]);
+        for (int x = 0; x < (COARSE/2); x++)
+        {
+          for (int y = 0; y < (COARSE/2); y++)
+          {
+            current->temperature[COARSE/2+x][y] = 0.0f;
+            for (int i = 0; i < 2; i++)
+            {
+              for (int j = 0; j < 2; j++)
+              {
+                current->temperature[COARSE/2+x][y] += one.temperature[2*x+i][2*y+j];
+              }
+            }
+            current->temperature[COARSE/2+x][y] /= 4.0f;
+          }
+        }
+        Cell &two = fast_regions[current->across_index_loc[2]].ref(current->across_cells[2]);
+        for (int x = 0; x < (COARSE/2); x++)
+        {
+          for (int y = 0; y < (COARSE/2); y++)
+          {
+            current->temperature[x][COARSE/2+y] = 0.0f;
+            for (int i = 0; i < 2; i++)
+            {
+              for (int j = 0; j < 2; j++)
+              {
+                current->temperature[x][COARSE/2+y] += two.temperature[2*x+i][2*y+j];
+              }
+            }
+            current->temperature[x][COARSE/2+y] /= 4.0f;
+          }
+        }
+        Cell &three = fast_regions[current->across_index_loc[3]].ref(current->across_cells[3]);
+        for (int x = 0; x < (COARSE/2); x++)
+        {
+          for (int y = 0; y < (COARSE/2); y++)
+          {
+            current->temperature[COARSE/2+x][COARSE/2+y] = 0.0f;
+            for (int i = 0; i < 2; i++)
+            {
+              for (int j = 0; j < 2; j++)
+              {
+                current->temperature[COARSE/2+x][COARSE/2+y] += three.temperature[2*x+i][2*y+j];
+              }
+            }
+            current->temperature[COARSE/2+x][COARSE/2+y] /= 4.0f;
+          }
+        }
+      }
+    }
+  }
+  {
+    ArrayAccessor cell_acc = fast_shr.get_instance();
+    int idx;
+    ptr_t<Cell> local_ptr;
+    Cell *current;
+    for (idx = 0; idx < num_shared; idx++)
+    {
+      local_ptr.value = shared_ptr.value + idx;
+      current = &cell_acc.ref<Cell>(local_ptr);
+      if (current->num_below > 0)
+      {
+        Cell &zero = fast_regions[current->across_index_loc[0]].ref(current->across_cells[0]);
+        for (int x = 0; x < (COARSE/2); x++)
+        {
+          for (int y = 0; y < (COARSE/2); y++)
+          {
+            current->temperature[x][y] = 0.0f;
+            for (int i = 0; i < 2; i++)
+            {
+              for (int j = 0; j < 2; j++)
+              {
+                current->temperature[x][y] += zero.temperature[2*x+i][2*y+j];
+              }
+            }
+            current->temperature[x][y] /= 4.0f;
+          }
+        }
+        Cell &one = fast_regions[current->across_index_loc[1]].ref(current->across_cells[1]);
+        for (int x = 0; x < (COARSE/2); x++)
+        {
+          for (int y = 0; y < (COARSE/2); y++)
+          {
+            current->temperature[COARSE/2+x][y] = 0.0f;
+            for (int i = 0; i < 2; i++)
+            {
+              for (int j = 0; j < 2; j++)
+              {
+                current->temperature[COARSE/2+x][y] += one.temperature[2*x+i][2*y+j];
+              }
+            }
+            current->temperature[COARSE/2+x][y] /= 4.0f;
+          }
+        }
+        Cell &two = fast_regions[current->across_index_loc[2]].ref(current->across_cells[2]);
+        for (int x = 0; x < (COARSE/2); x++)
+        {
+          for (int y = 0; y < (COARSE/2); y++)
+          {
+            current->temperature[x][COARSE/2+y] = 0.0f;
+            for (int i = 0; i < 2; i++)
+            {
+              for (int j = 0; j < 2; j++)
+              {
+                current->temperature[x][COARSE/2+y] += two.temperature[2*x+i][2*y+j];
+              }
+            }
+            current->temperature[x][COARSE/2+y] /= 4.0f;
+          }
+        }
+        Cell &three = fast_regions[current->across_index_loc[3]].ref(current->across_cells[3]);
+        for (int x = 0; x < (COARSE/2); x++)
+        {
+          for (int y = 0; y < (COARSE/2); y++)
+          {
+            current->temperature[COARSE/2+x][COARSE/2+y] = 0.0f;
+            for (int i = 0; i < 2; i++)
+            {
+              for (int j = 0; j < 2; j++)
+              {
+                current->temperature[COARSE/2+x][COARSE/2+y] += three.temperature[2*x+i][2*y+j];
+              }
+            }
+            current->temperature[COARSE/2+x][COARSE/2+y] /= 4.0f;
+          }
+        }
+      }
+    }
+  }
+#endif
+}
+#endif // COARSENING
 
 void initialization_task(   const void *global_args, size_t global_arglen,
                             const void *local_args, size_t local_arglen,
@@ -598,6 +1005,7 @@ int main(int argc, char **argv)
         region_main<AccessorGeneric, SIMULATION_DIM> >(REGION_MAIN, Processor::LOC_PROC, "region_main");
   HighLevelRuntime::register_index_task<
         initialization_task>(INIT_TASK, Processor::LOC_PROC, "init_task");
+#ifndef COARSENING
 #ifdef FAST_PATH
   HighLevelRuntime::register_single_task<
         interpolate_boundary_task<SIMULATION_DIM> >(INTERP_BOUNDARY,Processor::LOC_PROC, "interp_boundary");
@@ -617,9 +1025,19 @@ int main(int argc, char **argv)
   HighLevelRuntime::register_single_task<
         restrict_coarse_cells_task<SIMULATION_DIM> >(RESTRICT, Processor::LOC_PROC, "restrict");
 #endif
+#else
+  HighLevelRuntime::register_single_task<
+        interpolate_boundary_task<SIMULATION_DIM,COARSENING> >(INTERP_BOUNDARY, Processor::LOC_PROC, "interp_boundary");
+  HighLevelRuntime::register_index_task<
+        calculate_fluxes_task<SIMULATION_DIM,COARSENING> >(CALC_FLUXES, Processor::LOC_PROC, "calc_fluxes");
+  HighLevelRuntime::register_index_task<
+        advance_time_step_task<SIMULATION_DIM,COARSENING> >(ADVANCE, Processor::LOC_PROC, "advance");
+  HighLevelRuntime::register_single_task<
+        restrict_coarse_cells_task<SIMULATION_DIM,COARSENING> >(RESTRICT, Processor::LOC_PROC, "restrict");
+#endif
 
   // Register the reduction op
-  HighLevelRuntime::register_reduction_op<FluxReducer>(REDUCE_ID);
+  //HighLevelRuntime::register_reduction_op<FluxReducer>(REDUCE_ID);
 
   return HighLevelRuntime::start(argc, argv);
 }
@@ -1692,10 +2110,24 @@ void initialize_cells_2D(ptr_t<Cell> &bound_ptr, ptr_t<Flux> &flux_ptr, int cell
       }
       // Initialize cell temperature
       {
-        float x_pos = (float(global_x)+0.5f) * dx - 0.5f;
-        float y_pos = (float(global_y)+0.5f) * dx - 0.5f;
-        float dist = sqrt(x_pos*x_pos + y_pos*y_pos);
-        cell.temperature = 0.5f * (1.0f - tanh((dist-0.2f)/0.025f));
+#ifdef COARSENING
+        float small_dx = dx / float(COARSENING);
+        for (int x = 0; x < COARSENING; x++)
+        {
+          for (int y = 0; y < COARSENING; y++)
+          {
+            float x_pos = (float(global_x)*dx) + (float(x)+0.5f) * small_dx - 0.5;
+            float y_pos = (float(global_y)*dx) + (float(y)+0.5f) * small_dx - 0.5;
+            float dist = sqrt(x_pos*x_pos + y_pos*y_pos);
+            cell.temperature[x][y] = 0.5f *(1.0f - tanh((dist-0.2f)/0.025f));
+          }
+        }
+#else
+        float x_pos = (float(global_x)+0.5f) * dx - 0.5;
+        float y_pos = (float(global_y)+0.5f) * dx - 0.5;
+        float dist = sqrt(x_pos*x_pos + y_pos*y_pos); 
+        cell.temperature = 0.5f *(1.0f - tanh((dist-0.2f)/0.025f));
+#endif
       }
       
       // In-x
@@ -1712,7 +2144,12 @@ void initialize_cells_2D(ptr_t<Cell> &bound_ptr, ptr_t<Flux> &flux_ptr, int cell
           // Update the other cell
           Cell other = all_cells.read(f.cell_ptrs[0]);
           other.outx = cell.inx;
+#ifndef COARSENING
           other.temperature = cell.temperature;
+#else
+          for (int w = 0; w < COARSENING; w++)
+            other.temperature[0][w] = cell.temperature[0][w];
+#endif
           other.loc = BOUNDARY;
           other.position[0] = cell.position[0] - dx;
           other.position[1] = cell.position[1];
@@ -1750,7 +2187,12 @@ void initialize_cells_2D(ptr_t<Cell> &bound_ptr, ptr_t<Flux> &flux_ptr, int cell
         // Now do ourselves
         f.cell_ptrs[1] = cell_ptr;
         f.locations[1] = cell.loc;
+#ifndef COARSENING
         f.flux = 1e20f;
+#else
+        for (int w = 0; w < COARSENING; w++)
+          f.flux[w] = 1e20f;
+#endif
         // Write the flux back
         all_fluxes.write(cell.inx,f);
       }
@@ -1771,7 +2213,12 @@ void initialize_cells_2D(ptr_t<Cell> &bound_ptr, ptr_t<Flux> &flux_ptr, int cell
           f.locations[1] = BOUNDARY;
           Cell other = all_cells.read(f.cell_ptrs[1]);
           other.inx = cell.outx;
+#ifndef COARSENING
           other.temperature = cell.temperature;
+#else
+          for (int w = 0; w < COARSENING; w++)
+            other.temperature[0][w] = cell.temperature[0][w];
+#endif
           other.loc = BOUNDARY;
           other.position[0] = cell.position[0] + dx;
           other.position[1] = cell.position[1];
@@ -1788,7 +2235,12 @@ void initialize_cells_2D(ptr_t<Cell> &bound_ptr, ptr_t<Flux> &flux_ptr, int cell
           // Add to the list of ghost pointers we need
           ghost_pointers.insert(f.cell_ptrs[1]);
         }
+#ifndef COARSENING
         f.flux = 1e20f;
+#else
+        for (int w = 0; w < COARSENING; w++)
+          f.flux[w] = 1e20f;
+#endif
         // Write the flux back
         all_fluxes.write(cell.outx,f);
       }
@@ -1806,7 +2258,12 @@ void initialize_cells_2D(ptr_t<Cell> &bound_ptr, ptr_t<Flux> &flux_ptr, int cell
           f.locations[0] = BOUNDARY;
           Cell other = all_cells.read(f.cell_ptrs[0]);
           other.outy = cell.iny;
+#ifndef COARSENING
           other.temperature = cell.temperature;
+#else
+          for (int w = 0; w < COARSENING; w++)
+            other.temperature[0][w] = cell.temperature[0][w];
+#endif
           other.loc = BOUNDARY;
           other.position[0] = cell.position[0];
           other.position[1] = cell.position[1] - dx;
@@ -1844,7 +2301,12 @@ void initialize_cells_2D(ptr_t<Cell> &bound_ptr, ptr_t<Flux> &flux_ptr, int cell
         // Now do ourselves
         f.cell_ptrs[1] = cell_ptr;
         f.locations[1] = cell.loc;
+#ifndef COARSENING
         f.flux = 1e20f;
+#else
+        for (int w = 0; w < COARSENING; w++)
+          f.flux[w] = 1e20f;
+#endif
         // Write the flux back
         all_fluxes.write(cell.iny,f);
       }
@@ -1866,7 +2328,12 @@ void initialize_cells_2D(ptr_t<Cell> &bound_ptr, ptr_t<Flux> &flux_ptr, int cell
           f.locations[1] = BOUNDARY;
           Cell other = all_cells.read(f.cell_ptrs[1]);
           other.iny = cell.outy;
+#ifndef COARSENING
           other.temperature = cell.temperature;
+#else
+          for (int w = 0; w < COARSENING; w++)
+            other.temperature[0][w] = cell.temperature[0][w];
+#endif
           other.loc = BOUNDARY;
           other.position[0] = cell.position[0];
           other.position[1] = cell.position[1] + dx;
@@ -1883,7 +2350,12 @@ void initialize_cells_2D(ptr_t<Cell> &bound_ptr, ptr_t<Flux> &flux_ptr, int cell
           // Add it to the list of ghost cell pointers that we need
           ghost_pointers.insert(f.cell_ptrs[1]);
         }
+#ifndef COARSENING
         f.flux = 1e20f;
+#else
+        for (int w = 0; w < COARSENING; w++)
+          f.flux[w] = 1e20f;
+#endif
         // Write the flux back
         all_fluxes.write(cell.outy,f);
       }
@@ -2433,6 +2905,61 @@ void parse_input_args(char **argv, int argc, int &num_levels, int &default_num_c
   }
 }
 
+inline float compute_average_temp_2D(float temps[2][2], float center[2], float position[2])
+{
+  // Compute the average temperature of the coarser cells and
+  // the temperature gradients in the x and y dimensions
+  float avg_temp = 0.0f;
+  for (int i = 0; i < 2; i++)
+  {
+    for (int j = 0; j < 2; j++)
+    {
+      avg_temp += temps[i][j]; 
+    }
+  }
+  avg_temp /= 4.0f;
+  // Gradients 
+  float mx = ((temps[1][0] + temps[1][1]) - (temps[0][0] + temps[0][1])) / 2.0f;
+  float my = ((temps[0][1] + temps[1][1]) - (temps[0][0] + temps[1][0])) / 2.0f;
+  // calculate postion differences 
+  float dx = position[0] - center[0];
+  float dy = position[1] - center[1];
+
+  return (avg_temp + mx*dx + my*dy);
+}
+
+inline float compute_average_temp_3D(float temps[2][2][2], float center[3], float position[3])
+{
+  // Compute the aveerage temperature of the coarser cells and
+  // the temperature gradients in the x and y and z dimensions
+  float avg_temp = 0.0f;
+  for (int i = 0; i < 2; i++)
+  {
+    for (int j = 0; j < 2; j++)
+    {
+      for (int k = 0; k < 2; k++)
+      {
+        avg_temp += temps[i][j][k];
+      }
+    }
+  }        
+  avg_temp /= 8.0f;
+  // Gradients
+  float mx = ((temps[1][0][0] + temps[1][0][1] + temps[1][1][0] + temps[1][1][1]) -
+              (temps[0][0][0] + temps[0][0][1] + temps[0][1][0] + temps[0][1][1])) / 4.0f;
+  float my = ((temps[0][1][0] + temps[0][1][1] + temps[1][1][0] + temps[1][1][1]) -
+              (temps[0][0][0] + temps[0][0][1] + temps[1][0][0] + temps[1][0][1])) / 4.0f;
+  float mz = ((temps[0][0][1] + temps[0][1][1] + temps[1][0][1] + temps[1][1][1]) - 
+              (temps[0][0][0] + temps[0][1][0] + temps[1][0][0] + temps[1][1][0])) / 4.0f;
+  // calculate the position differences
+  float dx = position[0] - center[0];
+  float dy = position[1] - center[1];
+  float dz = position[2] - center[2];
+
+  return (avg_temp + mx*dx + my*dy + mz*dz);
+}
+
+#ifndef COARSENING
 const float FluxReducer::identity = 0.0f;
 
 template<> 
@@ -2587,60 +3114,6 @@ inline void fill_temps_and_center_3D(float temps[2][2][2], float center[3], ptr_
   {
     center[i] /= 8.0f;
   }
-}
-
-inline float compute_average_temp_2D(float temps[2][2], float center[2], float position[2])
-{
-  // Compute the average temperature of the coarser cells and
-  // the temperature gradients in the x and y dimensions
-  float avg_temp = 0.0f;
-  for (int i = 0; i < 2; i++)
-  {
-    for (int j = 0; j < 2; j++)
-    {
-      avg_temp += temps[i][j]; 
-    }
-  }
-  avg_temp /= 4.0f;
-  // Gradients 
-  float mx = ((temps[1][0] + temps[1][1]) - (temps[0][0] + temps[0][1])) / 2.0f;
-  float my = ((temps[0][1] + temps[1][1]) - (temps[0][0] + temps[1][0])) / 2.0f;
-  // calculate postion differences 
-  float dx = position[0] - center[0];
-  float dy = position[1] - center[1];
-
-  return (avg_temp + mx*dx + my*dy);
-}
-
-inline float compute_average_temp_3D(float temps[2][2][2], float center[3], float position[3])
-{
-  // Compute the aveerage temperature of the coarser cells and
-  // the temperature gradients in the x and y and z dimensions
-  float avg_temp = 0.0f;
-  for (int i = 0; i < 2; i++)
-  {
-    for (int j = 0; j < 2; j++)
-    {
-      for (int k = 0; k < 2; k++)
-      {
-        avg_temp += temps[i][j][k];
-      }
-    }
-  }        
-  avg_temp /= 8.0f;
-  // Gradients
-  float mx = ((temps[1][0][0] + temps[1][0][1] + temps[1][1][0] + temps[1][1][1]) -
-              (temps[0][0][0] + temps[0][0][1] + temps[0][1][0] + temps[0][1][1])) / 4.0f;
-  float my = ((temps[0][1][0] + temps[0][1][1] + temps[1][1][0] + temps[1][1][1]) -
-              (temps[0][0][0] + temps[0][0][1] + temps[1][0][0] + temps[1][0][1])) / 4.0f;
-  float mz = ((temps[0][0][1] + temps[0][1][1] + temps[1][0][1] + temps[1][1][1]) - 
-              (temps[0][0][0] + temps[0][1][0] + temps[1][0][0] + temps[1][1][0])) / 4.0f;
-  // calculate the position differences
-  float dx = position[0] - center[0];
-  float dy = position[1] - center[1];
-  float dz = position[2] - center[2];
-
-  return (avg_temp + mx*dx + my*dy + mz*dz);
 }
 
 inline float read_temp(ptr_t<Cell> source, PointerLocation source_loc, 
@@ -2887,6 +3360,7 @@ inline void average_cells(PhysicalRegion<AccessorArray> &cells,
 #endif
   }
 }
+#endif // COARSENING
 
 // EOF
 
