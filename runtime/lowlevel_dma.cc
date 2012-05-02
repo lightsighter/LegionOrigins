@@ -491,8 +491,10 @@ namespace RegionRuntime {
 	{
 	  log_dma.debug("remote write done with %d spans", span_count);
 	  // if we got any spans, the last one is still waiting to go out
-	  if(span_count > 0)
+	  if(span_count > 0) {
 	    really_do_span(true);
+	    return Event::NO_EVENT; // recipient will trigger the event
+	  }
 
 	  return event;
 	}
@@ -640,8 +642,16 @@ namespace RegionRuntime {
 
 	      ElementMask::forall_ranges(rexec, *reg_impl->valid_mask);
 
+	      // if no copies actually occur, we'll get the event back
+	      // from the range executor and we have to trigger it ourselves
 	      Event finish_event = rexec.finish();
-	      assert(finish_event == after_copy);
+	      if(finish_event.exists()) {
+		log_dma.info("triggering event %x/%d after empty remote copy",
+			     finish_event.id, finish_event.gen);
+		assert(finish_event == after_copy);
+		finish_event.impl()->trigger(finish_event.gen, gasnet_mynode());
+	      }
+	      
 	      return;
 	    }
 
