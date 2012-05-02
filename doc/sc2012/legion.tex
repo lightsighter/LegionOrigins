@@ -115,12 +115,13 @@ the tasks access $r$ with {\em atomic} coherence, then Legion
 guarantees only atomicity of the tasks with respect to $r$: either task $f_1(r)$
 appears to run entirely before $f_2(r)$ or vice versa.
 
-Legion programs are written using logical regions, each of which
-has one or more {\em physical instances} when the program executes.  Often
+Legion programs are written using logical regions, which do not commit
+to any particular placement of the data in the machine.  At runtime,
+each logical reagion has one or more {\em physical instances}.  Often
 logical regions correspond to a single physical instance, but it is also common and useful
 to have multiple physical copies of a logical region's contents in different parts of the machine 
 to duplicate and distribute read-only data, to keep an old copy of a region to break a 
-write-after-read dependency, or to allow independent, local reductions that are later combined.
+write-after-read dependence, or to allow independent, local reductions that are later combined.
 
 To introduce the programming model, we begin with an extended example
 of a circuit simulation in
@@ -143,14 +144,14 @@ implementation and evaluation of Legion:
   parallelism (because tasks may recursively spawn subtasks).
 
 
-\item We use a {\em deferred execution} model that extracts parallelism
-even from highly irregular, unbalanced computations.  Instead of blocking,
-an operation $o$ that cannot immediately execute because it is dependent
-on some other operation $o'$ waits on an event that occurs when $o'$ completes.
-Events can be created for the completion of any operation in Legion, and 
-the scheduler can build long chains of deferred operations.  In Section~\ref{sec:exp}
-we show that dataflow-like deferred execution gives us a significant performance improvement
-over bulk synchronous global synchronization primitives such as barriers.
+%\item We use a {\em deferred execution} model that extracts parallelism
+%even from highly irregular, unbalanced computations.  Instead of blocking,
+%an operation $o$ that cannot immediately execute because it is dependent
+%on some other operation $o'$ waits on an event that occurs when $o'$ completes.
+%Events can be created for the completion of any operation in Legion, and 
+%the scheduler can build long chains of deferred operations.  In Section~\ref{sec:exp}
+%we show that dataflow-like deferred execution gives us a significant performance improvement
+%over bulk synchronous global synchronization primitives such as barriers.
 
 \item A central part of orchestrating a program's execution is how
 tasks are assigned (or {\em mapped}) to processors and how physical instances of logical regions are

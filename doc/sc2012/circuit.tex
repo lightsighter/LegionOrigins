@@ -187,8 +187,9 @@ applications discussed in Section~\ref{sec:exp}.
 Pointers to region values declare the region to which they point.  For
 example, the definition of {\tt Wire} is parameterized on the region
 {\tt rn} to which the {\tt Node} pointers in fields {\tt in\_nodes}
-and {\tt out\_nodes} point, which guarantees that the two endpoints of
-a wire are always in the same region.
+and {\tt out\_nodes} point.
+% which guarantees that the two endpoints of
+%a wire are always in the same region.
 
 Regions are first-class values in Legion and can be stored in heap
 data structures.  For example, a {\tt Circuit} (defined on line 3)

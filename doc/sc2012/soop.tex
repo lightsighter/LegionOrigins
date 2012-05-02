@@ -68,7 +68,7 @@ SOOP will schedule them to run serially to preserve the program's
 sequential semantics.  If two child tasks have no dependence then
 Legion can schedule them to execute out of order, in parallel.  Thus,
 the first stage in the execution of a task is dependence analysis on
-the logical regins used by tasks.
+the logical regions used by tasks.
 
 \subsubsection{Dependences}
 Detecting dependences between a newly registered task $t$ and a previously registered task 
@@ -189,14 +189,14 @@ a non-disjoint, or {\em aliased}, partition.
 \item All the remaining pairs of regions used by the two tasks (e.g., {\tt pieces[0].rw\_pvt} and {\tt pieces[1].rn\_pvt})
 do not overlap because they are in different region trees and have no common region ancestor.
 \end{enumerate}
-Cases 4-6 indicate a possible dependence, however in each case the regions are accessed with only read privileges.  Thus, these two subtasks are independent.
+Cases 4-6 indicate a possible dependence, however in each case the regions are accessed with only read privileges.  Thus, the two subtasks are independent.
 
 A closer look at this example shows that whether there is overlap
 between two regions $r_1$ and $r_2$ can be determined by examining
 their least common ancestor $\lca{r_1}{r_2}$ in the region tree.  Note
 that the region tree alternates between regions and partitions:
 regions are always children of partitions and
-partitions are always children of regions in the region tree.  There
+partitions are always children of regions.  There
 are four cases.  If $\lca{r_1}{r_2}$ either does not exist (the regions
 are in different region trees) or is a disjoint partition, then $r_1$
 and $r_2$ are guaranteed to be disjoint.  If $\lca{r_1}{r_2}$ is an
@@ -204,17 +204,13 @@ aliased partition or a region (because $r_1$ and $r_2$ are in
 different partitions of the region, as in cases 4 and 5
 above), then $r_1$ and $r_2$ may not be disjoint.
 
-Consider the subtasks {\tt distribute\_charge(pieces[0],dt)} and
+Consider subtasks {\tt distribute\_charge(pieces[0],dt)} and
 {\tt update\_voltages[1]} in Listing~\ref{lst:code_ex}.  The former task
 uses region {\tt pieces[0].rn\_ghost} and the latter uses region {\tt pieces[1].rn\_shr}.
 The least common ancestor is the region of all shared nodes {\tt p\_nodes\_pvs[1]},
 so these two regions are not disjoint.  Since both tasks write their respective subregions,
 there is a dependence and the {\tt update\_voltages} task can only run after the
-{\tt distribute\_charges} task has completed.  There is an important additional piece 
-of information, as well.  Because the {\tt update\_voltages} task possibly reads the values
-written by the {\tt distribute\_charges} task, the updates done by {\tt distribute\_charges} must
-be reconciled on least common ancestor region {\tt p\_nodes\_pvs[1]}; our depedence analysis
-tracks this information as well.
+{\tt distribute\_charges} task has completed.  
 
 We can now describe the algorithm for the dependence analysis phase of
 the SOOP.  The SOOP maintains a local region forest for each task $t$,
@@ -225,7 +221,11 @@ following invariant. Let $r'$ be a region argument to subtask $t'$,
 and let $R$ be the set of regions $r''$ such that $r''$ is an argument
 to a task $t''$ registered after $t'$ and $t''$ depends on $t'$ because
 of overlap between $r''$ and $r'$.  Then $t'$ is listed on the region that
-is the least common ancestor of the set $R \cup \{r'\}$.
+is the least common ancestor of the set $R \cup \{r'\}$.  Moving $t'$ to an
+ancestor of $r'$ has the effect of coarsening the dependences involving $t'$
+for tasks registered in the future, and this can result in false dependences.
+However, the loss of information can be shown to be small and, as we show next, the
+benefit is that it dramatically speeds up dependence analysis overall.
 
 We can identify all dependences between sibling tasks and place tasks
 in the correct place in the region tree in amortized time ${\cal O}(nd)$,
@@ -235,18 +235,18 @@ walks the unique path in the region forest from a root to $r'$.  For each node $
 on the walk from the root to $r'$ the following actions are taken:
 \begin{itemize}
 \item Assume $m$ is a region with multiple child partitions, and let $m'$ be the child on the
-path to $r'$.  Any task in a subtree of $m$ other than $m'$ may conflict with $t'$; these tasks
-are all moved to $m$.
+path to $r'$.  Any task in a subtree of $m$ other than $m'$ on which $t'$ depends 
+is moved to $m$.
 
 \item Assume $m$ is a non-disjoint partition, and let $m'$ be the child on the
-path to $r'$.  Any task in a subtree of $m$ other than $m'$ may conflict with $t'$; these tasks
-are all moved to $m$.
+path to $r'$.  Any task in a subtree of $m$ other than $m'$ that $t'$ depends on is
+moved to $m$.
 
 \item Assume $m$ is a disjoint partition, and let $m'$ be the child on the
 path to $r'$.  No tasks in a subtree of $m$ other than $m'$ can conflict wtih $t'$; we simply move
 on to $m'$.
 
-\item Assume $m = r'$.  In this case any dependent tasks in $r'$'s subtree must be moved to $r'$.
+\item Assume $m = r'$.  In this case any dependent tasks in $r'$'s subtree are moved to $r'$.
 \end{itemize}
 
 \begin{figure*}
@@ -278,7 +278,7 @@ only moved up towards the root, so the overall work is (amortized)
 ${\cal O}(nd)$.  In practice, we have found this level of efficiency,
 where dependence analysis is linear in the number of region arguments (and not
 the square) and proportional to the depth of the region tree (and not its size)
-to be very important in keeping the overhead of the SOOP low.
+to be very important in minimizing the overhead of the SOOP.
 
 We now illustrate dependence analysis using the four tasks discussed
 above.  Many more tasks are executed by the circuit simulation in Listing~\ref{lst:code_ex},
