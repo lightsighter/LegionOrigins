@@ -211,6 +211,9 @@ void region_main(const void *args, size_t arglen,
     double sim_time = ((1.0 * (ts_end.tv_sec - ts_start.tv_sec)) +
                        (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
     printf("ELAPSED TIME = %7.3f s\n", sim_time);
+    double updates_sec = num_cells[0]*num_cells[0]*num_levels*steps;
+    updates_sec /= sim_time;
+    printf("UPDATES PER SEC = %7.3f \n",updates_sec);
   }
   RegionRuntime::LowLevel::DetailedTimer::report_timers();
 

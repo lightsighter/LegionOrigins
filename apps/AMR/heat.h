@@ -8,7 +8,7 @@
 
 #define POW2(dim)  ((dim==1) ? 2 : (dim==2) ? 4 : 8)
 
-#define COARSENING  8 
+#define COARSENING  16 
 
 using namespace RegionRuntime::HighLevel;
 
