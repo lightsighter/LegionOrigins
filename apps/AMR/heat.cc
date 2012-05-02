@@ -2366,7 +2366,7 @@ void parse_input_args(char **argv, int argc, int &num_levels, int &default_num_c
     if (!strcmp(argv[i], "-dd")) //default divisions
     {
       default_divisions = atoi(argv[++i]);
-      for (int i = 0; i < num_divisions; i++)
+      for (int i = 0; i < num_levels; i++)
       {
         divisions[i] = default_divisions;
       }
