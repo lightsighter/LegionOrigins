@@ -734,6 +734,39 @@ void advance_time_step_task(const void *global_args, size_t global_arglen,
     int i, j; 
     for (i = 0; i < num_private; i++)
     {
+      // Now update all the internal cells fluxes
+      float temp_fluxes_x[COARSE][COARSE-1];
+      for (int x = 0; x < COARSE; x++)
+      {
+        for (int y = 0; y < COARSE-1; y++)
+        {
+          temp_fluxes_x[x][y] = (coeff * dt * (current->temperature[x][y+1] - current->temperature[x][y]) / (dx / float(COARSE)));
+        }
+      }
+      float temp_fluxes_y[COARSE][COARSE-1];
+      for (int y = 0; y < COARSE; y++)
+      {
+        for (int x = 0; x < COARSE-1; x++)
+        {
+          temp_fluxes_y[y][x] = (coeff * dt * (current->temperature[x+1][y] - current->temperature[x][y]) / (dx / float(COARSE)));
+        }
+      }
+      for (int x = 0; x < COARSE; x++)
+      {
+        for (int y = 0; y < COARSE-1; y++)
+        {
+          current->temperature[x][y] -= temp_fluxes_x[x][y];
+          current->temperature[x][y+1] += temp_fluxes_x[x][y+1];
+        }
+      }
+      for (int y = 0; y < COARSE; y++)
+      {
+        for (int x = 0; x < COARSE-1; x++)
+        {
+          current->temperature[x][y] -= temp_fluxes_y[y][x];
+          current->temperature[x+1][y] += temp_fluxes_y[y][x];
+        }
+      }
       local_ptr.value = private_ptr.value + i;
       current = &cell_acc.ref<Cell>(local_ptr);
       inx = &flux_acc.ref<Flux>(current->inx);
@@ -747,18 +780,6 @@ void advance_time_step_task(const void *global_args, size_t global_arglen,
         current->temperature[j][0] += (coeff * dt * iny->flux[j] / (dx / float(COARSE)));
         current->temperature[j][COARSE-1] -= (coeff * dt * outy->flux[j] / (dx / float(COARSE)));
       }
-      // Now update all the internal cells fluxes
-      for (int x = 0; x < COARSE-1; x++)
-      {
-        for (int y = 0; y < COARSE-1; y++)
-        {
-          float deltax = (coeff * dt * (current->temperature[x+1][y] - current->temperature[x][y]) / (dx / float(COARSE)));
-          float deltay = (coeff * dt * (current->temperature[x][y+1] - current->temperature[x][y]) / (dx / float(COARSE)));
-          current->temperature[x][y] -= (deltax + deltay);
-          current->temperature[x+1][y] += deltax;
-          current->temperature[x][y+1] += deltay;
-        }
-      }
     }
   }
   {
@@ -769,7 +790,40 @@ void advance_time_step_task(const void *global_args, size_t global_arglen,
     int i, j; 
     for (i = 0; i < num_shared; i++)
     {
-      local_ptr.value = shared_ptr.value + i;
+      // Now update all the internal cells fluxes
+      float temp_fluxes_x[COARSE][COARSE-1];
+      for (int x = 0; x < COARSE; x++)
+      {
+        for (int y = 0; y < COARSE-1; y++)
+        {
+          temp_fluxes_x[x][y] = (coeff * dt * (current->temperature[x][y+1] - current->temperature[x][y]) / (dx / float(COARSE)));
+        }
+      }
+      float temp_fluxes_y[COARSE][COARSE-1];
+      for (int y = 0; y < COARSE; y++)
+      {
+        for (int x = 0; x < COARSE-1; x++)
+        {
+          temp_fluxes_y[y][x] = (coeff * dt * (current->temperature[x+1][y] - current->temperature[x][y]) / (dx / float(COARSE)));
+        }
+      }
+      for (int x = 0; x < COARSE; x++)
+      {
+        for (int y = 0; y < COARSE-1; y++)
+        {
+          current->temperature[x][y] -= temp_fluxes_x[x][y];
+          current->temperature[x][y+1] += temp_fluxes_x[x][y+1];
+        }
+      }
+      for (int y = 0; y < COARSE; y++)
+      {
+        for (int x = 0; x < COARSE-1; x++)
+        {
+          current->temperature[x][y] -= temp_fluxes_y[y][x];
+          current->temperature[x+1][y] += temp_fluxes_y[y][x];
+        }
+      }
+      local_ptr.value = private_ptr.value + i;
       current = &cell_acc.ref<Cell>(local_ptr);
       inx = &flux_acc.ref<Flux>(current->inx);
       outx = &flux_acc.ref<Flux>(current->outx);
@@ -781,18 +835,6 @@ void advance_time_step_task(const void *global_args, size_t global_arglen,
         current->temperature[COARSE-1][j] -= (coeff * dt * outx->flux[j] / (dx / float(COARSE)));
         current->temperature[j][0] += (coeff * dt * iny->flux[j] / (dx / float(COARSE)));
         current->temperature[j][COARSE-1] -= (coeff * dt * outy->flux[j] / (dx / float(COARSE)));
-      }
-      // Now update all the internal cells fluxes
-      for (int x = 0; x < COARSE-1; x++)
-      {
-        for (int y = 0; y < COARSE-1; y++)
-        {
-          float deltax = (coeff * dt * (current->temperature[x+1][y] - current->temperature[x][y]) / (dx / float(COARSE)));
-          float deltay = (coeff * dt * (current->temperature[x][y+1] - current->temperature[x][y]) / (dx / float(COARSE)));
-          current->temperature[x][y] -= (deltax + deltay);
-          current->temperature[x+1][y] += deltax;
-          current->temperature[x][y+1] += deltay;
-        }
       }
     }
   }
@@ -1984,7 +2026,7 @@ void initialize_simulation(std::vector<Level> &levels,
       runtime->unmap_region(ctx, all_fluxes);
     }
   }
-#if 0
+#if 1
   for (unsigned i = 0; i < num_cells.size(); i++)
   {
     PhysicalRegion<AccessorGeneric> gcells = 
