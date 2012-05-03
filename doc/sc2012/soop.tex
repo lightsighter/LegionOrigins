@@ -328,17 +328,158 @@ and can be defined by the user (see Section~\ref{sec:mapping}).
 \subsection{Mapping}
 \label{sec:map}
 
-\input{mapping_fig}
+After a processor $p$ is chosen for a task, $t$ executes entirely on $p$.
+Before execution, however, we must {\em map} $t$, i.e., choose the
+physical instances for $t$'s logical regions.  A physical instance is assigned
+to a particular memory in the machine and holds a snapshot of the region's data
+from some point in time; a {\em valid} physical instance has data that reflects
+all the updates of all previously mapped tasks.
 
+The region tree used to calculate logical dependences for $t$ is also
+used to hold mapping information.  Each logical region $r$ maintains a
+list of its physical instances and which sibling tasks are using which
+instances and with what permissions.  The important correctness
+property established by the dependence analysis phase is that all
+tasks $t$ depends on map before $t$ maps and no task that depends on
+$t$ maps before $t$ finishes mapping.  Thus, the region tree at the
+moment $t$ maps contains a consistent view of what the state of memory
+will be after $t$'s dependence predecessors have executed.
 
-\subsection{Execution}
-\label{sec:exec}
+There are two steps to mapping a particular region argument $r$ of
+task $t$.  First, the mapper must ensure there is at least one {\em valid}
+physical instance of $r$.  For example, assume there is one physical instance $s$ of
+logical region $r$ and that a task $t'$ that mapped prior to $t$ is recorded as writing a
+physical instance $s_i$ of subregion $r_i$ of $r$.  At this point there
+is no valid instance of $r$, because $s$ does not include
+the updates to $s_i$.  To restore $s$ to a valid instance of $r$ the
+system must shedule an operation after $t'$ to copy
+$s_i$ back into $s$.  
+
+In the second step, the mapping interface is used to select one of the
+valid physical instances of $r$ or to create a new one.  Typical
+policies are to to choose the existing physical instance that is
+closest to $t$'s processor, or to create a new instance (by issuing a
+copy operation) in the memory closest to $t$'s processor.
+We focus here on the first step, establishing a valid physical instance.
+The mapping interface is discussed further in Section~\ref{sec:mapping}.
+
+Detecting or creating a valid instance is, at its core, a dependence analysis on
+physical instances and thus similar to the mapping dependence analysis on logical
+regions already described in Section~\ref{sec:dep}.  Consider any task $t'$ using
+physical instance $s'$ of logical region $r'$.  There are four cases.
+\begin{enumerate}
+\item If $t'$ has only read permission
+for $r'$ it cannot invalidate any instance of region $r$ and nothing needs to be done.
+
+\item If $t'$ has reduce permission for $r'$ and $t$ has reduce
+  permission for $r$ and both use the same reduction operator, then
+  nothing needs to be done.  This is the only case in which a writer
+  does not require a valid instance---because reductions can be
+  reordered, the recombining of the instances of $r$ and $r'$ (if they
+  overlap) can be deferred to a later consumer of the data (see case
+  4).
+
+\item If $t'$ has write permission for $r'$ and $r$ and $r'$ may
+  overlap (i.e., $\lca{r}{r'}$ is either a region or an aliased
+  partition), then $s'$ must be copied to an instance $s''$ of
+  $\lca{r}{r'}$ and then a fresh instance of $r'$ created from $s''$
+  (if either $r = \lca{r}{r'}$ or $r' = \lca{r}{r'}$ one of the two
+  copy operations is omitted).
+ IS s' REMOVED FROM THE TREE?
+
+\item If $t'$ has reduce permission for $r'$, $t$ has read or write
+  permission for $r$, and $r$ and $r'$ may overlap, then $s'$ must be
+  reduced (using $t'$'s reduction operator) to an instance $s''$ of
+  $\lca{r}{r'}$ and then a fresh instance of $r'$ created from $s''$.
+  (If $r' = \lca{r}{r'}$ the reduction is unneeded, and if $r =
+  \lca{r}{r'}$ the copy is unneeded.)
+ IS s' REMOVED FROM THE TREE?
+\end{enumerate}
+
+Not all of these cases can occur simultaneously for a particular
+region argument $r$ of task $t$.  There may always be multiple
+previous readers (case 1), but the mapping dependence analysis
+guarantees that there would only be one previous writer (case 3) or
+one or more reducers (cases 2 and 4).  To map $r$, we walk from $r$'s
+root ancestor in the region forest to $r$, along the way exploring
+off-path subtrees to find region instances satisfying cases 3 and
+4; the details are similar to the implementation of dependence
+analysis in Section~\ref{sec:dep}.  
+
+As part of the walk any required copy and reduction operations are
+issued to construct a valid instance of $r$.  These operations are
+deferred, waiting to execute on the tasks that produce the data they
+copy or reduce. Similarly, the start of $t$'s execution is made
+dependent on completion of the copies/reductions that construct the
+instance of $r$ it will use.
+
+%
+%possibly make this consistent with the way we actually map circuit?
+%
+Consider again the four example tasks from Listing~\ref{lst:code_ex}.
+We focus only on the mapping of the node regions of the region tree in
+Figure~\ref{sfig:part_fig:tree}.  For this example, we assume a simple 
+machine with $n$ processors each with a local memory, and we map the $i$th
+piece of the circuit to the $i$th processor's memory.  Thus, all the
+region arguments of 
+{\tt cal\_new\_currents(pieces[0])}
+and
+{\tt cal\_new\_currents(pieces[1])}
+are mapped to instances in the memory's of processor's 0 and 1, respectively.  The tasks themselves
+are also mapped to processors 0 and 1, respectively.
+
+When {\tt distribute\_charge(pieces[0])} executes, it uses the same
+instances on processor 0 and the task also runs on processor 0.
+Enlarging the example to include more tasks, note that the region
+arguments of {\tt distribute\_charge(pieces[i])} overlap with {\tt
+  pieces[0]} both because the shared and ghost partitions are of the
+same data and because te ghost partitions are not disjoint.  However,
+{\tt distribute\_charge} only performs commutative reductions on all
+of these regions and so the subregion instances can be used as is on
+each of the processors for all {\tt distribute\_charge} tasks.
+Finally, {\tt update\_voltages(pieces[0])} reads and writes {\tt
+  pieces[0].rn\_shr}.  To guarantee the task sees the correct data,
+all of the shared and ghost partitions must be reduced back to the
+region of all shared nodes {\tt p\_nodes\_pvs[1]} (see
+Figure~\ref{sfig:part_fig:tree}, after which a fresh instance of {\tt
+  pieces[0].rn\_shr} can be copied from {\tt p\_nodes\_pvs[1]} to node
+0.
+
+%\input{mapping_fig}
+
+Figure~\ref{fig:gpumapping} shows a more involved mapping of the circuit simulation
+on a cluster of GPUs.  The $i$th private node and wire regions are mapped to the
+$i$th GPU's DRAM and simply left there for all three phases of the simulation.  The $i$th
+shared and ghost regions are mapped to zero-copy memory most of the time, but have to be
+reduced out to the global (GASNet) memory and a new instances of the  shared  regions
+created again with the updated information before the {\tt update\_voltage} tasks execute.
+A similar situation arises before {\tt calc\_new\_currents} tasks run again: the updates
+to the shared nodes by {\tt update\_voltage} have to be propagated to the ghost nodes before
+continuing.
 
 \begin{figure}
 \includegraphics[scale=0.48]{figs/CircuitMem.pdf}
 \caption{Tasks and data for the circuit simulation on a cluster of GPUs.}
+\label{fig:gpumapping}
 \end{figure}
+
+\subsection{Execution}
+\label{sec:exec}
+
+Once a task $t$ has been mapped it enters the execution stage of the SOOP.  When all of
+the operations (other tasks and copies) on which $t$ depends have completed, $t$ is
+launched on the processor.  When $t$ launches subtasks, they are recursively scheduled as siblings by
+the SOOP using $t$ as the parent task and $t$'s region arguments as the roots of the region forest.
+
 
 \subsection{Clean-Up}
 \label{sec:clean}
+
+Once a task is done executing the various pieces of state associated with it can be reclaimed.
+Dependence and mapping information can be removed from the region tree; in point of fact, 
+as an optimization we are often able to remove tasks from the region tree well before the task terminates.
+The most involved aspect of clean-up is colleting physical instances that are no longer in use.
+We use a distributed reference counting scheme to track the number of tasks using physical instances;
+when this number goes to 0 the physical intance can be reclaimed.
+
 
