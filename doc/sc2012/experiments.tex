@@ -12,7 +12,7 @@ viz & 10 & 2x Xeon 5680 (HT disabled) & 5x Quadro Q5000 & 24 GB & QDR \\
 keeneland & 32* & 2x Xeon 5660 (HT disabled) & 3x Tesla M2090 & 24 GB & QDR 
 \end{tabular}
 
-Nodes with multiple instances of multiple resources are a challenge for 
+Nodes with multiple instances of different resources are a challenge for 
 existing programming models that have a flat model of the system (e.g. MPI).
 They are faced with a choice of lumping all 
 the resources together and ignoring the internal irregularities (e.g. NUMA
@@ -27,23 +27,22 @@ machine hierarchies.
 
 For each application, multiple problem sizes were used, and each size problem was
 run on subsets of each machine ranging from the smallest (a single CPU core or GPU)
-to the largest or near-largest.  (Keeneland was an exception here - although it has
-115 nodes, we limited our runs to at most 32 nodes to get sufficient cluster time.)
+to the largest or near-largest (except Keeneland which has 115 nodes, but we limited 
+our runs to at most 32 nodes to get sufficient cluster time.)
 By looking at the performance of the same size problem over progressively larger
-machines, we are able to measure the ``strong scaling'' that Legion is able to
-achive.  By increasing the problem size as well, we also measure ``weak scaling''.
+machines, we are able to measure the strong scaling that Legion is able to
+achive.  By increasing the problem size as well, we also measure weak scaling.
 
 \subsection{Circuit Simulation}
 \label{subsec:exp_ckt}
 
-The first experiment run was the distributed circuit simulation, described in 
-section \ref{sec:ex}, with all application code running on the CUDA-capable GPUs in
-each node.  The application kernels are written in CUDA, while the Legion runtime
-handles all the resource allocation, scheduling, and data movement.  In particular,
-Legion's ability to efficiently manage, access, and move the irregularly partitioned
+The first experiment we investigate is the distributed circuit simulation described in 
+Section \ref{sec:ex}.  The Legion runtime handles all of the resource allocation, 
+scheduling, and data movement across the cluster of GPUs.  In particular,  
+Legion's ability to efficiently move the irregularly partitioned
 shared data around the system while keeping the private nodes and wires resident in
-each GPU's framebuffer memory is critical in keeping the overhead low, a neccessity
-for good scalability.
+each GPU's framebuffer memory is critical in keeping the overhead low and achieving 
+good scalability.
 
 Circuits of two different sizes were simulated.  The first had 480K wires, connecting
 120K nodes.  The second is twice as large, with nearly a million wires connecting a
@@ -53,27 +52,26 @@ changes to nodes or number of GPUs per node require any changes to the applicati
 
 The circuit simulation used a simple, but application-specific, mapper.  At initialization
 time, the mapper queries the list of GPUs in the machine and identifies each GPU's
-framebuffer memory and ``zero-copy'' memory (i.e. the pinned memory that both the GPU and
-CPUs in the system can access directly).  Once the circuit is partitioned, the partitions
-are assigned a ``home'' GPU in round-robin fashion.  Every task related to that partition is
-then sent to that GPU, with no task stealing allowed.  (If the circuit is partitioned well,
-there should be minimal load imbalance between the pieces, and the rebalancing benefit of 
+framebuffer memory and {\em zero-copy} memory, the pinned memory that both the GPU and
+CPUs in the system can access directly.  Once the circuit is partitioned, the partitions
+are assigned a home GPU in round-robin fashion.  Every task related to that partition is
+then sent to the home GPU, with no task stealing allowed.  (If the circuit is partitioned well,
+there is minimal load imbalance between the pieces, and the rebalancing benefit of 
 moving a partition is unlikely to be worth the cost of moving all the 
 private data for a piece from one GPU to another.)  The regions for a task are mapped as 
 shown in figure \ref{fig:gpumapping}.
 
 Figure \ref{fig:ckt_speed} shows the performance of the Legion circuit simulation relative
-to a single-GPU implmementation hand-coded in CUDA.  Each line shows the scaling of
+to a hand-coded single-GPU implmementation written in CUDA.  Each line shows the scaling of
 a particular problem size as the number of nodes is varied.  Our results demonstrate
-excellent strong scaling behavior, with speedups of 39.0X (compared to the single-GPU CUDA
-version) for the small problem on 48 GPUs and 62.5X for the larger problem size on 96 GPUs.
+excellent strong scaling, with speedups of 39.0X for the small problem on 48 GPUs and 
+62.5X for the larger problem size on 96 GPUs.  On a single GPU, our Legion implementation
+was within 5\% of the performance of the hand-coded example.
 
 Figure \ref{fig:ckt_overhead} shows the fraction of the overall simulation time (summed over
 all nodes) spent in the application kernels compared to the various pieces of the Legion
 runtime.  As the node count increases, the non-communication overhead stays relatively constant.
-Only the communication overhead grows, and it grows nearly linearly with the node count.
-A linear growth in communication cost as a simulation is split over multiple nodes is to
-be expected.
+As expected the communication overhead grow linearly with number of nodes.
 
 \begin{figure}
 \subfigure[Circuit Simulation Speed Relative to Single-GPU Implementation]
@@ -94,21 +92,21 @@ be expected.
 \label{subsec:exp_fluid}
 
 Our second experiment is a port of the \emph{fluidanimate} benchmark from the PARSEC suite\cite{bienia11benchmarking},
-which does a particle-based simulation of a fluid.  Each particle interacts only with other nearby
-particles, so the benchmark divides the space in which the fluid
-can move into a three-dimensional array of cells such that the range of interaction is limited to just the
+which does a particle-based simulation of an incompressible fluid.  Each particle interacts only with other nearby
+particles. The benchmark divides the space in which the fluid can move into a three-dimensional array of cells 
+such that the range of interaction is limited to just the
 cells adjacent (including diagonals) to the one a particle resides in.  Originally designed to be a
-chip multiprocessor benchmark, the application divides the array into ``grids'' and assigns each one to 
-a thread.  Per particle locking is used to safely access particles in cells that lie
-on the edge of a grid.  This fine-grained locking along with the assumption of a shared address space lead to
-good scaling in a multi-core processor, but rule out any attempt to scale beyond a single node.  To extend the
+chip multiprocessor benchmark, the application divides the array into {\em grids} and assigns each one to 
+a thread.  Per cell locking is used to safely access particles in cells that lie
+on the edge of a grid.  This fine-grained locking scheme along with the assumption of a shared address space lead to
+good scaling in a multi-core processor, but rule out any attempt run beyond a single node.  To extend the
 scaling further, our port uses region partitioning to divide the array into grids in a similar
 way, but handles the interaction between grids in a way that doesn't rely on access to uniform shared memory.
 Instead, the Legion version of the benchmark creates explicit ghost copies of cells on the boundaries of grids
 and uses those ghost cells to exchange information between the grids.
 
-The mapper for the particle simulation is very simple - it just maps one grid's tasks onto each processor and
-maps all regions for that grid (both the internal the ghost cells) into the system memory used by that processor.
+The mapper for the particle simulation is very simple - it maps one grid's tasks onto each processor and
+maps all regions for that grid (both the internal and the ghost regions) into the system memory used by that processor.
 The exchange of the ghost cell data between processors is handled by the Legion runtime as a ghost cell region
 gets alternately mapped in two different memories.
 
@@ -116,7 +114,7 @@ Figure \ref{fig:fluid_single} compares the performance of the Legion implementat
 using a relatively small problem (300K particles on a 15x21x15 array of cells).  Between 1 and 4 threads, the
 results for sapling are nearly indistinguishable, indicating 
 neither the Legion runtime nor the the restructuring of the implementation to allow multi-node scaling impose
-any significant overhead.  In fact, it's possible that the use of explicit ghost cells rather than 
+any significant overhead.  It's possible that the use of explicit ghost cells rather than 
 fine-grained sharing of cache lines might be a net win.  At 8 threads and above, the performance begins to vary.
 Both the Legion and PARSEC version on viz flatten out as they over-subscribe the 12 physical cores.  On sapling,
 which has HyperThreading enabled, deviations from linear begin sooner as the operating system's scheduler's
@@ -127,7 +125,8 @@ To measure scaling beyond a single node, three different problem sizes were run 
 \ref{fig:fluid_multi}.  For the smallest problem (300K particles), we observe a 20\% speedup when going to 1
 node to 2 (a total of 16 threads), but begin slowing down beyond that due to communication overhead - at 4 nodes
 there are twice as many ghost cells as interior grid cells.  The larger problem sizes (2.4M and 19M
-particles) do much better, with scaling of up to 5.4x when going from 1 node up to 16.
+particles) do much better, with scaling of up to 5.4x when going from 1 node up to 16 because the
+communication-to-computation ratio is lower.
 
 %Although the particle simulation being performed is on a regular array of cells, it turns out that the
 %distribution of particles amongst the cells is very irregular.  The simulation models gravity, which points in
@@ -169,8 +168,8 @@ In the third phase, cells at a coarser level that have been refined are restrict
 of the cells that they physically contain at the next finest level of refinement.
 
 Achieving high-performance on this application is particularly challenging for several reasons.  
-First, the application has a very high communication-to-computation ratio which for a fixed problem
-size begins as being memory bound, and with increasing node count becomes network bound as the
+First, the application has a very high communication-to-computation ratio which, for a fixed problem
+size begins as being memory bound and with increasing node count becomes network bound as the
 perimeter-to-area ratio of cell grids increases.  Second, when chosing how to partition cells into grids, the
 programmer must consider the locality both between cells in the same level, as well as for cells
 across levels.  In the case of cross-level cell dependences, mapping decisions must be made at runtime as the
@@ -187,12 +186,12 @@ into sub-grids to take advantage of intra-grid locality.
 Our Legion implementation performs two optimizations that allow us to achieve better performance than BoxLib.
 First, for each level of refinement we recursively partion the logical region of cells based on 
 the number of nodes in the machine and the size of the L3 cache and L2 caches.  Legion allows us to describe 
-locality at many levels of the memory hierarchy instead of just at the node-level.
+locality for many levels of the memory hierarchy instead of just at the node-level.
 
 Our second optimization takes advantage of the cross-level locality present in the application.  We implemented
 an application specific mapper that inspects the arguments of tasks to discover the relationships between
 grids at different levels of refinement.  The mapper dynamically performs intersection tests between logical regions
-containing grids of different refinement levels to determine if they overlap or not.  
+containing grids of different refinement levels to determine whether they overlap.  
 If grids from different levels overlap, the mapper
 ensures that they are always placed on the same node in the machine to leverage cross-level locality.  The mapper
 memoizes the results of these intersection tests to ammortize their cost.  The mapper also dynamically
