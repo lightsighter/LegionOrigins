@@ -41,7 +41,7 @@ to the largest or near-largest (except Keeneland which has 115 nodes, but we lim
 our runs to at most 32 nodes to get sufficient cluster time.)
 By looking at the performance of the same size problem over progressively larger
 machines, we are able to measure the strong scaling that Legion is able to
-achive.  By increasing the problem size as well, we also measure weak scaling.
+archive.  By increasing the problem size as well, we also measure weak scaling.
 
 \subsection{Circuit Simulation}
 \label{subsec:exp_ckt}
@@ -72,7 +72,7 @@ private data for a piece from one GPU to another.)  The regions for a task are m
 shown in figure \ref{fig:gpumapping}.
 
 Figure \ref{fig:ckt_speed} shows the performance of the Legion circuit simulation relative
-to a hand-coded single-GPU implmementation written in CUDA.  Each line shows the scaling of
+to a hand-coded single-GPU implementation written in CUDA.  Each line shows the scaling of
 a particular problem size as the number of nodes is varied.  Our results demonstrate
 excellent strong scaling, with speedups of 39.0X for the small problem on 48 GPUs and 
 62.5X for the larger problem size on 96 GPUs.  On a single GPU, our Legion implementation
@@ -180,7 +180,7 @@ of the cells that they physically contain at the next finest level of refinement
 Achieving high-performance on this application is particularly challenging for several reasons.  
 First, the application has a very high communication-to-computation ratio which, for a fixed problem
 size begins as being memory bound and with increasing node count becomes network bound as the
-perimeter-to-area ratio of cell grids increases.  Second, when chosing how to partition cells into grids, the
+perimeter-to-area ratio of cell grids increases.  Second, when choosing how to partition cells into grids, the
 programmer must consider the locality both between cells in the same level, as well as for cells
 across levels.  In the case of cross-level cell dependences, mapping decisions must be made at runtime as the
 location of refinements are determined based on application input.  Finally, this application has
@@ -194,7 +194,7 @@ that exists between grids from different levels of refinement.  Furthermore, Box
 into sub-grids to take advantage of intra-grid locality.
 
 Our Legion implementation performs two optimizations that allow us to achieve better performance than BoxLib.
-First, for each level of refinement we recursively partion the logical region of cells based on 
+First, for each level of refinement we recursively partition the logical region of cells based on 
 the number of nodes in the machine and the size of the L3 cache and L2 caches.  Legion allows us to describe 
 locality for many levels of the memory hierarchy instead of just at the node-level.
 
@@ -204,7 +204,7 @@ grids at different levels of refinement.  The mapper dynamically performs inters
 containing grids of different refinement levels to determine whether they overlap.  
 If grids from different levels overlap, the mapper
 ensures that they are always placed on the same node in the machine to leverage cross-level locality.  The mapper
-memoizes the results of these intersection tests to ammortize their cost.  The mapper also dynamically
+memoizes the results of these intersection tests to amortize their cost.  The mapper also dynamically
 load balances by distributing unconstrained grids from the coarsest level onto under-loaded nodes.
 
 We compared our Legion implementation against BoxLib on three different problem sizes with a fixed number

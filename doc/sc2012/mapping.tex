@@ -9,7 +9,7 @@ interface that gives a programmer total control over how these decisions are mad
 with this interface, the programmer can then specify application- or machine-specific
 mapping decisions that would be difficult for a general-purpose programming system to infer.
 In this section we describe the general mapping interface (Section \ref{sec:mapinterface}),
-our base implmentation of this interface (Section \ref{sec:defmapper}), and the benefits
+our base implementation of this interface (Section \ref{sec:defmapper}), and the benefits
 of creating custom mappers (Section \ref{sec:custommap}).
 
 \subsection{Mapping Interface}
@@ -35,12 +35,12 @@ By always returning an empty set, the mapper can disable stealing.
 
 \item {\tt map\_task\_region} - for each logical region requested for a task, the
 runtime will query the mapper for a prioritized list of memories where a physical instance for this
-task should be placed.  To aid the mapping decision the runtime provides a list of the current valid physical intances
+task should be placed.  To aid the mapping decision the runtime provides a list of the current valid physical instances
 of the logical region.  The mapper returns a list of memories in which the runtime
 should attempt to either reuse or manifest a physical instance of the logical region.  The
 runtime traverses this list and searches for a currently valid instance.  If none can be
 found, it attempts to allocate a physical instance and then issue the necessary copies
-to retrive the valid data.  If both options fail, it moves on to the next memory in the list.
+to retrieve the valid data.  If both options fail, it moves on to the next memory in the list.
 \end{itemize}
 
 There are two very elegant properties of this mapping interface.  The first property is
