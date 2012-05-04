@@ -238,14 +238,22 @@ on to $m'$.
 
 \begin{figure*}
 \centering
-\subfigure[Two independent {\tt calc\_new\_currents} tasks.]{
+
+\subfigure[Two {\tt calc\_new\_currents} tasks.]{
+\includegraphics[scale=0.45]{figs/CNC_State.pdf}
 \label{fig:depexamp:a}
 }
-\subfigure[A {\tt distribute\_charge} task depends on the previous two.]{
+\subfigure[{\tt distribute\_charge} depends on {\tt calc\_new\_currents}.]{ 
+\includegraphics[scale=0.45]{figs/DC_state.pdf}
 \label{fig:depexamp:b}
 }
-\subfigure[An {\tt update\_voltages} task depends on the previous one.]{
+\subfigure[{\tt update\_voltages} depends on {\tt distribute\_charge}.]{
+\includegraphics[scale=0.45]{figs/UV_State.pdf}
 \label{fig:depexamp:c}
+}
+\subfigure[An {\tt update\_voltages} mapping.]{
+\includegraphics[scale=0.45]{figs/UV_Update.pdf}
+\label{fig:depexamp:d}
 }
 \label{fig:depexamp}
 \caption{Dependence analysis examples from {\tt circuit\_simulation}.}
