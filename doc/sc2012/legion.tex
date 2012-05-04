@@ -79,7 +79,7 @@ distributed memory hierarchies and heterogeneous processing units.  Because the
 costs of communication within these architectures vary by several orders of magnitude, 
 the penalty for mistakes in the placement of data or computation is usually very poor performance.  Thus,
 to achieve good performance it is crucial that the programmer
-and the compiler be able to reason about {\em locality} (data resident
+and the programming system be able to reason about {\em locality} (data resident
 close to computation that uses it) and {\em independence} (computations
 operating on disjoint data, and therefore not requiring communication and able to be placed in possibly distant parts of the machine).  
 Most contemporary
@@ -106,7 +106,7 @@ values in Legion and may be dynamically allocated, deleted and stored
 in data structures. Regions can also be passed as arguments
 to distinguished functions called {\em tasks} that access the data in
 those regions, providing locality information.  Logical regions may be
-{\em partitioned} into (usually) disjoint {\em subregions}, providing
+{\em partitioned} into disjoint or aliased {\em subregions}, providing
 information for determining independence of computations.
 Furthermore, computations access logical regions with particular {\em
   privileges} ({\em read-only}, {\em read-write}, and {\em reduce}) and {\em coherence} (e.g., {\em exclusive access} and {\em
@@ -124,7 +124,7 @@ guarantees only atomicity of the tasks with respect to $r$: either task $f_1(r)$
 appears to run entirely before $f_2(r)$ or vice versa.
 
 Legion programs are written using logical regions, which do not commit
-to any particular placement of the data in the machine.  At runtime,
+to any particular layout of the data or placement of the data in the machine.  At runtime,
 each logical reagion has one or more {\em physical instances}.  Often
 logical regions correspond to a single physical instance, but it is also common and useful
 to have multiple physical copies of a logical region's contents in different parts of the machine 
@@ -182,7 +182,7 @@ not their correctness.
   versions on three different clusters of multicore processors with
   attached GPUs: a small cluster of our own (4 nodes with 12 CPUs and 2 GPUs per node), a medium-sized cluster
   designed for visualization applications (10 nodes with 12 CPUs and 5 GPUs per node), and up to a third of the
-  Keeneland supercomputer (32 nodes, 12 CPUs and 3 GPUs per node).
+  Keeneland supercomputer (32 nodes, 12 CPUs and 3 GPUs per node) \cite{Keeneland}.
 %
 % FIXME Give the same numbers as in the abstract.
 %

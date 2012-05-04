@@ -59,11 +59,8 @@ implement a new mapper with decisions specific to the new architecture.
 \subsection{Default Mapper}
 \label{sec:defmapper}
 To make writing Legion applications easier, we provide a default mapper implementation that
-can be used to get an application working quickly at a moderate performance level.  In addition,
-the default mapper serves as the base class for all custom mappers which makes implementing
-custom mappers easier as they only have to override the functions that need to be specialized.
-
-The default mapper employs a simple scheme for mapping tasks and regions.  When
+can be used to get an application working quickly at a moderate performance level.  The 
+default mapper employs a simple scheme for mapping tasks and regions.  When
 {\tt select\_initial\_processor} is invoked for the default mapper, it first checks for which kind of processors
 the task has variants (i.e. GPU).  If the fastest variant is for the kind of processor the mapper is managing
 it will choose to keep the task local, otherwise it will send the task to the closest processor of the
@@ -78,7 +75,7 @@ the same logical regions should be stolen as well.
 For calls to {\tt map\_task\_region}, the default mapper constructs a stack of memories ordered from best-to-worst
 by bandwidth from the local processor.  This stack is then returned as the location of memories to be used for
 mapping each region.  Note that this is a greedy algorithm that works well for the common case, but can cause some 
-regions to be pulled unnecessarily close to the processor and consuming precious fast memory space.  
+regions to be pulled unnecessarily close to the processor and consume precious fast memory space.  
 
 \subsection{Custom Mappers}
 \label{sec:custommap}

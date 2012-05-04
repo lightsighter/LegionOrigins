@@ -65,8 +65,8 @@ shown in figure \ref{fig:gpumapping}.
 Figure \ref{fig:ckt_speed} shows the performance of the Legion circuit simulation relative
 to a single-GPU implmementation hand-coded in CUDA.  Each line shows the scaling of
 a particular problem size as the number of nodes is varied.  Our results demonstrate
-excellent strong scaling behavior, with speedups of *??*x (compared to the single-GPU CUDA
-version) for the small problem on 48 GPUs and *??*x for the larger problem size on 96 GPUs.
+excellent strong scaling behavior, with speedups of 39.0X (compared to the single-GPU CUDA
+version) for the small problem on 48 GPUs and 62.5X for the larger problem size on 96 GPUs.
 
 Figure \ref{fig:ckt_overhead} shows the fraction of the overall simulation time (summed over
 all nodes) spent in the application kernels compared to the various pieces of the Legion
@@ -102,7 +102,7 @@ chip multiprocessor benchmark, the application divides the array into ``grids'' 
 a thread.  Per particle locking is used to safely access particles in cells that lie
 on the edge of a grid.  This fine-grained locking along with the assumption of a shared address space lead to
 good scaling in a multi-core processor, but rule out any attempt to scale beyond a single node.  To extend the
-scaling further, our port divides uses region partitioning to divide the array into grids in a similar
+scaling further, our port uses region partitioning to divide the array into grids in a similar
 way, but handles the interaction between grids in a way that doesn't rely on access to uniform shared memory.
 Instead, the Legion version of the benchmark creates explicit ghost copies of cells on the boundaries of grids
 and uses those ghost cells to exchange information between the grids.
