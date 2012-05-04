@@ -311,15 +311,12 @@ state of the node region tree is shown in Figure~\ref{fig:depexamp:c}.
 The first step in distribution is that $t$ waits for all tasks on which $t$ depends to
 map; nothing happens to $t$ during this time.  Once $t$'s mapping
 dependences are satisfied, $t$ is ready to be mapped and is placed
-in the mapping queue.
-
-Once in the mapping queue, SOOPs on other processors in the system may
+in the SOOP's mapping queue. At this point SOOPs on other processors may
 ask to steal $t$ from its home SOOP.  The home SOOP may decline the
 request, but if the request is granted, task $t$ along with a copy of
 $t$'s region forest is sent to the remote SOOP.  If $t$ has not been
 stolen when it reaches the head of the queue, the SOOP decides whether
 to execute $t$ on the local processor or send it to another processor.
-
 Thus, task distribution to processors in Legion is both ``pull'' (stealing) and ``push''.
 The various policies (whether steal requests are granted, when to send
 a task to another processor, etc.) are part of the {\em mapping interface}
@@ -336,22 +333,24 @@ and can be defined by the user (see Section~\ref{sec:mapping}).
 %from some point in time; a {\em valid} physical instance has data that reflects
 %all the updates of all previously mapped tasks.
 
-The region tree is also used to hold mapping information.  Each logical region $r$ maintains a
-list of its physical instances and which sibling tasks are using which
-instances and with what permissions.  The important correctness
-property established by stage 1 is that all
-tasks which $t$ may depend on map before $t$ maps and no task that may depend on
-$t$ maps before $t$ finishes mapping.  Thus, the region tree at the
-moment $t$ maps contains a consistent view of what the state of memory
-will be after $t$'s dependence predecessors execute.
-
 There are two steps to mapping a region $r$ used by
 task $t$.  First, the mapper must ensure there is at least one {\em valid}
-physical instance of $r$ for $t$ to use.  If an instance of a subregion of $r$ has been written by a previous task,
-for example, it is necessary to copy that subregion back to an instance of the parent $r$ so that $t$
+physical instance of $r$ for $t$ to use.  Not all intances have up-to-date
+data at all times.  For example, if an instance of a subregion of $r$ has been written by a previous task,
+it is necessary to copy that subregion back to an instance of $r$ so that $t$
 sees the correct data. In the second step, the mapping interface selects one of the
-valid physical instances of $r$ or creates a new one.  
-We focus here on the first step; the mapping interface is discussed further in Section~\ref{sec:mapping}.
+valid physical instances of $r$ for $t$ to use or creates a new one.  
+We focus on the first step; the mapping interface is discussed further in Section~\ref{sec:mapping}.
+
+Each logical region in the region tree maintains a
+list of its physical instances and which sibling tasks are using those
+instances and with what permissions.  The important correctness
+property established by stage 1 is that all
+tasks $t$ depends on map before $t$ maps and no task that depends on
+$t$ maps before $t$ finishes mapping.  Thus, the region tree when
+$t$ maps contains a consistent view of what the state of physical instances
+will be after $t$'s dependence predecessors execute.
+
 
 %For example, assume there is one physical instance $s$ of
 %logical region $r$ and that a task $t'$ that mapped prior to $t$ is recorded as writing a
@@ -368,9 +367,9 @@ We focus here on the first step; the mapping interface is discussed further in S
 %copy operation) in the memory closest to $t$'s processor.
 
 
-Detecting or creating a valid instance of $r$ is, at its core, a dependence analysis on
+Detecting or creating a valid instance of $r$ is, at its core, dependence analysis on
 physical instances and thus similar to the mapping dependence analysis on logical
-regions described in Section~\ref{sec:dep}.  Consider any task $t'$ using
+regions in Section~\ref{sec:dep}.  Consider any task $t'$ using
 physical instance $s'$ of logical region $r'$ in the region tree.  There are four cases.
 \begin{enumerate}
 \item If $t'$ has only read privileges
@@ -378,11 +377,10 @@ for $r'$ it cannot invalidate any instance of $r$.
 
 \item If $t'$ has read/write privileges for $r'$, and $r$ aliases $r'$,
    then $s'$ must be copied to an instance $s''$ of
-  $\lca{r}{r'}$ and a fresh instance of $r'$ created from $s''$.
+  $\lca{r}{r'}$ and a fresh instance of $r$ created from $s''$.
 %  (if either $r = \lca{r}{r'}$ or $r' = \lca{r}{r'}$ one of the two
 %  copies is omitted)
-Instance $s'$ is removed from the region tree
-  but not deallocated (see Section~\ref{sec:clean}).
+Instance $s'$ is removed from the region tree.
 
 \item If $t'$ has reduce privileges for $r'$ and $t$ has reduce
   privileges for $r$ and both use the same reduction operator, then
@@ -396,11 +394,11 @@ Instance $s'$ is removed from the region tree
   or reduce privileges with a different operator than $t'$
   for $r$, and $r$ aliases $r'$, then $s'$ must be
   reduced (using $t'$'s reduction operator) to an instance $s''$ of
-  $\lca{r}{r'}$ and then a fresh instance of $r'$ created from $s''$.
+  $\lca{r}{r'}$ and then a fresh instance of $r$ created from $s''$.
 %  (If $r' = \lca{r}{r'}$ the reduction is unneeded, and if $r =
 %  \lca{r}{r'}$ the copy is unneeded.) 
 Instance $s'$ is removed from the region
-  tree but not deallocated.
+  tree.
 \end{enumerate}
 
 %Not all of these cases can occur simultaneously for a particular
@@ -410,10 +408,10 @@ Instance $s'$ is removed from the region
 %one or more reducers (cases 2 and 4).  
 To map $r$, we walk from $r$'s
 root ancestor in the region forest to $r$, along the way exploring
-off-path subtrees to find region instances satisfying cases 3 and
+off-path subtrees to find region instances satisfying cases 2 and
 4. The details and analysis are similar to the implementation of dependence
 analysis in Section~\ref{sec:dep}; the amortized work per region mapped
-is proportional to the depth of the region tree.
+is proportional to the depth of the region forest.
 
 As part of the walk any required copy and reduction operations are
 issued to construct a valid instance of $r$.  These operations are
@@ -435,7 +433,7 @@ wire regions are mapped to the $i$th GPU's DRAM and simply left there
 for all three phases of the simulation.  The $i$th shared and ghost
 regions are mapped to zero-copy memory most of the time, but, as just
 illustrated, must be reduced out to the all-shared node region in the
-global (GASNet) memory and then a new instance of the shared
+global memory (which is managed by GASNet) and then a new instance of the shared
 subregions created with the updated information before the {\tt
   update\_voltages} tasks execute.  A similar situation arises before
 {\tt calc\_new\_currents} tasks run again: the updates to the shared
@@ -460,7 +458,7 @@ the SOOP using $t$ as the parent task and $t$'s region arguments as the roots of
 \subsection{Stage 5: Clean-Up}
 \label{sec:clean}
 
-Once task $t$ is done executing its state can be reclaimed Dependence
+Once task $t$ is done executing its state is reclaimed. Dependence
 and mapping information is removed from the region tree (it can
 usually be removed even earlier).  The most involved aspect of
 clean-up is collecting physical instances that are no longer in use,
