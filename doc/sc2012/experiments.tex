@@ -2,15 +2,25 @@
 \label{sec:exp}
 
 The efficiency and scalability of Legion was examined by measuring the performance
-of three applications on three clusters.  Table \ref{table:systems} summarizes 
+of three applications on three clusters.  The table in Figure~\ref{fig:systems} summarizes 
 the three clusters that were used.
 
-\begin{tabular}{lccccc}
- & Nodes & CPUs/Node & GPUs/Node & DRAM/Node & Infiniband \\
-sapling & 4 & 2x Xeon 5680 (HT enabled) & 2x Tesla C2070 & 48 GB & 2x QDR \\
-viz & 10 & 2x Xeon 5680 (HT disabled) & 5x Quadro Q5000 & 24 GB & QDR \\
-keeneland & 32* & 2x Xeon 5660 (HT disabled) & 3x Tesla M2090 & 24 GB & QDR 
+\begin{figure}
+{\footnotesize
+\begin{tabular}{l|ccc}
+Cluster & Sapling & Viz & Keeneland \\
+\midrule
+Nodes   &   4     &  10 &  32 (120) \\
+CPUs/Node & 2x Xeon 5680 & 2x Xeon 5680 & 2x Xeon 5660 \\
+HyperThreading & on & off & off \\
+GPUs/Node & 2x Tesla C2070 & 5x Quadro Q5000 & 3x Tesla M2090 \\
+DRAM/Node & 48 GB & 24 GB & 24 GB \\
+Infiniband & 2x QDR & QDR & QDR \\
 \end{tabular}
+}
+\label{fig:systems}
+\caption{Configurations of Systems Used for Experiments}
+\end{figure}
 
 Nodes with multiple instances of different resources are a challenge for 
 existing programming models that have a flat model of the system (e.g. MPI).
