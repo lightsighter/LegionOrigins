@@ -3,8 +3,8 @@
 
 Listing~\ref{lst:code_ex} shows code for an electrical
 circuit simulation, which takes a collection of
-of wires and nodes where wires meet.  
-The simulation repeatedly updates
+wires and nodes where wires meet.  
+The simulation repeatedly calculates 
 currents, distributes charges, and updates voltages for as many
 time steps as the simulation demands.  
 
@@ -68,7 +68,8 @@ accesses and the privileges and coherence it requires of those regions.
 In this case, the {\tt RWE} annotation specifies that the function
 accesses the regions {\tt c.r\_all\_nodes} and {\tt c.r\_all\_wires}
 with read-write privileges and {\em exclusive} coherence (i.e., no other
-function can access these two regions concurrently).  The simulation 
+task can access these two regions concurrently or be reordered around this
+task if they use either of the regions).  The simulation 
 reads and writes all nodes and wires, and it must be done
 with exclusive access to ensure correct results.  Privileges specify what
 the function can do with the regions; coherence specifies what other
@@ -82,7 +83,7 @@ array of pieces (constructed on lines 27-30 from the partitions),
 spawning a task for each piece.  There are no explicit requests for
 parallel execution ({\tt spawn} simply indicates a task call and does
 not require parallel execution) nor is there synchronization required
-between the passes.  Both the fact that the tasks can be run in
+between the passes.  Which tasks can be run in
 parallel within a pass and the required inter-pass dependencies are
 determined automatically by the Legion runtime based on the region
 access annotations on the task declarations.  The tasks spawned on
