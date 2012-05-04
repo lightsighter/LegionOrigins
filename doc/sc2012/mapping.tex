@@ -1,3 +1,97 @@
 \section{Mapping}
 \label{sec:mapping}
 
+While the Legion programming model describes locality and independence information abstractly,
+to run a Legion application on a machine we must make concrete decisions about
+where tasks will be run and where region instances will be placed.  Instead of placing
+the burden of decision making on the programming system, we introduce a programmable mapping
+interface that gives a programmer total control over how these decisions are made.  Armed
+with this interface, the programmer can then specify application- or machine-specific
+mapping decisions that would be difficult for a general-purpose programming system to infer.
+In this section we describe the general mapping interface (Section \ref{sec:mapinterface}),
+our base implmentation of this interface (Section \ref{sec:defmapper}), and the benefits
+of creating custom mappers (Section \ref{sec:custommap}).
+
+\subsection{Mapping Interface}
+\label{sec:mapinterface}
+A mapper is any object that implements the mapping interface.  The mapping interface
+consists of ten function calls that the runtime will make to request direction from
+the programmer about how a program should be executed.  To aid in performing the 
+decisions made in these calls the mapper has access to a simple 
+interface for inspecting the properties of the machine on which it is running.  This includes 
+information about all the processors and their kinds (i.e. CPU,GPU), as well as the memories visible
+to each processor and their latencies and bandwidths.  For brevity we only
+discuss three of the mapping interface calls.
+
+\begin{itemize}
+\item {\tt select\_initial\_processor} - for each task the runtime system will
+ask the mapper to which processor the task should be sent.  The mapper 
+can choose to keep the task on the local processor or send it to any other processor
+in the system.
+
+\item {\tt permit\_task\_steal} - when handling a steal request from another processor
+the runtime will ask the mapper to decide which tasks are allowed to be stolen.  
+By always returning an empty set, the mapper can disable stealing.
+
+\item {\tt map\_task\_region} - for each logical region requested for a task, the
+runtime will query the mapper for a prioritized list of memories where a physical instance for this
+task should be placed.  To aid the mapping decision the runtime provides a list of the current valid physical intances
+of the logical region.  The mapper returns a list of memories in which the runtime
+should attempt to either reuse or manifest a physical instance of the logical region.  The
+runtime traverses this list and searches for a currently valid instance.  If none can be
+found, it attempts to allocate a physical instance and then issue the necessary copies
+to retrive the valid data.  If both options fail, it moves on to the next memory in the list.
+\end{itemize}
+
+There are two very elegant properties of this mapping interface.  The first property is
+that all decisions made by a mapper are orthogonal to the correctness of the program and can only 
+impact performance.  Regardless of where a mapper chooses to place a task or map a region, 
+the runtime will always schedule tasks and copies in accordance with the privileges and 
+coherence properties specified in the Legion program.  Therefore when writing an application
+in Legion, a programmer can begin by using the default mapper and later optimize his program
+by creating a custom mapper and gradually refining its mapping decisions.
+
+The second useful property of the mapping interface is that it isolates machine-specific decisions
+to a specific module of code.  As a result, Legion programs are highly
+portable.  To port a Legion program to a new architecture, a programmer only has to
+implement a new mapper with decisions specific to the new architecture. 
+
+\subsection{Default Mapper}
+\label{sec:defmapper}
+To make writing Legion applications easier, we provide a default mapper implementation that
+can be used to get an application working quickly at a moderate performance level.  In addition,
+the default mapper serves as the base class for all custom mappers which makes implementing
+custom mappers easier as they only have to override the functions that need to be specialized.
+
+The default mapper employs a simple scheme for mapping tasks and regions.  When
+{\tt select\_initial\_processor} is invoked for the default mapper, it first checks for which kind of processors
+the task has variants (i.e. GPU).  If the fastest variant is for the kind of processor the mapper is managing
+it will choose to keep the task local, otherwise it will send the task to the closest processor of the
+fastest variant kind.
+
+The default mapper employs a Cilk-like algorithm for task stealing\cite{CILK95}.  Tasks are kept local
+to their target processor whenever possible and only moved when stolen.  Unlike Cilk, the default mapper
+has the information necessary for locality-aware stealing.  When {\tt permit\_task\_steal} is called for a task, 
+the default mapper inspects the logical regions for the task being stolen, and will mark that other tasks using 
+the same logical regions should be stolen as well.
+
+For calls to {\tt map\_task\_region}, the default mapper constructs a stack of memories ordered from best-to-worst
+by bandwidth from the local processor.  This stack is then returned as the location of memories to be used for
+mapping each region.  Note that this is a greedy algorithm that works well for the common case, but can cause some 
+regions to be pulled unnecessarily close to the processor and consuming precious fast memory space.  
+
+\subsection{Custom Mappers}
+\label{sec:custommap}
+To optimize a Legion program or library, programmers can create one or more custom mappers.  
+For each Legion task call the programmer specifies which mapper should be invoked by the runtime for
+mapping that particular task.  This allows for the composition of Legion applications and libraries
+each with their own custom mappers.
+
+Each custom mapper extends the default mapper.  A programmer only has to override the functions necessary 
+for creating a custom mapping.  Custom mappers can be used to create totally static mappings, 
+mappings that memoize their results, or even totally dynamic mappings.  We describe examples of 
+custom mappers in Section \ref{sec:exp}.
+
+
+
+
