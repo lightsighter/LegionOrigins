@@ -53,12 +53,11 @@ By increasing the problem size as well, we also measure weak scaling.
 \label{subsec:exp_ckt}
 
 The first experiment we investigate is the distributed circuit simulation described in 
-Section~\ref{sec:ex}.  The Legion runtime handles all of the resource allocation, 
+Section~\ref{sec:ex}.  The Legion SOOP runtime handles all of the resource allocation, 
 scheduling, and data movement across the cluster of GPUs.  In particular,  
 Legion's ability to efficiently move the irregularly partitioned
 shared data around the system while keeping the private nodes and wires resident in
-each GPU's framebuffer memory is critical to keeping the overhead low and achieving 
-good scalability.
+each GPU's framebuffer memory is critical to achieving good scalability.
 
 Circuits of two different sizes were simulated.  The first had 480K wires, connecting
 120K nodes.  The second is twice as large, with nearly 1M wires connecting 
@@ -94,8 +93,8 @@ is within 5\% of the performance of the hand-coded simulation.
 
 Figure~\ref{fig:ckt_overhead} shows the fraction of the overall simulation time (summed over
 all nodes) spent in the application kernels compared to the various pieces of the Legion
-runtime.  As the node count increases, the non-communication overhead stays relatively constant.
-As expected the communication overhead grows linearly with number of nodes.
+SOOP runtime.  As the node count increases, the non-communication overhead stays relatively constant.
+As expected the communication overhead grow linearly with number of nodes.
 
 \begin{figure}
 \subfigure[Circuit simulation speed relative to single-GPU implementation.]
@@ -124,13 +123,14 @@ Our second experiment is a port of the \emph{fluidanimate} benchmark from the PA
 which does a particle-based simulation of an incompressible fluid.  Each particle interacts only with other nearby
 particles. The benchmark divides the space in which the fluid can move into a three-dimensional array of cells 
 such that the range of interaction is limited to just the
-cells adjacent (including diagonals) to the one a particle resides in.  Originally designed to be a
-chip multiprocessor benchmark, the application divides the array into {\em grids} and assigns each one to 
+cells adjacent (including diagonals) to the one a particle resides in.  The application divides the array 
+into {\em grids} and assigns each one to 
 a thread.  Per cell locking is used to safely access particles in cells that lie
-on the edge of a grid.  This fine-grained locking scheme along with the assumption of a shared address space lead to
-good scaling in a multi-core processor, but rule out any attempt run beyond a single node.  To extend the
-scaling further, our port uses region partitioning to divide the array into grids in a similar
-way, but handles the interaction between grids in a way that doesn't rely on access to uniform shared memory.
+on the edge of a grid.  This fine-grained locking scheme along with the assumption of a shared address space leads to
+good scaling in a multi-core processor, but rules out any attempt run beyond a single node.  
+
+To extend the scaling further, our port uses region partitioning to divide the array into grids in a similar
+way, but handles the interaction between grids in a way that doesn't rely on access to shared memory.
 Instead, the Legion version of the benchmark creates explicit ghost copies of cells on the boundaries of grids
 and uses those ghost cells to exchange information between the grids.
 
@@ -141,11 +141,12 @@ gets alternately mapped in two different memories.
 
 Figure~\ref{fig:fluid_single} compares the performance of the Legion implementation against the PARSEC version,
 using a relatively small problem (300K particles on a 15x21x15 array of cells).  Between 1 and 4 threads, the
-results for sapling are nearly indistinguishable, indicating 
-neither the Legion runtime nor the the restructuring of the implementation to allow multi-node scaling impose
-any significant overhead.  It's possible that the use of explicit ghost cells rather than 
-fine-grained sharing of cache lines might be a net win.  At 8 threads and above, the performance begins to vary.
-Both the Legion and PARSEC version on viz flatten out as they over-subscribe the 12 physical cores.  On sapling,
+results for Sapling are nearly indistinguishable, indicating 
+neither the Legion runtime nor the restructuring of the implementation to allow multi-node scaling impose
+any significant overhead.  
+%It's possible that the use of explicit ghost cells rather than fine-grained sharing of cache lines might be a net win.  
+At 8 threads and above, the performance begins to vary.
+Both the Legion and PARSEC version on Viz flatten out as they over-subscribe the 12 physical cores.  On Sapling,
 which has HyperThreading enabled, deviations from linear begin sooner as the operating system's scheduler's
 thread placement choices begin to matter.
 
@@ -154,8 +155,8 @@ To measure scaling beyond a single node, three different problem sizes were run 
  For the smallest problem (300K particles), we observe a 20\% speedup when going to 1
 node to 2 (a total of 16 threads), but begin slowing down beyond that due to communication overhead - at 4 nodes
 there are twice as many ghost cells as interior grid cells.  The larger problem sizes (2.4M and 19M
-particles) do much better, with scaling of up to 5.4x when going from 1 node up to 16 because the
-communication-to-computation ratio is lower.
+particles) do much better, with scaling of up to 5.4x when going from 1 node up to 16 because of a lower 
+communication-to-computation ratio.
 
 %Although the particle simulation being performed is on a regular array of cells, it turns out that the
 %distribution of particles amongst the cells is very irregular.  The simulation models gravity, which points in
@@ -192,7 +193,7 @@ BoxLib project \cite{BoxLib}.  This application is a three-level adaptive-mesh-r
 code that computes a first order stencil on a 2D mesh of cells.  The simulation iterates for many time
 steps.  Updating the simulation for one time step consists of three phases.  In the first phase,
 the boundary cells around a box at a refined level linearly interpolate their values from the nearby cells at the
-next coarsest level.  The second phase computes the stencil computation on each cell in all levels.
+next coarsest level.  The second phase performs the stencil computation on each cell in every level.
 In the third phase, cells at a coarser level that have been refined are restricted to the average
 of the cells that they physically contain at the next finest level of refinement.
 
@@ -218,7 +219,7 @@ the number of nodes in the machine and the size of the L3 cache and L2 caches.  
 locality for many levels of the memory hierarchy instead of just at the node-level.
 
 Our second optimization takes advantage of the cross-level locality present in the application.  We implemented
-an application specific mapper that inspects the arguments of tasks to discover the relationships between
+an application specific mapper that dynamically discovers the relationships between
 grids at different levels of refinement.  The mapper dynamically performs intersection tests between logical regions
 containing grids of different refinement levels to determine whether they overlap.  
 If grids from different levels overlap, the mapper
@@ -228,7 +229,7 @@ load balances by distributing unconstrained grids from the coarsest level onto u
 
 We compared our Legion implementation against BoxLib on three different problem sizes with a fixed number
 of cells per level of refinement, but with randomly chosen refinements locations.  BoxLib also supports OpenMP
-and we took their best number from using 1, 2, 4, or 8 OpenMP threads per node.  Our Legion implementation
+and we took their best performance from using 1, 2, 4, or 8 threads per node.  Our Legion implementation
 always uses one thread per node to illustrate that in this application locality is significantly more important 
 than parallelism.  The results from our experiments on all three clusters can be seen in Figure~\ref{fig:amr_total}. 
 

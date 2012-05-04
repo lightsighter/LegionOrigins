@@ -43,7 +43,7 @@ void simulate_circuit(Circuit c, float dt) : RWE(c.r_all_nodes,c.r_all_wires)
   for(i = 0; i #$<$# MAX_PIECES; i++) 
     pieces[i] = { rn_pvt: p_pvt_nodes[i], rn_shr: p_shr_nodes[i],
                   rn_ghost: p_ghost_nodes[i], rw_pvt: p_wires[i] };
-  while(!done) {
+  for (t = 0; t #$<$# TIME_STEPS; t++) {
     spawn (i = 0; i #$<$# MAX_PIECES; i++) calc_new_currents(pieces[i]);
     spawn (i = 0; i #$<$# MAX_PIECES; i++) distribute_charge(pieces[i], dt);
     spawn (i = 0; i #$<$# MAX_PIECES; i++) update_voltages(pieces[i]);
