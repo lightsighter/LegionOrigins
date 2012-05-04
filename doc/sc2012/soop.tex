@@ -20,30 +20,31 @@ allocating resources to and issuing tasks that must wait because they have data 
 finished executing.   Pipelining and distributing the SOOP further improves throughput and hides latency.
 
 To solve the first problem, detecting and enforcing data dependences
-efficiently at run time, the SOOP analyzes, for each task $t$, the
-permissions on the regions $t$ uses and ensures that $t$ waits on any
+efficiently at run time, the SOOP considers, for each task $t$, the
+the regions $t$ uses and ensures that $t$ waits on any
 earlier task whose region uses may conflict with $t$'s.  There is a
-difficulty, however.  Recall that the programmer's regions are
-logical: a region names a set of objects, but a region does not say
-where those objects are physically allocated.
-Thus, to {\em map} $t$ (assign physical instances for each logical region used by $t$) the SOOP must know
-both what tasks $t$ depends on how those other tasks are mapped.
+difficulty, however.  The programmer's regions are logical; a region
+names a set of objects, but does not say where those objects
+are located.  To ensure dependences are satisfied the SOOP must also {\em map} $t$: assign an
+appropriate physical instance to each of $t$'s logical region.  Thus, dependence
+analysis requires knowing both which tasks $t$ depends on and how those
+other tasks are mapped.
 
 Our SOOP design solves this problem by dividing the analysis of
 dependences between two pipeline stages.  The first SOOP stage
-computes task dependences at the granularity of logical regions (Section~\ref{sec:dep}).  This
-does not give enough information to map $t$, but it does identify the
-other tasks that must map before $t$ can map. 
-The third SOOP stage
-maps $t$ by carrying out a more refined analysis of the (already
-mapped) tasks on which $t$ depends (Section~\ref{sec:map}).
-Between these stages, the second stage distributes tasks to other processors
-to improve locality or load balance the machine (Section~\ref{sec:dist}).
-Once the task has been assigned a processor and physical regions it is executed
-using deferred execution (Section~\ref{sec:exec}).  The fifth and final SOOP stage
-reclaims resources from completed tasks (Section~\ref{sec:clean}).
+computes task dependences at the granularity of logical regions
+(Section~\ref{sec:dep}), which does not give enough information to map
+$t$, but does identify other tasks that must map before $t$ can map.
+The third SOOP stage maps $t$ by carrying out a more refined analysis
+of the (already mapped) tasks on which $t$ depends
+(Section~\ref{sec:map}).  Between these stages, the second stage
+distributes tasks to other processors (Section~\ref{sec:dist}).  Once
+a task has been assigned a processor and physical instancess it is
+issued for deferred execution (Section~\ref{sec:exec}).  The final
+SOOP stage reclaims resources from completed tasks
+(Section~\ref{sec:clean}).
 
-\subsection{Stage 1: Mapping Depedences}
+\subsection{Stage 1: Mapping Dependences}
 \label{sec:dep}
 
 
@@ -199,24 +200,24 @@ there is a dependence and the {\tt update\_voltages} task can only map after the
 We can now describe the algorithm for the dependence analysis phase of
 the SOOP.  The SOOP maintains a local region forest for each task $t$,
 the roots of which are $t$'s region arguments and including all
-partitions and subregions used within the task.  Dependence analysis
-decorates the region tree with the subtasks of $t$, maintaining the
-following invariant. Let $r'$ be a region argument to subtask $t'$,
-and let $R$ be the set of regions $r''$ such that $r''$ is an argument
-to a task $t''$ registered after $t'$ and $t''$ depends on $t'$
+partitions and subregions used by $t$.  Dependence analysis
+places the child tasks of $t$ on the regions they use, maintaining the
+following invariant. Let $r'$ be a region used by child task $t'$,
+and let $R$ be the set of regions $r''$ such that $r''$ is used
+by a task $t''$ registered after $t'$ and $t''$ depends on $t'$
 because of overlap between $r''$ and $r'$.  Then $t'$ is listed on the
 region that is the least common ancestor of the set $R \cup \{r'\}$.
-Moving $t'$ to an ancestor of $r'$ has the effect of coarsening the
-dependences involving $t'$ for tasks registered in the future, and
+Placing $t'$ on an ancestor of $r'$ has the effect of coarsening the
+dependences involving $t'$, which
 this can result in false dependences.  However, the loss of
 information can be shown to be small and only affects when $t$ can
-map; any loss of information here will be recovered in the mapping
+map; any information lost is recovered in the subsequent mapping
 phase.  Furthermore, the benefit is that it dramatically speeds up
 dependence analysis overall.
 
 We can identify all mappoing dependences between sibling tasks and place tasks
 in the correct place in the region tree in amortized time ${\cal O}(d)$ per region,
-whre $d$ is the depth of the region tree.  For region $r'$ an argument of task $t'$, the analysis
+where $d$ is the depth of the region tree.  For region $r'$ an argument of task $t'$, the analysis
 walks the unique path in the region forest from a root to $r'$.  For each node $m$
 on the walk from the root to $r'$ the following actions are taken:
 \begin{itemize}
@@ -261,13 +262,14 @@ dependent tasks.  The off-path work is proportional to how far a task
 is moved back up the region tree.  Thus, for each region argument a
 task is initially placed at some depth in the tree and subsequently
 only moved up towards the root, so the overall work per region is (amortized)
-${\cal O}(d)$.  In practice, we have found this level of efficiency,
-where analyzing mapping dependences is linear in the number regions used (and not the square) and
-proportional to the depth of the region tree (and not its size)
-to be very important in minimizing the overhead of the SOOP.
+${\cal O}(d)$.  
+%In practice, we have found this level of efficiency,
+%where analyzing mapping dependences is linear in the number regions used (and not the square) and
+%proportional to the depth of the region tree (and not its size)
+%to be very important in minimizing the overhead of the SOOP.
 
-We now illustrate dependence analysis using the four tasks discussed
-above.  Many more tasks are executed by the circuit simulation in Listing~\ref{lst:code_ex},
+We illustrate dependence analysis using the four tasks discussed
+above.  Many more tasks are executed by the circuit simulation,
 but this subset illustrates the important
 points. Figure~\ref{fig:depexamp} shows the node region tree in three
 stages.  In Figure~\ref{fig:depexamp:a}, the two tasks
@@ -282,20 +284,13 @@ $d_0$ to also be moved to {\tt p\_nodes\_pvs[1]} for essentially the same reason
 state of the node region tree is shown in Figure~\ref{fig:depexamp:c}.
 
 
-\subsection{Distribution}
+\subsection{Stage 2: Distribution}
 \label{sec:dist}
 
-Once task $t$'s dependences have been analyzed, the distribution phase
-determines on which processor $t$ will run.  Subsequently the
-mapping phase chooses the physical instances of its logical
-regions that $t$ will use.  However, in choosing the processor and
-physical instances for $t$, it is helpful to know the processors and
-physical instances used by the tasks $t$ depends on---and not just for
-performance, but for correctness.  Thus, the first step in
-distribution is that $t$ waits for all tasks on which $t$ depends to
+The first step in distribution is that $t$ waits for all tasks on which $t$ depends to
 map; nothing happens to $t$ during this time.  Once $t$'s mapping
-dependences are satisfied, $t$ is ready to be mapped and places
-itself in the mapping queue.
+dependences are satisfied, $t$ is ready to be mapped and is placed
+in the mapping queue.
 
 Once in the mapping queue, SOOPs on other processors in the system may
 ask to steal $t$ from its home SOOP.  The home SOOP may decline the
@@ -306,91 +301,99 @@ to execute $t$ on the local processor or send it to another processor.
 
 Thus, task distribution to processors in Legion is both ``pull'' (stealing) and ``push''.
 The various policies (whether steal requests are granted, when to send
-a task to another processor and which processor to send it to, and when to
-try to steal tasks from other SOOPs) are part of the {\em mapping interface}
+a task to another processor, etc.) are part of the {\em mapping interface}
 and can be defined by the user (see Section~\ref{sec:mapping}).
 
 
-\subsection{Mapping}
+\subsection{Stage 3: Mapping}
 \label{sec:map}
 
-After a processor $p$ is chosen for a task, $t$ executes entirely on $p$.
-Before execution, however, we must {\em map} $t$, i.e., choose the
-physical instances for $t$'s logical regions.  A physical instance is assigned
-to a particular memory in the machine and holds a snapshot of the region's data
-from some point in time; a {\em valid} physical instance has data that reflects
-all the updates of all previously mapped tasks.
+%After a processor $p$ is chosen for a task, $t$ executes entirely on $p$.
+%nBefore execution, however, we must {\em map} $t$, i.e., choose the
+%physical instances for $t$'s logical regions.  A physical instance is assigned
+%to a particular memory in the machine and holds a snapshot of the region's data
+%from some point in time; a {\em valid} physical instance has data that reflects
+%all the updates of all previously mapped tasks.
 
-The region tree used to calculate logical dependences for $t$ is also
-used to hold mapping information.  Each logical region $r$ maintains a
+The region tree is also used to hold mapping information.  Each logical region $r$ maintains a
 list of its physical instances and which sibling tasks are using which
 instances and with what permissions.  The important correctness
-property established by the dependence analysis phase is that all
+property established by stage 1 is that all
 tasks $t$ depends on map before $t$ maps and no task that depends on
 $t$ maps before $t$ finishes mapping.  Thus, the region tree at the
 moment $t$ maps contains a consistent view of what the state of memory
-will be after $t$'s dependence predecessors have executed.
+will be after $t$'s dependence predecessors execute.
 
-There are two steps to mapping a particular region argument $r$ of
+There are two steps to mapping a region $r$ used by
 task $t$.  First, the mapper must ensure there is at least one {\em valid}
-physical instance of $r$.  For example, assume there is one physical instance $s$ of
-logical region $r$ and that a task $t'$ that mapped prior to $t$ is recorded as writing a
-physical instance $s_i$ of subregion $r_i$ of $r$.  At this point there
-is no valid instance of $r$, because $s$ does not include
-the updates to $s_i$.  To restore $s$ to a valid instance of $r$ the
-system must shedule an operation after $t'$ to copy
-$s_i$ back into $s$.  
+physical instance of $r$.  If an instance of a subregion of $r$ has been written by a previous task,
+for example, it is necessary to copy that subregion back to an instance of the parent $r$ so that $t$
+sees the correct data. In the second step, the mapping interface selects one of the
+valid physical instances of $r$ or creates a new one.  
+We focus here on the first step; the mapping interface is discussed further in Section~\ref{sec:mapping}.
 
-In the second step, the mapping interface is used to select one of the
-valid physical instances of $r$ or to create a new one.  Typical
-policies are to to choose the existing physical instance that is
-closest to $t$'s processor, or to create a new instance (by issuing a
-copy operation) in the memory closest to $t$'s processor.
-We focus here on the first step, establishing a valid physical instance.
-The mapping interface is discussed further in Section~\ref{sec:mapping}.
+%For example, assume there is one physical instance $s$ of
+%logical region $r$ and that a task $t'$ that mapped prior to $t$ is recorded as writing a
+%physical instance $s_i$ of subregion $r_i$ of $r$.  At this point there
+%is no valid instance of $r$, because $s$ does not include
+%the updates to $s_i$.  To restore $s$ to a valid instance of $r$ the
+%system must shedule an operation after $t'$ to copy
+%$s_i$ back into $s$.  
 
-Detecting or creating a valid instance is, at its core, a dependence analysis on
+
+%Typical
+%policies are to to choose the existing physical instance that is
+%closest to $t$'s processor, or to create a new instance (by issuing a
+%copy operation) in the memory closest to $t$'s processor.
+
+
+Detecting or creating a valid instance of $r$ is, at its core, a dependence analysis on
 physical instances and thus similar to the mapping dependence analysis on logical
-regions already described in Section~\ref{sec:dep}.  Consider any task $t'$ using
-physical instance $s'$ of logical region $r'$.  There are four cases.
+regions described in Section~\ref{sec:dep}.  Consider any task $t'$ using
+physical instance $s'$ of logical region $r'$ in the region tree.  There are four cases.
 \begin{enumerate}
-\item If $t'$ has only read permission
-for $r'$ it cannot invalidate any instance of region $r$ and nothing needs to be done.
+\item If $t'$ has only read privileges
+for $r'$ it cannot invalidate any instance of $r$.
 
-\item If $t'$ has reduce permission for $r'$ and $t$ has reduce
-  permission for $r$ and both use the same reduction operator, then
-  nothing needs to be done.  This is the only case in which a writer
+\item If $t'$ has read/write privileges for $r'$, and $r, r'$ may
+  overlap (i.e., $\lca{r}{r'}$ is a region or aliased
+  partition), then $s'$ must be copied to an instance $s''$ of
+  $\lca{r}{r'}$ and a fresh instance of $r'$ created from $s''$.
+%  (if either $r = \lca{r}{r'}$ or $r' = \lca{r}{r'}$ one of the two
+%  copies is omitted)
+Instance $s'$ is removed from the region tree
+  but not deallocated (see Section~\ref{sec:clean}).
+
+\item If $t'$ has reduce privileges for $r'$ and $t$ has reduce
+  privileges for $r$ and both use the same reduction operator, then
+  nothing is done.  This is the only case in which a writer
   does not require a valid instance---because reductions can be
-  reordered, the recombining of the instances of $r$ and $r'$ (if they
+  reordered, combining the instances of $r$ and $r'$ (if they
   overlap) can be deferred to a later consumer of the data (see case
   4).
 
-\item If $t'$ has write permission for $r'$ and $r$ and $r'$ may
-  overlap (i.e., $\lca{r}{r'}$ is either a region or an aliased
-  partition), then $s'$ must be copied to an instance $s''$ of
-  $\lca{r}{r'}$ and then a fresh instance of $r'$ created from $s''$
-  (if either $r = \lca{r}{r'}$ or $r' = \lca{r}{r'}$ one of the two
-  copy operations is omitted).
- IS s' REMOVED FROM THE TREE?
-
-\item If $t'$ has reduce permission for $r'$, $t$ has read or write
-  permission for $r$, and $r$ and $r'$ may overlap, then $s'$ must be
+\item If $t'$ has reduce privilege for $r'$ and $t$ has read, write, 
+  or reduce privileges with a different operator than $t'$
+  for $r$, and $r$ and $r'$ may overlap, then $s'$ must be
   reduced (using $t'$'s reduction operator) to an instance $s''$ of
   $\lca{r}{r'}$ and then a fresh instance of $r'$ created from $s''$.
-  (If $r' = \lca{r}{r'}$ the reduction is unneeded, and if $r =
-  \lca{r}{r'}$ the copy is unneeded.)
- IS s' REMOVED FROM THE TREE?
+%  (If $r' = \lca{r}{r'}$ the reduction is unneeded, and if $r =
+%  \lca{r}{r'}$ the copy is unneeded.) 
+Instance $s'$ is removed from the region
+  tree but not deallocated.
 \end{enumerate}
 
-Not all of these cases can occur simultaneously for a particular
-region argument $r$ of task $t$.  There may always be multiple
-previous readers (case 1), but the mapping dependence analysis
-guarantees that there would only be one previous writer (case 3) or
-one or more reducers (cases 2 and 4).  To map $r$, we walk from $r$'s
+%Not all of these cases can occur simultaneously for a particular
+%region argument $r$ of task $t$.  There may always be multiple
+%previous readers (case 1), but the mapping dependence analysis
+%guarantees that there would only be one previous writer (case 3) or
+%one or more reducers (cases 2 and 4).  
+To map $r$, we walk from $r$'s
 root ancestor in the region forest to $r$, along the way exploring
 off-path subtrees to find region instances satisfying cases 3 and
-4; the details are similar to the implementation of dependence
-analysis in Section~\ref{sec:dep}.  
+4. The details and analysis are similar to the implementation of dependence
+analysis in Section~\ref{sec:dep}; the amortized work per region mapped
+is proportional to the depth of the region tree.
 
 As part of the walk any required copy and reduction operations are
 issued to construct a valid instance of $r$.  These operations are
@@ -399,49 +402,25 @@ copy or reduce. Similarly, the start of $t$'s execution is made
 dependent on completion of the copies/reductions that construct the
 instance of $r$ it will use.
 
-%
-%possibly make this consistent with the way we actually map circuit?
-%
-Consider again the four example tasks from Listing~\ref{lst:code_ex}.
-We focus only on the mapping of the node regions of the region tree in
-Figure~\ref{sfig:part_fig:tree}.  For this example, we assume a simple 
-machine with $n$ processors each with a local memory, and we map the $i$th
-piece of the circuit to the $i$th processor's memory.  Thus, all the
-region arguments of 
-{\tt cal\_new\_currents(pieces[0])}
-and
-{\tt cal\_new\_currents(pieces[1])}
-are mapped to instances in the memory's of processor's 0 and 1, respectively.  The tasks themselves
-are also mapped to processors 0 and 1, respectively.
+Figure~\ref{fig:depexamp:c} shows part of the mapping of task {\tt update\_voltages[0]}; we focus
+only on the shared nodes.
+Because the immediately preceding {\tt distribute\_charges} tasks all performed the same reduction
+on the shared and ghost nodes they were allowed to run in parallel.  But {\tt update\_voltages[0]}
+needs read/write privilege for {\tt pieces[0].rn\_shr}, which forces all of the reductions to be merged
+back to an instance of the {\tt all-shared} nodes region, from which a new instance of {\tt pieces[0].rn\_shr} is copied and used by {\tt update\_voltages[0]}.
 
-When {\tt distribute\_charge(pieces[0])} executes, it uses the same
-instances on processor 0 and the task also runs on processor 0.
-Enlarging the example to include more tasks, note that the region
-arguments of {\tt distribute\_charge(pieces[i])} overlap with {\tt
-  pieces[0]} both because the shared and ghost partitions are of the
-same data and because te ghost partitions are not disjoint.  However,
-{\tt distribute\_charge} only performs commutative reductions on all
-of these regions and so the subregion instances can be used as is on
-each of the processors for all {\tt distribute\_charge} tasks.
-Finally, {\tt update\_voltages(pieces[0])} reads and writes {\tt
-  pieces[0].rn\_shr}.  To guarantee the task sees the correct data,
-all of the shared and ghost partitions must be reduced back to the
-region of all shared nodes {\tt p\_nodes\_pvs[1]} (see
-Figure~\ref{sfig:part_fig:tree}, after which a fresh instance of {\tt
-  pieces[0].rn\_shr} can be copied from {\tt p\_nodes\_pvs[1]} to node
-0.
-
-%\input{mapping_fig}
-
-Figure~\ref{fig:gpumapping} shows a more involved mapping of the circuit simulation
-on a cluster of GPUs.  The $i$th private node and wire regions are mapped to the
-$i$th GPU's DRAM and simply left there for all three phases of the simulation.  The $i$th
-shared and ghost regions are mapped to zero-copy memory most of the time, but have to be
-reduced out to the global (GASNet) memory and a new instances of the  shared  regions
-created again with the updated information before the {\tt update\_voltage} tasks execute.
-A similar situation arises before {\tt calc\_new\_currents} tasks run again: the updates
-to the shared nodes by {\tt update\_voltage} have to be propagated to the ghost nodes before
-continuing.
+Figure~\ref{fig:gpumapping} shows a timeline of our mapping of the
+circuit simulation on a cluster of GPUs.  The $i$th private node and
+wire regions are mapped to the $i$th GPU's DRAM and simply left there
+for all three phases of the simulation.  The $i$th shared and ghost
+regions are mapped to zero-copy memory most of the time, but, as just
+illustrated, must be reduced out to the all-shared node region in the
+global (GASNet) memory and then a new instance of the shared
+subregions created with the updated information before the {\tt
+  update\_voltages} tasks execute.  A similar situation arises before
+{\tt calc\_new\_currents} tasks run again: the updates to the shared
+nodes by {\tt update\_voltage} must be propagated to the ghost nodes
+before continuing.
 
 \begin{figure}
 \includegraphics[scale=0.48]{figs/CircuitMem.pdf}
@@ -449,23 +428,22 @@ continuing.
 \label{fig:gpumapping}
 \end{figure}
 
-\subsection{Execution}
+\subsection{Stage 4: Execution}
 \label{sec:exec}
 
 Once a task $t$ has been mapped it enters the execution stage of the SOOP.  When all of
 the operations (other tasks and copies) on which $t$ depends have completed, $t$ is
-launched on the processor.  When $t$ launches subtasks, they are recursively scheduled as siblings by
+launched on the processor.  When $t$ spawns subtasks, they are recursively scheduled as siblings by
 the SOOP using $t$ as the parent task and $t$'s region arguments as the roots of the region forest.
 
 
-\subsection{Clean-Up}
+\subsection{Stage 5: Clean-Up}
 \label{sec:clean}
 
-Once a task is done executing the various pieces of state associated with it can be reclaimed.
-Dependence and mapping information can be removed from the region tree; in point of fact, 
-as an optimization we are often able to remove tasks from the region tree well before the task terminates.
-The most involved aspect of clean-up is colleting physical instances that are no longer in use.
-We use a distributed reference counting scheme to track the number of tasks using physical instances;
-when this number goes to 0 the physical intance can be reclaimed.
+Once task $t$ is done executing its state can be reclaimed Dependence
+and mapping information is removed from the region tree (it can
+usually be removed even earlier).  The most involved aspect of
+clean-up is collecting physical instances that are no longer in use,
+for which we use a distributed reference counting scheme.
 
 
