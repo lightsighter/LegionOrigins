@@ -1,81 +1,81 @@
-\section{Mapping}
+\section{Mapping Interface}
 \label{sec:mapping}
 
-While the Legion programming model describes locality and independence information abstractly,
-to run a Legion application on a machine we must make concrete decisions about
-where tasks will be run and where region instances will be placed.  Instead of placing
-the burden of decision making on the programming system, we introduce a programmable mapping
-interface that gives a programmer total control over how these decisions are made.  Armed
-with this interface, the programmer can then specify application- or machine-specific
-mapping decisions that would be difficult for a general-purpose programming system to infer.
-In this section we describe the general mapping interface (Section \ref{sec:mapinterface}),
-our base implementation of this interface (Section \ref{sec:defmapper}), and the benefits
+As mentioned previously, a novel aspect of Legion is the {\em mapping interface},
+which gives programmers control over where tasks run and where region instances are placed,
+making possible application- or machine-specific mapping decisions that would be difficult for a 
+general-purpose programming system to infer.
+We describe the interface (Section \ref{sec:mapinterface}),
+our base implementation (Section \ref{sec:defmapper}), and the benefits
 of creating custom mappers (Section \ref{sec:custommap}).
 
-\subsection{Mapping Interface}
+\subsection{The Interface}
 \label{sec:mapinterface}
-A mapper is any object that implements the mapping interface.  The mapping interface
-consists of ten function calls that the runtime will make to request direction from
-the mapper about how a program should be executed.  To aid in performing the 
-decisions made in these calls the mapper has access to a simple 
-interface for inspecting the properties of the machine on which it is running.  This includes 
-information about all the processors and their kinds (i.e. CPU,GPU), as well as the memories visible
-to each processor and their latencies and bandwidths.  For brevity we only
-discuss three of the mapping interface calls.
+
+The mapping interface consists of ten methods that SOOPs call for
+mapping decisions.  A {\em mapper} implementing these methods has access to a simple interface
+for inspecting properties of the machine, including a list of
+processors and their type (i.e. CPU, GPU) and a list of
+memories visible to each processor and their latencies and bandwidths.
+For brevity we only discuss three of the mapping interface calls:
 
 \begin{itemize}
-\item {\tt select\_initial\_processor} - for each task the runtime system will
-ask the mapper to which processor the task should be sent.  The mapper 
-can choose to keep the task on the local processor or send it to any other processor
-in the system.
+\item {\tt select\_initial\_processor} - For each task $t$ in its mapping queue a SOOP will
+ask for a processor for $t$.  The mapper can keep the task on the local processor or send it to 
+any other processor in the system.
 
-\item {\tt permit\_task\_steal} - when handling a steal request from another processor
-the runtime will ask the mapper to decide which tasks are allowed to be stolen.  
-By always returning an empty set, the mapper can disable stealing.
+\item {\tt permit\_task\_steal} - When handling a steal request a SOOP
+asks which tasks may be stolen.  Stealing can be disabled by always returning the empty set.
 
-\item {\tt map\_task\_region} - for each logical region requested for a task, the
-runtime will query the mapper for a prioritized list of memories where a physical instance for this
-task should be placed.  To aid the mapping decision the runtime provides a list of the current valid physical instances
-of the logical region.  The mapper returns a list of memories in which the runtime
-should attempt to either reuse or manifest a physical instance of the logical region.  The
-runtime traverses this list and searches for a currently valid instance.  If none can be
-found, it attempts to allocate a physical instance and then issue the necessary copies
-to retrieve the valid data.  If both options fail, it moves on to the next memory in the list.
+\item {\tt map\_task\_region} - For each logical region $r$ used by a task, a
+SOOP asks for a prioritized list of memories where a physical instance of $r$ should be placed.  
+The SOOP provides a list of $r$'s current valid physical instances;
+the mapper returns a priority list of memories in which the SOOP
+should attempt to either reuse or create a physical instance of $r$.  Beginning with
+the first memory, the SOOP uses a current valid instance if one is present.  Otherwise,
+the SOOP attempts to allocate a physical instance and issue copies
+to retrieve the valid data.  If that also fails, the SOOP moves on to the next memory in the list.
 \end{itemize}
 
-There are two very elegant properties of this mapping interface.  The first property is
-that all decisions made by a mapper are orthogonal to the correctness of the program and can only 
-impact performance.  Regardless of where a mapper chooses to place a task or map a region, 
-the runtime will always schedule tasks and copies in accordance with the privileges and 
-coherence properties specified in the Legion program.  Therefore when writing an application
-in Legion, a programmer can begin by using the default mapper and later optimize his program
-by creating a custom mapper and gradually refining its mapping decisions.
-
-The second useful property of the mapping interface is that it isolates machine-specific decisions
-to a specific module of code.  As a result, Legion programs are highly
-portable.  To port a Legion program to a new architecture, a programmer only has to
+The mapping interface has two desirable properties.  First, all mapper
+decisions are orthogonal to program correctness and can only impact
+performance.  Regardless of where a mapper places a task or region,
+the SOOPs schedule tasks and copies in accordance with the privileges
+and coherence properties specified in the program.  Therefore when
+writing a Legion application, a programmer can begin by using the
+default mapper and later improve performance by creating and refining a custom mapper.
+Second, the mapping interface isolates machine-specific decisions
+to the mapper.  As a result, Legion programs are highly
+portable.  To port a Legion program to a new architecture, a programmer need only
 implement a new mapper with decisions specific to the new architecture. 
 
 \subsection{Default Mapper}
 \label{sec:defmapper}
-To make writing Legion applications easier, we provide a default mapper implementation that
-can be used to get an application working quickly at a moderate performance level.  The 
-default mapper employs a simple scheme for mapping tasks and regions.  When
-{\tt select\_initial\_processor} is invoked for the default mapper, it first checks for which kind of processors
-the task has variants (i.e. GPU).  If the fastest variant is for the kind of processor the mapper is managing
-it will choose to keep the task local, otherwise it will send the task to the closest processor of the
-fastest variant kind.
+To make writing Legion applications easier, we provide a default
+mapper that can quickly get an application working
+with moderate performance.  The default mapper employs a
+simple scheme for mapping tasks.  When {\tt
+select\_initial\_processor} is invoked, the mapper
+checks the type of processors for which task $t$ has
+implementations (e.g., GPU).  If the fastest implementation is for the
+local processor the mapper keeps $t$ local, otherwise
+it sends $t$ to the closest processor of the fastest kind that can run
+$t$.
 
-The default mapper employs a Cilk-like algorithm for task stealing\cite{CILK95}.  Tasks are kept local
-to their target processor whenever possible and only moved when stolen.  Unlike Cilk, the default mapper
-has the information necessary for locality-aware stealing.  When {\tt permit\_task\_steal} is called for a task, 
-the default mapper inspects the logical regions for the task being stolen, and will mark that other tasks using 
-the same logical regions should be stolen as well.
+
+The default mapper employs a Cilk-like algorithm for task
+stealing \cite{CILK95}.  Tasks are kept local 
+whenever possible and only moved when stolen.  Unlike Cilk, the
+default mapper has the information necessary for locality-aware
+stealing.  When {\tt permit\_task\_steal} is called for a task, the
+default mapper inspects the logical regions for the task being stolen
+and marks that other tasks using the same logical regions should
+be stolen as well.
 
 For calls to {\tt map\_task\_region}, the default mapper constructs a stack of memories ordered from best-to-worst
 by bandwidth from the local processor.  This stack is then returned as the location of memories to be used for
-mapping each region.  Note that this is a greedy algorithm that works well for the common case, but can cause some 
-regions to be pulled unnecessarily close to the processor and consume precious fast memory space.  
+mapping each region.  This greedy algorithm works well in common cases, but can cause some 
+regions to be pulled unnecessarily close to the processor, consuming precious fast memory.
 
 \subsection{Custom Mappers}
 \label{sec:custommap}
@@ -84,7 +84,7 @@ For each Legion task call the programmer specifies which mapper should be invoke
 mapping that particular task.  This allows for the composition of Legion applications and libraries
 each with their own custom mappers.
 
-Each custom mapper extends the default mapper.  A programmer only has to override the functions necessary 
+Each custom mapper extends the default mapper.  A programmer need only override the functions necessary 
 for creating a custom mapping.  Custom mappers can be used to create totally static mappings, 
 mappings that memoize their results, or even totally dynamic mappings.  We describe examples of 
 custom mappers in Section \ref{sec:exp}.

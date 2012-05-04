@@ -427,24 +427,27 @@ on the shared and ghost nodes they were allowed to run in parallel.  But {\tt up
 needs read/write privilege for {\tt pieces[0].rn\_shr}, which forces all of the reductions to be merged
 back to an instance of the {\tt all-shared} nodes region, from which a new instance of {\tt pieces[0].rn\_shr} is copied and used by {\tt update\_voltages[0]}.
 
-Figure~\ref{fig:gpumapping} shows a timeline of our mapping of the
-circuit simulation on a cluster of GPUs.  The $i$th private node and
-wire regions are mapped to the $i$th GPU's DRAM and simply left there
-for all three phases of the simulation.  The $i$th shared and ghost
-regions are mapped to zero-copy memory most of the time, but, as just
-illustrated, must be reduced out to the all-shared node region in the
-global memory (which is managed by GASNet) and then a new instance of the shared
-subregions created with the updated information before the {\tt
-  update\_voltages} tasks execute.  A similar situation arises before
-{\tt calc\_new\_currents} tasks run again: the updates to the shared
-nodes by {\tt update\_voltage} must be propagated to the ghost nodes
-before continuing.
-
-\begin{figure}
-\includegraphics[scale=0.48]{figs/CircuitMem.pdf}
-\caption{Tasks and data for the circuit simulation on a cluster of GPUs.}
-\label{fig:gpumapping}
-\end{figure}
+%
+% FIXME   CUT
+%
+%Figure~\ref{fig:gpumapping} shows a timeline of our mapping of the
+%circuit simulation on a cluster of GPUs.  The $i$th private node and
+%wire regions are mapped to the $i$th GPU's DRAM and simply left there
+%for all three phases of the simulation.  The $i$th shared and ghost
+%regions are mapped to zero-copy memory most of the time, but, as just
+%illustrated, must be reduced out to the all-shared node region in the
+%global memory (which is managed by GASNet) and then a new instance of the shared
+%subregions created with the updated information before the {\tt
+%  update\_voltages} tasks execute.  A similar situation arises before
+%{\tt calc\_new\_currents} tasks run again: the updates to the shared
+%nodes by {\tt update\_voltage} must be propagated to the ghost nodes
+%before continuing.
+%
+%\begin{figure}
+%\includegraphics[scale=0.48]{figs/CircuitMem.pdf}
+%\caption{Tasks and data for the circuit simulation on a cluster of GPUs.}
+%\label{fig:gpumapping}
+%\end{figure}
 
 \subsection{Stage 4: Execution}
 \label{sec:exec}
