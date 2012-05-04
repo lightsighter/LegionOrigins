@@ -17,12 +17,12 @@ def plot(cpus, speedups, label, mark_index, pp):
     plt.plot(cpus, speedups, label = label, linestyle = 'dashed', markersize = 7, marker = markers[mark_index], linewidth=0.5)
 
 baseline = {
-    'Viz': 4.525,
+    'Viz': 4.466,
     'Sapling': 3.442,
     }
 
 small_plot = [('Viz', 'PARSEC pthreads',
-               [(1, 5.03), (2, 2.684), (4, 1.447), (8, 0.875), (16, 0.901)]),
+               [(1, 4.999), (2, 2.634), (4, 1.425), (8, 0.851), (16, 0.829)]),
               ('Viz', 'Legion',
                [(1, 4.14), (2, 2.244), (4, 1.239), (8, 0.823), (10, 0.734), (12, 0.816), (2*10, 0.684)]),
               ('Sapling', 'PARSEC pthreads',
