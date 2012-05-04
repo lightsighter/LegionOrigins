@@ -222,7 +222,7 @@ map; any information lost is recovered during mapping.
 Furthermore, the benefit is that it dramatically speeds up
 dependence analysis overall.
 
-We can identify all mappoing dependences between sibling tasks and place tasks
+We can identify all mapping dependences between sibling tasks and place tasks
 in the correct place in the region tree in amortized time ${\cal O}(d)$ per region,
 where $d$ is the depth of the region tree.  For region $r'$ an argument of task $t'$, the analysis
 walks the unique path in the region forest from a root to $r'$.  For each node $m$
@@ -334,14 +334,14 @@ The region tree is also used to hold mapping information.  Each logical region $
 list of its physical instances and which sibling tasks are using which
 instances and with what permissions.  The important correctness
 property established by stage 1 is that all
-tasks $t$ depends on map before $t$ maps and no task that depends on
+tasks which $t$ may depend on map before $t$ maps and no task that may depend on
 $t$ maps before $t$ finishes mapping.  Thus, the region tree at the
 moment $t$ maps contains a consistent view of what the state of memory
 will be after $t$'s dependence predecessors execute.
 
 There are two steps to mapping a region $r$ used by
 task $t$.  First, the mapper must ensure there is at least one {\em valid}
-physical instance of $r$.  If an instance of a subregion of $r$ has been written by a previous task,
+physical instance of $r$ for $t$ to use.  If an instance of a subregion of $r$ has been written by a previous task,
 for example, it is necessary to copy that subregion back to an instance of the parent $r$ so that $t$
 sees the correct data. In the second step, the mapping interface selects one of the
 valid physical instances of $r$ or creates a new one.  
@@ -417,7 +417,7 @@ copy or reduce. Similarly, the start of $t$'s execution is made
 dependent on completion of the copies/reductions that construct the
 instance of $r$ it will use.
 
-Figure~\ref{fig:depexamp:c} shows part of the mapping of task {\tt update\_voltages[0]}; we focus
+Figure~\ref{fig:depexamp:d} shows part of the mapping of task {\tt update\_voltages[0]}; we focus
 only on the shared nodes.
 Because the immediately preceding {\tt distribute\_charges} tasks all performed the same reduction
 on the shared and ghost nodes they were allowed to run in parallel.  But {\tt update\_voltages[0]}

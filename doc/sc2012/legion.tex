@@ -125,10 +125,10 @@ appears to run entirely before $f_2(r)$ or vice versa.
 
 Legion programs are written using logical regions, which do not commit
 to any particular layout of the data or placement of the data in the machine.  At runtime,
-each logical reagion has one or more {\em physical instances}.  Often
+each logical region has one or more {\em physical instances}.  Often
 logical regions correspond to a single physical instance, but it is also common and useful
 to have multiple physical copies of a logical region's contents in different parts of the machine 
-to duplicate and distribute read-only data, to keep an old copy of a region to break a 
+to duplicate read-only data, to keep an old copy of a region to break a 
 write-after-read dependence, or to allow independent, local reductions that are later combined.
 
 To introduce the programming model, we present
