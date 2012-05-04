@@ -1,9 +1,7 @@
 \section{Experiments}
 \label{sec:exp}
 
-The efficiency and scalability of Legion was examined by measuring the performance
-of three applications on three clusters.  The table in Figure~\ref{fig:systems} summarizes 
-the three clusters that were used.
+
 
 \begin{figure}
 {\footnotesize
@@ -18,30 +16,38 @@ DRAM/Node & 48 GB & 24 GB & 24 GB \\
 Infiniband & 2x QDR & QDR & QDR \\
 \end{tabular}
 }
-
-\caption{Configurations of Systems Used for Experiments \label{fig:systems}}
+\caption{System configurations used for the experiments. \label{fig:systems}}
 \end{figure}
 
-Nodes with multiple instances of different resources are a challenge for 
-existing programming models that have a flat model of the system (e.g. MPI).
-They are faced with a choice of lumping all 
-the resources together and ignoring the internal irregularities (e.g. NUMA
-in multi-socket x86 systems) or of separating a single physical node into
-multiple smaller nodes, ignoring the better affinity between sockets/GPUs/etc
-on the same node and either wasting or over-subscribing some resources when
-the quantities of different resources don't share a common divisor.
+% FIXME
+% This is a nice paragraph, but it doesn't belong here; perhaps in the mapping section
+% if we have space.
+%
+%Nodes with multiple instances of different resources are challenging
+%for existing programming models with flat system views (e.g., MPI).
+%They must either lump resources together and ignore internal irregularities (e.g. NUMA
+%in multi-socket x86 systems), or divide a single physical node into
+%multiple smaller nodes, ignoring the better affinity between sockets/GPUs/etc.
+%on the same node. In contrast, the machine model used by Legion is based on an
+%affinity graph of CPUs and GPUs and accurately captures complex
+%machine hierarchies.
+%
+% FIXME
+%   I cut this from the above, commented-out paragraph because it was a digression. 
+%  
+% and either wasting or over-subscribing some resources when
+%the quantities of different resources don't share a common divisor.
 
-In contrast, the machine model used by the Legion runtime is based on an
-affinity graph of CPUs and GPUs and is able to accurately capture complex
-machine hierarchies.
 
+We evaluate the efficiency and scalability of Legion using
+three applications on three clusters (see Figure~\ref{fig:systems}).
 For each application, multiple problem sizes were used, and each size problem was
 run on subsets of each machine ranging from the smallest (a single CPU core or GPU)
-to the largest or near-largest (except Keeneland which has 115 nodes, but we limited 
-our runs to at most 32 nodes to get sufficient cluster time.)
-By looking at the performance of the same size problem over progressively larger
-machines, we are able to measure the strong scaling that Legion is able to
-archive.  By increasing the problem size as well, we also measure weak scaling.
+to the largest or near-largest (except Keeneland, where we limited
+runs to 32 nodes to get sufficient cluster time).
+By examining performance of the same size problem over progressively larger
+machines, we measure Legion's strong scaling.
+By increasing the problem size as well, we also measure weak scaling.
 
 \subsection{Circuit Simulation}
 \label{subsec:exp_ckt}
@@ -51,40 +57,48 @@ Section~\ref{sec:ex}.  The Legion runtime handles all of the resource allocation
 scheduling, and data movement across the cluster of GPUs.  In particular,  
 Legion's ability to efficiently move the irregularly partitioned
 shared data around the system while keeping the private nodes and wires resident in
-each GPU's framebuffer memory is critical in keeping the overhead low and achieving 
+each GPU's framebuffer memory is critical to keeping the overhead low and achieving 
 good scalability.
 
 Circuits of two different sizes were simulated.  The first had 480K wires, connecting
-120K nodes.  The second is twice as large, with nearly a million wires connecting a
-quarter of a million nodes.  In addition to running these tests on varying number of
+120K nodes.  The second is twice as large, with nearly 1M wires connecting 
+250K nodes.  In addition to running these tests on varying numbers of
 nodes, the number of GPUs used by the runtime was also varied.  In no case did the 
-changes to nodes or number of GPUs per node require any changes to the application code.
+changes to nodes or number of GPUs per node require changes to the application code.
 
-The circuit simulation used a simple, but application-specific, mapper.  At initialization
+The circuit simulation has a simple application-specific mapper.  At initialization
 time, the mapper queries the list of GPUs in the machine and identifies each GPU's
-framebuffer memory and {\em zero-copy} memory, the pinned memory that both the GPU and
-CPUs in the system can access directly.  Once the circuit is partitioned, the partitions
+framebuffer memory and {\em zero-copy} memory (pinned memory that both the GPU and
+CPUs in the system can access directly).  Once the circuit is partitioned, the partitions
 are assigned a home GPU in round-robin fashion.  Every task related to that partition is
-then sent to the home GPU, with no task stealing allowed.  (If the circuit is partitioned well,
-there is minimal load imbalance between the pieces, and the rebalancing benefit of 
-moving a partition is unlikely to be worth the cost of moving all the 
-private data for a piece from one GPU to another.)  The regions for a task are mapped as 
-shown in Figure~\ref{fig:gpumapping}.
+then sent to the home GPU, with no task stealing allowed.  
+%
+% FIXME CUT
+% We could put this nice sentence back in if we have space.
+%
+%(In a well-partitioned circuit,
+%load imbalance is low enough that the cost of moving the private data for a piece from one
+%GPU to another outweighs any benefits.)
+%
+% FIXME CUT  
+% If we find enough space this sentence and the figure can be reinserted here.
+%  The regions for a task are mapped as 
+%shown in Figure~\ref{fig:gpumapping}.
 
 Figure~\ref{fig:ckt_speed} shows the performance of the Legion circuit simulation relative
 to a hand-coded single-GPU implementation written in CUDA.  Each line shows the scaling of
 a particular problem size as the number of nodes is varied.  Our results demonstrate
 excellent strong scaling, with speedups of 39.0X for the small problem on 48 GPUs and 
 62.5X for the larger problem size on 96 GPUs.  On a single GPU, our Legion implementation
-was within 5\% of the performance of the hand-coded example.
+is within 5\% of the performance of the hand-coded simulation.
 
 Figure~\ref{fig:ckt_overhead} shows the fraction of the overall simulation time (summed over
 all nodes) spent in the application kernels compared to the various pieces of the Legion
 runtime.  As the node count increases, the non-communication overhead stays relatively constant.
-As expected the communication overhead grow linearly with number of nodes.
+As expected the communication overhead grows linearly with number of nodes.
 
 \begin{figure}
-\subfigure[Circuit Simulation Speed Relative to Single-GPU Implementation]
+\subfigure[Circuit simulation speed relative to single-GPU implementation.]
 {
 \includegraphics[scale=0.4]{figs/circuit_speedups.pdf}
 \makebox[0pt][r]{
@@ -95,12 +109,12 @@ As expected the communication overhead grow linearly with number of nodes.
 \label{fig:ckt_speed}
 }
 
-\subfigure[Overhead of Circuit Simulation on Keeneland with 3 GPUs/Node]
+\subfigure[Overhead of circuit simulation on Keeneland with 3 GPUs/node.]
 {
 \includegraphics[scale=0.4]{figs/circuit_overhead.pdf}
 \label{fig:ckt_overhead}
 }
-\caption{Circuit Simulation Results}
+\caption{Circuit simulation results.}
 \end{figure}
 
 \subsection{Particle Simulation}
@@ -151,24 +165,24 @@ communication-to-computation ratio is lower.
 %increased above the minimum. MORE TEXT NEEDED HERE
 
 \begin{figure}
-\subfigure[Single-Node Particle Simulation Speed]
+\subfigure[Single-node particle simulation speed.]
 {
 \includegraphics[scale=0.4]{figs/fluid_singlenode.pdf}
 \label{fig:fluid_single}
 }
 
-\subfigure[Multi-Node Scaling]
+\subfigure[Multi-node scaling.]
 {
 \includegraphics[scale=0.4]{figs/fluid_multinode.pdf}
 \label{fig:fluid_multi}
 }
 
-%\subfigure[Effect of Load-Balanced Partitioning]
+%\subfigure[Effect of load-balanced partitioning.]
 %{
 %\includegraphics[scale=0.4]{figs/fluid_balance.pdf}
 %\label{fig:fluid_balance}
 %}
-\caption{Fluid Simulation Results}
+\caption{Fluid simulation results.}
 \end{figure}
 
 \subsection{Adaptive Mesh Refinement}
@@ -222,7 +236,7 @@ On just one node, blocking for caches using Legion achieves up to 2.6X speedup o
 increases, the ability of our mapper to leverage cross-level locality allows us to further increase
 our performance advantage to 5.4X over BoxLib by reducing the total communication costs.  
 
-As the node count increased the AMR code becomes highly dependent on interconnect performance.  BoxLib performs much better
+As the node count increases the AMR code becomes highly dependent on interconnect performance.  BoxLib performs much better
 on Keeneland than it does on our viz cluster due to the better interconnect.  This can also be seen as we scale
 to a larger number of nodes and BoxLib begins to catch up as can be seen in Figure~\ref{fig:amr_keeneland}.  
 This occurs because our intra-level ghost-cell exchange algorithm relies on GASNet memory to exchange ghost cells which 
@@ -231,22 +245,22 @@ node-to-node exchanges of ghost cells similar to our fluid application.  A futur
 will employ a similar ghost cell exchange algorithm to improve scalability.
 
 \begin{figure}
-\subfigure[Sapling Results]
+\subfigure[Sapling results.]
 {
 \includegraphics[scale=0.4]{figs/Sapling_amr.pdf}
 \label{fig:amr_sapling}
 }
 
-\subfigure[Viz Results]
+\subfigure[Viz results.]
 {
 \includegraphics[scale=0.4]{figs/Viz_amr.pdf}
 \label{fig:amr_viz}
 }
 
-\subfigure[Keeneland Results]
+\subfigure[Keeneland results.]
 {
 \includegraphics[scale=0.4]{figs/Keeneland_amr.pdf}
 \label{fig:amr_keeneland}
 }
-\caption{Throuphput of Adaptive Mesh Refinement in Millions of Cells/s \label{fig:amr_total}}
+\caption{Throuphput of adaptive mesh refinement in millions of cells/s \label{fig:amr_total}}
 \end{figure}
