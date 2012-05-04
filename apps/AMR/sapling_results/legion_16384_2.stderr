@@ -1,0 +1,32 @@
+[0 - 7eff872c1700] {3}{heat}: heat simulation settings: steps=20, levels=3
+[0 - 7eff872c1700] {3}{heat}: cells per dim on level 0 is 1024
+[0 - 7eff872c1700] {3}{heat}: divisions per dim on level 0 is 4
+[0 - 7eff872c1700] {3}{heat}: cells per dim on level 1 is 1024
+[0 - 7eff872c1700] {3}{heat}: divisions per dim on level 1 is 2
+[0 - 7eff872c1700] {3}{heat}: cells per dim on level 2 is 1024
+[0 - 7eff872c1700] {3}{heat}: divisions per dim on level 2 is 2
+[0 - 7eff872c1700] {3}{heat}: Initializing simulation...
+[0 - 7eff872c1700] {3}{heat}: Simulation initialization complete
+[0 - 7eff872c1700] {3}{heat}: starting step 0 out of 20
+[0 - 7eff872c1700] {3}{heat}: starting step 1 out of 20
+[0 - 7eff872c1700] {3}{heat}: starting step 2 out of 20
+[0 - 7eff872c1700] {3}{heat}: starting step 3 out of 20
+[0 - 7eff872c1700] {3}{heat}: starting step 4 out of 20
+[0 - 7eff872c1700] {3}{heat}: starting step 5 out of 20
+[0 - 7eff872c1700] {3}{heat}: starting step 6 out of 20
+[0 - 7eff872c1700] {3}{heat}: starting step 7 out of 20
+[0 - 7eff872c1700] {3}{heat}: starting step 8 out of 20
+[0 - 7eff872c1700] {3}{heat}: starting step 9 out of 20
+[0 - 7eff872c1700] {3}{heat}: starting step 10 out of 20
+[0 - 7eff872c1700] {3}{heat}: starting step 11 out of 20
+[0 - 7eff872c1700] {3}{heat}: starting step 12 out of 20
+[0 - 7eff872c1700] {3}{heat}: starting step 13 out of 20
+[0 - 7eff872c1700] {3}{heat}: starting step 14 out of 20
+[0 - 7eff872c1700] {3}{heat}: starting step 15 out of 20
+[0 - 7eff872c1700] {3}{heat}: starting step 16 out of 20
+[0 - 7eff872c1700] {3}{heat}: starting step 17 out of 20
+[0 - 7eff872c1700] {3}{heat}: starting step 18 out of 20
+[0 - 7eff872c1700] {3}{heat}: starting step 19 out of 20
+[0 - 7eff872c1700] {3}{heat}: waiting for all simulation tasks to complete
+[0 - 7eff872c1700] {3}{heat}: SUCCESS!
+[0 - 7eff872c1700] {3}{heat}: simulation complete - destroying regions

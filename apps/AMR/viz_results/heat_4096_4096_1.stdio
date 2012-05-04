@@ -1,0 +1,8 @@
+  Max Grid Cells         4096
+  Level            0  cells         4096
+  Level            1  cells         4096
+  Level            2  cells         4096
+ Advancing time step          10 with dt=  3.35276126861572274E-009
+ Advancing time step          20 with dt=  3.35276126861572274E-009
+ Run time (s) =   22.381892919540405     
+ Cells Updates/s =   44975328.    
