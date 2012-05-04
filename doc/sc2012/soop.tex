@@ -75,7 +75,8 @@ but if either task needs write or reduction privileges, the coherence
 modes are compared using the table in Figure~\ref{fig:dependence}.
 {\tt Dep} indicates dependence while {\tt None}
 indicates independence.  {\tt Same} is a dependence unless the two tasks
-use the same physical instance of the logical region.\footnote{For example, if two tasks wish to acess the region with atomic coherence, then if they are working on the same physical copy of the data atomicity can be guaranteed using, e.g., locking.  If they are working on different copies of the data then the only safe execution strategy for Legion is to serialize the two tasks.}
+use the same physical instance of the logical region.
+%\footnote{For example, if two tasks wish to acess the region with atomic coherence, then if they are working on the same physical copy of the data atomicity can be guaranteed using, e.g., locking.  If they are working on different copies of the data then the only safe execution strategy for Legion is to serialize the two tasks.}
 {\tt Cont} 
 indicates a dependence unless a single writer has
 atomic coherence.  
@@ -139,7 +140,7 @@ a task may or may not observe concurrent updates.
 %\label{fig:independence}
 %\end{figure}
 
-A key property of Legion, that dependence analysis is only needed
+A key property of Legion is that dependence analysis is only needed
 between sibling tasks:
 \begin{observation}
 \label{obs:isolation}
@@ -158,38 +159,44 @@ calc\_new\_currents(pieces[0])} and {\tt
 calc\_new\_currents(pieces[1])}.  The first of these tasks reads and
 writes the private wires subregion {\tt pieces[0].rw\_pvt} in
 exclusive mode, and reads in exclusive mode the node subregions {\tt
-pieces[0].rn\_pvt}, {\tt pieces[0].rn\_shr}, and {\tt
-pieces[0].rn\_ghost} (see line 39).  The second subtask must be
+pieces[0].rn\_pvt}, {\tt .rn\_shr}, and {\tt
+.rn\_ghost} (see line 39).  The second subtask must be
 checked against the first for any dependences; the second subtask uses
 {\tt pieces[1].rw\_pvt} (read/write exclusive) and {\tt
-pieces[1].rn\_pvt}, {\tt pieces[1].rn\_shr}, and {\tt pieces[1].rn\_ghost} (read-only exclusive).
-It may be helpful to refer to the region tree for nodes in Figure~\ref{sfig:part_fig:tree} (recall that the wires region tree consists of a single disjoint partition).  We reason about the dependences as follows:
+pieces[1].rn\_pvt}, {\tt .rn\_shr}, and {\tt .rn\_ghost} (read-only exclusive).
+It may be helpful to refer to the region tree for nodes in Figure~\ref{sfig:part_fig:tree} (recall that the wires region tree consists of a single disjoint partition).  We give a few representative examples
+of reasoning about pairwise dependences (not all pairs are covered):
 \begin{enumerate}
 \item {\tt pieces[0].rw\_pvt} and {\tt pieces[1].rw\_pvt} do not overlap as they are subregions of a disjoint partition.
-\item {\tt pieces[0].rn\_pvt} and {\tt pieces[1].rn\_pvt} do not overlap for the same reason.
-\item {\tt pieces[0].rn\_shr} and {\tt pieces[1].rn\_shr} do not overlap, also for the same reason.
+%\item {\tt pieces[0].rn\_pvt} and {\tt pieces[1].rn\_pvt} do not overlap for the same reason.
+%\item {\tt pieces[0].rn\_shr} and {\tt pieces[1].rn\_shr} do not overlap, also for the same reason.
 \item {\tt pieces[0].rn\_ghost} may overlap with {\tt pieces[1].rn\_shr}, because they are in two different
   partitions of the same region.
-\item {\tt pieces[0].rn\_shr} and {\tt pieces[1].rn\_ghost} may overlap because they are in two different
+%\item {\tt pieces[0].rn\_shr} and {\tt pieces[1].rn\_ghost} may overlap because they are in two different
   partitions of the same region.
 \item {\tt pieces[0].rn\_ghost} may overlap with {\tt pieces[1].rn\_ghost} because they are in different subregions of
 an aliased partition.
-\item All remaining pairs of regions (e.g., {\tt pieces[0].rw\_pvt} and {\tt pieces[1].rn\_pvt})
+\item {\tt pieces[0].rw\_pvt} and {\tt pieces[1].rn\_pvt})
 do not overlap because they are in different region trees and have no common region ancestor.
 \end{enumerate}
-Cases 4-6 indicate a possible dependence, however in each case the regions are accessed with only read privileges.  Thus, the two subtasks are independent.
+Cases 2 and 3 indicate a possible dependence, however the regions are
+accessed with only read privileges. All other cases for these two
+subtasks are similar to one of the examples above; thus, the two
+subtasks are independent.
 
 A closer look at this example shows that whether there is overlap
 between two regions $r_1$ and $r_2$ can be determined by examining
 their least common ancestor $\lca{r_1}{r_2}$ in the region tree.  
 There are four cases.  If $\lca{r_1}{r_2}$ either does not exist (the regions
 are in different region trees) or is a disjoint partition, then $r_1$
-and $r_2$ are guaranteed to be disjoint.  If $\lca{r_1}{r_2}$ is an
-aliased partition or a region (because $r_1$ and $r_2$ are in
-different partitions of the region, as in cases 4 and 5
-above), then $r_1$ and $r_2$ may not be disjoint.
+and $r_2$ are disjoint.  If $\lca{r_1}{r_2}$ is an
+aliased partition or a region, 
+%(because $r_1$ and $r_2$ are in
+%different partitions of the region, as in cases 4 and 5
+%above), 
+then $r_1$ and $r_2$ may not be disjoint.
 
-Consider subtasks {\tt distribute\_charge(pieces[0],dt)} and
+Consider tasks {\tt distribute\_charge(pieces[0],dt)} and
 {\tt update\_voltages[1]} in Listing~\ref{lst:code_ex}.  The former task
 uses region {\tt pieces[0].rn\_ghost} and the latter uses region {\tt pieces[1].rn\_shr}.
 The least common ancestor is the region of all shared nodes {\tt p\_nodes\_pvs[1]},
@@ -209,10 +216,10 @@ because of overlap between $r''$ and $r'$.  Then $t'$ is listed on the
 region that is the least common ancestor of the set $R \cup \{r'\}$.
 Placing $t'$ on an ancestor of $r'$ has the effect of coarsening the
 dependences involving $t'$, which
-this can result in false dependences.  However, the loss of
+can result in false dependences.  However, the loss of
 information can be shown to be small and only affects when $t$ can
-map; any information lost is recovered in the subsequent mapping
-phase.  Furthermore, the benefit is that it dramatically speeds up
+map; any information lost is recovered during mapping.
+Furthermore, the benefit is that it dramatically speeds up
 dependence analysis overall.
 
 We can identify all mappoing dependences between sibling tasks and place tasks
