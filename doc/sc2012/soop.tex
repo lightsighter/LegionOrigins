@@ -346,7 +346,7 @@ Each logical region in the region tree maintains a
 list of its physical instances and which sibling tasks are using those
 instances and with what permissions.  The important correctness
 property established by stage 1 is that all
-tasks $t$ depends on map before $t$ maps and no task that depends on
+tasks on which $t$ depends map before $t$ maps and no task that depends on
 $t$ maps before $t$ finishes mapping.  Thus, the region tree when
 $t$ maps contains a consistent view of what the state of physical instances
 will be after $t$'s dependence predecessors execute.

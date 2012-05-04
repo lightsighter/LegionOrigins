@@ -18,8 +18,8 @@ DRAM/Node & 48 GB & 24 GB & 24 GB \\
 Infiniband & 2x QDR & QDR & QDR \\
 \end{tabular}
 }
-\label{fig:systems}
-\caption{Configurations of Systems Used for Experiments}
+
+\caption{Configurations of Systems Used for Experiments \label{fig:systems}}
 \end{figure}
 
 Nodes with multiple instances of different resources are a challenge for 
@@ -47,7 +47,7 @@ archive.  By increasing the problem size as well, we also measure weak scaling.
 \label{subsec:exp_ckt}
 
 The first experiment we investigate is the distributed circuit simulation described in 
-Section \ref{sec:ex}.  The Legion runtime handles all of the resource allocation, 
+Section~\ref{sec:ex}.  The Legion runtime handles all of the resource allocation, 
 scheduling, and data movement across the cluster of GPUs.  In particular,  
 Legion's ability to efficiently move the irregularly partitioned
 shared data around the system while keeping the private nodes and wires resident in
@@ -69,16 +69,16 @@ then sent to the home GPU, with no task stealing allowed.  (If the circuit is pa
 there is minimal load imbalance between the pieces, and the rebalancing benefit of 
 moving a partition is unlikely to be worth the cost of moving all the 
 private data for a piece from one GPU to another.)  The regions for a task are mapped as 
-shown in figure \ref{fig:gpumapping}.
+shown in Figure~\ref{fig:gpumapping}.
 
-Figure \ref{fig:ckt_speed} shows the performance of the Legion circuit simulation relative
+Figure~\ref{fig:ckt_speed} shows the performance of the Legion circuit simulation relative
 to a hand-coded single-GPU implementation written in CUDA.  Each line shows the scaling of
 a particular problem size as the number of nodes is varied.  Our results demonstrate
 excellent strong scaling, with speedups of 39.0X for the small problem on 48 GPUs and 
 62.5X for the larger problem size on 96 GPUs.  On a single GPU, our Legion implementation
 was within 5\% of the performance of the hand-coded example.
 
-Figure \ref{fig:ckt_overhead} shows the fraction of the overall simulation time (summed over
+Figure~\ref{fig:ckt_overhead} shows the fraction of the overall simulation time (summed over
 all nodes) spent in the application kernels compared to the various pieces of the Legion
 runtime.  As the node count increases, the non-communication overhead stays relatively constant.
 As expected the communication overhead grow linearly with number of nodes.
@@ -125,7 +125,7 @@ maps all regions for that grid (both the internal and the ghost regions) into th
 The exchange of the ghost cell data between processors is handled by the Legion runtime as a ghost cell region
 gets alternately mapped in two different memories.
 
-Figure \ref{fig:fluid_single} compares the performance of the Legion implementation against the PARSEC version,
+Figure~\ref{fig:fluid_single} compares the performance of the Legion implementation against the PARSEC version,
 using a relatively small problem (300K particles on a 15x21x15 array of cells).  Between 1 and 4 threads, the
 results for sapling are nearly indistinguishable, indicating 
 neither the Legion runtime nor the the restructuring of the implementation to allow multi-node scaling impose
@@ -136,8 +136,8 @@ which has HyperThreading enabled, deviations from linear begin sooner as the ope
 thread placement choices begin to matter.
 
 To measure scaling beyond a single node, three different problem sizes were run for each of the three systems,
- with the results plotted in figure
-\ref{fig:fluid_multi}.  For the smallest problem (300K particles), we observe a 20\% speedup when going to 1
+ with the results plotted in Figure~\ref{fig:fluid_multi}.  
+ For the smallest problem (300K particles), we observe a 20\% speedup when going to 1
 node to 2 (a total of 16 threads), but begin slowing down beyond that due to communication overhead - at 4 nodes
 there are twice as many ghost cells as interior grid cells.  The larger problem sizes (2.4M and 19M
 particles) do much better, with scaling of up to 5.4x when going from 1 node up to 16 because the
@@ -216,7 +216,7 @@ We compared our Legion implementation against BoxLib on three different problem 
 of cells per level of refinement, but with randomly chosen refinements locations.  BoxLib also supports OpenMP
 and we took their best number from using 1, 2, 4, or 8 OpenMP threads per node.  Our Legion implementation
 always uses one thread per node to illustrate that in this application locality is significantly more important 
-than parallelism.  The results from our experiments on all three clusters can be seen in Figure \ref{fig:amr_total}. 
+than parallelism.  The results from our experiments on all three clusters can be seen in Figure~\ref{fig:amr_total}. 
 
 On just one node, blocking for caches using Legion achieves up to 2.6X speedup over BoxLib.  As the node count 
 increases, the ability of our mapper to leverage cross-level locality allows us to further increase
@@ -224,7 +224,7 @@ our performance advantage to 5.4X over BoxLib by reducing the total communicatio
 
 As the node count increased the AMR code becomes highly dependent on interconnect performance.  BoxLib performs much better
 on Keeneland than it does on our viz cluster due to the better interconnect.  This can also be seen as we scale
-to a larger number of nodes and BoxLib begins to catch up as can be seen in Figure \ref{fig:amr_keeneland}.  
+to a larger number of nodes and BoxLib begins to catch up as can be seen in Figure~\ref{fig:amr_keeneland}.  
 This occurs because our intra-level ghost-cell exchange algorithm relies on GASNet memory to exchange ghost cells which 
 involves a linear increase in network traffic with the number of nodes.  BoxLib instead uses direct
 node-to-node exchanges of ghost cells similar to our fluid application.  A future implementation of our AMR code 
@@ -248,6 +248,5 @@ will employ a similar ghost cell exchange algorithm to improve scalability.
 \includegraphics[scale=0.4]{figs/Keeneland_amr.pdf}
 \label{fig:amr_keeneland}
 }
-\caption{Throuphput of Adaptive Mesh Refinement in Millions of Cells/s}
-\label{fig:amr_total}
+\caption{Throuphput of Adaptive Mesh Refinement in Millions of Cells/s \label{fig:amr_total}}
 \end{figure}
