@@ -1,0 +1,8 @@
+kid031.nics.utk.edu
+kid083.nics.utk.edu
+kid107.nics.utk.edu
+kid108.nics.utk.edu
+kid075.nics.utk.edu
+kid078.nics.utk.edu
+kid079.nics.utk.edu
+kid086.nics.utk.edu

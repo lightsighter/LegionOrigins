@@ -1,0 +1,7 @@
+circuit settings: loops=10 pieces=96 nodes/piece=2500 wires/piece=11264 pct_in_piece=95 seed=12345
+Total node size 3 MB
+Total wire size 99 MB
+Starting main simulation loop
+SUCCESS!
+ELAPSED TIME = 457.712 s
+GFLOPS =  22.680 GFLOPS

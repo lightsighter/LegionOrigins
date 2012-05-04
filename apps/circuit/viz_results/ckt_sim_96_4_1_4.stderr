@@ -1,0 +1,20 @@
+[0 - 4180b940] {3}{circuit}: circuit settings: loops=10 pieces=96 nodes/piece=2500 wires/piece=11264 pct_in_piece=95 seed=12345
+[0 - 4180b940] {3}{circuit}: Initializing circuit simulation...
+[0 - 4180b940] {3}{circuit}: Finished initializing simulation...
+[0 - 4180b940] {3}{timer}: clearing timers
+[0 - 4180b940] {3}{circuit}: starting loop 0 out of 10
+[2 - 40200940] {3}{timer}: clearing timers
+[3 - 40200940] {3}{timer}: clearing timers
+[1 - 40200940] {3}{timer}: clearing timers
+[0 - 4180b940] {3}{circuit}: starting loop 1 out of 10
+[0 - 4180b940] {3}{circuit}: starting loop 2 out of 10
+[0 - 4180b940] {3}{circuit}: starting loop 3 out of 10
+[0 - 4180b940] {3}{circuit}: starting loop 4 out of 10
+[0 - 4180b940] {3}{circuit}: starting loop 5 out of 10
+[0 - 4180b940] {3}{circuit}: starting loop 6 out of 10
+[0 - 4180b940] {3}{circuit}: starting loop 7 out of 10
+[0 - 4180b940] {3}{circuit}: starting loop 8 out of 10
+[0 - 4180b940] {3}{circuit}: starting loop 9 out of 10
+[0 - 4180b940] {3}{circuit}: waiting for all simulation tasks to complete
+[0 - 4180b940] {3}{circuit}: SUCCESS!
+[0 - 4180b940] {3}{circuit}: simulation complete - destroying regions

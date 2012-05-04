@@ -1,0 +1,41 @@
+Warning: Permanently added 'kid076.nics.utk.edu,10.39.16.95' (RSA) to the list of known hosts.
+Warning: Permanently added 'kid088.nics.utk.edu,10.39.16.107' (RSA) to the list of known hosts.
+Warning: Permanently added 'kid100.nics.utk.edu,10.39.16.119' (RSA) to the list of known hosts.
+Warning: Permanently added 'kid095.nics.utk.edu,10.39.16.114' (RSA) to the list of known hosts.
+Warning: Permanently added 'kid092.nics.utk.edu,10.39.16.111' (RSA) to the list of known hosts.
+Warning: Permanently added 'kid093.nics.utk.edu,10.39.16.112' (RSA) to the list of known hosts.
+Warning: Permanently added 'kid099.nics.utk.edu,10.39.16.118' (RSA) to the list of known hosts.
+Warning: Permanently added 'kid077.nics.utk.edu,10.39.16.96' (RSA) to the list of known hosts.
+Warning: Permanently added 'kid098.nics.utk.edu,10.39.16.117' (RSA) to the list of known hosts.
+[0 - 44aff940] {3}{circuit}: circuit settings: loops=10 pieces=48 nodes/piece=2500 wires/piece=16384 pct_in_piece=95 seed=12345
+[0 - 44aff940] {3}{circuit}: Initializing circuit simulation...
+[0 - 44aff940] {3}{circuit}: Finished initializing simulation...
+[0 - 44aff940] {3}{timer}: clearing timers
+[0 - 44aff940] {3}{circuit}: starting loop 0 out of 10
+[0 - 44aff940] {3}{circuit}: starting loop 1 out of 10
+[0 - 44aff940] {3}{circuit}: starting loop 2 out of 10
+[0 - 44aff940] {3}{circuit}: starting loop 3 out of 10
+[0 - 44aff940] {3}{circuit}: starting loop 4 out of 10
+[0 - 44aff940] {3}{circuit}: starting loop 5 out of 10
+[0 - 44aff940] {3}{circuit}: starting loop 6 out of 10
+[0 - 44aff940] {3}{circuit}: starting loop 7 out of 10
+[0 - 44aff940] {3}{circuit}: starting loop 8 out of 10
+[0 - 44aff940] {3}{circuit}: starting loop 9 out of 10
+[0 - 44aff940] {3}{circuit}: waiting for all simulation tasks to complete
+[13 - 41ae4940] {3}{timer}: clearing timers
+[14 - 40eb8940] {3}{timer}: clearing timers
+[2 - 428b8940] {3}{timer}: clearing timers
+[5 - 41cae940] {3}{timer}: clearing timers
+[4 - 41841940] {3}{timer}: clearing timers
+[6 - 4203c940] {3}{timer}: clearing timers
+[8 - 42590940] {3}{timer}: clearing timers
+[7 - 41b20940] {3}{timer}: clearing timers
+[10 - 41076940] {3}{timer}: clearing timers
+[9 - 40f7f940] {3}{timer}: clearing timers
+[11 - 41f33940] {3}{timer}: clearing timers
+[3 - 41b1b940] {3}{timer}: clearing timers
+[15 - 41ed1940] {3}{timer}: clearing timers
+[1 - 425d7940] {3}{timer}: clearing timers
+[12 - 40e63940] {3}{timer}: clearing timers
+[0 - 44aff940] {3}{circuit}: SUCCESS!
+[0 - 44aff940] {3}{circuit}: simulation complete - destroying regions

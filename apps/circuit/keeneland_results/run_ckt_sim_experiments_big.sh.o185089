@@ -1,0 +1,8 @@
+48 pieces 16 nodes 1 cpus 1 gpus
+48 pieces 16 nodes 1 cpus 2 gpus
+48 pieces 16 nodes 1 cpus 3 gpus
+96 pieces 16 nodes 1 cpus 1 gpus
+96 pieces 16 nodes 1 cpus 2 gpus
+96 pieces 16 nodes 1 cpus 3 gpus
+96 pieces 32 nodes 1 cpus 1 gpus
+    9989  Z   sequoia   [ckt_sim] <defunct>
