@@ -145,21 +145,21 @@ a task may or may not observe concurrent updates.
 %\label{fig:independence}
 %\end{figure}
 
-A key property of Legion is that dependence analysis is only needed
-between sibling tasks:
+A key property is that dependence analysis is not needed between arbitrary pairs of tasks.
+In fact, it suffices to check only  {\em siblings} (children with the same parent) for dependences.
 \begin{observation}
 \label{obs:isolation}
 \rm
 Let $t_1$ and $t_2$ be two sibling tasks with no dependence.  Then no subtask of $t_1$ has a dependence with any subtask
 of $t_2$.
 \end{observation}
-Recall from Section~\ref{sec:ex} that subtasks only access subregions of their parent task's region arguments (and with fewer
-privileges).  Thus if the regions used by $t_1$ and $t_2$ do not alias, the regions used by any subtasks of $t_1$ cannot
-alias the regions used by any subtask of $t_2$.  If the regions used by $t_1$ and $t_2$ alias
-but there is no dependence because the regions are used with simultaneous or relaxed coherence, then by definition there is no dependence between the subtasks.
+Recall from Section~\ref{sec:ex} that subtasks only access regions (or subregions) that their parent accesses.  
+Thus if the regions used by $t_1$ and $t_2$ do not alias, the regions used by any subtasks of $t_1$ cannot
+alias the regions used by any subtask of $t_2$.  If regions of $t_1$ and $t_2$ alias
+but there is no dependence because the regions have simultaneous or relaxed coherence, then by definition there is no dependence between the subtasks.
 
-Consider the first two subtasks spawned on line 32 of the circuit
-simulation in Listing~\ref{lst:code_ex}, {\tt
+Consider the first two subtasks spawned on line 32 
+in Listing~\ref{lst:code_ex}, {\tt
 calc\_new\_currents(pieces[0])} and {\tt
 calc\_new\_currents(pieces[1])}.  The first of these tasks reads and
 writes the private wires subregion {\tt pieces[0].rw\_pvt} in
@@ -170,47 +170,47 @@ checked against the first for any dependences; the second subtask uses
 {\tt pieces[1].rw\_pvt} (read/write exclusive) and {\tt
 pieces[1].rn\_pvt}, {\tt .rn\_shr}, and {\tt .rn\_ghost} (read-only exclusive).
 It may be helpful to refer to the region tree for nodes in Figure~\ref{sfig:part_fig:tree} (recall that the wires region tree consists of a single disjoint partition).  We give a few representative examples
-of reasoning about pairwise dependences (not all pairs are covered):
+of reasoning about pairwise aliasing (not all pairs are covered):
 \begin{enumerate}
 \item {\tt pieces[0].rw\_pvt} and {\tt pieces[1].rw\_pvt} do not alias as they are subregions of a disjoint partition.
 %\item {\tt pieces[0].rn\_pvt} and {\tt pieces[1].rn\_pvt} do not alias for the same reason.
 %\item {\tt pieces[0].rn\_shr} and {\tt pieces[1].rn\_shr} do not alias, also for the same reason.
-\item {\tt pieces[0].rn\_ghost} aliases {\tt pieces[1].rn\_shr}, because they are in two different
+\item {\tt pieces[0].rn\_ghost} and {\tt pieces[1].rn\_shr} alias as they are in different
   partitions of the same region.
 %\item {\tt pieces[0].rn\_shr} and {\tt pieces[1].rn\_ghost} alias because they are in two different
-  partitions of the same region.
-\item {\tt pieces[0].rn\_ghost} aliases {\tt pieces[1].rn\_ghost} because they are in different subregions of
+%  partitions of the same region.
+\item {\tt pieces[0].rn\_ghost} and {\tt pieces[1].rn\_ghost} alias because they are in different subregions of
 an aliased partition.
-\item {\tt pieces[0].rw\_pvt} and {\tt pieces[1].rn\_pvt})
-do not alias because they are in different region trees and have no common region ancestor.
+\item {\tt pieces[0].rw\_pvt} and {\tt pieces[1].rn\_pvt}
+do not alias because they are in different region trees.
 \end{enumerate}
 Cases 2 and 3 indicate a possible dependence, however the regions are
 accessed with only read privileges. All other cases for these two
 subtasks are similar to one of the examples above; thus, the two
 subtasks are independent.
 
-A closer look at this example shows that whether there is aliasing
-between two regions $r_1$ and $r_2$ can be determined by examining
+A closer look at this example shows that whether 
+$r_1$ aliases $r_2$ can be determined by examining
 their least common ancestor $\lca{r_1}{r_2}$ in the region tree.  
-There are four cases.  If $\lca{r_1}{r_2}$ either does not exist (the regions
+If $\lca{r_1}{r_2}$ either does not exist (the regions
 are in different region trees) or is a disjoint partition, then $r_1$
 and $r_2$ are disjoint.  If $\lca{r_1}{r_2}$ is an
 aliased partition or a region, 
 %(because $r_1$ and $r_2$ are in
 %different partitions of the region, as in cases 4 and 5
 %above), 
-then $r_1$ and $r_2$ may not be disjoint.
+then $r_1$ and $r_2$ alias.
 
 Consider tasks {\tt distribute\_charge(pieces[0],dt)} and
 {\tt update\_voltages[1]} in Listing~\ref{lst:code_ex}.  The former task
 uses region {\tt pieces[0].rn\_ghost} and the latter uses region {\tt pieces[1].rn\_shr}.
 The least common ancestor is the region of all shared nodes {\tt p\_nodes\_pvs[1]},
-so these two regions are not disjoint.  Since both tasks write their respective subregions,
+so these two regions alias.  Since both tasks write their respective subregions,
 there is a dependence and the {\tt update\_voltages} task can only map after the
 {\tt distribute\_charges} task has mapped.
 
-We can now describe the algorithm for the dependence analysis phase of
-the SOOP.  The SOOP maintains a local region forest for each task $t$,
+We can now describe the algorithm for mapping dependence analysis.
+The SOOP maintains a local region forest for each task $t$,
 the roots of which are $t$'s region arguments and including all
 partitions and subregions used by $t$.  Dependence analysis
 places the child tasks of $t$ on the regions they use, maintaining the
@@ -219,7 +219,7 @@ and let $R$ be the set of regions $r''$ such that $r''$ is used
 by a task $t''$ registered after $t'$ and $t''$ depends on $t'$
 because of aliasing between $r''$ and $r'$.  Then $t'$ is listed on the
 region that is the least common ancestor of the set $R \cup \{r'\}$.
-Placing $t'$ on an ancestor of $r'$ has the effect of coarsening the
+Placing $t'$ on an ancestor of $r'$ coarsens the
 dependences involving $t'$, which
 can result in false dependences.  However, the loss of
 information can be shown to be small and only affects when $t$ can
@@ -229,8 +229,9 @@ dependence analysis overall.
 
 We can identify all mapping dependences between sibling tasks and place tasks
 in the correct place in the region tree in amortized time ${\cal O}(d)$ per region,
-where $d$ is the depth of the region tree.  For region $r'$ an argument of task $t'$, the analysis
-walks the unique path in the region forest from a root to $r'$.  For each node $m$
+where $d$ is the depth of the region forest.  For region $r'$ used by task $t'$, the analysis
+walks the unique path in the region forest from a root to $r'$; task $t'$ depends on all tasks
+on this path when the walk completes.  For each node $m$
 on the walk from the root to $r'$ the following actions are taken:
 \begin{itemize}
 \item If $m$ is a region with multiple child partitions and $m'$ is the child on the
@@ -252,19 +253,19 @@ on to $m'$.
 \centering
 
 \subfigure[Two {\tt calc\_new\_currents} tasks.]{
-\includegraphics[scale=0.45]{figs/CNC_State.pdf}
+\includegraphics[scale=0.46]{figs/CNC_State.pdf}
 \label{fig:depexamp:a}
 }
 \subfigure[{\tt distribute\_charge} depends on {\tt calc\_new\_currents}.]{ 
-\includegraphics[scale=0.45]{figs/DC_state.pdf}
+\includegraphics[scale=0.46]{figs/DC_state.pdf}
 \label{fig:depexamp:b}
 }
 \subfigure[{\tt update\_voltages} depends on {\tt distribute\_charge}.]{
-\includegraphics[scale=0.45]{figs/UV_State.pdf}
+\includegraphics[scale=0.46]{figs/UV_State.pdf}
 \label{fig:depexamp:c}
 }
 \subfigure[An {\tt update\_voltages} mapping.]{
-\includegraphics[scale=0.45]{figs/UV_Update.pdf}
+\includegraphics[scale=0.46]{figs/UV_Update.pdf}
 \label{fig:depexamp:d}
 }
 \label{fig:depexamp}
@@ -274,14 +275,14 @@ on to $m'$.
 There are two parts to this analysis:
 the walk from a region root to $r'$ and the off-path work
 to move dependent tasks to the least common ancestor on the path.
-Clearly the walk to $r'$ is bounded by the depth of the region tree.
+The walk to $r'$ is bounded by the depth of the region tree.
 The off-path work can be made efficient by maintaining at each node a
-record of which subtrees have tasks in them and with what privileges,
+record of the {\em mode} of each subtree (whether the subtree has any tasks and with what privileges),
 enabling the off-path search to traverse directly and only to
 dependent tasks.  The off-path work is proportional to how far a task
 is moved back up the region tree.  Thus, for each region argument a
-task is initially placed at some depth in the tree and subsequently
-only moved up towards the root, so the overall work per region is (amortized)
+task is initially placed at some depth in the forest and subsequently
+only moved up towards a root, so the overall work per region is (amortized)
 ${\cal O}(d)$.  
 %In practice, we have found this level of efficiency,
 %where analyzing mapping dependences is linear in the number regions used (and not the square) and
@@ -299,7 +300,7 @@ stages.  In Figure~\ref{fig:depexamp:a}, the two tasks
 Next, in Figure~\ref{fig:depexamp:b}, the task {\tt distribute\_charge(pieces[0],dt)} ($d_0$)
 has dependences with both $c_0$ and $c_1$ caused by aliasing between the pieces of the
 shared node partition and the ghost node partition, so both $c_0$ and $c_1$ are moved to
-the {\tt p\_nodes\_pvs[1]} region.  Finally, the task {\tt update\_voltages[1]} ($u_1$) causes
+the {\tt p\_nodes\_pvs[1]} region.  Finally, the task {\tt update\_voltages[1]} causes
 $d_0$ to also be moved to {\tt p\_nodes\_pvs[1]} for essentially the same reason; the final
 state of the node region tree is shown in Figure~\ref{fig:depexamp:c}.
 
