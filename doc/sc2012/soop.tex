@@ -1,32 +1,37 @@
 \section{The Software Out-of-Order Processor}
 \label{sec:soop}
 
-Legion uses a {\em  software out-of-order processor}, or SOOP, to schedule tasks.  The SOOP 
-is pipelined, distributed and extracts nested parallelism from subtasks.
+Legion uses a {\em  software out-of-order processor}, or SOOP, to schedule tasks.  A SOOP 
+dynamically schedules a stream of tasks in a manner akin to an out-of-order processor scheduling a stream of instructions:
+just as an instruction scheduler is constrained by register dependences,
+the SOOP is constrained by region dependences.
+The SOOP  is pipelined, distributed and extracts nested parallelism from subtasks.
 There are two major challenges in implementing an efficient task scheduler:
 \begin{itemize}
-\item  For correctness, Legion must preserve data dependences between tasks.
-
+\item  For correctness, Legion must preserve data dependences between tasks, which is non-trivial
+because the same data may be in multiple different regions or subregions.
+  
 \item For performance, Legion must hide the extremely long latencies associated
   with machines that have both distributed memory and many levels of
   memory hierarchy.
 \end{itemize}
 
 To solve the second problem Legion uses a {\em deferred execution model} that decouples the issuing
-of operations from when operations are performed.  An issued operation waits for other operations on
+of operations from when operations are performed.  Using a low-level runtime event system (which we do
+not describe further in this paper), an issued operation waits for other operations on
 which it is dependent to complete before executing, but a waiting operation does not cause the SOOP
 to block.  With deferred execution, it is worthwhile for the SOOP to run (potentially far) ahead of actual execution,
 allocating resources to and issuing tasks that must wait because they have data dependences on earlier tasks that have not 
 finished executing.   Pipelining and distributing the SOOP further improves throughput and hides latency.
 
-To solve the first problem, detecting and enforcing data dependences
-efficiently at run time, the SOOP considers, for each task $t$, the
-the regions $t$ uses and ensures that $t$ waits on any
-earlier task whose region uses may conflict with $t$'s.  There is a
+To dynamically detect and enforce data dependences,
+the SOOP considers, for each task $t$, the
+the regions $t$ uses and ensures $t$ waits on any
+earlier task whose region uses conflict with $t$'s.  There is a
 difficulty, however.  The programmer's regions are logical; a region
 names a set of objects, but does not say where those objects
-are located.  To ensure dependences are satisfied the SOOP must also {\em map} $t$: assign an
-appropriate physical instance to each of $t$'s logical region.  Thus, dependence
+are in memory.  To ensure dependences are satisfied the SOOP must also {\em map} $t$: assign an
+appropriate physical instance to each of $t$'s logical regions.  Thus, dependence
 analysis requires knowing both which tasks $t$ depends on and how those
 other tasks are mapped.
 
@@ -34,7 +39,7 @@ Our SOOP design solves this problem by dividing the analysis of
 dependences between two pipeline stages.  The first SOOP stage
 computes task dependences at the granularity of logical regions
 (Section~\ref{sec:dep}), which does not give enough information to map
-$t$, but does identify other tasks that must map before $t$ can map.
+$t$, but does identify all tasks that must map before $t$ can map.
 The third SOOP stage maps $t$ by carrying out a more refined analysis
 of the (already mapped) tasks on which $t$ depends
 (Section~\ref{sec:map}).  Between these stages, the second stage
@@ -48,13 +53,13 @@ SOOP stage reclaims resources from completed tasks
 \label{sec:dep}
 
 
-When a Legion task runs, it may spawn new subtasks to be executed.  
-These subtasks are {\em children} of the {\em parent} task and {\em siblings} of each other.  
-A task always executes on a single processor, but
-its subtasks may execute elsewhere.
+%When a Legion task runs, it may spawn new subtasks to be executed.  
+%These subtasks are {\em children} of the {\em parent} task and {\em siblings} of each other.  
+%A task always executes on a single processor, but
+%its subtasks may execute elsewhere.
 
 Each processor in the system runs an instance of the SOOP.
-When a parent task spawns a child task, the child is {\em registered}
+When a {\em parent} task spawns a {\em child} task, the child is {\em registered}
 with the SOOP on the parent's processor;
 registration records the subtask's logical regions,
 privileges and coherence properties.  Children are
@@ -68,7 +73,7 @@ simulate\_circuit} executes.
 Detecting mapping dependences between a newly registered task $t$ and
 a previously registered task $t'$ requires comparing the two sets of
 logical regions accessed.  For each logical region used by $t'$ that
-may overlap with a logical region used by $t$, the privileges and
+may {\em alias} (may share data with) a logical region used by $t$, the privileges and
 coherence modes are compared to determine whether a dependence exists.
 If both regions need only read privileges there is never a dependence,
 but if either task needs write or reduction privileges, the coherence
@@ -100,7 +105,7 @@ Relaxed      & Dep & Cont & None & None \\
 The table lists {\em simultaneous} and {\em relaxed} coherence modes
 that we have not yet discussed.  Both modes
 allow other tasks using the region to execute at the same time and differ
-only in what data must be observed.  With simultaneous coherence, a task must 
+only in what updates must be observed.  With simultaneous coherence, a task must 
 see all updates to the logical region made by other tasks operating on the same region 
 simultaneously (i.e., shared memory semantics).  With relaxed coherence, 
 a task may or may not observe concurrent updates.
@@ -149,8 +154,8 @@ Let $t_1$ and $t_2$ be two sibling tasks with no dependence.  Then no subtask of
 of $t_2$.
 \end{observation}
 Recall from Section~\ref{sec:ex} that subtasks only access subregions of their parent task's region arguments (and with fewer
-privileges).  Thus if the regions used by $t_1$ and $t_2$ do not overlap, the regions used by any subtasks of $t_1$ cannot
-overlap with the regions used by any subtask of $t_2$.  If the regions used by $t_1$ and $t_2$ do overlap
+privileges).  Thus if the regions used by $t_1$ and $t_2$ do not alias, the regions used by any subtasks of $t_1$ cannot
+alias the regions used by any subtask of $t_2$.  If the regions used by $t_1$ and $t_2$ alias
 but there is no dependence because the regions are used with simultaneous or relaxed coherence, then by definition there is no dependence between the subtasks.
 
 Consider the first two subtasks spawned on line 32 of the circuit
@@ -167,24 +172,24 @@ pieces[1].rn\_pvt}, {\tt .rn\_shr}, and {\tt .rn\_ghost} (read-only exclusive).
 It may be helpful to refer to the region tree for nodes in Figure~\ref{sfig:part_fig:tree} (recall that the wires region tree consists of a single disjoint partition).  We give a few representative examples
 of reasoning about pairwise dependences (not all pairs are covered):
 \begin{enumerate}
-\item {\tt pieces[0].rw\_pvt} and {\tt pieces[1].rw\_pvt} do not overlap as they are subregions of a disjoint partition.
-%\item {\tt pieces[0].rn\_pvt} and {\tt pieces[1].rn\_pvt} do not overlap for the same reason.
-%\item {\tt pieces[0].rn\_shr} and {\tt pieces[1].rn\_shr} do not overlap, also for the same reason.
-\item {\tt pieces[0].rn\_ghost} may overlap with {\tt pieces[1].rn\_shr}, because they are in two different
+\item {\tt pieces[0].rw\_pvt} and {\tt pieces[1].rw\_pvt} do not alias as they are subregions of a disjoint partition.
+%\item {\tt pieces[0].rn\_pvt} and {\tt pieces[1].rn\_pvt} do not alias for the same reason.
+%\item {\tt pieces[0].rn\_shr} and {\tt pieces[1].rn\_shr} do not alias, also for the same reason.
+\item {\tt pieces[0].rn\_ghost} aliases {\tt pieces[1].rn\_shr}, because they are in two different
   partitions of the same region.
-%\item {\tt pieces[0].rn\_shr} and {\tt pieces[1].rn\_ghost} may overlap because they are in two different
+%\item {\tt pieces[0].rn\_shr} and {\tt pieces[1].rn\_ghost} alias because they are in two different
   partitions of the same region.
-\item {\tt pieces[0].rn\_ghost} may overlap with {\tt pieces[1].rn\_ghost} because they are in different subregions of
+\item {\tt pieces[0].rn\_ghost} aliases {\tt pieces[1].rn\_ghost} because they are in different subregions of
 an aliased partition.
 \item {\tt pieces[0].rw\_pvt} and {\tt pieces[1].rn\_pvt})
-do not overlap because they are in different region trees and have no common region ancestor.
+do not alias because they are in different region trees and have no common region ancestor.
 \end{enumerate}
 Cases 2 and 3 indicate a possible dependence, however the regions are
 accessed with only read privileges. All other cases for these two
 subtasks are similar to one of the examples above; thus, the two
 subtasks are independent.
 
-A closer look at this example shows that whether there is overlap
+A closer look at this example shows that whether there is aliasing
 between two regions $r_1$ and $r_2$ can be determined by examining
 their least common ancestor $\lca{r_1}{r_2}$ in the region tree.  
 There are four cases.  If $\lca{r_1}{r_2}$ either does not exist (the regions
@@ -212,7 +217,7 @@ places the child tasks of $t$ on the regions they use, maintaining the
 following invariant. Let $r'$ be a region used by child task $t'$,
 and let $R$ be the set of regions $r''$ such that $r''$ is used
 by a task $t''$ registered after $t'$ and $t''$ depends on $t'$
-because of overlap between $r''$ and $r'$.  Then $t'$ is listed on the
+because of aliasing between $r''$ and $r'$.  Then $t'$ is listed on the
 region that is the least common ancestor of the set $R \cup \{r'\}$.
 Placing $t'$ on an ancestor of $r'$ has the effect of coarsening the
 dependences involving $t'$, which
@@ -292,7 +297,7 @@ stages.  In Figure~\ref{fig:depexamp:a}, the two tasks
     calc\_new\_currents(pieces[1])} ($c_1$) have been placed on their region arguments,
   which determines these two tasks are independent.
 Next, in Figure~\ref{fig:depexamp:b}, the task {\tt distribute\_charge(pieces[0],dt)} ($d_0$)
-has dependences with both $c_0$ and $c_1$ caused by possible overlap between the pieces of the
+has dependences with both $c_0$ and $c_1$ caused by aliasing between the pieces of the
 shared node partition and the ghost node partition, so both $c_0$ and $c_1$ are moved to
 the {\tt p\_nodes\_pvs[1]} region.  Finally, the task {\tt update\_voltages[1]} ($u_1$) causes
 $d_0$ to also be moved to {\tt p\_nodes\_pvs[1]} for essentially the same reason; the final
@@ -370,9 +375,8 @@ physical instance $s'$ of logical region $r'$ in the region tree.  There are fou
 \item If $t'$ has only read privileges
 for $r'$ it cannot invalidate any instance of $r$.
 
-\item If $t'$ has read/write privileges for $r'$, and $r, r'$ may
-  overlap (i.e., $\lca{r}{r'}$ is a region or aliased
-  partition), then $s'$ must be copied to an instance $s''$ of
+\item If $t'$ has read/write privileges for $r'$, and $r$ aliases $r'$,
+   then $s'$ must be copied to an instance $s''$ of
   $\lca{r}{r'}$ and a fresh instance of $r'$ created from $s''$.
 %  (if either $r = \lca{r}{r'}$ or $r' = \lca{r}{r'}$ one of the two
 %  copies is omitted)
@@ -384,12 +388,12 @@ Instance $s'$ is removed from the region tree
   nothing is done.  This is the only case in which a writer
   does not require a valid instance---because reductions can be
   reordered, combining the instances of $r$ and $r'$ (if they
-  overlap) can be deferred to a later consumer of the data (see case
+  alias) can be deferred to a later consumer of the data (see case
   4).
 
 \item If $t'$ has reduce privilege for $r'$ and $t$ has read, write, 
   or reduce privileges with a different operator than $t'$
-  for $r$, and $r$ and $r'$ may overlap, then $s'$ must be
+  for $r$, and $r$ aliases $r'$, then $s'$ must be
   reduced (using $t'$'s reduction operator) to an instance $s''$ of
   $\lca{r}{r'}$ and then a fresh instance of $r'$ created from $s''$.
 %  (If $r' = \lca{r}{r'}$ the reduction is unneeded, and if $r =
