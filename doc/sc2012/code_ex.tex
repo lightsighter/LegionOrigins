@@ -57,7 +57,7 @@ void calc_new_currents(CircuitPiece piece):
 }
 
 void distribute_charge(CircuitPiece piece, float dt):
-        ROE(piece.rw_pvt), RdA(piece.rn_pvt, piece.rn_shr,piece.rn_ghost) {
+        ROE(piece.rw_pvt), RWE(piece.rn_pvt), RdA(piece.rn_shr,piece.rn_ghost) {
   foreach(w : piece.rw_pvt) {
     w#$\rightarrow$#in_node#$\rightarrow$#new_charge += -dt * w#$\rightarrow$#current;
     w#$\rightarrow$#out_node#$\rightarrow$#new_charge +=  dt * w#$\rightarrow$#current;
