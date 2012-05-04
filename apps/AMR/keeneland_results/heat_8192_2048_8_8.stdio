@@ -1,0 +1,10 @@
+ MPI initialized with            8  MPI processes
+ MPI initialized with            8  threads
+  Max Grid Cells         2048
+  Level            0  cells         8192
+  Level            1  cells         8192
+  Level            2  cells         8192
+ Advancing time step          10 with dt=  8.38190317153930685E-010
+ Advancing time step          20 with dt=  8.38190317153930685E-010
+ Run time (s) =   12.408931970596313     
+ Cells Updates/s =  3.24486560E+08

@@ -1,0 +1,22 @@
+Warning: Permanently added 'kid107.nics.utk.edu,10.39.16.126' (RSA) to the list of known hosts.
+Warning: Permanently added 'kid108.nics.utk.edu,10.39.16.127' (RSA) to the list of known hosts.
+[0 - 450fb940] {3}{circuit}: circuit settings: loops=10 pieces=48 nodes/piece=2500 wires/piece=16384 pct_in_piece=95 seed=12345
+[0 - 450fb940] {3}{circuit}: Initializing circuit simulation...
+[0 - 450fb940] {3}{circuit}: Finished initializing simulation...
+[2 - 41af8940] {3}{timer}: clearing timers
+[3 - 4257f940] {3}{timer}: clearing timers
+[1 - 41601940] {3}{timer}: clearing timers
+[0 - 450fb940] {3}{timer}: clearing timers
+[0 - 450fb940] {3}{circuit}: starting loop 0 out of 10
+[0 - 450fb940] {3}{circuit}: starting loop 1 out of 10
+[0 - 450fb940] {3}{circuit}: starting loop 2 out of 10
+[0 - 450fb940] {3}{circuit}: starting loop 3 out of 10
+[0 - 450fb940] {3}{circuit}: starting loop 4 out of 10
+[0 - 450fb940] {3}{circuit}: starting loop 5 out of 10
+[0 - 450fb940] {3}{circuit}: starting loop 6 out of 10
+[0 - 450fb940] {3}{circuit}: starting loop 7 out of 10
+[0 - 450fb940] {3}{circuit}: starting loop 8 out of 10
+[0 - 450fb940] {3}{circuit}: starting loop 9 out of 10
+[0 - 450fb940] {3}{circuit}: waiting for all simulation tasks to complete
+[0 - 450fb940] {3}{circuit}: SUCCESS!
+[0 - 450fb940] {3}{circuit}: simulation complete - destroying regions

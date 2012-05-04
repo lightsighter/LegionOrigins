@@ -1,0 +1,25 @@
+Warning: Permanently added 'kid086.nics.utk.edu,10.39.16.105' (RSA) to the list of known hosts.
+[0 - 40c09940] {3}{circuit}: circuit settings: loops=10 pieces=48 nodes/piece=2500 wires/piece=16384 pct_in_piece=95 seed=12345
+[0 - 40c09940] {3}{circuit}: Initializing circuit simulation...
+[0 - 40c09940] {3}{circuit}: Finished initializing simulation...
+[3 - 411bb940] {3}{timer}: clearing timers
+[6 - 4287c940] {3}{timer}: clearing timers
+[4 - 416aa940] {3}{timer}: clearing timers
+[5 - 42361940] {3}{timer}: clearing timers
+[2 - 40a0d940] {3}{timer}: clearing timers
+[1 - 411df940] {3}{timer}: clearing timers
+[7 - 41ab5940] {3}{timer}: clearing timers
+[0 - 40c09940] {3}{timer}: clearing timers
+[0 - 40c09940] {3}{circuit}: starting loop 0 out of 10
+[0 - 40c09940] {3}{circuit}: starting loop 1 out of 10
+[0 - 40c09940] {3}{circuit}: starting loop 2 out of 10
+[0 - 40c09940] {3}{circuit}: starting loop 3 out of 10
+[0 - 40c09940] {3}{circuit}: starting loop 4 out of 10
+[0 - 40c09940] {3}{circuit}: starting loop 5 out of 10
+[0 - 40c09940] {3}{circuit}: starting loop 6 out of 10
+[0 - 40c09940] {3}{circuit}: starting loop 7 out of 10
+[0 - 40c09940] {3}{circuit}: starting loop 8 out of 10
+[0 - 40c09940] {3}{circuit}: starting loop 9 out of 10
+[0 - 40c09940] {3}{circuit}: waiting for all simulation tasks to complete
+[0 - 40c09940] {3}{circuit}: SUCCESS!
+[0 - 40c09940] {3}{circuit}: simulation complete - destroying regions

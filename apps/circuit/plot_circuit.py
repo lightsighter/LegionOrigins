@@ -12,10 +12,12 @@ baseline="baseline"
 expr_name="ckt_sim"
 problems=[48,96]
 #speedup_axis=[1,97,1,97]
-speedup_axis=[1,128,1,128]
+speedup_axis=[1,100,1,100]
 linear=[1,2,4,8,16,32,48,96]
 
-markers = ['o','+','x','s','D','*','v','^','p','1','2','3','4','<','>','d']
+#markers = ['o','+','x','s','D','*','v','^','p','1','2','3','4','<','>','d']
+markers = ['o','s','D','*','v','^','p','<','>','d']
+colors = ['b','g','r','c','m','k']
 
 class Machine(object):
     def __init__(self,directory,name,gpu_set):
@@ -77,8 +79,8 @@ class Machine(object):
                 total_gpus.sort()
                 speedups.sort()
                 label = self.name+' P='+str(p)+' GPU/Node='+str(g)
-                #plt.plot(total_gpus,speedups,'k--',label=label,linestyle='dashed',markersize=7,marker=markers[mark_index],linewidth=0.5) 
-                plt.loglog(total_gpus,speedups,'k--',label=label,linestyle='dashed',markersize=7,marker=markers[mark_index],linewidth=0.5,basex=2,basey=2)
+                plt.plot(total_gpus,speedups,'--',color=colors[mark_index],label=label,linestyle='dashed',markersize=7,marker=markers[mark_index],linewidth=0.5) 
+                #plt.loglog(total_gpus,speedups,'k--',label=label,linestyle='dashed',markersize=7,marker=markers[mark_index],linewidth=0.5,basex=2,basey=2)
                 mark_index = mark_index + 1
         return mark_index
 
@@ -223,17 +225,30 @@ def make_plots():
         mach.print_summary()
 
     # Let's make the big line plot for all the experiments
-    fig = plt.figure()
     #plt.plot(linear,linear,'k-',label="Linear") 
-    plt.loglog(linear,linear,'k-',label="Linear",basex=2,basey=2)
-    marker_index = 0
+    #plt.loglog(linear,linear,'k-',label="Linear",basex=2,basey=2)
     for mach in machines:
+        fig = plt.figure()
+        linear = None
+        if mach.name=='Sapling':
+            linear = [1,2,4,8]
+        elif mach.name=='Viz':
+            linear = [1,2,4,8,16,24,48]
+        else:
+            linear = [1,2,4,8,16,24,48,96]
+        plt.plot(linear,linear,'k-',label="Linear")
+        marker_index = 0
         marker_index = mach.plot_speedups(fig,marker_index)
-    plt.legend(loc=2)
-    plt.xlabel('Total GPUs')
-    plt.ylabel('Speedup vs. Hand-Coded Single GPU')
-    plt.grid(True)
-    plt.axis(speedup_axis)
+        plt.legend(loc=2)
+        plt.xlabel('Total GPUs')
+        plt.ylabel('Speedup vs. Hand-Coded Single GPU')
+        plt.grid(True)
+        if mach.name=='Sapling':
+            plt.axis([1,8,1,8])
+        elif mach.name=='Viz':
+            plt.axis([1,48,1,48])
+        else:
+            plt.axis(speedup_axis)
     #fig.savefig(out_dir+'circuit_speedups.pdf',format='pdf')
     #plt.show()
 

@@ -1,0 +1,32 @@
+[0 - 46d93940] {3}{circuit}: circuit settings: loops=10 pieces=96 nodes/piece=2500 wires/piece=16384 pct_in_piece=95 seed=12345
+[0 - 46d93940] {3}{circuit}: Initializing circuit simulation...
+[0 - 46d93940] {3}{circuit}: Finished initializing simulation...
+[0 - 46d93940] {3}{timer}: clearing timers
+[2 - 41a37940] {3}{timer}: clearing timers
+[13 - 41ac4940] {3}{timer}: clearing timers
+[3 - 42910940] {3}{timer}: clearing timers
+[15 - 427d6940] {3}{timer}: clearing timers
+[11 - 419f7940] {3}{timer}: clearing timers
+[7 - 42078940] {3}{timer}: clearing timers
+[4 - 41285940] {3}{timer}: clearing timers
+[9 - 42357940] {3}{timer}: clearing timers
+[1 - 41bdf940] {3}{timer}: clearing timers
+[5 - 4176b940] {3}{timer}: clearing timers
+[6 - 40b47940] {3}{timer}: clearing timers
+[10 - 4226c940] {3}{timer}: clearing timers
+[12 - 415a1940] {3}{timer}: clearing timers
+[8 - 4207d940] {3}{timer}: clearing timers
+[14 - 4259c940] {3}{timer}: clearing timers
+[0 - 46d93940] {3}{circuit}: starting loop 0 out of 10
+[0 - 46d93940] {3}{circuit}: starting loop 1 out of 10
+[0 - 46d93940] {3}{circuit}: starting loop 2 out of 10
+[0 - 46d93940] {3}{circuit}: starting loop 3 out of 10
+[0 - 46d93940] {3}{circuit}: starting loop 4 out of 10
+[0 - 46d93940] {3}{circuit}: starting loop 5 out of 10
+[0 - 46d93940] {3}{circuit}: starting loop 6 out of 10
+[0 - 46d93940] {3}{circuit}: starting loop 7 out of 10
+[0 - 46d93940] {3}{circuit}: starting loop 8 out of 10
+[0 - 46d93940] {3}{circuit}: starting loop 9 out of 10
+[0 - 46d93940] {3}{circuit}: waiting for all simulation tasks to complete
+[0 - 46d93940] {3}{circuit}: SUCCESS!
+[0 - 46d93940] {3}{circuit}: simulation complete - destroying regions

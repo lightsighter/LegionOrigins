@@ -1,0 +1,26 @@
+48 pieces 1 nodes 1 cpus 1 gpus
+48 pieces 1 nodes 1 cpus 2 gpus
+48 pieces 1 nodes 1 cpus 3 gpus
+48 pieces 2 nodes 1 cpus 1 gpus
+48 pieces 2 nodes 1 cpus 2 gpus
+48 pieces 2 nodes 1 cpus 3 gpus
+48 pieces 4 nodes 1 cpus 1 gpus
+48 pieces 4 nodes 1 cpus 2 gpus
+48 pieces 4 nodes 1 cpus 3 gpus
+48 pieces 8 nodes 1 cpus 1 gpus
+48 pieces 8 nodes 1 cpus 2 gpus
+48 pieces 8 nodes 1 cpus 3 gpus
+96 pieces 1 nodes 1 cpus 1 gpus
+96 pieces 1 nodes 1 cpus 2 gpus
+96 pieces 1 nodes 1 cpus 3 gpus
+96 pieces 2 nodes 1 cpus 1 gpus
+96 pieces 2 nodes 1 cpus 2 gpus
+96 pieces 2 nodes 1 cpus 3 gpus
+96 pieces 4 nodes 1 cpus 1 gpus
+96 pieces 4 nodes 1 cpus 2 gpus
+96 pieces 4 nodes 1 cpus 3 gpus
+96 pieces 8 nodes 1 cpus 1 gpus
+96 pieces 8 nodes 1 cpus 2 gpus
+96 pieces 8 nodes 1 cpus 3 gpus
+Reset volatile ECC errors to zero for GPU 0000:11:00.0.
+Reset aggregate ECC errors to zero for GPU 0000:11:00.0.

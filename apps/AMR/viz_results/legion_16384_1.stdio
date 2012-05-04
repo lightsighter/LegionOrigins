@@ -1,0 +1,16 @@
+Starting main simulation loop
+ELAPSED TIME = 129.939 s
+UPDATES PER SEC = 484186.932 
+DETAILED TIMING SUMMARY:
+      KERNEL - 129.748 s
+        COPY -   0.043 s
+  HIGH-LEVEL -   0.086 s
+   LOW-LEVEL -   0.028 s
+      MAPPER -   0.002 s
+      SYSTEM -   0.001 s
+          10 -   0.220 s
+          13 -   0.001 s
+          14 -   0.189 s
+          15 -   0.000 s
+          16 -   0.000 s
+END OF DETAILED TIMING SUMMARY

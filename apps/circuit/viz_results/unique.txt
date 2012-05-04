@@ -1,0 +1,10 @@
+node012.cm.cluster
+node011.cm.cluster
+node010.cm.cluster
+node009.cm.cluster
+node008.cm.cluster
+node007.cm.cluster
+node006.cm.cluster
+node005.cm.cluster
+node004.cm.cluster
+node001.cm.cluster
