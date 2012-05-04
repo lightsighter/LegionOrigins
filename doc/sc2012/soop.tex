@@ -39,7 +39,7 @@ The third SOOP stage maps $t$ by carrying out a more refined analysis
 of the (already mapped) tasks on which $t$ depends
 (Section~\ref{sec:map}).  Between these stages, the second stage
 distributes tasks to other processors (Section~\ref{sec:dist}).  Once
-a task has been assigned a processor and physical instancess it is
+a task has been assigned a processor and physical instances it is
 issued for deferred execution (Section~\ref{sec:exec}).  The final
 SOOP stage reclaims resources from completed tasks
 (Section~\ref{sec:clean}).
@@ -237,7 +237,7 @@ path to $r'$, then any task in a subtree of $m$ other than $m'$ that $t'$ depend
 moved to $m$.
 
 \item If $m$ is a disjoint partition and $m'$ is the child on the
-path to $r'$, then no tasks in a subtree of $m$ other than $m'$ can conflict wtih $t'$; we simply move
+path to $r'$, then no tasks in a subtree of $m$ other than $m'$ can conflict with $t'$; we simply move
 on to $m'$.
 
 \item If $m = r'$ then any dependent tasks in $r'$'s subtree are moved to $r'$.
