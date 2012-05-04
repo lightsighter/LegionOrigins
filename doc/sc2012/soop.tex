@@ -1,83 +1,84 @@
 \section{The Software Out-of-Order Processor}
 \label{sec:soop}
 
-There are two major challenges in implementing an efficient task
-scheduler for Legion:
+Legion uses a {\em  software out-of-order processor}, or SOOP, to schedule tasks.  The SOOP 
+is pipelined, distributed and extracts nested parallelism from subtasks.
+There are two major challenges in implementing an efficient task scheduler:
 \begin{itemize}
-\item  For correctness, Legion must guarantee that every pair of {\em dependent} tasks is serialized in program order.
+\item  For correctness, Legion must preserve data dependences between tasks.
 
 \item For performance, Legion must hide the extremely long latencies associated
   with machines that have both distributed memory and many levels of
   memory hierarchy.
 \end{itemize}
-Our scheduler uses three techniques to achieve both correctness and high performance:
-\begin{itemize}
-\item If it were necessary to compare all pairs of tasks for dependences that 
-would be a bottleneck in most Legion programs.  Fortunately,
-subtasks enjoy an isolation property that allows Legion to check only task siblings for dependences
-(see Section~\ref{sec:dep}).
 
-\item Legion uses a {\em  software out-of-order processor}, or SOOP, to schedule tasks.  The SOOP 
-is pipelined and distributed, and also extracts nested parallelism from subtasks.
-
-\item Legion uses a {\em deferred execution model} that decouples the issuing
+To solve the second problem Legion uses a {\em deferred execution model} that decouples the issuing
 of operations from when operations are performed.  An issued operation waits for other operations on
 which it is dependent to complete before executing, but a waiting operation does not cause the SOOP
-to block, allowing Legion to perform other useful work while the operation is pending.  
+to block.  With deferred execution, it is worthwhile for the SOOP to run (potentially far) ahead of actual execution,
+allocating resources to and issuing tasks that must wait because they have data dependences on earlier tasks that have not 
+finished executing.   Pipelining and distributing the SOOP further improves throughput and hides latency.
 
-%  For example, Legion may issue a copy
-%operation to move the results of a task $a$ to the place where a task $b$ will take the copied data as
-%an argument.  Tasks $a$ and $b$ and the copy can all be issued, but the copy will not start until
-%task $a$ completes and task $b$ will not start until the copy completes.
+To solve the first problem, detecting and enforcing data dependences
+efficiently at run time, the SOOP analyzes, for each task $t$, the
+permissions on the regions $t$ uses and ensures that $t$ waits on any
+earlier task whose region uses may conflict with $t$'s.  There is a
+difficulty, however.  Recall that the programmer's regions are
+logical: a region names a set of objects, but a region does not say
+where those objects are physically allocated.
+Thus, to {\em map} $t$ (assign physical instances for each logical region used by $t$) the SOOP must know
+both what tasks $t$ depends on how those other tasks are mapped.
 
-\end{itemize}
+Our SOOP design solves this problem by dividing the analysis of
+dependences between two pipeline stages.  The first SOOP stage
+computes task dependences at the granularity of logical regions (Section~\ref{sec:dep}).  This
+does not give enough information to map $t$, but it does identify the
+other tasks that must map before $t$ can map. 
+The third SOOP stage
+maps $t$ by carrying out a more refined analysis of the (already
+mapped) tasks on which $t$ depends (Section~\ref{sec:map}).
+Between these stages, the second stage distributes tasks to other processors
+to improve locality or load balance the machine (Section~\ref{sec:dist}).
+Once the task has been assigned a processor and physical regions it is executed
+using deferred execution (Section~\ref{sec:exec}).  The fifth and final SOOP stage
+reclaims resources from completed tasks (Section~\ref{sec:clean}).
 
-Each processor in the machine runs an instance of the SOOP, which handles all requests
-for Legion services from tasks executing on the processor.  The SOOP is analagous to the out-of-order
-instruction scheduler in superscalar processors, but working at the granularity of tasks and their region
-arguments instead of instructions and their register arguments.
-Legion's SOOP has a five stage pipeline: dependence analysis (Section~\ref{sec:dep}),
-distribution (Section~\ref{sec:dist}),
-mapping (Section~\ref{sec:map}),
-execution (Section~\ref{sec:exec}),
-and clean-up (Section~\ref{sec:clean}).
-We discuss each stage in turn.
-
-\subsection{Depedence Analysis}
+\subsection{Stage 1: Mapping Depedences}
 \label{sec:dep}
 
 
-When a Legion task runs, it may spawn new subtasks to be executed.  We refer to the
-subtasks as {\em children} of the {\em parent} task.  The children of a parent task
-are {\em siblings} of each other.  A task always executes on a single processor, but
+When a Legion task runs, it may spawn new subtasks to be executed.  
+These subtasks are {\em children} of the {\em parent} task and {\em siblings} of each other.  
+A task always executes on a single processor, but
 its subtasks may execute elsewhere.
 
+Each processor in the system runs an instance of the SOOP.
 When a parent task spawns a child task, the child is {\em registered}
-with the SOOP on the processor where the parent is executing;
-registration records the subtask's logical region arguments and
-associated privileges and coherence properties.  Children are
-registered in the sequential execution order in which the parent task
-spawns them and enqueued for dependence analysis.  For example, in the
-circuit simulation in Listing~\ref{lst:code_ex}, the three spawn
-statements on lines 32-34 register will register all of the three
+with the SOOP on the parent's processor;
+registration records the subtask's logical regions,
+privileges and coherence properties.  Children are
+registered in the sequential order the parent
+spawns them and enqueued for mapping dependence analysis.  In the
+circuit simulation in Listing~\ref{lst:code_ex}, the spawn
+statements on lines 32-34 register all three
 kinds of subtasks (in program order) on the processor where {\tt
 simulate\_circuit} executes.
 
-If two children have a dependence between their region arguments, the
-SOOP will schedule them to run serially to preserve the program's
-sequential semantics.  If two child tasks have no dependence then
-Legion can schedule them to execute out of order, in parallel.  Thus,
-the first stage in the execution of a task is dependence analysis on
-the logical regions used by tasks.
+Detecting mapping dependences between a newly registered task $t$ and
+a previously registered task $t'$ requires comparing the two sets of
+logical regions accessed.  For each logical region used by $t'$ that
+may overlap with a logical region used by $t$, the privileges and
+coherence modes are compared to determine whether a dependence exists.
+If both regions need only read privileges there is never a dependence,
+but if either task needs write or reduction privileges, the coherence
+modes are compared using the table in Figure~\ref{fig:dependence}.
+{\tt Dep} indicates dependence while {\tt None}
+indicates independence.  {\tt Same} is a dependence unless the two tasks
+use the same physical instance of the logical region.\footnote{For example, if two tasks wish to acess the region with atomic coherence, then if they are working on the same physical copy of the data atomicity can be guaranteed using, e.g., locking.  If they are working on different copies of the data then the only safe execution strategy for Legion is to serialize the two tasks.}
+{\tt Cont} 
+indicates a dependence unless a single writer has
+atomic coherence.  
 
-\subsubsection{Dependences}
-Detecting dependences between a newly registered task $t$ and a previously registered task 
-$t'$ requires comparing the two sets of logical regions accessed.  For each logical region used by
-$t'$ that may overlap with a logical region used by $t$, the privileges
-and coherence modes are compared to determine whether a dependence exists.  If
-both regions need only read privileges there is never a dependence, but if either
-task needs write or reduction privileges, the coherence modes are compared using
-the table in Figure~\ref{fig:dependence}.
 
 \begin{figure}
 {\small
@@ -93,25 +94,15 @@ Relaxed      & Dep & Cont & None & None \\
 \caption{Dependence table.}
 \label{fig:dependence}
 \end{figure}
-A {\tt Dep} entry indicates dependence while {\tt None}
-indicates independence.  A {\tt Same} entry is a dependence unless the two tasks
-use the same physical instance of the logical region.\footnote{For example, if two tasks wish to acess the region with atomic coherence, then if they are working on the same physical copy of the data atomicity can be guaranteed using, e.g., locking.  If they are working on different copies of the data then the only safe execution strategy for Legion is to serialize the two tasks.}
-A {\tt Cont} entry
-indicates a dependence unless a single writer is using the
-atomic coherence mode.  When a dependence is detected, the new task
-waits for the older task to complete before it begins execution.
 
 The table lists {\em simultaneous} and {\em relaxed} coherence modes
-that we have not yet discussed.  Both simultaneous and relaxed
+that we have not yet discussed.  Both modes
 allow other tasks using the region to execute at the same time and differ
 only in what data must be observed.  With simultaneous coherence, a task must 
 see all updates to the logical region made by other tasks operating on the same region 
 simultaneously (i.e., shared memory semantics).  With relaxed coherence, 
-a task may or may not observe updates to the logical region by other tasks executing at
-the same time.
+a task may or may not observe concurrent updates.
 
-
-\subsubsection{Isolation}
 
 %
 %\begin{figure}
@@ -147,10 +138,8 @@ the same time.
 %\label{fig:independence}
 %\end{figure}
 
-The reader may wonder why we only compare sibling tasks for
-dependences when presumably arbitrary pairs of tasks may be dependent. 
-The following observation shows why dependence analysis can be limited to
-sibling tasks.
+A key property of Legion, that dependence analysis is only needed
+between sibling tasks:
 \begin{observation}
 \label{obs:isolation}
 \rm
@@ -159,10 +148,8 @@ of $t_2$.
 \end{observation}
 Recall from Section~\ref{sec:ex} that subtasks only access subregions of their parent task's region arguments (and with fewer
 privileges).  Thus if the regions used by $t_1$ and $t_2$ do not overlap, the regions used by any subtasks of $t_1$ cannot
-overlap with the regions used by any subtask of $t_2$.  In the case where the regions used by $t_1$ and $t_2$ do overlap
+overlap with the regions used by any subtask of $t_2$.  If the regions used by $t_1$ and $t_2$ do overlap
 but there is no dependence because the regions are used with simultaneous or relaxed coherence, then by definition there is no dependence between the subtasks.
-
-\subsubsection{Efficient Dependence Analysis}
 
 Consider the first two subtasks spawned on line 32 of the circuit
 simulation in Listing~\ref{lst:code_ex}, {\tt
@@ -185,19 +172,16 @@ It may be helpful to refer to the region tree for nodes in Figure~\ref{sfig:part
 \item {\tt pieces[0].rn\_shr} and {\tt pieces[1].rn\_ghost} may overlap because they are in two different
   partitions of the same region.
 \item {\tt pieces[0].rn\_ghost} may overlap with {\tt pieces[1].rn\_ghost} because they are in different subregions of
-a non-disjoint, or {\em aliased}, partition.
-\item All the remaining pairs of regions used by the two tasks (e.g., {\tt pieces[0].rw\_pvt} and {\tt pieces[1].rn\_pvt})
+an aliased partition.
+\item All remaining pairs of regions (e.g., {\tt pieces[0].rw\_pvt} and {\tt pieces[1].rn\_pvt})
 do not overlap because they are in different region trees and have no common region ancestor.
 \end{enumerate}
 Cases 4-6 indicate a possible dependence, however in each case the regions are accessed with only read privileges.  Thus, the two subtasks are independent.
 
 A closer look at this example shows that whether there is overlap
 between two regions $r_1$ and $r_2$ can be determined by examining
-their least common ancestor $\lca{r_1}{r_2}$ in the region tree.  Note
-that the region tree alternates between regions and partitions:
-regions are always children of partitions and
-partitions are always children of regions.  There
-are four cases.  If $\lca{r_1}{r_2}$ either does not exist (the regions
+their least common ancestor $\lca{r_1}{r_2}$ in the region tree.  
+There are four cases.  If $\lca{r_1}{r_2}$ either does not exist (the regions
 are in different region trees) or is a disjoint partition, then $r_1$
 and $r_2$ are guaranteed to be disjoint.  If $\lca{r_1}{r_2}$ is an
 aliased partition or a region (because $r_1$ and $r_2$ are in
@@ -209,8 +193,8 @@ Consider subtasks {\tt distribute\_charge(pieces[0],dt)} and
 uses region {\tt pieces[0].rn\_ghost} and the latter uses region {\tt pieces[1].rn\_shr}.
 The least common ancestor is the region of all shared nodes {\tt p\_nodes\_pvs[1]},
 so these two regions are not disjoint.  Since both tasks write their respective subregions,
-there is a dependence and the {\tt update\_voltages} task can only run after the
-{\tt distribute\_charges} task has completed.  
+there is a dependence and the {\tt update\_voltages} task can only map after the
+{\tt distribute\_charges} task has mapped.
 
 We can now describe the algorithm for the dependence analysis phase of
 the SOOP.  The SOOP maintains a local region forest for each task $t$,
@@ -219,34 +203,36 @@ partitions and subregions used within the task.  Dependence analysis
 decorates the region tree with the subtasks of $t$, maintaining the
 following invariant. Let $r'$ be a region argument to subtask $t'$,
 and let $R$ be the set of regions $r''$ such that $r''$ is an argument
-to a task $t''$ registered after $t'$ and $t''$ depends on $t'$ because
-of overlap between $r''$ and $r'$.  Then $t'$ is listed on the region that
-is the least common ancestor of the set $R \cup \{r'\}$.  Moving $t'$ to an
-ancestor of $r'$ has the effect of coarsening the dependences involving $t'$
-for tasks registered in the future, and this can result in false dependences.
-However, the loss of information can be shown to be small and, as we show next, the
-benefit is that it dramatically speeds up dependence analysis overall.
+to a task $t''$ registered after $t'$ and $t''$ depends on $t'$
+because of overlap between $r''$ and $r'$.  Then $t'$ is listed on the
+region that is the least common ancestor of the set $R \cup \{r'\}$.
+Moving $t'$ to an ancestor of $r'$ has the effect of coarsening the
+dependences involving $t'$ for tasks registered in the future, and
+this can result in false dependences.  However, the loss of
+information can be shown to be small and only affects when $t$ can
+map; any loss of information here will be recovered in the mapping
+phase.  Furthermore, the benefit is that it dramatically speeds up
+dependence analysis overall.
 
-We can identify all dependences between sibling tasks and place tasks
-in the correct place in the region tree in amortized time ${\cal O}(nd)$,
-where $n$ is the total number of region arguments to tasks and $d$ is the depth
-of the region tree.  For region $r'$ an argument of task $t'$, the analysis
+We can identify all mappoing dependences between sibling tasks and place tasks
+in the correct place in the region tree in amortized time ${\cal O}(d)$ per region,
+whre $d$ is the depth of the region tree.  For region $r'$ an argument of task $t'$, the analysis
 walks the unique path in the region forest from a root to $r'$.  For each node $m$
 on the walk from the root to $r'$ the following actions are taken:
 \begin{itemize}
-\item Assume $m$ is a region with multiple child partitions, and let $m'$ be the child on the
-path to $r'$.  Any task in a subtree of $m$ other than $m'$ on which $t'$ depends 
+\item If $m$ is a region with multiple child partitions and $m'$ is the child on the
+path to $r'$, then any task in a subtree of $m$ other than $m'$ on which $t'$ depends 
 is moved to $m$.
 
-\item Assume $m$ is a non-disjoint partition, and let $m'$ be the child on the
-path to $r'$.  Any task in a subtree of $m$ other than $m'$ that $t'$ depends on is
+\item If $m$ is a non-disjoint partition and $m'$ is the child on the
+path to $r'$, then any task in a subtree of $m$ other than $m'$ that $t'$ depends on is
 moved to $m$.
 
-\item Assume $m$ is a disjoint partition, and let $m'$ be the child on the
-path to $r'$.  No tasks in a subtree of $m$ other than $m'$ can conflict wtih $t'$; we simply move
+\item If $m$ is a disjoint partition and $m'$ is the child on the
+path to $r'$, then no tasks in a subtree of $m$ other than $m'$ can conflict wtih $t'$; we simply move
 on to $m'$.
 
-\item Assume $m = r'$.  In this case any dependent tasks in $r'$'s subtree are moved to $r'$.
+\item If $m = r'$ then any dependent tasks in $r'$'s subtree are moved to $r'$.
 \end{itemize}
 
 \begin{figure*}
@@ -264,20 +250,20 @@ on to $m'$.
 \caption{Dependence analysis examples from {\tt circuit\_simulation}.}
 \end{figure*}
 
-Thus, there are two parts to depedence analysis of a region argument
-$r'$ to a task: the walk from a region root to $r'$ and the off-path work
+There are two parts to this analysis:
+the walk from a region root to $r'$ and the off-path work
 to move dependent tasks to the least common ancestor on the path.
 Clearly the walk to $r'$ is bounded by the depth of the region tree.
 The off-path work can be made efficient by maintaining at each node a
-record of which subtrees have tasks in them and with what priveleges,
+record of which subtrees have tasks in them and with what privileges,
 enabling the off-path search to traverse directly and only to
 dependent tasks.  The off-path work is proportional to how far a task
 is moved back up the region tree.  Thus, for each region argument a
 task is initially placed at some depth in the tree and subsequently
-only moved up towards the root, so the overall work is (amortized)
-${\cal O}(nd)$.  In practice, we have found this level of efficiency,
-where dependence analysis is linear in the number of region arguments (and not
-the square) and proportional to the depth of the region tree (and not its size)
+only moved up towards the root, so the overall work per region is (amortized)
+${\cal O}(d)$.  In practice, we have found this level of efficiency,
+where analyzing mapping dependences is linear in the number regions used (and not the square) and
+proportional to the depth of the region tree (and not its size)
 to be very important in minimizing the overhead of the SOOP.
 
 We now illustrate dependence analysis using the four tasks discussed

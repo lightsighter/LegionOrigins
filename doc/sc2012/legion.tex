@@ -62,12 +62,12 @@ that identifies both independent tasks and nested parallelism.  Legion
 also enables explicit, programmer controlled movement of data through
 the memory hierarchy and placement of tasks based on locality
 information via a novel mapping interface.  We evaluate our Legion
-implementation using four applications: fluid-flow on a regular grid,
-a three-level AMR code solving a standard heat diffusion equation, a circuit simulation,
-and LINPACK.
-%Running on a 4 node cluster with 8 total GPUs 
-%and 4 levels of memory hierarchy, our implementation of Legion 
-%achieves up to 5.9X speedup over a single CPU-GPU node on real-world applications.
+implementation on three applications: fluid-flow on a regular grid,
+a three-level AMR code solving a heat diffusion equation, and 
+a circuit simulation.
+%
+% FIXME: put some performance numbers here
+%
 \end{abstract}
 
 \section{Introduction}
@@ -86,31 +86,39 @@ Most contemporary
 programming systems have no facilities for the programmer to express locality
 and independence.  The few languages that do focus primarily on
 array-based locality \cite{Fatahalian06,CHAPEL04,UPC99} and 
-avoid irregular pointer data structures.
+avoid irregular pointer data structures.  
+%
+% FIXME
+% Sean would like a bit more on why other systems don't support pointer data structures (e.g., the difficulty of
+% alias analysis.  I thought about it and feel it is too much of a digression: mentioning that in the first paragraph
+% makes it sound like it will be an important part of the paper.
+%
 %encode such structures in arrays, which 
 %data structures encoded in arrays which are impossible for compilers
 %and runtime systems to reason about with regard to locality and independence.
 
 In this paper we describe Legion, a parallel programming system based
-on using {\em logical regions} to describe the organization of data.
-A logical region names a set of objects.  Logical regions are first
-class values in Legion, and in particular may be passed as arguments
+on using {\em logical regions} to describe the organization of data
+and to make explicit relationships useful for reasoning about locality
+and independence.
+A logical region names a set of objects.  Logical regions are first-class 
+values in Legion and may be dynamically allocated, deleted and stored
+in data structures. Regions can also be passed as arguments
 to distinguished functions called {\em tasks} that access the data in
 those regions, providing locality information.  Logical regions may be
 {\em partitioned} into (usually) disjoint {\em subregions}, providing
 information for determining independence of computations.
 Furthermore, computations access logical regions with particular {\em
-  privileges} (e.g., {\em read-only} and {\em read-write}, among
-others) and {\em coherence} (e.g., {\em exclusive access} and {\em
+  privileges} ({\em read-only}, {\em read-write}, and {\em reduce}) and {\em coherence} (e.g., {\em exclusive access} and {\em
   atomic access}, among others).  Privileges express how a task may use
 its region arguments, providing data dependence information that
 is used to guide the extraction of parallelism.  For example, if two tasks
 access the same region with read-only privileges the two tasks
 can potentially be run in parallel.
-Coherence properties express the required semantics of concurrent
-accesses to the region.  For example, if the program executes $f_1(r); f_2(r)$ and tasks $f_1$
-and $f_2$ both require {\em exclusive} access to region $r$, then Legion guarantees that 
-$f_1(r)$ completes before $f_2(r)$ begins.   On the other hand, if
+Coherence properties express the required semantics of concurrent region accesses.
+For example, if the program executes $f_1(r); f_2(r)$ and tasks $f_1$
+and $f_2$ both require {\em exclusive} access to region $r$, then Legion guarantees the result will
+be as if $f_1(r)$ completes before $f_2(r)$ begins.   On the other hand, if
 the tasks access $r$ with {\em atomic} coherence, then Legion
 guarantees only atomicity of the tasks with respect to $r$: either task $f_1(r)$
 appears to run entirely before $f_2(r)$ or vice versa.
@@ -123,9 +131,9 @@ to have multiple physical copies of a logical region's contents in different par
 to duplicate and distribute read-only data, to keep an old copy of a region to break a 
 write-after-read dependence, or to allow independent, local reductions that are later combined.
 
-To introduce the programming model, we begin with an extended example
-of a circuit simulation in
-Section~\ref{sec:ex}. This example illustrates regions, tasks,
+To introduce the programming model, we present
+a circuit simulation in
+Section~\ref{sec:ex}, illustrating regions, tasks,
 permissions and coherence properties, the interactions between them,
 and how these building blocks are assembled into a Legion
 program.  Subsequent sections each describe a contribution in the
@@ -139,7 +147,7 @@ implementation and evaluation of Legion:
   scheduling tasks with region arguments in a manner analogous to how
   out-of-order hardware schedulers process instructions with register
   arguments (Section~\ref{sec:soop}).  In addition to pipelining the execution of tasks over
-  several stages, our SOOP is concurrent and distributed across the machine and is
+  several stages, our SOOP is distributed across the machine and is
   also hierarchical and naturally extracts nested
   parallelism (because tasks may recursively spawn subtasks).
 
@@ -153,29 +161,31 @@ implementation and evaluation of Legion:
 %we show that dataflow-like deferred execution gives us a significant performance improvement
 %over bulk synchronous global synchronization primitives such as barriers.
 
-\item A central part of orchestrating a program's execution is how
+\item Of central importance is how
 tasks are assigned (or {\em mapped}) to processors and how physical instances of logical regions are
-mapped to specific memory units within the machine  (Section~\ref{sec:mapping}).  Often there is
-application-specific information that, if exploited, results in better
-mappings than a generic, one-size-fits-all mapping strategy.  We describe
+mapped to specific memory units (Section~\ref{sec:mapping}).  Often using
+application-specific information results in better
+mappings than a generic mapping strategy.  We describe
 a {\em mapping interface} that allows programmers to give the SOOP a specification
 of how to map tasks and regions for a specific application, or even part of an
-application.  This mapping API is carefully defined so that
+application.  This mapping API is designed so that
 any user-supplied mapping strategy can only affect the performance of applications,
 not their correctness.  
 %Thus, user mappings only affect the time and resources required
 %to run the program and cannot change the program's output.
 
 
-\item We present the results of experiments on four applications:
+\item We present the results of experiments on three applications:
   fluid-flow on a regular grid, a three-level AMR code solving a
-  standard heat diffusion equation, a circuit simulation, and LINPACK (Section~\ref{sec:exp}).
+  standard heat diffusion equation and a circuit simulation.
   We run each of these four codes and best available reference
   versions on three different clusters of multicore processors with
-  attached GPUs: a small cluster of our own (4 nodes with 2 6-core CPUs and 2 GPUs per node), a medium-sized cluster
-  designed for visualization applications (10 nodes with 2 6-core CPUs and 5 GPUs per node), and up to a third of the
-  Keeneland supercomputer (32 nodes, 2 6-core CPUs and 3 GPUs per node)
-
+  attached GPUs: a small cluster of our own (4 nodes with 12 CPUs and 2 GPUs per node), a medium-sized cluster
+  designed for visualization applications (10 nodes with 12 CPUs and 5 GPUs per node), and up to a third of the
+  Keeneland supercomputer (32 nodes, 12 CPUs and 3 GPUs per node).
+%
+% FIXME Give the same numbers as in the abstract.
+%
 
 \end{itemize}
 
@@ -186,9 +196,6 @@ not their correctness.
 \input{experiments}
 \input{related}
 \input{conclusion}
-
-
-
 
 
 \bibstyle{IEEEtran}
