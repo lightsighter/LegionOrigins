@@ -6,8 +6,8 @@ import string, re
 import numpy as np
 import matplotlib.pyplot as plt
 
-home_dir="/home/mebauer/region/apps/circuit/"
-out_dir="/home/mebauer/region/apps/circuit/figs/"
+home_dir="./"
+out_dir="./figs/"
 baseline="baseline"
 expr_name="ckt_sim"
 problems=[48,96]
@@ -216,7 +216,7 @@ class Experiment(object):
         f.close()
 
 
-def make_plots():
+def make_plots(show = True, save = True):
     
     # Read in data from each of the machine experiments 
     for mach in machines:
@@ -227,8 +227,9 @@ def make_plots():
     # Let's make the big line plot for all the experiments
     #plt.plot(linear,linear,'k-',label="Linear") 
     #plt.loglog(linear,linear,'k-',label="Linear",basex=2,basey=2)
+    fig = plt.figure(figsize = (10,7))
+    plt.plot([0,70],[0,70],'k-',label="Linear")
     for mach in machines:
-        fig = plt.figure()
         linear = None
         if mach.name=='Sapling':
             linear = [1,2,4,8]
@@ -236,38 +237,42 @@ def make_plots():
             linear = [1,2,4,8,16,24,48]
         else:
             linear = [1,2,4,8,16,24,48,96]
-        plt.plot(linear,linear,'k-',label="Linear")
+        #plt.plot(linear,linear,'k-',label="Linear")
         marker_index = 0
         marker_index = mach.plot_speedups(fig,marker_index)
-        plt.legend(loc=2)
-        plt.xlabel('Total GPUs')
-        plt.ylabel('Speedup vs. Hand-Coded Single GPU')
-        plt.grid(True)
-        if mach.name=='Sapling':
-            plt.axis([1,8,1,8])
-        elif mach.name=='Viz':
-            plt.axis([1,48,1,48])
-        else:
-            plt.axis(speedup_axis)
-    #fig.savefig(out_dir+'circuit_speedups.pdf',format='pdf')
+    plt.legend(loc=2)
+    plt.xlabel('Total GPUs')
+    plt.ylabel('Speedup vs. Hand-Coded Single GPU')
+    plt.grid(True)
+    #    if mach.name=='Sapling':
+    #        plt.axis([1,8,1,8])
+    #    elif mach.name=='Viz':
+    #        plt.axis([1,48,1,48])
+    #    else:
+    #        plt.axis(speedup_axis)
+    if save:
+        fig.savefig(out_dir+'circuit_speedups.pdf',format='pdf',bbox_inches='tight')
     #plt.show()
 
     # Make the percentage plot for keeneland with 3 gpus/node
-    fig = plt.figure()
+    fig = plt.figure(figsize = (10,4))
     node_count = list()
     for mach in machines:
         if mach.name=="Keeneland":
             mach.plot_percentages(fig,3,96,node_count)
-    plt.title('Overhead of Circuit Simulation on Keeneland with 3 GPUs/Node')
+    #plt.title('Overhead of Circuit Simulation on Keeneland with 3 GPUs/Node')
     plt.xticks(np.arange(len(node_count)), node_count)
     plt.yticks(np.arange(0,101,10))
     plt.ylim(ymin=0,ymax=105)
     plt.xlabel('Node Count')
     plt.ylabel('Percentage of Execution Time')
     plt.legend(loc=2)
-    plt.show()
-    
+    #plt.show()
+    if save:
+        fig.savefig(out_dir+'circuit_overhead.pdf', format='pdf',bbox_inches='tight')
+    if show:
+        plt.show()
 
 if __name__=="__main__":
-    make_plots()
+    make_plots(not("-s" in sys.argv), True)
 

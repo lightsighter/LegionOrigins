@@ -13,7 +13,7 @@ def plot_init(title, xlabel, ylabel, pp):
 
 markers = ['o','s','D','*','v','^','p','<','>','d']
 
-def plot(cpus, speedups, label, mark_index, pp):
+def plot(cpus, speedups, label, mark_index):
     plt.plot(cpus, speedups, label = label, linestyle = 'dashed', markersize = 7, marker = markers[mark_index], linewidth=0.5)
 
 total_particles = {'300K': 305809, '2400K': 2446472, '19M': 19554392}
@@ -36,14 +36,16 @@ large_plot = [('Keeneland',
 ]
 
 if __name__ == '__main__':
-    pp = PdfPages('multinode_legion.pdf')
-    plot_init('Legion Scaling to Multiple Nodes', 'Nodes', 'Particles per Second (in Tens of Millions)', pp)
+    fig = plt.figure(figsize = (10,7))
+    plt.xlabel("Nodes")
+    plt.ylabel("Particles per second (in millions)")
+    plt.grid(True)
     index = 1
     for machine, mdata in large_plot:
         for psize, data in mdata:
-            plot(large_plot_nodes[:len(data)], total_particles[psize] * total_steps / data,
-                 '%s %s' % (machine, psize), index, pp)
+            plot(large_plot_nodes[:len(data)], total_particles[psize] * total_steps / data / 1e6,
+                 '%s %s' % (machine, psize), index)
             index += 1
     plt.legend(loc=4)
-    pp.savefig()
-    pp.close()
+    fig.savefig("figs/fluid_multinode.pdf", format="pdf", bbox_inches="tight");
+    #pp.close()

@@ -7,7 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
-home_dir="/home/mebauer/region/apps/AMR/"
+home_dir="./"
 out_dir = home_dir + "figs/"
 expr_name="heat"
 legion_name="legion"
@@ -205,14 +205,14 @@ class LegionExperiment(object):
             print "WARNING Legion experiment "+str(self.size)+'_'+str(self.nodes)+" FAILED!"
         f.close()
 
-def make_plots():
+def make_plots(show = True, save = True):
     for mach in machines:
         mach.read_experiments()
         print "Results for "+mach.name
         mach.print_summary()
     for mach in machines:
         #pp = PdfPages(mach.name+"_amr.pdf")
-        fig = plt.figure()
+        fig = plt.figure(figsize = (10,7))
         mark_index = 0
         for p in problem_sizes:
             mark_index = mach.plot_updates(fig,p,mark_index)
@@ -227,10 +227,13 @@ def make_plots():
         plt.xlabel('Node Count')
         plt.ylabel('Millions of Cell Updates/s')
         plt.grid(True)
+        if save:
+            fig.savefig(out_dir+mach.name+"_amr.pdf", format="pdf", bbox_inches="tight")
         #pp.savefig()
         #pp.close()
     
-    plt.show()
+    if show:
+        plt.show()
 
 if __name__=="__main__":
-    make_plots()
+    make_plots(not("-s" in sys.argv), True)
