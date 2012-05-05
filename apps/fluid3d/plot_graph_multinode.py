@@ -67,6 +67,7 @@ if __name__ == '__main__':
              psize_size[psize],
              psize_fill[psize],
              )
-    plt.legend(loc=4)
+    plt.legend(bbox_to_anchor=(0.40, 0.3, 0.6, 0.6))
+    #plt.legend(loc=4)
     fig.savefig("figs/fluid_multinode.pdf", format="pdf", bbox_inches="tight");
     #pp.close()

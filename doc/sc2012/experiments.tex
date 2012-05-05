@@ -78,18 +78,15 @@ framebuffer memory and {\em zero-copy} memory (pinned memory that both the GPU a
 CPUs in the system can access directly).  Once the circuit is partitioned, the partitions
 are assigned a home GPU in round-robin fashion.  Every task related to that partition is
 then sent to the home GPU, with no task stealing allowed.  
-%
-% FIXME CUT
-% We could put this nice sentence back in if we have space.
-%
 (In a well-partitioned circuit,
 load imbalance is low enough that the cost of moving the private data for a piece from one
 GPU to another outweighs any benefits.)
-%
-% FIXME CUT  
-% If we find enough space this sentence and the figure can be reinserted here.
-  The regions for a task are mapped as 
-shown in Figure~\ref{fig:gpumapping}.
+
+  The regions for the tasks are mapped as 
+shown in Figure~\ref{fig:gpumapping}.  Wires and private node data are kept in each GPU's
+framebuffer at all times.  An instance of the ``all-shared nodes'' region is placed in
+GASNet memory and instances for just the shared and ghost nodes needed by each GPU
+are placed into that GPU's zero-copy memory.
 
 \begin{figure}
 \includegraphics[scale=0.48]{figs/CircuitMem.pdf}
