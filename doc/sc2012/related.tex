@@ -6,12 +6,12 @@ Legion began as an outgrowth of Sequoia, a locality-aware programming language c
 of expressing computations in deep memory hierarchies
 \cite{Fatahalian06}.  Sequoia is a special case of the Legion
 programming model in which only arrays can be recursively partitioned,
-all access is exclusive, there is a static mapping of tasks and data on to the machine (though
+all access is exclusive, there is a static mapping of tasks and data (though
 extensions to Sequoia make this mapping more dynamic \cite{BCSA11}) and, most fundamentally, the decomposition of tasks and the decomposition
 of data is one-to-one.  Legion generalizes the Sequoia model by allowing for
 partitioning of pointer data structures through regions, enabling dynamic mappings through
 the mapper interface, and allowing different coherence
-properties.  Legion's decoupling of the task tree from the region tree in Legion leads directly to the scheduling problem solved by our software out-of-order processor for tasks with region arguments.
+properties.  Legion's decoupling of the task tree from the region tree leads directly to the scheduling problem solved by our software out-of-order processor for tasks with region arguments.
 
 Chapel has several concepts to support the expression of locality \cite{Chamberlain:Chapel}.
 Domains are similar to logical regions in that they describe maps from indexes
@@ -32,16 +32,19 @@ makes it challenging to fully utilize deep memory hierarchies.  Chapel currently
 clusters and GPUs in isolation \cite{CHAPELGPU}, but we are not aware of any results that 
 make use of both.
 
-X10 is another parallel programming environment designed to operate on distributed
-memory machines \cite{X1005}.  X10's {\em places} enable programmers to talk about where
-to place both data and tasks in the machine.  However, once data and tasks have
-been placed they are fixed, which mandates that data movement be explicitly managed by
-user level code or implicitly by the compiler or runtime \cite{X1008}.  Recently X10 has introduced
-the concept of a region into the compiler's intermediate representation \cite{X1011}.
-Unlike Legion, regions in X10 are not visible to the programmer but are inferred
-from high level arrays through static analysis.  X10 provides support for clusters of GPUs
-\cite{X10GPU}, but requires the programmer to write all code managing data movement
-through both the cluster and GPU memory hierarchies.
+X10 is another parallel programming language designed to operate on
+distributed memory machines \cite{X1005}.  X10's {\em places} enable
+programmers to talk about where to place both data and tasks.
+However, once data and tasks have been placed they are fixed, which
+mandates that data movement be explicitly managed by user level code
+or implicitly by the compiler or runtime \cite{X1008}.  Recently X10
+has introduced regions into the compiler's
+intermediate representation \cite{X1011}.  Unlike Legion, regions in
+X10 are not visible to the programmer but are inferred from high level
+arrays through static analysis.  X10 provides support for clusters of
+GPUs \cite{X10GPU}, but requires the programmer to write all code
+managing data movement through both the cluster and GPU memory
+hierarchies.
 
 Deterministic Parallel Java (DPJ) is a parallel extension of Java
 that, like Legion, uses regions to express locality and does
@@ -68,7 +71,7 @@ memory hierarchies consisting of local and global memory.
 %Titanium nor UPC currently support GPUs as part of their language
 %standard \cite{TITANIUMSTANDARD} \cite{UPCSTANDARD}.  
 Part of Legion's
-low-level runtime system is constructed using UPC's underlying GASNet
+low-level runtime system is constructed using UPC's GASNet
 runtime system \cite{GASNET07}.
 
 
