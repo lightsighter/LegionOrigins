@@ -112,7 +112,7 @@ The  {\tt calc\_new\_currents} task reads and writes the wires subregion
 and reads the private, shared, and ghost node subregions for its piece.
 The {\tt distribute\_charge} task reads the piece's 
 wires subregion and updates all nodes those wires touch.  However,
-rather than using read/write permission for the nodes (which would
+rather than using read/write privilege for the nodes (which would
 serialize these tasks for correctness), the task
 uses reorderable reduction operations and 
 atomic rather than exclusive access. The final task 
