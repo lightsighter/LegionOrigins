@@ -21,7 +21,7 @@ of operations from when operations are performed.  Using a low-level runtime eve
 not describe further in this paper), an issued operation waits for other operations on
 which it is dependent to complete before executing, but a waiting operation does not cause the SOOP
 to block.  With deferred execution, it is worthwhile for the SOOP to run (potentially far) ahead of actual execution,
-allocating resources to and issuing tasks that must wait because they have data dependences on earlier tasks that have not 
+allocating resources to and issuing tasks that may wait because they have data dependences on earlier tasks that have not 
 finished executing.   Pipelining and distributing the SOOP further improves throughput and hides latency.
 
 To dynamically detect and enforce data dependences,
@@ -167,7 +167,7 @@ exclusive mode, and reads in exclusive mode the node subregions {\tt
 pieces[0].rn\_pvt}, {\tt .rn\_shr}, and {\tt
 .rn\_ghost} (see line 39).  The second subtask must be
 checked against the first for any dependences; the second subtask uses
-{\tt pieces[1].rw\_pvt} (read/write exclusive) and {\tt
+{\tt pieces[1].rw\_pvt} (read~/~write exclusive) and {\tt
 pieces[1].rn\_pvt}, {\tt .rn\_shr}, and {\tt .rn\_ghost} (read-only exclusive).
 It may be helpful to refer to the region tree for nodes in Figure~\ref{sfig:part_fig:tree} (recall that the wires region tree consists of a single disjoint partition).  We give a few representative examples
 of reasoning about pairwise aliasing (not all pairs are covered):
@@ -205,7 +205,7 @@ Consider tasks {\tt distribute\_charge(pieces[0],dt)} and
 {\tt update\_voltages[1]} in Listing~\ref{lst:code_ex}.  The former task
 uses region {\tt pieces[0].rn\_ghost} and the latter uses region {\tt pieces[1].rn\_shr}.
 The least common ancestor is the region of all shared nodes {\tt p\_nodes\_pvs[1]},
-so these two regions alias.  Since both tasks write their respective subregions,
+so these two regions alias.  Since both tasks modify their respective subregions,
 there is a dependence and the {\tt update\_voltages} task can only map after the
 {\tt distribute\_charges} task has mapped.
 
@@ -346,9 +346,12 @@ list of its physical instances and which sibling tasks are using those
 instances and with what permissions.  The important correctness
 property established by stage 1 is that all
 tasks on which $t$ depends map before $t$ maps and no task that depends on
-$t$ maps before $t$ finishes mapping.  Thus, the region tree when
-$t$ maps contains a consistent view of what the state of physical instances
-will be after $t$'s dependence predecessors execute.
+$t$ maps before $t$ finishes mapping.  Thus, when $t$ maps, the region tree
+will be in a state consistent with an execution in which all tasks
+mapped in program order.
+%Thus, the region tree when
+%$t$ maps contains a consistent view of what the state of physical instances
+%will be after $t$'s dependence predecessors execute.
 
 
 %For example, assume there is one physical instance $s$ of
@@ -368,7 +371,7 @@ will be after $t$'s dependence predecessors execute.
 
 Detecting or creating a valid instance of $r$ is, at its core, dependence analysis on
 physical instances and thus similar to the mapping dependence analysis on logical
-regions in Section~\ref{sec:dep}.  Consider any task $t'$ using
+regions in Section~\ref{sec:dep}.  Consider mapping task $t$ with task $t'$ using
 physical instance $s'$ of logical region $r'$ in the region tree.  There are four cases.
 \begin{enumerate}
 \item If $t'$ has only read privileges
@@ -410,7 +413,8 @@ root ancestor in the region forest to $r$, along the way exploring
 off-path subtrees to find region instances satisfying cases 2 and
 4. The details and analysis are similar to the implementation of dependence
 analysis in Section~\ref{sec:dep}; the amortized work per region mapped
-is proportional to the depth of the region forest.
+is proportional to the depth of the region forest and independent of
+the number of tasks or physical instances.
 
 As part of the walk any required copy and reduction operations are
 issued to construct a valid instance of $r$.  These operations are
@@ -451,18 +455,20 @@ back to an instance of the {\tt all-shared} nodes region, from which a new insta
 \subsection{Stage 4: Execution}
 \label{sec:exec}
 
-Once a task $t$ has been mapped it enters the execution stage of the SOOP.  When all of
+After a task $t$ has been mapped it enters the execution stage of the SOOP.  When all of
 the operations (other tasks and copies) on which $t$ depends have completed, $t$ is
-launched on the processor.  When $t$ spawns subtasks, they are recursively scheduled as siblings by
-the SOOP using $t$ as the parent task and $t$'s region arguments as the roots of the region forest.
+launched on the processor it was mapped to.  When $t$ spawns subtasks, 
+they are registered by the SOOP on which $t$ is executing, using $t$ as the parent task 
+and $t$'s region arguments as the roots of the region forest.  Each child of $t$ traverses
+the SOOP pipeline on the same processor as $t$, possibly being mapped to a 
+SOOP instance on a different processor to execute.   
 
 
 \subsection{Stage 5: Clean-Up}
 \label{sec:clean}
 
 Once task $t$ is done executing its state is reclaimed. Dependence
-and mapping information is removed from the region tree (it can
-usually be removed even earlier).  The most involved aspect of
+and mapping information is removed from the region tree.  The most involved aspect of
 clean-up is collecting physical instances that are no longer in use,
 for which we use a distributed reference counting scheme.
 

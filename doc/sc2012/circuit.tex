@@ -18,8 +18,8 @@ subregions}.
 The goal is to pick an organization that makes explicit
 which computations are independent.  
 A {\tt Circuit}
-has two regions: collections of nodes and wires (line
-3 of Listing~\ref{lst:code_ex}).\footnote{Note that pointers to region values declare the region to which they point.  For
+has two regions: a collection of nodes and a collection of wires (line
+3 of Listing~\ref{lst:code_ex}).\footnote{Note that all pointers declare the region to which they point.  For
 example, the definition of {\tt Wire} (line 2) is parametrized on the region
 {\tt rn} to which the {\tt Node} pointers in fields {\tt in\_nodes}
 and {\tt out\_nodes} point.}
@@ -43,9 +43,12 @@ computations on the shared nodes require communication.  To make
 this explicit in the program, we partition the nodes region into
 private and shared subregions (line 18).  To partition a region, we
 provide a {\em coloring}, which is a relation between the elements of
-a region and a set of colors.  A partition is an object which given a
-coloring and a region $r$ contains for each color $c$ a subregion of
-$r$ containing all the elements of $r$ colored $c$. Note that the
+a region and a set of colors.  
+%A partition is an object which given a
+%coloring and a region $r$ contains for each color $c$ a subregion of
+%$r$ containing all the elements of $r$ colored $c$. 
+For each color $c$ in the coloring, the partition contains a subregion $r$
+of the region being partitioned, with $r$ consisting of the elements colored $c$.  Note that the
 partition into shared and private nodes is disjoint because each node has one color.
 
 The private and shared nodes are partitioned again into private and shared nodes for each circuit piece (lines 21
@@ -77,9 +80,11 @@ The {\tt RWE} annotation specifies that
 the regions {\tt c.r\_all\_nodes} and {\tt c.r\_all\_wires}
 are accessed with read-write privileges and {\em exclusive} coherence (i.e., no other
 task can access these two regions concurrently or be reordered around this
-task if they use either region).  The simulation 
-reads and writes all nodes and wires, and it must be done
-with exclusive access to ensure correct results.  Privileges specify what
+task if they use either region).  
+%The simulation 
+%reads and writes all nodes and wires, and it must be done
+%with exclusive access to ensure correct results.  
+Privileges specify what
 the function can do with the regions; coherence specifies what other
 functions can do with the regions concurrently.  Functions that
 declare their accessed regions, privileges, and coherence are called {\em tasks}
@@ -90,7 +95,7 @@ passes over the circuit in each iteration.  Each pass loops over an
 array of pieces (constructed on lines 27-30 from the partitions),
 spawning a task for each piece.  There are no explicit requests for
 parallel execution ({\tt spawn} simply indicates a task call and does
-not require parallel execution) nor is there synchronization 
+not mandate parallel execution) nor is there synchronization 
 between the passes.  Which tasks can be run in
 parallel within a pass and the required inter-pass dependencies are
 determined automatically by the Legion runtime based on the region
