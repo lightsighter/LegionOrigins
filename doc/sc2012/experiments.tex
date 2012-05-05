@@ -42,7 +42,12 @@ Infiniband & 2x QDR & QDR & QDR \\
 
 
 We evaluate the efficiency and scalability of Legion using
-three applications on three clusters (see Figure~\ref{fig:systems}).
+three applications on three clusters (see Figure~\ref{fig:systems}).  All three
+clusters were Linux-based, and the Legion runtime was built using pthreads for
+managing CPU threads, CUDA\cite{cuda} for GPUs, and GASNet\cite{GASNET07} for
+inter-node communication.  The RDMA features of GASNet were used to create a 
+globally addressable, but relatively slow, ``GASNet memory'' that is accessible
+by all nodes.
 For each application, multiple problem sizes were used, and each size problem was
 run on subsets of each machine ranging from the smallest (a single CPU core or GPU)
 to the largest or near-largest (except Keeneland, where we limited
@@ -77,14 +82,20 @@ then sent to the home GPU, with no task stealing allowed.
 % FIXME CUT
 % We could put this nice sentence back in if we have space.
 %
-%(In a well-partitioned circuit,
-%load imbalance is low enough that the cost of moving the private data for a piece from one
-%GPU to another outweighs any benefits.)
+(In a well-partitioned circuit,
+load imbalance is low enough that the cost of moving the private data for a piece from one
+GPU to another outweighs any benefits.)
 %
 % FIXME CUT  
 % If we find enough space this sentence and the figure can be reinserted here.
-%  The regions for a task are mapped as 
-%shown in Figure~\ref{fig:gpumapping}.
+  The regions for a task are mapped as 
+shown in Figure~\ref{fig:gpumapping}.
+
+\begin{figure}
+\includegraphics[scale=0.48]{figs/CircuitMem.pdf}
+\caption{Tasks and data for the circuit simulation on a cluster of GPUs.}
+\label{fig:gpumapping}
+\end{figure}
 
 Figure~\ref{fig:ckt_speed} shows the performance of the Legion circuit simulation relative
 to a hand-coded single-GPU implementation written in CUDA.  Each line shows the scaling of
@@ -306,6 +317,6 @@ employ a similar ghost cell exchange algorithm to improve scalability.
 \label{fig:amr_keeneland}
 }
 \vspace{-2mm}
-\caption{Throuphput of adaptive mesh refinement in millions of cells/s \label{fig:amr_total}}
+\caption{Throughput of adaptive mesh refinement code. \label{fig:amr_total}}
 \vspace{-6mm}
 \end{figure}
