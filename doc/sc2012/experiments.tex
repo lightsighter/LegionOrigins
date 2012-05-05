@@ -42,7 +42,12 @@ Infiniband & 2x QDR & QDR & 2x QDR \\
 
 
 We evaluate the efficiency and scalability of Legion using
-three applications on three clusters (see Figure~\ref{fig:systems}).
+three applications on three clusters (see Figure~\ref{fig:systems}).  All three
+clusters were Linux-based, and the Legion runtime was built using pthreads for
+managing CPU threads, CUDA\cite{CUDA} for GPUs, and GASNet\cite{GASNET07} for
+inter-node communication.  The RDMA features of GASNet were used to create a 
+globally addressable, but relatively slow, {\em GASNet memory} that is accessible
+by all nodes.
 For each application, multiple problem sizes were used, and each size problem was
 run on subsets of each machine ranging from the smallest (a single CPU core or GPU)
 to the largest or near-largest (except Keeneland, where we limited
@@ -77,20 +82,28 @@ then sent to the home GPU, with no task stealing allowed.
 % FIXME CUT
 % We could put this nice sentence back in if we have space.
 %
-%(In a well-partitioned circuit,
-%load imbalance is low enough that the cost of moving the private data for a piece from one
-%GPU to another outweighs any benefits.)
+(In a well-partitioned circuit,
+load imbalance is low enough that the cost of moving the private data for a piece from one
+GPU to another outweighs any benefits.)
 %
 % FIXME CUT  
 % If we find enough space this sentence and the figure can be reinserted here.
-%  The regions for a task are mapped as 
-%shown in Figure~\ref{fig:gpumapping}.
+  The regions for a task are mapped as 
+shown in Figure~\ref{fig:gpumapping}.
+
+\begin{figure}
+\includegraphics[scale=0.48]{figs/CircuitMem.pdf}
+\caption{Tasks and data for the circuit simulation on a cluster of GPUs.}
+\label{fig:gpumapping}
+\end{figure}
 
 Figure~\ref{fig:ckt_speed} shows the performance of the Legion circuit simulation relative
-to a hand-coded single-GPU implementation written in CUDA.  Each line shows the scaling of
+to a hand-coded single-GPU implementation written in CUDA.  The hand-coded implementation is
+able to keep the entire simulation state in fast framebuffer memory.  Each line shows the scaling of
 a particular problem size as the number of nodes is varied.  Our results demonstrate
 excellent strong scaling, with speedups of 39.0X for the small problem on 48 GPUs and 
-62.5X for the larger problem size on 96 GPUs.  On a single GPU, our Legion implementation
+62.5X for the larger problem size on 96 GPUs.  The inset in the graph shows the relative
+performance for small numbers of GPUs.  On a single GPU, our Legion implementation
 is within 5\% of the performance of the hand-coded simulation.
 
 Figure~\ref{fig:ckt_overhead} shows the fraction of the overall simulation time (summed over
@@ -153,8 +166,11 @@ different memories.
 
 Figure~\ref{fig:fluid_single} compares the performance of the Legion
 implementation against the PARSEC version, using a relatively small
-problem (300K particles on a 15x21x15 array of cells).  Between 1 and
-4 threads, the results for Sapling are nearly indistinguishable,
+problem (300K particles on a 15x21x15 array of cells).  Speedups for
+both the Legion and threaded PARSEC implementations are measured 
+relative to PARSEC's serial version, which eliminates all locking
+operations.  Between 1 and
+4 threads, the PARSEC and Legion results are nearly indistinguishable,
 indicating neither the Legion runtime nor the restructuring of the
 implementation to allow multi-node scaling impose any significant
 overhead.
@@ -306,6 +322,6 @@ employ a similar ghost cell exchange algorithm to improve scalability.
 \label{fig:amr_keeneland}
 }
 \vspace{-2mm}
-\caption{Throuphput of adaptive mesh refinement in millions of cells/s \label{fig:amr_total}}
+\caption{Throughput of adaptive mesh refinement code. \label{fig:amr_total}}
 \vspace{-6mm}
 \end{figure}

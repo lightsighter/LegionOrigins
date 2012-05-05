@@ -3529,6 +3529,6 @@ namespace RegionRuntime {
     vsnprintf(buffer+len, 199-len, fmt, args);
     strcat(buffer, "\n");
     fflush(stdout);
-    fputs(buffer, stdout);
+    fputs(buffer, stderr);
   }
 };

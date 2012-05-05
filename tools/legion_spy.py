@@ -151,8 +151,13 @@ def main():
     for ctx_id,pair in sorted(ctx_files.iteritems()):
         ctx_images.append(ImageWrapper(pair[1],pair[0],fontObj,blackColor,scale)) 
 
+    print 'Generating event image...'
     event_file = log.print_event_graph(temp_dir)
     event_image = ImageWrapper('Event Image',event_file,fontObj,blackColor,scale)
+    #if True:
+    #    print "Dumping event image..."
+    #    event_image.dump_file() 
+        #return
 
     currentImage = tree_images[0]
     currentTree = 0

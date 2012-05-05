@@ -5,6 +5,7 @@ import sys, os, shutil
 import string, re
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 
 home_dir="./"
 out_dir="./figs/"
@@ -18,6 +19,14 @@ linear=[1,2,4,8,16,32,48,96]
 #markers = ['o','+','x','s','D','*','v','^','p','1','2','3','4','<','>','d']
 markers = ['o','s','D','*','v','^','p','<','>','d']
 colors = ['b','g','r','c','m','k']
+
+machine_marker = { "Sapling": 'o',
+                   "Viz": 's',
+                   "Keeneland": 'D' };
+
+machine_color = { "Sapling": 'b',
+                  "Viz": 'g',
+                  "Keeneland": 'r' };
 
 class Machine(object):
     def __init__(self,directory,name,gpu_set):
@@ -68,20 +77,27 @@ class Machine(object):
         for p in problems:
             assert p in self.baselines
             base_time = self.baselines[p].time
-            for g in self.gpu_set:
-                total_gpus = list()
-                speedups = list() 
-                for e in self.experiments:
-                    if e.pieces == p and e.gpus == g:
-                        total_gpus.append(e.nodes*e.gpus)
-                        speedups.append(base_time/e.time)
-                # Now that we've got the list of data plot it
-                total_gpus.sort()
-                speedups.sort()
-                label = self.name+' P='+str(p)+' GPU/Node='+str(g)
-                plt.plot(total_gpus,speedups,'--',color=colors[mark_index],label=label,linestyle='dashed',markersize=7,marker=markers[mark_index],linewidth=0.5) 
+            speedups = dict()
+            for e in self.experiments:
+                if e.pieces == p:
+                    total_gpus = e.nodes * e.gpus
+                    speedup = base_time / e.time
+                    if speedup > speedups.get(total_gpus, 0):
+                        speedups[total_gpus] = speedup
+            label = self.name+' P='+str(p)
+            total_gpus = sorted(speedups.iterkeys())
+            plt.plot(total_gpus,
+                     list(speedups[g] for g in total_gpus),
+                     '--',
+                     color=machine_color[self.name], #colors[mark_index],
+                     label=label,
+                     linestyle='dashed',
+                     markersize=7,
+                     marker=machine_marker[self.name], #markers[mark_index],
+                     markerfacecolor=("w" if p==48 else None),
+                     linewidth=0.5) 
                 #plt.loglog(total_gpus,speedups,'k--',label=label,linestyle='dashed',markersize=7,marker=markers[mark_index],linewidth=0.5,basex=2,basey=2)
-                mark_index = mark_index + 1
+            mark_index = mark_index + 1
         return mark_index
 
     def plot_percentages(self,fig,gpus,pieces,node_count):
@@ -95,6 +111,7 @@ class Machine(object):
         mapper_pct = list()
         high_pct = list()
         low_pct = list()
+        runtime_pct = list()
         copy_pct = list()
         commun_pct = list()
         # Bottoms for each of the bars
@@ -102,6 +119,7 @@ class Machine(object):
         mapper_accum = list()
         high_accum = list()
         low_accum = list()
+        runtime_accum = list()
         copy_accum = list()
         for e in exprs:
             # Figure out the total time
@@ -124,25 +142,30 @@ class Machine(object):
             low_pct.append(100.0*e.low/total_time)
             high_accum.append(100.0*(e.system+e.copy+e.low)/total_time)
             high_pct.append(100.0*e.high/total_time)
+            runtime_accum.append(100.0*(e.system+e.copy)/total_time)
+            runtime_pct.append(100.0*(e.low+e.high)/total_time)
             mapper_accum.append(100.0*(e.system+e.copy+e.low+e.high)/total_time)
             mapper_pct.append(100.0*e.mapper/total_time)
             kern_accum.append(100.0*(e.system+e.copy+e.low+e.high+e.mapper)/total_time)
             kern_pct.append(100.0*e.kernel/total_time)
             node_count.append(str(e.nodes))
         width = 0.7
-        plt.bar(ind, kern_pct, width, color='r', bottom=kern_accum, align='center', label='Kernel')
+        plt.bar(ind, kern_pct, width, color='r', bottom=kern_accum, align='center', label='Application')
         plt.bar(ind, mapper_pct, width, color='g', bottom=mapper_accum, align='center',label='Mapper')
-        plt.bar(ind, high_pct, width, color='y', bottom=high_accum, align='center',label='High-Level')
-        plt.bar(ind, low_pct, width, color='b', bottom=low_accum, align='center',label='Low-Level')
-        plt.bar(ind, copy_pct, width, color='w', bottom=copy_accum, align='center',label='Copy')
+        #plt.bar(ind, high_pct, width, color='y', bottom=high_accum, align='center',label='High-Level')
+        #plt.bar(ind, low_pct, width, color='b', bottom=low_accum, align='center',label='Low-Level')
+        plt.bar(ind, runtime_pct, width, color='y', bottom=runtime_accum, align='center',label='SOOP Runtime')
+        plt.bar(ind, copy_pct, width, color='w', bottom=copy_accum, align='center',label='OS')
         plt.bar(ind, commun_pct, width, color='k',align='center',label='Communication')
         
 
 
 
-machines=[Machine('sapling_results','Sapling',[1,2]),
+machines=[Machine('keeneland_results','Keeneland',[1,2,3]),
           Machine('viz_results','Viz',[1,2,4]),
-          Machine('keeneland_results','Keeneland',[1,2,3])]
+          Machine('sapling_results','Sapling',[1,2]),
+          ]
+          
 
 expr_pat = re.compile(expr_name+"_(?P<pieces>[0-9]+)_(?P<nodes>[0-9]+)_(?P<cpus>[0-9]+)_(?P<gpus>[0-9]+)\.stdio")
 base_pat = re.compile(baseline+"_(?P<pieces>[0-9]+)_(?P<nodes>[0-9]+)_(?P<cpus>[0-9]+)_(?P<gpus>[0-9]+)\.stdio")
@@ -240,9 +263,11 @@ def make_plots(show = True, save = True):
         #plt.plot(linear,linear,'k-',label="Linear")
         marker_index = 0
         marker_index = mach.plot_speedups(fig,marker_index)
-    plt.legend(loc=2)
+    plt.bar([0.5], [8], width=8, bottom=0.5, edgecolor="grey", facecolor="None", linestyle="dashed")
+    plt.legend(loc=2, ncol=1)
     plt.xlabel('Total GPUs')
     plt.ylabel('Speedup vs. Hand-Coded Single GPU')
+    plt.xticks([ 1, 16, 32, 48, 64, 80, 96 ])
     plt.grid(True)
     #    if mach.name=='Sapling':
     #        plt.axis([1,8,1,8])
@@ -252,6 +277,41 @@ def make_plots(show = True, save = True):
     #        plt.axis(speedup_axis)
     if save:
         fig.savefig(out_dir+'circuit_speedups.pdf',format='pdf',bbox_inches='tight')
+    #plt.show()
+
+    fig = plt.figure(figsize = (4.25,3.25))
+    plt.grid(True)
+    plt.plot([0,70],[0,70],'k-',label="Linear")
+    for mach in machines:
+        linear = None
+        if mach.name=='Sapling':
+            linear = [1,2,4,8]
+        elif mach.name=='Viz':
+            linear = [1,2,4,8,16,24,48]
+        else:
+            linear = [1,2,4,8,16,24,48,96]
+        #plt.plot(linear,linear,'k-',label="Linear")
+        marker_index = 0
+        marker_index = mach.plot_speedups(fig,marker_index)
+    #plt.legend( ("INSET",), loc=2, handlelength=0)#, handleheight=0)
+    #plt.legend( ("INSET",), loc=2)
+    plt.text(0.8, 7.6, "INSET", bbox=dict(boxstyle="square", facecolor="white"))
+    #plt.xlabel('Total GPUs')
+    #plt.ylabel('Speedup vs. Hand-Coded Single GPU')
+    #plt.bar([0.1], [1], width=2, bottom=7.5, edgecolor="black", facecolor="red")#, edgecolor="black", color="w")#, linestyle="solid")
+    #plt.text(0.8, 7.6, "INSET")
+    plt.axis([0.5,8.5, 0.5,8.5])
+    plt.xticks([1, 2, 4, 6, 8])
+    plt.yticks([1, 2, 4, 6, 8])
+    #plt.gca().add_patch(mpatches.Rectangle([1,1], width=1, height=2, facecolor="red", edgecolor="blue"))
+    #    if mach.name=='Sapling':
+    #        plt.axis([1,8,1,8])
+    #    elif mach.name=='Viz':
+    #        plt.axis([1,48,1,48])
+    #    else:
+    #        plt.axis(speedup_axis)
+    if save:
+        fig.savefig(out_dir+'circuit_speedups_zoom.pdf',format='pdf',bbox_inches='tight')
     #plt.show()
 
     # Make the percentage plot for keeneland with 3 gpus/node
