@@ -26,7 +26,7 @@ finished executing.   Pipelining and distributing the SOOP further improves thro
 
 To dynamically detect and enforce data dependences,
 the SOOP considers, for each task $t$, the
-the regions $t$ uses and ensures $t$ waits on any
+regions $t$ uses and ensures $t$ waits on any
 earlier task whose region uses conflict with $t$'s.  There is a
 difficulty, however.  The programmer's regions are logical; a region
 names a set of objects, but does not say where those objects
@@ -81,8 +81,8 @@ modes are compared using the table in Figure~\ref{fig:dependence}.
 {\tt Dep} indicates dependence while {\tt None}
 indicates independence.  {\tt Same} is a dependence unless the two tasks
 use the same physical instance of the logical region.  Since tasks
-haven't mapped physical instances at this point in the pipeline {\tt Same} is always
-a mapping dependence.
+haven't mapped physical instances at this point in the pipeline,
+{\tt Same} is always a mapping dependence.
 %\footnote{For example, if two tasks wish to acess the region with atomic coherence, then if they are working on the same physical copy of the data atomicity can be guaranteed using, e.g., locking.  If they are working on different copies of the data then the only safe execution strategy for Legion is to serialize the two tasks.}
 {\tt Cont} 
 indicates a dependence contingent on whether it is a reader or
