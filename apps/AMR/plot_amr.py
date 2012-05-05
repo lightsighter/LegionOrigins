@@ -120,6 +120,8 @@ class Machine(object):
         legion_label = 'Legion Cells='+str(prob_size)
         plt.plot(nodes,boxlib_updates,'--',label=boxlib_label,linestyle='dashed',markersize=7,marker=markers[(mark_index)%len(markers)],linewidth=0.5)
         plt.plot(nodes,legion_updates,'--',label=legion_label,linestyle='dashed',markersize=7,marker=markers[(mark_index+1)%len(markers)],linewidth=0.5)
+        for i in range(len(nodes)):
+            print "Speedup over BoxLib on "+str(nodes[i])+" on "+self.name+" = "+str(legion_updates[i]/boxlib_updates[i])
 
         return mark_index+2
 
@@ -227,8 +229,8 @@ def make_plots(show = True, save = True):
         plt.xlabel('Node Count')
         plt.ylabel('Millions of Cell Updates/s')
         plt.grid(True)
-        if save:
-            fig.savefig(out_dir+mach.name+"_amr.pdf", format="pdf", bbox_inches="tight")
+        #if save:
+        #    fig.savefig(out_dir+mach.name+"_amr.pdf", format="pdf", bbox_inches="tight")
         #pp.savefig()
         #pp.close()
     
