@@ -455,10 +455,13 @@ back to an instance of the {\tt all-shared} nodes region, from which a new insta
 \subsection{Stage 4: Execution}
 \label{sec:exec}
 
-Once a task $t$ has been mapped it enters the execution stage of the SOOP.  When all of
+After a task $t$ has been mapped it enters the execution stage of the SOOP.  When all of
 the operations (other tasks and copies) on which $t$ depends have completed, $t$ is
-launched on the processor.  When $t$ spawns subtasks, they are recursively scheduled as siblings by
-the SOOP using $t$ as the parent task and $t$'s region arguments as the roots of the region forest.
+launched on the processor it was mapped to.  When $t$ spawns subtasks, 
+they are registered by the SOOP on which $t$ is executing, using $t$ as the parent task 
+and $t$'s region arguments as the roots of the region forest.  Each child of $t$ traverses
+the SOOP pipeline on the same processor as $t$, possibly being mapped to a 
+SOOP instance on a different processor to execute.   
 
 
 \subsection{Stage 5: Clean-Up}
