@@ -80,11 +80,14 @@ but if either task needs write or reduction privileges, the coherence
 modes are compared using the table in Figure~\ref{fig:dependence}.
 {\tt Dep} indicates dependence while {\tt None}
 indicates independence.  {\tt Same} is a dependence unless the two tasks
-use the same physical instance of the logical region.
+use the same physical instance of the logical region.  Since tasks
+haven't mapped physical instances at this point in the pipeline {\tt Same} is always
+a mapping dependence.
 %\footnote{For example, if two tasks wish to acess the region with atomic coherence, then if they are working on the same physical copy of the data atomicity can be guaranteed using, e.g., locking.  If they are working on different copies of the data then the only safe execution strategy for Legion is to serialize the two tasks.}
 {\tt Cont} 
-indicates a dependence unless a single writer has
-atomic coherence.  
+indicates a dependence contingent on whether it is a reader or
+writer that is Atomic (e.g. Atomic Read-Write and Simultaneous
+Read-Only will not cause a dependence).
 
 
 \begin{figure}

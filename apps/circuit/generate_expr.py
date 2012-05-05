@@ -10,7 +10,7 @@ bin_name = "ckt_sim"
 result_prefix = "results/"
 #Simulation parameters
 npp = 2500
-wpp = 10000 
+wpp = 14336 
 pieces = [48,96] 
 loops = 10
 level = 3
@@ -23,7 +23,7 @@ gsize = 1536
 node_start = 1
 node_stop  = 8
 node_step  = 1
-node_set   = [1,2,4,8]
+node_set   = [1,2,3,4]
 # Number of cpus (inclusive)
 cpu_start = 1
 cpu_stop  = 1
@@ -32,7 +32,7 @@ cpu_step  = 1
 gpu_start = 1
 gpu_stop  = 1
 gpu_step  = 1
-gpu_set   = [1,2,4]
+gpu_set   = [1,2]
 
 def generate_script():
     result_dir = home_dir + result_prefix
