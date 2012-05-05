@@ -74,8 +74,8 @@ changes to nodes or number of GPUs per node require changes to the application c
 
 The circuit simulation has a simple application-specific mapper.  At initialization
 time, the mapper queries the list of GPUs in the machine and identifies each GPU's
-framebuffer memory and {\em zero-copy} memory (pinned memory that both the GPU and
-CPUs in the system can access directly).  Once the circuit is partitioned, the partitions
+framebuffer memory and {\em zero-copy} memory (pinned memory that both the GPUs and
+CPUs on a node can access directly).  Once the circuit is partitioned, the partitions
 are assigned a home GPU in round-robin fashion.  Every task related to that partition is
 then sent to the home GPU, with no task stealing allowed.  
 (In a well-partitioned circuit,
@@ -138,15 +138,15 @@ As expected the communication overhead grow linearly with number of nodes.
 Our second experiment is a port of the \emph{fluidanimate} benchmark
 from the PARSEC benchmark suite\cite{bienia11benchmarking}, which does a
 particle-based simulation of an incompressible fluid.  Each particle
-interacts only with other nearby particles. The benchmark divides the
+interacts only with nearby particles. The benchmark divides the
 space in which the fluid can move into a three-dimensional array of
 cells such that the range of interaction is limited to just the cells
 adjacent (including diagonals) to the one a particle resides in.  The
 application divides the array into {\em grids} and assigns each grid to
-a thread.  Per-cell locking safely accesses particles in
+a thread.  Per-particle locking safely accesses particles in
 cells that lie on the edge of a grid.  This fine-grained locking
 scheme along with the assumption of a shared address space gives
-good scaling in a multi-core processor, but rules out any attempt to run
+good scaling in a multi-core processor, but prohibits running
 beyond a single node.
 
 To extend the scaling further, our port uses region partitioning to
@@ -230,7 +230,7 @@ order stencil on a 2D mesh of cells.
 Updating the simulation for one time step consists of
 three phases.  In the first phase, the boundary cells around a box at
 a refined level linearly interpolate their values from the nearby
-cells at the next coarsest level.  The second phase performs the
+cells at the next coarser level.  The second phase performs the
 stencil computation on each cell in every level.  In the third phase,
 cells at a coarser level that have been refined are restricted to the
 average of the cells that they physically contain at the next finest
@@ -244,7 +244,7 @@ becomes network bound as the perimeter-to-area ratio of cell grids
 increases.  Second, when choosing how to partition cells into grids,
 the programmer must consider the locality between cells within a
 level as well as across levels.  For
-cross-level cell dependences, mapping decisions must be made at
+cross-level cell dependences, optimal mapping decisions can only be made at
 runtime as the location of refinements are dynamically determined.
 Finally, this application has parallelism both
 between tasks running at the same level and tasks running across
@@ -281,7 +281,7 @@ refinement, but with randomly chosen refinement locations.  BoxLib
 also supports OpenMP and we took their best performance from using 1,
 2, 4, or 8 threads per node.  Our Legion implementation always uses
 one thread per node to illustrate that in this application locality is
-significantly more important than parallelism.  
+significantly more important than fine-grained data-parallelism.  
 
 Figure~\ref{fig:amr_total} gives the results.
 On just one node, blocking for caches using Legion achieves up to 2.6X
@@ -295,8 +295,8 @@ interconnect performance.  BoxLib performs much better on Keeneland
 than on Viz due to the better interconnect.  
 At higher node counts BoxLib
 begins to catch up (see Figure~\ref{fig:amr_keeneland})
-because our intra-level ghost-cell exchange 
-uses GASNet memory to exchange ghost cells, requiring a
+because our application's intra-level ghost-cell exchange algorithm
+uses GASNet memory to communicate ghost cells, requiring a
 linear increase in network traffic with the number of nodes.  BoxLib
 uses direct node-to-node exchanges of ghost cells, similar to
 our fluid application.  A future implementation of our AMR code will

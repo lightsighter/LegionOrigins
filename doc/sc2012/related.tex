@@ -9,16 +9,16 @@ programming model in which only arrays can be recursively partitioned,
 all access is exclusive, there is a static mapping of tasks and data (though
 extensions to Sequoia make this mapping more dynamic \cite{BCSA11}) and, most fundamentally, the decomposition of tasks and the decomposition
 of data is one-to-one.  Legion generalizes the Sequoia model by allowing for
-partitioning of pointer data structures through regions, enabling dynamic mappings through
+dynamic partitioning of pointer data structures through regions, enabling dynamic mappings through
 the mapper interface, and allowing different coherence
 properties.  Legion's decoupling of the task tree from the region tree leads directly to the scheduling problem solved by our software out-of-order processor for tasks with region arguments.
 
 Chapel has several concepts to support the expression of locality \cite{Chamberlain:Chapel}.
 Domains are similar to logical regions in that they describe maps from indexes
-to same-typed objects.  Domains can create sub-domains by slicing the index sets from
+to objects.  Domains can create sub-domains by slicing the index sets from
 a parent domain.  Domains are a higher level concept than regions; the domain index sets 
-support dimensionality and iterators, whereas  logical regions can only be accessed by pointers.  
-Second, the act of creating subdomains in Chapel does not track disjointness information,
+support dimensionality and iterators, whereas logical regions can only be accessed by pointers.  
+Also, the act of creating subdomains in Chapel does not track disjointness information,
 making it more challenging for the Chapel compiler or runtime to infer task independence.
 
 In addition to domains, Chapel also supports the notion of domain maps and locales to enable 
