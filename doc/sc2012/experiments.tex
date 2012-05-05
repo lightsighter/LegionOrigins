@@ -119,43 +119,56 @@ As expected the communication overhead grow linearly with number of nodes.
 \subsection{Particle Simulation}
 \label{subsec:exp_fluid}
 
-Our second experiment is a port of the \emph{fluidanimate} benchmark from the PARSEC suite\cite{bienia11benchmarking},
-which does a particle-based simulation of an incompressible fluid.  Each particle interacts only with other nearby
-particles. The benchmark divides the space in which the fluid can move into a three-dimensional array of cells 
-such that the range of interaction is limited to just the
-cells adjacent (including diagonals) to the one a particle resides in.  The application divides the array 
-into {\em grids} and assigns each one to 
-a thread.  Per cell locking is used to safely access particles in cells that lie
-on the edge of a grid.  This fine-grained locking scheme along with the assumption of a shared address space leads to
-good scaling in a multi-core processor, but rules out any attempt run beyond a single node.  
+Our second experiment is a port of the \emph{fluidanimate} benchmark
+from the PARSEC suite\cite{bienia11benchmarking}, which does a
+particle-based simulation of an incompressible fluid.  Each particle
+interacts only with other nearby particles. The benchmark divides the
+space in which the fluid can move into a three-dimensional array of
+cells such that the range of interaction is limited to just the cells
+adjacent (including diagonals) to the one a particle resides in.  The
+application divides the array into {\em grids} and assigns each grid to
+a thread.  Per-cell locking safely accesses particles in
+cells that lie on the edge of a grid.  This fine-grained locking
+scheme along with the assumption of a shared address space gives
+good scaling in a multi-core processor, but rules out any attempt to run
+beyond a single node.
 
-To extend the scaling further, our port uses region partitioning to divide the array into grids in a similar
-way, but handles the interaction between grids in a way that doesn't rely on access to shared memory.
-Instead, the Legion version of the benchmark creates explicit ghost copies of cells on the boundaries of grids
-and uses those ghost cells to exchange information between the grids.
+To extend the scaling further, our port uses region partitioning to
+divide the array into grids in a similar way, but avoids relying
+on shared memory to handle interactions between grids.
+Instead, the Legion version creates
+explicit ghost copies of cells on grid boundaries and uses
+those ghost cells to exchange information between the grids.
 
-The mapper for the particle simulation is very simple - it maps one grid's tasks onto each processor and
-maps all regions for that grid (both the internal and the ghost regions) into the system memory used by that processor.
-The exchange of the ghost cell data between processors is handled by the Legion runtime as a ghost cell region
-gets alternately mapped in two different memories.
+The particle simulation's mapper is very simple: it maps one grid's
+tasks onto each processor and maps all that grid's regions (both
+internal and ghost regions) into that processor's system memory.  The
+exchange of ghost cell data between processors is handled by the
+Legion runtime as a ghost cell region is alternately mapped to two
+different memories.
 
-Figure~\ref{fig:fluid_single} compares the performance of the Legion implementation against the PARSEC version,
-using a relatively small problem (300K particles on a 15x21x15 array of cells).  Between 1 and 4 threads, the
-results for Sapling are nearly indistinguishable, indicating 
-neither the Legion runtime nor the restructuring of the implementation to allow multi-node scaling impose
-any significant overhead.  
+Figure~\ref{fig:fluid_single} compares the performance of the Legion
+implementation against the PARSEC version, using a relatively small
+problem (300K particles on a 15x21x15 array of cells).  Between 1 and
+4 threads, the results for Sapling are nearly indistinguishable,
+indicating neither the Legion runtime nor the restructuring of the
+implementation to allow multi-node scaling impose any significant
+overhead.
 %It's possible that the use of explicit ghost cells rather than fine-grained sharing of cache lines might be a net win.  
-At 8 threads and above, the performance begins to vary.
-Both the Legion and PARSEC version on Viz flatten out as they over-subscribe the 12 physical cores.  On Sapling,
-which has HyperThreading enabled, deviations from linear begin sooner as the operating system's scheduler's
+At 8 threads and above, performance begins to vary.  Both the Legion
+and PARSEC versions on Viz flatten out as they over-subscribe the 12
+physical cores.  On Sapling, which has HyperThreading enabled,
+deviations from linear begin sooner as the operating system's
 thread placement choices begin to matter.
 
-To measure scaling beyond a single node, three different problem sizes were run for each of the three systems,
- with the results plotted in Figure~\ref{fig:fluid_multi}.  
- For the smallest problem (300K particles), we observe a 20\% speedup when going to 1
-node to 2 (a total of 16 threads), but begin slowing down beyond that due to communication overhead - at 4 nodes
-there are twice as many ghost cells as interior grid cells.  The larger problem sizes (2.4M and 19M
-particles) do much better, with scaling of up to 5.4x when going from 1 node up to 16 because of a lower 
+To measure scaling beyond a single node, three different problem sizes
+were run for each of the three systems (Figure~\ref{fig:fluid_multi}).
+For the smallest problem (300K particles), we observe a 20\% speedup
+from 1 to 2 nodes (16 threads total), but slow
+down beyond that due to communication overhead---at 4 nodes there are
+twice as many ghost cells as interior grid cells.  The larger problem
+sizes (2.4M and 19M particles) do much better, with scaling of up to
+5.4x when going from 1 node up to 16 because of a lower
 communication-to-computation ratio.
 
 %Although the particle simulation being performed is on a regular array of cells, it turns out that the
@@ -188,62 +201,85 @@ communication-to-computation ratio.
 
 \subsection{Adaptive Mesh Refinement}
 \label{subsec:exp_amr}
-Our final application is based on the third heat equation example from the Berkeley Labs 
-BoxLib project \cite{BoxLib}.  This application is a three-level adaptive-mesh-refinement (AMR)
-code that computes a first order stencil on a 2D mesh of cells.  The simulation iterates for many time
-steps.  Updating the simulation for one time step consists of three phases.  In the first phase,
-the boundary cells around a box at a refined level linearly interpolate their values from the nearby cells at the
-next coarsest level.  The second phase performs the stencil computation on each cell in every level.
-In the third phase, cells at a coarser level that have been refined are restricted to the average
-of the cells that they physically contain at the next finest level of refinement.
+Our final application is based on the third heat equation example from
+the Berkeley Labs BoxLib project \cite{BoxLib}.  This application is a
+three-level adaptive-mesh-refinement (AMR) code that computes a first
+order stencil on a 2D mesh of cells.  
+%The simulation iterates for many time steps.  
+Updating the simulation for one time step consists of
+three phases.  In the first phase, the boundary cells around a box at
+a refined level linearly interpolate their values from the nearby
+cells at the next coarsest level.  The second phase performs the
+stencil computation on each cell in every level.  In the third phase,
+cells at a coarser level that have been refined are restricted to the
+average of the cells that they physically contain at the next finest
+level of refinement.
 
-Achieving high-performance on this application is particularly challenging for several reasons.  
-First, the application has a very high communication-to-computation ratio which, for a fixed problem
-size begins as being memory bound and with increasing node count becomes network bound as the
-perimeter-to-area ratio of cell grids increases.  Second, when choosing how to partition cells into grids, the
-programmer must consider the locality both between cells in the same level, as well as for cells
-across levels.  In the case of cross-level cell dependences, mapping decisions must be made at runtime as the
-location of refinements are determined based on application input.  Finally, this application has
-parallelism both between tasks running at the same level and tasks running across levels, leading
-to complicated input-dependent data dependences.
+Achieving high-performance on this application is particularly
+challenging for several reasons.  First, the application has a very
+high communication-to-computation ratio which, for a fixed problem
+size, begins as being memory bound and with increasing node count
+becomes network bound as the perimeter-to-area ratio of cell grids
+increases.  Second, when choosing how to partition cells into grids,
+the programmer must consider the locality between cells within a
+level as well as across levels.  For
+cross-level cell dependences, mapping decisions must be made at
+runtime as the location of refinements are dynamically determined.
+Finally, this application has parallelism both
+between tasks running at the same level and tasks running across
+levels, leading to complicated input-dependent data dependences.
 
-BoxLib's implementation of this benchmark partitions cells within the same level into a number of grids
-based on the number of nodes in the machine and distributes one grid from each level to each node.  This
-optimizes for memory bandwidth and load balance, but does not take into account cross-level locality 
-that exists between grids from different levels of refinement.  Furthermore, BoxLib does not block grids
-into sub-grids to take advantage of intra-grid locality.
+BoxLib's implementation partitions cells within a level 
+into a number of grids based on the number of nodes in the
+machine and distributes one grid from each level to each node.  This
+optimizes for memory bandwidth and load balance, but does not 
+exploit cross-level locality between grids from
+different levels of refinement.  Furthermore, BoxLib does not block
+grids into sub-grids to take advantage of intra-grid locality.
 
-Our Legion implementation performs two optimizations that allow us to achieve better performance than BoxLib.
-First, for each level of refinement we recursively partition the logical region of cells based on 
-the number of nodes in the machine and the size of the L3 cache and L2 caches.  Legion allows us to describe 
-locality for many levels of the memory hierarchy instead of just at the node-level.
+Our Legion implementation performs two optimizations that allow us to
+outperform BoxLib.  First, for each level of
+refinement we recursively partition the logical region of cells based
+on the number of nodes in the machine and the sizes of the L2 and L3 caches.
+%Legion allows us to describe locality for many levels of
+%the memory hierarchy instead of just at the node-level.
+Our second optimization takes advantage of the cross-level locality.
+We wrote an application-specific mapper that dynamically discovers
+relationships between grids at different levels of refinement.  The
+mapper dynamically performs intersection tests between logical regions
+containing grids of different refinement levels.  If the mapper
+discovers overlaps between grids from different levels, the mapper
+places them on the same node in the machine.  The
+mapper memoizes the intersection tests to amortize their cost.  The
+mapper also dynamically load balances by distributing unconstrained
+grids from the coarsest level onto under-loaded nodes.
 
-Our second optimization takes advantage of the cross-level locality present in the application.  We implemented
-an application specific mapper that dynamically discovers the relationships between
-grids at different levels of refinement.  The mapper dynamically performs intersection tests between logical regions
-containing grids of different refinement levels to determine whether they overlap.  
-If grids from different levels overlap, the mapper
-ensures that they are always placed on the same node in the machine to leverage cross-level locality.  The mapper
-memoizes the results of these intersection tests to amortize their cost.  The mapper also dynamically
-load balances by distributing unconstrained grids from the coarsest level onto under-loaded nodes.
+We compared our Legion implementation against BoxLib on three
+different problem sizes with a fixed number of cells per level of
+refinement, but with randomly chosen refinement locations.  BoxLib
+also supports OpenMP and we took their best performance from using 1,
+2, 4, or 8 threads per node.  Our Legion implementation always uses
+one thread per node to illustrate that in this application locality is
+significantly more important than parallelism.  
 
-We compared our Legion implementation against BoxLib on three different problem sizes with a fixed number
-of cells per level of refinement, but with randomly chosen refinements locations.  BoxLib also supports OpenMP
-and we took their best performance from using 1, 2, 4, or 8 threads per node.  Our Legion implementation
-always uses one thread per node to illustrate that in this application locality is significantly more important 
-than parallelism.  The results from our experiments on all three clusters can be seen in Figure~\ref{fig:amr_total}. 
+Figure~\ref{fig:amr_total} gives the results.
+On just one node, blocking for caches using Legion achieves up to 2.6X
+speedup over BoxLib.  As node count increases, the mapper's
+ability to exploit cross-level locality further increases
+the performance advantage to 5.4X by reducing the total
+communication costs.
 
-On just one node, blocking for caches using Legion achieves up to 2.6X speedup over BoxLib.  As the node count 
-increases, the ability of our mapper to leverage cross-level locality allows us to further increase
-our performance advantage to 5.4X over BoxLib by reducing the total communication costs.  
-
-As the node count increases the AMR code becomes highly dependent on interconnect performance.  BoxLib performs much better
-on Keeneland than it does on our viz cluster due to the better interconnect.  This can also be seen as we scale
-to a larger number of nodes and BoxLib begins to catch up as can be seen in Figure~\ref{fig:amr_keeneland}.  
-This occurs because our intra-level ghost-cell exchange algorithm relies on GASNet memory to exchange ghost cells which 
-involves a linear increase in network traffic with the number of nodes.  BoxLib instead uses direct
-node-to-node exchanges of ghost cells similar to our fluid application.  A future implementation of our AMR code 
-will employ a similar ghost cell exchange algorithm to improve scalability.
+As the node count increases the AMR code becomes highly dependent on
+interconnect performance.  BoxLib performs much better on Keeneland
+than on Viz due to the better interconnect.  
+At higher node counts BoxLib
+begins to catch up (see Figure~\ref{fig:amr_keeneland})
+because our intra-level ghost-cell exchange 
+uses GASNet memory to exchange ghost cells, requiring a
+linear increase in network traffic with the number of nodes.  BoxLib
+uses direct node-to-node exchanges of ghost cells, similar to
+our fluid application.  A future implementation of our AMR code will
+employ a similar ghost cell exchange algorithm to improve scalability.
 
 \begin{figure}
 \subfigure[Sapling results.]
