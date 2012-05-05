@@ -86,7 +86,9 @@ GPU to another outweighs any benefits.)
 shown in Figure~\ref{fig:gpumapping}.  Wires and private node data are kept in each GPU's
 framebuffer at all times.  An instance of the ``all-shared nodes'' region is placed in
 GASNet memory and instances for just the shared and ghost nodes needed by each GPU
-are placed into that GPU's zero-copy memory.
+are placed into that GPU's zero-copy memory.  This enables the application kernels
+to access the data as well as the necessary inter-node exchanges of data via the GASNet
+memory.
 
 \begin{figure}
 \includegraphics[scale=0.48]{figs/CircuitMem.pdf}
