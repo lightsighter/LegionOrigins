@@ -1,0 +1,56 @@
+\documentclass[9pt,nocopyrightspace,preprint]{sigplanconf}
+
+\bibliographystyle{plainnat}
+\usepackage{amsmath,amsthm}
+\usepackage{listings}
+\usepackage{tikz}
+\usepackage{subfigure}
+\usepackage{multirow}
+\usepackage{pgfplots}
+\usepackage{booktabs}
+\usepackage{dcolumn}
+\usepackage{cancel}
+
+\newcommand{\infrule}[2]{\displaystyle\frac{\displaystyle\strut{#1}}{\displaystyle\strut {#2}}}
+\newcommand{\deref}{\ast}
+\newcommand{\rread}[1]{\mbox{\em Read}(#1)}
+\newcommand{\rwrite}[1]{\mbox{\em Write}(#1)}
+\newcommand{\lca}[2]{#1 \sqcup #2}
+\newcommand{\rleq}{\leq}
+\newcommand{\interval}[1]{\mbox{\em interval}(#1)}
+\newcommand{\context}[1]{\mbox{\em context}(#1)}
+\newtheorem{theorem}{Theorem} 
+\newtheorem{lemma}[theorem]{Lemma}
+
+\begin{document}
+
+\title{Legion: Expressing Locality and Independence with Logical Regions}
+\authorinfo{}{}{}
+\maketitle
+
+\begin{abstract}
+Limit is 12 pages, including bibliography and appendices.
+Deadlines: \\
+
+\begin{tabular}{ll}
+Paper registration & July 7, 2012 3:59am PDT \\
+Paper submission & July 11, 2012 3:59am PDT \\
+Author response & September 10 - September 13, 2012 \\
+Author notification & October 1, 2012
+\end{tabular}
+\end{abstract}
+
+\section{Introduction}
+\label{sect:intro}
+Introduction goes here.
+
+\input{conclusion}
+
+{
+\small
+\bibliography{bibliography}
+}
+
+\end{document}
+
+
