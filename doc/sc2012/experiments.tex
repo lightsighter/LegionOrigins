@@ -146,7 +146,7 @@ application divides the array into {\em grids} and assigns each grid to
 a thread.  Per-particle locking safely accesses particles in
 cells that lie on the edge of a grid.  This fine-grained locking
 scheme along with the assumption of a shared address space gives
-good scaling in a multi-core processor, but prohibits running
+good scaling in a multicore processor, but prohibits running
 beyond a single node.
 
 To extend the scaling further, our port uses region partitioning to

@@ -339,7 +339,7 @@ and can be defined by the user (see Section~\ref{sec:mapping}).
 
 There are two steps to mapping a region $r$ used by
 task $t$.  First, the mapper must ensure there is at least one {\em valid}
-physical instance of $r$ for $t$ to use.  Not all intances have up-to-date
+physical instance of $r$ for $t$ to use.  Not all instances have up-to-date
 data at all times.  For example, if an instance of a subregion of $r$ has been written by a previous task,
 it is necessary to copy that subregion back to an instance of $r$ so that $t$
 sees the correct data. In the second step, the mapping interface selects one of the
