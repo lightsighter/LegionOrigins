@@ -2731,7 +2731,7 @@ namespace RegionRuntime {
 
       // If its not ready it's registered in the logical tree and someone will
       // notify it and it will add itself to the ready queue
-      enqueue_task(desc);
+      perform_dependence_analysis(desc);
 
       return Future(desc->future);
     }
@@ -3817,8 +3817,6 @@ namespace RegionRuntime {
     void HighLevelRuntime::process_schedule_request(void)
     //--------------------------------------------------------------------------------------------
     {
-      // Perform dependence analysis on all tasks that were enqueued since the last time we were awake
-      perform_dependence_analysis();
       // Perform maps and deletions to make sure as many tasks are awake as possible
       perform_maps_and_deletions();
       // Launch up to max_tasks_per_schedule_request tasks, either from the ready queue, or
@@ -3867,8 +3865,7 @@ namespace RegionRuntime {
       // Check to see if have any remaining work in our queues, 
       // if not, then disable the idle task
       if (ready_queue.empty() &&
-          ready_maps.empty() && ready_deletions.empty() &&
-          mapping_queue.empty())
+          ready_maps.empty() && ready_deletions.empty())
       {
         idle_task_enabled = false;
         Processor copy = local_proc;
@@ -3950,38 +3947,26 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::perform_dependence_analysis(void)
+    void HighLevelRuntime::perform_dependence_analysis(TaskContext *ctx)
     //--------------------------------------------------------------------------------------------
     {
-      std::vector<TaskContext*> enqueued_tasks;
-      {
-        // Empty the current mapping queue
-        AutoLock q_lock(queue_lock);
-        enqueued_tasks = mapping_queue;
-        // Clear out the mapping queue
-        mapping_queue.clear();
-      }
-      for (std::vector<TaskContext*>::const_iterator it = enqueued_tasks.begin();
-            it != enqueued_tasks.end(); it++)
-      {
-        // Check for whether the task should be sapwned and mapped local 
-        check_spawn_and_map_local(*it);
+      // Check for whether the task should be sapwned and mapped local 
+      check_spawn_and_map_local(ctx);
 
-        // Register the context with its parent
-        (*it)->parent_ctx->register_child_task(*it);
+      // Register the context with its parent
+      ctx->parent_ctx->register_child_task(ctx);
 
-        // Figure out if this task is runnable
-        if ((*it)->is_ready())
+      // Figure out if this task is runnable
+      if (ctx->is_ready())
+      {
+        // Figure out where to place this task
+        if (target_task(ctx))
         {
-          // Figure out where to place this task
-          if (target_task(*it))
-          {
-            // Decided to keep it local, put it on the ready queue
-            add_to_ready_queue(*it);
-          }
+          // Decided to keep it local, put it on the ready queue
+          add_to_ready_queue(ctx);
         }
-        // Otherwise, someone else will wake it up
       }
+      // Otherwise, someone else will wake it up
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4215,17 +4200,6 @@ namespace RegionRuntime {
         // Erase all the failed theives
         failed_thiefs.erase(failed_thiefs.lower_bound(map_id),failed_thiefs.upper_bound(map_id));
       }
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::enqueue_task(TaskContext *ctx)
-    //--------------------------------------------------------------------------------------------
-    {
-      // Take the queue lock
-      AutoLock q_lock(queue_lock);
-      mapping_queue.push_back(ctx);
-      Processor copy = local_proc;
-      copy.enable_idle_task();
     }
 
     /////////////////////////////////////////////////////////////
