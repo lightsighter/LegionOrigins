@@ -162,6 +162,7 @@ void main_task(const void *args, size_t arglen,
     runtime->execute_index_space(ctx, TASKID_INIT_VECTORS, index_space,
 				 init_regions, global, arg_map, false);
   //init_f.wait_all_results();
+  init_f.release();
 
   printf("STARTING MAIN SIMULATION LOOP\n");
   struct timespec ts_start, ts_end;
@@ -182,6 +183,7 @@ void main_task(const void *args, size_t arglen,
     runtime->execute_index_space(ctx, TASKID_ADD_VECTORS, index_space,
                                  add_regions, global, arg_map, false);
   //add_f.wait_all_results();
+  add_f.release();
 
   // Print results
   clock_gettime(CLOCK_MONOTONIC, &ts_end);
