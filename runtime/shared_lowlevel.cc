@@ -2362,6 +2362,7 @@ namespace RegionRuntime {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
         // Find the copy operation in the set
         bool found = false;
+        EventImpl *complete = NULL; 
         for (std::list<CopyOperation>::iterator it = pending_copies.begin();
               it != pending_copies.end(); it++)
         {
@@ -2369,7 +2370,7 @@ namespace RegionRuntime {
           {
             found = true;
             perform_copy_operation(it->target,it->src_mask,it->dst_mask);
-            it->complete->trigger();
+            complete = it->complete;
             // Remove it from the list
             pending_copies.erase(it);
             break;
@@ -2379,6 +2380,8 @@ namespace RegionRuntime {
         assert(found);
 #endif
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
+        // Trigger the event saying we're done while not holding the lock!
+        complete->trigger();
     }
 
     namespace RangeExecutors {
@@ -2496,15 +2499,16 @@ namespace RegionRuntime {
 	return lock->get_lock();
     }
 
-    void RegionInstanceAccessorUntyped<AccessorGeneric>::get_untyped(unsigned ptr_value, void *dst, size_t size) const
+    void RegionInstanceAccessorUntyped<AccessorGeneric>::get_untyped(off_t byte_offset, void *dst, size_t size) const
     {
-      const void *src = ((RegionInstanceImpl *)internal_data)->read(ptr_value);
-      memcpy(dst, src, size);
+      const char *src = (const char*)(((RegionInstanceImpl *)internal_data)->get_base_ptr());
+      memcpy(dst, src+byte_offset, size);
     }
 
-    void RegionInstanceAccessorUntyped<AccessorGeneric>::put_untyped(unsigned ptr_value, const void *src, size_t size) const
+    void RegionInstanceAccessorUntyped<AccessorGeneric>::put_untyped(off_t byte_offset, const void *src, size_t size) const
     {
-      ((RegionInstanceImpl *)internal_data)->write(ptr_value, src);
+      char *dst = (char*)(((RegionInstanceImpl *)internal_data)->get_base_ptr());
+      memcpy(dst+byte_offset, src, size);
     }
 
     // Acessor Generic (can convert)
