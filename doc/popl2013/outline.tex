@@ -1,0 +1,73 @@
+\section{Proof Outline}
+
+\begin{itemize}
+
+\item A logical region $L$ is a set of abstract memory locations $a_i, a_j, ... \in A$.
+
+\item A coloring function $c : A \rightarrow C$ is a function from abstract memory locations to ``colors''.
+
+\item A partitioning $P_{L,c} : C \rightarrow 2^A$ of a region $L$ with a coloring function $c$ is a function from a color to a subregion of L, satisfying:
+
+\begin{itemize}
+
+\item $\forall L,c,i,a . a \in L \wedge c(a) = i \leftrightarrow a \in P_{L,c}(i)$
+
+\item $\forall L,c,i_1,i_2 . i_1 \neq i_2 \rightarrow P_{L,c}(i_1) * P_{L,c}(i_2)$
+
+\end{itemize}
+
+\item A static effect $E$ is a set of tuples $\langle L, op \rangle$ where $op \in \{ read, write \} \cup \{ reduce_f : f \text{is a reduction function} \}$.
+
+\item Physical memory locations are represented by the set $m_1, m_2, ... \in M$, along with a mapping function $\alpha : M \rightarrow A$ that describes which abstract location a physical memory location corresponds to.
+
+\item A dynamic trace $D = \langle \hat E, \hat O \rangle$ is a directed acyclic graph whose nodes $\hat E$ are actual memory operations $\langle m, op \rangle$ and edges $\hat O$ describe a partial ordering $\hat e_1 \prec \hat e_2$ of those memoory operations.  (Hmm...  Need notation that makes it clear that the same memory operation can be performed on the same memory address multiple times.)
+
+\item Soundness of effects: If $\vdash t : ^ET$ then the mapping function $\alpha$ and dynamic trace $D = \langle \hat E, \hat O \rangle$ that results from evaluating $t$ have the following properties:
+
+\begin{itemize}
+
+\item $\forall m . \langle m, read \rangle \in \hat E \rightarrow \exists L . \alpha(m) \in L \wedge \langle L, read \rangle \in E$
+
+\item $\forall m . \langle m, write \rangle \in \hat E \rightarrow \exists L . \alpha(m) \in L \wedge \langle L, write \rangle \in E$
+
+\item $\forall m, f . \langle m, reduce_f \rangle \in \hat E \rightarrow ( \exists L . \alpha(m) \in L \wedge \langle L, reduce_f \rangle \in E ) \vee ( \exists L_1, L_2 . \alpha(m) \in L_1 \wedge \langle L_1, read \rangle \in E \wedge \alpha(m) \in L_2 \wedge \langle L_2, write \rangle \in E )$
+
+\end{itemize}
+
+\item Two dynamic subtraces $D_1 = \langle \hat E_1, \hat O_1 \rangle$, and $D_2 = \langle \hat E_2, \hat O_2 \rangle$ are ``memory ordered'' (written $D_1 \prec_D D_2$) within a larger trace $D = \langle \hat E_1 \cup \hat E_2 \cup \hat E', \hat O_1 \cup \hat O_2 \cup \hat O' \rangle$ if $D_2$ sees all the results of $D_1$'s memory operations and $D_1$ sees none of the results of $D_2$'s memory operations:
+
+\begin{tabular}{l@{}l@{}l}
+$D_1 \prec_D D_2 \leftrightarrow \forall$ & $\hat e_1 = \langle m_1, op_1 \rangle \in \hat E_1,$ \\
+& $\hat e_2 = \langle m_2, op_2 \rangle \in \hat E_2 . \big($ & $m_1 \neq m_2 \vee$  \\
+&& $( op_1 = read \wedge op_2 = read ) \vee$ \\
+&& $( op_1 = reduce_f \wedge op_2 = reduce_f ) \vee$ \\
+&& $( \hat e_1 \prec \hat e_2 \in \hat O' ) \big)$
+\end{tabular}
+
+\item Note that if $D_1$ and $D_2$ have no memory addresses in common, then you have $D_1 \prec_D D_2$ and $D_2 \prec_D D_1$ for all D.  Maybe $\prec$ is the wrong symbol to use?
+
+\item Tasks are annotated with a coherence requirements $H_{excl}, H_{atom} \subseteq A$.  The default annotation is $H_{excl} = \bigcup_{\langle L, op \rangle \in E} L, H_{atom} = \emptyset$.
+
+\item The runtime enforces an execution order $\prec_E$ between two tasks $S_1$ and $S_2$ as follows:
+
+\begin{itemize}
+
+\item Strict ordering: when the two tasks have exclusive coherence requirements on two regions that can't be proven disjoint (i.e. $\not\vdash H_{excl_1} * H_{excl_2}$), we enforce $S_1 \prec_E S_2$.
+
+\item Serializability: when the two tasks have atomic coherence requirements on two regions that can't be proven disjoint, we enforce $S_1 \prec_E S_2 \vee S_2 \prec_E S_1$.
+
+\end{itemize}
+
+\item Execution order is stronger than memory order: $(S_1 \prec_E S_2) \rightarrow ( \forall \hat e_1 \in \hat E_1, \hat e_2 \in \hat E_2 . \hat e_1 \prec \hat e_2 ) \rightarrow (\forall D. D_1 \prec_D D_2)$.
+
+\item Coherence of sibling tasks:  If sibling tasks $S_1$ and $S_2$ are program ordered (i.e. $S_1 \prec_P S_2$) within their parent task:
+
+\begin{itemize}
+
+\item Overlap in exclusivity requirements guarantees memory ordering: $H_{excl_1} \cap H_{excl_2} \neq \emptyset \rightarrow D_1 \prec_D D_2$.  (If $\vdash (E_1 \cap H_{excl_1}) * (E_2 \cap H_{excl_2})$, soundness of effects guarantees disjointness of memory addresses and therefore memory ordering.  If not, the runtime enforces execution order and therefore memory ordering.)
+
+\item Overlap in atomic requirements guarantees serializability: $H_{atom_1} \cap H_{atom_2} \neq \emptyset \rightarrow D_1 \prec_D D_2 \vee D_2 \prec_D D_1$.  (Parallels proof above.)
+
+\end{itemize}
+
+\end{itemize}
