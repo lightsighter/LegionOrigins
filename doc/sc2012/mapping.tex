@@ -15,9 +15,9 @@ of creating custom mappers (Section \ref{sec:custommap}).
 The mapping interface consists of ten methods that SOOPs call for
 mapping decisions.  A {\em mapper} implementing these methods has access to a simple interface
 for inspecting properties of the machine, including a list of
-processors and their type (i.e. CPU, GPU) and a list of
-memories visible to each processor and their latencies and bandwidths.
-For brevity we only discuss three of the mapping interface calls:
+processors and their type (i.e. CPU, GPU), a list of
+memories visible to each processor, and their latencies and bandwidths.
+For brevity we only discuss the three most important interface calls:
 
 \begin{itemize}
 \item {\tt select\_initial\_processor} - For each task $t$ in its mapping queue a SOOP will
@@ -37,11 +37,13 @@ the SOOP attempts to allocate a physical instance and issue copies
 to retrieve the valid data.  If that also fails, the SOOP moves on to the next memory in the list.
 \end{itemize}
 
-The mapping interface has two desirable properties.  First, all mapper
-decisions are orthogonal to program correctness and can only impact
+The mapping interface has two desirable properties.  
+First, program correctness is unaffected by mapper decisions, which can only impact 
+%First, all mapper
+%decisions are orthogonal to program correctness and can only impact
 performance.  Regardless of where a mapper places a task or region,
 the SOOPs schedule tasks and copies in accordance with the privileges
-and coherence properties specified in the program.  Therefore when
+and coherence properties specified in the program.  Therefore, when
 writing a Legion application, a programmer can begin by using the
 default mapper and later improve performance by creating and refining a custom mapper.
 Second, the mapping interface isolates machine-specific decisions
@@ -84,8 +86,9 @@ For each Legion task call the programmer specifies which mapper should be invoke
 mapping that particular task.  This allows for the composition of Legion applications and libraries
 each with their own custom mappers.
 
-Each custom mapper extends the default mapper.  A programmer need only override the functions necessary 
-for creating a custom mapping.  Custom mappers can be used to create totally static mappings, 
+Each custom mapper extends the default mapper.  A programmer need only override the functions 
+%necessary for creating a custom mapping.  
+he wishes to customize.  Custom mappers can be used to create totally static mappings, 
 mappings that memoize their results, or even totally dynamic mappings.  We describe examples of 
 custom mappers in Section \ref{sec:exp}.
 

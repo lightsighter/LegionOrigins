@@ -5,7 +5,7 @@
 
 \begin{figure}
 {\footnotesize
-\begin{tabular}{l|ccc}
+\begin{tabular*}{3.5in}{l|ccc}
 Cluster & Sapling & Viz & Keeneland \\
 \midrule
 Nodes   &   4     &  10 &  32 (120) \\
@@ -13,10 +13,12 @@ CPUs/Node & 2x Xeon 5680 & 2x Xeon 5680 & 2x Xeon 5660 \\
 HyperThreading & on & off & off \\
 GPUs/Node & 2x Tesla C2070 & 5x Quadro Q5000 & 3x Tesla M2090 \\
 DRAM/Node & 48 GB & 24 GB & 24 GB \\
-Infiniband & 2x QDR & QDR & QDR \\
-\end{tabular}
+Infiniband & 2x QDR & QDR & 2x QDR \\
+\end{tabular*}
 }
+\vspace{-2mm}
 \caption{System configurations used for the experiments. \label{fig:systems}}
+\vspace{-6mm}
 \end{figure}
 
 % FIXME
@@ -40,7 +42,12 @@ Infiniband & 2x QDR & QDR & QDR \\
 
 
 We evaluate the efficiency and scalability of Legion using
-three applications on three clusters (see Figure~\ref{fig:systems}).
+three applications on three clusters (see Figure~\ref{fig:systems}).  All three
+clusters were Linux-based, and the Legion runtime was built using pthreads for
+managing CPU threads, CUDA\cite{CUDA} for GPUs, and GASNet\cite{GASNET07} for
+inter-node communication.  The RDMA features of GASNet were used to create a 
+globally addressable, but relatively slow, {\em GASNet memory} that is accessible
+by all nodes.
 For each application, multiple problem sizes were used, and each size problem was
 run on subsets of each machine ranging from the smallest (a single CPU core or GPU)
 to the largest or near-largest (except Keeneland, where we limited
@@ -67,28 +74,35 @@ changes to nodes or number of GPUs per node require changes to the application c
 
 The circuit simulation has a simple application-specific mapper.  At initialization
 time, the mapper queries the list of GPUs in the machine and identifies each GPU's
-framebuffer memory and {\em zero-copy} memory (pinned memory that both the GPU and
-CPUs in the system can access directly).  Once the circuit is partitioned, the partitions
+framebuffer memory and {\em zero-copy} memory (pinned memory that both the GPUs and
+CPUs on a node can access directly).  Once the circuit is partitioned, the partitions
 are assigned a home GPU in round-robin fashion.  Every task related to that partition is
 then sent to the home GPU, with no task stealing allowed.  
-%
-% FIXME CUT
-% We could put this nice sentence back in if we have space.
-%
-%(In a well-partitioned circuit,
-%load imbalance is low enough that the cost of moving the private data for a piece from one
-%GPU to another outweighs any benefits.)
-%
-% FIXME CUT  
-% If we find enough space this sentence and the figure can be reinserted here.
-%  The regions for a task are mapped as 
-%shown in Figure~\ref{fig:gpumapping}.
+(In a well-partitioned circuit,
+load imbalance is low enough that the cost of moving the private data for a piece from one
+GPU to another outweighs any benefits.)
+
+  The regions for the tasks are mapped as 
+shown in Figure~\ref{fig:gpumapping}.  Wires and private node data are kept in each GPU's
+framebuffer at all times.  An instance of the all-shared-nodes region is placed in
+GASNet memory and instances for just the shared and ghost nodes needed by each GPU
+are placed into that GPU's zero-copy memory.  This enables the application kernels
+to access the data as well as the necessary inter-node exchanges of data via the GASNet
+memory.
+
+\begin{figure}
+\includegraphics[scale=0.48]{figs/CircuitMem.pdf}
+\caption{Tasks and data for the circuit simulation on a cluster of GPUs.}
+\label{fig:gpumapping}
+\end{figure}
 
 Figure~\ref{fig:ckt_speed} shows the performance of the Legion circuit simulation relative
-to a hand-coded single-GPU implementation written in CUDA.  Each line shows the scaling of
+to a hand-coded single-GPU implementation written in CUDA.  The hand-coded implementation is
+able to keep the entire simulation state in fast framebuffer memory.  Each line shows the scaling of
 a particular problem size as the number of nodes is varied.  Our results demonstrate
 excellent strong scaling, with speedups of 39.0X for the small problem on 48 GPUs and 
-62.5X for the larger problem size on 96 GPUs.  On a single GPU, our Legion implementation
+62.5X for the larger problem size on 96 GPUs.  The inset in the graph shows the relative
+performance for small numbers of GPUs.  On a single GPU, our Legion implementation
 is within 5\% of the performance of the hand-coded simulation.
 
 Figure~\ref{fig:ckt_overhead} shows the fraction of the overall simulation time (summed over
@@ -102,7 +116,7 @@ As expected the communication overhead grow linearly with number of nodes.
 \includegraphics[scale=0.4]{figs/circuit_speedups.pdf}
 \makebox[0pt][r]{
 \raisebox{0.25 in}{
-\includegraphics[scale=0.18]{figs/circuit_speedups_zoom.pdf}
+\includegraphics[scale=0.4]{figs/circuit_speedups_zoom.pdf}
 }
 }
 \label{fig:ckt_speed}
@@ -113,24 +127,26 @@ As expected the communication overhead grow linearly with number of nodes.
 \includegraphics[scale=0.4]{figs/circuit_overhead.pdf}
 \label{fig:ckt_overhead}
 }
+\vspace{-2mm}
 \caption{Circuit simulation results.}
+\vspace{-6mm}
 \end{figure}
 
 \subsection{Particle Simulation}
 \label{subsec:exp_fluid}
 
 Our second experiment is a port of the \emph{fluidanimate} benchmark
-from the PARSEC suite\cite{bienia11benchmarking}, which does a
+from the PARSEC benchmark suite\cite{bienia11benchmarking}, which does a
 particle-based simulation of an incompressible fluid.  Each particle
-interacts only with other nearby particles. The benchmark divides the
+interacts only with nearby particles. The benchmark divides the
 space in which the fluid can move into a three-dimensional array of
 cells such that the range of interaction is limited to just the cells
 adjacent (including diagonals) to the one a particle resides in.  The
 application divides the array into {\em grids} and assigns each grid to
-a thread.  Per-cell locking safely accesses particles in
+a thread.  Per-particle locking safely accesses particles in
 cells that lie on the edge of a grid.  This fine-grained locking
 scheme along with the assumption of a shared address space gives
-good scaling in a multi-core processor, but rules out any attempt to run
+good scaling in a multicore processor, but prohibits running
 beyond a single node.
 
 To extend the scaling further, our port uses region partitioning to
@@ -149,8 +165,11 @@ different memories.
 
 Figure~\ref{fig:fluid_single} compares the performance of the Legion
 implementation against the PARSEC version, using a relatively small
-problem (300K particles on a 15x21x15 array of cells).  Between 1 and
-4 threads, the results for Sapling are nearly indistinguishable,
+problem (300K particles on a 15x21x15 array of cells).  Speedups for
+both the Legion and threaded PARSEC implementations are measured 
+relative to PARSEC's serial version, which eliminates all locking
+operations.  Between 1 and
+4 threads, the PARSEC and Legion results are nearly indistinguishable,
 indicating neither the Legion runtime nor the restructuring of the
 implementation to allow multi-node scaling impose any significant
 overhead.
@@ -196,7 +215,9 @@ communication-to-computation ratio.
 %\includegraphics[scale=0.4]{figs/fluid_balance.pdf}
 %\label{fig:fluid_balance}
 %}
+\vspace{-2mm}
 \caption{Fluid simulation results.}
+\vspace{-6mm}
 \end{figure}
 
 \subsection{Adaptive Mesh Refinement}
@@ -209,7 +230,7 @@ order stencil on a 2D mesh of cells.
 Updating the simulation for one time step consists of
 three phases.  In the first phase, the boundary cells around a box at
 a refined level linearly interpolate their values from the nearby
-cells at the next coarsest level.  The second phase performs the
+cells at the next coarser level.  The second phase performs the
 stencil computation on each cell in every level.  In the third phase,
 cells at a coarser level that have been refined are restricted to the
 average of the cells that they physically contain at the next finest
@@ -223,7 +244,7 @@ becomes network bound as the perimeter-to-area ratio of cell grids
 increases.  Second, when choosing how to partition cells into grids,
 the programmer must consider the locality between cells within a
 level as well as across levels.  For
-cross-level cell dependences, mapping decisions must be made at
+cross-level cell dependences, optimal mapping decisions can only be made at
 runtime as the location of refinements are dynamically determined.
 Finally, this application has parallelism both
 between tasks running at the same level and tasks running across
@@ -260,7 +281,7 @@ refinement, but with randomly chosen refinement locations.  BoxLib
 also supports OpenMP and we took their best performance from using 1,
 2, 4, or 8 threads per node.  Our Legion implementation always uses
 one thread per node to illustrate that in this application locality is
-significantly more important than parallelism.  
+significantly more important than fine-grained data-parallelism.  
 
 Figure~\ref{fig:amr_total} gives the results.
 On just one node, blocking for caches using Legion achieves up to 2.6X
@@ -274,8 +295,8 @@ interconnect performance.  BoxLib performs much better on Keeneland
 than on Viz due to the better interconnect.  
 At higher node counts BoxLib
 begins to catch up (see Figure~\ref{fig:amr_keeneland})
-because our intra-level ghost-cell exchange 
-uses GASNet memory to exchange ghost cells, requiring a
+because our application's intra-level ghost-cell exchange algorithm
+uses GASNet memory to communicate ghost cells, requiring a
 linear increase in network traffic with the number of nodes.  BoxLib
 uses direct node-to-node exchanges of ghost cells, similar to
 our fluid application.  A future implementation of our AMR code will
@@ -299,5 +320,7 @@ employ a similar ghost cell exchange algorithm to improve scalability.
 \includegraphics[scale=0.4]{figs/Keeneland_amr.pdf}
 \label{fig:amr_keeneland}
 }
-\caption{Throuphput of adaptive mesh refinement in millions of cells/s \label{fig:amr_total}}
+\vspace{-2mm}
+\caption{Throughput of adaptive mesh refinement code. \label{fig:amr_total}}
+\vspace{-6mm}
 \end{figure}

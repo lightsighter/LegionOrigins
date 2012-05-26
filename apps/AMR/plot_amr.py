@@ -88,7 +88,24 @@ class Machine(object):
         for l in sorted(self.legion,key=lambda x: x.size + x.nodes):
             print "\t\tCells "+str(l.size)+"                          Nodes "+str(l.nodes)+"                          Time "+str(l.time)+"   Updates/s "+str(l.updates)
 
-    def plot_updates(self,fig,prob_size,mark_index):
+    def plot_legion(self,fig,prob_size,mark_index):
+        legion_results = dict()
+        for e in self.legion:
+            if e.size <> prob_size:
+                continue
+            legion_results[e.nodes] = e.updates
+        nodes = list()
+        legion_updates = list()
+        for n,up in sorted(legion_results.iteritems()):
+            nodes.append(n)
+            legion_updates.append(up/1e6) 
+        assert len(nodes) == len(legion_updates)
+        legion_label = 'Legion Cells='+str(prob_size)
+        plt.plot(nodes,legion_updates,'--',label=legion_label,linestyle='dashed',markersize=7,marker=markers[(mark_index)%len(markers)],linewidth=0.5)
+
+        return mark_index+1
+
+    def plot_boxlib(self,fig,prob_size,mark_index):
         # Plot the BoxLib problem first
         boxlib_results = dict()
         for e in self.boxlib:
@@ -100,28 +117,17 @@ class Machine(object):
                     boxlib_results[e.nodes] = e.updates
             else:
                 boxlib_results[e.nodes] = e.updates
-        legion_results = dict()
-        for e in self.legion:
-            if e.size <> prob_size:
-                continue
-            legion_results[e.nodes] = e.updates
-        assert len(boxlib_results) == len(legion_results)
+        #assert len(boxlib_results) == len(legion_results)
         nodes = list()
         boxlib_updates = list()
         for n,up in sorted(boxlib_results.iteritems()):
             nodes.append(n)
             boxlib_updates.append(up/1e6)
-        legion_updates = list()
-        for n,up in sorted(legion_results.iteritems()):
-            legion_updates.append(up/1e6) 
         assert len(nodes) == len(boxlib_updates)
-        assert len(nodes) == len(legion_updates)
         boxlib_label = 'BoxLib Cells='+str(prob_size)
-        legion_label = 'Legion Cells='+str(prob_size)
         plt.plot(nodes,boxlib_updates,'--',label=boxlib_label,linestyle='dashed',markersize=7,marker=markers[(mark_index)%len(markers)],linewidth=0.5)
-        plt.plot(nodes,legion_updates,'--',label=legion_label,linestyle='dashed',markersize=7,marker=markers[(mark_index+1)%len(markers)],linewidth=0.5)
 
-        return mark_index+2
+        return mark_index+1
 
 
 machines = [Machine('sapling_results','Sapling'),Machine('viz_results','Viz'),Machine('keeneland_results','Keeneland')]
@@ -212,20 +218,27 @@ def make_plots(show = True, save = True):
         mach.print_summary()
     for mach in machines:
         #pp = PdfPages(mach.name+"_amr.pdf")
-        fig = plt.figure(figsize = (10,7))
+        fig = plt.figure(figsize = (10,5.5))
         mark_index = 0
-        for p in problem_sizes:
-            mark_index = mach.plot_updates(fig,p,mark_index)
+        for p in reversed(problem_sizes):
+            mark_index = mach.plot_legion(fig,p,mark_index)
+        for p in reversed(problem_sizes):
+            mark_index = mach.plot_boxlib(fig,p,mark_index)
         if mach.name=="Sapling":
             plt.axis([0,5,0,450])
+            plt.xticks([1,2,4])
+            plt.legend(loc = 2)
             pass
         elif mach.name=="Viz":
             plt.axis([0,9,0,450])
+            plt.xticks([1,2,4,8])
+            plt.legend(bbox_to_anchor=(0.40, 0.2, 0.6, 0.6))
         else:
             plt.axis([0,18,0,800])
-        plt.legend(loc=0)
+            plt.xticks([1,2,4,8,16])
+            plt.legend(loc = 4)
         plt.xlabel('Node Count')
-        plt.ylabel('Millions of Cell Updates/s')
+        plt.ylabel('Cell Updates per Second (in Millions)')
         plt.grid(True)
         if save:
             fig.savefig(out_dir+mach.name+"_amr.pdf", format="pdf", bbox_inches="tight")

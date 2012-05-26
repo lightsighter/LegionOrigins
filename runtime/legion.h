@@ -926,9 +926,8 @@ namespace RegionRuntime {
       // Where the magic happens!
       void process_schedule_request(void); 
       void perform_maps_and_deletions(void); 
-      void perform_dependence_analysis(void);
       void perform_region_mapping(RegionMappingImpl *impl);
-      void enqueue_task(TaskContext *ctx); // enqueue the task on the mapping queue
+      void perform_dependence_analysis(TaskContext *ctx);
       void check_spawn_and_map_local(TaskContext *ctx); // set the spawn parameter
       bool target_task(TaskContext *ctx); // Select a target processor, return true if local 
       // Need to hold queue lock prior to calling split task
@@ -959,7 +958,6 @@ namespace RegionRuntime {
       std::vector<ColorizeFnptr> colorize_functions;
       // Task Contexts
       bool idle_task_enabled; // Keep track if the idle task enabled or not
-      std::vector<TaskContext*> mapping_queue; // tasks that need to be mapped (IN ORDER!)
       std::list<TaskContext*> ready_queue; // Tasks ready to be mapped/stolen
 #ifdef LOW_LEVEL_LOCKS
       Lock queue_lock;
@@ -3282,7 +3280,7 @@ namespace RegionRuntime {
 
       // If its not ready it's registered in the logical tree and someone will
       // notify it and it will add itself to the ready queue
-      enqueue_task(desc);
+      perform_dependence_analysis(desc);
 
       // Return the future map that wraps the future map implementation 
       return FutureMap(desc->future_map);
@@ -3348,7 +3346,7 @@ namespace RegionRuntime {
 
       // If its not ready it's registered in the logical tree and someone will
       // notify it and it will add itself to the ready queue
-      enqueue_task(desc);
+      perform_dependence_analysis(desc);
       
       // Return the future where the return value will be set
       return Future(desc->future);

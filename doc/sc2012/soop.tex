@@ -26,7 +26,7 @@ finished executing.   Pipelining and distributing the SOOP further improves thro
 
 To dynamically detect and enforce data dependences,
 the SOOP considers, for each task $t$, the
-the regions $t$ uses and ensures $t$ waits on any
+regions $t$ uses and ensures $t$ waits on any
 earlier task whose region uses conflict with $t$'s.  There is a
 difficulty, however.  The programmer's regions are logical; a region
 names a set of objects, but does not say where those objects
@@ -80,11 +80,13 @@ but if either task needs write or reduction privileges, the coherence
 modes are compared using the table in Figure~\ref{fig:dependence}.
 {\tt Dep} indicates dependence while {\tt None}
 indicates independence.  {\tt Same} is a dependence unless the two tasks
-use the same physical instance of the logical region.
+use the same physical instance of the logical region.  Since tasks
+haven't mapped physical instances at this point in the pipeline,
+{\tt Same} is always a mapping dependence.
 %\footnote{For example, if two tasks wish to acess the region with atomic coherence, then if they are working on the same physical copy of the data atomicity can be guaranteed using, e.g., locking.  If they are working on different copies of the data then the only safe execution strategy for Legion is to serialize the two tasks.}
 {\tt Cont} 
-indicates a dependence unless a single writer has
-atomic coherence.  
+indicates a dependence contingent on the privileges of the two tasks
+(e.g. an Atomic Read-Write task and Simultaneous Read-Only task will not have a dependence).
 
 
 \begin{figure}
@@ -98,8 +100,9 @@ Simultaneous & Dep & Cont & Same & None \\
 Relaxed      & Dep & Cont & None & None \\
 \end{tabular}
 }
-\caption{Dependence table.}
-\label{fig:dependence}
+\vspace{-2mm}
+\caption{Dependence table. \label{fig:dependence}}
+\vspace{-6mm}
 \end{figure}
 
 The table lists {\em simultaneous} and {\em relaxed} coherence modes
@@ -268,7 +271,9 @@ on to $m'$.
 \includegraphics[scale=0.46]{figs/UV_Update.pdf}
 \label{fig:depexamp:d}
 }
+\vspace{-2mm}
 \caption{Dependence analysis examples from {\tt circuit\_simulation}. \label{fig:depexamp}}
+\vspace{-6mm}
 \end{figure*}
 
 There are two parts to this analysis:
@@ -334,7 +339,7 @@ and can be defined by the user (see Section~\ref{sec:mapping}).
 
 There are two steps to mapping a region $r$ used by
 task $t$.  First, the mapper must ensure there is at least one {\em valid}
-physical instance of $r$ for $t$ to use.  Not all intances have up-to-date
+physical instance of $r$ for $t$ to use.  Not all instances have up-to-date
 data at all times.  For example, if an instance of a subregion of $r$ has been written by a previous task,
 it is necessary to copy that subregion back to an instance of $r$ so that $t$
 sees the correct data. In the second step, the mapping interface selects one of the
