@@ -212,7 +212,7 @@ namespace RegionRuntime {
         {
           log_mapper(LEVEL_DEBUG,"Task %s (ID %d) (unique id %d) stolen from processor %x by processor %x",
                (*it)->variants->name, (*it)->task_id, 
-               (*it)->unique_id, local_proc.id, thief.id);
+               (*it)->get_unique_id(), local_proc.id, thief.id);
           to_steal.insert(*it);
           total_stolen++;
           // Check to see if we're done
@@ -251,7 +251,7 @@ namespace RegionRuntime {
               {
                 log_mapper(LEVEL_DEBUG,"Task %s (ID %d) (unique id %d) stolen from processor %x by "
                     "processor %x", (*inner_it)->variants->name,
-                    (*inner_it)->task_id, (*inner_it)->unique_id, local_proc.id, thief.id);
+                    (*inner_it)->task_id, (*inner_it)->get_unique_id(), local_proc.id, thief.id);
                 // Add it to the list of steals and either return or break
                 to_steal.insert(*inner_it);
                 total_stolen++;
@@ -273,7 +273,7 @@ namespace RegionRuntime {
     {
       log_mapper(LEVEL_SPEW,"Split constraint space in default mapper for task %s (ID %d) (unique id %d) on "
           "processor %x", task->variants->name, task->task_id,
-          task->unique_id, local_proc.id);
+          task->get_unique_id(), local_proc.id);
       assert(false);
       // TODO: Implement something for this
     }
@@ -285,7 +285,7 @@ namespace RegionRuntime {
     {
       log_mapper(LEVEL_SPEW,"Split range space in default mapper for task %s (ID %d) (unique id %d) on "
           "processor %x", task->variants->name, task->task_id,
-          task->unique_id, local_proc.id);
+          task->get_unique_id(), local_proc.id);
       // We'll try to split the range space into some factor of the number of processors
       // specified by the splitting factor
       unsigned goal_num_chunks = proc_group.size() * splitting_factor;
@@ -333,7 +333,7 @@ namespace RegionRuntime {
 
       log_mapper(LEVEL_SPEW,"Map task region in default mapper for region %d of task %s (ID %d) "
           "(unique id %d) on processor %x",req.handle.region.id, task->variants->name, 
-          task->task_id, task->unique_id, local_proc.id);
+          task->task_id, task->get_unique_id(), local_proc.id);
       // Just give our processor stack
       target_ranking = memory_stack;
       enable_WAR_optimization = war_enabled;
@@ -346,7 +346,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       log_mapper(LEVEL_SPEW,"Rank copy targets in default mapper for task %s (ID %d) (unique id %d) "
-          "on processor %x", task->variants->name, task->task_id, task->unique_id,local_proc.id);
+          "on processor %x", task->variants->name, task->task_id, task->get_unique_id(),local_proc.id);
       future_ranking = memory_stack;
     }
 

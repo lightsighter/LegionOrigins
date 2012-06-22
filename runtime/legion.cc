@@ -281,31 +281,30 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void TaskCollection::add_variant(Processor::TaskFuncID low_id, Processor::Kind kind, bool index)
+    void TaskCollection::add_variant(Processor::TaskFuncID low_id, Processor::Kind kind, bool index, bool leaf)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!has_variant(kind, index));
 #endif
-      variants.push_back(Variant(low_id, kind, index));
+      variants.push_back(Variant(low_id, kind, index, leaf));
     }
 
     //--------------------------------------------------------------------------
-    Processor::TaskFuncID TaskCollection::select_variant(bool index, Processor::Kind kind)
+    const TaskCollection::Variant& TaskCollection::select_variant(bool index, Processor::Kind kind)
     //--------------------------------------------------------------------------
     {
-      for (std::vector<Variant>::const_iterator it = variants.begin();
-            it != variants.end(); it++)
+      for (unsigned idx = 0; idx < variants.size(); idx++)
       {
-        if ((it->proc_kind == kind) && (it->index_space == index))
+        if ((variants[idx].proc_kind == kind) && (variants[idx].index_space == index))
         {
-          return it->low_id;
+          return variants[idx];
         }
       }
       log_variant(LEVEL_ERROR,"User task %s (ID %d) has no registered variants for "
           "processors of kind %d and index space %d",name, user_id, kind, index);
       exit(1);
-      return 0;
+      return variants[0];
     }
 
     /////////////////////////////////////////////////////////////
@@ -1361,7 +1360,7 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
     // Region Mapping Implementation
     /////////////////////////////////////////////////////////////
-
+#if 0
     //--------------------------------------------------------------------------
     RegionMappingImpl::RegionMappingImpl(HighLevelRuntime *rt)
       : runtime(rt), active(false), current_gen(0)
@@ -2152,6 +2151,7 @@ namespace RegionRuntime {
       assert(false);
       return InstanceInfo::get_no_instance();
     }
+#endif
 
     /////////////////////////////////////////////////////////////
     // High Level Runtime 
@@ -2238,18 +2238,17 @@ namespace RegionRuntime {
 #endif
 
       // Create some tasks contexts 
-      total_contexts = DEFAULT_CONTEXTS;
-      for (unsigned ctx = 0; ctx < total_contexts; ctx++)
+      total_contexts = 0;
+      for (unsigned ctx = 0; ctx < DEFAULT_CONTEXTS; ctx++)
       {
-        available_contexts.push_back(new TaskContext(local_proc, this, ctx)); 
+        available_indiv_tasks.push_back(new IndividualTask(local_proc, this, total_contexts++)); 
+        available_index_tasks.push_back(new IndexTask(local_proc, this, total_contexts++));
+        available_slice_tasks.push_back(new SliceTask(local_proc, this, total_contexts++));
+        available_point_tasks.push_back(new PointTask(local_proc, this, total_contexts++));
+        available_maps.push_back(new MappingOperation(this));
+        available_deletions.push_back(new DeletionOperation(this));
       }
-
-      // Create some region mappings
-      for (unsigned idx = 0; idx < DEFAULT_CONTEXTS; idx++)
-      {
-        available_maps.push_back(new RegionMappingImpl(this));
-      }
-
+      
       // Now initialize any mappers
       if(registration_callback != 0)
 	(*registration_callback)(Machine::get_machine(), this, local_proc);
@@ -2262,9 +2261,8 @@ namespace RegionRuntime {
       if (local_proc == (*first_cpu))
       {
         log_task(LEVEL_SPEW,"Issuing legion main task on processor %x",local_proc.id);
-        TaskContext *desc = get_available_context(true/*new tree*/);
-        desc->top_level_task = true;
-        UniqueID tid = get_unique_task_id();
+        IndividualTask *top = new IndividualTask(local_proc, this, total_contexts++, true/*top level task*/);
+        top->activate(NULL/*no parent context*/);
         {
           // Hold the mapping lock when reading the mapper information
 #ifdef LOW_LEVEL_LOCKS
@@ -2275,24 +2273,24 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           assert(!mapper_objects.empty());
 #endif
-          // Copy the argv into the default arguments
-          desc->initialize_task(NULL/*no parent*/,tid, HighLevelRuntime::legion_main_id,
-                                &HighLevelRuntime::get_input_args(), sizeof(InputArgs), 0, 0, mapper_objects[0], mapper_locks[0]);
+          top->initialize(HighLevelRuntime::legion_main_id,
+                                &HighLevelRuntime::get_input_args(), sizeof(InputArgs), 0/*map_id*/, 0/*tag*/, 
+                                mapper_objects[0], mapper_locks[0], false/*is index space*/, false/*must*/);
         }
 #ifndef LOG_EVENT_ONLY
-        log_spy(LEVEL_INFO,"Top Task %d %d",desc->unique_id,HighLevelRuntime::legion_main_id);
+        log_spy(LEVEL_INFO,"Top Task %d %d",top->unique_id,HighLevelRuntime::legion_main_id);
 #endif
         // Put this task in the ready queue
         {
           AutoLock q_lock(queue_lock);
-          ready_queue.push_back(desc);
+          ready_queue.push_back(top);
         }
 
-        desc->future = new FutureImpl(desc->termination_event);
+        top->set_future(new FutureImpl(top->get_termination_event()));
         // Pack up the future and a pointer to the context so we can deactivate
         // the task context when we're done.  This will make sure everything gets
         // cleaned up an will will help us capture any leaks.
-        Future fut(desc->future);
+        Future fut(top->get_future());
         size_t buffer_size = sizeof(Future);
         Serializer rez(buffer_size);
         rez.serialize<Future>(fut);
@@ -2311,17 +2309,31 @@ namespace RegionRuntime {
       log_task(LEVEL_DEBUG,"Shutting down high level runtime on processor %x", local_proc.id);
       {
         AutoLock ctx_lock(available_lock);
-        for (std::list<TaskContext*>::iterator it = available_contexts.begin();
-              it != available_contexts.end(); it++)
+        for (std::list<IndividualTask*>::iterator it = available_indiv_tasks.begin();
+              it != available_indiv_tasks.end(); it++)
           delete *it;
-        available_contexts.clear();
+        available_indiv_tasks.clear();
+        for (std::list<IndexTask*>::iterator it = available_index_tasks.begin();
+              it != available_index_tasks.end(); it++)
+          delete *it;
+        available_index_tasks.clear();
+        for (std::list<SliceTask*>::iterator it = available_slice_tasks.begin();
+              it != available_slice_tasks.end(); it++)
+          delete *it;
+        available_slice_tasks.clear();
+        for (std::list<PointTask*>::iterator it = available_point_tasks.begin();
+              it != available_point_tasks.end(); it++)
+          delete *it;
+        available_point_tasks.clear();
+        for (std::list<MappingOperation*>::iterator it = available_maps.begin();
+              it != available_maps.end(); it++)
+          delete *it;
+        available_maps.clear();
+        for (std::list<DeletionOperation*>::iterator it = available_deletions.begin();
+              it != available_deletions.end(); it++)
+          delete *it;
+        available_deletions.clear();
       }
-
-      // Clear the available maps too
-      for (std::list<RegionMappingImpl*>::iterator it = available_maps.begin();
-            it != available_maps.end(); it++)
-        delete *it;
-      available_maps.clear();
 
       // Clean up mapper objects and all the low-level locks that we own
 #ifdef DEBUG_HIGH_LEVEL
@@ -2411,7 +2423,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     /*static*/ TaskID HighLevelRuntime::update_collection_table(void (*low_level_ptr)(const void*,size_t,Processor),
                                                     TaskID uid, const char *name, bool index_space,
-                                                    Processor::Kind proc_kind)
+                                                    Processor::Kind proc_kind, bool leaf)
     //--------------------------------------------------------------------------------------------
     {
       std::map<Processor::TaskFuncID,TaskCollection*>& table = HighLevelRuntime::get_collection_table();
@@ -2448,12 +2460,12 @@ namespace RegionRuntime {
         assert(collec != NULL);
 #endif
         table[uid] = collec;
-        collec->add_variant(low_id, proc_kind, index_space);
+        collec->add_variant(low_id, proc_kind, index_space, leaf);
       }
       else
       {
         // Update the variants for the attribute
-        table[uid]->add_variant(low_id, proc_kind, index_space);
+        table[uid]->add_variant(low_id, proc_kind, index_space, leaf);
       }
       return uid;
     }
@@ -2686,9 +2698,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_EXECUTE_TASK); 
-      // Get a unique id for the task to use
-      UniqueID unique_id = get_unique_task_id();
-      TaskContext *desc = get_available_context(false/*new tree*/);
+      IndividualTask *indiv = get_available_individual_task(ctx,false/*resource owner*/);
       {
 #ifdef LOW_LEVEL_LOCKS
         AutoLock map_lock(mapping_lock,1,false);
@@ -2698,15 +2708,15 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEl
         assert(id < mapper_objects.size());
 #endif
-        desc->initialize_task(ctx, unique_id, task_id, arg.get_ptr(), arg.get_size(), 
-                              id, tag, mapper_objects[id], mapper_locks[id]);
+        indiv->initialize(task_id, arg.get_ptr(), arg.get_size(),
+                              id, tag, mapper_objects[id], mapper_locks[id],false/*is index space*/,false/*must*/);
       }
       
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Registering new single task with unique id %d and task %s (ID %d) with high level runtime on processor %x",
-                unique_id, desc->variants->name, task_id, local_proc.id);
+                indiv->unique_id, indiv->variants->name, task_id, local_proc.id);
 #endif
-      desc->set_regions(regions, true/*check same*/);
+      indiv->set_regions(regions, true/*check same*/);
       // Check if we want to spawn this task 
       //check_spawn_task(desc);
       // Don't free memory as the task becomes the owner
@@ -2727,13 +2737,13 @@ namespace RegionRuntime {
       //}
 
       // create the future BEFORE we enqueue it
-      desc->future = new FutureImpl(desc->termination_event);
+      indiv->set_future(new FutureImpl(indiv->get_termination_event()));
 
       // If its not ready it's registered in the logical tree and someone will
       // notify it and it will add itself to the ready queue
-      perform_dependence_analysis(desc);
+      perform_dependence_analysis(ctx, indiv);
 
-      return Future(desc->future);
+      return Future(indiv->get_future());
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2767,12 +2777,13 @@ namespace RegionRuntime {
                   low_region.id, ctx->variants->name, ctx->unique_id);
 
       // Get a deletion operation
-      DeletionOp *op = get_available_deletion(ctx, handle);
+      DeletionOperation *op = get_available_deletion(ctx);
+      op->initialize(handle);
       // Register the deletion in the parent task
       ctx->register_deletion(op);
       if (op->is_ready())
       {
-        op->perform_deletion(true/*need lock*/);
+        op->perform_operation();
         op->deactivate();
       }
       // If its not ready it's registered in the logical tree and someone will
@@ -2813,7 +2824,11 @@ namespace RegionRuntime {
                   smash_region.id, ctx->variants->name, ctx->unique_id);
 
       // Tell the context about the new smash region
-      ctx->smash_region(smash_region, regions);
+      // TODO: figure out how to do smash regions.  This will probably involve rethinking
+      // how we do region tree traversal since a smashed region will contain information
+      // for several subregions.
+      assert(false);
+      //ctx->smash_region(smash_region, regions);
 
       return smash_region;
     }
@@ -2963,13 +2978,14 @@ namespace RegionRuntime {
       log_region(LEVEL_DEBUG,"Destroying partition %d in task %s (ID %d)",
                   part.id, ctx->variants->name, ctx->unique_id);
       // Get a deletion operation
-      DeletionOp *op = get_available_deletion(ctx, part.id);
+      DeletionOperation *op = get_available_deletion(ctx);
+      op->initialize(part.id);
       // Register the deletion with the context
       ctx->register_deletion(op);
       // Check to see if it's ready or whether we should add it to the waiting queue
       if (op->is_ready())
       {
-        op->perform_deletion(true/*need lock*/);
+        op->perform_operation();
         op->deactivate();
       }
       // If its not ready it's registered in the logical tree and someone will
@@ -2991,11 +3007,12 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_INLINE_MAP);
-      RegionMappingImpl *impl = get_available_mapping(ctx, req, mid, tag); 
+      MappingOperation *op = get_available_mapping(ctx);
+      op->initialize(req, mid, tag);
 
-      internal_map_region(ctx, impl);
+      internal_map_region(ctx, op);
 
-      return PhysicalRegion<AccessorArray>(impl, req.handle.region);
+      return PhysicalRegion<AccessorArray>(op, req.handle.region);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3005,26 +3022,27 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_INLINE_MAP);
-      RegionMappingImpl *impl = get_available_mapping(ctx, req, mid, tag); 
+      MappingOperation *op = get_available_mapping(ctx);
+      op->initialize(req, mid, tag);
 
-      internal_map_region(ctx, impl);
+      internal_map_region(ctx, op);
       
-      return PhysicalRegion<AccessorGeneric>(impl, req.handle.region);
+      return PhysicalRegion<AccessorGeneric>(op, req.handle.region);
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::internal_map_region(TaskContext *ctx, RegionMappingImpl *impl)
+    void HighLevelRuntime::internal_map_region(Context ctx, MappingOperation *op)
     //--------------------------------------------------------------------------------------------
     {
       log_region(LEVEL_DEBUG,"Registering a map operation for region %x in task %s (ID %d)",
-                  impl->req.handle.region.id, ctx->variants->name, ctx->unique_id);
-      ctx->register_mapping(impl); 
+                  op->req.handle.region.id, ctx->variants->name, ctx->unique_id);
+      ctx->register_mapping(op); 
 
       // Check to see if it is ready to map, if so do it, otherwise add it to the list
       // of waiting map operations
-      if (impl->is_ready())
+      if (op->is_ready())
       {
-        perform_region_mapping(impl);
+        op->perform_operation();
       }
       // If its not ready it's registered in the logical tree and someone will
       // notify it and it will add itself to the ready queue
@@ -3043,7 +3061,7 @@ namespace RegionRuntime {
       {
         log_region(LEVEL_DEBUG,"Unmapping region %x in task %s (ID %d)",
                   region.impl->req.handle.region.id, ctx->variants->name, ctx->unique_id);
-        region.impl->deactivate(true/*need lock*/);
+        region.impl->deactivate();
       }
       else
       {
@@ -3065,7 +3083,7 @@ namespace RegionRuntime {
       {
         log_region(LEVEL_DEBUG,"Unmapping region %x in task %s (ID %d)",
                   region.impl->req.handle.region.id, ctx->variants->name, ctx->unique_id);   
-        region.impl->deactivate(true/*need lock*/);
+        region.impl->deactivate();
       }
       else
       {
@@ -3184,96 +3202,201 @@ namespace RegionRuntime {
       return ctx->get_local_args(point,local_size);
     }
 
-    //-------------------------------------------------------------------------------------------- 
-    TaskContext* HighLevelRuntime::get_available_context(bool new_tree)
+    //--------------------------------------------------------------------------------------------
+    IndividualTask* HighLevelRuntime::get_available_individual_task(Context ctx, bool owner)
     //--------------------------------------------------------------------------------------------
     {
-      TaskContext *result;
+      IndividualTask *result;
       {
-        // Get the lock on the available contexts
-        AutoLock ctx_lock(available_lock);
-
-        if (!available_contexts.empty())
+        // Get the available lock
+        AutoLock avail_lock(available_lock);
+        if (!available_indiv_tasks.empty())
         {
-          result = available_contexts.front();
-          available_contexts.pop_front();
+          result = available_indiv_tasks.front();
+          available_indiv_tasks.pop_front();
         }
         else
         {
           ContextID id = total_contexts++;
-          result = new TaskContext(local_proc,this,id);
+          result = new IndividualTask(local_proc,this,id);
         }
       }
-#ifdef DEBUG_HIGH_LEVEL
-      bool activated = 
-#endif
-      result->activate(new_tree);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(activated);
-#endif
+      result->activate(ctx);
+      result->set_resource_owner(owner);
       return result;
     }
 
     //--------------------------------------------------------------------------------------------
-    RegionMappingImpl* HighLevelRuntime::get_available_mapping(TaskContext *ctx, const RegionRequirement &req,
-                                                               MapperID mid, MappingTagID tag)
+    IndexTask* HighLevelRuntime::get_available_index_task(Context ctx)
     //--------------------------------------------------------------------------------------------
     {
-      RegionMappingImpl *result;
-      if (!available_maps.empty())
+      IndexTask *result;
       {
-        result = available_maps.front();
-        available_maps.pop_front();
+        // Get the available lock
+        AutoLock avail_lock(available_lock);
+        if (!available_index_tasks.empty())
+        {
+          result = available_index_tasks.front();
+          available_index_tasks.pop_front();
+        }
+        else
+        {
+          ContextID id = total_contexts++;
+          result = new IndexTask(local_proc,this,id);
+        }
       }
-      else
-      {
-        result = new RegionMappingImpl(this);
-      }
-      result->activate(ctx, req, mid, tag);
-
+      result->activate(ctx);
       return result;
     }
 
     //--------------------------------------------------------------------------------------------
-    DeletionOp* HighLevelRuntime::get_available_deletion(TaskContext *ctx, LogicalRegion handle)
+    SliceTask* HighLevelRuntime::get_available_slice_task(Context ctx, bool owner)
     //--------------------------------------------------------------------------------------------
     {
-      DeletionOp *result;
-      if (!available_deletions.empty())
+      SliceTask *result;
       {
-        result = available_deletions.front();
-        available_deletions.pop_front();
+        // Get the available lock
+        AutoLock avail_lock(available_lock);
+        if (!available_slice_tasks.empty())
+        {
+          result = available_slice_tasks.front();
+          available_slice_tasks.pop_front();
+        }
+        else
+        {
+          ContextID id = total_contexts++;
+          result = new SliceTask(local_proc,this,id);
+        }
       }
-      else
-      {
-        result = new DeletionOp(this);
-      }
-      result->activate(ctx, handle);
-
+      result->activate(ctx);
+      result->set_resource_owner(owner);
       return result;
     }
 
     //--------------------------------------------------------------------------------------------
-    DeletionOp* HighLevelRuntime::get_available_deletion(TaskContext *ctx, PartitionID pid)
+    PointTask* HighLevelRuntime::get_available_point_task(Context ctx)
     //--------------------------------------------------------------------------------------------
     {
-      DeletionOp *result;
-      if (!available_deletions.empty())
+      PointTask *result;
       {
-        result = available_deletions.front();
-        available_deletions.pop_front();
+        // Get the available lock
+        AutoLock avail_lock(available_lock);
+        if (!available_point_tasks.empty())
+        {
+          result = available_point_tasks.front();
+          available_point_tasks.pop_front();
+        }
+        else
+        {
+          ContextID id = total_contexts++;
+          result = new PointTask(local_proc,this,id);
+        }
       }
-      else
-      {
-        result = new DeletionOp(this);
-      }
-      result->activate(ctx, pid);
-
+      result->activate(ctx);
       return result;
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::add_to_ready_queue(TaskContext *ctx, bool acquire_lock)
+    MappingOperation* HighLevelRuntime::get_available_mapping(Context ctx)
+    //--------------------------------------------------------------------------------------------
+    {
+      MappingOperation *result;
+      {
+        // Get the available lock
+        AutoLock avail_lock(available_lock);
+        if (!available_maps.empty())
+        {
+          result = available_maps.front();
+          available_maps.pop_front();
+        }
+        else
+        {
+          result = new MappingOperation(this);
+        }
+      }
+      result->activate(ctx);
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    DeletionOperation* HighLevelRuntime::get_available_deletion(Context ctx)
+    //--------------------------------------------------------------------------------------------
+    {
+      DeletionOperation *result;
+      {
+        // Get the available lock
+        AutoLock avail_lock(available_lock);
+        if (!available_deletions.empty())
+        {
+          result = available_deletions.front();
+          available_deletions.pop_front();
+        }
+        else
+        {
+          result = new DeletionOperation(this);
+        }
+      }
+      result->activate(ctx);
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::free_individual_task(IndividualTask *task)
+    //--------------------------------------------------------------------------------------------
+    {
+      task->deactivate();
+      AutoLock avail_lock(available_lock);
+      available_indiv_tasks.push_back(task);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::free_index_task(IndexTask *task)
+    //--------------------------------------------------------------------------------------------
+    {
+      task->deactivate();
+      AutoLock avail_lock(available_lock);
+      available_index_tasks.push_back(task);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::free_slice_task(SliceTask *task)
+    //--------------------------------------------------------------------------------------------
+    {
+      task->deactivate();
+      AutoLock avail_lock(available_lock);
+      available_slice_tasks.push_back(task);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::free_point_task(PointTask *task)
+    //--------------------------------------------------------------------------------------------
+    {
+      task->deactivate();
+      AutoLock avail_lock(available_lock);
+      available_point_tasks.push_back(task);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::free_mapping(MappingOperation *op)
+    //--------------------------------------------------------------------------------------------
+    {
+      op->deactivate();
+      AutoLock avail_lock(available_lock);
+      available_maps.push_back(op);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::free_deletion(DeletionOperation *op)
+    //--------------------------------------------------------------------------------------------
+    {
+      op->deactivate();
+      AutoLock avail_lock(available_lock);
+      available_deletions.push_back(op);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::add_to_ready_queue(TaskContext *ctx, bool acquire_lock/*= true*/,
+                                              bool append/*= true*/)
     //--------------------------------------------------------------------------------------------
     {
       log_task(LEVEL_DEBUG,"Adding task %s with unique id %d to the ready queue",ctx->variants->name,ctx->unique_id);
@@ -3281,7 +3404,14 @@ namespace RegionRuntime {
       {
         AutoLock q_lock(queue_lock);
         // Put it on the ready_queue
-        ready_queue.push_back(ctx);
+        if (append)
+        {
+          ready_queue.push_back(ctx);
+        }
+        else
+        {
+          ready_queue.push_front(ctx);
+        }
         // enable the idle task so it will get scheduled
         if (!idle_task_enabled)
         {
@@ -3295,7 +3425,14 @@ namespace RegionRuntime {
       else
       {
         // Assume we already have the lock
-        ready_queue.push_back(ctx);
+        if (append)
+        {
+          ready_queue.push_back(ctx);
+        }
+        else
+        {
+          ready_queue.push_front(ctx);
+        }
         // enable the idle task
         if (!idle_task_enabled)
         {
@@ -3309,14 +3446,14 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::add_to_ready_queue(RegionMappingImpl *impl, bool acquire_lock/*=true*/)
+    void HighLevelRuntime::add_to_ready_queue(MappingOperation *op, bool acquire_lock/*=true*/)
     //--------------------------------------------------------------------------------------------
     {
       if (acquire_lock)
       {
         AutoLock q_lock(queue_lock);
         // Put it on the ready queue
-        ready_maps.push_back(impl);
+        ready_operations.push_back(op);
         if (!idle_task_enabled)
         {
           Processor copy = local_proc;
@@ -3326,7 +3463,7 @@ namespace RegionRuntime {
       }
       else
       {
-        ready_maps.push_back(impl);
+        ready_operations.push_back(op);
         if (!idle_task_enabled)
         {
           Processor copy = local_proc;
@@ -3337,14 +3474,14 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::add_to_ready_queue(DeletionOp *op, bool acquire_lock/*=true*/)
+    void HighLevelRuntime::add_to_ready_queue(DeletionOperation *op, bool acquire_lock/*=true*/)
     //--------------------------------------------------------------------------------------------
     {
       if (acquire_lock)
       {
         AutoLock q_lock(queue_lock);
         // Put it on the ready queue
-        ready_deletions.push_back(op);
+        ready_operations.push_back(op);
         if (!idle_task_enabled)
         {
           Processor copy = local_proc;
@@ -3354,7 +3491,7 @@ namespace RegionRuntime {
       }
       else
       {
-        ready_deletions.push_back(op);
+        ready_operations.push_back(op);
         if (!idle_task_enabled)
         {
           Processor copy = local_proc;
@@ -3362,28 +3499,6 @@ namespace RegionRuntime {
           idle_task_enabled = true;
         }
       }
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::free_context(TaskContext *ctx)
-    //--------------------------------------------------------------------------------------------
-    {
-      AutoLock ctx_lock(available_lock);
-      available_contexts.push_back(ctx); 
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::free_mapping(RegionMappingImpl *impl)
-    //--------------------------------------------------------------------------------------------
-    {
-      available_maps.push_back(impl);
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::free_deletion(DeletionOp *op)
-    //--------------------------------------------------------------------------------------------
-    {
-      available_deletions.push_back(op);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3430,70 +3545,23 @@ namespace RegionRuntime {
       // Unpack each of the tasks
       for (size_t i=0; i<num_tasks; i++)
       {
-        // Add the task description to the task queue
-        TaskContext *ctx= get_available_context(true/*new tree*/);
+        bool individual_task;
+        derez.deserialize<bool>(individual_task);
+        TaskContext *ctx;
+        if (individual_task)
+        {
+          ctx = get_available_individual_task(NULL/*no parent*/,true/*resource owner*/);
+        }
+        else
+        {
+          // If it's not an individual task, then it has to be a slice of an index space task
+          // since neither point tasks or index tasks can be stolen/sent remotely
+          ctx = get_available_slice_task(NULL/*no parent*/,true/*resource owner*/);
+        }
+        // Unpack the task and then add it to the ready queue
         ctx->unpack_task(derez);
-        {
-          // Update the tasks mapper information 
-#ifdef LOW_LEVEL_LOCKS
-          AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
-#else
-          AutoLock map_lock(mapping_lock);
-#endif
-          ctx->mapper = mapper_objects[ctx->map_id];
-          ctx->mapper_lock = mapper_locks[ctx->map_id];
-        }
-        // First check to see if this is a task of index_space or
-        // a single task.  If index_space, see if we need to divide it
-        if (ctx->is_index_space)
-        {
-          // Check to see if this index space still needs to be split
-          if (ctx->need_split)
-          {
-            // Need to hold the queue lock before calling split task
-            AutoLock ready_queue_lock(queue_lock); 
-            bool still_local = split_task(ctx,1);
-            // If it's still local add it to the ready queue
-            if (still_local)
-            {
-              add_to_ready_queue(ctx,false/*already have lock*/);
-#ifdef DEBUG_HIGH_LEVEL
-              log_task(LEVEL_DEBUG,"HLR on processor %x adding index space"
-                                    " task %s (ID %d) with unique id %d from orig %x",
-                ctx->local_proc.id,ctx->variants->name,
-                ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
-#endif
-            }
-            else
-            {
-              // No longer any versions of this task to keep locally
-              // Return the context to the free list
-              ctx->deactivate(true/*need lock*/);
-            }
-          }
-          else // doesn't need split
-          {
-            // This context doesn't need any splitting, add to ready queue 
-            add_to_ready_queue(ctx);
-#ifdef DEBUG_HIGH_LEVEL
-            log_task(LEVEL_DEBUG,"HLR on processor %x adding index space"
-                                  " task %s (ID %d) with unique id %d from orig %x",
-              ctx->local_proc.id, ctx->variants->name,
-              ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
-#endif
-          }
-        }
-        else // not an index space
-        {
-          // Single task, put it on the ready queue
-          add_to_ready_queue(ctx);
-#ifdef DEBUG_HIGH_LEVEL
-          log_task(LEVEL_DEBUG,"HLR on processor %x adding task %s (ID %d) "
-                                "with unique id %d from orig %x",
-            ctx->local_proc.id, ctx->variants->name,
-            ctx->task_id,ctx->unique_id,ctx->orig_proc.id);
-#endif
-        }
+        add_to_ready_queue(ctx);
+
         // check to see if this is a steal result coming back
         // this is only a guess a task could have been stolen earlier
         if (ctx->steal_count > 0)
@@ -3555,7 +3623,7 @@ namespace RegionRuntime {
                 it != ready_queue.rend(); it++)
           {
             // The tasks also must be stealable
-            if ((*it)->stealable && ((*it)->map_id == stealer))
+            if ((*it)->is_stealable() && ((*it)->map_id == stealer))
               mapper_tasks.push_back(*it);
           }
           // Now call the mapper and get back the results
@@ -3695,7 +3763,7 @@ namespace RegionRuntime {
           // If they are remote, deactivate the instance
           // If it's not remote, its parent will deactivate it
           if ((*it)->remote)
-            (*it)->deactivate(true/*need lock*/);
+            (*it)->deactivate();
         }
       }
     }
@@ -3704,7 +3772,7 @@ namespace RegionRuntime {
     void HighLevelRuntime::process_mapped(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
-      Context ctx = *((const Context*)args);
+      TaskContext *ctx = *((TaskContext**)args);
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"All child tasks mapped for task %s (ID %d) with unique id %d on processor %x",
         ctx->variants->name,ctx->task_id,ctx->unique_id,ctx->local_proc.id);
@@ -3717,7 +3785,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       // Unpack the context from the arguments
-      Context ctx = *((const Context*)args);
+      TaskContext *ctx = *((TaskContext**)args);
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Task %s (ID %d) with unique id %d finished on processor %x", 
         ctx->variants->name,ctx->task_id, ctx->unique_id, ctx->local_proc.id);
@@ -3731,10 +3799,10 @@ namespace RegionRuntime {
     {
       // Unpack context, task, and event info
       const char * ptr = (const char*)args;
-      Context local_ctx = *((const Context*)ptr);
-      ptr += sizeof(Context);
+      TaskContext *local_ctx = *((TaskContext**)ptr);
+      ptr += sizeof(TaskContext*);
      
-      local_ctx->remote_start(ptr, arglen-sizeof(Context));
+      local_ctx->remote_start(ptr, arglen-sizeof(TaskContext*));
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3743,10 +3811,10 @@ namespace RegionRuntime {
     {
       // Unpack the context
       const char *ptr = (const char*)args;
-      Context local_ctx = *((const Context*)ptr);
-      ptr += sizeof(Context);
+      TaskContext *local_ctx = *((TaskContext**)ptr);
+      ptr += sizeof(TaskContext*);
 
-      local_ctx->remote_children_mapped(ptr, arglen-sizeof(Context));
+      local_ctx->remote_children_mapped(ptr, arglen-sizeof(TaskContext*));
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3755,10 +3823,10 @@ namespace RegionRuntime {
     {
       // Unpack the user event to be trigged when we finished
       const char *ptr = (const char*)args;
-      Context local_ctx = *((const Context*)ptr);
-      ptr += sizeof(Context);
+      TaskContext *local_ctx = *((TaskContext**)ptr);
+      ptr += sizeof(TaskContext*);
 
-      local_ctx->remote_finish(ptr, arglen-sizeof(Context));
+      local_ctx->remote_finish(ptr, arglen-sizeof(TaskContext*));
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3842,15 +3910,16 @@ namespace RegionRuntime {
         ready_queue.pop_front();
         // Release the queue lock (maybe make this locking more efficient)
         queue_lock.unlock();
-        // Check to see if this task has been chosen already
+        // Check to see if this task has been distributed already
         // If not, then check to see if it is local, if it is
         // then map it here (otherwise it has already been sent away)
-        if (task->chosen || target_task(task))
+        if (task->distributed || task->distribute_task())
         {
           mapped_tasks++;
           //  Check to see if this is an index space and it needs to be split
           // Now map the task and then launch it on the processor
-          task->map_and_launch();
+          task->map_task();
+          task->perform_operation();
           // Perform and maps or deletions that were made ready
           perform_maps_and_deletions();
         }
@@ -3864,8 +3933,7 @@ namespace RegionRuntime {
       }
       // Check to see if have any remaining work in our queues, 
       // if not, then disable the idle task
-      if (ready_queue.empty() &&
-          ready_maps.empty() && ready_deletions.empty())
+      if (ready_queue.empty() && ready_operations.empty())
       {
         idle_task_enabled = false;
         Processor copy = local_proc;
@@ -3898,15 +3966,15 @@ namespace RegionRuntime {
       // Check any of the mapping operations that we need to perform to
       // see if they are ready to be performed.  If so we can just perform them here
       {
-        for (unsigned idx = 0; idx < ready_maps.size(); idx++)
+        for (unsigned idx = 0; idx < ready_operations.size(); idx++)
         {
-          RegionMappingImpl *mapping = ready_maps[idx];
+          GeneralizedOperation *op = ready_operations[idx];
           // Release the lock in case more maps get added
           queue_lock.unlock();
 #ifdef DEBUG_HIGH_LEVEL
-          assert(mapping->is_ready());
+          assert(op->is_ready());
 #endif
-          perform_region_mapping(mapping);
+          op->perform_operation();
           // Get the lock back
 #ifdef LOW_LEVEL_LOCKS
           Event lock_event = queue_lock.lock(0,true/*exclusive*/);
@@ -3916,67 +3984,33 @@ namespace RegionRuntime {
 #endif
         }
         // Now we can clear the list of maps since they've all been performed
-        ready_maps.clear();
-      }
-      // Finally check the list of region deletion operations to be performed to
-      // see if any of them are ready to be performed
-      // (still holding the lock)
-      {
-        for (unsigned idx = 0; idx < ready_deletions.size(); idx ++)
-        {
-          DeletionOp *op = ready_deletions[idx];
-          queue_lock.unlock();
-#ifdef DEBUG_HIGH_LEVEL
-          assert(op->is_ready());
-#endif
-          op->perform_deletion(true/*need lock*/);
-          // We can also deactivate the deletion now that we know it is done
-          op->deactivate();
-          // Reacquire the queue lock
-#ifdef LOW_LEVEL_LOCKS
-          Event lock_event = queue_lock.lock(0,true/*exclusive*/);
-          lock_event.wait(true/*block*/);
-#else
-          queue_lock.lock();
-#endif
-        }
-        ready_deletions.clear();
+        ready_operations.clear();
       }
       // Now that we're done, release the lock
       queue_lock.unlock();
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::perform_dependence_analysis(TaskContext *ctx)
+    void HighLevelRuntime::perform_dependence_analysis(Context parent, TaskContext *ctx)
     //--------------------------------------------------------------------------------------------
     {
       // Check for whether the task should be sapwned and mapped local 
       check_spawn_and_map_local(ctx);
 
       // Register the context with its parent
-      ctx->parent_ctx->register_child_task(ctx);
+      parent->register_child_task(ctx);
 
       // Figure out if this task is runnable
       if (ctx->is_ready())
       {
         // Figure out where to place this task
-        if (target_task(ctx))
+        if (ctx->distribute_task())
         {
           // Decided to keep it local, put it on the ready queue
           add_to_ready_queue(ctx);
         }
       }
       // Otherwise, someone else will wake it up
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::perform_region_mapping(RegionMappingImpl *impl)
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(impl->is_ready());
-#endif
-      impl->perform_mapping();
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4005,6 +4039,7 @@ namespace RegionRuntime {
       ctx->local_map = map_local;
     }
 
+#if 0
     //--------------------------------------------------------------------------------------------
     bool HighLevelRuntime::target_task(TaskContext *task)
     //--------------------------------------------------------------------------------------------
@@ -4103,6 +4138,7 @@ namespace RegionRuntime {
       }
       return still_local;
     }
+#endif
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::issue_steal_requests(void)
@@ -4203,9 +4239,4659 @@ namespace RegionRuntime {
     }
 
     /////////////////////////////////////////////////////////////
+    // Generalized Operation 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------------------------
+    GeneralizedOperation::GeneralizedOperation(HighLevelRuntime *rt)
+      : runtime(rt), active(false), current_gen(0), parent_ctx(NULL), unique_id(0)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
+    }
+
+    //--------------------------------------------------------------------------------------------
+    GenerationID GeneralizedOperation::get_generation(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      return current_gen;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    UniqueID GeneralizedOperation::get_unique_id(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      return unique_id;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    const TaskContext* GeneralizedOperation::get_enclosing_task(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      return parent_ctx;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool GeneralizedOperation::compute_region_trace(std::vector<unsigned> &trace, LogicalRegion parent, LogicalRegion child)
+    //--------------------------------------------------------------------------------------------
+    {
+      trace.push_back(child.id);
+      if (parent == child) return true; // Early out
+#ifdef DEBUG_HIGH_LEVEL
+      assert(region_nodes->find(parent) != region_nodes->end());
+      assert(region_nodes->find(child)  != region_nodes->end());
+#endif
+      RegionNode *parent_node = (*region_nodes)[parent];
+      RegionNode *child_node  = (*region_nodes)[child];
+      while (parent_node != child_node)
+      {
+        if (parent_node->depth >= child_node->depth)
+        {
+          return false;
+        }
+        if (child_node->parent == NULL)
+        {
+          return false;
+        }
+        trace.push_back(child_node->parent->pid); // Push the partition id onto the trace
+        trace.push_back(child_node->parent->parent->handle.id); // Push the next child node onto the trace
+        child_node = child_node->parent->parent;
+      }
+      return true;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool GeneralizedOperation::compute_partition_trace(std::vector<unsigned> &trace, LogicalRegion parent, PartitionID part)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(partition_nodes->find(part) != partition_nodes->end());
+#endif
+      // Push the partition's id onto the trace and then call compute trace
+      // on the partition's parent region
+      trace.push_back(part);
+      PartitionNode *node = (*partition_nodes)[part];
+#ifdef DEBUG_HIGH_LEVEL
+      assert(node->parent != NULL);
+#endif
+      return compute_region_trace(trace,parent,node->parent->handle);
+    }
+
+    
+    //--------------------------------------------------------------------------------------------
+    bool GeneralizedOperation::verify_privilege(const RegionRequirement &par_req, const RegionRequirement &child_req)
+    //--------------------------------------------------------------------------------------------
+    {
+      bool pass = true;
+      // Switch on the parent's privilege
+      switch (par_req.privilege)
+      {
+        case NO_ACCESS:
+          {
+            if (child_req.privilege != NO_ACCESS)
+              pass = false;
+            break;
+          }
+        case READ_ONLY:
+          {
+            if ((child_req.privilege != NO_ACCESS) &&
+                (child_req.privilege != READ_ONLY))
+              pass = false;
+            break;
+          }
+        case READ_WRITE:
+          {
+            // Always passes
+            break;
+          }
+        case REDUCE:
+          {
+            if ((child_req.privilege != NO_ACCESS) &&
+                (child_req.privilege != REDUCE))
+              pass = false;
+          }
+        default:
+          assert(false); // Should never make it here
+      }
+      return pass;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    LogicalRegion GeneralizedOperation::get_subregion(PartitionID pid, Color c) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+      assert(partition_nodes->find(pid) != partition_nodes->end());
+#endif
+      return (*partition_nodes)[pid]->get_subregion(c);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    LogicalRegion GeneralizedOperation::find_ancestor_region(const std::vector<LogicalRegion> &children) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+      assert(!children.empty());
+#endif
+      RegionNode *parent = (*region_nodes)[children.front()];
+      for (unsigned idx = 1; idx < children.size(); idx++)
+      {
+        RegionNode *child = (*region_nodes)[children[idx]];
+        if (child->depth < parent->depth)
+        {
+          // Walk the parent up until it's at the same depth as the child
+          while (child->depth < parent->depth)
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            assert(parent->parent != NULL); // If the partition is there, its parent region is there too
+#endif
+            parent = parent->parent->parent;
+          }
+        }
+        else if (parent->depth < child->depth)
+        {
+          // Walk the child up until it's at the same depth as the parent
+          while (parent->depth < child->depth)
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            assert(child->parent != NULL);
+#endif
+            child = child->parent->parent;
+          }
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        assert(parent->depth == child->depth);
+#endif
+        // Otherwise walk them both up until they are the same region
+        while (parent != child)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(parent->parent != NULL);
+          assert(child->parent != NULL);
+#endif
+          parent = parent->parent->parent;
+          child = child->parent->parent;
+        }
+      }
+      return parent->handle;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    InstanceInfo* GeneralizedOperation::create_instance_info(LogicalRegion handle, Memory m, ReductionOpID redop)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(handle.exists());
+      assert(m.exists());
+      assert(current_taken);
+#endif
+      // Try to make the instance in the memory
+      RegionInstance inst;
+      if (redop == 0)
+      {
+        inst = handle.create_instance_untyped(m);
+      }
+      else
+      {
+        inst = handle.create_instance_untyped(m, redop);
+      }
+      if (!inst.exists())
+      {
+        return InstanceInfo::get_no_instance();
+      }
+      // We made it, make a new instance info
+      // Get a new info ID
+      InstanceID iid = runtime->get_unique_instance_id();
+      InstanceInfo *result_info = new InstanceInfo(iid, handle, m, inst, false/*remote*/, NULL/*no parent*/,false/*open child*/);
+      // Put this in the set of instance infos
+#ifdef DEBUG_HIGH_LEVEL
+      assert(instance_infos->find(iid) == instance_infos->end());
+#endif
+      (*instance_infos)[iid] = result_info;
+      log_inst(LEVEL_DEBUG,"Creating physical instance %x of logical region %x in memory %x",
+          inst.id, handle.id, m.id);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!result_info->collected);
+#endif
+      return result_info;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    InstanceInfo* GeneralizedOperation::create_instance_info(LogicalRegion newer, InstanceInfo *old)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(newer.exists());
+      assert(old != InstanceInfo::get_no_instance());
+      assert(current_taken);
+      assert(old->handle != newer);
+      assert(!old->collected);
+#endif
+      // Make a new instance info for all those that don't already exist along the path
+      std::vector<unsigned> trace;
+#ifdef DEBUG_HIGH_LEVEL
+      bool trace_successful = 
+#endif
+      compute_region_trace(trace, old->handle, newer);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(trace_successful);
+      assert(trace[trace.size()-1] == old->handle.id);
+      assert(trace.size() >= 3); // Should at least have two regions and one partition
+#endif
+      InstanceInfo *current = old;
+      for (int idx = trace.size()-3; idx >= 0; idx-=2) // Every other thing in the trace is a region
+      {
+        LogicalRegion next_handle = { trace[idx] };
+#ifdef DEBUG_HIGH_LEVEL
+        assert(next_handle.exists());
+#endif
+        // We're just making views onto this physical instance, we should never have
+        // overlapping views so check to see if there are any already open
+        InstanceInfo *next = current->get_open_subregion(next_handle);
+        if (next == InstanceInfo::get_no_instance())
+        {
+          // Doesn't have an open instance info, so make one
+          InstanceID iid = runtime->get_unique_instance_id();
+          next= new InstanceInfo(iid,next_handle,current->location,current->inst,
+                                                false/*remote*/,current/*parent*/,true/*open child*/);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(instance_infos->find(iid) == instance_infos->end());
+#endif
+          (*instance_infos)[iid] = next;
+          log_inst(LEVEL_DEBUG,"Duplicating meta data for instance %x of logical region %x in memory %x "
+              "for subregion %x", current->inst.id, current->handle.id, current->location.id, next_handle.id);
+
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!next->collected);
+#endif
+        current = next;
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current->handle == newer); // sanity check
+#endif
+      return current;
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Mapping Operation 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------------------------
+    MappingOperation::MappingOperation(HighLevelRuntime *rt) : GeneralizedOperation(rt)
+    //--------------------------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void MappingOperation::initialize(const RegionRequirement &_req, MapperID _mid, MappingTagID _tag)
+    //--------------------------------------------------------------------------------------------
+    {
+      req = _req;
+      mid = _mid;
+      tag = _tag;
+      mapped_event = UserEvent::create_user_event();
+      ready_event = Event::NO_EVENT;
+      unmapped_event = UserEvent::create_user_event();
+      result = PhysicalRegion<AccessorGeneric>(req.handle.region);
+      fast_result = PhysicalRegion<AccessorArray>(req.handle.region);
+      remaining_notifications = 0;
+      allocator = RegionAllocator::NO_ALLOC;
+      already_chosen = false;
+      chosen_info = NULL;
+      mapped = false;
+      // Compute the parent's physical context for this region
+      {
+        // Iterate over the parent regions looking for the parent region
+#ifdef DEBUG_HIGH_LEVEL
+        bool found = false;
+#endif
+        for (unsigned parent_idx = 0; parent_idx < parent_ctx->regions.size(); parent_idx++)
+        {
+          if (req.parent == parent_ctx->regions[parent_idx].handle.region)
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            found = true;
+            assert(parent_idx < parent_ctx->chosen_ctx.size());
+#endif
+            parent_physical_ctx = parent_ctx->chosen_ctx[parent_idx];
+            break;
+          }
+        }
+        // Also check the created regions
+        for (std::map<LogicalRegion,ContextID>::const_iterator it = parent_ctx->created_regions.begin();
+              it != parent_ctx->created_regions.end(); it++)
+        {
+          if (req.parent == it->first)
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            found = true;
+#endif
+            parent_physical_ctx = it->second;
+          }
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        if (!found)
+        {
+          log_inst(LEVEL_ERROR,"Unable to find parent physical context for mapping implementation!");
+          exit(1);
+        }
+#endif
+      }
+#ifndef LOG_EVENT_ONLY
+      log_spy(LEVEL_INFO,"Map %d Parent %d",unique_id,parent_ctx->get_unique_id());
+      log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle %x Parent %x Privilege %d Coherence %d",
+          parent_ctx->unique_id,unique_id,0,req.handle.region.id,req.parent.id,req.privilege,req.prop);
+#endif
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void MappingOperation::set_target_instance(InstanceInfo *target)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!already_chosen);
+      assert(target != InstanceInfo::get_no_instance());
+#endif
+      already_chosen = true;
+      chosen_info = target;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    Event MappingOperation::get_termination_event(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      return unmapped_event;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    Event MappingOperation::get_individual_term_event(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      return unmapped_event;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    RegionUsage MappingOperation::get_usage(unsigned idx) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx == 0);
+#endif
+      return RegionUsage(req);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    const RegionRequirement& MappingOperation::get_requirement(unsigned idx) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx == 0);
+#endif
+      return req;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void MappingOperation::add_source_physical_instance(InstanceInfo *info)
+    //--------------------------------------------------------------------------------------------
+    {
+      source_copy_instances.push_back(info);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    InstanceInfo* MappingOperation::get_chosen_instance(unsigned idx) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx == 0);
+      assert(chosen_info != NULL);
+#endif
+      return chosen_info;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void MappingOperation::add_mapping_dependence(unsigned idx, const LogicalUser &target, const DependenceType &dtype)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx == 0);
+#endif
+#ifndef LOG_EVENT_ONLY
+      log_spy(LEVEL_INFO,"Mapping Dependence %d %d %d %d %d %d",parent_ctx->unique_id,target.uid,target.idx,unique_id,idx,dtype);
+#endif
+      if (target.ctx->add_waiting_dependence(this, target))
+      {
+        remaining_notifications++;
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool MappingOperation::add_waiting_dependence(GeneralizedOperation *waiter, const LogicalUser &original)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(original.gen <= current_gen);
+#endif
+      // Check to see if this mapping is already done
+      if (original.gen < current_gen)
+      {
+        return false;
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(original.idx == 0);
+#endif
+      // check to see if we already mapped, if so no need to wait
+      if (mapped)
+      {
+        return false;  
+      }
+      std::pair<std::set<GeneralizedOperation*>::iterator,bool> result = 
+        map_dependent_tasks.insert(waiter);
+      return result.second;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void MappingOperation::add_unresolved_dependence(unsigned idx, GeneralizedOperation *op, DependenceType dtype)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx == 0);
+      assert(unresolved_dependences.find(op->get_unique_id()) == unresolved_dependences.end());
+#endif
+      unresolved_dependences.insert(std::pair<UniqueID,Event>(op->get_unique_id(),op->get_termination_event()));
+    }
+
+    //--------------------------------------------------------------------------------------------
+    const std::map<UniqueID,Event>& MappingOperation::get_unresolved_dependences(unsigned idx)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx == 0);
+#endif
+      return unresolved_dependences;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool MappingOperation::is_ready(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      return (remaining_notifications == 0);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void MappingOperation::notify(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(remaining_notifications > 0);
+#endif
+      remaining_notifications--;
+      // if this is ready put it on the ready queue
+      if (remaining_notifications == 0)
+      {
+        runtime->add_to_ready_queue(this);
+      }
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void MappingOperation::perform_operation(bool acquire_lock)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void MappingOperation::activate(Context parent)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(parent != NULL); // parent cannot be NULL for a mapping operation
+      assert(!active);
+      current_taken = false;
+#endif
+      parent_ctx = parent;
+      current_lock = parent->current_lock;
+      unique_id = runtime->get_unique_task_id();
+      region_nodes = parent->region_nodes;
+      partition_nodes = parent->partition_nodes;
+      instance_infos = parent->instance_infos;
+      active = true;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void MappingOperation::deactivate(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!current_taken);
+#endif
+      {
+        // Update the generation, but hold the current lock to do it
+        AutoLock cur_lock(current_lock);
+
+        // Mark that the region has been unmapped
+        unmapped_event.trigger();
+        // Free the instances that we are no longer using
+        for (std::vector<InstanceInfo*>::const_iterator it = source_copy_instances.begin();
+              it != source_copy_instances.end(); it++)
+        {
+          (*it)->remove_copy_user(this->get_unique_id());
+        }
+        // If we had an allocator release it
+        if (allocator != RegionAllocator::NO_ALLOC)
+        {
+          req.handle.region.destroy_allocator_untyped(allocator);
+        }
+        // Relase our use of the physical instance
+        if (chosen_info != NULL)
+        {
+          chosen_info->remove_user(this->get_unique_id());
+        }
+        chosen_info = NULL;
+
+        map_dependent_tasks.clear();
+        unresolved_dependences.clear();
+        source_copy_instances.clear();
+
+        current_gen++;
+      }
+      parent_ctx = NULL;
+      region_nodes = NULL;
+      partition_nodes = NULL;
+      instance_infos = NULL;
+      unique_id = 0;
+#ifdef LOW_LEVEL_LOCKS
+      current_lock = Lock::NO_LOCK;
+#else
+      current_lock.clear();
+#endif
+      active = false;
+      // Put this back on the list of free mapping implementations for the runtime
+      runtime->free_mapping(this);
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Deletion Operation 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------------------------
+    DeletionOperation::DeletionOperation(HighLevelRuntime *rt) : GeneralizedOperation(rt)
+    //--------------------------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void DeletionOperation::initialize(LogicalRegion h)
+    //--------------------------------------------------------------------------------------------
+    {
+      handle = h;
+      is_region = true;
+      remaining_notifications = 0;
+      performed = false;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void DeletionOperation::initialize(PartitionID p)
+    //--------------------------------------------------------------------------------------------
+    {
+      pid = p;
+      is_region = false;
+      remaining_notifications = 0;
+      performed = false;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    Event DeletionOperation::get_termination_event(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      assert(false);
+      return Event::NO_EVENT;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    Event DeletionOperation::get_individual_term_event(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      assert(false);
+      return Event::NO_EVENT; 
+    }
+
+    //--------------------------------------------------------------------------------------------
+    RegionUsage DeletionOperation::get_usage(unsigned idx) const
+    //--------------------------------------------------------------------------------------------
+    {
+      assert(false);
+      return RegionUsage();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    const RegionRequirement& DeletionOperation::get_requirement(unsigned idx) const
+    //--------------------------------------------------------------------------------------------
+    {
+      assert(false);
+      return *(new RegionRequirement());
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void DeletionOperation::add_source_physical_instance(InstanceInfo *info)
+    //--------------------------------------------------------------------------------------------
+    {
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    InstanceInfo* DeletionOperation::get_chosen_instance(unsigned idx) const
+    //--------------------------------------------------------------------------------------------
+    {
+      assert(false);
+      return InstanceInfo::get_no_instance();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void DeletionOperation::add_mapping_dependence(unsigned idx, const LogicalUser &target, const DependenceType &dtype)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx == 0);
+#endif
+      if (target.ctx->add_waiting_dependence(this, target))
+      {
+        remaining_notifications++;
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool DeletionOperation::add_waiting_dependence(GeneralizedOperation *waiter, const LogicalUser &original)
+    //--------------------------------------------------------------------------------------------
+    {
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void DeletionOperation::add_unresolved_dependence(unsigned idx, GeneralizedOperation *ctx, DependenceType dtype)
+    //--------------------------------------------------------------------------------------------
+    {
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    const std::map<UniqueID,Event>& DeletionOperation::get_unresolved_dependences(unsigned idx)
+    //--------------------------------------------------------------------------------------------
+    {
+      assert(false);
+      return *(new std::map<UniqueID,Event>());
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool DeletionOperation::is_ready(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      return (remaining_notifications==0);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void DeletionOperation::notify(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(remaining_notifications > 0);
+#endif
+      remaining_notifications--;
+      if (remaining_notifications == 0)
+      {
+        runtime->add_to_ready_queue(this);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void DeletionOperation::perform_operation(bool acquire_lock)
+    //--------------------------------------------------------------------------------------------
+    {
+      if (acquire_lock)
+      {
+#ifdef LOW_LEVEL_LOCKS
+        Event lock_event = current_lock.lock(0,true/*exclusive*/);
+        lock_event.wait(true/*block*/);
+#else
+        current_lock.lock();
+#endif
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+      assert(is_ready());
+#endif
+      if (!performed)
+      {
+        // Once the deletion is ready to be performed, go down the physical
+        // region tree and mark all the physical instances that we own as being invalid
+        if (is_region)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(region_nodes->find(handle) != region_nodes->end());
+#endif
+          RegionNode *target = (*(region_nodes))[handle];
+          target->invalidate_physical_tree(physical_ctx);
+        }
+        else
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(partition_nodes->find(pid) != partition_nodes->end());
+#endif
+          PartitionNode *target = (*(partition_nodes))[pid];
+          target->invalidate_physical_tree(physical_ctx);
+        }
+        // Mark that we've been performed so we don't get performed twice
+        performed = true;
+      }
+      if (acquire_lock)
+      {
+        // Probably not so good, but I'm using the fact that we acquired the lock as evidence
+        // that we're calling this function from anywhere except children_mapped, which means
+        // we need to remove it from the list of deletions to be performed by the parent task
+        // Note that this safe even if done twice as it will just remove something that isn't there
+        parent_ctx->child_deletions.erase(this);
+        // Now we can unlock the lock
+        current_lock.unlock();
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void DeletionOperation::activate(Context parent)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(parent != NULL); // parent cannot be NULL for a mapping operation
+      assert(!active);
+      current_taken = false;
+#endif
+      parent_ctx = parent;
+      current_lock = parent->current_lock;
+      unique_id = runtime->get_unique_task_id();
+      region_nodes = parent->region_nodes;
+      partition_nodes = parent->partition_nodes;
+      instance_infos = parent->instance_infos;
+      active = true;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void DeletionOperation::deactivate(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(active);
+#endif
+      handle = LogicalRegion::NO_REGION;
+      pid = 0;
+      parent_ctx = NULL;
+#ifdef LOW_LEVEL_LOCKS
+      current_lock = Lock::NO_LOCK;
+#else
+      current_lock.clear();
+#endif
+      current_gen++;
+      runtime->free_deletion(this);
+    }
+
+
+    /////////////////////////////////////////////////////////////
+    // Task Context
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------------------------
+    TaskContext::TaskContext(Processor p, HighLevelRuntime *rt, ContextID id, bool top /*= false*/)
+      : GeneralizedOperation(rt), local_proc(p), ctx_id(id), top_level_task(top)
+    //--------------------------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------------------------
+    UniqueID TaskContext::get_unique_id(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      return unique_id;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    Event TaskContext::get_termination_event(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      return termination_event;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    RegionUsage TaskContext::get_usage(unsigned idx) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx < regions.size());
+#endif
+      return RegionUsage(regions[idx]);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    const RegionRequirement& TaskContext::get_requirement(unsigned idx) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx < regions.size());
+#endif
+      return regions[idx];
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::add_source_physical_instance(InstanceInfo *src_info)
+    //--------------------------------------------------------------------------------------------
+    {
+      source_copy_instances.push_back(src_info);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::add_mapping_dependence(unsigned idx, const LogicalUser &target, const DependenceType &dtype)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      if (this == target.ctx)
+      {
+        log_region(LEVEL_ERROR,"Illegal dependence between two regions %x and %x (with index %d and %d) "
+                                "in task %s (ID %d) with unique id %d",this->regions[idx].handle.region.id,
+                                this->regions[target.idx].handle.region.id,idx,target.idx,
+                                variants->name,task_id,unique_id);
+        exit(1);
+      }
+#endif
+#ifndef LOG_EVENT_ONLY
+      log_spy(LEVEL_INFO,"Mapping Dependence %d %d %d %d %d %d",
+                          parent_ctx->unique_id,target.uid,target.idx,unique_id,idx,dtype);
+#endif
+      bool new_dep = target.ctx->add_waiting_dependence(this,target);
+      if (new_dep)
+      {
+        remaining_notifications++;
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::add_unresolved_dependence(unsigned idx, GeneralizedOperation *ctx, DependenceType dtype)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx < unresolved_dependences.size());
+#endif
+      unresolved_dependences[idx].insert(std::pair<UniqueID,Event>(ctx->get_unique_id(),ctx->get_termination_event()));
+    }
+
+    //--------------------------------------------------------------------------------------------
+    const std::map<UniqueID,Event>& TaskContext::get_unresolved_dependences(unsigned idx)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx < unresolved_dependences.size());
+#endif
+      return unresolved_dependences[idx];
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool TaskContext::is_ready(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      return (remaining_notifications == 0);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::notify(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(remaining_notifications > 0);
+#endif
+      remaining_notifications--;
+      if (remaining_notifications == 0)
+      {
+        // then add ourselves to the ready queue
+        runtime->add_to_ready_queue(this);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::activate(Context parent)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!active);
+      current_taken = false;
+#endif
+      parent_ctx = parent;
+      if (parent_ctx != NULL)
+      {
+        current_lock = parent->current_lock;
+        region_nodes = parent->region_nodes;
+        partition_nodes = parent->partition_nodes;
+        instance_infos = parent->instance_infos;
+      }
+      else
+      {
+        // We're the first
+        current_lock = context_lock;
+        region_nodes = new std::map<LogicalRegion,RegionNode*>();
+        partition_nodes = new std::map<PartitionID,PartitionNode*>();
+        instance_infos = new std::map<InstanceID,InstanceInfo*>();
+      }
+      unique_id = runtime->get_unique_task_id();
+      active = true;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::deactivate(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!current_taken);
+#endif
+      {
+        // Update the generation, but hold the current lock to do it
+        AutoLock cur_lock(current_lock);
+        current_gen++;
+      }
+
+      // Free the args
+      if (args != NULL)
+      {
+        free(args);
+        args = NULL;
+        arglen = 0;
+      }
+      if (result != NULL)
+      {
+        free(result);
+        result = NULL;
+        result_size = 0;
+      }
+
+      // If our parent context is NULL, then we own the maps so we can delete them
+      if (resource_owner)
+      {
+        // We can delete the things in the maps and the maps
+        for (std::map<LogicalRegion,RegionNode*>::const_iterator it = region_nodes->begin();
+              it != region_nodes->end(); it++)
+        {
+          delete it->second;
+        }
+        for (std::map<PartitionID,PartitionNode*>::const_iterator it = partition_nodes->begin();
+              it != partition_nodes->end(); it++)
+        {
+          delete it->second;
+        }
+        for (std::map<InstanceID,InstanceInfo*>::const_iterator it = instance_infos->begin();
+              it != instance_infos->end(); it++)
+        {
+          delete it->second;
+        }
+        // We can also delete the maps that we created
+        delete region_nodes;
+        delete partition_nodes;
+        delete instance_infos;
+      }
+
+      if ((future != NULL) && future->mark_finished())
+      {
+        delete future;
+      }
+      future = NULL;
+
+      if (cached_buffer != NULL)
+      {
+        free(cached_buffer);
+        cached_buffer = NULL;
+        cached_size = 0;
+      }
+
+      parent_ctx = NULL;
+      region_nodes = NULL;
+      partition_nodes = NULL;
+      instance_infos = NULL;
+      unique_id = 0;
+#ifdef LOW_LEVEL_LOCKS
+      current_lock = Lock::NO_LOCK;
+      mapper_lock = Lock::NO_LOCK;
+#else
+      current_lock.clear();
+      mapper_lock.clear();
+#endif
+      active = false;
+      // Have each type of TaskContext return itself separately to the high level runtime
+      reclaim_context();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::set_base_values(Processor::TaskFuncID _task_id, void *_args, size_t _arglen,
+                                      MapperID _map_id, MappingTagID _tag, Mapper *_mapper,
+#ifdef LOW_LEVEL_LOCKS
+                                      Lock _map_lock,
+#else
+                                      ImmovableLock _map_lock,
+#endif
+                                      bool _is_index_space, bool _must)
+    //--------------------------------------------------------------------------------------------
+    {
+      task_id = _task_id;
+      args = _args;
+      arglen = _arglen;
+      map_id = _map_id;
+      tag = _tag;
+      orig_proc = local_proc;
+      steal_count = 0;
+      is_index_space = _is_index_space;
+      must = _must;
+      variants = HighLevelRuntime::get_collection_table()[task_id];
+#ifdef DEBUG_HIGH_LEVEL
+      assert(variants != NULL);
+#endif
+      mapper = _mapper;
+      mapper_lock = _map_lock;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::initialize_base(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      result = NULL;
+      result_size = 0;
+      partially_unpacked = false;
+      cached_buffer = NULL;
+      cached_size = 0;
+      sanitized = false;
+      needed_instances.clear();
+      mapper = NULL;
+      remote = false;
+      orig_ctx = this;
+      remote_start_event = Event::NO_EVENT;
+      remote_children_event = Event::NO_EVENT;
+      regions.clear();
+      unresolved_dependences.clear();
+      map_dependent_tasks.clear();
+      remaining_notifications = 0;
+      enclosing_ctx.clear();
+      chosen_ctx.clear();
+      distributed = false;
+      stealable = false;
+      local_map = false;
+      map_event = UserEvent::create_user_event();
+      unmapped = 0;
+      termination_event = UserEvent::create_user_event();
+      future = NULL;
+      result = NULL;
+      result_size = 0;
+      child_tasks.clear();
+      child_deletions.clear();
+      source_copy_instances.clear();
+      escaped_users.clear();
+      escaped_copies.clear();
+      created_regions.clear();
+      deleted_regions.clear();
+      deleted_partitions.clear();
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::set_regions(const std::vector<RegionRequirement> &_regions, bool all_same)
+    //--------------------------------------------------------------------------------------------
+    {
+      regions = _regions;
+      if (all_same)
+      {
+        // Check to make sure that all the region arguments are single regions
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          if (regions[idx].func_type != SINGULAR_FUNC)
+          {
+            log_task(LEVEL_ERROR,"All arguments to a single task launch must be single regions. "
+                "Region at index %d of task %s (ID %d) with unique id %d is not a singular region.",idx,
+                variants->name, task_id,
+                unique_id);
+            exit(1);
+          }
+        }
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      // A debugging check to make sure that all the regions are subregions of
+      // their declared parent region
+      {
+        AutoLock ctx_lock(current_lock);
+        current_taken = true;
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          std::vector<unsigned> trace;
+          if (regions[idx].func_type == SINGULAR_FUNC)
+          {
+            bool trace_result = compute_region_trace(trace, regions[idx].parent, regions[idx].handle.region);
+            if (!trace_result)
+            {
+              log_task(LEVEL_ERROR,"Region %x is not an ancestor of region %x (idx %d) for task %s (ID %d) (unique id %d)",
+                  regions[idx].parent.id,regions[idx].handle.region.id,idx,
+                  variants->name,task_id,unique_id);
+              exit(1);
+            }
+          }
+          else
+          {
+            bool trace_result = compute_partition_trace(trace, regions[idx].parent, regions[idx].handle.partition);
+            if (!trace_result)
+            {
+              log_task(LEVEL_ERROR,"Region %x is not an ancestor of partition %d (idx %d) for task %s (ID %d) (unique id %d)",
+                  regions[idx].parent.id,regions[idx].handle.partition,idx,
+                  variants->name,task_id,unique_id);
+              exit(1);
+            }
+          }
+        }
+        current_taken = false;
+      }
+#endif
+      map_dependent_tasks.resize(regions.size());
+      unresolved_dependences.resize(regions.size());
+
+      // Compute our enclosing contexts from the parent task
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        // Iterate over the parent regions looking for the parent region
+#ifdef DEBUG_HIGH_LEVEL
+        bool found = false;
+#endif
+        for (unsigned parent_idx = 0; parent_idx < parent_ctx->regions.size(); parent_idx++)
+        {
+          if (regions[idx].parent == parent_ctx->regions[parent_idx].handle.region)
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            found = true;
+            assert(parent_idx < parent_ctx->chosen_ctx.size());
+#endif
+            enclosing_ctx.push_back(parent_ctx->chosen_ctx[parent_idx]);
+            break;
+          }
+        }
+        // Also check the created regions
+        for (std::map<LogicalRegion,ContextID>::const_iterator it = parent_ctx->created_regions.begin();
+              it != parent_ctx->created_regions.end(); it++)
+        {
+          if (regions[idx].parent == it->first)
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            found = true;
+#endif
+            enclosing_ctx.push_back(it->second);
+          }
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        if (!found)
+        {
+          log_inst(LEVEL_ERROR,"Unable to find parent physical context for region %x (index %d) of task %s (ID %d) (unique id %d)!",
+              regions[idx].handle.region.id, idx, 
+              variants->name, task_id, unique_id);
+          exit(1);
+        }
+#endif
+      }
+
+      // All debugging printing below here
+#ifndef LOG_EVENT_ONLY
+      log_spy(LEVEL_INFO,"Task %d %s Task ID %d Parent Context %d",unique_id,variants->name,task_id,parent_ctx->unique_id);
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        switch (regions[idx].func_type)
+        {
+          case SINGULAR_FUNC:
+            {
+              log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle %x Parent %x Privilege %d Coherence %d",
+                  parent_ctx->unique_id,unique_id,idx,regions[idx].handle.region.id,regions[idx].parent.id,
+                  regions[idx].privilege, regions[idx].prop);
+              break;
+            }
+          case EXECUTABLE_FUNC:
+          case MAPPED_FUNC:
+            {
+              log_spy(LEVEL_INFO,"Context %d Task %d Partition %d Handle %d Parent %x Privilege %d Coherence %d",
+                  parent_ctx->unique_id,unique_id,idx,regions[idx].handle.partition,regions[idx].parent.id,
+                  regions[idx].privilege, regions[idx].prop);
+              break;
+            }
+          default:
+            assert(false);
+        }
+      }
+#endif
+    }
+
+    //-------------------------------------------------------------------------------------------- 
+    void TaskContext::set_future(FutureImpl *impl)
+    //--------------------------------------------------------------------------------------------
+    {
+      future = impl;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    FutureImpl* TaskContext::get_future(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      return future;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::register_region_dependence(const RegionRequirement &req, GeneralizedOperation *child, unsigned child_idx)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(child->get_enclosing_task() == this);
+      assert(current_taken);
+#endif
+      DependenceDetector dep(child_idx, child, this);
+
+      switch (req.func_type)
+      {
+        case SINGULAR_FUNC:
+          {
+            log_region(LEVEL_DEBUG,"registering region dependence for region %x "
+                  "with parent %x in task %s in logical context %d on processor %x",
+              req.handle.region.id,req.parent.id,variants->name,ctx_id,local_proc.id);
+#ifdef DEBUG_HIGH_LEVEL
+            bool trace_result =
+#endif
+            compute_region_trace(dep.trace, req.parent, req.handle.region);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(trace_result);
+#endif
+            break;
+          }
+        case EXECUTABLE_FUNC:
+        case MAPPED_FUNC:
+          {
+            PartitionNode *part_node = (*partition_nodes)[req.handle.partition];
+            if ((!part_node->disjoint) && IS_WRITE(req))
+            {
+              // We know this is a task context if its requesting a partition
+              TaskContext *ctx = static_cast<TaskContext*>(child);
+              log_task(LEVEL_ERROR,"Index space for task %s (ID %d) (unique id %d) "
+                  "requested aliased partition %d in write mode (index %d)."
+                  " Partition requirements for index spaces must be disjoint or read-only",
+                  ctx->variants->name,
+                  ctx->task_id, ctx->unique_id, part_node->pid, child_idx);
+              exit(1);
+            }
+            log_region(LEVEL_DEBUG,"registering partition dependence for region %d "
+              "with parent region %x in task %s in logical context %d on processor %x",
+              req.handle.partition,req.parent.id,variants->name,ctx_id,local_proc.id);
+#ifdef DEBUG_HIGH_LEVEL
+            bool trace_result = 
+#endif
+            compute_partition_trace(dep.trace, req.parent, req.handle.partition);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(trace_result);
+#endif
+            break;
+          }
+        default:
+          assert(false); // Should never make it here
+      }
+      RegionNode *top = (*region_nodes)[req.parent];
+      top->register_logical_region(dep);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    //RegionMapping TaskContext::map_region(unsigned idx, bool sanitizing /*= false*/)
+    //--------------------------------------------------------------------------------------------
+
+    //--------------------------------------------------------------------------------------------
+    size_t TaskContext::compute_tree_update_size(const std::map<LogicalRegion,unsigned/*idx*/> &to_check, 
+                                                 std::map<PartitionNode*,unsigned/*idx*/> &region_tree_updates)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+#endif
+      size_t result = 0;
+      result += sizeof(size_t); // num updated regions
+      // First get the size of the updates
+      for (std::map<LogicalRegion,unsigned>::const_iterator it = to_check.begin();
+            it != to_check.end(); it++)
+      {
+        std::set<PartitionNode*> updates;
+        result += (*region_nodes)[it->first]->compute_region_tree_update_size(updates);
+        for (std::set<PartitionNode*>::const_iterator pit = updates.begin();
+              pit != updates.end(); pit++)
+        {
+          region_tree_updates[*pit] = it->second; 
+        }
+      }
+      result += (region_tree_updates.size() * (sizeof(LogicalRegion) + sizeof(unsigned)));
+      // Compute the size of the created region trees
+      result += sizeof(size_t); // number of created regions
+      for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
+            it != created_regions.end(); it++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert((*region_nodes)[it->first]->added); // all created regions should be added
+#endif
+        // Only do this for the trees that haven't been passed back already
+        if ((*region_nodes)[it->first]->added)
+        {
+          result += (*region_nodes)[it->first]->compute_region_tree_size();
+        }
+      }
+      // Now compute the size of the deleted region and partition information
+      result += sizeof(size_t); // number of deleted regions
+      result += (deleted_regions.size() * sizeof(LogicalRegion));
+      result += sizeof(size_t);
+      result += (deleted_partitions.size() * sizeof(PartitionID));
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::pack_tree_updates(Serializer &rez, const std::map<PartitionNode*,unsigned/*idx*/> &region_tree_updates)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+#endif
+      rez.serialize<size_t>(region_tree_updates.size());
+      for (std::map<PartitionNode*,unsigned>::const_iterator it = region_tree_updates.begin();
+            it != region_tree_updates.end(); it++)
+      {
+        rez.serialize<LogicalRegion>(it->first->parent->handle);
+        rez.serialize<unsigned>(it->second);
+        it->first->pack_region_tree(rez);
+      }
+      // Created regions
+      rez.serialize<size_t>(created_regions.size());
+      for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
+            it != created_regions.end(); it++)
+      {
+        if ((*region_nodes)[it->first]->added)
+        {
+          (*region_nodes)[it->first]->pack_region_tree(rez);
+        }
+      }
+      // deleted regions
+      rez.serialize<size_t>(deleted_regions.size());
+      for (std::set<LogicalRegion>::const_iterator it = deleted_regions.begin();
+            it != deleted_regions.end(); it++)
+      {
+        rez.serialize<LogicalRegion>(*it);
+      }
+      // deleted partitions
+      rez.serialize<size_t>(deleted_partitions.size());
+      for (std::set<PartitionID>::const_iterator it = deleted_partitions.begin();
+            it != deleted_partitions.end(); it++)
+      {
+        rez.serialize<PartitionID>(*it);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::unpack_tree_updates(Deserializer &derez, std::vector<LogicalRegion> &created, ContextID outermost)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+#endif
+      size_t num_updates;
+      derez.deserialize<size_t>(num_updates);
+      for (unsigned idx = 0; idx < num_updates; idx++)
+      {
+        LogicalRegion parent;
+        derez.deserialize<LogicalRegion>(parent);
+        unsigned part_index;
+        derez.deserialize<unsigned>(part_index);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(region_nodes->find(parent) != region_nodes->end());
+        assert(part_index < regions.size());
+#endif
+        PartitionNode::unpack_region_tree(derez, (*region_nodes)[parent], get_enclosing_physical_context(part_index), 
+                                          region_nodes, partition_nodes, true/*add*/);
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(parent_ctx != NULL);
+      parent_ctx->current_taken = true;
+#endif
+      size_t num_created;
+      derez.deserialize<size_t>(num_created);
+      for (unsigned idx = 0; idx < num_created; idx++)
+      {
+        RegionNode *new_node = RegionNode::unpack_region_tree(derez,NULL,outermost,
+                                            region_nodes, partition_nodes, true/*add*/);
+        parent_ctx->update_created_regions(new_node->handle, new_node, outermost);
+        // Save this for when we unpack the states
+        created.push_back(new_node->handle);
+      }
+      // Unpack the deleted regions
+      size_t num_del_regions;
+      derez.deserialize<size_t>(num_del_regions);
+      for (unsigned idx = 0; idx < num_del_regions; idx++)
+      {
+        // Delete the regions, add them to the deleted list
+        LogicalRegion del_region;
+        derez.deserialize<LogicalRegion>(del_region);
+        // Add it to the list of deleted regions 
+#ifdef DEBUG_HIGH_LEVEL
+        assert(deleted_regions.find(del_region) == deleted_regions.end());
+#endif
+        parent_ctx->update_deleted_regions(del_region);
+      }
+      // unpack the deleted partitions
+      size_t num_del_parts;
+      derez.deserialize<size_t>(num_del_parts);
+      for (unsigned idx = 0; idx < num_del_parts; idx++)
+      {
+        // Delete the partitions
+        PartitionID del_part;
+        derez.deserialize<PartitionID>(del_part);
+        // Unpack it and send it back to the parent context
+        parent_ctx->update_deleted_partitions(del_part);
+        //PartitionNode *part = (*partition_nodes)[del_part];
+        //parent_ctx->remove_partition(del_part,part->parent->handle);
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      parent_ctx->current_taken = false;
+#endif
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::update_parent_context(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+      assert(parent_ctx != NULL);
+      parent_ctx->current_taken = true;
+#endif
+      for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
+            it != created_regions.end(); it++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(region_nodes->find(it->first) != region_nodes->end());
+#endif
+        parent_ctx->update_created_regions(it->first, (*region_nodes)[it->first], it->second);
+      }
+      for (std::set<LogicalRegion>::const_iterator it = deleted_regions.begin();
+            it != deleted_regions.end(); it++)
+      {
+        parent_ctx->update_deleted_regions(*it);
+      }
+      for (std::set<PartitionID>::const_iterator it = deleted_partitions.begin();
+            it != deleted_partitions.end(); it++)
+      {
+        parent_ctx->update_deleted_partitions(*it);
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      parent_ctx->current_taken = false;
+#endif
+    }
+
+    //--------------------------------------------------------------------------------------------
+    size_t TaskContext::compute_base_task_size(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      size_t result = 0;
+      result += sizeof(unique_id);
+      result += sizeof(task_id);
+      result += sizeof(size_t); // number of regions
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        result += regions[idx].compute_size();
+      }
+      result += sizeof(arglen);
+      result += arglen;
+      result += sizeof(map_id);
+      result += sizeof(tag);
+      result += sizeof(orig_proc);
+      result += sizeof(steal_count);
+      result += sizeof(is_index_space);
+      result += sizeof(must);
+      result += sizeof(orig_ctx); 
+      result += sizeof(distributed);
+      result += sizeof(stealable);
+      result += sizeof(local_map);
+      result += sizeof(termination_event);
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::pack_base_task(Serializer &rez)
+    //--------------------------------------------------------------------------------------------
+    {
+      // always pack whether this is an index space first so we know how to unpack it
+      // see HighLevelRuntime::process_tasks
+      rez.serialize<bool>(is_index_space);
+      rez.serialize<UniqueID>(unique_id);
+      rez.serialize<Processor::TaskFuncID>(task_id);
+      rez.serialize<size_t>(regions.size());
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        regions[idx].pack_requirement(rez);
+      }
+      rez.serialize<size_t>(arglen);
+      rez.serialize(args,arglen);
+      rez.serialize<MapperID>(map_id);
+      rez.serialize<MappingTagID>(tag);
+      rez.serialize<Processor>(orig_proc);
+      rez.serialize<unsigned>(steal_count);
+      rez.serialize<bool>(must);
+      rez.serialize<TaskContext*>(orig_ctx);
+      rez.serialize<bool>(distributed);
+      rez.serialize<bool>(stealable);
+      rez.serialize<bool>(local_map);
+      rez.serialize<UserEvent>(termination_event);
+    }
+    
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::unpack_base_task(Deserializer &derez)
+    //--------------------------------------------------------------------------------------------
+    {
+      // is_index_space will get unpacked by HighLevelRuntime::process_tasks
+      derez.deserialize<UniqueID>(unique_id);
+      derez.deserialize<Processor::TaskFuncID>(task_id);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(HighLevelRuntime::get_collection_table().find(task_id) != HighLevelRuntime::get_collection_table().end());
+#endif
+      variants = HighLevelRuntime::get_collection_table()[task_id];
+#ifdef DEBUG_HIGH_LEVEL
+      assert(variants != NULL);
+#endif
+      {
+        size_t num_regions;
+        derez.deserialize<size_t>(num_regions);
+        regions.resize(num_regions);
+        for (unsigned idx = 0; idx < num_regions; idx++)
+        {
+          regions[idx].unpack_requirement(derez);
+        }
+      }
+      derez.deserialize<size_t>(arglen);
+      args = malloc(arglen);
+      derez.deserialize(args,arglen);
+      derez.deserialize<MapperID>(map_id);
+      derez.deserialize<MappingTagID>(tag);
+      derez.deserialize<Processor>(orig_proc);
+      derez.deserialize<unsigned>(steal_count);
+      derez.deserialize<bool>(must);
+      derez.deserialize<TaskContext*>(orig_ctx);
+      derez.deserialize<bool>(distributed);
+      derez.deserialize<bool>(stealable);
+      derez.deserialize<UserEvent>(termination_event);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void TaskContext::set_resource_owner(bool owner)
+    //--------------------------------------------------------------------------------------------
+    {
+      resource_owner = owner;
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Single Task 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------------------------
+    SingleTask::SingleTask(Processor p, HighLevelRuntime *rt, ContextID id, bool top /*= false*/)
+      : TaskContext(p, rt, id, top)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SingleTask::initialize_single(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      initialize_base();
+      physical_mapped.clear();
+      physical_owned.clear();
+      physical_instances.clear();
+      allocators.clear();
+      preconditions.clear();
+      local_instances.clear();
+      local_mapped.clear();
+      child_tasks.clear();
+      child_deletions.clear();
+      is_leaf = false; // will be set when the task is launched
+    }
+
+    //--------------------------------------------------------------------------------------------
+    const IndexPoint& SingleTask::get_index_point(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      // Should never be called for single tasks
+      assert(false);
+      return *(new IndexPoint());
+    }
+
+    //--------------------------------------------------------------------------------------------
+    Event SingleTask::get_individual_term_event(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      return termination_event;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    InstanceInfo* SingleTask::get_chosen_instance(unsigned idx) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx < physical_instances.size());
+#endif
+      return physical_instances[idx];
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SingleTask::perform_operation(bool acquire_lock /*= true*/)
+    //--------------------------------------------------------------------------------------------
+    {
+      // At this point everything should be mapped and we just need to launch the task
+      initialize_region_tree_contexts();
+
+      Event start_cond = Event::merge_events(preconditions);
+#ifdef TRACE_CAPTURE
+      if (!start_cond.exists())
+      {
+        UserEvent new_start = UserEvent::create_user_event();
+        new_start.trigger();
+        start_cond = new_start;
+      }
+#endif
+#ifdef DEBUG_HIGH_LEVEL
+      {
+        // Debug printing for legion spy
+        log_event_merge(preconditions,start_cond);
+        Event term = termination_event;
+        log_spy(LEVEL_INFO,"Task ID %d %s",this->unique_id,this->variants->name);
+        if (is_index_space)
+        {
+          int index = 0;
+          char point_buffer[100]; 
+          const IndexPoint &point = get_index_point();
+          for (unsigned idx = 0; idx < point.size(); idx++)
+          {
+            index = sprintf(&point_buffer[index],"%d ",point[idx]);
+          }
+          log_spy(LEVEL_INFO,"Index Task Launch %d %d %x %d %x %d %x %d %ld %s",
+              task_id,unique_id,start_cond.id,start_cond.gen,term.id,term.gen,
+              term.id,term.gen,point.size(),point_buffer);
+        }
+        else
+        {
+          log_spy(LEVEL_INFO,"Task Launch %d %d %x %d %x %d",
+              task_id,unique_id,start_cond.id,start_cond.gen,term.id,term.gen);
+        }
+      }
+#endif
+      {
+        // Copy the arguments so we can write this context into the beginning of the arguments
+        // which we'll need to know how to do the callback to the runtime when the task starts
+        char *temp_args = (char*)malloc(arglen + sizeof(Context));
+        *((Context*)temp_args) = this;
+        memcpy(temp_args+sizeof(Context),args,arglen);
+
+        const TaskCollection::Variant &variant = this->variants->select_variant(this->is_index_space, runtime->proc_kind); 
+        // Set whether this is a leaf task or not
+        is_leaf = variant.leaf;
+
+        local_proc.spawn(variant.low_id, temp_args, arglen+sizeof(Context), start_cond);
+
+        // Reclaim our temporary args
+        free(temp_args);
+      }
+
+      // Call the virtual function that figures out what to do after we've launched the task
+      // for different types of single tasks
+      post_task_launch();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool SingleTask::add_waiting_dependence(GeneralizedOperation *waiter, const LogicalUser &original)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+      assert(original.gen <= current_gen);
+#endif
+      // Check to see if this is still the same context
+      if (original.gen < current_gen)
+      {
+        // Task is already done, no mapping dependence
+        return false;
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(original.idx < map_dependent_tasks.size());
+#endif
+      // Check to see if there is a valid physical instance
+      if ((original.idx < physical_instances.size()) && physical_mapped[original.idx])
+      {
+        return false; // no need to wait since it has already been mapped
+      }
+      std::pair<std::set<GeneralizedOperation*>::iterator,bool> result = map_dependent_tasks[original.idx].insert(waiter);
+      return result.second;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SingleTask::initialize(Processor::TaskFuncID _task_id, void *_args, size_t _arglen,
+                                MapperID _map_id, MappingTagID _tag, Mapper *_mapper,
+#ifdef LOW_LEVEL_LOCKS
+                                Lock _map_lock,
+#else
+                                ImmovableLock _map_lock,
+#endif
+                                bool _is_index_space, bool _must)
+    //--------------------------------------------------------------------------------------------
+    {
+      initialize_single(); // also calls initialize_base
+      set_base_values(_task_id, _args, _arglen, _map_id, _tag, _mapper, _map_lock, _is_index_space, _must);
+    }
+
+
+
+    //--------------------------------------------------------------------------------------------
+    ContextID SingleTask::get_enclosing_physical_context(unsigned idx)
+    //--------------------------------------------------------------------------------------------
+    {
+      if (remote)
+      {
+        // Just use our own context
+        return ctx_id;
+      }
+      else
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(enclosing_ctx.size() == regions.size());
+        assert(idx < enclosing_ctx.size());
+#endif
+        return enclosing_ctx[idx];
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    ContextID SingleTask::get_outermost_physical_context(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      Context ctx = this;
+      while (!ctx->remote && (ctx->parent_ctx != NULL))
+      {
+        ctx = ctx->parent_ctx;
+      }
+      return ctx->ctx_id;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SingleTask::update_created_regions(LogicalRegion handle, RegionNode *node, ContextID outermost)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+#endif
+      // Also initialize logical context
+      node->initialize_logical_context(ctx_id);
+      // Add it to the list of created regions
+      created_regions.insert(std::pair<LogicalRegion,ContextID>(handle,outermost));
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SingleTask::update_deleted_regions(LogicalRegion handle)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+      assert(region_nodes->find(handle) != region_nodes->end());
+#endif
+      RegionNode *node = (*region_nodes)[handle];
+      // Delete this region and get the physical context to invalidate
+      ContextID ctx = remove_region(handle);
+      // Now we can invalidate all the physical instances in this context
+      // No need to wait here since this is a deletion returning from a child
+      node->invalidate_physical_tree(ctx);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SingleTask::update_deleted_partitions(PartitionID pid)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+      assert(partition_nodes->find(pid) != partition_nodes->end());
+#endif
+      PartitionNode *node = (*partition_nodes)[pid];
+      // Delete this partition and get the physical context to invalidate
+      ContextID ctx = remove_partition(pid);
+      // Now we can invalidate all the physical instances in this context
+      // No need to wait here since this is a deletion returning from a child
+      node->invalidate_physical_tree(ctx);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SingleTask::start_task(std::vector<PhysicalRegion<AccessorGeneric> > &result_regions)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Task %s (ID %d) with unique id %d starting on processor %x",
+          variants->name,task_id,unique_id,local_proc.id);
+      assert(physical_instances.size() == regions.size());
+#endif
+      // Get the set of physical regions for the task
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        // Create the new physical region and mark which index
+        // it is in case we have to unmap it later
+        PhysicalRegion<AccessorGeneric> reg(idx, regions[idx].handle.region);
+
+        // check to see if they asked for a physical instance
+        if (local_instances[idx] != InstanceInfo::get_no_instance())
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(local_instances[idx]);
+#endif
+          reg.set_instance(local_instances[idx]->inst.get_accessor_untyped());
+        }
+        // Check to see if they asked for an allocator
+        if (regions[idx].alloc != NO_MEMORY)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(allocators[idx].exists());
+#endif
+          reg.set_allocator(allocators[idx]);
+        }
+        result_regions.push_back(reg);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SingleTask::complete_task(const void *res, size_t res_size,
+                                   std::vector<PhysicalRegion<AccessorGeneric> > &physical_regions)
+    //--------------------------------------------------------------------------------------------
+    {
+      // If remote save the result, otherwise we can just set the future right now
+      if (remote)
+      {
+        result = malloc(res_size);
+        memcpy(result, res, res_size);
+        result_size = res_size;
+      }
+      else
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(future != NULL);
+#endif
+        future->set_result(res, res_size);
+      }
+
+#ifdef DEBUG_HIGH_LEVEL
+      assert(physical_regions.size() == regions.size());
+#endif
+      // Reclaim the allocators that we used for this task
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        // Make sure that they are still valid!
+        // Don't double free allocators
+        if (allocators[idx].exists())
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(physical_regions[idx].valid_allocator);
+#endif
+          regions[idx].handle.region.destroy_allocator_untyped(allocators[idx]);
+        }
+      }
+
+      if (is_leaf)
+      {
+        // If this is a leaf task, then we are already done, jump straight to finish code
+        finish_task();
+      }
+      else
+      {
+        // Otherwise check to see if there are any child tasks that are yet to be mapped
+        std::set<Event> map_events;
+        {
+          // Need to hold the context lock when iterating over the child tasks
+          AutoLock cur_lock(current_lock);
+          for (std::vector<TaskContext*>::const_iterator it = child_tasks.begin();
+                it != child_tasks.end(); it++)
+          {
+            map_events.insert((*it)->map_event);
+          }
+        }
+        Event wait_on_event = Event::merge_events(map_events);
+        if (!wait_on_event.exists())
+        {
+          children_mapped();
+        }
+        else
+        {
+          size_t buffer_size = sizeof(Processor) + sizeof(Context);
+          Serializer rez(buffer_size);
+          rez.serialize<Processor>(local_proc);
+          rez.serialize<Context>(this);
+          // Launch the task to handle all the children being mapped on the utility processor
+          Processor utility = local_proc.get_utility_processor();
+          utility.spawn(CHILDREN_MAPPED_ID,rez.get_buffer(),buffer_size,wait_on_event);
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SingleTask::register_child_task(TaskContext *child)
+    //--------------------------------------------------------------------------------------------
+    {
+      log_task(LEVEL_DEBUG,"Registering child task %d with parent task %d",
+                child->unique_id, this->unique_id);
+      // Need the current context lock in exclusive mode to do this
+      AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
+#endif
+      // Moving to initialize task
+      //child_tasks.push_back(child);
+
+      // Now register each of the child task's region dependences
+      for (unsigned idx = 0; idx < child->regions.size(); idx++)
+      {
+        bool found = false;
+        // Find the top level region which this region is contained within
+        for (unsigned parent_idx = 0; parent_idx < regions.size(); parent_idx++)
+        {
+          if (regions[parent_idx].handle.region == child->regions[idx].parent)
+          {
+            found = true;
+            if (!child->regions[idx].verified)
+            {
+              if (!verify_privilege(regions[parent_idx],child->regions[idx])) 
+              {
+                log_region(LEVEL_ERROR,"Child task %d with unique id %d requests region %x (index %d)"
+                  " in mode %s but parent task only has parent region %x in mode %s", child->task_id,
+                  child->unique_id, child->regions[idx].handle.region.id, idx, get_privilege(child->regions[idx].privilege),
+                  regions[parent_idx].handle.region.id, get_privilege(regions[parent_idx].privilege));
+                exit(1);
+              }
+            }
+            register_region_dependence(child->regions[idx],child,idx);
+            break;
+          }
+        }
+        // If we still didn't find it, check the created regions
+        if (!found)
+        {
+          if (created_regions.find(child->regions[idx].parent) != created_regions.end())
+          {
+            // No need to verify privilege here, we have read-write access to created
+            register_region_dependence(child->regions[idx],child,idx);
+          }
+          else // if we make it here, it's an error
+          {
+            if (child->is_index_space)
+            {
+              switch (child->regions[idx].func_type)
+              {
+                case SINGULAR_FUNC:
+                  {
+                    log_region(LEVEL_ERROR,"Unable to find parent region %x for logical "
+                                            "region %x (index %d) for task %s (ID %d) with unique id %d",
+                                            child->regions[idx].parent.id, child->regions[idx].handle.region.id,
+                                            idx,child->variants->name,
+                                            child->task_id,child->unique_id);
+                    break;
+                  }
+                case EXECUTABLE_FUNC:
+                case MAPPED_FUNC:
+                  {
+                    log_region(LEVEL_ERROR,"Unable to find parent region %x for partition "
+                                            "%d (index %d) for task %s (ID %d) with unique id %d",
+                                            child->regions[idx].parent.id, child->regions[idx].handle.partition,
+                                            idx,child->variants->name,
+                                            child->task_id,child->unique_id);
+                    break;
+                  }
+                default:
+                  assert(false); // Should never make it here
+              }
+            }
+            else
+            {
+              log_region(LEVEL_ERROR,"Unable to find parent region %x for logical region %x (index %d)"
+                                      " for task %s (ID %d) with unique id %d",child->regions[idx].parent.id,
+                                child->regions[idx].handle.region.id,idx,
+                                child->variants->name,child->task_id,child->unique_id);
+            }
+            exit(1);
+          }
+        }
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SingleTask::register_mapping(MappingOperation *op)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Need the current context lock in exclusive mode to do this
+      AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
+#endif
+      // Check to see if we can find the parent region in the list
+      // of parent task region requirements
+      bool found = false;
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        if (regions[idx].handle.region == op->req.parent)
+        {
+          found = true;
+          // Check the privileges
+          if (!op->req.verified)
+          {
+            if (!verify_privilege(regions[idx],op->req))
+            {
+              log_region(LEVEL_ERROR,"Mapping request for region %x in mode %s but parent task only "
+                "has parent region %x in mode %s",op->req.handle.region.id,
+                get_privilege(op->req.privilege),regions[idx].handle.region.id,
+                get_privilege(regions[idx].privilege));
+              exit(1);
+            }
+          }
+          register_region_dependence(op->req,op,0);
+          break;
+        }
+      }
+      // If not found, check the created regions
+      if (!found)
+      {
+        if (created_regions.find(op->req.parent) != created_regions.end())
+        {
+          // No need to verify privileges here, we have read-write access to created
+          register_region_dependence(op->req,op,0);
+        }
+        else // error condition
+        {
+          log_region(LEVEL_ERROR,"Unable to find parent region %x for mapping region %x "
+              "in task %s (ID %d) with unique id %d",op->req.parent.id,op->req.handle.region.id,
+              this->variants->name,this->task_id,this->unique_id);
+          exit(1);
+        }
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SingleTask::register_deletion(DeletionOperation *op)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Need the current context lock in exclusive mode to do this
+      AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
+#endif
+      // Find the node for this deletion, then issue the register deletion on that node, 
+      // this will traverse down the tree in the current context and record all mapping dependences
+      // We don't need to register a mapping dependence on any other regions since we won't
+      // actually be using them.  We only need the target regions/partition and all of its subtree
+      if (op->is_region)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(region_nodes->find(op->handle) != region_nodes->end());
+#endif
+        RegionNode *target = (*region_nodes)[op->handle];
+        target->register_deletion(this->ctx_id, op);
+        op->physical_ctx = remove_region(op->handle);
+      }
+      else
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(partition_nodes->find(op->pid) != partition_nodes->end());
+#endif
+        PartitionNode *target = (*partition_nodes)[op->pid];
+        target->register_deletion(this->ctx_id, op);
+        op->physical_ctx = remove_partition(op->pid);
+      }
+      // Add it to the list of deletions that need to be performed
+      child_deletions.insert(op);
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SingleTask::create_region(LogicalRegion handle)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Need the current context lock in exclusive mode to do this
+      AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
+      assert(region_nodes->find(handle) == region_nodes->end());
+#endif
+      // Create a new RegionNode for the logical region and initialize logical state
+      RegionNode *node = new RegionNode(handle, 0/*depth*/, NULL/*parent*/, true/*add*/,ctx_id);
+      // Add it to the map of nodes
+      (*region_nodes)[handle] = node;
+      // Also initialize the physical state in the outermost enclosing region
+      ContextID outermost = get_outermost_physical_context();
+      node->initialize_physical_context(outermost);
+      // Update the list of newly created regions
+      created_regions.insert(std::pair<LogicalRegion,ContextID>(handle,outermost));
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SingleTask::create_partition(PartitionID pid, LogicalRegion parent, bool disjoint,
+                                      std::vector<LogicalRegion> &children)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Need the current context lock in exclusive mode to do this
+      AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
+#endif
+#ifdef DEBUG_HIGH_LEVEL
+      assert(partition_nodes->find(pid) == partition_nodes->end());
+      assert(region_nodes->find(parent) != region_nodes->end());
+#endif
+      RegionNode *parent_node = (*region_nodes)[parent];
+      // Create a new partition node for the logical children
+      PartitionNode *part_node = new PartitionNode(pid, parent_node->depth+1,parent_node,
+                                                    disjoint,true/*added*/,ctx_id);
+      (*partition_nodes)[pid] = part_node;
+      parent_node->add_partition(part_node);
+      // Now add all the children
+      for (unsigned idx = 0; idx < children.size(); idx++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(region_nodes->find(children[idx]) == region_nodes->end());
+#endif
+        RegionNode *child = new RegionNode(children[idx],parent_node->depth+2,part_node,true/*added*/,ctx_id);
+        (*region_nodes)[children[idx]] = child;
+        part_node->add_region(child, idx);
+      }
+      // For however many states the parent has, initialize the logical and physical states
+      unsigned num_contexts = parent_node->region_states.size();
+      for (unsigned ctx = 0; ctx < (num_contexts); ctx++)
+      {
+        part_node->initialize_logical_context(ctx);
+        part_node->initialize_physical_context(ctx);
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
+    }
+
+    //--------------------------------------------------------------------------------------------
+    ContextID SingleTask::remove_region(LogicalRegion handle)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+#endif
+      // Now we need to find the physical context to perform the deletion in.  Traverse up
+      // the logical region tree until we find a region which is either one of the parent task's
+      // regions or is one of the created regions
+      ContextID result = 0;
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(region_nodes->find(handle) != region_nodes->end());
+#endif
+        RegionNode *current = (*region_nodes)[handle];
+        bool found = false;
+        while (!found && (current != NULL))
+        {
+          // Check to see if we found it in the parent task's regions
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            if (current->handle == regions[idx].handle.region)
+            {
+              found = true;
+              result = chosen_ctx[idx];
+              // Add it to the list of deletion regions
+              deleted_regions.insert(handle);
+              break;
+            }
+          }
+          if (!found)
+          {
+            for (std::map<LogicalRegion,ContextID>::iterator it = created_regions.begin();
+                  !found && (it != created_regions.end()); it++)
+            {
+              if (current->handle == it->first)
+              {
+                found = true;
+                result = it->second;
+                deleted_regions.insert(handle);
+                break;
+              }
+            }
+          }
+          // If we didn't find it traverse up the tree
+          if (current->parent != NULL)
+          {
+            current = current->parent->parent;
+          }
+          else
+          {
+            current = NULL;
+          }
+        }
+        if (!found)
+        {
+          log_task(LEVEL_ERROR,"Attempted to delete region %x which is not contained in any of the "
+              "regions for which task %s (ID %d) (unique id %d) has permissions",handle.id,
+              variants->name,task_id,unique_id);
+          exit(1);
+        }
+      }
+      // Finally check to see if this is a top-level region that we created
+      if (created_regions.find(handle) != created_regions.end())
+      {
+        // This is when we finally delete the whole region tree, invalidate the tree, also
+        // mark that we're reclaiming all the region handles (resources) as well
+        RegionNode *target = (*region_nodes)[handle];
+        target->mark_tree_unadded(true/*reclaim resources*/);
+        created_regions.erase(handle);
+        // We can also delete it from the list of deleted regions
+        deleted_regions.erase(handle);
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    ContextID SingleTask::remove_partition(PartitionID pid)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(current_taken);
+#endif
+      // Now we need to find the physical context to perform the deletion in.  Traverse up
+      // the logical region tree until we find a region which is either one of the parent task's
+      // regions or is one of the created regions
+      ContextID result = 0;
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(partition_nodes->find(pid) != partition_nodes->end());
+#endif
+        RegionNode *current = (*partition_nodes)[pid]->parent;
+        bool found = false;
+        while (!found && (current != NULL))
+        {
+          // Check to see if we found it in the parent task's regions
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            if (current->handle == regions[idx].handle.region)
+            {
+              found = true;
+              result = chosen_ctx[idx];
+              // Add it to the list of deletion partitions 
+              deleted_partitions.insert(pid);
+              break;
+            }
+          }
+          if (!found)
+          {
+            for (std::map<LogicalRegion,ContextID>::iterator it = created_regions.begin();
+                  !found && (it != created_regions.end()); it++)
+            {
+              if (current->handle == it->first)
+              {
+                found = true;
+                result = it->second;
+                deleted_partitions.insert(pid);
+                break;
+              }
+            }
+          }
+          // If we didn't find it traverse up the tree
+          if (current->parent != NULL)
+          {
+            current = current->parent->parent;
+          }
+          else
+          {
+            current = NULL;
+          }
+        }
+        if (!found)
+        {
+          log_task(LEVEL_ERROR,"Attempted to delete partition %d which is not contained in any of the "
+              "partitions for which task %s (ID %d) (unique id %d) has permissions",pid,
+              variants->name,task_id,unique_id);
+          exit(1);
+        }
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SingleTask::unmap_region(unsigned idx, RegionAllocator allocator)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx < regions.size());
+      assert(regions.size() == physical_instances.size());
+      assert(regions.size() == allocators.size());
+#endif
+      // Destroy the allocator if there was one
+      if (allocators[idx].exists())
+      {
+        regions[idx].handle.region.destroy_allocator_untyped(allocators[idx]);
+        allocators[idx] = RegionAllocator::NO_ALLOC;
+      }
+      // Check to see if it was mapped
+      if (!local_mapped[idx])
+      {
+        return;
+      }
+      // Remove the reference from the local instance, note that this is not the
+      // reference from the original InstanceInfo which is what keeps the garbage
+      // collector from collecting it, instead it is the reference to the cloned
+      // InstanceInfo which will never collect the instance
+      local_instances[idx]->remove_user(this->unique_id);
+      local_mapped[idx] = false; 
+#ifdef TRACE_CAPTURE
+      // If we're doing a trace capture, we have to forcibly remove this instance
+      // from the removed users to avoid deadlock
+      local_instances[idx]->epoch_users.erase(this->unique_id);
+      local_instances[idx]->removed_users.erase(this->unique_id);
+#endif
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SingleTask::initialize_region_tree_contexts(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Need to hold the current lock to touch the region trees
+      AutoLock cur_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(regions.size() == chosen_ctx.size());
+      assert(regions.size() == physical_instances.size());
+      assert(regions.size() == physical_mapped.size());
+      current_taken = true;
+#endif
+
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        // Initialize all of the logical region contexts
+#ifdef DEBUG_HIGH_LEVEL
+        assert(region_nodes->find(regions[idx].handle.region) != region_nodes->end());
+#endif
+        RegionNode *reg = (*region_nodes)[regions[idx].handle.region]; 
+        reg->initialize_logical_context(ctx_id);
+
+        // Check to see if the physical context needs to be initialized for a new region
+        if (physical_instances[idx] != InstanceInfo::get_no_instance())
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(physical_mapped[idx]);
+#endif
+          // Initialize the physical context with our region
+          reg->initialize_physical_context(chosen_ctx[idx]);
+          // Create a new InstanceInfo that is the clone of the original InstanceInfo without
+          // all the dependences, we'll make sure this instance is never garbage collected because
+          // we hold a reference to the original for the lifetime of the task.  We also mark that
+          // we don't own this instance in the physical context which ensures that the the instance
+          // will never be marked invalid and therefore never accidentally garbage collected.
+          InstanceInfo *original = physical_instances[idx];
+          InstanceID clone_iid = runtime->get_unique_instance_id();
+          InstanceInfo *clone_inst = new InstanceInfo(clone_iid,original->handle,original->location,
+                                                      original->inst, false/*remote*/, NULL/*parent*/,false/*open*/,true/*clone*/);
+          // Put it in the table, so we reclaim it later
+#ifdef DEBUG_HIGH_LEVEL
+          assert(instance_infos->find(clone_iid) == instance_infos->end());
+#endif
+          (*instance_infos)[clone_iid] = clone_inst;
+          log_inst(LEVEL_DEBUG,"Creating clone instance info of physical instance %x of logical region %x in memory %x",
+            clone_inst->inst.id, clone_inst->handle.id, clone_inst->location.id);
+
+          // Update our local information
+          local_mapped.push_back(true);
+          local_instances.push_back(clone_inst);
+
+// Add ourselves to the users of this instance info
+#ifdef DEBUG_HIGH_LEVEL
+          Event precondition = 
+#endif
+          clone_inst->add_user(this,idx,Event::NO_EVENT,false/*check unresolved*/);
+#ifdef DEBUG_HIGH_LEVEL
+#ifndef TRACE_CAPTURE
+          assert(!precondition.exists()); // should be no precondition for using the instance
+#endif
+#endif
+          // When we insert the valid instance mark that it is not the owner so it is coming
+          // from the parent task's context
+          if (IS_READ_ONLY(regions[idx]) || IS_WRITE(regions[idx]))
+          {
+            reg->update_valid_instances(chosen_ctx[idx], clone_inst, IS_WRITE(regions[idx])/*writer*/, true/*owner*/);
+          }
+          else
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            assert(IS_REDUCE(regions[idx]));
+#endif
+            reg->update_reduction_instances(chosen_ctx[idx], clone_inst, true/*owner*/);
+          }
+        }
+        else
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(!physical_mapped[idx]);
+#endif
+          // Else we're using the pre-existing context so don't need to do anything
+          local_mapped.push_back(false);
+          local_instances.push_back(InstanceInfo::get_no_instance());
+        }
+      }
+
+#ifdef DEBUG_HIGH_LEVEL
+      assert(local_mapped.size() == regions.size());
+      assert(local_instances.size() == regions.size());
+      current_taken = false;
+#endif
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Individual Task 
+    /////////////////////////////////////////////////////////////
+    
+    //--------------------------------------------------------------------------------------------
+    IndividualTask::IndividualTask(Processor p, HighLevelRuntime *rt, ContextID id, bool top /*= false*/)
+      : SingleTask(p, rt, id, top)
+    //--------------------------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------------------------
+    const IndexPoint& IndividualTask::get_index_point(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      // no index points for individual tasks
+      assert(false);
+      return *(new IndexPoint());
+    }
+
+    //--------------------------------------------------------------------------------------------
+    size_t IndividualTask::compute_task_size(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      size_t result = 0;
+      result += compute_base_task_size();
+      result += sizeof(size_t); // remaining size
+      size_t temp_size = result;
+      // Everything after here doesn't need to be unpacked until we map
+      if (partially_unpacked)
+      {
+        result += cached_size;
+      }
+      else
+      {
+        if (!sanitized)
+        {
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            map_region(idx, true/*sanitizing*/);
+          }
+          sanitized = true;
+        }
+        // Keep track of the instance info's we need to pack
+        needed_instances.clear();
+        // Figure out all the other stuff we need to pack
+#ifdef DEBUG_HIGH_LEVEL
+        assert(unresolved_dependences.size() == regions.size());
+#endif
+        // unresolved dependeneces
+        for (unsigned idx = 0; idx < unresolved_dependences.size(); idx++)
+        {
+          result += sizeof(size_t);
+          result += (unresolved_dependences[idx].size() * (sizeof(UniqueID) + sizeof(Event)));
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        assert(current_taken);
+#endif
+        // Now we need to pack the region trees
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(regions[idx].func_type == SINGULAR_FUNC);
+#endif
+          // Check to see if this is an index space, if so pack from the parent region
+          result += (*region_nodes)[regions[idx].handle.region]->compute_region_tree_size();
+        }
+
+        if (local_map)
+        {
+          // If this task was locally mapped, figure out how to pack the mappings
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            result += sizeof(bool); // whether or not this task was mapped
+            if (physical_mapped[idx])
+            {
+              result += (sizeof(InstanceID) + sizeof(RegionAllocator));
+              // Add the instance info to the list of required instances
+              needed_instances.push_back(physical_instances[idx]);
+              physical_instances[idx]->get_needed_instances_outgoing(needed_instances);
+            }
+            else
+            {
+              // This wasn't mapped so we still need to send the physical state of the region tree
+#ifdef DEBUG_HIGH_LEVEL
+              assert(regions[idx].func_type == SINGULAR_FUNC);
+#endif
+              result += (*region_nodes)[regions[idx].handle.region]->
+                compute_physical_state_size(get_enclosing_physical_context(idx),needed_instances,false/*returning*/);
+            }
+          }
+
+          // Also compute the size of the event preconditions
+          result += sizeof(size_t); // number of events;
+          result += (preconditions.size() * sizeof(Event));
+        }
+        else
+        {
+          // We need to pack up the state of the physical region trees to pass along
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            assert(regions[idx].func_type == SINGULAR_FUNC);
+#endif
+            result += (*region_nodes)[regions[idx].handle.region]->
+              compute_physical_state_size(get_enclosing_physical_context(idx),needed_instances,false/*returning*/);
+          }
+        }
+        // compute the size of the needed instances
+        std::set<InstanceInfo*> actually_needed;
+        num_needed_instances = 0;
+        result += sizeof(num_needed_instances); 
+        for (std::vector<InstanceInfo*>::const_iterator it = needed_instances.begin();
+              it != needed_instances.end(); it++)
+        {
+          if (actually_needed.find(*it) == actually_needed.end())
+          {
+            result += (*it)->compute_info_size();
+            actually_needed.insert(*it);
+            num_needed_instances++;
+          }
+        }
+
+        cached_size = result - temp_size;
+      }
+
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndividualTask::pack_task(Serializer &rez, unsigned num_copies)
+    //--------------------------------------------------------------------------------------------
+    {
+      pack_base_task(rez);
+      rez.serialize<size_t>(cached_size);
+      if (partially_unpacked)
+      {
+        // If we never unpacked it in the first place, just pack it again
+        rez.serialize(cached_buffer,cached_size);
+      }
+      else
+      {
+        // pack the needed instances
+        rez.serialize<size_t>(num_needed_instances);
+        {
+          std::set<InstanceInfo*> actually_needed;
+          for (std::vector<InstanceInfo*>::const_iterator it = needed_instances.begin();
+                it != needed_instances.end(); it++)
+          {
+            if (actually_needed.find(*it) == actually_needed.end())
+            {
+              // Get the fraction for this instance
+              Fraction<long> to_take = (*it)->get_subtract_frac(num_copies);
+              (*it)->pack_instance_info(rez,to_take);
+              actually_needed.insert(*it);
+            }
+          }
+#ifdef DEBUG_HIGH_LEVEL
+          assert(actually_needed.size() == num_needed_instances);
+#endif
+        }
+
+        // pack unresolved dependences
+        for (unsigned idx = 0; idx < unresolved_dependences.size(); idx++)
+        {
+          rez.serialize<size_t>(unresolved_dependences[idx].size());
+          for (std::map<UniqueID,Event>::const_iterator it =
+                unresolved_dependences[idx].begin(); it !=
+                unresolved_dependences[idx].end(); it++)
+          {
+            rez.serialize<UniqueID>(it->first);
+            rez.serialize<Event>(it->second);
+          }
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        assert(current_taken);
+#endif
+
+        // pack the region trees
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          (*region_nodes)[regions[idx].handle.region]->pack_region_tree(rez);
+        }
+
+        if (local_map)
+        {
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            rez.serialize<bool>(physical_mapped[idx]);
+            if (physical_mapped[idx])
+            {
+              rez.serialize<InstanceID>(physical_instances[idx]->iid);
+              rez.serialize<RegionAllocator>(allocators[idx]);
+            }
+            else
+            {
+               log_region(LEVEL_DEBUG,"Region index %d is being packaged up from context %d for task %s",
+                                      idx, get_enclosing_physical_context(idx), variants->name);
+              (*region_nodes)[regions[idx].handle.region]->pack_physical_state(get_enclosing_physical_context(idx),rez); 
+            }
+          }
+          // Also pack up the events
+          rez.serialize<size_t>(preconditions.size());
+          for (std::set<Event>::const_iterator it = preconditions.begin();
+                it != preconditions.end(); it++)
+          {
+            rez.serialize<Event>(*it);
+          }
+        }
+        else
+        {
+          // Wasn't locally mapped so just pass everything over
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            log_region(LEVEL_DEBUG,"Region index %d is being packaged up from context %d for task %s",
+                                    idx, get_enclosing_physical_context(idx), variants->name);
+            (*region_nodes)[regions[idx].handle.region]->pack_physical_state(get_enclosing_physical_context(idx),rez);
+          }
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndividualTask::unpack_task(Deserializer &derez)
+    //--------------------------------------------------------------------------------------------
+    {
+      // initialize the context
+      initialize_single();
+      // now we can unpack everything
+      unpack_base_task(derez);
+      derez.deserialize<size_t>(cached_size);
+      cached_buffer = malloc(cached_size);
+      derez.deserialize(cached_buffer,cached_size);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndividualTask::final_unpack_task(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(partially_unpacked);
+      assert(current_taken);
+#endif
+      Deserializer derez(cached_buffer,cached_size);
+      // Do the deserialization of all the remaining data structures
+      // unpack the instance infos
+      size_t num_insts;
+      derez.deserialize<size_t>(num_insts);
+      for (unsigned idx = 0; idx < num_insts; idx++)
+      {
+        InstanceInfo::unpack_instance_info(derez, instance_infos, 1/*split factor*/);
+      }
+
+      // unpack the unresolved dependences
+      unresolved_dependences.resize(regions.size());
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        size_t num_elmts;
+        derez.deserialize<size_t>(num_elmts);
+        for (unsigned i = 0; i < num_elmts; i++)
+        {
+          std::pair<UniqueID,Event> unresolved;
+          derez.deserialize<UniqueID>(unresolved.first);
+          derez.deserialize<Event>(unresolved.second);
+          unresolved_dependences[idx].insert(unresolved);
+        }
+      }
+
+      // unpack the region trees
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        RegionNode::unpack_region_tree(derez,NULL,ctx_id,region_nodes,partition_nodes,false/*add*/);
+      }
+
+      if (local_map)
+      {
+        physical_mapped.resize(regions.size());
+        allocators.resize(regions.size());
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          bool mapped;
+          derez.deserialize<bool>(mapped);
+          // Apparently the STL doesn't know how to pass a boolen reference
+          // from a vector of booleans since it stores them as a bit string!
+          physical_mapped[idx] = mapped;
+          if (physical_mapped[idx])
+          {
+            InstanceID iid;
+            derez.deserialize<InstanceID>(iid);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(instance_infos->find(iid) != instance_infos->end());
+#endif
+            physical_instances.push_back((*instance_infos)[iid]);
+            physical_owned.push_back(true);
+            derez.deserialize<RegionAllocator>(allocators[idx]);
+          }
+          else
+          {
+            RegionNode *reg_node = (*region_nodes)[regions[idx].handle.region];
+            reg_node->initialize_physical_context(ctx_id);
+            reg_node->unpack_physical_state(ctx_id,derez,false/*returning*/,false/*merge*/,*instance_infos);
+            physical_instances.push_back(InstanceInfo::get_no_instance());
+            physical_owned.push_back(false);
+            allocators[idx] = RegionAllocator::NO_ALLOC;
+          }
+        }
+
+        // Unpack the precondition events
+        size_t num_events;
+        derez.deserialize<size_t>(num_events);
+        for (unsigned idx = 0; idx < num_events; idx++)
+        {
+          Event pre;
+          derez.deserialize<Event>(pre);
+          preconditions.insert(pre);
+        }
+      }
+      else
+      {
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          RegionNode *reg_node = (*region_nodes)[regions[idx].handle.region];
+          reg_node->initialize_physical_context(ctx_id);
+          reg_node->unpack_physical_state(ctx_id,derez,false/*returning*/,false/*merge*/,*instance_infos); 
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool IndividualTask::distribute_task(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!distributed);
+#endif
+      // Figure out where we want to send this task and whether it is local
+      Processor target;
+      {
+        AutoLock map_lock(mapper_lock);
+        DetailedTimer::ScopedPush sp(TIME_MAPPER);
+        target = mapper->select_initial_processor(this);
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(target.exists());
+#endif
+      // Mark that this task has been distributed
+      this->distributed = true;
+      if (target != local_proc)
+      {
+        // Check to see if we need to map this task locally
+        if (local_map)
+        {
+          // Perform the mapping
+          map_task();
+        }
+        // We need the context lock to package up a task
+        AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = true;
+#endif
+
+        size_t buffer_size = 2*sizeof(Processor)+sizeof(size_t)+compute_task_size();
+        Serializer rez(buffer_size);
+        rez.serialize<Processor>(target); // The actual target processor
+        rez.serialize<Processor>(local_proc); // The origin processor
+        rez.serialize<size_t>(1); // We're only sending one task
+        // Note if this task is already remote it won't matter since the
+        // InstanceInfos are already packed
+        pack_task(rez,2/*one local and one global*/);
+
+        // Get the utility processor for the target
+        Processor utility = target.get_utility_processor();
+        // Send the task to the utility processor
+        utility.spawn(ENQUEUE_TASK_ID,rez.get_buffer(),buffer_size);
+
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = false;
+#endif
+        // Task has been sent to a remote processor
+        return false;
+      }
+      else
+      {
+        // This task is being kept local
+        return true;
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndividualTask::map_task(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(physical_mapped.empty()); 
+      assert(physical_owned.empty());
+      assert(physical_instances.empty());
+      assert(allocators.empty());
+      assert(preconditions.empty());
+      assert(unmapped == 0);
+#endif
+      // For each region perform the mapping operation
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        RegionMapping mapping = map_region(idx);
+
+        // We need to hold the context lock when updating these
+        {
+          AutoLock ctx_lock(current_lock);
+          if (mapping.info == InstanceInfo::get_no_instance())
+          {
+            physical_mapped.push_back(false/*mapped*/);
+            unmapped++;
+          }
+          else
+          {
+            physical_mapped.push_back(true/*mapped*/);
+            // Otherwise if we're not remote we can tell all our mapping 
+            // dependent tasks that we've mapped this region
+            if (!remote)
+            {
+              for (std::set<GeneralizedOperation*>::const_iterator it = map_dependent_tasks[idx].begin();
+                    it != map_dependent_tasks[idx].end(); it++)
+              {
+                (*it)->notify();
+              }
+            }
+          }
+          physical_owned.push_back(mapping.owned);
+          physical_instances.push_back(mapping.info);
+          allocators.push_back(mapping.allocator);
+          preconditions.insert(mapping.precondition);
+        }
+      }
+
+      // If we're not remote, then we can say that this task has been mapped
+      if (!remote && (unmapped == 0))
+      {
+        // Trigger the map_event
+        map_event.trigger();
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndividualTask::post_task_launch(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!current_taken);
+#endif
+      // If we're remote and weren't locally mapped, we need to send back our mapping information, 
+      // otherwise we don't need to do anything
+      if (remote && !local_map)
+      {
+        AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = true;
+#endif
+        // Compute the size of the information to be sent back
+        size_t buffer_size = sizeof(orig_proc) + sizeof(orig_ctx);
+        buffer_size += (regions.size() * (sizeof(InstanceID) + sizeof(bool)));
+
+        std::set<InstanceInfo*> returning_infos;
+        // ORDER IS IMPORTANT WHEN SENDING BACK INSTANCE INFOS
+        std::vector<InstanceInfo*> required_infos;
+        // If everything was mapped, send back all the remote instance infos so that
+        // garbage collection can happen
+        if (unmapped == 0)
+        {
+          for (std::map<InstanceID,InstanceInfo*>::const_iterator it = instance_infos->begin();
+                it != instance_infos->end(); it++)
+          {
+            if (it->second->remote && !it->second->returned)
+            {
+              it->second->get_needed_instances_returning(required_infos);
+            }
+          }
+          for (std::vector<InstanceInfo*>::const_iterator it = required_infos.begin();
+                it != required_infos.end(); it++)
+          {
+            if (returning_infos.find(*it) == returning_infos.end())
+            {
+              buffer_size += (*it)->compute_return_info_size();
+              returning_infos.insert(*it);
+            }
+          }
+        }
+        // Mapped physical instances
+        buffer_size += sizeof(size_t); // number of returning infos
+        for (std::vector<InstanceInfo*>::const_iterator it = physical_instances.begin();
+              it != physical_instances.end(); it++)
+        {
+          if ((*it) != InstanceInfo::get_no_instance() &&
+              (returning_infos.find(*it) == returning_infos.end()))
+          {
+            buffer_size += (*it)->compute_return_info_size();
+            returning_infos.insert(*it);
+            required_infos.push_back(*it);
+          }
+        }
+        
+        // Source physical instances
+        buffer_size += sizeof(size_t);
+        buffer_size += (source_copy_instances.size() * sizeof(InstanceID));
+        for (std::vector<InstanceInfo*>::const_iterator it = source_copy_instances.begin();
+              it != source_copy_instances.end(); it++)
+        {
+          if (returning_infos.find(*it) == returning_infos.end())
+          {
+            buffer_size += (*it)->compute_return_info_size();
+            returning_infos.insert(*it);
+            required_infos.push_back(*it);
+          }
+        }
+
+        Serializer rez(buffer_size);
+        // Write in the target processor
+        rez.serialize<Processor>(orig_proc);
+        rez.serialize<TaskContext*>(orig_ctx);
+
+        // First pack the instance infos
+        rez.serialize<size_t>(returning_infos.size());
+        // ORDER IS IMPORTANT WHEN SENDING THINGS BACK
+        for (std::vector<InstanceInfo*>::const_iterator it = required_infos.begin();
+              it != required_infos.end(); it++)
+        {
+          // Make sure we haven't sent it back already
+          std::set<InstanceInfo*>::iterator finder = returning_infos.find(*it);
+          if (finder != returning_infos.end())
+          {
+            (*it)->pack_return_info(rez);
+            returning_infos.erase(finder);
+          }
+        }
+
+#ifdef DEBUG_HIGH_LEVEL
+        assert(returning_infos.empty()); // Should be empty again when we finish
+#endif
+        // Now pack the region IDs
+#ifdef DEBUG_HIGH_LEVEL
+        assert(regions.size() == physical_instances.size());
+        assert(regions.size() == physical_owned.size());
+#endif
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          if (physical_instances[idx] == InstanceInfo::get_no_instance())
+          {
+            rez.serialize<InstanceID>(0);
+          }
+          else
+          {
+            rez.serialize<InstanceID>(physical_instances[idx]->iid);
+          }
+          rez.serialize<bool>(physical_owned[idx]);
+        }
+
+        rez.serialize<size_t>(source_copy_instances.size());
+        for (std::vector<InstanceInfo*>::const_iterator it = source_copy_instances.begin();
+              it != source_copy_instances.end(); it++)
+        {
+          rez.serialize<InstanceID>((*it)->iid);
+        }
+        // Launch the begin notification on the utility processor 
+        // for the original processor 
+        // Save the remote start event so you can make sure the remote finish task
+        // happens after the remote start task
+        Processor utility = orig_proc.get_utility_processor();
+        this->remote_start_event = utility.spawn(NOTIFY_START_ID, rez.get_buffer(), buffer_size);
+        // Remote start task will trigger the mapping event
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = false;
+#endif
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndividualTask::children_mapped(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!is_leaf); // Should never be calling this for leaf tasks
+#endif
+      std::set<Event> cleanup_events;
+      {
+        AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = true;
+#endif
+        for (std::vector<InstanceInfo*>::const_iterator it = source_copy_instances.begin();
+            it != source_copy_instances.end(); it++)
+        {
+          (*it)->remove_copy_user(this->unique_id);
+        }
+        source_copy_instances.clear();
+
+        // Perform any deletions that haven't already been performed
+        // Do this early to get the garbage collector going and to
+        // remove things that don't need to be sent back
+        while (!child_deletions.empty())
+        {
+          std::set<DeletionOperation*>::const_iterator it = child_deletions.begin();
+#ifdef DEBUG_HIGH_LEVEL
+          assert((*it)->is_ready());
+#endif
+          // No need to acquire the lock since we already hold it
+          (*it)->perform_operation(false/*need lock*/); 
+          // Remove it from the list
+          child_deletions.erase(it);
+        }
+
+        // Issue any clean-up events and launch the termination task
+        // Now issue the termination task contingent on all our child tasks being done
+        // and the necessary copy up operations being applied
+        // Get a list of all the child task termination events so we know when they are done
+        for (std::vector<TaskContext*>::iterator it = child_tasks.begin();
+              it != child_tasks.end(); it++)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert((*it)->get_termination_event().exists());
+#endif
+          cleanup_events.insert((*it)->get_termination_event());
+        }
+
+        // Go through each of the mapped regions that we own and issue the necessary
+        // copy operations to restore data to the physical instances
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          // Check to see if we promised a physical instance and it wasn't read-only
+          if (local_instances[idx] != InstanceInfo::get_no_instance())
+          {
+            // If we're still the owner, remove ourselves from the list of users
+            if (local_mapped[idx])
+            {
+              local_instances[idx]->remove_user(this->unique_id);
+#ifdef TRACE_CAPTURE
+              // Force this in the case of trace capture or we'll deadlock ourselves and the world ends
+              local_instances[idx]->removed_users.erase(this->unique_id);
+              local_instances[idx]->epoch_users.erase(this->unique_id);
+#endif
+            }
+            if (IS_READ_ONLY(regions[idx]))
+            {
+              RegionNode *top = (*region_nodes)[regions[idx].handle.region];
+              // Don't give a mapper since we shouldn't be doing any copies
+              top->close_physical_tree(chosen_ctx[idx],local_instances[idx],this,NULL,false/*leave open*/);
+              local_instances[idx]->mark_begin_close();
+              local_instances[idx]->force_closed();
+              local_instances[idx]->mark_finish_close();
+            }
+            else
+            {
+              AutoLock map_lock(mapper_lock);
+              RegionNode *top = (*region_nodes)[regions[idx].handle.region];
+              top->close_physical_tree(chosen_ctx[idx],local_instances[idx],this,mapper,false/*leave open*/);
+              local_instances[idx]->mark_begin_close();
+              cleanup_events.insert(local_instances[idx]->force_closed());
+              local_instances[idx]->mark_finish_close();
+            }
+          }
+        }
+
+#ifdef DEBUG_HIGH_LEVEL
+        log_task(LEVEL_DEBUG,"All children mapped for individual task %s (ID %d) with unique id %d on processor %x",
+                variants->name,task_id,unique_id,local_proc.id);
+        // We can now go through and mark that all of our no-map operations are complete
+        assert(physical_instances.size() == regions.size());
+        assert(physical_instances.size() == physical_mapped.size());
+#endif
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          if (physical_instances[idx] == InstanceInfo::get_no_instance())
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            assert(!physical_mapped[idx]);
+#endif
+            // Mark that we can now consider this region mapped
+            physical_mapped[idx] = true;
+          }
+        }
+
+        if (remote)
+        {
+          // Send back information about updates to the region trees
+          // For any virtual mappings send back the physical region tree state
+          // Finally send back all the instance infos that haven't been sent back yet
+
+          size_t buffer_size = sizeof(orig_proc) + sizeof(orig_ctx);
+
+          std::map<PartitionNode*,unsigned> region_tree_updates;
+          {
+            // Compute the set of regions to check for updates
+            std::map<LogicalRegion,unsigned> to_check;
+            for (unsigned idx = 0; idx < regions.size(); idx++)
+            {
+              to_check.insert(std::pair<LogicalRegion,unsigned>(regions[idx].handle.region,idx));
+            }
+            buffer_size += compute_tree_update_size(to_check,region_tree_updates);      
+          }
+          // Finally compute the size state information to be passed back
+          std::vector<InstanceInfo*> required_instances;
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            if (physical_instances[idx] == InstanceInfo::get_no_instance())
+            {
+              buffer_size += (*region_nodes)[regions[idx].handle.region]->
+                              compute_physical_state_size(ctx_id,required_instances,true/*returning*/);
+            }
+          }
+          for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
+                it != created_regions.end(); it++)
+          {
+            buffer_size += (*region_nodes)[it->first]->compute_physical_state_size(it->second,required_instances,true/*returning*/);
+          }
+          // Also include the size of the instances to pass pack
+          buffer_size += sizeof(size_t); // num instances
+          // Compute the actually needed set of instances
+          std::set<InstanceInfo*> actual_instances;
+          // Get the required infos for all the remote instances that need to be returned
+          // Only need to do this if we aren't fully mapped otherwise it happened 
+          // already in map and launch task
+          if (unmapped > 0) 
+          {
+            for (std::map<InstanceID,InstanceInfo*>::const_iterator it = instance_infos->begin();
+                  it != instance_infos->end(); it++)
+            {
+              if (it->second->remote)
+              {
+                if (!it->second->returned)
+                {
+                  it->second->get_needed_instances_returning(required_instances);
+                }
+              }
+            }
+          }
+          // Also pack up anything in the required instances that is not remote and still valid
+          for (std::vector<InstanceInfo*>::const_iterator it = required_instances.begin();
+                it != required_instances.end(); it++)
+          {
+            if (actual_instances.find(*it) == actual_instances.end())
+            {
+              actual_instances.insert(*it);
+              buffer_size += (*it)->compute_return_info_size(escaped_users,escaped_copies);
+            }
+          }
+
+          // Now serialize everything
+          Serializer rez(buffer_size);
+          rez.serialize<Processor>(orig_proc);
+          rez.serialize<TaskContext*>(orig_ctx);
+
+          // Now do the instances
+          rez.serialize<size_t>(actual_instances.size());
+          // ORDER IS IMPORTANT WHEN SENDING BACK INSTANCE INFOS!
+          for (std::vector<InstanceInfo*>::const_iterator it = required_instances.begin();
+                it != required_instances.end(); it++)
+          {
+            std::set<InstanceInfo*>::iterator finder = actual_instances.find(*it);
+            if (finder != actual_instances.end())
+            {
+              (*it)->pack_return_info(rez);
+              actual_instances.erase(finder);
+            }
+          }
+#ifdef DEBUG_HIGH_LEVEL
+          assert(actual_instances.empty());
+#endif
+
+          pack_tree_updates(rez,region_tree_updates);
+            
+          // The physical states for the regions that were unmapped
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            if (physical_instances[idx] == InstanceInfo::get_no_instance())
+            {
+              (*region_nodes)[regions[idx].handle.region]->pack_physical_state(ctx_id,rez); 
+            }
+          }
+          // Physical states for the created regions
+          for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
+                it != created_regions.end(); it++)
+          {
+            (*region_nodes)[it->first]->pack_physical_state(it->second,rez);
+          }
+
+          // Run this task on the utility processor waiting for the remote start event
+          Processor utility = orig_proc.get_utility_processor();
+          this->remote_children_event = utility.spawn(NOTIFY_MAPPED_ID,rez.get_buffer(),buffer_size,remote_start_event);
+
+          // Note that we can clear the region tree updates since we've propagated them back to the parent
+          // For the created regions we just mark that they are no longer added
+          for (std::map<LogicalRegion,ContextID>::const_iterator it = created_regions.begin();
+                it != created_regions.end(); it++)
+          {
+            (*region_nodes)[it->first]->mark_tree_unadded(false/*reclaim resources*/);
+          }
+          created_regions.clear(); // We sent them back so we don't own them anymore
+          deleted_regions.clear();
+          deleted_partitions.clear();
+          
+          // Also mark all the added partitions as unadded since we've propagated this
+          // information back to the parent context
+          for (std::map<PartitionNode*,unsigned>::const_iterator it = region_tree_updates.begin();
+                it != region_tree_updates.end(); it++)
+          {
+            it->first->mark_tree_unadded(false/*reclaim resources*/);
+          }
+        }
+        else
+        {
+          // We don't need to pass back any physical state information as it has already
+          // been updated in the same region tree
+
+          // Now notify all of our map dependent tasks that the mapping information
+          // is ready for those regions that had no instance
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            if (physical_instances[idx] == InstanceInfo::get_no_instance())
+            {
+              for (std::set<GeneralizedOperation*>::const_iterator it = map_dependent_tasks[idx].begin();
+                    it != map_dependent_tasks[idx].end(); it++)
+              {
+                (*it)->notify();
+              }
+            }
+          }
+          // Check to see if we had any unmapped regions in which case we can now trigger that we've been mapped
+          if (unmapped > 0)
+          {
+            map_event.trigger();
+            unmapped = 0; // Everything has been mapped now
+          }
+        }
+
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = false;
+#endif
+      }
+
+      Event finish_precondition = Event::merge_events(cleanup_events);
+      if (finish_precondition.exists())
+      {
+        size_t buffer_size = sizeof(local_proc) + sizeof(this);
+        Serializer rez(buffer_size);
+        rez.serialize<Processor>(local_proc);
+        rez.serialize<Context>(this);
+        // Launch the finish task on this processor's utility processor
+        Processor utility = local_proc.get_utility_processor();
+        utility.spawn(FINISH_ID,rez.get_buffer(),buffer_size,finish_precondition);
+      }
+      else
+      {
+        // All the preconditions have already been met
+        finish_task();
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndividualTask::finish_task(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Finishing task %s (ID %d) with unique id %d on processor %x",
+                variants->name, task_id, unique_id, local_proc.id);
+#endif
+      {
+        AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = true;
+#endif
+
+        if (remote)
+        {
+          size_t buffer_size = sizeof(orig_proc) + sizeof(orig_ctx);
+          // Pack the leaked instances 
+          buffer_size += sizeof(size_t);
+          for (unsigned idx = 0; idx < escaped_users.size(); idx++)
+          {
+            buffer_size += escaped_users[idx].compute_escaped_user_size();
+          }
+          buffer_size += sizeof(size_t);
+          for (unsigned idx = 0; idx < escaped_copies.size(); idx++)
+          {
+            buffer_size += escaped_copies[idx].compute_escaped_copier_size();
+          } 
+          // Compute the region tree updates
+          std::map<PartitionNode*,unsigned> region_tree_updates;
+          {
+            std::map<LogicalRegion,unsigned> to_check;
+            for (unsigned idx = 0; idx < regions.size(); idx++)
+            {
+              to_check.insert(std::pair<LogicalRegion,unsigned>(regions[idx].handle.region,idx));  
+            }
+            buffer_size += compute_tree_update_size(to_check,region_tree_updates);
+          }
+          // Return result
+          buffer_size += sizeof(size_t); // num result bytes
+          buffer_size += result_size; // return result
+
+          // Pack it up and send it back
+          Serializer rez(buffer_size);
+          rez.serialize<Processor>(orig_proc);
+          rez.serialize<TaskContext*>(orig_ctx);
+          
+          rez.serialize<size_t>(escaped_users.size());
+          for (unsigned idx = 0; idx < escaped_users.size(); idx++)
+          {
+            escaped_users[idx].pack_escaped_user(rez);
+          }
+          rez.serialize<size_t>(escaped_copies.size());
+          for (unsigned idx = 0; idx < escaped_copies.size(); idx++)
+          {
+            escaped_copies[idx].pack_escaped_copier(rez);
+          }
+          // Pack the tree updates
+          pack_tree_updates(rez, region_tree_updates);
+          // Result
+          rez.serialize<size_t>(result_size);
+          rez.serialize(result,result_size);
+
+          // Send this thing back only need to wait on the remote children event since
+          // we always send one of those back there will always be an event.  Therefore
+          // there's a transitive event
+          std::set<Event> wait_on_events;
+          wait_on_events.insert(remote_start_event);
+          wait_on_events.insert(remote_children_event);
+          Processor utility = orig_proc.get_utility_processor();
+          utility.spawn(NOTIFY_FINISH_ID,rez.get_buffer(),buffer_size,Event::merge_events(wait_on_events));
+        }
+        else
+        {
+          // If we're not the top level context, propagate our information back to the parent context
+          if (!top_level_task)
+          {
+            update_parent_context();
+          }
+
+          // We're done so we can trigger the termination event
+          termination_event.trigger();
+        }
+
+        // Release any references that we have on our instances
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          // Remove all references here, different references depending on whether it is still mapped
+          // See comment in TaskContext::unmap_region
+          if (physical_instances[idx] != InstanceInfo::get_no_instance())
+          {
+            physical_instances[idx]->remove_user(unique_id);
+          }
+        }
+        // Also release any references we have to source physical instances
+        for (unsigned idx = 0; idx < source_copy_instances.size(); idx++)
+        {
+          source_copy_instances[idx]->remove_copy_user(this->unique_id);
+        }
+        source_copy_instances.clear();
+
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = false;
+#endif
+      }
+
+      // Deactivate any child operations we had when executing
+      for (std::vector<TaskContext*>::const_iterator it = child_tasks.begin();
+            it != child_tasks.end(); it++)
+      {
+        (*it)->deactivate();
+      }
+
+      // Also if we're remote, we can deactivate ourself
+      if (remote)
+      {
+        this->deactivate();
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndividualTask::remote_start(const char *args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Processing remote start for individual task %s (ID %d) with unique id %d",
+          variants->name,task_id,unique_id);
+#endif
+      // We need the current context lock in exclusive mode to do this
+      AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
+      assert(!local_map); // should never see a remote start for a locally mapped task
+      assert(unmapped == 0);
+#endif
+      Deserializer derez(args,arglen);
+
+      // Unpack the instance infos
+      size_t num_returning_infos;
+      derez.deserialize<size_t>(num_returning_infos);
+      for (unsigned i = 0; i < num_returning_infos; i++)
+      {
+        InstanceInfo::unpack_return_instance_info(derez, instance_infos); 
+      }
+
+      // Unpack each of the region instance infos
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        InstanceID iid;
+        derez.deserialize<InstanceID>(iid); 
+        bool owned;
+        derez.deserialize<bool>(owned);
+        if (iid != 0)
+        {
+          // Region was mapped
+#ifdef DEBUG_HIGH_LEVEL
+          assert(instance_infos->find(iid) != instance_infos->end());
+#endif
+          // See if we can find the ID
+          InstanceInfo *info = (*instance_infos)[iid];
+          physical_instances.push_back(info);
+          physical_mapped.push_back(true/*mapped*/);
+          // Update the valid instances of this region
+          ContextID enclosing_ctx = get_enclosing_physical_context(idx);
+          log_region(LEVEL_DEBUG,"Updating valid instances for region %d (index %d) of task %s in context %d",
+                      regions[idx].handle.region.id, idx, variants->name, enclosing_ctx);
+          if (IS_READ_ONLY(regions[idx]) || IS_WRITE(regions[idx]))
+          {
+            (*region_nodes)[info->handle]->update_valid_instances(enclosing_ctx,info,IS_WRITE(regions[idx]),owned);
+          }
+          else
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            assert(IS_REDUCE(regions[idx]));
+#endif
+            (*region_nodes)[info->handle]->update_reduction_instances(enclosing_ctx,info,owned);
+          }
+
+          // Now notify all the tasks waiting on this region that has been mapped
+          for (std::set<GeneralizedOperation*>::const_iterator it = map_dependent_tasks[idx].begin();
+                it != map_dependent_tasks[idx].end(); it++)
+          {
+            (*it)->notify();
+          }
+        }
+        else
+        {
+          // Region was unmapped
+          unmapped++;
+          physical_instances.push_back(InstanceInfo::get_no_instance()); 
+          physical_mapped.push_back(false/*mapped*/);
+        }
+      }
+      // If everything was mapped, then we can trigger the map_event
+      if (unmapped == 0)
+      {
+        map_event.trigger();
+      }
+      
+      // Also need to unpack the source copy instances
+      size_t num_source_instances;
+      derez.deserialize<size_t>(num_source_instances);
+      for (unsigned idx = 0; idx < num_source_instances; idx++)
+      {
+        InstanceID iid;
+        derez.deserialize<InstanceID>(iid);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(iid != 0);
+        assert(instance_infos->find(iid) != instance_infos->end());
+#endif
+        InstanceInfo *src_info = (*instance_infos)[iid]; 
+        // Don't need to update the valid instances here since no one is writing!
+        // Do need to remember this info so we can free it later
+        source_copy_instances.push_back(src_info);
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(physical_instances.size() == regions.size());
+      assert(physical_instances.size() == physical_mapped.size());
+      current_taken = false;
+#endif
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndividualTask::remote_children_mapped(const char *args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Processing remote children mapped for individual task %s (ID %d) with unique id %d",
+          variants->name,task_id,unique_id);
+#endif
+      // We need the current context lock in exclusive mode to do this
+      AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
+      assert(!remote);
+      assert(parent_ctx != NULL);
+#endif
+      Deserializer derez(args,arglen);
+
+      // Unpack the instance infos
+      size_t num_instance_infos;
+      derez.deserialize<size_t>(num_instance_infos);
+      for (unsigned idx = 0; idx < num_instance_infos; idx++)
+      {
+        InstanceInfo::unpack_return_instance_info(derez, instance_infos);
+      }
+
+      // Unpack the region tree updates
+      // unpack the created regions, do this in whatever the outermost enclosing context is
+      ContextID outermost = get_outermost_physical_context();
+      std::vector<LogicalRegion> created;
+      // unpack the region tree updates
+      unpack_tree_updates(derez,created,outermost);
+
+      // First unpack the physical states for the region instances
+      // Unpack them into the enclosing context since that is where the information needs to go
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        if (physical_instances[idx] == InstanceInfo::get_no_instance())
+        {
+          log_region(LEVEL_DEBUG,"Unpacking returning task state for region index %d of task %s in context %d",
+                                idx, variants->name, get_enclosing_physical_context(idx));
+          bool merge = IS_READ_ONLY(regions[idx]) || IS_REDUCE(regions[idx]);
+          (*region_nodes)[regions[idx].handle.region]->unpack_physical_state(
+                    get_enclosing_physical_context(idx),derez,
+                    true/*returning*/, merge, *instance_infos,this->unique_id);
+        }
+      }
+      for (unsigned idx = 0; idx < created.size(); idx++)
+      {
+        // No need to mark these as returning since they are newly created
+        (*region_nodes)[created[idx]]->unpack_physical_state(
+                      outermost,derez,false/*returning*/,false/*merge*/,*instance_infos);
+      }
+      // Now we can go through and notify all our map dependent tasks that the information has been propagated back
+      // into the physical region trees
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        if (physical_instances[idx] == InstanceInfo::get_no_instance())
+        {
+          // Mark that this region has been mapped now
+          physical_mapped[idx] = true;
+          for (std::set<GeneralizedOperation*>::const_iterator it = map_dependent_tasks[idx].begin();
+                it != map_dependent_tasks[idx].end(); it++)
+          {
+            (*it)->notify();
+          }
+        }
+      }
+
+      // If we had any unmapped children indicate that we are now mapped
+      // Only trigger if not local mapped which is done early
+      if (unmapped > 0)
+      {
+        map_event.trigger();
+      }
+
+      // Also free any copy source copy instances since we know that we're done with them
+      for (unsigned idx = 0; idx < source_copy_instances.size(); idx++)
+      {
+        source_copy_instances[idx]->remove_copy_user(unique_id);
+      }
+      source_copy_instances.clear();
+
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
+    }
+    
+    //--------------------------------------------------------------------------------------------
+    void IndividualTask::remote_finish(const char *args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      log_task(LEVEL_DEBUG,"Processing remote finish for task %s (ID %d) with unique id %d",
+          variants->name,task_id,unique_id);
+#endif
+      // Need the current context lock in exclusive lock to do this
+      AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = true;
+      assert(!remote);
+      assert(parent_ctx != NULL);
+#endif
+
+      Deserializer derez(args,arglen);
+      bool returning_slice;
+      derez.deserialize<bool>(returning_slice);
+      
+      // Unpack the escaped users
+      size_t num_escaped_users;
+      derez.deserialize<size_t>(num_escaped_users);
+      for (unsigned idx = 0; idx < num_escaped_users; idx++)
+      {
+        EscapedUser escapee;
+        EscapedUser::unpack_escaped_user(derez, escapee);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(instance_infos->find(escapee.iid) != instance_infos->end());
+#endif
+        (*instance_infos)[escapee.iid]->remove_user(escapee.user,escapee.references);
+      }
+      size_t num_escaped_copies;
+      derez.deserialize<size_t>(num_escaped_copies);
+      for (unsigned idx = 0; idx < num_escaped_copies; idx++)
+      {
+        EscapedCopier escapee;
+        EscapedCopier::unpack_escaped_copier(derez,escapee);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(instance_infos->find(escapee.iid) != instance_infos->end());
+#endif
+        (*instance_infos)[escapee.iid]->remove_copy_user(escapee.copier,escapee.references);
+      }
+      // Unpack the tree updates
+      {
+        std::vector<LogicalRegion> created;
+        ContextID outermost = get_outermost_physical_context();
+        unpack_tree_updates(derez,created,outermost);
+      }
+
+      // Set the future result
+      future->set_result(derez);
+      // No need to propagate information back to the parent, it was done in 
+      // unpack_tree_updates
+      // We're done now so we can trigger our termination event
+      termination_event.trigger();
+
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        if (physical_instances[idx] != InstanceInfo::get_no_instance())
+        {
+          physical_instances[idx]->remove_user(this->unique_id);
+        }
+      }
+
+#ifdef DEBUG_HIGH_LEVEL
+      current_taken = false;
+#endif
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndividualTask::reclaim_context(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Tell the runtime that we're done with this individual task
+      runtime->free_individual_task(this);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool IndividualTask::is_stealable(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!local_map || !stealable); // Can't be both local_map and stealable
+#endif
+      return stealable;
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Multi Task 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------------------------
+    MultiTask::MultiTask(Processor p, HighLevelRuntime *rt, ContextID id)
+      : TaskContext(p, rt, id)
+    //--------------------------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void MultiTask::initialize_multi(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      initialize_base();
+      constraint_space.clear();
+      range_space.clear();
+      frac_index_space = std::pair<unsigned,unsigned>(0,1);
+      num_total_points = 0;
+      num_unmapped_points = 0;
+      num_unfinished_points = 0;
+      mapped_physical_instances.clear();
+      //start_index_event = Barrier::create_barrier(1);
+      future_map = NULL;
+      index_arg_map.reset();
+      reduction = NULL;
+      reduction_value = NULL;
+      reduction_size = 0;
+      pre_mapped_regions.clear();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    const IndexPoint& MultiTask::get_index_point(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      assert(false);
+      return *(new IndexPoint());
+    }
+
+    //--------------------------------------------------------------------------------------------
+    Event MultiTask::get_individual_term_event(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      return termination_event;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    InstanceInfo* MultiTask::get_chosen_instance(unsigned idx) const
+    //--------------------------------------------------------------------------------------------
+    {
+      assert(false);
+      return NULL;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    ContextID MultiTask::get_enclosing_physical_context(unsigned idx)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Should never be called for either SliceTask or IndexTask
+      assert(false);
+      return 0;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    ContextID MultiTask::get_outermost_physical_context(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      if (remote)
+      {
+        return ctx_id;
+      }
+      else
+      {
+        Context ctx = parent_ctx;
+        while (!ctx->remote && (ctx->parent_ctx != NULL))
+        {
+          ctx = ctx->parent_ctx;
+        }
+        return ctx->ctx_id;
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void MultiTask::update_created_regions(LogicalRegion handle, RegionNode *node, ContextID outermost)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void MultiTask::update_deleted_regions(LogicalRegion handle)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void MultiTask::update_deleted_partitions(PartitionID pid)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    template<>
+    void MultiTask::set_space<Constraint>(const std::vector<Constraint> &space)
+    //--------------------------------------------------------------------------------------------
+    {
+      is_constraint_space = true;
+      constraint_space = space;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    template<>
+    void MultiTask::set_space<Range>(const std::vector<Range> &space)
+    //--------------------------------------------------------------------------------------------
+    {
+      is_constraint_space = false;
+      range_space = space;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    template<>
+    const std::vector<Constraint>& MultiTask::get_space(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(is_constraint_space);
+#endif
+      return constraint_space;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    template<>
+    const std::vector<Range>& MultiTask::get_space(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!is_constraint_space);
+#endif
+      return range_space;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void MultiTask::set_future_map(FutureMapImpl *impl)
+    //--------------------------------------------------------------------------------------------
+    {
+      future_map = impl;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    FutureMapImpl* MultiTask::get_future_map(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      return future_map;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void MultiTask::set_reduction(ReductionFnptr reduc, const TaskArgument &init)
+    //--------------------------------------------------------------------------------------------
+    {
+      reduction = reduc;
+      reduction_value = malloc(init.get_size());
+      memcpy(reduction_value,init.get_ptr(),init.get_size());
+      reduction_size = init.get_size();
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Index Task 
+    /////////////////////////////////////////////////////////////
+    
+    //--------------------------------------------------------------------------------------------
+    IndexTask::IndexTask(Processor p, HighLevelRuntime *rt, ContextID id)
+      : MultiTask(p, rt, id)
+    //--------------------------------------------------------------------------------------------
+    {
+    }
+    
+    //--------------------------------------------------------------------------------------------
+    void IndexTask::perform_operation(bool acquire_lock /*= true*/)
+    //--------------------------------------------------------------------------------------------
+    {
+      // This should never be called for an IndexTask
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool IndexTask::add_waiting_dependence(GeneralizedOperation *waiter, const LogicalUser &original)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(original.gen <= current_gen);
+#endif
+      // Check to see if this is still the same context
+      if (original.gen < current_gen)
+      {
+        // Task is already done, no mapping dependence
+        return false;
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(original.idx < mapped_physical_instances.size());
+#endif
+      // This is an index space so check to see if we have seen all the updates
+      // for the index space and also whether all of them mapped the task
+      if ((frac_index_space.first == frac_index_space.second) &&
+          (mapped_physical_instances[original.idx] == num_total_points))
+      {
+        return false; // been mapped by everybody
+      }
+      std::pair<std::set<GeneralizedOperation*>::iterator,bool> result = map_dependent_tasks[original.idx].insert(waiter);
+      return result.second; 
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndexTask::initialize(Processor::TaskFuncID _task_id, void *_args, size_t _arglen,
+                               MapperID _map_id, MappingTagID _tag, Mapper *_mapper,
+#ifdef LOW_LEVEL_LOCKS
+                               Lock _map_lock,
+#else
+                               ImmovableLock _map_lock,
+#endif
+                               bool _is_index_space, bool _must)
+    //--------------------------------------------------------------------------------------------
+    {
+      initialize_multi();
+      local_slices.clear();
+      set_base_values(_task_id, _args, _arglen, _map_id, _tag, _mapper, _map_lock, _is_index_space, _must);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    size_t IndexTask::compute_task_size(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Should never be called for index tasks as they should never be sent anywhere
+      assert(false);
+      return 0;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndexTask::pack_task(Serializer &rez, unsigned num_copies)
+    //--------------------------------------------------------------------------------------------
+    {
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndexTask::unpack_task(Deserializer &derez)
+    //--------------------------------------------------------------------------------------------
+    {
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndexTask::final_unpack_task(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool IndexTask::distribute_task(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!distributed);
+      assert(local_slices.empty());
+#endif
+      // Check to see if there are any regions that need to be premapped
+      // before we go distributing everything
+      pre_map_regions();
+
+      // Split out the index space of tasks
+      if (is_constraint_space)
+      {
+        std::vector<Mapper::ConstraintSplit> chunks;
+        {
+          // Ask the mapper to perform the division
+          AutoLock mapper_lock(mapper_lock);
+          DetailedTimer::ScopedPush sp(TIME_MAPPER);
+          mapper->split_index_space(this, constraint_space, chunks);
+        }
+        distribute_index_space_chunks<Constraint,Mapper::ConstraintSplit>(chunks);
+      }
+      else
+      {
+        std::vector<Mapper::RangeSplit> chunks;
+        {
+          // Ask the mapper to perform the division
+          AutoLock mapper_lock(mapper_lock);
+          DetailedTimer::ScopedPush sp(TIME_MAPPER);
+          mapper->split_index_space(this, range_space, chunks);
+        }
+        distribute_index_space_chunks<Range,Mapper::RangeSplit>(chunks); 
+      }
+      // Mark that we've been distributed
+      distributed = true;
+      for (std::vector<SliceTask*>::const_reverse_iterator rit = local_slices.rbegin();
+            rit != local_slices.rend(); rit++)
+      {
+        // Put this on the front of the ready queue
+        runtime->add_to_ready_queue(*rit,true/*acquire lock*/,false/*add to back*/);
+      }
+      local_slices.clear();
+      // Return false since this is an IndexTask and should never be executed
+      return false;
+    }
+    
+    //--------------------------------------------------------------------------------------------
+    void IndexTask::map_task(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      // This should never be called for IndexTask
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndexTask::children_mapped(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Should never be called
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndexTask::finish_task(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Should never be called
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndexTask::remote_start(const char *args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Unpack the information coming back from the slice and call index_space_start
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndexTask::remote_children_mapped(const char *args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Unpack the information coming back from the slice and call index_space_mapped
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndexTask::remote_finish(const char *args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Unpack the information coming back from the slice and call index_space_finish
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndexTask::reclaim_context(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      if ((future_map != NULL) && future_map->mark_finished())
+      {
+        delete future_map;
+      }
+      future_map = NULL;
+
+      if (reduction_value != NULL)
+      {
+        free(reduction_value);
+      }
+      reduction_value = NULL;
+      reduction_size = 0;
+
+      runtime->free_index_task(this);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool IndexTask::is_stealable(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      // IndexTask are never stealable since they have to be distributed
+      // into slices before they can be stolen
+      return false;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    template<typename T, typename CT>
+    void IndexTask::distribute_index_space_chunks(std::vector<CT> &chunks)
+    //--------------------------------------------------------------------------------------------
+    {
+      // If we're supposed to be locally mapping this index space, make sure that none of the 
+      // chunks ask to be recursively split
+      if (local_map)
+      {
+        for (typename std::vector<CT>::const_iterator it = chunks.begin();
+              it != chunks.end(); it++)
+        {
+          if (it->recurse)
+          {
+            log_task(LEVEL_ERROR,"Illegal request for recusive decomposition of index space that is to be locally mapped "
+                "for task %s (id %d) with unique ID %d", variants->name, task_id, unique_id);
+            exit(1);
+          }
+        }
+      }
+      // First send off all the remote chunks
+      {
+        // Have a remote slice task that we'll use for sending off
+        // all the remote chunks of this task.  We'll just deactivate
+        // this slice when we're done sending off remote versions
+        SliceTask *remote_slice = runtime->get_available_slice_task(parent_ctx,false/*resource owner*/);
+        // Clone the remote slice task
+        remote_slice->clone_slice_from<T>(this, chunks.size());
+        {
+          // Need the task's context lock to do this
+          AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+          current_taken = true;
+          remote_slice->current_taken = true;
+#endif
+          if (local_map)
+          {
+            for (typename std::vector<CT>::const_iterator it = chunks.begin();
+                  it != chunks.end(); it++)
+            {
+              if (it->p != local_proc)
+              {
+                remote_slice->set_space<T>(it->space);
+                remote_slice->distributed = !it->recurse;
+                size_t buffer_size = 2*sizeof(Processor) + sizeof(size_t) + remote_slice->compute_task_size();
+                Serializer rez(buffer_size);
+                rez.serialize<Processor>(it->p); // Actual target processor
+                rez.serialize<Processor>(local_proc); // local processor
+                rez.serialize<size_t>(1); // number of tasks
+                remote_slice->pack_task(rez,chunks.size());
+                Processor utility = it->p.get_utility_processor();
+                utility.spawn(ENQUEUE_TASK_ID,rez.get_buffer(),buffer_size);
+              }
+            }
+          }
+          else
+          {
+            // Not local_map so we know the size of each slice will be the same
+            size_t buffer_size = 2*sizeof(Processor) + sizeof(size_t) + remote_slice->compute_task_size();
+            for (typename std::vector<CT>::const_iterator it = chunks.begin();
+                  it != chunks.end(); it++)
+            {
+              if (it->p != local_proc)
+              {
+                remote_slice->set_space<T>(it->space);
+                remote_slice->distributed = !it->recurse;
+                Serializer rez(buffer_size);
+                rez.serialize<Processor>(it->p); // Actual target processor
+                rez.serialize<Processor>(local_proc); // local processor
+                rez.serialize<size_t>(1); // number of tasks
+                remote_slice->pack_task(rez,chunks.size());
+                Processor utility = it->p.get_utility_processor();
+                utility.spawn(ENQUEUE_TASK_ID,rez.get_buffer(),buffer_size);
+              }
+            }
+          }
+#ifdef DEBUG_HIGH_LEVEL
+          current_taken = false;
+          remote_slice->current_taken = false;
+#endif
+        }
+        // We can deactivate our remote slice since we're done with it
+        remote_slice->deactivate();
+      }
+      // Now that we've sent off all the remote chunks, handle our local chunks
+      for (typename std::vector<CT>::const_iterator it = chunks.begin();
+            it != chunks.end(); it++)
+      {
+        if (it->p == local_proc)
+        {
+          SliceTask *local_slice = runtime->get_available_slice_task(parent_ctx,false/*resource owner*/);
+          local_slice->clone_slice_from<T>(this, chunks.size());
+          local_slice->set_space(it->space);
+          if (it->recurse)
+          {
+            local_slice->distributed = false;
+            // Distribute it and see if it is still valid
+            if (local_slice->distribute_task())
+            {
+              // Still local, add it to the list
+              local_slices.push_back(local_slice);
+            }
+            else
+            {
+              // No longer still local, we can deactivate it
+              local_slice->deactivate();
+            }
+          }
+          else
+          {
+            // Otherwise mark that it has been distributed
+            // and add it to the list of local slices
+            local_slice->distributed = true;
+            add_local_slice(local_slice);
+          }
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndexTask::add_local_slice(SliceTask *local)
+    //--------------------------------------------------------------------------------------------
+    {
+      local_slices.push_back(local);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndexTask::pre_map_regions(void)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndexTask::index_space_start(unsigned slice_denominator, unsigned slice_points,
+                                      const std::vector<unsigned> &mapped_counts)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndexTask::index_space_mapped(unsigned slice_point, const std::vector<unsigned> &mapped_counts)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void IndexTask::index_space_finished(unsigned num_remote_points)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+    
+    /////////////////////////////////////////////////////////////
+    // Slice Task 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------------------------
+    SliceTask::SliceTask(Processor p, HighLevelRuntime *rt, ContextID id)
+      : MultiTask(p, rt, id)
+    //--------------------------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SliceTask::perform_operation(bool acquire_lock /*= true*/)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Launch each of our child tasks
+      for (std::vector<PointTask*>::const_iterator it = local_points.begin();
+            it != local_points.end(); it++)
+      {
+        (*it)->perform_operation(acquire_lock);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool SliceTask::add_waiting_dependence(GeneralizedOperation *waiter, const LogicalUser &original)
+    //--------------------------------------------------------------------------------------------
+    {
+      // This is a mapping call and should never be called for SliceTask
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SliceTask::initialize(Processor::TaskFuncID task_id, void *args, size_t arglen,
+                               MapperID map_id, MappingTagID tag, Mapper *mapper,
+#ifdef LOW_LEVEL_LOCKS
+                               Lock map_lock,
+#else
+                               ImmovableLock map_lock,
+#endif
+                               bool is_index_space, bool must)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Should never be called for SliceTask
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    size_t SliceTask::compute_task_size(void)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SliceTask::pack_task(Serializer &rez, unsigned num_copies)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SliceTask::unpack_task(Deserializer &derez)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SliceTask::final_unpack_task(void)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool SliceTask::distribute_task(void)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!distributed);
+#endif
+      bool still_valid;
+      // Split out the index space of tasks
+      if (is_constraint_space)
+      {
+        std::vector<Mapper::ConstraintSplit> chunks;
+        {
+          // Ask the mapper to perform the division
+          AutoLock mapper_lock(mapper_lock);
+          DetailedTimer::ScopedPush sp(TIME_MAPPER);
+          mapper->split_index_space(this, constraint_space, chunks);
+        }
+        still_valid = distribute_slice_chunks<Constraint,Mapper::ConstraintSplit>(chunks);
+      }
+      else
+      {
+        std::vector<Mapper::RangeSplit> chunks;
+        {
+          // Ask the mapper to perform the division
+          AutoLock mapper_lock(mapper_lock);
+          DetailedTimer::ScopedPush sp(TIME_MAPPER);
+          mapper->split_index_space(this, range_space, chunks);
+        }
+        still_valid = distribute_slice_chunks<Range,Mapper::RangeSplit>(chunks); 
+      }
+      // Mark that we've been distributed
+      distributed = true;
+      return still_valid;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SliceTask::map_task(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      // To map a slice task, first we enumerate its points, and then we map each one of those points 
+      if (is_constraint_space)
+      {
+        enumerate_constraint_space();
+      }
+      else
+      {
+        std::vector<int> point;
+        point.reserve(range_space.size());
+        enumerate_range_space(point,0/*idx*/);
+      }
+      // Now map each of our local points
+      for (std::vector<PointTask*>::const_iterator it = local_points.begin();
+            it != local_points.end(); it++)
+      {
+        (*it)->map_task();
+      }
+      
+      // Finally report back to our IndexTask what happened
+      if (remote)
+      {
+
+      }
+      else
+      {
+
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SliceTask::children_mapped(void)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SliceTask::finish_task(void)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SliceTask::remote_start(const char *args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Should never be called for SliceTask
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SliceTask::remote_children_mapped(const char *args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Should never be called for SliceTask 
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SliceTask::remote_finish(const char *args, size_t arglen)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Should never be called for SliceTask
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SliceTask::reclaim_context(void)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool SliceTask::is_stealable(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!local_map || !stealable); // Can't be both local_map and stealable
+#endif
+      return stealable;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    template<typename T>
+    void SliceTask::clone_slice_from(MultiTask *orig, unsigned denominator)
+    //--------------------------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------------------------
+    template<typename T, typename CT>
+    bool SliceTask::distribute_slice_chunks(std::vector<CT> &chunks)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Update the denominator
+      denominator *= chunks.size();
+      typename std::vector<CT> local_chunks;
+      // First send off all the remote chunks 
+      {
+        // Need the task's context lock to do this
+        AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = true;
+#endif
+        size_t buffer_size = 2*sizeof(Processor) + sizeof(size_t) + compute_task_size();
+        for (typename std::vector<CT>::const_iterator it = chunks.begin();
+              it != chunks.end(); it++)
+        {
+          if (it->p != local_proc)
+          {
+            set_space<T>(it->space);
+            this->distributed = !it->recurse;
+            Serializer rez(buffer_size);
+            rez.serialize<Processor>(it->p); // Actual target processor
+            rez.serialize<Processor>(local_proc); // local processor
+            rez.serialize<size_t>(1); // number of tasks
+            pack_task(rez,chunks.size());
+            Processor utility = it->p.get_utility_processor();
+            utility.spawn(ENQUEUE_TASK_ID,rez.get_buffer(),buffer_size);
+          }
+          else
+          {
+            local_chunks.push_back(*it);
+          }
+        }
+
+#ifdef DEBUG_HIGH_LEVEL
+        current_taken = false;
+#endif
+      }
+      // Now handle all the local chunks
+      if (!local_chunks.empty())
+      {
+        // If we're remote iterate over these in reverse order so they get put on
+        // the ready queue in the correct order.  If not remote do them in order.
+        // For all but the last one create a new slice task and distribute it.  If
+        // the one we created was still valid add it to the list of local slices for our parent task
+        if (remote)
+        {
+          unsigned idx = local_chunks.size()-1; 
+          // do this in reverse order so any local things get put on the ready queue in order
+          for ( ; idx > 0; idx--)
+          {
+            SliceTask *sub_slice = runtime->get_available_slice_task(parent_ctx,false/*resource owner*/);
+            sub_slice->clone_slice_from<T>(this, denominator);
+            sub_slice->set_space<T>(local_chunks[idx].space);
+            sub_slice->distributed = !local_chunks[idx].recurse;
+            if (local_chunks[idx].recurse)
+            {
+              if (sub_slice->distribute_task())
+              {
+#ifdef DEBUG_HIGH_LEVEL
+                assert(remote_owner != NULL);
+#endif
+                remote_owner->remote_slice_start();
+                // This is remote so add the new sub-slice to the ready queue
+                runtime->add_to_ready_queue(sub_slice,true/*acquire lock*/,false/*append*/);
+              }
+              else
+              {
+                // Sub-slice no longer contains any part of the slice
+                sub_slice->deactivate();
+              }
+            }
+            else
+            {
+#ifdef DEBUG_HIGH_LEVEL
+              assert(remote_owner != NULL);
+#endif
+              remote_owner->remote_slice_start();
+              // This is remote so add the new sub-slice to the ready queue
+              runtime->add_to_ready_queue(sub_slice,true/*acquire lock*/,false/*append*/);
+            }
+          }
+          // Now for the last one we'll use this slice task
+          set_space<T>(local_chunks[idx].space);
+          this->distributed = !local_chunks[idx].recurse;
+          if (this->distributed)
+          {
+            // Distribute this task
+            return distribute_task();
+          }
+          else
+          {
+            return true;
+          }
+        }
+        else
+        {
+          unsigned idx = local_chunks.size()-1; 
+          // do this in reverse order so any local things get put on the ready queue in order
+          for ( ; idx > 0; idx--)
+          {
+            SliceTask *sub_slice = runtime->get_available_slice_task(parent_ctx,false/*resource owner*/);
+            sub_slice->clone_slice_from<T>(this, denominator);
+            sub_slice->set_space<T>(local_chunks[idx].space);
+            sub_slice->distributed = !local_chunks[idx].recurse;
+            if (local_chunks[idx].recurse)
+            {
+              if (sub_slice->distribute_task())
+              {
+                // Not remote so add it to the index owner's list of local slices
+                index_owner->add_local_slice(sub_slice);
+              }
+              else
+              {
+                // Sub-slice no longer contains any part of the slice
+                sub_slice->deactivate();
+              }
+            }
+            else
+            {
+              // New sub-slice is ready, add it to the list
+              index_owner->add_local_slice(sub_slice);
+            }
+          }
+          // Now for the last one we'll use this slice task
+          set_space<T>(local_chunks[idx].space);
+          this->distributed = !local_chunks[idx].recurse;
+          if (this->distributed)
+          {
+            // Distribute this task
+            return distribute_task();
+          }
+          else
+          {
+            return true;
+          }
+        }
+      }
+      else
+      {
+        // No longer has any valid part of the index space
+        return false;
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SliceTask::remote_slice_start(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      AutoLock ctx_lock(current_lock);
+      remote_slices++;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void SliceTask::remote_slice_finish(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      bool finished;
+      {
+        AutoLock ctx_lock(current_lock);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(remote_slices > 0);
+#endif
+        remote_slices--;
+        finished = (remote_slices == 0);
+      }
+      // If we're finished we can deactivate this
+      // which will reclaim all our region tree resources
+      if (finished)
+      {
+        deactivate();
+      }
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Point Task 
+    /////////////////////////////////////////////////////////////
+
+    /////////////////////////////////////////////////////////////
     // Task Context
     ///////////////////////////////////////////////////////////// 
-
+#if 0
     //--------------------------------------------------------------------------------------------
     TaskContext::TaskContext(Processor p, HighLevelRuntime *r, ContextID id)
       : runtime(r), active(false), current_gen(0), ctx_id(id), top_level_task(false), 
@@ -10157,6 +14843,7 @@ namespace RegionRuntime {
 #endif
       return index_point;
     }
+#endif
 
     ///////////////////////////////////////////
     // Region Node 
@@ -11331,7 +16018,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void RegionNode::register_deletion(ContextID ctx, DeletionOp *op)
+    void RegionNode::register_deletion(ContextID ctx, DeletionOperation *op)
     //--------------------------------------------------------------------------------------------
     {
       RegionState &region_state = region_states[ctx];
@@ -11914,7 +16601,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     void RegionNode::close_physical_tree(ContextID ctx, InstanceInfo *target,
-                              GeneralizedContext *enclosing, Mapper *mapper, bool leave_open)
+                              GeneralizedOperation *enclosing, Mapper *mapper, bool leave_open)
     //--------------------------------------------------------------------------------------------
     {
       RegionState &region_state = region_states[ctx];
@@ -11970,7 +16657,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     bool RegionNode::close_local_tree(ContextID ctx, InstanceInfo *target, 
-                        GeneralizedContext *enclosing, Mapper *mapper, bool leave_open)
+                        GeneralizedOperation *enclosing, Mapper *mapper, bool leave_open)
     //--------------------------------------------------------------------------------------------
     {
       RegionState &region_state = region_states[ctx];
@@ -13413,7 +18100,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void PartitionNode::register_deletion(ContextID ctx, DeletionOp *op)
+    void PartitionNode::register_deletion(ContextID ctx, DeletionOperation *op)
     //--------------------------------------------------------------------------------------------
     {
       PartitionState &partition_state = partition_states[ctx];
@@ -13778,7 +18465,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     void PartitionNode::close_physical_tree(ContextID ctx, InstanceInfo *info,
-                                        GeneralizedContext *enclosing, Mapper *mapper, bool leave_open)
+                                        GeneralizedOperation *enclosing, Mapper *mapper, bool leave_open)
     //--------------------------------------------------------------------------------------------
     {
       PartitionState &partition_state = partition_states[ctx];
@@ -13956,7 +18643,7 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    Event InstanceInfo::add_user(GeneralizedContext *ctx, unsigned idx, Event precondition, bool check_unresolved /*=true*/)
+    Event InstanceInfo::add_user(GeneralizedOperation *ctx, unsigned idx, Event precondition, bool check_unresolved /*=true*/)
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -14149,7 +18836,7 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    void InstanceInfo::copy_from(InstanceInfo *src_info, GeneralizedContext *ctx, CopyDirection dir, ReductionOpID redop /*=0*/)
+    void InstanceInfo::copy_from(InstanceInfo *src_info, GeneralizedOperation *ctx, CopyDirection dir, ReductionOpID redop /*=0*/)
     //-------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -14387,7 +19074,7 @@ namespace RegionRuntime {
     }
 
     //-------------------------------------------------------------------------
-    bool InstanceInfo::has_war_dependence(GeneralizedContext *ctx, unsigned idx)
+    bool InstanceInfo::has_war_dependence(GeneralizedOperation *ctx, unsigned idx)
     //-------------------------------------------------------------------------
     {
       const RegionUsage &usage = ctx->get_usage(idx);
