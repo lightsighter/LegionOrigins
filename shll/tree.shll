@@ -10,39 +10,39 @@ type tree<r> = rr(rsl, rsr) < int, < tree<rsl>@rsl, tree<rsr>@rsr > >
 
 task color_split<r> ( elem: list<r>@r, splitval: int ) : int, reads(r) =
      let v : list<r> = read(elem) in
-     	 if v.1 .lt. elem then 1 else 2
+     	 if v.1 .lt. splitval then 1 else 2
 
 task nocolor<r> ( elem: list<r>@r, dummy: int) : int = 0
 
 task make_tree<rl,rt> ( l: list<rl>@rl, min: int, max: int ) : tree<rt>@rt, reads(rl), rdwrs(rt) =
      if isnull(l) then null else
-     let v : list<r> = read(l) in
+     let v : list<rl> = read(l) in
      if (v.1 .lt. min) | (v.1 .gt. max) then
      make_tree<rl,rt>(v.2, min, max) else
      let root : tree<rt>@rt = new tree<rt>@rt in
      partition rt using nocolor(0) as rsl,rsr in
      let lhs : tree<rsl>@rsl = make_tree<rl,rsl>(v.2, min, v.1) in
      let rhs : tree<rsr>@rsr = make_tree<rl,rsr>(v.2, v.1, max) in
-     let v2 : tree<rt> = pack < v.1, < lhs, rhs > > as tree<rt>(rsl, rsr) in
+     let v2 : tree<rt> = pack < v.1, < lhs, rhs > > as tree<rt>[rsl, rsr] in
      let junk : bool = write(root, v2) in
      root
 
 task reverse_tree<r> ( root: tree<r>@r ) : tree<r>@r, rdwrs(r) =
      if isnull(root) then null else
      let v : tree<r> = read(root) in
-     unpack v as u : tree<rt>(rsl, rsr) in
+     unpack v as u : tree<rt>[rsl, rsr] in
      let lhs_r : tree<rsl>@rsl = reverse_tree<rsl>(u.2.1) in
      let rhs_r : tree<rsr>@rsr = reverse_tree<rsr>(u.2.2) in
-     let v_r : tree<rt> = pack < u.1, < rhs_r, lhs_r > > as tree<rt>(rsr, rsl) in
+     let v_r : tree<rt> = pack < u.1, < rhs_r, lhs_r > > as tree<rt>[rsr, rsl] in
      let junk : bool = write(root, v_r) in
      root
 
 type tree2<rl,rls,rt> = rr(rll, rlr) < list<rl>@rls, < tree2<rl,rll,rt>@rt, tree2<rl,rlr,rt> > >
      		      	where rll <= rls and rlr <= rls and rll * rlr
 
-task make_tree2<rl,rls,rt> ( l: list<rl>@rl, min: int, max: int) : tree2<rl,rls,rt>, reads(rls), rdwrs(rt) =
+task make_tree2<rl,rls,rt> ( l: list<rl>@rl, min: int, max: int) : tree2<rl,rls,rt>, reads(rl), rdwrs(rt) =
      if isnull(l) then null else /* do comments work? */
-     let v : list<r> = read(l) in
+     let v : list<rl> = read(l) in
      if (v.1 .lt. min) | (v.1 .gt. max) then
      make_tree<rl,rt>(v.2, min, max) else
      let root : tree<rt>@rt = new tree<rt>@rt in
@@ -50,6 +50,6 @@ task make_tree2<rl,rls,rt> ( l: list<rl>@rl, min: int, max: int) : tree2<rl,rls,
      let ptr : list<rl>@rls = downregion(l, rls) in
      let lhs : tree2<rl,rll,rt>@rt = make_tree2<rl,rll,rt>(v.2, min, v.1) in
      let rhs : tree2<rl,rlr,rt>@rt = make_tree2<rl,rlr,rt>(v.2, v.1, max) in
-     let v2 : tree2<rl,rls,rt> = pack < ptr, < lhs, rhs > > as tree2<rl,rls,rt>(rll, rlr) in
+     let v2 : tree2<rl,rls,rt> = pack < ptr, < lhs, rhs > > as tree2<rl,rls,rt>[rll, rlr] in
      let junk : bool = write(root, v2) in
      root

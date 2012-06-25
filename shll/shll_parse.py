@@ -127,8 +127,8 @@ class Parser:
 
     def p_letexpr(self, p):
         'expr : LET ID ":" type "=" expr IN expr'
-        p[0] = LetExpr(valname = p[1], valtype = p[3], valexpr = p[5],
-                       body = p[7])
+        p[0] = LetExpr(valname = p[2], valtype = p[4], valexpr = p[6],
+                       body = p[8])
         
     def p_identexpr(self, p):
         'expr : ID'
@@ -192,13 +192,13 @@ class Parser:
                              body = p[11])
 
     def p_packexpr(self, p):
-        'expr : PACK expr AS type "(" region_list ")"'
+        'expr : PACK expr AS type "[" region_list "]"'
         p[0] = PackExpr(body = p[2],
                         rrtype = p[4],
                         rrparams = p[6])
 
     def p_unpackexpr(self, p):
-        'expr : UNPACK expr AS ID ":" type "(" region_list ")" IN expr'
+        'expr : UNPACK expr AS ID ":" type "[" region_list "]" IN expr'
         p[0] = UnpackExpr(argexpr = p[2],
                           name = p[4],
                           rrtype = p[6],
@@ -243,9 +243,10 @@ class Parser:
 
     def parse(self, src, **kwargs):
         self.lexer.input(src)
-        self.parser.parse(lexer = self.lexer)
+        return self.parser.parse(lexer = self.lexer)
 
 if __name__ == '__main__':
     import sys
     p = Parser()
-    p.parse(sys.stdin)
+    pgrm = p.parse(sys.stdin)
+    pgrm.type_check()

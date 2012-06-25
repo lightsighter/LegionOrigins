@@ -18,7 +18,7 @@ class Lexer:
         'INTVAL',
         ] + list(x.upper() for x in keywords)
 
-    literals = '={}()<>@*,:.+&|'
+    literals = '={}()<>@*,:.+&|[]'
 
     whitespace = " \t\r"
 
