@@ -216,7 +216,7 @@ class PtrType(Type):
                        #bindings.get(self.region))
 
     def isnullptrtype(self):
-        return ((self.elemtype is None) and (self.region is None))
+        return (self.elemtype is None)
 
     def equals(self, other, **kwargs):
         if not isinstance(other, PtrType):
@@ -895,7 +895,7 @@ class NullConstExpr(Expr):
 
     def get_type(self, pgrm, env, privs, consts):
         # TODO: is there a better way to handle this?
-        return PtrType(elemtype = None, region = None)
+        return PtrType(elemtype = None, regions = [ None ])
 
 class IntConstExpr(Expr):
     def __init__(self, value):
