@@ -33,6 +33,15 @@ class NoReadPriviledgeError(TypeError):
     def __str__(self):
         return "read of %s attempted with the following priviledges:\n%s" % (self.ptrtype, self.privs)
 
+class NoWritePriviledgeError(TypeError):
+    def __init__(self, expr, ptrtype, privs):
+        self.expr = expr
+        self.ptrtype = ptrtype
+        self.privs = privs
+
+    def __str__(self):
+        return "write of %s attempted with the following priviledges:\n%s" % (self.ptrtype, self.privs)
+
 class LetInitTypeError(TypeError):
     def __init__(self, expr, exptype, acttype):
         self.expr = expr
@@ -52,6 +61,26 @@ class WrongTypeClassError(TypeError):
 
     def __str__(self):
         return ("expected a %s type, got: %s" % (self.expclass, self.acttype))
+
+class PackTypeMismatchError(TypeError):
+    def __init__(self, expr, exptype, acttype):
+        self.expr = expr
+        self.exptype = exptype
+        self.acttype = acttype
+
+    def __str__(self):
+        return ("type mismatch in pack - wanted %s, got %s" %
+                (self.exptype, self.acttype))
+
+class UnpackTypeMismatchError(TypeError):
+    def __init__(self, expr, exptype, acttype):
+        self.expr = expr
+        self.exptype = exptype
+        self.acttype = acttype
+
+    def __str__(self):
+        return ("type mismatch in unpack - wanted %s, got %s" %
+                (self.exptype, self.acttype))
 
 class Program:
     def __init__(self):
@@ -150,8 +179,8 @@ class PtrType(Type):
 
     def rename(self, bindings):
         return PtrType(self.elemtype.rename(bindings),
-                       #bindings.get(self.region, self.region))
-                       bindings.get(self.region))
+                       bindings.get(self.region, self.region))
+                       #bindings.get(self.region))
 
     def isnullptrtype(self):
         return ((self.elemtype is None) and (self.region is None))
@@ -180,6 +209,12 @@ class TupleType(Type):
         return TupleType(self.lhs.rename(bindings), 
                          self.rhs.rename(bindings))
 
+    def equals(self, other):
+        if not isinstance(other, TupleType):
+            return False
+        return (self.lhs.equals(other.lhs) and
+                self.rhs.equals(other.rhs))
+
     def __str__(self):
         return ("<%s, %s>" % (self.lhs, self.rhs))
 
@@ -197,8 +232,8 @@ class UserType(Type):
 
     def rename(self, bindings):
         return UserType(self.name,
-                        #[ bindings.get(x, x) for x in self.params ])
-                        [ bindings.get(x) for x in self.params ])
+                        [ bindings.get(x, x) for x in self.params ])
+                        #[ bindings.get(x) for x in self.params ])
 
     # returns the expanded version of the type
     def expand(self, prgm):
@@ -231,18 +266,26 @@ class RRType(Type):
                                         " and ".join(map(str, self.constraints))))
 
     def rename(self, bindings):
+        newbindings = dict(bindings)
         for r in self.regions:
-            if r in bindings:
+            if r in newbindings:
                 raise RegionConflictError()
+            #newbindings[r] = r
         return RRType(self.regions,
-                      self.innertype.rename(bindings),
-                      [ c.rename(bindings) for c in self.constraints ])
+                      self.innertype.rename(newbindings),
+                      [ c.rename(newbindings) for c in self.constraints ])
 
     def equals(self, other):
         if not isinstance(other, RRType):
             return False
 
-        # step 1: number of regions bound HERE HERE HERE
+        # step 1: number of regions bound
+        if len(self.regions) <> len(other.regions):
+            return False
+
+        # now see if the inner types are the same up to renaming
+        return self.innertype.equals(other.innertype.rename(dict(zip(other.regions,
+                                                                     self.regions))))
 
 class RegionConstraint:
     def __init__(self, op, lhs, rhs):
@@ -255,8 +298,8 @@ class RegionConstraint:
 
     def rename(self, bindings):
         return RegionConstraint(self.op,
-                                bindings.get(self.lhs),
-                                bindings.get(self.rhs))
+                                bindings.get(self.lhs, self.lhs),
+                                bindings.get(self.rhs, self.rhs))
 
 class FormalsList:
     def __init__(self):
@@ -361,6 +404,11 @@ class TupleExpr(Expr):
     def __str__(self):
         return ("<%s, %s>" % (self.lhs, self.rhs))
 
+    def get_type(self, pgrm, env, privs, consts):
+        lhstype = self.lhs.get_type(pgrm, env, privs, consts)
+        rhstype = self.rhs.get_type(pgrm, env, privs, consts)
+        return TupleType(lhs = lhstype, rhs = rhstype)
+
 class FieldExpr(Expr):
     def __init__(self, subexpr, field):
         self.subexpr = subexpr
@@ -412,6 +460,24 @@ class WriteExpr(Expr):
 
     def __str__(self):
         return ("write(%s, %s)" % (self.ptrexpr, self.valexpr))
+
+    def get_type(self, pgrm, env, privs, consts):
+        # step 1: get the pointer's type
+        ptrtype = self.ptrexpr.get_type(pgrm, env, privs, consts)
+        if not isinstance(ptrtype, PtrType):
+            raise NonPointerTypeError(self, ptrtype)
+
+        # step 2: check priviledges
+        if ptrtype.region not in privs.writes:
+            raise NoWritePriviledgeError(self, ptrtype, privs)
+
+        # step 3: value type is element type of pointer
+        valtype = self.valexpr.get_type(pgrm, env, privs, consts)
+        if not ptrtype.elemtype.equals(valtype):
+            raise WriteTypeMismatchError(self, ptrtype, valtype)
+
+        # result of write is bool (an arbitrary choice)
+        return BoolType()
 
 class ReduceExpr(Expr):
     def __init__(self, func, ptrexpr, valexpr):
@@ -558,6 +624,23 @@ class PartitionExpr(Expr):
                  ", ".join(self.subregions),
                  self.body))
 
+    def get_type(self, pgrm, env, privs, consts):
+        # TODO: check partitioning function args/privs
+
+        # add constraints that each subregion is a subset of the original,
+        #  and that they are disjoint from each other
+        newconsts = list(consts)
+        for i, rs1 in enumerate(self.subregions):
+            newconsts.append(RegionConstraint(op = "<=", 
+                                              lhs = rs1, 
+                                              rhs = self.region))
+            for rs2 in self.subregions[i+1:]:
+                newconsts.append(RegionConstraint(op = "*",
+                                                  lhs = rs1, rhs = rs2))
+
+        # now type-check body with these additional constraints
+        return self.body.get_type(pgrm, env, privs, newconsts)
+
 class PackExpr(Expr):
     def __init__(self, body, rrtype, rrparams):
         self.body = body
@@ -580,11 +663,11 @@ class PackExpr(Expr):
             exptype = exptype.expand(pgrm)
         if not isinstance(exptype, RRType):
             raise WrongTypeClassError(self, "RR", exptype)
-        if len(self.rrparams) <> len(exptype.params):
+        if len(self.rrparams) <> len(exptype.regions):
             raise RRParamCountError(self, self.rrparams, exptype)
         exptype = exptype.innertype.rename(dict(zip(exptype.regions, self.rrparams)))
-        if not argtype.equals(exptype):
-            raise PackTypeMismatch(self, exptype, acttype)
+        if not acttype.equals(exptype):
+            raise PackTypeMismatchError(self, exptype, acttype)
 
         return self.rrtype
 
@@ -620,7 +703,7 @@ class UnpackExpr(Expr):
             raise UnpackTypeMismatchError(self, exptype, acttype)
 
         # now expand the unpacked type with the new names
-        if len(self.rrparams) <> len(exptype.params):
+        if len(self.rrparams) <> len(exptype.regions):
             raise RRParamCountError(self, self.rrparams, exptype)
         exptype = exptype.innertype.rename(dict(zip(exptype.regions, self.rrparams)))
 
@@ -642,6 +725,19 @@ class UpRegionExpr(Expr):
     def __str__(self):
         return ("upregion(%s, %s)" % (self.ptrexpr, self.region))
 
+    def get_type(self, pgrm, env, privs, consts):
+        # step 1: pointer must be a pointer type
+        ptrtype = self.ptrexpr.get_type(pgrm, env, privs, consts)
+        if not isinstance(ptrtype, PtrType):
+            raise WrongTypeClassError(self, "pointer", ptrtype)
+
+        # step 2: must be able to show that the pointer's region is a
+        #  a subregion of the one to which we're upcasting
+        # TODO
+
+        # result pointer type uses new region
+        return PtrType(elemtype = ptrtype.elemtype, region = self.region)
+
 class DownRegionExpr(Expr):
     def __init__(self, ptrexpr, region):
         self.ptrexpr = ptrexpr
@@ -649,6 +745,19 @@ class DownRegionExpr(Expr):
 
     def __str__(self):
         return ("downregion(%s, %s)" % (self.ptrexpr, self.region))
+
+    def get_type(self, pgrm, env, privs, consts):
+        # step 1: pointer must be a pointer type
+        ptrtype = self.ptrexpr.get_type(pgrm, env, privs, consts)
+        if not isinstance(ptrtype, PtrType):
+            raise WrongTypeClassError(self, "pointer", ptrtype)
+
+        # step 2: must be able to show that the target region is statically
+        #  known to be a subregion of the pointer's region
+        # TODO
+
+        # result pointer type uses new region
+        return PtrType(elemtype = ptrtype.elemtype, region = self.region)
 
 class IsNullExpr(Expr):
     def __init__(self, argexpr):

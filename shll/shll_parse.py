@@ -136,7 +136,7 @@ class Parser:
 
     def p_tupleexpr(self, p):
         'expr : "<" expr "," expr ">"'
-        p[0] = TupleExpr(lhs = p[1], rhs = p[3])
+        p[0] = TupleExpr(lhs = p[2], rhs = p[4])
 
     def p_readexpr(self, p):
         'expr : READ "(" expr ")"'
@@ -188,8 +188,8 @@ class Parser:
                              cf_name = p[4],
                              cf_params = p[5],
                              cf_args = p[7],
-                             subregions = p[9],
-                             body = p[11])
+                             subregions = p[10],
+                             body = p[12])
 
     def p_packexpr(self, p):
         'expr : PACK expr AS type "[" region_list "]"'
@@ -203,7 +203,7 @@ class Parser:
                           name = p[4],
                           rrtype = p[6],
                           rrparams = p[8],
-                          body = p[10])
+                          body = p[11])
 
     def p_uprgnexpr(self, p):
         'expr : UPREGION "(" expr "," ID ")"'
