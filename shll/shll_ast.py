@@ -42,6 +42,15 @@ class NoWritePriviledgeError(TypeError):
     def __str__(self):
         return "write of %s attempted with the following priviledges:\n%s" % (self.ptrtype, self.privs)
 
+class NoReducePriviledgeError(TypeError):
+    def __init__(self, expr, ptrtype, privs):
+        self.expr = expr
+        self.ptrtype = ptrtype
+        self.privs = privs
+
+    def __str__(self):
+        return "reduce to %s attempted with the following priviledges:\n%s" % (self.ptrtype, self.privs)
+
 class LetInitTypeError(TypeError):
     def __init__(self, expr, exptype, acttype):
         self.expr = expr
@@ -90,6 +99,16 @@ class WriteTypeMismatchError(TypeError):
 
     def __str__(self):
         return ("can't write a value of type %s to a pointer of type %s" %
+                (self.valtype, self.ptrtype))
+
+class ReduceTypeMismatchError(TypeError):
+    def __init__(self, expr, ptrtype, valtype):
+        self.expr = expr
+        self.ptrtype = ptrtype
+        self.valtype = valtype
+
+    def __str__(self):
+        return ("can't reduce a value of type %s to a pointer of type %s" %
                 (self.valtype, self.ptrtype))
 
 class Program:
@@ -180,16 +199,20 @@ class BoolType(Type):
         return isinstance(other, BoolType)
 
 class PtrType(Type):
-    def __init__(self, elemtype, region):
+    def __init__(self, elemtype, regions):
         self.elemtype = elemtype
-        self.region = region
+        self.regions = regions
 
     def __str__(self):
-        return str(self.elemtype) + "@" + str(self.region)
+        if len(self.regions) == 1:
+            return ("%s@%s" % (self.elemtype, self.regions[0]))
+        else:
+            return ("%s@(%s)" % (self.elemtype,
+                                 ",".join(self.regions)))
 
     def rename(self, bindings):
         return PtrType(self.elemtype.rename(bindings),
-                       bindings.get(self.region, self.region))
+                       [ bindings.get(x, x) for x in self.regions ])
                        #bindings.get(self.region))
 
     def isnullptrtype(self):
@@ -207,8 +230,14 @@ class PtrType(Type):
             if other.isnullptrtype():
                 return kwargs.get("nullok", True)
             else:
-                return (self.elemtype.equals(other.elemtype, **kwargs) and
-                        (self.region == other.region))
+                if not self.elemtype.equals(other.elemtype, **kwargs):
+                    return False
+                if len(self.regions) <> len(other.regions):
+                    return False
+                for r1,r2 in zip(self.regions, other.regions):
+                    if r1 <> r2:
+                        return False
+                return True
 
 class TupleType(Type):
     def __init__(self, lhs, rhs):
@@ -279,7 +308,7 @@ class RRType(Type):
         self.constraints = constraints
 
     def __str__(self):
-        return ("rr(%s) %s where %s" % (", ".join(self.regions),
+        return ("rr[%s] %s where %s" % (", ".join(self.regions),
                                         self.innertype,
                                         " and ".join(map(str, self.constraints))))
 
@@ -496,8 +525,9 @@ class ReadExpr(Expr):
             raise NonPointerTypeError(self, ptrtype)
 
         # step 2: check priviledges
-        if ptrtype.region not in privs.reads:
-            raise NoReadPriviledgeError(self, ptrtype, privs)
+        for r in ptrtype.regions:
+            if r not in privs.reads:
+                raise NoReadPriviledgeError(self, ptrtype, privs)
 
         # step 3: result type is element type of pointer
         return ptrtype.elemtype
@@ -517,8 +547,9 @@ class WriteExpr(Expr):
             raise NonPointerTypeError(self, ptrtype)
 
         # step 2: check priviledges
-        if ptrtype.region not in privs.writes:
-            raise NoWritePriviledgeError(self, ptrtype, privs)
+        for r in ptrtype.regions:
+            if r not in privs.writes:
+                raise NoWritePriviledgeError(self, ptrtype, privs)
 
         # step 3: value type is element type of pointer
         valtype = self.valexpr.get_type(pgrm, env, privs, consts)
@@ -536,6 +567,31 @@ class ReduceExpr(Expr):
 
     def __str__(self):
         return ("reduce(%s, %s, %s)" % (self.func, self.ptrexpr, self.valexpr))
+
+    def get_type(self, pgrm, env, privs, consts):
+        # step 1: get the pointer's type
+        ptrtype = self.ptrexpr.get_type(pgrm, env, privs, consts)
+        if not isinstance(ptrtype, PtrType):
+            raise NonPointerTypeError(self, ptrtype)
+
+        # step 2: check priviledges
+        if self.func not in privs.reduces:
+            raise NoReducePriviledgeError(self, ptrtype, privs)
+        for r in ptrtype.regions:
+            if r not in privs.reduces[self.func]:
+                raise NoReducePriviledgeError(self, ptrtype, privs)
+
+        # TODO: check function signature - needs to be monomorphic, with
+        #  first arg and result that match pointer's element type, and
+        #  second arg that matches valtype
+        valtype = self.valexpr.get_type(pgrm, env, privs, consts)
+
+        if not ptrtype.elemtype.equals(valtype, pgrm = pgrm):
+            raise ReduceTypeMismatchError(self, ptrtype, valtype)
+
+        # result of reduce is bool (an arbitrary choice)
+        return BoolType()
+
 
 class BinOpExpr(Expr):
     def __init__(self, op, lhs, rhs):
@@ -772,12 +828,13 @@ class UnpackExpr(Expr):
         return self.body.get_type(pgrm, newenv, privs, newconsts)
 
 class UpRegionExpr(Expr):
-    def __init__(self, ptrexpr, region):
+    def __init__(self, ptrexpr, regions):
         self.ptrexpr = ptrexpr
-        self.region = region
+        self.regions = regions
 
     def __str__(self):
-        return ("upregion(%s, %s)" % (self.ptrexpr, self.region))
+        return ("upregion(%s, %s)" % (self.ptrexpr, 
+                                      (", ".join(self.regions))))
 
     def get_type(self, pgrm, env, privs, consts):
         # step 1: pointer must be a pointer type
@@ -790,15 +847,16 @@ class UpRegionExpr(Expr):
         # TODO
 
         # result pointer type uses new region
-        return PtrType(elemtype = ptrtype.elemtype, region = self.region)
+        return PtrType(elemtype = ptrtype.elemtype, regions = self.regions)
 
 class DownRegionExpr(Expr):
-    def __init__(self, ptrexpr, region):
+    def __init__(self, ptrexpr, regions):
         self.ptrexpr = ptrexpr
-        self.region = region
+        self.regions = regions
 
     def __str__(self):
-        return ("downregion(%s, %s)" % (self.ptrexpr, self.region))
+        return ("downregion(%s, %s)" % (self.ptrexpr, 
+                                        (", ".join(self.regions))))
 
     def get_type(self, pgrm, env, privs, consts):
         # step 1: pointer must be a pointer type
@@ -811,7 +869,7 @@ class DownRegionExpr(Expr):
         # TODO
 
         # result pointer type uses new region
-        return PtrType(elemtype = ptrtype.elemtype, region = self.region)
+        return PtrType(elemtype = ptrtype.elemtype, regions = self.regions)
 
 class IsNullExpr(Expr):
     def __init__(self, argexpr):

@@ -44,9 +44,13 @@ class Parser:
         'type : BOOL'
         p[0] = BoolType()
 
-    def p_ptrtype(self, p):
+    def p_ptrtype_single(self, p):
         'type : type "@" ID'
-        p[0] = PtrType(elemtype = p[1], region = p[3])
+        p[0] = PtrType(elemtype = p[1], regions = [ p[3] ])
+
+    def p_ptrtype_union(self, p):
+        'type : type "@" "(" region_list ")"'
+        p[0] = PtrType(elemtype = p[1], regions = p[4])
 
     def p_tupletype(self, p):
         'type : "<" type "," type ">"'
@@ -228,14 +232,14 @@ class Parser:
                           body = p[11])
 
     def p_uprgnexpr(self, p):
-        'expr : UPREGION "(" expr "," ID ")"'
+        'expr : UPREGION "(" expr "," region_list ")"'
         p[0] = UpRegionExpr(ptrexpr = p[3],
-                            region = p[5])
+                            regions = p[5])
 
     def p_dnrgnexpr(self, p):
-        'expr : DOWNREGION "(" expr "," ID ")"'
+        'expr : DOWNREGION "(" expr "," region_list ")"'
         p[0] = DownRegionExpr(ptrexpr = p[3],
-                              region = p[5])
+                              regions = p[5])
 
     def p_parenexpr(self, p):
         'expr : "(" expr ")"'
