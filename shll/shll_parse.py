@@ -15,7 +15,8 @@ class Parser:
         ('left', 'IN'),
         ('left', '.'),
         ('left', '+'), # integer math operators
-        ('left', 'LT', 'GT'), # integer comparison operators
+        ('left', 'EMPTY_TYPE_PARAM_LIST'),
+        ('left', '<', '>'), # integer comparison operators
         ('left', '|'), # boolean operators
         )
 
@@ -32,7 +33,7 @@ class Parser:
         p[0] = p[1].add_task(p[2])
 
     def p_strdef(self, p):
-        'strdef : TYPE ID opt_region_params "=" type'
+        'strdef : TYPE ID opt_type_params "=" type'
         p[0] = Typedef(name = p[2], params = p[3], innertype = p[5])
 
     def p_inttype(self, p):
@@ -43,27 +44,38 @@ class Parser:
         'type : BOOL'
         p[0] = BoolType()
 
-    def p_ptrtype(self, p):
+    def p_ptrtype_single(self, p):
         'type : type "@" ID'
-        p[0] = PtrType(elemtype = p[1], region = p[3])
+        p[0] = PtrType(elemtype = p[1], regions = [ p[3] ])
+
+    def p_ptrtype_union(self, p):
+        'type : type "@" "(" region_list ")"'
+        p[0] = PtrType(elemtype = p[1], regions = p[4])
 
     def p_tupletype(self, p):
         'type : "<" type "," type ">"'
         p[0] = TupleType(lhs = p[2], rhs = p[4])
 
     def p_usertype(self, p):
-        'type : ID opt_region_params'
+        'type : ID opt_type_params'
         p[0] = UserType(name = p[1], params = p[2])
 
-    def p_opt_region_params(self, p):
-        '''opt_region_params : \n | "<" region_list ">"'''
+    def p_opt_type_params(self, p):
+        '''opt_type_params : %prec EMPTY_TYPE_PARAM_LIST \n| "<" region_list ">"'''
+        if len(p) > 1:
+            p[0] = p[2]
+        else:
+            p[0] = []
+
+    def p_opt_task_params(self, p):
+        '''opt_task_params : \n| "[" region_list "]"'''
         if len(p) > 1:
             p[0] = p[2]
         else:
             p[0] = []
 
     def p_rrtype(self, p):
-        'type : RR "(" region_list ")" type WHERE const_list'
+        'type : RR "[" region_list "]" type WHERE const_list'
         p[0] = RRType(regions = p[3],
                       innertype = p[5],
                       constraints = p[7])
@@ -85,9 +97,23 @@ class Parser:
     def p_region_const(self, p):
         '''region_const : ID "*" ID \n | ID SUBSET ID'''
         p[0] = RegionConstraint(op = p[2], lhs = p[1], rhs = p[3])
-        
+
+    # def p_const_subregion(self, p):
+    #     'const_list : ID SUBSET ID \n | const_list AND ID SUBSET ID'
+    #     if len(p) == 4:
+    #         p[0] = RegionConstraints().add_subregion(p[1], p[3])
+    #     else:
+    #         p[0] = p[1].add_subregion(p[3], p[5])
+
+    # def p_const_disjoint(self, p):
+    #     'const_list : ID "*" ID \n | const_list AND ID "*" ID'
+    #     if len(p) == 4:
+    #         p[0] = RegionConstraints().add_disjoint(p[1], p[3])
+    #     else:
+    #         p[0] = p[1].add_disjoint(p[3], p[5])
+
     def p_taskdef(self, p):
-        'taskdef : TASK ID opt_region_params "(" formal_list ")" ":" type effects "=" expr'
+        'taskdef : TASK ID opt_task_params "(" formal_list ")" ":" type effects "=" expr'
         p[0] = Taskdef(name = p[2],
                        params = p[3],
                        formals = p[5],
@@ -127,8 +153,8 @@ class Parser:
 
     def p_letexpr(self, p):
         'expr : LET ID ":" type "=" expr IN expr'
-        p[0] = LetExpr(valname = p[1], valtype = p[3], valexpr = p[5],
-                       body = p[7])
+        p[0] = LetExpr(valname = p[2], valtype = p[4], valexpr = p[6],
+                       body = p[8])
         
     def p_identexpr(self, p):
         'expr : ID'
@@ -136,7 +162,7 @@ class Parser:
 
     def p_tupleexpr(self, p):
         'expr : "<" expr "," expr ">"'
-        p[0] = TupleExpr(lhs = p[1], rhs = p[3])
+        p[0] = TupleExpr(lhs = p[2], rhs = p[4])
 
     def p_readexpr(self, p):
         'expr : READ "(" expr ")"'
@@ -155,8 +181,8 @@ class Parser:
         p[0] = FieldExpr(subexpr = p[1], field = p[3])
 
     def p_binopexpr(self, p):
-        '''expr : expr LT expr
-                | expr GT expr
+        '''expr : expr "<" expr
+                | expr ">" expr
                 | expr "+" expr
                 | expr "|" expr'''
         p[0] = BinOpExpr(op = p[2], lhs = p[1], rhs = p[3])
@@ -166,7 +192,7 @@ class Parser:
         p[0] = IfExpr(condexpr = p[2], thenexpr = p[4], elseexpr = p[6])
 
     def p_callexpr(self, p):
-        'expr : ID opt_region_params "(" arg_list ")"'
+        'expr : ID opt_task_params "(" arg_list ")"'
         p[0] = CallExpr(name = p[1],
                         params = p[2],
                         args = p[4])
@@ -183,37 +209,37 @@ class Parser:
         p[0] = NewExpr(p[2])
 
     def p_partexpr(self, p):
-        'expr : PARTITION ID USING ID opt_region_params "(" arg_list ")" AS region_list IN expr'
+        'expr : PARTITION ID USING ID opt_task_params "(" arg_list ")" AS region_list IN expr'
         p[0] = PartitionExpr(region = p[2],
                              cf_name = p[4],
                              cf_params = p[5],
                              cf_args = p[7],
-                             subregions = p[9],
-                             body = p[11])
+                             subregions = p[10],
+                             body = p[12])
 
     def p_packexpr(self, p):
-        'expr : PACK expr AS type "(" region_list ")"'
+        'expr : PACK expr AS type "[" region_list "]"'
         p[0] = PackExpr(body = p[2],
                         rrtype = p[4],
                         rrparams = p[6])
 
     def p_unpackexpr(self, p):
-        'expr : UNPACK expr AS ID ":" type "(" region_list ")" IN expr'
+        'expr : UNPACK expr AS ID ":" type "[" region_list "]" IN expr'
         p[0] = UnpackExpr(argexpr = p[2],
                           name = p[4],
                           rrtype = p[6],
                           rrparams = p[8],
-                          body = p[10])
+                          body = p[11])
 
     def p_uprgnexpr(self, p):
-        'expr : UPREGION "(" expr "," ID ")"'
+        'expr : UPREGION "(" expr "," region_list ")"'
         p[0] = UpRegionExpr(ptrexpr = p[3],
-                            region = p[5])
+                            regions = p[5])
 
     def p_dnrgnexpr(self, p):
-        'expr : DOWNREGION "(" expr "," ID ")"'
+        'expr : DOWNREGION "(" expr "," region_list ")"'
         p[0] = DownRegionExpr(ptrexpr = p[3],
-                              region = p[5])
+                              regions = p[5])
 
     def p_parenexpr(self, p):
         'expr : "(" expr ")"'
@@ -243,9 +269,10 @@ class Parser:
 
     def parse(self, src, **kwargs):
         self.lexer.input(src)
-        self.parser.parse(lexer = self.lexer)
+        return self.parser.parse(lexer = self.lexer)
 
 if __name__ == '__main__':
     import sys
     p = Parser()
-    p.parse(sys.stdin)
+    pgrm = p.parse(sys.stdin)
+    pgrm.type_check()
