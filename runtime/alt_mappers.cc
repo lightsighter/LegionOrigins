@@ -56,7 +56,7 @@ void DebugMapper::map_task_region(const Task *task, const RegionRequirement &req
 {
   log_debug(LEVEL_SPEW,"Map task region in debug mapper for region %d of task %s (ID %d) "
       "(unique id %d) on processor %x",req.handle.region.id, task->variants->name,
-      task->task_id, task->get_unique_id(), local_proc.id);
+      task->task_id, task->unique_id, local_proc.id);
   // Always move things into the last memory in our stack
   target_ranking.push_back(memory_stack.back());
   enable_WAR_optimization = false;
@@ -69,7 +69,7 @@ void DebugMapper::rank_copy_targets(const Task *task, const RegionRequirement &r
 //--------------------------------------------------------------------------------------------
 {
   log_debug(LEVEL_SPEW,"Rank copy targets in debug mapper for task %s (ID %d) (unique id %d) "
-      "on processor %x", task->variants->name, task->task_id, task->get_unique_id(), local_proc.id);
+      "on processor %x", task->variants->name, task->task_id, task->unique_id, local_proc.id);
   // Always map things into the last memory in our stack
   future_ranking.push_back(memory_stack.back());
 }
@@ -107,7 +107,7 @@ void SequoiaMapper::map_task_region(const Task *task, const RegionRequirement &r
 {
   log_sequoia(LEVEL_SPEW,"Map task region in sequoia mapper for region %d of task %s (ID %d) "
       "(unique id %d) on processor %x",req.handle.region.id, task->variants->name,
-      task->task_id, task->get_unique_id(), local_proc.id);
+      task->task_id, task->unique_id, local_proc.id);
   // Perform a Sequoia-like creation of instances.  If this is the first instance, put
   // it in the global memory, otherwise find the instance closest to the processor and
   // select one memory closer.
@@ -151,7 +151,7 @@ void SequoiaMapper::rank_copy_targets(const Task *task, const RegionRequirement 
 //--------------------------------------------------------------------------------------------
 {
   log_sequoia(LEVEL_SPEW,"Rank copy targets in sequoia mapper for task %s (ID %d) (unique id %d) "
-      "on processor %x", task->variants->name, task->task_id, task->get_unique_id(), local_proc.id);
+      "on processor %x", task->variants->name, task->task_id, task->unique_id, local_proc.id);
   // This is also Sequoia-like creation of instances.  Find the least common denominator
   // in our stack and pick that memory followed by any memories after it back to the global memory
   if (current_instances.empty())
