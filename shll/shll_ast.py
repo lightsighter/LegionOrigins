@@ -82,6 +82,16 @@ class UnpackTypeMismatchError(TypeError):
         return ("type mismatch in unpack - wanted %s, got %s" %
                 (self.exptype, self.acttype))
 
+class WriteTypeMismatchError(TypeError):
+    def __init__(self, expr, ptrtype, valtype):
+        self.expr = expr
+        self.ptrtype = ptrtype
+        self.valtype = valtype
+
+    def __str__(self):
+        return ("can't write a value of type %s to a pointer of type %s" %
+                (self.valtype, self.ptrtype))
+
 class Program:
     def __init__(self):
         self.types = dict()
@@ -153,7 +163,7 @@ class IntType(Type):
     def rename(self, bindings):
         return self
 
-    def equals(self, other):
+    def equals(self, other, **kwargs):
         return isinstance(other, IntType)
 
 class BoolType(Type):
@@ -166,7 +176,7 @@ class BoolType(Type):
     def rename(self, bindings):
         return self
 
-    def equals(self, other):
+    def equals(self, other, **kwargs):
         return isinstance(other, BoolType)
 
 class PtrType(Type):
@@ -185,19 +195,19 @@ class PtrType(Type):
     def isnullptrtype(self):
         return ((self.elemtype is None) and (self.region is None))
 
-    def equals(self, other, nullok = True):
+    def equals(self, other, **kwargs):
         if not isinstance(other, PtrType):
             return False
         if self.isnullptrtype():
             if other.isnullptrtype():
                 return True
             else:
-                return nullok
+                return kwargs.get("nullok", True)
         else:
             if other.isnullptrtype():
-                return nullok
+                return kwargs.get("nullok", True)
             else:
-                return (self.elemtype.equals(other.elemtype) and
+                return (self.elemtype.equals(other.elemtype, **kwargs) and
                         (self.region == other.region))
 
 class TupleType(Type):
@@ -209,11 +219,11 @@ class TupleType(Type):
         return TupleType(self.lhs.rename(bindings), 
                          self.rhs.rename(bindings))
 
-    def equals(self, other):
+    def equals(self, other, **kwargs):
         if not isinstance(other, TupleType):
             return False
-        return (self.lhs.equals(other.lhs) and
-                self.rhs.equals(other.rhs))
+        return (self.lhs.equals(other.lhs, **kwargs) and
+                self.rhs.equals(other.rhs, **kwargs))
 
     def __str__(self):
         return ("<%s, %s>" % (self.lhs, self.rhs))
@@ -244,7 +254,7 @@ class UserType(Type):
             raise TypeParamCountError(self, utype)
         return utype.innertype.rename(dict(zip(utype.params, self.params)))
 
-    def equals(self, other):
+    def equals(self, other, **kwargs):
         # quick way - if both are the same usertype, just compare params
         if isinstance(other, UserType) and (self.name == other.name):
             for sp, op in zip(self.params, other.params):
@@ -252,7 +262,15 @@ class UserType(Type):
                     return False
             return True
 
-        raise BadBadBad()
+        # slower way - expand one/both of our types and recompare
+        selfexp = self.expand(kwargs.get("pgrm"))
+        print ("self: expanded %s to %s" % (self, selfexp))
+        if isinstance(other, UserType):
+            otherexp = other.expand(kwargs.get("pgrm"))
+            print ("other: expanded %s to %s" % (other, otherexp))
+        else:
+            otherexp = other
+        return selfexp.equals(otherexp, **kwargs)
 
 class RRType(Type):
     def __init__(self, regions, innertype, constraints):
@@ -275,7 +293,7 @@ class RRType(Type):
                       self.innertype.rename(newbindings),
                       [ c.rename(newbindings) for c in self.constraints ])
 
-    def equals(self, other):
+    def equals(self, other, **kwargs):
         if not isinstance(other, RRType):
             return False
 
@@ -285,7 +303,38 @@ class RRType(Type):
 
         # now see if the inner types are the same up to renaming
         return self.innertype.equals(other.innertype.rename(dict(zip(other.regions,
-                                                                     self.regions))))
+                                                                     self.regions))),
+                                     **kwargs)
+
+class RegionConstraints:
+    def __init__(self):
+        self.regions = dict()
+
+    def populate(self, *list):
+        for r in list:
+            if r in self.regions: continue
+            self.regions[r] = dict(subs = set(),
+                                   supers = set(),
+                                   disjoints = set())
+
+    def add_subregion(self, rc, rp):
+        self.populate(rc, rp)
+        # connect rc and all its children to rp and all its parents
+        subs = set(self.regions[rc]['subs'])
+        subs.add(rc)
+        supers = set(self.regions[rp]['supers'])
+        supers.add(rp)
+        for rc2 in subs:
+            self.regions[rc2]['supers'] |= supers
+        for rp2 in supers:
+            self.regions[rp2]['subs'] |= subs
+        return self
+
+    def add_disjoint(self, rc, rp):
+        self.populate(rc, rp)
+        self.regions[rc]['disjoints'].add(rp)
+        self.regions[rp]['disjoints'].add(rc)
+        return self
 
 class RegionConstraint:
     def __init__(self, op, lhs, rhs):
@@ -373,7 +422,7 @@ class LetExpr(Expr):
     def get_type(self, pgrm, env, privs, consts):
         # step 1: the value's expression must have the right type
         actvaltype = self.valexpr.get_type(pgrm, env, privs, consts)
-        if not self.valtype.equals(actvaltype):
+        if not self.valtype.equals(actvaltype, pgrm = pgrm):
             raise LetInitTypeError(self, self.valtype, actvaltype)
 
         # step 2: type check the body with an updated environment
@@ -473,7 +522,7 @@ class WriteExpr(Expr):
 
         # step 3: value type is element type of pointer
         valtype = self.valexpr.get_type(pgrm, env, privs, consts)
-        if not ptrtype.elemtype.equals(valtype):
+        if not ptrtype.elemtype.equals(valtype, pgrm = pgrm):
             raise WriteTypeMismatchError(self, ptrtype, valtype)
 
         # result of write is bool (an arbitrary choice)
@@ -510,7 +559,7 @@ class BinOpExpr(Expr):
             return IntType()
 
         # integer -> boolean ops
-        if (self.op == ".lt.") or (self.op == ".gt."):
+        if (self.op == "<") or (self.op == ">"):
             if not isinstance(lhstype, IntType):
                 raise WrongTypeClassError(self, "int", lhstype)
             if not isinstance(rhstype, IntType):
@@ -548,10 +597,14 @@ class IfExpr(Expr):
         thentype = self.thenexpr.get_type(pgrm, env, privs, consts)
         elsetype = self.elseexpr.get_type(pgrm, env, privs, consts)
 
-        if not thentype.equals(elsetype):
+        if not thentype.equals(elsetype, pgrm = pgrm):
             raise IfTypeMismatchError(self, thentype, elsetype)
 
-        return thentype
+        # special case: if then side is a null pointer, use else
+        if isinstance(thentype, PtrType) and thentype.isnullptrtype():
+            return elsetype
+        else:
+            return thentype
 
 class CallExpr(Expr):
     def __init__(self, name, params, args):
@@ -583,7 +636,7 @@ class CallExpr(Expr):
             exptype = task.formals.byname[n].rename(bindings)
             acttype = self.args[i].get_type(pgrm, env, privs, consts)
             #print "%s: %s vs %s" % (n, exptype, acttype)
-            if not exptype.equals(acttype):
+            if not exptype.equals(acttype, pgrm = pgrm):
                 raise TaskArgTypeMismatchError(self, task, n, exptype, acttype)
 
         # step 4: check effects against constraints
@@ -666,7 +719,8 @@ class PackExpr(Expr):
         if len(self.rrparams) <> len(exptype.regions):
             raise RRParamCountError(self, self.rrparams, exptype)
         exptype = exptype.innertype.rename(dict(zip(exptype.regions, self.rrparams)))
-        if not acttype.equals(exptype):
+        #print ("pack check:\n  %s\nvs\n  %s" % (exptype, acttype))
+        if not acttype.equals(exptype, pgrm = pgrm):
             raise PackTypeMismatchError(self, exptype, acttype)
 
         return self.rrtype
@@ -699,7 +753,7 @@ class UnpackExpr(Expr):
             exptype = exptype.expand(pgrm)
         if not isinstance(exptype, RRType):
             raise WrongTypeClassError(self, "RR", exptype)
-        if not acttype.equals(exptype):
+        if not acttype.equals(exptype, pgrm = pgrm):
             raise UnpackTypeMismatchError(self, exptype, acttype)
 
         # now expand the unpacked type with the new names
