@@ -1,7 +1,13 @@
 
-type CircuitNode           = <int/*charge*/ , < int/*voltage*/ , < int/*capacitance*/, int/*leakage*/> > > 
-type CircuitWire<rp,rs,rg> = <CircuitNode@rp/*private*/, <CircuitNode@(rp,rs,rg)/*any*/, <int /*inductance*/, <int /*resistance*/, 
-                                  <int /*current*/, <int /*capacitance*/, int /*voltage*/> > > > > >
+type CircuitNode           = <int/*charge*/ , 
+                              < int/*voltage*/ , 
+                              < int/*capacitance*/, int/*leakage*/> > > 
+type CircuitWire<rp,rs,rg> = <CircuitNode@rp/*private*/, 
+                              <CircuitNode@(rp,rs,rg)/*any*/, 
+                              <int /*inductance*/, 
+                              <int /*resistance*/, 
+                              <int /*current*/, 
+                              <int /*capacitance*/, int /*voltage*/> > > > > >
 
 type node_list<r,rn>          = < CircuitNode@rn , pointer_list<r,rn>@r > 
 type wire_list<r,rw,rp,rs,rg> = < CircuitWire<rp,rs,rg>@rw , wire_list<r,rw,rp,rs,rg>@r >
@@ -13,15 +19,46 @@ type wire_list<r,rw,rp,rs,rg> = < CircuitWire<rp,rs,rg>@rw , wire_list<r,rw,rp,r
  * rs - region with shared nodes
  * rg - region with ghost nodes
  */
-task calculate_currents_task[rl,rw,rp,rs,rg] ( ptr_list : wire_list<rl,rw,rp,rs,rg> ) : bool, reads(rl), rdwrs(rw), reads(rp,rs,rg) =
-    if isnull(ptr_list.1) then true else
-    let wire : CircuitWire<rp,rs,rg> = read(ptr_list.1) in
+task calculate_currents_task[rl,rw,rp,rs,rg] ( ptr_list : wire_list<rl,rw,rp,rs,rg>@rl ) : bool, 
+                             reads(rl), rdwrs(rw), reads(rp,rs,rg) =
+    if isnull(ptr_list) then true else
+    let wire_node : wire_list<rl,rw,rp,rs,rg> = read(ptr_list) in
+    let wire : CircuitWire<rp,rs,rg> = read(wire_node.1) in
     let in_node : CircuitNode = read(wire.1) in
     let out_node: CircuitNode = read(wire.2.1) in
-    let current : int = in_node.2.1 + out_node.2.1 in  /* Do some math */
-        true 
+    let current : int = in_node.2.1 + out_node.2.1 in  /* Do some math, any math */ 
+    let new_wire : CircuitWire<rp,rs,rg> = < wire.1, 
+                                            < wire.2.1, 
+                                            < wire.2.2.1, 
+                                            < wire.2.2.2.1, 
+                                            < current, 
+                                            < wire.2.2.2.2.2.1, wire.2.2.2.2.2.2 > > > > > > in
+    let junk : bool = write(wire_node.1, new_wire) in
+        calculate_currents_task[rl,rw,rp,rs,rg](wire_node.2)
+
+task distribute_charge_task[rl,rw,rp,rs,rg] ( ptr_list : wire_list<rl,rw,rp,rs,rg>@rl ) : bool,
+                            reads(rl), reads(rw), rdwrs(rp), reduces(rs,rg) =
+    if isnull(ptr_list) then true else
+    let wire_node : wire_list<rl,rw,rp,rs,rg> = read(ptr_list) in
+    let wire : CircuitWire<rp,rs,rg> = read(wire_node.1) in
+    let junk1 : bool = reduce(reduce_charge, wire.1, wire.2.2.2.2.1) in
+        true
     /*
-    let new_wire : CircuitWire<rp,rs,rg> = < wire.1, < wire.2.1, < wire.2.2.1, < wire.2.2.2.1, < current, < wire.2.2.2.2.2.1, wire.2.2.2.2.2.2 > > > > > > in
-    let junk : bool = write(ptr_list.1, new_wire) in
-        calculate_currents_task[rl,rw,rp,rs,rg](ptr_list.2)
+    let junk2 : bool = reduce(reduce_charge, wire.2.1, wire.2.2.2.2.1) in
+        distribute_charge_task[rl,rw,rp,rs,rg](wire_node.2)
         */
+
+
+task update_voltage_task[rl,rn] ( ptr_list : node_list<rl,rn>@rl ) : bool,
+                                reads(rl), rdwrs(rn) =
+    if isnull(ptr_list) then true else
+    let node_node : node_list<rl,rn> = read(ptr_list) in
+    let node : CircuitNode = read(node_node.1) in
+        true
+
+task reduce_charge ( node : CircuitNode, current : int ) : CircuitNode =
+    let new_charge : int = node.1 + current in
+    let result : CircuitNode = < new_charge,
+                                < node.2.1,
+                                < node.2.2.1, node.2.2.2 > > > in
+        result
