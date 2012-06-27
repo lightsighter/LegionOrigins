@@ -13,11 +13,11 @@ class Parser:
     precedence = (
         ('left', 'ELSE'),
         ('left', 'IN'),
-        ('left', '.'),
-        ('left', '+'), # integer math operators
+        ('left', '|'), # boolean operators
         ('left', 'EMPTY_TYPE_PARAM_LIST'),
         ('left', '<', '>'), # integer comparison operators
-        ('left', '|'), # boolean operators
+        ('left', '+'), # integer math operators
+        ('left', '.'),
         )
 
     def p_program(self, p):
