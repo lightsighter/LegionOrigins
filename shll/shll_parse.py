@@ -141,7 +141,7 @@ class Parser:
 
     def p_effects_writes(self, p):
         'effects : effects "," WRITES "(" region_list ")"'
-        p[0] = p[1].add_writess(p[5])
+        p[0] = p[1].add_writes(p[5])
 
     def p_effects_rdwrs(self, p):
         'effects : effects "," RDWRS "(" region_list ")"'
