@@ -1,0 +1,150 @@
+\begin{table*}
+\centering
+{\small
+\begin{tabular}{cclr}
+
+$T$ & ::= &  & types \\
+  &$\mid$& bool $\;\;\;\mid\;\;\;$ int & base types \\
+  &$\mid$& $\langle T_1, T_2 \rangle$ & tuple \\
+  &$\mid$& $T@(r_1, \ldots, r_n)$ & pointer \\
+  &$\mid$& $rr[r_1, \ldots, r_n] T where C$ & region relationship \\
+\\
+$C$ & ::= &  & constraints \\
+  &$\mid$& $r_1 \leq r_2$ & subregion \\
+  &$\mid$& $r_1 * r_2$ & disjointness \\
+  &$\mid$& $C_1 \wedge C_2$ & conjunction \\
+\\
+$v$ & ::= & & values \\
+  &$\mid$& $bv$ $\;\;\;\mid\;\;\;$ $iv$ & base values \\
+  &$\mid$& $\langle v_1, v_2 \rangle$ & tuple \\
+  &$\mid$& null $\;\;\;\mid\;\;\;$ $a$ & address \\
+  &$\mid$& $\langle \langle r_1, \ldots, r_n, v\rangle \rangle$ & region relationship \\
+\\
+$bv$ & ::= & false $\;\;\;\mid\;\;\;$ true \\
+\\
+$iv$ & ::= & 0 $\;\;\;\mid\;\;\;$ 1 $\ldots$ \\
+\\
+$e$ & ::= & & expressions \\
+  &$\mid$& $bv$ $\;\;\;\mid\;\;\;$ $iv$ $\;\;\;\mid\;\;\;$ null & constants \\
+  &$\mid$& $\langle e_1, e_2 \rangle$ $\;\;\;\mid\;\;\;$ $e$.1 $\;\;\;\mid\;\;\;$ $e$.2 & tuple \\
+  &$\mid$& $id$ &  \\
+  &$\mid$& $\text{new}\ T@r$ & allocation \\
+  &$\mid$& $\text{isnull}(e)$ & \\
+  &$\mid$& $\text{upregion}(e, r_1,\ldots,r_n)$ $\;\;\;\mid\;\;\;$ $\text{downregion}(e, r_1,\ldots,r_n)$ & \\
+  &$\mid$& $\text{read}(e_1)$ $\;\;\;\mid\;\;\;$ $\text{write}(e_1, e_2)$ $\;\;\;\mid\;\;\;$ $\text{reduce}(id, e_1, e_2)$ & memory access \\
+  &$\mid$& $e_1 + e_2$ & integer operations \\
+  &$\mid$& $e_1 < e_2$ $\;\;\;\mid\;\;\;$ $e_1 > e_2$ & comparison operations \\
+  &$\mid$& $\text{let}\ id : T = e_1 \text{in}\ e_2$ &  \\
+  &$\mid$& $\text{if}\ e_1\ \text{then}\ e_2\ \text{else}\ e_3$ &  \\
+  &$\mid$& $id(e_1, \ldots, e_n)$ $\;\;\;\mid\;\;\;$ $id[r_1, \ldots, r_n](e_1,\ldots,e_n)$ & task calls \\
+  &$\mid$& $\text{partition}\ r_p\ \text{using}\ id(e_1,\ldots,e_n)\ \text{as}\ r_1,\ldots,r_n\ \text{in}\ e_{n+1}$ &  \\
+  &$\mid$& $\text{pack}\ e_1\ \text{as}\ T[r_1,\ldots,r_n]$ &  \\
+  &$\mid$& $\text{unpack}\ e_1\ \text{as}\ id : T[r_1,\ldots,r_n]\ \text{in}\ e_2$ &  \\
+
+\end{tabular}
+}
+\caption{Types}
+\end{table*}
+
+%\newcommand{\infrule}[2]{\displaystyle\frac{\displaystyle\strut{#1}}{\displaystyle\strut {#2}}}
+\newcommand{\cinfrule}[3]{\parbox{14cm}{\hfil$\infrule{#1}{#2}$\hfil}\parbox{4cm}{$\,#3$\hfil}}
+\newcommand{\finfrule}[2]{\vspace{10pt}\framebox{$\infrule{#1}{#2}$}\vspace{10pt}}
+
+\newcommand{\infx}[2]{\infrule{\begin{array}{l}{#1}\end{array}}{#2}}
+
+\newcommand{\regionexpand}[0]{[r'_1/r_1, \ldots, r'_n/r_n]}
+\newcommand{\rtriple}[3]{\left({#1},{#2},{#3}\right)}
+\newcommand{\rsingle}[1]{\rtriple{#1}{\emptyset}{\top}}
+\newcommand{\rtripsub}[3]{\rtriple{#1}{\Phi_{#2}}{C_{#3}}}
+\newcommand{\envsub}[2]{\Gamma, \Phi_{#1}, C_{#2} \vdash}
+\newcommand{\typeenv}[0]{\Gamma, \Phi, C \vdash}
+\newcommand{\oton}[1]{{#1}_1,\ldots,{#1}_n}
+\newcommand{\otok}[2]{{#2}_1,\ldots,{#2}_{#1}}
+
+\pagebreak
+
+Type rules:
+
+\framebox{
+$
+\begin{array}{c}
+\typeenv bv : bool \\
+\typeenv iv : int \\
+\typeenv \text{null}\ : ??? \\
+\typeenv \text{new}\ T@r : T@r \\
+
+\end{array}
+$
+}
+
+\finfrule{\typeenv e : \langle T_1,T_2 \rangle}{\typeenv e\text{.1}\ : T_1} \hspace{1cm}
+\finfrule{\typeenv e : \langle T_1,T_2 \rangle}{\typeenv e\text{.2}\ : T_2} \\
+
+\finfrule{\Gamma(id) = T}{\typeenv id : T} \\
+
+\finfrule{\typeenv e : T@(\oton{r})}{\typeenv \text{isnull}(e) : bool} \\
+
+\finfrule{\begin{array}{l}\typeenv e : T@(\otok{k}{r'}) \\ C \models \bigwedge_{i \in [1,k]}\bigvee_{j \in [1,n]} r'_i <= r_j\end{array}}{\typeenv upregion(e,\oton{r}) : T@(\oton{r})} \\
+
+\finfrule{\begin{array}{l}\typeenv e : T@(\otok{k}{r'}) \\ C \models \bigwedge_{j \in [1,n]}\bigvee_{i \in [1,k]} r_j <= r'_i\end{array}}{\typeenv downregion(e,\oton{r}) : T@(\oton{r})} \\
+
+\finfrule{\begin{array}{l}\typeenv e_1 : T@(\oton{r}) \\ \forall i, reads(r_i) \in \Phi\end{array}}{\typeenv \text{read}(e_1) : T} \\
+
+\finfrule{\begin{array}{l}\typeenv e_1 : T@(\oton{r}) \\ \typeenv e_2 : T \\ \forall i, writes(r_i) \in \Phi\end{array}}{\typeenv \text{write}(e_1, e_2) : bool} \\
+
+\finfrule{\begin{array}{l}\typeenv e_1 : T_1@(\oton{r}) \\ \typeenv e_2 : T_2 \\ \typeenv id : (T_1,T_2) \rightarrow T_1 !!! \\ \forall i, (reduces(id, r_i) \in \Phi) \vee ((reads(r_i) \in \Phi) \wedge (writes(r_i) \in \Phi))\end{array}}{\typeenv \text{reduce}(id, e_1, e_2) : bool} \\
+
+\finfrule{\begin{array}{l}\typeenv e_1 : int \\ \typeenv e_2 : int\end{array}}{\typeenv e_1 + e_2 : int} \\
+
+\finfrule{\begin{array}{l}\typeenv e_1 : int \\ \typeenv e_2 : int\end{array}}{\typeenv e_1 < e_2 : bool} \hspace{1cm}
+\finfrule{\begin{array}{l}\typeenv e_1 : int \\ \typeenv e_2 : int\end{array}}{\typeenv e_1 > e_2 : bool} \\
+
+\finfrule{\begin{array}{l}\typeenv e_1 : T_1 \\ \Gamma' = \Gamma[id/T_1] \\ \Gamma', \Phi, C \vdash e_2 : T_2 \end{array}}{\typeenv : \text{let}\ id : T_1 \text{in}\ e_2 : T_2} \\
+
+\finfrule{\begin{array}{l}\typeenv e_1 : bool \\ \typeenv e_2 : T \\ \typeenv e_3 : T\end{array}}{\typeenv \text{if}\ e_1\ \text{then}\ e_2\ \text{else}\ e_3 : T} \\
+
+\finfrule{
+\begin{array}{l}
+id = \text{task}(f_1 : T_1, \ldots f_n : T_n) : T_r, E \\
+\typeenv e_i : T_i \\
+E \subset \Phi !!!
+\end{array}}
+{\typeenv id(\oton{e}) : T_r} \\
+
+\finfrule{
+\begin{array}{l}
+id = \text{task}[\otok{k}{r'}](f_1 : T_1, \ldots f_n : T_n) : T_r, E \\
+\typeenv e_i : T_i[r_1/r'_1,\ldots,r_k/r'_k] \\
+E[r_1/r'_1,\ldots,r_k/r'_k] \subset \Phi !!!
+\end{array}}
+{\typeenv id[\otok{k}{r}](\oton{e}) : T_r[r_1/r'_1,\ldots,r_k/r'_k]} \\
+
+\finfrule{
+\begin{array}{l}
+id = \text{task}(f_1 : T_1, \ldots f_n : T_n) : int, E \\
+\typeenv e_i : T_i \\
+T_n = ??? \\\
+E \subset \Phi !!! \\
+C' = C \wedge \bigwedge_{i \in [1,k]} r_i \leq r_p \wedge \bigwedge_{i \not= j} r_i * r_j \\
+\Gamma, \Phi, C' \vdash e_{n+1} : T_{n+1}
+\end{array}}
+{\typeenv \text{partition}\ r_p\ \text{using}\ id(\otok{n-1}{e})\ \text{as}\ \otok{k}{r}\ \text{in}\ e_{n+1} : T_{n+1}} \\
+
+\finfrule{
+\begin{array}{l}
+T_1 = rr[\otok{k}{r'}] T_2 where C_1 \\
+C \models C_1[r_1/r'_1,\ldots,r_k/r'_k] \\
+\typeenv e_1 : T_2[r_1/r'_1,\ldots,r_k/r'_k]
+\end{array}}
+{\typeenv \text{pack}\ e_1\ \text{as}\ T_1[\otok{k}{r}] : T_1} \\
+
+\finfrule{
+\begin{array}{l}
+T_1 = rr[\otok{k}{r'}] T_2 where C_1 \\
+\typeenv e_1 : T_1 \\
+\Gamma' = \Gamma[T_2[r_1/r'_1,\ldots,r_k/r'_k] / id] \\
+C' = C \wedge C_1[r_1/r'_1,\ldots,r_k/r'_k] \\
+\Gamma', \Phi, C' \vdash e_2 : T_3
+\end{array}}
+{\typeenv \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 : T_3} \\
+
