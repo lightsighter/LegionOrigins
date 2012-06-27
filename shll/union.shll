@@ -5,6 +5,6 @@ task bar[ra,rb] ( x : int ): int, reads(ra) =
     let p2 : int@(ra,rb) = upregion(p, ra, rb) in
     let p3 : foo<ra> = pack p2 as foo<ra>[ra,rb] in
     unpack p3 as p4 : foo<ra>[rc,rd] in
-    let p4 : int@rc = downregion(p4, rc) in
-    let p5 : int@ra = upregion(p4, ra) in
-    read(p5)
+    let p5 : int@rc = downregion(p4, rc) in
+    let p6 : int@ra = upregion(p5, ra) in
+    read(p6)
