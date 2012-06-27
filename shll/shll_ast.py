@@ -102,14 +102,15 @@ class WriteTypeMismatchError(TypeError):
                 (self.valtype, self.ptrtype))
 
 class ReduceTypeMismatchError(TypeError):
-    def __init__(self, expr, ptrtype, valtype):
+    def __init__(self, expr, func, ptrtype, valtype):
         self.expr = expr
+        self.func = func
         self.ptrtype = ptrtype
         self.valtype = valtype
 
     def __str__(self):
-        return ("can't reduce a value of type %s to a pointer of type %s" %
-                (self.valtype, self.ptrtype))
+        return ("can't use %s to reduce a value of type %s to a pointer of type %s" %
+                (self.func, self.valtype, self.ptrtype))
 
 class Program:
     def __init__(self):
@@ -422,7 +423,7 @@ class Effects:
             s += ", reads(" + ", ".join(self.reads) + ")"
         if len(self.writes) > 0:
             s += ", writes(" + ", ".join(self.writes) + ")"
-        for fname, rset in self.reduces:
+        for fname, rset in self.reduces.iteritems():
             s += ", reduces(" + fname + ", " + ", ".join(rset) + ")"
         return s
 
@@ -574,20 +575,36 @@ class ReduceExpr(Expr):
         if not isinstance(ptrtype, PtrType):
             raise NonPointerTypeError(self, ptrtype)
 
-        # step 2: check priviledges
-        if self.func not in privs.reduces:
-            raise NoReducePriviledgeError(self, ptrtype, privs)
+        # step 2: check priviledges 
+        #  two ways to get reduce privs - either have both read and write, or
+        #  have the explicit reduce priv for that function
         for r in ptrtype.regions:
-            if r not in privs.reduces[self.func]:
-                raise NoReducePriviledgeError(self, ptrtype, privs)
+            if not(r in privs.reads and r in privs.writes):
+                if self.func not in privs.reduces:
+                    raise NoReducePriviledgeError(self, ptrtype, privs)
+                if r not in privs.reduces[self.func]:
+                    raise NoReducePriviledgeError(self, ptrtype, privs)
 
         # TODO: check function signature - needs to be monomorphic, with
         #  first arg and result that match pointer's element type, and
         #  second arg that matches valtype
         valtype = self.valexpr.get_type(pgrm, env, privs, consts)
 
-        if not ptrtype.elemtype.equals(valtype, pgrm = pgrm):
-            raise ReduceTypeMismatchError(self, ptrtype, valtype)
+        if not self.func in pgrm.tasks:
+            raise UnknownTaskError(self, self.func, pgrm.tasks)
+        rdtask = pgrm.tasks[self.func]
+
+        if len(rdtask.formals.byorder) <> 2:
+            raise BadlyFormedReductionTaskError(self, rdtask)
+
+        if not ptrtype.elemtype.equals(rdtask.formals.byname[rdtask.formals.byorder[0]], pgrm = pgrm):
+            raise ReduceTypeMismatchError(self, self.func, ptrtype, valtype)
+            
+        if not valtype.equals(rdtask.formals.byname[rdtask.formals.byorder[1]], pgrm = pgrm):
+            raise ReduceTypeMismatchError(self, self.func, ptrtype, valtype)
+
+        if not ptrtype.elemtype.equals(rdtask.rettype, pgrm = pgrm):
+            raise ReduceTypeMismatchError(self, self.func, ptrtype, valtype)
 
         # result of reduce is bool (an arbitrary choice)
         return BoolType()
