@@ -1,0 +1,20 @@
+
+type CircuitNode           = <int/*charge*/ , < int/*voltage*/ , < int/*capacitance*/, int/*leakage*/> > > 
+type CircuitWire<rp,rs,rg> = <CircuitNode@rp/*private*/, <CircuitNode@(rp,rs,rg)/*any*/, <int /*inductance*/, <int /*resistance*/, 
+                                  <int /*current*/, <int /*capacitance*/, int /*voltage*/> > > > > >
+
+type node_list<r,rn>          = < CircuitNode@rn , pointer_list<r,rn>@r > 
+type wire_list<r,rw,rp,rs,rg> = < CircuitWire<rp,rs,rg>@rw , wire_list<r,rw,rp,rs,rg>@r >
+
+task calculate_currents_task[rl,rw,rp,rs,rg] ( ptr_list : wire_list<rl,rw,rp,rs,rg> ) : bool, reads(rl), rdwrs(rw), reads(rp,rs,rg) =
+    if isnull(ptr_list.1) then true else
+    let wire : CircuitWire<rp,rs,rg> = read(ptr_list.1) in
+    let in_node : CircuitNode = read(wire.1) in
+    let out_node: CircuitNode = read(wire.2.1) in
+    let current : int = in_node.2.1 + out_node.2.1 in  /* Do some math */
+        true 
+    /*
+    let new_wire : CircuitWire<rp,rs,rg> = < wire.1, < wire.2.1, < wire.2.2.1, < wire.2.2.2.1, < current, < wire.2.2.2.2.2.1, wire.2.2.2.2.2.2 > > > > > > in
+    let junk : bool = write(ptr_list.1, new_wire) in
+        calculate_currents_task[rl,rw,rp,rs,rg](ptr_list.2)
+        */
