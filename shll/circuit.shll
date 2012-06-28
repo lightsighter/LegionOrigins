@@ -74,8 +74,6 @@ task reduce_charge ( node : CircuitNode, current : int ) : CircuitNode =
                                 < node.2.2.1, node.2.2.2 > > > in
         result
 
-task nocolor[r] ( dummy : int) : int = 0
-
 task create_graph[rn,rw,rnl,rwl] ( dummy : int ) : <node_list<rnl,rn>@rnl, wire_list<rwl,rw>@rwl>,
                                                     rdwrs(rn,rw,rnl,rwl) =
     /* We're only pretending to create the graph here */
@@ -104,7 +102,7 @@ task build_wire_list[rw,rwl,rwi,rwli] ( list : wire_list<rwl,rw>@rwl ) : wire_li
     let result : wire_list<rwli,rwi>@rwli = new wire_list<rwli,rwi>@rwli in
         result
 
-task main_task[rtop] ( dummy : int ) : bool =
+task main_task[rtop] ( dummy : int ) : bool, rdwrs(rtop) =
     /* Create the node and wire regions */
     partition rtop using newcolor rtop as rn,rw,rnl,rwl,rwl0,rwl1,rwl2,rwl3,rnl0,rnl1,rnl2,rnl3 in
     /* Create the graph and get the pointers to the lists of pointers */
