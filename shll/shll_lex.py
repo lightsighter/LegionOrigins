@@ -8,6 +8,7 @@ class Lexer:
                 'and', 'reads', 'writes', 'rdwrs', 'reduces', 'true', 'false',
                 'read', 'write', 'reduce', 'if', 'then', 'else', 'new',
                 'isnull', 'null', 'partition', 'using', 'as', 'pack', 'unpack',
+                'coloring', 'newcolor', 'color',
                 'upregion', 'downregion')
 
     tokens = [

@@ -112,6 +112,40 @@ class ReduceTypeMismatchError(TypeError):
         return ("can't use %s to reduce a value of type %s to a pointer of type %s" %
                 (self.func, self.valtype, self.ptrtype))
 
+class ColoringRegionMismatchError(TypeError):
+    def __init__(self, expr, coloringtype, region):
+        self.expr = expr
+        self.coloringtype = coloringtype
+        self.region = region
+
+    def __str__(self):
+        return ("coloring type %s not compatible with %s" %
+                (self.coloringtype, self.region))
+
+class TaskArgTypeMismatchError(TypeError):
+    def __init__(self, expr, task, argname, exptype, acttype):
+        self.expr = expr
+        self.task = task
+        self.argname = argname
+        self.exptype = exptype
+        self.acttype = acttype
+
+    def __str__(self):
+        return ("type mismatch on argument %s to task %s: wanted %s, got %s" %
+                (self.argname, self.task,
+                 self.exptype, self.acttype))
+
+class TaskArgCountError(TypeError):
+    def __init__(self, expr, task, expcount, actcount):
+        self.expr = expr
+        self.task = task
+        self.expcount = expcount
+        self.actcount = actcount
+
+    def __str__(self):
+        return ("wrong number of arguments to task %s: wanted %d, got %d" %
+                (self.task.name, self.expcount, self.actcount))
+
 class Program:
     def __init__(self):
         self.types = dict()
@@ -216,29 +250,17 @@ class PtrType(Type):
                        [ bindings.get(x, x) for x in self.regions ])
                        #bindings.get(self.region))
 
-    def isnullptrtype(self):
-        return (self.elemtype is None)
-
     def equals(self, other, **kwargs):
         if not isinstance(other, PtrType):
             return False
-        if self.isnullptrtype():
-            if other.isnullptrtype():
-                return True
-            else:
-                return kwargs.get("nullok", True)
-        else:
-            if other.isnullptrtype():
-                return kwargs.get("nullok", True)
-            else:
-                if not self.elemtype.equals(other.elemtype, **kwargs):
-                    return False
-                if len(self.regions) <> len(other.regions):
-                    return False
-                for r1,r2 in zip(self.regions, other.regions):
-                    if r1 <> r2:
-                        return False
-                return True
+        if not self.elemtype.equals(other.elemtype, **kwargs):
+            return False
+        if len(self.regions) <> len(other.regions):
+            return False
+        for r1,r2 in zip(self.regions, other.regions):
+            if r1 <> r2:
+                return False
+        return True
 
 class TupleType(Type):
     def __init__(self, lhs, rhs):
@@ -301,6 +323,22 @@ class UserType(Type):
         else:
             otherexp = other
         return selfexp.equals(otherexp, **kwargs)
+
+class ColoringType(Type):
+    def __init__(self, region):
+        self.region = region
+
+    def __str__(self):
+        return ("coloring(%s)" % (self.region,))
+
+    def rename(self, bindings):
+        return ColoringType(region = bindings.get(self.region, self.region))
+
+    def equals(self, other, **kwargs):
+        if not isinstance(other, ColoringType):
+            return False
+
+        return (self.region == other.region)
 
 class RRType(Type):
     def __init__(self, regions, innertype, constraints):
@@ -673,11 +711,7 @@ class IfExpr(Expr):
         if not thentype.equals(elsetype, pgrm = pgrm):
             raise IfTypeMismatchError(self, thentype, elsetype)
 
-        # special case: if then side is a null pointer, use else
-        if isinstance(thentype, PtrType) and thentype.isnullptrtype():
-            return elsetype
-        else:
-            return thentype
+        return thentype
 
 class CallExpr(Expr):
     def __init__(self, name, params, args):
@@ -704,7 +738,7 @@ class CallExpr(Expr):
 
         # step 3: check argument count and types
         if len(self.args) <> len(task.formals.byorder):
-            raise TaskArgCountError(self, task)
+            raise TaskArgCountError(self, task, len(task.formals.byorder), len(self.args))
         for i, n in enumerate(task.formals.byorder):
             exptype = task.formals.byname[n].rename(bindings)
             acttype = self.args[i].get_type(pgrm, env, privs, consts)
@@ -732,26 +766,68 @@ class NewExpr(Expr):
             raise WrongTypeClassError(self, "pointer", self.ptrtype)
         return self.ptrtype
 
-class PartitionExpr(Expr):
-    def __init__(self, region, cf_name, cf_params, cf_args, subregions, body):
+class NewColorExpr(Expr):
+    def __init__(self, region):
         self.region = region
-        self.cf_name = cf_name
-        self.cf_params = cf_params
-        self.cf_args = cf_args
+
+    def __str__(self):
+        return ("newcolor %s" % (self.region,))
+
+    def get_type(self, pgrm, env, privs, consts):
+        return ColoringType(self.region)
+
+class ColorExpr(Expr):
+    def __init__(self, coloring, ptr, color):
+        self.coloring = coloring
+        self.ptr = ptr
+        self.color = color
+
+    def __str__(self):
+        return ("color(%s, %s, %s)" % (self.coloring,
+                                       self.ptr,
+                                       self.color))
+
+    def get_type(self, pgrm, env, privs, consts):
+        coloringtype = self.coloring.get_type(pgrm, env, privs, consts)
+        ptrtype = self.ptr.get_type(pgrm, env, privs, consts)
+        colortype = self.color.get_type(pgrm, env, privs, consts)
+
+        # requirement 1: region must match between coloring and ptrtype
+        if not isinstance(coloringtype, ColoringType):
+            raise WrongTypeClassError(self, "coloring", coloringtype)
+        if not isinstance(ptrtype, PtrType):
+            raise WrongTypeClassError(self, "pointer", ptrtype)
+        if (len(ptrtype.regions) <> 1) or (ptrtype.regions[0] <> coloringtype.region):
+            raise ColoringRegionMismatchError(self, coloringtype, ptrtype)
+
+        # requirement 2: color must be an integer
+        if not isinstance(colortype, IntType):
+            raise WrongTypeClassError(self, "integer", colortype)
+
+        # return type is same as original coloring
+        return coloringtype
+
+class PartitionExpr(Expr):
+    def __init__(self, region, coloring, subregions, body):
+        self.region = region
+        self.coloring = coloring
         self.subregions = subregions
         self.body = body
 
     def __str__(self):
-        return ("partition %s using %s%s(%s) as %s in %s" %
+        return ("partition %s using %s as %s in %s" %
                 (self.region,
-                 self.cf_name,
-                 ("<" + ", ".join(self.cf_params) + ">" if len(self.cf_params) > 0 else ""),
-                 self.cf_args,
+                 self.coloring,
                  ", ".join(self.subregions),
                  self.body))
 
     def get_type(self, pgrm, env, privs, consts):
-        # TODO: check partitioning function args/privs
+        # coloring must be a coloringtype and match the region being partitioned
+        coloringtype = self.coloring.get_type(pgrm, env, privs, consts)
+        if not isinstance(coloringtype, ColoringType):
+            raise WrongTypeClassError(self, "coloring", coloringtype)
+        if self.region <> coloringtype.region:
+            raise ColoringRegionMismatchError(self, coloringtype, self.region)
 
         # add constraints that each subregion is a subset of the original,
         #  and that they are disjoint from each other
@@ -904,15 +980,18 @@ class IsNullExpr(Expr):
         return BoolType()
 
 class NullConstExpr(Expr):
-    def __init__(self):
-        pass
+    def __init__(self, ptrtype):
+        self.ptrtype = ptrtype
 
     def __str__(self):
-        return "null"
+        return ("null %s" % (self.ptrtype,))
 
     def get_type(self, pgrm, env, privs, consts):
-        # TODO: is there a better way to handle this?
-        return PtrType(elemtype = None, regions = [ None ])
+        # check to make sure we actually have a pointer type - if we do,
+        #  that's our type
+        if not isinstance(self.ptrtype, PtrType):
+            raise WrongTypeClassError(self, "pointer", self.ptrtype)
+        return self.ptrtype
 
 class IntConstExpr(Expr):
     def __init__(self, value):

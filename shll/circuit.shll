@@ -84,12 +84,12 @@ task create_graph[rn,rw,rnl,rwl] ( dummy : int ) : <node_list<rnl,rn>@rnl, wire_
         <node_ptr,wire_ptr>
 
 /* Node partitioning functions */
-task partition_all_nodes[rn] ( node : CircuitNode@rn, dummy : int ) : int = 0
-task partition_private_nodes[rn] ( node : CircuitNode@rn, dummy : int ) : int = 0
-task partition_shared_nodes[rn] ( node : CircuitNode@rn, dummy : int ) : int = 0
-task partition_ghost_nodes[rn] ( node : CircuitNode@rn, dummy : int ) : int = 0
+task partition_all_nodes[rn] ( /*node : CircuitNode@rn,*/ dummy : int ) : coloring(rn) = newcolor rn
+task partition_private_nodes[rn] ( /*node : CircuitNode@rn,*/ dummy : int ) : coloring(rn) = newcolor rn
+task partition_shared_nodes[rn] ( /*node : CircuitNode@rn,*/ dummy : int ) : coloring(rn) = newcolor rn
+task partition_ghost_nodes[rn] ( /*node : CircuitNode@rn,*/ dummy : int ) : coloring(rn) = newcolor rn
 /* Wire partitioning functions */
-task partition_wires[rw,rp,rs,rg] ( wire : CircuitWire<rp,rs,rg>@rw, dummy : int ) : int = 0
+task partition_wires[rw,rp,rs,rg] ( /*wire : CircuitWire<rp,rs,rg>@rw,*/ dummy : int ) : coloring(rw) = newcolor rw
 
 /* Functions for building the wires and node lists for each piece */
 task build_node_list[rn,rnl,rni,rnli] ( list : node_list<rnl,rn>@rnl ) : node_list<rnli,rni>@rnli,
@@ -106,7 +106,7 @@ task build_wire_list[rw,rwl,rwi,rwli] ( list : wire_list<rwl,rw>@rwl ) : wire_li
 
 task main_task[rtop] ( dummy : int ) : bool =
     /* Create the node and wire regions */
-    partition rtop using nocolor[rtop](0) as rn,rw,rnl,rwl,rwl0,rwl1,rwl2,rwl3,rnl0,rnl1,rnl2,rnl3 in
+    partition rtop using newcolor rtop as rn,rw,rnl,rwl,rwl0,rwl1,rwl2,rwl3,rnl0,rnl1,rnl2,rnl3 in
     /* Create the graph and get the pointers to the lists of pointers */
     let list_ptrs : <node_list<rnl,rn>@rnl,wire_list<rwl,rw>@rwl> = create_graph[rn,rw,rnl,rwl](0) in
     /* Partition the graph into all_shared and all_private */
@@ -122,10 +122,10 @@ task main_task[rtop] ( dummy : int ) : bool =
     /* Partition the wires into the pieces */
     partition rw using partition_wires[rw,rn,rn,rn](0) as rw0,rw1,rw2,rw3 in
     /* Build the lists of the nodes and wires for each piece */
-    let node_list0 : node_list<rnl0,rp0>@rnl0 = build_node_list[rn,rnl,rn0,rnl0](list_ptrs.1) in
-    let node_list1 : node_list<rnl1,rp1>@rnl1 = build_node_list[rn,rnl,rn1,rnl1](list_ptrs.1) in
-    let node_list2 : node_list<rnl2,rp2>@rnl2 = build_node_list[rn,rnl,rn2,rnl2](list_ptrs.1) in
-    let node_list3 : node_list<rnl3,rp3>@rnl3 = build_node_list[rn,rnl,rn3,rnl3](list_ptrs.1) in
+    let node_list0 : node_list<rnl0,rp0>@rnl0 = build_node_list[rn,rnl,rp0,rnl0](list_ptrs.1) in
+    let node_list1 : node_list<rnl1,rp1>@rnl1 = build_node_list[rn,rnl,rp1,rnl1](list_ptrs.1) in
+    let node_list2 : node_list<rnl2,rp2>@rnl2 = build_node_list[rn,rnl,rp2,rnl2](list_ptrs.1) in
+    let node_list3 : node_list<rnl3,rp3>@rnl3 = build_node_list[rn,rnl,rp3,rnl3](list_ptrs.1) in
     let wire_list0 : wire_list<rwl0,rw0>@rwl0 = build_wire_list[rw,rwl,rw0,rwl0](list_ptrs.2) in
     let wire_list1 : wire_list<rwl1,rw1>@rwl1 = build_wire_list[rw,rwl,rw1,rwl1](list_ptrs.2) in
     let wire_list2 : wire_list<rwl2,rw2>@rwl2 = build_wire_list[rw,rwl,rw2,rwl2](list_ptrs.2) in

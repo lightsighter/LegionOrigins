@@ -60,6 +60,10 @@ class Parser:
         'type : ID opt_type_params'
         p[0] = UserType(name = p[1], params = p[2])
 
+    def p_coloringtype(self, p):
+        'type : COLORING "(" ID ")"'
+        p[0] = ColoringType(region = p[3])
+
     def p_opt_type_params(self, p):
         '''opt_type_params : %prec EMPTY_TYPE_PARAM_LIST \n| "<" region_list ">"'''
         if len(p) > 1:
@@ -208,14 +212,24 @@ class Parser:
         'expr : NEW type'
         p[0] = NewExpr(p[2])
 
+    def p_nullexpr(self, p):
+        'expr : NULL type'
+        p[0] = NullConstExpr(p[2])
+
+    def p_newcolor(self, p):
+        'expr : NEWCOLOR ID'
+        p[0] = NewColorExpr(region = p[2])
+
+    def p_color(self, p):
+        'expr : COLOR "(" expr "," expr "," expr ")"'
+        p[0] = ColorExpr(coloring = p[3], ptr = p[5], color = p[7])
+
     def p_partexpr(self, p):
-        'expr : PARTITION ID USING ID opt_task_params "(" arg_list ")" AS region_list IN expr'
+        'expr : PARTITION ID USING expr AS region_list IN expr'
         p[0] = PartitionExpr(region = p[2],
-                             cf_name = p[4],
-                             cf_params = p[5],
-                             cf_args = p[7],
-                             subregions = p[10],
-                             body = p[12])
+                             coloring = p[4],
+                             subregions = p[6],
+                             body = p[8])
 
     def p_packexpr(self, p):
         'expr : PACK expr AS type "[" region_list "]"'
@@ -248,10 +262,6 @@ class Parser:
     def p_isnullexpr(self, p):
         'expr : ISNULL "(" expr ")"'
         p[0] = IsNullExpr(p[3])
-
-    def p_nullconst(self, p):
-        'expr : NULL'
-        p[0] = NullConstExpr()
 
     def p_intconst(self, p):
         'expr : INTVAL'

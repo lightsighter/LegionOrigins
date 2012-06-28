@@ -2,10 +2,8 @@
 
 type pp<r1> = rr[r2] < int@r1, < int@r2, int@r2 > > where r2 <= r1
 
-task nocolor[r]( dummy : int, ptr : int@r ) : int = 0
-
 task check1[r]( x : int ) : bool, rdwrs(r) =
-    partition r using nocolor[r](0) as rc1, rc2 in
+    partition r using newcolor r as rc1, rc2 in
     let p1 : int@r = new int@r in
     let p2 : int@rc1 = new int@rc1 in
     let p3 : int@rc1 = new int@rc1 in
@@ -14,7 +12,7 @@ task check1[r]( x : int ) : bool, rdwrs(r) =
     write(upregion(v2.2.1, r), 0)
 
 task check2[r]( x : int ) : bool, rdwrs(r) =
-    partition r using nocolor[r](0) as rc1, rc2 in
+    partition r using newcolor r as rc1, rc2 in
     let p1 : int@r = new int@r in
     let p2 : int@rc1 = new int@rc1 in
     let p3 : int@rc1 = new int@rc1 in
@@ -25,7 +23,7 @@ task check2[r]( x : int ) : bool, rdwrs(r) =
 
 /* this one shouldn't work, and doesn't type check */
 task check3[r]( x : int ) : bool, rdwrs(r) =
-    partition r using nocolor[r](0) as rc1, rc2 in
+    partition r using newcolor r as rc1, rc2 in
     let p1 : int@r = new int@r in
     let p2 : int@rc1 = new int@rc1 in
     let p3 : int@rc1 = new int@rc1 in
@@ -37,7 +35,7 @@ task check3[r]( x : int ) : bool, rdwrs(r) =
 /* this one is safe because the dynamic check performed by the downregion()
   will null out the pointer if it's not in the subregion */
 task check4[r]( x : int ) : bool, rdwrs(r) =
-    partition r using nocolor[r](0) as rc1, rc2 in
+    partition r using newcolor r as rc1, rc2 in
     let p1 : int@r = new int@r in
     let p2 : int@rc1 = new int@rc1 in
     let p3 : int@rc1 = new int@rc1 in
