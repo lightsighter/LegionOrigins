@@ -149,7 +149,8 @@ Type rules:
 \begin{array}{l}
 \typeenv e_1 : \text{coloring}(r_p) \\
 \Omega' = \Omega \wedge \bigwedge_{i \in [1,k]} r_i \leq r_p \wedge \bigwedge_{i \not= j} r_i * r_j \\
-\Gamma, \Phi, \Omega' \vdash e_2 : T
+\Gamma, \Phi, \Omega' \vdash e_2 : T \\
+r_i \not\in \textit{regions\_of}(\Gamma, T)
 \end{array}}
 {\typeenv \text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2 : T} \\
 
@@ -167,7 +168,8 @@ T_1 = \exists \otok{k}{r'}. T_2\text{ where }\Omega_1 \\
 \typeenv e_1 : T_1 \\
 \Gamma' = \Gamma[T_2[r_1/r'_1,\ldots,r_k/r'_k] / id] \\
 \Omega' = \Omega \wedge \Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \\
-\Gamma', \Phi, \Omega' \vdash e_2 : T_3
+\Gamma', \Phi, \Omega' \vdash e_2 : T_3 \\
+r_i \not\in \textit{regions\_of}(\Gamma, T_1, T_3)
 \end{array}}
 {\typeenv \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 : T_3} \\
 
@@ -402,6 +404,71 @@ then for all effects $\epsilon$ in $E$,
 \item if $\epsilon = reduce(id, l, v)$, then for some $r$, $reduces(id,r) \in \Phi \wedge l \in M(r)$
 \end{enumerate}
 
+\subsection{Strategy}
 
+\newcommand{\llbracket}{[\![}
+\newcommand{\rrbracket}{]\!]}
+
+The mapping $M$ is a function from logical region names $r$ to physical regions $\rho$.  It will
+be convenient to apply $M$ to types and even functions that operate on types by defining
+$\hat x = M \llbracket x \rrbracket$ to be $x$ with all logical region names $r_i$ replaced by their
+corresponding physical region $\rho_i = M(r_i)$.  Note that $M \llbracket x \rrbracket$ is not
+well-formed if it contains a logical region name $r_j \not\in dom(M)$. \\
+
+Soundness is proven using induction over the structure of an expression.  A number of properties
+are assumed and/or proven at each step: 
+\begin{enumerate}
+\item $M \sim \Omega \Leftrightarrow (\forall r_i, r_j. r_i \leq r_j \in \Omega \rightarrow M(r_i) \subseteq M(r_j)) \wedge (\forall r_i, r_j. r_i * r_j \in \Omega \rightarrow M(r_i) \cap M(r_j) = \emptyset)$, that M is an $\Omega$-satisfying mapping of logical regions to physical regions
+\item $\hat T = M \llbracket T \rrbracket$, a {\em physical type}, constructed by replacing all of the free region names $r$ in T with the physical regions $\rho = M(r)$
+\item $v \sim_H \hat T$, value consistency with respect to a heap typing.  Value consistency is
+itself defined inductively over the structure of a type:
+\begin{enumerate}
+\item $bv \sim_H bool$
+\item $iv \sim_H int$
+\item $null \ sim_H T@\rho$
+\item $l \sim_H T@\rho \Leftrightarrow (l \in \rho) \wedge (H(l) \sim_H T)$
+\item $\langle v_1, v_2 \rangle \sim_H \langle \hat T_1, \hat T_2 \rangle \Leftrightarrow (v_1 \sim_H \hat T_1) \wedge (v_2 \sim_H \hat T_2)$
+\item $\langle \langle \oton{\rho}, v \rangle \rangle \sim_H \text{rr}[\oton{r}] \hat T\text{ where }\Omega \Leftrightarrow (v \sim_H \hat T[\rho_1/r_1, \ldots \rho_n/r_n]) \wedge (\{ (r_i, \rho_i) \} \sim \Omega)$
+\end{enumerate}
+\item $L \sim_H M \llbracket \Gamma \rrbracket \Leftrightarrow \forall (id,v) \in L. v \sim_H M \llbracket \Gamma \rrbracket (id) $, local stack consistency with respect to a heap typing
+\item $S \sim H \Leftrightarrow \forall (l,v) \in S. v \sim_H H(l)$, store consistency with respect to a given heap typing
+\item $E \sim H \Leftrightarrow (\forall l, v. write(l,v) \in E \rightarrow v \sim_H H(l)) \wedge (\forall id, l, v. reduce_{id}(l, v) \in E \rightarrow (\hat \Gamma (id) = (\hat T_1, \hat T_2), \emptyset \rightarrow \hat T_1) \wedge H(l) = \hat T_1 \wedge v \sim_H \hat T_2)$, effect consistnecy with respect to a given heap typing
+\end{enumerate}
+
+Armed with all of these, we look at the following property:
+\begin{enumerate}
+\item $E \sim_H \Phi$, containment of effects within privileges
+\end{enumerate}
+
+and prove
+
+\finfrule
+{\begin{array}{l}
+\typeenv e : T \\
+\opsenv e \mapsto v, E \\
+M \sim \Omega \hspace{1cm}
+L \sim_H \Gamma \hspace{1cm}
+S \sim H
+\end{array}}
+{
+v \sim_H M \llbracket T \rrbracket \hspace{1cm}
+E \sim_H \Phi
+}
+
+A few lemmas will be useful:
+
+\finfrule
+{\begin{array}{l}
+S \sim H \hspace{1cm}
+E \sim H
+\end{array}}
+{ \text{apply}(S, E, C) \sim H }
+
+\finfrule
+{\begin{array}{l}
+E_1 \sim_H \Phi \hspace{1cm}
+E_2 \sim_H \Phi
+\end{array}}
+{ E_1 ++ E_2 \sim_H \Phi }
 
 
