@@ -470,6 +470,13 @@ E \sim H
 
 \finfrule
 {\begin{array}{l}
+E_1 \sim H \hspace{1cm}
+E_2 \sim H
+\end{array}}
+{ E_1 \dplus E_2 \sim H } \\
+
+\finfrule
+{\begin{array}{l}
 E_1 : \Phi \hspace{1cm}
 E_2 : \Phi
 \end{array}}
@@ -514,3 +521,97 @@ Unpack & & &
 \end{tabular}}
 \caption{Proof pieces}
 \end{table*}
+
+
+\subsection{Noninterference}
+
+For a given expression $e$, we can consider $v^o$ to be a ``sequential'' result and $E^o$ to be the corresponding ``sequential'' effects if: \\
+
+\framebox{$M, L, H, S, \emptyset \vdash e \mapsto v^o, E^o$} \\
+
+(i.e. if there are no manipulations of the store other than what's done by
+the evaluation of the expression $e$.)  We now wish to consider what parallel
+evaluations of this expression with other expression evaluations will still
+yield our ``sequential'' result. \\
+
+Two effects are considered to be noninterfering, written $E_1 \# E_2$ if for
+every $\epsilon_1$ in $E_1$ and every $\epsilon_2$ in $E_2$,
+\begin{enumerate}
+\item $\epsilon_1$ and $\epsilon_2$ are to different memory locations, or
+\item $\epsilon_1 = read(l, v_1)$ and $\epsilon_2 = read(l, v_2)$, or
+\item $\epsilon_1 = reduce_{id}(l, v_1)$ and $\epsilon_2 = reduce_{id}(l, v_2)$
+\end{enumerate}
+
+We define nonintereference (under a given mapping $M$) of static privileges
+$\Phi_1$ and $\Phi_2$ similarly.  We use the following table for determining
+noninterference of two individual priviledges $\phi_1$ and $\phi_2$:
+
+\begin{tabular}{ccccc}
+\multicolumn{2}{l}{$\phi_1 \#_M \phi_2 ?$} & \multicolumn{3}{c}{$\phi_2$} \\
+\multicolumn{2}{l}{} & $reads(r_2)$ & $writes(r_2)$ & $reduces(id_2, r_2)$ \\
+\multirow{3}{*}{$\phi_1$} & $reads(r_1)$ & true & $M(r_1) \cap M(r_2) = \emptyset$ & $M(r_1) \cap M(r_2) = \emptyset$\\
+& $writes(r_1)$ & $M(r_1) \cap M(r_2) = \emptyset$ & $M(r_1) \cap M(r_2) = \emptyset$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+& $reduces(id_1, r_1)$ & $M(r_1) \cap M(r_2) = \emptyset$ & $M(r_1) \cap M(r_2) = \emptyset$ & $\begin{array}{l}id_1 = id_2 \vee \\ M(r_1) \cap M(r_2) = \emptyset\end{array}$
+\end{tabular}
+
+We can then define: \\
+
+\framebox{$\Phi_1 \#_M \Phi_2 \Leftrightarrow \displaystyle\bigwedge_{\begin{array}{c}\phi_1 \in \Phi_1 \\ \phi_2 \in \Phi_2 \end{array}} \phi_1 \#_M \phi_2$} \\
+
+From the soundness of effects, result, we can show that for two expressions
+$e_1$ and $e_2$, if their privileges are noninterfering, any potential memory
+traces from their evaluation must also be noninterfering.  Formally:
+
+\finfrule
+{\begin{array}{l}
+\Gamma, \Phi_1, \Omega \vdash e_1 : T_1 \\
+\Gamma, \Phi_2, \Omega \vdash e_2 : T_2 \\
+\opsenv e_1 \mapsto v_1, E_1 \\
+\opsenv e_2 \mapsto v_2, E_2 \\
+\Phi_1 \#_M \Phi_2
+\end{array}}
+{E_1 \# E_2}
+
+(TODO: Generalize this further and allow $M_1 \not= M_2$?) \\
+
+Note that this result holds even if $C \not= \emptyset$.  This allows 
+two ``locally independent'' subtasks to run in parallel even if one or both
+of them is interacting (in a programmer-permitted way) with a third subtask.
+
+Noninterference of effects is something that can only be determined after
+evaluation of an expression is completed, and only at great expense (see STM).
+In contrast, the noninterference of privileges can be efficiently determined at
+runtime.  Even though the privileges themselves are static, the
+mapping $M$ can be dynamically determined, allowing noninterference to be 
+judged in many more cases than a purely static analysis can achieve.
+
+(TODO: Talk about coherence modes and how the runtime orders subtasks.  Maybe
+describe it in terms of a ``canonical'' memory trace and then allow
+reorderings?)
+
+\subsection{Hierarchical Scheduling}
+
+Let $e_1$ and $e_2$ be expressions that require privileges $\Phi_1$ and
+$\Phi_2$.  Now let $e_3$ be some subexpression of $e_1$ and $e_4$ be some 
+subexpression of $e_2$, with corresponding privileges $\Phi_3$ and $\Phi_4$.
+
+Proper scheduling of the evaluation of $e_3$ and $e_4$ depends on whether
+they interfere.  If they do intefere (and must therefore be serialized), we
+will have $E_3 \cancel\# E_4$, and by the above result, $\Phi_3 \cancel\# \Phi_4$. 
+
+We now show that this will also imply that $\Phi_1 \cancel\# \Phi_2$, and
+unless sequential behavior has been relaxed by the programmer, the
+evaluations of $e_1$ and $e_2$ will be serialized.  Since the evaluation of
+$e_3$ is a subsequence of the evaluation of $e_1$ and the evaluation of $e_4$
+is a subsequence of the evaluation of $e_2$, the evaluations of $e_3$ and $e_4$
+are properly serialized as well.
+
+Conversely, if $e_1$ and $e_2$ are judged to be noninterfering, the schedule
+does not need to check for interference between $e_3$ and $e_4$, as their
+noninterference is guaranteed.
+
+Proof is straightforward once armed with the following lemmas:
+
+\framebox{$\Phi_1 \#_M \Phi_2 \Leftrightarrow \Phi_1^* \#_M \Phi_2^*$}
+
+\framebox{$\Phi_1 \#_M \Phi_2 \wedge \Phi_3 \subseteq \Phi_2 \Rightarrow \Phi_1 \#_M \Phi_3$}
