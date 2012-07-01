@@ -3472,6 +3472,10 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(valid);
       verify_access(ptr.value);
+#else
+#ifdef POINTER_CHECKS
+      verify_access(ptr.value);
+#endif
 #endif
       return static_cast<LowLevel::RegionInstanceAccessor<T,AT_CONV(AT)> >(instance).read(ptr); 
     }
@@ -3484,6 +3488,10 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(valid);
       verify_access(ptr.value);
+#else
+#ifdef POINTER_CHECKS
+      verify_access(ptr.value);
+#endif
 #endif
       static_cast<LowLevel::RegionInstanceAccessor<T,AT_CONV(AT)> >(instance).write(ptr,newval); 
     }
@@ -3496,6 +3504,10 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(valid);
       verify_access(ptr.value);
+#else
+#ifdef POINTER_CHECKS
+      verify_access(ptr.value);
+#endif
 #endif
       return static_cast<LowLevel::RegionInstanceAccessor<T,AT_CONV(AT)> >(instance).ref(ptr); 
     }
@@ -3508,6 +3520,10 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(valid);
       verify_access(ptr.value);
+#else
+#ifdef POINTER_CHECKS
+      verify_access(ptr.value);
+#endif
 #endif
       static_cast<LowLevel::RegionInstanceAccessor<T,AT_CONV(AT)> >(instance).read_partial(ptr, offset, dst, size);
     }
@@ -3520,6 +3536,10 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(valid);
       verify_access(ptr.value);
+#else
+#ifdef POINTER_CHECKS
+      verify_access(ptr.value);
+#endif
 #endif
       static_cast<LowLevel::RegionInstanceAccessor<T,AT_CONV(AT)> >(instance).write_partial(ptr, offset, src, size);
     }
@@ -3532,6 +3552,10 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(valid);
       verify_access(ptr.value);
+#else
+#ifdef POINTER_CHECKS
+      verify_access(ptr.value);
+#endif
 #endif
       static_cast<LowLevel::RegionInstanceAccessor<T,AT_CONV(AT)> >(instance).reduce<REDOP>(ptr,newval); 
     }

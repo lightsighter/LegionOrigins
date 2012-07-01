@@ -1,0 +1,180 @@
+
+type Cell = < int/*temperature*/, int/*position*/>
+
+type Flux<rp,rs,rg,rb> = < int/*flux*/,
+                         < Cell@(rp,rs,rg,rb), /*flow in*/
+                           Cell@(rp,rs,rg,rb)  /*flow out*/ > >
+
+type cell_list<r,rc> = < Cell@rc, cell_list<r,rc>@r >
+type cell_list2<r,ra,rb> = < Cell@(ra,rb), cell_list2<r,ra,rb>@r >
+type flux_list<r,rf,rp,rs,rg,rb> = < Flux<rp,rs,rg,rb>@rf, flux_list<r,rf,rp,rs,rg,rb>@r >
+
+/**
+ * rl - list of boundary cells below
+ * rb - boundary region below
+ * rp - private region above
+ * rs - shared region above
+ */
+task interpolate_boundary[rl,rb,rp,rs] ( ptr_list : cell_list<rl,rb>@rl ) : bool,
+                          reads(rl), rdwrs(rb), reads(rp,rs) =
+    if isnull(ptr_list) then true else
+    let cell_node : cell_list<rl,rb> = read(ptr_list) in
+    let cell : Cell = read(cell_node.1) in
+    /* Pretend like we interpolate the boundary cell value from the enclosing parent cells */
+    let new_cell : Cell = cell in
+    let junk : bool = write(cell_node.1, new_cell) in
+        interpolate_boundary[rl,rb,rp,rs](cell_node.2)
+
+/**
+ * rl - list of fluxes to be computed
+ * rf - fluxes region
+ * rp - private cells
+ * rs - shared cells
+ * rg - ghost cells
+ * rb - boundary cells
+ */
+task calculate_fluxes[rl,rf,rp,rs,rg,rb] ( ptr_list : flux_list<rl,rf,rp,rs,rg,rb>@rl ) : bool,
+                      reads(rl), rdwrs(rf), reads(rp,rs,rg,rb) = 
+    if isnull(ptr_list) then true else
+    let flux_node : flux_list<rl,rf,rp,rs,rg,rb> = read(ptr_list) in
+    let flux : Flux<rp,rs,rg,rb> = read(flux_node.1) in
+    let cell1 : Cell = read(flux.2.1) in
+    let cell2 : Cell = read(flux.2.2) in
+    let new_flux : Flux<rp,rs,rg,rb> = < cell1.1 + cell2.1, < flux.2.1, flux.2.2 > > in
+    let junk : bool = write(flux_node.1,new_flux) in
+        calculate_fluxes[rl,rf,rp,rs,rg,rb](flux_node.2)
+
+/**
+ * rl - list of fluxes to update cells
+ * rf - fluxes region
+ * rp - private cells
+ * rs - shared cells
+ * rg - ghost cells
+ * rb - boundary cells
+ */
+task advance_time_step[rl,rf,rp,rs,rg,rb] ( ptr_list : flux_list<rl,rf,rp,rs,rg,rb>@rl ) : bool,
+                      reads(rl,rf), rdwrs(rp,rs,rg,rb) =
+    if isnull(ptr_list) then true else
+    let flux_node : flux_list<rl,rf,rp,rs,rg,rb> = read(ptr_list) in
+    let flux : Flux<rp,rs,rg,rb> = read(flux_node.1) in
+    let cell1 : Cell = read(flux.2.1) in
+    let new_cell1 : Cell = < cell1.1 + flux.1, cell1.2 > in
+    let junk1 : bool = write(flux.2.1,new_cell1) in
+    let cell2 : Cell = read(flux.2.2) in
+    let new_cell2 : Cell = < cell2.1 + flux.1, cell2.2 > in
+    let junk2 : bool = write(flux.2.2,new_cell2) in
+        advance_time_step[rl,rf,rp,rs,rg,rb](flux_node.2)
+
+/**
+ * rl - list of private and shared cells above to be updated
+ * rpa - private cells above
+ * rsa - shared cells above
+ * rp - private cells below
+ * rs - shared cells below
+ * rg - ghost cells below
+ * rb - boundary cells below
+ */
+task restrict_coarse_cells[rl,rpa,rsa,rp,rs,rg,rb] ( ptr_list : cell_list2<rl,rpa,rsa>@rl ) : bool,
+                          reads(rl), rdwrs(rpa,rsa), reads(rp,rs,rg,rb) = 
+    if isnull(ptr_list) then true else
+    let cell_node : cell_list2<rl,rpa,rsa> = read(ptr_list) in
+    let cell : Cell = read(cell_node.1) in
+    /* Pretend like we restrict the above cell based on the cells below */
+    let new_cell : Cell = cell in
+    let junk : bool = write(cell_node.1, new_cell) in
+        restrict_coarse_cells[rl,rpa,rsa,rp,rs,rg,rb](cell_node.2)
+
+task allocate_cells_and_fluxes[rl,rf,rp,rs,rg,rb]( dummy : int) : flux_list<rl,rf,rp,rs,rg,rb>@rl,
+                              rdwrs(rl,rf,rp,rs,rg,rb) =
+    /* Pretend like we allocate cells and fluxes and return the list of fluxes */
+    let result : flux_list<rl,rf,rp,rs,rg,rb>@rl = new flux_list<rl,rf,rp,rs,rg,rb>@rl in
+        result
+
+task compute_boundary_lists[rl,rb,rp,rs]( dummy : int ) : cell_list<rl,rb>@rl,
+                            rdwrs(rl,rb,rp,rs) =
+    /* Pretend like we compute these lists */
+    let result : cell_list<rl,rb>@rl = new cell_list<rl,rb>@rl in
+        result
+
+task compute_restrict_lists[rl,rpa,rsa,rp,rs,rg,rb] ( dummy : int ) : cell_list2<rl,rpa,rsa>@rl,
+                            rdwrs(rl,rpa,rsa,rp,rs,rg,rb) = 
+    /* Pretend like we compute these lists */
+    let result : cell_list2<rl,rpa,rsa>@rl = new cell_list2<rl,rpa,rsa>@rl in
+        result
+
+task main_task[rtop] ( dummy : int ) : bool, rdwrs(rtop) = 
+    /* Create the regions for the different levels and the lists */
+    partition rtop using newcolor rtop as r0,r1,r_fluxes0,r_fluxes1,rlists in
+    /* Create the list regions */
+    partition rlists using newcolor rlists as rfl00,rfl01,rfl02,rfl03,rfl10,rfl11,rfl12,rfl13,rbl0,rbl1,rbl2,rbl3,rsl0,rs1,rs2,rsl3 in 
+    /* Create the top regions for level 0 */
+    partition r0 using newcolor r0 as r_all_shared0,r_all_private0,r_all_boundary0 in
+    /* Create the lower regions for level 0 */
+    partition r_all_private0 using newcolor r_all_private0 as rp00,rp01,rp02,rp03 in
+    partition r_all_shared0 using newcolor r_all_shared0 as rs00,rs01,rs02,rs03 in
+    partition r_all_shared0 using newcolor r_all_shared0 as rg00 in
+    partition r_all_shared0 using newcolor r_all_shared0 as rg01 in
+    partition r_all_shared0 using newcolor r_all_shared0 as rg02 in
+    partition r_all_shared0 using newcolor r_all_shared0 as rg03 in
+    partition r_all_boundary0 using newcolor r_all_boundary0 as rb00,rb01,rb02,rb03 in
+    partition r_fluxes0 using newcolor r_fluxes0 as rf00,rf01,rf02,rf03 in
+    /* Create the top regions for level 1 */
+    partition r1 using newcolor r1 as r_all_shared1,r_all_private1,r_all_boundary1 in
+    /* Create the lower regions for level 1 */
+    partition r_all_private1 using newcolor r_all_private1 as rp10,rp11,rp12,rp13 in
+    partition r_all_shared1 using newcolor r_all_shared1 as rs10,rs11,rs12,rs13 in
+    partition r_all_shared1 using newcolor r_all_shared1 as rg10 in
+    partition r_all_shared1 using newcolor r_all_shared1 as rg11 in
+    partition r_all_shared1 using newcolor r_all_shared1 as rg12 in
+    partition r_all_shared1 using newcolor r_all_shared1 as rg13 in
+    partition r_all_boundary1 using newcolor r_all_boundary1 as rb10,rb11,rb12,rb13 in
+    partition r_fluxes1 using newcolor r_fluxes1 as rf10,rf11,rf12,rf13 in
+    /* allocate all the cells and fluxes */
+    let flux00 : flux_list<rfl00,rf00,rp00,rs00,rg00,rb00>@rfl00 = allocate_cells_and_fluxes[rfl00,rf00,rp00,rs00,rg00,rb00](0) in
+    let flux01 : flux_list<rfl01,rf01,rp01,rs01,rg01,rb01>@rfl01 = allocate_cells_and_fluxes[rfl01,rf01,rp01,rs01,rg01,rb01](1) in
+    let flux02 : flux_list<rfl02,rf02,rp02,rs02,rg02,rb02>@rfl02 = allocate_cells_and_fluxes[rfl02,rf02,rp02,rs02,rg02,rb02](2) in
+    let flux03 : flux_list<rfl03,rf03,rp03,rs03,rg03,rb03>@rfl03 = allocate_cells_and_fluxes[rfl03,rf03,rp03,rs03,rg03,rb03](3) in
+    let flux10 : flux_list<rfl10,rf10,rp10,rs10,rg10,rb10>@rfl10 = allocate_cells_and_fluxes[rfl10,rf10,rp10,rs10,rg10,rb10](0) in
+    let flux11 : flux_list<rfl11,rf11,rp11,rs11,rg11,rb11>@rfl11 = allocate_cells_and_fluxes[rfl11,rf11,rp11,rs11,rg11,rb11](1) in
+    let flux12 : flux_list<rfl12,rf12,rp12,rs12,rg12,rb12>@rfl12 = allocate_cells_and_fluxes[rfl12,rf12,rp12,rs12,rg12,rb12](2) in
+    let flux13 : flux_list<rfl13,rf13,rp13,rs13,rg13,rb13>@rfl13 = allocate_cells_and_fluxes[rfl13,rf13,rp13,rs13,rg13,rb13](3) in
+    /* Compute the lists for boundary interpolation and restriction */
+    let bound0 : cell_list<rbl0,rb10,rp00,rs00>@rbl0 = compute_boundary_lists[rbl0,rb10,rp00,rs00](0) in
+    let bound1 : cell_list<rbl1,rb11,rp01,rs01>@rbl1 = compute_boundary_lists[rbl1,rb11,rp01,rs01](1) in
+    let bound2 : cell_list<rbl2,rb12,rp02,rs02>@rbl2 = compute_boundary_lists[rbl2,rb12,rp02,rs02](2) in
+    let bound3 : cell_list<rbl3,rb13,rp03,rs03>@rbl3 = compute_boundary_lists[rbl3,rb13,rp03,rs03](3) in
+    let restr0 : cell_list2<rsl0,rp00,rs00>@rsl0 = compute_restrict_lists[rsl0,rp00,rs00,rp10,rs10,rg10,rb10](0) in
+    let restr1 : cell_list2<rsl1,rp01,rs01>@rsl1 = compute_restrict_lists[rsl1,rp01,rs01,rp11,rs11,rg11,rb11](1) in
+    let restr2 : cell_list2<rsl2,rp02,rs02>@rsl2 = compute_restrict_lists[rsl2,rp02,rs02,rp12,rs12,rg12,rb12](2) in
+    let restr3 : cell_list2<rsl3,rp03,rs03>@rsl3 = compute_restrict_lists[rsl3,rp03,rs03,rp13,rs13,rg13,rb13](3) in
+    /* Now we can actually run the simulation (one time step only) */
+    /* Interpolate the boundary cells at level 1 from level 0 */
+    let interp0 : bool = interpolate_boundary[rbl0,rb10,rp00,rs00](bound0) in
+    let interp1 : bool = interpolate_boundary[rbl1,rb11,rp01,rs01](bound1) in
+    let interp2 : bool = interpolate_boundary[rbl2,rb12,rp02,rs02](bound2) in
+    let interp3 : bool = interpolate_boundary[rbl3,rb13,rp03,rs03](bound3) in
+    /* compute the fluxes at both levels */
+    let compf00 : bool = calculate_fluxes[rfl00,rf00,rp00,rs00,rg00,rb00](flux00) in
+    let compf01 : bool = calculate_fluxes[rfl01,rf01,rp01,rs01,rg01,rb01](flux01) in
+    let compf02 : bool = calculate_fluxes[rfl02,rf02,rp02,rs02,rg02,rb02](flux02) in
+    let compf03 : bool = calculate_fluxes[rfl03,rf03,rp03,rs03,rg03,rb03](flux03) in
+    let compf10 : bool = calculate_fluxes[rfl10,rf10,rp10,rs10,rg10,rb10](flux10) in
+    let compf11 : bool = calculate_fluxes[rfl11,rf11,rp11,rs11,rg11,rb11](flux11) in
+    let compf12 : bool = calculate_fluxes[rfl12,rf12,rp12,rs12,rg12,rb12](flux12) in
+    let compf13 : bool = calculate_fluxes[rfl13,rf13,rp13,rs13,rg13,rb13](flux13) in
+    /* Advance the cells at both levels */
+    let advts00 : bool = advance_time_step[rfl00,rf00,rp00,rs00,rg00,rb00](flux00) in
+    let advts01 : bool = advance_time_step[rfl01,rf01,rp01,rs01,rg01,rb01](flux01) in
+    let advts02 : bool = advance_time_step[rfl02,rf02,rp02,rs02,rg02,rb02](flux02) in
+    let advts03 : bool = advance_time_step[rfl03,rf03,rp03,rs03,rg03,rb03](flux03) in
+    let advts10 : bool = advance_time_step[rfl10,rf10,rp10,rs10,rg10,rb10](flux10) in
+    let advts11 : bool = advance_time_step[rfl11,rf11,rp11,rs11,rg11,rb11](flux11) in
+    let advts12 : bool = advance_time_step[rfl12,rf12,rp12,rs12,rg12,rb12](flux12) in
+    let advts13 : bool = advance_time_step[rfl13,rf13,rp13,rs13,rg13,rb13](flux13) in
+    /* Restrict region cells at level 0 from level 1 */
+    let rest0 : bool = restrict_coarse_cells[rsl0,rp00,rs00,rp10,rs10,rg10,rb10](restr0) in
+    let rest1 : bool = restrict_coarse_cells[rsl1,rp01,rs01,rp11,rs11,rg11,rb11](restr1) in
+    let rest2 : bool = restrict_coarse_cells[rsl2,rp02,rs02,rp12,rs12,rg12,rb12](restr2) in
+    let rest3 : bool = restrict_coarse_cells[rsl3,rp03,rs03,rp13,rs13,rg13,rb13](restr3) in
+        true
+

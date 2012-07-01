@@ -4825,8 +4825,24 @@ namespace RegionRuntime {
 
     bool ElementMask::is_set(int ptr) const
     {
-      // TODO: implement this
-      return true;
+      if(raw_data != 0) {
+	ElementMaskImpl *impl = (ElementMaskImpl *)raw_data;
+	
+	int pos = ptr - first_element;
+	uint64_t val = (impl->bits[pos >> 6]);
+        uint64_t bit = ((val) >> (pos & 0x3f));
+        return ((bit & 1) != 0);
+      } else {
+        assert(0);
+	Memory::Impl *m_impl = memory.impl();
+
+	int pos = ptr - first_element;
+	off_t ofs = offset + ((pos >> 6) << 3);
+	uint64_t val;
+	m_impl->get_bytes(ofs, &val, sizeof(val));
+        uint64_t bit = ((val) >> (pos & 0x3f));
+        return ((bit & 1) != 0);
+      }
     }
 
     ElementMask::Enumerator *ElementMask::enumerate_enabled(int start /*= 0*/) const
@@ -5027,6 +5043,25 @@ namespace RegionRuntime {
     {
       return Runtime::runtime->get_instance_impl(*this);
     }
+
+#ifdef POINTER_CHECKS
+    void RegionInstanceUntyped::Impl::verify_access(unsigned ptr)
+    {
+      StaticAccess<RegionInstanceUntyped::Impl> data(this);
+      const ElementMask &mask = const_cast<RegionMetaDataUntyped*>(&(data->region))->get_valid_mask();
+      if (!mask.is_set(ptr))
+      {
+        fprintf(stderr,"ERROR: Accessing invalid pointer %d in logical region %x\n",ptr,data->region.id);
+        assert(false);
+      }
+    }
+
+    const ElementMask& RegionInstanceUntyped::Impl::get_element_mask(void)
+    {
+      StaticAccess<RegionInstanceUntyped::Impl> data(this);
+      return const_cast<RegionMetaDataUntyped*>(&(data->region))->get_valid_mask();
+    }
+#endif
 
     void RegionInstanceUntyped::Impl::get_bytes(off_t ptr_value, void *dst, size_t size)
     {
@@ -6356,6 +6391,13 @@ namespace RegionRuntime {
 					       elmt_size, bytes_to_copy);
     }
 
+#ifdef POINTER_CHECKS
+    void RegionInstanceAccessorUntyped<AccessorGeneric>::verify_access(unsigned ptr) const
+    {
+      ((RegionInstanceUntyped::Impl *)internal_data)->verify_access(ptr); 
+    }
+#endif
+
     void RegionInstanceAccessorUntyped<AccessorGeneric>::get_untyped(off_t byte_offset, void *dst, size_t size) const
     {
       ((RegionInstanceUntyped::Impl *)internal_data)->get_bytes(byte_offset, dst, size);
@@ -6413,6 +6455,9 @@ namespace RegionRuntime {
 	LocalCPUMemory *lcm = (LocalCPUMemory *)m_impl;
 	char *inst_base = lcm->base + i_data->access_offset;
 	RegionInstanceAccessorUntyped<AccessorArray> ria(inst_base);
+#ifdef POINTER_CHECKS
+        ria.set_mask(i_impl->get_element_mask());
+#endif
 	return ria;
       }
 
@@ -6420,6 +6465,9 @@ namespace RegionRuntime {
 	GPUZCMemory *zcm = (GPUZCMemory *)m_impl;
 	char *inst_base = zcm->cpu_base + i_data->access_offset;
 	RegionInstanceAccessorUntyped<AccessorArray> ria(inst_base);
+#ifdef POINTER_CHECKS
+        ria.set_mask(i_impl->get_element_mask()); 
+#endif
 	return ria;
       }
 

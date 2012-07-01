@@ -1,0 +1,43 @@
+Running on host kid064.nics.utk.edu
+Our CPUs: 0 2 4 6 8 10
+Running on host kid003.nics.utk.edu
+Our CPUs: 0 2 4 6 8 10
+Running on host kid112.nics.utk.edu
+Our CPUs: 0 2 4 6 8 10
+Running on host kid116.nics.utk.edu
+Our CPUs: 0 2 4 6 8 10
+Running on host kid094.nics.utk.edu
+Our CPUs: 0 2 4 6 8 10
+Running on host kid001.nics.utk.edu
+Our CPUs: 0 2 4 6 8 10
+Running on host kid087.nics.utk.edu
+Our CPUs: 0 2 4 6 8 10
+Our CPUs: 0 2 4 6 8 10
+Running on host kid002.nics.utk.edu
+Our CPUs: 0 2 4 6 8 10
+Our CPUs: 0 2 4 6 8 10
+Our CPUs: 0 2 4 6 8 10
+Our CPUs: 0 2 4 6 8 10
+Our CPUs: 0 2 4 6 8 10
+Our CPUs: 0 2 4 6 8 10
+Our CPUs: 0 2 4 6 8 10
+Our CPUs: 0 2 4 6 8 10
+Starting main simulation loop
+ELAPSED TIME =  27.605 s
+UPDATES PER SEC = 9116466.701 
+DETAILED TIMING SUMMARY:
+      KERNEL - 187.141 s
+        COPY -   0.609 s
+  HIGH-LEVEL -   8.084 s
+   LOW-LEVEL -   3.360 s
+      MAPPER -   0.029 s
+      SYSTEM -   0.011 s
+   ACTV_MESG -   1.240 s
+          10 -  15.341 s
+          13 -   0.058 s
+          14 -   0.478 s
+          15 -   0.001 s
+          16 -   0.073 s
+END OF DETAILED TIMING SUMMARY
+Running on host kid064.nics.utk.edu
+Our CPUs: 0 1 2 3 4 5 6 7 8 9 10 11

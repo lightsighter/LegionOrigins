@@ -663,7 +663,7 @@ namespace RegionRuntime {
 		     ((char *)base)+(i_data->access_offset),
 		     ((char *)base)+(i_data->alloc_offset));
 	RegionInstanceAccessorUntyped<AccessorGPU> ria(((char *)base)+(i_data->access_offset));
-#ifdef DEBUG_LOW_LEVEL
+#ifdef POINTER_CHECKS 
         ria.first_elmt = i_data->first_elmt;
         ria.last_elmt  = i_data->last_elmt;
 
@@ -690,7 +690,7 @@ namespace RegionRuntime {
 		     base, i_data->access_offset,
 		     ((char *)base)+(i_data->access_offset));
 	RegionInstanceAccessorUntyped<AccessorGPU> ria(((char *)base)+(i_data->access_offset));
-#ifdef DEBUG_LOW_LEVEL
+#ifdef POINTER_CHECKS 
         ria.first_elmt = i_data->first_elmt;
         ria.last_elmt  = i_data->last_elmt;
 #endif
@@ -735,7 +735,7 @@ namespace RegionRuntime {
 		     base, i_data->access_offset,
 		     ((char *)base)+(i_data->access_offset));
 	RegionInstanceAccessorUntyped<AccessorGPUReductionFold> ria(((char *)base)+(i_data->access_offset));
-#ifdef DEBUG_LOW_LEVEL
+#ifdef POINTER_CHECKS 
         ria.first_elmt = i_data->first_elmt;
         ria.last_elmt  = i_data->last_elmt;
 #endif
@@ -750,7 +750,7 @@ namespace RegionRuntime {
 		     base, i_data->access_offset,
 		     ((char *)base)+(i_data->access_offset));
 	RegionInstanceAccessorUntyped<AccessorGPUReductionFold> ria(((char *)base)+(i_data->access_offset));
-#ifdef DEBUG_LOW_LEVEL
+#ifdef POINTER_CHECKS 
         ria.first_elmt = i_data->first_elmt;
         ria.last_elmt  = i_data->last_elmt;
 #endif

@@ -611,6 +611,10 @@ namespace RegionRuntime {
 
       ~Impl(void);
 
+#ifdef POINTER_CHECKS
+      void verify_access(unsigned ptr);
+      const ElementMask& get_element_mask(void);
+#endif
       void get_bytes(off_t ptr_value, void *dst, size_t size);
       void put_bytes(off_t ptr_value, const void *src, size_t size);
 
