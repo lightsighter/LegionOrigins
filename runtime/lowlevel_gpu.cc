@@ -666,6 +666,18 @@ namespace RegionRuntime {
 #ifdef DEBUG_LOW_LEVEL
         ria.first_elmt = i_data->first_elmt;
         ria.last_elmt  = i_data->last_elmt;
+
+	// also need to grab a copy of the element mask for pointer checks
+	const ElementMask &mask = i_data->region.get_valid_mask();
+	unsigned *valid_mask_base;
+	CHECK_CUDART( cudaMalloc((void **)&valid_mask_base, mask.raw_size()) );
+	log_gpu.info("copy of valid mask (%zd bytes) created at %p",
+		     mask.raw_size(), valid_mask_base);
+	CHECK_CUDART( cudaMemcpy(valid_mask_base,
+				 mask.get_raw(),
+				 mask.raw_size(),
+				 cudaMemcpyHostToDevice) );
+	ria.valid_mask_base = valid_mask_base;
 #endif
 	return ria;
       }

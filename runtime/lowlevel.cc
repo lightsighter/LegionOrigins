@@ -4620,7 +4620,7 @@ namespace RegionRuntime {
       instance.impl()->memory.impl()->destroy_instance(instance, true);
     }
 
-    const ElementMask &RegionMetaDataUntyped::get_valid_mask(void)
+    const ElementMask &RegionMetaDataUntyped::get_valid_mask(void) const
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       RegionMetaDataUntyped::Impl *r_impl = impl();

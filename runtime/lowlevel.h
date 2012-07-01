@@ -364,7 +364,7 @@ namespace RegionRuntime {
       void destroy_allocator_untyped(RegionAllocatorUntyped allocator) const;
       void destroy_instance_untyped(RegionInstanceUntyped instance) const;
 
-      const ElementMask &get_valid_mask(void);
+      const ElementMask &get_valid_mask(void) const;
     };
 
     class RegionAllocatorUntyped {
@@ -534,6 +534,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_LOW_LEVEL
       size_t first_elmt;
       size_t last_elmt;
+      unsigned *valid_mask_base;
 #endif
 #ifdef __CUDACC__
       // Need copy constructors so we can move things around
@@ -602,6 +603,9 @@ namespace RegionRuntime {
       void bounds_check(ptr_t<T> ptr) const
       {
         assert((first_elmt <= ptr.value) && (ptr.value <= last_elmt));
+	off_t rel_ptr = ptr.value - first_elmt;
+	unsigned bits = valid_mask_base[rel_ptr >> 5];
+	assert(bits & (1U << (rel_ptr & 0x1f)));
       }
 #endif
     };
