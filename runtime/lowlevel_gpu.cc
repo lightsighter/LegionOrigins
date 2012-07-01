@@ -642,6 +642,25 @@ namespace RegionRuntime {
       if(m_impl->kind == Memory::Impl::MKIND_ZEROCOPY) return true;
       return false;
     }
+
+#ifdef POINTER_CHECKS
+    static unsigned *get_gpu_valid_mask(RegionMetaDataUntyped region)
+    {
+	const ElementMask &mask = region.get_valid_mask();
+	void *valid_mask_base;
+	for(size_t p = 0; p < mask.raw_size(); p += 4)
+	  log_gpu.info("  raw mask data[%zd] = %08x\n", p,
+		       ((unsigned *)(mask.get_raw()))[p>>2]);
+	CHECK_CUDART( cudaMalloc(&valid_mask_base, mask.raw_size()) );
+	log_gpu.info("copy of valid mask (%zd bytes) created at %p",
+		     mask.raw_size(), valid_mask_base);
+	CHECK_CUDART( cudaMemcpy(valid_mask_base,
+				 mask.get_raw(),
+				 mask.raw_size(),
+				 cudaMemcpyHostToDevice) );
+	return (unsigned *)&(((ElementMaskImpl *)valid_mask_base)->bits);
+    }
+#endif
     
     template <>
     RegionInstanceAccessorUntyped<AccessorGPU> RegionInstanceAccessorUntyped<AccessorGeneric>::convert<AccessorGPU>(void) const
@@ -666,18 +685,7 @@ namespace RegionRuntime {
 #ifdef POINTER_CHECKS 
         ria.first_elmt = i_data->first_elmt;
         ria.last_elmt  = i_data->last_elmt;
-
-	// also need to grab a copy of the element mask for pointer checks
-	const ElementMask &mask = i_data->region.get_valid_mask();
-	unsigned *valid_mask_base;
-	CHECK_CUDART( cudaMalloc((void **)&valid_mask_base, mask.raw_size()) );
-	log_gpu.info("copy of valid mask (%zd bytes) created at %p",
-		     mask.raw_size(), valid_mask_base);
-	CHECK_CUDART( cudaMemcpy(valid_mask_base,
-				 mask.get_raw(),
-				 mask.raw_size(),
-				 cudaMemcpyHostToDevice) );
-	ria.valid_mask_base = valid_mask_base;
+	ria.valid_mask_base = get_gpu_valid_mask(i_data->region);
 #endif
 	return ria;
       }
@@ -693,6 +701,7 @@ namespace RegionRuntime {
 #ifdef POINTER_CHECKS 
         ria.first_elmt = i_data->first_elmt;
         ria.last_elmt  = i_data->last_elmt;
+	ria.valid_mask_base = get_gpu_valid_mask(i_data->region);
 #endif
 	return ria;
       }
@@ -738,6 +747,7 @@ namespace RegionRuntime {
 #ifdef POINTER_CHECKS 
         ria.first_elmt = i_data->first_elmt;
         ria.last_elmt  = i_data->last_elmt;
+	ria.valid_mask_base = get_gpu_valid_mask(i_data->region);
 #endif
 	return ria;
       }
@@ -753,6 +763,7 @@ namespace RegionRuntime {
 #ifdef POINTER_CHECKS 
         ria.first_elmt = i_data->first_elmt;
         ria.last_elmt  = i_data->last_elmt;
+	ria.valid_mask_base = get_gpu_valid_mask(i_data->region);
 #endif
 	return ria;
       }

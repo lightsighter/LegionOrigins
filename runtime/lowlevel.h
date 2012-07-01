@@ -610,6 +610,7 @@ namespace RegionRuntime {
 #ifdef POINTER_CHECKS 
         first_elmt = old.first_elmt;
         last_elmt = old.last_elmt;
+	valid_mask_base = old.valid_mask_base;
 #endif
       }
 
@@ -667,7 +668,7 @@ namespace RegionRuntime {
       void bounds_check(ptr_t<T> ptr) const
       {
         assert((first_elmt <= ptr.value) && (ptr.value <= last_elmt));
-	off_t rel_ptr = ptr.value - first_elmt;
+	off_t rel_ptr = ptr.value ;//- first_elmt;
 	unsigned bits = valid_mask_base[rel_ptr >> 5];
 	assert(bits & (1U << (rel_ptr & 0x1f)));
       }
@@ -683,6 +684,7 @@ namespace RegionRuntime {
 #ifdef POINTER_CHECKS 
       size_t first_elmt;
       size_t last_elmt;
+      unsigned *valid_mask_base;
 #endif
 #ifdef __CUDACC__
       // Need copy constructors so we can move things around
@@ -693,6 +695,7 @@ namespace RegionRuntime {
 #ifdef POINTER_CHECKS 
         first_elmt = old.first_elmt;
         last_elmt  = old.last_elmt;
+	valid_mask_base = old.valid_mask_base;
 #endif
       }
       // no read or write on a reduction-fold-only accessor
@@ -701,6 +704,9 @@ namespace RegionRuntime {
       void reduce(ptr_t<T> ptr, RHS newval) const { 
 #ifdef POINTER_CHECKS 
         assert((first_elmt <= ptr.value) && (ptr.value <= last_elmt));
+	off_t rel_ptr = ptr.value ;//- first_elmt;
+	unsigned bits = valid_mask_base[rel_ptr >> 5];
+	assert(bits & (1U << (rel_ptr & 0x1f)));
 #endif
         REDOP::fold<false>(((RHS*)array_base)[ptr.value], newval); 
       }
@@ -711,6 +717,7 @@ namespace RegionRuntime {
 #ifdef POINTER_CHECKS 
         first_elmt = old.first_elmt;
         last_elmt  = old.last_elmt;
+	valid_mask_base = old.valid_mask_base;
 #endif
       }
 #endif
