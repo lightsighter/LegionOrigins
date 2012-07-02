@@ -5055,12 +5055,6 @@ namespace RegionRuntime {
         assert(false);
       }
     }
-
-    const ElementMask& RegionInstanceUntyped::Impl::get_element_mask(void)
-    {
-      StaticAccess<RegionInstanceUntyped::Impl> data(this);
-      return const_cast<RegionMetaDataUntyped*>(&(data->region))->get_valid_mask();
-    }
 #endif
 
     void RegionInstanceUntyped::Impl::get_bytes(off_t ptr_value, void *dst, size_t size)
@@ -6396,6 +6390,11 @@ namespace RegionRuntime {
     {
       ((RegionInstanceUntyped::Impl *)internal_data)->verify_access(ptr); 
     }
+
+    void RegionInstanceAccessorUntyped<AccessorArray>::verify_access(unsigned ptr) const
+    {
+      ((RegionInstanceUntyped::Impl *)impl_ptr)->verify_access(ptr);
+    }
 #endif
 
     void RegionInstanceAccessorUntyped<AccessorGeneric>::get_untyped(off_t byte_offset, void *dst, size_t size) const
@@ -6456,7 +6455,7 @@ namespace RegionRuntime {
 	char *inst_base = lcm->base + i_data->access_offset;
 	RegionInstanceAccessorUntyped<AccessorArray> ria(inst_base);
 #ifdef POINTER_CHECKS
-        ria.set_mask(i_impl->get_element_mask());
+        ria.set_impl(i_impl);
 #endif
 	return ria;
       }
@@ -6466,7 +6465,7 @@ namespace RegionRuntime {
 	char *inst_base = zcm->cpu_base + i_data->access_offset;
 	RegionInstanceAccessorUntyped<AccessorArray> ria(inst_base);
 #ifdef POINTER_CHECKS
-        ria.set_mask(i_impl->get_element_mask()); 
+        ria.set_impl(i_impl); 
 #endif
 	return ria;
       }
@@ -6518,6 +6517,7 @@ namespace RegionRuntime {
 
       assert(0);
     }
+
     
     ///////////////////////////////////////////////////
     // 
