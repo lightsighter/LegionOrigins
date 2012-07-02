@@ -1,6 +1,8 @@
 \newcommand{\oton}[1]{{#1}_1,\ldots,{#1}_n}
 \newcommand{\otok}[2]{{#2}_1,\ldots,{#2}_{#1}}
 \newcommand{\dplus}{\text{++}}
+\newcommand{\llbracket}{[\![}
+\newcommand{\rrbracket}{]\!]}
 
 % fun latex tricks to make typeenv and opsenv more friendly
 \makeatletter
@@ -47,7 +49,7 @@ $T$ & ::= &  & types \\
   &$\mid$& $T@(\oton{r})$ & pointer \\
   &$\mid$& $\text{coloring}(r)$ & region coloring \\
   &$\mid$& $\exists \oton{r}. T\text{ where }\Omega$ & region relationship \\
-  &$\mid$& $\forall \oton{r}. (\oton{T}), \Phi \rightarrow T_r$ & functions \\
+  &$\mid$& $\forall \oton{r}. (\oton{T}), \Phi, Q \rightarrow T_r$ & functions \\
 \\
 $\Omega$ & ::= & $\{ \oton{\omega} \}$ & region constraints \\
 $\omega$ & ::= & $r_1 \leq r_2$ & subregion \\
@@ -55,6 +57,9 @@ $\omega$ & ::= & $r_1 \leq r_2$ & subregion \\
 \\
 $\Phi$ & ::= & $\{ \oton{\phi} \}$ & privileges \\
 $\phi$ & ::= & reads$(r)$ $\;\;\;\mid\;\;\;$ writes$(r)$ $\;\;\;\mid\;\;\;$ reduces$(id,r)$ & \\
+\\
+$Q$ & ::= & $\{ \oton{q} \}$ & coherence modes \\
+$q$ & ::= & atomic$(r)$ $\;\;\;\mid\;\;\;$ simult$(r)$ & \\
 \\
 $v$ & ::= & & values \\
   &$\mid$& $bv$ $\;\;\;\mid\;\;\;$ $iv$ & base values \\
@@ -179,7 +184,7 @@ Type rules:
 
 \finfrule{
 \begin{array}{l}
-\Gamma(id) = \forall \otok{k}{r'}.(\oton{T}),\Phi_i \rightarrow T_r \\
+\Gamma(id) = \forall \otok{k}{r'}.(\oton{T}),\Phi_i, Q \rightarrow T_r \\
 \typeenvx e_i : T_i[r_1/r'_1,\ldots,r_k/r'_k] \\
 \Phi_i[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Phi^*
 \end{array}}
@@ -243,15 +248,87 @@ Operational semantics rules have the following form: \\
 
 where: 
 \begin{itemize}
-\item $M$ is the mapping from logical regions $r_i$ in types to physical regions $\rho_i$, which are sets of memory locations
+\item $M$ is the mapping from logical regions $r_i$ in types to physical regions $\rho_i$, which are sets of memory locations.  It will be useful to apply this logical-to-physical mapping to other
+things that defined in terms of logical regions to yield a corresponding definition in terms of
+physical regions.  The notation $\hat x = M \llbracket x \rrbracket$ is used to describe the
+result of replacing all free logical region names $r_i$ in $x$ with the corresponding physical
+region $\rho_i$.  (Note that $M \llbracket x \rrbracket$ is not
+well-formed if it contains a free logical region name $r_j \not\in dom(M)$.)
 \item $L$ is the mapping of local variable names to their values
 \item $H$ is the heap typing, mapping from memory locations to types
 \item $S$ is the store, mapping from memory locations $l_i$ to values
 \item $C$ is the ``clobber set'', a set of memory locations that may be accessed by concurrently executing operations (??? does this need to be split into read/write/reduce?)
 \item $e$ is the expression being evaluated
 \item $v$ is the result of the evaluation
-\item $E$ is a memory trace (i.e. the effects) of the execution, a list of read/write/reduce operations in the order they were performed
+\item $E$ is a memory trace (i.e. the effects) of the execution, a list of read/write/reduce operations in the order they were performed.  An operation $\epsilon$ is one of the following:
+\begin{itemize}
+\item $read(l, c, v)$, a read of location $l$ with coherence mode $c$, returning value $v$
+\item $write(l, c, v)$, a write to location $l$ with coherence mode $c$, storing value $v$
+\item $reduce_{id}(l, c, v)$, a reduction into location $l$ with coherence mode $c$ using a
+commutative function $id$ with value $v$
 \end{itemize}
+where coherence modes are one of ({\em excl}, {\em atomic}, {\em simult}).
+
+The following helper functions are used in some of the rules that deal with memory effects:
+\begin{itemize}
+\item $apply(S, E, C)$ is used to determine the effect on the store of a sequence of memory operations
+\item $mark\_coherence(E, \hat Q)$ marks the memory operations in a subtask's trace to
+constrain how the operations in that trace can be interleaved with other sibling tasks' operations
+\item $valid\_interleave(S, C, E', \oton{E})$ is used to determine if $E'$ is a valid way to
+interleave the memory traces of two or more subexpressions
+\end{itemize}
+Figure~\ref{fig:opsemfns} gives the definitions of {\em apply} and {\em mark\_coherence}.  For
+the {\em valid\_interleave} predicate, we state some of the necessary conditions here, but leave 
+the construction of actual valid interleavings until a later section.  Informally, a interleaving
+of two or more memory traces must include all the operations from each trace (and no additional
+operations), with each trace's operations remaining in order.  A valid interleaving must further
+satisfy the requirement that the value read from any location that's not in the clobber set $C$
+yield the most recently stored/reduced value.
+
+\begin{figure*}
+\centering{
+$
+\begin{array}{lll}
+apply(S, [], C) & = & S \\
+apply(S, E \dplus [ read(l, c, v) ]) & = & apply(S, E, C) \\
+apply(S, E \dplus [ write(l, c, v) ]) & = & apply(S, E, C)[v/l] \\
+apply(S, E \dplus [ reduce_{id}(l, c, v) ]) & = & apply(S, E, C)[id(S[l], v)/l] \\
+mark\_coherence([], \hat Q) & = & [] \\
+mark\_coherence(E \dplus [ op(l, c, v) ], \hat Q) & = & mark\_coherence(E, \hat Q) \dplus \\
+& & op(l, c', v), \text{ where } \\
+& & c' =
+\begin{cases}
+simult, & \text{if }\exists \rho. l \in \rho \wedge simult(\rho) \in \hat Q \\
+atomic, & \text{if }\exists \rho. l \in \rho \wedge atomic(\rho) \in \hat Q \\
+excl, & \text{otherwise}
+\end{cases} \\
+any\_interleave(E', [], \ldots, []) & \rightarrow & true \\
+any\_interleave([ op(l, c, v) ] \dplus E', E_1, \ldots, [ op(l, c, v) ] \dplus E_i, \ldots, E_n) & \rightarrow & any\_interleave(E', E_1, \ldots, E_i, \ldots, E_n) \\
+valid\_interleave(S, C, E', \oton{E}) & \rightarrow & any\_interleave(E', \oton{E}) \\
+valid\_interleave(S, C, E' \dplus [ read(l, c, v) ] \dplus E'', \oton{E}) & \rightarrow & l \in C \vee S'(l) = v, \text{ where } S' = apply(S, E', C)
+\end{array}
+$}
+\caption{Operational Semantics Helper Functions}
+\label{fig:opsemfns}
+\end{figure*}
+
+A few helper functions are used in the operational semantics rules, and defined in 
+A number of rules will also use the property $valid\_interleave(S, C, E', E_1, E_2)$ to 
+constrain how the memory operations of two subexpressions can be interleaved.  We will 
+consider actual constructions of valid interleavings later.  For now, we simply rely on
+the following necessary conditions for any valid interleaving:
+\begin{enumerate}
+\item A valid interleaving $E'$ of $E_1$ and $E_2$ contains exactly all operations from both
+$E_1$ and $E_2$, in some order.
+\item The operations in each of $E_1$ and $E_2$ remain in order in $E'$.
+\item For every $read(l, c, v)$ in $E'$ for which $l$ is not in the clobber set $C$, the value 
+returned by the read is consistent with the original store $S$ and any preceding writes or
+reductions.
+\end{enumerate}
+\end{itemize}
+
+
+
 
 \framebox{$\opsenvx bv \mapsto bv, []$} \hspace{1cm}
 \framebox{$\opsenvx iv \mapsto iv, []$} \\
@@ -260,9 +337,10 @@ where:
 {\begin{array}{l}
 \opsenvx e_1 \mapsto v_1, E_1 \\
 S' = apply(S, E_1, C) \\
-\opsenvx[S=S'] e_2 \mapsto v_2, E_2
+\opsenvx[S=S'] e_2 \mapsto v_2, E_2 \\
+valid\_interleave(S, C, E', E_1, E_2)
 \end{array}}
-{\opsenvx \langle e_1, e_2 \rangle \mapsto \langle v_1, v_2 \rangle, E_1 \dplus E_2} \\
+{\opsenvx \langle e_1, e_2 \rangle \mapsto \langle v_1, v_2 \rangle, E'} \\
 
 \finfrule
 {\opsenvx e \mapsto \langle v_1, v_2 \rangle, E}
@@ -312,7 +390,7 @@ null, & \text{otherwise}.
 S' = \text{apply}(S, E, C) \\
 v = S'[l]
 \end{array}}
-{\opsenvx \text{read}(e_1) \mapsto v, E \dplus [ read(l, v) ]} \\
+{\opsenvx \text{read}(e_1) \mapsto v, E \dplus [ read(l, excl, v) ]} \\
 
 \finfrule
 {\begin{array}{l}
@@ -320,7 +398,7 @@ v = S'[l]
 S' = \text{apply}(S, E_1, C) \\
 \opsenvx[S=S'] e_2 \mapsto v, E_2 \\
 \end{array}}
-{\opsenvx \text{write}(e_1, e_2) \mapsto true, E_1 \dplus E_2 \dplus [ write(l, v) ]} \\
+{\opsenvx \text{write}(e_1, e_2) \mapsto true, E_1 \dplus E_2 \dplus [ write(l, excl, v) ]} \\
 
 \finfrule
 {\begin{array}{l}
@@ -328,7 +406,7 @@ S' = \text{apply}(S, E_1, C) \\
 S' = \text{apply}(S, E_1, C) \\
 \opsenvx[S=S'] e_2 \mapsto v, E_2 \\
 \end{array}}
-{\opsenvx \text{reduce}(id, e_1, e_2) \mapsto true, E_1 \dplus E_2 \dplus [ reduce_{id}(l, v) ]} \\
+{\opsenvx \text{reduce}(id, e_1, e_2) \mapsto true, E_1 \dplus E_2 \dplus [ reduce_{id}(l, excl, v) ]} \\
 
 \framebox{$\opsenvx \text{newcolor }r \mapsto \emptyset, []$} \\
 
@@ -339,18 +417,20 @@ S' = \text{apply}(S, E_1, C) \\
 \opsenvx[S=S'] e_2 \mapsto l, E_2 \\
 S'' = \text{apply}(S', E_2, C) \\
 \opsenvx[S=S''] e_3 \mapsto v, E_3 \\
-K' = \{ (l,v) \} \cup \{ (l_i,v_i) : (l_i,v_i) \in K \wedge l \not= l_i \}
+K' = \{ (l,v) \} \cup \{ (l_i,v_i) : (l_i,v_i) \in K \wedge l \not= l_i \} \\
+valid\_interleave(S, C, E', E_1, E_2, E_3)
 \end{array}}
-{\opsenvx \text{color}(e_1, e_2, e_3) \mapsto K', E_1 \dplus E_2 \dplus E_3} \\
+{\opsenvx \text{color}(e_1, e_2, e_3) \mapsto K', E'} \\
 
 \finfrule
 {\begin{array}{l}
 \opsenvx e_1 \mapsto v_1, E_1 \\
 S' = \text{apply}(S, E_1, C) \\
 \opsenvx[S=S'] e_2 \mapsto v_2, E_2 \\
-v' = v_1 + v_2
+v' = v_1 + v_2 \\
+valid\_interleave(S, C, E', E_1, E_2)
 \end{array}}
-{\opsenvx e_1 + e_2 \mapsto v', E_1 \dplus E_2} \hspace{1cm}
+{\opsenvx e_1 + e_2 \mapsto v', E'} \hspace{1cm}
 
 \finfrule
 {\begin{array}{l}
@@ -360,34 +440,38 @@ S' = \text{apply}(S, E_1, C) \\
 v' = \begin{cases}
 true, & \text{if $v_1 < v_2$}. \\
 false, & \text{otherwise}.
-\end{cases}
+\end{cases} \\
+valid\_interleave(S, C, E', E_1, E_2)
 \end{array}}
-{\opsenvx e_1 < e_2 \mapsto v', E_1 \dplus E_2} \\
+{\opsenvx e_1 < e_2 \mapsto v', E'} \\
 
 \finfrule
 {\begin{array}{l}
 \opsenvx e_1 \mapsto v_1, E_1 \\
 L' = L[v_1/id] \\
 S' = \text{apply}(S, E_1, C) \\
-\opsenvx[L=L',S=S'] e_2 \mapsto v_2, E_2
+\opsenvx[L=L',S=S'] e_2 \mapsto v_2, E_2 \\
+valid\_interleave(S, C, E', E_1, E_2)
 \end{array}}
-{\opsenvx \text{let }id : T = e_1\text{ in }e_2 \mapsto v_2, E_1 \dplus E_2} \\
+{\opsenvx \text{let }id : T = e_1\text{ in }e_2 \mapsto v_2, E'} \\
 
 \finfrule
 {\begin{array}{l}
 \opsenvx e_1 \mapsto true, E_1 \\
 S' = \text{apply}(S, E_1, C) \\
-\opsenvx[L=L',S=S'] e_2 \mapsto v_2, E_2
+\opsenvx[L=L',S=S'] e_2 \mapsto v_2, E_2 \\
+valid\_interleave(S, C, E', E_1, E_2)
 \end{array}}
-{\opsenvx \text{if }e_1\text{ then }e_2\text{ else }e_3 \mapsto v_2, E_1 \dplus E_2} \\
+{\opsenvx \text{if }e_1\text{ then }e_2\text{ else }e_3 \mapsto v_2, E'} \\
 
 \finfrule
 {\begin{array}{l}
 \opsenvx e_1 \mapsto false, E_1 \\
 S' = \text{apply}(S, E_1, C) \\
-\opsenvx[L=L',S=S'] e_3 \mapsto v_3, E_3
+\opsenvx[L=L',S=S'] e_3 \mapsto v_3, E_3 \\
+valid\_interleave(S, C, E', E_1, E_3)
 \end{array}}
-{\opsenvx \text{if }e_1\text{ then }e_2\text{ else }e_3 \mapsto v_3, E_1 \dplus E_3} \\
+{\opsenvx \text{if }e_1\text{ then }e_2\text{ else }e_3 \mapsto v_3, E'} \\
 
 \finfrule
 {\begin{array}{l}
@@ -396,12 +480,16 @@ S_1 = \text{apply}(S, E_1, C) \\
 \opsenvx e_2 \mapsto v_2, E_2 \\
 \ldots \\
 S_n = \text{apply}(S_{n-1}, E_n, C) \\
-task id[\otok{k}{r'}](f_1 : T_1, \ldots, f_n : T_n) : T_r, E = e_{n+1} \\
+valid\_interleave(S, C, E', \oton{E}) \\
+S' = \text{apply}(S, E', C) \\
+task id[\otok{k}{r'}](f_1 : T_1, \ldots, f_n : T_n), \Phi_i, Q : T_r = e_{n+1} \\
 M' = \{ (r'_1, M(r_1)), \ldots (r'_k, M(r_k)) \} \\
 L' = \{ (f_1, v_1), \ldots, (f_n, v_n) \} \\
-\opsenvx[M=M',L=L',S=S_n] e_{n+1} \mapsto v_{n+1}, E_{n+1}
+\opsenvx[M=M',L=L',S=S'] e_{n+1} \mapsto v_{n+1}, E_{n+1} \\
+E'_{n+1} = mark\_coherence(E_{n+1}, M \llbracket Q \rrbracket) \\
+valid\_interleave(S, C, E'', E', E_{n+1})
 \end{array}}
-{\opsenvx id[\otok{k}{r}](\oton{e}) \mapsto v_{n+1}, E_1 \dplus \ldots \dplus E_{n+1}} \\
+{\opsenvx id[\otok{k}{r}](\oton{e}) \mapsto v_{n+1}, E''} \\
 
 \finfrule{
 \begin{array}{l}
@@ -409,9 +497,10 @@ L' = \{ (f_1, v_1), \ldots, (f_n, v_n) \} \\
 \rho_i = \{ l : (l, i) \in K \} \\
 M' = M[\rho_1/r_1, \ldots, \rho_k/r_k] \\
 S' = \text{apply}(S, E_1, C) \\
-\opsenvx[M=M',S=S'] e_2 \mapsto v, E_2
+\opsenvx[M=M',S=S'] e_2 \mapsto v, E_2 \\
+valid\_interleave(S, C, E', E_1, E_2)
 \end{array}}
-{\opsenvx \text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2 \mapsto v, E_1 \dplus E_2} \\
+{\opsenvx \text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2 \mapsto v, E'} \\
 
 \finfrule{
 \begin{array}{l}
@@ -427,12 +516,16 @@ v' = \langle \langle \otok{k}{\rho}, v \rangle \rangle
 M' = M[\rho_1/r_1, \ldots, \rho_k/r_k] \\
 L' = L[v_1/id] \\
 S' = \text{apply}(S, E_1, C) \\
-\opsenvx[M=M',L=L',S=S'] e_2 \mapsto v_2, E_2
+\opsenvx[M=M',L=L',S=S'] e_2 \mapsto v_2, E_2 \\
+valid\_interleave(S, C, E', E_1, E_2)
 \end{array}}
-{\opsenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 \mapsto v_2, E_1 \dplus E_2 } \\
+{\opsenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 \mapsto v_2, E' } \\
 
 \subsection{Soundness of Effects}
 
+An important property of the legion type system is that any expression that is well-typed is
+guaranteed to access the heap only in ways permitted by the privileges under which it was typed.
+A judgement $M \vdash E : \Phi$
 If
 \begin{enumerate}
 \item $\typeenvx e : T$
@@ -449,14 +542,10 @@ for all effects $\epsilon$ in $E$,
 
 \subsection{Strategy}
 
-\newcommand{\llbracket}{[\![}
-\newcommand{\rrbracket}{]\!]}
-
 The mapping $M$ is a function from logical region names $r$ to physical regions $\rho$.  It will
 be convenient to apply $M$ to types and even functions that operate on types by defining
 $\hat x = M \llbracket x \rrbracket$ to be $x$ with all logical region names $r_i$ replaced by their
-corresponding physical region $\rho_i = M(r_i)$.  Note that $M \llbracket x \rrbracket$ is not
-well-formed if it contains a logical region name $r_j \not\in dom(M)$. \\
+corresponding physical region $\rho_i = M(r_i)$.   \\
 
 Soundness is proven using induction over the structure of an expression.  A number of properties
 are assumed and/or proven at each step: 
@@ -518,6 +607,14 @@ E_2 \sim H
 
 \finfrule
 {\begin{array}{l}
+E_1 \sim H \hspace{1cm}
+E_2 \sim H \\
+valid\_interleave(S, C, E', E_1, E_2)
+\end{array}}
+{ E' \sim H } \\
+
+\finfrule
+{\begin{array}{l}
 E_1 : \Phi \hspace{1cm}
 E_2 : \Phi
 \end{array}}
@@ -565,6 +662,20 @@ Unpack & & &
 
 
 \subsection{Noninterference}
+
+The soundness proof above depended, in part, on the properties of a valid interleaving of two
+memory traces.  We now consider algorithms that create interleavings that satisfy those
+conditions.
+
+The simplest way to achieve a valid interleaving is to concatenate the traces in order.  This
+will always result in a valid interleaving, but implies a serialization of the evaluation of
+subexpressions.
+
+\framebox{$\forall S, C, E_1, E_2. valid\_interleave(S, C, E_1 \dplus E_2, E_1, E_2)$}
+
+Next step: For noninterfering traces $E_1 \# E_2$, show any interleaving is valid.
+
+Third step: For interactions only on atomic-coherence locations, serializability is sufficient.
 
 For a given expression $e$, we can consider $v^o$ to be a ``sequential'' result and $E^o$ to be the corresponding ``sequential'' effects if: \\
 
