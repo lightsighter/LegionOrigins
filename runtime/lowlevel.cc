@@ -4205,7 +4205,7 @@ namespace RegionRuntime {
       // maybe a GPU thread?
       ptr = gasnett_threadkey_get(gpu_thread);
       if(ptr != 0) {
-	assert(0);
+	//assert(0);
 	//printf("oh, good - we're a gpu thread - we'll spin for now\n");
 	//printf("waiting for %x/%d\n", id, gen);
 	while(!e->has_triggered(gen)) usleep(1000);
@@ -4828,7 +4828,7 @@ namespace RegionRuntime {
       if(raw_data != 0) {
 	ElementMaskImpl *impl = (ElementMaskImpl *)raw_data;
 	
-	int pos = ptr - first_element;
+	int pos = ptr;// - first_element;
 	uint64_t val = (impl->bits[pos >> 6]);
         uint64_t bit = ((val) >> (pos & 0x3f));
         return ((bit & 1) != 0);
