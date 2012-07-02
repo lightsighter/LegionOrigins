@@ -1,15 +1,15 @@
-fluid: 0x17ad4b20 23 -ll:csize 8192 -ll:gsize 1600 -ll:cpu 8 -ll:util 1 -hl:sched 4 -nbx 8 -nby 1 -nbz 4 -s 10 -input /lustre/medusa/sequoia//in_2400K.fluid -level 3 
+fluid: 0xc67db20 23 -ll:csize 8192 -ll:gsize 1600 -ll:cpu 8 -ll:util 1 -hl:sched 4 -nbx 8 -nby 1 -nbz 4 -s 10 -input /lustre/medusa/sequoia//in_2400K.fluid -level 3 
 fluid: cells     = 1115721 (93 x 129 x 93)
 fluid: divisions = 8 x 1 x 4
 fluid: steps     = 10
 STARTING MAIN SIMULATION LOOP
-ELAPSED TIME =   3.822 s
+ELAPSED TIME =   3.636 s
 DETAILED TIMING SUMMARY:
-      KERNEL -  63.239 s
-        COPY -   0.368 s
-  HIGH-LEVEL -   1.218 s
-   LOW-LEVEL -   6.220 s
-      MAPPER -   0.041 s
-      SYSTEM -   0.025 s
-   ACTV_MESG -   4.158 s
+      KERNEL -  61.761 s
+        COPY -   0.348 s
+  HIGH-LEVEL -   1.166 s
+   LOW-LEVEL -   5.808 s
+      MAPPER -   0.038 s
+      SYSTEM -   0.021 s
+   ACTV_MESG -   3.919 s
 END OF DETAILED TIMING SUMMARY
