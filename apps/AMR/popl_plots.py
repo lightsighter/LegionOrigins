@@ -31,6 +31,27 @@ other_pat   = re.compile("\s+(?P<id>[0-9]+)\s+-\s+(?P<other>[0-9\.]+) s")
 runtime_pat = re.compile("\s+Run time \(s\) =\s+(?P<time>[0-9\.]+)")
 update_pat  = re.compile("\s+Cells Updates/s =\s+(?P<updates>[0-9\.E+]+)")
 
+tableau1 = (0.968,0.714,0.824)
+tableau2 = (0.882,0.478,0.470)
+tableau3 = (0.565,0.663,0.792)
+tableau4 = (0.635,0.635,0.635)
+tableau5 = (0.678,0.545,0.788)
+tableau6 = (1.000,0.620,0.290)
+tableau7 = (0.859,0.859,0.553)
+tableau8 = (0.769,0.612,0.580)
+tableau9 = (0.478,0.757,0.424)
+tableau10= (0.427,0.800,0.855)
+tableau11= (0.929,0.592,0.792)
+tableau12= (0.929,0.400,0.364)
+tableau13= (0.447,0.620,0.808)
+tableau14= (0.780,0.780,0.780)
+tableau15= (0.773,0.690,0.835)
+tableau16= (0.882,0.616,0.353)
+tableau17= (0.804,0.800,0.365)
+tableau18= (0.659,0.471,0.431)
+tableau18= (0.404,0.749,0.361)
+tableau19= (0.137,0.122,0.125)
+
 class BoxExperiment(object):
     def __init__(self,file_name,size,division,nodes,cpus):
         self.size = size
@@ -157,21 +178,23 @@ def print_experiments(exprs):
     for e in exprs:
         print "Nodes "+str(e.nodes)+" Time "+str(e.time)
 
+# Based on wall clock time
 def make_plot(fig,orig,checks,box,prob_size):
     ind = np.arange(len(number_nodes))
-    width = 0.3
+    width = 0.35
+    offset = 0.2
 
     zip_list = zip(orig,checks)
     time_orig = list()
     boxlib = list()
     kernel_checks = list()
     runtime_checks = list()
-    copy_checks = list()
-    comm_checks = list()
+    #copy_checks = list()
+    #comm_checks = list()
     overhead_checks = list()
     # Bottoms for each of the bars
-    copy_accum = list()
-    comm_accum = list()
+    #copy_accum = list()
+    #comm_accum = list()
     runtime_accum = list()
     overhead_accum = list()
     i = 0
@@ -193,13 +216,15 @@ def make_plot(fig,orig,checks,box,prob_size):
         kernel_checks.append(o.time * (o.kernel/total_time))
         assert c.time >= o.time
         overhead_checks.append(c.time - o.time)
-        runtime_checks.append(o.time * ((o.high + o.low + o.mapper)/total_time))
-        copy_checks.append(o.time * (o.copy/total_time))
-        comm_checks.append(o.time * (o.system/total_time))
+        #runtime_checks.append(o.time * ((o.high + o.low + o.mapper)/total_time))
+        #copy_checks.append(o.time * (o.copy/total_time))
+        #comm_checks.append(o.time * (o.system/total_time))
+        runtime_checks.append(o.time * (o.high + o.low + o.mapper + o.copy + o.system)/total_time)
         # Update the accumulation overheads
-        copy_accum.append(kernel_checks[i])
-        comm_accum.append(copy_accum[i] + copy_checks[i])
-        runtime_accum.append(comm_accum[i] + comm_checks[i])
+        #copy_accum.append(kernel_checks[i])
+        #comm_accum.append(copy_accum[i] + copy_checks[i])
+        #runtime_accum.append(comm_accum[i] + comm_checks[i])
+        runtime_accum.append(kernel_checks[i])
         overhead_accum.append(runtime_accum[i] + runtime_checks[i])
         # Find the best boxlib version for this number of nodes
         boxlib_best = None
@@ -211,22 +236,125 @@ def make_plot(fig,orig,checks,box,prob_size):
         boxlib.append(boxlib_best)
         # Keep the index up to date
         i = i + 1
-    plt.bar(ind,time_orig,width, color='k',label='No Checks')
-    plt.bar(ind+width, overhead_checks, width, color='r', bottom=overhead_accum, label='Checking Overhead')
-    plt.bar(ind+width, runtime_checks, width, color='g', bottom=runtime_accum, label='Runtime')
-    plt.bar(ind+width, comm_checks, width, color='w', bottom=comm_accum, label='Communication')
-    plt.bar(ind+width, copy_checks, width, color='b', bottom=copy_accum, label='Copy')
-    plt.bar(ind+width, kernel_checks, width, color='y', label='Kernel')
-    plt.bar(ind+2*width, boxlib, width, color='c', label='BoxLib')
+    plt.bar(offset+ind,time_orig,width, color=tableau3,label='No Checks')
+    plt.bar(offset+ind+width, overhead_checks, width, color=tableau2, bottom=overhead_accum, label='Checking Overhead')
+    plt.bar(offset+ind+width, runtime_checks, width, color=tableau5, bottom=runtime_accum, label='Runtime')
+    #plt.bar(ind+width, comm_checks, width, color=tableau5, bottom=comm_accum, label='Communication')
+    #plt.bar(ind+width, copy_checks, width, color=tableau8, bottom=copy_accum, label='Copy')
+    plt.bar(offset+ind+width, kernel_checks, width, color=tableau9, label='Kernel')
+    #plt.bar(ind+2*width, boxlib, width, color=tableau10, label='BoxLib')
+
+    # Draw the lines for the baselines
+    overlap = 0.1
+    box_cur = 0.0125
+    delta = 1.0/len(time_orig)
+    overlap = 0.1/len(time_orig)
+    first = True
+    for b in boxlib:
+        if first:
+            # Put a label on the first one so it shows up in the legend
+            plt.axhline(y=b, xmin=box_cur+overlap, xmax=box_cur+delta-overlap, linewidth=3, color='k', linestyle='--', label='BoxLib')
+            first = False
+        else:
+            plt.axhline(y=b, xmin=box_cur+overlap, xmax=box_cur+delta-overlap, linewidth=3, color='k', linestyle='--')
+        box_cur = box_cur + delta
 
     plt.xlabel('Nodes')
-    plt.xticks(ind+1.5*width,number_nodes)
+    plt.xticks(offset+ind+width,number_nodes)
     plt.ylabel('Execution Time (secs)')
     plt.legend()
     plt.title('Pointer Checking Overhead for '+str(prob_size)+' Nodes')
 
+# Based on processor time
+def make_plot2(fig,orig,checks,box,prob_size):
+    ind = np.arange(len(number_nodes))
+    width = 0.7
+    offset = 0.2
 
-def make_plots(show = True, save = True):
+    zip_list = zip(orig,checks)
+    boxlib = list()
+    kernel_checks = list()
+    runtime_checks = list()
+    comm_checks = list()
+    overhead_checks = list()
+    # Bottoms for each of the bars
+    runtime_accum = list()
+    comm_accum = list()
+    overhead_accum = list()
+    i = 0
+    for o,c in zip_list:
+        assert o.nodes == c.nodes
+        # Compute the total time of the unchecked version
+        o_total = o.time * o.nodes
+        c_total = c.time * c.nodes
+        t2 = o.kernel + o.copy + o.high + o.low + o.mapper
+        if o_total >= t2:
+            # Split half to system and half to checking overhead 
+            # so we can give a good representation of what is actually happening
+            if prob_size==4096 and o.nodes==16:
+                # This case looked like it got the overlapping correct already
+                o.system = (o_total - t2)
+                c.overhead = 0.0
+            else:
+                o.system = (o_total - t2)/2.0
+                c.overhead = (o_total-t2)/2.0
+        else:
+            # Reduce the copy time to be the difference
+            o.copy = o_total - (o.kernel + o.high + o.low + o.mapper)
+            o.system = 0.0
+            c.overhead = 0.0
+        # Difference in kernel time between orig and checks is checking overhead
+        kernel_checks.append(o.kernel)
+        assert c.time >= o.time
+        runtime_checks.append(o.high + o.low + o.mapper)
+        comm_checks.append(o.copy + o.system)
+        overhead_checks.append((c_total - o_total) + c.overhead)
+        # Update the accumulation overheads
+        runtime_accum.append(kernel_checks[i])
+        comm_accum.append(runtime_accum[i] + runtime_checks[i])
+        overhead_accum.append(comm_accum[i] + comm_checks[i])
+        # Find the best boxlib version for this number of nodes
+        boxlib_best = None
+        for b in box:
+            if b.nodes==o.nodes:
+                if boxlib_best == None or boxlib_best > b.time:
+                    boxlib_best = b.time
+        assert boxlib_best <> None
+        boxlib.append(boxlib_best*o.nodes)
+        # Keep the index up to date
+        i = i + 1
+    plt.bar(offset+ind, overhead_checks, width, color=tableau2, bottom=overhead_accum, label='Checking Overhead')
+    plt.bar(offset+ind, comm_checks, width, color=tableau3, bottom=comm_accum, label='Communication')
+    plt.bar(offset+ind, runtime_checks, width, color=tableau5, bottom=runtime_accum, label='Runtime Overhead')
+    plt.bar(offset+ind, kernel_checks, width, color=tableau9, label='Kernel')
+
+    # Draw the lines for the baselines
+    overlap = 0.1
+    box_cur = 0.0125
+    delta = 1.0/len(zip_list)
+    overlap = 0.1/len(zip_list)
+    first = True
+    for b in boxlib:
+        if first:
+            # Put a label on the first one so it shows up in the legend
+            plt.axhline(y=b, xmin=box_cur+overlap, xmax=box_cur+delta-overlap, linewidth=3, color='k', linestyle='--', label='BoxLib')
+            first = False
+        else:
+            plt.axhline(y=b, xmin=box_cur+overlap, xmax=box_cur+delta-overlap, linewidth=3, color='k', linestyle='--')
+        box_cur = box_cur + delta
+
+    plt.xlabel('Nodes')
+    plt.xticks(offset+ind+width/2.0,number_nodes)
+    plt.ylabel('Processor Time (seconds)')
+    plt.legend(loc=2)
+    if prob_size==8192:
+        plt.ylim(ymin=0,ymax=130)
+    elif prob_size==16384:
+        plt.ylim(ymin=0,ymax=600)
+    #plt.title('Pointer Checking Overhead for '+str(prob_size)+' Nodes')
+
+
+def make_plots(show = True, save = True, out_dir="figs/"):
     for ps in problem_sizes:
         orig_exprs = read_experiments(ps,'keeneland_results/')
         check_exprs = read_experiments(ps,'check_results/')
@@ -238,7 +366,9 @@ def make_plots(show = True, save = True):
         print "\n"
         # New figure
         fig = plt.figure() #figsize = (10,5,5))
-        make_plot(fig,orig_exprs,check_exprs,box_exprs,ps)
+        make_plot2(fig,orig_exprs,check_exprs,box_exprs,ps)
+        if save:
+            fig.savefig(out_dir+"amr_"+str(ps)+"_popl.pdf", format="pdf", bbox_inches="tight") 
     if show:
         plt.show()
 
