@@ -498,7 +498,7 @@ namespace RegionRuntime {
       { 
         array_base = old.array_base; 
 #ifdef POINTER_CHECKS
-        mask = old.mask;
+        impl_ptr = old.impl_ptr;
 #endif
       }
 
@@ -511,20 +511,13 @@ namespace RegionRuntime {
 
       void *array_base;
 #ifdef POINTER_CHECKS
-      const ElementMask *mask;
+      void *impl_ptr;
 
-      void verify_access(unsigned ptr) const
-      {
-        if (!mask->is_set(ptr))
-        {
-          fprintf(stderr,"ERROR: Accessing invalid pointer %d in array accessor\n",ptr);
-          assert(false);
-        }
-      }
+      void verify_access(unsigned ptr) const;
 
-      void set_mask(const ElementMask &new_mask)
+      void set_impl(void *impl)
       {
-        mask = &new_mask;
+        impl_ptr = impl;
       }
 #endif
 
