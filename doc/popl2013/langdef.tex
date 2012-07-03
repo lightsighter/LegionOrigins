@@ -3,7 +3,7 @@
 
 \newcommand{\oton}[1]{{#1}_1,\ldots,{#1}_n}
 \newcommand{\otok}[2]{{#2}_1,\ldots,{#2}_{#1}}
-\newcommand{\dplus}{\text{++}}
+\newcommand{\dplus}{\text{+\!+}}
 \newcommand{\llbracket}{[\![}
 \newcommand{\rrbracket}{]\!]}
 
@@ -217,7 +217,7 @@ handling of existing variables and region names.
 \typeenvx e_2 : T \\
 \forall i, writes(r_i) \in \Phi^*
 \end{array}}
-{\typeenvx \text{write}(e_1, e_2) : bool}
+{\typeenvx \text{write}(e_1, e_2) : T@(\oton{r})}
 \finfrule
 {\begin{array}{l}
 \Gamma(id) = (T_1, T_2), \emptyset, \emptyset \rightarrow T_1 \\
@@ -225,7 +225,7 @@ handling of existing variables and region names.
 \typeenvx e_2 : T_2 \\
 \forall i, reduces(id, r_i) \in \Phi^*
 \end{array}}
-{\typeenvx \text{reduce}(id, e_1, e_2) : bool}
+{\typeenvx \text{reduce}(id, e_1, e_2) : T_1@(\oton{r})}
 \framebox{$\typeenvx \text{newcolor }r : \text{coloring}(r)$}
 \finfrule{\begin{array}{l}
 \typeenvx e_1 : \text{coloring}(r) \\
@@ -273,6 +273,19 @@ T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
 \{ \oton{r} \} \cap \textit{regions\_of}(\Gamma, T_1, T_3) = \emptyset
 \end{array}}
 {\typeenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 : T_3}
+\finfrule{
+\begin{array}{l}
+\text{for }1 \leq i \leq p, \\
+\Gamma(id_i) = \forall r_{i1}, \ldots r_{ik_i}. (T_{i1}, \ldots, T_{in_i}), \Phi_i, Q_i \rightarrow T_{ir} \\
+\Gamma_i = \Gamma[a_{i1}/T_{i1}, \ldots, a_{in_i}/T_{in_i}] \\
+\typeenv[G={\Gamma_i},P={\Phi_i},O=\emptyset]{e_i}{T_{ir}}
+\end{array}}
+{ 
+\begin{array}{l@{ }l}
+\vdash \{ & \text{task }id_1[r_{11}, \ldots, r_{1k_1}]( a_{11} : T_{11}, \ldots a_{1n_1} : T_{1n_1} ), \Phi_1, Q_1 : T_{1r} : e_1, \\
+          & \ldots \\
+          & \text{task }id_p[r_{p1}, \ldots, r_{pk_1}]( a_{p1} : T_{p1}, \ldots a_{pn_p} : T_{pn_p} ), \Phi_p, Q_p : T_{pr} : e_p \} : \bullet
+\end{array} }
 }
 \caption{Legion Core Type System}
 \label{fig:types}
@@ -474,7 +487,7 @@ S' = \text{apply}(S, E_1) \\
 \opsenvx[S=S'] e_2 \mapsto v, E_2 \\
 valid\_interleave(S, C, E', E_1, E_2)
 \end{array}}
-{\opsenvx \text{write}(e_1, e_2) \mapsto true, E' \dplus [ write(l, excl, v) ]}
+{\opsenvx \text{write}(e_1, e_2) \mapsto l, E' \dplus [ write(l, excl, v) ]}
 \finfrule
 {\begin{array}{l}
 \opsenvx e_1 \mapsto l, E_1 \\
@@ -482,7 +495,7 @@ S' = \text{apply}(S, E_1) \\
 \opsenvx[S=S'] e_2 \mapsto v, E_2 \\
 valid\_interleave(S, C, E', E_1, E_2)
 \end{array}}
-{\opsenvx \text{reduce}(id, e_1, e_2) \mapsto true, E' \dplus [ reduce_{id}(l, excl, v) ]}
+{\opsenvx \text{reduce}(id, e_1, e_2) \mapsto l, E' \dplus [ reduce_{id}(l, excl, v) ]}
 \framebox{$\opsenvx \text{newcolor }r \mapsto \emptyset, []$}
 \finfrule
 {\begin{array}{l}
@@ -830,6 +843,24 @@ conditions.
 The simplest way to achieve a valid interleaving is to concatenate the traces in order.  This
 will always result in a valid interleaving, but implies a serialization of the evaluation of
 subexpressions.
+
+\begin{figure*}
+$
+\begin{array}{l@{}l}
+valid\_interleave(S, C, E', E_1, E_2) = & any\_interleave(E', E_1, E_2) \wedge \\
+& coherent\_interleave(S, apply(S, E_1), C, excl, E', E_1, E_2) \wedge \\
+& (coherent\_interleave(S, apply(S, E_1), C, atomic, E', E_1, E_2) \vee \\
+& coherent\_interleave(S, apply(S, E_2), C, atomic, E', E_2, E_1)) \\
+
+coherent\_interleave(S_1, S_2, C, c, [], [], []) = & true \\
+coherent\_interleave(S_1, S_2, C, c, [ op(l, c', v) ] \dplus E', [ op(l, c, v) ] \dplus E_1, E_2) = & (op = read \wedge l \not\in C \wedge c = c' \Rightarrow S_1(l) = v) \wedge \\
+& coherent\_interleave(apply(S_1, op(l, c', v)), S_2, C, c, E', E_1, E_2) \\
+coherent\_interleave(S_1, S_2, C, c, [ op(l, c', v) ] \dplus E', E_1, [ op(l, c, v) ] \dplus E_2) = & (op = read \wedge l \not\in C \wedge c = c' \Rightarrow S_2(l) = v) \wedge \\
+& coherent\_interleave(S_1, apply(S_2, op(l, c', v)), C, c, E', E_1, E_2)
+\end{array}
+$
+\caption{work in progress}
+\end{figure*}
 
 \framebox{$\forall S, C, E_1, E_2. valid\_interleave(S, C, E_1 \dplus E_2, E_1, E_2)$}
 
