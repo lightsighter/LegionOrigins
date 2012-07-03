@@ -38,7 +38,7 @@
 \newcommand{\opsenv}[4][]{\opsenvx[#1] {#2} \mapsto {#3}, {#4}}
 \makeatother
 
-\begin{table*}
+\begin{figure*}
 \centering
 {\small
 \begin{tabular}{cclr}
@@ -91,105 +91,161 @@ $e$ & ::= & & expressions \\
 
 \end{tabular}
 }
-\caption{Types}
-\end{table*}
+\caption{Legion Core Language}
+\label{fig:langdef}
+\end{figure*}
 
 %\newcommand{\infrule}[2]{\displaystyle\frac{\displaystyle\strut{#1}}{\displaystyle\strut {#2}}}
 \newcommand{\cinfrule}[3]{\parbox{14cm}{\hfil$\infrule{#1}{#2}$\hfil}\parbox{4cm}{$\,#3$\hfil}}
-\newcommand{\finfrule}[2]{\vspace{10pt}\framebox{$\infrule{#1}{#2}$}\vspace{10pt}}
+\newcommand{\finfrule}[2]{\framebox{$\infrule{#1}{#2}$}}
+\newcommand{\oldfinfrule}[2]{\vspace{10pt}\framebox{$\infrule{#1}{#2}$}\vspace{10pt}}
 
 \newcommand{\infx}[2]{\infrule{\begin{array}{l}{#1}\end{array}}{#2}}
 
 \pagebreak
 
-Type rules:
+\section{Legion Core Language}
 
-\framebox{$\typeenv{bv}{bool}$} \hspace{1cm}
-\framebox{$\typeenv{iv}{int}$} \\
+\subsection{Language Definition}
 
+Figure~\ref{fig:langdef} defines the core subset of Legion application language.
+Legion includes basic boolean, integer and tuple types.  Pointers are included as well, but in
+addition to specifying the type of value it points to, a pointer's type also constrains where in
+memory it can point (i.e. only into regions listed in the type).  A special type exists for
+{\em colorings}, which are used to specify how a region should be partitioned into subregions.
+Functions in Legion are named, accept one or more arguments and return a value of some type.
+A function also declares what region access privileges and coherence it requires.  Function types
+are universally quantified over all logical region bindings, with all argument and result types,
+as well as the privileges and coherence requirements being expressed relative to the quantified
+region names.
+The final additional value type that Legion uses is a region relation.  Although logical regions
+cannot be stored directly in variables, they can be captured as part of a region relation 
+instance, which stores a value and one or more logical regions that satisfy a particular set of
+constraints.  An instance of a region relation can be read out of the heap and unpacked, giving
+new local names to the logical regions contained in the instance and tracking the constraints
+between those new logical regions.
+
+\subsection{Legion Core Type System}
+
+The Legion Core language is explicitly typed, using judgments of the following form:
+
+\begin{center}
+$\typeenv{e}{T}$
+\end{center}
+
+where:
+\begin{itemize}
+\item $\Gamma$ is the type environment, mapping the names of local variables and global functions
+to their types,
+\item $\Phi$ is the region access privileges under which the expression will be evaluated, and
+\item $\Omega$ is the set of constraints that must hold between regions
+\end{itemize}
+
+As regions are hierarchical, privileges and/or constraints on a region will often imply similar
+privileges or constraints on subregions.  Figure~\ref{fig:closure} defines transitive closure
+operations for $\Phi^*$ and $\Omega^*$ that will be used in some of the type checking rules.
+
+The full set of type checking rules are in Figure~\ref{fig:types}.  Many of the rules are 
+straightforward, but several deserve more explanation.
+
+The Legion core language has no subtyping, even for pointers into regions that are part of a 
+known region hierarchy.  The region ``scope'' of a pointer can only be changed via explicit
+{\em upregion} and {\em downregion} operations, which check that the ``from'' and ``to'' regions
+are in the right relationship.  It would have been possible to safely infer {\em upregion} calls,
+but {\em downregion} calls must be accompanied by a run-time check that the pointer really does
+point into the subregion(s), so {\em upregion} was made explicit as well for simplicity.
+
+Accesses to heap memory are performed via the {\em read}, {\em write}, and {\em reduce}
+operations, which are only legal if the region(s) in a pointers type are ones for which the
+enclosing function has privileges to access.
+
+Similarly, a call to another function is only permitted if the privileges required by the 
+callee are a subset of those held by the caller.  There is no way to create privileges within
+a Legion function - it is limited to those given to it by its caller.
+
+The {\em partition} operation uses a {\em coloring} to split a region into one or more
+disjoint subregions.  The subregions are given names within the body of the {\em partition},
+as well as constraints that assert that each subregion is contained by the parent region and
+the pairwise disjointness of the subregions.  These constraints can be used locally, or packed
+into region relation instances that can be unpacked and used later.
+
+The {\em pack} expression packs together a value and the corresponding set of logical regions,
+as long as the constraints in the region relationship type can be shown to hold.  The
+corresponding {\em unpack} expression gives (new) names to those regions.  Neither the 
+{\em partition} nor the {\em unpack} expression allows aliasing of region names, simplifying the
+handling of existing variables and region names.
+
+\begin{figure*}
+\centering{
+\framebox{$\typeenv{bv}{bool}$}
+\framebox{$\typeenv{iv}{int}$}
 \finfrule
 {\begin{array}{l}
 \typeenvx e_1 : T_1 \\
 \typeenvx e_2 : T_2
 \end{array}}
-{\typeenvx \langle e_1, e_2 \rangle : \langle T_1, T_2 \rangle} \\
-
-\finfrule{\typeenvx e : \langle T_1,T_2 \rangle}{\typeenvx e\text{.1}\ : T_1} \hspace{1cm}
-\finfrule{\typeenvx e : \langle T_1,T_2 \rangle}{\typeenvx e\text{.2}\ : T_2} \\
-
-\finfrule{\Gamma(id) = T}{\typeenvx id : T} \\
-
-\framebox{$\typeenvx \text{null }T@r : T@r$} \hspace{1cm}
-\framebox{$\typeenvx \text{new }T@r : T@r$} \\
-
-\finfrule{\typeenvx e : T@(\oton{r})}{\typeenvx \text{isnull}(e) : bool} \\
-
+{\typeenvx \langle e_1, e_2 \rangle : \langle T_1, T_2 \rangle}
+\finfrule{\typeenvx e : \langle T_1,T_2 \rangle}{\typeenvx e\text{.1}\ : T_1}
+\finfrule{\typeenvx e : \langle T_1,T_2 \rangle}{\typeenvx e\text{.2}\ : T_2}
+\finfrule{\Gamma(id) = T}{\typeenvx id : T}
+\framebox{$\typeenvx \text{null }T@r : T@r$}
+\framebox{$\typeenvx \text{new }T@r : T@r$}
+\finfrule{\typeenvx e : T@(\oton{r})}{\typeenvx \text{isnull}(e) : bool}
 \finfrule
 {\begin{array}{l}
 \typeenvx e : T@(\otok{k}{r'}) \\
 \forall i. \exists j, r'_i \leq r_j \in \Omega^* \\
 \end{array}}
-{\typeenvx upregion(e,\oton{r}) : T@(\oton{r})} \\
-
+{\typeenvx upregion(e,\oton{r}) : T@(\oton{r})}
 \finfrule
 {\begin{array}{l}
 \typeenvx e : T@(\otok{k}{r'}) \\
 \forall j. \exists i, r_j \leq r'_i \in \Omega^* \\
 \end{array}}
-{\typeenvx downregion(e,\oton{r}) : T@(\oton{r})} \\
-
+{\typeenvx downregion(e,\oton{r}) : T@(\oton{r})}
 \finfrule
 {\begin{array}{l}
 \typeenvx e_1 : T@(\oton{r}) \\
 \forall i, reads(r_i) \in \Phi^*\end{array}}
-{\typeenvx \text{read}(e_1) : T} \\
-
+{\typeenvx \text{read}(e_1) : T}
 \finfrule
 {\begin{array}{l}
 \typeenvx e_1 : T@(\oton{r}) \\
 \typeenvx e_2 : T \\
 \forall i, writes(r_i) \in \Phi^*
 \end{array}}
-{\typeenvx \text{write}(e_1, e_2) : bool} \\
-
+{\typeenvx \text{write}(e_1, e_2) : bool}
 \finfrule
 {\begin{array}{l}
-\Gamma(id) = (T_1, T_2), \emptyset \rightarrow T_1 \\
+\Gamma(id) = (T_1, T_2), \emptyset, \emptyset \rightarrow T_1 \\
 \typeenvx e_1 : T_1@(\oton{r}) \\
 \typeenvx e_2 : T_2 \\
 \forall i, reduces(id, r_i) \in \Phi^*
 \end{array}}
-{\typeenvx \text{reduce}(id, e_1, e_2) : bool} \\
-
-\framebox{$\typeenvx \text{newcolor }r : \text{coloring}(r)$} \\
-
+{\typeenvx \text{reduce}(id, e_1, e_2) : bool}
+\framebox{$\typeenvx \text{newcolor }r : \text{coloring}(r)$}
 \finfrule{\begin{array}{l}
 \typeenvx e_1 : \text{coloring}(r) \\
 \typeenvx e_2 : T@r \\
 \typeenvx e_3 : int
 \end{array}}
-{\typeenvx \text{color}(e_1, e_2, e_3) : \text{coloring}(r)} \\
-
-\finfrule{\begin{array}{l}\typeenvx e_1 : int \\ \typeenvx e_2 : int\end{array}}{\typeenvx e_1 + e_2 : int} \hspace{1 cm}
-\finfrule{\begin{array}{l}\typeenvx e_1 : int \\ \typeenvx e_2 : int\end{array}}{\typeenvx e_1 < e_2 : bool} \\
-
+{\typeenvx \text{color}(e_1, e_2, e_3) : \text{coloring}(r)}
+\finfrule{\begin{array}{l}\typeenvx e_1 : int \\ \typeenvx e_2 : int\end{array}}{\typeenvx e_1 + e_2 : int}
+\finfrule{\begin{array}{l}\typeenvx e_1 : int \\ \typeenvx e_2 : int\end{array}}{\typeenvx e_1 < e_2 : bool}
 \finfrule{\begin{array}{l}
 \typeenvx e_1 : T_1 \\
 \Gamma' = \Gamma[id/T_1] \\
 \typeenvx[G=\Gamma'] e_2 : T_2
 \end{array}}
-{\typeenvx : \text{let}\ id : T_1 \text{in}\ e_2 : T_2} \\
-
-\finfrule{\begin{array}{l}\typeenvx e_1 : bool \\ \typeenvx e_2 : T \\ \typeenvx e_3 : T\end{array}}{\typeenvx \text{if}\ e_1\ \text{then}\ e_2\ \text{else}\ e_3 : T} \\
-
+{\typeenvx : \text{let}\ id : T_1 \text{in}\ e_2 : T_2}
+\finfrule{\begin{array}{l}\typeenvx e_1 : bool \\ \typeenvx e_2 : T \\ \typeenvx e_3 : T\end{array}}{\typeenvx \text{if}\ e_1\ \text{then}\ e_2\ \text{else}\ e_3 : T}
 \finfrule{
 \begin{array}{l}
 \Gamma(id) = \forall \otok{k}{r'}.(\oton{T}),\Phi_i, Q \rightarrow T_r \\
 \typeenvx e_i : T_i[r_1/r'_1,\ldots,r_k/r'_k] \\
 \Phi_i[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Phi^*
 \end{array}}
-{\typeenvx id[\otok{k}{r}](\oton{e}) : T_r[r_1/r'_1,\ldots,r_k/r'_k]} \\
-
+{\typeenvx id[\otok{k}{r}](\oton{e}) : T_r[r_1/r'_1,\ldots,r_k/r'_k]}
 \finfrule{
 \begin{array}{l}
 \typeenvx e_1 : \text{coloring}(r_p) \\
@@ -197,16 +253,14 @@ Type rules:
 \typeenvx[O=\Omega'] e_2 : T \\
 r_i \not\in \textit{regions\_of}(\Gamma, T)
 \end{array}}
-{\typeenvx \text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2 : T} \\
-
+{\typeenvx \text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2 : T}
 \finfrule{
 \begin{array}{l}
 T_1 = \exists \otok{k}{r'}. T_2\text{ where }\Omega_1 \\
 \Omega \models \Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \\
 \typeenvx e_1 : T_2[r_1/r'_1,\ldots,r_k/r'_k]
 \end{array}}
-{\typeenvx \text{pack}\ e_1\ \text{as}\ T_1[\otok{k}{r}] : T_1} \\
-
+{\typeenvx \text{pack}\ e_1\ \text{as}\ T_1[\otok{k}{r}] : T_1}
 \finfrule{
 \begin{array}{l}
 T_1 = \exists \otok{k}{r'}. T_2\text{ where }\Omega_1 \\
@@ -216,21 +270,21 @@ T_1 = \exists \otok{k}{r'}. T_2\text{ where }\Omega_1 \\
 \typeenvx[G=\Gamma',O=\Omega'] e_2 : T_3 \\
 r_i \not\in \textit{regions\_of}(\Gamma, T_1, T_3)
 \end{array}}
-{\typeenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 : T_3} \\
+{\typeenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 : T_3}
+}
+\caption{Legion Core Type System}
+\label{fig:types}
+\end{figure*}
 
-\subsection{Closure of region constraints and priviledges}
-
-\framebox{
+\begin{figure}
+\centering{
 $\begin{array}{l}
 \Omega \subseteq \Omega^* \\
 r_i \leq r_j \in \Omega^*  \Rightarrow r_i \leq r_i \in \Omega^*\wedge r_j \leq r_j \in \Omega^* \\
 r_i \leq r_j \in \Omega^* \wedge r_j \leq r_k \in \Omega^* \Rightarrow r_i \leq r_k \in \Omega^* \\
 r_i \leq r_j \in \Omega^* \wedge r_j * r_k \in \Omega^* \Rightarrow r_i * r_k \in \Omega^* \\
 r_i * r_j \in \Omega^* \Rightarrow r_j * r_i \in \Omega^* \\
-\end{array}$
-} \\
-\framebox{
-$\begin{array}{l}
+\\
 \Phi \subseteq \Phi^* \\
 r_i \leq r_j \in \Omega^* \wedge reads(r_j) \in \Phi^* \Rightarrow reads(r_i) \in \Phi^* \\
 r_i \leq r_j \in \Omega^* \wedge writes(r_j) \in \Phi^* \Rightarrow writes(r_i) \in \Phi^* \\
@@ -239,28 +293,42 @@ reads(r) \in \Phi^* \wedge writes(r) \in \Phi^* \wedge \\
 \hspace{1cm} \Gamma(id) = \forall \otok{k}{r}. (\oton{T}), E \rightarrow T_r \Rightarrow reduces(id, r) \in \Phi^*
 \end{array}$
 }
+\caption{Privilege and Constraint Closure}
+\label{fig:closure}
+\end{figure}
 
 \subsection{Operational Semantics}
 
-Operational semantics rules have the following form: \\
+Operational semantics rules have the following form:
 
-\framebox{$\opsenv{e}{v}{E}$}
+\begin{center}
+$\opsenv{e}{v}{E}$
+\end{center}
 
 where: 
 \begin{itemize}
-\item $M$ is the mapping from logical regions $r_i$ in types to physical regions $\rho_i$, which are sets of memory locations.  It will be useful to apply this logical-to-physical mapping to other
+\item $M$ is the mapping from logical regions $r_i$ in types to physical regions $\rho_i$, which are sets of memory locations.
+
+It will be useful to apply this logical-to-physical mapping to other
 things that defined in terms of logical regions to yield a corresponding definition in terms of
 physical regions.  The notation $\hat x = M \llbracket x \rrbracket$ is used to describe the
 result of replacing all free logical region names $r_i$ in $x$ with the corresponding physical
 region $\rho_i$.  (Note that $M \llbracket x \rrbracket$ is not
 well-formed if it contains a free logical region name $r_j \not\in dom(M)$.)
-\item $L$ is the mapping of local variable names to their values
-\item $H$ is the heap typing, mapping from memory locations to types
-\item $S$ is the store, mapping from memory locations $l_i$ to values
+\item $L$ is the mapping of local variable names to their values on the stack.  These values are
+immutable, and private to the function - it is not possible to get a pointer to a local value.
+\item $H$ is the heap typing, mapping from memory locations to types.  The heap typing does not
+change during the execution of a legion program.  The Legion type system is strong enough to
+support the use of garbage collection
+to allow the reuse of a memory location (potentially with a different type stored in that
+location) once all existing references to it are dead, but we
+do not consider that further in this paper.
+\item $S$ is the store, mapping from memory locations $l_i$ to the current value stored.
 \item $C$ is the ``clobber set'', a set of memory locations that may be accessed by concurrently executing operations (??? does this need to be split into read/write/reduce?)
 \item $e$ is the expression being evaluated
 \item $v$ is the result of the evaluation
-\item $E$ is a memory trace (i.e. the effects) of the execution, a list of read/write/reduce operations in the order they were performed.  An operation $\epsilon$ is one of the following:
+\item $E$ is a memory trace (i.e. the effects) of the execution, a list of memory operations
+in the order they were performed.  An operation $\epsilon$ is one of the following:
 \begin{itemize}
 \item $read(l, c, v)$, a read of location $l$ with coherence mode $c$, returning value $v$
 \item $write(l, c, v)$, a write to location $l$ with coherence mode $c$, storing value $v$
@@ -282,8 +350,37 @@ the {\em valid\_interleave} predicate, we state some of the necessary conditions
 the construction of actual valid interleavings until a later section.  Informally, a interleaving
 of two or more memory traces must include all the operations from each trace (and no additional
 operations), with each trace's operations remaining in order.  A valid interleaving must further
-satisfy the requirement that the value read from any location that's not in the clobber set $C$
-yield the most recently stored/reduced value.
+satisfy the requirement that the value read from the store must yield the most recently 
+stored/reduced value unless that location is part of the clobber set $C$.
+\end{itemize}
+
+A number of the rules are worth discussing in detail.
+
+Because we would like to keep the heap typing $H$ constant, the semantics for the expression
+new $T@r$ allow the choice of any memory location that falls within the right physical region
+and has the appropriate heap type.  The soundness of the type system does not depend on that
+location being one that isn't already in use, although most implementations will want to 
+add that additional guarantee.
+
+A similar choice appears in the semantics of the read operation.  If the location being read
+from is within the clobber set $C$, the semantics appear to allow any value to be returned, as
+long as it has the right type.  In reality, the choices are more constrained.  If it's not the
+most recently written/reduced value from the current expression evaluation, it must at least be
+a value written by some concurrent evaluation.  The constraint is applied further up in the 
+expression tree when the result of the function is interleaved with other memory traces.
+
+Most of the heavy lifting in the Legion core language occurs in the function call expression.
+The expressions for all the function's arguments are evaluated in the caller's context, but a
+new context is assembled for the evaluation of the function's body.  The region mapping used
+in the callee only uses the caller's mapping indirectly - the only logical region names available
+are those over which the called function is quantified.  Similarly, the set of local values is
+replaced with a mapping of formal parameter names to the values of the arguments.  The store
+is updated to account for side-effects of those argument evaluations.  Finally, if the function
+being called operates with relaxed coherence (i.e. either {\em atomic} or {\em simult} instead of
+{\em excl}), the locations with relaxed coherence are added to the clobber set, allowing the
+impact of concurrent modifications of the store to be handled by the caller.  This is done by
+annotating the called function's memory trace with the relaxed coherence on a per-location basis
+and using the {\em valid\_interleave} predicate to control what parallel execution is allowed.
 
 \begin{figure*}
 \centering{
@@ -312,27 +409,10 @@ $}
 \label{fig:opsemfns}
 \end{figure*}
 
-A few helper functions are used in the operational semantics rules, and defined in 
-A number of rules will also use the property $valid\_interleave(S, C, E', E_1, E_2)$ to 
-constrain how the memory operations of two subexpressions can be interleaved.  We will 
-consider actual constructions of valid interleavings later.  For now, we simply rely on
-the following necessary conditions for any valid interleaving:
-\begin{enumerate}
-\item A valid interleaving $E'$ of $E_1$ and $E_2$ contains exactly all operations from both
-$E_1$ and $E_2$, in some order.
-\item The operations in each of $E_1$ and $E_2$ remain in order in $E'$.
-\item For every $read(l, c, v)$ in $E'$ for which $l$ is not in the clobber set $C$, the value 
-returned by the read is consistent with the original store $S$ and any preceding writes or
-reductions.
-\end{enumerate}
-\end{itemize}
-
-
-
-
-\framebox{$\opsenvx bv \mapsto bv, []$} \hspace{1cm}
-\framebox{$\opsenvx iv \mapsto iv, []$} \\
-
+\begin{figure*}
+\centering{\small
+\framebox{$\opsenvx bv \mapsto bv, []$}
+\framebox{$\opsenvx iv \mapsto iv, []$}
 \finfrule
 {\begin{array}{l}
 \opsenvx e_1 \mapsto v_1, E_1 \\
@@ -340,76 +420,68 @@ S' = apply(S, E_1, C) \\
 \opsenvx[S=S'] e_2 \mapsto v_2, E_2 \\
 valid\_interleave(S, C, E', E_1, E_2)
 \end{array}}
-{\opsenvx \langle e_1, e_2 \rangle \mapsto \langle v_1, v_2 \rangle, E'} \\
-
+{\opsenvx \langle e_1, e_2 \rangle \mapsto \langle v_1, v_2 \rangle, E'}
 \finfrule
 {\opsenvx e \mapsto \langle v_1, v_2 \rangle, E}
 {\opsenvx e\text{.1} \mapsto v_1, E} \hspace{1cm}
 \finfrule
 {\opsenvx e \mapsto \langle v_1, v_2 \rangle, E}
-{\opsenvx e\text{.2} \mapsto v_2, E} \\
-
+{\opsenvx e\text{.2} \mapsto v_2, E}
 \finfrule
 {L(id) = v}
-{\opsenvx id \mapsto v, []} \\
-
-\framebox{$\opsenvx \text{null }T@r \mapsto null, []$} \\
-
+{\opsenvx id \mapsto v, []}
+\framebox{$\opsenvx \text{null }T@r \mapsto null, []$}
 \finfrule
 {\begin{array}{l}
 l \in M(r) \\
-H(l) = T[M]
+H(l) = M \llbracket T \rrbracket
 \end{array}}
-{\opsenvx \text{new }T@r \mapsto l, []} \\
-
+{\opsenvx \text{new }T@r \mapsto l, []}
 \finfrule
-{\opsenvx e \mapsto v, E}
-{\opsenvx \text{isnull}(e) \mapsto false, E} \\
-
+{\opsenvx e \mapsto l, E}
+{\opsenvx \text{isnull}(e) \mapsto false, E}
 \finfrule
 {\opsenvx e \mapsto null, E}
-{\opsenvx \text{isnull}(e) \mapsto true, E} \\
-
+{\opsenvx \text{isnull}(e) \mapsto true, E}
 \finfrule
 {\opsenvx e \mapsto v, E}
 {\opsenvx \text{upregion}(e, \oton{r}) \mapsto v, E}
-
 \finfrule
 {\begin{array}{l}
-\opsenvx e \mapsto v, E \\
-v' = \begin{cases}
-v, & \text{if $v \not= null$ and $\exists i, v \in M(r_i)$}. \\
+\opsenvx e \mapsto l, E \\
+v = \begin{cases}
+l, & \text{if $\exists i, l \in M(r_i)$}. \\
 null, & \text{otherwise}.
 \end{cases}
 \end{array}}
-{\opsenvx \text{downregion}(e, \oton{r}) \mapsto v', E} \\
-
+{\opsenvx \text{downregion}(e, \oton{r}) \mapsto v, E}
 \finfrule
 {\begin{array}{l}
 \opsenvx e_1 \mapsto l, E \\
 S' = \text{apply}(S, E, C) \\
-v = S'[l]
+v = \begin{cases}
+S'(l), & \text{if } l \not\in C \\
+v' : H(l), & \text{otherwise}
+\end{cases}
 \end{array}}
-{\opsenvx \text{read}(e_1) \mapsto v, E \dplus [ read(l, excl, v) ]} \\
-
+{\opsenvx \text{read}(e_1) \mapsto v, E \dplus [ read(l, excl, v) ]}
 \finfrule
 {\begin{array}{l}
 \opsenvx e_1 \mapsto l, E_1 \\
 S' = \text{apply}(S, E_1, C) \\
 \opsenvx[S=S'] e_2 \mapsto v, E_2 \\
+valid\_interleave(S, C, E', E_1, E_2)
 \end{array}}
-{\opsenvx \text{write}(e_1, e_2) \mapsto true, E_1 \dplus E_2 \dplus [ write(l, excl, v) ]} \\
-
+{\opsenvx \text{write}(e_1, e_2) \mapsto true, E' \dplus [ write(l, excl, v) ]}
 \finfrule
 {\begin{array}{l}
 \opsenvx e_1 \mapsto l, E_1 \\
 S' = \text{apply}(S, E_1, C) \\
 \opsenvx[S=S'] e_2 \mapsto v, E_2 \\
+valid\_interleave(S, C, E', E_1, E_2)
 \end{array}}
-{\opsenvx \text{reduce}(id, e_1, e_2) \mapsto true, E_1 \dplus E_2 \dplus [ reduce_{id}(l, excl, v) ]} \\
-
-\framebox{$\opsenvx \text{newcolor }r \mapsto \emptyset, []$} \\
-
+{\opsenvx \text{reduce}(id, e_1, e_2) \mapsto true, E' \dplus [ reduce_{id}(l, excl, v) ]}
+\framebox{$\opsenvx \text{newcolor }r \mapsto \emptyset, []$}
 \finfrule
 {\begin{array}{l}
 \opsenvx e_1 \mapsto K, E_1 \\
@@ -420,8 +492,7 @@ S'' = \text{apply}(S', E_2, C) \\
 K' = \{ (l,v) \} \cup \{ (l_i,v_i) : (l_i,v_i) \in K \wedge l \not= l_i \} \\
 valid\_interleave(S, C, E', E_1, E_2, E_3)
 \end{array}}
-{\opsenvx \text{color}(e_1, e_2, e_3) \mapsto K', E'} \\
-
+{\opsenvx \text{color}(e_1, e_2, e_3) \mapsto K', E'}
 \finfrule
 {\begin{array}{l}
 \opsenvx e_1 \mapsto v_1, E_1 \\
@@ -430,8 +501,7 @@ S' = \text{apply}(S, E_1, C) \\
 v' = v_1 + v_2 \\
 valid\_interleave(S, C, E', E_1, E_2)
 \end{array}}
-{\opsenvx e_1 + e_2 \mapsto v', E'} \hspace{1cm}
-
+{\opsenvx e_1 + e_2 \mapsto v', E'}
 \finfrule
 {\begin{array}{l}
 \opsenvx e_1 \mapsto v_1, E_1 \\
@@ -443,8 +513,7 @@ false, & \text{otherwise}.
 \end{cases} \\
 valid\_interleave(S, C, E', E_1, E_2)
 \end{array}}
-{\opsenvx e_1 < e_2 \mapsto v', E'} \\
-
+{\opsenvx e_1 < e_2 \mapsto v', E'}
 \finfrule
 {\begin{array}{l}
 \opsenvx e_1 \mapsto v_1, E_1 \\
@@ -453,26 +522,21 @@ S' = \text{apply}(S, E_1, C) \\
 \opsenvx[L=L',S=S'] e_2 \mapsto v_2, E_2 \\
 valid\_interleave(S, C, E', E_1, E_2)
 \end{array}}
-{\opsenvx \text{let }id : T = e_1\text{ in }e_2 \mapsto v_2, E'} \\
-
+{\opsenvx \text{let }id : T = e_1\text{ in }e_2 \mapsto v_2, E'}
 \finfrule
 {\begin{array}{l}
 \opsenvx e_1 \mapsto true, E_1 \\
 S' = \text{apply}(S, E_1, C) \\
-\opsenvx[L=L',S=S'] e_2 \mapsto v_2, E_2 \\
-valid\_interleave(S, C, E', E_1, E_2)
+\opsenvx[L=L',S=S'] e_2 \mapsto v_2, E_2
 \end{array}}
-{\opsenvx \text{if }e_1\text{ then }e_2\text{ else }e_3 \mapsto v_2, E'} \\
-
+{\opsenvx \text{if }e_1\text{ then }e_2\text{ else }e_3 \mapsto v_2, E_1 \dplus E_2}
 \finfrule
 {\begin{array}{l}
 \opsenvx e_1 \mapsto false, E_1 \\
 S' = \text{apply}(S, E_1, C) \\
-\opsenvx[L=L',S=S'] e_3 \mapsto v_3, E_3 \\
-valid\_interleave(S, C, E', E_1, E_3)
+\opsenvx[L=L',S=S'] e_3 \mapsto v_3, E_3
 \end{array}}
-{\opsenvx \text{if }e_1\text{ then }e_2\text{ else }e_3 \mapsto v_3, E'} \\
-
+{\opsenvx \text{if }e_1\text{ then }e_2\text{ else }e_3 \mapsto v_3, E_1 \dplus E_3}
 \finfrule
 {\begin{array}{l}
 \opsenvx e_1 \mapsto v_1, E_1 \\
@@ -480,17 +544,19 @@ S_1 = \text{apply}(S, E_1, C) \\
 \opsenvx e_2 \mapsto v_2, E_2 \\
 \ldots \\
 S_n = \text{apply}(S_{n-1}, E_n, C) \\
-valid\_interleave(S, C, E', \oton{E}) \\
-S' = \text{apply}(S, E', C) \\
-task id[\otok{k}{r'}](f_1 : T_1, \ldots, f_n : T_n), \Phi_i, Q : T_r = e_{n+1} \\
+valid\_interleave(S, C, E', \oton{E})
+\vspace{1.5mm} \\
+\text{task }id[\otok{k}{r'}](f_1 : T_1, \ldots, f_n : T_n), \Phi_i, Q : T_r = e_{n+1} \\
 M' = \{ (r'_1, M(r_1)), \ldots (r'_k, M(r_k)) \} \\
 L' = \{ (f_1, v_1), \ldots, (f_n, v_n) \} \\
-\opsenvx[M=M',L=L',S=S'] e_{n+1} \mapsto v_{n+1}, E_{n+1} \\
-E'_{n+1} = mark\_coherence(E_{n+1}, M \llbracket Q \rrbracket) \\
+S' = \text{apply}(S, E', C) \\
+C' = C \cup \{ l : \exists \rho. atomic(\rho) \in M' \llbracket Q \rrbracket \vee simult(\rho) \in M' \llbracket Q \rrbracket \} \\
+\opsenvx[M=M',L=L',S=S'] e_{n+1} \mapsto v_{n+1}, E_{n+1}
+\vspace{1.5mm} \\
+E'_{n+1} = mark\_coherence(E_{n+1}, M' \llbracket Q \rrbracket) \\
 valid\_interleave(S, C, E'', E', E_{n+1})
 \end{array}}
-{\opsenvx id[\otok{k}{r}](\oton{e}) \mapsto v_{n+1}, E''} \\
-
+{\opsenvx id[\otok{k}{r}](\oton{e}) \mapsto v_{n+1}, E''}
 \finfrule{
 \begin{array}{l}
 \opsenvx e_1 \mapsto K, E_1 \\
@@ -500,16 +566,14 @@ S' = \text{apply}(S, E_1, C) \\
 \opsenvx[M=M',S=S'] e_2 \mapsto v, E_2 \\
 valid\_interleave(S, C, E', E_1, E_2)
 \end{array}}
-{\opsenvx \text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2 \mapsto v, E'} \\
-
+{\opsenvx \text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2 \mapsto v, E'}
 \finfrule{
 \begin{array}{l}
 \opsenvx e_1 \mapsto v, E \\
 \rho_i = M[r_i] \\
 v' = \langle \langle \otok{k}{\rho}, v \rangle \rangle
 \end{array}}
-{\opsenvx \text{pack}\ e_1\ \text{as}\ T_1[\otok{k}{r}] \mapsto v', E} \\
-
+{\opsenvx \text{pack}\ e_1\ \text{as}\ T_1[\otok{k}{r}] \mapsto v', E}
 \finfrule{
 \begin{array}{l}
 \opsenvx e_1 \mapsto \langle \langle \otok{k}{\rho} , v_1 \rangle \rangle, E_1 \\
@@ -519,7 +583,11 @@ S' = \text{apply}(S, E_1, C) \\
 \opsenvx[M=M',L=L',S=S'] e_2 \mapsto v_2, E_2 \\
 valid\_interleave(S, C, E', E_1, E_2)
 \end{array}}
-{\opsenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 \mapsto v_2, E' } \\
+{\opsenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 \mapsto v_2, E' }
+}
+\caption{Legion Core Operational Semantics}
+\label{fig:semantics}
+\end{figure*}
 
 \subsection{Soundness of Effects}
 
