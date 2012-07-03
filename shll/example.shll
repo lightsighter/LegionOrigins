@@ -1,0 +1,71 @@
+type list<r> = < int, list<r>@r >
+
+task sum_list[r] ( l: list<r>@r ), reads(r) : int =
+    if isnull(l) then 0 else
+    let v : list<r> = read(l) in
+    v.1 + sum_list[r](v.2)
+
+task color_list[r,rs] ( clr: coloring(rs), head: list<r>@r, splitval: int ), reads(r) : coloring(rs) =
+    if isnull(head) then clr else
+    let v : list<r> = read(head) in
+    let ps : list<r>@rs = downregion(head, rs) in
+    color_list[r,rs](if isnull(ps)
+		         then clr else color(clr, ps, if v.1 < splitval then 1 else 2),
+                     v.2, splitval)
+
+type tree<rl,rls,rt> = rr[rll, rlr, rtl, rtr] 
+                       < list<rl>@rls, 
+                         < tree<rl,rll,rtl>@rtl, 
+	 		   tree<rl,rlr,rtr>@rtr > >
+     		       where rll <= rls and rlr <= rls and rll * rlr
+                         and rtl <= rt  and rtr <= rt  and rtl * rtr
+
+task make_tree[rl,rls,rt] ( l: list<rl>@rl, min: int, max: int), reads(rl), rdwrs(rt) : tree<rl,rls,rt>@rt =
+    if isnull(l) then null tree<rl,rls,rt>@rt else /* do comments work? */
+    let v : list<rl> = read(l) in
+    if (v.1 < min) | (v.1 > max) then
+    make_tree[rl,rls,rt](v.2, min, max) else
+    let root : tree<rl,rls,rt>@rt = new tree<rl,rls,rt>@rt in
+    partition rt using newcolor rt as rtl,rtr in
+    partition rls using color_list[rl,rls](newcolor rls, v.2, v.1) as rll,rlr in
+    let ptr : list<rl>@rls = downregion(l, rls) in
+    let lhs : tree<rl,rll,rtl>@rtl = make_tree[rl,rll,rtl](v.2, min, v.1) in
+    let rhs : tree<rl,rlr,rtr>@rtr = make_tree[rl,rlr,rtr](v.2, v.1, max) in
+    let v2 : tree<rl,rls,rt> = pack < ptr, < lhs, rhs > > as tree<rl,rls,rt>[rll, rlr, rtl, rtr] in
+    write(root, v2)
+
+task reverse_tree[rl,rls,rt] ( root: tree<rl,rls,rt>@rt ), rdwrs(rt) : tree<rl,rls,rt>@rt =
+     if isnull(root) then null tree<rl,rls,rt>@rt else
+     let v : tree<rl,rls,rt> = read(root) in
+     unpack v as u : tree<rl,rls,t>[rll, rlr, rtl, rtr] in
+     let lhs_r : tree<rl,rll,rtl>@rtl = reverse_tree[rl,rll,rtl](u.2.1) in
+     let rhs_r : tree<rl,rlr,rtr>@rtr = reverse_tree[rl,rlr,rtr](u.2.2) in
+     let v_r : tree<rl,rls,rt> = pack < u.1, < rhs_r, lhs_r > > as tree<rl,rls,rt>[rlr, rll, rtr, rtl] in
+     write(root, v_r)
+
+type hist = < int, int >
+
+task hist_tree1[rl,rls,rt,rh] ( root: tree<rl,rls,rt>@rt, hptr: hist@rh, t : int ), reads(rt), reads(rls), rdwrs(rh), atomic(rh) : int =
+    if isnull(root) then 0 else
+    let v : tree<rl,rls,rt> = read(root) in
+    unpack v as u : tree<rl,rls,t>[rll, rlr, rtl, rtr] in
+    let lval : list<rl> = read(u.1) in
+    let hval : hist = read(hptr) in
+    let hval2 : hist = if lval.1 < t then < hval.1 + 1, hval.2 >
+                                     else < hval.1, hval.2 + 1 > in
+    let _ : hist@rh = write(hptr, hval2) in
+    1 + hist_tree1[rl,rll,rtl,rh](u.2.1, hptr, t)
+      + hist_tree1[rl,rlr,rtr,rh](u.2.2, hptr, t)
+
+task inc_bucket ( hval: hist, b: int ) : hist =
+    if b < 2 then < hval.1 + 1, hval.2 > else < hval.1, hval.2 + 1 >
+
+task hist_tree2[rl,rls,rt,rh] ( root: tree<rl,rls,rt>@rt, hptr: hist@rh, t : int ), reads(rt), reads(rls), reduces(inc_bucket, rh) : int =
+    if isnull(root) then 0 else
+    let v : tree<rl,rls,rt> = read(root) in
+    unpack v as u : tree<rl,rls,t>[rll, rlr, rtl, rtr] in
+    let lval : list<rl> = read(u.1) in
+    let _ : hist@rh = reduce(inc_bucket, hptr, if lval.1 < t then 1 else 2) in
+    1 + hist_tree1[rl,rll,rtl,rh](u.2.1, hptr, t)
+      + hist_tree1[rl,rlr,rtr,rh](u.2.2, hptr, t)
+

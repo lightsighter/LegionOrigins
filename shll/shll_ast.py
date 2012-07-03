@@ -595,8 +595,8 @@ class WriteExpr(Expr):
         if not ptrtype.elemtype.equals(valtype, pgrm = pgrm):
             raise WriteTypeMismatchError(self, ptrtype, valtype)
 
-        # result of write is bool (an arbitrary choice)
-        return BoolType()
+        # result of write is pointer type
+        return ptrtype
 
 class ReduceExpr(Expr):
     def __init__(self, func, ptrexpr, valexpr):
@@ -644,8 +644,8 @@ class ReduceExpr(Expr):
         if not ptrtype.elemtype.equals(rdtask.rettype, pgrm = pgrm):
             raise ReduceTypeMismatchError(self, self.func, ptrtype, valtype)
 
-        # result of reduce is bool (an arbitrary choice)
-        return BoolType()
+        # result of reduce is pointer type
+        return ptrtype
 
 
 class BinOpExpr(Expr):

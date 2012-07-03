@@ -8,7 +8,7 @@ class Lexer:
                 'and', 'reads', 'writes', 'rdwrs', 'reduces', 'true', 'false',
                 'read', 'write', 'reduce', 'if', 'then', 'else', 'new',
                 'isnull', 'null', 'partition', 'using', 'as', 'pack', 'unpack',
-                'coloring', 'newcolor', 'color',
+                'coloring', 'newcolor', 'color', 'atomic', 'simult',
                 'upregion', 'downregion')
 
     tokens = [
@@ -17,7 +17,7 @@ class Lexer:
         'INTVAL',
         ] + list(x.upper() for x in keywords)
 
-    literals = '={}()<>@*,:.+&|[]'
+    literals = '={}()<>@*,:.+&|[]_'
 
     whitespace = " \t\r"
 
