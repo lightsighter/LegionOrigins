@@ -401,10 +401,10 @@ simult, & \text{if }\exists \rho. l \in \rho \wedge simult(\rho) \in \hat Q \\
 atomic, & \text{if }\exists \rho. l \in \rho \wedge atomic(\rho) \in \hat Q \\
 excl, & \text{otherwise}
 \end{cases} \\
-any\_interleave(E', [], \ldots, []) & \rightarrow & true \\
-any\_interleave([ op(l, c, v) ] \dplus E', E_1, \ldots, [ op(l, c, v) ] \dplus E_i, \ldots, E_n) & \rightarrow & any\_interleave(E', E_1, \ldots, E_i, \ldots, E_n) \\
-valid\_interleave(S, C, E', \oton{E}) & \rightarrow & any\_interleave(E', \oton{E}) \\
-valid\_interleave(S, C, E' \dplus [ read(l, c, v) ] \dplus E'', \oton{E}) & \rightarrow & l \in C \vee S'(l) = v, \text{ where } S' = apply(S, E')
+any\_interleave(E', [], \ldots, []) & = & true \\
+any\_interleave([ op(l, c, v) ] \dplus E', E_1, \ldots, [ op(l, c, v) ] \dplus E_i, \ldots, E_n) & = & any\_interleave(E', E_1, \ldots, E_i, \ldots, E_n) \\
+valid\_interleave(S, C, E', \oton{E}) & \Rightarrow & any\_interleave(E', \oton{E}) \\
+valid\_interleave(S, C, E' \dplus [ read(l, c, v) ] \dplus E'', \oton{E}) & \Rightarrow & l \in C \vee S'(l) = v, \text{ where } S' = apply(S, E')
 \end{array}
 $}
 \caption{Operational Semantics Helper Functions}
@@ -601,9 +601,9 @@ to locations covered by the privileges in $\Phi$:
 \begin{center}
 \begin{tabular}{l@{ }l@{ }l}
 $M \vdash E : \Phi$ & $\Leftrightarrow$ & $\forall \epsilon\text { in } E.$ \\
-& & $(\epsilon = read(l, c, v) \rightarrow \exists r. l \in M(r) \wedge reads(r) \in \Phi)\ \wedge$ \\
-& & $(\epsilon = write(l, c, v) \rightarrow \exists r. l \in M(r) \wedge writes(r) \in \Phi)\ \wedge$ \\
-& & $(\epsilon = reduce_{id}(l, c, v) \rightarrow \exists r. l \in M(r) \wedge reduces(id, r) \in \Phi)$
+& & $(\epsilon = read(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge reads(r) \in \Phi)\ \wedge$ \\
+& & $(\epsilon = write(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge writes(r) \in \Phi)\ \wedge$ \\
+& & $(\epsilon = reduce_{id}(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge reduces(id, r) \in \Phi)$
 \end{tabular}
 \end{center}
 
@@ -629,15 +629,15 @@ $
 \begin{array}{l}
 \begin{array}{ll}
 \begin{array}{lll}
-M \sim \Omega & \Leftrightarrow & (\forall r_i, r_j. r_i \leq r_j \in \Omega \rightarrow M(r_i) \subseteq M(r_j))\ \wedge \\
-              &                 & (\forall r_i, r_j. r_i * r_j \in \Omega \rightarrow M(r_i) \cap M(r_j) = \emptyset) \\
+M \sim \Omega & \Leftrightarrow & (\forall r_i, r_j. r_i \leq r_j \in \Omega \Rightarrow M(r_i) \subseteq M(r_j))\ \wedge \\
+              &                 & (\forall r_i, r_j. r_i * r_j \in \Omega \Rightarrow M(r_i) \cap M(r_j) = \emptyset) \\
 L \sim_H \Gamma & \Leftrightarrow & \forall (id,v) \in L. v \sim_H M \llbracket \Gamma \rrbracket (id) \\
 S \sim H & \Leftrightarrow & \forall (l,v) \in S. v \sim_H H(l) \\
 \end{array} & 
 \begin{array}{lll}
-E \sim H & \Leftrightarrow & (\forall l, c, v. write(l,c, v) \in E \rightarrow v \sim_H H(l))\ \wedge \\
-& & (\forall id, l, v. reduce_{id}(l, v) \in E \rightarrow \\
-& & (M \llbracket \Gamma \rrbracket (id) = (\hat T_1, \hat T_2), \emptyset, \emptyset \rightarrow \hat T_1) \wedge H(l) = \hat T_1 \wedge v \sim_H \hat T_2) \\
+E \sim H & \Leftrightarrow & (\forall l, c, v. write(l,c, v) \in E \Rightarrow v \sim_H H(l))\ \wedge \\
+& & (\forall id, l, v. reduce_{id}(l, v) \in E \Rightarrow \\
+& & (M \llbracket \Gamma \rrbracket (id) = (\hat T_1, \hat T_2), \emptyset, \emptyset \Rightarrow \hat T_1) \wedge H(l) = \hat T_1 \wedge v \sim_H \hat T_2) \\
 \end{array}
 \end{array} \vspace{3mm} \\
 \begin{array}{l@{\hspace{1cm}}l}
@@ -650,8 +650,8 @@ null \sim_H \hat T@\rho \\
 l \sim_H \hat T@\rho & \Leftrightarrow & l \in \rho \wedge H(l) \sim_H \hat T \\
 \langle v_1, v_2 \rangle \sim_H \langle \hat T_1, \hat T_2 \rangle & \Leftrightarrow & (v_1 \sim_H \hat T_1) \wedge (v_2 \sim_H \hat T_2) \\
 \langle \langle \oton{\rho}, v \rangle \rangle \sim_H \text{rr}[\oton{r}] \hat T\text{ where }\Omega & \Leftrightarrow & (v \sim_H \hat T[\rho_1/r_1, \ldots \rho_n/r_n]) \wedge (\{ (r_i, \rho_i) \} \sim \Omega) \\
-K \sim_H coloring(\rho) & \Leftrightarrow & \forall l_1, v_1. (l_1, v_1) \in K \rightarrow (l_1 \in \rho\ \wedge \\
-& & \forall l_2, v_2. (l_2, v_2) \in K \rightarrow (l_1 \not= l_2) \vee (v_1 = v_2)) \\
+K \sim_H coloring(\rho) & \Leftrightarrow & \forall l_1, v_1. (l_1, v_1) \in K \Rightarrow (l_1 \in \rho\ \wedge \\
+& & \forall l_2, v_2. (l_2, v_2) \in K \Rightarrow (l_1 \not= l_2) \vee (v_1 = v_2)) \\
 \end{array}
 \end{array}
 \end{array}
