@@ -1,3 +1,6 @@
+\newtheorem{thm}{Theorem}
+\newtheorem{lem}{Lemma}
+
 \newcommand{\oton}[1]{{#1}_1,\ldots,{#1}_n}
 \newcommand{\otok}[2]{{#2}_1,\ldots,{#2}_{#1}}
 \newcommand{\dplus}{\text{++}}
@@ -257,7 +260,7 @@ r_i \not\in \textit{regions\_of}(\Gamma, T)
 \finfrule{
 \begin{array}{l}
 T_1 = \exists \otok{k}{r'}. T_2\text{ where }\Omega_1 \\
-\Omega \models \Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \\
+\Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Omega^* \\
 \typeenvx e_1 : T_2[r_1/r'_1,\ldots,r_k/r'_k]
 \end{array}}
 {\typeenvx \text{pack}\ e_1\ \text{as}\ T_1[\otok{k}{r}] : T_1}
@@ -527,14 +530,14 @@ valid\_interleave(S, C, E', E_1, E_2)
 {\begin{array}{l}
 \opsenvx e_1 \mapsto true, E_1 \\
 S' = \text{apply}(S, E_1, C) \\
-\opsenvx[L=L',S=S'] e_2 \mapsto v_2, E_2
+\opsenvx[S=S'] e_2 \mapsto v_2, E_2
 \end{array}}
 {\opsenvx \text{if }e_1\text{ then }e_2\text{ else }e_3 \mapsto v_2, E_1 \dplus E_2}
 \finfrule
 {\begin{array}{l}
 \opsenvx e_1 \mapsto false, E_1 \\
 S' = \text{apply}(S, E_1, C) \\
-\opsenvx[L=L',S=S'] e_3 \mapsto v_3, E_3
+\opsenvx[S=S'] e_3 \mapsto v_3, E_3
 \end{array}}
 {\opsenvx \text{if }e_1\text{ then }e_2\text{ else }e_3 \mapsto v_3, E_1 \dplus E_3}
 \finfrule
@@ -593,105 +596,195 @@ valid\_interleave(S, C, E', E_1, E_2)
 
 An important property of the legion type system is that any expression that is well-typed is
 guaranteed to access the heap only in ways permitted by the privileges under which it was typed.
-A judgement $M \vdash E : \Phi$
-If
-\begin{enumerate}
-\item $\typeenvx e : T$
-\item $\opsenvx e \mapsto v, E$
-\end{enumerate}
-we would like to prove that all of the dynamic effects described by $E$ are
-included in the static privileges $\Phi$.  A judgement $E : \Phi$ means that
-for all effects $\epsilon$ in $E$,
-\begin{enumerate}
-\item if $\epsilon = read(l, v)$, then for some $r$, $reads(r) \in \Phi \wedge l \in M(r)$
-\item if $\epsilon = write(l, v)$, then for some $r$, $writes(r) \in \Phi \wedge l \in M(r)$
-\item if $\epsilon = reduce(id, l, v)$, then for some $r$, $reduces(id,r) \in \Phi \wedge l \in M(r)$
-\end{enumerate}
+A judgement $M \vdash E : \Phi$ holds if all the memory operations in $E$ are of the types and
+to locations covered by the privileges in $\Phi$:
 
-\subsection{Strategy}
+\begin{center}
+\begin{tabular}{l@{ }l@{ }l}
+$M \vdash E : \Phi$ & $\Leftrightarrow$ & $\forall \epsilon\text { in } E.$ \\
+& & $(\epsilon = read(l, c, v) \rightarrow \exists r. l \in M(r) \wedge reads(r) \in \Phi)\ \wedge$ \\
+& & $(\epsilon = write(l, c, v) \rightarrow \exists r. l \in M(r) \wedge writes(r) \in \Phi)\ \wedge$ \\
+& & $(\epsilon = reduce_{id}(l, c, v) \rightarrow \exists r. l \in M(r) \wedge reduces(id, r) \in \Phi)$
+\end{tabular}
+\end{center}
 
-The mapping $M$ is a function from logical region names $r$ to physical regions $\rho$.  It will
-be convenient to apply $M$ to types and even functions that operate on types by defining
-$\hat x = M \llbracket x \rrbracket$ to be $x$ with all logical region names $r_i$ replaced by their
-corresponding physical region $\rho_i = M(r_i)$.   \\
+The proof that $M \vdash E : \Phi$ holds for all well-typed Legion expressions is achieved by
+induction over the structure of the expression.  Soundness is contingent on the following
+consistent properties, which must be shown to hold for each subexpression:
+\begin{itemize}
+\item $M \sim \Omega$, a region mapping must satisfy the region constraints under which the expression was typed
+\item $L \sim_H \Gamma$, the local values must have types consistent with the environment under which the expression was typed
+\item $S \sim H$, the initial state of the store must contain values whose types are consisten with the heap typing
+\end{itemize}
 
-Soundness is proven using induction over the structure of an expression.  A number of properties
-are assumed and/or proven at each step: 
-\begin{enumerate}
-\item $M \sim \Omega \Leftrightarrow (\forall r_i, r_j. r_i \leq r_j \in \Omega \rightarrow M(r_i) \subseteq M(r_j)) \wedge (\forall r_i, r_j. r_i * r_j \in \Omega \rightarrow M(r_i) \cap M(r_j) = \emptyset)$, that M is an $\Omega$-satisfying mapping of logical regions to physical regions
-\item $\hat T = M \llbracket T \rrbracket$, a {\em physical type}, constructed by replacing all of the free region names $r$ in T with the physical regions $\rho = M(r)$
-\item $v \sim_H \hat T$, value consistency with respect to a heap typing.  Value consistency is
-itself defined inductively over the structure of a type:
-\begin{enumerate}
-\item $bv \sim_H bool$
-\item $iv \sim_H int$
-\item $null \sim_H T@\rho$
-\item $l \sim_H T@\rho \Leftrightarrow (l \in \rho) \wedge (H(l) \sim_H T)$
-\item $\langle v_1, v_2 \rangle \sim_H \langle \hat T_1, \hat T_2 \rangle \Leftrightarrow (v_1 \sim_H \hat T_1) \wedge (v_2 \sim_H \hat T_2)$
-\item $\langle \langle \oton{\rho}, v \rangle \rangle \sim_H \text{rr}[\oton{r}] \hat T\text{ where }\Omega \Leftrightarrow (v \sim_H \hat T[\rho_1/r_1, \ldots \rho_n/r_n]) \wedge (\{ (r_i, \rho_i) \} \sim \Omega)$
-\item $K \sim_H coloring(\rho) \Leftrightarrow \forall l_1, v_1. (l_1, v_1) \in K \rightarrow (l_1 \in \rho \wedge \forall l_2, v_2. (l_2, v_2) \in K \rightarrow (l_1 \not= l_2) \vee (v_1 = v_2))$
-\end{enumerate}
-\item $L \sim_H M \llbracket \Gamma \rrbracket \Leftrightarrow \forall (id,v) \in L. v \sim_H M \llbracket \Gamma \rrbracket (id) $, local stack consistency with respect to a heap typing
-\item $S \sim H \Leftrightarrow \forall (l,v) \in S. v \sim_H H(l)$, store consistency with respect to a given heap typing
-\item $E \sim H \Leftrightarrow (\forall l, v. write(l,v) \in E \rightarrow v \sim_H H(l)) \wedge (\forall id, l, v. reduce_{id}(l, v) \in E \rightarrow (\hat \Gamma (id) = (\hat T_1, \hat T_2), \emptyset \rightarrow \hat T_1) \wedge H(l) = \hat T_1 \wedge v \sim_H \hat T_2)$, effect consistnecy with respect to a given heap typing
-\end{enumerate}
+The proof requires two additional properties be proved for each subexpression:
+\begin{itemize}
+\item $v \sim_H M \llbracket T \rrbracket$, a subexpresion must evaluate to a value of the right type
+\item $E \sim H$, the values written to the store must match the heap types of the location to which they're stored
+\end{itemize}
+Figure~\ref{fig:constprop} gives the precise definition of these properties.
 
-Armed with all of these, we look at the following property:
-\begin{enumerate}
-\item $E \sim_H \Phi$, containment of effects within privileges
-\end{enumerate}
-
-and prove
-
-\finfrule
-{\begin{array}{l}
-\typeenvx e : T \\
-\opsenvx e \mapsto v, E \\
-M \sim \Omega \hspace{1cm}
-L \sim_H \Gamma \hspace{1cm}
-S \sim H
-\end{array}}
-{
-v \sim_H M \llbracket T \rrbracket \hspace{1cm}
-E \sim H \hspace{1cm}
-E : \Phi
+\begin{figure*}
+\centering{\footnotesize
+$
+\begin{array}{l}
+\begin{array}{ll}
+\begin{array}{lll}
+M \sim \Omega & \Leftrightarrow & (\forall r_i, r_j. r_i \leq r_j \in \Omega \rightarrow M(r_i) \subseteq M(r_j))\ \wedge \\
+              &                 & (\forall r_i, r_j. r_i * r_j \in \Omega \rightarrow M(r_i) \cap M(r_j) = \emptyset) \\
+L \sim_H \Gamma & \Leftrightarrow & \forall (id,v) \in L. v \sim_H M \llbracket \Gamma \rrbracket (id) \\
+S \sim H & \Leftrightarrow & \forall (l,v) \in S. v \sim_H H(l) \\
+\end{array} & 
+\begin{array}{lll}
+E \sim H & \Leftrightarrow & (\forall l, c, v. write(l,c, v) \in E \rightarrow v \sim_H H(l))\ \wedge \\
+& & (\forall id, l, v. reduce_{id}(l, v) \in E \rightarrow \\
+& & (M \llbracket \Gamma \rrbracket (id) = (\hat T_1, \hat T_2), \emptyset, \emptyset \rightarrow \hat T_1) \wedge H(l) = \hat T_1 \wedge v \sim_H \hat T_2) \\
+\end{array}
+\end{array} \vspace{3mm} \\
+\begin{array}{l@{\hspace{1cm}}l}
+\begin{array}{l}
+bv \sim_H bool \\
+iv \sim_H int \\
+null \sim_H \hat T@\rho \\
+\end{array} &
+\begin{array}{lll}
+l \sim_H \hat T@\rho & \Leftrightarrow & l \in \rho \wedge H(l) \sim_H \hat T \\
+\langle v_1, v_2 \rangle \sim_H \langle \hat T_1, \hat T_2 \rangle & \Leftrightarrow & (v_1 \sim_H \hat T_1) \wedge (v_2 \sim_H \hat T_2) \\
+\langle \langle \oton{\rho}, v \rangle \rangle \sim_H \text{rr}[\oton{r}] \hat T\text{ where }\Omega & \Leftrightarrow & (v \sim_H \hat T[\rho_1/r_1, \ldots \rho_n/r_n]) \wedge (\{ (r_i, \rho_i) \} \sim \Omega) \\
+K \sim_H coloring(\rho) & \Leftrightarrow & \forall l_1, v_1. (l_1, v_1) \in K \rightarrow (l_1 \in \rho\ \wedge \\
+& & \forall l_2, v_2. (l_2, v_2) \in K \rightarrow (l_1 \not= l_2) \vee (v_1 = v_2)) \\
+\end{array}
+\end{array}
+\end{array}
+$
 }
+\caption{Consistency Properties}
+\label{fig:constprop}
+\end{figure*}
 
-A few lemmas will be useful:
+\begin{thm}
+For any expression $e$, if:
+\begin{center}
+$
+\begin{array}{l} \\
+\typeenv{e}{T} \\
+\opsenv{e}{v}{E} \\
+M \sim \Omega \\
+L \sim_H \Gamma \\
+S \sim H
+\end{array}
+$
+\end{center}
+then:
+\begin{center}
+$
+\begin{array}{l}
+v \sim_H M \llbracket T \rrbracket \\
+E \sim H \\
+M \vdash E : \Phi
+\end{array}
+$
+\end{center}
+\end{thm}
 
-\finfrule
-{\begin{array}{l}
-S \sim H \hspace{1cm}
-E \sim H
-\end{array}}
-{ \text{apply}(S, E, C) \sim H }
+Although there are 23 different cases to be proven, many of them are similar, and benefit from
+the use of the following lemmas:
 
-\finfrule
-{\begin{array}{l}
-E_1 \sim H \hspace{1cm}
-E_2 \sim H
-\end{array}}
-{ E_1 \dplus E_2 \sim H } \\
+\begin{lem}
+\label{lemma:heapconst:apply}
+If $S \sim H$ and $E \sim H$, then $\text{apply}(S, E, C) \sim H$.
+\end{lem}
 
-\finfrule
-{\begin{array}{l}
-E_1 \sim H \hspace{1cm}
-E_2 \sim H \\
-valid\_interleave(S, C, E', E_1, E_2)
-\end{array}}
-{ E' \sim H } \\
+\begin{lem}
+\label{lemma:heapconst:effects1}
+If $E_1 \sim H$ and $E_2 \sim H$, then $E_1 \dplus E_2 \sim H$.
+\end{lem}
 
-\finfrule
-{\begin{array}{l}
-E_1 : \Phi \hspace{1cm}
-E_2 : \Phi
-\end{array}}
-{ E_1 \dplus E_2 : \Phi } \\
+\begin{lem}
+\label{lemma:heapconst:effects2}
+If $E_1 \sim H$ and $E_2 \sim H$ and $valid\_interleave(S, C, E', E_1, E_2)$, then $E' \sim H$.
+\end{lem}
 
-\framebox{$M \sim \Omega \Leftrightarrow M \sim \Omega^*$} \\
+\begin{lem}
+\label{lemma:effsound:effects1}
+If $M \vdash E_1 : \Phi$ and $M \vdash E_2 : \Phi$, then $M \vdash E_1 \dplus E_2 : \Phi$.
+\end{lem}
 
-\framebox{$E : \Phi \Leftrightarrow E : \Phi^*$}
+\begin{lem}
+\label{lemma:effsound:effects2}
+If $M \vdash E_1 : \Phi$ and $M \vdash E_2 : \Phi$ and $valid\_interleave(S, C, E', E_1, E_2)$, then $M \vdash E' : \Phi$.
+\end{lem}
 
+\begin{lem}
+\label{lemma:omegaclosure}
+$M \sim \Omega^*$ if and only if $M \sim \Omega$.
+\end{lem}
+
+\begin{lem}
+\label{lemma:phiclosure}
+$M \vdash E : \Phi^*$ if ant only if $M \vdash E : \Phi$.
+\end{lem}
+
+The complete soundness proof can be found here\cite{xyz} - for space reasons we just discuss
+the general strategy here.
+
+\begin{itemize}
+
+\item Only three expressions have subexpressions that modify $M$ or $\Omega$.  For the
+{\em partition} expression, the assumed consistency of the coloring can be shown to preserve
+the region mapping consistency with respect to the constraints.  Similarly, the consistency of 
+a region relation instance guarantees the maintenance of consistency in an {\em unpack}
+expression.  Finally, the body of a called function executes with a different region mapping,
+but with an initially-empty set of constraints, so they are trivially satisfied.
+
+\item Only three expression have subexpressions that modify $L$, $\Gamma$, $M$.  The
+{\em partition} expression only modifies $M$, and the requirement that it not reuse existing
+names ensures that $M \llbracket \Gamma \rrbracket$ does not change.  The value and type of the
+binding created in a {\em let} expression is obviously consistent, while the binding created in
+an {\em unpack} expression is less obviously so, requiring an induction over the type of the 
+unpacked value to show equivalence under the new mapping.  The last case is again the body of a
+called function, which requires the same style of proof as for the {\em unpack} expression to
+be performed for each formal parameter.
+
+\item The heap typing consistency of all stores used in subexpressions follows directly from
+Lemma~\ref{lemma:heapconst:apply}.
+
+\item With the necessary consistency conditions all satified, the inductive hypothesis asserts
+the type consistency of all subexpression result values.  The consistency of the result of 
+the {\em upregion} is guaranteed by the type checking requirement of appropriate subregion
+constraints and the mapping's consistency with those constraints, whereas {\em downregion}
+expression's result is consistent due to the run time check that is performed.  (The requirement
+for appropriate constraints in the {\em downregion} typing rule is primarily for performance
+(i.e. knowing which part of the region tree to examine) and to catch downcasts that will never
+work at runtime.)
+
+The consistency of a {\em read} expression's result is trivial when an address falls in the
+clobber set, and counts on the consistency of the store otherwise.  The consistency of a 
+{\em color} expression's result depends on the pointer subexpression's consistency and the 
+removal of any previous coloring of that location from the coloring set.  The remaining
+interesting cases arise from changes to the mapping $M$ rather than transformations on the
+value $v$.  In the case of {\em partition} and {\em unpack} expressions, the type system's
+requirement that the body subexpression's result not use the regions that were added to the
+mapping allow the changes to the mapping to be ignored.  The last case is, yet again, the body
+of a called function, and the same strategy that was used for the type consistency of the
+formal parameters works in reverse for the function's result.
+
+\item The type consistency of the value in an expression's effect follows from
+Lemmas~\ref{lemma:heapconst:effects1} and~\ref{lemma:heapconst:effects2}.  New effects are
+added by the {\em write} and {\em reduce} expressions, but their values' consistency follows
+directly from the inductive hypothesis on their subexpressions.  Finally, the consistency of the
+values in a called function's memory trace is addressed in the same way as the return value.
+
+\item The proof of the crucial property of containment of effects within the available privileges
+is very similar to the previous step, with Lemmas~\ref{lemma:effsound:effects1}
+and~\ref{lemma:effsound:effects2} covering most cases, straightforward proofs for the {\em read},
+{\em write}, and {\em reduce} expressions, and one final special case for function calls.  The 
+inductive hypothesis asserts that the function body's effects are contained within its own
+privileges.  Those are a subset of the caller's $\Phi^*$, and then Lemma~\ref{lemma:phiclosure}
+is used to complete the proof.
+\end{itemize}
+
+modify $M$
 \begin{table*}
 \centering
 {\small
