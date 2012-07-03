@@ -15,14 +15,14 @@ type flux_list<r,rf,rp,rs,rg,rb> = < Flux<rp,rs,rg,rb>@rf, flux_list<r,rf,rp,rs,
  * rp - private region above
  * rs - shared region above
  */
-task interpolate_boundary[rl,rb,rp,rs] ( ptr_list : cell_list<rl,rb>@rl ) : bool,
-                          reads(rl), rdwrs(rb), reads(rp,rs) =
+task interpolate_boundary[rl,rb,rp,rs] ( ptr_list : cell_list<rl,rb>@rl ),
+                          reads(rl), rdwrs(rb), reads(rp,rs) : bool =
     if isnull(ptr_list) then true else
     let cell_node : cell_list<rl,rb> = read(ptr_list) in
     let cell : Cell = read(cell_node.1) in
     /* Pretend like we interpolate the boundary cell value from the enclosing parent cells */
     let new_cell : Cell = cell in
-    let junk : bool = write(cell_node.1, new_cell) in
+    let junk : Cell@rb = write(cell_node.1, new_cell) in
         interpolate_boundary[rl,rb,rp,rs](cell_node.2)
 
 /**
@@ -33,15 +33,15 @@ task interpolate_boundary[rl,rb,rp,rs] ( ptr_list : cell_list<rl,rb>@rl ) : bool
  * rg - ghost cells
  * rb - boundary cells
  */
-task calculate_fluxes[rl,rf,rp,rs,rg,rb] ( ptr_list : flux_list<rl,rf,rp,rs,rg,rb>@rl ) : bool,
-                      reads(rl), rdwrs(rf), reads(rp,rs,rg,rb) = 
+task calculate_fluxes[rl,rf,rp,rs,rg,rb] ( ptr_list : flux_list<rl,rf,rp,rs,rg,rb>@rl ),
+                      reads(rl), rdwrs(rf), reads(rp,rs,rg,rb) : bool = 
     if isnull(ptr_list) then true else
     let flux_node : flux_list<rl,rf,rp,rs,rg,rb> = read(ptr_list) in
     let flux : Flux<rp,rs,rg,rb> = read(flux_node.1) in
     let cell1 : Cell = read(flux.2.1) in
     let cell2 : Cell = read(flux.2.2) in
     let new_flux : Flux<rp,rs,rg,rb> = < cell1.1 + cell2.1, < flux.2.1, flux.2.2 > > in
-    let junk : bool = write(flux_node.1,new_flux) in
+    let junk : Flux<rp,rs,rg,rb>@rf = write(flux_node.1,new_flux) in
         calculate_fluxes[rl,rf,rp,rs,rg,rb](flux_node.2)
 
 /**
@@ -52,17 +52,17 @@ task calculate_fluxes[rl,rf,rp,rs,rg,rb] ( ptr_list : flux_list<rl,rf,rp,rs,rg,r
  * rg - ghost cells
  * rb - boundary cells
  */
-task advance_time_step[rl,rf,rp,rs,rg,rb] ( ptr_list : flux_list<rl,rf,rp,rs,rg,rb>@rl ) : bool,
-                      reads(rl,rf), rdwrs(rp,rs,rg,rb) =
+task advance_time_step[rl,rf,rp,rs,rg,rb] ( ptr_list : flux_list<rl,rf,rp,rs,rg,rb>@rl ),
+                      reads(rl,rf), rdwrs(rp,rs,rg,rb) : bool =
     if isnull(ptr_list) then true else
     let flux_node : flux_list<rl,rf,rp,rs,rg,rb> = read(ptr_list) in
     let flux : Flux<rp,rs,rg,rb> = read(flux_node.1) in
     let cell1 : Cell = read(flux.2.1) in
     let new_cell1 : Cell = < cell1.1 + flux.1, cell1.2 > in
-    let junk1 : bool = write(flux.2.1,new_cell1) in
+    let junk1 : Cell@(rp,rs,rg,rb) = write(flux.2.1,new_cell1) in
     let cell2 : Cell = read(flux.2.2) in
     let new_cell2 : Cell = < cell2.1 + flux.1, cell2.2 > in
-    let junk2 : bool = write(flux.2.2,new_cell2) in
+    let junk2 : Cell@(rp,rs,rg,rb) = write(flux.2.2,new_cell2) in
         advance_time_step[rl,rf,rp,rs,rg,rb](flux_node.2)
 
 /**
@@ -74,35 +74,35 @@ task advance_time_step[rl,rf,rp,rs,rg,rb] ( ptr_list : flux_list<rl,rf,rp,rs,rg,
  * rg - ghost cells below
  * rb - boundary cells below
  */
-task restrict_coarse_cells[rl,rpa,rsa,rp,rs,rg,rb] ( ptr_list : cell_list2<rl,rpa,rsa>@rl ) : bool,
-                          reads(rl), rdwrs(rpa,rsa), reads(rp,rs,rg,rb) = 
+task restrict_coarse_cells[rl,rpa,rsa,rp,rs,rg,rb] ( ptr_list : cell_list2<rl,rpa,rsa>@rl ),
+                          reads(rl), rdwrs(rpa,rsa), reads(rp,rs,rg,rb) : bool = 
     if isnull(ptr_list) then true else
     let cell_node : cell_list2<rl,rpa,rsa> = read(ptr_list) in
     let cell : Cell = read(cell_node.1) in
     /* Pretend like we restrict the above cell based on the cells below */
     let new_cell : Cell = cell in
-    let junk : bool = write(cell_node.1, new_cell) in
+    let junk : Cell@(rpa,rsa) = write(cell_node.1, new_cell) in
         restrict_coarse_cells[rl,rpa,rsa,rp,rs,rg,rb](cell_node.2)
 
-task allocate_cells_and_fluxes[rl,rf,rp,rs,rg,rb]( dummy : int) : flux_list<rl,rf,rp,rs,rg,rb>@rl,
-                              rdwrs(rl,rf,rp,rs,rg,rb) =
+task allocate_cells_and_fluxes[rl,rf,rp,rs,rg,rb]( dummy : int),
+                              rdwrs(rl,rf,rp,rs,rg,rb) : flux_list<rl,rf,rp,rs,rg,rb>@rl =
     /* Pretend like we allocate cells and fluxes and return the list of fluxes */
     let result : flux_list<rl,rf,rp,rs,rg,rb>@rl = new flux_list<rl,rf,rp,rs,rg,rb>@rl in
         result
 
-task compute_boundary_lists[rl,rb,rp,rs]( dummy : int ) : cell_list<rl,rb>@rl,
-                            rdwrs(rl,rb,rp,rs) =
+task compute_boundary_lists[rl,rb,rp,rs]( dummy : int ),
+                            rdwrs(rl,rb,rp,rs) : cell_list<rl,rb>@rl =
     /* Pretend like we compute these lists */
     let result : cell_list<rl,rb>@rl = new cell_list<rl,rb>@rl in
         result
 
-task compute_restrict_lists[rl,rpa,rsa,rp,rs,rg,rb] ( dummy : int ) : cell_list2<rl,rpa,rsa>@rl,
-                            rdwrs(rl,rpa,rsa,rp,rs,rg,rb) = 
+task compute_restrict_lists[rl,rpa,rsa,rp,rs,rg,rb] ( dummy : int ),
+                            rdwrs(rl,rpa,rsa,rp,rs,rg,rb) : cell_list2<rl,rpa,rsa>@rl = 
     /* Pretend like we compute these lists */
     let result : cell_list2<rl,rpa,rsa>@rl = new cell_list2<rl,rpa,rsa>@rl in
         result
 
-task main_task[rtop] ( dummy : int ) : bool, rdwrs(rtop) = 
+task main_task[rtop] ( dummy : int ), rdwrs(rtop) : bool = 
     /* Create the regions for the different levels and the lists */
     partition rtop using newcolor rtop as r0,r1,r_fluxes0,r_fluxes1,rlists in
     /* Create the list regions */

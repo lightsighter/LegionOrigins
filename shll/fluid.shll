@@ -14,55 +14,55 @@ type cell_list<r,rm,rh,rv,rc> = < Cell@(rm,rh,rv,rc), cell_list<r,rm,rh,rv,rc>@r
  * rv - region with vertical ghost cells
  * rc - region with corner ghost cells
  */
-task initialize_simulation[rl,rm,rh,rv,rc] ( ptr_list : cell_list<rl,rm,rh,rv,rc>@rl ) : bool,
-                                reads(rl), rdwrs(rm,rh,rv,rc) = 
+task initialize_simulation[rl,rm,rh,rv,rc] ( ptr_list : cell_list<rl,rm,rh,rv,rc>@rl ),
+                                reads(rl), rdwrs(rm,rh,rv,rc) : bool = 
     if isnull(ptr_list) then true else
     let cell_node : cell_list<rl,rm,rh,rv,rc> = read(ptr_list) in
     let cell : Cell = read(cell_node.1) in
     let new_cell : Cell = < cell.1, < 0, < cell.2.2.1, < cell.2.2.2.1, cell.2.2.2.2 > > > > in
-    let junk : bool = write(cell_node.1, new_cell) in
+    let junk : Cell@(rm,rh,rv,rc) = write(cell_node.1, new_cell) in
         initialize_simulation[rl,rm,rh,rv,rc](cell_node.2)
                                                 
-task rebuild_reduce[rl,rm,rh,rv,rc] ( ptr_list : cell_list<rl,rm,rh,rv,rc>@rl ) : bool,
-                                reads(rl), rdwrs(rm,rh,rv,rc) =
+task rebuild_reduce[rl,rm,rh,rv,rc] ( ptr_list : cell_list<rl,rm,rh,rv,rc>@rl ),
+                                reads(rl), rdwrs(rm,rh,rv,rc) : bool =
     if isnull(ptr_list) then true else
     let cell_node : cell_list<rl,rm,rh,rv,rc> = read(ptr_list) in
     let cell : Cell = read(cell_node.1) in
     let new_cell : Cell = < cell.1, < cell.2.2.1, < cell.2.2.1 + cell.2.2.2.1, < cell.2.2.2.1, cell.2.2.2.2 > > > > in
-    let junk : bool = write(cell_node.1, new_cell) in
+    let junk : Cell@(rm,rh,rv,rc) = write(cell_node.1, new_cell) in
         rebuild_reduce[rl,rm,rh,rv,rc](cell_node.2)
 
-task scatter_densities[rl,rm,rh,rv,rc] ( ptr_list : cell_list<rl,rm,rh,rv,rc>@rl ) : bool,
-                                reads(rl), rdwrs(rm,rh,rv,rc) =
+task scatter_densities[rl,rm,rh,rv,rc] ( ptr_list : cell_list<rl,rm,rh,rv,rc>@rl ),
+                                reads(rl), rdwrs(rm,rh,rv,rc) : bool =
     if isnull(ptr_list) then true else
     let cell_node : cell_list<rl,rm,rh,rv,rc> = read(ptr_list) in
     let cell : Cell = read(cell_node.1) in
     let new_cell : Cell = < cell.1, < cell.2.1, < cell.2.2.1, < cell.2.2.2.1, cell.2.2.2.2 + cell.1 > > > > in
-    let junk : bool = write(cell_node.1, new_cell) in
+    let junk : Cell@(rm,rh,rv,rc) = write(cell_node.1, new_cell) in
         scatter_densities[rl,rm,rh,rv,rc](cell_node.2)
 
-task gather_forces_advance[rl,rm,rh,rv,rc] ( ptr_list : cell_list<rl,rm,rh,rv,rc>@rl ) : bool,
-                                reads(rl), rdwrs(rm,rh,rv,rc) =
+task gather_forces_advance[rl,rm,rh,rv,rc] ( ptr_list : cell_list<rl,rm,rh,rv,rc>@rl ),
+                                reads(rl), rdwrs(rm,rh,rv,rc) : bool =
     if isnull(ptr_list) then true else
     let cell_node : cell_list<rl,rm,rh,rv,rc> = read(ptr_list) in
     let cell : Cell = read(cell_node.1) in
     let new_cell : Cell = < cell.1 + cell.2.2.1, < cell.2.1, < cell.2.2.1, < cell.2.2.2.1, cell.2.2.2.2> > > > in
-    let junk : bool = write(cell_node.1, new_cell) in
+    let junk : Cell@(rm,rh,rv,rc) = write(cell_node.1, new_cell) in
         gather_forces_advance[rl,rm,rh,rv,rc](cell_node.2)
 
-task allocate_cells[rl,rm,rh,rv,rc] ( dummy : int ) : cell_list<rl,rm,rh,rv,rc>@rl,
-                    rdwrs(rl,rm,rh,rv,rc) =
+task allocate_cells[rl,rm,rh,rv,rc] ( dummy : int ),
+                    rdwrs(rl,rm,rh,rv,rc) : cell_list<rl,rm,rh,rv,rc>@rl =
       /* Pretend that we allocate all the local cells and build the local list */
       let ptr_list : cell_list<rl,rm,rh,rv,rc>@rl = new cell_list<rl,rm,rh,rv,rc>@rl in
           ptr_list
 
-task build_ghost_cell_list[rl,rm,rh,rv,rc] ( dummy : int ) : cell_list<rl,rm,rh,rv,rc>@rl,
-                      rdwrs(rl), reads(rm,rh,rv,rc) = 
+task build_ghost_cell_list[rl,rm,rh,rv,rc] ( dummy : int ),
+                      rdwrs(rl), reads(rm,rh,rv,rc) : cell_list<rl,rm,rh,rv,rc>@rl = 
       /* Pretend that we build these lists */
       let ptr_list : cell_list<rl,rm,rh,rv,rc>@rl = new cell_list<rl,rm,rh,rv,rc>@rl in
           ptr_list
 
-task main_task[rtop] ( dummy : int ) : bool, rdwrs(rtop) =
+task main_task[rtop] ( dummy : int ), rdwrs(rtop) : bool =
     /* Create all the top level regions for each of the types */
     partition rtop using newcolor rtop as rcells, rlists in
     /* Create all of the cell regions */ 

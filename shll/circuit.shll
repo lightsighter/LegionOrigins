@@ -28,8 +28,8 @@ type circuit_piece<rwl,rpl,rsl,rn,rw> = rr[rwp,rp,rs,rg]
  * rs - region with shared nodes
  * rg - region with ghost nodes
  */
-task calculate_currents_task[rl,rw,rp,rs,rg] ( ptr_list : wire_list<rl,rw,rp,rs,rg>@rl ) : bool, 
-                             reads(rl), rdwrs(rw), reads(rp,rs,rg) =
+task calculate_currents_task[rl,rw,rp,rs,rg] ( ptr_list : wire_list<rl,rw,rp,rs,rg>@rl ), 
+                             reads(rl), rdwrs(rw), reads(rp,rs,rg) : bool =
     if isnull(ptr_list) then true else
     let wire_node : wire_list<rl,rw,rp,rs,rg> = read(ptr_list) in
     let wire : CircuitWire<rp,rs,rg> = read(wire_node.1) in
@@ -42,21 +42,21 @@ task calculate_currents_task[rl,rw,rp,rs,rg] ( ptr_list : wire_list<rl,rw,rp,rs,
                                             < wire.2.2.2.1, 
                                             < current, 
                                             < wire.2.2.2.2.2.1, wire.2.2.2.2.2.2 > > > > > > in
-    let junk : bool = write(wire_node.1, new_wire) in
+    let junk : CircuitWire<rp,rs,rg>@rw = write(wire_node.1, new_wire) in
         calculate_currents_task[rl,rw,rp,rs,rg](wire_node.2)
 
-task distribute_charge_task[rl,rw,rp,rs,rg] ( ptr_list : wire_list<rl,rw,rp,rs,rg>@rl ) : bool,
-                            reads(rl), reads(rw), rdwrs(rp), reduces(reduce_charge,rs,rg) =
+task distribute_charge_task[rl,rw,rp,rs,rg] ( ptr_list : wire_list<rl,rw,rp,rs,rg>@rl ),
+                            reads(rl), reads(rw), rdwrs(rp), reduces(reduce_charge,rs,rg) : bool =
     if isnull(ptr_list) then true else
     let wire_node : wire_list<rl,rw,rp,rs,rg> = read(ptr_list) in
     let wire : CircuitWire<rp,rs,rg> = read(wire_node.1) in
-    let junk1 : bool = reduce(reduce_charge, wire.1, wire.2.2.2.2.1) in
-    let junk2 : bool = reduce(reduce_charge, wire.2.1, wire.2.2.2.2.1) in
+    let junk1 : CircuitNode@rp = reduce(reduce_charge, wire.1, wire.2.2.2.2.1) in
+    let junk2 : CircuitNode@(rp,rs,rg) = reduce(reduce_charge, wire.2.1, wire.2.2.2.2.1) in
         distribute_charge_task[rl,rw,rp,rs,rg](wire_node.2)
 
 
-task update_voltage_task[rl,rn] ( ptr_list : node_list<rl,rn>@rl ) : bool,
-                                reads(rl), rdwrs(rn) =
+task update_voltage_task[rl,rn] ( ptr_list : node_list<rl,rn>@rl ),
+                                reads(rl), rdwrs(rn) : bool =
     if isnull(ptr_list) then true else
     let node_node : node_list<rl,rn> = read(ptr_list) in
     let node : CircuitNode = read(node_node.1) in
@@ -64,7 +64,7 @@ task update_voltage_task[rl,rn] ( ptr_list : node_list<rl,rn>@rl ) : bool,
     let new_node : CircuitNode = < node.1,
                                   < voltage,
                                   < node.2.2.1, node.2.2.2 > > > in
-    let junk : bool = write(node_node.1, new_node) in
+    let junk : CircuitNode@rn = write(node_node.1, new_node) in
         update_voltage_task[rl,rn](node_node.2)
 
 task reduce_charge ( node : CircuitNode, current : int ) : CircuitNode =
@@ -74,8 +74,8 @@ task reduce_charge ( node : CircuitNode, current : int ) : CircuitNode =
                                 < node.2.2.1, node.2.2.2 > > > in
         result
 
-task create_graph[rn,rw,rnl,rwl] ( dummy : int ) : <node_list<rnl,rn>@rnl, wire_list<rwl,rw>@rwl>,
-                                                    rdwrs(rn,rw,rnl,rwl) =
+task create_graph[rn,rw,rnl,rwl] ( dummy : int ), 
+                rdwrs(rn,rw,rnl,rwl) : <node_list<rnl,rn>@rnl, wire_list<rwl,rw>@rwl> =
     /* We're only pretending to create the graph here */
     let node_ptr : node_list<rnl,rn>@rnl = new node_list<rnl,rn>@rnl in
     let wire_ptr : wire_list<rwl,rw>@rwl = new wire_list<rwl,rw>@rwl in 
@@ -90,19 +90,19 @@ task partition_ghost_nodes[rn] ( /*node : CircuitNode@rn,*/ dummy : int ) : colo
 task partition_wires[rw,rp,rs,rg] ( /*wire : CircuitWire<rp,rs,rg>@rw,*/ dummy : int ) : coloring(rw) = newcolor rw
 
 /* Functions for building the wires and node lists for each piece */
-task build_node_list[rn,rnl,rni,rnli] ( list : node_list<rnl,rn>@rnl ) : node_list<rnli,rni>@rnli,
-                                      reads(rn,rnl), rdwrs(rni,rnli) = 
+task build_node_list[rn,rnl,rni,rnli] ( list : node_list<rnl,rn>@rnl ),
+                                      reads(rn,rnl), rdwrs(rni,rnli) : node_list<rnli,rni>@rnli = 
     /* Pretend like we're building these lists */
     let result : node_list<rnli,rni>@rnli = new node_list<rnli,rni>@rnli in
         result
 
-task build_wire_list[rw,rwl,rwi,rwli] ( list : wire_list<rwl,rw>@rwl ) : wire_list<rwli,rwi>@rwli,
-                                        reads(rw,rwl), rdwrs(rwi,rwli) =
+task build_wire_list[rw,rwl,rwi,rwli] ( list : wire_list<rwl,rw>@rwl ),
+                                        reads(rw,rwl), rdwrs(rwi,rwli) : wire_list<rwli,rwi>@rwli =
     /* Pretend like we're building these lists */
     let result : wire_list<rwli,rwi>@rwli = new wire_list<rwli,rwi>@rwli in
         result
 
-task main_task[rtop] ( dummy : int ) : bool, rdwrs(rtop) =
+task main_task[rtop] ( dummy : int ), rdwrs(rtop) : bool =
     /* Create the node and wire regions */
     partition rtop using newcolor rtop as rn,rw,rnl,rwl,rwl0,rwl1,rwl2,rwl3,rnl0,rnl1,rnl2,rnl3 in
     /* Create the graph and get the pointers to the lists of pointers */
