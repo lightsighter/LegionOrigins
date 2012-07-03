@@ -117,12 +117,12 @@ class Parser:
     #         p[0] = p[1].add_disjoint(p[3], p[5])
 
     def p_taskdef(self, p):
-        'taskdef : TASK ID opt_task_params "(" formal_list ")" ":" type effects "=" expr'
+        'taskdef : TASK ID opt_task_params "(" formal_list ")" effects ":" type "=" expr'
         p[0] = Taskdef(name = p[2],
                        params = p[3],
                        formals = p[5],
-                       rettype = p[8],
-                       effects = p[9],
+                       rettype = p[9],
+                       effects = p[7],
                        body = p[11])
 
     def p_formal_list(self, p):
@@ -155,10 +155,22 @@ class Parser:
         'effects : effects "," REDUCES "(" ID "," region_list ")"'
         p[0] = p[1].add_reduces(p[5], p[7])
 
+    def p_effects_atomic(self, p):
+        'effects : effects "," ATOMIC "(" region_list ")"'
+        p[0] = p[1]
+
+    def p_effects_simult(self, p):
+        'effects : effects "," SIMULT "(" region_list ")"'
+        p[0] = p[1]
+
     def p_letexpr(self, p):
-        'expr : LET ID ":" type "=" expr IN expr'
+        'expr : LET id_or_dummy ":" type "=" expr IN expr'
         p[0] = LetExpr(valname = p[2], valtype = p[4], valexpr = p[6],
                        body = p[8])
+
+    def p_id_or_dummy(self, p):
+        'id_or_dummy : ID \n | "_"'
+        p[0] = (None if (p[1] == "_") else p[1])
         
     def p_identexpr(self, p):
         'expr : ID'
