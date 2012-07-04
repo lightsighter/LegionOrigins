@@ -369,20 +369,41 @@ satisfy the requirement that the value read from the store must yield the most r
 stored/reduced value unless that location is part of the clobber set $C$.
 \end{itemize}
 
-A number of the rules are worth discussing in detail.
+There are a number of rules that appear to be nondeterministic, allowing multiple choices for
+valid evaluation.  In reality, only the memory allocation case (i.e. new $T@r$) has a truly
+nondeterministic choice (i.e. which currently-unused memory location of the right type to 
+use).  A particular memory allocation algorithm is likely to be deterministic, but the
+design of such algorithms is unrelated to the subject at hand, and by abstracting the location 
+choice, we show that our results hold for any correct memory allocation algorithm.  (In fact,
+our criteria are even weaker than that.  Our soundness result even holds if the location returned
+by ``new $T@r$'' is one that is already in use, as long as the heap typing of that location is
+correct.)
 
-Because we would like to keep the heap typing $H$ constant, the semantics for the expression
-new $T@r$ allow the choice of any memory location that falls within the right physical region
-and has the appropriate heap type.  The soundness of the type system does not depend on that
-location being one that isn't already in use, although most implementations will want to 
-add that additional guarantee.
+The remaining cases of apparent nondeterminism are the result of how we handle the semantics of
+concurrent execution.  An operational semantics that explicitly tracks the state of all 
+concurrently executing operations would allow precise specification of the result of each 
+evaluation step, but would be extremely cumbersome.  Instead, we identify the cases in which
+nonlocal effects (i.e. those that result from the concurrent evaluation of other expressions)
+can impact the local evaluation, and make a ``guess'' of what value would result from an 
+operation.  The check that the guess was consistent with the state of the system is deferred until
+the previously nonlocal effects become local (i.e. contained within the evaluation of an enclosing
+expression tree).  If the guess is not consistent, then the attempted proof of the subexpression's
+behavior is flawed and must be reattempted.
 
-A similar choice appears in the semantics of the read operation.  If the location being read
-from is within the clobber set $C$, the semantics appear to allow any value to be returned, as
-long as it has the right type.  In reality, the choices are more constrained.  If it's not the
-most recently written/reduced value from the current expression evaluation, it must at least be
-a value written by some concurrent evaluation.  The constraint is applied further up in the 
-expression tree when the result of the function is interleaved with other memory traces.
+In the case of ``read'' operations whose locations are in the clobber set $C$, we allow the local
+evaluation to guess any value as long as it is of the right type.  The consistency of the value
+is eventually checked by the $valid\_interleave$ predicate of some enclosing expression, but it
+may not be the closest enclosing one.  The $valid\_interleave$ test itself allows some (apparent)
+freedom of choice, deferring some of the consistency checks to the corresponding check further up
+the expression tree.  The final case of apparent nondeterminism is in the choice of what 
+additional locations to include in each subregion that results from a {\em partition} operation.
+The expansion of the coloring set is necessary for the success of subsequent memory allocation
+within a subregion, but that allocation might not occur within the {\em partition} expression's
+body.  Although the correctness of these partitioning guesses cannot be fully verified until the
+entire execution is known, when an inconsistency is encountered (i.e. there isn't a location of
+the right type in the right region for a ``new $T@r$'' expression) it is possible to ``patch'' the 
+proof (by adding a previously unnamed location to the appropriate expanded colorings and giving
+it the right type in $H$) rather than having to start the proof over from the beginning.
 
 Most of the heavy lifting in the Legion core language occurs in the function call expression.
 The expressions for all the function's arguments are evaluated in the caller's context, but a
@@ -574,8 +595,9 @@ valid\_interleave(S, C, E'', E', E_{n+1})
 {\opsenvx id[\otok{k}{r}](\oton{e}) \mapsto v_{n+1}, E''}
 \finfrule{
 \begin{array}{l}
-\opsenvx e_1 \mapsto K, E_1 \\
-\rho_i = \{ l : (l, i) \in K \}, \text{ for } 1 \leq i \leq k \\
+\opsenv{e_1}{K}{E_1} \\
+K' = K \cup \{ (l_1, v_1), \ldots, (l_p, v_p) \}, \text{ where } \forall i \in [1,p]. (\forall v'. (l_i, v') \not\in K) \wedge (\forall j \in [1,p]. l_i \not= l_j) \wedge v_i \in [1,k] \\
+\rho_i = \{ l : (l, i) \in K' \}, \text{ for } 1 \leq i \leq k \\
 M' = M[\rho_1/r_1, \ldots, \rho_k/r_k] \\
 S' = \text{apply}(S, E_1) \\
 \opsenvx[M=M',S=S'] e_2 \mapsto v, E_2 \\
@@ -675,31 +697,35 @@ $
 \end{figure*}
 
 \begin{thm}
-For any expression $e$, if:
-\begin{center}
-$
-\begin{array}{l} \\
-\typeenv{e}{T} \\
-\opsenv{e}{v}{E} \\
+Let $e$ be a well-typed Legion expression.  Let $M$ be a region mapping, $L$ be local value mapping,
+$H$ be a heap typing, and $S$ be an initial state of the store satisfying the consistency properties:
+$$
+\begin{array}{l}
 M \sim \Omega \\
 L \sim_H \Gamma \\
 S \sim H
 \end{array}
-$
-\end{center}
-then:
-\begin{center}
-$
+$$
+If $v$ and $E$ are the value and memory trace resulting from a permissable terminating evaluation of
+$e$, then:
+$$
 \begin{array}{l}
 v \sim_H M \llbracket T \rrbracket \\
 E \sim H \\
 M \vdash E : \Phi
 \end{array}
-$
-\end{center}
+$$
 \end{thm}
 
-Although there are 23 different cases to be proven, many of them are similar, and benefit from
+Due to space constraints, we limit the discussion to the general strategy of the proof.  The full
+proof can be found here\cite{xyz}.  If $v$ and $E$ are the result of a permissible evaluation of
+$e$, then a proof exists of:
+$$\opsenv{e}{v}{E}$$
+The soundness of the result is shown by induction over the structure of this proof.  For each of 
+the 23 different forms a Legion expression can have, we assume the soundness of the subexpressions'
+evaluations (provided we can show the consistency of the mappings and store used by that
+subexpression) and prove that the result of the expression's evaluation is sound.  Although there
+are a multitude of cases to be proven, many of them are similar, and benefit from
 the use of the following lemmas:
 
 \begin{lem}
@@ -737,12 +763,14 @@ $M \sim \Omega^*$ if and only if $M \sim \Omega$.
 $M \vdash E : \Phi^*$ if ant only if $M \vdash E : \Phi$.
 \end{lem}
 
-The complete soundness proof can be found here\cite{xyz} - for space reasons we just discuss
-the general strategy here.
+The proofs of these lemmas can also be found here\cite{xyz}.  The proof of the theorem is organized
+into six pieces, one for each of the three consistency properties needed for subexpressions and one
+for each of the three soundness properties we wish to show.
 
 \begin{itemize}
 
-\item Only three expressions have subexpressions that modify $M$ or $\Omega$.  For the
+\item Only three expressions have subexpressions that modify $M$ or $\Omega$ - those that don't
+trivially satisfy the region mapping consistency requirement.  For the
 {\em partition} expression, the assumed consistency of the coloring can be shown to preserve
 the region mapping consistency with respect to the constraints.  Similarly, the consistency of 
 a region relation instance guarantees the maintenance of consistency in an {\em unpack}
