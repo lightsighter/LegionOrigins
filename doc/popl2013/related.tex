@@ -55,11 +55,17 @@ deadlocks and race conditions \cite{Boyapati02,Abadi06,Jacobs08}, but do not pre
 any mechanism for discovering parallelism.
 
 Separation Logic is another mechanism that can be used for reasoning about disjointness
-of program data \cite{Reynolds02}. %Still not sure what we want to put here.
+of program data \cite{Reynolds02}.  Concurrent separation logic\cite{Brookes04} has been 
+used both to parallelize sequential programs\cite{Raza09,Gotsman07} and to provide 
+a mechanism for reasoning about independence\cite{Hayman06}.
+While we adopted some notation from separation logic, we ultimately chose to use a 
+type and effect system as our primary formalism because separation logic cannot easily 
+describe the interleaving of effects to non-disjoint regions of memory.
+%Still not sure what we want to put here.
 % DPJ sites additional separation logic papers but they didn't seem very similar.
 % Let me know if you think we should include them as well.
 
-Chapel\cite{Chamberlain:Chapel} and X10 \cite{X1005} are similar parallel programming
+Chapel \cite{Chamberlain:Chapel} and X10 \cite{X1005} are similar parallel programming
 models to Legion.  Chapel's domains and X10's places provide the programmer with a 
 mechanism for expressing locality similar to regions in Legion.  However, domains
 and places are not used in any way for independence analysis for discovering parallelism.
