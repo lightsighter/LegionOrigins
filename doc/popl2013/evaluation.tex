@@ -6,7 +6,7 @@ To determine the benefits of the Legion type system we evaluate
 it on three criteria:
 \begin{itemize}
 \item Expressivity: can real applications be expressed (Section \ref{subsec:expressivity})
-\item Overhead: can the it reduce checking overhead (Section \ref{subsec:overhead})
+\item Overhead: can it reduce checking overhead (Section \ref{subsec:overhead})
 \item Scalability: can it leverage hierarchical scheduling to scale (Section \ref{subsec:scalability})
 \end{itemize}
 Our evaluation uses a prototype implementation of the Legion langauge and programming model.
@@ -86,17 +86,16 @@ regions being a first-class feature.
 Our initial implementation of Legion consisted only of a C++ library for Legion 
 programs\cite{Legion12} which contained no checking of region memory accesses.  In the process
 of implementing applications in Legion we frequently encountered memory corruption due to
-illegal region accesses because of bugs and the lack of checking.  Many times these corruptions 
-occurred on remote nodes or on GPUs.  Finding these bugs required either multiple {\tt gdb} windows
+illegal region accesses caused by bugs and a lack of checking.  Many times these corruptions 
+occurred on remote nodes or on GPUs.  Finding these bugs required either multiple {\tt gdb} sessions 
 for observing execution on multiple nodes simultaneously or using {\tt printf} for debugging on
-GPUs.  To alleviate this problem we added a feature to our runtime system that dynamically checked region 
-accesses for both CPUs and GPUs to guarantee safety.  However, in many cases this 
-added considerable overhead.  
+GPUs.  To alleviate this problem we added a feature to our runtime system that dynamically checked all region 
+accesses for both CPUs and GPUs to guarantee safety.  However, this feature
+added considerable runtime overhead.  
 
 To avoid the overhead of dynamic checks for all memory accesses we implemented a type checker of the
-language in Section \ref{subsec:langdef}.  Using this checker we were able to implement programs
-in this language and type check them.  The soundness proof for the type system allowed us to safely
-elide all dynamic checks of region accesses.  
+language in Section \ref{subsec:langdef}.  Using the type checker we were able to statically verify
+the correctness of all region accesses and elide all the dynamic checks.  
 
 %\begin{figure}
 %\subfigure[48 Piece Data Set]
@@ -114,20 +113,25 @@ elide all dynamic checks of region accesses.
 
 \begin{figure}
 \begin{center}
-\includegraphics[scale=0.40]{figs/circuit_96_popl.pdf}
+\includegraphics[scale=0.35]{figs/circuit_96_popl.pdf}
 \end{center}
+\vspace{-2mm}
 \caption{Overhead for the Circuit simulation with 96 total pieces.\label{fig:ckt_overhead}}
+\vspace{-6mm}
 \end{figure}
 
 \begin{figure}
 \begin{center}
-\includegraphics[scale=0.40]{figs/fluid_19200_popl.pdf}
+\includegraphics[scale=0.35]{figs/fluid_19200_popl.pdf}
 \end{center}
+\vspace{-2mm}
 \caption{Overhead for the Fluid simulation with 19200 cells.\label{fig:fluid_overhead}}
+\vspace{-6mm}
 \end{figure}
 
 Figures \ref{fig:ckt_overhead}, \ref{fig:fluid_overhead}, and \ref{fig:amr_overhead} show 
-the total time spent by all CPUs and GPUs in each phase of the application.  In 
+the total time spent by all CPUs and GPUs in each phase of the application.  The topmost
+component of each bar shows the overhead of the dynamic checks.  In 
 each figure the problem size stays the same as the number of processors are increased
 (strong scaling).  Figure \ref{fig:amr_overhead} includes multiple problem sizes to show
 how overhead is affected by changing problem size (weak scaling).  For cases where there
@@ -140,21 +144,23 @@ performance relative to the baseline implementations please refer to \cite{Legio
 \begin{center}
 \subfigure[4096 cells per dimension]
 {
-\includegraphics[scale=0.40]{figs/amr_4096_popl.pdf}
+\includegraphics[scale=0.35]{figs/amr_4096_popl.pdf}
 \label{fig:amr4096}
 }
 \subfigure[8192 cells per dimension]
 {
-\includegraphics[scale=0.40]{figs/amr_8192_popl.pdf}
+\includegraphics[scale=0.35]{figs/amr_8192_popl.pdf}
 \label{fig:amr8192}
 }
 \subfigure[16384 cells per dimension]
 {
-\includegraphics[scale=0.40]{figs/amr_16384_popl.pdf}
+\includegraphics[scale=0.35]{figs/amr_16384_popl.pdf}
 \label{fig:amr16384}
 }
 \end{center}
-\caption{Overhead for the AMR application across problem sizes.\label{fig:amr_overhead}}
+\vspace{-2mm}
+\caption{Overhead for the AMR application for three different problem sizes.\label{fig:amr_overhead}}
+\vspace{-6mm}
 \end{figure}
 
 In addition to total processor overhead, we also measured performance gain in terms of wall-clock
