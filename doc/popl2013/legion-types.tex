@@ -27,7 +27,10 @@
 
 \title{A Type System for Safe and Scalable Parallelism using Logical Regions}
 %\title{Scalable and Safe Parallelism using Logical Regions}
-\authorinfo{}{}{}
+\authorinfo{Sean Treichler \and Michael Bauer \and Alex Aiken}{Stanford University}{\{sjt,mebauer,aiken\}@cs.stanford.edu}
+%\authorinfo{Sean Treichler}{Stanford Unviersity}{sjt@cs.stanford.edu}
+%\authorinfo{Michael Bauer}{Stanford University}{mebauer@cs.stanford.edu}
+%\authorinfo{Alex Aiken}{Stanford University}{aiken@cs.stanford.edu}
 \maketitle
 
 \begin{abstract}
@@ -38,11 +41,11 @@ feature of Legion that allow programmers to specify independence
 and locality properties of program data dynamically.  We present
 a type and effect system for reasoning about logical regions in Legion.  
 We prove a soundness result for our type system and use it to show
-that all memory accesses in Legion are safe.  Futhermore, we prove that
-the soundess of our type system enables a scalable hierarchical
+that all memory accesses in Legion are safe.  Furthermore, we prove that
+the soundness of our type system enables a scalable hierarchical
 scheduling algorithm for Legion programs.  We implement a type checker
 for Legion programs and improve performance up to 71\% by eliding
-unncessary memory checks.  We demonstrate an implementation of the Legion 
+unnecessary memory checks.  We demonstrate an implementation of the Legion 
 runtime based on the hierarchical scheduling algorithm scales for
 three real-world applications.
 
