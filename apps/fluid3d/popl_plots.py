@@ -116,6 +116,7 @@ def read_experiments(ps, directory):
 def print_experiments(exprs):
     for e in exprs:
         print "Nodes "+str(e.nodes)+" Time "+str(e.time)
+    print ""
 
 def make_plot(fig, orig_exprs, check_exprs, prob_size):
     assert len(orig_exprs) == len(check_exprs)
@@ -178,6 +179,11 @@ def make_plot(fig, orig_exprs, check_exprs, prob_size):
     plt.xticks(offset+ind+width/2.0,cpus16)
     plt.ylabel('Processor Time (seconds)')
     plt.legend(loc=2)
+    # Print the overheads
+    print "Overheads for "+str(prob_size)+" cells"
+    for o,c in zip_list:
+        print "Processors "+str(o.nodes*o.cpus)+" "+str(c.time/o.time)
+    print ""
     
 
 def make_plots(show = True, save = True, out_dir="figs/"):
@@ -186,9 +192,8 @@ def make_plots(show = True, save = True, out_dir="figs/"):
         check_exprs = read_experiments(ps,'check_results/')
         print "Results for problem size "+str(ps)+" for original experiments"
         print_experiments(orig_exprs)
-        print "\nResults for problem size "+str(ps)+" for checking experiments"
+        print "Results for problem size "+str(ps)+" for checking experiments"
         print_experiments(check_exprs)
-        print "\n"
         # new figure
         fig = plt.figure()
         make_plot(fig,orig_exprs,check_exprs,ps)
