@@ -1111,6 +1111,7 @@ We are now able to connect the dots and get to the key result that allows the Le
 safely run subtasks in parallel.
 
 \begin{thm}
+\label{thm:parallelexec}
 Let $\oton{e}$ be well-typed Legion expressions, each with its own privileges $\Phi_i$.
 Let $M$ be a region mapping, $L$ be local value mapping,
 $H$ be a heap typing, and $S$ be an initial state of the store satisfying the consistency properties:
@@ -1138,7 +1139,46 @@ Note that this result holds even if the clobber set $C$ is non-empty.  This allo
 two ``locally independent'' subtasks to run in parallel even if one or both
 of them is interacting (in a programmer-permitted way) with a third subtask.
 
-TODO: talk about atomic case
+\subsection{Relaxed Coherence}
+
+The analysis above did not consider the coherence modes on each operation in the memory traces,
+making the worst-case assumption that all were using the $excl$ mode.  However, if two or more
+subexpressions contain calls to functions that use $atomic$ and/or $simult$ coherence modes
+on some of their regions, options other than serial execution may be guaranteed to 
+result in valid interleavings even if constituent traces have some locations in common.  There
+are two cases of particular interest that we will cover.  In each case, the entirety of the 
+reasoning from the previous section is repeated with minor modifications, so we will limit our
+discussion to a general description of the differences rather than the complete proofs.
+
+The first important case occurs when all apparently-interfering operations have coherence modes
+of either $atomic$ or $simult$.  In this case, we can see that the conditions required for
+coherence and sequential equivalence are satisfied for all locations in $L_{excl}$.  The
+requirements for locations in $L_{atomic}$ allow for any permutation of the constituent traces,
+so the runtime is free to serialize the execution of the subexpressions in any order, not just
+the original program order.
+
+In order to convert the required analysis to one that can be performed on regions, we modify
+the noninterference operator for effects to consider only locations in $L_{excl}$ and show that
+traces that a noninterfering under this modified check satisfy the requirement for atomic
+execution.  We then modify the noninterference operator on privileges to allow 
+$M(r_1) \cap M(r_2) \not= \emptyset$ if either $atomic(r_1)$ or $simult(r_1)$ is in $Q_1$ and
+either $atomic(r_2)$ or $simult(r_2)$ is in $Q_2$, and can show that subexpressions with 
+privileges that can be shown to be ``atomically noninterfering'' (under a dynamic region mapping
+$M$) will always have effects that are compatible with atomically-reordered execution.  Finally,
+in the special case where each subexpression has $atomic(r)$ or $simult(r)$ in $Q_i$ for every $r$
+in $\Phi_i$, we can eliminate the dynamic check entirely.
+
+The second case is a subset of the first, in which all apparently-interfering operations have
+the $simult$ coherence mode.  In this case, all the coherence and sequential equivalence 
+checks are trivially satisfied, and any interleaving of the constituent traces will be valid.
+We again modify the noninterference criteria for effects, traces, and privileges, this time
+only allowing $simult$ coherence annotations, and can show that subexpression with privileges
+that can be shown to be ``simulataneously noninterfering'' (under mapping $M$) can be executed
+in parallel.  This will include all the cases covered by Theorem~\ref{thm:parallelexec} as well
+as those where the programmer has used the $simult$ coherence mode to explicitly allow parallel
+execution.  Again, a special (but important) case exists where all privileges for each
+subexpression are paired with $simult$ coherence mode declarations, allowing the safety of
+parallel execution to be determined at compile time.
 
 \begin{figure*}
 $
@@ -1160,28 +1200,57 @@ $
 
 \subsection{Hierarchical Scheduling}
 
-Let $e_1$ and $e_2$ be expressions that require privileges $\Phi_1$ and
+The enforcement of a (locally) valid interleaving at every step in the operational semantics
+captures the hierarchical nature of the scheduler used by the Legion runtime.  As the cost of
+a scheduling decision is quadratic in the number of tasks (more precisely, the number of 
+privileges for those tasks), it should be clear that a hierarchical scheduling algorithm will
+be vastly more efficient than a global algorithm that must consider the privileges of every
+concurrently executing expression.
+However, a scheduling algorithm that makes decisions hierarchically must do so with limited
+information, and must respect all required scheduling dependencies while ideally imposing as
+few extra dependencies as possible.
+
+Let $e_1$ and $e_2$ be well-typed Legion expressions that using privileges $\Phi_1$ and
 $\Phi_2$.  Now let $e_3$ be some subexpression of $e_1$ and $e_4$ be some 
 subexpression of $e_2$, with corresponding privileges $\Phi_3$ and $\Phi_4$.
 
-Proper scheduling of the evaluation of $e_3$ and $e_4$ depends on whether
-they interfere.  If they do intefere (and must therefore be serialized), we
-will have $E_3 \cancel\# E_4$, and by the above result, $\Phi_3 \cancel\# \Phi_4$. 
+By Theorem~\ref{thm:parallelexec}, if the runtime can verify $\Phi_1 \#_M \Phi_2$, then 
+expressions $e_1$ and $e_2$ may be evaluated in parallel.  The evaluation of the subexpressions
+$e_3$ and $e_4$ will therefore be allowed to run in parallel, and we must show that this is
+permissible.  We do so by proving that any memory traces that can result from the evaluation
+of the subexpression must be noninterfering (allowing parallel execution by
+Lemma~\ref{lem:noninteffects}).
 
-We now show that this will also imply that $\Phi_1 \cancel\# \Phi_2$, and
-unless sequential behavior has been relaxed by the programmer, the
-evaluations of $e_1$ and $e_2$ will be serialized.  Since the evaluation of
-$e_3$ is a subsequence of the evaluation of $e_1$ and the evaluation of $e_4$
-is a subsequence of the evaluation of $e_2$, the evaluations of $e_3$ and $e_4$
-are properly serialized as well.
+\begin{thm}
+Let $e_1$ and $e_2$ be well-typed Legion expressions that using privileges $\Phi_1$ and
+$\Phi_2$.  Now let $e_3$ be some subexpression of $e_1$ and $e_4$ be some 
+subexpression of $e_2$.  For any memory traces $E_3$ and $E_4$ that result from evaluation of
+$e_1$ and $e_2$ (with the usual consistent $M$, $L$, $H$, and $S$), $E_3$ and $E_4$ must be
+noninterfering.
+\end{thm}
 
-Conversely, if $e_1$ and $e_2$ are judged to be noninterfering, the schedule
-does not need to check for interference between $e_3$ and $e_4$, as their
-noninterference is guaranteed.
+\begin{proof}
+Let $E_1$ be the result of an evaluation of $e_1$, with $E_3$ being the memory trace from the
+evaluation of $e_3$ within the expression tree.  $E_1$ will be formed from a tree of valid
+interleavings, each of which must include all the memory operations of each consitituent trace.
+By induction over the number of intermediate subexpressions between $e_1$ and $e_3$, we
+can show that any memory operation $\epsilon_3$ that is in $E_3$ must also be in $E_1$.
+Similarly, any memory operation $\epsilon_4$ that is in $E_4$ must also be in $E_2$.  We have
+$E_1 \# E_2$ from Lemma~\ref{lem:nonintpriv}, so and therefore $\epsilon_3 \# \epsilon_4$.  Since
+this holds for all $\epsilon_3$ in $E_3$ and all $\epsilon_4$ in $E_4$, we have $E_3 \# E_4$.
+\end{proof}
 
-Proof is straightforward once armed with the following lemmas:
-
-\framebox{$\Phi_1 \#_M \Phi_2 \Leftrightarrow \Phi_1^* \#_M \Phi_2^*$}
-
-\framebox{$\Phi_1 \#_M \Phi_2 \wedge \Phi_3 \subseteq \Phi_2 \Rightarrow \Phi_1 \#_M \Phi_3$}
+Although a decision that $e_1$ and $e_2$ are noninterfering guarantees that $e_3$ and $e_4$ are
+noninterfering, the converse is not true.  It is possible for $e_1$ and $e_2$ to be judged to be
+potentially interfering and be serialized in their entirety even when the subexpressions could
+have been proven to be noninterfering.  This loss of precision can impact performance, and did
+for a few times during the implementation of our experiments.  When the performance impact is
+significant, two options exist to improve the precision.  In cases where the $e_1$ and $e_2$ are
+in fact noninterfering, the partitioning of regions can be further refined to make the
+disjointness visible in the privileges.  Alternately, and this is the only option when the 
+interference is dynamically determined, the code can be refactored to life the subexpressions
+(or some expression containing them) up to the same level, allowing the dynamic test based on
+the region mapping to infer noninterference in more cases.  Although this can increase the
+overhead of scheduling decisions, judicious use of this technique in practice has not shown
+any measurable performance degradation.
 
