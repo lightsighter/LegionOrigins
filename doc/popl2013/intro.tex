@@ -1,7 +1,68 @@
 
 \section{Introduction}
 \label{sec:intro}
-Introduction goes here.
+
+In the past decade machine architecture, particularly at the high
+performance end of the spectrum, has undergone a revolution.  The
+latest supercomputers are now complex hierarchies of many different
+kinds of computing technologies: networks of nodes at the top level,
+multiple chips per node, mutiple cores within a chip, and, most
+recently, multiple accelerators (usually GPUs) per node, which are
+themselves can be further decomposed into several levels of machine
+hierarchy.  In this paper, we present the operational and static
+semantics of Legion, a programming language targeted at providing an
+appropriate level of abstraction for programming such machines, one
+that is both sufficiently high-level to be portable while still
+exposing aspects that are crucial to performance. A very brief summary
+of Legion is that data is organized in a hierarchy of {\em regions}
+and subregions and computation is organized in a hierarchy of {\em
+tasks} and subtasks operating on regions.  Regions and tasks interact
+through a static system of {\em region permissions} specifying the
+operations a task may perform on a region argument (e.g., read or
+write, among others) and novel {\em region coherence} annotations that
+expresses whether other tasks may perform operations concurrently on
+the region (e.g., {\em exclusive} access for task $t$ guarantees no
+other task's updates to a region are visible to $t$).  We prove the
+soundness of the permissions and coherence system and use these two
+results to prove a third result: if two tasks $t_1$ and $t_2$ are {\em
+dependent} (roughly, must be executed in program order to guarantee
+the correct answer), then the unique ancestors of $t_1$ and $t_2$ in
+the task hierarchy that are {\em siblings} (have the same parent task)
+are also dependent.  This theoremis the basis for distributed
+scheduling in a Legion implementation, which is crucial for
+performance; any centralized scheduler would be a severe bottleneck
+because of the huge latencies involved in moving data and computation
+in the target class of machines.
+
+Legion programs organize data into {\em logical regions}.  Logical
+regions (which we usually refer to simply as {\em regions}) express
+locality, which is just data that will be used together and therefore
+should be colocated in the machine.  Listing~\ref{lst:linkedlist}
+gives an example that defines a region containing a linked list of integers and a task
+that sums the elements of the list.  As is standard in region systems, we use
+$T @ r$ for the type of a pointer to a value of type $T$ in region $r$.
+As is also
+
+Two of the basic properties programmers need to express in writing
+programs for highly parallel, distributed machines are the {\em
+locality} and {\em independence} of data. Locality identifies data
+that will be used together and so should be placed in the same part of
+the machine; independence identifies data sets that are disjoint and
+so can be operated on in parallel.  Legion programs use {\em logical
+regions} to express both.  A logical region (which we will usually
+refer to as simply a {\em region} for brevity) is a
+programmer-specified collection of data; we use the notation of
+separating conjunction $r_1 \ast r_2$ for disjoint regions $r_1$ and
+$r_2$.
+
+
+
+%Programming
+%these machines is currently done by using a heterogeneous collection
+%of software technologies targeted at the individual level; a typical
+%melange is MPI for the network, OpenMP for the node, and CUDA for the GPUs.
+
+
 
 % This is a description of how the listings should be formatted.
 % It can go anywhere before the listings.
