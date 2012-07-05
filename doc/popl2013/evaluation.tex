@@ -3,11 +3,11 @@
 \label{sec:evaluation}
 
 To determine the benefits of the Legion type system we evaluate
-the ability of the type system on three criteria:
+it on three criteria:
 \begin{itemize}
-\item Expressivity: can real applications be expressed in the type system (Section \ref{subsec:expressivity})
-\item Overhead: can the type system reduce the checking overhead for ensuring safety (Section \ref{subsec:overhead})
-\item Scalability: does our system leverage hierarchical scheduling to scale (Section \ref{subsec:scalability})
+\item Expressivity: can real applications be expressed (Section \ref{subsec:expressivity})
+\item Overhead: can the it reduce checking overhead (Section \ref{subsec:overhead})
+\item Scalability: can it leverage hierarchical scheduling to scale (Section \ref{subsec:scalability})
 \end{itemize}
 Our evaluation uses a prototype implementation of the Legion langauge and programming model.
 The prototype consists of two components: an implementation of a type checker
@@ -66,7 +66,7 @@ parallel.  Additional partitions are created for viewing data from coarser and f
 the simulation.  Two types of region relationships are created: one for describing the pieces of
 each level of refinement, and another for describing the relationship between pieces at different
 levels of refinement.  These region relationships capture both intra- and inter-level disjointness
-information.  The dynamic nature of AMR requires that both regions can be created, partitioned,
+information.  The dynamic nature of AMR requires that regions can be created, partitioned,
 and destroyed at runtime.  The many ways in which cells are used also mandates that we multiple
 partitions of regions can be created.
 
@@ -77,11 +77,98 @@ ability to handle applications that make runtime decisions about how to partitio
 is able to capture both allocate-then-partition (Circuit) and partition-then-allocate (Fluid) ways 
 of loading data.  Having multiple partitions of regions is necessary for describing the many ways 
 that data can be accessed (Circuit,AMR).  All types of privileges and coherence are necessary for 
-expressing the various applications presented in this paper (Circuit,Fluid,AMR,Histogram).
-
+expressing the various applications presented in this paper (Circuit,Fluid,AMR,Histogram).  In
+all applications region relationships allow for disjointness information to be conveyed despite
+regions being a first-class feature.
 
 \subsection{Checking Overhead}
 \label{subsec:overhead}
+Our initial implementation of Legion consisted only of a C++ library for Legion 
+programs\cite{Legion12} which contained no checking of region memory accesses.  In the process
+of implementing applications in Legion we frequently encountered memory corruption due to
+illegal region accesses because of bugs and the lack of checking.  Many times these corruptions 
+occurred on remote nodes or on GPUs.  Finding these bugs required either multiple {\tt gdb} windows
+for observing execution on multiple nodes simultaneously or using {\tt printf} for debugging on
+GPUs.  To alleviate this problem we added a feature to our runtime system that dynamically checked region 
+accesses for both CPUs and GPUs to guarantee safety.  However, in many cases this 
+added considerable overhead.  
+
+To avoid the overhead of dynamic checks for all memory accesses we implemented a type checker of the
+language in Section \ref{subsec:langdef}.  Using this checker we were able to implement programs
+in this language and type check them.  The soundness proof for the type system allowed us to safely
+elide all dynamic checks of region accesses.  
+
+%\begin{figure}
+%\subfigure[48 Piece Data Set]
+%{
+%\includegraphics[scale=0.4]{figs/circuit_48_popl.pdf}
+%\label{fig:ckt48}
+%}
+%\subfigure[96 Piece Data Set]
+%{
+%\includegraphics[scale=0.4]{figs/circuit_96_popl.pdf}
+%\label{fig:ckt96}
+%}
+%\caption{Checking overhead of the Circuit simulation.\label{fig:ckt_overhead}}
+%\end{figure}
+
+\begin{figure}
+\begin{center}
+\includegraphics[scale=0.40]{figs/circuit_96_popl.pdf}
+\end{center}
+\caption{Overhead for the Circuit simulation with 96 total pieces.\label{fig:ckt_overhead}}
+\end{figure}
+
+\begin{figure}
+\begin{center}
+\includegraphics[scale=0.40]{figs/fluid_19200_popl.pdf}
+\end{center}
+\caption{Overhead for the Fluid simulation with 19200 cells.\label{fig:fluid_overhead}}
+\end{figure}
+
+Figures \ref{fig:ckt_overhead}, \ref{fig:fluid_overhead}, and \ref{fig:amr_overhead} show 
+the total time spent by all CPUs and GPUs in each phase of the application.  In 
+each figure the problem size stays the same as the number of processors are increased
+(strong scaling).  Figure \ref{fig:amr_overhead} includes multiple problem sizes to show
+how overhead is affected by changing problem size (weak scaling).  For cases where there
+is an existing implementation to compare against we have included a dotted line indicating
+baseline performance.  In a few cases (e.g. Figure \ref{fig:amr4096}) checking overhead is the difference
+between better and worse performance than the baseline.  For an explanation of overall
+performance relative to the baseline implementations please refer to \cite{Legion12}.
+
+\begin{figure}
+\begin{center}
+\subfigure[4096 cells per dimension]
+{
+\includegraphics[scale=0.40]{figs/amr_4096_popl.pdf}
+\label{fig:amr4096}
+}
+\subfigure[8192 cells per dimension]
+{
+\includegraphics[scale=0.40]{figs/amr_8192_popl.pdf}
+\label{fig:amr8192}
+}
+\subfigure[16384 cells per dimension]
+{
+\includegraphics[scale=0.40]{figs/amr_16384_popl.pdf}
+\label{fig:amr16384}
+}
+\end{center}
+\caption{Overhead for the AMR application across problem sizes.\label{fig:amr_overhead}}
+\end{figure}
+
+In addition to total processor overhead, we also measured performance gain in terms of wall-clock
+time.  Note that since most region accesses occur in leaf tasks they often parallelize
+very well.  Wall-clock performance gains from eliding memory checks ranged from 1-10\%, 1-15\%, 
+and 2-71\% for Circuit, Fluid, and AMR respectively.  Performance gains for AMR were larger than
+the other applications because AMR was already memory bound and the additional checks intensified
+memory pressure.  We also note that for GPU kernels, checking required up to 8 additional registers.  
+While the GPU kernels in Circuit where not bound by 
+available on-chip memory, kernels that are would be susceptible to extreme performance 
+degradation due to the extra registers required for checking.  Finally, we measured the overhead
+of the dynamic checks associated with unpack operations but found them to be negligible relative
+to the overhead of region access checks.
 
 \subsection{Scalability}
 \label{subsec:scalability}
+
