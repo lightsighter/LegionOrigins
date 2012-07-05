@@ -829,42 +829,41 @@ privileges.  Those are a subset of the caller's $\Phi^*$, and then Lemma~\ref{le
 is used to complete the proof.
 \end{itemize}
 
-modify $M$
-\begin{table*}
-\centering
-{\small
-\begin{tabular}{l|p{5cm}|p{5cm}|p{5cm}}
-{\bf Rule} & 
-\multicolumn{1}{|c|}{$\mathbf{v \sim_H M \llbracket T \rrbracket}$} &
-\multicolumn{1}{|c|}{$\mathbf{E \sim H}$} &
-\multicolumn{1}{|c|}{$\mathbf{E : \Phi}$} \\
-\hline
-BoolConst & & & \\
-IntConst & & & \\
-TupleBuild & & & \\
-TupleField & & & \\
-LocalVar & & & \\
-NullPtr & & & \\
-NewPtr & & & \\
-IsNull & & & \\
-UpRegion & & & \\
-DownRegion & & & \\
-Read & & & \\
-Write & & & \\
-Reduce & & & \\
-Newcolor & & & \\
-Color & & & \\
-IntMath & & & \\
-IntCmp & & & \\
-Let & & & \\
-IfElse & & & \\
-TaskCall & & & \\
-Partition & & & \\
-Pack & & & \\
-Unpack & & &
-\end{tabular}}
-\caption{Proof pieces}
-\end{table*}
+%% \begin{table*}
+%% \centering
+%% {\small
+%% \begin{tabular}{l|p{5cm}|p{5cm}|p{5cm}}
+%% {\bf Rule} & 
+%% \multicolumn{1}{|c|}{$\mathbf{v \sim_H M \llbracket T \rrbracket}$} &
+%% \multicolumn{1}{|c|}{$\mathbf{E \sim H}$} &
+%% \multicolumn{1}{|c|}{$\mathbf{E : \Phi}$} \\
+%% \hline
+%% BoolConst & & & \\
+%% IntConst & & & \\
+%% TupleBuild & & & \\
+%% TupleField & & & \\
+%% LocalVar & & & \\
+%% NullPtr & & & \\
+%% NewPtr & & & \\
+%% IsNull & & & \\
+%% UpRegion & & & \\
+%% DownRegion & & & \\
+%% Read & & & \\
+%% Write & & & \\
+%% Reduce & & & \\
+%% Newcolor & & & \\
+%% Color & & & \\
+%% IntMath & & & \\
+%% IntCmp & & & \\
+%% Let & & & \\
+%% IfElse & & & \\
+%% TaskCall & & & \\
+%% Partition & & & \\
+%% Pack & & & \\
+%% Unpack & & &
+%% \end{tabular}}
+%% \caption{Proof pieces}
+%% \end{table*}
 
 
 \subsection{Coherence}
@@ -943,6 +942,7 @@ $$apply(S, E_1 \dplus E_2) = apply(apply(S, E_1), E_2).$$
 The proof of this follows directly from the definition of $apply$.
 
 \begin{thm}
+\label{thm:sequential}
 Let $S_0$ be an initial store, $C$ be a clobber set and $\oton{E}$ be memory traces to be
 interleaved.  Let $E' = E_1 \dplus \ldots \dplus E_n$.  If there exists any $E''$ that is a
 valid interleaving of $\oton{E}$, then $E'$ is also valid interleaving of $\oton{E}$.
@@ -1001,6 +1001,7 @@ op_1^{E_1}(l_1, c_1,& v_1)\ \#\ op_2^{E_2}(l_2, c_2, v_2) \Leftrightarrow E_1 \n
 $$
 
 \begin{lem}
+\label{lem:nonintswap}
 Let $S$ be an initial store, $C$ be a clobber set, $\oton{E}, E'_a, E'_b$ be memory traces, and
 $\epsilon_1, \epsilon_2$ be two annotated memory operations such that $\epsilon_1 \# \epsilon_2$.
 Then,
@@ -1041,17 +1042,101 @@ piece of the coherence proof.
 \end{enumerate}
 \end{proof}
 
-First, we would like a fallback approach that will always result in a valid interleaving, even if
-we lack information about the constituent traces (or perhaps lack the time to analyze it).  The
+We now extend the noninterference operator to entire memory traces, providing a way to say that
+no operation in a trace interferes with any operation in other:
+$$E_1 \# E_2 \Leftrightarrow \displaystyle\bigwedge_{\epsilon_1 \text{ in } E_1, \epsilon_2 \text{ in } E_2} \epsilon_1 \# \epsilon_2$$
+and observe that this property permits arbitrary ordering (i.e. parallel execution) of the 
+corresponding subexpressions.
 
+\begin{lem}
+\label{lem:noninteffects}
+Let $S$ be an initial store, $C$ be a clobber set, $\oton{E}$ be memory traces such that $E_i \# E_j$
+for every $1 \leq i < j \leq n$.  Then any trace $E'$ satisfying:
+$$any\_interleave(E', \oton{E})$$
+is a valid interleaving.
+\end{lem}
 
-The soundness proof above depended, in part, on the properties of a valid interleaving of two
-memory traces.  We now consider algorithms that create interleavings that satisfy those
-conditions.
+\begin{proof}
+We will use Theorem~\ref{thm:sequential} and Lemma~\ref{lem:nonintswap} to make repeated swaps
+of adjacent operations to transform $E'$ into $E_1 \dplus \ldots \dplus E_n$.  The symmetry of
+Lemma~\ref{lem:nonintswap} is then used to show that the validity of $E_1 \dplus \ldots \dplus E_n$
+under Theorem~\ref{thm:sequential} implies the validity of $E'$.
 
-The simplest way to achieve a valid interleaving is to concatenate the traces in order.  This
-will always result in a valid interleaving, but implies a serialization of the evaluation of
-subexpressions.
+The swapping algorithm as follows: Associate with each operation in $E'$ the index of that operation
+in $E_1 \dplus \ldots \dplus E_n$.  Any consectutive pair of operations $\epsilon_1$ and $\epsilon_2$
+for which $index(\epsilon_1) > index(\epsilon_2)$ is a {\em misordered pair}.  For any such pair,
+$\epsilon_1$ and $\epsilon_2$ will be from different constituent traces (if they were from the same
+trace, their misordering would mean that $E'$ was not an interleaving of $\oton{E}$).  Every pair of
+traces is noninterfering, so $\epsilon_1 \# \epsilon_2$ and they can be swapped while preserving
+validity of the trace.  At most $n^2/2$ swaps are needed to eliminate all misordered pairs.
+\end{proof}
+
+Our next step is to extend noninterference to the privileges used in the type system.  We will make
+use of the region mapping $M$ to translate the logical regions named in privileges into sets of
+locations (i.e. physical regions), and define noninterference between individual privileges as
+follows:
+\begin{center}
+\begin{tabular}{llc}
+\multicolumn{1}{c}{$\phi_1$} & \multicolumn{1}{c}{$\phi_2$} & $\phi_1 \#_M \phi_2$? \\
+\multirow{3}{*}{$reads(r_1)$} & $reads(r_2)$ & true \\
+& $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+& $reduces(id_2,r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+\cline{1-1}
+\multirow{3}{*}{$writes(r_1)$} & $reads(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+& $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+& $reduces(id_2,r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+\cline{1-1}
+\multirow{3}{*}{$reduces(id_1r_1)$} & $reads(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+& $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+& $reduces(id_2,r_2)$ & $\begin{array}{c}id_1 = id_2 \vee \\ M(r_1) \cap M(r_2) = \emptyset\end{array}$ \\
+\end{tabular}
+\end{center}
+and noninterference between sets of privileges in the same way as memory traces:
+$$\Phi_1 \#_M \Phi_2 \Leftrightarrow \displaystyle\bigwedge_{\phi_1 \in \Phi_1, \phi_2 \in \Phi_2} \phi_1 \#_M \phi_2$$
+
+\begin{lem}
+\label{lem:nonintpriv}
+Let $M$ be a region mapping and $E_1$ and $E_2$ two memory traces such that $M \vdash E_1 : \Phi_1$ and $M \vdash E_2 : \Phi_2$.  If $\Phi_1$ and $\Phi_2$ are noninterfering under $M$, then $E_1$ and $E_2$ must be noninterfering.
+\end{lem}
+
+\begin{proof}
+The proof is by contradiction.  Assume $E_1 \cancel\# E_2$.  Then there must be some $\epsilon_1$ in $E_1$ and some $\epsilon_2$ in $E_2$ such that $\epsilon_1 \cancel\# \epsilon_2$.  This requires that
+$\epsilon_1$ and $\epsilon_2$ be operations to the same location $l$ and not both be reads or both
+reductions using the same function name.  Assume $\epsilon_1 = read(l, c_1, v_1)$ and $\epsilon_2 = write(l, c_2, v_2)$.  The definition of $M \vdash E_1 : \Phi_1$ tells us that there must be some $r_1$ satisfying $l \in M(r_1) \wedge reads(r_1) \in \Phi_1$.  Similarly, there must be some $r_2$ satisfying $l \in M(r_2) \wedge writes(r_2) \in \Phi_2$.  Letting $\phi_1 = reads(r_1)$ and $\phi_2 = writes(r_2)$, we have $M(r_1) \cap M(r_2) \not= \emptyset$ (it contains at least $l$), so $\phi_1 \cancel\#_M \phi_2$ and $\Phi_1 \cancel\#_M \Phi_2$.  There are seven other cases to consider (using $id_1 \not= id_2$ for the reduce-reduce case), but all yield the same result.
+\end{proof}
+
+We are now able to connect the dots and get to the key result that allows the Legion runtime to 
+safely run subtasks in parallel.
+
+\begin{thm}
+Let $\oton{e}$ be well-typed Legion expressions, each with its own privileges $\Phi_i$.
+Let $M$ be a region mapping, $L$ be local value mapping,
+$H$ be a heap typing, and $S$ be an initial state of the store satisfying the consistency properties:
+$$
+\begin{array}{l}
+M \sim \Omega \\
+L \sim_H \Gamma \\
+S \sim H
+\end{array}
+$$
+If $\Phi_i \#_M \Phi_j$ for $1 \leq i < j \leq n$, then any parallel execution of expressions
+$\oton{e}$ will result in a valid interleaving of memory operations.
+\end{thm}
+
+The proof follows directly from Lemma~\ref{lem:nonintpriv} and Lemma~\ref{lem:noninteffects}. \\
+
+Noninterference of effects is something that can only be determined after
+evaluation of an expression is completed, and only at great expense (see STM).
+In contrast, the noninterference of privileges can be efficiently determined at
+runtime.  Even though the privileges themselves are static, the
+mapping $M$ can be dynamically determined, allowing noninterference to be 
+judged in many more cases than a purely static analysis can achieve.
+
+Note that this result holds even if the clobber set $C$ is non-empty.  This allows 
+two ``locally independent'' subtasks to run in parallel even if one or both
+of them is interacting (in a programmer-permitted way) with a third subtask.
+
+TODO: talk about atomic case
 
 \begin{figure*}
 $
@@ -1070,76 +1155,6 @@ coherent\_interleave(S_1, S_2, C, c, [ op(l, c', v) ] \dplus E', E_1, [ op(l, c,
 $
 \caption{work in progress}
 \end{figure*}
-
-\framebox{$\forall S, C, E_1, E_2. valid\_interleave(S, C, E_1 \dplus E_2, E_1, E_2)$}
-
-Next step: For noninterfering traces $E_1 \# E_2$, show any interleaving is valid.
-
-Third step: For interactions only on atomic-coherence locations, serializability is sufficient.
-
-For a given expression $e$, we can consider $v^o$ to be a ``sequential'' result and $E^o$ to be the corresponding ``sequential'' effects if: \\
-
-\framebox{$M, L, H, S, \emptyset \vdash e \mapsto v^o, E^o$} \\
-
-(i.e. if there are no manipulations of the store other than what's done by
-the evaluation of the expression $e$.)  We now wish to consider what parallel
-evaluations of this expression with other expression evaluations will still
-yield our ``sequential'' result. \\
-
-Two effects are considered to be noninterfering, written $E_1 \# E_2$ if for
-every $\epsilon_1$ in $E_1$ and every $\epsilon_2$ in $E_2$,
-\begin{enumerate}
-\item $\epsilon_1$ and $\epsilon_2$ are to different memory locations, or
-\item $\epsilon_1 = read(l, v_1)$ and $\epsilon_2 = read(l, v_2)$, or
-\item $\epsilon_1 = reduce_{id}(l, v_1)$ and $\epsilon_2 = reduce_{id}(l, v_2)$
-\end{enumerate}
-
-We define nonintereference (under a given mapping $M$) of static privileges
-$\Phi_1$ and $\Phi_2$ similarly.  We use the following table for determining
-noninterference of two individual priviledges $\phi_1$ and $\phi_2$:
-
-\begin{tabular}{ccccc}
-\multicolumn{2}{l}{$\phi_1 \#_M \phi_2 ?$} & \multicolumn{3}{c}{$\phi_2$} \\
-\multicolumn{2}{l}{} & $reads(r_2)$ & $writes(r_2)$ & $reduces(id_2, r_2)$ \\
-\multirow{3}{*}{$\phi_1$} & $reads(r_1)$ & true & $M(r_1) \cap M(r_2) = \emptyset$ & $M(r_1) \cap M(r_2) = \emptyset$\\
-& $writes(r_1)$ & $M(r_1) \cap M(r_2) = \emptyset$ & $M(r_1) \cap M(r_2) = \emptyset$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-& $reduces(id_1, r_1)$ & $M(r_1) \cap M(r_2) = \emptyset$ & $M(r_1) \cap M(r_2) = \emptyset$ & $\begin{array}{l}id_1 = id_2 \vee \\ M(r_1) \cap M(r_2) = \emptyset\end{array}$
-\end{tabular}
-
-We can then define: \\
-
-\framebox{$\Phi_1 \#_M \Phi_2 \Leftrightarrow \displaystyle\bigwedge_{\begin{array}{c}\phi_1 \in \Phi_1 \\ \phi_2 \in \Phi_2 \end{array}} \phi_1 \#_M \phi_2$} \\
-
-From the soundness of effects, result, we can show that for two expressions
-$e_1$ and $e_2$, if their privileges are noninterfering, any potential memory
-traces from their evaluation must also be noninterfering.  Formally:
-
-\finfrule
-{\begin{array}{l}
-\typeenvx[P=\Phi_1] e_1 : T_1 \\
-\typeenvx[P=\Phi_2] e_2 : T_2 \\
-\opsenvx e_1 \mapsto v_1, E_1 \\
-\opsenvx e_2 \mapsto v_2, E_2 \\
-\Phi_1 \#_M \Phi_2
-\end{array}}
-{E_1 \# E_2}
-
-(TODO: Generalize this further and allow $M_1 \not= M_2$?) \\
-
-Note that this result holds even if $C \not= \emptyset$.  This allows 
-two ``locally independent'' subtasks to run in parallel even if one or both
-of them is interacting (in a programmer-permitted way) with a third subtask.
-
-Noninterference of effects is something that can only be determined after
-evaluation of an expression is completed, and only at great expense (see STM).
-In contrast, the noninterference of privileges can be efficiently determined at
-runtime.  Even though the privileges themselves are static, the
-mapping $M$ can be dynamically determined, allowing noninterference to be 
-judged in many more cases than a purely static analysis can achieve.
-
-(TODO: Talk about coherence modes and how the runtime orders subtasks.  Maybe
-describe it in terms of a ``canonical'' memory trace and then allow
-reorderings?)
 
 \subsection{Hierarchical Scheduling}
 
