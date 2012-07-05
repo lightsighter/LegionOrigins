@@ -361,12 +361,11 @@ constrain how the operations in that trace can be interleaved with other sibling
 interleave the memory traces of two or more subexpressions
 \end{itemize}
 Figure~\ref{fig:opsemfns} gives the definitions of {\em apply} and {\em mark\_coherence}.  For
-the {\em valid\_interleave} predicate, we state some of the necessary conditions here, but leave 
-the construction of actual valid interleavings until a later section.  Informally, a interleaving
-of two or more memory traces must include all the operations from each trace (and no additional
-operations), with each trace's operations remaining in order.  A valid interleaving must further
-satisfy the requirement that the value read from the store must yield the most recently 
-stored/reduced value unless that location is part of the clobber set $C$.
+the {\em valid\_interleave} predicate, we leave the precise definition to a later section.  For this
+section, we need only one of the necessary conditions of a valid interleaving, that a valid
+interleaving is at least an interleaving - it contains all the memory operations from each of the
+constituent traces and no more, and that each trace's operations remain in order in the interleaved
+trace.
 \end{itemize}
 
 There are a number of rules that appear to be nondeterministic, allowing multiple choices for
@@ -395,10 +394,11 @@ evaluation to guess any value as long as it is of the right type.  The consisten
 is eventually checked by the $valid\_interleave$ predicate of some enclosing expression, but it
 may not be the closest enclosing one.  The $valid\_interleave$ test itself allows some (apparent)
 freedom of choice, deferring some of the consistency checks to the corresponding check further up
-the expression tree.  The final case of apparent nondeterminism is in the choice of what 
-additional locations to include in each subregion that results from a {\em partition} operation.
-The expansion of the coloring set is necessary for the success of subsequent memory allocation
-within a subregion, but that allocation might not occur within the {\em partition} expression's
+the expression tree.  The final case of apparent nondeterminism is in the choice of what initial
+locations to include in the result of a ``newcolor $r$'' expression.  The inclusion of locations
+beyond those which are explicitly requested by the application is necessary for the success of
+subsequent memory allocation within a subregion created from a partitioning using the coloring, but
+that allocation might not occur within the {\em partition} expression's
 body.  Although the correctness of these partitioning guesses cannot be fully verified until the
 entire execution is known, when an inconsistency is encountered (i.e. there isn't a location of
 the right type in the right region for a ``new $T@r$'' expression) it is possible to ``patch'' the 
@@ -435,10 +435,9 @@ simult, & \text{if }\exists \rho. l \in \rho \wedge simult(\rho) \in \hat Q \\
 atomic, & \text{if }\exists \rho. l \in \rho \wedge atomic(\rho) \in \hat Q \\
 excl, & \text{otherwise}
 \end{cases} \\
-any\_interleave(E', [], \ldots, []) & = & true \\
-any\_interleave([ op(l, c, v) ] \dplus E', E_1, \ldots, [ op(l, c, v) ] \dplus E_i, \ldots, E_n) & = & any\_interleave(E', E_1, \ldots, E_i, \ldots, E_n) \\
+any\_interleave([], [], \ldots, []) & = & true \\
+any\_interleave([ \epsilon ] \dplus E', E_1, \ldots, [ \epsilon ] \dplus E_i, \ldots, E_n) & = & any\_interleave(E', E_1, \ldots, E_i, \ldots, E_n) \\
 valid\_interleave(S, C, E', \oton{E}) & \Rightarrow & any\_interleave(E', \oton{E}) \\
-valid\_interleave(S, C, E' \dplus [ read(l, c, v) ] \dplus E'', \oton{E}) & \Rightarrow & l \in C \vee S'(l) = v, \text{ where } S' = apply(S, E')
 \end{array}
 $}
 \caption{Operational Semantics Helper Functions}
@@ -517,7 +516,14 @@ S' = \text{apply}(S, E_1) \\
 valid\_interleave(S, C, E', E_1, E_2)
 \end{array}}
 {\opsenvx \text{reduce}(id, e_1, e_2) \mapsto l, E' \dplus [ reduce_{id}(l, excl, v) ]}
-\framebox{$\opsenvx \text{newcolor }r \mapsto \emptyset, []$}
+\finfrule{
+\begin{array}{l@{}l}
+K = \{ (l_1, iv_1), & \ldots, (l_p, v_p) \}, \text{ where } \\
+& (\forall i \in [1,p]. l_i \in M(r)) \wedge \\
+& (\forall i,j \in [1,p]. l_i \not= l_j)
+\end{array}
+}
+{\opsenvx \text{newcolor }r \mapsto K, []}
 \finfrule
 {\begin{array}{l}
 \opsenvx e_1 \mapsto K, E_1 \\
@@ -596,8 +602,7 @@ valid\_interleave(S, C, E'', E', E_{n+1})
 \finfrule{
 \begin{array}{l}
 \opsenv{e_1}{K}{E_1} \\
-K' = K \cup \{ (l_1, v_1), \ldots, (l_p, v_p) \}, \text{ where } \forall i \in [1,p]. (\forall v'. (l_i, v') \not\in K) \wedge (\forall j \in [1,p]. l_i \not= l_j) \wedge v_i \in [1,k] \\
-\rho_i = \{ l : (l, i) \in K' \}, \text{ for } 1 \leq i \leq k \\
+\rho_i = \{ l : (l, i) \in K \}, \text{ for } 1 \leq i \leq k \\
 M' = M[\rho_1/r_1, \ldots, \rho_k/r_k] \\
 S' = \text{apply}(S, E_1) \\
 \opsenvx[M=M',S=S'] e_2 \mapsto v, E_2 \\
@@ -862,7 +867,183 @@ Unpack & & &
 \end{table*}
 
 
-\subsection{Noninterference}
+\subsection{Coherence}
+
+The soundness proof above guarantees that the evaluation of an expression produces a value of the
+right type, and do so within the regions of memory for which privileges are held, but for the
+Legion programming model to be useful, we need to also guarantee that the evaluation of an expression
+produces the (or at least, a) correct value.  The key to doing this is to place additional 
+constraints on what it means to be a valid interleaving of two or more memory traces.  In
+addition to a valid interleaving being an interleaving of the individual traces, we will 
+require that it be:
+\begin{itemize}
+\item {\em coherent} - each memory read operation should see the effect of all writes and reductions 
+that occur earlier in the interleaved trace to the same location, and
+\item {\em sequentially equivalent} - the value read by each memory read operation and the result of applying the interleaved trace to the original store should be the same as if each constituent trace
+was applied to the store in a valid {\em program order}.
+\end{itemize}
+These requirements are relaxed in some cases due to either a non-empty clobber set (representing
+operations that may occur concurrently as part of evaluating other functions) or due to coherence
+modes other than {\em excl} on operations with the traces (representing operations that may 
+occur concurrently as part of evaluating other parts of the same function).
+
+Figure~\ref{fig:validinterleave} gives the precise definition of the {\em valid\_interleave}
+predicate, but there are a lot of moving parts, so description in ``plain'' English may help.
+Consider a set of constituent traces $\oton{E}$.  Let the {\em exclusive location set} $L_{excl}$ be
+the set of all locations that appear in at least one operation with coherence mode $excl$ in at least
+one constituent trace, excepting any locations in the clobber set $C$.  Let the {\em atomic location
+set} $L_{atomic}$ similarly be the set of locations that appear in at least one operation with 
+coherence mode $atomic$, but no operations with coherence mode $excl$, again excepting any location
+in the clobber set.  A memory trace $E'$ is considered a valid interleaving of $\oton{E}$ if all of
+the following are true:
+\begin{enumerate}
+\item $E'$ is an interleaving of $\oton{E}$.
+\item For every read in $E'$ with a location in $L_{excl}$, the value read is what would be in the
+ store at that location if all the previous operations of $E'$ were applied to the original
+store $S$.
+\item For every read in $E_i$ with a location in $L_{excl}$, the value read is what would be in the
+store at that location if all preceding constituent
+traces (i.e. $E_1, \ldots, E_{i-1}$) were applied to the store $S$, followed by the operations from
+$E_i$ that precede the read.
+\item For every location $l$ in $L_{excl}$, the value
+at that location after the trace $E'$ is applied to $S$ must match the value that would be in
+the store if each of $E_i$ were successively applied to $S$.
+\item For every read in $E'$ with a location in $L_{atomic}$ for which a write operation to the same
+location appears earlier in $E'$, the value read is what would be in the store if all the previous
+operations of $E'$ were applied to the initial store $S$.
+\item There is some permutation $\oton{\pi}$ of the integers $1,\ldots,n$ such that, for every read
+in $E_{\pi_i}$ with a location in $L_{atomic}$, the value read is what would be in the store at that
+location if the traces $E_{\pi_1}, \ldots E_{\pi_{i-1}}$ were applied to $S$, following by the operations 
+from $E_{\pi_i}$ that precede the read.
+\item Using the same permutation $\oton{\pi}$, for every location in $L_{atomic}$, the value at that
+location after the trace $E'$ is applied to $S$ must match the value that would be in the store
+if each of $E_{\pi_i}$ were successively applied to $S$.
+\end{enumerate}
+
+Flexibility in interleaving operations is the key to achieving parallel execution, but
+hopefully the reader will agree that the exact criteria for creating a valid interleaving is
+much too expensive to implement at runtime, so we now consider whether there are simpler ways to
+generate valid interleavings, and under what conditions those approaches may be used.
+
+The first option available to us is to serialize the constituent traces into the original
+program order.  Although each constituent trace can be assumed to be coherent, that coherence is
+in the context of a clobber set that may differ from the one in which the interleaving must occur.
+As discussed earlier, this difference can result in cases where no valid interleaving exists.
+However, we can show that as long as any valid interleavings exist, the serialization of the
+constituent traces will be one of them.
+
+To prove this result, we will use the following lemma:
+
+\begin{lem}
+\label{lemma:applychain}
+For any initial store $S$ and memory traces $E_1$ and $E_2$,
+$$apply(S, E_1 \dplus E_2) = apply(apply(S, E_1), E_2).$$
+\end{lem}
+
+The proof of this follows directly from the definition of $apply$.
+
+\begin{thm}
+Let $S_0$ be an initial store, $C$ be a clobber set and $\oton{E}$ be memory traces to be
+interleaved.  Let $E' = E_1 \dplus \ldots \dplus E_n$.  If there exists any $E''$ that is a
+valid interleaving of $\oton{E}$, then $E'$ is also valid interleaving of $\oton{E}$.
+\end{thm}
+
+\begin{proof}
+To prove $valid\_interleave(S_0, C, E', \oton{E})$, we need to show the three conditions hold:
+\begin{enumerate}
+\item $any\_interleave(E', \oton{E})$ is intuitively obvious, and can be proven by induction over 
+the length of $E_1$, followed by $E_2$, and so on.
+\item $coherent(S_0, C, E')$ is shown by considering each constituent trace's subsequence in $E'$
+in order, using Lemma~\ref{lemma:applychain} along with the coherence of each $E_i$.
+\item $seq\_equiv(S_0, C, E', \oton{E})$ is trivial, as each leading subsequence of $E'$ corresponds
+to the appropriate pieces of $\otok{i}{E}$.
+\item $coherent(S_0, C, E')$ can be shown from the sequential equivalence of $E''$.  The value 
+returned by each read in $E''$ has been shown to be equal to the value in the store that results
+from the application of all previous constituent traces and the operations before the read in its
+own trace.  This is exactly the sequence of preceding operations of the corresponding read in $E'$,
+and Lemma~\ref{lemma:applychain} allows us to trainsform the chain of $apply$ operations into a 
+single $apply$ operation on the whole sequence, satisfying the coherence condition for the read
+in $E'$.  This property applies for all reads in $E''$, and since both $E'$ and $E''$ are
+interleavings of the same traces, they have exactly the same reads, so we have shown all the reads
+in $E'$ to be coherent.
+\end{enumerate}
+\end{proof}
+
+Now that we have a way to construct a valid interleaving, we can look at how to modify that
+interleaving to get interleavings that are still valid, but allow parallel execution.  To do this,
+we consider the criteria under which we may swap the order of two adjacent memory operations in an
+existing valid interleaving.
+\begin{itemize}
+\item First, the two operations must have come from different constituent
+traces, or the swap would violate the $any\_interleave$ criterion.
+\item Second, if one is a read of
+a location (that is not in the clobber set), the other may not be a write or reduce to the same
+location, as changing the order would almost certainly change the value that is read.
+\item Third, if one is a write of a location, the other may not be a write or reduce to the same
+location, as the store that would result from applying those operations in the opposite order would
+show a difference in that location.
+\item Finally, if both operations are reductions to the same location, they may be swapped if they
+use the same reduction function, as reduction functions are assumed to be commutative.  (We 
+follow the example of other work (i.e. DPJ) and leave proofs of commutativity to the programmer,
+possibly with the aid of other tools.)  However, if they use different reduction functions (by
+name - we make no attempt to compare the operation of functions), commutative cannot be 
+guaranteed and swapping the two operations might result in a different resulting store.
+\end{itemize}
+
+To summarize this, we define a {\em noninterference} operator on two effects that have been
+annotated with which constituent trace they came from as follows:
+$$
+\begin{array}{l@{ }l}
+op_1^{E_1}(l_1, c_1,& v_1)\ \#\ op_2^{E_2}(l_2, c_2, v_2) \Leftrightarrow E_1 \not= E_2\ \wedge \\
+& \big( l_1 \not= l_2 \vee (op_1 = read \wedge op_2 = read)\ \vee \\
+& (op_1 = reduce_{id_1} \wedge op_2 = reduce_{id_2} \wedge id_1 = id_2) \big)
+\end{array}
+$$
+
+\begin{lem}
+Let $S$ be an initial store, $C$ be a clobber set, $\oton{E}, E'_a, E'_b$ be memory traces, and
+$\epsilon_1, \epsilon_2$ be two annotated memory operations such that $\epsilon_1 \# \epsilon_2$.
+Then,
+$$valid\_interleave(S, C, E'_a \dplus \epsilon_1 \dplus \epsilon_2 \dplus E'_b, \oton{E})$$
+if and only if
+$$valid\_interleave(S, C, E'_a \dplus \epsilon_2 \dplus \epsilon_1 \dplus E'_b, \oton{E}).$$
+\end{lem}
+
+\begin{proof}
+As before, we consider the three conditions needed to be a valid interleaving.  We describe the
+implication in the ``forward'' direction, but the arguments are all symmetric.
+\begin{enumerate}
+\item If $E'_a \dplus \epsilon_1 \dplus \epsilon_2 \dplus E'_b$ is an interleaving of $\oton{E}$,
+the proof must first ``pop off'' all of $E'_a$, leaving $\epsilon_1 \dplus \epsilon_2 \dplus E'_b$ for
+the interleaved subtrace.  The next two steps must pop $\epsilon_1$ and $\epsilon_2$, leaving $E'_b$.
+They cannot be in the same subtrace because $\epsilon_1 \# \epsilon_2$, so we could also pop
+$\epsilon_2$ and then $\epsilon_1$, resulting in a proof that $E'_a \dplus \epsilon_2 \dplus \epsilon_1 \dplus E'_b$ is also an interleaving of the constituent traces.
+\item For coherence, we must show the value read (if any) by $\epsilon_1$ does not change, the value
+read (if any) by $\epsilon_2$ does not change, and that any read in $E'_b$ sees no change.  With the
+help of Lemma~\ref{lemma:applychain}, we can eliminate the common $E'_a$ from all sequences by
+using $S' = apply(S, E'_a)$.  Similarly to show that $apply(S', \epsilon_1 \dplus \epsilon_2 \dplus E) = apply(S', \epsilon_2 \dplus \epsilon_1 \dplus E)$ for any $E$, we need only to show that it holds
+for $E = []$.  The proof is now reduced to showing the following:
+\begin{enumerate}
+\item $\epsilon_1 = read(l, c, v) \Rightarrow S'(l) = apply(S',\epsilon_2)(l)$ - since $\epsilon_1$
+is a read, either $\epsilon_2$ must be a read (in which case $apply(S, \epsilon_2) = S'$) or must be
+to a different location, so the result of applying just it to $S'$ cannot change the value in 
+location $l$.
+\item $\epsilon_2 = read(l, c, v) \Rightarrow apply(S', \epsilon_1)(l) = S'(l)$ - this is the same
+as above, with $\epsilon_1$ and $\epsilon_2$ switched.
+\item $apply(S', \epsilon_1 \dplus \epsilon_2) = apply(S', \epsilon_2 \dplus \epsilon_1)$ - we must
+show that the two store operations $apply(\bullet, \epsilon_1)$ and $apply(\bullet, \epsilon_2)$
+commute.  Modifications to two different locations commute, as do two reads (which make no change
+to the store).  Finally, two reductions using the same function to the same location also commute.
+\end{enumerate}
+\item The proof that sequential equivalence is maintained comes down to showing the final store
+is identical after the swap of the two operations, and this is merely a special case of the third
+piece of the coherence proof.
+\end{enumerate}
+\end{proof}
+
+First, we would like a fallback approach that will always result in a valid interleaving, even if
+we lack information about the constituent traces (or perhaps lack the time to analyze it).  The
+
 
 The soundness proof above depended, in part, on the properties of a valid interleaving of two
 memory traces.  We now consider algorithms that create interleavings that satisfy those
@@ -880,9 +1061,9 @@ valid\_interleave(S, C, E', E_1, E_2) = & any\_interleave(E', E_1, E_2) \wedge \
 & (coherent\_interleave(S, apply(S, E_1), C, atomic, E', E_1, E_2) \vee \\
 & coherent\_interleave(S, apply(S, E_2), C, atomic, E', E_2, E_1)) \\
 
-coherent\_interleave(S_1, S_2, C, c, [], [], []) = & true \\
-coherent\_interleave(S_1, S_2, C, c, [ op(l, c', v) ] \dplus E', [ op(l, c, v) ] \dplus E_1, E_2) = & (op = read \wedge l \not\in C \wedge c = c' \Rightarrow S_1(l) = v) \wedge \\
-& coherent\_interleave(apply(S_1, op(l, c', v)), S_2, C, c, E', E_1, E_2) \\
+coherent\_interleave(S, C, c, E', [], E_1, [], E_2, []) = & \forall l. l \in C \vee apply(S, E')(l) = apply(S, E_1 \dplus E_2)(l) \\
+coherent\_interleave(S, C, c, E'_a, \epsilon \dplus E'_b, E_{1a}, \epsilon \dplus E_{1b}, E_{2a}, E_{2b}) = & (\epsilon = read(l, c, v) \wedge l \not\in C \Rightarrow apply(S,E'_a)(l) = v \wedge apply(S,E_{1a})(l) = v) \wedge \\
+& coherent\_interleave(S, C, c,  E'_a \dplus \epsilon, E'_b, E_{1a} \dplus \epsilon, E_{1b}, E_{2a}, E_{2b}) \\
 coherent\_interleave(S_1, S_2, C, c, [ op(l, c', v) ] \dplus E', E_1, [ op(l, c, v) ] \dplus E_2) = & (op = read \wedge l \not\in C \wedge c = c' \Rightarrow S_2(l) = v) \wedge \\
 & coherent\_interleave(S_1, apply(S_2, op(l, c', v)), C, c, E', E_1, E_2)
 \end{array}
