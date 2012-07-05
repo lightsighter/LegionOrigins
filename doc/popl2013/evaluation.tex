@@ -2,3 +2,86 @@
 \section{Evaluation}
 \label{sec:evaluation}
 
+To determine the benefits of the Legion type system we evaluate
+the ability of the type system on three criteria:
+\begin{itemize}
+\item Expressivity: can real applications be expressed in the type system (Section \ref{subsec:expressivity})
+\item Overhead: can the type system reduce the checking overhead for ensuring safety (Section \ref{subsec:overhead})
+\item Scalability: does our system leverage hierarchical scheduling to scale (Section \ref{subsec:scalability})
+\end{itemize}
+Our evaluation uses a prototype implementation of the Legion langauge and programming model.
+The prototype consists of two components: an implementation of a type checker
+for the langauge introduced in Section \ref{subsec:langdef} and a C++ runtime library
+for executing programs written in the Legion programming model\cite{Legion12}.  All experiments
+are conducted on the Keeneland supercomputer\cite{Keeneland}.  Each node of the Keeneland
+machine consists of two Xeon 5660 processors, three Tesla M2090 GPUs, and 24 GB of DRAM.  Nodes
+are connected by a QDR Infiniband interconnect.
+
+\subsection{Expressivity}
+\label{subsec:expressivity}
+We evaluate Legion on three real-world applications.  To qualitatively gauge the 
+expressivity of the Legion type system, we introduce each of these applications in
+the context of which features of the Legion type system are used in their implementations.
+
+\subsubsection{Circuit Simulation}
+\label{subsec:circuit}
+The circuit application simulates the wires of a large integrated circuit using an RLC
+model.  The computation consists of three phases for each time step: compute the current in each wire using
+an iterative model, updated the charge in each node, and compute the voltage of each node.
+The primary data structure in the circuit graph is a large irregular graph.  To execute
+this computation in parallel the graph is dynamically partitioned into pieces to be
+performed in parallel.  Our implementation creates separate regions for the wires and
+nodes in the graph.  The wire and node regions are recusrively partitioned up into
+subregions for pieces of the graph.  The node region is also partitioned an additional way to 
+describe the sets of ghost nodes required for each piece providing multiple views onto the
+same data.  The information about each piece of the graph is stored
+in a region relationship that remembers the disjointness information for each piece
+from other pieces.  Launching the tasks for the three phases of the computation make 
+use of read, write, and reduce privileges as well as exclusive and simultaneous coherence.
+
+\subsubsection{Fluid Simulation}
+\label{subsec:fluid}
+Our fluid application is based on the fluidanimate benchmark for the PARSEC benchmark
+suite\cite{bienia11benchmarking}.  Fluid simulates the flow of an incompressible fluid
+using particles that move between a regular grid of cells.  To perform operations in 
+parallel the cells are partitioned into grids that can be executed in parallel.  Unlike
+the Circuit application, the Fluid first creates regions and partitions them before
+allocating cells in Regions.  Another difference between Fluid and Circuit is that Fluid
+maintains separate regions for ghost cells rather using multiple views of
+the regions containing shared data.  Region relationships are again used to remember
+the disjointness of information for the regions of each grid.
+
+\subsubsection{Adaptive Mesh Refinement}
+\label{subsec:amr}
+The third application is an adaptive mesh refinement (AMR) benchmark based on the third heat flow
+example from the Berkeley Labs BoxLib project\cite{BoxLib}.  The algorithm solves the two
+dimensional heat equation on a grid of cells using three levels of refinement with subrefinements
+randomly placed on the surface.  For each time step in the application cells at the boundary of
+a refinement are interpolated from cells at a coarser level of refinement, energy fluxes between
+cells are computed, energy is transferred, and cells at a coarser level of refinement are restricted
+to the values of refined cells.  The AMR application uses separate regions for every level of
+refinement.  The regions at each level are partitioned several ways to provide multiple views of
+the cells.  One partitioning separates cells into pieces that can be updated in
+parallel.  Additional partitions are created for viewing data from coarser and finer levels of
+the simulation.  Two types of region relationships are created: one for describing the pieces of
+each level of refinement, and another for describing the relationship between pieces at different
+levels of refinement.  These region relationships capture both intra- and inter-level disjointness
+information.  The dynamic nature of AMR requires that both regions can be created, partitioned,
+and destroyed at runtime.  The many ways in which cells are used also mandates that we multiple
+partitions of regions can be created.
+
+These applications illustrate the expressivity of the Legion type system.  Legion is capable of 
+expressing applications with both regular (Fluid,AMR) and irregular (Circuit) pointer data structres.
+Being able to dynamically create, partition, and destroy regions at runtime is crucial to Legion's
+ability to handle applications that make runtime decisions about how to partition data (AMR).  Legion
+is able to capture both allocate-then-partition (Circuit) and partition-then-allocate (Fluid) ways 
+of loading data.  Having multiple partitions of regions is necessary for describing the many ways 
+that data can be accessed (Circuit,AMR).  All types of privileges and coherence are necessary for 
+expressing the various applications presented in this paper (Circuit,Fluid,AMR,Histogram).
+
+
+\subsection{Checking Overhead}
+\label{subsec:overhead}
+
+\subsection{Scalability}
+\label{subsec:scalability}
