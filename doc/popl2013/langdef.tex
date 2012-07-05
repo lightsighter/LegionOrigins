@@ -6,6 +6,9 @@
 \newcommand{\dplus}{\text{+\!+}}
 \newcommand{\llbracket}{[\![}
 \newcommand{\rrbracket}{]\!]}
+\makeatletter
+\newcommand{\nonint}[1][]{\#\@ifmtarg{#1}{}{_{\!\!#1}}}
+\makeatother
 
 % fun latex tricks to make typeenv and opsenv more friendly
 \makeatletter
@@ -59,7 +62,7 @@ $\omega$ & ::= & $r_1 \leq r_2$ & subregion \\
   &$\mid$& $r_1 * r_2$ & disjointness \\
 \\
 $\Phi$ & ::= & $\{ \oton{\phi} \}$ & privileges \\
-$\phi$ & ::= & reads$(r)$ $\;\;\;\mid\;\;\;$ writes$(r)$ $\;\;\;\mid\;\;\;$ reduces$(id,r)$ & \\
+$\phi$ & ::= & reads$(r)$ $\;\;\;\mid\;\;\;$ writes$(r)$ $\;\;\;\mid\;\;\;$ $\text{reduces}_{id}(r)$ & \\
 \\
 $Q$ & ::= & $\{ \oton{q} \}$ & coherence modes \\
 $q$ & ::= & atomic$(r)$ $\;\;\;\mid\;\;\;$ simult$(r)$ & \\
@@ -225,7 +228,7 @@ handling of existing variables and region names.
 \Gamma(id) = (T_1, T_2), \emptyset, \emptyset \rightarrow T_1 \\
 \typeenvx e_1 : T_1@(\oton{r}) \\
 \typeenvx e_2 : T_2 \\
-\forall i, reduces(id, r_i) \in \Phi^*
+\forall i, reduces_{id}(r_i) \in \Phi^*
 \end{array}}
 {\typeenvx \text{reduce}(id, e_1, e_2) : T_1@(\oton{r})}
 \framebox{$\typeenvx \text{newcolor }r : \text{coloring}(r)$}
@@ -305,9 +308,9 @@ r_i * r_j \in \Omega^* \Rightarrow r_j * r_i \in \Omega^* \\
 \Phi \subseteq \Phi^* \\
 r_i \leq r_j \in \Omega^* \wedge reads(r_j) \in \Phi^* \Rightarrow reads(r_i) \in \Phi^* \\
 r_i \leq r_j \in \Omega^* \wedge writes(r_j) \in \Phi^* \Rightarrow writes(r_i) \in \Phi^* \\
-r_i \leq r_j \in \Omega^* \wedge reduces(id, r_j) \in \Phi^* \Rightarrow reduces(id, r_i) \in \Phi^* \\
+r_i \leq r_j \in \Omega^* \wedge reduces_{id}(r_j) \in \Phi^* \Rightarrow reduces_{id}(r_i) \in \Phi^* \\
 reads(r) \in \Phi^* \wedge writes(r) \in \Phi^* \wedge \\
-\hspace{1cm} \Gamma(id) = \forall \otok{k}{r}. (\oton{T}), \Phi', Q' \rightarrow T_r \Rightarrow reduces(id, r) \in \Phi^*
+\hspace{1cm} \Gamma(id) = \forall \otok{k}{r}. (\oton{T}), \Phi', Q' \rightarrow T_r \Rightarrow reduces_{id}(r) \in \Phi^*
 \end{array}$
 }
 \caption{Privilege and Constraint Closure}
@@ -645,7 +648,7 @@ to locations covered by the privileges in $\Phi$:
 $M \vdash E : \Phi$ & $\Leftrightarrow$ & $\forall \epsilon\text { in } E.$ \\
 & & $(\epsilon = read(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge reads(r) \in \Phi)\ \wedge$ \\
 & & $(\epsilon = write(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge writes(r) \in \Phi)\ \wedge$ \\
-& & $(\epsilon = reduce_{id}(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge reduces(id, r) \in \Phi)$
+& & $(\epsilon = reduce_{id}(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge reduces_{id}(r) \in \Phi)$
 \end{tabular}
 \end{center}
 
@@ -767,7 +770,7 @@ $M \sim \Omega^*$ if and only if $M \sim \Omega$.
 
 \begin{lem}
 \label{lemma:phiclosure}
-$M \vdash E : \Phi^*$ if ant only if $M \vdash E : \Phi$.
+$M \vdash E : \Phi^*$ if and only if $M \vdash E : \Phi$.
 \end{lem}
 
 The proofs of these lemmas can also be found here\cite{xyz}.  The proof of the theorem is organized
@@ -888,6 +891,33 @@ operations that may occur concurrently as part of evaluating other functions) or
 modes other than {\em excl} on operations with the traces (representing operations that may 
 occur concurrently as part of evaluating other parts of the same function).
 
+\begin{figure*}
+$$
+\begin{array}{lll}
+valid\_interleave(S, C, E', \oton{E}) & = & any\_interleave(E', \oton{E}) \wedge \\
+& & coherent(S, L_{excl}(E', C), L_{excl}(E', C), E')\ \wedge \\
+& & seq\_equiv(S, L_{excl}(E', C), L_{excl}(E', C), E', \oton{E})\ \wedge \\
+& & coherent(S, L_{atomic}(E', C), \emptyset, E')\ \wedge \\
+& & \exists \oton{\pi}, (\oton{\pi}) \text{ is a permutation of } (1,\ldots,n)\ \wedge \\
+& & \ \ \ seq\_equiv(S, L_{atomic}(E', C), \emptyset, E', E_{\pi_1}, \ldots, E_{\pi_n}) \\
+coherent(S, L_1, L_2, []) & = & \text{true} \\
+coherent(S, L_1, L_2, \epsilon \dplus E) & = &\
+\begin{cases}
+(l \in L_2 \Rightarrow S(l) = v)\ \wedge \\
+\ \ \ coherent(S, L_1, L_2, E), & \text{if $\epsilon = read(l, c, v)$} \\
+coherent(apply(S, \epsilon), L_1, L_2 \cup \{ l \}, E), & \text{if $\epsilon = write(l, c, v)$ and $l \in L_1$} \\
+coherent(apply(S, \epsilon), L_1, L_2, E), & \text{otherwise}
+\end{cases} \\
+seq\_equiv(S, L_1, L_2, E', \oton{E}) & = & coherent(S, L_1, L_2, E_1 \dplus \ldots \dplus E_2)\ \wedge \\
+& & \forall l \in L_1. apply(S, E')(l) = apply(S, E_1 \dplus \ldots \dplus E_n)(l) \\
+L_{excl}(E, C) & = & \{ l : op(l, excl, v) \text{ in } E  \} \setminus C \\
+L_{atomic}(E, C) & = & \{ l : op(l, atomic, v) \text{ in } E \} \setminus (C \cup L_{excl}(E, C)) \\
+\end{array}
+$$
+\caption{Valid Interleaving Test}
+\label{fig:validinterleave}
+\end{figure*}
+
 Figure~\ref{fig:validinterleave} gives the precise definition of the {\em valid\_interleave}
 predicate, but there are a lot of moving parts, so description in ``plain'' English may help.
 Consider a set of constituent traces $\oton{E}$.  Let the {\em exclusive location set} $L_{excl}$ be
@@ -895,31 +925,13 @@ the set of all locations that appear in at least one operation with coherence mo
 one constituent trace, excepting any locations in the clobber set $C$.  Let the {\em atomic location
 set} $L_{atomic}$ similarly be the set of locations that appear in at least one operation with 
 coherence mode $atomic$, but no operations with coherence mode $excl$, again excepting any location
-in the clobber set.  A memory trace $E'$ is considered a valid interleaving of $\oton{E}$ if all of
-the following are true:
-\begin{enumerate}
-\item $E'$ is an interleaving of $\oton{E}$.
-\item For every read in $E'$ with a location in $L_{excl}$, the value read is what would be in the
- store at that location if all the previous operations of $E'$ were applied to the original
-store $S$.
-\item For every read in $E_i$ with a location in $L_{excl}$, the value read is what would be in the
-store at that location if all preceding constituent
-traces (i.e. $E_1, \ldots, E_{i-1}$) were applied to the store $S$, followed by the operations from
-$E_i$ that precede the read.
-\item For every location $l$ in $L_{excl}$, the value
-at that location after the trace $E'$ is applied to $S$ must match the value that would be in
-the store if each of $E_i$ were successively applied to $S$.
-\item For every read in $E'$ with a location in $L_{atomic}$ for which a write operation to the same
-location appears earlier in $E'$, the value read is what would be in the store if all the previous
-operations of $E'$ were applied to the initial store $S$.
-\item There is some permutation $\oton{\pi}$ of the integers $1,\ldots,n$ such that, for every read
-in $E_{\pi_i}$ with a location in $L_{atomic}$, the value read is what would be in the store at that
-location if the traces $E_{\pi_1}, \ldots E_{\pi_{i-1}}$ were applied to $S$, following by the operations 
-from $E_{\pi_i}$ that precede the read.
-\item Using the same permutation $\oton{\pi}$, for every location in $L_{atomic}$, the value at that
-location after the trace $E'$ is applied to $S$ must match the value that would be in the store
-if each of $E_{\pi_i}$ were successively applied to $S$.
-\end{enumerate}
+in the clobber set.  The $coherent(S,L_1,L_2,E)$ test checks that all reads of locations in $L_2$ and any read of a location in $L_1$ that comes after a write to the same location return values
+that match what was most recently written into the store.  (The difference betwen $L_1$ and $L_2$
+defers the checking of atomic reads that don't have a preceeding write until any other traces that
+may be ordered before $E$ are included.)  The $seq\_equiv$ test verifies that every read in $E'$ with a location in $L_1$ would also have be coherent if the operations were performed in the original program order and that the store that results from applying $E'$ matches the store that would
+have resulted from applying the constituent traces in program order for all locations in $L_1$.
+For the atomic location set, we allow the constituent traces to be permuted, but all locations
+must be checked with the same permutation.
 
 Flexibility in interleaving operations is the key to achieving parallel execution, but
 hopefully the reader will agree that the exact criteria for creating a valid interleaving is
@@ -996,7 +1008,7 @@ To summarize this, we define a {\em noninterference} operator on two effects tha
 annotated with which constituent trace they came from as follows:
 $$
 \begin{array}{l@{ }l}
-op_1^{E_1}(l_1, c_1,& v_1)\ \#\ op_2^{E_2}(l_2, c_2, v_2) \Leftrightarrow E_1 \not= E_2\ \wedge \\
+op_1^{E_1}(l_1, c_1,& v_1)\ \nonint\ op_2^{E_2}(l_2, c_2, v_2) \Leftrightarrow E_1 \not= E_2\ \wedge \\
 & \big( l_1 \not= l_2 \vee (op_1 = read \wedge op_2 = read)\ \vee \\
 & (op_1 = reduce_{id_1} \wedge op_2 = reduce_{id_2} \wedge id_1 = id_2) \big)
 \end{array}
@@ -1005,7 +1017,7 @@ $$
 \begin{lem}
 \label{lem:nonintswap}
 Let $S$ be an initial store, $C$ be a clobber set, $\oton{E}, E'_a, E'_b$ be memory traces, and
-$\epsilon_1, \epsilon_2$ be two annotated memory operations such that $\epsilon_1 \# \epsilon_2$.
+$\epsilon_1, \epsilon_2$ be two annotated memory operations such that $\epsilon_1 \nonint \epsilon_2$.
 Then,
 $$valid\_interleave(S, C, E'_a \dplus \epsilon_1 \dplus \epsilon_2 \dplus E'_b, \oton{E})$$
 if and only if
@@ -1019,7 +1031,7 @@ implication in the ``forward'' direction, but the arguments are all symmetric.
 \item If $E'_a \dplus \epsilon_1 \dplus \epsilon_2 \dplus E'_b$ is an interleaving of $\oton{E}$,
 the proof must first ``pop off'' all of $E'_a$, leaving $\epsilon_1 \dplus \epsilon_2 \dplus E'_b$ for
 the interleaved subtrace.  The next two steps must pop $\epsilon_1$ and $\epsilon_2$, leaving $E'_b$.
-They cannot be in the same subtrace because $\epsilon_1 \# \epsilon_2$, so we could also pop
+They cannot be in the same subtrace because $\epsilon_1 \nonint \epsilon_2$, so we could also pop
 $\epsilon_2$ and then $\epsilon_1$, resulting in a proof that $E'_a \dplus \epsilon_2 \dplus \epsilon_1 \dplus E'_b$ is also an interleaving of the constituent traces.
 \item For coherence, we must show the value read (if any) by $\epsilon_1$ does not change, the value
 read (if any) by $\epsilon_2$ does not change, and that any read in $E'_b$ sees no change.  With the
@@ -1046,13 +1058,13 @@ piece of the coherence proof.
 
 We now extend the noninterference operator to entire memory traces, providing a way to say that
 no operation in a trace interferes with any operation in other:
-$$E_1 \# E_2 \Leftrightarrow \displaystyle\bigwedge_{\epsilon_1 \text{ in } E_1, \epsilon_2 \text{ in } E_2} \epsilon_1 \# \epsilon_2$$
+$$E_1 \nonint E_2 \Leftrightarrow \displaystyle\bigwedge_{\epsilon_1 \text{ in } E_1, \epsilon_2 \text{ in } E_2} \epsilon_1 \nonint \epsilon_2$$
 and observe that this property permits arbitrary ordering (i.e. parallel execution) of the 
 corresponding subexpressions.
 
 \begin{lem}
 \label{lem:noninteffects}
-Let $S$ be an initial store, $C$ be a clobber set, $\oton{E}$ be memory traces such that $E_i \# E_j$
+Let $S$ be an initial store, $C$ be a clobber set, $\oton{E}$ be memory traces such that $E_i \nonint E_j$
 for every $1 \leq i < j \leq n$.  Then any trace $E'$ satisfying:
 $$any\_interleave(E', \oton{E})$$
 is a valid interleaving.
@@ -1069,7 +1081,7 @@ in $E_1 \dplus \ldots \dplus E_n$.  Any consectutive pair of operations $\epsilo
 for which $index(\epsilon_1) > index(\epsilon_2)$ is a {\em misordered pair}.  For any such pair,
 $\epsilon_1$ and $\epsilon_2$ will be from different constituent traces (if they were from the same
 trace, their misordering would mean that $E'$ was not an interleaving of $\oton{E}$).  Every pair of
-traces is noninterfering, so $\epsilon_1 \# \epsilon_2$ and they can be swapped while preserving
+traces is noninterfering, so $\epsilon_1 \nonint \epsilon_2$ and they can be swapped while preserving
 validity of the trace.  At most $n^2/2$ swaps are needed to eliminate all misordered pairs.
 \end{proof}
 
@@ -1077,24 +1089,31 @@ Our next step is to extend noninterference to the privileges used in the type sy
 use of the region mapping $M$ to translate the logical regions named in privileges into sets of
 locations (i.e. physical regions), and define noninterference between individual privileges as
 follows:
-\begin{center}
-\begin{tabular}{llc}
-\multicolumn{1}{c}{$\phi_1$} & \multicolumn{1}{c}{$\phi_2$} & $\phi_1 \#_M \phi_2$? \\
-\multirow{3}{*}{$reads(r_1)$} & $reads(r_2)$ & true \\
-& $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-& $reduces(id_2,r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-\cline{1-1}
-\multirow{3}{*}{$writes(r_1)$} & $reads(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-& $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-& $reduces(id_2,r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-\cline{1-1}
-\multirow{3}{*}{$reduces(id_1r_1)$} & $reads(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-& $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-& $reduces(id_2,r_2)$ & $\begin{array}{c}id_1 = id_2 \vee \\ M(r_1) \cap M(r_2) = \emptyset\end{array}$ \\
-\end{tabular}
-\end{center}
+$$
+\begin{array}{l@{ }l}
+priv_1(r_1) \nonint[M] & priv_2(r_2) \Leftrightarrow (M(r_1) \cap M(r_2) = \emptyset)\ \vee \\
+& (priv_1 = reads \wedge priv_2 = reads)\ \vee \\
+& (priv_1 = reduces_{id_1} \wedge priv_2 = reduces_{id_2} \wedge id_1 = id_2)
+\end{array}
+$$
+%% \begin{center}
+%% \begin{tabular}{llc}
+%% \multicolumn{1}{c}{$\phi_1$} & \multicolumn{1}{c}{$\phi_2$} & $\phi_1 \nonint[M] \phi_2$? \\
+%% \multirow{3}{*}{$reads(r_1)$} & $reads(r_2)$ & true \\
+%% & $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%% & $reduces_{id_2}(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%% \cline{1-1}
+%% \multirow{3}{*}{$writes(r_1)$} & $reads(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%% & $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%% & $reduces_{id_2}(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%% \cline{1-1}
+%% \multirow{3}{*}{$reduces_{id_1}(r_1)$} & $reads(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%% & $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%% & $reduces_{id_2}(r_2)$ & $\begin{array}{c}id_1 = id_2 \vee \\ M(r_1) \cap M(r_2) = \emptyset\end{array}$ \\
+%% \end{tabular}
+%% \end{center}
 and noninterference between sets of privileges in the same way as memory traces:
-$$\Phi_1 \#_M \Phi_2 \Leftrightarrow \displaystyle\bigwedge_{\phi_1 \in \Phi_1, \phi_2 \in \Phi_2} \phi_1 \#_M \phi_2$$
+$$\Phi_1 \nonint[M] \Phi_2 \Leftrightarrow \displaystyle\bigwedge_{\phi_1 \in \Phi_1, \phi_2 \in \Phi_2} \phi_1 \nonint[M] \phi_2$$
 
 \begin{lem}
 \label{lem:nonintpriv}
@@ -1102,9 +1121,9 @@ Let $M$ be a region mapping and $E_1$ and $E_2$ two memory traces such that $M \
 \end{lem}
 
 \begin{proof}
-The proof is by contradiction.  Assume $E_1 \cancel\# E_2$.  Then there must be some $\epsilon_1$ in $E_1$ and some $\epsilon_2$ in $E_2$ such that $\epsilon_1 \cancel\# \epsilon_2$.  This requires that
+The proof is by contradiction.  Assume $E_1 \cancel\nonint E_2$.  Then there must be some $\epsilon_1$ in $E_1$ and some $\epsilon_2$ in $E_2$ such that $\epsilon_1 \cancel\nonint \epsilon_2$.  This requires that
 $\epsilon_1$ and $\epsilon_2$ be operations to the same location $l$ and not both be reads or both
-reductions using the same function name.  Assume $\epsilon_1 = read(l, c_1, v_1)$ and $\epsilon_2 = write(l, c_2, v_2)$.  The definition of $M \vdash E_1 : \Phi_1$ tells us that there must be some $r_1$ satisfying $l \in M(r_1) \wedge reads(r_1) \in \Phi_1$.  Similarly, there must be some $r_2$ satisfying $l \in M(r_2) \wedge writes(r_2) \in \Phi_2$.  Letting $\phi_1 = reads(r_1)$ and $\phi_2 = writes(r_2)$, we have $M(r_1) \cap M(r_2) \not= \emptyset$ (it contains at least $l$), so $\phi_1 \cancel\#_M \phi_2$ and $\Phi_1 \cancel\#_M \Phi_2$.  There are seven other cases to consider (using $id_1 \not= id_2$ for the reduce-reduce case), but all yield the same result.
+reductions using the same function name.  Assume $\epsilon_1 = read(l, c_1, v_1)$ and $\epsilon_2 = write(l, c_2, v_2)$.  The definition of $M \vdash E_1 : \Phi_1$ tells us that there must be some $r_1$ satisfying $l \in M(r_1) \wedge reads(r_1) \in \Phi_1$.  Similarly, there must be some $r_2$ satisfying $l \in M(r_2) \wedge writes(r_2) \in \Phi_2$.  Letting $\phi_1 = reads(r_1)$ and $\phi_2 = writes(r_2)$, we have $M(r_1) \cap M(r_2) \not= \emptyset$ (it contains at least $l$), so $\phi_1 \cancel{\nonint[M]} \phi_2$ and $\Phi_1 \cancel{\nonint[M]} \Phi_2$.  There are seven other cases to consider (using $id_1 \not= id_2$ for the reduce-reduce case), but all yield the same result.
 \end{proof}
 
 We are now able to connect the dots and get to the key result that allows the Legion runtime to 
@@ -1122,7 +1141,7 @@ L \sim_H \Gamma \\
 S \sim H
 \end{array}
 $$
-If $\Phi_i \#_M \Phi_j$ for $1 \leq i < j \leq n$, then any parallel execution of expressions
+If $\Phi_i \nonint[M] \Phi_j$ for $1 \leq i < j \leq n$, then any parallel execution of expressions
 $\oton{e}$ will result in a valid interleaving of memory operations.
 \end{thm}
 
@@ -1180,24 +1199,6 @@ execution.  Again, a special (but important) case exists where all privileges fo
 subexpression are paired with $simult$ coherence mode declarations, allowing the safety of
 parallel execution to be determined at compile time.
 
-\begin{figure*}
-$
-\begin{array}{l@{}l}
-valid\_interleave(S, C, E', E_1, E_2) = & any\_interleave(E', E_1, E_2) \wedge \\
-& coherent\_interleave(S, apply(S, E_1), C, excl, E', E_1, E_2) \wedge \\
-& (coherent\_interleave(S, apply(S, E_1), C, atomic, E', E_1, E_2) \vee \\
-& coherent\_interleave(S, apply(S, E_2), C, atomic, E', E_2, E_1)) \\
-
-coherent\_interleave(S, C, c, E', [], E_1, [], E_2, []) = & \forall l. l \in C \vee apply(S, E')(l) = apply(S, E_1 \dplus E_2)(l) \\
-coherent\_interleave(S, C, c, E'_a, \epsilon \dplus E'_b, E_{1a}, \epsilon \dplus E_{1b}, E_{2a}, E_{2b}) = & (\epsilon = read(l, c, v) \wedge l \not\in C \Rightarrow apply(S,E'_a)(l) = v \wedge apply(S,E_{1a})(l) = v) \wedge \\
-& coherent\_interleave(S, C, c,  E'_a \dplus \epsilon, E'_b, E_{1a} \dplus \epsilon, E_{1b}, E_{2a}, E_{2b}) \\
-coherent\_interleave(S_1, S_2, C, c, [ op(l, c', v) ] \dplus E', E_1, [ op(l, c, v) ] \dplus E_2) = & (op = read \wedge l \not\in C \wedge c = c' \Rightarrow S_2(l) = v) \wedge \\
-& coherent\_interleave(S_1, apply(S_2, op(l, c', v)), C, c, E', E_1, E_2)
-\end{array}
-$
-\caption{work in progress}
-\end{figure*}
-
 \subsection{Hierarchical Scheduling}
 
 The enforcement of a (locally) valid interleaving at every step in the operational semantics
@@ -1214,7 +1215,7 @@ Let $e_1$ and $e_2$ be well-typed Legion expressions that using privileges $\Phi
 $\Phi_2$.  Now let $e_3$ be some subexpression of $e_1$ and $e_4$ be some 
 subexpression of $e_2$, with corresponding privileges $\Phi_3$ and $\Phi_4$.
 
-By Theorem~\ref{thm:parallelexec}, if the runtime can verify $\Phi_1 \#_M \Phi_2$, then 
+By Theorem~\ref{thm:parallelexec}, if the runtime can verify $\Phi_1 \nonint[M] \Phi_2$, then 
 expressions $e_1$ and $e_2$ may be evaluated in parallel.  The evaluation of the subexpressions
 $e_3$ and $e_4$ will therefore be allowed to run in parallel, and we must show that this is
 permissible.  We do so by proving that any memory traces that can result from the evaluation
@@ -1222,6 +1223,7 @@ of the subexpression must be noninterfering (allowing parallel execution by
 Lemma~\ref{lem:noninteffects}).
 
 \begin{thm}
+\label{thm:hiersched}
 Let $e_1$ and $e_2$ be well-typed Legion expressions that using privileges $\Phi_1$ and
 $\Phi_2$.  Now let $e_3$ be some subexpression of $e_1$ and $e_4$ be some 
 subexpression of $e_2$.  For any memory traces $E_3$ and $E_4$ that result from evaluation of
@@ -1236,8 +1238,8 @@ interleavings, each of which must include all the memory operations of each cons
 By induction over the number of intermediate subexpressions between $e_1$ and $e_3$, we
 can show that any memory operation $\epsilon_3$ that is in $E_3$ must also be in $E_1$.
 Similarly, any memory operation $\epsilon_4$ that is in $E_4$ must also be in $E_2$.  We have
-$E_1 \# E_2$ from Lemma~\ref{lem:nonintpriv}, so and therefore $\epsilon_3 \# \epsilon_4$.  Since
-this holds for all $\epsilon_3$ in $E_3$ and all $\epsilon_4$ in $E_4$, we have $E_3 \# E_4$.
+$E_1 \nonint E_2$ from Lemma~\ref{lem:nonintpriv}, so and therefore $\epsilon_3 \nonint \epsilon_4$.  Since
+this holds for all $\epsilon_3$ in $E_3$ and all $\epsilon_4$ in $E_4$, we have $E_3 \nonint E_4$.
 \end{proof}
 
 Although a decision that $e_1$ and $e_2$ are noninterfering guarantees that $e_3$ and $e_4$ are
