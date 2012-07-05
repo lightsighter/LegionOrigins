@@ -117,6 +117,7 @@ def read_experiments(prob_size, directory):
 def print_experiments(exprs):
     for e in exprs:
         print "Total GPUs "+str(e.nodes*e.gpus)+" Time "+str(e.time)
+    print ""
 
 def make_plot(fig, orig_exprs, check_exprs, ps):
     assert len(orig_exprs) == len(check_exprs)
@@ -178,6 +179,11 @@ def make_plot(fig, orig_exprs, check_exprs, ps):
         plt.ylim(ymin=0,ymax=300)
     else:
         plt.ylim(ymin=0,ymax=650)
+    #Print the overheads
+    print "Overheads for "+str(ps)+" pieces"
+    for o,c in zip_list:
+        print "GPUs "+str(o.nodes*o.gpus)+" "+str(c.time/o.time)
+    print ""
 
 
 def make_plots(show = True, save = True, out_dir="figs/"):
@@ -186,9 +192,8 @@ def make_plots(show = True, save = True, out_dir="figs/"):
         check_exprs = read_experiments(ps, 'check_results/')
         print "Results for problem size "+str(ps)+" for original experiments"
         print_experiments(orig_exprs)
-        print "\nResults for problem size "+str(ps)+" for checking experiments"
+        print "Results for problem size "+str(ps)+" for checking experiments"
         print_experiments(check_exprs)
-        print "\n"
         # new figure
         fig = plt.figure()
         make_plot(fig,orig_exprs,check_exprs,ps)

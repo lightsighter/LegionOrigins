@@ -177,6 +177,7 @@ def read_boxlib(prob_size, directory):
 def print_experiments(exprs):
     for e in exprs:
         print "Nodes "+str(e.nodes)+" Time "+str(e.time)
+    print "\n"
 
 # Based on wall clock time
 def make_plot(fig,orig,checks,box,prob_size):
@@ -264,6 +265,7 @@ def make_plot(fig,orig,checks,box,prob_size):
     plt.ylabel('Execution Time (secs)')
     plt.legend()
     plt.title('Pointer Checking Overhead for '+str(prob_size)+' Nodes')
+       
 
 # Based on processor time
 def make_plot2(fig,orig,checks,box,prob_size):
@@ -352,6 +354,12 @@ def make_plot2(fig,orig,checks,box,prob_size):
     elif prob_size==16384:
         plt.ylim(ymin=0,ymax=600)
     #plt.title('Pointer Checking Overhead for '+str(prob_size)+' Nodes')
+    # Print out the overheads
+    print "Overheads for problem size: "+str(prob_size)
+    for o,c in zip_list:
+        print "Nodes "+str(o.nodes)+" "+str(c.time/o.time)
+    print "\n"
+     
 
 
 def make_plots(show = True, save = True, out_dir="figs/"):
@@ -361,9 +369,8 @@ def make_plots(show = True, save = True, out_dir="figs/"):
         box_exprs = read_boxlib(ps,'keeneland_results/')
         print "Results for problem size "+str(ps)+" for original experiments"
         print_experiments(orig_exprs)
-        print "\nResults for problem size "+str(ps)+" for checking experiments"
+        print "Results for problem size "+str(ps)+" for checking experiments"
         print_experiments(check_exprs)
-        print "\n"
         # New figure
         fig = plt.figure() #figsize = (10,5,5))
         make_plot2(fig,orig_exprs,check_exprs,box_exprs,ps)
