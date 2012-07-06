@@ -18,7 +18,7 @@ type tree<rl,rls,rt> = rr[rll, rlr, rtl, rtr]
                          < tree<rl,rll,rtl>@rtl, 
 	 		   tree<rl,rlr,rtr>@rtr > >
      		       where rll <= rls and rlr <= rls and rll * rlr
-                         and rtl <= rt  and rtr <= rt  and rtl * rtr
+                         and rtl <= rt  and rtr <= rt  and rtl * rtr and rls <= rl
 
 task make_tree[rl,rls,rt] ( l: list<rl>@rl, min: int, max: int), reads(rl), rdwrs(rt) : tree<rl,rls,rt>@rt =
     if isnull(l) then null tree<rl,rls,rt>@rt else /* do comments work? */
