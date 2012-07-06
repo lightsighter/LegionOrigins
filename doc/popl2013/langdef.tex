@@ -112,12 +112,12 @@ $e$ & ::= & & expressions \\
 \label{sec:legioncore}
 
 Figure~\ref{fig:langdef} defines the core subset of Legion.  Types
-include booleans, integers, tuples, and pointers annotated with a list
+include booleans, integers, tuples, and pointers, which are annotated with a list
 of regions into which they may point.  There is a special type for
 {\em colorings}, which are used to specify partitions of regions into
 subregions.  Functions/tasks in Legion are named, accept one or more
 arguments and return a value of some type.  A function also declares
-what region access privileges and coherence it requires.  Function
+the region access privileges and coherence it requires.  Function
 types are universally quantified over all logical region bindings,
 with all argument and result types, as well as the privileges and
 coherence requirements being expressed relative to the quantified
@@ -139,7 +139,7 @@ where
 \begin{itemize}
 \item $\Gamma$ is the type environment, mapping the names of local variables and global functions
 to their types,
-\item $\Phi$ is the region access privileges under which the expression will be evaluated, and
+\item $\Phi$ is the region access privileges under which the expression is evaluated, and
 \item $\Omega$ is the set of constraints that must hold between regions
 \end{itemize}
 As regions are hierarchical, privileges and/or constraints on a region often imply similar
@@ -148,32 +148,27 @@ operations for $\Phi^*$ and $\Omega^*$ that add implied constraints.
 The type checking rules are in Figure~\ref{fig:types}.  Many of the rules are 
 straightforward, but several deserve more explanation.
 
-Core Legion has no subtyping, even for pointers into regions that are part of a 
-known region hierarchy.  The region ``scope'' of a pointer can only be changed via explicit
-{\em upregion} and {\em downregion} operations, which check that the ``from'' and ``to'' regions
-are in the right relationship.  It would have been possible to safely infer {\em upregion} calls,
-but {\em downregion} calls must be accompanied by a run-time check that the pointer really does
-point into the subregion(s), so {\em upregion} was made explicit as well for simplicity.
+Core Legion has no subtyping, but a pointer's region can be changed via explicit
+{\em upregion} and {\em downregion} operations.  {\em Upregion} calls can be inferred,
+but {\em downregion} must be accompanied by a run-time check that the pointer really does
+point into the subregion(s), so {\em upregion} is made explicit as well for simplicity.
 
 Accesses to heap memory are performed via the {\em read}, {\em write}, and {\em reduce}
-operations, which are only legal if the region(s) in a pointers type are ones for which the
-enclosing function has privileges to access.
-
-Similarly, a call to another function is only permitted if the privileges required by the 
+operations, which are only legal if the regions in a pointer's type are ones for which the
+enclosing function has privileges.
+Similarly, a call to another function is permitted only if the privileges required by the 
 callee are a subset of those held by the caller.  There is no way to create privileges within
-a Legion function - it is limited to those given to it by its caller.
+a Legion function - it is limited to privileges given to it by its caller.
 
-The {\em partition} operation uses a {\em coloring} to split a region into one or more
-disjoint subregions.  The subregions are given names within the body of the {\em partition},
-as well as constraints that assert that each subregion is contained by the parent region and
-the pairwise disjointness of the subregions.  These constraints can be used locally, or packed
-into region relation instances that can be unpacked and used later.
+The {\em partition} operation uses a {\em coloring} to split a region into 
+disjoint subregions.  The subregions are given names within the body of the partition,
+as well as constraints asserting subregions are pairwise disjoint and contained within the parent region.
+%These constraints can be used locally, or packed into region relation instances that can be unpacked and used later.
 
-The {\em pack} expression packs together a value and the corresponding set of logical regions,
-as long as the constraints in the region relationship type can be shown to hold.  The
-corresponding {\em unpack} expression gives (new) names to those regions.  Neither the 
-{\em partition} nor the {\em unpack} expression allows aliasing of region names, simplifying the
-handling of existing variables and region names.
+The {\em pack} expression packs together a value and the corresponding logical regions,
+provided the region relation's constraints hold.  The
+corresponding {\em unpack} expression gives (new) names to those regions.  For simplicitly, neither the 
+{\em partition} nor the {\em unpack} expression allows shadowing of region names.
 
 \begin{figure*}
 \centering{
@@ -301,8 +296,7 @@ r_i * r_j \in \Omega^* \Rightarrow r_j * r_i \in \Omega^* \\
 r_i \leq r_j \in \Omega^* \wedge reads(r_j) \in \Phi^* \Rightarrow reads(r_i) \in \Phi^* \\
 r_i \leq r_j \in \Omega^* \wedge writes(r_j) \in \Phi^* \Rightarrow writes(r_i) \in \Phi^* \\
 r_i \leq r_j \in \Omega^* \wedge reduces_{id}(r_j) \in \Phi^* \Rightarrow reduces_{id}(r_i) \in \Phi^* \\
-reads(r) \in \Phi^* \wedge writes(r) \in \Phi^* \wedge \\
-\hspace{1cm} \Gamma(id) = \forall \otok{k}{r}. (\oton{T}), \Phi', Q' \rightarrow T_r \Rightarrow reduces_{id}(r) \in \Phi^*
+reads(r) \in \Phi^* \wedge writes(r) \in \Phi^* \wedge id \in \mbox{\em functions}(\Gamma) \Rightarrow reduces_{id}(r) \in \Phi^*
 \end{array}$
 }
 \caption{Privilege and Constraint Closure}
@@ -311,7 +305,7 @@ reads(r) \in \Phi^* \wedge writes(r) \in \Phi^* \wedge \\
 
 \subsection{Operational Semantics}
 
-Operational semantics rules have the following form:
+Core Legion's operational semantics rules have the following form:
 
 \begin{center}
 $\opsenv{e}{v}{E}$

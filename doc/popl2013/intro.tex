@@ -24,7 +24,7 @@ latest supercomputers are now complex hierarchies of many different
 kinds of computing technologies: networks of nodes at the top level,
 multiple chips per node, mutiple cores within a chip, and, most
 recently, multiple accelerators (usually GPUs) per node, which 
-can be further decomposed into several levels.   In this paper, we present the operational and static
+can themselves be decomposed into several levels.   We present the operational and static
 semantics of Legion, a programming model targeted at providing an
 appropriate level of abstraction for programming such machines, one
 that is both sufficiently high-level to be portable while still
@@ -33,10 +33,10 @@ exposing aspects that are crucial to performance.
 Briefly, in Legion data is organized in a hierarchy of {\em regions}
 and subregions and computation is organized in a hierarchy of {\em
 tasks} and subtasks operating on regions.  Regions and tasks interact
-through a static system of {\em region permissions} specifying the
+through a static system of {\em region permissions} specifying 
 operations a task may perform on a region argument (read,
 write, or reduce) and novel {\em region coherence} annotations that
-express whether other tasks may perform operations concurrently on
+express what other tasks may do concurrently with
 the region (exclusive, atomic, or simultaneous).  We prove the
 soundness of the permissions and coherence system and use these two
 results to prove a third result: if two tasks $t_1$ and $t_2$ are {\em
@@ -121,8 +121,7 @@ and the left and right subtrees hold pointers to list elements with values less 
 respectively.  The task {\tt reverse\_tree} then does an in-place, recursive reversal of the children of each interior
 node of the tree.  We focus on a description of the structure of types, regions and permissions in this example.
 
-Line 1 defines a {\em region relationship} {\tt rr[rll, rlr, rtl, rtr]}.  
-Region relationships are bounded existential types.  The
+Line 1 defines a {\em region relationship}, which is a bounded existential type.  The
 {\tt tree} region relationship defines the type of a binary tree
 node. The naming convention followed throughout the example is that
 regions beginning with {\tt rl} name regions 
