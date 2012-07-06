@@ -47,54 +47,67 @@
 \begin{figure*}
 \centering
 {\small
-\begin{tabular}{cclr}
+\begin{tabular}{cclr|cclr}
 
-$T$ & ::= &  & types \\
-  &$\mid$& bool $\;\;\;\mid\;\;\;$ int & base types \\
-  &$\mid$& $\langle T_1, T_2 \rangle$ & tuple \\
-  &$\mid$& $T@(\oton{r})$ & pointer \\
-  &$\mid$& $\text{coloring}(r)$ & region coloring \\
-  &$\mid$& $\exists \oton{r}. T\text{ where }\Omega$ & region relationship \\
-  &$\mid$& $\forall \oton{r}. (\oton{T}), \Phi, Q \rightarrow T_r$ & functions \\
-\\
-$\Omega$ & ::= & $\{ \oton{\omega} \}$ & region constraints \\
-$\omega$ & ::= & $r_1 \leq r_2$ & subregion \\
-  &$\mid$& $r_1 * r_2$ & disjointness \\
-\\
-$\Phi$ & ::= & $\{ \oton{\phi} \}$ & privileges \\
-$\phi$ & ::= & reads$(r)$ $\;\;\;\mid\;\;\;$ writes$(r)$ $\;\;\;\mid\;\;\;$ $\text{reduces}_{id}(r)$ & \\
-\\
-$Q$ & ::= & $\{ \oton{q} \}$ & coherence modes \\
-$q$ & ::= & atomic$(r)$ $\;\;\;\mid\;\;\;$ simult$(r)$ & \\
-\\
-$v$ & ::= & & values \\
-  &$\mid$& $bv$ $\;\;\;\mid\;\;\;$ $iv$ & base values \\
-  &$\mid$& $\langle v_1, v_2 \rangle$ & tuple \\
-  &$\mid$& null $\;\;\;\mid\;\;\;$ $a$ & address \\
-  &$\mid$& $\{ (a_i, iv), \ldots \}$ & coloring \\
-  &$\mid$& $\langle \langle \oton{\rho}, v\rangle \rangle$ & region relationship instance \\
-\\
-$bv$ & ::= & false $\;\;\;\mid\;\;\;$ true \\
-\\
-$iv$ & ::= & 0 $\;\;\;\mid\;\;\;$ 1 $\ldots$ \\
-\\
-$e$ & ::= & & expressions \\
-  &$\mid$& $bv$ $\;\;\;\mid\;\;\;$ $iv$ & constants \\
-  &$\mid$& $\langle e_1, e_2 \rangle$ $\;\;\;\mid\;\;\;$ $e$.1 $\;\;\;\mid\;\;\;$ $e$.2 & tuple \\
-  &$\mid$& $id$ &  \\
-  &$\mid$& $\text{new}\ T@r$ $\;\;\;\mid\;\;\;$ $\text{null }T@r$ $\;\;\;\mid\;\;\;$ $\text{isnull}(e)$ & \\
-  &$\mid$& $\text{upregion}(e, r_1,\ldots,r_n)$ $\;\;\;\mid\;\;\;$ $\text{downregion}(e, r_1,\ldots,r_n)$ & \\
-  &$\mid$& $\text{read}(e_1)$ $\;\;\;\mid\;\;\;$ $\text{write}(e_1, e_2)$ $\;\;\;\mid\;\;\;$ $\text{reduce}(id, e_1, e_2)$ & memory access \\
-  &$\mid$& $\text{newcolor}\ r$ $\;\;\;\mid\;\;\;$ $\text{color}(e_1, e_2, e_3)$ & coloring operations \\
-  &$\mid$& $e_1 + e_2$ & integer operations \\
-  &$\mid$& $e_1 < e_2$ & comparison operations \\
+$T$ & ::= &  & types & $bv$ & ::= & false $\;\;\;\mid\;\;\;$ true & \\
+  &$\mid$& bool $\;\;\;\mid\;\;\;$ int & base types & & & & \\
+  &$\mid$& $\langle T_1, T_2 \rangle$ & tuple & $iv$ & ::= & 0 $\;\;\;\mid\;\;\;$ 1 $\ldots$ & \\
+  &$\mid$& $T@(\oton{r})$ & pointer & & & & \\
+  &$\mid$& $\text{coloring}(r)$ & region coloring & $e$ & ::= & & expressions \\
+  &$\mid$& $\exists \oton{r}. T\text{ where }\Omega$ & region relationship &   &$\mid$& $bv$ $\;\;\;\mid\;\;\;$ $iv$ & constants \\
+  &$\mid$& $\forall \oton{r}. (\oton{T}), \Phi, Q \rightarrow T_r$ & functions &   &$\mid$& $\langle e_1, e_2 \rangle$ $\;\;\;\mid\;\;\;$ $e$.1 $\;\;\;\mid\;\;\;$ $e$.2 & tuple \\
+& & & &   &$\mid$& $id$ &  \\
+$\Omega$ & ::= & $\{ \oton{\omega} \}$ & region constraints &   &$\mid$& $\text{new}\ T@r$ $\;\;\;\mid\;\;\;$ $\text{null }T@r$ $\;\;\;\mid\;\;\;$ $\text{isnull}(e)$ & \\
+$\omega$ & ::= & $r_1 \leq r_2$ & subregion   &   
+  &$\mid$& $\text{upregion}(e, r_1,\ldots,r_n)$ & \\
+  &$\mid$& $r_1 * r_2$ & disjointness &   
+  &$\mid$ & $\text{downregion}(e, r_1,\ldots,r_n)$ & \\  
+& & &  & 
+  &$\mid$& $\text{read}(e_1)$ $\;\mid\;$ $\text{write}(e_1, e_2)$ & memory access \\
+$\Phi$ & ::= & $\{ \oton{\phi} \}$ & privileges & 
+  & $\mid$ & $\text{reduce}(id, e_1, e_2)$ & \\
+$\phi$ & ::= & reads$(r)$ $\;\mid\;$ writes$(r)$ $\;\mid\;$ $\text{reduces}_{id}(r)$ &  &  
+  &$\mid$& $\text{newcolor}\ r$ $\;\mid\;$ $\text{color}(e_1, e_2, e_3)$ & coloring \\
+& & & &  
+  &   $\mid$& $e_1 + e_2$ & integer ops \\
+$Q$ & ::= & $\{ \oton{q} \}$ & coherence modes  &   
+       & $\mid$& $e_1 < e_2$ & comparisons \\
+$q$ & ::= & atomic$(r)$ $\;\;\;\mid\;\;\;$ simult$(r)$ & &   
   &$\mid$& $\text{let}\ id : T = e_1 \text{in}\ e_2$ &  \\
-  &$\mid$& $\text{if}\ e_1\ \text{then}\ e_2\ \text{else}\ e_3$ &  \\
-  &$\mid$& $id[r_1, \ldots, r_n](e_1,\ldots,e_n)$ & task calls \\
-  &$\mid$& $\text{partition}\ r_p\text{ using }e_1\text{ as }\oton{r}\text{ in }\ e_2$ &  \\
-  &$\mid$& $\text{pack}\ e_1\ \text{as}\ T[r_1,\ldots,r_n]$ &  \\
-  &$\mid$& $\text{unpack}\ e_1\ \text{as}\ id : T[r_1,\ldots,r_n]\ \text{in}\ e_2$ &  \\
-
+& & & &   
+       & $\mid$& $\text{if}\ e_1\ \text{then}\ e_2\ \text{else}\ e_3$ &  \\
+$v$ & ::= & & values &   
+       & $\mid$& $id[r_1, \ldots, r_n](e_1,\ldots,e_n)$ & task calls \\
+  &$\mid$& $bv$ $\;\;\;\mid\;\;\;$ $iv$ & base values &   
+       & $\mid$ & $\text{partition}\ r_p\text{ using }e_1\text{ as }\oton{r}\text{ in }\ e_2$ &  \\
+  &$\mid$& $\langle v_1, v_2 \rangle$ & tuple & 
+       & $\mid$& $\text{pack}\ e_1\ \text{as}\ T[r_1,\ldots,r_n]$ &  \\
+  &$\mid$& null $\;\;\;\mid\;\;\;$ $a$ & address & 
+       & $\mid$& $\text{unpack}\ e_1\ \text{as}\ id : T[r_1,\ldots,r_n]\ \text{in}\ e_2$ &  \\
+  &$\mid$& $\{ (a_i, iv), \ldots \}$ & coloring & 
+    & & & \\
+  &$\mid$& $\langle \langle \oton{\rho}, v\rangle \rangle$ & reg. relation instance & 
+   & & & \\
+%$bv$ & ::= & false $\;\;\;\mid\;\;\;$ true \\
+%\\
+%$iv$ & ::= & 0 $\;\;\;\mid\;\;\;$ 1 $\ldots$ \\
+%\\
+%$e$ & ::= & & expressions \\
+%  &$\mid$& $bv$ $\;\;\;\mid\;\;\;$ $iv$ & constants \\
+%  &$\mid$& $\langle e_1, e_2 \rangle$ $\;\;\;\mid\;\;\;$ $e$.1 $\;\;\;\mid\;\;\;$ $e$.2 & tuple \\
+%  &$\mid$& $id$ &  \\
+%  &$\mid$& $\text{new}\ T@r$ $\;\;\;\mid\;\;\;$ $\text{null }T@r$ $\;\;\;\mid\;\;\;$ $\text{isnull}(e)$ & \\
+%  &$\mid$& $\text{upregion}(e, r_1,\ldots,r_n)$ $\;\;\;\mid\;\;\;$ $\text{downregion}(e, r_1,\ldots,r_n)$ & \\
+%  &$\mid$& $\text{read}(e_1)$ $\;\;\;\mid\;\;\;$ $\text{write}(e_1, e_2)$ $\;\;\;\mid\;\;\;$ $\text{reduce}(id, e_1, e_2)$ & memory access \\
+%  &$\mid$& $\text{newcolor}\ r$ $\;\;\;\mid\;\;\;$ $\text{color}(e_1, e_2, e_3)$ & coloring operations \\
+%  &$\mid$& $e_1 + e_2$ & integer operations \\
+%  &$\mid$& $e_1 < e_2$ & comparison operations \\
+%  &$\mid$& $\text{let}\ id : T = e_1 \text{in}\ e_2$ &  \\
+%  &$\mid$& $\text{if}\ e_1\ \text{then}\ e_2\ \text{else}\ e_3$ &  \\
+%  &$\mid$& $id[r_1, \ldots, r_n](e_1,\ldots,e_n)$ & task calls \\
+%  &$\mid$& $\text{partition}\ r_p\text{ using }e_1\text{ as }\oton{r}\text{ in }\ e_2$ &  \\
+%  &$\mid$& $\text{pack}\ e_1\ \text{as}\ T[r_1,\ldots,r_n]$ &  \\
+%  &$\mid$& $\text{unpack}\ e_1\ \text{as}\ id : T[r_1,\ldots,r_n]\ \text{in}\ e_2$ &  \\
 \end{tabular}
 }
 \caption{Legion Core Language}
