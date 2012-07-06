@@ -41,13 +41,13 @@ Legion is a programming model that introduces
 {\em logical regions} as a mechanism for targeting large heterogeneous machines 
 with complex memory hierarchies.  Logical regions are first-class 
 values in Legion, allowing programmers to specify independence 
-and locality properties of program data dynamically.  We present
+and locality properties of program data.  We present
 a type system with permissions and coherence properties for reasoning about logical regions.  
 We prove the soundness of the type system and use it to show
 that all memory accesses in Legion are safe.  Furthermore, we prove that
-type soundness directly enables a scalable, hierarchical
-scheduling algorithm for Legion programs.  We implement a type checker
-for Legion programs and improve performance up to 71\% by eliding
+type soundness enables a scalable, hierarchical
+scheduling algorithm for Legion programs.  We show that an implementation of the type checker
+for Legion programs improves performance up to 71\% by eliding
 memory checks the type system proves safe.  We also demonstrate that an implementation of the Legion 
 runtime based on the hierarchical scheduling algorithm scales well for
 three real-world applications.
