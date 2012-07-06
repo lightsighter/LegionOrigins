@@ -108,53 +108,47 @@ $e$ & ::= & & expressions \\
 
 \newcommand{\infx}[2]{\infrule{\begin{array}{l}{#1}\end{array}}{#2}}
 
-\section{Legion Core Language}
+\section{Legion}
 \label{sec:legioncore}
 
-\subsection{Language Definition}
-\label{subsec:langdef}
+Figure~\ref{fig:langdef} defines the core subset of Legion.  Types
+include booleans, integers, tuples, and pointers annotated with a list
+of regions into which they may point.  There is a special type for
+{\em colorings}, which are used to specify partitions of regions into
+subregions.  Functions/tasks in Legion are named, accept one or more
+arguments and return a value of some type.  A function also declares
+what region access privileges and coherence it requires.  Function
+types are universally quantified over all logical region bindings,
+with all argument and result types, as well as the privileges and
+coherence requirements being expressed relative to the quantified
+region names.  The final additional value type that Legion uses is a
+region relation, which stores a value and one or more logical regions
+satisfying associated region constraints.  An instance of a region
+relation can be read out of the heap and unpacked, giving new local
+names to the logical regions contained in the instance.
+% and tracking
+%the constraints between those new logical regions.
 
-Figure~\ref{fig:langdef} defines the core subset of Legion application language.
-Legion includes basic boolean, integer and tuple types.  Pointers are included as well, but in
-addition to specifying the type of value it points to, a pointer's type also constrains where in
-memory it can point (i.e. only into regions listed in the type).  A special type exists for
-{\em colorings}, which are used to specify how a region should be partitioned into subregions.
-Functions in Legion are named, accept one or more arguments and return a value of some type.
-A function also declares what region access privileges and coherence it requires.  Function types
-are universally quantified over all logical region bindings, with all argument and result types,
-as well as the privileges and coherence requirements being expressed relative to the quantified
-region names.
-The final additional value type that Legion uses is a region relation.  Although logical regions
-cannot be stored directly in variables, they can be captured as part of a region relation 
-instance, which stores a value and one or more logical regions that satisfy a particular set of
-constraints.  An instance of a region relation can be read out of the heap and unpacked, giving
-new local names to the logical regions contained in the instance and tracking the constraints
-between those new logical regions.
+\subsection{Core Type System}
 
-\subsection{Legion Core Type System}
-
-The Legion Core language is explicitly typed, using judgments of the following form:
-
+Core Legion is explicitly typed using judgments of the form
 \begin{center}
 $\typeenv{e}{T}$
 \end{center}
-
-where:
+where
 \begin{itemize}
 \item $\Gamma$ is the type environment, mapping the names of local variables and global functions
 to their types,
 \item $\Phi$ is the region access privileges under which the expression will be evaluated, and
 \item $\Omega$ is the set of constraints that must hold between regions
 \end{itemize}
-
-As regions are hierarchical, privileges and/or constraints on a region will often imply similar
-privileges or constraints on subregions.  Figure~\ref{fig:closure} defines transitive closure
-operations for $\Phi^*$ and $\Omega^*$ that will be used in some of the type checking rules.
-
-The full set of type checking rules are in Figure~\ref{fig:types}.  Many of the rules are 
+As regions are hierarchical, privileges and/or constraints on a region often imply similar
+privileges or constraints on subregions.  Figure~\ref{fig:closure} defines closure
+operations for $\Phi^*$ and $\Omega^*$ that add implied constraints.
+The type checking rules are in Figure~\ref{fig:types}.  Many of the rules are 
 straightforward, but several deserve more explanation.
 
-The Legion core language has no subtyping, even for pointers into regions that are part of a 
+Core Legion has no subtyping, even for pointers into regions that are part of a 
 known region hierarchy.  The region ``scope'' of a pointer can only be changed via explicit
 {\em upregion} and {\em downregion} operations, which check that the ``from'' and ``to'' regions
 are in the right relationship.  It would have been possible to safely infer {\em upregion} calls,
