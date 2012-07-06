@@ -36,12 +36,33 @@ in the target class of machines.
 
 Legion programs organize data into {\em logical regions}.  Logical
 regions (which we usually refer to simply as {\em regions}) express
-locality, which is just data that will be used together and therefore
-should be colocated in the machine.  Listing~\ref{lst:linkedlist}
-gives an example that defines a region containing a linked list of integers and a task
-that sums the elements of the list.  As is standard in region systems, we use
-$T @ r$ for the type of a pointer to a value of type $T$ in region $r$.
-As is also
+{\em locality}, which is just data that will be used together and
+therefore should be colocated in the machine.
+Listing~\ref{lst:linkedlist} gives an example that defines a region
+containing a linked list of integers and a task that sums the elements
+of the list.  As is standard in region systems, we use $T @ r$ for the
+type of a pointer to a value of type $T$ in region $r$.  The task also
+illustrates a simple use of the permissions system; in this case the
+task {\tt sum\_list} must have permission {\tt reads(r)}, the ability
+to read the values in region {\tt r}.
+
+Listing~\ref{lst:treereverse} gives a more elaborate example.  While
+artificial (it is designed to use the greatest number of Legion
+features in the smallest space), the program illustrates typical
+Legion programming idioms.  Given a list of integers as defined in Listing~\ref{lst:linkedlist}, 
+the task {\tt make\_tree} builds a binary tree of pointers to list elements.
+Each internal node of the tree stores a pointer to a list element with value $i$
+and the left and right subtrees hold pointers to list elements with values less than $i$ and greater than $i$,
+respectively.  The task {\tt reverse\_tree} then does an in-place, recursive reversal of the children of each interior
+node of the tree.  We focus on a description of the structure of types and permissions in this example.
+
+Line 1 defines a type that is a {\em region relationship} {\tt rr[ rll, rlr, rtl, rtr]}.  Region relationships are
+constrained existential types.  The {\tt tree} region relationship defines the type of a node of the tree: it has a pointer
+to a list node and two pointers to the left and right subtrees. The crucial part is the {\em subregion} and {\em disjointness}
+constraints that describe the relationships between the various regions.  Here {\tt rl} is the region holding all list elements,
+{\tt rls} is the region holding
+
+
 
 Two of the basic properties programmers need to express in writing
 programs for highly parallel, distributed machines are the {\em

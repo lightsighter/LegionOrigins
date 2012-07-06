@@ -129,14 +129,14 @@ able to safely elide all the dynamic region access checks.
 \vspace{-6mm}
 \end{figure}
 
-Figures \ref{fig:ckt_overhead}, \ref{fig:fluid_overhead}, and \ref{fig:amr_overhead} show 
+Figures~\ref{fig:ckt_overhead}, \ref{fig:fluid_overhead}, and \ref{fig:amr_overhead} show 
 the total time spent by all CPUs and GPUs in each phase of the application.  The topmost
 component of each bar shows the overhead added by the dynamic checks.  In 
 each figure the problem size stays the same as the number of processors are increased
-(strong scaling).  Figure \ref{fig:amr_overhead} includes multiple problem sizes to show
+(strong scaling).  Figure~\ref{fig:amr_overhead} includes multiple problem sizes to show
 how overhead is affected by changing problem size (weak scaling).  For cases where there
 is an existing implementation to compare against we have included a dotted line indicating
-baseline performance.  In a few cases (Figures \ref{fig:fluid_overhead} and 
+baseline performance.  In a few cases (Figures~\ref{fig:fluid_overhead} and 
 \ref{fig:amr4096}) checking overhead is the difference
 between better and worse performance than the baseline.  For an explanation of overall
 performance relative to the baseline implementations please refer to \cite{Legion12}.
@@ -160,7 +160,7 @@ performance relative to the baseline implementations please refer to \cite{Legio
 }
 \end{center}
 \vspace{-2mm}
-\caption{Overhead for the AMR application for three different problem sizes.\label{fig:amr_overhead}}
+\caption{Overhead for the AMR application.\label{fig:amr_overhead}}
 \vspace{-6mm}
 \end{figure}
 
@@ -178,5 +178,19 @@ to the overhead of region access checks.
 
 \subsection{Scalability}
 \label{subsec:scalability}
+The scalability of Legion derives directly from Theorem~\ref{thm:hiersched}.  This 
+theorem makes it safe for the runtime to only perform dependence checks between two
+tasks that share the same immediate parent task instead of having to consider all
+possible interactions with other tasks anywhere in the system.  Since all tasks that
+share the same immediate parent are all created on the node where the parent is executing,
+all dependence checks and scheduling decisions can be performed locally with no communication.  
+Without this property the runtime would be forced to inform all other processors in the system 
+of every task that it launches using expensive broadcasts. 
 
+Figures~\ref{fig:ckt_overhead}, \ref{fig:fluid_overhead}, and \ref{fig:amr_overhead} show that
+the overhead of the Legion runtime is always less than 7\% of the total execution time
+of the applications.  In some applications communication doesn't scale well, but in these cases communication is
+the result of the algorithm being performed and is not caused by runtime communication.
+Even in the case of the Circuit application which exhibits quadratic communication, the Legion
+runtime is able to achieve a 62.5X speedup on 96 GPUs over a hand-coded single GPU implementation\cite{Legion12}.
 
