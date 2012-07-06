@@ -36,7 +36,7 @@ task sum_list[r] ( l:list<r>@r ), reads(r) : int =
 type tree<rl,rls,rt> = rr[rll, rlr, rtl, rtr] 
                        < list<rl>@rls, < tree<rl,rll,rtl>@rtl, tree<rl,rlr,rtr>@rtr > >
      		       where rll #$\le$# rls and rlr #$\le$# rls and rll #$*$# rlr and 
-                                  rtl #$\le$# rt and rtr #$\le$# rt  and rtl #$*$# rtr
+                                  rtl #$\le$# rt and rtr #$\le$# rt and rtl #$*$# rtr and rls #$\le$# rl
 
 task color_list[r,rs] ( clr: coloring(rs), head: list<r>@r, 
                         splitval: int ), reads(r) : coloring(rs) =
