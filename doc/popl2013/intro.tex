@@ -75,8 +75,8 @@ to read the values in region {\tt r}.
 \begin{lstlisting}[float={t},label={lst:treereverse},caption={Tree Partitioning and Reversal Example}]
 type tree<rl,rls,rt> = rr[rll, rlr, rtl, rtr] 
                        < list<rl>@rls, < tree<rl,rll,rtl>@rtl, tree<rl,rlr,rtr>@rtr > >
-     		       where rll #$\le$# rls and rlr #$\le$# rls and rll #$*$# rlr and 
-                                  rtl #$\le$# rt and rtr #$\le$# rt and rtl #$*$# rtr and rls #$\le$# rl
+     		       where rll #$\le$# rls and rlr #$\le$# rls and rll #$*$# rlr and rls #$\le$# rl and
+                                  rtl #$\le$# rt and rtr #$\le$# rt and rtl #$*$# rtr 
 
 task color_list[r,rs] ( clr: coloring(rs), head: list<r>@r, 
                         splitval: int ), reads(r) : coloring(rs) =
