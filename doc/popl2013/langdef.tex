@@ -125,20 +125,20 @@ $v$ & ::= & & values &
 \label{sec:legioncore}
 
 Figure~\ref{fig:langdef} defines the core subset of Legion.  Types
-include booleans, integers, tuples, and pointers, which are annotated with a list
-of regions into which they may point.  There is a special type for
-{\em colorings}, which are used to specify partitions of regions into
-subregions.  Functions/tasks in Legion are named, accept one or more
-arguments and return a value of some type.  A function also declares
-the region access privileges and coherence it requires.  Function
-types are universally quantified over all logical region bindings,
-with all argument and result types, as well as the privileges and
-coherence requirements being expressed relative to the quantified
-region names.  The final additional value type that Legion uses is a
-region relation, which stores a value and one or more logical regions
-satisfying associated region constraints.  An instance of a region
-relation can be read out of the heap and unpacked, giving new local
-names to the logical regions contained in the instance.
+include booleans, integers, tuples, and pointers.  Note that pointers
+are annotated with a list of regions into which they may point; in a
+well-typed program, the pointer is guaranteed to point to at least one
+of those regions. There is a special type for {\em colorings}, which
+are used to specify partitions of regions into subregions.
+Functions/tasks in Legion are named, accept one or more arguments and
+return a value of some type.  A function also declares the region
+access privileges and coherence it requires.  Function types are
+universally quantified over all region names appearing in the type.
+The final value is a region relation, which stores a value and one or
+more logical regions satisfying associated region constraints.  An
+instance of a region relation can be read out of the heap and
+unpacked, giving new local names to the logical regions contained in
+the instance.
 % and tracking
 %the constraints between those new logical regions.
 
@@ -161,7 +161,7 @@ operations for $\Phi^*$ and $\Omega^*$ that add implied constraints.
 The type checking rules are in Figure~\ref{fig:types}.  Many of the rules are 
 straightforward, but several deserve more explanation.
 
-Core Legion has no subtyping, but a pointer's region can be changed via explicit
+Core Legion has no subtyping. A pointer's region is changed only via explicit
 {\em upregion} and {\em downregion} operations.  {\em Upregion} calls can be inferred,
 but {\em downregion} must be accompanied by a run-time check that the pointer really does
 point into the subregion(s), so {\em upregion} is made explicit as well for simplicity.
@@ -309,7 +309,8 @@ r_i * r_j \in \Omega^* \Rightarrow r_j * r_i \in \Omega^* \\
 r_i \leq r_j \in \Omega^* \wedge reads(r_j) \in \Phi^* \Rightarrow reads(r_i) \in \Phi^* \\
 r_i \leq r_j \in \Omega^* \wedge writes(r_j) \in \Phi^* \Rightarrow writes(r_i) \in \Phi^* \\
 r_i \leq r_j \in \Omega^* \wedge reduces_{id}(r_j) \in \Phi^* \Rightarrow reduces_{id}(r_i) \in \Phi^* \\
-reads(r) \in \Phi^* \wedge writes(r) \in \Phi^* \wedge id \in \mbox{\em functions}(\Gamma) \Rightarrow reduces_{id}(r) \in \Phi^*
+reads(r) \in \Phi^* \wedge writes(r) \in \Phi^* \Rightarrow reduces_{id}(r) \in \Phi^* \\
+\ \ \ \mbox{for every function identifier $id$}
 \end{array}$
 }
 \caption{Privilege and Constraint Closure}
@@ -326,101 +327,73 @@ $\opsenv{e}{v}{E}$
 
 where: 
 \begin{itemize}
-\item $M$ is the mapping from logical regions $r_i$ in types to physical regions $\rho_i$, which are sets of memory locations.
+\item $M$ is a mapping from logical regions $r_i$ to {\em physical regions} $\rho_i$, which are sets of concrete memory locations.
+We write $\hat x = M \llbracket x \rrbracket$ for the application of $M$ to other objects (e.g., types), 
+replacing all free logical region names $r_i$ in $x$ with corresponding physical regions $\rho_i$.  
+(Note $M \llbracket x \rrbracket$ is ill-formed if it contains a free logical region name $r_j \not\in dom(M)$.)
 
-It will be useful to apply this logical-to-physical mapping to other
-things that defined in terms of logical regions to yield a corresponding definition in terms of
-physical regions.  The notation $\hat x = M \llbracket x \rrbracket$ is used to describe the
-result of replacing all free logical region names $r_i$ in $x$ with the corresponding physical
-region $\rho_i$.  (Note that $M \llbracket x \rrbracket$ is not
-well-formed if it contains a free logical region name $r_j \not\in dom(M)$.)
-\item $L$ is the mapping of local variable names to their values on the stack.  These values are
-immutable, and private to the function - it is not possible to get a pointer to a local value.
-\item $H$ is the heap typing, mapping from memory locations to types.  The heap typing does not
-change during the execution of a legion program.  The Legion type system is strong enough to
-support the use of garbage collection
-to allow the reuse of a memory location (potentially with a different type stored in that
-location) once all existing references to it are dead, but we
-do not consider that further in this paper.
-\item $S$ is the store, mapping from memory locations $l_i$ to the current value stored.
-\item $C$ is the ``clobber set'', a set of memory locations that may be accessed by concurrently executing operations (??? does this need to be split into read/write/reduce?)
-\item $e$ is the expression being evaluated
-\item $v$ is the result of the evaluation
-\item $E$ is a memory trace (i.e. the effects) of the execution, a list of memory operations
-in the order they were performed.  An operation $\epsilon$ is one of the following:
+\item $L$ is a mapping of local variables to (immutable) values.  
+
+\item $H$ is a {\em heap typing}, assigning an invariant type to every memory location. 
+
+\item $S$ is a store, mapping memory locations $l_i$ to values.
+
+\item $C$ is a {\em clobber set}, memory locations that may be accessed by concurrently executing operations.
+
+\item $e$ is an expression.
+
+\item $v$ is the result of evaluatinig $e$.
+
+\item $E$ is a {\em memory trace} of the execution, a list of {\em memory operations}
+in the order performed.  A memory operation $\epsilon$ is either
+$read(l, c, v)$ (a read of location $l$ with coherence mode $c$, returning value $v$),
+$write(l, c, v)$ (a write to location $l$ with coherence mode $c$, storing value $v$),
+or $reduce_{id}(l, c, v)$ (a reduction into location $l$ with coherence mode $c$ using an
+associative function $id$ with value $v$).  Coherence modes are one of ({\em excl}, {\em atomic}, {\em simult}).
+\end{itemize}
+
+Helper functions are used in some rules:
 \begin{itemize}
-\item $read(l, c, v)$, a read of location $l$ with coherence mode $c$, returning value $v$
-\item $write(l, c, v)$, a write to location $l$ with coherence mode $c$, storing value $v$
-\item $reduce_{id}(l, c, v)$, a reduction into location $l$ with coherence mode $c$ using a
-commutative function $id$ with value $v$
+\item $apply(S, E) = S'$ computes the store $S'$ resulting from applying memory trace $E$ to initial store $S$.
+
+\item $mark\_coherence(E, \hat Q)$ records the coherence of operations in trace $E$ according to coherence annotations $Q$. 
+
+\item $valid\_interleave(S, C, E', \oton{E})$ is true if $E'$ is a valid interleaving
+of the memory traces $\oton{E}$.
 \end{itemize}
-where coherence modes are one of ({\em excl}, {\em atomic}, {\em simult}).
+Figure~\ref{fig:opsemfns} defines {\em apply} and {\em mark\_coherence}.  The precise definition of
+{\em valid\_interleave} is given in Section~\ref{sec:coherence}.  For now, we need only that a valid interleaving
+is at least an interleaving, containing each constituent trace as a subequence and no other operations.
 
-The following helper functions are used in some of the rules that deal with memory effects:
-\begin{itemize}
-\item $apply(S, E)$ is used to determine the effect on the store of a sequence of memory operations
-\item $mark\_coherence(E, \hat Q)$ marks the memory operations in a subtask's trace to
-constrain how the operations in that trace can be interleaved with other sibling tasks' operations
-\item $valid\_interleave(S, C, E', \oton{E})$ is used to determine if $E'$ is a valid way to
-interleave the memory traces of two or more subexpressions
-\end{itemize}
-Figure~\ref{fig:opsemfns} gives the definitions of {\em apply} and {\em mark\_coherence}.  For
-the {\em valid\_interleave} predicate, we leave the precise definition to a later section.  For this
-section, we need only one of the necessary conditions of a valid interleaving, that a valid
-interleaving is at least an interleaving - it contains all the memory operations from each of the
-constituent traces and no more, and that each trace's operations remain in order in the interleaved
-trace.
-\end{itemize}
+Some rules modeling concurrent execution are locally
+non-deterministic, guessing values that result from
+concurrent tasks.  For example, the rule for {\tt read(e)} returns an
+arbitrary value $v'$ of the correct type if the location being read is
+in the clobber set $C$, the set of locations concurrent tasks may
+clobber (i.e., update).\footnote{Note that this is also the reason for
+including a global heap typing.}  The guess is eventually checked for
+consistency by the $valid\_interleave$ predicate of some enclosing
+expression, at a point where the task that wrote $v'$ is also local to
+the expression being evaluated.
 
-There are a number of rules that appear to be nondeterministic, allowing multiple choices for
-valid evaluation.  In reality, only the memory allocation case (i.e. new $T@r$) has a truly
-nondeterministic choice (i.e. which currently-unused memory location of the right type to 
-use).  A particular memory allocation algorithm is likely to be deterministic, but the
-design of such algorithms is unrelated to the subject at hand, and by abstracting the location 
-choice, we show that our results hold for any correct memory allocation algorithm.  (In fact,
-our criteria are even weaker than that.  Our soundness result even holds if the location returned
-by ``new $T@r$'' is one that is already in use, as long as the heap typing of that location is
-correct.)
+Another prescient operation is {\tt newcolor r}, which guesses initial
+memory locations and their colors for a partition.  These locations
+support partition-then-allocate, ensuring the memory mappping $M$ has
+locations for the new subregions that can be allocated by {\tt new}.
+As is usual, memory allocation is also non-deterministic, choosing any
+location of the correct type in the region.  For simplicity we do not
+require locations to be ``fresh''; our soundness results hold even if
+{\tt new T@r} returns locations already in use, provided the heap
+typing of the location is correct.
 
-The remaining cases of apparent nondeterminism are the result of how we handle the semantics of
-concurrent execution.  An operational semantics that explicitly tracks the state of all 
-concurrently executing operations would allow precise specification of the result of each 
-evaluation step, but would be extremely cumbersome.  Instead, we identify the cases in which
-nonlocal effects (i.e. those that result from the concurrent evaluation of other expressions)
-can impact the local evaluation, and make a ``guess'' of what value would result from an 
-operation.  The check that the guess was consistent with the state of the system is deferred until
-the previously nonlocal effects become local (i.e. contained within the evaluation of an enclosing
-expression tree).  If the guess is not consistent, then the attempted proof of the subexpression's
-behavior is flawed and must be reattempted.
-
-In the case of ``read'' operations whose locations are in the clobber set $C$, we allow the local
-evaluation to guess any value as long as it is of the right type.  The consistency of the value
-is eventually checked by the $valid\_interleave$ predicate of some enclosing expression, but it
-may not be the closest enclosing one.  The $valid\_interleave$ test itself allows some (apparent)
-freedom of choice, deferring some of the consistency checks to the corresponding check further up
-the expression tree.  The final case of apparent nondeterminism is in the choice of what initial
-locations to include in the result of a ``newcolor $r$'' expression.  The inclusion of locations
-beyond those which are explicitly requested by the application is necessary for the success of
-subsequent memory allocation within a subregion created from a partitioning using the coloring, but
-that allocation might not occur within the {\em partition} expression's
-body.  Although the correctness of these partitioning guesses cannot be fully verified until the
-entire execution is known, when an inconsistency is encountered (i.e. there isn't a location of
-the right type in the right region for a ``new $T@r$'' expression) it is possible to ``patch'' the 
-proof (by adding a previously unnamed location to the appropriate expanded colorings and giving
-it the right type in $H$) rather than having to start the proof over from the beginning.
-
-Most of the heavy lifting in the Legion core language occurs in the function call expression.
-The expressions for all the function's arguments are evaluated in the caller's context, but a
-new context is assembled for the evaluation of the function's body.  The region mapping used
-in the callee only uses the caller's mapping indirectly - the only logical region names available
-are those over which the called function is quantified.  Similarly, the set of local values is
-replaced with a mapping of formal parameter names to the values of the arguments.  The store
-is updated to account for side-effects of those argument evaluations.  Finally, if the function
-being called operates with relaxed coherence (i.e. either {\em atomic} or {\em simult} instead of
-{\em excl}), the locations with relaxed coherence are added to the clobber set, allowing the
-impact of concurrent modifications of the store to be handled by the caller.  This is done by
-annotating the called function's memory trace with the relaxed coherence on a per-location basis
-and using the {\em valid\_interleave} predicate to control what parallel execution is allowed.
+The most involved rule in Core Legion's semantics is for task calls.
+Note that the only regions accessible to the callee (through $M'$) are the region arguments.
+Also, if any regions are used with relaxed coherence (either {\em atomic} or {\em simult} instead of
+{\em excl}), those locations are added to the clobber set, allowing the
+impact of concurrent modifications of the store to be handled by the caller.  
+%This is done by
+%annotating the called function's memory trace with the relaxed coherence on a per-location basis
+%and using the {\em valid\_interleave} predicate to control what parallel execution is allowed.
 
 \begin{figure*}
 \centering{
@@ -496,14 +469,14 @@ null, & \text{otherwise}.
 {\opsenvx \text{downregion}(e, \oton{r}) \mapsto v, E}
 \finfrule
 {\begin{array}{l}
-\opsenvx e_1 \mapsto l, E \\
+\opsenvx e \mapsto l, E \\
 S' = \text{apply}(S, E) \\
 v = \begin{cases}
 S'(l), & \text{if } l \not\in C \\
 v' : H(l), & \text{otherwise}
 \end{cases}
 \end{array}}
-{\opsenvx \text{read}(e_1) \mapsto v, E \dplus [ read(l, excl, v) ]}
+{\opsenvx \text{read}(e) \mapsto v, E \dplus [ read(l, excl, v) ]}
 \finfrule
 {\begin{array}{l}
 \opsenvx e_1 \mapsto l, E_1 \\
@@ -637,33 +610,32 @@ valid\_interleave(S, C, E', E_1, E_2)
 
 \subsection{Soundness of Effects}
 
-An important property of the legion type system is that any expression that is well-typed is
+A key property of the Legion type system is that any expression that is well-typed is
 guaranteed to access the heap only in ways permitted by the privileges under which it was typed.
-A judgement $M \vdash E : \Phi$ holds if all the memory operations in $E$ are of the types and
+A judgement $M \vdash E : \Phi$ holds if all the memory operations in memory trace $E$ are of the types and
 to locations covered by the privileges in $\Phi$:
+\[ 
+\begin{array}{rl}
+M \vdash & E : \Phi \Leftrightarrow \forall \epsilon \in E. \\
+& (\epsilon = read(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge reads(r) \in \Phi)\ \wedge \\
+& (\epsilon = write(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge writes(r) \in \Phi)\ \wedge \\
+& (\epsilon = reduce_{id}(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge reduces_{id}(r) \in \Phi)
+\end{array}
+\]
 
-\begin{center}
-\begin{tabular}{l@{ }l@{ }l}
-$M \vdash E : \Phi$ & $\Leftrightarrow$ & $\forall \epsilon\text { in } E.$ \\
-& & $(\epsilon = read(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge reads(r) \in \Phi)\ \wedge$ \\
-& & $(\epsilon = write(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge writes(r) \in \Phi)\ \wedge$ \\
-& & $(\epsilon = reduce_{id}(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge reduces_{id}(r) \in \Phi)$
-\end{tabular}
-\end{center}
-
-The proof that $M \vdash E : \Phi$ holds for all well-typed Legion expressions is achieved by
-induction over the structure of the expression.  Soundness is contingent on the following
-consistent properties, which must be shown to hold for each subexpression:
+Our goal is to show $M \vdash E : \Phi$ holds for the execution of an expression $e$ with static permissions $\Phi$.
+As usual, even stating such a claim requires that corresponding parts of the initial static and dynamic environments be consistent.
+For our results, three consistency properties are needed:
 \begin{itemize}
-\item $M \sim \Omega$, a region mapping must satisfy the region constraints under which the expression was typed
-\item $L \sim_H \Gamma$, the local values must have types consistent with the environment under which the expression was typed
-\item $S \sim H$, the initial state of the store must contain values whose types are consisten with the heap typing
+\item $M \sim \Omega$, a region mapping satisfies the region constraints under which the expression was typed
+\item $L \sim_H \Gamma$, local values have types consistent with the environment under which the expression was typed
+\item $S \sim H$, the initial state of the store contains values whose types are consisten with the heap typing
 \end{itemize}
 
-The proof requires two additional properties be proved for each subexpression:
+Two additional properties are proven for each subexpression:
 \begin{itemize}
-\item $v \sim_H M \llbracket T \rrbracket$, a subexpresion must evaluate to a value of the right type
-\item $E \sim H$, the values written to the store must match the heap types of the location to which they're stored
+\item $v \sim_H M \llbracket T \rrbracket$, the expression yields a value of the right type
+\item $E \sim H$, values written to the store match the heap types of their locations
 \end{itemize}
 Figure~\ref{fig:constprop} gives the precise definition of these properties.
 
@@ -706,31 +678,23 @@ $
 \end{figure*}
 
 \begin{thm}
-Let $e$ be a well-typed Legion expression.  Let $M$ be a region mapping, $L$ be local value mapping,
-$H$ be a heap typing, and $S$ be an initial state of the store satisfying the consistency properties:
-$$
-\begin{array}{l}
-M \sim \Omega \\
-L \sim_H \Gamma \\
-S \sim H
-\end{array}
-$$
-If $v$ and $E$ are the value and memory trace resulting from a permissable terminating evaluation of
-$e$, then:
-$$
-\begin{array}{l}
-v \sim_H M \llbracket T \rrbracket \\
-E \sim H \\
-M \vdash E : \Phi
-\end{array}
-$$
+\label{thm:effects}
+\rm
+If $\typeenv{e}{T}$ and $\opsenv{e}{v}{E}$  and $M \sim \Omega$, $L \sim_H \Gamma$ and $S \sim H$,
+then
+$v \sim_H M \llbracket T \rrbracket$, $E \sim H$ and $M \vdash E : \Phi$.
 \end{thm}
 
-Due to space constraints, we limit the discussion to the general strategy of the proof.  The full
-proof can be found here\cite{LegionTypes12}.  If $v$ and $E$ are the result of a permissible evaluation of
-$e$, then a proof exists of:
-$$\opsenv{e}{v}{E}$$
-The soundness of the result is shown by induction over the structure of this proof.  For each of 
+We spare the reader the lengthy proof, which can be found in
+\cite{LegionTypes12}, and merely outline the general strategy.  The
+proof is a standard induction on the structure of the derivation in
+the operational semantics.  The proof is organized into six pieces,
+one for each of the three consistency properties that must be shown
+for the execution environment of subexpressions and one for each of
+the three properties of the execution's results we wish to show.
+
+\texcomment{
+For each of 
 the 23 different forms a Legion expression can have, we assume the soundness of the subexpressions'
 evaluations (provided we can show the consistency of the mappings and store used by that
 subexpression) and prove that the result of the expression's evaluation is sound.  Although there
@@ -772,65 +736,71 @@ $M \sim \Omega^*$ if and only if $M \sim \Omega$.
 $M \vdash E : \Phi^*$ if and only if $M \vdash E : \Phi$.
 \end{lem}
 
-The proofs of these lemmas can also be found here\cite{LegionTypes12}.  The proof of the theorem is organized
-into six pieces, one for each of the three consistency properties needed for subexpressions and one
-for each of the three soundness properties we wish to show.
+The proofs of these lemmas can also be found here\cite{LegionTypes12}.  
+}
+
 
 \begin{itemize}
 
-\item Only three expressions have subexpressions that modify $M$ or $\Omega$ - those that don't
-trivially satisfy the region mapping consistency requirement.  For the
-{\em partition} expression, the assumed consistency of the coloring can be shown to preserve
-the region mapping consistency with respect to the constraints.  Similarly, the consistency of 
-a region relation instance guarantees the maintenance of consistency in an {\em unpack}
-expression.  Finally, the body of a called function executes with a different region mapping,
-but with an initially-empty set of constraints, so they are trivially satisfied.
+\item[$M \sim \Omega$] Three expressions have subexpressions that modify $M$ or $\Omega$ and therefore do not
+trivially satisfy region mapping consistency.  For {\tt partition},
+the consistency of the coloring preserves region mapping consistency
+with respect to the constraints.  For {\tt unpack}, the consistency of
+a region relation instance guarantees consistency of region mapping.
+Finally, the body of a called function with an initially-empty set of
+constraints, which are trivially satisfied.
 
-\item Only three expression have subexpressions that modify $L$, $\Gamma$, $M$.  The
-{\em partition} expression only modifies $M$, and the requirement that it not reuse existing
-names ensures that $M \llbracket \Gamma \rrbracket$ does not change.  The value and type of the
-binding created in a {\em let} expression is obviously consistent, while the binding created in
-an {\em unpack} expression is less obviously so, requiring an induction over the type of the 
-unpacked value to show equivalence under the new mapping.  The last case is again the body of a
-called function, which requires the same style of proof as for the {\em unpack} expression to
-be performed for each formal parameter.
+\item[$L \sim_H \Gamma$] Four expressions have subexpressions that modify $L$, $\Gamma$, or $M$.  For
+{\tt partition}, which only modifies $M$, the requirement that it not reuse existing
+names ensures that $M \llbracket \Gamma \rrbracket$ does not change.  For {\tt let},
+the value and type of the binding is obviously consistent, while the binding created in
+an {\tt unpack} is less obviously so, requiring an induction over the type of the 
+unpacked value to show equivalence under the new mapping.  The last case is the body of a
+called function, which requires the same style of proof as for {\tt unpack} 
+for each formal parameter.
 
-\item The heap typing consistency of all stores used in subexpressions follows directly from
-Lemma~\ref{lemma:heapconst:apply}.
+\item[$S \sim H$] The heap typing consistency of all stores used in subexpressions follows directly from the following
+lemma: If $S \sim H$ and $E \sim H$, then $\text{apply}(S, E) \sim H$.
 
-\item With the necessary consistency conditions all satified, the inductive hypothesis asserts
-the type consistency of all subexpression result values.  The consistency of the result of 
-the {\em upregion} is guaranteed by the type checking requirement of appropriate subregion
-constraints and the mapping's consistency with those constraints, whereas {\em downregion}
-expression's result is consistent due to the run time check that is performed.  (The requirement
-for appropriate constraints in the {\em downregion} typing rule is primarily for performance
-(i.e. knowing which part of the region tree to examine) and to catch downcasts that will never
-work at runtime.)
+\end{itemize}
 
-The consistency of a {\em read} expression's result is trivial when an address falls in the
-clobber set, and counts on the consistency of the store otherwise.  The consistency of a 
-{\em color} expression's result depends on the pointer subexpression's consistency and the 
-removal of any previous coloring of that location from the coloring set.  The remaining
-interesting cases arise from changes to the mapping $M$ rather than transformations on the
-value $v$.  In the case of {\em partition} and {\em unpack} expressions, the type system's
-requirement that the body subexpression's result not use the regions that were added to the
-mapping allow the changes to the mapping to be ignored.  The last case is, yet again, the body
+With the necessary consistency conditions proven for a subexpression, the conclusion of the theorem follows for
+the subexpression by the inductive hypothesis.  The remaining obligation is to prove the the three parts of the
+conclusion for an entire expression:
+\begin{itemize}
+
+\item[$v \sim_H M \llbracket T \rrbracket$]    The consistency of 
+{\tt upregion} is guaranteed by the type checking requirement of appropriate subregion
+constraints and the mapping's consistency with those constraints, and {\tt downregion}'s
+result is consistent because of the run time check.  
+%(The requirement
+%for appropriate constraints in the {\em downregion} typing rule is primarily for performance
+%(i.e. knowing which part of the region tree to examine) and to catch downcasts that will never
+%work at runtime.) The consistency of a {\tt read}'s result is trivial for an address in the
+clobber set and uses the consistency of the store otherwise.  The consistency of a 
+{\tt color}'s result depends on the pointer subexpression's consistency and the 
+removal of any previous coloring of that location from the coloring set.  
+
+The remaining interesting cases arise from changes to the mapping $M$ rather than transformations on the
+value $v$.  In the case of {\tt partition} and {\tt unpack}, the type system
+guarantees that the subexpression's result cannot use the regions that were added to the
+mapping, allowing the changes to the mapping to be ignored.  The last case is, yet again, the body
 of a called function, and the same strategy that was used for the type consistency of the
 formal parameters works in reverse for the function's result.
 
-\item The type consistency of the value in an expression's effect follows from
-Lemmas~\ref{lemma:heapconst:effects1} and~\ref{lemma:heapconst:effects2}.  New effects are
-added by the {\em write} and {\em reduce} expressions, but their values' consistency follows
-directly from the inductive hypothesis on their subexpressions.  Finally, the consistency of the
+\item[$E \sim H$] The type consistency of the value in an expression's effect follows from two lemmas applied to the effects
+of subexpressions:
+if $E_1 \sim H$ and $E_2 \sim H$, then $E_1 \dplus E_2 \sim H$; and 
+if $E_1 \sim H$ and $E_2 \sim H$ and $valid\_interleave(S, C, E', E_1, E_2)$, then $E' \sim H$.
+New effects are added by {\tt write} and {\tt reduce} expressions, but consistency follows
+directly from the induction hypothesis.  Finally, the consistency of the
 values in a called function's memory trace is addressed in the same way as the return value.
 
-\item The proof of the crucial property of containment of effects within the available privileges
-is very similar to the previous step, with Lemmas~\ref{lemma:effsound:effects1}
-and~\ref{lemma:effsound:effects2} covering most cases, straightforward proofs for the {\em read},
-{\em write}, and {\em reduce} expressions, and one final special case for function calls.  The 
-inductive hypothesis asserts that the function body's effects are contained within its own
-privileges.  Those are a subset of the caller's $\Phi^*$, and then Lemma~\ref{lemma:phiclosure}
-is used to complete the proof.
+\item[$M \vdash E : \Phi$] The proof of the crucial property of containment of effects within the available privileges
+is similar in outline to the previous step.  The easy cases are covered by lemmas combining the corresponding results
+for subexpressions: if $M \vdash E_1 : \Phi$ and $M \vdash E_2 : \Phi$, then $M \vdash E_1 \dplus E_2 : \Phi$, and
+if $M \vdash E_1 : \Phi$ and $M \vdash E_2 : \Phi$ and $valid\_interleave(S, C, E', E_1, E_2)$, then $M \vdash E' : \Phi$.
+Straightforward proofs cover {\tt read}, {\tt write}, {\tt reduce}, and one final special case for function calls. 
 \end{itemize}
 
 %% \begin{table*}
@@ -871,9 +841,13 @@ is used to complete the proof.
 
 
 \subsection{Coherence}
+\label{sec:coherence}
 
-The soundness proof above guarantees that the evaluation of an expression produces a value of the
-right type, and do so within the regions of memory for which privileges are held, but for the
+Theorem~\ref{thm:effects} guarantees expression evaluation produces a value of the
+correct type and does so within the regions of memory for which privileges are held.
+
+
+ but for the
 Legion programming model to be useful, we need to also guarantee that the evaluation of an expression
 produces the (or at least, a) correct value.  The key to doing this is to place additional 
 constraints on what it means to be a valid interleaving of two or more memory traces.  In
@@ -1191,7 +1165,7 @@ the $simult$ coherence mode.  In this case, all the coherence and sequential equ
 checks are trivially satisfied, and any interleaving of the constituent traces will be valid.
 We again modify the noninterference criteria for effects, traces, and privileges, this time
 only allowing $simult$ coherence annotations, and can show that subexpression with privileges
-that can be shown to be ``simulataneously noninterfering'' (under mapping $M$) can be executed
+that can be shown to be ``simultaneously noninterfering'' (under mapping $M$) can be executed
 in parallel.  This will include all the cases covered by Theorem~\ref{thm:parallelexec} as well
 as those where the programmer has used the $simult$ coherence mode to explicitly allow parallel
 execution.  Again, a special (but important) case exists where all privileges for each
