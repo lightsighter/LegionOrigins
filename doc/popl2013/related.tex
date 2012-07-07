@@ -10,7 +10,7 @@ aware of \cite{Bocchino09}.  While there are similarities in the permission syst
 reused some DPJ notation, there are differences stemming from DPJ's more static approach.
 Regions in Legion are first-class and can be created, partitioned, packed, and unpacked 
 dynamically, allowing programmers to compute data organization at runtime; like Sequoia, DPJ
-partition schemes must be decided at compile-time.  Legion also allows 
+partition schemes must be decided at compile-time.  Legion allows 
 programmers to create multiple partitions of the same region to give different 
 views onto the same data, which is not possible in DPJ.  
 %DPJ only supports the 
@@ -29,7 +29,7 @@ to discover parallelism, but lacks a region system to name and organize unbounde
 
 % Unclear to me what subtleties need to be pointed out here and explained
 % to properly differentiate our work
-Many efforta use static region systems for  memory management (e.g., \cite{Tofte94, Grossman02}).
+Many efforts use static region systems for  memory management (e.g., \cite{Tofte94, Grossman02}).
 Our system is more closely affiliated with dynamic region systems used for expressing locality for performance \cite{Gay01}.
 
 %In addition to region languages with static type systems, there have been several

@@ -143,6 +143,7 @@ the instance.
 %the constraints between those new logical regions.
 
 \subsection{Core Type System}
+\label{subsec:coretypes}
 
 Core Legion is explicitly typed using judgments of the form
 \begin{center}
@@ -318,6 +319,7 @@ reads(r) \in \Phi^* \wedge writes(r) \in \Phi^* \Rightarrow reduces_{id}(r) \in 
 \end{figure}
 
 \subsection{Operational Semantics}
+\label{subsec:opsemantics}
 
 Core Legion's operational semantics rules have the following form:
 
@@ -609,6 +611,7 @@ valid\_interleave(S, C, E', E_1, E_2)
 \end{figure*}
 
 \section{Soundness of Effects}
+\label{sec:soundness}
 
 A key property of the Legion type system is that any expression that is well-typed is
 guaranteed to access the heap only in ways permitted by the privileges under which it was typed.
@@ -950,7 +953,7 @@ valid interleaving of $\oton{E}$, then $E'$ is also valid interleaving of $\oton
 \end{thm}
 
 \begin{proof}
-To prove $valid\_interleave(S_0, C, E', \oton{E})$, we need to show the three conditions:
+To prove $valid\_interleave(S_0, C, E', \oton{E})$, we need to show the four conditions:
 \begin{enumerate}
 \item $any\_interleave(E', \oton{E})$ is proven by induction on
 the length of $E_1$, followed by $E_2$, and so on.
@@ -1044,7 +1047,7 @@ piece of the coherence proof.
 }
 The proof is included in \cite{LegionTypes12}.
 We now extend the noninterference operator to entire memory traces, providing a way to say that
-no operation in a trace interferes with any operation in other:
+no operation in a trace interferes with any operation in another:
 $$E_1 \nonint E_2 \Leftrightarrow \displaystyle\bigwedge_{\epsilon_1 \text{ in } E_1, \epsilon_2 \text{ in } E_2} \epsilon_1 \nonint \epsilon_2$$
 and observe that this property permits arbitrary ordering (i.e. parallel execution) of the 
 corresponding subexpressions.
@@ -1139,7 +1142,7 @@ soundness of privileges.  Noninterference of memory effects is
 something that can only be determined after evaluation of an
 expression is completed, and only at great expense, as illustrated at
 one extreme by work on transactional
-memory \cite{transactionalmemory}.  At the other extreme are systems
+memory \cite{Harris05}.  At the other extreme are systems
 that check privileges statically, such as Jade \cite{Rinard98} and
 DPJ \cite{Bocchino11}.  In contrast, Legion checks noninterference of privileges
 at runtime, which is much simpler and more efficient than checking
@@ -1152,13 +1155,14 @@ can achieve.
 
 
 \subsection{Relaxed Coherence}
+\label{subsec:relaxed}
 
 The analysis above does not consider the coherence modes of operations,
 making the worst-case assumption that all operations use $excl$ mode.  However, if two or more
 subexpressions contain calls to tasks using $atomic$ or $simult$ coherence modes
 on some regions, executions besides serial program order may 
 result in valid interleavings even if constituent traces have locations in common.  We discuss
-two cases of interest.  In both  the previous section's
+two cases of interest.  In both the previous sections noninterference % Is noninterference the right subject here?
 is repeated with minor modifications, so for brevity we limit
 discussion to a description of the differences rather than complete proofs.
 
