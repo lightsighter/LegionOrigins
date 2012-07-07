@@ -845,10 +845,10 @@ Straightforward proofs cover {\tt read}, {\tt write}, {\tt reduce}, and one fina
 
 Theorem~\ref{thm:effects} guarantees that a task produces a value of the
 correct type and does so within the regions of memory for which privileges are held.
-It does not, however, address conherence, what concurrent operations on the regions are permitted.
+It does not, however, address {\em coherence}, what concurrent operations on the regions are permitted.
 An innovation in Legion is that programmers can control coherence on a per-region basis.  Intuitively,
-the different coherence modes permit different interleavings of memory traces.  We begin by formalizing
-exclusive access, the strictest coherence mode.  Exclusive access requires valid interleavings be:
+the different coherence modes permit different interleavings of memory traces.  For example,
+in addition to be an interleaving, exclusive access requires interleaved memory traces to be:
 \begin{itemize}
 \item {\em coherent} - a read of location $l$ should see the effect of all writes and reductions to $l$
 occuring earlier in the interleaved trace, and
@@ -856,7 +856,7 @@ occuring earlier in the interleaved trace, and
 operation and the result of applying the interleaved trace to the original store should be the same as if each constituent trace
 was applied to the store in a valid sequential execution of the program.
 \end{itemize}
-These requirements are relaxed in some cases due to either a non-empty clobber set (representing
+These requirements are relaxed for either a non-empty clobber set (representing
 operations that may occur concurrently as part of evaluating other functions) or for coherence
 modes other than {\em excl}.
 
@@ -887,90 +887,105 @@ $$
 \label{fig:validinterleave}
 \end{figure*}
 
-Figure~\ref{fig:validinterleave} gives the precise definition of the {\em valid\_interleave}
-predicate, but there are a lot of moving parts, so description in ``plain'' English may help.
-Consider a set of constituent traces $\oton{E}$.  Let the {\em exclusive location set} $L_{excl}$ be
-the set of all locations that appear in at least one operation with coherence mode $excl$ in at least
-one constituent trace, excepting any locations in the clobber set $C$.  Let the {\em atomic location
-set} $L_{atomic}$ similarly be the set of locations that appear in at least one operation with 
-coherence mode $atomic$, but no operations with coherence mode $excl$, again excepting any location
-in the clobber set.  The $coherent(S,L_1,L_2,E)$ test checks that all reads of locations in $L_2$ and any read of a location in $L_1$ that comes after a write to the same location return values
-that match what was most recently written into the store.  (The difference betwen $L_1$ and $L_2$
-defers the checking of atomic reads that don't have a preceeding write until any other traces that
-may be ordered before $E$ are included.)  The $seq\_equiv$ test verifies that every read in $E'$ with a location in $L_1$ would also have be coherent if the operations were performed in the original program order and that the store that results from applying $E'$ matches the store that would
-have resulted from applying the constituent traces in program order for all locations in $L_1$.
-For the atomic location set, we allow the constituent traces to be permuted, but all locations
-must be checked with the same permutation.
+Figure~\ref{fig:validinterleave} formally defines {\em
+valid\_interleave}, which we briefly explain.  Consider
+traces $\oton{E}$.  The {\em exclusive location set} $L_{excl}$ is the
+set of locations used in an operation with coherence mode $excl$ in
+some trace $E_i$, excepting any locations in the clobber set $C$.
+Similarly, the {\em atomic location set} $L_{atomic}$ is the set of
+locations in an operation with coherence mode $atomic$, but no
+operations with coherence mode $excl$, again excepting any location in
+the clobber set.  The $coherent(S,L_1,L_2,E)$ test checks that all
+reads of locations in $L_2$, and any read of a location $l \in L_1$
+that comes after a write to $l$, return the value most recently written
+to the store.  (If $L_2 = \emptyset$ initially, atomic reads without a preceding write are not checked, effectively defering
+these checks to point where traces ordered before $E$ are included.)  The $seq\_equiv$
+test verifies every read in $E'$ with a location in $L_1$ 
+is coherent if operations are performed in 
+program order and that the store that results from applying $E'$
+matches the store resulting from applying the
+constituent traces in program order for all locations in $L_1$.  For
+the atomic location set, we allow the constituent traces to be
+permuted, but all locations must be checked with the same permutation.
 
 Flexibility in interleaving operations is the key to achieving parallel execution, but
-hopefully the reader will agree that the exact criteria for creating a valid interleaving is
-much too expensive to implement at runtime, so we now consider whether there are simpler ways to
-generate valid interleavings, and under what conditions those approaches may be used.
+implementing the precise criteria for checking a valid interleaving is
+much too expensive.  We now consider practical mechanisms that generate valid interleavings and 
+under what conditions these approaches may be used.
 
-The first option available to us is to serialize the constituent traces into the original
-program order.  Although each constituent trace can be assumed to be coherent, that coherence is
-in the context of a clobber set that may differ from the one in which the interleaving must occur.
-As discussed earlier, this difference can result in cases where no valid interleaving exists.
-However, we can show that as long as any valid interleavings exist, the serialization of the
-constituent traces will be one of them.
-
-To prove this result, we will use the following lemma:
+%
+% FIX ME   I don't understand this paragraph.  I didn't see this discussed
+% earlier; I took that comment out.  I don't know what the pronoun ``the one in which''
+% refers to.  The clobber set?  The interleaving?
+%
+The first option is to serialize the constituent traces in program
+order.  Although each constituent trace can be assumed to be coherent,
+that coherence is in the context of a clobber set that may differ from
+the one in which the interleaving must occur. 
+This difference can result in cases where no valid interleaving
+exists.  
+%
+% FIX ME  Why?
+%
+However, we can show that as long as any valid interleaving
+exists, the serialization of the constituent traces is valid.
+To prove this result, we use the following lemma, the proof
+of which follows directly from the definition of $apply$.
 
 \begin{lem}
 \label{lemma:applychain}
+\rm
 For any initial store $S$ and memory traces $E_1$ and $E_2$,
 $$apply(S, E_1 \dplus E_2) = apply(apply(S, E_1), E_2).$$
 \end{lem}
 
-The proof of this follows directly from the definition of $apply$.
 
 \begin{thm}
 \label{thm:sequential}
-Let $S_0$ be an initial store, $C$ be a clobber set and $\oton{E}$ be memory traces to be
-interleaved.  Let $E' = E_1 \dplus \ldots \dplus E_n$.  If there exists any $E''$ that is a
+\rm
+Let $S_0$ be a store, $C$ a clobber set and $\oton{E}$ memory traces to be
+interleaved.  Let $E' = E_1 \dplus \ldots \dplus E_n$, in program order.  If there exists any $E''$ that is a
 valid interleaving of $\oton{E}$, then $E'$ is also valid interleaving of $\oton{E}$.
 \end{thm}
 
 \begin{proof}
-To prove $valid\_interleave(S_0, C, E', \oton{E})$, we need to show the three conditions hold:
+To prove $valid\_interleave(S_0, C, E', \oton{E})$, we need to show the three conditions:
 \begin{enumerate}
-\item $any\_interleave(E', \oton{E})$ is intuitively obvious, and can be proven by induction over 
+\item $any\_interleave(E', \oton{E})$ is proven by induction on
 the length of $E_1$, followed by $E_2$, and so on.
 \item $coherent(S_0, C, E')$ is shown by considering each constituent trace's subsequence in $E'$
-in order, using Lemma~\ref{lemma:applychain} along with the coherence of each $E_i$.
-\item $seq\_equiv(S_0, C, E', \oton{E})$ is trivial, as each leading subsequence of $E'$ corresponds
-to the appropriate pieces of $\otok{i}{E}$.
-\item $coherent(S_0, C, E')$ can be shown from the sequential equivalence of $E''$.  The value 
-returned by each read in $E''$ has been shown to be equal to the value in the store that results
+in order, using Lemma~\ref{lemma:applychain} with the coherence of each $E_i$.
+\item $seq\_equiv(S_0, C, E', \oton{E})$ follows trivially by matching the structure of $E'$
+to the corresponding  pieces $\oton{E}$.
+\item $coherent(S_0, C, E')$ is shown using the sequential equivalence of $E''$.  The value 
+returned by each read in $E''$ is equal to the value in the store that results
 from the application of all previous constituent traces and the operations before the read in its
 own trace.  This is exactly the sequence of preceding operations of the corresponding read in $E'$,
-and Lemma~\ref{lemma:applychain} allows us to trainsform the chain of $apply$ operations into a 
+and Lemma~\ref{lemma:applychain} allows us to transform the chain of $apply$ operations into a 
 single $apply$ operation on the whole sequence, satisfying the coherence condition for the read
-in $E'$.  This property applies for all reads in $E''$, and since both $E'$ and $E''$ are
-interleavings of the same traces, they have exactly the same reads, so we have shown all the reads
-in $E'$ to be coherent.
+in $E'$.  This property applies for all reads in $E''$, and since $E'$ and $E''$ are
+interleavings of the same traces, they have the same reads, so all reads
+in $E'$ are coherent.
 \end{enumerate}
 \end{proof}
 
-Now that we have a way to construct a valid interleaving, we can look at how to modify that
-interleaving to get interleavings that are still valid, but allow parallel execution.  To do this,
-we consider the criteria under which we may swap the order of two adjacent memory operations in an
-existing valid interleaving.
+Next we examine how to modify the serialized interleaving to produce valid interleavings allowing parallel execution. 
+We consider when we may swap the order of two adjacent memory operations in a valid interleaving.
 \begin{itemize}
-\item First, the two operations must have come from different constituent
-traces, or the swap would violate the $any\_interleave$ criterion.
-\item Second, if one is a read of
-a location (that is not in the clobber set), the other may not be a write or reduce to the same
-location, as changing the order would almost certainly change the value that is read.
-\item Third, if one is a write of a location, the other may not be a write or reduce to the same
-location, as the store that would result from applying those operations in the opposite order would
-show a difference in that location.
+\item The two operations must have come from different constituent
+traces, or the swap would violate $any\_interleave$.
+\item If one is a read of
+a location $l$ (that is not in the clobber set), the other may not be a write or reduce to $l$, 
+as changing the order would almost certainly change the value read.
+\item If one is a write of a location $l$, the other may not be a write or reduce to $l$,
+as the store that would result from applying those operations in the opposite order may
+differ in $l$.
 \item Finally, if both operations are reductions to the same location, they may be swapped if they
-use the same reduction function, as reduction functions are assumed to be commutative.  (We 
-follow the example of other work (i.e. DPJ) and leave proofs of commutativity to the programmer,
-possibly with the aid of other tools.)  However, if they use different reduction functions (by
-name - we make no attempt to compare the operation of functions), commutative cannot be 
-guaranteed and swapping the two operations might result in a different resulting store.
+use the same reduction function, as reduction functions are assumed to commute.  
+%(We 
+%follow the example of other work (i.e. DPJ) and leave proofs of commutativity to the programmer,
+%possibly with the aid of other tools.)  
+However, if the reduction functions have different names, swapping the two operations might result in a different store.
 \end{itemize}
 
 To summarize this, we define a {\em noninterference} operator on two effects that have been
@@ -985,6 +1000,7 @@ $$
 
 \begin{lem}
 \label{lem:nonintswap}
+\rm
 Let $S$ be an initial store, $C$ be a clobber set, $\oton{E}, E'_a, E'_b$ be memory traces, and
 $\epsilon_1, \epsilon_2$ be two annotated memory operations such that $\epsilon_1 \nonint \epsilon_2$.
 Then,
@@ -992,7 +1008,7 @@ $$valid\_interleave(S, C, E'_a \dplus \epsilon_1 \dplus \epsilon_2 \dplus E'_b, 
 if and only if
 $$valid\_interleave(S, C, E'_a \dplus \epsilon_2 \dplus \epsilon_1 \dplus E'_b, \oton{E}).$$
 \end{lem}
-
+\texcomment{
 \begin{proof}
 As before, we consider the three conditions needed to be a valid interleaving.  We describe the
 implication in the ``forward'' direction, but the arguments are all symmetric.
@@ -1024,7 +1040,8 @@ is identical after the swap of the two operations, and this is merely a special 
 piece of the coherence proof.
 \end{enumerate}
 \end{proof}
-
+}
+The proof is included in \cite{LegionTypes12}.
 We now extend the noninterference operator to entire memory traces, providing a way to say that
 no operation in a trace interferes with any operation in other:
 $$E_1 \nonint E_2 \Leftrightarrow \displaystyle\bigwedge_{\epsilon_1 \text{ in } E_1, \epsilon_2 \text{ in } E_2} \epsilon_1 \nonint \epsilon_2$$
@@ -1033,12 +1050,12 @@ corresponding subexpressions.
 
 \begin{lem}
 \label{lem:noninteffects}
+\rm
 Let $S$ be an initial store, $C$ be a clobber set, $\oton{E}$ be memory traces such that $E_i \nonint E_j$
-for every $1 \leq i < j \leq n$.  Then any trace $E'$ satisfying:
-$$any\_interleave(E', \oton{E})$$
+for every $1 \leq i < j \leq n$.  Then any trace $E'$ satisfying $any\_interleave(E', \oton{E})$
 is a valid interleaving.
 \end{lem}
-
+\texcomment{
 \begin{proof}
 We will use Theorem~\ref{thm:sequential} and Lemma~\ref{lem:nonintswap} to make repeated swaps
 of adjacent operations to transform $E'$ into $E_1 \dplus \ldots \dplus E_n$.  The symmetry of
@@ -1053,14 +1070,14 @@ trace, their misordering would mean that $E'$ was not an interleaving of $\oton{
 traces is noninterfering, so $\epsilon_1 \nonint \epsilon_2$ and they can be swapped while preserving
 validity of the trace.  At most $n^2/2$ swaps are needed to eliminate all misordered pairs.
 \end{proof}
-
-Our next step is to extend noninterference to the privileges used in the type system.  We will make
+}
+The next step is to extend noninterference to privileges.  We make
 use of the region mapping $M$ to translate the logical regions named in privileges into sets of
-locations (i.e. physical regions), and define noninterference between individual privileges as
-follows:
+locations (i.e. physical regions), and define noninterference between individual privileges and
+sets of privileges:
 $$
 \begin{array}{l@{ }l}
-priv_1(r_1) \nonint[M] & priv_2(r_2) \Leftrightarrow (M(r_1) \cap M(r_2) = \emptyset)\ \vee \\
+priv_1(r_1) & \nonint[M] priv_2(r_2) \Leftrightarrow (M(r_1) \cap M(r_2) = \emptyset)\ \vee \\
 & (priv_1 = reads \wedge priv_2 = reads)\ \vee \\
 & (priv_1 = reduces_{id_1} \wedge priv_2 = reduces_{id_2} \wedge id_1 = id_2)
 \end{array}
@@ -1081,51 +1098,57 @@ $$
 %% & $reduces_{id_2}(r_2)$ & $\begin{array}{c}id_1 = id_2 \vee \\ M(r_1) \cap M(r_2) = \emptyset\end{array}$ \\
 %% \end{tabular}
 %% \end{center}
-and noninterference between sets of privileges in the same way as memory traces:
+
 $$\Phi_1 \nonint[M] \Phi_2 \Leftrightarrow \displaystyle\bigwedge_{\phi_1 \in \Phi_1, \phi_2 \in \Phi_2} \phi_1 \nonint[M] \phi_2$$
 
 \begin{lem}
 \label{lem:nonintpriv}
+\rm
 Let $M$ be a region mapping and $E_1$ and $E_2$ two memory traces such that $M \vdash E_1 : \Phi_1$ and $M \vdash E_2 : \Phi_2$.  If $\Phi_1$ and $\Phi_2$ are noninterfering under $M$, then $E_1$ and $E_2$ must be noninterfering.
 \end{lem}
-
+\texcomment{
 \begin{proof}
 The proof is by contradiction.  Assume $E_1 \cancel\nonint E_2$.  Then there must be some $\epsilon_1$ in $E_1$ and some $\epsilon_2$ in $E_2$ such that $\epsilon_1 \cancel\nonint \epsilon_2$.  This requires that
 $\epsilon_1$ and $\epsilon_2$ be operations to the same location $l$ and not both be reads or both
 reductions using the same function name.  Assume $\epsilon_1 = read(l, c_1, v_1)$ and $\epsilon_2 = write(l, c_2, v_2)$.  The definition of $M \vdash E_1 : \Phi_1$ tells us that there must be some $r_1$ satisfying $l \in M(r_1) \wedge reads(r_1) \in \Phi_1$.  Similarly, there must be some $r_2$ satisfying $l \in M(r_2) \wedge writes(r_2) \in \Phi_2$.  Letting $\phi_1 = reads(r_1)$ and $\phi_2 = writes(r_2)$, we have $M(r_1) \cap M(r_2) \not= \emptyset$ (it contains at least $l$), so $\phi_1 \cancel{\nonint[M]} \phi_2$ and $\Phi_1 \cancel{\nonint[M]} \Phi_2$.  There are seven other cases to consider (using $id_1 \not= id_2$ for the reduce-reduce case), but all yield the same result.
 \end{proof}
-
-We are now able to connect the dots and get to the key result that allows the Legion runtime to 
-safely run subtasks in parallel.
+}
+We are now able to state the key result that allows the Legion runtime to safely run subtasks in parallel.
 
 \begin{thm}
 \label{thm:parallelexec}
+\rm
 Let $\oton{e}$ be well-typed Legion expressions, each with its own privileges $\Phi_i$.
-Let $M$ be a region mapping, $L$ be local value mapping,
-$H$ be a heap typing, and $S$ be an initial state of the store satisfying the consistency properties:
-$$
-\begin{array}{l}
-M \sim \Omega \\
-L \sim_H \Gamma \\
-S \sim H
-\end{array}
-$$
+Let $M$ be a region mapping, $L$ a local value mapping,
+$H$ a heap typing, and $S$ be an initial store satisfying
+$M \sim \Omega$, $L \sim_H \Gamma$, and $S \sim H$.
 If $\Phi_i \nonint[M] \Phi_j$ for $1 \leq i < j \leq n$, then any parallel execution of expressions
-$\oton{e}$ will result in a valid interleaving of memory operations.
+$\oton{e}$ results in a valid interleaving of memory operations.
 \end{thm}
 
-The proof follows directly from Lemma~\ref{lem:nonintpriv} and Lemma~\ref{lem:noninteffects}. \\
+The proof follows directly from Lemmas~\ref{lem:noninteffects}
+and \ref{lem:nonintpriv}.  This result holds even if the
+clobber set $C$ is non-empty, allowing two ``locally independent''
+subtasks to run in parallel even if one or both of them is interacting
+(in a programmer-permitted way) with a third subtask.
 
-Noninterference of effects is something that can only be determined after
-evaluation of an expression is completed, and only at great expense (see STM).
-In contrast, the noninterference of privileges can be efficiently determined at
-runtime.  Even though the privileges themselves are static, the
-mapping $M$ can be dynamically determined, allowing noninterference to be 
-judged in many more cases than a purely static analysis can achieve.
+We are now able to explain an important aspect of the Legion
+implementation that is different from other systems and relies on the
+soundness of privileges.  Noninterference of memory effects is
+something that can only be determined after evaluation of an
+expression is completed, and only at great expense, as illustrated at
+one extreme by work on transactional
+memory \cite{transactionalmemory}.  At the other extreme are systems
+that check privileges statically, such as Jade \cite{} and
+DPJ \cite{}.  In contrast, Legion checks noninterference of privileges
+at runtime, which is much simpler and more efficient than checking
+noninterference of dynamic effects.  Even though the privileges
+themselves are static, the region mapping $M$ is dynamic.  Testing
+noninterference on the privileges with physical regions allows
+parallel execution in many more cases than a purely static analysis
+can achieve.
 
-Note that this result holds even if the clobber set $C$ is non-empty.  This allows 
-two ``locally independent'' subtasks to run in parallel even if one or both
-of them is interacting (in a programmer-permitted way) with a third subtask.
+
 
 \subsection{Relaxed Coherence}
 
@@ -1194,6 +1217,7 @@ Lemma~\ref{lem:noninteffects}).
 
 \begin{thm}
 \label{thm:hiersched}
+\rm
 Let $e_1$ and $e_2$ be well-typed Legion expressions that using privileges $\Phi_1$ and
 $\Phi_2$.  Now let $e_3$ be some subexpression of $e_1$ and $e_4$ be some 
 subexpression of $e_2$.  For any memory traces $E_3$ and $E_4$ that result from evaluation of
