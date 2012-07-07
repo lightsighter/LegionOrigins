@@ -776,7 +776,8 @@ result is consistent because of the run time check.
 %(The requirement
 %for appropriate constraints in the {\em downregion} typing rule is primarily for performance
 %(i.e. knowing which part of the region tree to examine) and to catch downcasts that will never
-%work at runtime.) The consistency of a {\tt read}'s result is trivial for an address in the
+%work at runtime.) 
+The consistency of a {\tt read}'s result is trivial for an address in the
 clobber set and uses the consistency of the store otherwise.  The consistency of a 
 {\tt color}'s result depends on the pointer subexpression's consistency and the 
 removal of any previous coloring of that location from the coloring set.  
@@ -784,7 +785,7 @@ removal of any previous coloring of that location from the coloring set.
 The remaining interesting cases arise from changes to the mapping $M$ rather than transformations on the
 value $v$.  In the case of {\tt partition} and {\tt unpack}, the type system
 guarantees that the subexpression's result cannot use the regions that were added to the
-mapping, allowing the changes to the mapping to be ignored.  The last case is, yet again, the body
+mapping, allowing the changes to the mapping to be ignored.  The last case is again the body
 of a called function, and the same strategy that was used for the type consistency of the
 formal parameters works in reverse for the function's result.
 

@@ -30,8 +30,8 @@ appropriate level of abstraction for programming such machines, one
 that is both sufficiently high-level to be portable while still
 exposing aspects that are crucial to performance. 
 
-Briefly, in Legion data is organized in a hierarchy of {\em regions}
-and subregions and computation is organized in a hierarchy of {\em
+In Legion data is organized in a hierarchy of {\em regions}
+and subregions while computation is organized in a hierarchy of {\em
 tasks} and subtasks operating on regions.  Regions and tasks interact
 through a static system of {\em region permissions} specifying 
 operations a task may perform on a region argument (read,
@@ -39,15 +39,15 @@ write, or reduce) and novel {\em region coherence} annotations that
 express what other tasks may do concurrently with
 the region (exclusive, atomic, or simultaneous).  We prove the
 soundness of the permissions and coherence system and use these two
-results to prove a third result: if two tasks $t_1$ and $t_2$ are {\em
-dependent} (roughly, must be executed in program order to guarantee
-the correct answer), then the unique ancestors of $t_1$ and $t_2$ in
-the task hierarchy that are {\em siblings} (have the same parent task)
-are also dependent.  This theorem is the basis for correct distributed
+results to prove a third result: if two {\em siblings} (tasks that
+have the same immediate parent task) $t_1$ and $t_2$ are 
+{\em independent} (have no ordering requirements for correctness), 
+then the unique ancestors of $t_1$ and $t_2$ in the task hierarchy 
+are also independent.  This theorem is the basis for correct distributed
 task scheduling in a Legion implementation, which is crucial for
 performance; a centralized scheduler would be a bottleneck
-because of the huge latencies involved in moving data and computation
-in the target class of machines.
+because of the huge latencies involved in communicating in the target
+class of machines.
 
 % The linked list example
 % Add float={t} to the list of options if you want the listing at the top
