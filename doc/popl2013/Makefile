@@ -1,7 +1,7 @@
 DOC=legion-types
 
 # dependencies via include files
-INCLUDED_TEX = conclusion.tex outline.tex langdef.tex intro.tex
+INCLUDED_TEX = conclusion.tex outline.tex langdef.tex intro.tex evaluation.tex
 INCLUDED_FIGS = 
 
 $(DOC).pdf: $(DOC).tex bibliography.bib $(INCLUDED_TEX) $(INCLUDED_FIGS)
