@@ -608,7 +608,7 @@ valid\_interleave(S, C, E', E_1, E_2)
 \label{fig:semantics}
 \end{figure*}
 
-\subsection{Soundness of Effects}
+\section{Soundness of Effects}
 
 A key property of the Legion type system is that any expression that is well-typed is
 guaranteed to access the heap only in ways permitted by the privileges under which it was typed.
@@ -840,29 +840,25 @@ Straightforward proofs cover {\tt read}, {\tt write}, {\tt reduce}, and one fina
 %% \end{table*}
 
 
-\subsection{Coherence}
+\section{Coherence}
 \label{sec:coherence}
 
-Theorem~\ref{thm:effects} guarantees expression evaluation produces a value of the
+Theorem~\ref{thm:effects} guarantees that a task produces a value of the
 correct type and does so within the regions of memory for which privileges are held.
-
-
- but for the
-Legion programming model to be useful, we need to also guarantee that the evaluation of an expression
-produces the (or at least, a) correct value.  The key to doing this is to place additional 
-constraints on what it means to be a valid interleaving of two or more memory traces.  In
-addition to a valid interleaving being an interleaving of the individual traces, we will 
-require that it be:
+It does not, however, address conherence, what concurrent operations on the regions are permitted.
+An innovation in Legion is that programmers can control coherence on a per-region basis.  Intuitively,
+the different coherence modes permit different interleavings of memory traces.  We begin by formalizing
+exclusive access, the strictest coherence mode.  Exclusive access requires valid interleavings be:
 \begin{itemize}
-\item {\em coherent} - each memory read operation should see the effect of all writes and reductions 
-that occur earlier in the interleaved trace to the same location, and
-\item {\em sequentially equivalent} - the value read by each memory read operation and the result of applying the interleaved trace to the original store should be the same as if each constituent trace
-was applied to the store in a valid {\em program order}.
+\item {\em coherent} - a read of location $l$ should see the effect of all writes and reductions to $l$
+occuring earlier in the interleaved trace, and
+\item {\em sequentially equivalent} - the value read by each read 
+operation and the result of applying the interleaved trace to the original store should be the same as if each constituent trace
+was applied to the store in a valid sequential execution of the program.
 \end{itemize}
 These requirements are relaxed in some cases due to either a non-empty clobber set (representing
-operations that may occur concurrently as part of evaluating other functions) or due to coherence
-modes other than {\em excl} on operations with the traces (representing operations that may 
-occur concurrently as part of evaluating other parts of the same function).
+operations that may occur concurrently as part of evaluating other functions) or for coherence
+modes other than {\em excl}.
 
 \begin{figure*}
 $$
@@ -1172,7 +1168,8 @@ execution.  Again, a special (but important) case exists where all privileges fo
 subexpression are paired with $simult$ coherence mode declarations, allowing the safety of
 parallel execution to be determined at compile time.
 
-\subsection{Hierarchical Scheduling}
+\section{Hierarchical Scheduling}
+\label{sec:scheduling}
 
 The enforcement of a (locally) valid interleaving at every step in the operational semantics
 captures the hierarchical nature of the scheduler used by the Legion runtime.  As the cost of
