@@ -1202,29 +1202,30 @@ be vastly more efficient than a global algorithm that must consider the privileg
 concurrently executing expression.
 However, a scheduling algorithm that makes decisions hierarchically must do so with limited
 information, and must respect all required scheduling dependencies while ideally imposing as
-few extra dependencies as possible.
+few extra dependencies as possible.  The following theorem forms the basis of the 
+Legion scheduler.
 
-Let $e_1$ and $e_2$ be well-typed Legion expressions that using privileges $\Phi_1$ and
+\texcomment{
+Let $e_1$ and $e_2$ be well-typed Legion expressions using privileges $\Phi_1$ and
 $\Phi_2$.  Now let $e_3$ be some subexpression of $e_1$ and $e_4$ be some 
 subexpression of $e_2$, with corresponding privileges $\Phi_3$ and $\Phi_4$.
-
 By Theorem~\ref{thm:parallelexec}, if the runtime can verify $\Phi_1 \nonint[M] \Phi_2$, then 
 expressions $e_1$ and $e_2$ may be evaluated in parallel.  The evaluation of the subexpressions
 $e_3$ and $e_4$ will therefore be allowed to run in parallel, and we must show that this is
 permissible.  We do so by proving that any memory traces that can result from the evaluation
 of the subexpression must be noninterfering (allowing parallel execution by
 Lemma~\ref{lem:noninteffects}).
-
+}
 \begin{thm}
 \label{thm:hiersched}
 \rm
-Let $e_1$ and $e_2$ be well-typed Legion expressions that using privileges $\Phi_1$ and
-$\Phi_2$.  Now let $e_3$ be some subexpression of $e_1$ and $e_4$ be some 
-subexpression of $e_2$.  For any memory traces $E_3$ and $E_4$ that result from evaluation of
-$e_1$ and $e_2$ (with the usual consistent $M$, $L$, $H$, and $S$), $E_3$ and $E_4$ must be
+Let $e_1$ and $e_2$ be well-typed Legion expressions using privileges $\Phi_1$ and
+$\Phi_2$ respectively .  Let $e_3$ be a subexpression of $e_1$ and $e_4$ be a 
+subexpression of $e_2$.  Any memory traces $E_3$ of $e_3$ and $E_4$ of $e_4$ resulting from evaluation of
+$e_1$ and $e_2$ (with the usual consistent $M$, $L$, $H$, and $S$), must be
 noninterfering.
 \end{thm}
-
+\texcomment{
 \begin{proof}
 Let $E_1$ be the result of an evaluation of $e_1$, with $E_3$ being the memory trace from the
 evaluation of $e_3$ within the expression tree.  $E_1$ will be formed from a tree of valid
@@ -1235,18 +1236,26 @@ Similarly, any memory operation $\epsilon_4$ that is in $E_4$ must also be in $E
 $E_1 \nonint E_2$ from Lemma~\ref{lem:nonintpriv}, so and therefore $\epsilon_3 \nonint \epsilon_4$.  Since
 this holds for all $\epsilon_3$ in $E_3$ and all $\epsilon_4$ in $E_4$, we have $E_3 \nonint E_4$.
 \end{proof}
-
-Although a decision that $e_1$ and $e_2$ are noninterfering guarantees that $e_3$ and $e_4$ are
-noninterfering, the converse is not true.  It is possible for $e_1$ and $e_2$ to be judged to be
-potentially interfering and be serialized in their entirety even when the subexpressions could
-have been proven to be noninterfering.  This loss of precision can impact performance, and did
-for a few times during the implementation of our experiments.  When the performance impact is
-significant, two options exist to improve the precision.  In cases where the $e_1$ and $e_2$ are
-in fact noninterfering, the partitioning of regions can be further refined to make the
-disjointness visible in the privileges.  Alternately, and this is the only option when the 
-interference is dynamically determined, the code can be refactored to life the subexpressions
-(or some expression containing them) up to the same level, allowing the dynamic test based on
-the region mapping to infer noninterference in more cases.  Although this can increase the
-overhead of scheduling decisions, judicious use of this technique in practice has not shown
-any measurable performance degradation.
+} The Legion task scheduler uses Theorem~\ref{thm:hiersched} in the
+following way.  Sibling task calls (tasks invoked within the same
+function body) are checked for non-interference of their (dynamic)
+privileges.  If they interfere they are serialized; otherwise they are
+considered for parallel execution.  Although determining that $e_1$
+and $e_2$ are noninterfering guarantees $e_3$ and $e_4$ are
+noninterfering, the converse is not true.  It is possible for $e_1$
+and $e_2$ to be judged to be potentially interfering and be serialized
+even when the subexpressions are noninterfering.  This loss of
+precision can impact performance, and did in a few instances in our
+experiments.  
+%When the performance impact is significant, two options
+%exist to improve matters.  
+In cases where $e_1$ and $e_2$ are in fact
+noninterfering, region partitions can be further refined to make the
+disjointness visible in the privileges.  Alternately, the code can be
+refactored to lift the subexpressions up to the same level, allowing
+the dynamic test based on the region mapping to infer noninterference
+in more cases.  
+%Although this can increase the overhead of scheduling
+%decisions, judicious use of this technique in practice has not shown
+%any measurable performance degradation.
 
