@@ -1001,12 +1001,12 @@ $$
 \begin{lem}
 \label{lem:nonintswap}
 \rm
-Let $S$ be an initial store, $C$ be a clobber set, $\oton{E}, E'_a, E'_b$ be memory traces, and
-$\epsilon_1, \epsilon_2$ be two annotated memory operations such that $\epsilon_1 \nonint \epsilon_2$.
+Let $S$ be a store, $C$ a clobber set, $\oton{E}, E'_a, E'_b$ memory traces, and
+$\epsilon_1, \epsilon_2$ two annotated memory operations such that $\epsilon_1 \nonint \epsilon_2$.
 Then,
-$$valid\_interleave(S, C, E'_a \dplus \epsilon_1 \dplus \epsilon_2 \dplus E'_b, \oton{E})$$
+$valid\_interleave(S, C, E'_a \dplus \epsilon_1 \dplus \epsilon_2 \dplus E'_b, \oton{E})$
 if and only if
-$$valid\_interleave(S, C, E'_a \dplus \epsilon_2 \dplus \epsilon_1 \dplus E'_b, \oton{E}).$$
+$valid\_interleave(S, C, E'_a \dplus \epsilon_2 \dplus \epsilon_1 \dplus E'_b, \oton{E}).$
 \end{lem}
 \texcomment{
 \begin{proof}
@@ -1071,8 +1071,8 @@ traces is noninterfering, so $\epsilon_1 \nonint \epsilon_2$ and they can be swa
 validity of the trace.  At most $n^2/2$ swaps are needed to eliminate all misordered pairs.
 \end{proof}
 }
-The next step is to extend noninterference to privileges.  We make
-use of the region mapping $M$ to translate the logical regions named in privileges into sets of
+We next extend noninterference to privileges.  We 
+use the region mapping $M$ to translate the logical regions named in privileges into sets of
 locations (i.e. physical regions), and define noninterference between individual privileges and
 sets of privileges:
 $$
@@ -1139,8 +1139,8 @@ something that can only be determined after evaluation of an
 expression is completed, and only at great expense, as illustrated at
 one extreme by work on transactional
 memory \cite{transactionalmemory}.  At the other extreme are systems
-that check privileges statically, such as Jade \cite{} and
-DPJ \cite{}.  In contrast, Legion checks noninterference of privileges
+that check privileges statically, such as Jade \cite{Rinard98} and
+DPJ \cite{Bocchino11}.  In contrast, Legion checks noninterference of privileges
 at runtime, which is much simpler and more efficient than checking
 noninterference of dynamic effects.  Even though the privileges
 themselves are static, the region mapping $M$ is dynamic.  Testing
@@ -1152,40 +1152,40 @@ can achieve.
 
 \subsection{Relaxed Coherence}
 
-The analysis above did not consider the coherence modes on each operation in the memory traces,
-making the worst-case assumption that all were using the $excl$ mode.  However, if two or more
-subexpressions contain calls to functions that use $atomic$ and/or $simult$ coherence modes
-on some of their regions, options other than serial execution may be guaranteed to 
-result in valid interleavings even if constituent traces have some locations in common.  There
-are two cases of particular interest that we will cover.  In each case, the entirety of the 
-reasoning from the previous section is repeated with minor modifications, so we will limit our
-discussion to a general description of the differences rather than the complete proofs.
+The analysis above does not consider the coherence modes of operations,
+making the worst-case assumption that all operations use $excl$ mode.  However, if two or more
+subexpressions contain calls to tasks using $atomic$ or $simult$ coherence modes
+on some regions, executions besides serial program order may 
+result in valid interleavings even if constituent traces have locations in common.  We discuss
+two cases of interest.  In both  the previous section's
+is repeated with minor modifications, so for brevity we limit
+discussion to a description of the differences rather than complete proofs.
 
 The first important case occurs when all apparently-interfering operations have coherence modes
-of either $atomic$ or $simult$.  In this case, we can see that the conditions required for
-coherence and sequential equivalence are satisfied for all locations in $L_{excl}$.  The
-requirements for locations in $L_{atomic}$ allow for any permutation of the constituent traces,
+of either $atomic$ or $simult$.  In this case, the conditions required for
+coherence and sequential equivalence are trivially satisfied for locations in $L_{excl}$.  The
+requirements for locations in $L_{atomic}$ allow any permutation of the constituent traces,
 so the runtime is free to serialize the execution of the subexpressions in any order, not just
-the original program order.
+program order.
 
-In order to convert the required analysis to one that can be performed on regions, we modify
+To convert the required analysis to one that can be performed on regions, we modify
 the noninterference operator for effects to consider only locations in $L_{excl}$ and show that
-traces that a noninterfering under this modified check satisfy the requirement for atomic
+traces that are noninterfering under this modified check satisfy the requirement for atomic
 execution.  We then modify the noninterference operator on privileges to allow 
 $M(r_1) \cap M(r_2) \not= \emptyset$ if either $atomic(r_1)$ or $simult(r_1)$ is in $Q_1$ and
-either $atomic(r_2)$ or $simult(r_2)$ is in $Q_2$, and can show that subexpressions with 
-privileges that can be shown to be ``atomically noninterfering'' (under a dynamic region mapping
-$M$) will always have effects that are compatible with atomically-reordered execution.  Finally,
+either $atomic(r_2)$ or $simult(r_2)$ is in $Q_2$. We then show that subexpressions with 
+privileges that are {\em atomically noninterfering} (under a dynamic region mapping
+$M$) always have effects compatible with atomically-reordered execution.  Finally,
 in the special case where each subexpression has $atomic(r)$ or $simult(r)$ in $Q_i$ for every $r$
 in $\Phi_i$, we can eliminate the dynamic check entirely.
 
 The second case is a subset of the first, in which all apparently-interfering operations have
 the $simult$ coherence mode.  In this case, all the coherence and sequential equivalence 
-checks are trivially satisfied, and any interleaving of the constituent traces will be valid.
+checks are trivially satisfied, and any interleaving of the constituent traces is valid.
 We again modify the noninterference criteria for effects, traces, and privileges, this time
-only allowing $simult$ coherence annotations, and can show that subexpression with privileges
-that can be shown to be ``simultaneously noninterfering'' (under mapping $M$) can be executed
-in parallel.  This will include all the cases covered by Theorem~\ref{thm:parallelexec} as well
+only allowing $simult$ coherence annotations. We show that subexpression with privileges
+that are {\em simultaneously noninterfering} (under mapping $M$) can be executed
+in parallel, which includes all the cases covered by Theorem~\ref{thm:parallelexec} as well
 as those where the programmer has used the $simult$ coherence mode to explicitly allow parallel
 execution.  Again, a special (but important) case exists where all privileges for each
 subexpression are paired with $simult$ coherence mode declarations, allowing the safety of
