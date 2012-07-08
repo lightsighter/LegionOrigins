@@ -367,7 +367,7 @@ T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
 \begin{tabular}{m{5cm}m{5cm}m{8cm}}
 \infrule[PACK]{T_1 = \exists r'_1, \ldots r'_n.\ T_2\text{ where }\Omega_1 \\ \Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Omega^* \\ \typeenvx e_1 : T_2[r_1/r'_1,\ldots,r_k/r'_k]}{\typeenvx \text{pack}\ e_1\ \text{as}\ T_1[\otok{k}{r}] : T_1} &
 \infrule[IF-ELSE]{\typeenvx e_1 : bool \\ \typeenvx e_2 : T \\ \typeenvx e_3 : T}{\typeenvx \text{if}\ e_1\ \text{then}\ e_2\ \text{else}\ e_3 : T} &
-\infrule[TASK CALL]{\Gamma(id) = \forall r'_1, \ldots r'_k.(\oton{T}),\Phi', Q' \rightarrow T_r \\ \typeenvx e_i : T_i[r_1/r'_1,\ldots,r_k/r'_k] \\ \Phi'[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Phi^*}{\typeenvx id[\otok{k}{r}](\oton{e}) : T_r[r_1/r'_1,\ldots,r_k/r'_k]}
+\infrule[TASK-CALL]{\Gamma(id) = \forall r'_1, \ldots r'_k.(\oton{T}),\Phi', Q' \rightarrow T_r \\ \typeenvx e_i : T_i[r_1/r'_1,\ldots,r_k/r'_k] \\ \Phi'[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Phi^*}{\typeenvx id[\otok{k}{r}](\oton{e}) : T_r[r_1/r'_1,\ldots,r_k/r'_k]}
 \end{tabular}
 \end{minipage}
 % Row 8: unpack, partition
