@@ -48,8 +48,8 @@ parallel the cells are partitioned.  Unlike
 Circuit, Fluid first creates regions and partitions them before
 allocating cells in regions.  Another difference is that Fluid
 maintains separate regions for ghost cells rather using multiple partitions of
-the regions containing shared data.  Region relationships are again used to remember
-the disjointness of information for the regions of each grid.
+the regions containing shared data.  Region relationships are used for remembering
+which regions are required for each grid.
 
 \subsubsection{Adaptive Mesh Refinement}
 \label{subsec:amr}
@@ -67,9 +67,9 @@ the cells.  One partitioning separates cells into pieces that can be updated in
 parallel.  Additional partitions are created for viewing data from coarser and finer levels of
 the simulation.  Two types of region relationships are created: one for describing the pieces at 
 each level of refinement, and another for describing the relationship between pieces at different
-levels of refinement.  These region relationships capture both intra- and inter-level disjointness
-information.  The dynamic nature of AMR requires that regions can be created and partitioned
-at runtime.  
+levels of refinement.  
+%These region relationships capture both intra- and inter-level disjointness information.  
+The dynamic nature of AMR requires that regions can be created and partitioned at runtime.  
 %The many ways in which cells are used also requires multiple simultaneous
 %partitions of regions.
 
@@ -80,8 +80,8 @@ ability to handle applications that make runtime decisions about data organizati
 is able to capture both allocate-then-partition (Circuit) and partition-then-allocate (Fluid) algorithms. 
 Having multiple partitions of regions is necessary for describing the many ways 
 that data can be accessed (Circuit,AMR).  All the types of privileges and coherence we have
-described are needed in different combinations by the applications.  In
-all applications, region relationships convey disjointness information.
+described are needed in different combinations by the applications.  Region relationships
+are used in all applications. %, region relationships convey disjointness information.
 % despite
 %regions being a first-class feature that cannot be fully tracked statically.
 
