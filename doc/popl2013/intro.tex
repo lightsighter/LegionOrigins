@@ -35,7 +35,7 @@ and subregions while computation is organized in a hierarchy of {\em
 tasks} and subtasks operating on regions.  Regions and tasks interact
 through a static system of {\em region permissions} specifying 
 operations a task may perform on a region argument (read,
-write, or reduce) and novel {\em region coherence} annotations that
+write, or reduce) and  {\em region coherence} annotations that
 express what other tasks may do concurrently with
 the region (exclusive, atomic, or simultaneous).  We prove the
 soundness of the permissions and coherence system and use these two
@@ -49,21 +49,89 @@ performance; a centralized scheduler would be a bottleneck
 because of the huge latencies involved in communicating in the target
 class of machines.
 
-% The linked list example
-% Add float={t} to the list of options if you want the listing at the top
-\begin{lstlisting}[float={t},label={lst:linkedlist},caption={Linked List Example}]
-type list<r> = < int, list<r>@r >
 
-task sum_list[r] ( l:list<r>@r ), reads(r) : int =
-    if isnull(l) then 0 else
-    let v : list<r> = read(l) in
-        v.1 + sum_list[r](v.2)
+\lstset{
+  captionpos=b,
+  language=C++,
+  basicstyle=\scriptsize,
+  numbers=left,
+  numberstyle=\tiny,
+  columns=fullflexible,
+  stepnumber=1,
+  escapechar=\#,
+  keepspaces=true,
+  literate={<}{{$\langle$}}1 {>}{{$\rangle$}}1,
+  morekeywords={region,coloring,partition,spawn,disjoint,aliased},
+  deletekeywords=float,
+}
+\begin{lstlisting}[float={t},label={lst:code_ex},caption={Circuit simulation.}]
+struct Node { float voltage, new_charge, capacitance; };
+struct Wire<rn> { Node@rn in_node, out_node; float current, ... ; };
+struct Circuit { region   r_all_nodes; /* contains all nodes for the circuit */
+                 region   r_all_wires; /* contains all circuit wires */ };
+struct CircuitPiece {
+  region  rn_pvt, rn_shr, rn_ghost; /* private, shared, ghost node regions */
+  region  rw_pvt;                   /* private wires region */ };
+
+void simulate_circuit(Circuit c, float dt) : RWE(c.r_all_nodes, c.r_all_wires)
+{
+  // The construction of the colorings is not shown.  The colorings wire_owner_map,
+  // node_owner_map, and node_neighbor_map have MAX_PIECES colors 
+  // 0..MAX_PIECES #$-$# 1. The coloring node_sharing map has two colors 0 and 1.
+  //
+  // Partition of wires into MAX_PIECES pieces
+  partition<disjoint> p_wires = c.r_all_wires.partition(wire_owner_map); 
+  // Partition nodes into two parts for all-private vs. all-shared
+  partition<disjoint> p_nodes_pvs = c.r_all_nodes.partition(node_sharing map);
+
+  // Partition all-private into MAX_PIECES disjoint circuit pieces
+  partition<disjoint> p_pvt_nodes = p_nodes_pvs[0].partition(node_owner_map);
+  // Partition all-shared into MAX_PIECES disjoint circuit pieces
+  partition<disjoint> p_shr_nodes = p_nodes_pvs[1].partition(node_owner_map);
+  // Partition all-shared into MAX_PIECES ghost regions, which may be aliased
+  partition<aliased> p_ghost_nodes = p_nodes_pvs[1].partition(node_neighbor_map);
+
+  CircuitPiece pieces[MAX_PIECES];
+  for(i = 0; i #$<$# MAX_PIECES; i++) 
+    pieces[i] = { rn_pvt: p_pvt_nodes[i], rn_shr: p_shr_nodes[i],
+                  rn_ghost: p_ghost_nodes[i], rw_pvt: p_wires[i] };
+  for (t = 0; t #$<$# TIME_STEPS; t++) {
+    for (i = 0; i #$<$# MAX_PIECES; i++) calc_new_currents(pieces[i]);
+    for (i = 0; i #$<$# MAX_PIECES; i++) distribute_charge(pieces[i], dt);
+    for (i = 0; i #$<$# MAX_PIECES; i++) update_voltages(pieces[i]);
+  }
+}
+
+void calc_new_currents(CircuitPiece piece):
+        RWE(piece.rw_pvt), ROE(piece.rn_pvt, piece.rn_shr, piece.rn_ghost) {
+  foreach(w : piece.rw_pvt)
+    w#$\rightarrow$#current = (w#$\rightarrow$#in_node#$\rightarrow$#voltage - w#$\rightarrow$#out_node#$\rightarrow$#voltage) / w#$\rightarrow$#resistance;
+}
+
+void distribute_charge(CircuitPiece piece, float dt):
+        ROE(piece.rw_pvt), RdA(piece.rn_pvt, piece.rn_shr, piece.rn_ghost) {
+  foreach(w : piece.rw_pvt) {
+    w#$\rightarrow$#in_node#$\rightarrow$#new_charge += -dt * w#$\rightarrow$#current;
+    w#$\rightarrow$#out_node#$\rightarrow$#new_charge +=  dt * w#$\rightarrow$#current;
+  }
+}
+
+void update_voltages(CircuitPiece piece): RWE(piece.rn_pvt, piece.rn_shr) {
+  foreach(n : piece.rn_pvt, piece.rn_shr) {
+    n#$\rightarrow$#voltage += n#$\rightarrow$#new_charge / n#$\rightarrow$#capacitance;
+    n#$\rightarrow$#new_charge = 0;
+  }
+}
 \end{lstlisting}
 
-Legion programs organize data into {\em logical regions}.  Logical
-regions (which we usually refer to simply as {\em regions}) express
-{\em locality}, which is simply data that will be used together.
-Listing~\ref{lst:linkedlist} gives an example that defines a region
+Legion programs organize data into a forest of {\em logical regions}.  Logical
+regions express {\em locality} (data that will be used together, and therefore may be colocated in the same
+physical memory) and {\em independence} (disjoint data that may be operated on in parallel).
+Beginning with Sequoia \cite{Fatahalion06} and Deterministic Parallel Java \cite{Bocchino09}, researchers
+have explored hierarchical decomposition of data to express locality and independence.  Two 
+
+
+
 containing a linked list of integers and a task that sums the elements
 of the list.  As is standard in region systems, we use $T @ r$ for the
 type of a pointer to a value of type $T$ in region $r$.  The task also
