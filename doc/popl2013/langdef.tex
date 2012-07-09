@@ -134,13 +134,11 @@ Functions/tasks in Legion are named, accept one or more arguments and
 return a value of some type.  A function also declares the region
 access privileges and coherence it requires.  Function types are
 universally quantified over all region names appearing in the type.
-The final value is a region relation, which stores a value and one or
-more logical regions satisfying associated region constraints.  An
+The final type is a region relationship, instance of which capture a value and
+one or more regions satisfying associated constraints.  An
 instance of a region relation can be read out of the heap and
-unpacked, giving new local names to the logical regions contained in
+unpacked, giving new local names to the regions contained in
 the instance.
-% and tracking
-%the constraints between those new logical regions.
 
 \subsection{Core Type System}
 \label{subsec:coretypes}
@@ -172,7 +170,10 @@ operations, which are only legal if the regions in a pointer's type are ones for
 enclosing function has privileges.
 Similarly, a call to another function is permitted only if the privileges required by the 
 callee are a subset of those held by the caller.  There is no way to create privileges within
-a Legion function - it is limited to privileges given to it by its caller.
+a Legion function - it is limited to privileges given to it by its caller.  (The
+top-level task of a Legion program begins with a single region from with other
+regions can be partitioned and full read and
+write privileges.)
 
 The {\em partition} operation uses a {\em coloring} to split a region into 
 disjoint subregions.  The subregions are given names within the body of the partition,
@@ -348,7 +349,9 @@ T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
 \vspace{-0.4cm}
 \begin{tabular}{m{9cm}m{10cm}}
 \infrule[UPREG]{\typeenvx e : T@(r'_1, \ldots r'_k) \andalso \forall i. \exists j, r'_i \leq r_j \in \Omega^*}{\typeenvx upregion(e,\oton{r}) : T@(\oton{r})} &
-\infrule[DOWNREG]{\typeenvx e : T@(r'_1, \ldots r'_k) \andalso \forall j. \exists i, r_j \leq r'_i \in \Omega^*}{\typeenvx downregion(e,\oton{r}) : T@(\oton{r})}
+\infrule[DOWNREG]{\typeenvx e : T@(r'_1, \ldots r'_k)
+% \andalso \forall j. \exists i, r_j \leq r'_i \in \Omega^*
+}{\typeenvx downregion(e,\oton{r}) : T@(\oton{r})}
 \end{tabular}
 \end{minipage}
 % Row 6: read, write, reduce
@@ -434,7 +437,7 @@ where:
 \item $M$ is a mapping from logical regions $r_i$ to {\em physical regions} $\rho_i$, which are sets of concrete memory locations.
 We write $\hat x = M \llbracket x \rrbracket$ for the application of $M$ to other objects (e.g., types), 
 replacing all free logical region names $r_i$ in $x$ with corresponding physical regions $\rho_i$.  
-(Note $M \llbracket x \rrbracket$ is ill-formed if it contains a free logical region name $r_j \not\in dom(M)$.)
+(Note $M \llbracket x \rrbracket$ is ill-formed if $x$ contains a free logical region name $r_j \not\in dom(M)$.)
 
 \item $L$ is a mapping of local variables to (immutable) values.  
 
@@ -446,7 +449,7 @@ replacing all free logical region names $r_i$ in $x$ with corresponding physical
 
 \item $e$ is an expression.
 
-\item $v$ is the result of evaluatinig $e$.
+\item $v$ is the result of evaluating $e$.
 
 \item $E$ is a {\em memory trace} of the execution, a list of {\em memory operations}
 in the order performed.  A memory operation $\epsilon$ is either
@@ -458,7 +461,7 @@ associative function $id$ with value $v$).  Coherence modes are one of ({\em exc
 
 Helper functions are used in some rules:
 \begin{itemize}
-\item $apply(S, E) = S'$ computes the store $S'$ resulting from applying memory trace $E$ to initial store $S$.
+\item $apply(S, E)$ computes the store that results from applying memory trace $E$ to initial store $S$.
 
 \item $mark\_coherence(E, \hat Q)$ records the coherence of operations in trace $E$ according to coherence annotations $Q$. 
 
@@ -761,7 +764,7 @@ valid\_interleave(S, C, E', E_1, E_2)
 \begin{tabular}{m{6.5cm}m{6.5cm}m{6cm}}
 \infrule[OP-IF-ELSE-TRUE]{\opsenvx e_1 \mapsto true, E_1 \\ S' = \text{apply}(S, E_1) \\ \opsenvx[S=S'] e_2 \mapsto v_2, E_2}{\opsenvx \text{if }e_1\text{ then }e_2\text{ else }e_3 \mapsto v_2, E_1 \dplus E_2} &
 \infrule[OP-IF-ELSE-FALSE]{\opsenvx e_1 \mapsto \textit{false}, E_1 \\ S' = \text{apply}(S, E_1) \\ \opsenvx[S=S'] e_3 \mapsto v_3, E_3}{\opsenvx \text{if }e_1\text{ then }e_2\text{ else }e_3 \mapsto v_3, E_1 \dplus E_3} &
-\infrule[OP-NEW-COLOR]{K = \{ (l_1, iv_1), \ldots, (l_p, v_p) \}, \text{ where } \\ (\forall i \in [1,p]. l_i \in M(r)) \wedge (\forall i,j \in [1,p]. l_i \not= l_j)}{\opsenvx \text{newcolor }r \mapsto K, []}
+\infrule[OP-NEW-COLOR]{K = \{ (l_1, iv_1), \ldots, (l_p, iv_p) \}, \text{ where } \\ (\forall i \in [1,p]. l_i \in M(r)) \wedge (\forall i,j \in [1,p]. l_i \not= l_j)}{\opsenvx \text{newcolor }r \mapsto K, []}
 \end{tabular}
 \end{minipage}
 % Row 6: partition, color
@@ -817,11 +820,11 @@ valid\_interleave(S, C, E', E_1, E_2)
 % Row 10: task call
 \begin{minipage}{\linewidth}
 %\vspace{-0.5cm}
-\infrule[OP-TASK-CALL]{\opsenvx e_1 \mapsto v_1, E_1 \andalso S_1 = \text{apply}(S, E_1) \andalso \opsenvx e_2 \mapsto v_2, E_2 \andalso \ldots \andalso S_n = \text{apply}(S_{n-1}, E_n) \\
+\infrule[OP-Task-CALL]{\opsenvx e_1 \mapsto v_1, E_1 \andalso S_1 = \text{apply}(S, E_1) \andalso \opsenvx e_2 \mapsto v_2, E_2 \andalso \ldots \andalso S_n = \text{apply}(S_{n-1}, E_n) \\
   valid\_interleave(S, C, E', \oton{E}) \andalso \text{task }id[\otok{k}{r'}](a_1 : T_1, \ldots, a_n : T_n), \Phi', Q' : T_r = e_{n+1} \\
   M' = \{ (r'_1, M(r_1)), \ldots (r'_k, M(r_k)) \} \andalso L' = \{ (a_1, v_1), \ldots, (a_n, v_n) \} \andalso S' = \text{apply}(S, E') \\
   C' = C \cup \{ l : \exists \rho. atomic(\rho) \in M' \llbracket Q' \rrbracket \vee simult(\rho) \in M' \llbracket Q' \rrbracket \} \\
-  \opsenvx[M=M',L=L',S=S'] e_{n+1} \mapsto v_{n+1}, E_{n+1} \andalso E'_{n+1} = mark\_coherence(E_{n+1}, M' \llbracket Q' \rrbracket) \andalso valid\_interleave(S, C, E'', E', E_{n+1})}
+  \opsenvx[M=M',L=L',S=S',C=C'] e_{n+1} \mapsto v_{n+1}, E_{n+1} \andalso E'_{n+1} = mark\_coherence(E_{n+1}, M' \llbracket Q' \rrbracket) \andalso valid\_interleave(S, C, E'', E', E_{n+1})}
   {\opsenvx id[\otok{k}{r}](\oton{e}) \mapsto v_{n+1}, E''}
 \end{minipage}
 \end{center}
@@ -1012,10 +1015,9 @@ mapping, allowing the changes to the mapping to be ignored.  The last case is ag
 of a called function, and the same strategy that was used for the type consistency of the
 formal parameters works in reverse for the function's result.
 
-\item[$E \sim H$] The type consistency of the value in an expression's effect follows from two lemmas applied to the effects
-of subexpressions:
-if $E_1 \sim H$ and $E_2 \sim H$, then $E_1 \dplus E_2 \sim H$; and 
-if $E_1 \sim H$ and $E_2 \sim H$ and $valid\_interleave(S, C, E', E_1, E_2)$, then $E' \sim H$.
+\item[$E \sim H$] The type consistency of the values in an expression's memory
+trace follows from the following lemma applied to the traces of subexpressions:
+if $E_1 \sim H$ and $E_2 \sim H$ and $any\_interleave(E', E_1, E_2)$, then $E' \sim H$.
 New effects are added by {\tt write} and {\tt reduce} expressions, but consistency follows
 directly from the induction hypothesis.  Finally, the consistency of the
 values in a called function's memory trace is addressed in the same way as the return value.
@@ -1072,7 +1074,7 @@ correct type and does so within the regions of memory for which privileges are h
 It does not, however, address {\em coherence}, what concurrent operations on the regions are permitted.
 An innovation in Legion is that programmers can control coherence on a per-region basis.  Intuitively,
 the different coherence modes permit different interleavings of memory traces.  For example,
-in addition to be an interleaving, exclusive access requires interleaved memory traces to be:
+in addition to being an interleaving of the constituent traces, exclusive access requires interleaved memory traces to be:
 \begin{itemize}
 \item {\em coherent} - a read of location $l$ should see the effect of all writes and reductions to $l$
 occuring earlier in the interleaved trace, and
@@ -1094,7 +1096,7 @@ valid\_interleave(S, C, E', \oton{E}) & = & any\_interleave(E', \oton{E}) \wedge
 & & \exists \oton{\pi}, (\oton{\pi}) \text{ is a permutation of } (1,\ldots,n)\ \wedge \\
 & & \ \ \ seq\_equiv(S, L_{atomic}(E', C), \emptyset, E', E_{\pi_1}, \ldots, E_{\pi_n}) \\
 coherent(S, L_1, L_2, []) & = & \text{true} \\
-coherent(S, L_1, L_2, \epsilon \dplus E) & = &\
+coherent(S, L_1, L_2, [ \epsilon ] \dplus E) & = &\
 \begin{cases}
 (l \in L_2 \Rightarrow S(l) = v)\ \wedge \\
 \ \ \ coherent(S, L_1, L_2, E), & \text{if $\epsilon = read(l, c, v)$} \\
@@ -1123,7 +1125,7 @@ the clobber set.  The $coherent(S,L_1,L_2,E)$ test checks that all
 reads of locations in $L_2$, and any read of a location $l \in L_1$
 that comes after a write to $l$, return the value most recently written
 to the store.  (If $L_2 = \emptyset$ initially, atomic reads without a preceding write are not checked, effectively defering
-these checks to point where traces ordered before $E$ are included.)  The $seq\_equiv$
+these checks to point where traces that might be ordered before $E$ are included.)  The $seq\_equiv$
 test verifies every read in $E'$ with a location in $L_1$ 
 is coherent if operations are performed in 
 program order and that the store that results from applying $E'$
@@ -1137,20 +1139,12 @@ implementing the precise criteria for checking a valid interleaving is
 much too expensive.  We now consider practical mechanisms that generate valid interleavings and 
 under what conditions these approaches may be used.
 
-%
-% FIX ME   I don't understand this paragraph.  I didn't see this discussed
-% earlier; I took that comment out.  I don't know what the pronoun ``the one in which''
-% refers to.  The clobber set?  The interleaving?
-%
 The first option is to serialize the constituent traces in program
-order.  Although each constituent trace can be assumed to be coherent,
-that coherence is in the context of a clobber set that may differ from
-the one in which the interleaving must occur. 
-This difference can result in cases where no valid interleaving
-exists.  
-%
-% FIX ME  Why?
-%
+order.  Although each constituent trace has been checked for coherence, the
+checking of some operations may have been deferred due to non-empty
+clobber sets.  It is possible that when an interleaving of these traces
+is attemped in the parent expression's context, there may no valid interleaving
+if the wrong guesses were made in the derivation of a subexpression.
 However, we can show that as long as any valid interleaving
 exists, the serialization of the constituent traces is valid.
 To prove this result, we use the following lemma, the proof
@@ -1172,6 +1166,7 @@ interleaved.  Let $E' = E_1 \dplus \ldots \dplus E_n$, in program order.  If the
 valid interleaving of $\oton{E}$, then $E'$ is also valid interleaving of $\oton{E}$.
 \end{thm}
 
+% FIX ME FIX ME FIX ME
 \begin{proof}
 To prove $valid\_interleave(S_0, C, E', \oton{E})$, we need to show the four conditions:
 \begin{enumerate}
@@ -1228,24 +1223,24 @@ $$
 Let $S$ be a store, $C$ a clobber set, $\oton{E}, E'_a, E'_b$ memory traces, and
 $\epsilon_1, \epsilon_2$ two annotated memory operations such that $\epsilon_1 \nonint \epsilon_2$.
 Then,
-$valid\_interleave(S, C, E'_a \dplus \epsilon_1 \dplus \epsilon_2 \dplus E'_b, \oton{E})$
+$$valid\_interleave(S, C, E'_a \dplus [ \epsilon_1, \epsilon_2 ] \dplus E'_b, \oton{E})$$
 if and only if
-$valid\_interleave(S, C, E'_a \dplus \epsilon_2 \dplus \epsilon_1 \dplus E'_b, \oton{E}).$
+$$valid\_interleave(S, C, E'_a \dplus [ \epsilon_2, \epsilon_1 ] \dplus E'_b, \oton{E}).$$
 \end{lem}
 \texcomment{
 \begin{proof}
 As before, we consider the three conditions needed to be a valid interleaving.  We describe the
 implication in the ``forward'' direction, but the arguments are all symmetric.
 \begin{enumerate}
-\item If $E'_a \dplus \epsilon_1 \dplus \epsilon_2 \dplus E'_b$ is an interleaving of $\oton{E}$,
-the proof must first ``pop off'' all of $E'_a$, leaving $\epsilon_1 \dplus \epsilon_2 \dplus E'_b$ for
+\item If $E'_a \dplus [ \epsilon_1 ] \dplus [ \epsilon_2 ] \dplus E'_b$ is an interleaving of $\oton{E}$,
+the proof must first ``pop off'' all of $E'_a$, leaving $[ \epsilon_1 ] \dplus [ \epsilon_2 ] \dplus E'_b$ for
 the interleaved subtrace.  The next two steps must pop $\epsilon_1$ and $\epsilon_2$, leaving $E'_b$.
 They cannot be in the same subtrace because $\epsilon_1 \nonint \epsilon_2$, so we could also pop
-$\epsilon_2$ and then $\epsilon_1$, resulting in a proof that $E'_a \dplus \epsilon_2 \dplus \epsilon_1 \dplus E'_b$ is also an interleaving of the constituent traces.
+$\epsilon_2$ and then $\epsilon_1$, resulting in a proof that $E'_a \dplus [ \epsilon_2 ] \dplus [ \epsilon_1 ] \dplus E'_b$ is also an interleaving of the constituent traces.
 \item For coherence, we must show the value read (if any) by $\epsilon_1$ does not change, the value
 read (if any) by $\epsilon_2$ does not change, and that any read in $E'_b$ sees no change.  With the
 help of Lemma~\ref{lemma:applychain}, we can eliminate the common $E'_a$ from all sequences by
-using $S' = apply(S, E'_a)$.  Similarly to show that $apply(S', \epsilon_1 \dplus \epsilon_2 \dplus E) = apply(S', \epsilon_2 \dplus \epsilon_1 \dplus E)$ for any $E$, we need only to show that it holds
+using $S' = apply(S, E'_a)$.  Similarly to show that $apply(S', [ \epsilon_1  ] \dplus [ \epsilon_2 ] \dplus E) = apply(S', [ \epsilon_2 ] \dplus [ \epsilon_1 ] \dplus E)$ for any $E$, we need only to show that it holds
 for $E = []$.  The proof is now reduced to showing the following:
 \begin{enumerate}
 \item $\epsilon_1 = read(l, c, v) \Rightarrow S'(l) = apply(S',\epsilon_2)(l)$ - since $\epsilon_1$
