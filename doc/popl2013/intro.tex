@@ -180,8 +180,8 @@ is practical.
 
 Legion's execution model is that by default, a program's semantics is
 its meaning as a sequential program, which we refer to as the {\em
-program order} execution; this is similar to DPJ.  While the
-implementation is not our focus here, if two functions work on
+program order} execution.  While the
+implementation is not our focus here, if two functions use
 disjoint data (because all of the regions they use are disjoint), then
 Legion may execute them simultaneously.  Also like DPJ,
 Legion has a system of {\em permissions} ({\em read}, {\em write}, and
