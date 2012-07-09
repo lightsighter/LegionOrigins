@@ -110,7 +110,7 @@ $v$ & ::= & & values &
 %  &$\mid$& $\text{unpack}\ e_1\ \text{as}\ id : T[r_1,\ldots,r_n]\ \text{in}\ e_2$ &  \\
 \end{tabular}
 }
-\caption{Legion Core Language}
+\caption{Core Legion}
 \label{fig:langdef}
 \end{figure*}
 
@@ -124,7 +124,8 @@ $v$ & ::= & & values &
 \section{Legion}
 \label{sec:legioncore}
 
-Figure~\ref{fig:langdef} defines the core subset of Legion.  Types
+Figure~\ref{fig:langdef} defines Core Legion, a subset of the full Legion language
+that still illustrates all of the important issues.  Types
 include booleans, integers, tuples, and pointers.  Note that pointers
 are annotated with a list of regions into which they may point; in a
 well-typed program, the pointer is guaranteed to point to at least one
