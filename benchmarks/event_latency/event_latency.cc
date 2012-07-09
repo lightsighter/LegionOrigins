@@ -110,16 +110,16 @@ void top_level_task(const void *args, size_t arglen, Processor p)
   UserEvent start_event = UserEvent::create_user_event();
   
   // Initialize a big long chain of events, wait until it is done being initialized
-  fprintf(stdout,"Initializing event latency experiment with a depth of %u events...\n",depth);
+  fprintf(stdout,"Initializing event latency experiment with a depth of %d events...\n",depth);
   {
-    size_t buffer_size = sizeof(Processor) + sizeof (Event) + sizeof(unsigned);
+    size_t buffer_size = sizeof(Processor) + sizeof (Event) + sizeof(int);
     void *buffer = malloc(buffer_size); 
     char *ptr = (char*)buffer;
     *((Processor*)ptr) = p; // Everything starts with this processor
     ptr += sizeof(Processor);
     *((Event*)ptr) = start_event; // the starting event
     ptr += sizeof(Event);
-    *((unsigned*)ptr) = depth; // the depth to go to
+    *((int*)ptr) = depth; // the depth to go to
     Processor next_proc = get_next_processor(p);
     // Launch the task to build the big chain of events
     Event initialized = next_proc.spawn(THUNK_BUILDER,buffer,buffer_size);
@@ -156,14 +156,14 @@ void top_level_task(const void *args, size_t arglen, Processor p)
 
 void thunk_builder(const void *args, size_t arglen, Processor p)
 {
-  assert(arglen == (sizeof(Processor) + sizeof(Event) + sizeof(unsigned)));
+  assert(arglen == (sizeof(Processor) + sizeof(Event) + sizeof(int)));
   // Unpack everything
   const char *ptr = (const char*)args;
   Processor orig = *((Processor*)ptr);
   ptr += sizeof(Processor);
   Event prev_event = *((Event*)ptr);
   ptr += sizeof(Event);
-  unsigned depth = *((unsigned*)ptr);
+  int depth = *((int*)ptr);
 
   // Make a temporary user event
   UserEvent temp_event = UserEvent::create_user_event();
@@ -185,7 +185,7 @@ void thunk_builder(const void *args, size_t arglen, Processor p)
     ptr += sizeof(Processor);
     *((Event*)ptr) = next_event;
     ptr += sizeof(Event);
-    *((unsigned*)ptr) = (depth-1);
+    *((int*)ptr) = (depth-1);
     Processor next_proc = get_next_processor(p);
     initialized = next_proc.spawn(THUNK_BUILDER,buffer,arglen);
     free(buffer);
