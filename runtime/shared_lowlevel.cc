@@ -499,6 +499,25 @@ namespace RegionRuntime {
 	e->wait(gen,block);
     }
 
+    Event Event::merge_events(Event ev1, Event ev2, Event ev3,
+                              Event ev4, Event ev5, Event ev6)
+    {
+      std::set<Event> wait_for;
+      if (ev1.exists()) wait_for.insert(ev1);
+      if (ev2.exists()) wait_for.insert(ev2);
+      if (ev3.exists()) wait_for.insert(ev3);
+      if (ev4.exists()) wait_for.insert(ev4);
+      if (ev5.exists()) wait_for.insert(ev5);
+      if (ev6.exists()) wait_for.insert(ev6);
+
+      if (wait_for.empty())
+        return Event::NO_EVENT;
+      else if (wait_for.size() == 1)
+        return *(wait_for.begin());
+      else
+        return merge_events(wait_for);
+    }
+
     Event Event::merge_events(const std::set<Event>& wait_for)
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
@@ -552,8 +571,8 @@ namespace RegionRuntime {
         {
           if (!(*it).exists())
             continue;
-          wait_for_impl.insert(
-            std::pair<EventImpl*,Event>(Runtime::get_runtime()->get_event_impl(*it),*it));
+          EventImpl *src_impl = Runtime::get_runtime()->get_event_impl(*it);
+          wait_for_impl.insert(std::pair<EventImpl*,Event>(src_impl,*it));
         }
 	return e->merge_events(wait_for_impl);
     }
@@ -2636,7 +2655,7 @@ namespace RegionRuntime {
 	r->destroy_instance(i);
     }
 
-    const ElementMask &RegionMetaDataUntyped::get_valid_mask(void)
+    const ElementMask &RegionMetaDataUntyped::get_valid_mask(void) const
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
