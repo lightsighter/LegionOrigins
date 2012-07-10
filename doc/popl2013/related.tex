@@ -2,7 +2,7 @@
 \section{Related Work}
 \label{sec:related}
 Legion is most directly related to Sequoia \cite{Fatahalian06}.  Sequoia is array-based, with
-a limited repetoire of ways to partition arrays.  Sequoia is a very static language with a single unified hierarchy
+a limited repetoire of ways to partition arrays.  Sequoia is a static language with a single unified hierarchy
 of tasks and data; Legion is more dynamic with separate task and region hierarchies.
 
 Deterministic Parallel Java (DPJ) is the only other region-based parallel system we are
@@ -50,7 +50,7 @@ used both to parallelize sequential programs\cite{Raza09,Gotsman07} and to provi
 a mechanism for reasoning about independence\cite{Hayman06}.
 While we have borrowed some separation logic notation, we ultimately chose to use a 
 permissions system as our primary formalism because separation logic does not easily
-support the interleaving of effects to non-disjoint regions of memory.
+support the interleaving of operations to non-disjoint regions of memory.
 
 % I'm also not sure how much detail to go into here.  DPJ spends a lot of time
 % on these papers, but I'm not sure I understand all the details of these papers.

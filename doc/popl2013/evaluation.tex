@@ -4,13 +4,13 @@
 
 We evaluate the Legion type system on three criteria:
 \begin{itemize}
-\item Expressivity: Can real applications be written (Section \ref{subsec:expressivity})?
-\item Overhead: Does it reduce checking costs (Section \ref{subsec:overhead})?
-\item Scalability: Can we leverage hierarchical scheduling (Section \ref{subsec:scalability})?
+\item Expressivity: Can real applications be written (Section~\ref{subsec:expressivity})?
+\item Overhead: Does it reduce checking costs (Section~\ref{subsec:overhead})?
+\item Scalability: Can it leverage hierarchical scheduling (Section~\ref{subsec:scalability})?
 \end{itemize}
 %Our evaluation uses a prototype implementation of the Legion language and programming model.
 Our prototype implementation has two components: a type checker
-for the language introduced in Section \ref{sec:legioncore} and a C++ runtime library
+for the language introduced in Section~\ref{sec:legioncore} and a C++ runtime library
 for executing programs written in the Legion programming model\cite{Legion12}.  All experiments
 are conducted on the Keeneland supercomputer\cite{Keeneland}.  Each node of the Keeneland
 machine consists of two Xeon 5660 processors, three Tesla M2090 GPUs, and 24 GB of DRAM.  Nodes
@@ -91,7 +91,7 @@ are used in all applications. %, region relationships convey disjointness inform
 Our first Legion implementation consisted of a C++ library of Legion primitives
 \cite{Legion12} with no checking of region memory accesses.  
 When testing applications we frequently encountered memory corruption due to
-illegal region accesses caused by a confluence of application bugs and the lack of checking.  Many times these corruptions 
+illegal region accesses caused by a confluence of application bugs and lack of checking.  Many times these corruptions 
 occurred on remote nodes or on GPUs, requiring heroic debugging efforts.
 %  Finding these bugs required either multiple {\tt gdb} sessions 
 %for observing execution on different nodes simultaneously or using {\tt printf} for debugging on
@@ -179,7 +179,7 @@ memory pressure.  For the GPU kernels in the Circuit application checking requir
 registers per thread.  While the GPU kernels in Circuit where not bound by 
 available on-chip memory, kernels that are would be susceptible to extreme performance 
 degradation due to the extra registers required for checking.  We also measured the overhead
-of the dynamic checks associated with unpack operations but found them to be negligible.
+of the dynamic checks associated with checking task call privileges but found them to be negligible.
 % relative to the overhead of region access checks.
 
 \subsection{Scalability}

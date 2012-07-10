@@ -9,8 +9,8 @@ latest supercomputers are now complex hierarchies of many different
 kinds of computing technologies: networks of nodes at the top level,
 multiple chips per node, mutiple cores within a chip, and, most
 recently, multiple accelerators (usually GPUs) per node, which 
-can themselves be decomposed into several levels.   We present the operational and static
-semantics of Legion, a programming model targeted at providing an
+can themselves be decomposed.  We present the operational and static
+semantics of Legion\cite{Legion12}, a programming model targeted at providing an
 appropriate level of abstraction for programming such machines, one
 that is both sufficiently high-level to be portable while still
 exposing aspects that are crucial to performance. 
@@ -35,8 +35,8 @@ because of the huge latencies involved in communicating in the target
 class of machines.
 
 Legion programs organize data into a forest of {\em logical regions}.  Logical
-regions express {\em locality} (data that will be used together, and therefore colocated if possible in the same
-physical memory) and {\em independence} (disjoint data that may be operated on in parallel).
+regions express {\em locality} (data that will be used together, and therefore should be colocated) 
+and {\em independence} (disjoint data that may be operated on in parallel).
 Researchers have previously explored language designs with hierarchical decomposition of data to express
 locality and independence for high performance programming. Two recent examples, Sequoia \cite{Fatahalian06} and 
 Deterministic Parallel Java (DPJ) \cite{Bocchino09}, each provide a mechanism to partition the heap recursively
@@ -63,10 +63,10 @@ regions;
 
 \item  a logical region may be dynamically partitioned in multiple different ways.
 \end{itemize}
-A consequence of these decisions is that, through partitioning, a
+One consequence of these decisions is that, through partitioning, a
 given datum may belong to multiple different regions.  For example, if
-a region $R$ participates in three separate disjoint partition
-operations and each partition allocates every element of $R$ to a
+a region $R$ is disjointly partitioned three distinct ways 
+and each partition allocates every element of $R$ to a
 subregion (partitions need not be total in Legion), then every element
 of $R$ is included in three different subregions.  This is why we use
 the term {\em logical} regions: language-level regions serve to name
@@ -76,7 +76,7 @@ is a separate system of {\em physical regions} at runtime that hold
 copies of the data in the language-level logical regions.  In fact,
 the Legion implementation routinely maintains multiple distinct
 physical regions, each with a copy of the data in the corresponding
-logical region, for performance reasons.
+logical region, for performance reasons \cite{Legion12}.
 
 A further consequence of placing the same data in multiple logical
 regions is that it introduces aliasing which makes it difficult 
@@ -85,7 +85,7 @@ One approach is to outlaw aliasing which allows for a static analysis
 to discover all available parallelism and schedule it entirely at
 compile-time, avoiding any runtime overhead.  Languages such as
 Sequoia and DPJ take this approach and allow only a single static partition of any region 
-to eliminate region aliasing at the cost of the flexibility of their language.
+to eliminate aliasing at the cost of the flexibility of their language.
 
 % Putting this here so that we can get the code in a good place
 \lstset{
@@ -194,11 +194,11 @@ for independence are done at the granularity of regions and one check on a regio
 itself often serves to prove the independence of many subsequent region
 uses.  In contrast, because transactional memory has no mechanism
 for grouping heap data into larger collections, it must test the
-overlap between two sets of data on each individual element, which is
-much more expensive.
+overlap between two sets of data on each individual memory access, which is
+significantly more expensive.
 
 We begin in Section~\ref{sec:example} with an example program that illustrates
-a typical style of programming in Legion as well as motivating the need for multiple, dynamically computed  partitions of
+a typical style of programming in Legion and motivates the need for multiple, dynamically computed partitions of
 a region.  We define Core Legion, a small language suitable for our formal development, in Section~\ref{sec:legioncore}.
 The next four sections each state and prove one of our main results and contributions:
 \begin{itemize}
@@ -208,8 +208,10 @@ The next four sections each state and prove one of our main results and contribu
 
 \item We show that if expressions $e_1$ and $e_2$ are {\em non-interfering} (can be executed in parallel), then subexpressions
 $e_1'$ of $e_1$ and $e_2'$ of $e_2$ are also non-interfering (Section~\ref{sec:scheduling}).  This result is the basis
-for a hierarchical, distributed scheduler in the Legion implementation; on the target class of machines, any centralized
-scheduler would be a serious bottleneck.
+for a hierarchical, distributed scheduler in the Legion implementation which is crucial for high performance
+on the target class of machines.
+%; on the target class of machines, any centralized
+%scheduler would be a serious bottleneck.
 
 \item We give experimental evidence for the Legion design.  On three real-world applications, we show that 
 dynamic region pointer checks would be expensive, justifying checking this aspect of the type system statically.

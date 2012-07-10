@@ -45,7 +45,7 @@ it may map the same element to multiple colors.
 After creating the colorings, the application partitions the region
 into {\em subregions} according to the colorings (lines 21-25).  For
 simplicity, our example only partitions the circuit into two pieces.
-Lines 21 and 23 create two different partitions with two different
+Lines 21 and 23 create two different partitions each with two different
 subregions of the {\tt rn} region.  The first partition uses a
 coloring and is therefore {\em disjoint}; the second partition uses a
 multicoloring and is {\em aliased}---the subregions may not be
@@ -119,10 +119,11 @@ see from other functions using the same region.  If not otherwise
 specified, coherence defaults to {\em exclusive}, meaning the
 function must appear to execute in program order.  Line 14 shows
 an example of {\tt atomic}, a relaxed coherence mode requiring
-that reductions to {\tt rn} and {\tt rg} must appear atomic relative
+that operations to {\tt rn} and {\tt rg} must appear atomic relative
 to other functions using those regions.  The most relaxed coherence
 mode is {\tt simult}; all functions with 
-simultaneous coherence are allowed to access the region concurrently.
+simultaneous coherence are allowed to access the region concurrently
+with other functions having simultaneous coherence to the region.
 
 % This is a description of how the listings should be formatted.
 % It can go anywhere before the listings.

@@ -196,7 +196,7 @@ enclosing function has privileges.
 Similarly, a call to another function is permitted only if the privileges required by the 
 callee are a subset of those held by the caller.  There is no way to create privileges within
 a Legion function - it is limited to privileges given to it by its caller.  (The
-top-level task of a Legion program begins with a single region from with other
+top-level task of a Legion program begins with a single, empty region from which other
 regions can be partitioned and full read and
 write privileges.)
 
@@ -525,7 +525,7 @@ require locations to be ``fresh''; our soundness results hold even if
 typing of the location is correct.
 
 The most involved rule in Core Legion's semantics is for function calls.
-Note that the only regions accessible to the callee (through $M'$) are the region arguments.
+The only regions accessible to the callee (through $M'$) are the region arguments.
 Also, if any regions are used with relaxed coherence (either {\em atomic} or {\em simult} instead of
 {\em excl}), those locations are added to the clobber set, allowing the
 impact of concurrent modifications of the store to be handled by the caller.  
@@ -1011,7 +1011,7 @@ trivially satisfy region mapping consistency.  For {\tt partition},
 the consistency of the coloring preserves region mapping consistency
 with respect to the constraints.  For {\tt unpack}, the consistency of
 a region relation instance guarantees consistency of region mapping.
-Finally, the body of a called function with an initially-empty set of
+Finally, the body of a called function uses an initially-empty set of
 constraints, which are trivially satisfied.
 
 \vspace{4pt}
@@ -1170,7 +1170,7 @@ the clobber set.  The $coherent(S,L_1,L_2,E)$ test checks that all
 reads of locations in $L_2$, and any read of a location $l \in L_1$
 that comes after a write to $l$, return the value most recently written
 to the store.  (If $L_2 = \emptyset$ initially, atomic reads without a preceding write are not checked, effectively defering
-these checks to point where traces that might be ordered before $E$ are included.)  The $seq\_equiv$
+these checks to a point where traces that might be ordered before $E$ are included.)  The $seq\_equiv$
 test verifies every read in $E'$ with a location in $L_1$ 
 is coherent if operations are performed in 
 program order and that the store that results from applying $E'$
@@ -1380,7 +1380,7 @@ $\epsilon_1$ and $\epsilon_2$ be operations to the same location $l$ and not bot
 reductions using the same function name.  Assume $\epsilon_1 = read(l, c_1, v_1)$ and $\epsilon_2 = write(l, c_2, v_2)$.  The definition of $\privconsist{E_1}{\Phi_1}$ tells us that there must be some $r_1$ satisfying $l \in M(r_1) \wedge reads(r_1) \in \Phi_1$.  Similarly, there must be some $r_2$ satisfying $l \in M(r_2) \wedge writes(r_2) \in \Phi_2$.  Letting $\phi_1 = reads(r_1)$ and $\phi_2 = writes(r_2)$, we have $M(r_1) \cap M(r_2) \not= \emptyset$ (it contains at least $l$), so $\phi_1 \cancel{\nonint[M]} \phi_2$ and $\Phi_1 \cancel{\nonint[M]} \Phi_2$.  There are seven other cases to consider (using $id_1 \not= id_2$ for the reduce-reduce case), but all yield the same result.
 \end{proof}
 }
-We are now able to state the key result that allows the Legion runtime to safely evaluate subexpressions as
+We can now state the key result that allows the Legion runtime to safely evaluate subexpressions as
 separate tasks in parallel.
 
 \begin{thm}
@@ -1400,14 +1400,14 @@ clobber set $C$ is non-empty, allowing two ``locally independent''
 subtasks to run in parallel even if one or both of them is interacting
 (in a programmer-permitted way) with a third subtask.
 
-We are now able to explain an important aspect of the Legion
+We now highlight an important aspect of the Legion
 implementation that is different from other systems and relies on the
 soundness of privileges.  Noninterference of memory operations is
 something that can only be determined after evaluation of an
 expression is completed, and only at great expense, as illustrated at
 one extreme by work on transactional
 memory \cite{Harris05}.  At the other extreme are systems
-that check privileges statically, such as Jade \cite{Rinard98} and
+that check noninterference statically, such as Jade \cite{Rinard98} and
 DPJ \cite{Bocchino11}.  In contrast, Legion checks noninterference of privileges
 at runtime, which is much simpler and more efficient than checking
 noninterference of dynamic memory traces.  Even though the privileges
@@ -1426,7 +1426,7 @@ making the worst-case assumption that all operations use $excl$ mode.  However, 
 subexpressions contain calls to functions using $atomic$ or $simult$ coherence modes
 on some regions, executions besides serial program order may 
 result in valid interleavings even if constituent traces have locations in common.  We discuss
-two cases of interest.  In both the previous sections noninterference % Is noninterference the right subject here?
+two cases of interest.  In both, the previous section's analysis 
 is repeated with minor modifications, so for brevity we limit
 discussion to a description of the differences rather than complete proofs.
 
