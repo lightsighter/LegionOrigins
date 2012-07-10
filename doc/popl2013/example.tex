@@ -2,97 +2,127 @@
 \section{Circuit Example}
 \label{sec:example}
 
-Listing~\ref{lst:circuit_ex} shows code for a
-circuit simulation written in the core Legion language introduced in
-Section~\ref{sec:legioncore} (with one exception described below).  The
-circuit simulation takes as input a large graph of circuit elements and wires
-connecting the elements.  To perform the simulation in parallel the graph
-is partitioned into pieces.  After partitioning
-the graph the simulation is run for a number of time steps.  Each time step
-consists of three phases: calculating the current on each wire, distributing
-charge to the nodes to which each wire is connected, and updating the voltage
-of each node.
+Listing~\ref{lst:circuit_ex} shows a circuit simulation written (with
+one exception) in the core Legion language (see
+Section~\ref{sec:legioncore}).  The input is a graph of circuit
+elements and connecting wires.  To perform parallel
+simulation the graph is partitioned into pieces, after which the
+simulation is run for a number of time steps.  Each time step has
+three phases: calculate each wire's current, distribute charge to
+the nodes to which each wire is connected, and update each node's voltage.
 
-The top level function in the application is {\tt simulate\_circuit} (line 15).  The {\tt simulate\_circuit} 
-function is parameterized on the regions {\tt rl}, {\tt rw}, and {\tt rn} (line 15) which 
-implies that the when the function is invoked it must have privileges for the regions 
-bound to those parameters.  Furthermore, these privileges must be for both reading 
-and writing these regions (line 17).  The only logical regions which {\tt simulate\_circuit} will 
-be allowed to access are these regions and their logical subregions.  This property will be 
-enforced by the type system introduced in Section~\ref{sec:legioncore}.  {\tt simulate\_circuit}
-takes pointers to the lists of nodes and wires that describe the graph.  The nodes
-are stored in the {\tt rn} region while wires are stored in the {\tt rw} region.  The
-lists live in the {\tt rl} region.  
+The top-level function is {\tt simulate\_circuit} (line 15), which is
+parameterized on regions {\tt rl}, {\tt rw}, and {\tt rn} (line 15).
+The wires and nodes live in regions {\tt rw} and {\tt rn},
+respectively.  The {\tt rl} region holds lists of the nodes and wires.
+When {\tt simulate\_circuit} is invoked it must have read and
+write privileges for the region parameters
+(line 17); the type system enforces that
+{\tt simulate\_circuit} only accesses these regions and their
+subregions.
 
-The first step in {\tt simulate\_circuit} is to partition the graph into pieces.  Partitioning
-is done by constructing {\em colorings} using the {\tt color\_circuit} function (line 18-19).  A
-coloring is a mapping from region elements to colors with each color corresponding to a new subregion
-to be created.  The algorithm for performing a coloring is an application specific decision made by 
-the programmer.  Note, that in the case of circuit, it would be impossible to
-pick a single static partitioning scheme that would do well for all graphs.  Dynamic partitioning
-provides the programmer the flexibility to make partitioning decisions based on input data.
+Partitioning of the graph is done using {\em colorings} built in the
+{\tt color\_circuit} function (line 18-19).  A coloring maps region
+elements to colors, with each color corresponding to a new subregion
+to be created.  Note that it is impossible to pick a single static
+partitioning scheme that would do well for all graphs.  Dynamic
+partitioning using colorings provides the programmer the flexibility
+to make partitioning decisions based on input data.
 
-The {\tt color\_circuit} function returns three colorings.  The first coloring is a total 
-coloring that maps each node in the graph the piece that owns it.  The third coloring is a total
-coloring that maps each wire in the graph to a piece which owns on of its nodes.  The second coloring captures a
-different property of the graph: those nodes which must be shared between different pieces of the
-graph to perform computations in parallel.  These are often referred to as {\em ghost nodes}.  We
-describe how ghost node regions are used in conjunction with the owned nodes later.
-Note that its possible some ghost nodes are shared between multiple pieces, and can be colored multiple ways. 
-The second coloring is referred to as a {\em multicoloring} because it might map the same element
-to multiple colors.
+The {\tt color\_circuit} function returns three colorings.  The first
+maps each node to the graph piece that owns it.
+The third maps each wire to a graph piece that
+owns one of its nodes.  The second coloring captures, for each piece $p$,
+the nodes in other pieces on the boundary of $p$, often referred to as
+{\em ghost nodes}.  
+%We describe how ghost node regions are used in
+%conjunction with the owned nodes shortly.  
+Note that 
+ghost nodes may be on the boundary of multiple pieces and therefore colored
+multiple ways.  The second coloring is a {\em multicoloring} because
+it may map the same element to multiple colors.
 
-After creating the colorings, the application partitions the region into {\em subregions} based on 
-the colorings (lines 21-25).  For simplicity, our example only partitions the circuit into two pieces.  Lines
-21 and 23 create two different partitions with two different subregions of the {\tt rn} region.  The first partition is
-{\em disjoint} because it is based on a coloring while the second partition is {\em aliased}
-because it is based on a multicoloring which does not imply disjointness of subregions.  While 
-aliased partitions based on multicolorings are not a part of core Legion described in Section~\ref{sec:legioncore}, 
-they are functionally equivalent to creating single partitions for each color in the multicoloring.
+After creating the colorings, the application partitions the region
+into {\em subregions} according to the colorings (lines 21-25).  For
+simplicity, our example only partitions the circuit into two pieces.
+Lines 21 and 23 create two different partitions with two different
+subregions of the {\tt rn} region.  The first partition uses a
+coloring and is therefore {\em disjoint}; the second partition uses a
+multicoloring and is {\em aliased}---the subregions may not be
+disjoint. While aliased partitions based on multicolorings are not a
+part of core Legion described in Section~\ref{sec:legioncore}, they
+are functionally equivalent to creating single partitions for each
+color in the multicoloring.
+Disjoint partitions introduce region disjointness constraints into the static
+environment indicating that all the subregions in the partition are
+disjoint (e.g. {\tt rn0}$*${\tt rn1} on line 21 says {\tt rn0} is
+disjoint from {\tt rn1}).  Both disjoint and aliased partitions
+introduce constraints into the environment indicating that all created
+regions are logical subregions of the partitioned parent region
+(e.g. {\tt rn0}$\leq${\tt rn}).
 
-Disjoint partitions introduce
-disjointness constraints into the static environment indicating that all the subregions in the partition are 
-disjoint (e.g. {\tt rn0}$*${\tt rn1} on line 21 says {\tt rn0} is disjoint from {\tt rn1}).
-Both disjoint and aliased partitions introduce constraints into the environment indicating that all
-created regions are logical subregions of the partitioned parent region (e.g. {\tt rn0}$<${\tt rn}).
+The circuit simulation uses an {\em allocate-then-partition} style of
+computation, where a large data structure is first allocated and then
+partitioned.  Legion also supports {\em partition-then-allocate},
+where empty regions are first partitioned and later populated with
+data.  Both are useful; e.g., Sequoia \cite{Fatahalian06} and DPJ
+\cite{Bocchino09} support static forms of allocate-then-partition and
+partition-then-allocate, respectively.  Legion supports both
+approaches dynamically.
 
-The circuit example illustrates an example of partitioning called {\em allocate-then-partition}
-where the data structure is allocated first and parititoned later.  Alternatively, a
-{\em partition-then-allocate} scheme would allow the creation and paritioning of regions that
-are later populated with data.  Sequoia supports a static form of the former while DPJ supports
-a static form of the later.  Legion enables both approaches dynamically.
+After partitioning the circuit into pieces, the application creates
+instances of {\tt CircuitPiece} (defined on lines 9-12) for each piece
+(lines 28-33).  {\tt CircuitPiece} is a {\em region relationship}, a
+bounded existential type.  Region relationships allow the programmer
+to {\em pack} a group of regions together and remember properties
+about them such as disjointness and subregion relationships (lines 29
+and 33).  The type system verifies the properties hold statically when
+packing; when region relationships are {\em unpacked} the same
+properties are reintroduced into the static checking environment
+(lines 40-41).  A key feature underlying the soundness of the Legion
+type system is that privileges cannot be packed in a region
+relationship---privileges belong to functions. When a function unpacks
+a region relationship it must already hold privileges for the new
+regions it finds in the packed value.  For example, on line 40
+function {\tt execute\_time\_steps} has read/write privileges for
+region {\tt rn0} because it has read/write privileges for {\tt rn} and
+the {\tt CircuitPiece} region relationship constraints ensure $\tt rn0
+\leq rn$ (line 12).
 
-After partitioning the circuit into pieces, the application creates instances of {\tt CircuitPiece} 
-(defined on lines 9-12) for each piece (lines 28-33).  {\tt CircuitPiece} is a bounded existential 
-type called a {\em region relationship}.  
-Region relationships allow the programmer to {\em pack} a group of regions together and remember properties about
-them such as disjointness and sub-region relationships (lines 29 and 33).  The type system verifies 
-the properties hold statically when packing so when region relationships are {\em unpacked} the same properties can
-be reintroduced into the static checking environment (lines 40-41).  One important feature of Legion
-is that privileges cannot be packed in a region relationship but can only be passed through function calls.
+The {\tt execute\_time\_steps} function (lines 37-48)  
+also illustrates the importance of using different partitions to give
+multiple views onto the same logical region.  Both {\tt
+  calc\_new\_currents} and {\tt distribute\_charge} 
+use the owned and ghost regions of a piece, which are from different partitions. In
+{\tt calc\_new\_currents} these regions only need read
+privileges, allowing both instances of {\tt calc\_new\_currents} to be
+run in parallel.  In {\tt distribute\_charge} the
+privilege is for a reduction which can also be done in parallel
+because of the atomic and commutative nature of reductions.  No
+single partition of the nodes
+describes these data sharing patterns.
 
-The {\tt execute\_time\_steps} function represents the primary loop of the simulation (lines 37-48).  Here
-we see the importance of having multiple views onto the same logical region.  Both the the 
-{\tt calc\_new\_currents} and {\tt distribute\_charge} function calls bind the owned region of a piece 
-and the ghost region of a piece.  In the case of {\tt calc\_new\_currents} these regions only need
-read privileges, allowing both instances of {\tt calc\_new\_currents} to be run in parallel.  In the
-case of {\tt distribute\_charge} the privilege is for a reduction which can also be done 
-in parallel because of the atomic and commutative nature of reductions.  If it were only possible to have a single
-partition of the region {\tt rn} it would have been impossible to describe these data sharing patterns.
+Listing~\ref{lst:circuit_leaf} shows the leaf functions for each phase.
+Each function iterates over the list of wires or
+nodes for its piece.  Each function specifies the region privileges it
+requires (lines 2,14,23).  
+%These privileges
+%are statically checked to match the operations performed inside of
+%each function (e.g. read and write).  
+In the case of {\em reduce} the
+privilege must also specify which reduction function is used
+(line 14).
 
-Listing~\ref{lst:circuit_leaf} shows the leaf functions for each phase of the computation.  Each
-function iterates over the list of wires or nodes for its piece.  Each function specifies the privileges
-that it must have for all of its regions (lines 2,14,23).  These privileges are statically checked
-to match the operations performed inside of each function (e.g. read and write).  In the case of {\em reduce}
-the privilege must also specify which reduction function is being used (line 14).  
-
-In addition to privileges, functions can also specify {\em coherence} on regions.  Coherence specifies what 
-values the function is allowed to see from other functions using the same region.  If not otherwise specified,
-coherence defaults to {\em exclusive} which means the function must appear to execute as if the whole program
-were run sequentialy, which we refer to as {\em program order}.  Line 14 shows an example of a relaxed
-coherence mode called {\tt atomic} which says that reductions to {\tt rn} and {\tt rg} must appear atomic relative to other
-functions using those regions.  The most relaxed coherence mode is {\tt simult} which means multiple functions
-all with simultaneous coherence are allowed to access the region concurrently.
+In addition to privileges, functions can also specify {\em coherence}
+on regions.  Coherence specifies what updates the function may
+see from other functions using the same region.  If not otherwise
+specified, coherence defaults to {\em exclusive}, meaning the
+function must appear to execute in program order.  Line 14 shows
+an example of {\tt atomic}, a relaxed coherence mode requiring
+that reductions to {\tt rn} and {\tt rg} must appear atomic relative
+to other functions using those regions.  The most relaxed coherence
+mode is {\tt simult}; all functions with 
+simultaneous coherence are allowed to access the region concurrently.
 
 % This is a description of how the listings should be formatted.
 % It can go anywhere before the listings.
