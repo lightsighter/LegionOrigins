@@ -27,15 +27,6 @@ task build_lists[rl,rw,rn,rpw,rpn,rg] ( all_nodes : node_list<rl,rn>@rl, all_wir
   let node_ptr : node_list<rl,rpn>@rl = new node_list<rl,rpn>@rl in
     <wire_ptr,node_ptr>
 
-task build_piece[rl,rw,rn,rpw,rpn,rg] ( all_nodes : node_list<rl,rn>@rl, all_wires : wire_list<rl,rw,rn>@rl,
-                                 owned_coloring : coloring(rn), ghost_coloring : coloring(rn),
-                                 wires_coloring : coloring(rw), c : int), reads(rn,rw,rl), writes(rl) :
-                                  CircuitPiece<rl,rw,rn> =
-  let piece_lists : < wire_list<rl,rpw,rpn,rg>@rl, node_list<rl,rpn>@rl > = 
-    build_lists[rl,rw,rn,rpw,rpn,rg](all_nodes,all_wires,owned_coloring,ghost_coloring,wires_coloring,c) in
-      pack piece_lists as CircuitPiece<rl,rw,rn>[rpw,rpn,rg] 
-
-
 task calc_new_currents[rl,rw,rn,rg] ( ptr_list : wire_list<rl,rw,rn,rg>@rl ), reads(rl,rw,rn,rg), writes(rw) : bool =
   if isnull(ptr_list) then true else
   let wire_node : wire_list<rl,rw,rn,rg> = read(ptr_list) in
@@ -76,8 +67,12 @@ task simulate_circuit[rl,rw,rn] ( all_nodes : node_list<rl,rn>@rl,
   partition rn using pc.1 as rn0,rn1 in
   partition rn using pc.2.1 as rg0,rg1 in
   partition rw using pc.2.2 as rw0,rw1 in
-  let piece0 : CircuitPiece<rl,rw,rn> = build_piece[rl,rw,rn,rw0,rn0,rg0](all_nodes,all_wires,pc.1,pc.2.1,pc.2.2,0) in
-  let piece1 : CircuitPiece<rl,rw,rn> = build_piece[rl,rw,rn,rw1,rn1,rg1](all_nodes,all_wires,pc.1,pc.2.1,pc.2.2,1) in
+  let lists0 : <wire_list<rl,rw0,rn0,rg0>@rl,node_list<rl,rn0>@rl> = 
+        build_lists[rl,rw,rn,rw0,rn0,rg0](all_nodes,all_wires,pc.1,pc.2.1,pc.2.2,0) in
+  let piece0 : CircuitPiece<rl,rw,rn> = pack lists0 as CircuitPiece<rl,rw,rn>[rw0,rn0,rg0] in
+  let lists1 : <wire_list<rl,rw1,rn1,rg1>@rl,node_list<rl,rn1>@rl> =
+        build_lists[rl,rw,rn,rw1,rn1,rg1](all_nodes,all_wires,pc.1,pc.2.1,pc.2.2,1) in
+  let piece1 : CircuitPiece<rl,rw,rn> = pack lists1 as CircuitPiece<rl,rw,rn>[rw1,rn1,rg1] in
       execute_time_steps[rl,rw,rn](piece0,piece1,steps)
 
 task execute_time_steps[rl,rw,rn] ( p0 : CircuitPiece<rl,rw,rn>, p1 : CircuitPiece<rl,rw,rn>,
