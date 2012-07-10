@@ -6,7 +6,24 @@
 \newcommand{\dplus}{\text{+\!+}}
 \newcommand{\llbracket}{[\![}
 \newcommand{\rrbracket}{]\!]}
+\newcommand{\tuple}[2]{\langle #1, #2 \rangle}
 \makeatletter
+% macros for consistency flavors
+\newcommand{\foo}[1]{\cancel{#1}}
+\newcommand{\simH}{\sim_{\!H}}
+% usually: \mapconsist{\Omega}
+\newcommand{\mapconsist}[2][M]{#1 \foo\sim #2}
+% usually: \localconsist{L}{\Gamma}
+\newcommand{\localconsist}[3][M]{#2 \foo\simH \@ifmtarg{#1}{#3}{#1 \llbracket #3 \rrbracket}}
+% usually: \storeconsist{S}{H}
+\newcommand{\storeconsist}[2]{#1 \foo\sim #2}
+% usually: \valueconsist{v}{T}
+\newcommand{\valueconsist}[3][M]{#2 \foo\simH \@ifmtarg{#1}{#3}{#1 \llbracket #3 \rrbracket}}
+% usually: \traceconsist{E}
+\newcommand{\traceconsist}[2][H]{#2 \foo\sim #1}
+% usually: \privconsist{E}{\Phi}
+\newcommand{\privconsist}[3][M]{#2 \@ifmtarg{#1}{:}{:_{\!#1}} #3}
+
 \newcommand{\nonint}[1][]{\#\@ifmtarg{#1}{}{_{\!\!#1}}}
 \makeatother
 
@@ -839,30 +856,30 @@ valid\_interleave(S, C, E', E_1, E_2)
 
 A key property of the Legion type system is that any expression that is well-typed is
 guaranteed to access the heap only in ways permitted by the privileges under which it was typed.
-A judgement $M \vdash E : \Phi$ holds if all the memory operations in memory trace $E$ are of the types and
+A judgement $\privconsist{E}{\Phi}$ holds if all the memory operations in memory trace $E$ are of the types and
 to locations covered by the privileges in $\Phi$:
 \[ 
-\begin{array}{rl}
-M \vdash & E : \Phi \Leftrightarrow \forall \epsilon \in E. \\
-& (\epsilon = read(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge reads(r) \in \Phi)\ \wedge \\
-& (\epsilon = write(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge writes(r) \in \Phi)\ \wedge \\
-& (\epsilon = reduce_{id}(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge reduces_{id}(r) \in \Phi)
+\begin{array}{l}
+\privconsist{E}{\Phi} \Leftrightarrow \forall \epsilon \in E. \\
+\quad\quad (\epsilon = read(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge reads(r) \in \Phi)\ \wedge \\
+\quad\quad (\epsilon = write(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge writes(r) \in \Phi)\ \wedge \\
+\quad\quad (\epsilon = reduce_{id}(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge reduces_{id}(r) \in \Phi)
 \end{array}
 \]
 
-Our goal is to show $M \vdash E : \Phi$ holds for the execution of an expression $e$ with static permissions $\Phi$.
+Our goal is to show $\privconsist{E}{\Phi}$ holds for any execution of an expression $e$ with static permissions $\Phi$.
 As usual, even stating such a claim requires that corresponding parts of the initial static and dynamic environments be consistent.
 For our results, three consistency properties are needed:
 \begin{itemize}
-\item $M \sim \Omega$, a region mapping satisfies the region constraints under which the expression was typed
-\item $L \sim_H \Gamma$, local values have types consistent with the environment under which the expression was typed
-\item $S \sim H$, the initial state of the store contains values whose types are consisten with the heap typing
+\item $\mapconsist{\Omega}$, a region mapping satisfies the region constraints under which the expression was typed
+\item $\localconsist{L}{\Gamma}$, local values have types consistent with the environment under which the expression was typed
+\item $\storeconsist{S}{H}$, the initial state of the store contains values whose types are consisten with the heap typing
 \end{itemize}
 
 Two additional properties are proven for each subexpression:
 \begin{itemize}
-\item $v \sim_H M \llbracket T \rrbracket$, the expression yields a value of the right type
-\item $E \sim H$, values written to the store match the heap types of their locations
+\item $\valueconsist{v}{T}$, the expression yields a value of the right type
+\item $\traceconsist{E}$, values written to the store match the heap types of their locations
 \end{itemize}
 Figure~\ref{fig:constprop} gives the precise definition of these properties.
 
@@ -872,28 +889,28 @@ $
 \begin{array}{l}
 \begin{array}{ll}
 \begin{array}{lll}
-M \sim \Omega & \Leftrightarrow & (\forall r_i, r_j. r_i \leq r_j \in \Omega \Rightarrow M(r_i) \subseteq M(r_j))\ \wedge \\
+\mapconsist{\Omega} & \Leftrightarrow & (\forall r_i, r_j. r_i \leq r_j \in \Omega \Rightarrow M(r_i) \subseteq M(r_j))\ \wedge \\
               &                 & (\forall r_i, r_j. r_i * r_j \in \Omega \Rightarrow M(r_i) \cap M(r_j) = \emptyset) \\
-L \sim_H \Gamma & \Leftrightarrow & \forall (id,v) \in L. v \sim_H M \llbracket \Gamma \rrbracket (id) \\
-S \sim H & \Leftrightarrow & \forall (l,v) \in S. v \sim_H H(l) \\
+\localconsist{L}{\Gamma} & \Leftrightarrow & \forall (id,v) \in L. \valueconsist[]{v}{M \llbracket \Gamma \rrbracket (id)} \\
+\storeconsist{S}{H} & \Leftrightarrow & \forall (l,v) \in S. \valueconsist[]{v}{H(l)} \\
 \end{array} & 
 \begin{array}{lll}
-E \sim H & \Leftrightarrow & (\forall l, c, v. write(l,c, v) \in E \Rightarrow v \sim_H H(l))\ \wedge \\
+\traceconsist{E} & \Leftrightarrow & (\forall l, c, v. write(l,c, v) \in E \Rightarrow \valueconsist[]{v}{H(l)})\ \wedge \\
 & & (\forall id, l, v. reduce_{id}(l, v) \in E \Rightarrow \\
-& & (M \llbracket \Gamma \rrbracket (id) = (\hat T_1, \hat T_2), \emptyset, \emptyset \Rightarrow \hat T_1) \wedge H(l) = \hat T_1 \wedge v \sim_H \hat T_2) \\
+& & (M \llbracket \Gamma \rrbracket (id) = (\hat T_1, \hat T_2), \emptyset, \emptyset \Rightarrow \hat T_1) \wedge H(l) = \hat T_1 \wedge \valueconsist[]{v}{\hat T_2}) \\
 \end{array}
 \end{array} \vspace{3mm} \\
 \begin{array}{l@{\hspace{1cm}}l}
 \begin{array}{l}
-bv \sim_H bool \\
-iv \sim_H int \\
-null \sim_H \hat T@\rho \\
+\valueconsist[]{bv}{bool} \\
+\valueconsist[]{iv}{int} \\
+\valueconsist[]{null}{\hat T@\rho} \\
 \end{array} &
 \begin{array}{lll}
-l \sim_H \hat T@\rho & \Leftrightarrow & l \in \rho \wedge H(l) \sim_H \hat T \\
-\langle v_1, v_2 \rangle \sim_H \langle \hat T_1, \hat T_2 \rangle & \Leftrightarrow & (v_1 \sim_H \hat T_1) \wedge (v_2 \sim_H \hat T_2) \\
-\langle \langle \oton{\rho}, v \rangle \rangle \sim_H \text{rr}[\oton{r}] \hat T\text{ where }\Omega & \Leftrightarrow & (v \sim_H \hat T[\rho_1/r_1, \ldots \rho_n/r_n]) \wedge (\{ (r_i, \rho_i) \} \sim \Omega) \\
-K \sim_H coloring(\rho) & \Leftrightarrow & \forall l_1, v_1. (l_1, v_1) \in K \Rightarrow (l_1 \in \rho\ \wedge \\
+\valueconsist[]{l}{\hat T@\rho} & \Leftrightarrow & l \in \rho \wedge H(l) = \hat T \\
+\valueconsist[]{\tuple{v_1}{v_2}}{\tuple{\hat T_1}{\hat T_2}} & \Leftrightarrow & (\valueconsist[]{v_1}{\hat T_1}) \wedge (\valueconsist[]{v_2}{\hat T_2}) \\
+\valueconsist[]{\langle \langle \oton{\rho}, v \rangle \rangle}{\text{rr}[\oton{r}]\ \hat T\text{ where }\Omega} & \Leftrightarrow & (\valueconsist[]{v}{T[\rho_1/r_1, \ldots \rho_n/r_n]}) \wedge (\mapconsist[\{ (r_i, \rho_i) \}]{\Omega}) \\
+\valueconsist[]{K}{coloring(\rho)} & \Leftrightarrow & \forall l_1, v_1. (l_1, v_1) \in K \Rightarrow (l_1 \in \rho\ \wedge \\
 & & \forall l_2, v_2. (l_2, v_2) \in K \Rightarrow (l_1 \not= l_2) \vee (v_1 = v_2)) \\
 \end{array}
 \end{array}
@@ -907,9 +924,9 @@ $
 \begin{thm}
 \label{thm:effects}
 \rm
-If $\typeenv{e}{T}$ and $\opsenv{e}{v}{E}$  and $M \sim \Omega$, $L \sim_H \Gamma$ and $S \sim H$,
+If $\typeenv{e}{T}$ and $\opsenv{e}{v}{E}$  and $\mapconsist{\Omega}$, $\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$,
 then
-$v \sim_H M \llbracket T \rrbracket$, $E \sim H$ and $M \vdash E : \Phi$.
+$\valueconsist{v}{T}$, $\traceconsist{E}$ and $\privconsist{E}{\Phi}$.
 \end{thm}
 
 We spare the reader the lengthy proof, which can be found in
@@ -930,37 +947,37 @@ the use of the following lemmas:
 
 \begin{lem}
 \label{lemma:heapconst:apply}
-If $S \sim H$ and $E \sim H$, then $\text{apply}(S, E) \sim H$.
+If $\storeconsist{S}{H}$ and $\traceconsist{E}$, then $\storeconsist{\text{apply}(S, E)}{H}$.
 \end{lem}
 
 \begin{lem}
 \label{lemma:heapconst:effects1}
-If $E_1 \sim H$ and $E_2 \sim H$, then $E_1 \dplus E_2 \sim H$.
+If $\traceconsist{E_1}$ and $\traceconsist{E_2}$, then $\traceconsist{E_1 \dplus E_2}$.
 \end{lem}
 
 \begin{lem}
 \label{lemma:heapconst:effects2}
-If $E_1 \sim H$ and $E_2 \sim H$ and $valid\_interleave(S, C, E', E_1, E_2)$, then $E' \sim H$.
+If $\traceconsist{E_1}$ and $\traceconsist{E_2}$ and $valid\_interleave(S, C, E', E_1, E_2)$, then $\traceconsist{E'}$.
 \end{lem}
 
 \begin{lem}
 \label{lemma:effsound:effects1}
-If $M \vdash E_1 : \Phi$ and $M \vdash E_2 : \Phi$, then $M \vdash E_1 \dplus E_2 : \Phi$.
+If $\privconsist{E_1}{\Phi}$ and $\privconsist{E_2}{\Phi}$, then $\privconsist{E_1 \dplus E_2}{\Phi}$.
 \end{lem}
 
 \begin{lem}
 \label{lemma:effsound:effects2}
-If $M \vdash E_1 : \Phi$ and $M \vdash E_2 : \Phi$ and $valid\_interleave(S, C, E', E_1, E_2)$, then $M \vdash E' : \Phi$.
+If $\privconsist{E_1}{\Phi}$ and $\privconsist{E_2}{\Phi}$ and $valid\_interleave(S, C, E', E_1, E_2)$, then $\privconsist{E'}{\Phi}$.
 \end{lem}
 
 \begin{lem}
 \label{lemma:omegaclosure}
-$M \sim \Omega^*$ if and only if $M \sim \Omega$.
+$\mapconsist{\Omega^*}$ if and only if $\mapconsist{\Omega}$.
 \end{lem}
 
 \begin{lem}
 \label{lemma:phiclosure}
-$M \vdash E : \Phi^*$ if and only if $M \vdash E : \Phi$.
+$\privconsist{E}{\Phi^*}$ if and only if $\privconsist{E}{\Phi}$.
 \end{lem}
 
 The proofs of these lemmas can also be found here\cite{LegionTypes12}.  
@@ -969,7 +986,7 @@ The proofs of these lemmas can also be found here\cite{LegionTypes12}.
 
 \begin{itemize}
 
-\item[$M \sim \Omega$] Three expressions have subexpressions that modify $M$ or $\Omega$ and therefore do not
+\item[$\mapconsist{\Omega}$] Three expressions have subexpressions that modify $M$ or $\Omega$ and therefore do not
 trivially satisfy region mapping consistency.  For {\tt partition},
 the consistency of the coloring preserves region mapping consistency
 with respect to the constraints.  For {\tt unpack}, the consistency of
@@ -977,7 +994,7 @@ a region relation instance guarantees consistency of region mapping.
 Finally, the body of a called function with an initially-empty set of
 constraints, which are trivially satisfied.
 
-\item[$L \sim_H \Gamma$] Four expressions have subexpressions that modify $L$, $\Gamma$, or $M$.  For
+\item[$\localconsist{L}{\Gamma}$] Four expressions have subexpressions that modify $L$, $\Gamma$, or $M$.  For
 {\tt partition}, which only modifies $M$, the requirement that it not reuse existing
 names ensures that $M \llbracket \Gamma \rrbracket$ does not change.  For {\tt let},
 the value and type of the binding is obviously consistent, while the binding created in
@@ -986,8 +1003,8 @@ unpacked value to show equivalence under the new mapping.  The last case is the 
 called function, which requires the same style of proof as for {\tt unpack} 
 for each formal parameter.
 
-\item[$S \sim H$] The heap typing consistency of all stores used in subexpressions follows directly from the following
-lemma: If $S \sim H$ and $E \sim H$, then $\text{apply}(S, E) \sim H$.
+\item[$\storeconsist{S}{H}$] The heap typing consistency of all stores used in subexpressions follows directly from the following
+lemma: If $\storeconsist{S}{H}$ and $\traceconsist{E}$, then $\storeconsist{\text{apply}(S, E)}{H}$.
 
 \end{itemize}
 
@@ -996,7 +1013,7 @@ the subexpression by the inductive hypothesis.  The remaining obligation is to p
 conclusion for an entire expression:
 \begin{itemize}
 
-\item[$v \sim_H M \llbracket T \rrbracket$]    The consistency of 
+\item[$\valueconsist{v}{T}$]    The consistency of 
 {\tt upregion} is guaranteed by the type checking requirement of appropriate subregion
 constraints and the mapping's consistency with those constraints, and {\tt downregion}'s
 result is consistent because of the run time check.  
@@ -1016,17 +1033,16 @@ mapping, allowing the changes to the mapping to be ignored.  The last case is ag
 of a called function, and the same strategy that was used for the type consistency of the
 formal parameters works in reverse for the function's result.
 
-\item[$E \sim H$] The type consistency of the values in an expression's memory
+\item[$\traceconsist{E}$] The type consistency of the values in an expression's memory
 trace follows from the following lemma applied to the traces of subexpressions:
-if $E_1 \sim H$ and $E_2 \sim H$ and $any\_interleave(E', E_1, E_2)$, then $E' \sim H$.
+if $\traceconsist{E_1}$ and $\traceconsist{E_2}$ and $any\_interleave(E', E_1, E_2)$, then $\traceconsist{E'}$.
 New effects are added by {\tt write} and {\tt reduce} expressions, but consistency follows
 directly from the induction hypothesis.  Finally, the consistency of the
 values in a called function's memory trace is addressed in the same way as the return value.
 
-\item[$M \vdash E : \Phi$] The proof of the crucial property of containment of effects within the available privileges
-is similar in outline to the previous step.  The easy cases are covered by lemmas combining the corresponding results
-for subexpressions: if $M \vdash E_1 : \Phi$ and $M \vdash E_2 : \Phi$, then $M \vdash E_1 \dplus E_2 : \Phi$, and
-if $M \vdash E_1 : \Phi$ and $M \vdash E_2 : \Phi$ and $valid\_interleave(S, C, E', E_1, E_2)$, then $M \vdash E' : \Phi$.
+\item[$\privconsist{E}{\Phi}$] The proof of the crucial property of containment of effects within the available privileges
+is similar in outline to the previous step.  The easy cases are covered by a lemma combining the corresponding results
+for subexpressions: if $\privconsist{E_1}{\Phi}$ and $\privconsist{E_2}{\Phi}$ and $any\_interleave(E', E_1, E_2)$, then $\privconsist{E'}{\Phi}$.
 Straightforward proofs cover {\tt read}, {\tt write}, {\tt reduce}, and one final special case for function calls. 
 \end{itemize}
 
@@ -1324,13 +1340,13 @@ $$\Phi_1 \nonint[M] \Phi_2 \Leftrightarrow \displaystyle\bigwedge_{\phi_1 \in \P
 \begin{lem}
 \label{lem:nonintpriv}
 \rm
-Let $M$ be a region mapping and $E_1$ and $E_2$ two memory traces such that $M \vdash E_1 : \Phi_1$ and $M \vdash E_2 : \Phi_2$.  If $\Phi_1$ and $\Phi_2$ are noninterfering under $M$, then $E_1$ and $E_2$ must be noninterfering.
+Let $M$ be a region mapping and $E_1$ and $E_2$ two memory traces such that $\privconsist{E_1}{\Phi_1}$ and $\privconsist{E_2}{\Phi_2}$.  If $\Phi_1$ and $\Phi_2$ are noninterfering under $M$, then $E_1$ and $E_2$ must be noninterfering.
 \end{lem}
 \texcomment{
 \begin{proof}
 The proof is by contradiction.  Assume $E_1 \cancel\nonint E_2$.  Then there must be some $\epsilon_1$ in $E_1$ and some $\epsilon_2$ in $E_2$ such that $\epsilon_1 \cancel\nonint \epsilon_2$.  This requires that
 $\epsilon_1$ and $\epsilon_2$ be operations to the same location $l$ and not both be reads or both
-reductions using the same function name.  Assume $\epsilon_1 = read(l, c_1, v_1)$ and $\epsilon_2 = write(l, c_2, v_2)$.  The definition of $M \vdash E_1 : \Phi_1$ tells us that there must be some $r_1$ satisfying $l \in M(r_1) \wedge reads(r_1) \in \Phi_1$.  Similarly, there must be some $r_2$ satisfying $l \in M(r_2) \wedge writes(r_2) \in \Phi_2$.  Letting $\phi_1 = reads(r_1)$ and $\phi_2 = writes(r_2)$, we have $M(r_1) \cap M(r_2) \not= \emptyset$ (it contains at least $l$), so $\phi_1 \cancel{\nonint[M]} \phi_2$ and $\Phi_1 \cancel{\nonint[M]} \Phi_2$.  There are seven other cases to consider (using $id_1 \not= id_2$ for the reduce-reduce case), but all yield the same result.
+reductions using the same function name.  Assume $\epsilon_1 = read(l, c_1, v_1)$ and $\epsilon_2 = write(l, c_2, v_2)$.  The definition of $\privconsist{E_1}{\Phi_1}$ tells us that there must be some $r_1$ satisfying $l \in M(r_1) \wedge reads(r_1) \in \Phi_1$.  Similarly, there must be some $r_2$ satisfying $l \in M(r_2) \wedge writes(r_2) \in \Phi_2$.  Letting $\phi_1 = reads(r_1)$ and $\phi_2 = writes(r_2)$, we have $M(r_1) \cap M(r_2) \not= \emptyset$ (it contains at least $l$), so $\phi_1 \cancel{\nonint[M]} \phi_2$ and $\Phi_1 \cancel{\nonint[M]} \Phi_2$.  There are seven other cases to consider (using $id_1 \not= id_2$ for the reduce-reduce case), but all yield the same result.
 \end{proof}
 }
 We are now able to state the key result that allows the Legion runtime to safely run subtasks in parallel.
@@ -1341,7 +1357,7 @@ We are now able to state the key result that allows the Legion runtime to safely
 Let $\oton{e}$ be well-typed Legion expressions, each with its own privileges $\Phi_i$.
 Let $M$ be a region mapping, $L$ a local value mapping,
 $H$ a heap typing, and $S$ be an initial store satisfying
-$M \sim \Omega$, $L \sim_H \Gamma$, and $S \sim H$.
+$\mapconsist{\Omega}$, $\localconsist{L}{\Gamma}$, and $\storeconsist{S}{H}$.
 If $\Phi_i \nonint[M] \Phi_j$ for $1 \leq i < j \leq n$, then any parallel execution of expressions
 $\oton{e}$ results in a valid interleaving of memory operations.
 \end{thm}
