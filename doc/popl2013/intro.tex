@@ -52,11 +52,10 @@ class of machines.
 }
 
 \begin{lstlisting}[float={t},label={lst:circuit_ex},caption={Circuilt Simulation}]
-type CircuitNode        = <float/*voltage*/,float/*current*/,
-                           float/*charge*/,float/*capacitance*/>
-type CircuitWire<rn,rg>  = <CircuitNode@rn,      -- Owned node
-                            CircuitNode@(rn,rg), -- Owned or Ghost node
-                            float/*resistance*/, float/*current*/>
+-- <voltage,current,charge,capacitance>
+type CircuitNode        = <float,float,float,float>
+-- < owned node, owned or ghost node, resistance, current>
+type CircuitWire<rn,rg>  = <CircuitNode@rn, CircuitNode@(rn,rg),float,float>
 
 type node_list<rl,rn>       = < CircuitNode@rn, node_list<rl,rn>@rl >
 type wire_list<rl,rw,rn,rg>= < CircuitWire<rn,rg>@rw, wire_list<rl,rw,rn,rg>@rl >
