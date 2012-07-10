@@ -77,10 +77,14 @@ function simulate_circuit[rl,rw,rn] ( all_nodes : node_list<rl,rn>@rl,
   partition rn using pc.2 as rg0,rg1 in
   -- Disjoint partition for the owned wires of each piece
   partition rw using pc.3 as rw0,rw1 in
+  let lists0 : <wire_list<rl,rw0,rn0,rg0>@rl,node_list<rl,rn0>@rl> = 
+        build_lists[rl,rw,rn,rw0,rn0,rg0](all_nodes,all_wires,pc.1,pc.2,pc.3,0) in
   let piece0 : CircuitPiece<rl,rw,rn> = 
-                build_piece[rl,rw,rn,rw0,rn0,rg0](all_nodes,all_wires,pc.1,pc.2,pc.3,0) in
+        pack lists0 as CircuitPiece<rl,rw,rn>[rw0,rn0,rg0] in
+  let lists1 : <wire_list<rl,rw1,rn1,rg1>@rl,node_list<rl,rn1>@rl> =
+        build_lists[rl,rw,rn,rw1,rn1,rg1](all_nodes,all_wires,pc.1,pc.2,pc.3,1) in
   let piece1 : CircuitPiece<rl,rw,rn> = 
-                build_piece[rl,rw,rn,rw1,rn1,rg1](all_nodes,all_wires,pc.1,pc.2,pc.3,1) in
+        pack lists1 as CircuitPiece<rl,rw,rn>[rw1,rn1,rg1] in
       execute_time_steps[rl,rw,rn](piece0,piece1,steps)
 
 -- Time Step Loop
@@ -109,13 +113,6 @@ function build_lists[rl,rw,rn,rpw,rpn,rg] ( nodes : node_list<rl,rn>@rl,
        wc : coloring(rw), c : int), reads(rn,rw,rl), writes(rl) 
        : < wire_list<rl,rpw,rpn,rg>@rl, node_list<rl,rpn>@rl > = 
   -- Construct lists of node and wire pointers for the given colorings
-
-function build_piece[rl,rw,rn,rpw,rpn,rg] ( nodes : node_list<rl,rn>@rl, 
-      wires : wire_list<rl,rw,rn>@rl, oc : multicoloring(rn), gc : coloring(rn), 
-      wc : coloring(rw), c : int), reads(rn,rw,rl), writes(rl) : CircuitPiece<rl,rw,rn> =
-  let piece_lists : < wire_list<rl,rpw,rpn,rg>@rl, node_list<rl,rpn>@rl > = 
-    build_lists[rl,rw,rn,rpw,rpn,rg](nodes,wires,oc,gc,wc,c) in
-      pack piece_lists as CircuitPiece<rl,rw,rn>[rpw,rpn,rg] 
 \end{lstlisting}
 
 Legion programs organize data into a forest of {\em logical regions}.  Logical
