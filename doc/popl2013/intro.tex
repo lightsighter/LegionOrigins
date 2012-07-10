@@ -1,3 +1,5 @@
+
+
 % This is a description of how the listings should be formatted.
 % It can go anywhere before the listings.
 \lstset{
@@ -125,207 +127,111 @@ void update_voltages(CircuitPiece piece): RWE(piece.rn_pvt, piece.rn_shr) {
 \end{lstlisting}
 
 Legion programs organize data into a forest of {\em logical regions}.  Logical
-regions express {\em locality} (data that will be used together, and therefore may be colocated in the same
+regions express {\em locality} (data that will be used together, and therefore colocated if possible in the same
 physical memory) and {\em independence} (disjoint data that may be operated on in parallel).
-Beginning with Sequoia \cite{Fatahalion06} and Deterministic Parallel Java \cite{Bocchino09}, researchers
-have explored hierarchical decomposition of data to express locality and independence.  Two 
+Researchers have previously explored language designs with hierarchical decomposition of data to express
+locality and independence for high performance programming. Two recent examples, Sequoia \cite{Fatahalion06} and 
+Deterministic Parallel Java (DPJ) \cite{Bocchino09}, each provide a mechanism to partition the heap recursively
+into a tree of collections of data.  The two designs are different in many aspects, but agree that there is
+a single tree-shaped partitioning of data that can be checked fully statically (see Section~\ref{sec:related} for more
+discussion of related work).
+
+Our own experience with Sequoia and many high-performance applications
+written in the current industry standard mix of MPI, shared-memory
+threads, and CUDA, has taught us that for many practical situations a
+single, fairly static partitioning is insufficient.  In practice, the
+best way to partition data is often a function of the data
+itself---i.e., the partitions need to be dynamically computed.
+Furthermore, it is useful to allow mutliple partitions simultaneously of
+the same data, providing different views on to that data. Thus, in Legion the 
+handling of regions and partitioning of regions is much more dynamic than in 
+previous designs.  In particular,
+\begin{itemize}
+\item  logical regions are first-class values in Legion
+and may be dynamically allocated and stored in data structures;
+
+\item logical regions can be {\em partitioned} into {\em subregions}; the programmer can express arbitrary partitions of
+regions;
+
+\item  a logical region may be dynamically partitioned in multiple different ways.
+\end{itemize}
+A consequence of these decisions is that, through partitioning, a
+given datum may belong to multiple different regions.  For example, if
+a region $R$ participates in three separate disjoint partition
+operations and each partition allocates every element of $R$ to a
+subregion (partitions need not be total in Legion), then every element
+of $R$ is included in three different subregions.  This is why we use
+the term {\em logical} regions: language-level regions serve to name
+sets of data but do not imply anything about physical layout.  There
+is a separate system of {\em physical regions} at runtime that hold
+copies of the data in the language-level logical regions.  In fact,
+the Legion implementation routinely maintains multiple distinct
+physical regions, each with a copy of the data in the corresponding
+logical region, for performance reasons.
+
+A further consequence of placing the same data in multiple logical
+regions as a result of runtime computation is that Legion has a very
+hard static alias analysis problem on regions, which poses a problem
+for parallel computation because knowing regions do not alias is the
+basis for safe parallel execution.  This is why languages such as
+Sequoia and DPJ allow only a single static partition of each
+region---it simplifies static analysis of regions to the point that it
+is practical.  
+
+Legion's execution model is that by default, a program's semantics is
+its meaning as a sequential program, which we refer to as the {\em
+program order} execution.  While the
+implementation is not our focus here, if two functions use
+disjoint data (because all of the regions they use are disjoint), then
+Legion may execute them simultaneously.  Also like DPJ,
+Legion has a system of {\em permissions} ({\em read}, {\em write}, and
+{\em reduce}) on regions and an orthogonal system of region {\em
+coherence} modes ({\em excl}, {\em atomic}, and {\em simultaneous})
+that increase the number of situations in which functions can be
+executed in parallel.
+
+The important difference bewteen Legion and the more static approaches
+is that the hardest part of the tests to justify parallel execution is
+done dynamically instead of statically.  The key observation is that
+alias analysis is hard statically but very easy and relatively cheap
+dynamically.  Thus, Legion falls between fully static systems, such as
+Sequoia and DPJ, and fully dynamic approaches such as transactional
+memory.  Legion still has a significant static component; in
+particular, the safety of permissions is checked statically and region
+pointer dereferences are checked statically.  The dynamic alias tests
+are done at the granularity of regions and one check on a region
+itself often serves to prove the safety of many subsequent region
+accesses.  In contrast, because transactional memory has no mechanism
+for grouping heap data into larger collections, it much test the
+overlap between two sets of data on each individual element, which is
+much more expensive.
 
 
+We begin in Section~\ref{sec:example} with an example program that illustrates
+a typical style of programming in Legion as well as motivating the need for multiple, dynamically computed  partitions of
+a region.  We define Core Legion, a small language suitable for our formal development, in Section~\ref{sec:legioncore}.
+The next four sections each state and prove one of our main results and contributions:
+\begin{itemize}
+\item We prove the soundness of Legion's permissions system (Section~\ref{sec:soundness}).
 
-containing a linked list of integers and a task that sums the elements
-of the list.  As is standard in region systems, we use $T @ r$ for the
-type of a pointer to a value of type $T$ in region $r$.  The task also
-illustrates a simple use of the permissions system:
-task {\tt sum\_list} must have permission {\tt reads(r)}, the ability
-to read the values in region {\tt r}.
+\item We use the soundness of permissions to prove the soundness of Legion's region coherence modes (Section~\ref{sec:coherence}).
 
-% The tree example with partitioning and tree reversal
-\begin{lstlisting}[float={t},label={lst:treereverse},caption={Tree Partitioning and Reversal Example}]
-type tree<rl,rls,rt> = rr[rll, rlr, rtl, rtr] 
-                       < list<rl>@rls, < tree<rl,rll,rtl>@rtl, tree<rl,rlr,rtr>@rtr > >
-     		       where rll #$\le$# rls and rlr #$\le$# rls and rll #$*$# rlr and rls #$\le$# rl and
-                                  rtl #$\le$# rt and rtr #$\le$# rt and rtl #$*$# rtr 
+\item We show that if expressions $e_1$ and $e_2$ are {\em non-interfering} (can be executed in parallel), then subexpressions
+$e_1'$ of $e_1$ and $e_2'$ of $e_2$ are also non-interfering (Section~\ref{sec:scheduling}).  This result is the basis
+for a hierarchical, distributed scheduler in the Legion implementation; on the target class of machines, any centralized
+scheduler would be a serious bottleneck.
 
-task color_list[r,rs] ( clr: coloring(rs), head: list<r>@r, 
-                        splitval: int ), reads(r) : coloring(rs) =
-    if isnull(head) then clr else
-    let v : list<r> = read(head) in
-    let ps : list<r>@rs = downregion(head, rs) in
-        color_list[r,rs](if isnull(ps) then clr 
-                                else color(clr, ps, if v.1 #$<$# splitval then 1 else 2), v.2, splitval)
+\item We give experimental evidence for the Legion design.  On three real-world applications, we show that 
+dynamic region pointer checks would be expensive, justifying checking this aspect of the type system statically.
+We also show that the cost of checking aliasing on region permissions is low, showing that a much more expressive
+and dynamic langauge is not incompatible with high performance.
 
-task make_tree[rl,rls,rt] ( l: list<rl>@rl, min: int, 
-                            max: int), reads(rl,rt), writes(rt) : tree<rl,rls,rt>@rt =
-    if isnull(l) then null tree<rl,rls,rt>@rt else 
-    let v : list<rl> = read(l) in
-    if (v.1 #$<$# min) | (v.1 #$>$# max) then
-    make_tree[rl,rls,rt](v.2, min, max) else
-    let root : tree<rl,rls,rt>@rt = new tree<rl,rls,rt>@rt in
-    partition rt using newcolor rt as rtl,rtr in
-    partition rls using color_list[rl,rls](newcolor rls, v.2, v.1) as rll,rlr in
-    let ptr : list<rl>@rls = downregion(l, rls) in
-    let lhs : tree<rl,rll,rtl>@rtl = make_tree[rl,rll,rtl](v.2, min, v.1) in
-    let rhs : tree<rl,rlr,rtr>@rtr = make_tree[rl,rlr,rtr](v.2, v.1, max) in
-    let v2 : tree<rl,rls,rt> = pack < ptr, < lhs, rhs > > as tree<rl,rls,rt>[rll, rlr, rtl, rtr] in
-        write(root, v2)
+\end{itemize}
+Finally, Section~\ref{sec:related} discusses the most closely related work and
+Section~\ref{sect:conclusion} concludes.
 
-task reverse_tree[rl,rls,rt] ( root: tree<rl,rls,rt>@rt ), reads(rt), writes(rt) : tree<rl,rls,rt>@rt =
-     if isnull(root) then null tree<rl,rls,rt>@rt else
-     let v : tree<rl,rls,rt> = read(root) in
-     unpack v as u : tree<rl,rls,t>[rll, rlr, rtl, rtr] in
-     let lhs_r : tree<rl,rll,rtl>@rtl = reverse_tree[rl,rll,rtl](u.2.1) in
-     let rhs_r : tree<rl,rlr,rtr>@rtr = reverse_tree[rl,rlr,rtr](u.2.2) in
-     let v_r : tree<rl,rls,rt> = pack < u.1, < rhs_r, lhs_r > > as tree<rl,rls,rt>[rlr, rll, rtr, rtl] in
-        write(root, v_r)
-\end{lstlisting}
 
-Listing~\ref{lst:treereverse} gives a more elaborate example.  While
-artificial (it is designed to use the greatest number of Legion
-features in the smallest space), the program illustrates typical
-Legion programming idioms.  Given a list of integers as defined in Listing~\ref{lst:linkedlist}, 
-the task {\tt make\_tree} builds a binary tree of pointers to list elements.
-Each internal node of the tree stores a pointer to a list element with value $i$
-and the left and right subtrees hold pointers to list elements with values less than $i$ and greater than $i$,
-respectively.  The task {\tt reverse\_tree} then does an in-place, recursive reversal of the children of each interior
-node of the tree.  We focus on a description of the structure of types, regions and permissions in this example.
-
-Line 1 defines a {\em region relationship}, which is a bounded existential type.  The
-{\tt tree} region relationship defines the type of a binary tree
-node. The naming convention followed throughout the example is that
-regions beginning with {\tt rl} name regions 
-holding list elements and regions beginning with {\tt rt} name
-regions holding tree elements.  The most important part is the {\em
-  subregion} and {\em disjointness} constraints that describe the
-relationships between the various regions.  Here {\tt rl} is the
-region holding all list elements and {\tt rls} and {\tt rt} are the
-regions holding, respetively, the subset of list elements and the tree
-nodes for this tree.  Note that {\tt rls} is required to be a
-subregion of {\tt rl}, which means that all the values in region {\tt
-  rls} are also in region {\tt rl}.  The body of the {\tt tree} region
-relationship declares the shape of a node of the tree, which includes
-a pointer to a list element in {\tt rls} and pointers to two
-subtrees. The region relation says that there exist four regions {\tt
-  rll, rlr, rtl}, and {\tt rtr} such that the left subtree has list
-and tree elements that are in subregions {\tt rll} and {\tt rtl} of
-the corresponding list and tree regions {\tt rls} and {\tt rt} for the
-entire tree; the right subtree's list and tree elements in subregions
-{\tt rlr} and {\tt rtr} are also subregions of {\tt rls} and {\tt rt}
-respectively.  Furthermore, the constraints $\tt rll \ast rlr$ and
-$\tt rtl \ast rtr$ guarantee that the left and right subtrees are
-disjoint.
-
-The {\tt make\_tree} task, which builds a {\tt tree} indexing a list
-of integers, illustrates region {\em partitions}, another important
-building block of Legion programs.  The region arguments to {\tt
-make\_tree} are {\tt rl}, the region holding all list elements, {\tt
-rls}, the subregion of {\tt rl} holding those list elements to be
-indexed by this call to {\tt make\_tree}, and {\tt rt}, the region to
-hold the tree itself.  Line 21 divides the list elements in {\tt rls}
-into those that are less than and those that are greater than a split
-value (which is arbitrarily chosen to be the value of the first
-element of the list).  Partitioning is done by constructing a {\em
-coloring} using the task {\tt color\_list} (line 6), which traverses the list
-and for each list element in the subregion (region {\tt rs} in
-{\tt color\_region}) either colors the element 1 or 2 (colors are
-integers) depending on its relationship to the split value.  A
-coloring is just a distinghuished function, built using the Legion
-primitive {\tt color}, that maps elements of a region to integers.
-When used in a {\tt partition} expression the coloring defines how to
-populate new subregions of the partitioned region.  On line 22, the
-list elements in {\tt rls} are partitioned into two subregions {\tt
-rll} and {\tt rlr} of list elements less than, and greater than or
-equal to, the split value, respectively.  Another use of {\tt
-partition} is seen on line 21 where the {\tt rt} region is partitioned
-into subregions to hold the left {\tt rlt} and right {\tt rtr}
-subtrees, respectively.  Because region {\tt rt} is empty at this
-point (has no elements), the empty coloring function {\tt newcolor rt}
-for the region {\tt rt} is given to the partitioning operation; the
-two new subregions are also empty.  These examples illustrate that
-partitioning can be used for two distinct, and equally important,
-styles of computation: {\em allocate-then-partition}, in which a
-global collection of data is created and then subdivided for
-(usually parallel) processing, and {\em partition-then-allocate}, in
-which a collection of empty but disjoint subregions is created and
-then populated with data on which (usually parallel) processing will
-take place.
-
-Lines 26-27 illustrates {\em packing} a region relationship into the heap.
-Regions are first-class values in Legion and can be stored in data structures.
-Here a tree node is written to the {\tt root} pointer after being {\tt packed}.
-Opertionally, the four existentially quantified regions {\tt rll, rlr, rtl} and {\tt rtr} are
-stored with the tree value.  The type system guarantees statically that the packed value
-satisfies the subregion and disjointness constraints declared on lines 3-4 at the point
-the packed value is stored.  When the region relationship value is read 
-from the heap and {\tt unpack} is applied (line 32) the newly introduced regions are known to 
-satisfy these constraints.  A key design decision in Legion, one that turns out to be
-central to the soundness results as well as the ability to perform distributed, parallel
-scheduling of tasks, is that permissions and coherence annotations 
-are not captured by region relationships.  When a region is stored in the heap it has no
-permissions or coherence associated with it; these belong to the task.  When the region relationship
-is read out of the heap and unpacked, the task must already hold permissions for an unpacked region 
-to use it. Thus, on line 32, the task {\tt reverse\_tree} unpacks the region {\tt rtl} (among others).
-The reads and writes of {\tt rtl} typecheck, however, because {\tt reverse\_tree} has read and
-write permission for region {\tt rt} and $\tt rtl \leq rt$ is a constraint of the region relationship; holding
-permission for a region $r$ implies the same permission for any subregion of $r$ (note
-that the region {\tt rt} is not one of the existentially quantified regions).
-
-The {\tt reverse\_tree} task swaps the two subtrees of a tree in place (lines 35-36) after calling two
-subtasks to recursively swap all pointers in the subtrees (lines 33-34).  Beside the unpack operations, there
-are two other interesting features of this task.  First, the Legion scheduler will detect at runtime that the two
-subtasks are independent and may choose to run them in parallel.  In this example the test can even be done
-statically (because {\tt rtl} and {\tt rtr} are statically known to be disjoint) but, in general, testing the
-runtime {\em physical regions} is more precise than the compile-time logical regions.  Furthermore, it is a theorem
-that it is sufficient for the scheduler to check only {\em sibling} tasks (subtasks with the same parent task,
-such as those on lines 33-34) for dependences.  Thus, further subtasks within the recursive calls can be scheduled
-without consideration of their subtask cousins, which serves as the basis of a distributed scheduler for Legion.
-The second point is that
-even after destructively updating the subtrees the type system can prove using all of the region constraints in the
-{\tt tree} region relationship that the result is a well-formed {\tt tree}.
-
-\begin{lstlisting}[label={lst:histogram},caption={Histogram with Reductions and Atomic Coherence}]
-type hist = < int, int >
-
-task hist_tree1[rl,rls,rt,rh] ( root: tree<rl,rls,rt>@rt, hptr: hist@rh, 
-                                t : int ), reads(rt,rls,rh), writes(rh), atomic(rh) : int =
-    if isnull(root) then 0 else
-    let v : tree<rl,rls,rt> = read(root) in
-    unpack v as u : tree<rl,rls,t>[rll, rlr, rtl, rtr] in
-    let lval : list<rl> = read(u.1) in
-    let hval : hist = read(hptr) in
-    let hval2 : hist = if lval.1 #$<$# t then < hval.1 + 1, hval.2 >
-                                     else < hval.1, hval.2 + 1 > in
-    let _ : hist@rh = write(hptr, hval2) in
-        1 + hist_tree1[rl,rll,rtl,rh](u.2.1, hptr, t) + hist_tree1[rl,rlr,rtr,rh](u.2.2, hptr, t)
-
-task inc_bucket ( hval: hist, b: int ) : hist =
-    if b #$<$# 2 then < hval.1 + 1, hval.2 > else < hval.1, hval.2 + 1 >
-
-task hist_tree2[rl,rls,rt,rh] ( root: tree<rl,rls,rt>@rt, hptr: hist@rh, 
-                                t : int ), reads(rt,rls), reduces(inc_bucket, rh) : int =
-    if isnull(root) then 0 else
-    let v : tree<rl,rls,rt> = read(root) in
-    unpack v as u : tree<rl,rls,t>[rll, rlr, rtl, rtr] in
-    let lval : list<rl> = read(u.1) in
-    let _ : hist@rh = reduce(inc_bucket, hptr, if lval.1 #$<$# t then 1 else 2) in
-        1 + hist_tree1[rl,rll,rtl,rh](u.2.1, hptr, t) + hist_tree1[rl,rlr,rtr,rh](u.2.2, hptr, t)
-\end{lstlisting}
-
-The last example, shown in Listing~\ref{lst:histogram}, is a histogram
-computation that recursively walks a {\tt tree}.  The first version 
-uses a {\em coherence annotation} to relax the
-required ordering of tasks.  When there is no coherence annotation on
-a region $r$ used by a task $t$, the task implicitly requires $r$
-with {\em exclusive} coherence, meaning that any other task $t'$ that might
-update $r$ in a way visible to $t$ must appear to execute in normal sequential
-order with respect to $t$.  The task {\tt hist\_tree1} only requires the region {\tt rh}
-with {\tt atomic} coherence, meaning that other tasks that also use {\tt rh} with {\tt atomic} coherence
-may be reordered to appear to execute atomically before or after the task.  The task {\tt hist\_tree2} achieves
-a similar effect in a finer-grain way by accessing {\tt rh} only with {\tt reduce} privileges, which allows reductions
-with the same associative-commutative operator to be reordered.
-
-The rest of the paper is organized as follows.  Section~\ref{sec:legioncore} defines the core legion language, type system,
-opertional semantics, and presents our main results, proving the soundness of permissions and coherence annotations, and proving
-that it is sufficient for the scheduler to test dependences only between sibling tasks.  Section~\ref{sec:evaluation} presents an experimental evaluation, measuring both the improvement achieved by eliding checks the static type system can prove safe as well as demonstrating the performance benefits of the distributed scheduling.  Section~\ref{sec:related} discusses the most closely related work and Section~\ref{sect:conclusion} concludes.
+  
 
 
 
