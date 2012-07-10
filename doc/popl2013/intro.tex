@@ -113,7 +113,7 @@ type wire_list<rl,rw,rn,rg>= < CircuitWire<rn,rg>@rw, wire_list<rl,rw,rn,rg>@rl 
 
 type CircuitPiece<rl,rw,rn> = rr[rpw,rpn,rg]
                             < wire_list<rl,rpw,rpn,rg>@rl, node_list<rl,rpn>@rl >         
-                            where rpn <= rn and rg <= rn and rpw <= rw and
+                            where rpn #$\le$# rn and rg #$\le$# rn and rpw #$\le$# rw and
                                   rpn * rg and rn * rw and rl * rn and rl * rw
 
 -- Simulation initialization and invocation
