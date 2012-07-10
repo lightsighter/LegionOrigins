@@ -47,86 +47,76 @@ class of machines.
   escapechar=\#,
   keepspaces=true,
   literate={<}{{$\langle$}}1 {>}{{$\rangle$}}1,
-  morekeywords={task,rr,int,bool,isnull,partition,as,downregion,upregion,reads,writes,rdwrs,reduces,read,write,reduce,using,unpack,pack,coloring,color,newcolor,atomic,simultaneous},
+  morekeywords={function,rr,int,float,bool,isnull,partition,as,downregion,upregion,reads,writes,rdwrs,reduces,read,write,reduce,using,unpack,pack,coloring,multicoloring,color,newcolor,atomic,simultaneous},
   deletekeywords={float,head,min,max}
 }
 
-\begin{lstlisting}[float={t},label={lst:code_ex},caption={Circuit simulation.}]
-type CircuitNode        = < float, --voltage
-                            int >
-type CircuitWire<rn,rg>  = < CircuitNode@rn,
-                             CircuitNode@(rn,rg),
-                             float> -- current
+\begin{lstlisting}[float={t},label={lst:circuit_ex},caption={Circuilt Simulation}]
+type CircuitNode        = <float/*voltage*/,float/*current*/,
+                           float/*charge*/,float/*capacitance*/>
+type CircuitWire<rn,rg>  = <CircuitNode@rn,      -- Owned node
+                            CircuitNode@(rn,rg), -- Owned or Ghost node
+                            float/*resistance*/, float/*current*/>
 
 type node_list<rl,rn>       = < CircuitNode@rn, node_list<rl,rn>@rl >
-type wire_list<rl,rw,rn,rg> = < CircuitWire<rn,rg>@rw, wire_list<rl,rw,rn,rg>@rl >
+type wire_list<rl,rw,rn,rg>= < CircuitWire<rn,rg>@rw, wire_list<rl,rw,rn,rg>@rl >
 
 type CircuitPiece<rl,rw,rn> = rr[rpw,rpn,rg]
-        < wire_list<rl,rpw,rpn,rg>@rl,
-          node_list<rl,rpn>@rl >         
-          where rpn <= rn and rg <= rn and rpw <= rw and
-                rpn * rg and rn * rw and rl * rn and rl * rw
+                            < wire_list<rl,rpw,rpn,rg>@rl, node_list<rl,rpn>@rl >         
+                            where rpn <= rn and rg <= rn and rpw <= rw and
+                                  rpn * rg and rn * rw and rl * rn and rl * rw
 
-type piece_list<rl,rp,rw,rn> = < CircuitPiece<rl,rw,rn>@rp, piece_list<rl,rp,rw,rn>@rl >
+-- Simulation initialization and invocation
+function simulate_circuit[rl,rw,rn] ( all_nodes : node_list<rl,rn>@rl, 
+      all_wires : wire_list<rl,rw,rn,rn>@rl, steps : int ), 
+      reads(rn,rw,rl), writes(rn,rw,rl) : bool = 
+  let pc : <coloring(rn),coloring(rn),coloring(rw)> 
+            = color_circuit[rn,rw,rl](all_nodes,all_wires) in
+  -- Disjoint partition for the owned nodes of each piece
+  partition rn using pc.1 as rn0,rn1 in
+  -- Aliased partition for ghost nodes of each piece
+  partition rn using pc.2 as rg0,rg1 in
+  -- Disjoint partition for the owned wires of each piece
+  partition rw using pc.3 as rw0,rw1 in
+  let piece0 : CircuitPiece<rl,rw,rn> = 
+                build_piece[rl,rw,rn,rw0,rn0,rg0](all_nodes,all_wires,pc.1,pc.2,pc.3,0) in
+  let piece1 : CircuitPiece<rl,rw,rn> = 
+                build_piece[rl,rw,rn,rw1,rn1,rg1](all_nodes,all_wires,pc.1,pc.2,pc.3,1) in
+      execute_time_steps[rl,rw,rn](piece0,piece1,steps)
 
-function color_circuit[rn,rw,rl] ( all_nodes : node_list<rl,rn>@rl,
-                               all_wires : wire_list<rl,rw,rn>@rl ), reads(rn,rw,rl) : 
-                               <coloring(rn), coloring(rn), coloring(rw)> =  
+-- Time Step Loop
+function execute_time_steps[rl,rw,rn] ( p0 : CircuitPiece<rl,rw,rn>, 
+      p1 : CircuitPiece<rl,rw,rn>, steps : int ) , reads(rn,rw,rl), writes(rn,rw) : bool = 
+  if steps #$<$# 1 then true else
+  unpack p0 as piece0 : CircuitPiece<rl,rw,rn>[rw0,rn0,rg0] in 
+  unpack p1 as piece1 : CircuitPiece<rl,rw,rn>[rw1,rn1,rg1] in
+  let _ : bool = calc_new_currents[rl,rw0,rn0,rg0](piece0.1) in
+  let _ : bool = calc_new_currents[rl,rw1,rn1,rg1](piece1.1) in
+  let _ : bool = distribute_charge[rl,rw0,rn0,rg0](piece0.1) in
+  let _ : bool = distribute_charge[rl,rw1,rn1,rg1](piece1.1) in
+  let _ : bool = update_voltage[rl,rn0](piece0.2) in
+  let _ : bool = update_voltage[rl,rn1](piece1.2) in
+      execute_time_steps[rl,rw,rn](p0,p1,steps-1)
+
+-- Helper methods
+function color_circuit[rn,rw,rl] ( all_nodes : node_list<rl,rn>@rl, 
+                               all_wires : wire_list<rl,rw,rn>@rl ), 
+        reads(rn,rw,rl) : <coloring(rn), multicoloring(rn), coloring(rw)> =  
   -- Invoke programmer chosen coloring algorithm (e.g. METIS)
+  -- return owned, ghost, wire colorings
 
-function build_lists[rl,rw,rn,rpw,rpn,rg] ( all_nodes : node_list<rl,rn>@rl, all_wires : wire_list<rl,rw,rn>@rl,
-                                 owned_coloring : coloring(rn), ghost_coloring : coloring(rn),
-                                 wires_coloring : coloring(rw), c : int), reads(rn,rw,rl), writes(rl) :
-                                 < wire_list<rl,rpw,rpn,rg>@rl, node_list<rl,rpn>@rl > = 
-  -- Construct node and wire lists for each piece based on coloring
+function build_lists[rl,rw,rn,rpw,rpn,rg] ( nodes : node_list<rl,rn>@rl, 
+       wires : wire_list<rl,rw,rn>@rl, oc : coloring(rn), gc : multicoloring(rn), 
+       wc : coloring(rw), c : int), reads(rn,rw,rl), writes(rl) 
+       : < wire_list<rl,rpw,rpn,rg>@rl, node_list<rl,rpn>@rl > = 
+  -- Construct lists of node and wire pointers for the given colorings
 
-function build_piece_list[rl,rp,rw,rn] ( one: CircuitPiece<rl,rw,rn>, two : CircuitPiece<rl,rw,rn>,
-                                 three: CircuitPiece<rl,rw,rn>, four : CircuitPiece<rl,rw,rn> ),
-                                 reads(rl,rp,rw,rn), writes(rl,rp) : piece_list<rl,rp,rw,rn>@rl =
-  -- Build a list of the pieces
-
-function simulate_circuit[rl,rw,rn] ( all_nodes : node_list<rl,rn>@rl,
-                                  all_wires : wire_list<rl,rw,rn,rn>@rl, steps : int ),
-                          reads(rn,rw,rl), writes(rn,rw,rl) : bool = 
-  let pc : <coloring(rn),<coloring(rn),coloring(rw)> >
-                      = color_circuit[rn,rw,rl](all_nodes,all_wires) in
-  partition rn using pc.1 as rn0,rn1,rn2,rn3 in
-  partition rn using pc.2 as rg0,rg1,rg2,rg3 in
-  partition rw using pc.3 as rw0,rw1,rw2,rw3 in
-  let piece0_lists : < wire_list<rl,rw0,rn0,rg0>@rl, node_list<rl,rn0>@rl > = 
-           build_lists[rl,rw,rn,rw0,rn0,rg0](all_nodes,all_wires,pc.1,pc.2.1,pc.2.2,0) in
-  let piece0 : CircuitPiece<rl,rw,rn> = pack piece0_lists as CircuitPiece<rl,rw,rn>[rw0,rn0,rg0] in
-  let piece1_lists : < wire_list<rl,rw1,rn1,rg1>@rl, node_list<rl,rn1>@rl > = 
-           build_lists[rl,rw,rn,rw1,rn1,rg1](all_nodes,all_wires,pc.1,pc.2.1,pc.2.2,1) in
-  let piece1 : CircuitPiece<rl,rw,rn> = pack piece1_lists as CircuitPiece<rl,rw,rn>[rw1,rn1,rg1] in
-  let piece2_lists : < wire_list<rl,rw2,rn2,rg2>@rl, node_list<rl,rn2>@rl > = 
-           build_lists[rl,rw,rn,rw2,rn2,rg2](all_nodes,all_wires,pc.1,pc.2.1,pc.2.2,2) in
-  let piece2 : CircuitPiece<rl,rw,rn> = pack piece2_lists as CircuitPiece<rl,rw,rn>[rw2,rn2,rg2] in
-  let piece3_lists : < wire_list<rl,rw3,rn3,rg3>@rl, node_list<rl,rn3>@rl > = 
-           build_lists[rl,rw,rn,rw3,rn3,rg3](all_nodes,all_wires,pc.1,pc.2.1,pc.2.2,3) in
-  let piece3 : CircuitPiece<rl,rw,rn> = pack piece3_lists as CircuitPiece<rl,rw,rn>[rw3,rn3,rg3] in
-  let all_pieces : pieces_list<rl,rl,rw,rn> = build_piece_list[rl,rl,rw,rn](piece0,piece1,piece2,piece3) in
-      execute_time_step[rl,rl,rw,rn](all_pieces,steps)
-
-function execute_time_step[rl,rp,rw,rn] ( all_pieces : pieces_list<rl,rp,rw,rn>@rl ),
-                                          reads(rl,rp,rw,rn), writes(rw,rn) : bool =
-  if steps < 1 then true else
-  let all_pieces' : pieces_list<rl,rp,rw,rn>@rl = map calc_new_currents[rl,rw,rn] all_pieces in
-  let all_pieces'' : pieces_list<rl,rp,rw,rn>@rl = map distribute_charge[rl,rw,rn] all_pieces' in
-  let all_pieces''' : pieces_list<rl,rp,rw,rn>@rl = map update_voltage[rl,rw,rn] all_pieces'' in
-      execute_time_step[rl,rp,rw,rn](all_pieces''',steps-1)
-
-function calc_new_currents[rl,rw,rn] ( p : CircuitPiece<rl,rw,rn> ), 
-                                      reads(rl,rw,rn), writes(rw) : CircuitPiece<rl,rw,rn> =
-  -- Calculate new currents for each wire
-
-function distribute_charge[rl,rw,rn] ( p : CircuitPiece<rl,rw,rn> ), 
-                      reads(rl,rw,rn), reduces(reduce_charge,rn), atomic(rn) : CircuitPiece<rl,rw,rn> =
-  -- Distribute charge from each wire to all nodes
-
-function update_voltage[rl,rw,rn] ( piece : CircuitPiece<rl,rw,rn> ), reads(rl,rw,rn), writes(rn) : bool = 
-  -- Update voltage for all our owned nodes
-
+function build_piece[rl,rw,rn,rpw,rpn,rg] ( nodes : node_list<rl,rn>@rl, 
+      wires : wire_list<rl,rw,rn>@rl, oc : multicoloring(rn), gc : coloring(rn), 
+      wc : coloring(rw), c : int), reads(rn,rw,rl), writes(rl) : CircuitPiece<rl,rw,rn> =
+  let piece_lists : < wire_list<rl,rpw,rpn,rg>@rl, node_list<rl,rpn>@rl > = 
+    build_lists[rl,rw,rn,rpw,rpn,rg](nodes,wires,oc,gc,wc,c) in
+      pack piece_lists as CircuitPiece<rl,rw,rn>[rpw,rpn,rg] 
 \end{lstlisting}
 
 Legion programs organize data into a forest of {\em logical regions}.  Logical
@@ -138,6 +128,44 @@ Deterministic Parallel Java (DPJ) \cite{Bocchino09}, each provide a mechanism to
 into a tree of collections of data.  The two designs are different in many aspects, but agree that there is
 a single tree-shaped partitioning of data that can be checked fully statically (see Section~\ref{sec:related} for more
 discussion of related work).
+
+\begin{lstlisting}[float={t},label={lst:circuit_leaf},caption={Circuilt Leaf Tasks}]
+function calc_new_currents[rl,rw,rn,rg] ( ptr_list : wire_list<rl,rw,rn,rg>@rl ), 
+      reads(rl,rw,rn,rg), writes(rw) : bool =
+  if isnull(ptr_list) then true else
+  let wire_node : wire_list<rl,rw,rn,rg> = read(ptr_list) in
+  let wire : CircuitWire<rn,rg> = read(wire_node.1) in
+  let in_node : CircuitNode = read(wire.1) in
+  let out_node : CircuitNode = read(wire.2) in
+  let current : float = (in_node.1 - out_node.1) /  wire.3 in 
+  let new_wire : CircuitWire<rn,rg> = <wire.1,wire.2,wire.3,current> in
+  let _ : CircuitWire<rn,rg>@rw = write(wire_node.1, new_wire) in
+      calc_new_currents[rl,rw,rn,rg](wire_node.2)
+
+function distribute_charge[rl,rw,rn,rg] ( ptr_list : wire_list<rl,rw,rn,rg>@rl ), 
+      reads(rl,rw,rn), reduces(reduce_charge,rn,rg), atomic(rn,rg) : bool =
+  if isnull(ptr_list) then true else
+  let wire_node : wire_list<rl,rw,rn,rg> = read(ptr_list) in
+  let wire : CircuitWire<rn,rg> = read(wire_node.1) in
+  let _ : CircuitNode@rn = reduce(reduce_charge, wire.1, wire.4) in
+  let _ : CircuitNode@(rn,rg) = reduce(reduce_charge, wire.2, wire.4) in
+      distribute_charge[rl,rw,rn,rg](wire_node.2)
+
+function update_voltage[rl,rn] ( ptr_list : node_list<rl,rn>@rl ), 
+      reads(rl,rn), writes(rn) : bool = 
+  if isnull(ptr_list) then true else
+  let node_node : node_list<rl,rn> = read(ptr_list) in
+  let node : CircuitNode = read(node_node.1) in
+  let voltage : float = (node.3/node.4) in
+  let new_node : CircuitNode = <voltage,node.2,node.3,node.4> in
+  let _ : CircuitNode@rn = write(node_node.1, new_node) in
+      update_voltage[rl,rn](node_node.2)
+
+-- Reduction function for distribute charge
+function reduce_charge ( node : CircuitNode, current : float ) : CircuitNode =
+    let new_charge : float = node.3 + current in
+        < node.1,new_charge,node.3,node.4>
+\end{lstlisting}
 
 Our own experience with Sequoia and many high-performance applications
 written in the current industry standard mix of MPI, shared-memory
