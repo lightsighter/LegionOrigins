@@ -1,0 +1,80 @@
+type CircuitNode        = < int, int >
+type CircuitWire<rn,rg>  = < CircuitNode@rn,
+                             CircuitNode@(rn,rg) >
+
+type node_list<rl,rn>       = < CircuitNode@rn, node_list<rl,rn>@rl >
+type wire_list<rl,rw,rn,rg>= < CircuitWire<rn,rg>@rw, wire_list<rl,rw,rn,rg>@rl >
+
+type CircuitPiece<rl,rw,rn> = rr[rpw,rpn,rg]
+        < wire_list<rl,rpw,rpn,rg>@rl,
+          node_list<rl,rpn>@rl >         
+          where rpn <= rn and rg <= rn and rpw <= rw and
+                rpn * rg and rn * rw and rl * rn and rl * rw
+
+task color_circuit[rn,rw,rl] ( all_nodes : node_list<rl,rn>@rl,
+                               all_wires : wire_list<rl,rw,rn>@rl ), reads(rn,rw,rl) : 
+                               <coloring(rn), <coloring(rn), coloring(rw)> > =  
+    <newcolor rn, <newcolor rn, newcolor rw> >
+
+task build_lists[rl,rw,rn,rpw,rpn,rg] ( all_nodes : node_list<rl,rn>@rl, all_wires : wire_list<rl,rw,rn>@rl,
+                                 owned_coloring : coloring(rn), ghost_coloring : coloring(rn),
+                                 wires_coloring : coloring(rw), c : int), reads(rn,rw,rl), writes(rl) :
+                                 < wire_list<rl,rpw,rpn,rg>@rl, node_list<rl,rpn>@rl > = 
+  let wire_ptr : wire_list<rl,rpw,rpn,rg>@rl = new wire_list<rl,rpw,rpn,rg>@rl in 
+  let node_ptr : node_list<rl,rpn>@rl = new node_list<rl,rpn>@rl in
+    <wire_ptr,node_ptr>
+
+task calc_new_currents[rl,rw,rn] ( piece : CircuitPiece<rl,rw,rn> ), reads(rl,rw,rn), writes(rw) : bool =
+  true
+
+task distribute_charge[rl,rw,rn] ( piece : CircuitPiece<rl,rw,rn> ), reads(rl,rw,rn), reduces(reduce_charge,rn), atomic(rn) : bool =
+  true
+
+task update_voltage[rl,rw,rn] ( piece : CircuitPiece<rl,rw,rn> ), reads(rl,rw,rn), writes(rn) : bool = 
+  true
+
+task reduce_charge ( node : CircuitNode, current : int ) : CircuitNode =
+    let new_charge : int = node.1 + current in
+    let result : CircuitNode = < new_charge, node.2> in
+        result
+
+task simulate_circuit[rl,rw,rn] ( all_nodes : node_list<rl,rn>@rl,
+                                  all_wires : wire_list<rl,rw,rn,rn>@rl, steps : int ),
+                          reads(rn,rw,rl), writes(rn,rw,rl) : bool = 
+  let pc : <coloring(rn),<coloring(rn),coloring(rw)> >
+                      = color_circuit[rn,rw,rl](all_nodes,all_wires) in
+  partition rn using pc.1 as rn0,rn1,rn2,rn3 in
+  partition rn using pc.2.1 as rg0,rg1,rg2,rg3 in
+  partition rw using pc.2.2 as rw0,rw1,rw2,rw3 in
+  let piece0_lists : < wire_list<rl,rw0,rn0,rg0>@rl, node_list<rl,rn0>@rl > = 
+           build_lists[rl,rw,rn,rw0,rn0,rg0](all_nodes,all_wires,pc.1,pc.2.1,pc.2.2,0) in
+  let piece0 : CircuitPiece<rl,rw,rn> = pack piece0_lists as CircuitPiece<rl,rw,rn>[rw0,rn0,rg0] in
+  let piece1_lists : < wire_list<rl,rw1,rn1,rg1>@rl, node_list<rl,rn1>@rl > = 
+           build_lists[rl,rw,rn,rw1,rn1,rg1](all_nodes,all_wires,pc.1,pc.2.1,pc.2.2,1) in
+  let piece1 : CircuitPiece<rl,rw,rn> = pack piece1_lists as CircuitPiece<rl,rw,rn>[rw1,rn1,rg1] in
+  let piece2_lists : < wire_list<rl,rw2,rn2,rg2>@rl, node_list<rl,rn2>@rl > = 
+           build_lists[rl,rw,rn,rw2,rn2,rg2](all_nodes,all_wires,pc.1,pc.2.1,pc.2.2,2) in
+  let piece2 : CircuitPiece<rl,rw,rn> = pack piece2_lists as CircuitPiece<rl,rw,rn>[rw2,rn2,rg2] in
+  let piece3_lists : < wire_list<rl,rw3,rn3,rg3>@rl, node_list<rl,rn3>@rl > = 
+           build_lists[rl,rw,rn,rw3,rn3,rg3](all_nodes,all_wires,pc.1,pc.2.1,pc.2.2,3) in
+  let piece3 : CircuitPiece<rl,rw,rn> = pack piece3_lists as CircuitPiece<rl,rw,rn>[rw3,rn3,rg3] in
+      execute_time_steps[rl,rw,rn](piece0,piece1,piece2,piece3,steps)
+
+task execute_time_steps[rl,rw,rn] ( piece0 : CircuitPiece<rl,rw,rn>, piece1 : CircuitPiece<rl,rw,rn>,
+                                        piece2 : CircuitPiece<rl,rw,rn>, piece3 : CircuitPiece<rl,rw,rn>,
+                                        steps : int ) , reads(rn,rw,rl), writes(rn,rw) : bool = 
+  if steps < 1 then true else
+  let _ : bool = calc_new_currents[rl,rw,rn](piece0) in
+  let _ : bool = calc_new_currents[rl,rw,rn](piece1) in
+  let _ : bool = calc_new_currents[rl,rw,rn](piece2) in
+  let _ : bool = calc_new_currents[rl,rw,rn](piece3) in
+  let _ : bool = distribute_charge[rl,rw,rn](piece0) in
+  let _ : bool = distribute_charge[rl,rw,rn](piece1) in
+  let _ : bool = distribute_charge[rl,rw,rn](piece2) in
+  let _ : bool = distribute_charge[rl,rw,rn](piece3) in
+  let _ : bool = update_voltage[rl,rw,rn](piece0) in
+  let _ : bool = update_voltage[rl,rw,rn](piece1) in
+  let _ : bool = update_voltage[rl,rw,rn](piece2) in
+  let _ : bool = update_voltage[rl,rw,rn](piece3) in
+      execute_time_steps[rl,rw,rn](piece0,piece1,piece2,piece3,steps+1)
+
