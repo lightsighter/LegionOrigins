@@ -325,10 +325,10 @@ def make_plot2(fig,orig,checks,box,prob_size):
         boxlib.append(boxlib_best*o.nodes)
         # Keep the index up to date
         i = i + 1
-    plt.bar(offset+ind, overhead_checks, width, color=tableau2, bottom=overhead_accum, label='Checking Overhead')
-    plt.bar(offset+ind, comm_checks, width, color=tableau3, bottom=comm_accum, label='Communication')
-    plt.bar(offset+ind, runtime_checks, width, color=tableau5, bottom=runtime_accum, label='Runtime Overhead')
-    plt.bar(offset+ind, kernel_checks, width, color=tableau9, label='Kernel')
+    plt.bar(offset+ind, overhead_checks, width, color=tableau6, bottom=overhead_accum, label='Checking Overhead')
+    plt.bar(offset+ind, comm_checks, width, color=tableau2, bottom=comm_accum, label='Communication')
+    plt.bar(offset+ind, runtime_checks, width, color=tableau10, bottom=runtime_accum, label='Runtime Overhead')
+    plt.bar(offset+ind, kernel_checks, width, color=tableau18, label='Kernel')
 
     # Draw the lines for the baselines
     overlap = 0.1
