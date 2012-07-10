@@ -67,9 +67,9 @@ type CircuitPiece<rl,rw,rn> = rr[rpw,rpn,rg]
 
 -- Simulation initialization and invocation
 function simulate_circuit[rl,rw,rn] ( all_nodes : node_list<rl,rn>@rl, 
-      all_wires : wire_list<rl,rw,rn,rn>@rl, steps : int ), 
+                            all_wires : wire_list<rl,rw,rn,rn>@rl, steps : int ), 
       reads(rn,rw,rl), writes(rn,rw,rl) : bool = 
-  let pc : <coloring(rn),coloring(rn),coloring(rw)> 
+  let pc : <coloring(rn),multicoloring(rn),coloring(rw)> 
             = color_circuit[rn,rw,rl](all_nodes,all_wires) in
   -- Disjoint partition for the owned nodes of each piece
   partition rn using pc.1 as rn0,rn1 in
