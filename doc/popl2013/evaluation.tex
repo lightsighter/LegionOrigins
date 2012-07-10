@@ -19,25 +19,26 @@ are connected by a QDR Infiniband interconnect.
 \subsection{Expressivity}
 \label{subsec:expressivity}
 We evaluate Legion on three real-world applications.  To qualitatively gauge the 
-expressivity of the Legion type system, we introduce each of these applications
+expressivity of the Legion type system, we introduce these applications
 by describing features of the Legion type system used in their implementations.
+The Circuit example was already covered in detail in Section~\ref{sec:example}.
 
-\subsubsection{Circuit Simulation}
-\label{subsec:circuit}
-Circuit simulates the wires of a large integrated circuit.
+%\subsubsection{Circuit Simulation}
+%\label{subsec:circuit}
+%Circuit simulates the wires of a large integrated circuit.
 % using an RLC model.  
 %The computation consists of three phases for each time step: compute the current in each wire using
 %an iterative model, updated the charge in each node, and compute the voltage of each node.
-The primary data structure is a large irregular graph, which is
-dynamically partitioned into pieces to enable parallel simulation.
-Our implementation creates separate regions for the wires and
-nodes,  which are recursively partitioned into
-subregions for pieces of the graph.  The node region is partitioned an additional way to 
-describe the sets of ghost nodes required for each piece.  
-The information about each piece of the graph is stored
-in a region relationship that remembers the disjointness information of each piece
-from other pieces.  The tasks for the three phases of the computation use different combinations of
-read, write, and reduce privileges as well as exclusive and simultaneous coherence.
+%The primary data structure is a large irregular graph, which is
+%dynamically partitioned into pieces to enable parallel simulation.
+%Our implementation creates separate regions for the wires and
+%nodes,  which are recursively partitioned into
+%subregions for pieces of the graph.  The node region is partitioned an additional way to 
+%describe the sets of ghost nodes required for each piece.  
+%The information about each piece of the graph is stored
+%in a region relationship that remembers the disjointness information of each piece
+%from other pieces.  The tasks for the three phases of the computation use different combinations of
+%read, write, and reduce privileges as well as exclusive and simultaneous coherence.
 
 \subsubsection{Fluid Simulation}
 \label{subsec:fluid}
