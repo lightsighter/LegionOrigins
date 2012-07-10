@@ -27,6 +27,12 @@
 \newcommand{\nonint}[1][]{\#\@ifmtarg{#1}{}{_{\!\!#1}}}
 \makeatother
 
+% override BCP's typesetrule function to left-justify multiple lines of hypotheses
+\renewcommand{\typesetrule}[2]{%
+   \setrulebody{%
+      \frac{\begin{array}{@{}l@{}}#1\end{array}}%
+           {\begin{array}{@{}l@{}}#2\end{array}}}}
+
 % fun latex tricks to make typeenv and opsenv more friendly
 \makeatletter
 \define@key{typeenv}{G}{\def\typeenv@G{#1}}
@@ -94,7 +100,7 @@ $q$ & ::= & atomic$(r)$ $\;\;\;\mid\;\;\;$ simult$(r)$ & &
 & & & &   
        & $\mid$& $\text{if}\ e_1\ \text{then}\ e_2\ \text{else}\ e_3$ &  \\
 $v$ & ::= & & values &   
-       & $\mid$& $id[r_1, \ldots, r_n](e_1,\ldots,e_n)$ & task calls \\
+       & $\mid$& $id[r_1, \ldots, r_n](e_1,\ldots,e_n)$ & function calls \\
   &$\mid$& $bv$ $\;\;\;\mid\;\;\;$ $iv$ & base values &   
        & $\mid$ & $\text{partition}\ r_p\text{ using }e_1\text{ as }\oton{r}\text{ in }\ e_2$ &  \\
   &$\mid$& $\langle v_1, v_2 \rangle$ & tuple & 
@@ -121,7 +127,7 @@ $v$ & ::= & & values &
 %  &$\mid$& $e_1 < e_2$ & comparison operations \\
 %  &$\mid$& $\text{let}\ id : T = e_1 \text{in}\ e_2$ &  \\
 %  &$\mid$& $\text{if}\ e_1\ \text{then}\ e_2\ \text{else}\ e_3$ &  \\
-%  &$\mid$& $id[r_1, \ldots, r_n](e_1,\ldots,e_n)$ & task calls \\
+%  &$\mid$& $id[r_1, \ldots, r_n](e_1,\ldots,e_n)$ & function calls \\
 %  &$\mid$& $\text{partition}\ r_p\text{ using }e_1\text{ as }\oton{r}\text{ in }\ e_2$ &  \\
 %  &$\mid$& $\text{pack}\ e_1\ \text{as}\ T[r_1,\ldots,r_n]$ &  \\
 %  &$\mid$& $\text{unpack}\ e_1\ \text{as}\ id : T[r_1,\ldots,r_n]\ \text{in}\ e_2$ &  \\
@@ -148,13 +154,15 @@ are annotated with a list of regions into which they may point; in a
 well-typed program, the pointer is guaranteed to point to at least one
 of those regions. There is a special type for {\em colorings}, which
 are used to specify partitions of regions into subregions.
-Functions/tasks in Legion are named, accept one or more arguments and
+Functions in Legion are named, accept one or more arguments and
 return a value of some type.  A function also declares the region
-access privileges and coherence it requires.  Function types are
+access privileges and coherence it requires.  A function may be executed
+within the current task or run as a separate subtask - this decision is made
+by the Legion task scheduler.  Function types are
 universally quantified over all region names appearing in the type.
-The final type is a region relationship, instance of which capture a value and
-one or more regions satisfying associated constraints.  An
-instance of a region relation can be read out of the heap and
+The final type is a region relationship, an instance of which captures a value and
+one or more regions satisfying associated constraints.  A region relation instance
+can be written into the heap and later read and
 unpacked, giving new local names to the regions contained in
 the instance.
 
@@ -308,9 +316,9 @@ T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
 \end{array}}
 { 
 \begin{array}{l@{ }l}
-\vdash \{ & \text{task }id_1[r_{11}, \ldots, r_{1k_1}]( a_{11} : T_{11}, \ldots a_{1n_1} : T_{1n_1} ), \Phi_1, Q_1 : T_{1r} : e_1, \\
+\vdash \{ & \text{function }id_1[r_{11}, \ldots, r_{1k_1}]( a_{11} : T_{11}, \ldots a_{1n_1} : T_{1n_1} ), \Phi_1, Q_1 : T_{1r} : e_1, \\
           & \ldots \\
-          & \text{task }id_p[r_{p1}, \ldots, r_{pk_1}]( a_{p1} : T_{p1}, \ldots a_{pn_p} : T_{pn_p} ), \Phi_p, Q_p : T_{pr} : e_p \} : \bullet
+          & \text{function }id_p[r_{p1}, \ldots, r_{pk_1}]( a_{p1} : T_{p1}, \ldots a_{pn_p} : T_{pn_p} ), \Phi_p, Q_p : T_{pr} : e_p \} : \bullet
 \end{array} }
 }
 \caption{Legion Core Type System}
@@ -325,10 +333,10 @@ T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
 \begin{minipage}{\linewidth}
 %\centering
 \begin{tabular}{m{4cm}m{3.5cm}m{5cm}m{5cm}}
-\infax[BOOL]{\typeenv{bv}{bool}} & 
-\infax[INT]{\typeenv{iv}{int}} & 
-\infrule[TUPLE1]{\typeenvx e : \langle T_1,T_2 \rangle}{\typeenvx e\text{.1}\ : T_1} & 
-\infrule[TUPLE2]{\typeenvx e : \langle T_1,T_2 \rangle}{\typeenvx e\text{.2}\ : T_2} 
+\infax[T-Bool]{\typeenv{bv}{bool}} & 
+\infax[T-Int]{\typeenv{iv}{int}} & 
+\infrule[T-Tuple1]{\typeenvx e : \langle T_1,T_2 \rangle}{\typeenvx e\text{.1}\ : T_1} & 
+\infrule[T-Tuple2]{\typeenvx e : \langle T_1,T_2 \rangle}{\typeenvx e\text{.2}\ : T_2} 
 \end{tabular}
 \end{minipage}
 % Row 2:  var, null, isnull, maketuple
@@ -336,10 +344,10 @@ T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
 \vspace{-0.4cm}
 %\centering
 \begin{tabular}{m{3cm}m{3cm}m{5cm}m{6cm}}
-\infrule[VAR]{\Gamma(id) = T}{\typeenvx id : T} &
-\infax[NULL]{\typeenvx \text{null }T@r : T@r} &
-\infrule[ISNULL]{\typeenvx e : T@(\oton{r})}{\typeenvx \text{isnull}(e) : bool} &
-\infrule[MAKETUPLE]{\typeenvx e_1 : T_1 \andalso \typeenvx e_2 : T_2}{\typeenvx \langle e_1, e_2 \rangle : \langle T_1, T_2 \rangle}
+\infrule[T-Var]{\Gamma(id) = T}{\typeenvx id : T} &
+\infax[T-Null]{\typeenvx \text{null }T@r : T@r} &
+\infrule[T-IsNull]{\typeenvx e : T@(\oton{r})}{\typeenvx \text{isnull}(e) : bool} &
+\infrule[T-MakeTuple]{\typeenvx e_1 : T_1 \andalso \typeenvx e_2 : T_2}{\typeenvx \langle e_1, e_2 \rangle : \langle T_1, T_2 \rangle}
 \end{tabular}
 \end{minipage}
 % Row 3: new, newcolor, coloring
@@ -347,9 +355,9 @@ T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
 \vspace{-0.6cm}
 %\centering
 \begin{tabular}{m{4cm}m{5cm}m{9cm}}
-\infax[NEW]{\typeenvx \text{new }T@r : T@r} &
-\infax[NEWCOLOR]{\typeenvx \text{newcolor }r : \text{coloring}(r)} &
-\infrule[COLORING]{\typeenvx e_1 : \text{coloring}(r) \andalso \typeenvx e_2 : T@r \andalso \typeenvx e_3 : int}{\typeenvx \text{color}(e_1, e_2, e_3) : \text{coloring}(r)}
+\infax[T-New]{\typeenvx \text{new }T@r : T@r} &
+\infax[T-Newcolor]{\typeenvx \text{newcolor }r : \text{coloring}(r)} &
+\infrule[T-Color]{\typeenvx e_1 : \text{coloring}(r) \andalso \typeenvx e_2 : T@r \andalso \typeenvx e_3 : int}{\typeenvx \text{color}(e_1, e_2, e_3) : \text{coloring}(r)}
 \end{tabular}
 \end{minipage}
 % Row 4: let, add, compare
@@ -357,17 +365,17 @@ T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
 \vspace{-0.7cm}
 %\centering
 \begin{tabular}{m{6cm}m{5cm}m{6cm}}
-\infrule[LET]{\typeenvx e_1 : T_1 \\ \typeenvx[G={\Gamma[id/T_1]}] e_2 : T_2}{\typeenvx : \text{let}\ id : T_1 \text{in}\ e_2 : T_2} &
-\infrule[ADD]{\typeenvx e_1 : int \\ \typeenvx e_2 : int}{\typeenvx e_1 + e_2 : int} &
-\infrule[COMPARE]{\typeenvx e_1 : int \\ \typeenvx e_2 : int}{\typeenvx e_1 < e_2 : bool}
+\infrule[T-Let]{\typeenvx e_1 : T_1 \\ \typeenvx[G={\Gamma[id/T_1]}] e_2 : T_2}{\typeenvx : \text{let}\ id : T_1 \text{in}\ e_2 : T_2} &
+\infrule[T-Add]{\typeenvx e_1 : int \\ \typeenvx e_2 : int}{\typeenvx e_1 + e_2 : int} &
+\infrule[T-Compare]{\typeenvx e_1 : int \\ \typeenvx e_2 : int}{\typeenvx e_1 < e_2 : bool}
 \end{tabular}
 \end{minipage}
 % Row 5: upregion, downregion
 \begin{minipage}{\linewidth}
 \vspace{-0.4cm}
 \begin{tabular}{m{9cm}m{10cm}}
-\infrule[UPREG]{\typeenvx e : T@(r'_1, \ldots r'_k) \andalso \forall i. \exists j, r'_i \leq r_j \in \Omega^*}{\typeenvx upregion(e,\oton{r}) : T@(\oton{r})} &
-\infrule[DOWNREG]{\typeenvx e : T@(r'_1, \ldots r'_k)
+\infrule[T-UpRgn]{\typeenvx e : T@(r'_1, \ldots r'_k) \andalso \forall i. \exists j, r'_i \leq r_j \in \Omega^*}{\typeenvx upregion(e,\oton{r}) : T@(\oton{r})} &
+\infrule[T-DownRgn]{\typeenvx e : T@(r'_1, \ldots r'_k)
 % \andalso \forall j. \exists i, r_j \leq r'_i \in \Omega^*
 }{\typeenvx downregion(e,\oton{r}) : T@(\oton{r})}
 \end{tabular}
@@ -376,9 +384,9 @@ T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
 \begin{minipage}{\linewidth}
 \vspace{-0.3cm}
 \begin{tabular}{m{5cm}m{5cm}m{8cm}}
-\infrule[READ]{\typeenvx e_1 : T@(\oton{r}) \\ \forall i, reads(r_i) \in \Phi^*}{\typeenvx \text{read}(e_1) : T} &
-\infrule[WRITE]{\typeenvx e_1 : T@(\oton{r}) \\ \typeenvx e_2 : T \\ \forall i, writes(r_i) \in \Phi^*}{\typeenvx \text{write}(e_1, e_2) : T@(\oton{r})} &
-\infrule[REDUCE]{\Gamma(id) = (T_1, T_2), \emptyset, \emptyset \rightarrow T_1 \andalso \typeenvx e_2 : T_2 \\
+\infrule[T-Read]{\typeenvx e_1 : T@(\oton{r}) \\ \forall i, reads(r_i) \in \Phi^*}{\typeenvx \text{read}(e_1) : T} &
+\infrule[T-Write]{\typeenvx e_1 : T@(\oton{r}) \\ \typeenvx e_2 : T \\ \forall i, writes(r_i) \in \Phi^*}{\typeenvx \text{write}(e_1, e_2) : T@(\oton{r})} &
+\infrule[T-Reduce]{\Gamma(id) = (T_1, T_2), \emptyset, \emptyset \rightarrow T_1 \andalso \typeenvx e_2 : T_2 \\
  \typeenvx e_1 : T_1@(\oton{r}) \andalso \forall i, reduces_{id}(r_i) \in \Phi^*}{\typeenvx \text{reduce}(id, e_1, e_2) : T_1@(\oton{r})}
 \end{tabular}
 \end{minipage}
@@ -386,33 +394,33 @@ T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
 \begin{minipage}{\linewidth}
 \vspace{-0.6cm}
 \begin{tabular}{m{5cm}m{5cm}m{8cm}}
-\infrule[PACK]{T_1 = \exists r'_1, \ldots r'_n.\ T_2\text{ where }\Omega_1 \\ \Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Omega^* \\ \typeenvx e_1 : T_2[r_1/r'_1,\ldots,r_k/r'_k]}{\typeenvx \text{pack}\ e_1\ \text{as}\ T_1[\otok{k}{r}] : T_1} &
-\infrule[IF-ELSE]{\typeenvx e_1 : bool \\ \typeenvx e_2 : T \\ \typeenvx e_3 : T}{\typeenvx \text{if}\ e_1\ \text{then}\ e_2\ \text{else}\ e_3 : T} &
-\infrule[TASK-CALL]{\Gamma(id) = \forall r'_1, \ldots r'_k.(\oton{T}),\Phi', Q' \rightarrow T_r \\ \typeenvx e_i : T_i[r_1/r'_1,\ldots,r_k/r'_k] \\ \Phi'[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Phi^*}{\typeenvx id[\otok{k}{r}](\oton{e}) : T_r[r_1/r'_1,\ldots,r_k/r'_k]}
+\infrule[T-Pack]{T_1 = \exists r'_1, \ldots r'_n.\ T_2\text{ where }\Omega_1 \\ \Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Omega^* \\ \typeenvx e_1 : T_2[r_1/r'_1,\ldots,r_k/r'_k]}{\typeenvx \text{pack}\ e_1\ \text{as}\ T_1[\otok{k}{r}] : T_1} &
+\infrule[T-IfElse]{\typeenvx e_1 : bool \\ \typeenvx e_2 : T \\ \typeenvx e_3 : T}{\typeenvx \text{if}\ e_1\ \text{then}\ e_2\ \text{else}\ e_3 : T} &
+\infrule[T-Call]{\Gamma(id) = \forall r'_1, \ldots r'_k.(\oton{T}),\Phi', Q' \rightarrow T_r \\ \typeenvx e_i : T_i[r_1/r'_1,\ldots,r_k/r'_k] \\ \Phi'[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Phi^*}{\typeenvx id[\otok{k}{r}](\oton{e}) : T_r[r_1/r'_1,\ldots,r_k/r'_k]}
 \end{tabular}
 \end{minipage}
 % Row 8: unpack, partition
 \begin{minipage}{\linewidth}
 \vspace{-0.7cm}
 \begin{tabular}{m{10cm}m{8cm}}
-\infrule[UNPACK]{T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \andalso \typeenvx e_1 : T_1 \\
+\infrule[T-Unpack]{T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \andalso \typeenvx e_1 : T_1 \\
   \Gamma' = \Gamma[T_2[r_1/r'_1,\ldots,r_k/r'_k] / id] \andalso \Omega' = \Omega \cup \Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \\
   \typeenvx[G=\Gamma',O=\Omega'] e_2 : T_3 \andalso \{ \oton{r} \} \cap \textit{regions\_of}(\Gamma, T_1, T_3) = \emptyset}
   {\typeenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 : T_3} &
-\infrule[PARTITION]{\typeenvx e_1 : \text{coloring}(r_p) \\ \Omega' = \Omega \wedge \bigwedge_{i \in [1,k]} r_i \leq r_p \wedge \bigwedge_{1 \leq i < j \leq k} r_i * r_j \\ \typeenvx[O=\Omega'] e_2 : T \\ \{ \oton{r} \} \cap \textit{regions\_of}(\Gamma, T) = \emptyset}
+\infrule[T-Part]{\typeenvx e_1 : \text{coloring}(r_p) \\ \Omega' = \Omega \wedge \bigwedge_{i \in [1,k]} r_i \leq r_p \wedge \bigwedge_{1 \leq i < j \leq k} r_i * r_j \\ \typeenvx[O=\Omega'] e_2 : T \\ \{ \oton{r} \} \cap \textit{regions\_of}(\Gamma, T) = \emptyset}
   {\typeenvx \text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2 : T}
 \end{tabular}
 \end{minipage}
 % Row 9: program
 \begin{minipage}{\linewidth}
 \vspace{-0.5cm}
-\infrule[PROGRAM]{\text{for }1 \leq i \leq p, \\
+\infrule[T-Program]{\text{for }1 \leq i \leq p, \\
   \Gamma(id_i) = \forall r_{i1}, \ldots r_{ik_i}. (T_{i1}, \ldots, T_{in_i}), \Phi_i, Q_i \rightarrow T_{ir} \andalso
   \Gamma_i = \Gamma[a_{i1}/T_{i1}, \ldots, a_{in_i}/T_{in_i}] \andalso
   \typeenv[G={\Gamma_i},P={\Phi_i},O=\emptyset]{e_i}{T_{ir}}}
-  {\vdash \{  \text{task }id_1[r_{11}, \ldots, r_{1k_1}]( a_{11} : T_{11}, \ldots a_{1n_1} : T_{1n_1} ), \Phi_1, Q_1 : T_{1r} : e_1, 
+  {\vdash \{  \text{function }id_1[r_{11}, \ldots, r_{1k_1}]( a_{11} : T_{11}, \ldots a_{1n_1} : T_{1n_1} ), \Phi_1, Q_1 : T_{1r} : e_1, 
            \ldots
-           \text{task }id_p[r_{p1}, \ldots, r_{pk_1}]( a_{p1} : T_{p1}, \ldots a_{pn_p} : T_{pn_p} ), \Phi_p, Q_p : T_{pr} : e_p \} : \bullet}
+           \text{function }id_p[r_{p1}, \ldots, r_{pk_1}]( a_{p1} : T_{p1}, \ldots a_{pn_p} : T_{pn_p} ), \Phi_p, Q_p : T_{pr} : e_p \} : \bullet}
 \end{minipage}
 \end{center}
 \end{adjustwidth}
@@ -459,7 +467,11 @@ replacing all free logical region names $r_i$ in $x$ with corresponding physical
 
 \item $L$ is a mapping of local variables to (immutable) values.  
 
-\item $H$ is a {\em heap typing}, assigning an invariant type to every memory location. 
+\item $H$ is a {\em heap typing}, assigning an invariant type to every memory location.  The heap typing
+serves two important roles.  First, it is used to bound the values that can be used for reads when 
+concurrent operation may make the exact value uncertain.  Second, it greatly simplifies the consistency
+check of pointer values, allowing a simple test against the heap typing for a location in lieu of a
+potentially unbounded walk through the store for complicated pointer data structures.
 
 \item $S$ is a store, mapping memory locations $l_i$ to values.
 
@@ -481,22 +493,21 @@ Helper functions are used in some rules:
 \begin{itemize}
 \item $apply(S, E)$ computes the store that results from applying memory trace $E$ to initial store $S$.
 
-\item $mark\_coherence(E, \hat Q)$ records the coherence of operations in trace $E$ according to coherence annotations $Q$. 
+\item $mark\_coh(E, \hat Q)$ records the coherence of operations in trace $E$ according to coherence annotations $\hat Q$. 
 
 \item $valid\_interleave(S, C, E', \oton{E})$ is true if $E'$ is a valid interleaving
 of the memory traces $\oton{E}$.
 \end{itemize}
 Figure~\ref{fig:opsemfns} defines {\em apply} and {\em mark\_coherence}.  The precise definition of
 {\em valid\_interleave} is given in Section~\ref{sec:coherence}.  For now, we need only that a valid interleaving
-is at least an interleaving, containing each constituent trace as a subequence and no other operations.
+is at least an interleaving, containing each constituent trace as a subsequence and no other operations.
 
 Some rules modeling concurrent execution are locally
 non-deterministic, guessing values that result from
 concurrent tasks.  For example, the rule for {\tt read(e)} returns an
 arbitrary value $v'$ of the correct type if the location being read is
 in the clobber set $C$, the set of locations concurrent tasks may
-clobber (i.e., update).\footnote{Note that this is also the reason for
-including a global heap typing.}  The guess is eventually checked for
+clobber (i.e., update).  The guess is eventually checked for
 consistency by the $valid\_interleave$ predicate of some enclosing
 expression, at a point where the task that wrote $v'$ is also local to
 the expression being evaluated.
@@ -511,7 +522,7 @@ require locations to be ``fresh''; our soundness results hold even if
 {\tt new T@r} returns locations already in use, provided the heap
 typing of the location is correct.
 
-The most involved rule in Core Legion's semantics is for task calls.
+The most involved rule in Core Legion's semantics is for function calls.
 Note that the only regions accessible to the callee (through $M'$) are the region arguments.
 Also, if any regions are used with relaxed coherence (either {\em atomic} or {\em simult} instead of
 {\em excl}), those locations are added to the clobber set, allowing the
@@ -523,23 +534,31 @@ impact of concurrent modifications of the store to be handled by the caller.
 \begin{figure*}
 \centering{
 $
-\begin{array}{lll}
+\begin{array}{@{}l@{}}
+\begin{array}{@{}l@{\hspace{-0.25in}}l@{}} 
+\begin{array}{@{}lll}
 apply(S, []) & = & S \\
 apply(S, E \dplus [ read(l, c, v) ]) & = & apply(S, E) \\
 apply(S, E \dplus [ write(l, c, v) ]) & = & apply(S, E)[v/l] \\
-apply(S, E \dplus [ reduce_{id}(l, c, v) ]) & = & S'[id(S'(l), v)/l], \text{ where } S' = apply(S, E) \\
-mark\_coherence([], \hat Q) & = & [] \\
-mark\_coherence(E \dplus [ op(l, c, v) ], \hat Q) & = & mark\_coherence(E, \hat Q) \dplus \\
-& & op(l, c', v), \text{ where } \\
-& & c' =
+apply(S, E \dplus [ reduce_{id}(l, c, v) ]) & = & S'[id(S'(l), v)/l], \\
+& & \text{ where } S' = apply(S, E)
+\end{array} &
+\begin{array}{@{}ll}
+mark\_coh([], \hat Q) & = [] \\
+mark\_coh([ op(l, c, v) ] \dplus E, \hat Q) & = [ op(l, c', v) ] \dplus mark\_coh(E, \hat Q), \\
+\multicolumn{2}{@{}l}{ \hspace{1.0in} \text{ where } c' =
 \begin{cases}
 simult, & \text{if }\exists \rho. l \in \rho \wedge simult(\rho) \in \hat Q \\
 atomic, & \text{if }\exists \rho. l \in \rho \wedge atomic(\rho) \in \hat Q \\
 excl, & \text{otherwise}
-\end{cases} \\
+\end{cases}}
+\end{array}
+\end{array} \\
+\begin{array}{@{}lll}
 any\_interleave([], [], \ldots, []) & = & true \\
 any\_interleave([ \epsilon ] \dplus E', E_1, \ldots, [ \epsilon ] \dplus E_i, \ldots, E_n) & = & any\_interleave(E', E_1, \ldots, E_i, \ldots, E_n) \\
 valid\_interleave(S, C, E', \oton{E}) & \Rightarrow & any\_interleave(E', \oton{E}) \\
+\end{array}
 \end{array}
 $}
 \caption{Operational Semantics Helper Functions}
@@ -691,7 +710,7 @@ S_1 = \text{apply}(S, E_1) \\
 S_n = \text{apply}(S_{n-1}, E_n) \\
 valid\_interleave(S, C, E', \oton{E})
 \vspace{1.5mm} \\
-\text{task }id[\otok{k}{r'}](a_1 : T_1, \ldots, a_n : T_n), \Phi', Q' : T_r = e_{n+1} \\
+\text{function }id[\otok{k}{r'}](a_1 : T_1, \ldots, a_n : T_n), \Phi', Q' : T_r = e_{n+1} \\
 M' = \{ (r'_1, M(r_1)), \ldots (r'_k, M(r_k)) \} \\
 L' = \{ (a_1, v_1), \ldots, (a_n, v_n) \} \\
 S' = \text{apply}(S, E') \\
@@ -741,59 +760,59 @@ valid\_interleave(S, C, E', E_1, E_2)
 % Row 1: bool, int, val
 \begin{minipage}{\linewidth}
 \begin{tabular}{m{6cm}m{6cm}m{6cm}}
-\infax[OP-BOOL]{\opsenvx bv \mapsto bv, []} &
-\infax[OP-INT]{\opsenvx iv \mapsto iv, []} &
-\infax[OP-NULL]{\opsenvx \text{null }T@r \mapsto null, []} 
+\infax[E-Bool]{\opsenvx bv \mapsto bv, []} &
+\infax[E-Int]{\opsenvx iv \mapsto iv, []} &
+\infax[E-Null]{\opsenvx \text{null }T@r \mapsto null, []} 
 \end{tabular}
 \end{minipage}
 % Row 2: tuple1, tuple2, make tuple
 \begin{minipage}{\linewidth}
 \vspace{-0.6cm}
 \begin{tabular}{m{9cm}m{4.5cm}m{4.5cm}}
-\infrule[OP-MAKETUPLE]{\opsenvx e_1 \mapsto v_1, E_1 \andalso S' = apply(S, E_1) \\
+\infrule[E-MakeTuple]{\opsenvx e_1 \mapsto v_1, E_1 \andalso S' = apply(S, E_1) \\
   \opsenvx[S=S'] e_2 \mapsto v_2, E_2 \andalso valid\_interleave(S, C, E', E_1, E_2)}
   {\opsenvx \langle e_1, e_2 \rangle \mapsto \langle v_1, v_2 \rangle, E'} &
-\infrule[OP-TUPLE1]{\opsenvx e \mapsto \langle v_1, v_2 \rangle, E}{\opsenvx e\text{.1} \mapsto v_1, E} &
-\infrule[OP-TUPLE2]{\opsenvx e \mapsto \langle v_1, v_2 \rangle, E}{\opsenvx e\text{.2} \mapsto v_2, E}
+\infrule[E-Tuple1]{\opsenvx e \mapsto \langle v_1, v_2 \rangle, E}{\opsenvx e\text{.1} \mapsto v_1, E} &
+\infrule[E-Tuple2]{\opsenvx e \mapsto \langle v_1, v_2 \rangle, E}{\opsenvx e\text{.2} \mapsto v_2, E}
 \end{tabular}
 \end{minipage}
 % Row 3: new, null, isnull, isnull
 \begin{minipage}{\linewidth}
 \vspace{-0.6cm}
 \begin{tabular}{m{4cm}m{4.5cm}m{5cm}m{5cm}}
-\infrule[OP-NEW]{l \in M(r) \\ H(l) = M \llbracket T \rrbracket}{\opsenvx \text{new }T@r \mapsto l, []} &
-\infrule[OP-VAL]{L(id) = v}{\opsenvx id \mapsto v, []} &
-\infrule[OP-ISNULL-FALSE]{\opsenvx e \mapsto l, E}{\opsenvx \text{isnull}(e) \mapsto \textit{false}, E} &
-\infrule[OP-ISNULL-TRUE]{\opsenvx e \mapsto null, E}{\opsenvx \text{isnull}(e) \mapsto true, E}
+\infrule[E-New]{l \in M(r) \\ H(l) = M \llbracket T \rrbracket}{\opsenvx \text{new }T@r \mapsto l, []} &
+\infrule[E-Var]{L(id) = v}{\opsenvx id \mapsto v, []} &
+\infrule[E-IsNull-F]{\opsenvx e \mapsto l, E}{\opsenvx \text{isnull}(e) \mapsto \textit{false}, E} &
+\infrule[E-IsNull-T]{\opsenvx e \mapsto null, E}{\opsenvx \text{isnull}(e) \mapsto true, E}
 \end{tabular}
 \end{minipage}
 % Row 4: let, add, compare
 \begin{minipage}{\linewidth}
 \vspace{-0.7cm}
 \begin{tabular}{m{6cm}m{6cm}m{6cm}}
-\infrule[OP-LET]{\opsenvx e_1 \mapsto v_1, E_1 \\ L' = L[v_1/id] \\ S' = \text{apply}(S, E_1) \\ \opsenvx[L=L',S=S'] e_2 \mapsto v_2, E_2 \\ valid\_interleave(S, C, E', E_1, E_2)}{\opsenvx \text{let }id : T = e_1\text{ in }e_2 \mapsto v_2, E'} &
-\infrule[OP-ADD]{\opsenvx e_1 \mapsto v_1, E_1 \\ S' = \text{apply}(S, E_1) \\ \opsenvx[S=S'] e_2 \mapsto v_2, E_2 \\ v' = v_1 + v_2 \\ valid\_interleave(S, C, E', E_1, E_2)}{\opsenvx e_1 + e_2 \mapsto v', E'} &
-\infrule[OP-COMPARE]{\opsenvx e_1 \mapsto v_1, E_1 \\ S' = \text{apply}(S, E_1) \\ \opsenvx[S=S'] e_2 \mapsto v_2, E_2 \\ v' = \begin{cases} true, & \text{if $v_1 < v_2$}. \\ \textit{false}, & \text{otherwise}. \end{cases} \\ valid\_interleave(S, C, E', E_1, E_2)}{\opsenvx e_1 < e_2 \mapsto v', E'}
+\infrule[E-Let]{\opsenvx e_1 \mapsto v_1, E_1 \\ L' = L[v_1/id] \\ S' = \text{apply}(S, E_1) \\ \opsenvx[L=L',S=S'] e_2 \mapsto v_2, E_2 \\ valid\_interleave(S, C, E', E_1, E_2)}{\opsenvx \text{let }id : T = e_1\text{ in }e_2 \mapsto v_2, E'} &
+\infrule[E-Add]{\opsenvx e_1 \mapsto v_1, E_1 \\ S' = \text{apply}(S, E_1) \\ \opsenvx[S=S'] e_2 \mapsto v_2, E_2 \\ v' = v_1 + v_2 \\ valid\_interleave(S, C, E', E_1, E_2)}{\opsenvx e_1 + e_2 \mapsto v', E'} &
+\infrule[E-Compare]{\opsenvx e_1 \mapsto v_1, E_1 \\ S' = \text{apply}(S, E_1) \\ \opsenvx[S=S'] e_2 \mapsto v_2, E_2 \\ v' = \begin{cases} true, & \text{if $v_1 < v_2$}. \\ \textit{false}, & \text{otherwise}. \end{cases} \\ valid\_interleave(S, C, E', E_1, E_2)}{\opsenvx e_1 < e_2 \mapsto v', E'}
 \end{tabular}
 \end{minipage}
 % Row 5: if-else, if-else, new color
 \begin{minipage}{\linewidth}
 \vspace{-0.7cm}
 \begin{tabular}{m{6.5cm}m{6.5cm}m{6cm}}
-\infrule[OP-IF-ELSE-TRUE]{\opsenvx e_1 \mapsto true, E_1 \\ S' = \text{apply}(S, E_1) \\ \opsenvx[S=S'] e_2 \mapsto v_2, E_2}{\opsenvx \text{if }e_1\text{ then }e_2\text{ else }e_3 \mapsto v_2, E_1 \dplus E_2} &
-\infrule[OP-IF-ELSE-FALSE]{\opsenvx e_1 \mapsto \textit{false}, E_1 \\ S' = \text{apply}(S, E_1) \\ \opsenvx[S=S'] e_3 \mapsto v_3, E_3}{\opsenvx \text{if }e_1\text{ then }e_2\text{ else }e_3 \mapsto v_3, E_1 \dplus E_3} &
-\infrule[OP-NEW-COLOR]{K = \{ (l_1, iv_1), \ldots, (l_p, iv_p) \}, \text{ where } \\ (\forall i \in [1,p]. l_i \in M(r)) \wedge (\forall i,j \in [1,p]. l_i \not= l_j)}{\opsenvx \text{newcolor }r \mapsto K, []}
+\infrule[E-IfElse-T]{\opsenvx e_1 \mapsto true, E_1 \\ S' = \text{apply}(S, E_1) \\ \opsenvx[S=S'] e_2 \mapsto v_2, E_2}{\opsenvx \text{if }e_1\text{ then }e_2\text{ else }e_3 \mapsto v_2, E_1 \dplus E_2} &
+\infrule[E-IfElse-F]{\opsenvx e_1 \mapsto \textit{false}, E_1 \\ S' = \text{apply}(S, E_1) \\ \opsenvx[S=S'] e_3 \mapsto v_3, E_3}{\opsenvx \text{if }e_1\text{ then }e_2\text{ else }e_3 \mapsto v_3, E_1 \dplus E_3} &
+\infrule[E-Newcolor]{K = \{ (l_1, iv_1), \ldots, (l_p, iv_p) \}, \text{ where } \\ (\forall i \in [1,p]. l_i \in M(r)) \wedge (\forall i,j \in [1,p]. l_i \not= l_j)}{\opsenvx \text{newcolor }r \mapsto K, []}
 \end{tabular}
 \end{minipage}
 % Row 6: partition, color
 \begin{minipage}{\linewidth}
 \vspace{-0.6cm}
 \begin{tabular}{m{8.5cm}m{10.5cm}}
-\infrule[OP-PARTITION]{\opsenv{e_1}{K}{E_1} \andalso \rho_i = \{ l : (l, i) \in K \}, \text{ for } 1 \leq i \leq k \\
+\infrule[E-Part]{\opsenv{e_1}{K}{E_1} \andalso \rho_i = \{ l : (l, i) \in K \}, \text{ for } 1 \leq i \leq k \\
   M' = M[\rho_1/r_1, \ldots, \rho_k/r_k] \andalso S' = \text{apply}(S, E_1) \\
   \opsenvx[M=M',S=S'] e_2 \mapsto v, E_2 \andalso valid\_interleave(S, C, E', E_1, E_2)}
   {\opsenvx \text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2 \mapsto v, E'} &
-\infrule[OP-COLOR]{\opsenvx e_1 \mapsto K, E_1 \andalso S' = \text{apply}(S, E_1) \\
+\infrule[E-Color]{\opsenvx e_1 \mapsto K, E_1 \andalso S' = \text{apply}(S, E_1) \\
   \opsenvx[S=S'] e_2 \mapsto l, E_2 \andalso S'' = \text{apply}(S', E_2) \\
   \opsenvx[S=S''] e_3 \mapsto v, E_3 \\
   K' = \{ (l,v) \} \cup \{ (l_i,v_i) : (l_i,v_i) \in K \wedge l \not= l_i \} \\
@@ -805,19 +824,19 @@ valid\_interleave(S, C, E', E_1, E_2)
 \begin{minipage}{\linewidth}
 \vspace{-0.2cm}
 \begin{tabular}{m{6cm}m{6.5cm}m{6.5cm}}
-\infrule[OP-UPREG]{\opsenvx e \mapsto v, E}{\opsenvx \text{upregion}(e, \oton{r}) \mapsto v, E} &
-\infrule[OP-DOWNREG]{\opsenvx e \mapsto l, E \\ v = \begin{cases} l, & \text{if $\exists i, l \in M(r_i)$}. \\ null, & \text{otherwise}. \end{cases}}{\opsenvx \text{downregion}(e, \oton{r}) \mapsto v, E} &
-\infrule[OP-READ]{\opsenvx e \mapsto l, E \andalso S' = \text{apply}(S, E) \\ v = \begin{cases} S'(l), & \text{if } l \not\in C \\ v' : H(l), & \text{otherwise} \end{cases}}{\opsenvx \text{read}(e) \mapsto v, E \dplus [ read(l, excl, v) ]}
+\infrule[E-UpRgn]{\opsenvx e \mapsto v, E}{\opsenvx \text{upregion}(e, \oton{r}) \mapsto v, E} &
+\infrule[E-DownRgn]{\opsenvx e \mapsto l, E \\ v = \begin{cases} l, & \text{if $\exists i, l \in M(r_i)$}. \\ null, & \text{otherwise}. \end{cases}}{\opsenvx \text{downregion}(e, \oton{r}) \mapsto v, E} &
+\infrule[E-Read]{\opsenvx e \mapsto l, E \andalso S' = \text{apply}(S, E) \\ v = \begin{cases} S'(l), & \text{if } l \not\in C \\ v' : H(l), & \text{otherwise} \end{cases}}{\opsenvx \text{read}(e) \mapsto v, E \dplus [ read(l, excl, v) ]}
 \end{tabular}
 \end{minipage}
 % Row 8: write, reduce
 \begin{minipage}{\linewidth}
 \vspace{-0.5cm}
 \begin{tabular}{m{9cm}m{9cm}}
-\infrule[OP-WRITE]{\opsenvx e_1 \mapsto l, E_1 \andalso S' = \text{apply}(S, E_1) \\
+\infrule[E-Write]{\opsenvx e_1 \mapsto l, E_1 \andalso S' = \text{apply}(S, E_1) \\
   \opsenvx[S=S'] e_2 \mapsto v, E_2 \andalso valid\_interleave(S, C, E', E_1, E_2)}
   {\opsenvx \text{write}(e_1, e_2) \mapsto l, E' \dplus [ write(l, excl, v) ]} &
-\infrule[OP-REDUCE]{\opsenvx e_1 \mapsto l, E_1 \andalso S' = \text{apply}(S, E_1) \\
+\infrule[E-Reduce]{\opsenvx e_1 \mapsto l, E_1 \andalso S' = \text{apply}(S, E_1) \\
   \opsenvx[S=S'] e_2 \mapsto v, E_2 \andalso valid\_interleave(S, C, E', E_1, E_2)}
   {\opsenvx \text{reduce}(id, e_1, e_2) \mapsto l, E' \dplus [ reduce_{id}(l, excl, v) ]}
 \end{tabular}
@@ -826,10 +845,10 @@ valid\_interleave(S, C, E', E_1, E_2)
 \begin{minipage}{\linewidth}
 \vspace{-0.5cm}
 \begin{tabular}{m{8cm}m{10cm}}
-\infrule[OP-PACK]{\opsenvx e_1 \mapsto v, E \andalso \rho_i = M[r_i], \text{ for } 1 \leq i \leq k \\
+\infrule[E-Pack]{\opsenvx e_1 \mapsto v, E \andalso \rho_i = M[r_i], \text{ for } 1 \leq i \leq k \\
   v' = \langle \langle \otok{k}{\rho}, v \rangle \rangle}
   {\opsenvx \text{pack}\ e_1\ \text{as}\ T_1[\otok{k}{r}] \mapsto v', E} &
-\infrule[OP-UNPACK]{\opsenvx e_1 \mapsto \langle \langle \otok{k}{\rho} , v_1 \rangle \rangle, E_1 \andalso M' = M[\rho_1/r_1, \ldots, \rho_k/r_k] \\
+\infrule[E-Unpack]{\opsenvx e_1 \mapsto \langle \langle \otok{k}{\rho} , v_1 \rangle \rangle, E_1 \andalso M' = M[\rho_1/r_1, \ldots, \rho_k/r_k] \\
   L' = L[v_1/id] \andalso S' = \text{apply}(S, E_1) \\
   \opsenvx[M=M',L=L',S=S'] e_2 \mapsto v_2, E_2 \andalso valid\_interleave(S, C, E', E_1, E_2)}
   {\opsenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 \mapsto v_2, E'}
@@ -838,8 +857,8 @@ valid\_interleave(S, C, E', E_1, E_2)
 % Row 10: task call
 \begin{minipage}{\linewidth}
 %\vspace{-0.5cm}
-\infrule[OP-Task-CALL]{\opsenvx e_1 \mapsto v_1, E_1 \andalso S_1 = \text{apply}(S, E_1) \andalso \opsenvx e_2 \mapsto v_2, E_2 \andalso \ldots \andalso S_n = \text{apply}(S_{n-1}, E_n) \\
-  valid\_interleave(S, C, E', \oton{E}) \andalso \text{task }id[\otok{k}{r'}](a_1 : T_1, \ldots, a_n : T_n), \Phi', Q' : T_r = e_{n+1} \\
+\infrule[E-Call]{\opsenvx e_1 \mapsto v_1, E_1 \andalso S_1 = \text{apply}(S, E_1) \andalso \opsenvx e_2 \mapsto v_2, E_2 \andalso \ldots \andalso S_n = \text{apply}(S_{n-1}, E_n) \\
+  valid\_interleave(S, C, E', \oton{E}) \andalso \text{function }id[\otok{k}{r'}](a_1 : T_1, \ldots, a_n : T_n), \Phi', Q' : T_r = e_{n+1} \\
   M' = \{ (r'_1, M(r_1)), \ldots (r'_k, M(r_k)) \} \andalso L' = \{ (a_1, v_1), \ldots, (a_n, v_n) \} \andalso S' = \text{apply}(S, E') \\
   C' = C \cup \{ l : \exists \rho. atomic(\rho) \in M' \llbracket Q' \rrbracket \vee simult(\rho) \in M' \llbracket Q' \rrbracket \} \\
   \opsenvx[M=M',L=L',S=S',C=C'] e_{n+1} \mapsto v_{n+1}, E_{n+1} \andalso E'_{n+1} = mark\_coherence(E_{n+1}, M' \llbracket Q' \rrbracket) \andalso valid\_interleave(S, C, E'', E', E_{n+1})}
@@ -876,7 +895,7 @@ For our results, three consistency properties are needed:
 \item $\storeconsist{S}{H}$, the initial state of the store contains values whose types are consisten with the heap typing
 \end{itemize}
 
-Two additional properties are proven for each subexpression:
+\noindent Two additional properties are proven for each subexpression:
 \begin{itemize}
 \item $\valueconsist{v}{T}$, the expression yields a value of the right type
 \item $\traceconsist{E}$, values written to the store match the heap types of their locations
@@ -935,7 +954,7 @@ proof is a standard induction on the structure of the derivation in
 the operational semantics.  The proof is organized into six pieces,
 one for each of the three consistency properties that must be shown
 for the execution environment of subexpressions and one for each of
-the three properties of the execution's results we wish to show.
+the three properties of the execution's results we wish to show:
 
 \texcomment{
 For each of 
@@ -983,10 +1002,9 @@ $\privconsist{E}{\Phi^*}$ if and only if $\privconsist{E}{\Phi}$.
 The proofs of these lemmas can also be found here\cite{LegionTypes12}.  
 }
 
-
-\begin{itemize}
-
-\item[$\mapconsist{\Omega}$] Three expressions have subexpressions that modify $M$ or $\Omega$ and therefore do not
+\vspace{4pt}
+\hangindent=2\parindent \hangafter=1 \noindent %
+$\mapconsist{\Omega}$ - Three expressions have subexpressions that modify $M$ or $\Omega$ and therefore do not
 trivially satisfy region mapping consistency.  For {\tt partition},
 the consistency of the coloring preserves region mapping consistency
 with respect to the constraints.  For {\tt unpack}, the consistency of
@@ -994,7 +1012,9 @@ a region relation instance guarantees consistency of region mapping.
 Finally, the body of a called function with an initially-empty set of
 constraints, which are trivially satisfied.
 
-\item[$\localconsist{L}{\Gamma}$] Four expressions have subexpressions that modify $L$, $\Gamma$, or $M$.  For
+\vspace{4pt}
+\hangindent=2\parindent \hangafter=1 \noindent %
+$\localconsist{L}{\Gamma}$ -  Four expressions have subexpressions that modify $L$, $\Gamma$, or $M$.  For
 {\tt partition}, which only modifies $M$, the requirement that it not reuse existing
 names ensures that $M \llbracket \Gamma \rrbracket$ does not change.  For {\tt let},
 the value and type of the binding is obviously consistent, while the binding created in
@@ -1003,17 +1023,19 @@ unpacked value to show equivalence under the new mapping.  The last case is the 
 called function, which requires the same style of proof as for {\tt unpack} 
 for each formal parameter.
 
-\item[$\storeconsist{S}{H}$] The heap typing consistency of all stores used in subexpressions follows directly from the following
+\vspace{4pt}
+\hangindent=2\parindent \hangafter=1 \noindent %
+$\storeconsist{S}{H}$ -  The heap typing consistency of all stores used in subexpressions follows directly from the following
 lemma: If $\storeconsist{S}{H}$ and $\traceconsist{E}$, then $\storeconsist{\text{apply}(S, E)}{H}$.
 
-\end{itemize}
-
+\vspace{4pt}
 With the necessary consistency conditions proven for a subexpression, the conclusion of the theorem follows for
 the subexpression by the inductive hypothesis.  The remaining obligation is to prove the the three parts of the
 conclusion for an entire expression:
-\begin{itemize}
 
-\item[$\valueconsist{v}{T}$]    The consistency of 
+\vspace{4pt}
+\hangindent=2\parindent \hangafter=1 \noindent %
+$\valueconsist{v}{T}$ - The consistency of 
 {\tt upregion} is guaranteed by the type checking requirement of appropriate subregion
 constraints and the mapping's consistency with those constraints, and {\tt downregion}'s
 result is consistent because of the run time check.  
@@ -1026,6 +1048,7 @@ clobber set and uses the consistency of the store otherwise.  The consistency of
 {\tt color}'s result depends on the pointer subexpression's consistency and the 
 removal of any previous coloring of that location from the coloring set.  
 
+\hangindent=2\parindent \hangafter=1 \indent\indent\indent %
 The remaining interesting cases arise from changes to the mapping $M$ rather than transformations on the
 value $v$.  In the case of {\tt partition} and {\tt unpack}, the type system
 guarantees that the subexpression's result cannot use the regions that were added to the
@@ -1033,18 +1056,21 @@ mapping, allowing the changes to the mapping to be ignored.  The last case is ag
 of a called function, and the same strategy that was used for the type consistency of the
 formal parameters works in reverse for the function's result.
 
-\item[$\traceconsist{E}$] The type consistency of the values in an expression's memory
+\vspace{4pt}
+\hangindent=2\parindent \hangafter=1 \noindent %
+$\traceconsist{E}$ -  The type consistency of the values in an expression's memory
 trace follows from the following lemma applied to the traces of subexpressions:
 if $\traceconsist{E_1}$ and $\traceconsist{E_2}$ and $any\_interleave(E', E_1, E_2)$, then $\traceconsist{E'}$.
 New effects are added by {\tt write} and {\tt reduce} expressions, but consistency follows
 directly from the induction hypothesis.  Finally, the consistency of the
 values in a called function's memory trace is addressed in the same way as the return value.
 
-\item[$\privconsist{E}{\Phi}$] The proof of the crucial property of containment of effects within the available privileges
+\vspace{4pt}
+\hangindent=2\parindent \hangafter=1 \noindent %
+$\privconsist{E}{\Phi}$ -  The proof of the crucial property of containment of effects within the available privileges
 is similar in outline to the previous step.  The easy cases are covered by a lemma combining the corresponding results
 for subexpressions: if $\privconsist{E_1}{\Phi}$ and $\privconsist{E_2}{\Phi}$ and $any\_interleave(E', E_1, E_2)$, then $\privconsist{E'}{\Phi}$.
 Straightforward proofs cover {\tt read}, {\tt write}, {\tt reduce}, and one final special case for function calls. 
-\end{itemize}
 
 %% \begin{table*}
 %% \centering
@@ -1086,7 +1112,7 @@ Straightforward proofs cover {\tt read}, {\tt write}, {\tt reduce}, and one fina
 \section{Coherence}
 \label{sec:coherence}
 
-Theorem~\ref{thm:effects} guarantees that a task produces a value of the
+Theorem~\ref{thm:effects} guarantees that a function call produces a value of the
 correct type and does so within the regions of memory for which privileges are held.
 It does not, however, address {\em coherence}, what concurrent operations on the regions are permitted.
 An innovation in Legion is that programmers can control coherence on a per-region basis.  Intuitively,
@@ -1349,7 +1375,8 @@ $\epsilon_1$ and $\epsilon_2$ be operations to the same location $l$ and not bot
 reductions using the same function name.  Assume $\epsilon_1 = read(l, c_1, v_1)$ and $\epsilon_2 = write(l, c_2, v_2)$.  The definition of $\privconsist{E_1}{\Phi_1}$ tells us that there must be some $r_1$ satisfying $l \in M(r_1) \wedge reads(r_1) \in \Phi_1$.  Similarly, there must be some $r_2$ satisfying $l \in M(r_2) \wedge writes(r_2) \in \Phi_2$.  Letting $\phi_1 = reads(r_1)$ and $\phi_2 = writes(r_2)$, we have $M(r_1) \cap M(r_2) \not= \emptyset$ (it contains at least $l$), so $\phi_1 \cancel{\nonint[M]} \phi_2$ and $\Phi_1 \cancel{\nonint[M]} \Phi_2$.  There are seven other cases to consider (using $id_1 \not= id_2$ for the reduce-reduce case), but all yield the same result.
 \end{proof}
 }
-We are now able to state the key result that allows the Legion runtime to safely run subtasks in parallel.
+We are now able to state the key result that allows the Legion runtime to safely evaluate subexpressions as
+separate tasks in parallel.
 
 \begin{thm}
 \label{thm:parallelexec}
@@ -1391,7 +1418,7 @@ can achieve.
 
 The analysis above does not consider the coherence modes of operations,
 making the worst-case assumption that all operations use $excl$ mode.  However, if two or more
-subexpressions contain calls to tasks using $atomic$ or $simult$ coherence modes
+subexpressions contain calls to functions using $atomic$ or $simult$ coherence modes
 on some regions, executions besides serial program order may 
 result in valid interleavings even if constituent traces have locations in common.  We discuss
 two cases of interest.  In both the previous sections noninterference % Is noninterference the right subject here?
@@ -1433,8 +1460,8 @@ parallel execution to be determined at compile time.
 
 The enforcement of a (locally) valid interleaving at every step in the operational semantics
 captures the hierarchical nature of the scheduler used by the Legion runtime.  As the cost of
-a scheduling decision is quadratic in the number of tasks (more precisely, the number of 
-privileges for those tasks), it should be clear that a hierarchical scheduling algorithm will
+a scheduling decision is quadratic in the number of function calls (more precisely, the number of 
+privileges for those calls), it should be clear that a hierarchical scheduling algorithm will
 be vastly more efficient than a global algorithm that must consider the privileges of every
 concurrently executing expression.
 However, a scheduling algorithm that makes decisions hierarchically must do so with limited
@@ -1474,10 +1501,10 @@ $E_1 \nonint E_2$ from Lemma~\ref{lem:nonintpriv}, so and therefore $\epsilon_3 
 this holds for all $\epsilon_3$ in $E_3$ and all $\epsilon_4$ in $E_4$, we have $E_3 \nonint E_4$.
 \end{proof}
 } The Legion task scheduler uses Theorem~\ref{thm:hiersched} in the
-following way.  Sibling task calls (tasks invoked within the same
+following way.  Sibling function calls (those invoked within the same
 function body) are checked for non-interference of their (dynamic)
 privileges.  If they interfere they are serialized; otherwise they are
-considered for parallel execution.  Although determining that $e_1$
+considered for parallel execution as parallel subtasks.  Although determining that $e_1$
 and $e_2$ are noninterfering guarantees $e_3$ and $e_4$ are
 noninterfering, the converse is not true.  It is possible for $e_1$
 and $e_2$ to be judged to be potentially interfering and be serialized
