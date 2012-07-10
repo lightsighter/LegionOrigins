@@ -34,134 +34,15 @@ performance; a centralized scheduler would be a bottleneck
 because of the huge latencies involved in communicating in the target
 class of machines.
 
-% This is a description of how the listings should be formatted.
-% It can go anywhere before the listings.
-\lstset{
-  captionpos=b,
-  language=Haskell,
-  basicstyle=\scriptsize,
-  numbers=left,
-  numberstyle=\tiny,
-  columns=fullflexible,
-  stepnumber=1,
-  escapechar=\#,
-  keepspaces=true,
-  literate={<}{{$\langle$}}1 {>}{{$\rangle$}}1,
-  morekeywords={function,rr,int,float,bool,isnull,partition,as,downregion,upregion,reads,writes,rdwrs,reduces,read,write,reduce,using,unpack,pack,coloring,multicoloring,color,newcolor,atomic,simultaneous},
-  deletekeywords={float,head,min,max}
-}
-
-\begin{lstlisting}[float={t},label={lst:circuit_ex},caption={Circuilt Simulation}]
--- <voltage,current,charge,capacitance>
-type CircuitNode        = <float,float,float,float>
--- < owned node, owned or ghost node, resistance, current>
-type CircuitWire<rn,rg>  = <CircuitNode@rn, CircuitNode@(rn,rg),float,float>
-
-type node_list<rl,rn>       = < CircuitNode@rn, node_list<rl,rn>@rl >
-type wire_list<rl,rw,rn,rg>= < CircuitWire<rn,rg>@rw, wire_list<rl,rw,rn,rg>@rl >
-
-type CircuitPiece<rl,rw,rn> = rr[rpw,rpn,rg]
-                            < wire_list<rl,rpw,rpn,rg>@rl, node_list<rl,rpn>@rl >         
-                            where rpn <= rn and rg <= rn and rpw <= rw and
-                                  rpn * rg and rn * rw and rl * rn and rl * rw
-
--- Simulation initialization and invocation
-function simulate_circuit[rl,rw,rn] ( all_nodes : node_list<rl,rn>@rl, 
-                            all_wires : wire_list<rl,rw,rn,rn>@rl, steps : int ), 
-      reads(rn,rw,rl), writes(rn,rw,rl) : bool = 
-  let pc : <coloring(rn),multicoloring(rn),coloring(rw)> 
-            = color_circuit[rn,rw,rl](all_nodes,all_wires) in
-  -- Disjoint partition for the owned nodes of each piece
-  partition rn using pc.1 as rn0,rn1 in
-  -- Aliased partition for ghost nodes of each piece
-  partition rn using pc.2 as rg0,rg1 in
-  -- Disjoint partition for the owned wires of each piece
-  partition rw using pc.3 as rw0,rw1 in
-  let lists0 : <wire_list<rl,rw0,rn0,rg0>@rl,node_list<rl,rn0>@rl> = 
-        build_lists[rl,rw,rn,rw0,rn0,rg0](all_nodes,all_wires,pc.1,pc.2,pc.3,0) in
-  let piece0 : CircuitPiece<rl,rw,rn> = 
-        pack lists0 as CircuitPiece<rl,rw,rn>[rw0,rn0,rg0] in
-  let lists1 : <wire_list<rl,rw1,rn1,rg1>@rl,node_list<rl,rn1>@rl> =
-        build_lists[rl,rw,rn,rw1,rn1,rg1](all_nodes,all_wires,pc.1,pc.2,pc.3,1) in
-  let piece1 : CircuitPiece<rl,rw,rn> = 
-        pack lists1 as CircuitPiece<rl,rw,rn>[rw1,rn1,rg1] in
-      execute_time_steps[rl,rw,rn](piece0,piece1,steps)
-
--- Time Step Loop
-function execute_time_steps[rl,rw,rn] ( p0 : CircuitPiece<rl,rw,rn>, 
-      p1 : CircuitPiece<rl,rw,rn>, steps : int ) , reads(rn,rw,rl), writes(rn,rw) : bool = 
-  if steps #$<$# 1 then true else
-  unpack p0 as piece0 : CircuitPiece<rl,rw,rn>[rw0,rn0,rg0] in 
-  unpack p1 as piece1 : CircuitPiece<rl,rw,rn>[rw1,rn1,rg1] in
-  let _ : bool = calc_new_currents[rl,rw0,rn0,rg0](piece0.1) in
-  let _ : bool = calc_new_currents[rl,rw1,rn1,rg1](piece1.1) in
-  let _ : bool = distribute_charge[rl,rw0,rn0,rg0](piece0.1) in
-  let _ : bool = distribute_charge[rl,rw1,rn1,rg1](piece1.1) in
-  let _ : bool = update_voltage[rl,rn0](piece0.2) in
-  let _ : bool = update_voltage[rl,rn1](piece1.2) in
-      execute_time_steps[rl,rw,rn](p0,p1,steps-1)
-
--- Helper methods
-function color_circuit[rn,rw,rl] ( all_nodes : node_list<rl,rn>@rl, 
-                               all_wires : wire_list<rl,rw,rn>@rl ), 
-        reads(rn,rw,rl) : <coloring(rn), multicoloring(rn), coloring(rw)> =  
-  -- Invoke programmer chosen coloring algorithm (e.g. METIS)
-  -- return owned, ghost, wire colorings
-
-function build_lists[rl,rw,rn,rpw,rpn,rg] ( nodes : node_list<rl,rn>@rl, 
-       wires : wire_list<rl,rw,rn>@rl, oc : coloring(rn), gc : multicoloring(rn), 
-       wc : coloring(rw), c : int), reads(rn,rw,rl), writes(rl) 
-       : < wire_list<rl,rpw,rpn,rg>@rl, node_list<rl,rpn>@rl > = 
-  -- Construct lists of node and wire pointers for the given colorings
-\end{lstlisting}
-
 Legion programs organize data into a forest of {\em logical regions}.  Logical
 regions express {\em locality} (data that will be used together, and therefore colocated if possible in the same
 physical memory) and {\em independence} (disjoint data that may be operated on in parallel).
 Researchers have previously explored language designs with hierarchical decomposition of data to express
-locality and independence for high performance programming. Two recent examples, Sequoia \cite{Fatahalion06} and 
+locality and independence for high performance programming. Two recent examples, Sequoia \cite{Fatahalian06} and 
 Deterministic Parallel Java (DPJ) \cite{Bocchino09}, each provide a mechanism to partition the heap recursively
 into a tree of collections of data.  The two designs are different in many aspects, but agree that there is
 a single tree-shaped partitioning of data that can be checked fully statically (see Section~\ref{sec:related} for more
 discussion of related work).
-
-\begin{lstlisting}[float={t},label={lst:circuit_leaf},caption={Circuilt Leaf Tasks}]
-function calc_new_currents[rl,rw,rn,rg] ( ptr_list : wire_list<rl,rw,rn,rg>@rl ), 
-      reads(rl,rw,rn,rg), writes(rw) : bool =
-  if isnull(ptr_list) then true else
-  let wire_node : wire_list<rl,rw,rn,rg> = read(ptr_list) in
-  let wire : CircuitWire<rn,rg> = read(wire_node.1) in
-  let in_node : CircuitNode = read(wire.1) in
-  let out_node : CircuitNode = read(wire.2) in
-  let current : float = (in_node.1 - out_node.1) /  wire.3 in 
-  let new_wire : CircuitWire<rn,rg> = <wire.1,wire.2,wire.3,current> in
-  let _ : CircuitWire<rn,rg>@rw = write(wire_node.1, new_wire) in
-      calc_new_currents[rl,rw,rn,rg](wire_node.2)
-
-function distribute_charge[rl,rw,rn,rg] ( ptr_list : wire_list<rl,rw,rn,rg>@rl ), 
-      reads(rl,rw,rn), reduces(reduce_charge,rn,rg), atomic(rn,rg) : bool =
-  if isnull(ptr_list) then true else
-  let wire_node : wire_list<rl,rw,rn,rg> = read(ptr_list) in
-  let wire : CircuitWire<rn,rg> = read(wire_node.1) in
-  let _ : CircuitNode@rn = reduce(reduce_charge, wire.1, wire.4) in
-  let _ : CircuitNode@(rn,rg) = reduce(reduce_charge, wire.2, wire.4) in
-      distribute_charge[rl,rw,rn,rg](wire_node.2)
-
-function update_voltage[rl,rn] ( ptr_list : node_list<rl,rn>@rl ), 
-      reads(rl,rn), writes(rn) : bool = 
-  if isnull(ptr_list) then true else
-  let node_node : node_list<rl,rn> = read(ptr_list) in
-  let node : CircuitNode = read(node_node.1) in
-  let voltage : float = (node.3/node.4) in
-  let new_node : CircuitNode = <voltage,node.2,node.3,node.4> in
-  let _ : CircuitNode@rn = write(node_node.1, new_node) in
-      update_voltage[rl,rn](node_node.2)
-
--- Reduction function for distribute charge
-function reduce_charge ( node : CircuitNode, current : float ) : CircuitNode =
-    let new_charge : float = node.3 + current in
-        < node.1,new_charge,node.3,node.4>
-\end{lstlisting}
 
 Our own experience with Sequoia and many high-performance applications
 written in the current industry standard mix of MPI, shared-memory
@@ -199,7 +80,7 @@ logical region, for performance reasons.
 A further consequence of placing the same data in multiple logical
 regions as a result of runtime computation is that Legion has a very
 hard static alias analysis problem on regions, which poses a problem
-for parallel computation because knowing regions do not alias is the
+for parallel computation because knowing which regions do not alias is the
 basis for safe parallel execution.  This is why languages such as
 Sequoia and DPJ allow only a single static partition of each
 region---it simplifies static analysis of regions to the point that it
