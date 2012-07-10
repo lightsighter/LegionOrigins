@@ -417,9 +417,12 @@ T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
   \Gamma(id_i) = \forall r_{i1}, \ldots r_{ik_i}. (T_{i1}, \ldots, T_{in_i}), \Phi_i, Q_i \rightarrow T_{ir} \andalso
   \Gamma_i = \Gamma[a_{i1}/T_{i1}, \ldots, a_{in_i}/T_{in_i}] \andalso
   \typeenv[G={\Gamma_i},P={\Phi_i},O=\emptyset]{e_i}{T_{ir}}}
-  {\vdash \{  \text{function }id_1[r_{11}, \ldots, r_{1k_1}]( a_{11} : T_{11}, \ldots a_{1n_1} : T_{1n_1} ), \Phi_1, Q_1 : T_{1r} : e_1, 
-           \ldots
-           \text{function }id_p[r_{p1}, \ldots, r_{pk_1}]( a_{p1} : T_{p1}, \ldots a_{pn_p} : T_{pn_p} ), \Phi_p, Q_p : T_{pr} : e_p \} : \bullet}
+  {\begin{array}{@{}l@{}l@{}}
+   \vdash \{ & \text{function }id_1[r_{11}, \ldots, r_{1k_1}]( a_{11} : T_{11}, \ldots a_{1n_1} : T_{1n_1} ), \Phi_1, Q_1 : T_{1r} : e_1, \\
+           & \ldots \\
+           & \text{function }id_p[r_{p1}, \ldots, r_{pk_1}]( a_{p1} : T_{p1}, \ldots a_{pn_p} : T_{pn_p} ), \Phi_p, Q_p : T_{pr} : e_p \} : \bullet
+   \end{array}
+  }
 \end{minipage}
 \end{center}
 \end{adjustwidth}
@@ -869,7 +872,7 @@ valid\_interleave(S, C, E', E_1, E_2)
 \label{fig:semantics}
 \end{figure*}
 
-\section{Soundness of Effects}
+\section{Soundness of Privileges}
 \label{sec:soundness}
 
 A key property of the Legion type system is that any expression that is well-typed is
@@ -1060,13 +1063,13 @@ formal parameters works in reverse for the function's result.
 $\traceconsist{E}$ -  The type consistency of the values in an expression's memory
 trace follows from the following lemma applied to the traces of subexpressions:
 if $\traceconsist{E_1}$ and $\traceconsist{E_2}$ and $any\_interleave(E', E_1, E_2)$, then $\traceconsist{E'}$.
-New effects are added by {\tt write} and {\tt reduce} expressions, but consistency follows
+New memory operations are added by {\tt write} and {\tt reduce} expressions, but consistency follows
 directly from the induction hypothesis.  Finally, the consistency of the
 values in a called function's memory trace is addressed in the same way as the return value.
 
 \vspace{4pt}
 \hangindent=2\parindent \hangafter=1 \noindent %
-$\privconsist{E}{\Phi}$ -  The proof of the crucial property of containment of effects within the available privileges
+$\privconsist{E}{\Phi}$ -  The proof of the crucial property of containment of heap accesses within the available privileges
 is similar in outline to the previous step.  The easy cases are covered by a lemma combining the corresponding results
 for subexpressions: if $\privconsist{E_1}{\Phi}$ and $\privconsist{E_2}{\Phi}$ and $any\_interleave(E', E_1, E_2)$, then $\privconsist{E'}{\Phi}$.
 Straightforward proofs cover {\tt read}, {\tt write}, {\tt reduce}, and one final special case for function calls. 
@@ -1194,11 +1197,11 @@ The solution in the case of serial execution is to not expand the clobber
 set for subexpressions, instead using the parent expression's clobber set.
 
 Only a single rule is modified for this alternate execution - $e_{n+1}$ in
-{\sc E-Call} uses the original $C$ instead of $C'$.  Note that this change
+{\sc E-Call} uses the original $C$ instead of $C'$.  This change
 can result in there being no terminating execution for an expression in
 which the only terminating executions required a particular (non-program-)
-ordering of subexpression evaluation, but the Legion core language does not
-guarantee parallel execution in any case, so the evaluation of such an 
+ordering of subexpression evaluation.  However, the Legion core language never
+guarantees parallel execution, so the evaluation of such an 
 expression is unlikely to terminate even under the original clobber set.
 We can, however, show that any terminating execution that results from using
 the restricted clobber set is a valid execution under the original:
@@ -1216,7 +1219,9 @@ executed subexpression is always a valid interleaving:
 \begin{thm}
 \label{thm:sequential}
 \rm
-Let $\oton{e}$ be expressions such that $\opsenv[S={S_{i-1}}]{e_i}{v_i}{E_i}$, 
+Let $\oton{e}$ be expressions such that 
+%$\opsenv[S={S_{i-1}}]{e_i}{v_i}{E_i}$, 
+$M, L, H, S_{i-1},\linebreak C \vdash e_i \mapsto v_i, E_i$,
 where $S_i = apply(S_{i-1}, E_i)$.  If $E' = E_1 \dplus \ldots \dplus E_n$, then
 $valid\_interleave(S_0, C, E', \oton{E})$.
 \end{thm}
@@ -1250,7 +1255,7 @@ use the same reduction function, as reduction functions are assumed to commute.
 However, if the reduction functions have different names, swapping the two operations might result in a different store.
 \end{itemize}
 
-To summarize this, we define a {\em noninterference} operator on two effects that have been
+To summarize this, we define a {\em noninterference} operator on two memory operations that have been
 annotated with which constituent trace they came from as follows:
 $$
 \begin{array}{l@{ }l}
@@ -1397,7 +1402,7 @@ subtasks to run in parallel even if one or both of them is interacting
 
 We are now able to explain an important aspect of the Legion
 implementation that is different from other systems and relies on the
-soundness of privileges.  Noninterference of memory effects is
+soundness of privileges.  Noninterference of memory operations is
 something that can only be determined after evaluation of an
 expression is completed, and only at great expense, as illustrated at
 one extreme by work on transactional
@@ -1405,7 +1410,7 @@ memory \cite{Harris05}.  At the other extreme are systems
 that check privileges statically, such as Jade \cite{Rinard98} and
 DPJ \cite{Bocchino11}.  In contrast, Legion checks noninterference of privileges
 at runtime, which is much simpler and more efficient than checking
-noninterference of dynamic effects.  Even though the privileges
+noninterference of dynamic memory traces.  Even though the privileges
 themselves are static, the region mapping $M$ is dynamic.  Testing
 noninterference on the privileges with physical regions allows
 parallel execution in many more cases than a purely static analysis
@@ -1433,20 +1438,20 @@ so the runtime is free to serialize the execution of the subexpressions in any o
 program order.
 
 To convert the required analysis to one that can be performed on regions, we modify
-the noninterference operator for effects to consider only locations in $L_{excl}$ and show that
+the noninterference operator for memory operations to consider only locations in $L_{excl}$ and show that
 traces that are noninterfering under this modified check satisfy the requirement for atomic
 execution.  We then modify the noninterference operator on privileges to allow 
 $M(r_1) \cap M(r_2) \not= \emptyset$ if either $atomic(r_1)$ or $simult(r_1)$ is in $Q_1$ and
 either $atomic(r_2)$ or $simult(r_2)$ is in $Q_2$. We then show that subexpressions with 
 privileges that are {\em atomically noninterfering} (under a dynamic region mapping
-$M$) always have effects compatible with atomically-reordered execution.  Finally,
+$M$) always have memory traces compatible with atomically-reordered execution.  Finally,
 in the special case where each subexpression has $atomic(r)$ or $simult(r)$ in $Q_i$ for every $r$
 in $\Phi_i$, we can eliminate the dynamic check entirely.
 
 The second case is a subset of the first, in which all apparently-interfering operations have
 the $simult$ coherence mode.  In this case, all the coherence and sequential equivalence 
 checks are trivially satisfied, and any interleaving of the constituent traces is valid.
-We again modify the noninterference criteria for effects, traces, and privileges, this time
+We again modify the noninterference criteria for memory operations, traces, and privileges, this time
 only allowing $simult$ coherence annotations. We show that subexpression with privileges
 that are {\em simultaneously noninterfering} (under mapping $M$) can be executed
 in parallel, which includes all the cases covered by Theorem~\ref{thm:parallelexec} as well
