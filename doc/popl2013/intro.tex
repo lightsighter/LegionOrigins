@@ -1,22 +1,5 @@
 
 
-% This is a description of how the listings should be formatted.
-% It can go anywhere before the listings.
-\lstset{
-  captionpos=b,
-  language=Haskell,
-  basicstyle=\scriptsize,
-  numbers=left,
-  numberstyle=\tiny,
-  columns=fullflexible,
-  stepnumber=1,
-  escapechar=\#,
-  keepspaces=true,
-  literate={<}{{$\langle$}}1 {>}{{$\rangle$}}1,
-  morekeywords={task,rr,int,bool,isnull,partition,as,downregion,upregion,reads,writes,rdwrs,reduces,read,write,reduce,using,unpack,pack,coloring,color,newcolor,atomic,simultaneous},
-  deletekeywords={float,head,min,max}
-}
-
 \section{Introduction}
 \label{sec:intro}
 
@@ -51,10 +34,11 @@ performance; a centralized scheduler would be a bottleneck
 because of the huge latencies involved in communicating in the target
 class of machines.
 
-
+% This is a description of how the listings should be formatted.
+% It can go anywhere before the listings.
 \lstset{
   captionpos=b,
-  language=C++,
+  language=Haskell,
   basicstyle=\scriptsize,
   numbers=left,
   numberstyle=\tiny,
@@ -63,67 +47,86 @@ class of machines.
   escapechar=\#,
   keepspaces=true,
   literate={<}{{$\langle$}}1 {>}{{$\rangle$}}1,
-  morekeywords={region,coloring,partition,spawn,disjoint,aliased},
-  deletekeywords=float,
+  morekeywords={task,rr,int,bool,isnull,partition,as,downregion,upregion,reads,writes,rdwrs,reduces,read,write,reduce,using,unpack,pack,coloring,color,newcolor,atomic,simultaneous},
+  deletekeywords={float,head,min,max}
 }
+
 \begin{lstlisting}[float={t},label={lst:code_ex},caption={Circuit simulation.}]
-struct Node { float voltage, new_charge, capacitance; };
-struct Wire<rn> { Node@rn in_node, out_node; float current, ... ; };
-struct Circuit { region   r_all_nodes; /* contains all nodes for the circuit */
-                 region   r_all_wires; /* contains all circuit wires */ };
-struct CircuitPiece {
-  region  rn_pvt, rn_shr, rn_ghost; /* private, shared, ghost node regions */
-  region  rw_pvt;                   /* private wires region */ };
+type CircuitNode        = < float, --voltage
+                            int >
+type CircuitWire<rn,rg>  = < CircuitNode@rn,
+                             CircuitNode@(rn,rg),
+                             float> -- current
 
-void simulate_circuit(Circuit c, float dt) : RWE(c.r_all_nodes, c.r_all_wires)
-{
-  // The construction of the colorings is not shown.  The colorings wire_owner_map,
-  // node_owner_map, and node_neighbor_map have MAX_PIECES colors 
-  // 0..MAX_PIECES #$-$# 1. The coloring node_sharing map has two colors 0 and 1.
-  //
-  // Partition of wires into MAX_PIECES pieces
-  partition<disjoint> p_wires = c.r_all_wires.partition(wire_owner_map); 
-  // Partition nodes into two parts for all-private vs. all-shared
-  partition<disjoint> p_nodes_pvs = c.r_all_nodes.partition(node_sharing map);
+type node_list<rl,rn>       = < CircuitNode@rn, node_list<rl,rn>@rl >
+type wire_list<rl,rw,rn,rg> = < CircuitWire<rn,rg>@rw, wire_list<rl,rw,rn,rg>@rl >
 
-  // Partition all-private into MAX_PIECES disjoint circuit pieces
-  partition<disjoint> p_pvt_nodes = p_nodes_pvs[0].partition(node_owner_map);
-  // Partition all-shared into MAX_PIECES disjoint circuit pieces
-  partition<disjoint> p_shr_nodes = p_nodes_pvs[1].partition(node_owner_map);
-  // Partition all-shared into MAX_PIECES ghost regions, which may be aliased
-  partition<aliased> p_ghost_nodes = p_nodes_pvs[1].partition(node_neighbor_map);
+type CircuitPiece<rl,rw,rn> = rr[rpw,rpn,rg]
+        < wire_list<rl,rpw,rpn,rg>@rl,
+          node_list<rl,rpn>@rl >         
+          where rpn <= rn and rg <= rn and rpw <= rw and
+                rpn * rg and rn * rw and rl * rn and rl * rw
 
-  CircuitPiece pieces[MAX_PIECES];
-  for(i = 0; i #$<$# MAX_PIECES; i++) 
-    pieces[i] = { rn_pvt: p_pvt_nodes[i], rn_shr: p_shr_nodes[i],
-                  rn_ghost: p_ghost_nodes[i], rw_pvt: p_wires[i] };
-  for (t = 0; t #$<$# TIME_STEPS; t++) {
-    for (i = 0; i #$<$# MAX_PIECES; i++) calc_new_currents(pieces[i]);
-    for (i = 0; i #$<$# MAX_PIECES; i++) distribute_charge(pieces[i], dt);
-    for (i = 0; i #$<$# MAX_PIECES; i++) update_voltages(pieces[i]);
-  }
-}
+type piece_list<rl,rp,rw,rn> = < CircuitPiece<rl,rw,rn>@rp, piece_list<rl,rp,rw,rn>@rl >
 
-void calc_new_currents(CircuitPiece piece):
-        RWE(piece.rw_pvt), ROE(piece.rn_pvt, piece.rn_shr, piece.rn_ghost) {
-  foreach(w : piece.rw_pvt)
-    w#$\rightarrow$#current = (w#$\rightarrow$#in_node#$\rightarrow$#voltage - w#$\rightarrow$#out_node#$\rightarrow$#voltage) / w#$\rightarrow$#resistance;
-}
+function color_circuit[rn,rw,rl] ( all_nodes : node_list<rl,rn>@rl,
+                               all_wires : wire_list<rl,rw,rn>@rl ), reads(rn,rw,rl) : 
+                               <coloring(rn), coloring(rn), coloring(rw)> =  
+  -- Invoke programmer chosen coloring algorithm (e.g. METIS)
 
-void distribute_charge(CircuitPiece piece, float dt):
-        ROE(piece.rw_pvt), RdA(piece.rn_pvt, piece.rn_shr, piece.rn_ghost) {
-  foreach(w : piece.rw_pvt) {
-    w#$\rightarrow$#in_node#$\rightarrow$#new_charge += -dt * w#$\rightarrow$#current;
-    w#$\rightarrow$#out_node#$\rightarrow$#new_charge +=  dt * w#$\rightarrow$#current;
-  }
-}
+function build_lists[rl,rw,rn,rpw,rpn,rg] ( all_nodes : node_list<rl,rn>@rl, all_wires : wire_list<rl,rw,rn>@rl,
+                                 owned_coloring : coloring(rn), ghost_coloring : coloring(rn),
+                                 wires_coloring : coloring(rw), c : int), reads(rn,rw,rl), writes(rl) :
+                                 < wire_list<rl,rpw,rpn,rg>@rl, node_list<rl,rpn>@rl > = 
+  -- Construct node and wire lists for each piece based on coloring
 
-void update_voltages(CircuitPiece piece): RWE(piece.rn_pvt, piece.rn_shr) {
-  foreach(n : piece.rn_pvt, piece.rn_shr) {
-    n#$\rightarrow$#voltage += n#$\rightarrow$#new_charge / n#$\rightarrow$#capacitance;
-    n#$\rightarrow$#new_charge = 0;
-  }
-}
+function build_piece_list[rl,rp,rw,rn] ( one: CircuitPiece<rl,rw,rn>, two : CircuitPiece<rl,rw,rn>,
+                                 three: CircuitPiece<rl,rw,rn>, four : CircuitPiece<rl,rw,rn> ),
+                                 reads(rl,rp,rw,rn), writes(rl,rp) : piece_list<rl,rp,rw,rn>@rl =
+  -- Build a list of the pieces
+
+function simulate_circuit[rl,rw,rn] ( all_nodes : node_list<rl,rn>@rl,
+                                  all_wires : wire_list<rl,rw,rn,rn>@rl, steps : int ),
+                          reads(rn,rw,rl), writes(rn,rw,rl) : bool = 
+  let pc : <coloring(rn),<coloring(rn),coloring(rw)> >
+                      = color_circuit[rn,rw,rl](all_nodes,all_wires) in
+  partition rn using pc.1 as rn0,rn1,rn2,rn3 in
+  partition rn using pc.2 as rg0,rg1,rg2,rg3 in
+  partition rw using pc.3 as rw0,rw1,rw2,rw3 in
+  let piece0_lists : < wire_list<rl,rw0,rn0,rg0>@rl, node_list<rl,rn0>@rl > = 
+           build_lists[rl,rw,rn,rw0,rn0,rg0](all_nodes,all_wires,pc.1,pc.2.1,pc.2.2,0) in
+  let piece0 : CircuitPiece<rl,rw,rn> = pack piece0_lists as CircuitPiece<rl,rw,rn>[rw0,rn0,rg0] in
+  let piece1_lists : < wire_list<rl,rw1,rn1,rg1>@rl, node_list<rl,rn1>@rl > = 
+           build_lists[rl,rw,rn,rw1,rn1,rg1](all_nodes,all_wires,pc.1,pc.2.1,pc.2.2,1) in
+  let piece1 : CircuitPiece<rl,rw,rn> = pack piece1_lists as CircuitPiece<rl,rw,rn>[rw1,rn1,rg1] in
+  let piece2_lists : < wire_list<rl,rw2,rn2,rg2>@rl, node_list<rl,rn2>@rl > = 
+           build_lists[rl,rw,rn,rw2,rn2,rg2](all_nodes,all_wires,pc.1,pc.2.1,pc.2.2,2) in
+  let piece2 : CircuitPiece<rl,rw,rn> = pack piece2_lists as CircuitPiece<rl,rw,rn>[rw2,rn2,rg2] in
+  let piece3_lists : < wire_list<rl,rw3,rn3,rg3>@rl, node_list<rl,rn3>@rl > = 
+           build_lists[rl,rw,rn,rw3,rn3,rg3](all_nodes,all_wires,pc.1,pc.2.1,pc.2.2,3) in
+  let piece3 : CircuitPiece<rl,rw,rn> = pack piece3_lists as CircuitPiece<rl,rw,rn>[rw3,rn3,rg3] in
+  let all_pieces : pieces_list<rl,rl,rw,rn> = build_piece_list[rl,rl,rw,rn](piece0,piece1,piece2,piece3) in
+      execute_time_step[rl,rl,rw,rn](all_pieces,steps)
+
+function execute_time_step[rl,rp,rw,rn] ( all_pieces : pieces_list<rl,rp,rw,rn>@rl ),
+                                          reads(rl,rp,rw,rn), writes(rw,rn) : bool =
+  if steps < 1 then true else
+  let all_pieces' : pieces_list<rl,rp,rw,rn>@rl = map calc_new_currents[rl,rw,rn] all_pieces in
+  let all_pieces'' : pieces_list<rl,rp,rw,rn>@rl = map distribute_charge[rl,rw,rn] all_pieces' in
+  let all_pieces''' : pieces_list<rl,rp,rw,rn>@rl = map update_voltage[rl,rw,rn] all_pieces'' in
+      execute_time_step[rl,rp,rw,rn](all_pieces''',steps-1)
+
+function calc_new_currents[rl,rw,rn] ( p : CircuitPiece<rl,rw,rn> ), 
+                                      reads(rl,rw,rn), writes(rw) : CircuitPiece<rl,rw,rn> =
+  -- Calculate new currents for each wire
+
+function distribute_charge[rl,rw,rn] ( p : CircuitPiece<rl,rw,rn> ), 
+                      reads(rl,rw,rn), reduces(reduce_charge,rn), atomic(rn) : CircuitPiece<rl,rw,rn> =
+  -- Distribute charge from each wire to all nodes
+
+function update_voltage[rl,rw,rn] ( piece : CircuitPiece<rl,rw,rn> ), reads(rl,rw,rn), writes(rn) : bool = 
+  -- Update voltage for all our owned nodes
+
 \end{lstlisting}
 
 Legion programs organize data into a forest of {\em logical regions}.  Logical
