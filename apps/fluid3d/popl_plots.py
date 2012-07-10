@@ -171,10 +171,10 @@ def make_plot(fig, orig_exprs, check_exprs, prob_size):
         assert prob_size==19200
         plt.axhline(y=379.432, xmin=0.0125+delta, xmax=0.0125+(1.0/len(zip_list))-delta, linewidth=3, color='k', linestyle='--', label='PARSEC')
 
-    plt.bar(offset+ind, overhead_checks, width, color=tableau2, bottom=overhead_accum, label='Checking Overhead')
-    plt.bar(offset+ind, comm_checks, width, color=tableau3, bottom=comm_accum, label='Communication')
-    plt.bar(offset+ind, runtime_checks, width, color=tableau5, bottom=runtime_accum, label='Runtime Overhead')
-    plt.bar(offset+ind, kernel_checks, width, color=tableau9, label='Kernel')
+    plt.bar(offset+ind, overhead_checks, width, color=tableau6, bottom=overhead_accum, label='Checking Overhead')
+    plt.bar(offset+ind, comm_checks, width, color=tableau2, bottom=comm_accum, label='Communication')
+    plt.bar(offset+ind, runtime_checks, width, color=tableau10, bottom=runtime_accum, label='Runtime Overhead')
+    plt.bar(offset+ind, kernel_checks, width, color=tableau18, label='Kernel')
     plt.xlabel('Total CPUs (8 CPUs/node)')
     plt.xticks(offset+ind+width/2.0,cpus16)
     plt.ylabel('Processor Time (seconds)')
