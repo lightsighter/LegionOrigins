@@ -164,10 +164,10 @@ def make_plot(fig, orig_exprs, check_exprs, ps):
         overhead_accum.append(comm_accum[i] + comm_checks[i])
         # Update the index
         i = i + 1
-    plt.bar(offset+ind, overhead_checks, width, color=tableau2, bottom=overhead_accum, label='Checking Overhead')
-    plt.bar(offset+ind, comm_checks, width, color=tableau3, bottom=comm_accum, label='Communication')
-    plt.bar(offset+ind, runtime_checks, width, color=tableau5, bottom=runtime_accum, label='Runtime Overhead')
-    plt.bar(offset+ind, kernel_checks, width, color=tableau9, label='Kernel')
+    plt.bar(offset+ind, overhead_checks, width, color=tableau6, bottom=overhead_accum, label='Checking Overhead')
+    plt.bar(offset+ind, comm_checks, width, color=tableau2, bottom=comm_accum, label='Communication')
+    plt.bar(offset+ind, runtime_checks, width, color=tableau10, bottom=runtime_accum, label='Runtime Overhead')
+    plt.bar(offset+ind, kernel_checks, width, color=tableau18, label='Kernel')
     plt.xlabel('Total GPUs (3 GPUs/node)')
     if len(zip_list)==16:
         plt.xticks(offset+ind+width/2.0,gpus48)
