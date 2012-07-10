@@ -9,18 +9,17 @@
 \newcommand{\tuple}[2]{\langle #1, #2 \rangle}
 \makeatletter
 % macros for consistency flavors
-\newcommand{\foo}[1]{\cancel{#1}}
 \newcommand{\simH}{\sim_{\!H}}
 % usually: \mapconsist{\Omega}
-\newcommand{\mapconsist}[2][M]{#1 \foo\sim #2}
+\newcommand{\mapconsist}[2][M]{#1 \sim #2}
 % usually: \localconsist{L}{\Gamma}
-\newcommand{\localconsist}[3][M]{#2 \foo\simH \@ifmtarg{#1}{#3}{#1 \llbracket #3 \rrbracket}}
+\newcommand{\localconsist}[3][M]{#2 \simH \@ifmtarg{#1}{#3}{#1 \llbracket #3 \rrbracket}}
 % usually: \storeconsist{S}{H}
-\newcommand{\storeconsist}[2]{#1 \foo\sim #2}
+\newcommand{\storeconsist}[2]{#1 \sim #2}
 % usually: \valueconsist{v}{T}
-\newcommand{\valueconsist}[3][M]{#2 \foo\simH \@ifmtarg{#1}{#3}{#1 \llbracket #3 \rrbracket}}
+\newcommand{\valueconsist}[3][M]{#2 \simH \@ifmtarg{#1}{#3}{#1 \llbracket #3 \rrbracket}}
 % usually: \traceconsist{E}
-\newcommand{\traceconsist}[2][H]{#2 \foo\sim #1}
+\newcommand{\traceconsist}[2][H]{#2 \sim #1}
 % usually: \privconsist{E}{\Phi}
 \newcommand{\privconsist}[3][M]{#2 \@ifmtarg{#1}{:}{:_{\!#1}} #3}
 
@@ -1182,53 +1181,54 @@ implementing the precise criteria for checking a valid interleaving is
 much too expensive.  We now consider practical mechanisms that generate valid interleavings and 
 under what conditions these approaches may be used.
 
-The first option is to serialize the constituent traces in program
-order.  Although each constituent trace has been checked for coherence, the
-checking of some operations may have been deferred due to non-empty
+The first option is to serialize the evaluation of the subexpressions that
+make up an expression and attempt to generate a valid interleaving by simply
+concatenating the constituent traces in program order.  However, there is a
+complication related to the nondeterminism that is allowed for reads.  Although
+each subexpression's trace will have been checked for coherence, the checking
+of some operations may have been deferred due to non-empty
 clobber sets.  It is possible that when an interleaving of these traces
 is attemped in the parent expression's context, there may no valid interleaving
 if the wrong guesses were made in the derivation of a subexpression.
-However, we can show that as long as any valid interleaving
-exists, the serialization of the constituent traces is valid.
-To prove this result, we use the following lemma, the proof
-of which follows directly from the definition of $apply$.
+The solution in the case of serial execution is to not expand the clobber
+set for subexpressions, instead using the parent expression's clobber set.
+
+Only a single rule is modified for this alternate execution - $e_{n+1}$ in
+{\sc E-Call} uses the original $C$ instead of $C'$.  Note that this change
+can result in there being no terminating execution for an expression in
+which the only terminating executions required a particular (non-program-)
+ordering of subexpression evaluation, but the Legion core language does not
+guarantee parallel execution in any case, so the evaluation of such an 
+expression is unlikely to terminate even under the original clobber set.
+We can, however, show that any terminating execution that results from using
+the restricted clobber set is a valid execution under the original:
 
 \begin{lem}
-\label{lemma:applychain}
-\rm
-For any initial store $S$ and memory traces $E_1$ and $E_2$,
-$$apply(S, E_1 \dplus E_2) = apply(apply(S, E_1), E_2).$$
+\label{lem:clobberreduce}
+\rm 
+Let $\typeenv{e}{T}$ and $\opsenv{e}{v}{E}$ and $\storeconsist{S}{H}$.  If $C \subseteq C'$, then
+$\opsenv[C=C']{e}{v}{E}$.
 \end{lem}
 
+We now show that the concatenation of the memory traces from these serially
+executed subexpression is always a valid interleaving:
 
 \begin{thm}
 \label{thm:sequential}
 \rm
-Let $S_0$ be a store, $C$ a clobber set and $\oton{E}$ memory traces to be
-interleaved.  Let $E' = E_1 \dplus \ldots \dplus E_n$, in program order.  If there exists any $E''$ that is a
-valid interleaving of $\oton{E}$, then $E'$ is also valid interleaving of $\oton{E}$.
+Let $\oton{e}$ be expressions such that $\opsenv[S={S_{i-1}}]{e_i}{v_i}{E_i}$, 
+where $S_i = apply(S_{i-1}, E_i)$.  If $E' = E_1 \dplus \ldots \dplus E_n$, then
+$valid\_interleave(S_0, C, E', \oton{E})$.
 \end{thm}
 
-% FIX ME FIX ME FIX ME
 \begin{proof}
-To prove $valid\_interleave(S_0, C, E', \oton{E})$, we need to show the four conditions:
-\begin{enumerate}
-\item $any\_interleave(E', \oton{E})$ is proven by induction on
-the length of $E_1$, followed by $E_2$, and so on.
-\item $coherent(S_0, C, E')$ is shown by considering each constituent trace's subsequence in $E'$
-in order, using Lemma~\ref{lemma:applychain} with the coherence of each $E_i$.
-\item $seq\_equiv(S_0, C, E', \oton{E})$ follows trivially by matching the structure of $E'$
-to the corresponding  pieces $\oton{E}$.
-\item $coherent(S_0, C, E')$ is shown using the sequential equivalence of $E''$.  The value 
-returned by each read in $E''$ is equal to the value in the store that results
-from the application of all previous constituent traces and the operations before the read in its
-own trace.  This is exactly the sequence of preceding operations of the corresponding read in $E'$,
-and Lemma~\ref{lemma:applychain} allows us to transform the chain of $apply$ operations into a 
-single $apply$ operation on the whole sequence, satisfying the coherence condition for the read
-in $E'$.  This property applies for all reads in $E''$, and since $E'$ and $E''$ are
-interleavings of the same traces, they have the same reads, so all reads
-in $E'$ are coherent.
-\end{enumerate}
+First, we must show that $any\_interleave(E', \oton{E})$.  This is done by
+induction on the length of $E_1$, followed by $E_2$, and so on.  Next, we must
+show that $E'$ is coherent for both $L_{excl}$ and $L_{atomic}$.  This is done by
+matching the structure of $E'$ with $\oton{E}$ and the use of the following
+lemma: $apply(S, E_1 \dplus E_2) = apply(apply(S, E_1), E_2)$.  With the
+question of coherence addressed, the sequential equivalence of $E'$ is trivial
+for both the exclusive and atomic cases.
 \end{proof}
 
 Next we examine how to modify the serialized interleaving to produce valid interleavings allowing parallel execution. 
