@@ -41,11 +41,11 @@ Researchers have previously explored language designs with hierarchical decompos
 locality and independence for high performance programming. Two recent examples, Sequoia \cite{Fatahalian06} and 
 Deterministic Parallel Java (DPJ) \cite{Bocchino09}, each provide a mechanism to partition the heap recursively
 into a tree of collections of data.  The two designs are different in many aspects, but agree that there is
-a single tree-shaped partitioning of data that can be checked fully statically (see Section~\ref{sec:related} for more
+a single tree-shaped partitioning of data that can be fully checked statically (see Section~\ref{sec:related} for more
 discussion of related work).
 
-Our own experience with Sequoia and many high-performance applications
-written in the current industry standard mix of MPI, shared-memory
+Our own experience with writing high-performance applications in both 
+Sequoia and the current industry standard mix of MPI, shared-memory
 threads, and CUDA, has taught us that for many practical situations a
 single, fairly static partitioning is insufficient.  In practice, the
 best way to partition data is often a function of the data
@@ -70,7 +70,8 @@ operations and each partition allocates every element of $R$ to a
 subregion (partitions need not be total in Legion), then every element
 of $R$ is included in three different subregions.  This is why we use
 the term {\em logical} regions: language-level regions serve to name
-sets of data but do not imply anything about physical layout.  There
+sets of data but do not imply anything about physical layout or placement
+in the memory hierarchy.  There
 is a separate system of {\em physical regions} at runtime that hold
 copies of the data in the language-level logical regions.  In fact,
 the Legion implementation routinely maintains multiple distinct
@@ -78,42 +79,123 @@ physical regions, each with a copy of the data in the corresponding
 logical region, for performance reasons.
 
 A further consequence of placing the same data in multiple logical
-regions as a result of runtime computation is that Legion has a very
-hard static alias analysis problem on regions, which poses a problem
-for parallel computation because knowing which regions do not alias is the
-basis for safe parallel execution.  This is why languages such as
-Sequoia and DPJ allow only a single static partition of each
-region---it simplifies static analysis of regions to the point that it
-is practical.  
+regions is that it introduces aliasing which makes it difficult 
+to statically figure out which computations can be run in parallel.  
+One approach is to outlaw aliasing which allows for a static analysis
+to discover all available parallelism and schedule it entirely at
+compile-time, avoiding any runtime overhead.  Languages such as
+Sequoia and DPJ take this approach and allow only a single static partition of any region 
+to eliminate region aliasing at the cost of the flexibility of their language.
 
-Legion's execution model is that by default, a program's semantics is
-its meaning as a sequential program, which we refer to as the {\em
-program order} execution.  While the
-implementation is not our focus here, if two functions use
-disjoint data (because all of the regions they use are disjoint), then
-Legion may execute them simultaneously.  Also like DPJ,
-Legion has a system of {\em permissions} ({\em read}, {\em write}, and
-{\em reduce}) on regions and an orthogonal system of region {\em
-coherence} modes ({\em excl}, {\em atomic}, and {\em simultaneous})
-that increase the number of situations in which functions can be
-executed in parallel.
+% Putting this here so that we can get the code in a good place
+\lstset{
+  captionpos=b,
+  language=Haskell,
+  basicstyle=\scriptsize,
+  numbers=left,
+  numberstyle=\tiny,
+  columns=fullflexible,
+  stepnumber=1,
+  escapechar=\#,
+  keepspaces=true,
+  literate={<}{{$\langle$}}1 {>}{{$\rangle$}}1,
+  morekeywords={function,rr,int,float,bool,isnull,partition,as,downregion,upregion,reads,writes,rdwrs,reduces,read,write,reduce,using,unpack,pack,coloring,multicoloring,color,newcolor,atomic,simultaneous},
+  deletekeywords={float,head,min,max}
+}
+\begin{lstlisting}[float={t},label={lst:circuit_ex},caption={Circuilt Simulation}]
+--                        <voltage,current,charge,capacitance>
+type CircuitNode        = <float,float,float,float>
+--                     < owned node, owned or ghost node, resistance, current>
+type CircuitWire<rn,rg>  = <CircuitNode@rn, CircuitNode@(rn,rg),float,float>
+
+type node_list<rl,rn>       = < CircuitNode@rn, node_list<rl,rn>@rl >
+type wire_list<rl,rw,rn,rg>= < CircuitWire<rn,rg>@rw, wire_list<rl,rw,rn,rg>@rl >
+
+type CircuitPiece<rl,rw,rn> = rr[rpw,rpn,rg]
+                            < wire_list<rl,rpw,rpn,rg>@rl, node_list<rl,rpn>@rl >         
+                            where rpn <= rn and rg <= rn and rpw <= rw and
+                                  rpn * rg and rn * rw and rl * rn and rl * rw
+
+-- Simulation initialization and invocation
+function simulate_circuit[rl,rw,rn] ( all_nodes : node_list<rl,rn>@rl, 
+                            all_wires : wire_list<rl,rw,rn,rn>@rl, steps : int ), 
+      reads(rn,rw,rl), writes(rn,rw,rl) : bool = 
+  let pc : <coloring(rn),multicoloring(rn),coloring(rw)> 
+            = color_circuit[rn,rw,rl](all_nodes,all_wires) in
+  -- Disjoint partition for the owned nodes of each piece
+  partition rn using pc.1 as rn0,rn1 in
+  -- Aliased partition for ghost nodes of each piece
+  partition rn using pc.2 as rg0,rg1 in
+  -- Disjoint partition for the owned wires of each piece
+  partition rw using pc.3 as rw0,rw1 in
+  let lists0 : <wire_list<rl,rw0,rn0,rg0>@rl,node_list<rl,rn0>@rl> = 
+        build_lists[rl,rw,rn,rw0,rn0,rg0](all_nodes,all_wires,pc.1,pc.2,pc.3,0) in
+  let piece0 : CircuitPiece<rl,rw,rn> = 
+        pack lists0 as CircuitPiece<rl,rw,rn>[rw0,rn0,rg0] in
+  let lists1 : <wire_list<rl,rw1,rn1,rg1>@rl,node_list<rl,rn1>@rl> =
+        build_lists[rl,rw,rn,rw1,rn1,rg1](all_nodes,all_wires,pc.1,pc.2,pc.3,1) in
+  let piece1 : CircuitPiece<rl,rw,rn> = 
+        pack lists1 as CircuitPiece<rl,rw,rn>[rw1,rn1,rg1] in
+      execute_time_steps[rl,rw,rn](piece0,piece1,steps)
+
+-- Time Step Loop
+function execute_time_steps[rl,rw,rn] ( p0 : CircuitPiece<rl,rw,rn>, 
+      p1 : CircuitPiece<rl,rw,rn>, steps : int ) , reads(rn,rw,rl), writes(rn,rw) : bool = 
+  if steps #$<$# 1 then true else
+  unpack p0 as piece0 : CircuitPiece<rl,rw,rn>[rw0,rn0,rg0] in 
+  unpack p1 as piece1 : CircuitPiece<rl,rw,rn>[rw1,rn1,rg1] in
+  let _ : bool = calc_new_currents[rl,rw0,rn0,rg0](piece0.1) in
+  let _ : bool = calc_new_currents[rl,rw1,rn1,rg1](piece1.1) in
+  let _ : bool = distribute_charge[rl,rw0,rn0,rg0](piece0.1) in
+  let _ : bool = distribute_charge[rl,rw1,rn1,rg1](piece1.1) in
+  let _ : bool = update_voltage[rl,rn0](piece0.2) in
+  let _ : bool = update_voltage[rl,rn1](piece1.2) in
+      execute_time_steps[rl,rw,rn](p0,p1,steps-1)
+
+function color_circuit[rn,rw,rl] ( all_nodes : node_list<rl,rn>@rl, 
+                               all_wires : wire_list<rl,rw,rn>@rl ), 
+        reads(rn,rw,rl) : <coloring(rn), multicoloring(rn), coloring(rw)> =  
+  -- Invoke programmer chosen coloring algorithm (e.g. METIS)
+  -- return owned, ghost, wire colorings
+
+-- Helper method
+function build_lists[rl,rw,rn,rpw,rpn,rg] ( nodes : node_list<rl,rn>@rl, 
+       wires : wire_list<rl,rw,rn>@rl, oc : coloring(rn), gc : multicoloring(rn), 
+       wc : coloring(rw), c : int), reads(rn,rw,rl), writes(rl) 
+       : < wire_list<rl,rpw,rpn,rg>@rl, node_list<rl,rpn>@rl > = 
+  -- Construct lists of node and wire pointers for the given colorings
+\end{lstlisting}
+
+% Moving this to the circuit example section since it fits better there
+% and some of this is redundant
+%Legion's execution model is that by default, a program's semantics is
+%its meaning as a sequential program, which we refer to as the {\em
+%program order} execution.  While the
+%implementation is not our focus here, if two functions use
+%disjoint data (because all of the regions they use are disjoint), then
+%Legion may execute them simultaneously.  Also like DPJ,
+%Legion has a system of {\em permissions} ({\em read}, {\em write}, and
+%{\em reduce}) on regions and an orthogonal system of region {\em
+%coherence} modes ({\em excl}, {\em atomic}, and {\em simultaneous})
+%that increase the number of situations in which functions can be
+%executed in parallel.
 
 The important difference bewteen Legion and the more static approaches
-is that the hardest part of the tests to justify parallel execution is
-done dynamically instead of statically.  The key observation is that
-alias analysis is hard statically but very easy and relatively cheap
-dynamically.  Thus, Legion falls between fully static systems, such as
+is that Legion allows aliasing, but does so in a structured way that minimizes
+runtime overheads.  The key observation is that
+alias analysis is hard statically but very easy dynamically and is relatively cheap
+when done at the granularity of regions instead of individual memory
+locations.  Thus, Legion falls between fully static systems, such as
 Sequoia and DPJ, and fully dynamic approaches such as transactional
 memory.  Legion still has a significant static component; in
 particular, the safety of permissions is checked statically and region
 pointer dereferences are checked statically.  The dynamic alias tests
-are done at the granularity of regions and one check on a region
-itself often serves to prove the safety of many subsequent region
-accesses.  In contrast, because transactional memory has no mechanism
-for grouping heap data into larger collections, it much test the
+for independence are done at the granularity of regions and one check on a region
+itself often serves to prove the independence of many subsequent region
+uses.  In contrast, because transactional memory has no mechanism
+for grouping heap data into larger collections, it must test the
 overlap between two sets of data on each individual element, which is
 much more expensive.
-
 
 We begin in Section~\ref{sec:example} with an example program that illustrates
 a typical style of programming in Legion as well as motivating the need for multiple, dynamically computed  partitions of
