@@ -18,12 +18,12 @@ exposing aspects that are crucial to performance.
 In Legion data is organized in a hierarchy of {\em regions}
 and subregions while computation is organized in a hierarchy of {\em
 tasks} and subtasks operating on regions.  Regions and tasks interact
-through a static system of {\em region permissions} specifying 
+through a static system of {\em region privileges} specifying 
 operations a task may perform on a region argument (read,
 write, or reduce) and  {\em region coherence} annotations that
 express what other tasks may do concurrently with
 the region (exclusive, atomic, or simultaneous).  We prove the
-soundness of the permissions and coherence system and use these two
+soundness of the privileges and coherence system and use these two
 results to prove a third result: if two {\em siblings} (tasks that
 have the same immediate parent task) $t_1$ and $t_2$ are 
 {\em non-interfering} (have no ordering requirements for correctness), 
@@ -174,7 +174,7 @@ function build_lists[rl,rw,rn,rpw,rpn,rg] ( nodes : node_list<rl,rn>@rl,
 %implementation is not our focus here, if two functions use
 %disjoint data (because all of the regions they use are disjoint), then
 %Legion may execute them simultaneously.  Also like DPJ,
-%Legion has a system of {\em permissions} ({\em read}, {\em write}, and
+%Legion has a system of {\em privileges} ({\em read}, {\em write}, and
 %{\em reduce}) on regions and an orthogonal system of region {\em
 %coherence} modes ({\em excl}, {\em atomic}, and {\em simultaneous})
 %that increase the number of situations in which functions can be
@@ -189,7 +189,8 @@ when done at the granularity of regions instead of individual memory
 locations.  Thus, Legion falls between fully static systems, such as
 Sequoia and DPJ, and fully dynamic approaches such as transactional
 memory.  Legion still has a significant static component; in
-particular, the safety of permissions is checked statically and region
+particular, the required privileges for function calls is checked statically
+and region
 pointer dereferences are checked statically.  The dynamic alias tests
 for independence are done at the granularity of regions and one check 
 on a region
@@ -204,9 +205,9 @@ a typical style of programming in Legion and motivates the need for multiple, dy
 a region.  We define Core Legion, a small language suitable for our formal development, in Section~\ref{sec:legioncore}.
 The next four sections each state and prove one of our main results and contributions:
 \begin{itemize}
-\item We prove the soundness of Legion's permissions system (Section~\ref{sec:soundness}).
+\item We prove the soundness of Legion's privileges system (Section~\ref{sec:soundness}).
 
-\item We use the soundness of permissions to prove the soundness of Legion's region coherence modes (Section~\ref{sec:coherence}).
+\item We use the soundness of privileges to prove the soundness of Legion's region coherence modes (Section~\ref{sec:coherence}).
 
 \item We show that if expressions $e_1$ and $e_2$ are {\em non-interfering} (can be executed in parallel), then subexpressions
 $e_1'$ of $e_1$ and $e_2'$ of $e_2$ are also non-interfering (Section~\ref{sec:scheduling}).  This result is the basis
@@ -217,7 +218,7 @@ on the target class of machines.
 
 \item We give experimental evidence for the Legion design.  On three real-world applications, we show that 
 dynamic region pointer checks would be expensive, justifying checking this aspect of the type system statically.
-We also show that the cost of checking aliasing on region permissions is low, showing that a much more expressive
+We also show that the cost of checking for non-interference of region privileges is low, showing that a much more expressive
 and dynamic langauge is not incompatible with high performance.
 
 \end{itemize}

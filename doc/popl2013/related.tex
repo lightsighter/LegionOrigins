@@ -6,7 +6,7 @@ a limited repetoire of ways to partition arrays.  Sequoia is a static language w
 of tasks and data; Legion is more dynamic with separate task and region hierarchies.
 
 Deterministic Parallel Java (DPJ) is the only other region-based parallel system of which we are
-aware\cite{Bocchino09}.  While there are similarities in the permission system and we have
+aware\cite{Bocchino09}.  While there are similarities between DPJ's effects and Legion privileges and we have
 reused some DPJ notation, there are differences stemming from DPJ's static approach.
 Regions in Legion are first-class and can be created, partitioned, packed, and unpacked 
 dynamically, allowing programmers to compute data organization at runtime; like Sequoia, DPJ
@@ -49,7 +49,7 @@ Concurrent separation logic\cite{Brookes04} has been
 used both to parallelize sequential programs\cite{Raza09,Gotsman07} and to provide 
 a mechanism for reasoning about independence\cite{Hayman06}.
 While we have borrowed some separation logic notation, we ultimately chose to use a 
-permissions system as our primary formalism because separation logic does not easily
+privileges system as our primary formalism because separation logic does not easily
 support reasoning about the interleaving of operations to non-disjoint regions of memory.
 
 % I'm also not sure how much detail to go into here.  DPJ spends a lot of time
