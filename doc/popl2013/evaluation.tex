@@ -46,8 +46,8 @@ Fluid is based on the {\tt fluidanimate} benchmark from the PARSEC
 suite\cite{bienia11benchmarking}.  Fluid simulates the flow of an incompressible fluid
 using particles that move within a regular grid of cells.  To perform operations in 
 parallel the array of cells is partitioned.  Unlike
-Circuit, Fluid first creates regions and partitions them before
-allocating cells in regions.  Another difference is that Fluid
+Circuit, Fluid creates and partitions regions before
+allocating cells in them (i.e., partition-then-allocate).  Another difference is that Fluid
 maintains separate regions for ghost cells rather using multiple partitions of
 the regions containing shared data.  Region relationships are used for remembering
 which regions are required for each grid.
