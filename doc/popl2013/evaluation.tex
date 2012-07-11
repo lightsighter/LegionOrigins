@@ -179,7 +179,8 @@ memory pressure.  For the GPU kernels in the Circuit application checking requir
 registers per thread.  While the GPU kernels in Circuit were not bound by 
 available on-chip memory, kernels that are would be susceptible to extreme performance 
 degradation due to the extra registers required for checking.  We also measured the overhead
-of the dynamic checks associated with checking task call privileges but found them to be negligible.
+of the dynamic checks associated with checking task call privileges but found them to be negligible,
+demonstrating that runtime non-interference checks are inexpensive in Legion.
 % relative to the overhead of region access checks.
 
 \subsection{Scalability}
