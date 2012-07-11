@@ -1169,8 +1169,8 @@ operations with coherence mode $excl$, again excepting any location in
 the clobber set.  The $coherent(S,L_1,L_2,E)$ test checks that all
 reads of locations in $L_2$, and any read of a location $l \in L_1$
 that comes after a write to $l$, return the value most recently written
-to the store.  (If $L_2 = \emptyset$ initially, atomic reads without a preceding write are not checked, effectively defering
-these checks to a point where traces that might be ordered before $E$ are included.)  The $seq\_equiv$
+to the store.  (If $L_2 = \emptyset$ initially, atomic reads without a preceding write are not 
+checked, but are defered to a point where traces that might be ordered before $E$ are included.)  The $seq\_equiv$
 test verifies every read in $E'$ with a location in $L_1$ 
 is coherent if operations are performed in 
 program order and that the store that results from applying $E'$
