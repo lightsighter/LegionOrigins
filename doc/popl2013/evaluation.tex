@@ -46,8 +46,8 @@ Fluid is based on the {\tt fluidanimate} benchmark from the PARSEC
 suite\cite{bienia11benchmarking}.  Fluid simulates the flow of an incompressible fluid
 using particles that move within a regular grid of cells.  To perform operations in 
 parallel the array of cells is partitioned.  Unlike
-Circuit, Fluid first creates regions and partitions them before
-allocating cells in regions.  Another difference is that Fluid
+Circuit, Fluid creates and partitions regions before
+allocating cells in them (i.e., partition-then-allocate).  Another difference is that Fluid
 maintains separate regions for ghost cells rather using multiple partitions of
 the regions containing shared data.  Region relationships are used for remembering
 which regions are required for each grid.
@@ -96,7 +96,7 @@ GPUs, environments for which debugging tools are primitive at best.
 %  Finding these bugs required either multiple {\tt gdb} sessions 
 %for observing execution on different nodes simultaneously or using {\tt printf} for debugging on
 %GPUs.  
-To location the application bugs causing these illegal accesses, we initially added 
+To locate the application bugs causing these illegal accesses, we initially added 
 dynamic checks on  all region accesses for both CPUs and GPUs.  
 Unsurprisingly, these checks added considerable runtime overhead.  
 To preserve the benefit of checking every access, but eliminate the cost of dynamic checks we implemented the type, privilege, and coherence checker we have described. 

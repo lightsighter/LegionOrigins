@@ -157,7 +157,7 @@ are used to specify partitions of regions into subregions.
 Functions in Legion are named, accept one or more arguments and
 return a value of some type.  A function also declares the region
 access privileges and coherence it requires.  A function may be executed
-within the current task or run as a separate subtask---this decision is made
+within the current task or run in parallel as a separate subtask---this decision is made
 by the Legion task scheduler.  Function types are
 universally quantified over all region names appearing in the type.
 The final type is a region relationship, an instance of which captures a value and
@@ -206,7 +206,7 @@ as well as constraints asserting subregions are pairwise disjoint and contained 
 
 The {\em pack} expression packs together a value and the corresponding logical regions,
 provided the region relation's constraints hold.  The
-corresponding {\em unpack} expression gives (new) names to those regions.  For simplicity, neither the 
+corresponding {\em unpack} expression gives (new) names to those regions.  For simplicity, in Core Legion neither the 
 {\em partition} nor the {\em unpack} expression allows shadowing of region names.
 
 \begin{comment}
