@@ -50,7 +50,7 @@ threads, and CUDA, has taught us that for many practical situations a
 single, static partitioning is insufficient.  In practice, the
 best way to partition data is often a function of the data
 itself---i.e., the partitions need to be dynamically computed.
-Furthermore, it is useful to allow multiple simultaneous partitions of
+Furthermore, it is useful to allow multiple, simultaneous partitions of
 the same data, providing different views on to that data. Thus, in Legion the 
 handling of regions and partitioning of regions is much more dynamic than in 
 previous designs.  In particular,
