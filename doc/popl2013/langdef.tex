@@ -148,10 +148,10 @@ $v$ & ::= & & values &
 
 Figure~\ref{fig:langdef} defines Core Legion, a subset of the full Legion language
 that still illustrates all of the important issues.  Types
-include booleans, integers, tuples, and pointers.  Note that pointers
-are annotated with a list of regions into which they may point; in a
-well-typed program, the pointer is guaranteed to point to at least one
-of those regions. There is a special type for {\em colorings}, which
+include booleans, integers, tuples, and pointers.  Pointers
+are annotated with a list of regions - a non-null pointer must point to a 
+location that is contained in at least one of the regions. There is a special
+type for {\em colorings}, which
 are used to specify partitions of regions into subregions.
 Functions in Legion are named, accept one or more arguments and
 return a value of some type.  A function also declares the region

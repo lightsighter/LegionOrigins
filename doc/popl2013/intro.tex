@@ -66,7 +66,7 @@ regions;
 One consequence of these decisions is that, through partitioning, a
 given datum may belong to multiple different regions.  For example, if
 a region $R$ is disjointly partitioned three distinct ways 
-and each partition allocates every element in $R$ to a
+and each partition assigns every element in $R$ to a
 subregion (partitions need not be total in Legion), then every element
 in $R$ is included in three different subregions.  This is why we use
 the term {\em logical} regions: language-level regions serve to name
@@ -185,11 +185,11 @@ is that Legion allows aliasing, but does so in a structured way that minimizes
 runtime overheads.  The key observation is that
 static alias analysis is hard, but dynamic analysis is very easy
 and relatively cheap
-when done at the granularity of regions instead of individual memory
+when done at the granularity of regions instead of individual heap
 locations.  Thus, Legion falls between fully static systems, such as
 Sequoia and DPJ, and fully dynamic approaches such as transactional
 memory.  Legion still has a significant static component; in
-particular, the required privileges for function calls is checked statically
+particular, the required privileges for function calls are checked statically
 and region
 pointer dereferences are checked statically.  The dynamic alias tests
 for independence are done at the granularity of regions and one check 
