@@ -1,0 +1,83 @@
+\section{Outline}
+
+\begin{enumerate}
+\item Abstract
+\item Introduction
+\item LLR Components
+  \begin{enumerate}
+  \item Processors
+  \item Memories
+  \item Events
+  \item Locks
+  \item Physical Regions
+  \end{enumerate}
+\item Implementations
+  \begin{enumerate}
+  \item SMP Version
+  \item GASNet/CUDA Version
+  \end{enumerate}
+\item Microbenchmarks
+  \begin{enumerate}
+  \item Events
+    \begin{enumerate}
+    \item Latency (inter- and intra-node)
+    \item Throughput (separate tracks and single wide track)
+    \end{enumerate}
+  \item Locks
+    \begin{enumerate}
+    \item Latency, Throughput vs. Load
+    \item Locality - associate data with lock either implicitly or explicitly, show effect of unfairness
+    \end{enumerate}
+  \item Reductions
+    \begin{enumerate}
+    \item Histogram Mini-app - vary data, histogram sizes, use variety of reduction techniques
+    \end{enumerate}
+  \end{enumerate}
+\item Applications
+  \begin{enumerate}
+  \item Circuit
+  \item Fluid
+  \item AMR
+  \end{enumerate}
+\item Application Profiling
+  \begin{enumerate}
+  \item Events
+    \begin{enumerate}
+    \item Lifetimes (Storage Cost)
+    \item Trigger vs. Query Times
+    \item Waiters per Event (individual and aggeregated per-node)
+    \end{enumerate}
+  \item Locks
+    \begin{enumerate}
+    \item ???
+    \end{enumerate}
+  \item Reductions
+    \begin{enumerate}
+    \item ???
+    \end{enumerate}
+  \item Deferred Execution
+    \begin{enumerate}
+    \item Comparison vs. Bulk Synchronous Implementation
+    \end{enumerate}
+  \end{enumerate}
+\item Related Work
+\item Conclusion
+\item Bibliography
+\end{enumerate}
+
+\section{TODO}
+
+\newcommand{\tblhdr}[1]{\multicolumn{1}{c}{\bf #1}}
+
+\begin{tabular}{lll}
+\tblhdr{Status} & \tblhdr{Owner} & \tblhdr{Task} \\
+DONE & Mike & Code event latency microbenchmark \\
+& Mike & Code event throughput microbenchmark \\
+& ?? & Code lock latency/throughput microbenchmark \\
+& Sean & Code lock locality microbenchmark \\
+& ?? & Code histogram microbenchmark \\
+& Sean & Detailed event logging \\
+& Sean & Bulk-Synchronous Mode: Circuit \\
+& Sean & Bulk-Synchronous Mode: Fluid \\
+& Mike & Bulk-Synchronous Mode: AMR \\
+\end{tabular}
