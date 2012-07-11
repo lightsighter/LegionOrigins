@@ -169,10 +169,8 @@ the instance.
 \label{subsec:coretypes}
 
 Core Legion is explicitly typed using judgments of the form
-\begin{center}
-$\typeenv{e}{T}$
-\end{center}
-where
+$$\typeenv{e}{T}$$
+where:
 \begin{itemize}
 \item $\Gamma$ is the type environment, mapping the names of local variables and global functions
 to their types,
@@ -181,7 +179,7 @@ to their types,
 \end{itemize}
 As regions are hierarchical, privileges and/or constraints on a region often imply similar
 privileges or constraints on subregions.  Figure~\ref{fig:closure} defines closure
-operations for $\Phi^*$ and $\Omega^*$ that add implied constraints.
+operations for $\Phi^*$ and $\Omega^*$ that explicitly add these implied constraints.
 The type checking rules are in Figure~\ref{fig:types}.  Many of the rules are 
 straightforward, but several deserve more explanation.
 
@@ -196,7 +194,7 @@ enclosing function has privileges.
 Similarly, a call to another function is permitted only if the privileges required by the 
 callee are a subset of those held by the caller.  There is no way to create privileges within
 a Legion function - it is limited to privileges given to it by its caller.  (The
-top-level task of a Legion program begins with a single, empty region from which other
+top-level task of a Core Legion program begins with a single, empty region from which other
 regions can be partitioned and full read and
 write privileges.)
 
@@ -457,11 +455,7 @@ reads(r) \in \Phi^* \wedge writes(r) \in \Phi^* \Rightarrow reduces_{id}(r) \in 
 \label{subsec:opsemantics}
 
 Core Legion's operational semantics rules have the following form:
-
-\begin{center}
-$\opsenv{e}{v}{E}$
-\end{center}
-
+$$\opsenv{e}{v}{E}$$
 where: 
 \begin{itemize}
 \item $M$ is a mapping from logical regions $r_i$ to {\em physical regions} $\rho_i$, which are sets of concrete memory locations.
@@ -1220,8 +1214,9 @@ Let $\typeenv{e}{T}$ and $\opsenv{e}{v}{E}$ and $\storeconsist{S}{H}$.  If $C \s
 $\opsenv[C=C']{e}{v}{E}$.
 \end{lem}
 
+The proof of this (and other lemmas in this section) is included in \cite{LegionTypes12}.
 We now show that the concatenation of the memory traces from these serially
-executed subexpression is always a valid interleaving:
+executed subexpressions is always a valid interleaving:
 
 \begin{thm}
 \label{thm:sequential}
@@ -1255,7 +1250,7 @@ as changing the order would almost certainly change the value read.
 as the store that would result from applying those operations in the opposite order may
 differ in $l$.
 \item Finally, if both operations are reductions to the same location, they may be swapped if they
-use the same reduction function, as reduction functions are assumed to commute.  
+use the same reduction function, as each reduction function is assumed to commute with itself.  
 %(We 
 %follow the example of other work (i.e. DPJ) and leave proofs of commutativity to the programmer,
 %possibly with the aid of other tools.)  
@@ -1315,7 +1310,6 @@ piece of the coherence proof.
 \end{enumerate}
 \end{proof}
 }
-The proof is included in \cite{LegionTypes12}.
 We now extend the non-interference operator to entire memory traces, providing a way to say that
 no operation in a trace interferes with any operation in another:
 $$E_1 \nonint E_2 \Leftrightarrow \displaystyle\bigwedge_{\epsilon_1 \text{ in } E_1, \epsilon_2 \text{ in } E_2} \epsilon_1 \nonint \epsilon_2$$
@@ -1350,10 +1344,10 @@ use the region mapping $M$ to translate the logical regions named in privileges 
 locations (i.e. physical regions), and define non-interference between individual privileges and
 sets of privileges:
 $$
-\begin{array}{l@{ }l}
-priv_1(r_1) & \nonint[M] priv_2(r_2) \Leftrightarrow (M(r_1) \cap M(r_2) = \emptyset)\ \vee \\
-& (priv_1 = reads \wedge priv_2 = reads)\ \vee \\
-& (priv_1 = reduces_{id_1} \wedge priv_2 = reduces_{id_2} \wedge id_1 = id_2)
+\begin{array}{@{}l@{}}
+priv_1(r_1) \nonint[M] priv_2(r_2) \Leftrightarrow (M(r_1) \cap M(r_2) = \emptyset)\ \vee \\
+\hspace{0.35in} (priv_1 = reads \wedge priv_2 = reads)\ \vee \\
+\hspace{0.35in} (priv_1 = reduces_{id_1} \wedge priv_2 = reduces_{id_2} \wedge id_1 = id_2)
 \end{array}
 $$
 %% \begin{center}
@@ -1496,7 +1490,7 @@ Lemma~\ref{lem:noninteffects}).
 \label{thm:hiersched}
 \rm
 Let $e_1$ and $e_2$ be well-typed Legion expressions using privileges $\Phi_1$ and
-$\Phi_2$ respectively .  Let $e_3$ be a subexpression of $e_1$ and $e_4$ be a 
+$\Phi_2$ respectively, where $\Phi_1 \nonint[M] \Phi_2$.  Let $e_3$ be a subexpression of $e_1$ and $e_4$ be a 
 subexpression of $e_2$.  Any memory traces $E_3$ of $e_3$ and $E_4$ of $e_4$ resulting from evaluation of
 $e_1$ and $e_2$ (with the usual consistent $M$, $L$, $H$, and $S$), must be
 non-interfering.
