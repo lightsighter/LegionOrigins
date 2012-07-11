@@ -45,8 +45,8 @@
 Legion is a programming model that introduces
 {\em logical regions} as a mechanism for targeting large heterogeneous machines 
 with complex memory hierarchies.  Logical regions are first-class 
-values in Legion, allowing programmers to specify independence 
-and locality properties of program data.  We present
+values in Legion, and programmers may {\em partition} regions in multiple different
+ways into subregions.  We present
 a type system with privileges and coherence properties for reasoning about logical regions.  
 We prove the soundness of the type system and use it to show
 that all memory accesses in Legion are safe.  Furthermore, we prove that
