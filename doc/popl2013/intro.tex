@@ -7,7 +7,7 @@ In the past decade machine architecture, particularly at the high
 performance end of the spectrum, has undergone a revolution.  The
 latest supercomputers are now complex hierarchies of many different
 kinds of computing technologies: networks of nodes at the top level,
-multiple chips per node, mutiple cores within a chip, and, most
+multiple chips per node, multiple cores within a chip, and, most
 recently, multiple accelerators (usually GPUs) per node, which 
 can themselves be decomposed.  We present the operational and static
 semantics of Legion\cite{Legion12}, a programming model targeted at providing an
@@ -27,8 +27,8 @@ soundness of the privileges and coherence system and use these two
 results to prove a third result: if two {\em siblings} (tasks that
 have the same immediate parent task) $t_1$ and $t_2$ are 
 {\em non-interfering} (have no ordering requirements for correctness), 
-then the any descendent of $t_1$ in the task hierarchy is non-interfering
-with any descendent of $t_2$.  This theorem is the basis for correct distributed
+then the any descendant of $t_1$ in the task hierarchy is non-interfering
+with any descendant of $t_2$.  This theorem is the basis for correct distributed
 task scheduling in a Legion implementation, which is crucial for
 performance; a centralized scheduler would be a bottleneck
 because of the huge latencies involved in communicating in the target
@@ -102,7 +102,7 @@ to eliminate aliasing at the cost of the flexibility of their language.
   morekeywords={function,rr,int,float,bool,isnull,partition,as,downregion,upregion,reads,writes,rdwrs,reduces,read,write,reduce,using,unpack,pack,coloring,multicoloring,color,newcolor,atomic,simultaneous},
   deletekeywords={float,head,min,max}
 }
-\begin{lstlisting}[float={t},label={lst:circuit_ex},caption={Circuilt Simulation}]
+\begin{lstlisting}[float={t},label={lst:circuit_ex},caption={Circuit Simulation}]
 --                        <voltage,current,charge,capacitance>
 type CircuitNode        = <float,float,float,float>
 --                     < owned node, owned or ghost node, resistance, current>
@@ -180,7 +180,7 @@ function build_lists[rl,rw,rn,rpw,rpn,rg] ( nodes : node_list<rl,rn>@rl,
 %that increase the number of situations in which functions can be
 %executed in parallel.
 
-The important difference bewteen Legion and the more static approaches
+The important difference between Legion and the more static approaches
 is that Legion allows aliasing, but does so in a structured way that minimizes
 runtime overheads.  The key observation is that
 static alias analysis is hard, but dynamic analysis is very easy
@@ -219,7 +219,7 @@ on the target class of machines.
 \item We give experimental evidence for the Legion design.  On three real-world applications, we show that 
 dynamic region pointer checks would be expensive, justifying checking this aspect of the type system statically.
 We also show that the cost of checking for non-interference of region privileges is low, showing that a much more expressive
-and dynamic langauge is not incompatible with high performance.
+and dynamic language is not incompatible with high performance.
 
 \end{itemize}
 Finally, Section~\ref{sec:related} discusses the most closely related work and

@@ -207,7 +207,7 @@ as well as constraints asserting subregions are pairwise disjoint and contained 
 
 The {\em pack} expression packs together a value and the corresponding logical regions,
 provided the region relation's constraints hold.  The
-corresponding {\em unpack} expression gives (new) names to those regions.  For simplicitly, neither the 
+corresponding {\em unpack} expression gives (new) names to those regions.  For simplicity, neither the 
 {\em partition} nor the {\em unpack} expression allows shadowing of region names.
 
 \begin{comment}
@@ -518,7 +518,7 @@ the expression being evaluated.
 
 Another prescient operation is {\tt newcolor r}, which guesses initial
 memory locations and their colors for a partition.  These locations
-support partition-then-allocate, ensuring the memory mappping $M$ has
+support partition-then-allocate, ensuring the memory mapping $M$ has
 locations for the new subregions that can be allocated by {\tt new}.
 As is usual, memory allocation is also non-deterministic, choosing any
 location of the correct type in the region.  For simplicity we do not
@@ -880,7 +880,7 @@ valid\_interleave(S, C, E', E_1, E_2)
 
 A key property of the Legion type system is that any expression that is well-typed is
 guaranteed to access the heap only in ways permitted by the privileges under which it was typed.
-A judgement $\privconsist{E}{\Phi}$ holds if all the memory operations in memory trace $E$ are of the types and
+A judgment $\privconsist{E}{\Phi}$ holds if all the memory operations in memory trace $E$ are of the types and
 to locations covered by the privileges in $\Phi$:
 \[ 
 \begin{array}{l}
@@ -897,7 +897,7 @@ For our results, three consistency properties are needed:
 \begin{itemize}
 \item $\mapconsist{\Omega}$, a region mapping satisfies the region constraints under which the expression was typed
 \item $\localconsist{L}{\Gamma}$, local values have types consistent with the environment under which the expression was typed
-\item $\storeconsist{S}{H}$, the initial state of the store contains values whose types are consisten with the heap typing
+\item $\storeconsist{S}{H}$, the initial state of the store contains values whose types are consistent with the heap typing
 \end{itemize}
 
 \noindent Two additional properties are proven for each subexpression:
@@ -1126,7 +1126,7 @@ the different coherence modes permit different interleavings of memory traces.  
 in addition to being an interleaving of the constituent traces, exclusive access requires interleaved memory traces to be:
 \begin{itemize}
 \item {\em coherent} - a read of location $l$ should see the effect of all writes and reductions to $l$
-occuring earlier in the interleaved trace, and
+occurring earlier in the interleaved trace, and
 \item {\em sequentially equivalent} - the value read by each read 
 operation and the result of applying the interleaved trace to the original store should be the same as if each constituent trace
 was applied to the store in a valid sequential execution of the program.
@@ -1175,7 +1175,7 @@ the clobber set.  The $coherent(S,L_1,L_2,E)$ test checks that all
 reads of locations in $L_2$, and any read of a location $l \in L_1$
 that comes after a write to $l$, return the value most recently written
 to the store.  (If $L_2 = \emptyset$ initially, atomic reads without a preceding write are not 
-checked, but are defered to a point where traces that might be ordered before $E$ are included.)  The $seq\_equiv$
+checked, but are deferred to a point where traces that might be ordered before $E$ are included.)  The $seq\_equiv$
 test verifies every read in $E'$ with a location in $L_1$ 
 is coherent if operations are performed in 
 program order and that the store that results from applying $E'$
@@ -1194,11 +1194,11 @@ under what conditions these approaches may be used.
 The first option is to serialize the evaluation of the subexpressions that
 make up an expression and attempt to generate a valid interleaving by simply
 concatenating the constituent traces in program order.  However, there is a
-complication related to the nondeterminism that is allowed for reads.  Although
+complication related to the non-determinism that is allowed for reads.  Although
 each subexpression's trace will have been checked for coherence, the checking
 of some operations may have been deferred due to non-empty
 clobber sets.  It is possible that when an interleaving of these traces
-is attemped in the parent expression's context, there may no valid interleaving
+is attempted in the parent expression's context, there may no valid interleaving
 if the wrong guesses were made in the derivation of a subexpression.
 The solution in the case of serial execution is to not expand the clobber
 set for subexpressions, instead using the parent expression's clobber set.
@@ -1337,7 +1337,7 @@ Lemma~\ref{lem:nonintswap} is then used to show that the validity of $E_1 \dplus
 under Theorem~\ref{thm:sequential} implies the validity of $E'$.
 
 The swapping algorithm as follows: Associate with each operation in $E'$ the index of that operation
-in $E_1 \dplus \ldots \dplus E_n$.  Any consectutive pair of operations $\epsilon_1$ and $\epsilon_2$
+in $E_1 \dplus \ldots \dplus E_n$.  Any consecutive pair of operations $\epsilon_1$ and $\epsilon_2$
 for which $index(\epsilon_1) > index(\epsilon_2)$ is a {\em misordered pair}.  For any such pair,
 $\epsilon_1$ and $\epsilon_2$ will be from different constituent traces (if they were from the same
 trace, their misordering would mean that $E'$ was not an interleaving of $\oton{E}$).  Every pair of
@@ -1505,7 +1505,7 @@ non-interfering.
 \begin{proof}
 Let $E_1$ be the result of an evaluation of $e_1$, with $E_3$ being the memory trace from the
 evaluation of $e_3$ within the expression tree.  $E_1$ will be formed from a tree of valid
-interleavings, each of which must include all the memory operations of each consitituent trace.
+interleavings, each of which must include all the memory operations of each constituent trace.
 By induction over the number of intermediate subexpressions between $e_1$ and $e_3$, we
 can show that any memory operation $\epsilon_3$ that is in $E_3$ must also be in $E_1$.
 Similarly, any memory operation $\epsilon_4$ that is in $E_4$ must also be in $E_2$.  We have

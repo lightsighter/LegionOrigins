@@ -115,7 +115,7 @@ describes these data sharing patterns.
 %runtime, and the safety of parallel execution follows from the soundness of
 %the type system.
 The {\tt execute\_time\_steps} function also demonstrates the benefit of dynamically
-being able to discover disjointness.  To run the two intances of 
+being able to discover disjointness.  To run the two instances of 
 {\tt calc\_new\_currents} in parallel requires knowing that {\tt rw0}
 and {\tt rw1} are disjoint.  There is a similar requirement for parallel
 execution of the two {\tt update\_voltage} calls with {\tt rn0} and {\tt rn1}.  In

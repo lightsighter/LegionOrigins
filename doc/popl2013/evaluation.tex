@@ -56,13 +56,13 @@ which regions are required for each grid.
 \label{subsec:amr}
 The third application is a Legion port of an adaptive mesh refinement (AMR) benchmark 
 from BoxLib \cite{BoxLib}.  The algorithm solves the two
-dimensional heat diffusion equation on a grid of cells using three levels of refinement with subrefinements
+dimensional heat diffusion equation on a grid of cells using three levels of refinement with sub-refinements
 randomly placed on the surface.  
 %For each time step in the application, cells at the boundary of
 %a refinement are interpolated from cells at a coarser level of refinement, energy fluxes between
 %cells are computed, energy is transferred, and cells at a coarser level of refinement are restricted
 %to the values of refined cells.  
-Every levelof refinement uses a separate region, which is partitioned several ways to support multiple views of
+Every level of refinement uses a separate region, which is partitioned several ways to support multiple views of
 the cells.  One partitioning separates cells into pieces that can be updated in
 parallel.  Additional partitions are created for viewing data from coarser and finer levels of
 the simulation.  Two types of region relationships are created: one for describing the pieces at 
