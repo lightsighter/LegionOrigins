@@ -9,9 +9,9 @@ elements and connecting wires.  To perform parallel
 simulation the graph is partitioned into pieces, after which the
 simulation is run for a number of time steps.  Each time step has
 three phases: calculation of each wire's current, distribution of charge to
-the nodes to which each wire is connected, and updating of each node's voltage.
+the nodes connected to each wire, and updating of node voltages.
 
-The top-level function is {\tt simulate\_circuit} (line 15), which is
+The entry function is {\tt simulate\_circuit} (line 15), which is
 parameterized on regions {\tt rl}, {\tt rw}, and {\tt rn}.
 The wires and nodes are contained in regions {\tt rw} and {\tt rn},
 respectively.  The {\tt rl} region holds lists of pointers to the nodes and wires.
@@ -19,11 +19,11 @@ When {\tt simulate\_circuit} is invoked it must have both read and
 write privileges for the regions {\tt rl}, {\tt rw}, and {\tt rn}
 (line 17); the type system enforces that
 {\tt simulate\_circuit} only accesses these regions and their
-subregions.
+subregions at compile-time.
 
 Partitioning of the graph is done using {\em colorings} built in the
 {\tt color\_circuit} function (line 18-19).  A coloring maps region
-elements to ``colors'' (i.e. integers), with each color corresponding
+elements to colors (i.e. integers), with each color corresponding
  to a new subregion
 to be created.  Note that it is impossible to pick a single static
 partitioning scheme that would do well for all graphs.  Dynamic
@@ -44,10 +44,9 @@ multiple ways.  The second coloring is a {\em multicoloring} because
 it may map the same element to multiple colors.
 
 After creating the colorings, the application partitions the node and wire
-regions
-into {\em subregions} according to the colorings (lines 21-25).  For
+regions into {\em subregions} according to the colorings (lines 21-25).  For
 simplicity, our example only partitions the circuit into two pieces.
-Line 21 uses {\tt pc.1} to partition {\tt rn} into {\tt rn0}, and {\tt rn1}.
+Line 21 uses coloring {\tt pc.1} to partition {\tt rn} into {\tt rn0}, and {\tt rn1}.
 Subregion {\tt rn0} will contain all locations with a color of 1 in {\tt pc.1},
 while {\tt rn1} will contain all locations with a color of 2.  This
 partitioning uses a coloring and results in {\em disjoint} subpartitions.
@@ -103,18 +102,27 @@ each piece to be updated in parallel.  No
 single partition of the nodes
 describes these data sharing patterns.
 
-This function also demonstrates the benefit of being able to dynamically
-(re-)discover disjointness.  Safely running both instances of 
-{\tt calc\_new\_currents} in parallel depends on knowing that {\tt rw0} and
-{\tt rw1} in {\tt execute\_time\_steps} are disjoint.  Similarly, parallel
-execution of the instances of {\tt update\_voltage} requires knowing that
-{\tt rn0} is disjoint from {\tt rn1}.  In both cases, this knowledge was
-statically available in {\tt simulate\_circuit} and could have been captured
-in a region relationship, but it would have resulted in much more complicated
-code.
-Instead, an inexpensive dynamic disjointness check is performed by the Legion
-runtime, and the safety of parallel execution follows from the soundness of
-the type system.
+%This function also demonstrates the benefit of being able to dynamically
+%(re-)discover disjointness.  Safely running both instances of 
+%{\tt calc\_new\_currents} in parallel depends on knowing that {\tt rw0} and
+%{\tt rw1} in {\tt execute\_time\_steps} are disjoint.  Similarly, parallel
+%execution of the instances of {\tt update\_voltage} requires knowing that
+%{\tt rn0} is disjoint from {\tt rn1}.  In both cases, this knowledge was
+%statically available in {\tt simulate\_circuit} and could have been captured
+%in a region relationship, but it would have resulted in much more complicated
+%code.
+%Instead, an inexpensive dynamic disjointness check is performed by the Legion
+%runtime, and the safety of parallel execution follows from the soundness of
+%the type system.
+The {\tt execute\_time\_steps} function also demonstrates the benefit of dynamically
+being able to discover disjointness.  To run the two intances of 
+{\tt calc\_new\_currents} in parallel requires knowing that {\tt rw0}
+and {\tt rw1} are disjoint.  There is a similar requirement for parallel
+execution of the two {\tt update\_voltage} calls with {\tt rn0} and {\tt rn1}.  In
+both cases, this knowledge was statically available in {\tt simulate\_circuit}
+and could have been captured in a region relationship at the cost
+of much more complicated code.  Instead, an inexpensive dynamic disjointness
+check by the Legion runtime will discover the parallelism.
 
 Listing~\ref{lst:circuit_leaf} shows the leaf functions for each phase.
 Each function iterates over the list of wires or
@@ -133,11 +141,10 @@ see from other functions using the same region.  If not otherwise
 specified, coherence defaults to {\em exclusive}, meaning the
 function must appear to execute in program order.  Line 14 shows
 an example of {\tt atomic}, a relaxed coherence mode requiring
-that operations to {\tt rn} and {\tt rg} must appear atomic relative
+that operations to {\tt rn} and {\tt rg} appear atomic relative
 to other functions using those regions.  The most relaxed coherence
-mode is {\tt simult}; all functions with 
-simultaneous coherence are allowed to access the region concurrently
-with other functions having simultaneous coherence to the region.
+mode is {\tt simult}; simultaneous coherence allows concurrent access 
+to the region by all functions with simultaneous coherence on the region. 
 
 % This is a description of how the listings should be formatted.
 % It can go anywhere before the listings.
