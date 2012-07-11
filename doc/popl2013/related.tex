@@ -6,8 +6,9 @@ a limited repertoire of ways to partition arrays.  Sequoia is a static language 
 of tasks and data; Legion is more dynamic with separate task and region hierarchies.
 
 Deterministic Parallel Java (DPJ) is the only other region-based parallel system of which we are
-aware\cite{Bocchino09}.  While there are similarities between DPJ's effects and Legion privileges and we have
-reused some DPJ notation, there are differences stemming from DPJ's static approach.
+aware\cite{Bocchino09}.  While there are similarities between DPJ's effects and Legion privileges, 
+%and we have reused some DPJ notation, 
+there are differences stemming from DPJ's static approach.
 Regions in Legion are first-class and can be created, partitioned, packed, and unpacked 
 dynamically, allowing programmers to compute data organization at runtime; like Sequoia, DPJ
 partition schemes must be statically decided.  Legion allows 
