@@ -1255,7 +1255,7 @@ use the same reduction function, as reduction functions are assumed to commute.
 However, if the reduction functions have different names, swapping the two operations might result in a different store.
 \end{itemize}
 
-To summarize this, we define a {\em noninterference} operator on two memory operations that have been
+To summarize this, we define a {\em non-interference} operator on two memory operations that have been
 annotated with which constituent trace they came from as follows:
 $$
 \begin{array}{l@{ }l}
@@ -1309,7 +1309,7 @@ piece of the coherence proof.
 \end{proof}
 }
 The proof is included in \cite{LegionTypes12}.
-We now extend the noninterference operator to entire memory traces, providing a way to say that
+We now extend the non-interference operator to entire memory traces, providing a way to say that
 no operation in a trace interferes with any operation in another:
 $$E_1 \nonint E_2 \Leftrightarrow \displaystyle\bigwedge_{\epsilon_1 \text{ in } E_1, \epsilon_2 \text{ in } E_2} \epsilon_1 \nonint \epsilon_2$$
 and observe that this property permits arbitrary ordering (i.e. parallel execution) of the 
@@ -1334,13 +1334,13 @@ in $E_1 \dplus \ldots \dplus E_n$.  Any consectutive pair of operations $\epsilo
 for which $index(\epsilon_1) > index(\epsilon_2)$ is a {\em misordered pair}.  For any such pair,
 $\epsilon_1$ and $\epsilon_2$ will be from different constituent traces (if they were from the same
 trace, their misordering would mean that $E'$ was not an interleaving of $\oton{E}$).  Every pair of
-traces is noninterfering, so $\epsilon_1 \nonint \epsilon_2$ and they can be swapped while preserving
+traces is non-interfering, so $\epsilon_1 \nonint \epsilon_2$ and they can be swapped while preserving
 validity of the trace.  At most $n^2/2$ swaps are needed to eliminate all misordered pairs.
 \end{proof}
 }
-We next extend noninterference to privileges.  We 
+We next extend non-interference to privileges.  We 
 use the region mapping $M$ to translate the logical regions named in privileges into sets of
-locations (i.e. physical regions), and define noninterference between individual privileges and
+locations (i.e. physical regions), and define non-interference between individual privileges and
 sets of privileges:
 $$
 \begin{array}{l@{ }l}
@@ -1371,7 +1371,7 @@ $$\Phi_1 \nonint[M] \Phi_2 \Leftrightarrow \displaystyle\bigwedge_{\phi_1 \in \P
 \begin{lem}
 \label{lem:nonintpriv}
 \rm
-Let $M$ be a region mapping and $E_1$ and $E_2$ two memory traces such that $\privconsist{E_1}{\Phi_1}$ and $\privconsist{E_2}{\Phi_2}$.  If $\Phi_1$ and $\Phi_2$ are noninterfering under $M$, then $E_1$ and $E_2$ must be noninterfering.
+Let $M$ be a region mapping and $E_1$ and $E_2$ two memory traces such that $\privconsist{E_1}{\Phi_1}$ and $\privconsist{E_2}{\Phi_2}$.  If $\Phi_1$ and $\Phi_2$ are non-interfering under $M$, then $E_1$ and $E_2$ must be non-interfering.
 \end{lem}
 \texcomment{
 \begin{proof}
@@ -1402,17 +1402,17 @@ subtasks to run in parallel even if one or both of them is interacting
 
 We now highlight an important aspect of the Legion
 implementation that is different from other systems and relies on the
-soundness of privileges.  Noninterference of memory operations is
+soundness of privileges.  Non-interference of memory operations is
 something that can only be determined after evaluation of an
 expression is completed, and only at great expense, as illustrated at
 one extreme by work on transactional
 memory \cite{Harris05}.  At the other extreme are systems
-that check noninterference statically, such as Jade \cite{Rinard98} and
-DPJ \cite{Bocchino11}.  In contrast, Legion checks noninterference of privileges
+that check non-interference statically, such as Jade \cite{Rinard98} and
+DPJ \cite{Bocchino11}.  In contrast, Legion checks non-interference of privileges
 at runtime, which is much simpler and more efficient than checking
-noninterference of dynamic memory traces.  Even though the privileges
+non-interference of dynamic memory traces.  Even though the privileges
 themselves are static, the region mapping $M$ is dynamic.  Testing
-noninterference on the privileges with physical regions allows
+non-interference on the privileges with physical regions allows
 parallel execution in many more cases than a purely static analysis
 can achieve.
 
@@ -1438,12 +1438,12 @@ so the runtime is free to serialize the execution of the subexpressions in any o
 program order.
 
 To convert the required analysis to one that can be performed on regions, we modify
-the noninterference operator for memory operations to consider only locations in $L_{excl}$ and show that
-traces that are noninterfering under this modified check satisfy the requirement for atomic
-execution.  We then modify the noninterference operator on privileges to allow 
+the non-interference operator for memory operations to consider only locations in $L_{excl}$ and show that
+traces that are non-interfering under this modified check satisfy the requirement for atomic
+execution.  We then modify the non-interference operator on privileges to allow 
 $M(r_1) \cap M(r_2) \not= \emptyset$ if either $atomic(r_1)$ or $simult(r_1)$ is in $Q_1$ and
 either $atomic(r_2)$ or $simult(r_2)$ is in $Q_2$. We then show that subexpressions with 
-privileges that are {\em atomically noninterfering} (under a dynamic region mapping
+privileges that are {\em atomically non-interfering} (under a dynamic region mapping
 $M$) always have memory traces compatible with atomically-reordered execution.  Finally,
 in the special case where each subexpression has $atomic(r)$ or $simult(r)$ in $Q_i$ for every $r$
 in $\Phi_i$, we can eliminate the dynamic check entirely.
@@ -1451,9 +1451,9 @@ in $\Phi_i$, we can eliminate the dynamic check entirely.
 The second case is a subset of the first, in which all apparently-interfering operations have
 the $simult$ coherence mode.  In this case, all the coherence and sequential equivalence 
 checks are trivially satisfied, and any interleaving of the constituent traces is valid.
-We again modify the noninterference criteria for memory operations, traces, and privileges, this time
+We again modify the non-interference criteria for memory operations, traces, and privileges, this time
 only allowing $simult$ coherence annotations. We show that subexpression with privileges
-that are {\em simultaneously noninterfering} (under mapping $M$) can be executed
+that are {\em simultaneously non-interfering} (under mapping $M$) can be executed
 in parallel, which includes all the cases covered by Theorem~\ref{thm:parallelexec} as well
 as those where the programmer has used the $simult$ coherence mode to explicitly allow parallel
 execution.  Again, a special (but important) case exists where all privileges for each
@@ -1482,7 +1482,7 @@ By Theorem~\ref{thm:parallelexec}, if the runtime can verify $\Phi_1 \nonint[M] 
 expressions $e_1$ and $e_2$ may be evaluated in parallel.  The evaluation of the subexpressions
 $e_3$ and $e_4$ will therefore be allowed to run in parallel, and we must show that this is
 permissible.  We do so by proving that any memory traces that can result from the evaluation
-of the subexpression must be noninterfering (allowing parallel execution by
+of the subexpression must be non-interfering (allowing parallel execution by
 Lemma~\ref{lem:noninteffects}).
 }
 \begin{thm}
@@ -1492,7 +1492,7 @@ Let $e_1$ and $e_2$ be well-typed Legion expressions using privileges $\Phi_1$ a
 $\Phi_2$ respectively .  Let $e_3$ be a subexpression of $e_1$ and $e_4$ be a 
 subexpression of $e_2$.  Any memory traces $E_3$ of $e_3$ and $E_4$ of $e_4$ resulting from evaluation of
 $e_1$ and $e_2$ (with the usual consistent $M$, $L$, $H$, and $S$), must be
-noninterfering.
+non-interfering.
 \end{thm}
 \texcomment{
 \begin{proof}
@@ -1509,20 +1509,20 @@ this holds for all $\epsilon_3$ in $E_3$ and all $\epsilon_4$ in $E_4$, we have 
 following way.  Sibling function calls (those invoked within the same
 function body) are checked for non-interference of their (dynamic)
 privileges.  If they interfere they are serialized; otherwise they are
-considered for parallel execution as parallel subtasks.  Although determining that $e_1$
-and $e_2$ are noninterfering guarantees $e_3$ and $e_4$ are
-noninterfering, the converse is not true.  It is possible for $e_1$
+considered for execution as parallel subtasks.  Although determining that $e_1$
+and $e_2$ are non-interfering guarantees $e_3$ and $e_4$ are
+non-interfering, the converse is not true.  It is possible for $e_1$
 and $e_2$ to be judged to be potentially interfering and be serialized
-even when the subexpressions are noninterfering.  This loss of
+even when the subexpressions are non-interfering.  This loss of
 precision can impact performance, and did in a few instances in our
 experiments.  
 %When the performance impact is significant, two options
 %exist to improve matters.  
 In cases where $e_1$ and $e_2$ are in fact
-noninterfering, region partitions can be further refined to make the
+non-interfering, region partitions can be further refined to make the
 disjointness visible in the privileges.  Alternately, the code can be
 refactored to lift the subexpressions up to the same level, allowing
-the dynamic test based on the region mapping to infer noninterference
+the dynamic test based on the region mapping to infer non-interference
 in more cases.  
 %Although this can increase the overhead of scheduling
 %decisions, judicious use of this technique in practice has not shown
