@@ -166,7 +166,7 @@ modes is formalized in Section~\ref{sec:coherence}.
   deletekeywords={float,head,min,max}
 }
 
-\begin{lstlisting}[float={t},label={lst:circuit_leaf},caption={Circuilt Leaf Functions}]
+\begin{lstlisting}[float={t},label={lst:circuit_leaf},caption={Circuit Leaf Functions}]
 function calc_new_currents[rl,rw,rn,rg] ( ptr_list : wire_list<rl,rw,rn,rg>@rl ), 
       reads(rl,rw,rn,rg), writes(rw) : bool =
   if isnull(ptr_list) then true else
