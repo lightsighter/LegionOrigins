@@ -1175,7 +1175,9 @@ test verifies every read in $E'$ with a location in $L_1$
 is coherent if operations are performed in 
 program order and that the store that results from applying $E'$
 matches the store resulting from applying the
-constituent traces in program order for all locations in $L_1$.  For
+constituent traces in program order for all locations in $L_1$.  Program order
+is implicitly defined in the operational semantics, and is equivalent to a 
+postorder traversal of an expression's tree.  For
 the atomic location set, we allow the constituent traces to be
 permuted, but all locations must be checked with the same permutation.
 
