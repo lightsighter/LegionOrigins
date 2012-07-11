@@ -96,7 +96,7 @@ GPUs, environments for which debugging tools are primitive at best.
 %  Finding these bugs required either multiple {\tt gdb} sessions 
 %for observing execution on different nodes simultaneously or using {\tt printf} for debugging on
 %GPUs.  
-To location the application bugs causing these illegal accesses, we initially added 
+To locate the application bugs causing these illegal accesses, we initially added 
 dynamic checks on  all region accesses for both CPUs and GPUs.  
 Unsurprisingly, these checks added considerable runtime overhead.  
 To preserve the benefit of checking every access, but eliminate the cost of dynamic checks we implemented the type, privilege, and coherence checker we have described. 
