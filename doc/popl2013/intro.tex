@@ -80,12 +80,12 @@ logical region, for performance reasons \cite{Legion12}.
 
 A further consequence of placing the same data in multiple logical
 regions is that it introduces aliasing which makes it difficult 
-to statically figure out which computations can be run in parallel.  
+to statically determine which computations can be run in parallel.  
 One approach is to outlaw aliasing which allows for a static analysis
 to discover all available parallelism and schedule it entirely at
 compile-time, avoiding any runtime overhead.  Languages such as
 Sequoia and DPJ take this approach and allow only a single static partition of any region 
-to eliminate aliasing at the cost of the flexibility of their language.
+to eliminate region aliasing, at some cost in expressiveness.
 
 % Putting this here so that we can get the code in a good place
 \lstset{
@@ -181,7 +181,7 @@ function build_lists[rl,rw,rn,rpw,rpn,rg] ( nodes : node_list<rl,rn>@rl,
 %executed in parallel.
 
 The important difference between Legion and the more static approaches
-is that Legion allows aliasing, but does so in a structured way that minimizes
+is that Legion allows region aliasing, but does so in a structured way that minimizes
 runtime overheads.  The key observation is that
 static alias analysis is hard, but dynamic analysis is very easy
 and relatively cheap
@@ -189,9 +189,9 @@ when done at the granularity of regions instead of individual heap
 locations.  Thus, Legion falls between fully static systems, such as
 Sequoia and DPJ, and fully dynamic approaches such as transactional
 memory.  Legion still has a significant static component; in
-particular, the required privileges for function calls are checked statically
+particular, the required privileges for function calls
 and region
-pointer dereferences are checked statically.  The dynamic alias tests
+pointer dereferences are checked statically.  The dynamic alias checks
 for independence are done at the granularity of regions and one check 
 on a region
 often serves to prove the independence of many subsequent uses of that region.
