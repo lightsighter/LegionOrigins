@@ -31,7 +31,7 @@ then the any descendant of $t_1$ in the task hierarchy is non-interfering
 with any descendant of $t_2$.  This theorem is the basis for correct distributed
 task scheduling in a Legion implementation, which is crucial for
 performance; a centralized scheduler would be a bottleneck
-because of the huge latencies involved in communicating in the target
+because of the large communication latencies in the target
 class of machines.
 
 Legion programs organize data into a forest of {\em logical regions}.  Logical

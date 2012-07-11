@@ -144,7 +144,10 @@ an example of {\tt atomic}, a relaxed coherence mode requiring
 that operations to {\tt rn} and {\tt rg} appear atomic relative
 to other functions using those regions.  The most relaxed coherence
 mode is {\tt simult}; simultaneous coherence allows concurrent access 
-to the region by all functions with simultaneous coherence on the region. 
+to the region by all functions that are using the region
+in a simultaneous mode.  The interaction between tasks using the same
+region with different coherence
+modes is formalized in Section~\ref{sec:coherence}.
 
 % This is a description of how the listings should be formatted.
 % It can go anywhere before the listings.
