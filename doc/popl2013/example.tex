@@ -8,22 +8,23 @@ Section~\ref{sec:legioncore}).  The input is a graph of circuit
 elements and connecting wires.  To perform parallel
 simulation the graph is partitioned into pieces, after which the
 simulation is run for a number of time steps.  Each time step has
-three phases: calculate each wire's current, distribute charge to
-the nodes to which each wire is connected, and update each node's voltage.
+three phases: calculation of each wire's current, distribution of charge to
+the nodes to which each wire is connected, and updating of each node's voltage.
 
 The top-level function is {\tt simulate\_circuit} (line 15), which is
-parameterized on regions {\tt rl}, {\tt rw}, and {\tt rn} (line 15).
-The wires and nodes live in regions {\tt rw} and {\tt rn},
-respectively.  The {\tt rl} region holds lists of the nodes and wires.
-When {\tt simulate\_circuit} is invoked it must have read and
-write privileges for the region parameters
+parameterized on regions {\tt rl}, {\tt rw}, and {\tt rn}.
+The wires and nodes are contained in regions {\tt rw} and {\tt rn},
+respectively.  The {\tt rl} region holds lists of pointers to the nodes and wires.
+When {\tt simulate\_circuit} is invoked it must have both read and
+write privileges for the regions {\tt rl}, {\tt rw}, and {\tt rn}
 (line 17); the type system enforces that
 {\tt simulate\_circuit} only accesses these regions and their
 subregions.
 
 Partitioning of the graph is done using {\em colorings} built in the
 {\tt color\_circuit} function (line 18-19).  A coloring maps region
-elements to colors, with each color corresponding to a new subregion
+elements to ``colors'' (i.e. integers), with each color corresponding
+ to a new subregion
 to be created.  Note that it is impossible to pick a single static
 partitioning scheme that would do well for all graphs.  Dynamic
 partitioning using colorings provides the programmer the flexibility
@@ -42,28 +43,26 @@ ghost nodes may be on the boundary of multiple pieces and therefore colored
 multiple ways.  The second coloring is a {\em multicoloring} because
 it may map the same element to multiple colors.
 
-After creating the colorings, the application partitions the region
+After creating the colorings, the application partitions the node and wire
+regions
 into {\em subregions} according to the colorings (lines 21-25).  For
 simplicity, our example only partitions the circuit into two pieces.
-Lines 21 and 23 create two different partitions each with two different
-subregions of the {\tt rn} region.  The first partition uses a
-coloring and is therefore {\em disjoint}; the second partition uses a
-multicoloring and is {\em aliased}---the subregions may not be
-disjoint. While aliased partitions based on multicolorings are not a
-part of core Legion described in Section~\ref{sec:legioncore}, they
-are functionally equivalent to creating single partitions for each
-color in the multicoloring.
-Disjoint partitions introduce region disjointness constraints into the static
-environment indicating that all the subregions in the partition are
-disjoint (e.g. {\tt rn0}$*${\tt rn1} on line 21 says {\tt rn0} is
-disjoint from {\tt rn1}).  Both disjoint and aliased partitions
-introduce constraints into the environment indicating that all created
-regions are logical subregions of the partitioned parent region
-(e.g. {\tt rn0}$\leq${\tt rn}).
+Line 21 uses {\tt pc.1} to partition {\tt rn} into {\tt rn0}, and {\tt rn1}.
+Subregion {\tt rn0} will contain all locations with a color of 1 in {\tt pc.1},
+while {\tt rn1} will contain all locations with a color of 2.  This
+partitioning uses a coloring and results in {\em disjoint} subpartitions.
+Constraints are introduced into the static environment describing both the
+disjointness of the subregions (i.e. {\tt rn0 $*$ rn1}) and the inclusion of
+each subregion in the original region (e.g. {\tt rn0 $\leq$ rn}).  Line
+23 is similar, but uses a multicoloring, so the subregions may be {\em aliased},
+and only the inclusion constraints are introduced into the static environment.
+Although multicolorings are not part of the Core Legion described in 
+Section~\ref{sec:legioncore}, they can be easily implemented using a separate 
+coloring for each color in the multicoloring.
 
 The circuit simulation uses an {\em allocate-then-partition} style of
 computation, where a large data structure is first allocated and then
-partitioned.  Legion also supports {\em partition-then-allocate},
+partitioned.  Legion also supports a {\em partition-then-allocate} style,
 where empty regions are first partitioned and later populated with
 data.  Both are useful; e.g., Sequoia \cite{Fatahalian06} and DPJ
 \cite{Bocchino09} support static forms of allocate-then-partition and
@@ -98,9 +97,24 @@ use the owned and ghost regions of a piece, which are from different partitions.
 privileges, allowing both instances of {\tt calc\_new\_currents} to be
 run in parallel.  In {\tt distribute\_charge} the
 privilege is for a reduction which can also be done in parallel
-because of the atomic and commutative nature of reductions.  No
+because of the atomic and commutative nature of reductions.  Finally,
+the {\tt update\_voltage} function modifies only the owned regions, permitting
+each piece to be updated in parallel.  No
 single partition of the nodes
 describes these data sharing patterns.
+
+This function also demonstrates the benefit of being able to dynamically
+(re-)discover disjointness.  Safely running both instances of 
+{\tt calc\_new\_currents} in parallel depends on knowing that {\tt rw0} and
+{\tt rw1} in {\tt execute\_time\_steps} are disjoint.  Similarly, parallel
+execution of the instances of {\tt update\_voltage} requires knowing that
+{\tt rn0} is disjoint from {\tt rn1}.  In both cases, this knowledge was
+statically available in {\tt simulate\_circuit} and could have been captured
+in a region relationship, but it would have resulted in much more complicated
+code.
+Instead, an inexpensive dynamic disjointness check is performed by the Legion
+runtime, and the safety of parallel execution follows from the soundness of
+the type system.
 
 Listing~\ref{lst:circuit_leaf} shows the leaf functions for each phase.
 Each function iterates over the list of wires or
