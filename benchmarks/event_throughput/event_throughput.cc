@@ -12,6 +12,7 @@ using namespace RegionRuntime::LowLevel;
 
 #define DEFAULT_LEVELS 32 
 #define DEFAULT_TRACKS 32 
+#define DEFAULT_FANOUT 16 
 
 // TASK IDs
 enum {
@@ -32,12 +33,12 @@ InputArgs& get_input_args(void)
   return args;
 }
 
-typedef std::map<Processor,Event> EventMap;
+typedef std::set<Event> EventSet;
 
-EventMap& get_event_map(void)
+EventSet& get_event_set(void)
 {
-  static EventMap event_map;
-  return event_map;
+  static EventSet event_set;
+  return event_set;
 }
 
 void shutdown(void)
@@ -53,9 +54,9 @@ void shutdown(void)
   }
 }
 
-void send_level_commands(Processor local, const EventMap &send_events, const std::set<Processor> &all_procs)
+void send_level_commands(int fanout, Processor local, const EventSet &send_events, const std::set<Processor> &all_procs)
 {
-  assert(send_events.size() <= all_procs.size());
+  assert(!send_events.empty());
   size_t buffer_size = sizeof(Processor) + sizeof(size_t) + (send_events.size() * sizeof(Event));
   void * buffer = malloc(buffer_size);
   char *ptr = (char*)buffer;
@@ -64,45 +65,45 @@ void send_level_commands(Processor local, const EventMap &send_events, const std
   size_t num_events = send_events.size();
   *((size_t*)ptr) = num_events;
   ptr += sizeof(size_t);
-  for (EventMap::const_iterator it = send_events.begin(); 
+  for (EventSet::const_iterator it = send_events.begin(); 
         it != send_events.end(); it++)
   {
-    *((Event*)ptr) = it->second;
+    *((Event*)ptr) = *it;
     ptr += sizeof(Event);
   }
-  for (std::set<Processor>::const_iterator it = all_procs.begin();
-        it != all_procs.end(); it++)
+  std::set<Processor>::const_iterator it = all_procs.begin();
+  for (int i = 0; i < fanout; i++)
   {
     Processor copy = *it;
     Event wait_for = copy.spawn(LEVEL_BUILDER,buffer,buffer_size);
+    // Update the iterator while we're waiting
+    it++;
+    if (it == all_procs.end()) // if we reach the end, reset
+      it = all_procs.begin();
     // Wait for it to finish so we know when we're done
     wait_for.wait();
   }
   free(buffer);
-  assert(get_event_map().size() == all_procs.size());
+  assert(int(get_event_set().size()) == fanout);
 }
 
-void construct_track(int levels, Processor local, Event precondition, std::set<Event> &wait_for, const std::set<Processor> &all_procs)
+void construct_track(int levels, int fanout, Processor local, Event precondition, EventSet &wait_for, const std::set<Processor> &all_procs)
 {
-  EventMap send_events;   
-  EventMap &receive_events = get_event_map();
+  EventSet send_events;   
+  EventSet &receive_events = get_event_set();
   receive_events.clear();
   // For the first level there is only one event that has to be sent
-  send_events[local] = precondition;
-  send_level_commands(local, send_events, all_procs);
+  send_events.insert(precondition);
+  send_level_commands(fanout, local, send_events, all_procs);
   for (int i = 1; i < levels; i++)
   {
     // Copy the send events from the receive events
     send_events = receive_events;
     receive_events.clear();
-    send_level_commands(local, send_events, all_procs);
+    send_level_commands(fanout, local, send_events, all_procs);
   }
   // Put all the receive events from the last level into the wait for set
-  for (EventMap::const_iterator it = receive_events.begin();
-        it != receive_events.end(); it++)
-  {
-    wait_for.insert(it->second);
-  }
+  wait_for.insert(receive_events.begin(),receive_events.end());
   receive_events.clear();
 }
 
@@ -110,6 +111,7 @@ void top_level_task(const void *args, size_t arglen, Processor p)
 {
   int levels = DEFAULT_LEVELS;
   int tracks = DEFAULT_TRACKS;
+  int fanout = DEFAULT_FANOUT;
   // Parse the input arguments
 #define INT_ARG(argname, varname) do { \
         if(!strcmp((argv)[i], argname)) {		\
@@ -129,9 +131,11 @@ void top_level_task(const void *args, size_t arglen, Processor p)
     {
       INT_ARG("-l", levels);
       INT_ARG("-t", tracks);
+      INT_ARG("-f", fanout);
     }
     assert(levels > 0);
     assert(tracks > 0);
+    assert(fanout > 0);
   }
 #undef INT_ARG
 #undef BOOL_ARG
@@ -143,18 +147,18 @@ void top_level_task(const void *args, size_t arglen, Processor p)
   long total_events;
   long total_triggers;
   // Initialize a bunch of experiments, each track does an all-to-all event communication for each level
-  fprintf(stdout,"Initializing event throughput experiment with %d tracks and %d levels per track...\n",tracks,levels);
+  fprintf(stdout,"Initializing event throughput experiment with %d tracks and %d levels per track with fanout %d...\n",tracks,levels,fanout);
   {
     Machine *machine = Machine::get_machine();
     const std::set<Processor> &all_procs = machine->get_all_processors();
     for (int t = 0; t < tracks; t++)
     {
-      construct_track(levels, p, start_event, wait_for_finish, all_procs);
+      construct_track(levels, fanout, p, start_event, wait_for_finish, all_procs);
     }
-    assert(wait_for_finish.size() == (all_procs.size() * tracks));
+    assert(wait_for_finish.size() == (fanout * tracks));
     // Compute the total number of events to be triggered
-    total_events = all_procs.size() * levels * tracks;
-    total_triggers = total_events * all_procs.size(); // each event sends a trigger to every processor
+    total_events = fanout * levels * tracks;
+    total_triggers = total_events * fanout; // each event sends a trigger to every processor
   }
   // Merge all the finish events together into one finish event
   Event finish_event = Event::merge_events(wait_for_finish);
@@ -205,11 +209,9 @@ void level_builder(const void *args, size_t arglen, Processor p)
   Event finish_event = p.spawn(DUMMY_TASK,NULL,0,launch_event);
   // Send back the event for this processor
   {
-    size_t buffer_size = sizeof(Processor) + sizeof(Event);
+    size_t buffer_size = sizeof(Event);
     void * buffer = malloc(buffer_size);
     char * ptr = (char*)buffer;
-    *((Processor*)ptr) = p;
-    ptr += sizeof(Processor);
     *((Event*)ptr) = finish_event;
     // Send it back, wait for it to finish
     Event report_event = orig.spawn(SET_REMOTE_EVENT,buffer,buffer_size);
@@ -220,14 +222,11 @@ void level_builder(const void *args, size_t arglen, Processor p)
 
 void set_remote_event(const void *args, size_t arglen, Processor p)
 {
-  assert(arglen == (sizeof(Processor) + sizeof(Event))); 
+  assert(arglen == (sizeof(Event))); 
   const char* ptr = (const char*)args;
-  Processor src_proc = *((Processor*)ptr);
-  ptr += sizeof(Processor);
   Event result = *((Event*)ptr);
-  EventMap &event_map = get_event_map();
-  assert(event_map.find(src_proc) == event_map.end());
-  event_map[src_proc] = result;
+  EventSet &event_set = get_event_set();
+  event_set.insert(result);
 }
 
 void dummy_task(const void *args, size_t arglen, Processor p)
