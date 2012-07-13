@@ -70,7 +70,8 @@ void AccumulateCharge::fold<false>(RHS &rhs1, RHS rhs2)
 // Utility functions
 void parse_input_args(char **argv, int argc, int &num_loops, int &num_pieces,
                       int &nodes_per_piece, int &wires_per_piece,
-                      int &pct_wire_in_piece, int &random_seed);
+                      int &pct_wire_in_piece, int &random_seed,
+		      int &sync);
 
 Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context ctx,
                         HighLevelRuntime *runtime, int num_pieces, int nodes_per_piece,
@@ -130,13 +131,15 @@ void region_main(const void *args, size_t arglen,
   int wires_per_piece = 4;
   int pct_wire_in_piece = 95;
   int random_seed = 12345;
+  int sync = 0;
   {
     InputArgs *inputs = (InputArgs*)args;
     char **argv = inputs->argv;
     int argc = inputs->argc;
 
     parse_input_args(argv, argc, num_loops, num_pieces, nodes_per_piece, 
-                      wires_per_piece, pct_wire_in_piece, random_seed);
+		     wires_per_piece, pct_wire_in_piece, random_seed,
+		     sync);
 
     log_circuit(LEVEL_WARNING,"circuit settings: loops=%d pieces=%d nodes/piece=%d wires/piece=%d pct_in_piece=%d seed=%d",
        num_loops, num_pieces, nodes_per_piece, wires_per_piece,
@@ -233,11 +236,23 @@ void region_main(const void *args, size_t arglen,
     //last = runtime->execute_index_space(ctx, SANITY_CHECK_WIRES, index_space,
     //                            sanity_regions, global_arg, local_args, false/*must*/);
     //last.wait_all_results();
+    if(sync) {
+      last = runtime->execute_index_space(ctx, CALC_NEW_CURRENTS_NOP, index_space,
+					  cnc_regions,
+					  TaskArgument(0, 0),
+					  ArgumentMap(), false/*must*/);
+      if(sync == 1)
+	last.wait_all_results();
+      else
+	last.release();
+    }
     // Calculate new currents
     last = runtime->execute_index_space(ctx, CALC_NEW_CURRENTS, index_space,
                                   cnc_regions, global_arg, local_args, false/*must*/);
-    //last.wait_all_results();
-    last.release();
+    if(sync == 1)
+      last.wait_all_results();
+    else
+      last.release();
     
     //last = runtime->execute_index_space(ctx, SANITY_CHECK_WIRES, index_space,
     //                              sanity_regions, global_arg, local_args, false/*must*/);
@@ -248,22 +263,46 @@ void region_main(const void *args, size_t arglen,
     //last.wait_all_results();
 
     // Distribute charge
+    if(sync) {
+      last = runtime->execute_index_space(ctx, DISTRIBUTE_CHARGE_NOP, index_space,
+					  dsc_regions,
+					  TaskArgument(0, 0),
+					  ArgumentMap(), false/*must*/);
+      if(sync == 1)
+	last.wait_all_results();
+      else
+	last.release();
+    }
     last = runtime->execute_index_space(ctx, DISTRIBUTE_CHARGE, index_space,
                                   dsc_regions, global_arg, local_args, false/*must*/);
-    //last.wait_all_results();
-    last.release();
+    if(sync == 1)
+      last.wait_all_results();
+    else
+      last.release();
 
     //last = runtime->execute_index_space(ctx, SANITY_CHECK_WIRES, index_space,
     //                              sanity_regions, global_arg, local_args, false/*must*/);
     //last.wait_all_results();
 
     // Update voltages
+    if(sync) {
+      last = runtime->execute_index_space(ctx, UPDATE_VOLTAGES_NOP, index_space,
+					  upv_regions,
+					  TaskArgument(0, 0),
+					  ArgumentMap(), false/*must*/);
+      if(sync == 1)
+	last.wait_all_results();
+      else
+	last.release();
+    }
     last = runtime->execute_index_space(ctx, UPDATE_VOLTAGES, index_space,
                                   upv_regions, global_arg, local_args, false/*must*/);
     if (i != (num_loops-1))
     {
-      //last.wait_all_results();
-      last.release();
+      if(sync == 1)
+	last.wait_all_results();
+      else
+	last.release();
     }
   }
 
@@ -420,6 +459,15 @@ void update_voltages_task(const void *global_args, size_t global_arglen,
 #endif
 }
 
+template<AccessorType AT>
+void dummy_task(const void *global_args, size_t global_arglen,
+		const void *local_args, size_t local_arglen,
+		const IndexPoint &point,
+		std::vector<PhysicalRegion<AT> > &regions,
+		Context ctx, HighLevelRuntime *runtime)
+{
+}
+
 /////////////////
 // GPU versions
 /////////////////
@@ -518,6 +566,12 @@ int main(int argc, char **argv)
           distribute_charge_task<AccessorGeneric> >(DISTRIBUTE_CHARGE, Processor::LOC_PROC, "distribute_charge");
   HighLevelRuntime::register_index_task<
           update_voltages_task<AccessorGeneric> >(UPDATE_VOLTAGES, Processor::LOC_PROC, "update_voltages");
+  HighLevelRuntime::register_index_task<
+          dummy_task<AccessorGeneric> >(CALC_NEW_CURRENTS_NOP, Processor::LOC_PROC, "calc_new_currents_nop");
+  HighLevelRuntime::register_index_task<
+          dummy_task<AccessorGeneric> >(DISTRIBUTE_CHARGE_NOP, Processor::LOC_PROC, "distribute_charge_nop");
+  HighLevelRuntime::register_index_task<
+          dummy_task<AccessorGeneric> >(UPDATE_VOLTAGES_NOP, Processor::LOC_PROC, "update_voltages_nop");
 #ifndef USING_SHARED
   // GPU versions
   HighLevelRuntime::register_index_task<
@@ -526,6 +580,12 @@ int main(int argc, char **argv)
           distribute_charge_task_gpu<AccessorGeneric> >(DISTRIBUTE_CHARGE, Processor::TOC_PROC, "distribute_charge");
   HighLevelRuntime::register_index_task<
           update_voltages_task_gpu<AccessorGeneric> >(UPDATE_VOLTAGES, Processor::TOC_PROC, "update_voltages");
+  HighLevelRuntime::register_index_task<
+          dummy_task<AccessorGeneric> >(CALC_NEW_CURRENTS_NOP, Processor::TOC_PROC, "calc_new_currents_nop");
+  HighLevelRuntime::register_index_task<
+          dummy_task<AccessorGeneric> >(DISTRIBUTE_CHARGE_NOP, Processor::TOC_PROC, "distribute_charge_nop");
+  HighLevelRuntime::register_index_task<
+          dummy_task<AccessorGeneric> >(UPDATE_VOLTAGES_NOP, Processor::TOC_PROC, "update_voltages_nop");
   HighLevelRuntime::register_index_task<
           sanity_check_wires_task_gpu<AccessorGeneric> >(SANITY_CHECK_WIRES, Processor::TOC_PROC, "sanity_check_wires");
 #endif
@@ -602,18 +662,21 @@ public:
       switch (task->task_id)
       {
         case CALC_NEW_CURRENTS:
+        case CALC_NEW_CURRENTS_NOP:
           {
             // All regions in local memory
             target_ranking.push_back(local_mem);
             break;
           }
         case DISTRIBUTE_CHARGE:
+        case DISTRIBUTE_CHARGE_NOP:
           {
             // All regions in local memory
             target_ranking.push_back(local_mem);
             break;
           }
         case UPDATE_VOLTAGES:
+        case UPDATE_VOLTAGES_NOP:
           {
             // All regions in local memory
             target_ranking.push_back(local_mem);
@@ -782,6 +845,7 @@ public:
       switch (task->task_id)
       {
         case CALC_NEW_CURRENTS:
+        case CALC_NEW_CURRENTS_NOP:
         case SANITY_CHECK_WIRES:
           {
             switch (index)
@@ -818,6 +882,7 @@ public:
             break;
           }
         case DISTRIBUTE_CHARGE:
+        case DISTRIBUTE_CHARGE_NOP:
           {
             switch (index)
             {
@@ -853,6 +918,7 @@ public:
             break;
           }
         case UPDATE_VOLTAGES:
+        case UPDATE_VOLTAGES_NOP:
           {
             switch (index)
             {
@@ -924,7 +990,8 @@ void registration_func(Machine *machine, HighLevelRuntime *runtime, Processor lo
 
 void parse_input_args(char **argv, int argc, int &num_loops, int &num_pieces,
                       int &nodes_per_piece, int &wires_per_piece,
-                      int &pct_wire_in_piece, int &random_seed)
+                      int &pct_wire_in_piece, int &random_seed,
+		      int &sync)
 {
   for (int i = 1; i < argc; i++) 
   {
@@ -961,6 +1028,12 @@ void parse_input_args(char **argv, int argc, int &num_loops, int &num_pieces,
     if(!strcmp(argv[i], "-s")) 
     {
       random_seed = atoi(argv[++i]);
+      continue;
+    }
+
+    if(!strcmp(argv[i], "-sync")) 
+    {
+      sync = atoi(argv[++i]);
       continue;
     }
   }
