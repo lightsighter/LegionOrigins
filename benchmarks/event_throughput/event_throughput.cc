@@ -155,7 +155,7 @@ void top_level_task(const void *args, size_t arglen, Processor p)
     {
       construct_track(levels, fanout, p, start_event, wait_for_finish, all_procs);
     }
-    assert(wait_for_finish.size() == (fanout * tracks));
+    assert(int(wait_for_finish.size()) == (fanout * tracks));
     // Compute the total number of events to be triggered
     total_events = fanout * levels * tracks;
     total_triggers = total_events * fanout; // each event sends a trigger to every processor
