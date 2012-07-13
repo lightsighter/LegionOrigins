@@ -380,13 +380,37 @@ namespace RegionRuntime {
     pthread_mutex_t *mutex;
   };
 
-#undef PTHREAD_SAFE_CALL
-
   /**
    * A timer class for doing detailed timing analysis of applications
    * Implementation is specific to low level runtimes
    */
   namespace LowLevel {
+    /* clock that is (mostly-)synchronized across whole machine */
+    class Clock {
+    protected:
+      static double zero_time;
+
+    public:
+      static double abs_time(void)
+      {
+	struct timespec tp;
+	clock_gettime(CLOCK_REALTIME, &tp);
+	return((1.0 * tp.tv_sec) + (1e-9 * tp.tv_nsec));
+      }
+      
+      static double abs_to_rel(double abs_time)
+      {
+	return(abs_time - zero_time);
+      }
+
+      static double rel_time(void)
+      {
+	return abs_to_rel(abs_time());
+      }
+
+      static void synchronize(void);
+    };
+
     class DetailedTimer {
     public:
 #ifdef DETAILED_TIMING
@@ -437,10 +461,145 @@ namespace RegionRuntime {
         return result;
       }
     };
+
+    class EventTracer {
+    public:
+      enum Action { ACT_CREATE,
+		    ACT_QUERY,
+		    ACT_TRIGGER,
+		    ACT_WAIT,
+      };
+
+      struct EventTraceItem {
+	unsigned time_units, event_id, event_gen, action;
+      };
+
+      class EventTraceBlock {
+      public:
+	explicit EventTraceBlock(const EventTraceBlock &refblk)
+	  : max_size(refblk.max_size), cur_size(0),
+	    time_mult(refblk.time_mult), next(0)
+	{
+	  PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
+	  start_time = Clock::rel_time();
+	  items = new EventTraceItem[max_size];
+	}
+
+	EventTraceBlock(size_t block_size, double exp_evtrate)
+	  : max_size(block_size), cur_size(0), next(0)
+	{
+	  PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
+	  start_time = Clock::rel_time();
+	  items = new EventTraceItem[max_size];
+
+	  // set the time multiplier such that there'll likely be 2^31
+	  //  time units by the time we fill the block, i.e.:
+	  // (block_size / exp_evtrate) * mult = 2^31  -->
+	  // mult = 2^31 * exp_evtrate / block_size
+	  time_mult = 2147483648.0 * exp_evtrate / block_size;
+	}
+
+	pthread_mutex_t mutex;
+	size_t max_size, cur_size;
+	double start_time, time_mult;
+	EventTraceItem *items;
+	EventTraceBlock *next;
+      };
+
+      static EventTraceBlock *first_block, *last_block;
+
+      static void init_trace(size_t block_size, double exp_evtrate)
+      {
+	first_block = last_block = new EventTraceBlock(block_size, exp_evtrate);
+      }
+
+      static void dump_trace(const char *filename, bool append);
+#if 0
+      static void dump_trace(const char *filename, bool append)
+      {
+	EventTraceBlock *block = first_block;
+	while(block) {
+	  for(size_t i = 0; (i < block->cur_size) && (i < block->max_size); i++) {
+	    double abs_time = block->start_time + (block->items[i].time_units /
+						   block->time_mult);
+	    printf("%p %6zd %21.9f %08x %5d %3d\n",
+		   block, i, abs_time,
+		   block->items[i].event_id,
+		   block->items[i].event_gen,
+		   block->items[i].action);
+	  }
+
+	  block = block->next;
+	}
+      }
+#endif
+
+      static inline void trace_event(unsigned id, unsigned gen, Action action)
+      {
+#ifdef EVENT_TRACING
+	EventTraceBlock *block = last_block;
+	if(!block) return; // no block at all means we're not tracing
+
+	// loop until we can manage to reserve a real entry
+	size_t my_index;
+	while(1) {
+	  my_index = __sync_fetch_and_add(&(block->cur_size), 1);
+	  if(my_index < block->max_size) break; // victory!
+
+	  // no space - case 1: another block has already been chained on -
+	  //  try that one
+	  if(block->next) {
+	    block = block->next;
+	    continue;
+	  }
+
+	  // case 2: try to add a block on ourselves - take the current block's
+	  //  mutex and make sure somebody else didn't do it while we waited
+	  pthread_mutex_lock(&(block->mutex));
+	  if(block->next) {
+	    pthread_mutex_unlock(&(block->mutex));
+	    block = block->next;
+	    continue;
+	  }
+
+	  // the next pointer is still null, and we hold the lock, so we
+	  //  do the allocation of the next block
+	  EventTraceBlock *newblock = new EventTraceBlock(*block);
+	  
+	  // nobody else knows about the block, so we can have index 0
+	  my_index = 0;
+	  newblock->cur_size++;
+
+	  // now update the "last_block" static value (while we still hold
+	  //  the previous block's lock)
+	  last_block = newblock;
+	  block->next = newblock;
+	  pthread_mutex_unlock(&(block->mutex));
+	  
+	  // new block has been added, and we already grabbed our location,
+	  //  so we're done
+	  block = newblock;
+	  break;
+	}
+
+	double time_units = ((Clock::rel_time() - block->start_time) * 
+			     block->time_mult);
+	assert(time_units >= 0);
+	assert(time_units < 4294967296.0);
+
+	block->items[my_index].time_units = (unsigned)time_units;
+	block->items[my_index].event_id = id;
+	block->items[my_index].event_gen = gen;
+	block->items[my_index].action = action;
+#endif
+      }
+    };
   };
 
   // typedef so we can use detailed timers anywhere in the runtime
   typedef LowLevel::DetailedTimer DetailedTimer;
 };
+
+#undef PTHREAD_SAFE_CALL
 
 #endif // __RUNTIME_UTILITIES_H__

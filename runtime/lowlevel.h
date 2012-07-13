@@ -827,7 +827,7 @@ namespace RegionRuntime {
       
       ptr_t<T> alloc(unsigned count = 1) 
       { 
-	ptr_t<T> ptr = { alloc_untyped(count) };
+	ptr_t<T> ptr = ptr_t<T>(alloc_untyped(count));
 	return ptr; 
       }
       void free(ptr_t<T> ptr, unsigned count = 1) { free_untyped(ptr.value,count); }

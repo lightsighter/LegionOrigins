@@ -578,7 +578,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(!finished);
 #endif
-        ptr_t<T> result = { unsigned(current_pointer) };
+        ptr_t<T> result(current_pointer);
         remaining_elmts--;
         if (remaining_elmts > 0)
         {
