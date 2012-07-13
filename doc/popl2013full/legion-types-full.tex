@@ -1,0 +1,92 @@
+\documentclass[9pt,nocopyrightspace]{sigplanconf}
+% preprint for dates
+\bibliographystyle{plainnat}
+\usepackage{amsmath,amsthm}
+\usepackage{listings}
+\usepackage{tikz}
+\usepackage{subfigure}
+\usepackage{multirow}
+\usepackage{pgfplots}
+\usepackage{booktabs}
+\usepackage{dcolumn}
+\usepackage{cancel}
+\usepackage{multirow}
+\usepackage{ifmtarg}
+\usepackage{url}
+\usepackage{bcprules}
+\usepackage{verbatim}
+\usepackage{graphicx}
+\usepackage{chngpage}
+
+%\newcommand{\infrule}[2]{\displaystyle\frac{\displaystyle\strut{#1}}{\displaystyle\strut {#2}}}
+\newcommand{\deref}{\ast}
+\newcommand{\rread}[1]{\mbox{\em Read}(#1)}
+\newcommand{\rwrite}[1]{\mbox{\em Write}(#1)}
+\newcommand{\lca}[2]{#1 \sqcup #2}
+\newcommand{\rleq}{\leq}
+\newcommand{\interval}[1]{\mbox{\em interval}(#1)}
+\newcommand{\context}[1]{\mbox{\em context}(#1)}
+\newtheorem{theorem}{Theorem} 
+\newtheorem{lemma}[theorem]{Lemma}
+\newcommand{\texcomment}[1]{}
+
+\begin{document}
+
+\title{A Type System for Safe and Scalable Parallelism using Logical Regions}
+%\title{Scalable and Safe Parallelism using Logical Regions}
+\authorinfo{Sean Treichler \and Michael Bauer \and Alex Aiken}{Stanford University}{\{sjt,mebauer,aiken\}@cs.stanford.edu}
+%\authorinfo{Sean Treichler}{Stanford Unviersity}{sjt@cs.stanford.edu}
+%\authorinfo{Michael Bauer}{Stanford University}{mebauer@cs.stanford.edu}
+%\authorinfo{Alex Aiken}{Stanford University}{aiken@cs.stanford.edu}
+\maketitle
+
+\begin{abstract}
+
+Legion is a programming model that introduces
+{\em logical regions} as a mechanism for targeting large heterogeneous machines 
+with complex memory hierarchies.  Logical regions are first-class 
+values in Legion, and programmers may {\em partition} regions in multiple different
+ways into subregions.  We present
+a type system with privileges and coherence properties for reasoning about logical regions.  
+We prove the soundness of the type system and use it to show
+that all memory accesses in Legion are safe.  Furthermore, we prove that
+type soundness enables a scalable, hierarchical
+scheduling algorithm for Legion programs.  We show that an implementation of the type checker
+for Legion programs improves performance up to 71\% by eliding
+memory checks the type system proves safe.  We also demonstrate that an implementation of the Legion 
+runtime based on the hierarchical scheduling algorithm scales well for
+three real-world applications.
+
+
+%Limit is 12 pages, including bibliography and appendices.
+%Deadlines: \\
+
+%\begin{tabular}{ll}
+%Paper registration & July 7, 2012 3:59am PDT \\
+%Paper submission & July 11, 2012 3:59am PDT \\
+%Author response & September 10 - September 13, 2012 \\
+%Author notification & October 1, 2012
+%\end{tabular}
+\end{abstract}
+
+\input{intro}
+
+\input{example}
+%\input{outline}
+
+\input{langdef}
+
+\input{evaluation}
+
+\input{related}
+
+\input{conclusion}
+
+{
+\small
+\bibliography{bibliography}
+}
+
+\end{document}
+
+

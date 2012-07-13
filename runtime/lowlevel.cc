@@ -6996,7 +6996,7 @@ namespace RegionRuntime {
       unsigned dma_worker_threads = 1;
       unsigned active_msg_worker_threads = 1;
       bool     active_msg_sender_threads = false;
-#ifdef EVENT_TRACKING
+#ifdef EVENT_TRACING
       size_t   event_trace_block_size = 1 << 20;
       double   event_trace_exp_evtrate = 1e3;
 #endif
@@ -7030,7 +7030,7 @@ namespace RegionRuntime {
 #ifdef EVENT_TRACING
 	  event_trace_file = strdup((*argv)[++i]);
 #else
-	  fprintf(stderr,"WARNING: event tracing requested, but not enabled at compile time!\n");
+	  fprintf(stderr, "WARNING: event tracing requested, but not enabled at compile time!\n");
 #endif
 	  continue;
 	}
