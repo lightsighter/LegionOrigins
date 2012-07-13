@@ -566,12 +566,14 @@ namespace RegionRuntime {
         // Get the implementations for all the wait_for events
         // Do this to avoid calling get_event_impl while holding the event lock
         std::map<EventImpl*,Event> wait_for_impl;
-        for (std::set<Event>::iterator it = wait_for.begin();
+        for (std::set<Event>::const_iterator it = wait_for.begin();
               it != wait_for.end(); it++)
         {
+          assert(wait_for_impl.size() < wait_for.size());
           if (!(*it).exists())
             continue;
           EventImpl *src_impl = Runtime::get_runtime()->get_event_impl(*it);
+          std::pair<EventImpl*,Event> made_pair(src_impl,*it);
           wait_for_impl.insert(std::pair<EventImpl*,Event>(src_impl,*it));
         }
 	return e->merge_events(wait_for_impl);
