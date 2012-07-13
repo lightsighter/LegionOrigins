@@ -24,9 +24,13 @@ enum {
   TASKID_INIT_CELLS,
   TASKID_REBUILD_REDUCE,
   TASKID_SCATTER_DENSITIES,
-  TASKID_GATHER_DENSITIES,
-  TASKID_SCATTER_FORCES,
+  //TASKID_GATHER_DENSITIES,
+  //TASKID_SCATTER_FORCES,
   TASKID_GATHER_FORCES,
+  TASKID_INIT_CELLS_NOP,
+  TASKID_REBUILD_REDUCE_NOP,
+  TASKID_SCATTER_DENSITIES_NOP,
+  TASKID_GATHER_FORCES_NOP,
   TASKID_MAIN_TASK,
   TASKID_LOAD_FILE,
   TASKID_SAVE_FILE,
@@ -285,6 +289,8 @@ struct FluidConfig {
   unsigned nx, ny, nz, numCells;
   Vec3 delta;				// cell dimensions
 
+  // should app be run in bulk-synchronous mode?
+  int sync;
 };
 
 static inline int MOVE_BX(int x, int dir, const FluidConfig &c) { return MOVE_X(x, dir, 0, c.nbx-1); }
@@ -312,6 +318,7 @@ static unsigned parse_args(int argc, char **argv, FluidConfig &conf)
   numSteps = 4;
   nbx = nby = nbz = 1;
   conf.balance = 0;
+  conf.sync = 0; // default is to not be bulk-synchronous
   strcpy(inFilename, "init.fluid");
   strcpy(outFilename, "");
 
@@ -355,6 +362,12 @@ static unsigned parse_args(int argc, char **argv, FluidConfig &conf)
 
     if(!strcmp(argv[i], "-balance")) {
       conf.balance = atoi(argv[++i]);
+      continue;
+    }
+
+    if(!strcmp(argv[i], "-sync")) {
+      conf.sync = atoi(argv[++i]);
+      printf("sync set to %d\n", conf.sync);
       continue;
     }
   }
@@ -992,181 +1005,280 @@ void main_task(const void *args, size_t arglen,
   {
     // Initialize cells
     //for (unsigned id = 0; id < numBlocks; id++)
-    for (int id = (numBlocks-1); id >= 0; id--)
-    {
-      // init and rebuild reads the real cells from the previous pass and
-      //  moves atoms into the real cells for this pass or the edge0 cells
-      std::vector<RegionRequirement> init_regions;
+    for (int spass = conf.sync ? 1 : 0; spass >= 0; spass--) {
+      std::list<Future> phase_futures;
+
+      for (int id = (numBlocks-1); id >= 0; id--)
+      {
+	// init and rebuild reads the real cells from the previous pass and
+	//  moves atoms into the real cells for this pass or the edge0 cells
+	std::vector<RegionRequirement> init_regions;
 
 
-      init_regions.push_back(RegionRequirement(tlr.config,
-                                               READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                               tlr.config));
-      init_regions.push_back(RegionRequirement(block_regions[id],
-                                               READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                               tlr.blocks));
-      init_regions.push_back(RegionRequirement(block_cell_ptr_regions[id],
-                                               READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                               block_cell_ptr_regions[id]));
+	init_regions.push_back(RegionRequirement(tlr.config,
+						 READ_ONLY, NO_MEMORY, EXCLUSIVE,
+						 tlr.config));
+	init_regions.push_back(RegionRequirement(block_regions[id],
+						 READ_ONLY, NO_MEMORY, EXCLUSIVE,
+						 tlr.blocks));
+	init_regions.push_back(RegionRequirement(block_cell_ptr_regions[id],
+						 READ_ONLY, NO_MEMORY, EXCLUSIVE,
+						 block_cell_ptr_regions[id]));
 
-      // read old
-      init_regions.push_back(RegionRequirement(block_bases[1 - cur_buffer][id],
-					       READ_ONLY, NO_MEMORY, EXCLUSIVE,
-					       tlr.real_cells[1 - cur_buffer]));
-      // write new
-      init_regions.push_back(RegionRequirement(block_bases[cur_buffer][id],
-					       READ_WRITE, NO_MEMORY, EXCLUSIVE,
-					       tlr.real_cells[cur_buffer]));
+	// read old
+	init_regions.push_back(RegionRequirement(block_bases[1 - cur_buffer][id],
+						 READ_ONLY, NO_MEMORY, EXCLUSIVE,
+						 tlr.real_cells[1 - cur_buffer]));
+	// write new
+	init_regions.push_back(RegionRequirement(block_bases[cur_buffer][id],
+						 READ_WRITE, NO_MEMORY, EXCLUSIVE,
+						 tlr.real_cells[cur_buffer]));
 
-      // write edge0
-      get_all_regions(block_edges[0][id], init_regions,
-		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-		      tlr.edge_cells);
+	// write edge0
+	get_all_regions(block_edges[0][id], init_regions,
+			READ_WRITE, NO_MEMORY, EXCLUSIVE,
+			tlr.edge_cells);
+	
+	if(spass > 0) {
+	  // run a dummy task to move data in a separate phase
+	  Future f = runtime->execute_task(ctx, TASKID_INIT_CELLS_NOP,
+					   init_regions, 
+					   TaskArgument(0, 0), 0, id);
+	  phase_futures.push_back(f);
+	} else {
+	  unsigned bufsize = sizeof(int) + sizeof(unsigned);
+	  Serializer ser(bufsize);
+	  ser.serialize(cur_buffer);
+	  ser.serialize(id);
+	  TaskArgument buffer(ser.get_buffer(), bufsize);
 
-      unsigned bufsize = sizeof(int) + sizeof(unsigned);
-      Serializer ser(bufsize);
-      ser.serialize(cur_buffer);
-      ser.serialize(id);
-      TaskArgument buffer(ser.get_buffer(), bufsize);
+	  Future f = runtime->execute_task(ctx, TASKID_INIT_CELLS,
+					   init_regions,
+					   buffer,
+					   0, id);
 
-      Future f = runtime->execute_task(ctx, TASKID_INIT_CELLS,
-                                       init_regions,
-                                       buffer,
-                                       0, id);
-      f.release();
+	  if(conf.sync)
+	    phase_futures.push_back(f);
+	  else
+	    f.release();
+	}
+      }
+
+      while(phase_futures.size() > 0) {
+	Future f = phase_futures.front();
+	phase_futures.pop_front();
+	if(conf.sync > 1)
+	  f.release();
+	else
+	  f.get_void_result();
+      }
     }
 
     // Rebuild reduce (reduction)
     //for (unsigned id = 0; id < numBlocks; id++)
-    for (int id = (numBlocks-1); id >= 0; id--)
-    {
-      // rebuild reduce reads the cells provided by neighbors, incorporates
-      //  them into its own cells, and puts copies of those boundary cells into
-      //  the ghosts to exchange back
-      //
-      // edge phase here is _1_
+    for (int spass = conf.sync ? 1 : 0; spass >= 0; spass--) {
+      std::list<Future> phase_futures;
 
-      std::vector<RegionRequirement> rebuild_regions;
+      for (int id = (numBlocks-1); id >= 0; id--)
+      {
+	// rebuild reduce reads the cells provided by neighbors, incorporates
+	//  them into its own cells, and puts copies of those boundary cells into
+	//  the ghosts to exchange back
+	//
+	// edge phase here is _1_
 
-      rebuild_regions.push_back(RegionRequirement(block_regions[id],
-                                                  READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                                  tlr.blocks));
-      rebuild_regions.push_back(RegionRequirement(block_cell_ptr_regions[id],
-                                                  READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                                  block_cell_ptr_regions[id]));
-      rebuild_regions.push_back(RegionRequirement(block_bases[cur_buffer][id],
-						  READ_WRITE, NO_MEMORY, EXCLUSIVE,
-						  tlr.real_cells[cur_buffer]));
+	std::vector<RegionRequirement> rebuild_regions;
 
-      // write edge1
-      get_all_regions(block_edges[1][id], rebuild_regions,
-		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-		      tlr.edge_cells);
+	rebuild_regions.push_back(RegionRequirement(block_regions[id],
+						    READ_ONLY, NO_MEMORY, EXCLUSIVE,
+						    tlr.blocks));
+	rebuild_regions.push_back(RegionRequirement(block_cell_ptr_regions[id],
+						    READ_ONLY, NO_MEMORY, EXCLUSIVE,
+						    block_cell_ptr_regions[id]));
+	rebuild_regions.push_back(RegionRequirement(block_bases[cur_buffer][id],
+						    READ_WRITE, NO_MEMORY, EXCLUSIVE,
+						    tlr.real_cells[cur_buffer]));
 
-      unsigned bufsize = sizeof(int) + sizeof(unsigned);
-      Serializer ser(bufsize);
-      ser.serialize(cur_buffer);
-      ser.serialize(id);
-      TaskArgument buffer(ser.get_buffer(), bufsize);
+	// write edge1
+	get_all_regions(block_edges[1][id], rebuild_regions,
+			READ_WRITE, NO_MEMORY, EXCLUSIVE,
+			tlr.edge_cells);
 
-      Future f = runtime->execute_task(ctx, TASKID_REBUILD_REDUCE,
-				       rebuild_regions,
-                                       buffer,
-                                       0, id);
-      f.release();
+	if(spass > 0) {
+	  // run a dummy task to move data in a separate phase
+	  Future f = runtime->execute_task(ctx, TASKID_REBUILD_REDUCE_NOP,
+					   rebuild_regions, 
+					   TaskArgument(0, 0), 0, id);
+	  phase_futures.push_back(f);
+	} else {
+	  unsigned bufsize = sizeof(int) + sizeof(unsigned);
+	  Serializer ser(bufsize);
+	  ser.serialize(cur_buffer);
+	  ser.serialize(id);
+	  TaskArgument buffer(ser.get_buffer(), bufsize);
+
+	  Future f = runtime->execute_task(ctx, TASKID_REBUILD_REDUCE,
+					   rebuild_regions,
+					   buffer,
+					   0, id);
+
+	  if(conf.sync)
+	    phase_futures.push_back(f);
+	  else
+	    f.release();
+	}
+      }
+
+      while(phase_futures.size() > 0) {
+	Future f = phase_futures.front();
+	phase_futures.pop_front();
+	if(conf.sync > 1)
+	  f.release();
+	else
+	  f.get_void_result();
+      }
     }
 
     // init forces and scatter densities
     //for (unsigned id = 0; id < numBlocks; id++)
-    for (int id = (numBlocks-1); id >= 0; id--)
-    {
-      // this step looks at positions in real and edge cells and updates
-      // densities for all owned particles - boundary real cells are copied to
-      // the edge cells for exchange
-      //
-      // edge phase here is _0_
+    for (int spass = conf.sync ? 1 : 0; spass >= 0; spass--) {
+      std::list<Future> phase_futures;
 
-      std::vector<RegionRequirement> density_regions;
+      for (int id = (numBlocks-1); id >= 0; id--)
+      {
+	// this step looks at positions in real and edge cells and updates
+	// densities for all owned particles - boundary real cells are copied to
+	// the edge cells for exchange
+	//
+	// edge phase here is _0_
 
-      density_regions.push_back(RegionRequirement(tlr.config,
-                                                  READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                                  tlr.config));
-      density_regions.push_back(RegionRequirement(block_regions[id],
-                                                  READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                                  tlr.blocks));
-      density_regions.push_back(RegionRequirement(block_cell_ptr_regions[id],
-                                                  READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                                  block_cell_ptr_regions[id]));
-      density_regions.push_back(RegionRequirement(block_bases[cur_buffer][id],
-						  READ_WRITE, NO_MEMORY, EXCLUSIVE,
-						  tlr.real_cells[cur_buffer]));
+	std::vector<RegionRequirement> density_regions;
 
-      // write edge1
-      get_all_regions(block_edges[0][id], density_regions,
-		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-		      tlr.edge_cells);
+	density_regions.push_back(RegionRequirement(tlr.config,
+						    READ_ONLY, NO_MEMORY, EXCLUSIVE,
+						    tlr.config));
+	density_regions.push_back(RegionRequirement(block_regions[id],
+						    READ_ONLY, NO_MEMORY, EXCLUSIVE,
+						    tlr.blocks));
+	density_regions.push_back(RegionRequirement(block_cell_ptr_regions[id],
+						    READ_ONLY, NO_MEMORY, EXCLUSIVE,
+						    block_cell_ptr_regions[id]));
+	density_regions.push_back(RegionRequirement(block_bases[cur_buffer][id],
+						    READ_WRITE, NO_MEMORY, EXCLUSIVE,
+						    tlr.real_cells[cur_buffer]));
 
-      unsigned bufsize = sizeof(int) + sizeof(unsigned);
-      Serializer ser(bufsize);
-      ser.serialize(cur_buffer);
-      ser.serialize(id);
-      TaskArgument buffer(ser.get_buffer(), bufsize);
+	// write edge1
+	get_all_regions(block_edges[0][id], density_regions,
+			READ_WRITE, NO_MEMORY, EXCLUSIVE,
+			tlr.edge_cells);
 
-      Future f = runtime->execute_task(ctx, TASKID_SCATTER_DENSITIES,
-				       density_regions, 
-                                       buffer,
-                                       0, id);
-      f.release();
+	if(spass > 0) {
+	  // run a dummy task to move data in a separate phase
+	  Future f = runtime->execute_task(ctx, TASKID_SCATTER_DENSITIES_NOP,
+					   density_regions, 
+					   TaskArgument(0, 0), 0, id);
+	  phase_futures.push_back(f);
+	} else {
+	  unsigned bufsize = sizeof(int) + sizeof(unsigned);
+	  Serializer ser(bufsize);
+	  ser.serialize(cur_buffer);
+	  ser.serialize(id);
+	  TaskArgument buffer(ser.get_buffer(), bufsize);
+
+	  Future f = runtime->execute_task(ctx, TASKID_SCATTER_DENSITIES,
+					   density_regions, 
+					   buffer,
+					   0, id);
+
+	  if(conf.sync)
+	    phase_futures.push_back(f);
+	  else
+	    f.release();
+	}
+      }
+
+      while(phase_futures.size() > 0) {
+	Future f = phase_futures.front();
+	phase_futures.pop_front();
+	if(conf.sync > 1)
+	  f.release();
+	else
+	  f.get_void_result();
+      }
     }
 
     // Gather forces and advance
     //for (unsigned id = 0; id < numBlocks; id++)
-    for (int id = (numBlocks-1); id >= 0; id--)
-    {
-      // this is very similar to scattering of density - basically just 
-      //  different math, and a different edge phase
-      // actually, since this fully calculates the accelerations, we just
-      //  advance positions in this task as well and we're done with an
-      //  iteration
-      //
-      // edge phase here is _1_
+    for (int spass = conf.sync ? 1 : 0; spass >= 0; spass--) {
+      std::list<Future> phase_futures;
 
-      std::vector<RegionRequirement> force_regions;
+      for (int id = (numBlocks-1); id >= 0; id--)
+      {
+	// this is very similar to scattering of density - basically just 
+	//  different math, and a different edge phase
+	// actually, since this fully calculates the accelerations, we just
+	//  advance positions in this task as well and we're done with an
+	//  iteration
+	//
+	// edge phase here is _1_
 
-      force_regions.push_back(RegionRequirement(tlr.config,
-                                                READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                                tlr.config));
-      force_regions.push_back(RegionRequirement(block_regions[id],
-                                                READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                                tlr.blocks));
-      force_regions.push_back(RegionRequirement(block_cell_ptr_regions[id],
-                                                READ_ONLY, NO_MEMORY, EXCLUSIVE,
-                                                block_cell_ptr_regions[id]));
-      force_regions.push_back(RegionRequirement(block_bases[cur_buffer][id],
-						READ_WRITE, NO_MEMORY, EXCLUSIVE,
-						tlr.real_cells[cur_buffer]));
+	std::vector<RegionRequirement> force_regions;
+	
+	force_regions.push_back(RegionRequirement(tlr.config,
+						  READ_ONLY, NO_MEMORY, EXCLUSIVE,
+						  tlr.config));
+	force_regions.push_back(RegionRequirement(block_regions[id],
+						  READ_ONLY, NO_MEMORY, EXCLUSIVE,
+						  tlr.blocks));
+	force_regions.push_back(RegionRequirement(block_cell_ptr_regions[id],
+						  READ_ONLY, NO_MEMORY, EXCLUSIVE,
+						  block_cell_ptr_regions[id]));
+	force_regions.push_back(RegionRequirement(block_bases[cur_buffer][id],
+						  READ_WRITE, NO_MEMORY, EXCLUSIVE,
+						  tlr.real_cells[cur_buffer]));
 
-      // write edge1
-      get_all_regions(block_edges[1][id], force_regions,
-		      READ_WRITE, NO_MEMORY, EXCLUSIVE,
-		      tlr.edge_cells);
+	// write edge1
+	get_all_regions(block_edges[1][id], force_regions,
+			READ_WRITE, NO_MEMORY, EXCLUSIVE,
+			tlr.edge_cells);
 
-      unsigned bufsize = sizeof(int) + sizeof(unsigned);
-      Serializer ser(bufsize);
-      ser.serialize(cur_buffer);
-      ser.serialize(id);
-      TaskArgument buffer(ser.get_buffer(), bufsize);
+	if(spass > 0) {
+	  // run a dummy task to move data in a separate phase
+	  Future f = runtime->execute_task(ctx, TASKID_GATHER_FORCES_NOP,
+					   force_regions, 
+					   TaskArgument(0, 0), 0, id);
+	  phase_futures.push_back(f);
+	} else {
+	  unsigned bufsize = sizeof(int) + sizeof(unsigned);
+	  Serializer ser(bufsize);
+	  ser.serialize(cur_buffer);
+	  ser.serialize(id);
+	  TaskArgument buffer(ser.get_buffer(), bufsize);
 
-      Future f = runtime->execute_task(ctx, TASKID_GATHER_FORCES,
-                                       force_regions, 
-                                       buffer,
-                                       0, id);
+	  Future f = runtime->execute_task(ctx, TASKID_GATHER_FORCES,
+					   force_regions, 
+					   buffer,
+					   0, id);
 
-      // remember the futures for the last pass so we can wait on them
-      if(step == conf.numSteps - 1)
-        futures.push_back(f);
-      else
-        f.release();
+	  // remember the futures for the last pass so we can wait on them
+	  if(step == conf.numSteps - 1)
+	    futures.push_back(f);
+	  else
+	    if(conf.sync)
+	      phase_futures.push_back(f);
+	    else
+	      f.release();
+	}
+      }
+
+      while(phase_futures.size() > 0) {
+	Future f = phase_futures.front();
+	phase_futures.pop_front();
+	if(conf.sync > 1)
+	  f.release();
+	else
+	  f.get_void_result();
+      }
     }
 
     // flip the phase
@@ -1634,20 +1746,20 @@ void scatter_densities(const void *args, size_t arglen,
 #endif
 }
 
-template<AccessorType AT>
-void gather_densities(const void *args, size_t arglen,
-                std::vector<PhysicalRegion<AT> > &regions,
-                Context ctx, HighLevelRuntime *runtime)
-{
+// template<AccessorType AT>
+// void gather_densities(const void *args, size_t arglen,
+//                 std::vector<PhysicalRegion<AT> > &regions,
+//                 Context ctx, HighLevelRuntime *runtime)
+// {
 
-}
+// }
 
-template<AccessorType AT>
-void scatter_forces(const void *args, size_t arglen,
-                std::vector<PhysicalRegion<AT> > &regions,
-                Context ctx, HighLevelRuntime *runtime)
-{
-}
+// template<AccessorType AT>
+// void scatter_forces(const void *args, size_t arglen,
+//                 std::vector<PhysicalRegion<AT> > &regions,
+//                 Context ctx, HighLevelRuntime *runtime)
+// {
+// }
 
 template<AccessorType AT>
 void gather_forces_and_advance(const void *args, size_t arglen,
@@ -2264,6 +2376,7 @@ void dummy_task(const void *args, size_t arglen,
                std::vector<PhysicalRegion<AT> > &regions,
                Context ctx, HighLevelRuntime *runtime)
 {
+  //printf("dummy task run\n");
 }
 
 static bool sort_by_proc_id(const std::pair<Processor,Memory> &a,
@@ -2311,11 +2424,15 @@ static inline int get_proc_id_for_task(int task_id, int tag, int num_procs)
     return 0;
   case TASKID_LOAD_FILE:
   case TASKID_INIT_CELLS:
+  case TASKID_INIT_CELLS_NOP:
   case TASKID_REBUILD_REDUCE:
+  case TASKID_REBUILD_REDUCE_NOP:
   case TASKID_SCATTER_DENSITIES:
-  case TASKID_GATHER_DENSITIES:
-  case TASKID_SCATTER_FORCES:
+  case TASKID_SCATTER_DENSITIES_NOP:
+  //case TASKID_GATHER_DENSITIES:
+  //case TASKID_SCATTER_FORCES:
   case TASKID_GATHER_FORCES:
+  case TASKID_GATHER_FORCES_NOP:
 #if MAP_MAIN_SEPARATELY
     if (num_procs == 1)
       return 0;
@@ -2487,6 +2604,7 @@ public:
       }
       break;
     case TASKID_INIT_CELLS:
+    case TASKID_INIT_CELLS_NOP:
       {
         switch (idx) { // First four regions should be local to us
         case 0: // config
@@ -2508,7 +2626,8 @@ public:
       }
       break;
     case TASKID_SCATTER_DENSITIES: // Operations which write ghost cells
-    case TASKID_SCATTER_FORCES:
+    case TASKID_SCATTER_DENSITIES_NOP:
+    //case TASKID_SCATTER_FORCES:
       {
         switch (idx) {
         case 0: // config
@@ -2529,8 +2648,10 @@ public:
       }
       break;
     case TASKID_REBUILD_REDUCE:
-    case TASKID_GATHER_DENSITIES:
+    case TASKID_REBUILD_REDUCE_NOP:
+    //case TASKID_GATHER_DENSITIES:
     case TASKID_GATHER_FORCES:
+    case TASKID_GATHER_FORCES_NOP:
       {
         switch (idx) {
         case 0: // block
@@ -2611,11 +2732,15 @@ int main(int argc, char **argv)
   HighLevelRuntime::register_single_task<top_level_task<AccessorGeneric> >(TOP_LEVEL_TASK_ID,Processor::LOC_PROC,"top_level_task");
   HighLevelRuntime::register_single_task<main_task<AccessorGeneric> >(TASKID_MAIN_TASK,Processor::LOC_PROC,"main_task");
   HighLevelRuntime::register_single_task<init_and_rebuild<AccessorGeneric> >(TASKID_INIT_CELLS,Processor::LOC_PROC,"init_cells");
+  HighLevelRuntime::register_single_task<dummy_task<AccessorGeneric> >(TASKID_INIT_CELLS_NOP,Processor::LOC_PROC,"init_cells_nop");
   HighLevelRuntime::register_single_task<rebuild_reduce<AccessorGeneric> >(TASKID_REBUILD_REDUCE,Processor::LOC_PROC,"rebuild_reduce");
+  HighLevelRuntime::register_single_task<dummy_task<AccessorGeneric> >(TASKID_REBUILD_REDUCE_NOP,Processor::LOC_PROC,"rebuild_reduce_nop");
   HighLevelRuntime::register_single_task<scatter_densities<AccessorGeneric> >(TASKID_SCATTER_DENSITIES,Processor::LOC_PROC,"scatter_densities");
-  HighLevelRuntime::register_single_task<gather_densities<AccessorGeneric> >(TASKID_GATHER_DENSITIES,Processor::LOC_PROC,"gather_densities");
-  HighLevelRuntime::register_single_task<scatter_forces<AccessorGeneric> >(TASKID_SCATTER_FORCES,Processor::LOC_PROC,"scatter_forces");
+  HighLevelRuntime::register_single_task<dummy_task<AccessorGeneric> >(TASKID_SCATTER_DENSITIES_NOP,Processor::LOC_PROC,"scatter_densities_nop");
+  //HighLevelRuntime::register_single_task<gather_densities<AccessorGeneric> >(TASKID_GATHER_DENSITIES,Processor::LOC_PROC,"gather_densities");
+  //HighLevelRuntime::register_single_task<scatter_forces<AccessorGeneric> >(TASKID_SCATTER_FORCES,Processor::LOC_PROC,"scatter_forces");
   HighLevelRuntime::register_single_task<gather_forces_and_advance<AccessorGeneric> >(TASKID_GATHER_FORCES,Processor::LOC_PROC,"gather_forces");
+  HighLevelRuntime::register_single_task<dummy_task<AccessorGeneric> >(TASKID_GATHER_FORCES_NOP,Processor::LOC_PROC,"gather_forces_nop");
   HighLevelRuntime::register_single_task<load_file<AccessorGeneric> >(TASKID_LOAD_FILE,Processor::LOC_PROC,"load_file");
   HighLevelRuntime::register_single_task<save_file<AccessorGeneric> >(TASKID_SAVE_FILE,Processor::LOC_PROC,"save_file");
   HighLevelRuntime::register_single_task<dummy_task<AccessorGeneric> >(TASKID_DUMMY_TASK,Processor::LOC_PROC,"dummy_task");
