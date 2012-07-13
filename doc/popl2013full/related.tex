@@ -1,0 +1,73 @@
+
+\section{Related Work}
+\label{sec:related}
+Legion is most directly related to Sequoia \cite{Fatahalian06}.  Sequoia is array-based, with
+a limited repertoire of ways to partition arrays.  Sequoia is a static language with a single unified hierarchy
+of tasks and data; Legion is more dynamic with separate task and region hierarchies.
+
+Deterministic Parallel Java (DPJ) is the only other region-based parallel system of which we are
+aware\cite{Bocchino09}.  While there are similarities between DPJ's effects and Legion privileges, 
+%and we have reused some DPJ notation, 
+there are differences stemming from DPJ's static approach.
+Regions in Legion are first-class and can be created, partitioned, packed, and unpacked 
+dynamically, allowing programmers to compute data organization at runtime; like Sequoia, DPJ
+partition schemes must be statically decided.  Legion allows 
+programmers to create multiple partitions of the same region to give different 
+views onto the same data, which is not possible in DPJ.  
+%DPJ only supports the 
+%equivalent to Legion's exclusive and atomic coherence modes \cite{Bocchino11} 
+%while Legion provides safe execution even in simultaneous environments.  
+There is also a difference in emphasis: DPJ requires shared memory, while Legion 
+is designed for distributed heterogeneous machines.
+
+Chapel \cite{Chamberlain:Chapel} and X10 \cite{X1005} also provide some Legion-like facilities.
+Chapel's domains and X10's places provide the programmer with a 
+mechanism for expressing locality, similar to regions in Legion.  However, domains
+and places are not used for independence analysis to discover parallelism.
+In contrast, Jade uses annotations to describe
+data disjointness,  and like Legion leverages the disjointness information
+to discover parallelism, but lacks a region system to name and organize unbounded collections of objects \cite{Rinard98}.  
+
+% Unclear to me what subtleties need to be pointed out here and explained
+% to properly differentiate our work
+Many efforts use static region systems for  memory management (e.g., \cite{Tofte94, Grossman02}).
+Our system is more closely affiliated with dynamic region systems used for expressing locality for performance \cite{Gay01}.
+
+%In addition to region languages with static type systems, there have been several
+%dynamic region languages.  Cyclone uses both a static type system and dynamic
+%region checks to enforce memory safety properties of C programs\cite{Grossman02}.
+%Gay and Aiken introduced RC which reference counts regions dynamically and uses
+%a static type system to reason about effeciently garbage collecting regions\cite{Gay01}.
+
+There have been many type and effect systems for ownership types
+\cite{Boyapati03} including ones that leverage nested regions for describing
+relationships \cite{Clarke02,Cameron07}.  However, ownership type and effect systems
+are primarily used for reasoning about determinism in object oriented languages and
+don't capture the range of disjointness properties that can be specified in Legion.
+
+Reasoning about disjoint heap data is the strong suit of separation logic \cite{Reynolds02}.  
+Concurrent separation logic\cite{Brookes04} has been 
+used both to parallelize sequential programs\cite{Raza09,Gotsman07} and to provide 
+a mechanism for reasoning about independence\cite{Hayman06}.
+While we have borrowed some separation logic notation, we ultimately chose to use a 
+privileges system as our primary formalism because separation logic does not easily
+support reasoning about the interleaving of operations to non-disjoint regions of memory.
+
+% I'm also not sure how much detail to go into here.  DPJ spends a lot of time
+% on these papers, but I'm not sure I understand all the details of these papers.
+% DPJ also cites Lu06 here, but I'm not sure if we have to
+%Type and effect systems have also been used to reason about regions.  FX presented
+%the original type and effect system on regions \cite{Lucassen88}, but was restricted 
+%to using a finite number of regions and was incapable of describing nested data
+%structures.  
+
+% Do we need to enumerate what these disjointness properties are (DPJ does)
+%Type and effect systems have also been used in the context of parallelism to discover
+%deadlocks and race conditions \cite{Boyapati02,Abadi06,Jacobs08}, but do not present 
+%any mechanism for discovering parallelism.
+
+%Still not sure what we want to put here.
+% DPJ sites additional separation logic papers but they didn't seem very similar.
+% Let me know if you think we should include them as well.
+
+
