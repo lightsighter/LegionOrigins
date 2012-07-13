@@ -3702,8 +3702,8 @@ namespace RegionRuntime {
 	      al.reacquire();
 
 	      log_task(LEVEL_INFO, "finished processor shutdown task: proc=%x", proc->me.id);
-	      proc->finished();
 	    }
+            proc->finished();
 	  }
 
 	  log_task(LEVEL_DEBUG, "worker thread terminating: proc=%x", proc->me.id);
@@ -6996,8 +6996,10 @@ namespace RegionRuntime {
       unsigned dma_worker_threads = 1;
       unsigned active_msg_worker_threads = 1;
       bool     active_msg_sender_threads = false;
+#ifdef EVENT_TRACKING
       size_t   event_trace_block_size = 1 << 20;
       double   event_trace_exp_evtrate = 1e3;
+#endif
 
       for(int i = 1; i < *argc; i++) {
 #define INT_ARG(argname, varname) do { \
@@ -7028,7 +7030,7 @@ namespace RegionRuntime {
 #ifdef EVENT_TRACING
 	  event_trace_file = strdup((*argv)[++i]);
 #else
-	  fprintf("WARNING: event tracing requested, but not enabled at compile time!\n");
+	  fprintf(stderr,"WARNING: event tracing requested, but not enabled at compile time!\n");
 #endif
 	  continue;
 	}
