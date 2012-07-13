@@ -30,6 +30,8 @@
 // Maximum memory in global
 #define GLOBAL_MEM      4096   // (MB)	
 #define LOCAL_MEM       16384  // (KB)
+// Default Pthreads stack size
+#define STACK_SIZE      2      // (MB) 
 
 #ifdef DEBUG_LOW_LEVEL
 #define PTHREAD_SAFE_CALL(cmd)			\
@@ -395,7 +397,7 @@ namespace RegionRuntime {
 
     class ProcessorImpl : public Triggerable {
     public:
-	ProcessorImpl(pthread_barrier_t *init, Processor::TaskIDTable table, Processor p, bool is_utility = false, unsigned num_owners = 0) :
+	ProcessorImpl(pthread_barrier_t *init, Processor::TaskIDTable table, Processor p, size_t stacksize, bool is_utility = false, unsigned num_owners = 0) :
 		init_bar(init), task_table(table), proc(p), utility_proc(p),
                 has_scheduler(!is_utility && (table.find(Processor::TASK_ID_PROCESSOR_IDLE) != table.end())),
                 is_utility_proc(is_utility), remaining_stops(num_owners), 
@@ -405,11 +407,13 @@ namespace RegionRuntime {
                 wait_cond = (pthread_cond_t*)malloc(sizeof(pthread_cond_t));
 		PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
 		PTHREAD_SAFE_CALL(pthread_cond_init(wait_cond,NULL));
+                PTHREAD_SAFE_CALL(pthread_attr_init(&attr));
+                PTHREAD_SAFE_CALL(pthread_attr_setstacksize(&attr,stacksize));
 		shutdown = false;
 		shutdown_trigger = NULL;
                 idle_task_enabled = true;
 	}
-        ProcessorImpl(pthread_barrier_t *init, Processor::TaskIDTable table, Processor p, Processor utility) :
+        ProcessorImpl(pthread_barrier_t *init, Processor::TaskIDTable table, Processor p, Processor utility, size_t stacksize) :
                 init_bar(init), task_table(table), proc(p), utility_proc(utility),
                 has_scheduler(table.find(Processor::TASK_ID_PROCESSOR_IDLE) != table.end()),
                 is_utility_proc(false), remaining_stops(0), 
@@ -419,6 +423,8 @@ namespace RegionRuntime {
                 wait_cond = (pthread_cond_t*)malloc(sizeof(pthread_cond_t));
                 PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
 		PTHREAD_SAFE_CALL(pthread_cond_init(wait_cond,NULL));
+                PTHREAD_SAFE_CALL(pthread_attr_init(&attr));
+                PTHREAD_SAFE_CALL(pthread_attr_setstacksize(&attr,stacksize));
 		shutdown = false;
 		shutdown_trigger = NULL;
                 idle_task_enabled = true;
@@ -427,6 +433,7 @@ namespace RegionRuntime {
         {
                 PTHREAD_SAFE_CALL(pthread_mutex_destroy(mutex));
                 PTHREAD_SAFE_CALL(pthread_cond_destroy(wait_cond));
+                PTHREAD_SAFE_CALL(pthread_attr_destroy(&attr));
                 free(mutex);
                 free(wait_cond);
         }
@@ -456,6 +463,8 @@ namespace RegionRuntime {
 		Event wait;
 		EventImpl *complete;
 	};
+    public:
+        pthread_attr_t attr; // For setting pthread parameters when starting the thread
     private:
         pthread_barrier_t *init_bar;
 	Processor::TaskIDTable task_table;
@@ -2894,6 +2903,7 @@ namespace RegionRuntime {
         unsigned num_utility_cpus = NUM_UTILITY_PROCS;
         size_t cpu_mem_size_in_mb = GLOBAL_MEM;
         size_t cpu_l1_size_in_kb = LOCAL_MEM;
+        size_t cpu_stack_size = STACK_SIZE;
 
 #ifdef DEBUG_PRINT
 	PTHREAD_SAFE_CALL(pthread_mutex_init(&debug_mutex,NULL));
@@ -2911,8 +2921,10 @@ namespace RegionRuntime {
           INT_ARG("-ll:l1size", cpu_l1_size_in_kb);
           INT_ARG("-ll:cpu", num_cpus);
           INT_ARG("-ll:util",num_utility_cpus);
+          INT_ARG("-ll:stack",cpu_stack_size);
 #undef INT_ARG
         }
+        cpu_stack_size = cpu_stack_size * (1 << 20);
 
         if (num_utility_cpus > num_cpus)
         {
@@ -2920,7 +2932,7 @@ namespace RegionRuntime {
             fflush(stderr);
             exit(1);
         }
-	
+
 	// Create the runtime and initialize with this machine
 	Runtime::runtime = new Runtime(this, redop_table);
 
@@ -2953,12 +2965,12 @@ namespace RegionRuntime {
                   utility.id = num_cpus + 1 + util;
                   //fprintf(stdout,"Processor %d has utility processor %d\n",id,utility.id);
                   //fflush(stdout);
-                  impl = new ProcessorImpl(init_barrier,task_table, p, utility);
+                  impl = new ProcessorImpl(init_barrier,task_table, p, utility, cpu_stack_size);
                   utility_users[util]++;
                 }
                 else
                 {
-                  impl = new ProcessorImpl(init_barrier,task_table, p);
+                  impl = new ProcessorImpl(init_barrier,task_table, p, cpu_stack_size);
                 }
 		Runtime::runtime->processors.push_back(impl);
 	}	
@@ -2973,7 +2985,7 @@ namespace RegionRuntime {
                 //fprintf(stdout,"Utility processor %d has %d users\n",p.id,utility_users[id-1]);
                 //fflush(stdout);
                 // This processor is a utility processor so it is be default its own utility
-                ProcessorImpl *impl = new ProcessorImpl(init_barrier,task_table, p, true/*utility*/, utility_users[id-1]);
+                ProcessorImpl *impl = new ProcessorImpl(init_barrier,task_table, p, cpu_stack_size, true/*utility*/, utility_users[id-1]);
                 Runtime::runtime->processors.push_back(impl);
         }
 	{
@@ -3094,7 +3106,7 @@ namespace RegionRuntime {
       {
               ProcessorImpl *impl = Runtime::runtime->processors[id];
               pthread_t thread;
-              PTHREAD_SAFE_CALL(pthread_create(&thread, NULL, ProcessorImpl::start, (void*)impl));
+              PTHREAD_SAFE_CALL(pthread_create(&thread, &(impl->attr), ProcessorImpl::start, (void*)impl));
       }
 
       // Now run the scheduler, we'll never return from this
