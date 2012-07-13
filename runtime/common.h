@@ -67,8 +67,14 @@ template<typename T>
 struct ptr_t 
 { 
 public:
+#ifdef __CUDACC__
+  __host__ __device__
+#endif
   ptr_t(void) : value(0) { }
   explicit ptr_t(const utptr_t &p) : value(p.value) { }
+#ifdef __CUDACC__
+  __host__ __device__
+#endif
   ptr_t(const ptr_t<T> &p) : value(p.value) { }
   ptr_t(unsigned v) : value(v) { }
 public:
