@@ -11,6 +11,10 @@
 GASNETT_THREADKEY_DEFINE(cur_thread);
 GASNETT_THREADKEY_DEFINE(gpu_thread);
 
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+
 #if 0
 #include <assert.h>
 
@@ -537,6 +541,86 @@ namespace RegionRuntime {
       printf("END OF DETAILED TIMING SUMMARY\n");
     }
 #endif
+
+    static void gasnet_barrier(void)
+    {
+      gasnet_barrier_notify(0, GASNET_BARRIERFLAG_ANONYMOUS);
+      gasnet_barrier_wait(0, GASNET_BARRIERFLAG_ANONYMOUS);
+    }
+    
+    /*static*/ double Clock::zero_time = 0;
+
+    /*static*/ void Clock::synchronize(void)
+    {
+      // basic idea is that we barrier a couple times across the machine
+      // and grab the local absolute time in between two of the barriers -
+      // that becomes the zero time for the local machine
+      gasnet_barrier();
+      gasnet_barrier();
+      zero_time = abs_time();
+      gasnet_barrier();
+    }
+
+    /*static*/ EventTracer::EventTraceBlock *EventTracer::first_block = 0;
+    /*static*/ EventTracer::EventTraceBlock *EventTracer::last_block = 0;
+
+    struct EventTraceFileItem {
+      double time;
+      unsigned node, event_id, event_gen, action;
+    };
+
+    /*static*/ void EventTracer::dump_trace(const char *filename, bool append)
+    {
+      // each node dumps its stuff in order (using barriers to keep things
+      // separate) - nodes other than zero ALWAYS append
+      gasnet_barrier();
+
+      for(int i = 0; i < gasnet_nodes(); i++) {
+	if(i == gasnet_mynode()) {
+	  int fd = open(filename, (O_WRONLY |
+				   O_CREAT |
+				   ((append || (i > 0)) ? O_APPEND : O_TRUNC)),
+			0666);
+	  assert(fd >= 0);
+
+	  EventTraceBlock *block = first_block;
+	  size_t total = 0;
+	  while(block) {
+	    if(block->cur_size > 0) {
+	      size_t act_size = block->cur_size;
+	      total += act_size;
+	      if(act_size > block->max_size) act_size = block->max_size;
+
+	      EventTraceFileItem *fitems = new EventTraceFileItem[act_size];
+
+	      for(size_t i = 0; i < act_size; i++) {
+		fitems[i].time = block->start_time + (block->items[i].time_units /
+						      block->time_mult);
+		fitems[i].node = gasnet_mynode();
+		fitems[i].event_id = block->items[i].event_id;
+		fitems[i].event_gen = block->items[i].event_gen;
+		fitems[i].action = block->items[i].action;
+	      }
+
+	      size_t bytes_to_write = sizeof(EventTraceFileItem) * act_size;
+	      ssize_t bytes_written = write(fd, fitems, bytes_to_write);
+	      assert(bytes_written == (ssize_t)bytes_to_write);
+
+	      delete[] fitems;
+	    }
+
+	    block = block->next;
+	  }
+
+	  close(fd);
+
+	  printf("%zd trace items dumped to \"%s\"\n",
+		 total, filename);
+	}
+
+	gasnet_barrier();
+      }
+    }
 
 #if 0
 
@@ -1516,6 +1600,7 @@ namespace RegionRuntime {
 	ev.gen = impl->generation + 1;
 	//printf("REUSE EVENT %x/%d\n", ev.id, ev.gen);
 	log_event(LEVEL_SPEW, "event reused: event=%x/%d", ev.id, ev.gen);
+	EventTracer::trace_event(ev.id, ev.gen, EventTracer::ACT_CREATE);
 	return ev;
       }
 
@@ -1542,6 +1627,7 @@ namespace RegionRuntime {
 	  ev.gen = (*it).generation + 1;
 	  //printf("REUSE EVENT %x/%d\n", ev.id, ev.gen);
 	  log_event(LEVEL_SPEW, "event reused: event=%x/%d", ev.id, ev.gen);
+	  EventTracer::trace_event(ev.id, ev.gen, EventTracer::ACT_CREATE);
 	  return ev;
 	}
       }
@@ -1559,11 +1645,13 @@ namespace RegionRuntime {
       ev.gen = 1; // waiting for first generation of this new event
       //printf("NEW EVENT %x/%d\n", ev.id, ev.gen);
       log_event(LEVEL_SPEW, "event created: event=%x/%d", ev.id, ev.gen);
+      EventTracer::trace_event(ev.id, ev.gen, EventTracer::ACT_CREATE);
       return ev;
     }
 
     void Event::Impl::add_waiter(Event event, EventWaiter *waiter)
     {
+      EventTracer::trace_event(event.id, event.gen, EventTracer::ACT_WAIT);
       bool trigger_now = false;
 
       int subscribe_owner = -1;
@@ -1601,6 +1689,7 @@ namespace RegionRuntime {
 
     bool Event::Impl::has_triggered(Event::gen_t needed_gen)
     {
+      EventTracer::trace_event(me.id, needed_gen, EventTracer::ACT_QUERY);
       return (needed_gen <= generation);
     }
     
@@ -1608,6 +1697,7 @@ namespace RegionRuntime {
     {
       log_event(LEVEL_SPEW, "event triggered: event=%x/%d by node %d", 
 		me.id, gen_triggered, trigger_node);
+      EventTracer::trace_event(me.id, gen_triggered, EventTracer::ACT_TRIGGER);
       //printf("[%d] TRIGGER %x/%d\n", gasnet_mynode(), me.id, gen_triggered);
       std::deque<EventWaiter *> to_wake;
       {
@@ -3612,8 +3702,8 @@ namespace RegionRuntime {
 	      al.reacquire();
 
 	      log_task(LEVEL_INFO, "finished processor shutdown task: proc=%x", proc->me.id);
-	      proc->finished();
 	    }
+            proc->finished();
 	  }
 
 	  log_task(LEVEL_DEBUG, "worker thread terminating: proc=%x", proc->me.id);
@@ -4205,7 +4295,7 @@ namespace RegionRuntime {
       // maybe a GPU thread?
       ptr = gasnett_threadkey_get(gpu_thread);
       if(ptr != 0) {
-	assert(0);
+	//assert(0);
 	//printf("oh, good - we're a gpu thread - we'll spin for now\n");
 	//printf("waiting for %x/%d\n", id, gen);
 	while(!e->has_triggered(gen)) usleep(1000);
@@ -4620,7 +4710,7 @@ namespace RegionRuntime {
       instance.impl()->memory.impl()->destroy_instance(instance, true);
     }
 
-    const ElementMask &RegionMetaDataUntyped::get_valid_mask(void)
+    const ElementMask &RegionMetaDataUntyped::get_valid_mask(void) const
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       RegionMetaDataUntyped::Impl *r_impl = impl();
@@ -4825,8 +4915,24 @@ namespace RegionRuntime {
 
     bool ElementMask::is_set(int ptr) const
     {
-      // TODO: implement this
-      return true;
+      if(raw_data != 0) {
+	ElementMaskImpl *impl = (ElementMaskImpl *)raw_data;
+	
+	int pos = ptr;// - first_element;
+	uint64_t val = (impl->bits[pos >> 6]);
+        uint64_t bit = ((val) >> (pos & 0x3f));
+        return ((bit & 1) != 0);
+      } else {
+        assert(0);
+	Memory::Impl *m_impl = memory.impl();
+
+	int pos = ptr - first_element;
+	off_t ofs = offset + ((pos >> 6) << 3);
+	uint64_t val;
+	m_impl->get_bytes(ofs, &val, sizeof(val));
+        uint64_t bit = ((val) >> (pos & 0x3f));
+        return ((bit & 1) != 0);
+      }
     }
 
     ElementMask::Enumerator *ElementMask::enumerate_enabled(int start /*= 0*/) const
@@ -5027,6 +5133,19 @@ namespace RegionRuntime {
     {
       return Runtime::runtime->get_instance_impl(*this);
     }
+
+#ifdef POINTER_CHECKS
+    void RegionInstanceUntyped::Impl::verify_access(unsigned ptr)
+    {
+      StaticAccess<RegionInstanceUntyped::Impl> data(this);
+      const ElementMask &mask = const_cast<RegionMetaDataUntyped*>(&(data->region))->get_valid_mask();
+      if (!mask.is_set(ptr))
+      {
+        fprintf(stderr,"ERROR: Accessing invalid pointer %d in logical region %x\n",ptr,data->region.id);
+        assert(false);
+      }
+    }
+#endif
 
     void RegionInstanceUntyped::Impl::get_bytes(off_t ptr_value, void *dst, size_t size)
     {
@@ -6356,6 +6475,18 @@ namespace RegionRuntime {
 					       elmt_size, bytes_to_copy);
     }
 
+#ifdef POINTER_CHECKS
+    void RegionInstanceAccessorUntyped<AccessorGeneric>::verify_access(unsigned ptr) const
+    {
+      ((RegionInstanceUntyped::Impl *)internal_data)->verify_access(ptr); 
+    }
+
+    void RegionInstanceAccessorUntyped<AccessorArray>::verify_access(unsigned ptr) const
+    {
+      ((RegionInstanceUntyped::Impl *)impl_ptr)->verify_access(ptr);
+    }
+#endif
+
     void RegionInstanceAccessorUntyped<AccessorGeneric>::get_untyped(off_t byte_offset, void *dst, size_t size) const
     {
       ((RegionInstanceUntyped::Impl *)internal_data)->get_bytes(byte_offset, dst, size);
@@ -6413,6 +6544,9 @@ namespace RegionRuntime {
 	LocalCPUMemory *lcm = (LocalCPUMemory *)m_impl;
 	char *inst_base = lcm->base + i_data->access_offset;
 	RegionInstanceAccessorUntyped<AccessorArray> ria(inst_base);
+#ifdef POINTER_CHECKS
+        ria.set_impl(i_impl);
+#endif
 	return ria;
       }
 
@@ -6420,6 +6554,9 @@ namespace RegionRuntime {
 	GPUZCMemory *zcm = (GPUZCMemory *)m_impl;
 	char *inst_base = zcm->cpu_base + i_data->access_offset;
 	RegionInstanceAccessorUntyped<AccessorArray> ria(inst_base);
+#ifdef POINTER_CHECKS
+        ria.set_impl(i_impl); 
+#endif
 	return ria;
       }
 
@@ -6470,6 +6607,7 @@ namespace RegionRuntime {
 
       assert(0);
     }
+
     
     ///////////////////////////////////////////////////
     // 
@@ -6790,6 +6928,10 @@ namespace RegionRuntime {
 
     static Machine *the_machine = 0;
 
+#ifdef EVENT_TRACING
+    static char *event_trace_file = 0;
+#endif
+
     /*static*/ Machine *Machine::get_machine(void) { return the_machine; }
 
 
@@ -6854,6 +6996,10 @@ namespace RegionRuntime {
       unsigned dma_worker_threads = 1;
       unsigned active_msg_worker_threads = 1;
       bool     active_msg_sender_threads = false;
+#ifdef EVENT_TRACKING
+      size_t   event_trace_block_size = 1 << 20;
+      double   event_trace_exp_evtrate = 1e3;
+#endif
 
       for(int i = 1; i < *argc; i++) {
 #define INT_ARG(argname, varname) do { \
@@ -6879,6 +7025,15 @@ namespace RegionRuntime {
 	INT_ARG("-ll:dma", dma_worker_threads);
 	INT_ARG("-ll:amsg", active_msg_worker_threads);
         BOOL_ARG("-ll:senders", active_msg_sender_threads);
+
+	if(!strcmp((*argv)[i], "-ll:eventtrace")) {
+#ifdef EVENT_TRACING
+	  event_trace_file = strdup((*argv)[++i]);
+#else
+	  fprintf(stderr,"WARNING: event tracing requested, but not enabled at compile time!\n");
+#endif
+	  continue;
+	}
       }
 
       Logger::init(*argc, (const char **)*argv);
@@ -6924,6 +7079,14 @@ namespace RegionRuntime {
 
       if (active_msg_sender_threads)
         start_sending_threads();
+
+      Clock::synchronize();
+
+#ifdef EVENT_TRACING
+      if(event_trace_file != 0)
+	EventTracer::init_trace(event_trace_block_size,
+				event_trace_exp_evtrate);
+#endif
 	
       //gasnet_seginfo_t seginfos = new gasnet_seginfo_t[num_nodes];
       //CHECK_GASNET( gasnet_getSegmentInfo(seginfos, num_nodes) );
@@ -7197,6 +7360,14 @@ namespace RegionRuntime {
 
     Machine::~Machine(void)
     {
+#ifdef EVENT_TRACING
+      if(event_trace_file) {
+	printf("writing event trace to %s\n", event_trace_file);
+	EventTracer::dump_trace(event_trace_file, false);
+	free(event_trace_file);
+	event_trace_file = 0;
+      }
+#endif
       gasnet_exit(0);
     }
 

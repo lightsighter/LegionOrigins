@@ -1,0 +1,25 @@
+Running on host kid001.nics.utk.edu
+Our CPUs: 0 2 4 6 8 10
+Running on host kid002.nics.utk.edu
+Our CPUs: 0 2 4 6 8 10
+Our CPUs: 0 2 4 6 8 10
+Our CPUs: 0 2 4 6 8 10
+Starting main simulation loop
+ELAPSED TIME =  24.212 s
+UPDATES PER SEC = 2598521.259 
+DETAILED TIMING SUMMARY:
+      KERNEL -  46.794 s
+        COPY -   0.274 s
+  HIGH-LEVEL -   4.811 s
+   LOW-LEVEL -   1.988 s
+      MAPPER -   0.011 s
+      SYSTEM -   0.009 s
+   ACTV_MESG -   0.358 s
+          10 -   7.780 s
+          13 -   0.036 s
+          14 -   0.159 s
+          15 -   0.001 s
+          16 -   0.008 s
+END OF DETAILED TIMING SUMMARY
+Running on host kid001.nics.utk.edu
+Our CPUs: 0 1 2 3 4 5 6 7 8 9 10 11

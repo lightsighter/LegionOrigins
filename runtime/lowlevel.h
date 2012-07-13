@@ -364,7 +364,7 @@ namespace RegionRuntime {
       void destroy_allocator_untyped(RegionAllocatorUntyped allocator) const;
       void destroy_instance_untyped(RegionInstanceUntyped instance) const;
 
-      const ElementMask &get_valid_mask(void);
+      const ElementMask &get_valid_mask(void) const;
     };
 
     class RegionAllocatorUntyped {
@@ -413,6 +413,9 @@ namespace RegionRuntime {
 
       void *internal_data;
 
+#ifdef POINTER_CHECKS
+      void verify_access(unsigned ptr) const;
+#endif
       void get_untyped(off_t byte_offset, void *dst, size_t size) const;
       void put_untyped(off_t byte_offset, const void *src, size_t size) const;
 
@@ -420,18 +423,27 @@ namespace RegionRuntime {
       T read(ptr_t<T> ptr) const
 	{ 
 	  assert(!is_reduction_only());
+#ifdef POINTER_CHECKS
+          verify_access(ptr.value);
+#endif
 	  T val; get_untyped(ptr.value*sizeof(T), &val, sizeof(T)); return val;
 	}
 
       template <class T>
       void read_partial(ptr_t<T> ptr, off_t offset, void *dst, size_t size) const
 	{
+#ifdef POINTER_CHECKS
+          verify_access(ptr.value);
+#endif
 	  get_untyped(ptr.value*sizeof(T) + offset, dst, size);
 	}
 
       template <class T>
       void write(ptr_t<T> ptr, const T& newval) const
 	{
+#ifdef POINTER_CHECKS
+          verify_access(ptr.value);
+#endif
 	  assert(!is_reduction_only());
 	  put_untyped(ptr.value*sizeof(T), &newval, sizeof(T));
 	}
@@ -439,12 +451,18 @@ namespace RegionRuntime {
       template <class T>
       void write_partial(ptr_t<T> ptr, off_t offset, const void *src, size_t size) const
 	{
+#ifdef POINTER_CHECKS
+          verify_access(ptr.value);
+#endif
 	  put_untyped(ptr.value*sizeof(T) + offset, src, size);
 	}
 
       template <class REDOP, class T, class RHS>
       void reduce(ptr_t<T> ptr, RHS newval) const 
 	{ 
+#ifdef POINTER_CHECKS
+          verify_access(ptr.value);
+#endif
   	  if(is_reduction_only()) {
 	    RHS val; 
 	    get_untyped(ptr.value*sizeof(RHS), &val, sizeof(RHS));
@@ -477,7 +495,12 @@ namespace RegionRuntime {
 
       // Need copy constructors so we can move things around
       RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorArray> &old)
-      { array_base = old.array_base; }
+      { 
+        array_base = old.array_base; 
+#ifdef POINTER_CHECKS
+        impl_ptr = old.impl_ptr;
+#endif
+      }
 
       bool operator<(const RegionInstanceAccessorUntyped<AccessorArray> &rhs) const
       { return array_base < rhs.array_base; }
@@ -487,18 +510,52 @@ namespace RegionRuntime {
       { return array_base != rhs.array_base; }
 
       void *array_base;
+#ifdef POINTER_CHECKS
+      void *impl_ptr;
+
+      void verify_access(unsigned ptr) const;
+
+      void set_impl(void *impl)
+      {
+        impl_ptr = impl;
+      }
+#endif
 
       template <class T>
-      T read(ptr_t<T> ptr) const { return ((T*)array_base)[ptr.value]; }
+      T read(ptr_t<T> ptr) const 
+      { 
+#ifdef POINTER_CHECKS
+        verify_access(ptr.value);
+#endif
+        return ((T*)array_base)[ptr.value]; 
+      }
 
       template <class T>
-      void write(ptr_t<T> ptr, const T& newval) const { ((T*)array_base)[ptr.value] = newval; }
+      void write(ptr_t<T> ptr, const T& newval) const 
+      { 
+#ifdef POINTER_CHECKS
+        verify_access(ptr.value);
+#endif
+        ((T*)array_base)[ptr.value] = newval; 
+      }
 
       template <class REDOP, class T, class RHS>
-      void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::apply<false>(((T*)array_base)[ptr.value], newval); }
+      void reduce(ptr_t<T> ptr, RHS newval) const 
+      { 
+#ifdef POINTER_CHECKS
+        verify_access(ptr.value);
+#endif
+        REDOP::apply<false>(((T*)array_base)[ptr.value], newval); 
+      }
 
       template <class T>
-      T &ref(ptr_t<T> ptr) const { return ((T*)array_base)[ptr.value]; }
+      T &ref(ptr_t<T> ptr) const 
+      { 
+#ifdef POINTER_CHECKS
+        verify_access(ptr.value);
+#endif
+        return ((T*)array_base)[ptr.value]; 
+      }
     };
 
     template <> class RegionInstanceAccessorUntyped<AccessorArrayReductionFold> {
@@ -531,9 +588,10 @@ namespace RegionRuntime {
 	: array_base(_array_base) {}
       
       void *array_base;
-#ifdef DEBUG_LOW_LEVEL
+#ifdef POINTER_CHECKS 
       size_t first_elmt;
       size_t last_elmt;
+      unsigned *valid_mask_base;
 #endif
 #ifdef __CUDACC__
       // Need copy constructors so we can move things around
@@ -542,15 +600,16 @@ namespace RegionRuntime {
       RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorGPU> &old)
       { 
         array_base = old.array_base; 
-#ifdef DEBUG_LOW_LEVEL
+#ifdef POINTER_CHECKS 
         first_elmt = old.first_elmt;
         last_elmt = old.last_elmt;
+	valid_mask_base = old.valid_mask_base;
 #endif
       }
 
       template <class T>
       T *gpu_ptr(ptr_t<T> ptr) const {
-#ifdef DEBUG_LOW_LEVEL
+#ifdef POINTER_CHECKS 
         bounds_check(ptr);
 #endif
 	return &((T*)array_base)[ptr.value];
@@ -560,7 +619,7 @@ namespace RegionRuntime {
       template <class T>
       __device__ __forceinline__
       T read(ptr_t<T> ptr) const { 
-#ifdef DEBUG_LOW_LEVEL
+#ifdef POINTER_CHECKS 
         bounds_check(ptr);
 #endif
         return ((T*)array_base)[ptr.value]; 
@@ -569,7 +628,7 @@ namespace RegionRuntime {
       template <class T>
       __device__ __forceinline__
       void write(ptr_t<T> ptr, const T& newval) const { 
-#ifdef DEBUG_LOW_LEVEL
+#ifdef POINTER_CHECKS 
         bounds_check(ptr);
 #endif
         ((T*)array_base)[ptr.value] = newval; 
@@ -578,7 +637,7 @@ namespace RegionRuntime {
       template <class REDOP, class T, class RHS>
       __device__ __forceinline__
       void reduce(ptr_t<T> ptr, RHS newval) const { 
-#ifdef DEBUG_LOW_LEVEL
+#ifdef POINTER_CHECKS 
         bounds_check(ptr);
 #endif
         REDOP::apply<false>(((T*)array_base)[ptr.value], newval); 
@@ -587,14 +646,14 @@ namespace RegionRuntime {
       template <class T>
       __device__ __forceinline__
       T &ref(ptr_t<T> ptr) const { 
-#ifdef DEBUG_LOW_LEVEL
+#ifdef POINTER_CHECKS 
         bounds_check(ptr);
 #endif
         return ((T*)array_base)[ptr.value]; 
       }
 #endif
 
-#ifdef DEBUG_LOW_LEVEL
+#ifdef POINTER_CHECKS 
       template <class T>
 #ifdef __CUDACC__
       __device__ __forceinline__
@@ -602,6 +661,9 @@ namespace RegionRuntime {
       void bounds_check(ptr_t<T> ptr) const
       {
         assert((first_elmt <= ptr.value) && (ptr.value <= last_elmt));
+	off_t rel_ptr = ptr.value ;//- first_elmt;
+	unsigned bits = valid_mask_base[rel_ptr >> 5];
+	assert(bits & (1U << (rel_ptr & 0x1f)));
       }
 #endif
     };
@@ -612,9 +674,10 @@ namespace RegionRuntime {
 	: array_base(_array_base) {}
 
       void *array_base;
-#ifdef DEBUG_LOW_LEVEL
+#ifdef POINTER_CHECKS 
       size_t first_elmt;
       size_t last_elmt;
+      unsigned *valid_mask_base;
 #endif
 #ifdef __CUDACC__
       // Need copy constructors so we can move things around
@@ -622,17 +685,21 @@ namespace RegionRuntime {
       RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorGPUReductionFold> &old)
       { 
         array_base = old.array_base; 
-#ifdef DEBUG_LOW_LEVEL
+#ifdef POINTER_CHECKS 
         first_elmt = old.first_elmt;
         last_elmt  = old.last_elmt;
+	valid_mask_base = old.valid_mask_base;
 #endif
       }
       // no read or write on a reduction-fold-only accessor
       template <class REDOP, class T, class RHS>
       __device__ __forceinline__
       void reduce(ptr_t<T> ptr, RHS newval) const { 
-#ifdef DEBUG_LOW_LEVEL
+#ifdef POINTER_CHECKS 
         assert((first_elmt <= ptr.value) && (ptr.value <= last_elmt));
+	off_t rel_ptr = ptr.value ;//- first_elmt;
+	unsigned bits = valid_mask_base[rel_ptr >> 5];
+	assert(bits & (1U << (rel_ptr & 0x1f)));
 #endif
         REDOP::fold<false>(((RHS*)array_base)[ptr.value], newval); 
       }
@@ -640,9 +707,10 @@ namespace RegionRuntime {
       RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorGPUReductionFold> &old)
       {
         array_base = old.array_base;
-#ifdef DEBUG_HIGH_LEVEL
+#ifdef POINTER_CHECKS 
         first_elmt = old.first_elmt;
         last_elmt  = old.last_elmt;
+	valid_mask_base = old.valid_mask_base;
 #endif
       }
 #endif
@@ -759,7 +827,7 @@ namespace RegionRuntime {
       
       ptr_t<T> alloc(unsigned count = 1) 
       { 
-	ptr_t<T> ptr = { alloc_untyped(count) };
+	ptr_t<T> ptr = ptr_t<T>(alloc_untyped(count));
 	return ptr; 
       }
       void free(ptr_t<T> ptr, unsigned count = 1) { free_untyped(ptr.value,count); }

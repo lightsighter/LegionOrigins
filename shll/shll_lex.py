@@ -8,17 +8,16 @@ class Lexer:
                 'and', 'reads', 'writes', 'rdwrs', 'reduces', 'true', 'false',
                 'read', 'write', 'reduce', 'if', 'then', 'else', 'new',
                 'isnull', 'null', 'partition', 'using', 'as', 'pack', 'unpack',
+                'coloring', 'newcolor', 'color', 'atomic', 'simult',
                 'upregion', 'downregion')
 
     tokens = [
         'ID',
-        'LT',
-        'GT',
         'SUBSET',
         'INTVAL',
         ] + list(x.upper() for x in keywords)
 
-    literals = '={}()<>@*,:.+&|'
+    literals = '={}()<>@*,:.+&|[]_'
 
     whitespace = " \t\r"
 
@@ -47,13 +46,13 @@ class Lexer:
     def t_SUBSET(self, t):
         return t
 
-    @TOKEN(r'\.lt\.')
-    def t_LT(self, t):
-        return t
+    #@TOKEN(r'\.lt\.')
+    #def t_LT(self, t):
+    #    return t
 
-    @TOKEN(r'\.gt\.')
-    def t_GT(self, t):
-        return t
+    #@TOKEN(r'\.gt\.')
+    #def t_GT(self, t):
+    #    return t
 
     @TOKEN(r'[0-9]+')
     def t_INTVAL(self, t):

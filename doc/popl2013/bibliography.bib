@@ -26,20 +26,208 @@
 @string {SC = "Supercomputing"}
 
 
+@inproceedings{Legion12,
+  author = {Bauer, M. and Treichler, S. and Slaughter, E. and Aiken, A.},
+  title = {Legion: Expressing Locality and Independence with Logical Regions},
+  booktitle = {Supercomputing (SC)},
+  year = {2012},
+  note = "To appear"
+}
+
+@misc{LegionTypes12,
+  author = {Treichler, S. and Bauer, M. and Aiken, A.},
+  title = {A Type System for Safe and Scalable Parallelism using Logical Regions: Full Version},
+  year = {2012},
+  howpublished = "\url{http://theory.stanford.edu/~aiken/publications/new/legion_types_full.pdf}",
+  note = "Technical Report"
+}
+
 @inproceedings{Bocchino09,
  author = {Bocchino, R. and Adve, V. and Dig, D. and Adve, S. and Heumann, S. and Komuravelli, R. and Overbey, J. and Simmons, P. and Sung, H. and Vakilian, M.},
  title = {A Type and Effect System for Deterministic Parallel {J}ava},
- booktitle = {Proceedings of the Conference on Object Oriented Programming Systems Languages and Applications},
+ booktitle = {OOPSLA},
  year = {2009},
- pages = {97--116}
+}
+
+@inproceedings{Bocchino11,
+   author = {Bocchino, R. and Heumann, S. and Honarmand, N. and Adve, S. V. and Adve, V. S. and Welc, A. and Shpeisman, T.},
+   title = {Safe nondeterminism in a deterministic-by-default parallel language},
+   booktitle = {POPL},
+   year = {2011},
+   pages = {535--548},
+} 
+
+@inproceedings{Harris05,
+   author = {Harris, T. and Marlow, S. and Peyton-Jones, S. and Herlihy, M.},
+   title = {Composable memory transactions},
+   booktitle = {PPOPP},
+   year = {2005},
+   pages = {48--60},
+} 
+
+@inproceedings{Tofte94,
+  author = {Tofte, M. and Talpin, J.P.},
+  title = {Region-Based Memory Management},
+  booktitle = {POPL},
+  year = {1994},
+  pages = {188--201},
+}
+
+@inproceedings{Aiken95,
+   author = {Aiken, A. and F\"{a}hndrich, M. and Levien, R.},
+   title = {Better static memory management: improving region-based analysis of higher-order languages},
+   booktitle = {Proceedings of the ACM SIGPLAN conference on Programming language design and implementation},
+   year = {1995},
+   pages = {174--185},
+} 
+
+@inproceedings{Henglein01,
+   author = {Henglein, F. and Makholm, H. and Niss, H.},
+   title = {A direct approach to control-flow sensitive region-based memory management},
+   booktitle = {Proceedings of the 3rd ACM SIGPLAN international conference on Principles and practice of declarative programming},
+   year = {2001},
+   pages = {175--186},
+} 
+
+@article{Walker00,
+   author = {Walker, D. and Crary, K. and Morrisett, G.},
+   title = {Typed memory management via static capabilities},
+   journal = {ACM Trans. Program. Lang. Syst.},
+   year = {2000},
+   pages = {701--771},
+} 
+
+@inproceedings{Grossman02,
+   author = {Grossman, D. and Morrisett, G. and Jim, T. and Hicks, M. and Wang, Y. and Cheney, J.},
+   title = {Region-Based Memory Management in Cyclone},
+   booktitle = {PLDI},
+   year = {2002},
+} 
+
+@inproceedings{Gay01,
+   author = {Gay, D. and Aiken, A.},
+   title = {Language support for regions},
+   booktitle = {PLDI},
+   year = {2001},
+} 
+
+@inproceedings{Lucassen88,
+   author = {Lucassen, J. M. and Gifford, D. K.},
+   title = {Polymorphic effect systems},
+   booktitle = {Proceedings of the 15th ACM SIGPLAN-SIGACT symposium on Principles of programming languages},
+   year = {1988},
+   pages = {47--57},
+} 
+
+@inproceedings{Boyapati03,
+   author = {Boyapati, C. and Liskov, B. and Shrira, L.},
+   title = {Ownership types for object encapsulation},
+   booktitle = {POPL},
+   year = {2003},
+   pages = {213--223},
+} 
+
+@inproceedings{Clarke02,
+   author = {Clarke, D. and Drossopoulou, S.},
+   title = {Ownership, Encapsulation and the Disjointness of Type and Effect},
+   booktitle = {OOPSLA},
+   year = {2002},
+   pages = {292--310},
+} 
+
+@inproceedings{Cameron07,
+   author = {Cameron, N. R. and Drossopoulou, S. and Noble, J. and Smith, M. J.},
+   title = {Multiple ownership},
+   booktitle = {OOPSLA},
+   year = {2007},
+   pages = {441--460},
+} 
+
+@inproceedings{Lu06,
+   author = {Lu, Y. and Potter, J.},
+   title = {Protecting representation with effect encapsulation},
+   booktitle = {Conference record of the 33rd ACM SIGPLAN-SIGACT symposium on Principles of programming languages},
+   year = {2006},
+   pages = {359--371},
+} 
+
+@inproceedings{Boyapati02,
+   author = {Boyapati, C. and Lee, R. and Rinard, M.},
+   title = {Ownership types for safe programming: preventing data races and deadlocks},
+   booktitle = {Proceedings of the 17th ACM SIGPLAN conference on Object-oriented programming, systems, languages, and applications},
+   year = {2002},
+   pages = {211--230},
+}
+
+@article{Abadi06,
+   author = {Abadi, M. and Flanagan, C. and Freund, S. N.},
+   title = {Types for safe locking: Static race detection for Java},
+   journal = {ACM Trans. Program. Lang. Syst.},
+   year = {2006},
+   pages = {207--255},
+} 
+
+@article{Jacobs08,
+   author = {Jacobs, B. and Piessens, F. and Smans, J. and Leino, K. Rustan M. and Schulte, W.},
+   title = {A programming model for concurrent object-oriented programs},
+   journal = {ACM Trans. Program. Lang. Syst.},
+   year = {2008},
+   pages = {1:1--1:48},
+} 
+
+@inproceedings{Reynolds02,
+   author = {Reynolds, John C.},
+   title = {Separation Logic: A Logic for Shared Mutable Data Structures},
+   booktitle = {Proceedings of the 17th Annual IEEE Symposium on Logic in Computer Science},
+   year = {2002},
+   pages = {55--74},
+} 
+
+@article{Rinard98,
+   author = {Rinard, M. C. and Lam, M. S.},
+   title = {The design, implementation, and evaluation of Jade},
+   journal = {ACM Trans. Program. Lang. Syst.},
+   year = {1998},
+} 
+
+@inproceedings{Hayman06,
+  author={Hayman, J. and Winskel, G.},
+  title={Independence and Concurrent Separation Logic},
+  booktitle={Logic in Computer Science, 2006 21st Annual IEEE Symposium on}, 
+  year={2006},
+  pages={147 -156},
+}
+
+@incollection{Brookes04,
+  author = {Brookes, S.},
+  title = {A Semantics for Concurrent Separation Logic},
+  booktitle = {CONCUR},
+  series = {Lecture Notes in Computer Science},
+  pages = {16-34},
+  year = {2004},
+}
+
+@incollection{Raza09,
+  author = {Raza, M. and Calcagno, C. and Gardner, P.},
+  title = {Automatic Parallelization with Separation Logic},
+  booktitle = {Programming Languages and Systems},
+  series = {Lecture Notes in Computer Science},
+  pages = {348-362},
+  year = {2009},
+}
+
+@inproceedings{Gotsman07,
+   author = {Gotsman, A. and Berdine, J. and Cook, B. and Sagiv, M.},
+   title = {Thread-Modular Shape Analysis},
+   booktitle = {PLDI},
+   year = {2007},
 } 
 
 @ARTICLE{Keeneland,
   author={Vetter, J.S. and Glassbrook, R. and Dongarra, J. and Schwan, K. and Loftis, B. and McNally, S. and Meredith, J. and Rogers, J. and Roth, P. and Spafford, K. and Yalamanchili, S.},
-  journal={Computing in Science Engineering}, title={Keeneland: Bringing Heterogeneous GPU Computing to the Computational Science Community},
+  journal={Computing in Science Engineering}, 
+  title={Keeneland: Bringing Heterogeneous GPU Computing to the Computational Science Community},
   year={2011},
-  volume={13},
-  number={5},
   pages={90 -95},
 }
 
@@ -151,13 +339,10 @@ year = {2004}
 
 @Article{Chamberlain:Chapel,
   author = 	 {B.L. Chamberlain and D. Callahan and H.P. Zima},
-  title = 	 "{Parallel Programmability and the Chapel Language}",
-  journal = 	 {Int'l Journal of High Performance Computing Applications},
+  title = 	 {Parallel Programmability and the Chapel Language},
+  journal = 	 {International Journal of High Performance Computing Applications},
   year = 	 {2007},
-  volume = 	 {21},
-  number = 	 {3},
   pages = 	 {291-312},
-  month = 	 {August}
 }
 
 @Article{CHAPEL11,

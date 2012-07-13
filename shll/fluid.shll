@@ -1,0 +1,104 @@
+
+type Cell = < int, /* position */
+            < int, /* hv */
+            < int, /* velocity */
+            < int, /* acceleration */
+              int /* density */ > > > >
+
+type cell_list<r,rm,rh,rv,rc> = < Cell@(rm,rh,rv,rc), cell_list<r,rm,rh,rv,rc>@r >
+
+/**
+ * rl - region with the list of cell poniters in it
+ * rm - region with most of the cells for this grid
+ * rh - region with horizontal ghost cells
+ * rv - region with vertical ghost cells
+ * rc - region with corner ghost cells
+ */
+task initialize_simulation[rl,rm,rh,rv,rc] ( ptr_list : cell_list<rl,rm,rh,rv,rc>@rl ),
+                                reads(rl), rdwrs(rm,rh,rv,rc) : bool = 
+    if isnull(ptr_list) then true else
+    let cell_node : cell_list<rl,rm,rh,rv,rc> = read(ptr_list) in
+    let cell : Cell = read(cell_node.1) in
+    let new_cell : Cell = < cell.1, < 0, < cell.2.2.1, < cell.2.2.2.1, cell.2.2.2.2 > > > > in
+    let junk : Cell@(rm,rh,rv,rc) = write(cell_node.1, new_cell) in
+        initialize_simulation[rl,rm,rh,rv,rc](cell_node.2)
+                                                
+task rebuild_reduce[rl,rm,rh,rv,rc] ( ptr_list : cell_list<rl,rm,rh,rv,rc>@rl ),
+                                reads(rl), rdwrs(rm,rh,rv,rc) : bool =
+    if isnull(ptr_list) then true else
+    let cell_node : cell_list<rl,rm,rh,rv,rc> = read(ptr_list) in
+    let cell : Cell = read(cell_node.1) in
+    let new_cell : Cell = < cell.1, < cell.2.2.1, < cell.2.2.1 + cell.2.2.2.1, < cell.2.2.2.1, cell.2.2.2.2 > > > > in
+    let junk : Cell@(rm,rh,rv,rc) = write(cell_node.1, new_cell) in
+        rebuild_reduce[rl,rm,rh,rv,rc](cell_node.2)
+
+task scatter_densities[rl,rm,rh,rv,rc] ( ptr_list : cell_list<rl,rm,rh,rv,rc>@rl ),
+                                reads(rl), rdwrs(rm,rh,rv,rc) : bool =
+    if isnull(ptr_list) then true else
+    let cell_node : cell_list<rl,rm,rh,rv,rc> = read(ptr_list) in
+    let cell : Cell = read(cell_node.1) in
+    let new_cell : Cell = < cell.1, < cell.2.1, < cell.2.2.1, < cell.2.2.2.1, cell.2.2.2.2 + cell.1 > > > > in
+    let junk : Cell@(rm,rh,rv,rc) = write(cell_node.1, new_cell) in
+        scatter_densities[rl,rm,rh,rv,rc](cell_node.2)
+
+task gather_forces_advance[rl,rm,rh,rv,rc] ( ptr_list : cell_list<rl,rm,rh,rv,rc>@rl ),
+                                reads(rl), rdwrs(rm,rh,rv,rc) : bool =
+    if isnull(ptr_list) then true else
+    let cell_node : cell_list<rl,rm,rh,rv,rc> = read(ptr_list) in
+    let cell : Cell = read(cell_node.1) in
+    let new_cell : Cell = < cell.1 + cell.2.2.1, < cell.2.1, < cell.2.2.1, < cell.2.2.2.1, cell.2.2.2.2> > > > in
+    let junk : Cell@(rm,rh,rv,rc) = write(cell_node.1, new_cell) in
+        gather_forces_advance[rl,rm,rh,rv,rc](cell_node.2)
+
+task allocate_cells[rl,rm,rh,rv,rc] ( dummy : int ),
+                    rdwrs(rl,rm,rh,rv,rc) : cell_list<rl,rm,rh,rv,rc>@rl =
+      /* Pretend that we allocate all the local cells and build the local list */
+      let ptr_list : cell_list<rl,rm,rh,rv,rc>@rl = new cell_list<rl,rm,rh,rv,rc>@rl in
+          ptr_list
+
+task build_ghost_cell_list[rl,rm,rh,rv,rc] ( dummy : int ),
+                      rdwrs(rl), reads(rm,rh,rv,rc) : cell_list<rl,rm,rh,rv,rc>@rl = 
+      /* Pretend that we build these lists */
+      let ptr_list : cell_list<rl,rm,rh,rv,rc>@rl = new cell_list<rl,rm,rh,rv,rc>@rl in
+          ptr_list
+
+task main_task[rtop] ( dummy : int ), rdwrs(rtop) : bool =
+    /* Create all the top level regions for each of the types */
+    partition rtop using newcolor rtop as rcells, rlists in
+    /* Create all of the cell regions */ 
+    partition rcells using newcolor rtop as rm0,rv0,rh0,rc0,rm1,rv1,rh1,rc1,rm2,rv2,rh2,rc2,rm3,rv3,rh3,rc3 in
+    /* Create all of the regions for the list of nodes */
+    partition rlists using newcolor rtop as r_local0,r_ghost0,r_local1,r_ghost1,r_local2,r_ghost2,r_local3,r_ghost3 in
+    /* Allocate all the cells and set up the region lists */
+    let local0 : cell_list<r_local0,rm0,rh0,rv0,rc0>@r_local0 = allocate_cells[r_local0,rm0,rh0,rv0,rc0](0) in
+    let local1 : cell_list<r_local1,rm1,rh1,rv1,rc1>@r_local1 = allocate_cells[r_local1,rm1,rh1,rv1,rc1](1) in
+    let local2 : cell_list<r_local2,rm2,rh2,rv2,rc2>@r_local2 = allocate_cells[r_local2,rm2,rh2,rv2,rc2](2) in
+    let local3 : cell_list<r_local3,rm3,rh3,rv3,rc3>@r_local3 = allocate_cells[r_local3,rm3,rh3,rv3,rc3](3) in
+    /* Now build the pointer lists for the ghost cell regions */
+    let ghost0 : cell_list<r_ghost0,rm0,rh2,rv1,rc3>@r_ghost0 = build_ghost_cell_list[r_ghost0,rm0,rh2,rv1,rc3](0) in
+    let ghost1 : cell_list<r_ghost1,rm1,rh3,rv0,rc2>@r_ghost1 = build_ghost_cell_list[r_ghost1,rm1,rh3,rv0,rc2](1) in
+    let ghost2 : cell_list<r_ghost2,rm2,rh0,rv3,rc1>@r_ghost2 = build_ghost_cell_list[r_ghost2,rm2,rh0,rv3,rc1](2) in
+    let ghost3 : cell_list<r_ghost3,rm3,rh1,rv2,rc0>@r_ghost3 = build_ghost_cell_list[r_ghost3,rm3,rh1,rv2,rc0](3) in
+    /* Now we can run the simulation (one time step only) */
+    /* init and rebuild */
+    let init0 : bool = initialize_simulation[r_local0,rm0,rh0,rv0,rc0](local0) in
+    let init1 : bool = initialize_simulation[r_local1,rm1,rh1,rv1,rc1](local1) in
+    let init2 : bool = initialize_simulation[r_local2,rm2,rh2,rv2,rc2](local2) in
+    let init3 : bool = initialize_simulation[r_local3,rm3,rh3,rv3,rc3](local3) in
+    /* rebuild reduce */
+    let reb0 : bool = rebuild_reduce[r_ghost0,rm0,rh2,rv1,rc3](ghost0) in
+    let reb1 : bool = rebuild_reduce[r_ghost1,rm1,rh3,rv0,rc2](ghost1) in
+    let reb2 : bool = rebuild_reduce[r_ghost2,rm2,rh0,rv3,rc1](ghost2) in
+    let reb3 : bool = rebuild_reduce[r_ghost3,rm3,rh1,rv2,rc0](ghost3) in
+    /* scatter densities */
+    let scat0 : bool = scatter_densities[r_local0,rm0,rh0,rv0,rc0](local0) in
+    let scat1 : bool = scatter_densities[r_local1,rm1,rh1,rv1,rc1](local1) in
+    let scat2 : bool = scatter_densities[r_local2,rm2,rh2,rv2,rc2](local2) in
+    let scat3 : bool = scatter_densities[r_local3,rm3,rh3,rv3,rc3](local3) in
+    /* gather forces and advance */ 
+    let adv0 : bool = gather_forces_advance[r_ghost0,rm0,rh2,rv1,rc3](ghost0) in
+    let adv1 : bool = gather_forces_advance[r_ghost1,rm1,rh3,rv0,rc2](ghost1) in
+    let adv2 : bool = gather_forces_advance[r_ghost2,rm2,rh0,rv3,rc1](ghost2) in
+    let adv3 : bool = gather_forces_advance[r_ghost3,rm3,rh1,rv2,rc0](ghost3) in
+        true
+
