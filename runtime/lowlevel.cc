@@ -3702,8 +3702,8 @@ namespace RegionRuntime {
 	      al.reacquire();
 
 	      log_task(LEVEL_INFO, "finished processor shutdown task: proc=%x", proc->me.id);
-	      proc->finished();
 	    }
+            proc->finished();
 	  }
 
 	  log_task(LEVEL_DEBUG, "worker thread terminating: proc=%x", proc->me.id);
