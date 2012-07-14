@@ -5744,7 +5744,6 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         current_taken = true;
 #endif
-        // We only need to compute the return size one time
         size_t buffer_size = 2*sizeof(Processor) + sizeof(size_t) + compute_task_size();
         for (typename std::vector<CT>::const_iterator it = chunks.begin();
               it != chunks.end(); it++)
@@ -10308,6 +10307,7 @@ namespace RegionRuntime {
       result += sizeof(size_t); // num valid instances
       result += sizeof(size_t); // num reduction instances
       result += (region_state.valid_instances.size() * (sizeof(InstanceID) + sizeof(bool)));
+      result += (region_state.reduction_instances.size() * (sizeof(InstanceID) + sizeof(bool)));
       result += sizeof(PartState);
       result += sizeof(DataState);
       result += sizeof(ReductionOpID);
@@ -11823,22 +11823,25 @@ namespace RegionRuntime {
         // First check to see if we're doing sanitizing or actual opening
         if (ren.sanitizing)
         {
-          // Create an instance info for each of the valid instances we can find 
-          std::set<Memory> locations;
-          get_physical_locations(ren.ctx_id,locations,true/*recurse*/,false/*reduction*/);
-#ifdef DEBUG_HIGH_LEVEL
-          //assert(!locations.empty());
-#endif
-          // For each location, make a physical instance here
-          for (std::set<Memory>::const_iterator it = locations.begin();
-                it != locations.end(); it++)
+          if (!IS_REDUCE(ren.usage))
           {
-            std::pair<InstanceInfo*,bool> result = find_physical_instance(ren.ctx_id,*it,true/*recurse*/,false/*reduction*/);
-            InstanceInfo *info = result.first;
-            if (info->handle != handle)
+            // Create an instance info for each of the valid instances we can find 
+            std::set<Memory> locations;
+            get_physical_locations(ren.ctx_id,locations,true/*recurse*/,false/*reduction*/);
+#ifdef DEBUG_HIGH_LEVEL
+            //assert(!locations.empty());
+#endif
+            // For each location, make a physical instance here
+            for (std::set<Memory>::const_iterator it = locations.begin();
+                  it != locations.end(); it++)
             {
-              InstanceInfo *new_info = ren.ctx->create_instance_info(handle,info);
-              update_valid_instances(ren.ctx_id, new_info, false/*write*/, true/*owned*/);
+              std::pair<InstanceInfo*,bool> result = find_physical_instance(ren.ctx_id,*it,true/*recurse*/,false/*reduction*/);
+              InstanceInfo *info = result.first;
+              if (info->handle != handle)
+              {
+                InstanceInfo *new_info = ren.ctx->create_instance_info(handle,info);
+                update_valid_instances(ren.ctx_id, new_info, false/*write*/, true/*owned*/);
+              }
             }
           }
           return precondition;
