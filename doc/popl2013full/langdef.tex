@@ -1085,10 +1085,51 @@ It follows immediately that $\valueconsist{v_1}{T_1}$ also holds.
 
 \item Case [E-Tuple2] is symmetric to case [E-Tuple1].
 
-\item[E-New]
-\item[E-Var]
-\item[E-IsNull-F]
-\item[E-IsNull-T]
+\item Case[E-New].
+By assumption, 
+$\opsenv{\text{new }T@r}{l}{[]}$ and 
+$\typeenv{\text{new }T@r}{T@r}$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+The hypothesis of the [E-New] rule is that $l \in M(r)$ and $H(l) = M \llbracket T \rrbracket$,
+which establishes $\valueconsist{l}{T}$.  
+The other two conclusions,
+$\traceconsist{[]}$ and 
+$\privconsist{[]}{\Phi}$, follow trivially.
+\item Case [E-Var].
+By assumption, 
+$\opsenv{id}{v}{[]}$ and 
+$\typeenv{id}{T}$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+The hypothesis of the [E-Var] rule is $L(id) = v$.
+From $\localconsist{L}{\Gamma}$ we have $\valueconsist{L(id)}{\Gamma(id)}$.
+The hypothesis of the [T-Var] rule is $\Gamma(id) = T$.
+Putting these three facts together we conclude $\valueconsist{v}{T}$.
+The other two conclusions,
+$\traceconsist{[]}$ and 
+$\privconsist{[]}{\Phi}$, follow trivially.
+
+\item Case [E-IsNull-F].
+By assumption, 
+$\opsenv{\text{isnull}(e)}{\textit{false}}{E}$ and 
+$\typeenv{\text{isnull}(e)}{bool}$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+From the form of [E-IsNull-F] we know that
+$\opsenv{e}{l}{E}$, and
+and from the form of the type rule [T-IsNull] we know
+$\typeenv{e}{T@(\oton{r})}$.
+Clearly $\valueconsist{\textit{false}}{bool}$, and
+$\traceconsist{E}$ and 
+      $\privconsist{E}{\Phi}$ follow by induction.
+
+\item Case [E-IsNull-T] is almost identical to case [E-IsNull-F], with $l$ replaced by \textit{null} and
+\textit{true} replaced by \textit{false}.
+
 \item[E-Let]
 \item[E-Add]
 \item[E-Compare]
