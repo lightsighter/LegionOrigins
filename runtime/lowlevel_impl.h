@@ -54,6 +54,38 @@ namespace RegionRuntime {
   namespace LowLevel {
     extern Logger::Category log_mutex;
 
+#ifdef EVENT_TRACING
+    // For event tracing
+    struct EventTraceItem {
+    public:
+      enum Action {
+        ACT_CREATE,
+        ACT_QUERY,
+        ACT_TRIGGER,
+        ACT_WAIT,
+      };
+    public:
+      unsigned time_units, event_id, event_gen, action;
+    };
+#endif
+
+#ifdef LOCK_TRACING
+    // For lock tracing
+    struct LockTraceItem {
+    public:
+      enum Action {
+        ACT_LOCAL_REQUEST, // request for a lock where the owner is local
+        ACT_REMOTE_REQUEST, // request for a lock where the owner is not local
+        ACT_FORWARD_REQUEST, // for forwarding of requests
+        ACT_LOCAL_GRANT, // local grant of the lock
+        ACT_REMOTE_GRANT, // remote grant of the lock (change owners)
+        ACT_REMOTE_RELEASE, // remote release of a shared lock
+      };
+    public:
+      unsigned time_units, lock_id, owner, action;
+    };
+#endif
+
     class AutoHSLLock {
     public:
       AutoHSLLock(gasnet_hsl_t &mutex) : mutexp(&mutex), held(true)

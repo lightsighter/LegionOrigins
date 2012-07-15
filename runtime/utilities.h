@@ -462,83 +462,63 @@ namespace RegionRuntime {
       }
     };
 
-    class EventTracer {
+    template<typename ITEM>
+    class Tracer {
     public:
-      enum Action { ACT_CREATE,
-		    ACT_QUERY,
-		    ACT_TRIGGER,
-		    ACT_WAIT,
-      };
-
-      struct EventTraceItem {
-	unsigned time_units, event_id, event_gen, action;
-      };
-
-      class EventTraceBlock {
+      class TraceBlock {
       public:
-	explicit EventTraceBlock(const EventTraceBlock &refblk)
+        explicit TraceBlock(const TraceBlock &refblk)
 	  : max_size(refblk.max_size), cur_size(0),
 	    time_mult(refblk.time_mult), next(0)
 	{
 	  PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
 	  start_time = Clock::rel_time();
-	  items = new EventTraceItem[max_size];
+	  items = new ITEM[max_size];
 	}
 
-	EventTraceBlock(size_t block_size, double exp_evtrate)
+	TraceBlock(size_t block_size, double exp_arrv_rate)
 	  : max_size(block_size), cur_size(0), next(0)
 	{
 	  PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));
 	  start_time = Clock::rel_time();
-	  items = new EventTraceItem[max_size];
+	  items = new ITEM[max_size];
 
 	  // set the time multiplier such that there'll likely be 2^31
 	  //  time units by the time we fill the block, i.e.:
-	  // (block_size / exp_evtrate) * mult = 2^31  -->
-	  // mult = 2^31 * exp_evtrate / block_size
-	  time_mult = 2147483648.0 * exp_evtrate / block_size;
+	  // (block_size / exp_arrv_rate) * mult = 2^31  -->
+	  // mult = 2^31 * exp_arrv_rate / block_size
+	  time_mult = 2147483648.0 * exp_arrv_rate / block_size;
 	}
-
-	pthread_mutex_t mutex;
+        pthread_mutex_t mutex;
 	size_t max_size, cur_size;
 	double start_time, time_mult;
-	EventTraceItem *items;
-	EventTraceBlock *next;
+	ITEM *items;
+	TraceBlock *next;
       };
 
-      static EventTraceBlock *first_block, *last_block;
-
-      static void init_trace(size_t block_size, double exp_evtrate)
+      static TraceBlock*& get_first_block(void)
       {
-	first_block = last_block = new EventTraceBlock(block_size, exp_evtrate);
+        static TraceBlock *first_block = NULL;
+        return first_block;
       }
 
-      static void dump_trace(const char *filename, bool append);
-#if 0
-      static void dump_trace(const char *filename, bool append)
+      static TraceBlock*& get_last_block(void)
       {
-	EventTraceBlock *block = first_block;
-	while(block) {
-	  for(size_t i = 0; (i < block->cur_size) && (i < block->max_size); i++) {
-	    double abs_time = block->start_time + (block->items[i].time_units /
-						   block->time_mult);
-	    printf("%p %6zd %21.9f %08x %5d %3d\n",
-		   block, i, abs_time,
-		   block->items[i].event_id,
-		   block->items[i].event_gen,
-		   block->items[i].action);
-	  }
-
-	  block = block->next;
-	}
+        static TraceBlock *last_block = NULL;
+        return last_block;
       }
-#endif
 
-      static inline void trace_event(unsigned id, unsigned gen, Action action)
+      static void init_trace(size_t block_size, double exp_arrv_rate)
       {
-#ifdef EVENT_TRACING
-	EventTraceBlock *block = last_block;
-	if(!block) return; // no block at all means we're not tracing
+        get_first_block() = get_last_block() = new TraceBlock(block_size, exp_arrv_rate);
+        assert(get_first_block() != NULL);
+        assert(get_last_block() != NULL);
+      }
+
+      static inline ITEM& trace_item(void)
+      {
+        TraceBlock *block = get_last_block();
+        assert(block != NULL);
 
 	// loop until we can manage to reserve a real entry
 	size_t my_index;
@@ -564,7 +544,7 @@ namespace RegionRuntime {
 
 	  // the next pointer is still null, and we hold the lock, so we
 	  //  do the allocation of the next block
-	  EventTraceBlock *newblock = new EventTraceBlock(*block);
+	  TraceBlock *newblock = new TraceBlock(*block);
 	  
 	  // nobody else knows about the block, so we can have index 0
 	  my_index = 0;
@@ -572,7 +552,7 @@ namespace RegionRuntime {
 
 	  // now update the "last_block" static value (while we still hold
 	  //  the previous block's lock)
-	  last_block = newblock;
+	  get_last_block() = newblock;
 	  block->next = newblock;
 	  pthread_mutex_unlock(&(block->mutex));
 	  
@@ -588,17 +568,21 @@ namespace RegionRuntime {
 	assert(time_units < 4294967296.0);
 
 	block->items[my_index].time_units = (unsigned)time_units;
-	block->items[my_index].event_id = id;
-	block->items[my_index].event_gen = gen;
-	block->items[my_index].action = action;
-#endif
+        return block->items[my_index];
       }
+
+      // Implementation specific to low level runtime because of synchronization
+      static void dump_trace(const char *filename, bool append);
     };
-  };
+
+    // Example Item types in lowlevel_impl.h 
+
+  }; // RegionRuntime::LowLevel namespace
 
   // typedef so we can use detailed timers anywhere in the runtime
   typedef LowLevel::DetailedTimer DetailedTimer;
-};
+
+}; // RegionRuntime namespace
 
 #undef PTHREAD_SAFE_CALL
 
