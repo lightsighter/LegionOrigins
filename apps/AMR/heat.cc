@@ -37,7 +37,7 @@ enum {
 
 void parse_input_args(char **argv, int argc, int &num_levels, int &default_num_cells,
                       std::vector<int> &num_cells, int &default_divisions,
-                      std::vector<int> &divisions, int &steps, int random_seed);
+                      std::vector<int> &divisions, int &steps, int &random_seed, int &sync);
 
 void initialize_simulation(std::vector<Level> &levels,
                            std::vector<int> &num_cells,
@@ -66,13 +66,14 @@ void region_main(const void *args, size_t arglen,
   divisions[2] = 2;
   int steps = 20;
   int random_seed = 12345;
+  int sync = 0;
   {
     InputArgs *inputs = (InputArgs*) args;
     char **argv = inputs->argv;
     int argc = inputs->argc;
 
     parse_input_args(argv, argc, num_levels, default_num_cells, num_cells, 
-                     default_divisions, divisions, steps, random_seed);
+                     default_divisions, divisions, steps, random_seed, sync);
 
     assert(int(num_cells.size()) == num_levels);
 
@@ -124,10 +125,34 @@ void region_main(const void *args, size_t arglen,
     // All these are independent so it doesn't matter which order we do them in
     // No need to interp the boundary cells on the first loop
     // This will allow our mapper to get the right choice of mappings
+    if ((s > 0) && sync)
+    {
+      for (int i = 1; i < num_levels-1; i++)
+      {
+        std::vector<Future> futures;
+        for (unsigned j = 0; j < levels[i].interp_boundary_regions.size(); j++)
+        {
+          Future f = runtime->execute_task(ctx, INTERP_BOUNDARY_NOP, levels[i].interp_boundary_regions[j], global_args[i],0/*mapper id*/
+#ifndef SHARED_LOWLEVEL
+                                                                                                  ,levels[i].interp_tags[j]/*tag*/
+#endif
+              );
+          futures.push_back(f);
+        }
+        for (int j = 0; j < futures.size(); j++)
+        {
+          if (sync == 1)
+            futures[j].get_void_result();
+          else
+            futures[j].release();
+        }
+      }
+    }
     if (s > 0)
     {
       for (int i = 1; i < num_levels-1; i++)
       {
+        std::vector<Future> futures;
         for (unsigned j = 0; j < levels[i].interp_boundary_regions.size(); j++)
         {
           Future f = runtime->execute_task(ctx, INTERP_BOUNDARY, levels[i].interp_boundary_regions[j], global_args[i],0/*mapper id*/
@@ -135,8 +160,28 @@ void region_main(const void *args, size_t arglen,
                                                                                                   ,levels[i].interp_tags[j]/*tag*/
 #endif
               );
-          f.release();
+          futures.push_back(f);
         }
+        for (int j = 0; j < futures.size(); j++)
+        {
+          if (sync == 1)
+            futures[j].get_void_result();
+          else
+            futures[j].release();
+        }
+      }
+    }
+
+    if (sync)
+    {
+      for (int i = (num_levels-1); i >= 0; i--)  
+      {
+        FutureMap map = runtime->execute_index_space(ctx, CALC_FLUXES_NOP, levels[i].index_space,
+                      levels[i].calc_fluxes_regions, global_args[i], local_args, false/*must*/);  
+        if (sync == 1)
+          map.wait_all_results();
+        else
+          map.release();
       }
     }
 
@@ -149,9 +194,24 @@ void region_main(const void *args, size_t arglen,
                       levels[i].calc_fluxes_regions, global_args[i], local_args, false/*must*/); 
       // If this is the first loop we need to wait for these things to happen in order
       // so that the mapper gets everything right
-      map.release();
+      if (sync == 1)
+        map.wait_all_results();
+      else
+        map.release();
     }
 
+    if (sync)
+    {
+      for (int i = (num_levels-1); i >= 0; i--)
+      {
+        FutureMap map = runtime->execute_index_space(ctx, ADVANCE_NOP, levels[i].index_space,
+                      levels[i].adv_time_step_regions, global_args[i], local_args, false/*must*/);
+        if (sync == 1)
+          map.wait_all_results();
+        else
+          map.release();
+      }
+    }
     // Advance the time step at each level
     for (int i = (num_levels-1); i >= 0; i--)
     {
@@ -164,10 +224,37 @@ void region_main(const void *args, size_t arglen,
       }
       else
       {
-        map.release();
+        if (sync == 1)
+          map.wait_all_results();
+        else
+          map.release();
       }
     }
 
+    if (sync)
+    {
+      for (int i = (num_levels-1); i > 0; i--)
+      {
+        std::vector<Future> futures;
+        for (unsigned j = 0; j < levels[i].restrict_coarse_regions.size(); j++)
+        {
+          Future f = runtime->execute_task(ctx, RESTRICT, levels[i].restrict_coarse_regions[j], levels[i].restrict_args[j], 
+                                                                                              0/*mapper id*/
+#ifndef SHARED_LOWLEVEL
+                                                                                              ,levels[i].restrict_tags[j]/*tag*/
+#endif
+            );
+          futures.push_back(f);
+        }
+        for (int j = 0; j < futures.size(); j++)
+        {
+          if (sync == 1)
+            futures[j].get_void_result();
+          else
+            futures[j].release();
+        }
+      }
+    }
     // Restrict the results for coarser regions from finer regions
     // Have to do this bottom up to catch dependences
     for (int i = (num_levels-1); i > 0; i--)
@@ -186,7 +273,10 @@ void region_main(const void *args, size_t arglen,
         }
         else
         {
-          f.release();
+          if (sync == 1)
+            f.get_void_result();
+          else
+            f.release();
         }
       }
     }
@@ -1040,6 +1130,24 @@ void initialization_task(   const void *global_args, size_t global_arglen,
   log_heat(LEVEL_DEBUG,"Initialization task for point %d",point[0]);
 }
 
+template<AccessorType AT>
+void dummy_single_task(const void *args, size_t arglen, 
+                       std::vector<PhysicalRegion<AT> > &regions, 
+                       Context ctx, HighLevelRuntime *runtime)
+{
+
+}
+
+template<AccessorType AT>
+void dummy_index_task(const void * global_args, size_t global_arglen,
+                      const void * local_args, size_t local_arglen,
+                      const IndexPoint &point,
+                      std::vector<PhysicalRegion<AT> > &regions,
+                      Context ctx, HighLevelRuntime *runtime)
+{
+
+}
+
 void registration_func(Machine *machine, HighLevelRuntime *runtime, Processor local);
 
 int main(int argc, char **argv)
@@ -1081,6 +1189,14 @@ int main(int argc, char **argv)
   HighLevelRuntime::register_single_task<
         restrict_coarse_cells_task<SIMULATION_DIM,COARSENING> >(RESTRICT, Processor::LOC_PROC, "restrict");
 #endif
+  HighLevelRuntime::register_single_task<
+        dummy_single_task<AccessorGeneric> >(INTERP_BOUNDARY_NOP,Processor::LOC_PROC, "interp_boundary_nop");
+  HighLevelRuntime::register_index_task<
+        dummy_index_task<AccessorGeneric> >(CALC_FLUXES_NOP, Processor::LOC_PROC, "calc_fluxes_nop");
+  HighLevelRuntime::register_index_task<
+        dummy_index_task<AccessorGeneric> >(ADVANCE_NOP, Processor::LOC_PROC, "advance_nop");
+  HighLevelRuntime::register_single_task<
+        dummy_single_task<AccessorGeneric> >(RESTRICT_NOP, Processor::LOC_PROC, "restrict_nop");
 
   // Register the reduction op
   //HighLevelRuntime::register_reduction_op<FluxReducer>(REDUCE_ID);
@@ -1180,7 +1296,9 @@ public:
   virtual bool map_task_locally(const Task *task)
   {
     if ((task->task_id == INTERP_BOUNDARY) ||
-        (task->task_id == RESTRICT))
+        (task->task_id == RESTRICT) ||
+        (task->task_id == INTERP_BOUNDARY_NOP) ||
+        (task->task_id == RESTRICT_NOP))
     {
       return true;
     }
@@ -1196,6 +1314,7 @@ public:
           return local_proc;
         }
       case INTERP_BOUNDARY:
+      case INTERP_BOUNDARY_NOP:
         {
           int level = *((int*)(((char*)task->args)+sizeof(Context)+3*sizeof(float)));
           int idx = task->tag;
@@ -1206,11 +1325,14 @@ public:
       case INIT_TASK:
       case CALC_FLUXES:
       case ADVANCE:
+      case CALC_FLUXES_NOP:
+      case ADVANCE_NOP:
         {
           // index space
           assert(false);
         }
       case RESTRICT:
+      case RESTRICT_NOP:
         {
           int level = *((int*)(((char*)task->args)+sizeof(Context)+3*sizeof(float)));
           int idx = task->tag;
@@ -1255,6 +1377,7 @@ public:
           break;
         }
       case INTERP_BOUNDARY:
+      case INTERP_BOUNDARY_NOP:
         {
           // Figure out which processor this is going to
           int level = *((int*)(((char*)task->args)+sizeof(Context)+3*sizeof(float)));
@@ -1266,18 +1389,21 @@ public:
         }
       case INIT_TASK:
       case CALC_FLUXES:
+      case CALC_FLUXES_NOP:
         {
           // Put everything in system memory
           target_ranking.push_back(system_mem);
           break;
         }
       case ADVANCE:
+      case ADVANCE_NOP:
         {
           // Everything better have been mapped previously by here
           target_ranking.push_back(system_mem);
           break;
         }
       case RESTRICT:
+      case RESTRICT_NOP:
         {
           int level = *((int*)(((char*)task->args)+sizeof(Context)+3*sizeof(float)));
           int idx = task->tag;
@@ -2864,7 +2990,7 @@ void set_region_requirements(std::vector<Level> &levels)
 
 void parse_input_args(char **argv, int argc, int &num_levels, int &default_num_cells,
                       std::vector<int> &num_cells, int &default_divisions,
-                      std::vector<int> &divisions, int &steps, int random_seed)
+                      std::vector<int> &divisions, int &steps, int &random_seed, int &sync)
 {
   for (int i = 1; i < argc; i++)
   {
@@ -2946,6 +3072,11 @@ void parse_input_args(char **argv, int argc, int &num_levels, int &default_num_c
     if (!strcmp(argv[i], "-r"))
     {
       random_seed = atoi(argv[++i]);
+      continue;
+    }
+    if (!strcmp(argv[i], "-sync"))
+    {
+      sync = atoi(argv[++i]);
       continue;
     }
   }
