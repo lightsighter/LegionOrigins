@@ -949,60 +949,169 @@ then
 $\valueconsist{v}{T}$, $\traceconsist{E}$ and $\privconsist{E}{\Phi}$.
 \end{thm}
 
-We spare the reader the lengthy proof, which can be found in
-\cite{LegionTypes12}, and merely outline the general strategy.  The
-proof is a standard induction on the structure of the derivation in
-the operational semantics.  The proof is organized into six pieces,
+The proof is a standard induction on the structure of the derivation
+For each of 
+the Core Legion expressions there are six separate parts to the proof,
 one for each of the three consistency properties that must be shown
 for the execution environment of subexpressions and one for each of
-the three properties of the execution's results we wish to show:
-
-\texcomment{
-For each of 
-the 23 different forms a Legion expression can have, we assume the soundness of the subexpressions'
-evaluations (provided we can show the consistency of the mappings and store used by that
-subexpression) and prove that the result of the expression's evaluation is sound.  Although there
-are a multitude of cases to be proven, many of them are similar, and benefit from
-the use of the following lemmas:
+the three properties of the execution's results.
+Many of the cases are similar, and benefit from
+the use of the following straighforward lemmas:
 
 \begin{lem}
 \label{lemma:heapconst:apply}
+\rm
 If $\storeconsist{S}{H}$ and $\traceconsist{E}$, then $\storeconsist{\text{apply}(S, E)}{H}$.
 \end{lem}
 
 \begin{lem}
 \label{lemma:heapconst:effects1}
+\rm
 If $\traceconsist{E_1}$ and $\traceconsist{E_2}$, then $\traceconsist{E_1 \dplus E_2}$.
 \end{lem}
 
 \begin{lem}
 \label{lemma:heapconst:effects2}
-If $\traceconsist{E_1}$ and $\traceconsist{E_2}$ and $valid\_interleave(S, C, E', E_1, E_2)$, then $\traceconsist{E'}$.
+\rm
+If $\traceconsist{E_1}$ and $\traceconsist{E_2}$ and \\
+$valid\_interleave(S, C, E', E_1, E_2)$, then $\traceconsist{E'}$.
 \end{lem}
 
 \begin{lem}
 \label{lemma:effsound:effects1}
+\rm
 If $\privconsist{E_1}{\Phi}$ and $\privconsist{E_2}{\Phi}$, then $\privconsist{E_1 \dplus E_2}{\Phi}$.
 \end{lem}
 
 \begin{lem}
 \label{lemma:effsound:effects2}
-If $\privconsist{E_1}{\Phi}$ and $\privconsist{E_2}{\Phi}$ and $valid\_interleave(S, C, E', E_1, E_2)$, then $\privconsist{E'}{\Phi}$.
+\rm
+If $\privconsist{E_1}{\Phi}$ and $\privconsist{E_2}{\Phi}$ and \\ 
+$valid\_interleave(S, C, E', E_1, E_2)$, then $\privconsist{E'}{\Phi}$.
 \end{lem}
 
 \begin{lem}
 \label{lemma:omegaclosure}
+\rm
 $\mapconsist{\Omega^*}$ if and only if $\mapconsist{\Omega}$.
 \end{lem}
 
 \begin{lem}
 \label{lemma:phiclosure}
+\rm
 $\privconsist{E}{\Phi^*}$ if and only if $\privconsist{E}{\Phi}$.
 \end{lem}
 
-The proofs of these lemmas can also be found here\cite{LegionTypes12}.  
-}
 
+\begin{proof}
+The proof is by cases on the structure of the derivation of $e$.
+\begin{itemize}
+
+\item
+Case [E-Bool]. By assumption, 
+$\opsenv{bv}{bv}{[]}$ and
+$\typeenv{bv}{T}$ and
+$\mapconsist{\Omega}$ and
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+The only type rule that can apply is [T-Bool], so $T = bool$.
+Therefore $\valueconsist{bv}{bool}$ and 
+$\traceconsist{[]}$ and 
+$\privconsist{[]}{\Phi}$ all follow trivially.
+
+\item Case [E-Int].  
+By assumption, 
+$\opsenv{iv}{iv}{[]}$ and 
+$\typeenv{iv}{T}$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
+The only type rule that can apply is [T-Int], so $T = int$.
+Therefore $\valueconsist{iv}{int}$ and 
+$\traceconsist{[]}$ and 
+$\privconsist{[]}{\Phi}$ all follow trivially.
+
+\item Case [E-Null].
+By assumption, 
+$\opsenv{\text{null\ }T@r}{null}{[]}$ and 
+$\typeenv{\text{null}}{T'}$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
+The only type rule that can apply is [T-Null], so $T' = T@r$.
+Therefore $\valueconsist{null}{T@r}$, $\traceconsist{[]}$ and $\privconsist{[]}{\Phi}$ all follow trivially.
+
+\item
+Case [E-MakeTuple].
+By assumption, 
+$\opsenv{\langle e_1, e_2 \rangle}{\langle v_1,v_2 \rangle}{E'}$ and 
+$\typeenv{\langle e_1, e_2 \rangle}{T}$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
+The only type rule that can apply is [T-MakeType], so $T = \langle T_1, T_2 \rangle$.
+
+For the subexpression $e_1$, 
+from the form of rule [E-MakeTuple], we know that $\opsenv{e_1}{v_1}{E_1}$.
+From the form of rule [T-MakeTuple], we know that $\typeenv{e_1}{T_1}$.
+Then, by induction, we have $\valueconsist{v_1}{T_1}$, $\traceconsist{E_1}$ and 
+      $\privconsist{E_1}{\Phi}$.
+
+
+For the subexpression $e_2$, 
+from the form of rule [E-MakeTuple], we know that $\opsenv[S=S']{e_2}{v_2}{E_2}$
+where $S' = apply(S,E_1)$.  By Lemma~\ref{lemma:heapconst:apply}, $\storeconsist{S' = \text{apply}(S,E)}{H}$.
+From the form of rule [T-MakeTuple], we know that $\typeenv{e_2}{T_2}$.
+Then, by induction, we have $\valueconsist{v_2}{T_2}$, $\traceconsist{E_2}$ and 
+      $\privconsist{E_2}{\Phi}$.
+
+Finally, from the precedinig steps we can conclude that $\valueconsist{\langle v_1, v_2\rangle}{\langle T_1, T_2 \rangle}$.
+By Lemma~\ref{lemma:heapconst:effects1}, $\traceconsist{E_1 \dplus E_2}$, and by Lemma~\ref{lemma:effsound:effects1}
+$\privconsist{E_1 \dplus E_2}{\Phi}$.
+
+
+
+\item Case [E-Tuple1].
+By assumption, 
+$\opsenv{e\text{.1}}{v_1}{E}$ and 
+$\typeenv{e\text{.1}}{T_1}$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
+From the form of [E-Tuple1] we know that
+$\opsenv{e}{\langle v_1, v_2 \rangle}{E}$.
+The only type rule that can apply is [T-Tuple1], and from the form of the rule we know
+$\typeenv{e}{\langle T_1, T_2 \rangle}$.
+By induction, we have $\valueconsist{\langle v_1, v_2 \rangle}{\langle T_1, T_2 \rangle}$, $\traceconsist{E}$ and 
+      $\privconsist{E}{\Phi}$.
+It follows immediately that $\valueconsist{v_1}{T_1}$ also holds.
+
+
+\item Case [E-Tuple2] is symmetric to case [E-Tuple1].
+
+\item[E-New]
+\item[E-Var]
+\item[E-IsNull-F]
+\item[E-IsNull-T]
+\item[E-Let]
+\item[E-Add]
+\item[E-Compare]
+\item[E-IfElse-T]
+\item[E-IfElse-F]
+\item[E-Newcolor]
+\item[E-Color]
+\item[E-UpRgn]
+\item[E-DownRgn]
+\item[E-Read]
+\item[E-Write]
+\item[E-Reduce]
+\item[E-Pack]
+\item[E-Unpack]
+\item[E-Call]
+\item[E-Program]
+
+
+
+
+\end{itemize}
+
+\end{proof}
 \vspace{4pt}
 \hangindent=2\parindent \hangafter=1 \noindent %
 $\mapconsist{\Omega}$ - Three expressions have subexpressions that modify $M$ or $\Omega$ and therefore do not
@@ -1033,6 +1142,7 @@ lemma: If $\storeconsist{S}{H}$ and $\traceconsist{E}$, then $\storeconsist{\tex
 With the necessary consistency conditions proven for a subexpression, the conclusion of the theorem follows for
 the subexpression by the inductive hypothesis.  The remaining obligation is to prove the the three parts of the
 conclusion for an entire expression:
+
 
 \vspace{4pt}
 \hangindent=2\parindent \hangafter=1 \noindent %
@@ -1073,41 +1183,41 @@ is similar in outline to the previous step.  The easy cases are covered by a lem
 for subexpressions: if $\privconsist{E_1}{\Phi}$ and $\privconsist{E_2}{\Phi}$ and $any\_interleave(E', E_1, E_2)$, then $\privconsist{E'}{\Phi}$.
 Straightforward proofs cover {\tt read}, {\tt write}, {\tt reduce}, and one final special case for function calls. 
 
-%% \begin{table*}
-%% \centering
-%% {\small
-%% \begin{tabular}{l|p{5cm}|p{5cm}|p{5cm}}
-%% {\bf Rule} & 
-%% \multicolumn{1}{|c|}{$\mathbf{v \sim_H M \llbracket T \rrbracket}$} &
-%% \multicolumn{1}{|c|}{$\mathbf{E \sim H}$} &
-%% \multicolumn{1}{|c|}{$\mathbf{E : \Phi}$} \\
-%% \hline
-%% BoolConst & & & \\
-%% IntConst & & & \\
-%% TupleBuild & & & \\
-%% TupleField & & & \\
-%% LocalVar & & & \\
-%% NullPtr & & & \\
-%% NewPtr & & & \\
-%% IsNull & & & \\
-%% UpRegion & & & \\
-%% DownRegion & & & \\
-%% Read & & & \\
-%% Write & & & \\
-%% Reduce & & & \\
-%% Newcolor & & & \\
-%% Color & & & \\
-%% IntMath & & & \\
-%% IntCmp & & & \\
-%% Let & & & \\
-%% IfElse & & & \\
-%% TaskCall & & & \\
-%% Partition & & & \\
-%% Pack & & & \\
-%% Unpack & & &
-%% \end{tabular}}
-%% \caption{Proof pieces}
-%% \end{table*}
+ \begin{table*}
+ \centering
+ {\small
+ \begin{tabular}{l|p{5cm}|p{5cm}|p{5cm}}
+ {\bf Rule} & 
+ \multicolumn{1}{|c|}{$\mathbf{v \sim_H M \llbracket T \rrbracket}$} &
+ \multicolumn{1}{|c|}{$\mathbf{E \sim H}$} &
+ \multicolumn{1}{|c|}{$\mathbf{E : \Phi}$} \\
+ \hline
+ BoolConst & & & \\
+ IntConst & & & \\
+ TupleBuild & & & \\
+ TupleField & & & \\
+ LocalVar & & & \\
+ NullPtr & & & \\
+ NewPtr & & & \\
+ IsNull & & & \\
+ UpRegion & & & \\
+ DownRegion & & & \\
+ Read & & & \\
+ Write & & & \\
+ Reduce & & & \\
+ Newcolor & & & \\
+ Color & & & \\
+ IntMath & & & \\
+ IntCmp & & & \\
+ Let & & & \\
+ IfElse & & & \\
+ TaskCall & & & \\
+ Partition & & & \\
+ Pack & & & \\
+ Unpack & & &
+ \end{tabular}}
+ \caption{Proof pieces}
+ \end{table*}
 
 
 \section{Coherence}
@@ -1278,7 +1388,6 @@ $$valid\_interleave(S, C, E'_a \dplus [ \epsilon_1, \epsilon_2 ] \dplus E'_b, \o
 if and only if
 $$valid\_interleave(S, C, E'_a \dplus [ \epsilon_2, \epsilon_1 ] \dplus E'_b, \oton{E}).$$
 \end{lem}
-\texcomment{
 \begin{proof}
 As before, we consider the three conditions needed to be a valid interleaving.  We describe the
 implication in the ``forward'' direction, but the arguments are all symmetric.
@@ -1310,7 +1419,7 @@ is identical after the swap of the two operations, and this is merely a special 
 piece of the coherence proof.
 \end{enumerate}
 \end{proof}
-}
+
 We now extend the non-interference operator to entire memory traces, providing a way to say that
 no operation in a trace interferes with any operation in another:
 $$E_1 \nonint E_2 \Leftrightarrow \displaystyle\bigwedge_{\epsilon_1 \text{ in } E_1, \epsilon_2 \text{ in } E_2} \epsilon_1 \nonint \epsilon_2$$
@@ -1324,7 +1433,6 @@ Let $S$ be an initial store, $C$ be a clobber set, $\oton{E}$ be memory traces s
 for every $1 \leq i < j \leq n$.  Then any trace $E'$ satisfying $any\_interleave(E', \oton{E})$
 is a valid interleaving.
 \end{lem}
-\texcomment{
 \begin{proof}
 We will use Theorem~\ref{thm:sequential} and Lemma~\ref{lem:nonintswap} to make repeated swaps
 of adjacent operations to transform $E'$ into $E_1 \dplus \ldots \dplus E_n$.  The symmetry of
@@ -1339,7 +1447,7 @@ trace, their misordering would mean that $E'$ was not an interleaving of $\oton{
 traces is non-interfering, so $\epsilon_1 \nonint \epsilon_2$ and they can be swapped while preserving
 validity of the trace.  At most $n^2/2$ swaps are needed to eliminate all misordered pairs.
 \end{proof}
-}
+
 We next extend non-interference to privileges.  We 
 use the region mapping $M$ to translate the logical regions named in privileges into sets of
 locations (i.e. physical regions), and define non-interference between individual privileges and
@@ -1351,22 +1459,23 @@ priv_1(r_1) \nonint[M] priv_2(r_2) \Leftrightarrow (M(r_1) \cap M(r_2) = \emptys
 \hspace{0.35in} (priv_1 = reduces_{id_1} \wedge priv_2 = reduces_{id_2} \wedge id_1 = id_2)
 \end{array}
 $$
+%% 
 %% \begin{center}
-%% \begin{tabular}{llc}
-%% \multicolumn{1}{c}{$\phi_1$} & \multicolumn{1}{c}{$\phi_2$} & $\phi_1 \nonint[M] \phi_2$? \\
-%% \multirow{3}{*}{$reads(r_1)$} & $reads(r_2)$ & true \\
-%% & $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-%% & $reduces_{id_2}(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-%% \cline{1-1}
-%% \multirow{3}{*}{$writes(r_1)$} & $reads(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-%% & $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-%% & $reduces_{id_2}(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-%% \cline{1-1}
-%% \multirow{3}{*}{$reduces_{id_1}(r_1)$} & $reads(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-%% & $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-%% & $reduces_{id_2}(r_2)$ & $\begin{array}{c}id_1 = id_2 \vee \\ M(r_1) \cap M(r_2) = \emptyset\end{array}$ \\
-%% \end{tabular}
-%% \end{center}
+%%  \begin{tabular}{llc}
+%%  \multicolumn{1}{c}{$\phi_1$} & \multicolumn{1}{c}{$\phi_2$} & $\phi_1 \nonint[M] \phi_2$? \\
+%%  \multirow{3}{*}{$reads(r_1)$} & $reads(r_2)$ & true \\
+%%  & $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%%  & $reduces_{id_2}(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%%  \cline{1-1}
+%%  \multirow{3}{*}{$writes(r_1)$} & $reads(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%%  & $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%%  & $reduces_{id_2}(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%%  \cline{1-1}
+%%  \multirow{3}{*}{$reduces_{id_1}(r_1)$} & $reads(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%%  & $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%%  & $reduces_{id_2}(r_2)$ & $\begin{array}{c}id_1 = id_2 \vee \\ M(r_1) \cap M(r_2) = \emptyset\end{array}$ \\
+%%  \end{tabular}
+%%  \end{center}
 
 $$\Phi_1 \nonint[M] \Phi_2 \Leftrightarrow \displaystyle\bigwedge_{\phi_1 \in \Phi_1, \phi_2 \in \Phi_2} \phi_1 \nonint[M] \phi_2$$
 
@@ -1375,13 +1484,13 @@ $$\Phi_1 \nonint[M] \Phi_2 \Leftrightarrow \displaystyle\bigwedge_{\phi_1 \in \P
 \rm
 Let $M$ be a region mapping and $E_1$ and $E_2$ two memory traces such that $\privconsist{E_1}{\Phi_1}$ and $\privconsist{E_2}{\Phi_2}$.  If $\Phi_1$ and $\Phi_2$ are non-interfering under $M$, then $E_1$ and $E_2$ must be non-interfering.
 \end{lem}
-\texcomment{
+
 \begin{proof}
 The proof is by contradiction.  Assume $E_1 \cancel\nonint E_2$.  Then there must be some $\epsilon_1$ in $E_1$ and some $\epsilon_2$ in $E_2$ such that $\epsilon_1 \cancel\nonint \epsilon_2$.  This requires that
 $\epsilon_1$ and $\epsilon_2$ be operations to the same location $l$ and not both be reads or both
 reductions using the same function name.  Assume $\epsilon_1 = read(l, c_1, v_1)$ and $\epsilon_2 = write(l, c_2, v_2)$.  The definition of $\privconsist{E_1}{\Phi_1}$ tells us that there must be some $r_1$ satisfying $l \in M(r_1) \wedge reads(r_1) \in \Phi_1$.  Similarly, there must be some $r_2$ satisfying $l \in M(r_2) \wedge writes(r_2) \in \Phi_2$.  Letting $\phi_1 = reads(r_1)$ and $\phi_2 = writes(r_2)$, we have $M(r_1) \cap M(r_2) \not= \emptyset$ (it contains at least $l$), so $\phi_1 \cancel{\nonint[M]} \phi_2$ and $\Phi_1 \cancel{\nonint[M]} \Phi_2$.  There are seven other cases to consider (using $id_1 \not= id_2$ for the reduce-reduce case), but all yield the same result.
 \end{proof}
-}
+
 We can now state the key result that allows the Legion runtime to safely evaluate subexpressions as
 separate tasks in parallel.
 
@@ -1476,7 +1585,7 @@ information, and must respect all required scheduling dependencies while ideally
 few extra dependencies as possible.  The following theorem forms the basis of the 
 Legion scheduler.
 
-\texcomment{
+
 Let $e_1$ and $e_2$ be well-typed Legion expressions using privileges $\Phi_1$ and
 $\Phi_2$.  Now let $e_3$ be some subexpression of $e_1$ and $e_4$ be some 
 subexpression of $e_2$, with corresponding privileges $\Phi_3$ and $\Phi_4$.
@@ -1486,7 +1595,7 @@ $e_3$ and $e_4$ will therefore be allowed to run in parallel, and we must show t
 permissible.  We do so by proving that any memory traces that can result from the evaluation
 of the subexpression must be non-interfering (allowing parallel execution by
 Lemma~\ref{lem:noninteffects}).
-}
+
 \begin{thm}
 \label{thm:hiersched}
 \rm
@@ -1496,7 +1605,7 @@ subexpression of $e_2$.  Any memory traces $E_3$ of $e_3$ and $E_4$ of $e_4$ res
 $e_1$ and $e_2$ (with the usual consistent $M$, $L$, $H$, and $S$), must be
 non-interfering.
 \end{thm}
-\texcomment{
+
 \begin{proof}
 Let $E_1$ be the result of an evaluation of $e_1$, with $E_3$ being the memory trace from the
 evaluation of $e_3$ within the expression tree.  $E_1$ will be formed from a tree of valid
@@ -1507,7 +1616,8 @@ Similarly, any memory operation $\epsilon_4$ that is in $E_4$ must also be in $E
 $E_1 \nonint E_2$ from Lemma~\ref{lem:nonintpriv}, so and therefore $\epsilon_3 \nonint \epsilon_4$.  Since
 this holds for all $\epsilon_3$ in $E_3$ and all $\epsilon_4$ in $E_4$, we have $E_3 \nonint E_4$.
 \end{proof}
-} The Legion task scheduler uses Theorem~\ref{thm:hiersched} in the
+
+ The Legion task scheduler uses Theorem~\ref{thm:hiersched} in the
 following way.  Sibling function calls (those invoked within the same
 function body) are checked for non-interference of their (dynamic)
 privileges.  If they interfere they are serialized; otherwise they are
