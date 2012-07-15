@@ -1,0 +1,17 @@
+Starting main simulation loop
+ELAPSED TIME =  17.378 s
+GFLOPS = 434.456 GFLOPS
+DETAILED TIMING SUMMARY:
+      KERNEL - 187.451 s
+        COPY -   9.415 s
+  HIGH-LEVEL -   3.542 s
+   LOW-LEVEL -   0.610 s
+      MAPPER -   0.033 s
+      SYSTEM -   0.004 s
+   ACTV_MESG -   0.086 s
+          10 -   2.466 s
+          13 -   0.027 s
+          14 -   0.164 s
+          15 -   0.000 s
+          16 -   0.007 s
+END OF DETAILED TIMING SUMMARY
