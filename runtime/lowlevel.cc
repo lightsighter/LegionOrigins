@@ -1317,6 +1317,15 @@ namespace RegionRuntime {
 
       Event::Impl *impl = args.event.impl();
 
+#ifdef EVENT_TRACING
+      {
+        EventTraceItem &item = Tracer<EventTraceItem>::trace_item();
+        item.event_id = args.event.id; 
+        item.event_gen = args.event.gen;
+        item.action = EventTraceItem::ACT_WAIT;
+      }
+#endif
+
       // early-out case: if we can see the generation needed has already
       //  triggered, signal without taking the mutex
       unsigned stale_gen = impl->generation;
