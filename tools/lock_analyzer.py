@@ -64,17 +64,51 @@ class Lock(object):
     def get_remote_requests(self):
         result = 0
         for r in self.requests:
-            if r.owner <> r.location:
+            if r.action == 1:
+                assert r.owner <> r.location
+                result = result + 1
+        return result
+
+    def get_local_requests(self):
+        result = 0
+        for r in self.requests:
+            if r.action == 0:
+                assert r.owner == r.location
+                result = result + 1
+        return result
+
+    def get_local_grants(self):
+        result = 0
+        for r in self.requests:
+            if r.action == 3:
+                assert r.owner == r.location
+                result = result + 1
+        return result
+
+    def get_remote_grants(self):
+        result = 0
+        for r in self.requests:
+            if r.action == 4:
+                assert r.owner == r.location
                 result = result + 1
         return result
 
     def get_total_messages(self):
         result = self.get_remote_requests()
         result = result + len(self.forwards)
-        for g in self.grants:
-            if g.owner <> g.location:
-                result = result + 1
+        result = result + self.get_remote_grants()
+        result = result + len(self.releases)
         return result
+
+    def dump(self):
+        print "Lock "+str(self.idy)
+        print "\tLocal Requests: "+str(self.get_local_requests())
+        print "\tRemote Requests: "+str(self.get_remote_requests())
+        print "\tForwards: "+str(len(self.forwards))
+        print "\tLocal Grants: "+str(self.get_local_grants())
+        print "\tRemote Grants: "+str(self.get_remote_grants())
+        print "\tRemote Releases: "+str(len(self.releases))
+        print "\tTotal Messages: "+str(self.get_total_messages())
         
 
 def parse_log_file(file_name,items):
@@ -118,7 +152,7 @@ def plot_request_message_ratios(lock_table,outdir):
         if remote_requests > most_requests:
             most_requests = remote_requests
     fig = plt.figure(figsize=(10,7))
-    plt.plot([0,most_requests],[0,most_requests],'k-')
+    plt.plot([0,most_requests+1],[0,most_requests+1],'k-')
     plt.plot(remote_request_list,total_message_list,color='k',linestyle='None',marker='+',markersize=5)
     plt.xlabel('Number of Remote Lock Requests')
     plt.ylabel('Total Number of All Active Messages')

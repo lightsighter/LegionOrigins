@@ -147,15 +147,10 @@ class EventTable(object):
         self.finalized = True
                 
 
-
-def usage():
-    print "Usage: "+sys.argv[0]+" [-d (output directory)] [-s] log_file_name"
-    sys.exit(1)
-
 def parse_log_file(file_name,items):
     f = open(file_name, "rb")
 
-    # All sizes here correspond to the size of EvenTraceItem defined at the top of lowlevel_impl.h
+    # All sizes here correspond to the size of EventTraceItem defined at the top of lowlevel_impl.h
     # as well as the extra data packed in dump_trace in lowlevel.cc
     try:
         # double time, unsigned node, unsigned time_units, unsigned event_id, unsigned event_gen, unsigned action
@@ -256,7 +251,7 @@ def plot_event_lifetimes(dynamic_events,outdir):
         liveness_time.append(p[0])
         liveness_list.append(live_event_total)
     assert live_event_total == 0
-    plt.figure(figsize=(10,7))
+    fig = plt.figure(figsize=(10,7))
     plt.plot(dynamic_time,dynamic_event_list,'--',color=tableau12,linestyle='dashed',label='Dynamic Events',linewidth=2.0)
     plt.plot(dynamic_time,physical_event_list,'--',color=tableau9,linestyle='dashed',label='Physical Events',linewidth=2.0)
     plt.plot(liveness_time,liveness_list,'--',color=tableau13,linestyle='dashed',label='Live Events',linewidth=2.0)
@@ -264,6 +259,9 @@ def plot_event_lifetimes(dynamic_events,outdir):
     plt.xlabel('Time (seconds)')
     plt.ylabel('Count')
     plt.grid(True)
+
+    if outdir <> None:
+        fig.savefig(outdir+'/event_lifetimes.pdf',format='pdf',bbox_inches='tight')
 
 def plot_waiter_ratios(dynamic_events,outdir):
     smallest_ratio = 1.0
@@ -289,7 +287,7 @@ def plot_waiter_ratios(dynamic_events,outdir):
                 smallest_total = total_waiters
                 smallest_local = local_waiters
 
-    plt.figure(figsize=(10,7))
+    fig = plt.figure(figsize=(10,7))
     plt.plot([0,most_waiters],[0,most_waiters],'k-')
     plt.plot(total_waiters_list,local_waiters_list,color='k',linestyle='None',marker='+',markersize=5)
     plt.xlabel('Number of Total Waiters')
@@ -297,7 +295,14 @@ def plot_waiter_ratios(dynamic_events,outdir):
 
     print "The largest reduction in waiters was "+str(smallest_ratio)+" from "+str(smallest_total)+" total waiters to "+ \
             str(smallest_local)+" local waiters"
+
+    if outdir <> None:
+        fig.savefig(outdir+'/waiter_ratios.pdf',format='pdf',bbox_inches='tight')
     
+
+def usage():
+    print "Usage: "+sys.argv[0]+" [-d (output directory)] [-s] log_file_name"
+    sys.exit(1)
 
 def main():
     if len(sys.argv) < 2:
@@ -309,7 +314,7 @@ def main():
         usage()
 
     outdir = opts.get('-d',None)
-    show = opts.get('-s',True) 
+    show = (opts.get('-s',' ') == ' ')
     file_name = args[0]
     print "Analyzing event file "+str(file_name)+"..."
 
@@ -336,3 +341,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
