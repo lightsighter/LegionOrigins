@@ -269,7 +269,7 @@ corresponding {\em unpack} expression gives (new) names to those regions.  For s
 \finfrule{\begin{array}{l}\typeenvx e_1 : int \\ \typeenvx e_2 : int\end{array}}{\typeenvx e_1 < e_2 : bool}
 \finfrule{\begin{array}{l}
 \typeenvx e_1 : T_1 \\
-\typeenvx[G={\Gamma[id/T_1]}] e_2 : T_2
+\typeenvx[G={\Gamma[T_1/id]}] e_2 : T_2
 \end{array}}
 {\typeenvx : \text{let}\ id : T_1 \text{in}\ e_2 : T_2}
 \finfrule{\begin{array}{l}\typeenvx e_1 : bool \\ \typeenvx e_2 : T \\ \typeenvx e_3 : T\end{array}}{\typeenvx \text{if}\ e_1\ \text{then}\ e_2\ \text{else}\ e_3 : T}
@@ -363,7 +363,7 @@ T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
 \vspace{-0.7cm}
 %\centering
 \begin{tabular}{m{6cm}m{5cm}m{6cm}}
-\infrule[T-Let]{\typeenvx e_1 : T_1 \\ \typeenvx[G={\Gamma[id/T_1]}] e_2 : T_2}{\typeenvx : \text{let}\ id : T_1 \text{in}\ e_2 : T_2} &
+\infrule[T-Let]{\typeenvx e_1 : T_1 \\ \typeenvx[G={\Gamma[T_1/id]}] e_2 : T_2}{\typeenvx : \text{let}\ id : T_1 \text{in}\ e_2 : T_2} &
 \infrule[T-Add]{\typeenvx e_1 : int \\ \typeenvx e_2 : int}{\typeenvx e_1 + e_2 : int} &
 \infrule[T-Compare]{\typeenvx e_1 : int \\ \typeenvx e_2 : int}{\typeenvx e_1 < e_2 : bool}
 \end{tabular}
@@ -916,7 +916,7 @@ $
 \begin{array}{lll}
 \traceconsist{E} & \Leftrightarrow & (\forall l, c, v. write(l,c, v) \in E \Rightarrow \valueconsist[]{v}{H(l)})\ \wedge \\
 & & (\forall id, l, v. reduce_{id}(l, v) \in E \Rightarrow \\
-& & (M \llbracket \Gamma \rrbracket (id) = (\hat T_1, \hat T_2), \emptyset, \emptyset \Rightarrow \hat T_1) \wedge H(l) = \hat T_1 \wedge \valueconsist[]{v}{\hat T_2}) \\
+& & (M \llbracket \Gamma \rrbracket (id) = (\hat T_1, \hat T_2), \emptyset, \emptyset \rightarrow \hat T_1) \wedge H(l) = \hat T_1 \wedge \valueconsist[]{v}{\hat T_2}) \\
 \end{array}
 \end{array} \vspace{3mm} \\
 \begin{array}{l@{\hspace{1cm}}l}
@@ -957,7 +957,6 @@ for the execution environment of subexpressions and one for each of
 the three properties of the execution's results.
 Many of the cases are similar, and benefit from
 the use of the following straighforward lemmas:
-
 \begin{lem}
 \label{lemma:heapconst:apply}
 \rm
@@ -1002,157 +1001,9 @@ $\mapconsist{\Omega^*}$ if and only if $\mapconsist{\Omega}$.
 $\privconsist{E}{\Phi^*}$ if and only if $\privconsist{E}{\Phi}$.
 \end{lem}
 
+We first give an outline of the idea behindthe proof.  For each subexpression of a compound expression,
+there are three consistency properties we must prove to be able to apply induction: \\
 
-\begin{proof}
-The proof is by cases on the structure of the derivation of $e$.
-\begin{itemize}
-
-\item
-Case [E-Bool]. By assumption, 
-$\opsenv{bv}{bv}{[]}$ and
-$\typeenv{bv}{T}$ and
-$\mapconsist{\Omega}$ and
-$\localconsist{L}{\Gamma}$ and 
-$\storeconsist{S}{H}$.
-The only type rule that can apply is [T-Bool], so $T = bool$.
-Therefore $\valueconsist{bv}{bool}$ and 
-$\traceconsist{[]}$ and 
-$\privconsist{[]}{\Phi}$ all follow trivially.
-
-\item Case [E-Int].  
-By assumption, 
-$\opsenv{iv}{iv}{[]}$ and 
-$\typeenv{iv}{T}$ and 
-$\mapconsist{\Omega}$ and 
-$\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
-The only type rule that can apply is [T-Int], so $T = int$.
-Therefore $\valueconsist{iv}{int}$ and 
-$\traceconsist{[]}$ and 
-$\privconsist{[]}{\Phi}$ all follow trivially.
-
-\item Case [E-Null].
-By assumption, 
-$\opsenv{\text{null\ }T@r}{null}{[]}$ and 
-$\typeenv{\text{null}}{T'}$ and 
-$\mapconsist{\Omega}$ and 
-$\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
-The only type rule that can apply is [T-Null], so $T' = T@r$.
-Therefore $\valueconsist{null}{T@r}$, $\traceconsist{[]}$ and $\privconsist{[]}{\Phi}$ all follow trivially.
-
-\item
-Case [E-MakeTuple].
-By assumption, 
-$\opsenv{\langle e_1, e_2 \rangle}{\langle v_1,v_2 \rangle}{E'}$ and 
-$\typeenv{\langle e_1, e_2 \rangle}{T}$ and 
-$\mapconsist{\Omega}$ and 
-$\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
-The only type rule that can apply is [T-MakeType], so $T = \langle T_1, T_2 \rangle$.
-
-For the subexpression $e_1$, 
-from the form of rule [E-MakeTuple], we know that $\opsenv{e_1}{v_1}{E_1}$.
-From the form of rule [T-MakeTuple], we know that $\typeenv{e_1}{T_1}$.
-Then, by induction, we have $\valueconsist{v_1}{T_1}$, $\traceconsist{E_1}$ and 
-      $\privconsist{E_1}{\Phi}$.
-
-
-For the subexpression $e_2$, 
-from the form of rule [E-MakeTuple], we know that $\opsenv[S=S']{e_2}{v_2}{E_2}$
-where $S' = apply(S,E_1)$.  By Lemma~\ref{lemma:heapconst:apply}, $\storeconsist{S' = \text{apply}(S,E)}{H}$.
-From the form of rule [T-MakeTuple], we know that $\typeenv{e_2}{T_2}$.
-Then, by induction, we have $\valueconsist{v_2}{T_2}$, $\traceconsist{E_2}$ and 
-      $\privconsist{E_2}{\Phi}$.
-
-Finally, from the precedinig steps we can conclude that $\valueconsist{\langle v_1, v_2\rangle}{\langle T_1, T_2 \rangle}$.
-By Lemma~\ref{lemma:heapconst:effects1}, $\traceconsist{E_1 \dplus E_2}$, and by Lemma~\ref{lemma:effsound:effects1}
-$\privconsist{E_1 \dplus E_2}{\Phi}$.
-
-
-
-\item Case [E-Tuple1].
-By assumption, 
-$\opsenv{e\text{.1}}{v_1}{E}$ and 
-$\typeenv{e\text{.1}}{T_1}$ and 
-$\mapconsist{\Omega}$ and 
-$\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
-From the form of [E-Tuple1] we know that
-$\opsenv{e}{\langle v_1, v_2 \rangle}{E}$.
-The only type rule that can apply is [T-Tuple1], and from the form of the rule we know
-$\typeenv{e}{\langle T_1, T_2 \rangle}$.
-By induction, we have $\valueconsist{\langle v_1, v_2 \rangle}{\langle T_1, T_2 \rangle}$, $\traceconsist{E}$ and 
-      $\privconsist{E}{\Phi}$.
-It follows immediately that $\valueconsist{v_1}{T_1}$ also holds.
-
-
-\item Case [E-Tuple2] is symmetric to case [E-Tuple1].
-
-\item Case[E-New].
-By assumption, 
-$\opsenv{\text{new }T@r}{l}{[]}$ and 
-$\typeenv{\text{new }T@r}{T@r}$ and 
-$\mapconsist{\Omega}$ and 
-$\localconsist{L}{\Gamma}$ and 
-$\storeconsist{S}{H}$.
-The hypothesis of the [E-New] rule is that $l \in M(r)$ and $H(l) = M \llbracket T \rrbracket$,
-which establishes $\valueconsist{l}{T}$.  
-The other two conclusions,
-$\traceconsist{[]}$ and 
-$\privconsist{[]}{\Phi}$, follow trivially.
-\item Case [E-Var].
-By assumption, 
-$\opsenv{id}{v}{[]}$ and 
-$\typeenv{id}{T}$ and 
-$\mapconsist{\Omega}$ and 
-$\localconsist{L}{\Gamma}$ and 
-$\storeconsist{S}{H}$.
-The hypothesis of the [E-Var] rule is $L(id) = v$.
-From $\localconsist{L}{\Gamma}$ we have $\valueconsist{L(id)}{\Gamma(id)}$.
-The hypothesis of the [T-Var] rule is $\Gamma(id) = T$.
-Putting these three facts together we conclude $\valueconsist{v}{T}$.
-The other two conclusions,
-$\traceconsist{[]}$ and 
-$\privconsist{[]}{\Phi}$, follow trivially.
-
-\item Case [E-IsNull-F].
-By assumption, 
-$\opsenv{\text{isnull}(e)}{\textit{false}}{E}$ and 
-$\typeenv{\text{isnull}(e)}{bool}$ and 
-$\mapconsist{\Omega}$ and 
-$\localconsist{L}{\Gamma}$ and 
-$\storeconsist{S}{H}$.
-From the form of [E-IsNull-F] we know that
-$\opsenv{e}{l}{E}$, and
-and from the form of the type rule [T-IsNull] we know
-$\typeenv{e}{T@(\oton{r})}$.
-Clearly $\valueconsist{\textit{false}}{bool}$, and
-$\traceconsist{E}$ and 
-      $\privconsist{E}{\Phi}$ follow by induction.
-
-\item Case [E-IsNull-T] is almost identical to case [E-IsNull-F], with $l$ replaced by \textit{null} and
-\textit{true} replaced by \textit{false}.
-
-\item[E-Let]
-\item[E-Add]
-\item[E-Compare]
-\item[E-IfElse-T]
-\item[E-IfElse-F]
-\item[E-Newcolor]
-\item[E-Color]
-\item[E-UpRgn]
-\item[E-DownRgn]
-\item[E-Read]
-\item[E-Write]
-\item[E-Reduce]
-\item[E-Pack]
-\item[E-Unpack]
-\item[E-Call]
-\item[E-Program]
-
-
-
-
-\end{itemize}
-
-\end{proof}
 \vspace{4pt}
 \hangindent=2\parindent \hangafter=1 \noindent %
 $\mapconsist{\Omega}$ - Three expressions have subexpressions that modify $M$ or $\Omega$ and therefore do not
@@ -1224,42 +1075,590 @@ is similar in outline to the previous step.  The easy cases are covered by a lem
 for subexpressions: if $\privconsist{E_1}{\Phi}$ and $\privconsist{E_2}{\Phi}$ and $any\_interleave(E', E_1, E_2)$, then $\privconsist{E'}{\Phi}$.
 Straightforward proofs cover {\tt read}, {\tt write}, {\tt reduce}, and one final special case for function calls. 
 
- \begin{table*}
- \centering
- {\small
- \begin{tabular}{l|p{5cm}|p{5cm}|p{5cm}}
- {\bf Rule} & 
- \multicolumn{1}{|c|}{$\mathbf{v \sim_H M \llbracket T \rrbracket}$} &
- \multicolumn{1}{|c|}{$\mathbf{E \sim H}$} &
- \multicolumn{1}{|c|}{$\mathbf{E : \Phi}$} \\
- \hline
- BoolConst & & & \\
- IntConst & & & \\
- TupleBuild & & & \\
- TupleField & & & \\
- LocalVar & & & \\
- NullPtr & & & \\
- NewPtr & & & \\
- IsNull & & & \\
- UpRegion & & & \\
- DownRegion & & & \\
- Read & & & \\
- Write & & & \\
- Reduce & & & \\
- Newcolor & & & \\
- Color & & & \\
- IntMath & & & \\
- IntCmp & & & \\
- Let & & & \\
- IfElse & & & \\
- TaskCall & & & \\
- Partition & & & \\
- Pack & & & \\
- Unpack & & &
- \end{tabular}}
- \caption{Proof pieces}
- \end{table*}
+\begin{proof}
+The proof of the theorem is by cases on the structure of the derivation of $e$.
+\begin{itemize}
 
+\item
+Case [E-Bool]. By assumption, 
+$$\opsenv{bv}{bv}{[]}$$ and
+$$\typeenv{bv}{T}$$ and
+$\mapconsist{\Omega}$ and
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+The only type rule that can apply is [T-Bool], so $T = bool$.
+Therefore $\valueconsist{bv}{bool}$ and 
+$\traceconsist{[]}$ and 
+$\privconsist{[]}{\Phi}$ all follow trivially.
+
+\item Case [E-Int].  
+By assumption, 
+$$\opsenv{iv}{iv}{[]}$$ and 
+$$\typeenv{iv}{T}$$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
+The only type rule that can apply is [T-Int], so $T = int$.
+Therefore $\valueconsist{iv}{int}$ and 
+$\traceconsist{[]}$ and 
+$\privconsist{[]}{\Phi}$ all follow trivially.
+
+\item Case [E-Null].
+By assumption, 
+$$\opsenv{\text{null\ }T@r}{null}{[]}$$ and 
+$$\typeenv{\text{null}}{T'}$$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
+The only type rule that can apply is [T-Null], so $T' = T@r$.
+Therefore $\valueconsist{null}{T@r}$, $\traceconsist{[]}$ and $\privconsist{[]}{\Phi}$ all follow trivially.
+
+\item
+Case [E-MakeTuple].
+By assumption, 
+$$\opsenv{\langle e_1, e_2 \rangle}{\langle v_1,v_2 \rangle}{E'}$$ and 
+$$\typeenv{\langle e_1, e_2 \rangle}{T}$$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
+The only type rule that can apply is [T-MakeTuple], so $T = \langle T_1, T_2 \rangle$.
+
+For the subexpression $e_1$, 
+from the form of rule [E-MakeTuple], we know that $$\opsenv{e_1}{v_1}{E_1}$$
+From the form of rule [T-MakeTuple], we know that $$\typeenv{e_1}{T_1}$$
+Then, by induction, we have $\valueconsist{v_1}{T_1}$, $\traceconsist{E_1}$ and 
+      $\privconsist{E_1}{\Phi}$.
+
+
+For the subexpression $e_2$, 
+from the form of rule [E-MakeTuple], we know that $$\opsenv[S=S']{e_2}{v_2}{E_2}$$
+where $S' = apply(S,E_1)$.  By Lemma~\ref{lemma:heapconst:apply}, $\storeconsist{S' = \text{apply}(S,E)}{H}$.
+From the form of rule [T-MakeTuple], we know that $$\typeenv{e_2}{T_2}$$
+Then, by induction, we have $\valueconsist{v_2}{T_2}$, $\traceconsist{E_2}$ and 
+      $\privconsist{E_2}{\Phi}$.
+
+From the preceding steps we can conclude that $\valueconsist{\langle v_1, v_2\rangle}{\langle T_1, T_2 \rangle}$.
+Finally, from [E-MakeTuple] we also have $$valid\_interleave(S,C,E',E_1,E_2)$$ and
+Lemma~\ref{lemma:heapconst:effects2}, $\traceconsist{E'}$ and by Lemma~\ref{lemma:effsound:effects2}
+$\privconsist{E'}{\Phi}$.
+
+
+
+\item Case [E-Tuple1].
+By assumption, 
+$$\opsenv{e\text{.1}}{v_1}{E}$$ and 
+$$\typeenv{e\text{.1}}{T_1}$$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
+From the form of [E-Tuple1] we know that
+$$\opsenv{e}{\langle v_1, v_2 \rangle}{E}$$
+The only type rule that can apply is [T-Tuple1], and from the form of the rule we know
+$$\typeenv{e}{\langle T_1, T_2 \rangle}$$
+By induction, we have $\valueconsist{\langle v_1, v_2 \rangle}{\langle T_1, T_2 \rangle}$, $\traceconsist{E}$ and 
+      $\privconsist{E}{\Phi}$.
+It follows immediately that $\valueconsist{v_1}{T_1}$ also holds.
+
+
+\item Case [E-Tuple2] is symmetric to case [E-Tuple1].
+
+\item Case[E-New].
+By assumption, 
+$$\opsenv{\text{new }T@r}{l}{[]}$$ and 
+$$\typeenv{\text{new }T@r}{T@r}$$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+The hypothesis of the [E-New] rule is that $l \in M(r)$ and $H(l) = M \llbracket T \rrbracket$,
+which establishes $\valueconsist{l}{T}$.  
+The other two conclusions,
+$\traceconsist{[]}$ and 
+$\privconsist{[]}{\Phi}$, follow trivially.
+\item Case [E-Var].
+By assumption, 
+$$\opsenv{id}{v}{[]}$$ and 
+$$\typeenv{id}{T}$$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+The hypothesis of the [E-Var] rule is $L(id) = v$.
+From $\localconsist{L}{\Gamma}$ we have $\valueconsist{L(id)}{\Gamma(id)}$.
+The hypothesis of the [T-Var] rule is $\Gamma(id) = T$.
+Putting these three facts together we conclude $\valueconsist{v}{T}$.
+The other two conclusions,
+$\traceconsist{[]}$ and 
+$\privconsist{[]}{\Phi}$, follow trivially.
+
+\item Case [E-IsNull-F].
+By assumption, 
+$$\opsenv{\text{isnull}(e)}{\textit{false}}{E}$$ and 
+$$\typeenv{\text{isnull}(e)}{bool}$$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+From the form of [E-IsNull-F] we know that
+$\opsenv{e}{l}{E}$, and
+and from the form of the type rule [T-IsNull] we know
+$\typeenv{e}{T@(\oton{r})}$.
+Clearly $\valueconsist{\textit{false}}{bool}$, and
+$\traceconsist{E}$ and 
+      $\privconsist{E}{\Phi}$ follow by induction.
+
+\item Case [E-IsNull-T] is almost identical to case [E-IsNull-F], with $l$ replaced by \textit{null} and
+\textit{false} replaced by \textit{true}.
+
+\item Case [E-Let].
+By assumption, 
+$$\opsenv{\text{let } id:T_1 = e_1 \text{ in } e_2}{v_2}{E'}$$ and 
+$$\typeenv{\text{let } id:T_1 = e_1 \text{ in } e_2}{T_2}$$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
+
+
+For the subexpression $e_1$, 
+from [E-Let], we know that $$\opsenv{e_1}{v_1}{E_1}$$
+From type rule [T-Let], we know that $$\typeenv{e_1}{T_1}$$
+Then, by induction, we have $\valueconsist{v_1}{T_1}$, $\traceconsist{E_1}$ and 
+      $\privconsist{E_1}{\Phi}$.
+
+For the subexpression $e_2$, 
+from [E-Let], we have $$\opsenv[L=L',S=S']{e_2}{v_2}{E_2}$$
+where $L' = L[v_1/id]$ and $S' = apply(S,E_1)$.  
+From [T-Let], we have $\typeenv[G={\Gamma[T_1/id]}]{e_2}{T_2}$.
+By Lemma~\ref{lemma:heapconst:apply}, $\storeconsist{S' = \text{apply}(S,E)}{H}$.
+From $\localconsist{L}{\Gamma}$ and $\valueconsist{v_1}{T_1}$ we conclude $\localconsist{L[v_1/id]}{\Gamma[T_1/id]}$.
+Then, by induction, we have $\valueconsist{v_2}{T_2}$, $\traceconsist{E_2}$ and 
+      $\privconsist{E_2}{\Phi}$.
+
+Finally, from [E-Let] we also have $$valid\_interleave(S,C,E',E_1,E_2)$$
+Then, by Lemma~\ref{lemma:heapconst:effects2}, $\traceconsist{E'}$ and by 
+Lemma~\ref{lemma:effsound:effects2} $\privconsist{E'}{\Phi}$.
+
+\item Case [E-Add].
+By assumption, 
+$$\opsenv{e_1 + e_2}{v'}{E'}$$ and 
+$$\typeenv{e_1 + e_2}{T}$$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
+The only type rule that can apply is [T-Add], so $T = int$.
+
+For the subexpression $e_1$, 
+from [E-Add] we know $$\opsenv{e_1}{v_1}{E_1}$$
+From [T-Add], we know that $$\typeenv{e_1}{int}$$
+Then, by induction, we have $\valueconsist{v_1}{T_1}$, $\traceconsist{E_1}$ and 
+      $\privconsist{E_1}{\Phi}$.
+
+For the subexpression $e_2$, 
+from [E-Add], we know $$\opsenv[S=S']{e_2}{v_2}{E_2}$$
+where $S' = apply(S,E_1)$.  By Lemma~\ref{lemma:heapconst:apply}, $\storeconsist{S' = \text{apply}(S,E)}{H}$.
+From [T-Add] we know $$\typeenv{e_2}{int}$$
+Then, by induction, we have $\valueconsist{v_2}{T_2}$, $\traceconsist{E_2}$ and 
+      $\privconsist{E_2}{\Phi}$.
+
+It is immediate that $\valueconsist{v_1 + v_2}{int}$.
+Finally, from [E-Add] we also have $$valid\_interleave(S,C,E',E_1,E_2)$$ and
+Lemma~\ref{lemma:heapconst:effects2}, $\traceconsist{E'}$ and by Lemma~\ref{lemma:effsound:effects2},
+$\privconsist{E'}{\Phi}$.
+
+\item Case [E-Compare] is isomorphic to [E-Add].
+
+\item Case [E-IfElse-T].
+ By assumption, 
+$$\opsenv{\text{ if } e_1 \text{ then } e_2 \text{ else } e_3}{v_2}{E}$$ and 
+$$\typeenv{\text{ if } e_1 \text{ then } e_2 \text{ else } e_3}{T}$$ and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+
+For the subexpression $e_1$, 
+from [E-IfElse-T] we know $$\opsenv{e_1}{true}{E_1 \dplus E_2}$$
+From [T-IfElse], we know that $$\typeenv{e_1}{bool}$$
+Clearly $\valueconsist{true}{bool}$, and by induction we have  $\traceconsist{E_1}$ and 
+      $\privconsist{E_1}{\Phi}$.
+
+For the subexpression $e_2$, 
+from [E-IfElse-T] we know $$\opsenv[S=S']{e_2}{v_2}{E_2}$$
+where $S' = apply(S,E_1)$.  By Lemma~\ref{lemma:heapconst:apply}, $\storeconsist{S' = \text{apply}(S,E)}{H}$.
+From [T-IfElse-T] we know $$\typeenv{e_2}{T}$$
+Then, by induction, we have $\valueconsist{v_2}{T}$, $\traceconsist{E_2}$ and 
+      $\privconsist{E_2}{\Phi}$.
+
+Finally, by Lemma~\ref{lemma:heapconst:effects1}, $\traceconsist{E_1 \dplus E_2}$ and by Lemma~\ref{lemma:effsound:effects1},
+$\privconsist{E_1 \dplus E_2}{\Phi}$.
+
+\item Case [E-IfElse-F] is nearly the same as [E-IfElse-T] with {\em false} replacing {\em true} and $e_3$ replacing $e_2$.
+
+\item Case [E-Newcolor].
+By assumption, 
+$$\opsenv{\text{newcolor } r}{K}{[]}$$ 
+where  $K = \{ (l_1,v_1),\ldots,(l_p,i_p) \}$ such that
+$l_i \in M(r)$ for all $i$ and $l_1,\ldots,l_p$ are pairwise distinct locations.
+In addition, we have the assumptions
+$$\typeenv{\text{newcolor } r}{T}$$ and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+The only type rule that can apply if [T-Newcolor], so can infer that $T = \text{coloring}(r)$.
+From the structure of $K$ it follows that $\valueconsist{K}{\text{coloring(r)}}$.
+The other two conclusions,
+$\traceconsist{[]}$ and 
+$\privconsist{[]}{\Phi}$, follow trivially.
+
+\item  Case [E-Color].
+By assumption, 
+$$\opsenv{\text{color($e_1$, $e_2$, $e_3$)}}{K'}{E'}$$ and
+$$\typeenv{\text{color($e_1$, $e_2$,$e_3$)}}{T}$$ and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+The only type rule that can apply if [T-Color], so we know $T = \text{coloring}(r)$.
+
+For the subexpression $e_1$, 
+from [E-Color] we know $$\opsenv{e_1}{K}{E_1}$$
+From [T-Color], we know that $$\typeenv{e_1}{\text{coloring}(r)}$$
+By induction it follows that $\valueconsist{K}{\text{coloring(r)}}$ and $\traceconsist{E_1}$ and 
+      $\privconsist{E_1}{\Phi}$.
+
+For the subexpression $e_2$, 
+from [E-Color] we know $$\opsenv[S=S']{e_2}{l}{E_2}$$ where $S' = \text{apply}(S,E_1)$.
+From [T-Color], we know that $$\typeenv{e_2}{T'@r}$$
+By Lemma~\ref{lemma:heapconst:apply}, $\storeconsist{S'}{H}$.
+By induction, $\valueconsist{l}{T'@r}$ and $\traceconsist{E_2}$ and 
+      $\privconsist{E_2}{\Phi}$.
+
+For the subexpression $e_3$, 
+from [E-Color] we know $$\opsenv[S=S'']{e_3}{v}{E_3}$$ where $S'' \text{apply}(S',E_2)$.
+From [T-Color], we know that $$\typeenv{e_3}{int}$$
+By Lemma~\ref{lemma:heapconst:apply}, $\storeconsist{S''}{H}$.
+By induction, $\valueconsist{v}{int}$ and $\traceconsist{E_3}$ and 
+      $\privconsist{E_3}{\Phi}$.
+
+Now $K'$ is built from $K$ by extending $K$ with a mapping for location $l$.  First, because $\valueconsist{l}{T'@r}$ and
+$\valueconsist{K}{\text{coloring(r))}$ and because $K'$ excludes any previous mapping for $l$ (guaranteeing the the coloring is a function), we conclude $\valueconsist{K'}{\text{coloring}(r)}}$.  From [E-Color], we also know
+$$valid\_interleave(S, C, E', E_1, E_2, E_3)$$ and by applying Lemma~\ref{lemma:heapconst:effects2} twice
+we can conclude $\traceconsist{E'}$.  Similarly, by applying Lemma~\ref{lemma:effsound:effects2} twice
+we can conlude $\privconsist{E'}{\Phi}$.
+
+\item  Case [E-UpRgn].
+By assumption, $$\opsenv{\text{upregion}(e,\oton{r})}{v}{E}$$ and
+$$\typeenv{\text{upgregion}(e,\oton{r})}{T}$$ and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+The type rule must be [T-UpRgn], so we also know $T = T' @ (\oton{r})$.
+
+From [E-UpRgn] we know $$\opsenv{e}{v}{E}$$ and
+from [T-UpRgn] we know $$\typeenv{e}{T' @ (r_1',\ldots,r_k')}$$
+By induction, we can conclude that $\valueconsist{v}{T'@(r_1',\ldots,r_k')}$,
+$\traceconsist{E}$ and $\privconsist{E}{\Phi}$.
+ 
+To show $\valueconsist{v}{T'@(\oton{r})}$, we first observe that from
+$\valueconsist{v}{T'@(r_1',\ldots,r_k')}$ we know
+there is an $i$ such that $v \in M(r_i')$ and 
+$H(v) = \hat T'$.   From [T-UpRgn]
+we know $\forall i. \exists j. r_i' \leq r_j \in \Omega^*$.  Combining this with
+$\mapconsist{\Omega}$ and Lemma~\ref{lemma:omegaclosure}, we know there
+is some $r_j$ such that $v \in M(r_j)$.
+Therefore $\valueconsist{v}{T'@(\oton{r})}$.
+
+\item Case [E-DownRgn].
+By assumption, $$\opsenv{\text{downregion}(e,\oton{r})}{v}{E}$$ and
+$$\typeenv{\text{downgregion}(e,\oton{r})}{T}$$ and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+The type rule must be [T-DownRgn], so we also know $T = T' @ (\oton{r})$.
+
+From [E-DownRgn] we know $$\opsenv{e}{l}{E}$$ and
+from [T-DownRgn] we know $$\typeenv{e}{T' @ (r_1',\ldots,r_k')}$$
+By induction, we can conclude that $\valueconsist{l}{T'@(r_1',\ldots,r_k')}$,
+$\traceconsist{E}$ and $\privconsist{E}{\Phi}$.
+ 
+To show $\valueconsist{v}{T'@(\oton{r})}$ there are two cases.
+If $v = null$ then $\valueconsist{null}{T'@(\oton{r})}$ follows by definition.
+Otherwise, $v = l$ and $l \in M(r_i)$ for some $i$.  We also know $H(v) = \hat T'$
+because $\valueconsist{l}{T'@(r_1',\ldots,r_k')}$.  Therefore
+$\valueconsist{v}{T'@(\oton{r})}$.
+
+\item Case [E-Read].
+By assumption, $$\opsenv{\text{read}(e)}{v}{E \dplus [ read(l,excl,v) ]}$$ and
+$$\typeenv{\text{read}(e)}{T}$$ and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+
+From [E-Read] we have $$\opsenv{e}{l}{E}$$ and
+from [T-Read] we know $$\typeenv{e}{T @ (\oton{r})}$$
+By induction, we can conclude that $\valueconsist{l}{T@(\oton{r})}$,
+$\traceconsist{E}$ and $\privconsist{E}{\Phi}$.
+ 
+To show $\valueconsist{v}{T}$ there are two cases.
+If $v = M(l)$ then the claim follows from $\valueconsist{l}{T@(\oton{r})}$.
+If $v$ is instead some $v'$ of type $H(l)$ the result also follows because $H(l) = \hat{T}$.
+Next, $\traceconsist{E \dplus [ read(l,excl,v)]}$ follows immediately from $\traceconsist{E}$ as
+any read operation is consistent (the resriction is only on writes and reductions).
+
+Finally, we must show $\privconsist{E \dplus [ read(l,excl,v)]}{\Phi}$.
+Since we have already shown $\privconsist{E}{\Phi}$, it suffices to show $\privconsist{[ read(l,excl,v) ]}{\Phi}$.
+By $\valueconsist{l}{T@(\oton{r})}$, there is some $r_i$ such that $l \in M(r_i)$.  Furthermore,
+from [T-Read] we have $reads(r_i) \in \Phi^*$, which shows $\privconsist{[ read(l,excl,v)]}{\Phi^*}$.
+The result follows from Lemma~\ref{lemma:phiclosure}.
+
+\item Case [E-Write].
+By assumption, $$\opsenv{\text{write}(e_1,e_2)}{l}{E' \dplus [ write(l,excl,v) ]}$$ and
+$$\typeenv{\text{write}(e_1,e_2)}{T@(\oton{r})}$$ and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+
+For subexpression $e_1$,
+From [E-Write] we have $$\opsenv{e_1}{l}{E_1}$$ and
+from [T-Write] we know $$\typeenv{e_1}{T @ (\oton{r})}$$.
+By induction, we can conclude that $\valueconsist{l}{T@(\oton{r})}$,
+$\traceconsist{E_1}$ and $\privconsist{E_1}{\Phi}$.
+
+For subexpression $e_2$,
+From [E-Write] we have $$\opsenv[S=S']{e_2}{v}{E_2}$$ where
+$S' = \text{apply}(S,E_1)$.
+From [T-Write] we know $\typeenv{e_2}{T}$.
+Using Lemma~\ref{lemma:heapconst:apply} it follows that $\storeconsist{S'}{H}$. 
+Then by induction, we can conclude that $\valueconsist{v}{T}$,
+$\traceconsist{E_2}$ and $\privconsist{E_2}{\Phi}$.
+
+
+We have already shown $\valueconsist{l}{T@(\oton{r})}$, so it only remains to show
+$\traceconsist{E' \dplus [ write(l,excl,v) ]}$ and 
+$\privconsist{E' \dplus [ write(l,excl,v) ]}{\Phi}$.
+From [E-Write] we have $$valid\_interleave(S,C,E',E_1,E_2)$$ and therefore by Lemma~\ref{lemma:heapconst:effects2} we have
+$\traceconsist{E'}$.  To show $\traceconsist{[ write(l,excl,v)]}$ we must show $\valueconsist{v}{H(l)}$,
+which follows from $\valueconsist{v}{T}$ and $\valueconsist{l}{T@(\oton{r})}$ and $\storeconsist{S}{H}$.
+Thus, $\traceconsist{E' \dplus [ write(l,excl,v) ]}$.
+
+To show $\privconsist{E' \dplus [ write(l,excl,v) ]}{\Phi}$, we first observe that
+$valid\_interleave(S,C,E',E_1,E_2)$ and Lemma~\ref{lemma:effsound:effects2} imply
+$\privconsist{E'}{\Phi}$.  To show $\privconsist{[ write(l,excl,v) ]}{\Phi}$, we observe that because
+$\valueconsist{l}{T@(\oton{r})}$, there is some $r_i$ such that $l \in M(r_i)$.  Furthermore,
+from [T-Write] we have $writes(r_i) \in \Phi^*$, which shows $\privconsist{[ write(l,excl,v)]}{\Phi^*}$.
+The result follows from Lemma~\ref{lemma:phiclosure}.
+
+\item Case[E-Reduce].
+By assumption, $$\opsenv{\text{reduce}(id,e_1,e_2)}{l}{E' \dplus [ reduce_{id}(l,excl,v) ]}$$ and
+$$\typeenv{\text{reduce}(id,e_1,e_2)}{T_1@(\oton{r})}$$ and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+
+For subexpression $e_1$,
+From [E-Reduce] we have $$\opsenv{e_1}{l}{E_1}$$ and
+from [T-Reduce] we know $$\typeenv{e_1}{T @ (\oton{r})}$$.
+By induction, we can conclude that $\valueconsist{l}{T@(\oton{r})}$,
+$\traceconsist{E_1}$ and $\privconsist{E_1}{\Phi}$.
+
+For subexpression $e_2$,
+From [E-Reduce] we have $$\opsenv[S=S']{e_2}{v}{E_2}$$ where
+$S' = \text{apply}(S,E_1)$.
+From [T-Reduce] we know $$\typeenv{e_2}{T_2}$$
+Using Lemma~\ref{lemma:heapconst:apply} it follows that $\storeconsist{S'}{H}$. 
+Then by induction, we can conclude that $\valueconsist{v}{T_2}$,
+$\traceconsist{E_2}$ and $\privconsist{E_2}{\Phi}$.
+
+
+We have already shown $\valueconsist{l}{T_1@(\oton{r})}$, so it only remains to show
+$\traceconsist{E' \dplus [ reduce_{id}(l,excl,v) ]}$ and 
+$\privconsist{E' \dplus [ reduce_{id}(l,excl,v) ]}{\Phi}$.
+From [E-Reduce] we have $valid\_interleave(S,C,E',E_1,E_2)$ and therefore by Lemma~\ref{lemma:heapconst:effects2} we have
+$\traceconsist{E'}$.  To show $\traceconsist{[ reduce_{id}(l,excl,v)]}$ we must show three things.
+First, we must show $M \llbracket \Gamma \rrbracket (id) = (\hat T_1, \hat T_2), \emptyset, \emptyset \rightarrow \hat T_1$ which
+follows from the assumption $\Gamma(id) = (T_1, T_2), \emptyset, \emptyset \rightarrow T_1$ in [T-Reduce].
+Second, we must show $H(l) = \hat T_1$, which follows from $\valueconsist{l}{T_1@(\oton{r})}$.
+Finally, we have already shown $\valueconsist{v}{\hat T_2}$.
+Thus, $$\traceconsist{E' \dplus [ reduce_{id}(l,excl,v) ]}$$.
+
+To show $$\privconsist{E' \dplus [ reduce_{id}(l,excl,v) ]}{\Phi}$$, we first observe that
+$valid\_interleave(S,C,E',E_1,E_2)$ and Lemma~\ref{lemma:effsound:effects2} imply
+$\privconsist{E'}{\Phi}$.  To show $\privconsist{[ reduce_{id}(l,excl,v) ]}{\Phi}$, we observe that because
+$\valueconsist{l}{T@(\oton{r})}$, there is some $r_i$ such that $l \in M(r_i)$.  Furthermore,
+from [T-Reduce] we have $reduce_{id}(r_i) \in \Phi^*$, which shows $\privconsist{[ reduce_{id}(l,excl,v)]}{\Phi^*}$.
+The result follows from Lemma~\ref{lemma:phiclosure}.
+
+
+\item Case [E-Pack].
+By assumption, $$\opsenv{\text{pack } e_1 \text{ as } T_1[\otok{k}{r}]}{v'}{E}$$ and
+$$\typeenv{\text{pack } e_1 \text{ as } T_1[\otok{k}{r}]}{T_1}$$ and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+
+From [E-Pack] we have $\opsenv{e_1}{v}{E}$ and
+from [T-Pack] we know $\typeenv{e_1}{T_2[r_1/r'_1,\ldots,r_k/r'_k]}$.
+By induction, we can conclude that $\valueconsist{v}{T_2[r_1/r'_1,\ldots,r_k/r'_k]}$,
+$\traceconsist{E}$ and $\privconsist{E}{\Phi}$.
+ 
+The only thing remaining to show is $\valueconsist{v'}{T_1}$.
+From [E-Pack] we have   $v' = \langle \langle \otok{k}{\rho}, v \rangle \rangle$.
+From [T-Pack] we have $T_1 = \exists r'_1, \ldots r'_n.\ T_2\text{ where }\Omega_1$
+and $\Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Omega^*$.  
+%
+% FIXME  The next sentence can't be made fully formal with the current setup.
+%
+The result
+follows from the definition of value consistency on region relationships.
+
+\item Case [E-Unpack].
+By assumption, $$\opsenv{\text{unpack } e_1 \text{ as } id : T_1[\otok{k}{r}] \text{ in } e_2}{v_2}{E'}$$ and
+$$\typeenv{\text{unpack } e_1 \text{ as } id : T_1[\otok{k}{r}] \text{ in } e_2}{T}$$ and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+
+For subexpression $e_1$, from [E-UnPack] we have $$\opsenv{e_1}{\langle \langle \otok{k}{\rho},v \rangle\rangle}{E}$$ and
+from [T-UnPack] we know $$\typeenv{e_1}{T_1 = \exists r'_1,\ldots,r'_n.T_2 \text{ where }\Omega_1}$$
+By induction, we can conclude that $\valueconsist{\langle \langle \otok{k}{\rho},v \rangle\rangle}{T_1}$ and
+$\traceconsist{E}$ and $\privconsist{E}{\Phi}$.
+ 
+For subexpression $e_2$, from [E-UnPack] we have
+$$\opsenv[M=M',L=L',S=S']{e_2}{v_2}{E_2}$$ where
+$S' = \text{apply}(S,E_2)$, $L' = L[v_1/id]$ and $M' = M[\rho_1/r_1,\ldots,\rho_k/r_k]$.
+From [T-Unpack] we have
+$$\typeenv[G=\Gamma',O=\Omega']{e_2}{T_3}$$
+where
+$\Gamma' = \Gamma[T_2[r_1/r'_1,\ldots,r_k/r'_k] / id]$ and
+$\Omega' = \Omega \cup \Omega_1[r_1/r'_1,\ldots,r_k/r'_k]$.
+To establish the induction hypothesis for $e_2$, we must show
+$\mapconsist[M']{\Omega'}$ and
+$\localconsist[M']{L'}{\Gamma'}$ and
+$\storeconsist{S'}{H}$.
+
+To show $\mapconsist[M']{\Omega'}$, consider a constraint $r \leq r' \in \Omega'$.  There are two cases. If $r \leq r' \in \Omega_1[r_1/r'_1,\ldots,r_k/r'_k]$
+then $M'(r) \subseteq M'(r')$ follows from $\valueconsist{\langle \langle \otok{k}{\rho},v \rangle\rangle}{T_1}$.
+If $r \leq r' \not\in \Omega_1[r_1/r'_1,\ldots,r_k/r'_k]$ then $r \leq r' \in \Omega$ and $M'(r) = M(r) \subseteq M(r') = M'(r')$.
+The reasoning for constraints $r * r'$ is the same.
+
+To show $\localconsist[M']{L'}{\Gamma'}$, we must show
+$\valueconsist[M']{L'(x)}{\Gamma'(x)}$ for all identifiers $x$ in
+the domain of $\Gamma'$.  For any $id' \neq id$, the statement is equivalent
+to showing $\valueconsist[M']{L(x)}{\Gamma(x)}$, which must hold becuase $M'$ does 
+does not change any existing binding in $M$.  For $id$, we have
+$\valueconsist[M']{v_1}{T_1[r_1/r'_1,\ldots,r_k/r'_k]}$, which is implied by
+$\valueconsist{\langle \langle \otok{k}{\rho},v \rangle\rangle}{T_1}$.
+
+Finally, as in previous cases, $\storeconsist{S'}{H}$ follows from Lemma~\ref{lemma:heapconst:apply}.
+Thus, we can conclude that 
+$\valueconsist[M']{v_2}{T_3}$ and
+$\traceconsist{E_2}$ and 
+$\privconsist{E_2}{\Phi}$.
+
+Because $T_3$ cannot include any of the unpacked regions in it, $\valueconsist{v_2}{T_3}$.
+From [E-Unpack] we have $$valid\_interleave(S, C, E', E_1, E_2)$$ and using Lemma~\ref{lemma:heapconst:effects2} we
+prove $\traceconsist{E'}$.
+To finish the case, we note that from $\privconsist{E_1}{\Phi}$, $\privconsist{E_2}{\Phi}$, 
+$valid\_interleave(S, C, E', E_1, E_2)$, and using Lemma~\ref{lemma:effsound:effects2} we can conclude $\privconsist{E'}{\Phi}$.
+
+
+\item Case [E-Part].
+By assumption,
+$$\opsenv{\text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2}{v}{E'}$$
+and
+$$\typeenv{\text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2}{T}$$
+and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$. 
+
+For subexpression $e_1$, from [E-Part] we have $$\opsenv{e_1}{K}{E_1}$$ and
+from [T-Part] we have $$\typeenv{e_1}{\text{coloring}(r_p)}$$
+By induction, we conclude that $\valueconsist{K}{\text{coloring}(r_p)}$ and
+$\traceconsist{E_1}$ and 
+$\privconsist{E_1}{\Phi}$.
+For subexpression $e_2$, from [E-Part] we have
+$$\opsenv[M=M',S=S']{e_2}{v}{E_2}$$
+where 
+$M' = M[\rho_1/r_1, \ldots, \rho_k/r_k]$ and
+$S' = \text{apply}(S, E_1)$.
+From [T-Part] we have
+$$\typeenv[O=\Omega']{e_2}{T}$$ 
+where
+$\Omega' = \Omega \wedge \bigwedge_{i \in [1,k]} r_i \leq r_p \wedge \bigwedge_{1 \leq i < j \leq k} r_i * r_j$.    
+To establish the induction hypothesis for $e_2$, we must show
+$\mapconsist[M']{\Omega'}$ and
+$\localconsist[M']{L}{\Gamma}$ and
+$\storeconsist{S'}{H}$.
+
+For $\mapconsist[M']{\Omega'}$, we observe that all of the constraints are either present previously
+(hold in $\mapconsist{\Omega}$) or are established explicitly by the partition operation.  Note that
+the type of the coloring carries the name of the region being partitioned and that all introduced region names are
+not in use in $M$.  For $\localconsist[M']{L}{\Gamma}$, we simply observe that $\localconsist{L}{\Gamma}$ holds
+and $M'$ is an extension of $M$.  
+Finally, as in previous cases, $\storeconsist{S'}{H}$ follows from Lemma~\ref{lemma:heapconst:apply}.
+
+Therefore, we can conclude by induction
+$\valueconsist[M']{v}{T}$ and
+$\traceconsist{E_2}$ and 
+$\privconsist{E_2}{\Phi}$.
+Because $T$ may not mention any of the regions introduced in the partitioning, we have
+$\valueconsist{v}{T}$.
+From [E-Part] we have $$valid\_interleave(S, C, E', E_1, E_2)$$ and using Lemma~\ref{lemma:heapconst:effects2} we
+prove $\traceconsist{E'}$.
+To finish the case, we note that from $\privconsist{E_1}{\Phi}$, $\privconsist{E_2}{\Phi}$, 
+$valid\_interleave(S, C, E', E_1, E_2)$, and using Lemma~\ref{lemma:effsound:effects2} we can conclude $\privconsist{E'}{\Phi}$.
+
+
+\item Case [E-Call].
+From [E-Call] we have
+$$\opsenv{id[\otok{k}{r}](\oton{e})}{v_{n+1}}{E''}$$
+and from [T-Call] we have
+$$\typeenv{id[\otok{k}{r}](\oton{e})}{T_r[r_1/r'_1,\ldots,r_k/r'_k]}$$
+
+For subexpression $e_1$, from [E-Call] we have $\opsenv{e_1}{v_1}{E_1}$ and from [T-Call] we have
+$\typeenv{e_1}{T_1[r_1/r'_1,\ldots,r_k/r'_k]}$.
+By induction, 
+$\valueconsist{v_1}{T_1[r_1/r'_1,\ldots,r_k/r'_k]}$,
+$\traceconsist{E_1}$ and 
+$\privconsist{E_1}{\Phi}$.
+
+For the other subexpressions that are arguments to the call the reasoning is very similar; we show
+only the last argument $e_n$.  First, 
+$$S_n = \text{apply}(E_{n-1},\text{apply}(E_{n-2},\ldots \text{apply}(E_1,S) \ldots )$$
+From Lemma~\ref{lemma:heapconst:apply} it follows that $\storeconsist{S_n}{H}$.
+We also have $\opsenv{e_n}{v_n}{E_n}$ from [E-Call] and
+$\typeenv{e_n}{T_n[r_1/r'_1,\ldots,r_k/r'_k]}$ from [T-Call].
+By induction, 
+$\valueconsist{v_n}{T_n[r_1/r'_1,\ldots,r_k/r'_k]}$,
+$\traceconsist{E_n}$ and 
+$\privconsist{E_n}{\Phi}$.
+
+
+Now, from [E-Call] we have
+$valid\_interleave(S, C, E', \oton{E})$
+and furthermore
+$M' = \{ (r'_1, M(r_1)), \ldots (r'_k, M(r_k)) \}$  and
+$L' = \{ (a_1, v_1), \ldots, (a_n, v_n) \}$ and
+$S' = \text{apply}(S, E')$ and
+$\opsenv[M=M',L=L',S=S',C=C']{e_{n+1}}{v_{n+1}}{E_{n+1}}$.
+From [T-Program] we know
+$\typeenv[G=\Gamma',O=\emptyset,P=\Phi']{e_{n+1}}{T_r}$,
+where $e_{n+1}$ is the body of the function.
+To apply the induction hypothesis to $e_{n+1}$ we must
+show 
+\begin{itemize}
+\item $\mapconsist[M']{\emptyset}$,
+which is immediate.
+
+\item $\localconsist[M']{L'}{\Gamma'}$ where
+$\Gamma'(a_i) = T_i$and $\storeconsist{S'}{H}$.
+\end{itemize}
+
+$\Gamma(id) = \forall r'_1, \ldots r'_k.(\oton{T}),\Phi', Q' \rightarrow T_r$ 
+$\text{function }id[\otok{k}{r'}](a_1 : T_1, \ldots, a_n : T_n), \Phi', Q' : T_r = e_{n+1}$
+
+$E'_{n+1} = mark\_coherence(E_{n+1}, M' \llbracket Q' \rrbracket)$ 
+$valid\_interleave(S, C, E'', E', E_{n+1})$
+
+
+
+
+$\typeenv{e_i}{T_i[r_1/r'_1,\ldots,r_k/r'_k]}$
+$\Phi'[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Phi^*$
+
+
+\end{itemize}
+\end{proof}
 
 \section{Coherence}
 \label{sec:coherence}
