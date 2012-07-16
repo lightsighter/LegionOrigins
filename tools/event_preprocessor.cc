@@ -352,7 +352,7 @@ size_t compute_waiter_ratios(OrderedTable &ordered_events, int fw)
     waiters.push_back(total_waiters);
   }
   {
-    size_t buffer_size = waiters.size();
+    size_t buffer_size = waiters.size()/2; // Divide by 2 since there are two values for each element
     ssize_t bytes_written = write(fw, &buffer_size, sizeof(size_t));
     assert(bytes_written == sizeof(size_t));
     total += bytes_written;

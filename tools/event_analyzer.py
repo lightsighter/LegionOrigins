@@ -211,6 +211,18 @@ def find_dynamic_events(items,dynamic_events):
             print ""
     return latest_time
 
+def make_event_lifetimes_plot(outdir,dynamic_time,dynamic_event_list,physical_event_list,liveness_time,liveness_list):
+    fig = plt.figure(figsize=(10,7))
+    plt.plot(dynamic_time,dynamic_event_list,'--',color=tableau12,linestyle='dashed',label='Dynamic Events',linewidth=2.0)
+    plt.plot(dynamic_time,physical_event_list,'--',color=tableau9,linestyle='dashed',label='Physical Events',linewidth=2.0)
+    plt.plot(liveness_time,liveness_list,'--',color=tableau13,linestyle='dashed',label='Live Events',linewidth=2.0)
+    plt.legend(loc=2,ncol=1)
+    plt.xlabel('Time (seconds)')
+    plt.ylabel('Count')
+    plt.grid(True)
+    if outdir <> None:
+        fig.savefig(outdir+'/event_lifetimes.pdf',format='pdf',bbox_inches='tight')
+
 def plot_event_lifetimes(dynamic_events,outdir):
     # Build lists for each of the different properties
     dynamic_time = list()
@@ -251,17 +263,17 @@ def plot_event_lifetimes(dynamic_events,outdir):
         liveness_time.append(p[0])
         liveness_list.append(live_event_total)
     assert live_event_total == 0
+    # make the plot
+    make_event_lifetimes_plot(outdir,dynamic_time,dynamic_event_list,physical_event_list,liveness_time,liveness_list)
+    
+def make_waiter_ratios_plot(outdir,most_waiters,local_waiters_list,total_waiters_list):
     fig = plt.figure(figsize=(10,7))
-    plt.plot(dynamic_time,dynamic_event_list,'--',color=tableau12,linestyle='dashed',label='Dynamic Events',linewidth=2.0)
-    plt.plot(dynamic_time,physical_event_list,'--',color=tableau9,linestyle='dashed',label='Physical Events',linewidth=2.0)
-    plt.plot(liveness_time,liveness_list,'--',color=tableau13,linestyle='dashed',label='Live Events',linewidth=2.0)
-    plt.legend(loc=2,ncol=1)
-    plt.xlabel('Time (seconds)')
-    plt.ylabel('Count')
-    plt.grid(True)
-
+    plt.plot([0,most_waiters],[0,most_waiters],'k-')
+    plt.plot(total_waiters_list,local_waiters_list,color='k',linestyle='None',marker='+',markersize=5)
+    plt.xlabel('Number of Total Waiters')
+    plt.ylabel('Number of Local Waiters')
     if outdir <> None:
-        fig.savefig(outdir+'/event_lifetimes.pdf',format='pdf',bbox_inches='tight')
+        fig.savefig(outdir+'/waiter_ratios.pdf',format='pdf',bbox_inches='tight')
 
 def plot_waiter_ratios(dynamic_events,outdir):
     smallest_ratio = 1.0
@@ -287,53 +299,105 @@ def plot_waiter_ratios(dynamic_events,outdir):
                 smallest_total = total_waiters
                 smallest_local = local_waiters
 
-    fig = plt.figure(figsize=(10,7))
-    plt.plot([0,most_waiters],[0,most_waiters],'k-')
-    plt.plot(total_waiters_list,local_waiters_list,color='k',linestyle='None',marker='+',markersize=5)
-    plt.xlabel('Number of Total Waiters')
-    plt.ylabel('Number of Local Waiters')
-
     print "The largest reduction in waiters was "+str(smallest_ratio)+" from "+str(smallest_total)+" total waiters to "+ \
             str(smallest_local)+" local waiters"
+    make_waiter_ratios_plot(outdir,most_waiters,local_waiters_list,total_waiters_list)
 
-    if outdir <> None:
-        fig.savefig(outdir+'/waiter_ratios.pdf',format='pdf',bbox_inches='tight')
+def handle_preprocessed_file(file_name,outdir):
+    f = open(file_name, "rb") 
+
+    try:
+        # These are the physical and dynamic number of events and their times
+        next_elmt = f.read(8)    
+        num_elmts = struct.unpack('Q',next_elmt)[0]
+        physical_list = list()
+        dynamic_list = list()
+        time_list = list()
+        physical_list.append(0)
+        dynamic_list.append(0)
+        time_list.append(0.0)
+        for idx in range(num_elmts):
+            next_elmt = f.read(16)
+            val = struct.unpack('dII',next_elmt)
+            time_list.append(val[0])
+            dynamic_list.append(val[1])
+            physical_list.append(val[2])
+        # Now unpack the live events
+        live_time_list = list()
+        live_event_list = list()
+        live_time_list.append(0.0)
+        live_event_list.append(0)
+        next_elmt = f.read(8)
+        num_elmts = struct.unpack('Q',next_elmt)[0]
+        for idx in range(num_elmts):
+            next_elmt = f.read(12)
+            val = struct.unpack('dI',next_elmt)
+            live_time_list.append(val[0])
+            live_event_list.append(val[1])
+        # We can now call the function that does the printing
+        make_event_lifetimes_plot(outdir,time_list,dynamic_list,physical_list,live_time_list,live_event_list)
+
+        # Read in the waiter ratios
+        next_elmt = f.read(8)
+        num_elmts = struct.unpack('Q',next_elmt)[0]
+        local_waiters_list = list()
+        total_waiters_list = list()
+        most_waiters = 0
+        for idx in range(0,num_elmts):
+            next_elmt = f.read(8)
+            val = struct.unpack('II',next_elmt)
+            local_waiters_list.append(val[0])
+            total_waiters_list.append(val[1])
+            if val[1] > most_waiters:
+                most_waiters = val[1]
+        # make the second plot
+        make_waiter_ratios_plot(outdir,most_waiters,local_waiters_list,total_waiters_list)
+    except:
+        print "Really bad!  Mismatch reading preprocessed file"
+        sys.exit(1)
+    finally:
+        f.close()
     
 
 def usage():
-    print "Usage: "+sys.argv[0]+" [-d (output directory)] [-s] log_file_name"
+    print "Usage: "+sys.argv[0]+" [-d (output directory)] [-s] [-p preprocessed_file] log_file_name"
     sys.exit(1)
 
 def main():
     if len(sys.argv) < 2:
         usage()
 
-    opts, args = getopt(sys.argv[1:],'d:s')
+    opts, args = getopt(sys.argv[1:],'d:p:s')
     opts = dict(opts)
-    if len(args) <> 1:
-        usage()
-
     outdir = opts.get('-d',None)
     show = (opts.get('-s',' ') == ' ')
-    file_name = args[0]
-    print "Analyzing event file "+str(file_name)+"..."
+    preprocessed = opts.get('-p',None)
 
-    items = list()
-    parse_log_file(file_name,items)
+    if len(args) <> 1 and preprocessed == None:
+        usage()
 
-    print "Read "+str(len(items))+" different event items"
+    if preprocessed <> None:
+        handle_preprocessed_file(preprocessed,outdir)
+    else:
+        file_name = args[0]
+        print "Analyzing event file "+str(file_name)+"..."
 
-    dynamic_events = EventTable()
+        items = list()
+        parse_log_file(file_name,items)
 
-    exec_time = find_dynamic_events(items,dynamic_events)
-    # Finalize the event table (there are no more events to add)
-    dynamic_events.finalize()
+        print "Read "+str(len(items))+" different event items"
 
-    print "Found "+str(len(dynamic_events.get_all_events()))+" dynamic events"
-    print "Execution lasted "+str(exec_time)+" seconds"
+        dynamic_events = EventTable()
 
-    plot_event_lifetimes(dynamic_events,outdir)
-    plot_waiter_ratios(dynamic_events,outdir)
+        exec_time = find_dynamic_events(items,dynamic_events)
+        # Finalize the event table (there are no more events to add)
+        dynamic_events.finalize()
+
+        print "Found "+str(len(dynamic_events.get_all_events()))+" dynamic events"
+        print "Execution lasted "+str(exec_time)+" seconds"
+
+        plot_event_lifetimes(dynamic_events,outdir)
+        plot_waiter_ratios(dynamic_events,outdir)
 
     if show:
         plt.show()
