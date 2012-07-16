@@ -162,7 +162,7 @@ def make_plot(show = True, save = True, out_dir="figs/"):
     plt.plot(gpus96,bulk_96_speedups,'--',color=tableau18,label='Bulk-Sync P=96',
               linestyle='dashed',markersize=10,marker='v',markerfacecolor=tableau18,linewidth=0.5)
     plt.legend(loc=2,ncol=1)
-    plt.xlabel('Total GPUs')
+    plt.xlabel('Total GPUs (3 GPUs/node)')
     plt.ylabel('Speedup vs. Hand-Coded Single GPU')
     plt.xticks([1,16,32,48,64,80,96])
     plt.grid(True)
