@@ -561,15 +561,8 @@ namespace RegionRuntime {
       gasnet_barrier();
     }
 
-    /*static*/ EventTracer::EventTraceBlock *EventTracer::first_block = 0;
-    /*static*/ EventTracer::EventTraceBlock *EventTracer::last_block = 0;
-
-    struct EventTraceFileItem {
-      double time;
-      unsigned node, event_id, event_gen, action;
-    };
-
-    /*static*/ void EventTracer::dump_trace(const char *filename, bool append)
+    template<typename ITEM>
+    /*static*/ void Tracer<ITEM>::dump_trace(const char *filename, bool append)
     {
       // each node dumps its stuff in order (using barriers to keep things
       // separate) - nodes other than zero ALWAYS append
@@ -583,30 +576,32 @@ namespace RegionRuntime {
 			0666);
 	  assert(fd >= 0);
 
-	  EventTraceBlock *block = first_block;
+	  TraceBlock *block = get_first_block();
 	  size_t total = 0;
 	  while(block) {
 	    if(block->cur_size > 0) {
 	      size_t act_size = block->cur_size;
-	      total += act_size;
 	      if(act_size > block->max_size) act_size = block->max_size;
+              total += act_size;
 
-	      EventTraceFileItem *fitems = new EventTraceFileItem[act_size];
+              size_t bytes_to_write = act_size * (sizeof(double) + sizeof(unsigned) + sizeof(ITEM));
+	      void *fitems = malloc(bytes_to_write);
+              char *ptr = (char*)fitems;
 
 	      for(size_t i = 0; i < act_size; i++) {
-		fitems[i].time = block->start_time + (block->items[i].time_units /
-						      block->time_mult);
-		fitems[i].node = gasnet_mynode();
-		fitems[i].event_id = block->items[i].event_id;
-		fitems[i].event_gen = block->items[i].event_gen;
-		fitems[i].action = block->items[i].action;
+		*((double*)ptr) = block->start_time + (block->items[i].time_units /
+                                                        block->time_mult);
+                ptr += sizeof(double);
+                *((unsigned*)ptr) = gasnet_mynode();
+                ptr += sizeof(unsigned);
+                *((ITEM*)ptr) = block->items[i];
+                ptr += sizeof(ITEM);
 	      }
 
-	      size_t bytes_to_write = sizeof(EventTraceFileItem) * act_size;
 	      ssize_t bytes_written = write(fd, fitems, bytes_to_write);
 	      assert(bytes_written == (ssize_t)bytes_to_write);
 
-	      delete[] fitems;
+              free(fitems);
 	    }
 
 	    block = block->next;
@@ -1600,7 +1595,14 @@ namespace RegionRuntime {
 	ev.gen = impl->generation + 1;
 	//printf("REUSE EVENT %x/%d\n", ev.id, ev.gen);
 	log_event(LEVEL_SPEW, "event reused: event=%x/%d", ev.id, ev.gen);
-	EventTracer::trace_event(ev.id, ev.gen, EventTracer::ACT_CREATE);
+#ifdef EVENT_TRACING
+        {
+          EventTraceItem &item = Tracer<EventTraceItem>::trace_item();
+          item.event_id = ev.id;
+          item.event_gen = ev.gen;
+          item.action = EventTraceItem::ACT_CREATE;
+        }
+#endif
 	return ev;
       }
 
@@ -1627,7 +1629,14 @@ namespace RegionRuntime {
 	  ev.gen = (*it).generation + 1;
 	  //printf("REUSE EVENT %x/%d\n", ev.id, ev.gen);
 	  log_event(LEVEL_SPEW, "event reused: event=%x/%d", ev.id, ev.gen);
-	  EventTracer::trace_event(ev.id, ev.gen, EventTracer::ACT_CREATE);
+#ifdef EVENT_TRACING
+          {
+	    EventTraceItem &item = Tracer<EventTraceItem>::trace_item();
+            item.event_id = ev.id;
+            item.event_gen = ev.gen;
+            item.action = EventTraceItem::ACT_CREATE;
+          }
+#endif
 	  return ev;
 	}
       }
@@ -1645,13 +1654,27 @@ namespace RegionRuntime {
       ev.gen = 1; // waiting for first generation of this new event
       //printf("NEW EVENT %x/%d\n", ev.id, ev.gen);
       log_event(LEVEL_SPEW, "event created: event=%x/%d", ev.id, ev.gen);
-      EventTracer::trace_event(ev.id, ev.gen, EventTracer::ACT_CREATE);
+#ifdef EVENT_TRACING
+      {
+        EventTraceItem &item = Tracer<EventTraceItem>::trace_item();
+        item.event_id = ev.id;
+        item.event_gen = ev.gen;
+        item.action = EventTraceItem::ACT_CREATE;
+      }
+#endif
       return ev;
     }
 
     void Event::Impl::add_waiter(Event event, EventWaiter *waiter)
     {
-      EventTracer::trace_event(event.id, event.gen, EventTracer::ACT_WAIT);
+#ifdef EVENT_TRACING
+      {
+        EventTraceItem &item = Tracer<EventTraceItem>::trace_item();
+        item.event_id = event.id;
+        item.event_gen = event.gen;
+        item.action = EventTraceItem::ACT_WAIT;
+      }
+#endif
       bool trigger_now = false;
 
       int subscribe_owner = -1;
@@ -1689,7 +1712,14 @@ namespace RegionRuntime {
 
     bool Event::Impl::has_triggered(Event::gen_t needed_gen)
     {
-      EventTracer::trace_event(me.id, needed_gen, EventTracer::ACT_QUERY);
+#ifdef EVENT_TRACING
+      {
+        EventTraceItem &item = Tracer<EventTraceItem>::trace_item();
+        item.event_id = me.id;
+        item.event_gen = needed_gen;
+        item.action = EventTraceItem::ACT_QUERY;
+      }
+#endif
       return (needed_gen <= generation);
     }
     
@@ -1697,7 +1727,14 @@ namespace RegionRuntime {
     {
       log_event(LEVEL_SPEW, "event triggered: event=%x/%d by node %d", 
 		me.id, gen_triggered, trigger_node);
-      EventTracer::trace_event(me.id, gen_triggered, EventTracer::ACT_TRIGGER);
+#ifdef EVENT_TRACING
+      {
+        EventTraceItem &item = Tracer<EventTraceItem>::trace_item();
+        item.event_id = me.id;
+        item.event_gen = gen_triggered;
+        item.action = EventTraceItem::ACT_TRIGGER;
+      }
+#endif
       //printf("[%d] TRIGGER %x/%d\n", gasnet_mynode(), me.id, gen_triggered);
       std::deque<EventWaiter *> to_wake;
       {
@@ -1884,12 +1921,32 @@ namespace RegionRuntime {
       } while(0);
 
       if(req_forward_target != -1)
+      {
 	LockRequestMessage::request(req_forward_target, args);
+#ifdef LOCK_TRACING
+        {
+          LockTraceItem &item = Tracer<LockTraceItem>::trace_item();
+          item.lock_id = impl->me.id;
+          item.owner = req_forward_target;
+          item.action = LockTraceItem::ACT_FORWARD_REQUEST;
+        }
+#endif
+      }
 
       if(grant_target != -1)
+      {
 	LockGrantMessage::request(grant_target, g_args,
 				  impl->local_data, impl->local_data_size,
 				  PAYLOAD_KEEP);
+#ifdef LOCK_TRACING
+        {
+          LockTraceItem &item = Tracer<LockTraceItem>::trace_item();
+          item.lock_id = impl->me.id;
+          item.owner = grant_target;
+          item.action = LockTraceItem::ACT_REMOTE_GRANT;
+        }
+#endif
+      }
     }
 
     /*static*/ void /*Lock::Impl::*/handle_lock_release(LockReleaseArgs args)
@@ -1960,6 +2017,14 @@ namespace RegionRuntime {
 	       in_use);
 
 	if(owner == gasnet_mynode()) {
+#ifdef LOCK_TRACING
+          {
+            LockTraceItem &item = Tracer<LockTraceItem>::trace_item();
+            item.lock_id = me.id;
+            item.owner = gasnet_mynode();
+            item.action = LockTraceItem::ACT_LOCAL_REQUEST;
+          }
+#endif
 	  // case 1: we own the lock
 	  // can we grant it?
 	  if((count == ZERO_COUNT) || ((mode == new_mode) && (mode != MODE_EXCL))) {
@@ -1967,6 +2032,14 @@ namespace RegionRuntime {
 	    count++;
 	    log_lock.spew("count ++(1) [%p]=%d", &count, count);
 	    got_lock = true;
+#ifdef LOCK_TRACING
+            {
+              LockTraceItem &item = Tracer<LockTraceItem>::trace_item();
+              item.lock_id = me.id;
+              item.owner = gasnet_mynode();
+              item.action = LockTraceItem::ACT_LOCAL_GRANT;
+            }
+#endif
 	  }
 	} else {
 	  // somebody else owns it
@@ -2012,7 +2085,17 @@ namespace RegionRuntime {
       }
 
       if(lock_request_target != -1)
+      {
 	LockRequestMessage::request(lock_request_target, args);
+#ifdef LOCK_TRACING
+        {
+          LockTraceItem &item = Tracer<LockTraceItem>::trace_item();
+          item.lock_id = me.id;
+          item.owner = lock_request_target;
+          item.action = LockTraceItem::ACT_REMOTE_REQUEST;
+        }
+#endif
+      }
 
       // if we got the lock, trigger an event if we were given one
       if(got_lock && after_lock.exists()) 
@@ -2061,6 +2144,14 @@ namespace RegionRuntime {
 	local_waiters.erase(it);  // actually pull list off map!
 	// TODO: can we share with any other nodes?
       }
+#ifdef LOCK_TRACING
+      {
+        LockTraceItem &item = Tracer<LockTraceItem>::trace_item();
+        item.lock_id = me.id;
+        item.owner = gasnet_mynode();
+        item.action = LockTraceItem::ACT_LOCAL_GRANT;
+      }
+#endif
 
       return true;
     }
@@ -2128,12 +2219,32 @@ namespace RegionRuntime {
       } while(0);
 
       if(release_target != -1)
+      {
 	LockReleaseMessage::request(release_target, r_args);
+#ifdef LOCK_TRACING
+        {
+          LockTraceItem &item = Tracer<LockTraceItem>::trace_item();
+          item.lock_id = me.id;
+          item.owner = release_target;
+          item.action = LockTraceItem::ACT_REMOTE_RELEASE;
+        }
+#endif
+      }
 
       if(grant_target != -1)
+      {
 	LockGrantMessage::request(grant_target, g_args,
 				  local_data, local_data_size,
 				  PAYLOAD_KEEP);
+#ifdef LOCK_TRACING
+        {
+          LockTraceItem &item = Tracer<LockTraceItem>::trace_item();
+          item.lock_id = me.id;
+          item.owner = grant_target;
+          item.action = LockTraceItem::ACT_REMOTE_GRANT;
+        }
+#endif
+      }
 
       for(std::deque<Event>::iterator it = to_wake.begin();
 	  it != to_wake.end();
@@ -6931,6 +7042,9 @@ namespace RegionRuntime {
 #ifdef EVENT_TRACING
     static char *event_trace_file = 0;
 #endif
+#ifdef LOCK_TRACING
+    static char *lock_trace_file = 0;
+#endif
 
     /*static*/ Machine *Machine::get_machine(void) { return the_machine; }
 
@@ -6998,7 +7112,11 @@ namespace RegionRuntime {
       bool     active_msg_sender_threads = false;
 #ifdef EVENT_TRACING
       size_t   event_trace_block_size = 1 << 20;
-      double   event_trace_exp_evtrate = 1e3;
+      double   event_trace_exp_arrv_rate = 1e3;
+#endif
+#ifdef LOCK_TRACING
+      size_t   lock_trace_block_size = 1 << 10;
+      double   lock_trace_exp_arrv_rate = 1e1;
 #endif
 
       for(int i = 1; i < *argc; i++) {
@@ -7034,6 +7152,16 @@ namespace RegionRuntime {
 #endif
 	  continue;
 	}
+
+        if (!strcmp((*argv)[i], "-ll:locktrace"))
+        {
+#ifdef LOCK_TRACING
+          lock_trace_file = strdup((*argv)[++i]);
+#else
+          fprintf(stderr, "WARNING: lock tracing requested, but not enabled at compile time!\n");
+#endif
+          continue;
+        }
       }
 
       Logger::init(*argc, (const char **)*argv);
@@ -7083,9 +7211,16 @@ namespace RegionRuntime {
       Clock::synchronize();
 
 #ifdef EVENT_TRACING
-      if(event_trace_file != 0)
-	EventTracer::init_trace(event_trace_block_size,
-				event_trace_exp_evtrate);
+      // Always initialize even if we won't dump to file, otherwise segfaults happen
+      // when we try to save event info
+      Tracer<EventTraceItem>::init_trace(event_trace_block_size,
+                                         event_trace_exp_arrv_rate);
+#endif
+#ifdef LOCK_TRACING
+      // Always initialize even if we won't dump to file, otherwise segfaults happen
+      // when we try to save lock info
+      Tracer<LockTraceItem>::init_trace(lock_trace_block_size,
+                                        lock_trace_exp_arrv_rate);
 #endif
 	
       //gasnet_seginfo_t seginfos = new gasnet_seginfo_t[num_nodes];
@@ -7363,9 +7498,18 @@ namespace RegionRuntime {
 #ifdef EVENT_TRACING
       if(event_trace_file) {
 	printf("writing event trace to %s\n", event_trace_file);
-	EventTracer::dump_trace(event_trace_file, false);
+        Tracer<EventTraceItem>::dump_trace(event_trace_file, false);
 	free(event_trace_file);
 	event_trace_file = 0;
+      }
+#endif
+#ifdef LOCK_TRACING
+      if (lock_trace_file)
+      {
+        printf("writing lock trace to %s\n", lock_trace_file);
+        Tracer<LockTraceItem>::dump_trace(lock_trace_file, false);
+        free(lock_trace_file);
+        lock_trace_file = 0;
       }
 #endif
       gasnet_exit(0);
