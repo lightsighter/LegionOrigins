@@ -1,4 +1,4 @@
-DOC=legion-types
+DOC=legion-types-full
 
 # dependencies via include files
 INCLUDED_TEX = legion-types-full.tex conclusion.tex outline.tex langdef.tex intro.tex evaluation.tex related.tex example.tex
