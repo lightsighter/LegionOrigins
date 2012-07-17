@@ -210,11 +210,11 @@ void top_level_task(const void *args, size_t arglen, Processor p)
     final_event.wait();
     clock_gettime(CLOCK_MONOTONIC, &stop);
 
-    double latency = 1e6 * (stop.tv_sec - start.tv_sec) +
-                      1e-3 * (stop.tv_nsec - start.tv_nsec); 
+    double latency = 1e3 * (stop.tv_sec - start.tv_sec) +
+                      1e-6 * (stop.tv_nsec - start.tv_nsec); 
     fprintf(stdout,"Total time: %7.3f us\n", latency);
     double grants_per_sec = locks_per_processor * tasks_per_processor_per_lock * all_procs.size() / latency;
-    fprintf(stdout,"Lock Grants/s (in Millions): %7.3f us\n", grants_per_sec);
+    fprintf(stdout,"Lock Grants/s (in Thousands): %7.3f\n", grants_per_sec);
   }
   
   // Tell everyone to shutdown
