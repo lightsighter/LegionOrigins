@@ -266,6 +266,7 @@ def plot_event_lifetimes(dynamic_events,outdir):
     # make the plot
     make_event_lifetimes_plot(outdir,dynamic_time,dynamic_event_list,physical_event_list,liveness_time,liveness_list)
     
+    
 def make_waiter_ratios_plot(outdir,most_waiters,local_waiters_list,total_waiters_list):
     fig = plt.figure(figsize=(10,7))
     plt.plot([0,most_waiters],[0,most_waiters],'k-')
@@ -274,6 +275,33 @@ def make_waiter_ratios_plot(outdir,most_waiters,local_waiters_list,total_waiters
     plt.ylabel('Number of Local Waiters')
     if outdir <> None:
         fig.savefig(outdir+'/waiter_ratios.pdf',format='pdf',bbox_inches='tight')
+   
+# An alternate way to plot the ratio of local waiters to total waiters
+    """
+def make_waiter_ratios_plot(outdir,most_waiters,local_waiters_list,total_waiters_list):
+    fig = plt.figure(figsize=(10,7))
+    # compute the ratios and put them in a list to make a histogram from
+    ratio_list = list()
+    assert len(local_waiters_list) == len(total_waiters_list)
+    for idx in range(len(local_waiters_list)):
+        if total_waiters_list[idx] == 0:
+            continue
+        assert local_waiters_list[idx] >= 0
+        assert total_waiters_list[idx] > 0
+        assert local_waiters_list[idx] <= total_waiters_list[idx]
+        ratio = float(local_waiters_list[idx])/float(total_waiters_list[idx])
+        ratio_list.append(ratio)
+    bins = list()
+    current = 0.0
+    dx = 0.05
+    while current <= 1.0:
+        bins.append(current)
+        current = current + dx
+    n, bins, patches = plt.hist(ratio_list,bins,facecolor=tableau13)
+    plt.xlabel('Local Waiters/Total Waiters Ratio')
+    plt.ylabel('Dynamic Event Count')
+    plt.grid(True)
+    """
 
 def plot_waiter_ratios(dynamic_events,outdir):
     smallest_ratio = 1.0
@@ -352,9 +380,11 @@ def handle_preprocessed_file(file_name,outdir):
                 most_waiters = val[1]
         # make the second plot
         make_waiter_ratios_plot(outdir,most_waiters,local_waiters_list,total_waiters_list)
+        """
     except:
         print "Really bad!  Mismatch reading preprocessed file"
         sys.exit(1)
+        """
     finally:
         f.close()
     
@@ -377,6 +407,7 @@ def main():
         usage()
 
     if preprocessed <> None:
+        print "Using pre-processed file "+str(preprocessed)
         handle_preprocessed_file(preprocessed,outdir)
     else:
         file_name = args[0]
