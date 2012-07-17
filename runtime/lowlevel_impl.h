@@ -59,10 +59,10 @@ namespace RegionRuntime {
     struct EventTraceItem {
     public:
       enum Action {
-        ACT_CREATE,
-        ACT_QUERY,
-        ACT_TRIGGER,
-        ACT_WAIT,
+        ACT_CREATE = 0,
+        ACT_QUERY = 1,
+        ACT_TRIGGER = 2,
+        ACT_WAIT = 3,
       };
     public:
       unsigned time_units, event_id, event_gen, action;
@@ -74,12 +74,12 @@ namespace RegionRuntime {
     struct LockTraceItem {
     public:
       enum Action {
-        ACT_LOCAL_REQUEST, // request for a lock where the owner is local
-        ACT_REMOTE_REQUEST, // request for a lock where the owner is not local
-        ACT_FORWARD_REQUEST, // for forwarding of requests
-        ACT_LOCAL_GRANT, // local grant of the lock
-        ACT_REMOTE_GRANT, // remote grant of the lock (change owners)
-        ACT_REMOTE_RELEASE, // remote release of a shared lock
+        ACT_LOCAL_REQUEST = 0, // request for a lock where the owner is local
+        ACT_REMOTE_REQUEST = 1, // request for a lock where the owner is not local
+        ACT_FORWARD_REQUEST = 2, // for forwarding of requests
+        ACT_LOCAL_GRANT = 3, // local grant of the lock
+        ACT_REMOTE_GRANT = 4, // remote grant of the lock (change owners)
+        ACT_REMOTE_RELEASE = 5, // remote release of a shared lock
       };
     public:
       unsigned time_units, lock_id, owner, action;

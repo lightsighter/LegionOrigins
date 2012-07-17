@@ -594,7 +594,7 @@ namespace RegionRuntime {
                 ptr += sizeof(double);
                 *((unsigned*)ptr) = gasnet_mynode();
                 ptr += sizeof(unsigned);
-                *((ITEM*)ptr) = block->items[i];
+                memcpy(ptr,&(block->items[i]),sizeof(ITEM));
                 ptr += sizeof(ITEM);
 	      }
 
@@ -7124,8 +7124,8 @@ namespace RegionRuntime {
       double   event_trace_exp_arrv_rate = 1e3;
 #endif
 #ifdef LOCK_TRACING
-      size_t   lock_trace_block_size = 1 << 10;
-      double   lock_trace_exp_arrv_rate = 1e1;
+      size_t   lock_trace_block_size = 1 << 20;
+      double   lock_trace_exp_arrv_rate = 1e2;
 #endif
 
       for(int i = 1; i < *argc; i++) {
