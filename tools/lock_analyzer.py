@@ -162,6 +162,39 @@ def plot_request_message_ratios(lock_table,outdir):
     if outdir <> None:
         fig.savefig(outdir+'/lock_remote_messages.pdf',format='pdf',bbox_inches='tight')
 
+def plot_movement_histogram(lock_table,outdir):
+    moves_list = list()
+    largest = 0
+    for l in lock_table:
+        moves = lock_table[l].get_remote_grants()
+        #if moves > 50:
+        #    continue
+        moves_list.append(moves)
+        if moves > largest:
+            largest = moves
+    
+    fig = plt.figure(figsize=(10,7))
+    plt.semilogy()
+    bins = None
+    if largest < 10:
+        bins = range(10)
+    else:
+        bins = range(largest)
+    n, bins, patches = plt.hist(moves_list,bins,facecolor=tableau13)
+    # Find the biggest bar and last bin
+    largest = 0
+    for b in n:
+        if b > largest:
+            largest = b
+    last = 0
+    for b in bins:
+        last = b
+    plt.xlabel('Lock Movements')
+    plt.ylabel('Count')
+    plt.ylim(ymin=0.2)
+    plt.grid(True)
+
+
 def print_statistics(lock_table):
     zero_am = 0
     one_am = 0
@@ -256,11 +289,12 @@ def main():
     print "Found "+str(len(lock_table))+" locks"
 
     #plot_request_message_ratios(lock_table,outdir)
+    plot_movement_histogram(lock_table,outdir)
 
     print_statistics(lock_table)
 
-    #if show:
-    #    plt.show()
+    if show:
+        plt.show()
 
     
 
