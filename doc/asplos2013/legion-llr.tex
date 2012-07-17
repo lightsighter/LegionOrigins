@@ -1,6 +1,5 @@
-\documentclass[preprint]{sig-alternate}
+\documentclass{sig-alternate}
 
-\bibliographystyle{plainnat}
 \usepackage{amsmath}
 %\usepackage{amsthm}
 \usepackage{listings}
@@ -25,9 +24,19 @@
 
 \begin{document}
 
-\title{Asynchronous High-Performance Language Primitives for Distributed Heterogeneous Architectures}
+\title{High-Performance Language Primitives for Distributed Architectures using Asynchronous Events}
 \numberofauthors{3}
-\author{}
+\author{
+\alignauthor Sean Treichler\\
+             \affaddr{Stanford University} \\
+             \email{sjt@cs.stanford.edu}
+\alignauthor Michael Bauer \\
+             \affaddr{Stanford University} \\
+             \email{mebauer@cs.stanford.edu}
+\alignauthor Alex Aiken \\
+             \affaddr{Stanford University} \\
+             \email{aiken@cs.stanford.edu}
+}
 \maketitle
 
 \begin{abstract}
@@ -57,16 +66,19 @@ of an advanced runtime system.  We measure the performance of three real-world a
 that use our system on the Keeneland supercomputer.
 \end{abstract}
 
-\section{Introduction}
-\label{sect:intro}
-Introduction goes here\cite{Keeneland}.
-
-\input{outline}
+%\input{outline}
+\input{intro}
+\input{interface}
+\input{impl}
+\input{micro}
+\input{results}
+\input{related}
 
 \input{conclusion}
 
 {
 \small
+\bibliographystyle{abbrv}
 \bibliography{bibliography}
 }
 
