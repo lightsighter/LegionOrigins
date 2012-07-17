@@ -79,7 +79,7 @@ class Lock(object):
 
     def get_local_grants(self):
         result = 0
-        for r in self.requests:
+        for r in self.grants:
             if r.action == 3:
                 assert r.owner == r.location
                 result = result + 1
@@ -87,9 +87,9 @@ class Lock(object):
 
     def get_remote_grants(self):
         result = 0
-        for r in self.requests:
+        for r in self.grants:
             if r.action == 4:
-                assert r.owner == r.location
+                assert r.owner <> r.location
                 result = result + 1
         return result
 
@@ -162,6 +162,69 @@ def plot_request_message_ratios(lock_table,outdir):
     if outdir <> None:
         fig.savefig(outdir+'/lock_remote_messages.pdf',format='pdf',bbox_inches='tight')
 
+def print_statistics(lock_table):
+    zero_am = 0
+    one_am = 0
+    two_am = 0
+    other_am = 0
+    zero_moves = 0
+    one_moves = 0
+    two_moves = 0
+    other_moves = 0
+    total_requests = 0
+    total_remote_requests = 0
+    total_local_requests = 0
+    total_forwards = 0
+    total_remote_grants = 0
+    total_local_grants = 0
+    total_releases = 0
+    for l in lock_table:
+        total_messages = lock_table[l].get_total_messages()
+        if total_messages == 0:
+            zero_am = zero_am + 1
+        elif total_messages == 1:
+            one_am = one_am + 1
+        elif total_messages == 2:
+            two_am = two_am + 1
+        else:
+            other_am = other_am + 1
+        moves = lock_table[l].get_remote_grants()
+        if moves == 0:
+            zero_moves = zero_moves + 1
+        elif moves == 1:
+            one_moves = one_moves + 1
+        elif moves == 2:
+            two_moves = two_moves + 1
+        else:
+            other_moves = other_moves + 1
+        total_requests = total_requests + len(lock_table[l].requests)
+        total_remote_requests = total_remote_requests + lock_table[l].get_remote_requests()
+        total_local_requests = total_local_requests + lock_table[l].get_local_requests()
+        total_forwards = total_forwards + len(lock_table[l].forwards)
+        total_remote_grants = total_remote_grants + lock_table[l].get_remote_grants()
+        total_local_grants = total_local_grants + lock_table[l].get_local_grants()
+        total_releases = total_releases + len(lock_table[l].releases)
+    print "Active Message Distribution"
+    print "\tZero AM: "+str(zero_am)
+    print "\tOne AM: "+str(one_am)
+    print "\tTwo AM: "+str(two_am)
+    print "\tOther AM: "+str(other_am)
+    print ""
+    print "Lock Move Distribution"
+    print "\tZero Moves: "+str(zero_moves)
+    print "\tOne Move: "+str(one_moves)
+    print "\tTwo Moves: "+str(two_moves)
+    print "\tOther Moves: "+str(other_moves)
+    print ""
+    print "Operation Statistics"
+    print "\tTotal Requests: "+str(total_requests)
+    print "\tRemote Requests: "+str(total_remote_requests)
+    print "\tLocal Requests: "+str(total_local_requests)
+    print "\tForwards: "+str(total_forwards)
+    print "\tRemote Grants: "+str(total_remote_grants)
+    print "\tLocal Grants: "+str(total_local_grants)
+    print "\tReleases: "+str(total_releases)
+
 
 def usage():
     print "Usage: "+sys.argv[0]+" [-d (output directory)] [-s] log_file_name"
@@ -192,10 +255,12 @@ def main():
 
     print "Found "+str(len(lock_table))+" locks"
 
-    plot_request_message_ratios(lock_table,outdir)
+    #plot_request_message_ratios(lock_table,outdir)
 
-    if show:
-        plt.show()
+    print_statistics(lock_table)
+
+    #if show:
+    #    plt.show()
 
     
 
