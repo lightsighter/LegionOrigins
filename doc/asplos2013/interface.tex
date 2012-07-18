@@ -1,3 +1,243 @@
 
 \section{Programming Interface}
 \label{sec:interface}
+
+The Legion Low-Level Runtime (LLR) interface organizes
+functionality into objects.  Objects are grouped into
+four different categories: machine objects for describing
+the underlying architecture, events for capturing dependences,
+deferred locks for performing synchronization, and physical regions
+for managing data.  In all cases, the objects are light-weight
+{\em handles} that can be passed around by value.  Furthermore
+every handle is valid everywhere in the system.  This property allows 
+a programmer to pass handles by value between computations without
+having to reason about the distributed nature of the system.
+We describe how we support this property in more detail in 
+Section~\ref{sec:impl}.
+
+\lstset{
+  captionpos=b,
+  language=C++,
+  basicstyle=\scriptsize,
+  numbers=left,
+  numberstyle=\tiny,
+  columns=fullflexible,
+  stepnumber=1,
+  escapechar=\#,
+  keepspaces=true,
+  %literate={<}{{$\langle$}}1 {>}{{$\rangle$}}1,
+  %morekeywords={region,coloring,partition,spawn,disjoint,aliased},
+  %deletekeywords=float,
+}
+\subsection{Machine Interface}
+\label{subsec:machmodel}
+Listing~\ref{lst:machineapi} shows the machine interface.  The machine interface 
+contains three different object types: {\tt Processor} (line 1), {\tt Memory} (line 17), and a 
+singleton {\tt Machine} object (line 22).  For every processor (i.e. CPU core or GPU) in 
+the system there exists a unique {\tt Processor} handle naming that processor.  
+{\tt Processor} objects support a single {\tt spawn} operation (line 13-14) that will
+launch a {\em task} on that processor.  Note that because the {\tt spawn} operation
+is invoked on a processor handle, it is possible to launch a task on any
+processor from anywhere in the system.  The {\tt spawn} call takes as arguments
+the {\tt TaskFuncID} of the task to be run, a pointer to and size of arguments to
+be passed to the task, and an optional {\tt Event} (described in Section~\ref{subsec:events})
+that must trigger before the task can begin.  The result of the {\tt spawn} call
+is an {\tt Event} that will trigger when the task completes. 
+
+For every memory in the system there also exists a unique {\tt Memory} handle. 
+Different memories often, but not always, imply a different address space.  For
+example, in a large cluster each node would have a different {\tt Memory} handle
+corresponding to each node's memory.
+However, if the cluster supported multiple GPUs then there would be a different
+{\tt Memory} handle for each GPU's {\em zero-copy} memory which shares part of the 
+address space with the corresponding node memory.  Memories will be used for describing
+the placement of data described in Section~\ref{subsec:phyreg}.
+
+The {\tt Machine} object is a singleton object that serves two purposes.  First, it
+is the mechanism for initializing the runtime; at the start of a program the programmer
+creates a {\tt Machine} object and invokes the {\tt run} method (line 30-31).
+Second, the {\tt Machine} object provides an interface for the programmer to 
+discover properties of the underlying machine (lines 35-43).  The {\tt Machine} object maintains
+sets of all the {\tt Processor} and all the {\tt Memory} handles in the system.
+The {\tt Machine} also maintains two relations between these sets:
+
+\begin{itemize}
+\item Processor-Memory: for each {\tt Processor} and each {\tt Memory} whether
+the {\tt Processor} can directly access (read and write) the {\tt Memory} and 
+latency and bandwidth properties if access is possible
+\item Memory-Memory: for every pair of {\tt Memory} whether a copy can be
+performed between the two memories and latency 
+bandwidth properties if a copy is possible
+\end{itemize}
+
+The programmer can query these two relations by the {\tt get\_*\_affinity} calls
+(lines 40-43).  These calls populate a vector with affinity structures (not shown)
+that contain latency and bandwidth information.  The programmer can restrict the query
+by specifying a specific processor or memory, otherwise information is returned
+about all processors and memories in the system.  
+
+\begin{lstlisting}[float={t},label={lst:machineapi},caption={Machine Interface.}]
+class Processor {
+public:
+  const unsigned id;
+  typedef unsigned TaskFuncID;
+  typedef void (*TaskFuncPtr)
+            (const void *args,size_t arglen,Processor p);
+  typedef map<TaskFuncID, TaskFuncPtr> TaskIDTable;
+
+  enum Kind {
+    CPU_PROC,GPU_PROC,// ... future processor types
+  };
+
+  Event spawn(TaskFuncID func_id,const void *args,size_t arglen,
+              Event wait_on = Event::NO_EVENT) const;
+};
+
+class Memory {
+public:
+  const unsigned id;
+};
+
+class Machine {
+public:
+  Machine(int *argc, char ***argv,
+          const Processor::TaskIDTable &task_table);
+  enum RunStyle {
+    ONE_TASK_ONLY,ONE_TASK_PER_NODE,
+    ONE_TASK_PER_PROCESSOR,
+  };
+  void run(Processor::TaskFuncID task_id = 0, 
+        RunStyle = ONE_TASK_ONLY, const void *args, size_t arglen);
+public:
+  static Machine* get_machine(void); // pointer to Machine
+  // References to all processors and memories
+  const set<Memory>& get_all_memories(void) const;
+  const set<Processor>& get_all_processors(void) const;
+  Processor::Kind get_processor_kind(Processor p) const;
+  size_t get_memory_size(Memory m) const;
+  // Query properties of underlying hardware
+  int get_proc_mem_affinity(vector<ProcMemAffinity &result,
+          Processor restrict_proc = 0, Memory restrict_mem = 0);
+  int get_mem_mem_affinity(vector<MemMemAffinity> &result,
+          Memory restrict_mem1 = 0, Memory restrict_mem2 = 0);
+};
+\end{lstlisting}
+
+
+\subsection{Events}
+\label{subsec:events}
+Listing~\ref{lst:eventapi} shows the interface for events.  
+{\tt Event} is the base type of events.  An instance of an {\tt Event} type 
+names a unique event in the system.  {\tt NO\_EVENT} (line 5) is a special instance
+of an event that by definition has always triggered.  The {\tt Event} interface
+also supports testing whether an event has triggered (line 7) and waiting on
+an event to trigger (line 9).  While these methods can be useful, the most common
+use of events is passing them as preconditions for operations such as the {\tt spawn}
+call described in Section~\ref{subsec:machmodel}.  The programmer can use the
+{\tt merge\_events} call (line 11) to create an event corresponding to the 
+conjunction of a set of events when multiple events are a precondition for an operation.
+
+In most cases events are created by the runtime as the result of other
+operations and the runtime is responsible for triggering these events.  Users 
+can create a special type of event called a {\tt UserEvent} (line 14) that the
+user has the power to trigger.  {\tt UserEvent} is a sub-type of {\tt Event} 
+that has {\tt trigger} method (line 17).  Users can also create another
+type of event called a {\tt Barrier} that will require multiple arrivals before
+the event is triggered.  The user can manage the number of arrivals that must
+be seen as well as how many arrivals occur at a time.  Note that since {\tt UserEvent}
+and {\tt Barrier} are sub-types of {\tt Event} they can be used wherever an
+{\tt Event} is required.
+
+\begin{lstlisting}[float={t},label={lst:eventapi},caption={Event Interface.}]
+class Event {
+public:
+  const unsigned id;
+  const unsigned gen;
+  static const Event NO_EVENT;
+  // check if an event has triggered
+  bool has_triggered() const;
+  // wait on the event
+  void wait() const;
+  // Merge events together to a new event
+  static Event merge_events(const set<Event> &to_merge);
+};
+
+class UserEvent : public Event {
+public:
+  static UserEvent create_user_event();
+  void trigger() const;
+};
+
+class Barrier : public Event {
+public:
+  static Barrier create_barrier(unsigned expected_arrivals);
+  void alter_arrival_count(int delta) const;
+  void arrive(unsigned count = 1) const;
+};
+\end{lstlisting}
+
+\subsection{Deferred Locks}
+\label{subsec:locks}
+Deferred locks are a new synchronization mechanism that has different semantics from
+blocking locks.  From here on we refer to locks and deferred locks interchangeably, 
+but will refer to blocking locks explicitly.  Listing~\ref{lst:lockapi} shows the 
+interface for locks.  Unlike blocking locks, the {\tt lock} method (line 4) doesn't
+block but instead always returns immediately with an event that will be triggered
+when the lock has been acquired.  If the lock can be acquired immediately then a {\tt NO\_EVENT}
+is returned.  The {\tt lock} method also takes an optional event
+parameter indicating that the lock acquire shouldn't be performed until the event
+has triggered.  Similarly, the {\tt unlock} method (line 5) takes an optional event parameter indicating
+an event to wait for before performing the unlock operation.
+
+Deferred locks provide a super-set of the functionality of blocking locks.  As their
+name suggests, deferred locks can use the event corresponding to their lock acquire
+operation to defer execution until the lock acquire has been granted.  Deferred
+locks can also be converted back into a blocking lock by immediately waiting on the event
+returned from a call to {\tt lock}.  In addition, deffered locks also provide {\tt mode} and
+and {\tt exclusive} parameters that allow the user to specify whether other requests can acquire
+the lock simultaneously.  A lock can only be acquired in one mode at a time.  The
+{\tt exclusive} parameter specifies whether other owners are permitted once the
+current lock request is granted.
+
+An important difference between deferred locks and blocking locks is that the processor
+that requests the lock doesn't have to be the one that uses it.  A common
+convention in writing code with deferred locks is to acquire locks for a task being
+launched.  Listing~\ref{lst:lockapi} illustrates this with a simple example.  The
+{\tt launcher\_task} is calling a sub-task that is going to require the {\tt needed}
+lock.  A lock request is issued and the resulting {\tt lock\_event} is used as
+a precondition for launching the {\tt SUB\_TASK} task.  The unlock operation is then
+precondition on the event corresponding to {\tt SUB\_TASK} task's completion.  The
+sub-task can run safely while holding the lock and the lock is released when the task
+sub-task completes.  Using deferred locks in this style minimizes the time
+compute resources spend waiting on locks by ensuring tasks only run when their needed
+locks have already been acquired.
+
+\begin{lstlisting}[float={t},label={lst:lockapi},caption={Deferred Lock Interface and Example.}]
+class Lock {
+public:
+  const unsigned id;
+  Event lock(unsigned mode = 0, bool exclusive, 
+              Event wait_on = Event::NO_EVENT) const;
+  void unlock(Event wait_on = Event::NO_EVENT) const;
+  // Create a new lock, destroy an existing lock
+  static Lock create_lock();
+  void destroy_lock();
+};
+
+void launcher_task(const void *args, size_t arglen, Processor p) {
+  ...
+  // Unpack lock from arguments
+  Lock needed = ...
+  // Acquire lock
+  Event lock_event = needed.lock();
+  // Launch task
+  Event task_event = p.spawn(SUB_TASK,NULL,0,lock_event);
+  // Release lock
+  needed.unlock(task_event);
+  ...
+}
+\end{lstlisting}
+
+\subsection{Physical Regions}
+\label{subsec:phyreg}
+
