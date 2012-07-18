@@ -241,3 +241,54 @@ void launcher_task(const void *args, size_t arglen, Processor p) {
 \subsection{Physical Regions}
 \label{subsec:phyreg}
 
+The LLR interface uses {\em physical regions} as an abstraction for reasoning about
+the placement and movement of data in the memory hierarchy.  Physical regions imply a specific
+allocation of data in a single memory in the memory hierarchy.  Listing~\ref{lst:regionapi} 
+shows a subset of the physical region interface.  The first object in the interface
+is a {\tt RegionMetaData} object (line 1).  {\tt RegionMetaData} objects 
+do not actually allocate data, but instead provide an interface for the
+creation of physical regions called {\tt RegionInstance} objects (line 17).  {\tt RegionMetaData}
+objects are crucial for the movement of data by the runtime.  The runtime is only able
+to copy data between two {\tt RegionInstance} objects that were created by the
+same {\tt RegionMetaData} object.  A runtime error will be generated if a copy is attempted
+between two {\tt RegionInstance} objects that were not created by the same {\tt RegionMetaData}.
+
+When creating a {\tt RegionInstance} object the programmer must specify the {\tt Memory}
+in which the instance is going to be allocated (line 10).  Once the {\tt RegionInstance} is created it
+cannot be moved.   There is no coherence of data between {\tt RegionInstance} objects of the
+same {\tt RegionMetaData}.  It is the programmer's responsiblity to manage data coherence
+using copies between {\tt RegionInstance} objects (line 22-23).  Just like other operations
+copies can be predicated on an {\tt Event} and return an {\tt Event} corresponding to
+completion.  A copy between two {\tt RegionInstance} objects can only be performed if copies
+are permitted between their two memories.  A test of whether copies can be performed can be performed 
+by a query of the {\tt Machine} object (see Section~\ref{subsec:machmodel}).
+
+
+
+\begin{lstlisting}[float={t},label={lst:regionapi},caption={Subset of Physical Region Interface.}]
+class RegionMetaData {
+public:
+  const unsigned id;
+  static const RegionMetaData NO_REGION;
+  // Create and destroy metadatas
+  static RegionMetaData create_region(size_t num_elmts, 
+                                      size_t elmt_size);
+  void destroy_region() const;
+  // Create and destroy instances
+  RegionInstance create_instance(Memory memory) const;
+  void destroy_instance(RegionInstance instance) const;
+  // Create a physical instance only for reductions
+  RegionInstance create_instance(Memory memory, 
+                        ReductionOpID redopid) const;
+};
+
+class RegionInstance {
+public:
+  const unsigned id;
+  static const RegionInstance NO_INST;
+  // Copy between instances
+  Event copy_to(RegionInstance target, 
+                Event wait_on = Event::NO_EVENT);
+};
+\end{lstlisting}
+
