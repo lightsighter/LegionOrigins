@@ -2,13 +2,13 @@
 \section{Programming Interface}
 \label{sec:interface}
 
-The Legion Low-Level Runtime (LLR) interface organizes
+The runtime interface organizes
 functionality into objects.  Objects are grouped into
 four different categories: machine objects for describing
 the underlying architecture, events for capturing dependences,
 deferred locks for performing synchronization, and physical regions
 for managing data.  In all cases, the objects are light-weight
-{\em handles} that can be passed around by value.  Furthermore
+{\em handles} that can be copied and passed around by value.  Furthermore
 every handle is valid everywhere in the system.  This property allows 
 a programmer to pass handles by value between computations without
 having to reason about the distributed nature of the system.
@@ -34,7 +34,7 @@ Section~\ref{sec:impl}.
 Listing~\ref{lst:machineapi} shows the machine interface.  The machine interface 
 contains three different object types: {\tt Processor} (line 1), {\tt Memory} (line 17), and a 
 singleton {\tt Machine} object (line 22).  For every processor (i.e. CPU core or GPU) in 
-the system there exists a unique {\tt Processor} handle naming that processor.  
+the system there exists a {\tt Processor} handle with a unique ID naming that processor.  
 {\tt Processor} objects support a single {\tt spawn} operation (line 13-14) that will
 launch a {\em task} on that processor.  Note that because the {\tt spawn} operation
 is invoked on a processor handle, it is possible to launch a task on any
@@ -44,10 +44,10 @@ be passed to the task, and an optional {\tt Event} (described in Section~\ref{su
 that must trigger before the task can begin.  The result of the {\tt spawn} call
 is an {\tt Event} that will trigger when the task completes. 
 
-For every memory in the system there also exists a unique {\tt Memory} handle. 
+For every memory in the system there also exists a {\tt Memory} handle with a unique ID. 
 Different memories often, but not always, imply a different address space.  For
 example, in a large cluster each node would have a different {\tt Memory} handle
-corresponding to each node's memory.
+corresponding to each node's DRAM memory.
 However, if the cluster supported multiple GPUs then there would be a different
 {\tt Memory} handle for each GPU's {\em zero-copy} memory which shares part of the 
 address space with the corresponding node memory.  Memories will be used for describing
@@ -58,15 +58,15 @@ is the mechanism for initializing the runtime; at the start of a program the pro
 creates a {\tt Machine} object and invokes the {\tt run} method (line 30-31).
 Second, the {\tt Machine} object provides an interface for the programmer to 
 discover properties of the underlying machine (lines 35-43).  The {\tt Machine} object maintains
-sets of all the {\tt Processor} and all the {\tt Memory} handles in the system.
+sets of all the unique {\tt Processor} and {\tt Memory} handles in the system.
 The {\tt Machine} also maintains two relations between these sets:
 
 \begin{itemize}
-\item Processor-Memory: for each {\tt Processor} and each {\tt Memory} whether
+\item Processor-Memory: for each {\tt Processor} - {\tt Memory} pair whether
 the {\tt Processor} can directly access (read and write) the {\tt Memory} and 
 latency and bandwidth properties if access is possible
 \item Memory-Memory: for every pair of {\tt Memory} whether a copy can be
-performed between the two memories and latency 
+performed between the two memories and latency and
 bandwidth properties if a copy is possible
 \end{itemize}
 
@@ -144,7 +144,8 @@ user has the power to trigger.  {\tt UserEvent} is a sub-type of {\tt Event}
 that has {\tt trigger} method (line 17).  Users can also create another
 type of event called a {\tt Barrier} that will require multiple arrivals before
 the event is triggered.  The user can manage the number of arrivals that must
-be seen as well as how many arrivals occur at a time.  Note that since {\tt UserEvent}
+be seen as well as how many arrivals occur at a time.  Once a barrier's arrival
+count goes to zero, the barrier will trigger.  Note that since {\tt UserEvent}
 and {\tt Barrier} are sub-types of {\tt Event} they can be used wherever an
 {\tt Event} is required.
 
@@ -241,29 +242,60 @@ void launcher_task(const void *args, size_t arglen, Processor p) {
 \subsection{Physical Regions}
 \label{subsec:phyreg}
 
-The LLR interface uses {\em physical regions} as an abstraction for reasoning about
-the placement and movement of data in the memory hierarchy.  Physical regions imply a specific
+{\em Physical regions} are the mechanism for reasoning about
+the placement and movement of data in the runtime.  Physical regions are an 
 allocation of data in a single memory in the memory hierarchy.  Listing~\ref{lst:regionapi} 
 shows a subset of the physical region interface.  The first object in the interface
-is a {\tt RegionMetaData} object (line 1).  {\tt RegionMetaData} objects 
-do not actually allocate data, but instead provide an interface for the
-creation of physical regions called {\tt RegionInstance} objects (line 17).  {\tt RegionMetaData}
-objects are crucial for the movement of data by the runtime.  The runtime is only able
-to copy data between two {\tt RegionInstance} objects that were created by the
+is a {\tt RegionMetaData} object (line 1).  {\tt RegionMetaData} objects provide the interface for the
+creation of sets of physical regions that possess the same number and type of elements (but not necessarily
+the same data layout).  The runtime is only able
+to copy data between two physical regions that were created by the
 same {\tt RegionMetaData} object.  A runtime error will be generated if a copy is attempted
-between two {\tt RegionInstance} objects that were not created by the same {\tt RegionMetaData}.
+between two physical regions that were not created by the same {\tt RegionMetaData}.
 
-When creating a {\tt RegionInstance} object the programmer must specify the {\tt Memory}
-in which the instance is going to be allocated (line 10).  Once the {\tt RegionInstance} is created it
-cannot be moved.   There is no coherence of data between {\tt RegionInstance} objects of the
+An instance of a physical region is represented by a {\tt RegionInstance} object (line 17).
+When creating a physical region the programmer must specify the {\tt Memory}
+in which the physical region is going to be allocated (line 10).  Once the physical region is created it
+cannot be moved.   There is no coherence of data between physical regions created by the 
 same {\tt RegionMetaData}.  It is the programmer's responsiblity to manage data coherence
-using copies between {\tt RegionInstance} objects (line 22-23).  Just like other operations
+using copies between physical regions (line 22-23).  Just like other operations,
 copies can be predicated on an {\tt Event} and return an {\tt Event} corresponding to
-completion.  A copy between two {\tt RegionInstance} objects can only be performed if copies
-are permitted between their two memories.  A test of whether copies can be performed can be performed 
-by a query of the {\tt Machine} object (see Section~\ref{subsec:machmodel}).
+completion.  A copy between two physical regions can only be performed if copies
+are permitted between the two memories where the regions were created.  
+The legality of copies can be discovered using queries to the {\tt Machine} object
+described in Section~\ref{subsec:machmodel}.
 
+The data held inside a physical region is accessed by another kind of object called an
+{\em instance accessor} (not shown).  Accessors support read, write, and reduction operations
+to elements inside the physical region.  Accessors can be specialized for the case where
+all memory is known to be directly accessible to the executing processor, which allows 
+for direct references to elements.  In cases where not all memory is directly accessable, 
+accessors supply the level of indirection necessary to convert operations into remote 
+memory operations (RMAs).  %An example of this is described in more detail in Section~\ref{sec:impl}.
 
+One special (but common) case for applications is when reductions need to be performed.
+For reductions it is usually more efficient to store reduction
+operations in a local reduction buffer and then merge reduction buffers together at a later
+point in time.  To support this case the interface allows for the creation of a special kind
+of physical instance called a {\em reduction instance}.  The call to {\tt create\_instance} on
+lines 13-14 takes a {\em reduction operation} to be associated with a physical instance which
+tells the runtime to create a reduction instance.  Reduction instances can only be accessed
+using a reduction of the given reduction type; any other accesses will result in a runtime
+error.  A reduction operation is a functor which must have at least one method of the type
+$(T_1 \rightarrow T_2 \rightarrow T_1)$ which takes an element of type $T_1$ and a value
+to be reduced of type $T_2$ and creates and new element.  Reduction operations can also
+support two additional methods: a method that supplies an initial value of type $T_2$ and a 
+fold method of type $(T_2 \rightarrow T_2 \rightarrow T_2)$.  The presence of these methods
+enable additional runtime optimizations for reductions described in Section~\ref{sec:impl}.
+
+Reduction instances can be copied using the same interface as regular physical instances.
+It is only legal to copy a reduction instance to a regular physical instance or another
+reduction instance.  Any attempt to copy from a regular physical instance to a reduction
+instance will result in a runtime error.  A copy from a reduction instance to a regular
+physical instance will apply all the reductions in the reduction buffer to the physical
+instance.  If a copy is from one reduction instance to another, the two reduction buffers
+will be merged.  The semantics of a merge are dependent upon the underlying implementation
+of reduction buffers which is discussed in more detail in Section~\ref{sec:impl}.
 
 \begin{lstlisting}[float={t},label={lst:regionapi},caption={Subset of Physical Region Interface.}]
 class RegionMetaData {

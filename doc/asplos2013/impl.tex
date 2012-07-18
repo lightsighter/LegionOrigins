@@ -1,3 +1,52 @@
 
-\section{Implementation}
+\section{Runtime Implementation}
 \label{sec:impl}
+
+There are currently two implementations of our interface:
+one that works only on shared memory machines and another that
+runs on larges clusters with both CPUs and GPUs.  The shared-memory
+implementation uses the POSIX threads library.
+The implementation for heterogeneous clusters also uses POSIX
+threads as well as the CUDA runtime library for GPUs\cite{CUDA} and the GASNet
+API for large clusters\cite{GASNET07}.  
+
+The heterogeneous implementation
+models a cluster with CPUs and GPUs as having two types of processors 
+and four types of memory.  Every CPU core is a different CPU processor
+and every GPU is a GPU processor.  For every node in the system
+there is a memory corresponding to the DRAM associated with that node.  For
+every GPU in the system there are two memories corresponding to the framebuffer
+memory and the zero-copy memory associated with that GPU \footnote{Zero-copy 
+memory contains pages that are mapped in both framebuffer and node memory with
+coherence maintained by the PCI-E protocol.}. The last memory is 
+a global GASNet memory that represents pages that have been registered 
+with all nodes in the system for supporting remote memory accesses (RMAs).
+The GASNet memory provides the illusion of global memory.  CPU processors
+can directly access their node memory, all zero-copy memories for GPUs on
+their node, and the GASNet memory.  GPU processors can only access their
+framebuffer memory and their zero-copy memory.  Copies are permitted
+between all pairs of memory except between any framebuffer memory and
+the GASNet memory.
+
+To support inter-node operations our implementation relies on GASNet active
+messages for communication.  Active messages are a command and a payload
+that are sent remotely and cause a handler to be run on the target node.
+A simple example of our use of active messages can be illustrated by the 
+{\tt spawn} call on a {\tt Processor} object.  Consider that {\tt spawn}
+is invoked on a processor that is on a remote node from the node on which
+the currently running task is executing.  This operation is converted into
+an active message that contains all the information about the task launch.
+When the active message is handled by the remote node, the task and all its
+metadata are registered with the processor on which the task was launched.
+While most of the implementation of our heterogeneous runtime is straight
+forward, the next three sections describe in greater detail the nuances
+of the implementation of events, locks, and reduction instances.
+
+\subsection{Event Implementation}
+\label{subsec:eventimpl}
+
+\subsection{Lock Implementation}
+\label{subsec:lockimpl}
+
+\subsection{Reduction Instances}
+\label{subsec:reducimpl}
