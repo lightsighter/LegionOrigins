@@ -32,9 +32,8 @@ To support inter-node operations our implementation relies on GASNet active
 messages for communication.  Active messages are a command and a payload
 that are sent remotely and cause a handler to be run on the target node.
 A simple example of our use of active messages can be illustrated by the 
-{\tt spawn} call on a {\tt Processor} object.  Consider that {\tt spawn}
-is invoked on a processor that is on a remote node from the node on which
-the currently running task is executing.  This operation is converted into
+{\tt spawn} call on a {\tt Processor} object.  Consider the case where {\tt spawn}
+is invoked on a processor that is on a remote node.  This operation is converted into
 an active message that contains all the information about the task launch.
 When the active message is handled by the remote node, the task and all its
 metadata are registered with the processor on which the task was launched.
@@ -44,6 +43,61 @@ of the implementation of events, locks, and reduction instances.
 
 \subsection{Event Implementation}
 \label{subsec:eventimpl}
+Events are created on demand by each node.  The ID of the creating node is encoded
+in the upper bits of each event's ID and the creating node is said to be the 
+event's {\em owner}.  If an event is used as an argument to an
+operation on a remote node then the remote node can determine the owner of 
+the event and send an active message to become a {\em subscriber} of the event.  When a
+remote node becomes a subscriber to an event it guarantees that it will receive an active
+message from the event's owner when the event triggers.  To minimize the amount
+of communication that occurs between nodes, each node remembers the events to which it
+is subscribed and guarantees that it only subscribes to an event once.  In the case
+where there may be many remote waiters on an event 
+this can dramatically reduce the number of inter-node active messages.
+
+When an event triggers, it automatically notifies all of the operations that are waiting
+on its local node.  The owner node will also send active messages to all of the subscriber nodes
+telling them that the event has triggered.  Even though the event has now notified all of
+its waiters, the memory on the owning node for storing the event cannot be reclaimed 
+because there still may be handles to the event in the system which will request to
+use this event in the future.  These requests will need to be satisfied saying that 
+the event has already triggered for the duration of the application.  Rather than waste
+the resources, we recycle event implementations.
+
+A {\em dynamic event} is a logical construct that will only be triggered once and is the level
+of abstraction at which the programmer reasons about events.  A {\em physical event} is an
+actual event implementation that consumes resources on its owner node.  Multiple dynamic events
+can be mapped to a single physical event.  However, for each physical event there can be at most
+one {\em active} event in the set of dynamic events that are mapped to it.  An active event is a 
+dynamic event that is yet to trigger.  By only having one active dyanmic event at a time 
+there is no need to disambiguate event triggers that are sent to the physical event.  Each
+physical event maintains a count of the number of trigger operations that it has observed.
+
+When the runtime needs to return a handle corresponding to a new dynamic event, it finds
+a physical event which currently has no active events (e.g. the trigger count equals the number
+of dynamic events mapped to the physical event).  The runtime increases the count
+of the number of dynamic events mapped to the physical event.  The handle that is returned 
+corresponds to a new dynamic event which contains an ID that refers to the physical
+event it is mapped to and a {\em generation} that is the dynamic event number for the particular
+physical event.  Note that by definition the generation will always be one greater than the
+trigger count at the time of dynamic event creation.
+
+Within this framework it is now very easy to test whether the dynamic event specified by a
+handle has triggered.  Using the ID that is contained within the handle we find the
+physical event implementation (which may require an active message if the owner node is
+remote from where the test is begin performed).  We can then compare the generation of
+the handle to the number of observed triggers contained by the physical event.  If the
+number of physical triggers is greater than or equal to the handle's generation, then
+the dynamic event has triggered.  We show in Section~\ref{sec:apps} that in practice
+the number of needed physical events is significantly less than the number of dynamic events.
+
+We also leverage the mapping of dynamic events onto physical events to improve the efficiency
+of subscriptions.  Nodes cache the last generation for every physical event for which they
+have seen a trigger notification.  If the trigger test described above detects a trigger based
+on the cached information then there would be no need for the subscription which would save an
+active message.  If the event has not been detected to have
+triggered locally then an active message is sent to the owner which would always have been necesary
+without the dynamic to physical event mapping.
 
 \subsection{Lock Implementation}
 \label{subsec:lockimpl}
