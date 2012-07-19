@@ -903,9 +903,9 @@ For our results, three consistency properties are needed:
 Figure~\ref{fig:constprop} gives the precise definition of these
 properties.\footnote{Note that in the definition of
 $\mapconsist{\Omega}$, the quantified variables $r_i$ and $r_j$
-range over both logical and concrete regions.  Since $M$'s domain is
+range over both logical and physical regions.  Since $M$'s domain is
 logical regions, we extend $M$ to constraints with mixed logical and
-concrete regions in the standard way by defining
+physical regions in the standard way by defining
 $M \llbracket \rho \rrbracket = \rho$.}
 
 \begin{figure*}
@@ -934,7 +934,7 @@ $
 \begin{array}{lll}
 \valueconsist[]{l}{\hat T@\rho} & \Leftrightarrow & l \in \rho \wedge H(l) = \hat T \\
 \valueconsist[]{\tuple{v_1}{v_2}}{\tuple{\hat T_1}{\hat T_2}} & \Leftrightarrow & (\valueconsist[]{v_1}{\hat T_1}) \wedge (\valueconsist[]{v_2}{\hat T_2}) \\
-\valueconsist[]{\langle \langle \oton{\rho}, v \rangle \rangle}{\text{rr}[\oton{r}]\ \hat T\text{ where }\Omega} & \Leftrightarrow & (\valueconsist[]{v}{T[\rho_1/r_1, \ldots \rho_n/r_n]}) \wedge (\mapconsist[\{ (r_i, \rho_i) \}]{\Omega}) \\
+\valueconsist[]{\langle \langle \oton{\rho}, v \rangle \rangle}{\text{rr}[\oton{r}]\ \hat T\text{ where }\hat \Omega} & \Leftrightarrow & (\valueconsist[]{v}{T[\rho_1/r_1, \ldots \rho_n/r_n]}) \wedge (\mapconsist[\{ (r_i, \rho_i) \}]{\hat \Omega}) \\
 \valueconsist[]{K}{coloring(\rho)} & \Leftrightarrow & \forall l_1, v_1. (l_1, v_1) \in K \Rightarrow (l_1 \in \rho\ \wedge \\
 & & \forall l_2, v_2. (l_2, v_2) \in K \Rightarrow (l_1 \not= l_2) \vee (v_1 = v_2)) \\
 \end{array}
@@ -962,7 +962,7 @@ one for each of the three consistency properties that must be shown
 for the execution environment of subexpressions and one for each of
 the three properties of the execution's results.
 Many of the cases are similar, and benefit from
-the use of the following straighforward lemmas:
+the use of the following straightforward lemmas:
 \begin{lem}
 \label{lemma:heapconst:apply}
 \rm
@@ -1007,7 +1007,7 @@ $\mapconsist{\Omega^*}$ if and only if $\mapconsist{\Omega}$.
 $\privconsist{E}{\Phi^*}$ if and only if $\privconsist{E}{\Phi}$.
 \end{lem}
 
-We first give an outline of the idea behindthe proof.  For each subexpression of a compound expression,
+We first give an outline of the idea behind the proof.  For each subexpression of a compound expression,
 there are three consistency properties we must prove to be able to apply induction: \\
 
 \vspace{4pt}
@@ -1033,8 +1033,8 @@ for each formal parameter.
 
 \vspace{4pt}
 \hangindent=2\parindent \hangafter=1 \noindent %
-$\storeconsist{S}{H}$ -  The heap typing consistency of all stores used in subexpressions follows directly from the following
-lemma: If $\storeconsist{S}{H}$ and $\traceconsist{E}$, then $\storeconsist{\text{apply}(S, E)}{H}$.
+$\storeconsist{S}{H}$ -  The heap typing consistency of all stores used in subexpressions follows directly from
+Lemma~\ref{lem:heapconst:apply}.
 
 \vspace{4pt}
 With the necessary consistency conditions proven for a subexpression, the conclusion of the theorem follows for
@@ -1068,8 +1068,7 @@ formal parameters works in reverse for the function's result.
 \vspace{4pt}
 \hangindent=2\parindent \hangafter=1 \noindent %
 $\traceconsist{E}$ -  The type consistency of the values in an expression's memory
-trace follows from the following lemma applied to the traces of subexpressions:
-if $\traceconsist{E_1}$ and $\traceconsist{E_2}$ and $any\_interleave(E', E_1, E_2)$, then $\traceconsist{E'}$.
+trace follows from Lemma~\ref{lem:heapconst:effects1} and Lemma~\ref{lem:heapconst:effects2}.
 New memory operations are added by {\tt write} and {\tt reduce} expressions, but consistency follows
 directly from the induction hypothesis.  Finally, the consistency of the
 values in a called function's memory trace is addressed in the same way as the return value.
@@ -1083,8 +1082,8 @@ Straightforward proofs cover {\tt read}, {\tt write}, {\tt reduce}, and one fina
 
 \begin{proof}
 The proof of the theorem is by cases on the structure of the derivation of $e$.
-\begin{itemize}
-
+{\begin{itemize}
+\setlength{\itemsep}{4pt}
 \item
 Case [E-Bool]. By assumption, 
 $$\opsenv{bv}{bv}{[]}$$ and
@@ -1111,7 +1110,7 @@ $\privconsist{[]}{\Phi}$ all follow trivially.
 \item Case [E-Null].
 By assumption, 
 $$\opsenv{\text{null\ }T@r}{null}{[]}$$ and 
-$$\typeenv{\text{null}}{T'}$$ and 
+$$\typeenv{\text{null\ }T@r}{T'}$$ and 
 $\mapconsist{\Omega}$ and 
 $\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
 The only type rule that can apply is [T-Null], so $T' = T@r$.
@@ -1266,14 +1265,14 @@ $\privconsist{E'}{\Phi}$.
 
 \item Case [E-IfElse-T].
  By assumption, 
-$$\opsenv{\text{ if } e_1 \text{ then } e_2 \text{ else } e_3}{v_2}{E}$$ and 
+$$\opsenv{\text{ if } e_1 \text{ then } e_2 \text{ else } e_3}{v_2}{E_1 \dplus E_2}$$ and 
 $$\typeenv{\text{ if } e_1 \text{ then } e_2 \text{ else } e_3}{T}$$ and
 $\mapconsist{\Omega}$ and 
 $\localconsist{L}{\Gamma}$ and 
 $\storeconsist{S}{H}$.
 
 For the subexpression $e_1$, 
-from [E-IfElse-T] we know $$\opsenv{e_1}{true}{E_1 \dplus E_2}$$
+from [E-IfElse-T] we know $$\opsenv{e_1}{true}{E_1}$$
 From [T-IfElse], we know that $$\typeenv{e_1}{bool}$$
 Clearly $\valueconsist{true}{bool}$, and by induction we have  $\traceconsist{E_1}$ and 
       $\privconsist{E_1}{\Phi}$.
@@ -1300,7 +1299,7 @@ $$\typeenv{\text{newcolor } r}{T}$$ and
 $\mapconsist{\Omega}$ and 
 $\localconsist{L}{\Gamma}$ and 
 $\storeconsist{S}{H}$.
-The only type rule that can apply if [T-Newcolor], so can infer that $T = \text{coloring}(r)$.
+The only type rule that can apply is [T-Newcolor], so we can infer that $T = \text{coloring}(r)$.
 From the structure of $K$ it follows that $\valueconsist{K}{\text{coloring(r)}}$.
 The other two conclusions,
 $\traceconsist{[]}$ and 
@@ -1313,7 +1312,7 @@ $$\typeenv{\text{color($e_1$, $e_2$,$e_3$)}}{T}$$ and
 $\mapconsist{\Omega}$ and 
 $\localconsist{L}{\Gamma}$ and 
 $\storeconsist{S}{H}$.
-The only type rule that can apply if [T-Color], so we know $T = \text{coloring}(r)$.
+The only type rule that can apply is [T-Color], so we know $T = \text{coloring}(r)$.
 
 For the subexpression $e_1$, 
 from [E-Color] we know $$\opsenv{e_1}{K}{E_1}$$
@@ -1329,21 +1328,21 @@ By induction, $\valueconsist{l}{T'@r}$ and $\traceconsist{E_2}$ and
       $\privconsist{E_2}{\Phi}$.
 
 For the subexpression $e_3$, 
-from [E-Color] we know $$\opsenv[S=S'']{e_3}{v}{E_3}$$ where $S'' \text{apply}(S',E_2)$.
+from [E-Color] we know $$\opsenv[S=S'']{e_3}{v}{E_3}$$ where $S'' = \text{apply}(S',E_2)$.
 From [T-Color], we know that $$\typeenv{e_3}{int}$$
 By Lemma~\ref{lemma:heapconst:apply}, $\storeconsist{S''}{H}$.
 By induction, $\valueconsist{v}{int}$ and $\traceconsist{E_3}$ and 
       $\privconsist{E_3}{\Phi}$.
 
 Now $K'$ is built from $K$ by extending $K$ with a mapping for location $l$.  First, because $\valueconsist{l}{T'@r}$ and
-$\valueconsist{K}{\text{coloring(r))}$ and because $K'$ excludes any previous mapping for $l$ (guaranteeing the the coloring is a function), we conclude $\valueconsist{K'}{\text{coloring}(r)}}$.  From [E-Color], we also know
+$\valueconsist{K}{\text{coloring}(r)}$ and because $K'$ excludes any previous mapping for $l$ (guaranteeing the the coloring is a function), we conclude $\valueconsist{K'}{\text{coloring}(r)}$.  From [E-Color], we also know
 $$valid\_interleave(S, C, E', E_1, E_2, E_3)$$ and by applying Lemma~\ref{lemma:heapconst:effects2} twice
 we can conclude $\traceconsist{E'}$.  Similarly, by applying Lemma~\ref{lemma:effsound:effects2} twice
-we can conlude $\privconsist{E'}{\Phi}$.
+we can conclude $\privconsist{E'}{\Phi}$.
 
 \item  Case [E-UpRgn].
 By assumption, $$\opsenv{\text{upregion}(e,\oton{r})}{v}{E}$$ and
-$$\typeenv{\text{upgregion}(e,\oton{r})}{T}$$ and
+$$\typeenv{\text{upregion}(e,\oton{r})}{T}$$ and
 $\mapconsist{\Omega}$ and 
 $\localconsist{L}{\Gamma}$ and 
 $\storeconsist{S}{H}$.
@@ -1359,13 +1358,14 @@ $\valueconsist{v}{T'@(r_1',\ldots,r_k')}$ we know
 there is an $i$ such that $v \in M(r_i')$ and 
 $H(v) = \hat T'$.   From [T-UpRgn]
 we know $\forall i. \exists j. r_i' \leq r_j \in \Omega^*$.  Combining this with
-$\mapconsist{\Omega}$ and Lemma~\ref{lemma:omegaclosure}, we know there
-is some $r_j$ such that $v \in M(r_j)$.
-Therefore $\valueconsist{v}{T'@(\oton{r})}$.
+$\mapconsist{\Omega}$ and 
+From Lemma~\ref{lemma:omegaclosure}, we have $mapconsist{\Omega^*}$, so there
+must be some $r_j$ such that $M(r_i') \subseteq M(r_j)$.  Therefore $v \in M(r_j)$
+and $\valueconsist{v}{T'@(\oton{r})}$.
 
 \item Case [E-DownRgn].
 By assumption, $$\opsenv{\text{downregion}(e,\oton{r})}{v}{E}$$ and
-$$\typeenv{\text{downgregion}(e,\oton{r})}{T}$$ and
+$$\typeenv{\text{downregion}(e,\oton{r})}{T}$$ and
 $\mapconsist{\Omega}$ and 
 $\localconsist{L}{\Gamma}$ and 
 $\storeconsist{S}{H}$.
@@ -1394,11 +1394,15 @@ from [T-Read] we know $$\typeenv{e}{T @ (\oton{r})}$$
 By induction, we can conclude that $\valueconsist{l}{T@(\oton{r})}$,
 $\traceconsist{E}$ and $\privconsist{E}{\Phi}$.
  
-To show $\valueconsist{v}{T}$ there are two cases.
-If $v = M(l)$ then the claim follows from $\valueconsist{l}{T@(\oton{r})}$.
-If $v$ is instead some $v'$ of type $H(l)$ the result also follows because $H(l) = \hat{T}$.
+To show $\valueconsist{v}{T}$ there are two cases.  If $l \not\in C$, then $v = S'(l)$.
+Since $\storeconsist{S'}{H}$ from Lemma~\ref{lemma:heapconst:apply}, we have $\valueconsist[]{S'(l)}{H(l)}$.
+If $l \in C$, we have $v = \valueconsist[]{v'}{H(l)}$ from [E-Read] directly.  In
+both cases, $\valueconsist{l}{T@(\oton{r})}$ gives us $H(l) = \hat T$ and therefore
+$\valueconsist{v}{T}$.
+%If $v = M(l)$ then the claim follows from $\valueconsist{l}{T@(\oton{r})}$.
+%If $v$ is instead some $v'$ of type $H(l)$ the result also follows because $H(l) = \hat{T}$.
 Next, $\traceconsist{E \dplus [ read(l,excl,v)]}$ follows immediately from $\traceconsist{E}$ as
-any read operation is consistent (the resriction is only on writes and reductions).
+any read operation is consistent (the restriction is only on writes and reductions).
 
 Finally, we must show $\privconsist{E \dplus [ read(l,excl,v)]}{\Phi}$.
 Since we have already shown $\privconsist{E}{\Phi}$, it suffices to show $\privconsist{[ read(l,excl,v) ]}{\Phi}$.
@@ -1503,7 +1507,7 @@ and $\Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Omega^*$.
 
 Observe that 
 $$M \llbracket \exists r'_1, \ldots r'_n.\ T_2\text{ where }\Omega_1 \rrbracket$$
-replaces all free region names in $T_2$ and particularly $\Omega_1$ by concrete regions, so
+replaces all free region names in $T_2$ and particularly $\Omega_1$ by physical regions, so
 that the only region names remaining are $r'_1,\ldots,r'_n$.  It is then easy to show that
 $$\mapconsist[\{(r'_i,\rho_i)\}]{M \backslash \{r'_1,\ldots, r'_n \}\llbracket \Omega_1 \rrbracket}$$
 from which $\valueconsist{v'}{T_1}$ follows (see Figure~\ref{fig:constprop}).
@@ -1541,7 +1545,7 @@ The reasoning for constraints $r * r'$ is the same.
 To show $\localconsist[M']{L'}{\Gamma'}$, we must show
 $\valueconsist[M']{L'(x)}{\Gamma'(x)}$ for all identifiers $x$ in
 the domain of $\Gamma'$.  For any $id' \neq id$, the statement is equivalent
-to showing $\valueconsist[M']{L(x)}{\Gamma(x)}$, which must hold becuase $M'$ does 
+to showing $\valueconsist[M']{L(x)}{\Gamma(x)}$, which must hold because $M'$ does 
 does not change any existing binding in $M$.  For $id$, we have
 $\valueconsist[M']{v_1}{T_1[r_1/r'_1,\ldots,r_k/r'_k]}$, which is implied by
 $\valueconsist{\langle \langle \otok{k}{\rho},v \rangle\rangle}{T_1}$.
@@ -1671,7 +1675,7 @@ $\valueconsist{v_{n+1}}{T_r[r_1/r'_1,\ldots,r_k/r'_k}$.
 
 To show that
 $\traceconsist{E_{n+1}}$ under $M'$ implies $\traceconsist{E_{n+1}}$
-under $M$, note that $H(\cdot)$ does not depend on the mapping (because it includes only concrete, not logical, regions) so the
+under $M$, note that $H(\cdot)$ does not depend on the mapping (because it includes only physical, not logical, regions) so the
 types of locations are unaffected by the mapping (see
 Figure~\ref{fig:constprop}).  Now, the environment
 $M' \llbracket \Gamma' \rrbracket$ is used to look up reduction
@@ -1693,7 +1697,7 @@ and so
 $\privconsist{E_{n+1}}{\Phi^*}$.  Applying Lemma~\ref{lemma:phiclosure} we conclude
 that $\privconsist{E_{n+1}}{\Phi}$.
 Finally, from Lemma~\ref{lemma:effsound:effects2} we conclude $\privconsist{E''}{\Phi}$.
-\end{itemize}
+\end{itemize}}
 \end{proof}
 
 \section{Coherence}
