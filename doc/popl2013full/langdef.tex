@@ -958,7 +958,7 @@ then
 $\valueconsist{v}{T}$, $\traceconsist{E}$ and $\privconsist{E}{\Phi}$.
 \end{thm}
 
-The proof is a standard induction on the structure of the derivation
+The proof is a standard induction on the structure of the derivation.
 For each of 
 the Core Legion expressions there are six separate parts to the proof,
 one for each of the three consistency properties that must be shown
@@ -1043,7 +1043,7 @@ for each formal parameter.
 \vspace{4pt}
 \hangindent=2\parindent \hangafter=1 \noindent %
 $\storeconsist{S}{H}$ -  The heap typing consistency of all stores used in subexpressions follows directly from
-Lemma~\ref{lem:heapconst:apply}.
+Lemma~\ref{lemma:heapconst:apply}.
 
 \vspace{4pt}
 With the necessary consistency conditions proven for a subexpression, the conclusion of the theorem follows for
@@ -1077,7 +1077,7 @@ formal parameters works in reverse for the function's result.
 \vspace{4pt}
 \hangindent=2\parindent \hangafter=1 \noindent %
 $\traceconsist{E}$ -  The type consistency of the values in an expression's memory
-trace follows from Lemma~\ref{lem:heapconst:effects1} and Lemma~\ref{lem:heapconst:effects2}.
+trace follows from Lemma~\ref{lemma:heapconst:effects1} and Lemma~\ref{lemma:heapconst:effects2}.
 New memory operations are added by {\tt write} and {\tt reduce} expressions, but consistency follows
 directly from the induction hypothesis.  Finally, the consistency of the
 values in a called function's memory trace is addressed in the same way as the return value.
@@ -1301,7 +1301,7 @@ $\privconsist{E_1 \dplus E_2}{\Phi}$.
 \item Case [E-Newcolor].
 By assumption, 
 $$\opsenv{\text{newcolor } r}{K}{[]}$$ 
-where  $K = \{ (l_1,v_1),\ldots,(l_p,i_p) \}$ such that
+where  $K = \{ (l_1,iv_1),\ldots,(l_p,iv_p) \}$ such that
 $l_i \in M(r)$ for all $i$ and $l_1,\ldots,l_p$ are pairwise distinct locations.
 In addition, we have the assumptions
 $$\typeenv{\text{newcolor } r}{T}$$ and
@@ -1366,10 +1366,10 @@ To show $\valueconsist{v}{T'@(\oton{r})}$, we first observe that from
 $\valueconsist{v}{T'@(r_1',\ldots,r_k')}$ we know
 there is an $i$ such that $v \in M(r_i')$ and 
 $H(v) = \hat T'$.   From [T-UpRgn]
-we know $\forall i. \exists j. r_i' \leq r_j \in \Omega^*$.  Combining this with
-$\mapconsist{\Omega}$ and 
-From Lemma~\ref{lemma:omegaclosure}, we have $mapconsist{\Omega^*}$, so there
-must be some $r_j$ such that $M(r_i') \subseteq M(r_j)$.  Therefore $v \in M(r_j)$
+we know $\forall i. \exists j. r_i' \leq r_j \in \Omega^*$.
+%  Combining this with $\mapconsist{\Omega}$ and 
+From Lemma~\ref{lemma:omegaclosure}, we have $\mapconsist{\Omega^*}$, so there
+must be some $r_j$ such that $M(r_i') \subseteq M(r_j)$.  Then $v \in M(r_j)$
 and $\valueconsist{v}{T'@(\oton{r})}$.
 
 \item Case [E-DownRgn].
@@ -1521,8 +1521,9 @@ to $M \llbracket T_2 [r_1/r'_1,\ldots,r_k/r'_k] \rrbracket$.
 
 Similarly, observe that
 $$\hat \Omega_1 [ \rho_1/r'_1,\ldots,\rho_k/r'_k ] = M \llbracket \Omega_1 [ r_1/r'_1,\ldots,r_k/r'_k ] \rrbracket$$
-.  With two applications of Lemma~\ref{lemma:mappedomega}, we have $\mapconsist[\{(r'_i,\rho_i)\}]{\hat \Omega_1}$
-if and only if $\mapconsist{\Omega_1 [ r_1/r'_1,\ldots,r_k/r'_k ]}$.  The latter constraints are a subset of
+.  With two applications of Lemma~\ref{lemma:mappedomega}, we have
+$$\mapconsist[\{(r'_i,\rho_i)\}]{\hat \Omega_1} \Leftrightarrow \mapconsist{\Omega_1 [ r_1/r'_1,\ldots,r_k/r'_k ]}$$
+.  The latter constraints are a subset of
 $\Omega^*$, and must be satisfied if $\mapconsist{\Omega^*}$, which we have from Lemma~\ref{lemma:omegaclosure}.
 
 \begin{comment}
@@ -1551,8 +1552,8 @@ $\mapconsist{\Omega}$ and
 $\localconsist{L}{\Gamma}$ and 
 $\storeconsist{S}{H}$.
 
-For subexpression $e_1$, from [E-UnPack] we have $$\opsenv{e_1}{\langle \langle \otok{k}{\rho},v \rangle\rangle}{E}$$ and
-from [T-UnPack] we know $$\typeenv{e_1}{T_1 = \exists r'_1,\ldots,r'_n.T_2 \text{ where }\Omega_1}$$
+For subexpression $e_1$, from [E-UnPack] we have $$\opsenv{e_1}{\langle \langle \otok{k}{\rho},v_1 \rangle\rangle}{E}$$ and
+from [T-Unpack] we know $$\typeenv{e_1}{T_1 = \exists r'_1,\ldots,r'_n.T_2 \text{ where }\Omega_1}$$
 By induction, we can conclude that $\valueconsist{\langle \langle \otok{k}{\rho},v \rangle\rangle}{T_1}$ and
 $\traceconsist{E}$ and $\privconsist{E}{\Phi}$.
  
@@ -1569,18 +1570,34 @@ $\mapconsist[M']{\Omega'}$ and
 $\localconsist[M']{L'}{\Gamma'}$ and
 $\storeconsist{S'}{H}$.
 
+We can show $\mapconsist[M']{\Omega'}$ by showing both $\mapconsist[M']{\Omega}$ and $\mapconsist[M']{\Omega_1[r_1/r'_1,\ldots,r_k/r'_k]}$.  The former follows directly from $\mapconsist{\Omega}$ as $M'$ does not change any existing
+mappings in $M$.  The latter requires an argument similar to the [E-Pack] case.  We let
+$M \llbracket T_1 \rrbracket = \exists r'_1, \ldots, r'_n.\ \hat T_2\text{ where }\hat \Omega_1$, and conclude that
+$\mapconsist[\{ \rho_1/r'_1,\ldots,\rho_k/r'_k \}]{\hat \Omega_1}$.  From Lemma~\ref{lemma:mappedomega} we have 
+$\mapconsist[\emptyset]{\hat \Omega_1[\rho_1/r'_1,\ldots,\rho_k/r'_k]}$.  Finally, we observe that 
+$$M' \llbracket \Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \rrbracket = \hat \Omega_1[\rho_1/r'_1,\ldots,\rho_k/r'_k]$$
+and conclude $\mapconsist[M']{\Omega'}$ with another application of Lemma~\ref{lemma:mappedomega}.
+
+\begin{comment}
 To show $\mapconsist[M']{\Omega'}$, consider a constraint $r \leq r' \in \Omega'$.  There are two cases. If $r \leq r' \in \Omega_1[r_1/r'_1,\ldots,r_k/r'_k]$
 then $M'(r) \subseteq M'(r')$ follows from $\valueconsist{\langle \langle \otok{k}{\rho},v \rangle\rangle}{T_1}$.
 If $r \leq r' \not\in \Omega_1[r_1/r'_1,\ldots,r_k/r'_k]$ then $r \leq r' \in \Omega$ and $M'(r) = M(r) \subseteq M(r') = M'(r')$.
 The reasoning for constraints $r * r'$ is the same.
+\end{comment}
 
 To show $\localconsist[M']{L'}{\Gamma'}$, we must show
 $\valueconsist[M']{L'(x)}{\Gamma'(x)}$ for all identifiers $x$ in
 the domain of $\Gamma'$.  For any $id' \neq id$, the statement is equivalent
 to showing $\valueconsist[M']{L(x)}{\Gamma(x)}$, which must hold because $M'$ does 
-does not change any existing binding in $M$.  For $id$, we have
+does not change any existing binding in $M$.
+For $id$, we have $\valueconsist[]{v_1}{\hat T_2[\rho_1/r'_1,\ldots,\rho_k/r'_k]}$
+and again observe that since $r'_1,\ldots,r'_k$ do not appear in $M$, the right hand side
+is equal to $M' \llbracket T_2[r_1/r'_1,\ldots,r_k/r'_k] \rrbracket$.
+
+\begin{comment}
 $\valueconsist[M']{v_1}{T_1[r_1/r'_1,\ldots,r_k/r'_k]}$, which is implied by
 $\valueconsist{\langle \langle \otok{k}{\rho},v \rangle\rangle}{T_1}$.
+\end{comment}
 
 Finally, as in previous cases, $\storeconsist{S'}{H}$ follows from Lemma~\ref{lemma:heapconst:apply}.
 Thus, we can conclude that 
