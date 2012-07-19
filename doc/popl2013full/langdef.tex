@@ -906,7 +906,10 @@ $\mapconsist{\Omega}$, the quantified variables $r_i$ and $r_j$
 range over both logical and physical regions.  Since $M$'s domain is
 logical regions, we extend $M$ to constraints with mixed logical and
 physical regions in the standard way by defining
-$M \llbracket \rho \rrbracket = \rho$.}
+$M \llbracket \rho \rrbracket = \rho$.  And although the definition of
+$\traceconsist{E}$ refers to $M$ and $\Gamma$, the restriction that reduction
+functions must be monomorphic and visible in all functions means that 
+$\traceconsist{E}$ will be insensistive to the particular $M$ and $\Gamma$.}
 
 \begin{figure*}
 \centering{\footnotesize
@@ -934,7 +937,7 @@ $
 \begin{array}{lll}
 \valueconsist[]{l}{\hat T@\rho} & \Leftrightarrow & l \in \rho \wedge H(l) = \hat T \\
 \valueconsist[]{\tuple{v_1}{v_2}}{\tuple{\hat T_1}{\hat T_2}} & \Leftrightarrow & (\valueconsist[]{v_1}{\hat T_1}) \wedge (\valueconsist[]{v_2}{\hat T_2}) \\
-\valueconsist[]{\langle \langle \oton{\rho}, v \rangle \rangle}{\text{rr}[\oton{r}]\ \hat T\text{ where }\hat \Omega} & \Leftrightarrow & (\valueconsist[]{v}{T[\rho_1/r_1, \ldots \rho_n/r_n]}) \wedge (\mapconsist[\{ (r_i, \rho_i) \}]{\hat \Omega}) \\
+\valueconsist[]{\langle \langle \oton{\rho}, v \rangle \rangle}{\text{rr}[\oton{r}]\ \hat T\text{ where }\hat \Omega} & \Leftrightarrow & (\valueconsist[]{v}{\hat T[\rho_1/r_1, \ldots \rho_n/r_n]}) \wedge (\mapconsist[\{ (r_i, \rho_i) \}]{\hat \Omega}) \\
 \valueconsist[]{K}{coloring(\rho)} & \Leftrightarrow & \forall l_1, v_1. (l_1, v_1) \in K \Rightarrow (l_1 \in \rho\ \wedge \\
 & & \forall l_2, v_2. (l_2, v_2) \in K \Rightarrow (l_1 \not= l_2) \vee (v_1 = v_2)) \\
 \end{array}
@@ -1005,6 +1008,12 @@ $\mapconsist{\Omega^*}$ if and only if $\mapconsist{\Omega}$.
 \label{lemma:phiclosure}
 \rm
 $\privconsist{E}{\Phi^*}$ if and only if $\privconsist{E}{\Phi}$.
+\end{lem}
+
+\begin{lem}
+\label{lemma:mappedomega}
+\rm
+$\mapconsist{\Omega}$ if and only if $\mapconsist[\emptyset]{M \llbracket \Omega \rrbracket}$.
 \end{lem}
 
 We first give an outline of the idea behind the proof.  For each subexpression of a compound expression,
@@ -1501,16 +1510,39 @@ By induction, we can conclude that $\valueconsist{v}{T_2[r_1/r'_1,\ldots,r_k/r'_
 $\traceconsist{E}$ and $\privconsist{E}{\Phi}$.
  
 The only thing remaining to show is $\valueconsist{v'}{T_1}$.
-From [E-Pack] we have   $v' = \langle \langle \otok{k}{\rho}, v \rangle \rangle$.
-From [T-Pack] we have $T_1 = \exists r'_1, \ldots r'_n.\ T_2\text{ where }\Omega_1$
+From [E-Pack] we have   $v' = \langle \langle \otok{k}{\rho}, v \rangle \rangle$ and $M(r_i) = \rho_i$.
+From [T-Pack] we have $T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1$
 and $\Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Omega^*$.  
 
+Let $M \llbracket T_1 \rrbracket = \exists r'_1, \ldots, r'_n.\ \hat T_2\text{ where }\hat \Omega_1$.
+We require that $\valueconsist[]{v}{\hat T_2[\rho_1/r'_1,\ldots,\rho_k/r'_k]}$ and $\mapconsist[\{(r'_i,\rho_i)\}]{\hat \Omega_1}$.
+The right hand side of the first condition can be rewritten as $\hat T_2[M(r_1)/r'_1,\ldots,M(r_k)/r'_k]$, which is equal
+to $M \llbracket T_2 [r_1/r'_1,\ldots,r_k/r'_k] \rrbracket$.
+
+Similarly, observe that
+$$\hat \Omega_1 [ \rho_1/r'_1,\ldots,\rho_k/r'_k ] = M \llbracket \Omega_1 [ r_1/r'_1,\ldots,r_k/r'_k ] \rrbracket$$
+.  With two applications of Lemma~\ref{lemma:mappedomega}, we have $\mapconsist[\{(r'_i,\rho_i)\}]{\hat \Omega_1}$
+if and only if $\mapconsist{\Omega_1 [ r_1/r'_1,\ldots,r_k/r'_k ]}$.  The latter constraints are a subset of
+$\Omega^*$, and must be satisfied if $\mapconsist{\Omega^*}$, which we have from Lemma~\ref{lemma:omegaclosure}.
+
+\begin{comment}
+For the second condition, consider each constraint $x_i \leq x_j \in \hat \Omega_1$, where each $x_i$ is either a 
+physical region $\rho_i$ or one of the bounded logical regions $r'_i$.
+
+
+We must therefore show $\valueconsist{v}{T_2[\rho_1/r'_1,\ldots,\rho_k/r'_k]}$ and $\mapconsist[\{(r_i',\rho_i)\}]{M \llbracket \Omega_1 \rrbracket}$.  We have $\rho_i = M(r_i)$ from [E-Pack] and a partial application of $M$ satisfies
+the first condition.  To show the second condition, we apply the renaming $[r_1/r'_1,\ldots,r_k/r'_k]$ to both sides,
+yielding
+$$\mapconsist[\{(r_i,\rho_i)\}]{M \llbracket \Omega_1 [r_1/r'_1,\ldots,r_k/r'_k] \rrbracket}$$
+,  Observe that the left hand side is a subset of $M$
+By partially applying $M$ to $T_2[r_1/r'_1,\ldots,r_k/r'_k]$, we get $\valueconsist{v}{T_2[\rho_1/r'_1,\ldots,\rho_k/r'_k]}$, satisfying the first half o
 Observe that 
 $$M \llbracket \exists r'_1, \ldots r'_n.\ T_2\text{ where }\Omega_1 \rrbracket$$
 replaces all free region names in $T_2$ and particularly $\Omega_1$ by physical regions, so
 that the only region names remaining are $r'_1,\ldots,r'_n$.  It is then easy to show that
 $$\mapconsist[\{(r'_i,\rho_i)\}]{M \backslash \{r'_1,\ldots, r'_n \}\llbracket \Omega_1 \rrbracket}$$
 from which $\valueconsist{v'}{T_1}$ follows (see Figure~\ref{fig:constprop}).
+\end{comment}
 
 \item Case [E-Unpack].
 By assumption, $$\opsenv{\text{unpack } e_1 \text{ as } id : T_1[\otok{k}{r}] \text{ in } e_2}{v_2}{E'}$$ and
