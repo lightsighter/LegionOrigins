@@ -900,7 +900,13 @@ For our results, three consistency properties are needed:
 \item $\valueconsist{v}{T}$, the expression yields a value of the right type
 \item $\traceconsist{E}$, values written to the store match the heap types of their locations
 \end{itemize}
-Figure~\ref{fig:constprop} gives the precise definition of these properties.
+Figure~\ref{fig:constprop} gives the precise definition of these
+properties.\footnote{Note that in the definition of
+$\mapconsist{\Omega}$, the quantified variables $r_i$ and $r_j$
+range over both logical and concrete regions.  Since $M$'s domain is
+logical regions, we extend $M$ to constraints with mixed logical and
+concrete regions in the standard way by defining
+$M \llbracket \rho \rrbracket = \rho$.}
 
 \begin{figure*}
 \centering{\footnotesize
@@ -1494,11 +1500,13 @@ The only thing remaining to show is $\valueconsist{v'}{T_1}$.
 From [E-Pack] we have   $v' = \langle \langle \otok{k}{\rho}, v \rangle \rangle$.
 From [T-Pack] we have $T_1 = \exists r'_1, \ldots r'_n.\ T_2\text{ where }\Omega_1$
 and $\Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Omega^*$.  
-%
-% FIXME  The next sentence can't be made fully formal with the current setup.
-%
-The result
-follows from the definition of value consistency on region relationships.
+
+Observe that 
+$$M \llbracket \exists r'_1, \ldots r'_n.\ T_2\text{ where }\Omega_1 \rrbracket$$
+replaces all free region names in $T_2$ and particularly $\Omega_1$ by concrete regions, so
+that the only region names remaining are $r'_1,\ldots,r'_n$.  It is then easy to show that
+$$\mapconsist[\{(r'_i,\rho_i)\}]{M \backslash \{r'_1,\ldots, r'_n \}\llbracket \Omega_1 \rrbracket}$$
+from which $\valueconsist{v'}{T_1}$ follows (see Figure~\ref{fig:constprop}).
 
 \item Case [E-Unpack].
 By assumption, $$\opsenv{\text{unpack } e_1 \text{ as } id : T_1[\otok{k}{r}] \text{ in } e_2}{v_2}{E'}$$ and
@@ -1596,7 +1604,7 @@ $\valueconsist{v}{T}$.
 From [E-Part] we have $$valid\_interleave(S, C, E', E_1, E_2)$$ and using Lemma~\ref{lemma:heapconst:effects2} we
 prove $\traceconsist{E'}$.
 To finish the case, we note that from $\privconsist{E_1}{\Phi}$, $\privconsist{E_2}{\Phi}$, 
-$valid\_interleave(S, C, E', E_1, E_2)$, and using Lemma~\ref{lemma:effsound:effects2} we can conclude $\privconsist{E'}{\Phi}$.
+$$valid\_interleave(S, C, E', E_1, E_2)$$, and using Lemma~\ref{lemma:effsound:effects2} we can conclude $\privconsist{E'}{\Phi}$.
 
 
 \item Case [E-Call].
@@ -1605,8 +1613,8 @@ $$\opsenv{id[\otok{k}{r}](\oton{e})}{v_{n+1}}{E''}$$
 and from [T-Call] we have
 $$\typeenv{id[\otok{k}{r}](\oton{e})}{T_r[r_1/r'_1,\ldots,r_k/r'_k]}$$
 
-For subexpression $e_1$, from [E-Call] we have $\opsenv{e_1}{v_1}{E_1}$ and from [T-Call] we have
-$\typeenv{e_1}{T_1[r_1/r'_1,\ldots,r_k/r'_k]}$.
+For subexpression $e_1$, from [E-Call] we have $$\opsenv{e_1}{v_1}{E_1}$$ and from [T-Call] we have
+$$\typeenv{e_1}{T_1[r_1/r'_1,\ldots,r_k/r'_k]}$$
 By induction, 
 $\valueconsist{v_1}{T_1[r_1/r'_1,\ldots,r_k/r'_k]}$,
 $\traceconsist{E_1}$ and 
@@ -1614,49 +1622,77 @@ $\privconsist{E_1}{\Phi}$.
 
 For the other subexpressions that are arguments to the call the reasoning is very similar; we show
 only the last argument $e_n$.  First, 
-$$S_n = \text{apply}(E_{n-1},\text{apply}(E_{n-2},\ldots \text{apply}(E_1,S) \ldots )$$
-From Lemma~\ref{lemma:heapconst:apply} it follows that $\storeconsist{S_n}{H}$.
-We also have $\opsenv{e_n}{v_n}{E_n}$ from [E-Call] and
-$\typeenv{e_n}{T_n[r_1/r'_1,\ldots,r_k/r'_k]}$ from [T-Call].
-By induction, 
+$$S_n
+= \text{apply}(E_{n-1},\text{apply}(E_{n-2},\ldots \text{apply}(E_1,S) \ldots
+)$$ An induction on the number of applications of {\em apply} using
+Lemma~\ref{lemma:heapconst:apply} shows that
+$\storeconsist{S_n}{H}$.  We also have $$\opsenv{e_n}{v_n}{E_n}$$ from
+[E-Call] and $$\typeenv{e_n}{T_n[r_1/r'_1,\ldots,r_k/r'_k]}$$ from
+[T-Call].  By induction,
 $\valueconsist{v_n}{T_n[r_1/r'_1,\ldots,r_k/r'_k]}$,
-$\traceconsist{E_n}$ and 
-$\privconsist{E_n}{\Phi}$.
+$\traceconsist{E_n}$ and $\privconsist{E_n}{\Phi}$.
 
 
 Now, from [E-Call] we have
-$valid\_interleave(S, C, E', \oton{E})$
+$$valid\_interleave(S, C, E', \oton{E})$$
 and furthermore
-$M' = \{ (r'_1, M(r_1)), \ldots (r'_k, M(r_k)) \}$  and
-$L' = \{ (a_1, v_1), \ldots, (a_n, v_n) \}$ and
-$S' = \text{apply}(S, E')$ and
-$\opsenv[M=M',L=L',S=S',C=C']{e_{n+1}}{v_{n+1}}{E_{n+1}}$.
+$$M' = \{ (r'_1, M(r_1)), \ldots (r'_k, M(r_k)) \}$$
+$$L' = \{ (a_1, v_1), \ldots, (a_n, v_n) \}$$
+$$S' = \text{apply}(S, E')$$
+We also know from [E-Call] that
+$$\opsenv[M=M',L=L',S=S',C=C']{e_{n+1}}{v_{n+1}}{E_{n+1}}$$
+where $e_{n+1}$ is the body of the called function.
 From [T-Program] we know
-$\typeenv[G=\Gamma',O=\emptyset,P=\Phi']{e_{n+1}}{T_r}$,
-where $e_{n+1}$ is the body of the function.
-To apply the induction hypothesis to $e_{n+1}$ we must
-show 
-\begin{itemize}
-\item $\mapconsist[M']{\emptyset}$,
-which is immediate.
+$$\typeenv[G=\Gamma',O=\emptyset,P=\Phi']{e_{n+1}}{T_r}$$
+where $\Gamma'(a_i) = T_i$.
+To apply the induction hypothesis to $e_{n+1}$ we want to show
+\begin{enumerate}
+\item $\storeconsist{S'}{H}$, 
+\item $\mapconsist[M']{\emptyset}$, and
+\item $\localconsist[M']{L'}{\Gamma'}$ 
+\end{enumerate}
 
-\item $\localconsist[M']{L'}{\Gamma'}$ where
-$\Gamma'(a_i) = T_i$and $\storeconsist{S'}{H}$.
-\end{itemize}
+For (1), using $\traceconsist{E_i}$ for $1 \leq i \leq n$ and applying Lemma~\ref{lemma:heapconst:effects2} $n - 1$ times
+we can conclude that $\traceconsist{E'}$.  Then because $\storeconsist{S}{H}$ and $S' = \text{apply}(S, E')$ by
+Lemma~\ref{lemma:heapconst:apply} we have $\storeconsist{S'}{H}$.
 
-$\Gamma(id) = \forall r'_1, \ldots r'_k.(\oton{T}),\Phi', Q' \rightarrow T_r$ 
-$\text{function }id[\otok{k}{r'}](a_1 : T_1, \ldots, a_n : T_n), \Phi', Q' : T_r = e_{n+1}$
+Part (2) is immediate by the definition of mapping consistency.
 
-$E'_{n+1} = mark\_coherence(E_{n+1}, M' \llbracket Q' \rrbracket)$ 
-$valid\_interleave(S, C, E'', E', E_{n+1})$
+For (3), in previous steps we have shown  $$\valueconsist{v_i}{T_i[r_1/r'_1,\ldots,r_k/r'_k]}$$ for $1 \leq i \leq n$.
+Since $M \llbracket r_i \rrbracket = M' \llbracket r'_i \rrbracket$ it follows that
+$M \llbracket T_i[r_1/r'_1,\ldots,r_k/r'_k \rrbracket = M' \llbracket T_i \rrbracket$ and therefore
+$\valueconsist[M']{v_i}{T_i}$, from which the result follows.
+ 
+Thus, by induction, we conclude that
+$\valueconsist[M']{v_{n+1}}{T_r}$, $\traceconsist{E_{n+1}}$ (under
+$M'$) and $\privconsist[M']{E_{n+1}}{\Phi'}$.  Because 
+$$M \llbracket T_r[r_1/r'_1,\ldots,r_k/r'_k \rrbracket = M' \llbracket T_r \rrbracket$$ we can conclude
+$\valueconsist{v_{n+1}}{T_r[r_1/r'_1,\ldots,r_k/r'_k}$.  
 
+To show that
+$\traceconsist{E_{n+1}}$ under $M'$ implies $\traceconsist{E_{n+1}}$
+under $M$, note that $H(\cdot)$ does not depend on the mapping (because it includes only concrete, not logical, regions) so the
+types of locations are unaffected by the mapping (see
+Figure~\ref{fig:constprop}).  Now, the environment
+$M' \llbracket \Gamma' \rrbracket$ is used to look up reduction
+functions, but the reduction function signatures are restricted to
+have no regions named in their arguments and so
+$$M \llbracket \Gamma' \rrbracket(id)  = M' \llbracket \Gamma' \rrbracket(id)$$
+Finally, from 
+$$valid\_interleave(S, C, E'', E', E_{n+1})$$
+and Lemma~\ref{lemma:heapconst:effects2} we conclude $\traceconsist{E''}$.
 
-
-
-$\typeenv{e_i}{T_i[r_1/r'_1,\ldots,r_k/r'_k]}$
-$\Phi'[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Phi^*$
-
-
+For the last consistency property of the function call, we first observe
+that $\privconsist[M']{E_{n+1}}{\Phi'}$ is equivalent to 
+$$\privconsist{E_{n+1}}{\Phi[r_1/r'_1,\ldots,r_k/r'_k]}$$
+because, again, $E_{n+1}$ does not mention logical region names and
+$M' \llbracket r' \rrbracket = M \llbracket r \rrbracket$.
+From [T-Call] we have 
+$$\Phi[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Phi^*$$
+and so
+$\privconsist{E_{n+1}}{\Phi^*}$.  Applying Lemma~\ref{lemma:phiclosure} we conclude
+that $\privconsist{E_{n+1}}{\Phi}$.
+Finally, from Lemma~\ref{lemma:effsound:effects2} we conclude $\privconsist{E''}{\Phi}$.
 \end{itemize}
 \end{proof}
 
@@ -1926,9 +1962,9 @@ Let $M$ be a region mapping and $E_1$ and $E_2$ two memory traces such that $\pr
 \end{lem}
 
 \begin{proof}
-The proof is by contradiction.  Assume $E_1 \cancel\nonint E_2$.  Then there must be some $\epsilon_1$ in $E_1$ and some $\epsilon_2$ in $E_2$ such that $\epsilon_1 \cancel\nonint \epsilon_2$.  This requires that
+The proof is by contradiction.  Assume $E_1 \nonint E_2$.  Then there must be some $\epsilon_1$ in $E_1$ and some $\epsilon_2$ in $E_2$ such that $\epsilon_1 \nonint \epsilon_2$.  This requires that
 $\epsilon_1$ and $\epsilon_2$ be operations to the same location $l$ and not both be reads or both
-reductions using the same function name.  Assume $\epsilon_1 = read(l, c_1, v_1)$ and $\epsilon_2 = write(l, c_2, v_2)$.  The definition of $\privconsist{E_1}{\Phi_1}$ tells us that there must be some $r_1$ satisfying $l \in M(r_1) \wedge reads(r_1) \in \Phi_1$.  Similarly, there must be some $r_2$ satisfying $l \in M(r_2) \wedge writes(r_2) \in \Phi_2$.  Letting $\phi_1 = reads(r_1)$ and $\phi_2 = writes(r_2)$, we have $M(r_1) \cap M(r_2) \not= \emptyset$ (it contains at least $l$), so $\phi_1 \cancel{\nonint[M]} \phi_2$ and $\Phi_1 \cancel{\nonint[M]} \Phi_2$.  There are seven other cases to consider (using $id_1 \not= id_2$ for the reduce-reduce case), but all yield the same result.
+reductions using the same function name.  Assume $\epsilon_1 = read(l, c_1, v_1)$ and $\epsilon_2 = write(l, c_2, v_2)$.  The definition of $\privconsist{E_1}{\Phi_1}$ tells us that there must be some $r_1$ satisfying $l \in M(r_1) \wedge reads(r_1) \in \Phi_1$.  Similarly, there must be some $r_2$ satisfying $l \in M(r_2) \wedge writes(r_2) \in \Phi_2$.  Letting $\phi_1 = reads(r_1)$ and $\phi_2 = writes(r_2)$, we have $M(r_1) \cap M(r_2) \not= \emptyset$ (it contains at least $l$), so $\phi_1 {\nonint[M]} \phi_2$ and $\Phi_1 {\nonint[M]} \Phi_2$.  There are seven other cases to consider (using $id_1 \not= id_2$ for the reduce-reduce case), but all yield the same result.
 \end{proof}
 
 We can now state the key result that allows the Legion runtime to safely evaluate subexpressions as
