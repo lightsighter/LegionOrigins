@@ -1,4 +1,56 @@
 
 \section{Introduction}
 \label{sec:intro}
-Introduction goes here.
+
+% Big machines -> latencies are growing
+% Processors can't be blocked, need to be able to continue handling work
+% Operations need to be composable
+% deferred execution model
+
+% Contributions:
+% - An event system where every operation can take an event and returns an event
+% - Handles are globally valid
+% - More flexible synchronization primitive for this environment: deferred locks
+% - Physical regions for data movement including special versions for reductions
+
+With the multicore revolution, modern supercomputers have continued to scale
+by increasing the number of processors available for computation.  The
+price of this scaling is complex interconnection networks and
+deep memory hierarchies.  These parts of the system are designed to
+minimize latency, but the growing scale of these machines has
+caused average and worst-case latencies to grow by orders of magnitdue.
+Recently, some of these latencies have grown to the point that supercomputers
+share many of the same performance properties as machines commonly
+classified as distributed systems.  Despite this major evolution in the
+performance of supercomputers, most programs for supercomputers are still
+written using the same old programming models and libraries that were designed
+years ago for machines many orders of magnitude smaller.  
+  
+In this paper we propose a new interface for programming modern supercomputers 
+that is designed to hide the large latencies associated with current 
+interconnection networks and memory hierarchies.  Our interface is built 
+around {\em events}.  Events provide a mechanism for naming a point in the future
+when an operation (i.e. task, copy, synchronization) will complete.  Every call to perform
+an operation in our runtime is asynchronous and returns immediately with an event that will 
+{\em trigger} when the operation has completed.  Furthermore, every call
+to perform an operation can take a precondition event that must trigger before
+the operation can begin.  Using events programmers can compose large
+chains of dependent operations.  The runtime is free to execute operations
+in any order that obeys the event dependences.  With this freedom the
+runtime can schedule operations in a way that optimizes throughput
+while automatically hiding the long latency memory and communication operations.
+
+For most supercomputer programmers effectively overlapping computation with
+memory and communication latency is the most difficult barrier to achieving high
+performance.  Current parallel programming APIs hinder this ability by either
+failing to support asynchronous constructs, or by supporting constructs that are
+not composable.  For example, MPI supports asynchronous send and receive operations
+but does so in a way that later requires blocking to know when the send and receive 
+operations have completed\cite{MPI}.  There is no way in MPI to launch a new 
+operation contingent on the result of a blocking receive operation.  
+
+% Parallel programs have three parts
+%  Parallel control
+%  Data movement in the memory hierarchy
+%  Synchronization
+
