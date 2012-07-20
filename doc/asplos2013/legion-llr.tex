@@ -50,21 +50,21 @@
 %Author response & around October 15, 2012 \\
 %Author notification & November 9, 2012
 %\end{tabular}
-Modern parallel architectures are composed of both heterogeneous processors
-and complex distributed memory hierarchies.  We present a low-level programming
-interface that provides simple primitives for targeting this class of
-machines.  Our interface includes mechanisms for the creation and movement
-of data through the memory hierarchy as well as a novel synchronization primitive 
-called a deferred lock.  To hide the large latencies associated with the target
-set of machines the interface is made asynchronous via an event system.  All
+We present a low-level runtime interface for current highly distributed, heterogeneous
+parallel machines that provides a fully asynchronous 
+programming model, allowing all types of runtime actions, including synchronization,
+to be non-blocking.  Our interface includes mechanisms for the creation and movement
+of data through the memory hierarchy as well as {\em deferred locks}, a novel synchronization primitive.
+Asynchrony is exposed by the the interface using a distributed event system.  All
 operations return an event to be triggered when the operation completes.  Events
 can be chained together and used to create dependences between operations.
+
 We describe an implementation of our interface capable of running on
 a large supercomputer with both CPU and GPU processors and a high speed interconnect.
 We employ several micro-benchmarks to show that our implementation approaches
 the performance limits of the underlying hardware.
 We also demonstrate that the interface is sufficiently powerful to serve as the foundation 
-of an advanced runtime system.  We measure the performance of three real-world applications
+of an advanced parallel programming system.  We measure the performance of three real-world applications
 that use our system on the Keeneland supercomputer.
 \end{abstract}
 
