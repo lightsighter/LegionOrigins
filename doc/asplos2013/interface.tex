@@ -2,13 +2,16 @@
 \section{Programming Interface}
 \label{sec:interface}
 
-The runtime interface organizes
-functionality into objects.  Objects are grouped into
-four different categories: machine objects for describing
-the underlying architecture, events for capturing dependences,
-deferred locks for performing synchronization, and physical regions
-for managing data.  In all cases, the objects are light-weight
-{\em handles} that can be copied and passed around by value.  Furthermore
+Our interface organizes functionality into objects.  We describe
+these objects in five parts: events for composing operations 
+(Section~\ref{subsec:events}), processors for parallel computation 
+(\ref{subsec:procs}), deffered locks for synchronization
+(\ref{subsec:locks}), physical regions for data movement
+(\ref{subsec:phyreg}), and an object for introspection of the underlying
+hardware (\ref{subsec:machmodel}).  In all cases (except for the
+machine which is a static singleton), instances of the objects
+are light-weight {\em handles} that provide a unique name for an underlying
+implementation.  Handles can be copied and passed by value.  Furthermore,
 every handle is valid everywhere in the system.  This property allows 
 a programmer to pass handles by value between computations without
 having to reason about the distributed nature of the system.
@@ -29,125 +32,32 @@ Section~\ref{sec:impl}.
   %morekeywords={region,coloring,partition,spawn,disjoint,aliased},
   %deletekeywords=float,
 }
-\subsection{Machine Interface}
-\label{subsec:machmodel}
-Listing~\ref{lst:machineapi} shows the machine interface.  The machine interface 
-contains three different object types: {\tt Processor} (line 1), {\tt Memory} (line 17), and a 
-singleton {\tt Machine} object (line 22).  For every processor (i.e. CPU core or GPU) in 
-the system there exists a {\tt Processor} handle with a unique ID naming that processor.  
-{\tt Processor} objects support a single {\tt spawn} operation (line 13-14) that will
-launch a {\em task} on that processor.  Note that because the {\tt spawn} operation
-is invoked on a processor handle, it is possible to launch a task on any
-processor from anywhere in the system.  The {\tt spawn} call takes as arguments
-the {\tt TaskFuncID} of the task to be run, a pointer to and size of arguments to
-be passed to the task, and an optional {\tt Event} (described in Section~\ref{subsec:events})
-that must trigger before the task can begin.  The result of the {\tt spawn} call
-is an {\tt Event} that will trigger when the task completes. 
-
-For every memory in the system there also exists a {\tt Memory} handle with a unique ID. 
-Different memories often, but not always, imply a different address space.  For
-example, in a large cluster each node would have a different {\tt Memory} handle
-corresponding to each node's DRAM memory.
-However, if the cluster supported multiple GPUs then there would be a different
-{\tt Memory} handle for each GPU's {\em zero-copy} memory which shares part of the 
-address space with the corresponding node memory.  Memories will be used for describing
-the placement of data described in Section~\ref{subsec:phyreg}.
-
-The {\tt Machine} object is a singleton object that serves two purposes.  First, it
-is the mechanism for initializing the runtime; at the start of a program the programmer
-creates a {\tt Machine} object and invokes the {\tt run} method (line 30-31).
-Second, the {\tt Machine} object provides an interface for the programmer to 
-discover properties of the underlying machine (lines 35-43).  The {\tt Machine} object maintains
-sets of all the unique {\tt Processor} and {\tt Memory} handles in the system.
-The {\tt Machine} also maintains two relations between these sets:
-
-\begin{itemize}
-\item Processor-Memory: for each {\tt Processor} - {\tt Memory} pair whether
-the {\tt Processor} can directly access (read and write) the {\tt Memory} and 
-latency and bandwidth properties if access is possible
-\item Memory-Memory: for every pair of {\tt Memory} whether a copy can be
-performed between the two memories and latency and
-bandwidth properties if a copy is possible
-\end{itemize}
-
-The programmer can query these two relations by the {\tt get\_*\_affinity} calls
-(lines 40-43).  These calls populate a vector with affinity structures (not shown)
-that contain latency and bandwidth information.  The programmer can restrict the query
-by specifying a specific processor or memory, otherwise information is returned
-about all processors and memories in the system.  
-
-\begin{lstlisting}[float={t},label={lst:machineapi},caption={Machine Interface.}]
-class Processor {
-public:
-  const unsigned id;
-  typedef unsigned TaskFuncID;
-  typedef void (*TaskFuncPtr)
-            (const void *args,size_t arglen,Processor p);
-  typedef map<TaskFuncID, TaskFuncPtr> TaskIDTable;
-
-  enum Kind {
-    CPU_PROC,GPU_PROC,// ... future processor types
-  };
-
-  Event spawn(TaskFuncID func_id,const void *args,size_t arglen,
-              Event wait_on = Event::NO_EVENT) const;
-};
-
-class Memory {
-public:
-  const unsigned id;
-};
-
-class Machine {
-public:
-  Machine(int *argc, char ***argv,
-          const Processor::TaskIDTable &task_table);
-  enum RunStyle {
-    ONE_TASK_ONLY,ONE_TASK_PER_NODE,
-    ONE_TASK_PER_PROCESSOR,
-  };
-  void run(Processor::TaskFuncID task_id = 0, 
-        RunStyle = ONE_TASK_ONLY, const void *args, size_t arglen);
-public:
-  static Machine* get_machine(void); // pointer to Machine
-  // References to all processors and memories
-  const set<Memory>& get_all_memories(void) const;
-  const set<Processor>& get_all_processors(void) const;
-  Processor::Kind get_processor_kind(Processor p) const;
-  size_t get_memory_size(Memory m) const;
-  // Query properties of underlying hardware
-  int get_proc_mem_affinity(vector<ProcMemAffinity &result,
-          Processor restrict_proc = 0, Memory restrict_mem = 0);
-  int get_mem_mem_affinity(vector<MemMemAffinity> &result,
-          Memory restrict_mem1 = 0, Memory restrict_mem2 = 0);
-};
-\end{lstlisting}
-
 
 \subsection{Events}
 \label{subsec:events}
-Listing~\ref{lst:eventapi} shows the interface for events.  
-{\tt Event} is the base type of events.  An instance of an {\tt Event} type 
+Events are the primary mechanism for describing dependences in our system.
+Listing~\ref{lst:eventapi} shows the interface for events.  An instance of the {\tt Event} type 
 names a unique event in the system.  {\tt NO\_EVENT} (line 5) is a special instance
-of an event that by definition has always triggered.  The {\tt Event} interface
-also supports testing whether an event has triggered (line 7) and waiting on
+of an event that by definition has always triggered.  The event interface
+supports testing whether an event has triggered (line 7) and waiting on
 an event to trigger (line 9).  While these methods can be useful, the most common
-use of events is passing them as preconditions for operations such as the {\tt spawn}
-call described in Section~\ref{subsec:machmodel}.  The programmer can use the
+use of events is passing them as preconditions for other operations.  The programmer can use the
 {\tt merge\_events} call (line 11) to create an event corresponding to the 
-conjunction of a set of events when multiple events are a precondition for an operation.
+conjunction of a set of events.
 
-In most cases events are created by the runtime as the result of other
-operations and the runtime is responsible for triggering these events.  Users 
+In most cases events are created as the result of other
+operations and the implementation is responsible for triggering these events.  Users 
 can create a special type of event called a {\tt UserEvent} (line 14) that the
-user has the power to trigger.  {\tt UserEvent} is a sub-type of {\tt Event} 
-that has {\tt trigger} method (line 17).  Users can also create another
+user has the power to trigger.  A user event is a sub-type of an event
+that has a {\tt trigger} method (line 17).  Users can also create another
 type of event called a {\tt Barrier} that will require multiple arrivals before
 the event is triggered.  The user can manage the number of arrivals that must
 be seen as well as how many arrivals occur at a time.  Once a barrier's arrival
-count goes to zero, the barrier will trigger.  Note that since {\tt UserEvent}
-and {\tt Barrier} are sub-types of {\tt Event} they can be used wherever an
-{\tt Event} is required.
+count goes to zero, the barrier will trigger.  Note that barriers in our interface
+provide a superset of the functionality of traditional barriers since they can
+be used both in a blocking manner (via the {\tt wait} call), but can also be used
+asynchronously.  Lastly, since user events and barriers are sub-types of 
+an event they can be used wherever an event is required.
 
 \begin{lstlisting}[float={t},label={lst:eventapi},caption={Event Interface.}]
 class Event {
@@ -177,41 +87,87 @@ public:
 };
 \end{lstlisting}
 
+\subsection{Processors}
+\label{subsec:procs}
+Listing~\ref{lst:procapi} shows the interface for {\tt Processor} objects which allow for
+the creation of parallel computations.  Processor objects provide a way of naming 
+every computational unit in the machine.  In the case of our current implementation 
+processors are either individual cores or discrete GPUs, but this can be easily modified 
+to include new processor types (line 10).   Processors support a single {\tt spawn}
+operation (lines 13-14) that will launch a new {\em task} on that processor.
+Note that because the spawn operation
+is invoked on a processor handle, it is possible to launch a task on any
+processor from anywhere in the system.  To allow for the chaining of dependences
+through events the spawn call takes an 
+optional event that must trigger before the task can begin.  
+The result of the spawn call is an event that will trigger when the task completes
+which permits the creation of dependences upon this task.
+
+\begin{lstlisting}[float={t},label={lst:procapi},caption={Processor Interface.}]
+class Processor {
+public:
+  const unsigned id;
+  typedef unsigned TaskFuncID;
+  typedef void (*TaskFuncPtr)
+            (const void *args,size_t arglen,Processor p);
+  typedef map<TaskFuncID, TaskFuncPtr> TaskIDTable;
+
+  enum Kind {
+    CPU_PROC,GPU_PROC,// ... future processor types
+  };
+
+  Event spawn(TaskFuncID func_id,const void *args,size_t arglen,
+              Event wait_on = Event::NO_EVENT) const;
+};
+\end{lstlisting}
+
 \subsection{Deferred Locks}
 \label{subsec:locks}
-Deferred locks are a new synchronization mechanism that has different semantics from
-blocking locks.  From here on we refer to locks and deferred locks interchangeably, 
-but will refer to blocking locks explicitly.  Listing~\ref{lst:lockapi} shows the 
+
+Events and barriers express ordering properties between operations, but in many
+cases ordering is too strict.  For many applications access to data must only be atomic and
+not necessarily ordered.  Traditionally locks have been used to synchronize access
+to data.  However, all lock implementations that we are aware of require either blocking
+or spinning on locks, neither of which composes well with other asynchronous operations.
+Deferred locks are a new synchronization mechanism that allows for synchronization
+in an completely asynchronous environment.  
+
+Listing~\ref{lst:lockapi} shows the 
 interface for locks.  Unlike blocking locks, the {\tt lock} method (line 4) doesn't
 block but instead always returns immediately with an event that will be triggered
-when the lock has been acquired.  If the lock can be acquired immediately then a {\tt NO\_EVENT}
-is returned.  The {\tt lock} method also takes an optional event
-parameter indicating that the lock acquire shouldn't be performed until the event
-has triggered.  Similarly, the {\tt unlock} method (line 5) takes an optional event parameter indicating
-an event to wait for before performing the unlock operation.
-
-Deferred locks provide a super-set of the functionality of blocking locks.  As their
-name suggests, deferred locks can use the event corresponding to their lock acquire
-operation to defer execution until the lock acquire has been granted.  Deferred
-locks can also be converted back into a blocking lock by immediately waiting on the event
-returned from a call to {\tt lock}.  In addition, deffered locks also provide {\tt mode} and
-and {\tt exclusive} parameters that allow the user to specify whether other requests can acquire
-the lock simultaneously.  A lock can only be acquired in one mode at a time.  The
-{\tt exclusive} parameter specifies whether other owners are permitted once the
-current lock request is granted.
+when the lock has been acquired.  Just like the spawn method, the lock method also 
+takes an optional event parameter as a precondition.  Similarly, the {\tt unlock} 
+method (line 5) takes an optional event precondition parameter.
 
 An important difference between deferred locks and blocking locks is that the processor
 that requests the lock doesn't have to be the one that uses it.  A common
-convention in writing code with deferred locks is to acquire locks for a task being
+convention in writing code with deferred locks is to acquire locks on behalf of a task being
 launched.  Listing~\ref{lst:lockapi} illustrates this with a simple example.  The
 {\tt launcher\_task} is calling a sub-task that is going to require the {\tt needed}
 lock.  A lock request is issued and the resulting {\tt lock\_event} is used as
 a precondition for launching the {\tt SUB\_TASK} task.  The unlock operation is then
 precondition on the event corresponding to {\tt SUB\_TASK} task's completion.  The
-sub-task can run safely while holding the lock and the lock is released when the task
-sub-task completes.  Using deferred locks in this style minimizes the time
-compute resources spend waiting on locks by ensuring tasks only run when their needed
+sub-task can run safely while holding the lock and the lock is released when the
+sub-task completes.  Using deferred locks in this style prevents 
+compute resources from waiting on locks by ensuring tasks only run when their needed
 locks have already been acquired.
+
+Between deffered locks and barriers (described in Section~\ref{subsec:events}) programmers
+have access to the same set of synchronization primitves that they traditionally have
+in both threading and bulk-synchronous interfaces, but in a distributed asynchronous
+environment.  Furthermore these operations can now be composed with other asynchronous
+operations which is not possible in any other interface.
+
+%Deferred locks provide a super-set of the functionality of blocking locks.  As their
+%name suggests, deferred locks can use the event corresponding to their lock acquire
+%operation to defer execution until the lock acquire has been granted.  Deferred
+%locks can also be converted back into a blocking lock by immediately waiting on the event
+%returned from a call to {\tt lock}.  In addition, deffered locks also provide {\tt mode} and
+%and {\tt exclusive} parameters that allow the user to specify whether other requests can acquire
+%the lock simultaneously.  A lock can only be acquired in one mode at a time.  The
+%{\tt exclusive} parameter specifies whether other owners are permitted once the
+%current lock request is granted.
+
 
 \begin{lstlisting}[float={t},label={lst:lockapi},caption={Deferred Lock Interface and Example.}]
 class Lock {
@@ -243,35 +199,38 @@ void launcher_task(const void *args, size_t arglen, Processor p) {
 \label{subsec:phyreg}
 
 {\em Physical regions} are the mechanism for reasoning about
-the placement and movement of data in the runtime.  Physical regions are an 
+the placement and movement of data in the interface.  Physical regions are an 
 allocation of data in a single memory in the memory hierarchy.  Listing~\ref{lst:regionapi} 
 shows a subset of the physical region interface.  The first object in the interface
-is a {\tt RegionMetaData} object (line 1).  {\tt RegionMetaData} objects provide the interface for the
+is a {\tt RegionMetaData} object (line 1).  Region meta-data objects provide the interface for the
 creation of sets of physical regions that possess the same number and type of elements (but not necessarily
-the same data layout).  The runtime is only able
+the same data layout).  The interface is only able
 to copy data between two physical regions that were created by the
-same {\tt RegionMetaData} object.  A runtime error will be generated if a copy is attempted
-between two physical regions that were not created by the same {\tt RegionMetaData}.
+same region meta-data object.  A runtime error will be generated if a copy is attempted
+between two physical regions that were not created by the same meta-data object.
 
 An instance of a physical region is represented by a {\tt RegionInstance} object (line 17).
 When creating a physical region the programmer must specify the {\tt Memory}
-in which the physical region is going to be allocated (line 10).  Once the physical region is created it
+in which the physical region is going to be allocated (line 10).  Memories are described
+in more detail in Section~\ref{subsec:machmodel}.  Once the physical region is created it
 cannot be moved.   There is no coherence of data between physical regions created by the 
-same {\tt RegionMetaData}.  It is the programmer's responsiblity to manage data coherence
+same meta-data object.  It is the programmer's responsiblity to manage data coherence
 using copies between physical regions (line 22-23).  Just like other operations,
-copies can be predicated on an {\tt Event} and return an {\tt Event} corresponding to
-completion.  A copy between two physical regions can only be performed if copies
-are permitted between the two memories where the regions were created.  
-The legality of copies can be discovered using queries to the {\tt Machine} object
-described in Section~\ref{subsec:machmodel}.
+copies can be predicated on an event and return an event corresponding to
+completion.  
+%A copy between two physical regions can only be performed if copies
+%are permitted between the two memories where the regions were created.  
+%The legality of copies can be discovered using queries to the {\tt Machine} object
+%described in Section~\ref{subsec:machmodel}.
 
 The data held inside a physical region is accessed by another kind of object called an
-{\em instance accessor} (not shown).  Accessors support read, write, and reduction operations
+{\em accessor} (not shown).  Accessors support read, write, and reduction operations
 to elements inside the physical region.  Accessors can be specialized for the case where
 all memory is known to be directly accessible to the executing processor, which allows 
 for direct references to elements.  In cases where not all memory is directly accessable, 
 accessors supply the level of indirection necessary to convert operations into remote 
-memory operations (RMAs).  %An example of this is described in more detail in Section~\ref{sec:impl}.
+memory operations (RMAs) if supported by the underlying hardware.  
+%An example of this is described in more detail in Section~\ref{sec:impl}.
 
 One special (but common) case for applications is when reductions need to be performed.
 For reductions it is usually more efficient to store reduction
@@ -279,23 +238,24 @@ operations in a local reduction buffer and then merge reduction buffers together
 point in time.  To support this case the interface allows for the creation of a special kind
 of physical instance called a {\em reduction instance}.  The call to {\tt create\_instance} on
 lines 13-14 takes a {\em reduction operation} to be associated with a physical instance which
-tells the runtime to create a reduction instance.  Reduction instances can only be accessed
+tells the interface to create a reduction instance.  Reduction instances can only be accessed
 using a reduction of the given reduction type; any other accesses will result in a runtime
 error.  A reduction operation is a functor which must have at least one method of the type
-$(T_1 \rightarrow T_2 \rightarrow T_1)$ which takes an element of type $T_1$ and a value
-to be reduced of type $T_2$ and creates and new element.  Reduction operations can also
+$(T_1 \rightarrow T_2 \rightarrow T_1)$ which takes a region element of type $T_1$ and a value
+to be reduced of type $T_2$ and creates and new region element.  Reduction operations can optionally 
 support two additional methods: a method that supplies an initial value of type $T_2$ and a 
 fold method of type $(T_2 \rightarrow T_2 \rightarrow T_2)$.  The presence of these methods
-enable additional runtime optimizations for reductions described in Section~\ref{sec:impl}.
+enable additional optimizations for reductions described in Section~\ref{subsec:reducimpl}.
 
 Reduction instances can be copied using the same interface as regular physical instances.
 It is only legal to copy a reduction instance to a regular physical instance or another
-reduction instance.  Any attempt to copy from a regular physical instance to a reduction
-instance will result in a runtime error.  A copy from a reduction instance to a regular
-physical instance will apply all the reductions in the reduction buffer to the physical
-instance.  If a copy is from one reduction instance to another, the two reduction buffers
-will be merged.  The semantics of a merge are dependent upon the underlying implementation
-of reduction buffers which is discussed in more detail in Section~\ref{sec:impl}.
+reduction instance of the same reduction operator.  Any attempt to copy from a regular physical 
+instance to a reduction instance will result in a runtime error.  A copy from a reduction 
+instance to a regular physical instance will apply all the reductions in the reduction 
+buffer to the physical instance.  If a copy is from one reduction instance to another, 
+the two reduction buffers will be merged.  The semantics of a merge are dependent upon 
+the underlying implementation of reduction buffers which is discussed in more detail 
+in Section~\ref{subsec:reducimpl}.
 
 \begin{lstlisting}[float={t},label={lst:regionapi},caption={Subset of Physical Region Interface.}]
 class RegionMetaData {
@@ -323,4 +283,87 @@ public:
                 Event wait_on = Event::NO_EVENT);
 };
 \end{lstlisting}
+
+
+\subsection{Machine Interface}
+\label{subsec:machmodel}
+The last component of the interface allows for introspection of the current machine.
+Listing~\ref{lst:machineapi} shows the machine interface.
+The {\tt Machine} object is a singleton object that serves two purposes.  First, it
+is the mechanism for initializing the runtime; at the start of a program the programmer
+creates a machine object and invokes the {\tt run} method (line 30-31).
+Second, the machine object provides an interface for the programmer to 
+discover properties of the underlying machine (lines 35-43).  The machine object maintains
+sets of all the unique {\tt Processor} and {\tt Memory} handles in the system.  Processors
+were described in Section~\ref{subsec:procs}.  For every memory in the system there also 
+exists a {\tt Memory} handle with a unique ID.  Different memories often, but not always, 
+imply a different address space.  Examples of different memories are described in
+Section~\ref{sec:impl}.
+
+%For
+%example, in a large cluster each node would have a different {\tt Memory} handle
+%corresponding to each node's DRAM memory.
+%However, if the cluster supported multiple GPUs then there would be a different
+%{\tt Memory} handle for each GPU's {\em zero-copy} memory which shares part of the 
+%address space with the corresponding node memory.  Memories will be used for describing
+%the placement of data described in Section~\ref{subsec:phyreg}.
+
+%The machine interface 
+%contains three different object types: {\tt Processor} (line 1), {\tt Memory} (line 17), and a 
+%singleton {\tt Machine} object (line 22).  For every processor (i.e. CPU core or GPU) in 
+%the system there exists a {\tt Processor} handle with a unique ID naming that processor.  
+%{\tt Processor} objects support a single {\tt spawn} operation (line 13-14) that will
+%launch a {\em task} on that processor.   
+
+The machine object also maintains two relations between the set of processors
+and the set of memories:
+\begin{itemize}
+\item Processor-Memory: for each processor-memory pair whether
+the processor can directly access (read and write) the memory and 
+latency and bandwidth properties if access is possible
+\item Memory-Memory: for every pair of memories whether a copy can be
+performed between the two memories and latency and
+bandwidth properties if a copy is possible
+\end{itemize}
+
+The programmer can query these two relations by the {\tt get\_*\_affinity} calls
+(lines 40-43).  
+
+%These calls populate a vector with affinity structures (not shown)
+%that contain latency and bandwidth information.  The programmer can restrict the query
+%by specifying a specific processor or memory, otherwise information is returned
+%about all processors and memories in the system.  
+
+\begin{lstlisting}[float={t},label={lst:machineapi},caption={Machine Interface.}]
+
+class Memory {
+public:
+  const unsigned id;
+};
+
+class Machine {
+public:
+  Machine(int *argc, char ***argv,
+          const Processor::TaskIDTable &task_table);
+  enum RunStyle {
+    ONE_TASK_ONLY,ONE_TASK_PER_NODE,
+    ONE_TASK_PER_PROCESSOR,
+  };
+  void run(Processor::TaskFuncID task_id = 0, 
+        RunStyle = ONE_TASK_ONLY, const void *args, size_t arglen);
+public:
+  static Machine* get_machine(void); // pointer to Machine
+  // References to all processors and memories
+  const set<Memory>& get_all_memories(void) const;
+  const set<Processor>& get_all_processors(void) const;
+  Processor::Kind get_processor_kind(Processor p) const;
+  size_t get_memory_size(Memory m) const;
+  // Query properties of underlying hardware
+  int get_proc_mem_affinity(vector<ProcMemAffinity &result,
+          Processor restrict_proc = 0, Memory restrict_mem = 0);
+  int get_mem_mem_affinity(vector<MemMemAffinity> &result,
+          Memory restrict_mem1 = 0, Memory restrict_mem2 = 0);
+};
+\end{lstlisting}
+
 
