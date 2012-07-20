@@ -895,7 +895,7 @@ namespace RegionRuntime {
 	Lock get_lock(void) const;
     private:
 	Event register_request(unsigned m, bool exc, TriggerHandle handle = 0);
-	void perform_unlock();
+	void perform_unlock(std::set<EventImpl*> &to_trigger);
     private:
 	class LockRecord {
 	public:
@@ -1037,6 +1037,7 @@ namespace RegionRuntime {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
         log_lock(LEVEL_DEBUG,"unlock request: lock=%x mode=%d excl=%d event=%x/%d count=%d",
                  index, mode, exclusive, wait_on.id, wait_on.gen, holders);
+        std::set<EventImpl*> to_trigger;
 	if (wait_on.exists())
 	{
 		// Register this lock to be unlocked when the even triggers	
@@ -1046,25 +1047,32 @@ namespace RegionRuntime {
 		{
 			// The event didn't register which means it already triggered
 			// so go ahead and perform the unlock operation
-			perform_unlock();
+			perform_unlock(to_trigger);
 		}	
 	}
 	else
 	{
 		// No need to wait to perform the unlock
-		perform_unlock();		
+		perform_unlock(to_trigger);		
 	}
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
+        // Don't perform any triggers while holding the lock's lock
+        for (std::set<EventImpl*>::const_iterator it = to_trigger.begin();
+              it != to_trigger.end(); it++)
+        {
+          (*it)->trigger();
+        }
     }
 
     void LockImpl::trigger(unsigned count, TriggerHandle handle)
     {
+        std::set<EventImpl*> to_trigger;
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
         // If the trigger handle is 0 then unlock the lock, 
         // otherwise find the lock request to wake up
         if (handle == 0)
         {
-          perform_unlock();
+          perform_unlock(to_trigger);
         }
         else
         {
@@ -1088,8 +1096,7 @@ namespace RegionRuntime {
                 {
                   holders++;
                   // Trigger the event saying we have the lock
-                  EventImpl *impl = Runtime::get_runtime()->get_event_impl(it->event);
-                  impl->trigger();
+                  to_trigger.insert(Runtime::get_runtime()->get_event_impl(it->event));
                   // Remove the request
                   requests.erase(it);
                 }
@@ -1106,8 +1113,7 @@ namespace RegionRuntime {
                 mode = it->mode; 
                 holders = 1;
                 // Trigger the event saying we have the lock
-                EventImpl *impl = Runtime::get_runtime()->get_event_impl(it->event);
-                impl->trigger();
+                to_trigger.insert(Runtime::get_runtime()->get_event_impl(it->event));
                 // Remove this request
                 requests.erase(it);
 #ifdef DEBUG_PRINT
@@ -1122,10 +1128,16 @@ namespace RegionRuntime {
 #endif
         }
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
+        // Don't perform any triggers while holding the lock's lock
+        for (std::set<EventImpl*>::const_iterator it = to_trigger.begin();
+              it != to_trigger.end(); it++)
+        {
+          (*it)->trigger();
+        }
     }
 
     // Always called while holding the lock's mutex
-    void LockImpl::perform_unlock(void)
+    void LockImpl::perform_unlock(std::set<EventImpl*> &to_trigger)
     {
 	holders--;	
 	// If the holders are zero, get the next request out of the queue and trigger it
@@ -1180,7 +1192,7 @@ namespace RegionRuntime {
 		DPRINT3("Issuing lock %d in mode %d with exclusivity %d\n",index,mode,exclusive);
 #endif
 		// Trigger the event
-		Runtime::get_runtime()->get_event_impl(req.event)->trigger();
+                to_trigger.insert(Runtime::get_runtime()->get_event_impl(req.event));
 		// If this isn't an exclusive mode, see if there are any other
 		// requests with the same mode that aren't exclusive that we can handle
 		if (!exclusive)
@@ -1194,7 +1206,7 @@ namespace RegionRuntime {
 				if ((it->mode == mode) && (!it->exclusive) && (!it->handled))
 				{
 					it->handled = true;
-					Runtime::get_runtime()->get_event_impl(it->event)->trigger();
+                                        to_trigger.insert(Runtime::get_runtime()->get_event_impl(it->event));
 					holders++;
 				}
 				else
