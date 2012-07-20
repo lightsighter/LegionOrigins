@@ -13,44 +13,96 @@
 % - More flexible synchronization primitive for this environment: deferred locks
 % - Physical regions for data movement including special versions for reductions
 
+% Parallel programs have three parts
+%  Parallel control
+%  Data movement in the memory hierarchy
+%  Synchronization
+
+% Bulk-synchronous
+% asynchronous components are not composable
+
 With the multicore revolution, modern supercomputers have continued to scale
 by increasing the number of processors available for computation.  The
 price of this scaling is complex interconnection networks and
 deep memory hierarchies.  These parts of the system are designed to
-minimize latency, but the growing scale of these machines has
+minimize latency, but the growing scale of supercomputers has
 caused average and worst-case latencies to grow by orders of magnitdue.
 Recently, some of these latencies have grown to the point that supercomputers
 share many of the same performance properties as machines commonly
 classified as distributed systems.  Despite this major evolution in the
 performance of supercomputers, most programs for supercomputers are still
-written using the same old programming models and libraries that were designed
-years ago for machines many orders of magnitude smaller.  
-  
-In this paper we propose a new interface for programming modern supercomputers 
-that is designed to hide the large latencies associated with current 
-interconnection networks and memory hierarchies.  Our interface is built 
-around {\em events}.  Events provide a mechanism for naming a point in the future
-when an operation (i.e. task, copy, synchronization) will complete.  Every call to perform
-an operation in our runtime is asynchronous and returns immediately with an event that will 
+written using programming models and libraries that were designed
+for machines many orders of magnitude smaller\cite{MPI,COARRAY_FORTRAN,UPC99}.  
+
+The approach that current programming models provide is commonly reffered to
+as a {\em bulk-synchronous} model\cite{Valiant90}.  Bulk-synchronous models
+break computations down into three kinds of phases: parallel computation, data
+communication, and synchronization.  At any given point in time all the processors
+in the system are engaged in one of the three kinds of phase.  The bulk-synchronous
+approach to parallel programming makes it easy to reason about parallel execution, but
+has a fundamental limitation: it is very difficult to hide long-latency communication
+or memory movement phases.  In older machines this was not a problem because slower
+processors and smaller machines meant computation phases were much larger than
+communication or synchronization phases.  However, today's machines are much
+larger with faster processors which cause increasingly large percentages of time
+to be spend in the communication and synchronization phases.
+
+To combat this problem, parallel programming libraries have introduced
+asynchronous constructs which allow the programmer to overlap phases.  For example,
+MPI has asynchronous {\em send} and {\em receive} operations for sending
+messages in parallel with computation.  There are two problems with this approach.
+First, not all phases support asynchronous constructs.  Second,
+the asynchronous operations do not {\em compose}.  There is no way to express
+that an asynchronous computation should begin as soon as an asynchronous
+communication operation has completed.  The result is that
+at some point there must be blocking operations to coordinate synchronous
+and asynchronous phases.  If blocking calls are not accurately placed in the
+program they can lead to processor stalls that expose latency.  Correct
+placement of blocking calls can be dependent on input data, algorithmic decisions like blocking
+factors, or even the underlying hardware.  
+To hide as much latency as possible and to minimize processor stalls, regardless
+of inputs, algorithmic choices, or underlying hardware,
+all three major aspects of parallel programs (computation, data movement, synchronization)
+should be made asynchronous and composable.
+
+We propose a new interface for programming modern supercomputers 
+that is fully asynchronous to hide the large latencies associated with current 
+interconnection networks and memory hierarchies.  Our interface makes it possible
+to asynchronously compose computation, data movement, and synchronizatioan.  The 
+fundamental mechanism that enables us to compose all three aspects of parallel
+programs are {\em events}.  Events provide a mechanism for naming a point in the future
+when an operation (i.e. computation, data copy, synchronization) will complete.  
+Every call to perform an operation in our runtime returns immediately with an event that will 
 {\em trigger} when the operation has completed.  Furthermore, every call
 to perform an operation can take a precondition event that must trigger before
 the operation can begin.  Using events programmers can compose large
 chains of dependent operations.  The runtime is free to execute operations
 in any order that obeys the event dependences.  With this freedom the
 runtime can schedule operations in a way that optimizes throughput
-while automatically hiding the long latency memory and communication operations.
+while automatically hiding the long latency operations.
 
-For most supercomputer programmers effectively overlapping computation with
-memory and communication latency is the most difficult barrier to achieving high
-performance.  Current parallel programming APIs hinder this ability by either
-failing to support asynchronous constructs, or by supporting constructs that are
-not composable.  For example, MPI supports asynchronous send and receive operations
-but does so in a way that later requires blocking to know when the send and receive 
-operations have completed\cite{MPI}.  There is no way in MPI to launch a new 
-operation contingent on the result of a blocking receive operation.  
+The following sections describe our contributions:
+\begin{itemize}
+\item We present an interface for asynchronously composing
+parallel computation, data movement, and synchronization based on events.  
+To support synchronization in an event system we describe a novel synchronization
+primitive called a {\em deffered lock}.  Our interface also supports efficient
+mechanisms for performing distributed reduction operations (Section~\ref{sec:interface}).
 
-% Parallel programs have three parts
-%  Parallel control
-%  Data movement in the memory hierarchy
-%  Synchronization
+\item We describe a distributed implementation of our interface that requires no
+global coordination and is capable of running on current supercomputers.  We
+describe optimizations for the implementation of events, deffered locks, and
+reductions (Section~\ref{sec:impl}).
+
+\item We show the result of micro-benchmarks that are designed to stress
+our implementation.  The results indiciate that our implementation approaches the performance of
+the underlying hardware (Section~\ref{sec:micro}).
+
+\item We demonstrate that our interface is powerful enough to support a higher-level
+runtime system and that real applications running on this stack of software
+are capable of achieving high-performance (Section~\ref{sec:apps}).
+\end{itemize}
+
+In Section~\ref{sec:related} we describe related work and in Section~\ref{sec:conclusion}
+we conclude.
 
