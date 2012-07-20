@@ -54,14 +54,17 @@ void shutdown(void)
   }
 }
 
-void send_level_commands(int fanout, Processor local, const EventSet &send_events, const std::set<Processor> &all_procs)
+void send_level_commands(int fanout, Processor local, const EventSet &send_events, 
+                          const std::set<Processor> &all_procs, bool first)
 {
   assert(!send_events.empty());
-  size_t buffer_size = sizeof(Processor) + sizeof(size_t) + (send_events.size() * sizeof(Event));
+  size_t buffer_size = sizeof(Processor) + sizeof(bool) + sizeof(size_t) + (send_events.size() * sizeof(Event));
   void * buffer = malloc(buffer_size);
   char *ptr = (char*)buffer;
   *((Processor*)ptr) = local;
   ptr += sizeof(Processor);
+  *((bool*)ptr) = first;
+  ptr += sizeof(bool);
   size_t num_events = send_events.size();
   *((size_t*)ptr) = num_events;
   ptr += sizeof(size_t);
@@ -94,13 +97,13 @@ void construct_track(int levels, int fanout, Processor local, Event precondition
   receive_events.clear();
   // For the first level there is only one event that has to be sent
   send_events.insert(precondition);
-  send_level_commands(fanout, local, send_events, all_procs);
+  send_level_commands(fanout, local, send_events, all_procs, true/*first*/);
   for (int i = 1; i < levels; i++)
   {
     // Copy the send events from the receive events
     send_events = receive_events;
     receive_events.clear();
-    send_level_commands(fanout, local, send_events, all_procs);
+    send_level_commands(fanout, local, send_events, all_procs, false/*first*/);
   }
   // Put all the receive events from the last level into the wait for set
   wait_for.insert(receive_events.begin(),receive_events.end());
@@ -195,6 +198,8 @@ void level_builder(const void *args, size_t arglen, Processor p)
   const char* ptr = (const char*)args;
   Processor orig = *((Processor*)ptr);
   ptr += sizeof(Processor);
+  bool first = *((bool*)ptr);
+  ptr += sizeof(bool);
   size_t total_events = *((size_t*)ptr);
   ptr += sizeof(size_t);
   for (unsigned i = 0; i < total_events; i++)
@@ -204,9 +209,18 @@ void level_builder(const void *args, size_t arglen, Processor p)
     wait_for_events.insert(wait_event);
   }
   // Merge all the wait for events together
-  Event launch_event = Event::merge_events(wait_for_events);
-  // Launch the task on this processor
-  Event finish_event = p.spawn(DUMMY_TASK,NULL,0,launch_event);
+  Event finish_event = Event::NO_EVENT;
+  if (first)
+  {
+    Event launch_event = Event::merge_events(wait_for_events);
+    // Launch the task on this processor
+    finish_event = p.spawn(DUMMY_TASK,NULL,0,launch_event);
+  }
+  else
+  {
+    finish_event = Event::merge_events(wait_for_events);
+  }
+  assert(finish_event.exists());
   // Send back the event for this processor
   {
     size_t buffer_size = sizeof(Event);
