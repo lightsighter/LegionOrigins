@@ -1854,7 +1854,30 @@ Let $\typeenv{e}{T}$ and $\opsenv{e}{v}{E}$ and $\storeconsist{S}{H}$.  If $C \s
 $\opsenv[C=C']{e}{v}{E}$.
 \end{lem}
 
-The proof of this (and other lemmas in this section) is included in \cite{LegionTypes12}.
+\begin{proof}
+The proof is by induction on the structure of the derivation of $e$.  The clobber set is only manipulated
+in one case and only examined in one other case.  In all other cases, the clobber set is unchanged and
+used only in the derivation of subexpressions.  The case where the clobber set is manipulated is [E-Call], but
+the use of a union operation still allows the inductive hypothesis to be applied to the subexpression $e_{n+1}$.
+The examination of the clobber set occurs in [E-Read] where it is used to choose the result $v$ of the read
+from the heap.  For each use of the [E-Read] rule, there are three possible cases:
+\begin{itemize}
+\item $l \in C$, for which $v = S'(l)$ in the derivation using $C$.  Since $C \subseteq C'$, we have $l \in C'$, and $S'(l)$ is the correct result for the $C'$ derivation as well.
+\item $l \not\in C'$, and therefore $l \not\in C$.  Both derivations may use any value $v' : H(l)$.
+\item $l \in C, l \not\in C'$, for which $v = S'(l)$ must be chosen for the derivation using $C$.  From Theorem~\ref{thm:effects} and Lemma~\ref{lemma:heapconst:apply}, we have $\traceconsist{E}$ and $\storeconsist{S' = apply(S, E)}{H}$, so $\valueconsist[]{S'(l)}{H(l)}$, and $v$ is a legal choice for $v'$ in the derivation using $C'$.
+\end{itemize}
+\end{proof}
+
+For the following proofs, we will need one additional lemma, which follows directly
+from the definition of $apply$:
+
+\begin{lem}
+\label{lemma:applychain}
+\rm
+Let $S$ be an initial store, and $E_1$ and $E_2$ be memory traces.  Then:
+$$apply(S, E_1 \dplus E_2) = apply(apply(S, E_1), E_2)$$
+\end{lem}
+
 We now show that the concatenation of the memory traces from these serially
 executed subexpressions is always a valid interleaving:
 
@@ -1872,8 +1895,8 @@ $valid\_interleave(S_0, C, E', \oton{E})$.
 First, we must show that $any\_interleave(E', \oton{E})$.  This is done by
 induction on the length of $E_1$, followed by $E_2$, and so on.  Next, we must
 show that $E'$ is coherent for both $L_{excl}$ and $L_{atomic}$.  This is done by
-matching the structure of $E'$ with $\oton{E}$ and the use of the following
-lemma: $apply(S, E_1 \dplus E_2) = apply(apply(S, E_1), E_2)$.  With the
+matching the structure of $E'$ with $\oton{E}$ and the use of Lemma~\ref{lemma:applychain}.
+With the
 question of coherence addressed, the sequential equivalence of $E'$ is trivial
 for both the exclusive and atomic cases.
 \end{proof}
@@ -2015,9 +2038,9 @@ Let $M$ be a region mapping and $E_1$ and $E_2$ two memory traces such that $\pr
 \end{lem}
 
 \begin{proof}
-The proof is by contradiction.  Assume $E_1 \nonint E_2$.  Then there must be some $\epsilon_1$ in $E_1$ and some $\epsilon_2$ in $E_2$ such that $\epsilon_1 \nonint \epsilon_2$.  This requires that
+The proof is by contradiction.  Assume $E_1 \cancel\nonint E_2$.  Then there must be some $\epsilon_1$ in $E_1$ and some $\epsilon_2$ in $E_2$ such that $\epsilon_1 \cancel\nonint \epsilon_2$.  This requires that
 $\epsilon_1$ and $\epsilon_2$ be operations to the same location $l$ and not both be reads or both
-reductions using the same function name.  Assume $\epsilon_1 = read(l, c_1, v_1)$ and $\epsilon_2 = write(l, c_2, v_2)$.  The definition of $\privconsist{E_1}{\Phi_1}$ tells us that there must be some $r_1$ satisfying $l \in M(r_1) \wedge reads(r_1) \in \Phi_1$.  Similarly, there must be some $r_2$ satisfying $l \in M(r_2) \wedge writes(r_2) \in \Phi_2$.  Letting $\phi_1 = reads(r_1)$ and $\phi_2 = writes(r_2)$, we have $M(r_1) \cap M(r_2) \not= \emptyset$ (it contains at least $l$), so $\phi_1 {\nonint[M]} \phi_2$ and $\Phi_1 {\nonint[M]} \Phi_2$.  There are seven other cases to consider (using $id_1 \not= id_2$ for the reduce-reduce case), but all yield the same result.
+reductions using the same function name.  Assume $\epsilon_1 = read(l, c_1, v_1)$ and $\epsilon_2 = write(l, c_2, v_2)$.  The definition of $\privconsist{E_1}{\Phi_1}$ tells us that there must be some $r_1$ satisfying $l \in M(r_1) \wedge reads(r_1) \in \Phi_1$.  Similarly, there must be some $r_2$ satisfying $l \in M(r_2) \wedge writes(r_2) \in \Phi_2$.  Letting $\phi_1 = reads(r_1)$ and $\phi_2 = writes(r_2)$, we have $M(r_1) \cap M(r_2) \not= \emptyset$ (the intersection contains at least $l$), so $\phi_1 \cancel{\nonint[M]} \phi_2$ and $\Phi_1 \cancel{\nonint[M]} \Phi_2$.  There are seven other cases to consider (using $id_1 \not= id_2$ for the reduce-reduce case), but all yield the same result.
 \end{proof}
 
 We can now state the key result that allows the Legion runtime to safely evaluate subexpressions as
