@@ -177,11 +177,11 @@ void top_level_task(const void *args, size_t arglen, Processor p)
     finish_event.wait();
     clock_gettime(CLOCK_MONOTONIC, &stop);
 
-    double latency = 1e6 * (stop.tv_sec - start.tv_sec) +
-                      1e-3 * (stop.tv_nsec - start.tv_nsec); 
+    double latency = 1e3 * (stop.tv_sec - start.tv_sec) +
+                      1e-6 * (stop.tv_nsec - start.tv_nsec); 
     fprintf(stdout,"Total time: %7.3f us\n", latency);
     fprintf(stdout,"Events triggered: %ld\n", total_events);
-    fprintf(stdout,"Events throughput: %7.3f Million/s\n",(double(total_events)/latency));
+    fprintf(stdout,"Events throughput: %7.3f Thousands/s\n",(double(total_events)/latency));
     fprintf(stdout,"Triggers performed: %ld\n", total_triggers);
     fprintf(stdout,"Triggers throughput: %7.3f Million/s\n",(double(total_triggers)/latency));
   }
