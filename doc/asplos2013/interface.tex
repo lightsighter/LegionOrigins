@@ -388,8 +388,8 @@ void reduction_ex(const void *args,size_t arglen,Processor p) {
   Event t2 = p2.spawn(REDUC,&inst2,sizeof(RegionInstance));
   Event c1 = inst1.copy_to(inst3,t1);
   Event c2 = inst2.copy_to(inst3,t2);
-  Event e0 = Event::merge_events(c1,c2);
-  Event t3 = p3.spawn(USE,&inst3,sizeof(RegionInstance),e0);
+  Event em = Event::merge_events(c1,c2);
+  Event t3 = p3.spawn(USE,&inst3,sizeof(RegionInstance),em);
 }
 \end{lstlisting}
 
@@ -399,9 +399,10 @@ void reduction_ex(const void *args,size_t arglen,Processor p) {
 The last component of the interface allows for introspection of the current machine.
 Listing~\ref{lst:machineapi} shows the machine interface.
 The {\tt Machine} object is a singleton object that serves two purposes.  First, it
-is the mechanism for initializing the runtime; at the start of a program the programmer
-creates a machine object and invokes the {\tt run} method (line 30-31).
-Second, the machine object provides an interface for the programmer to 
+is the mechanism for initializing the runtime; at the start of a program the client 
+creates a machine object, instantiates a task table mapping task IDs to function pointers,
+and invokes the {\tt run} method (line 30-31).
+Second, the machine object provides an interface for the client to 
 discover properties of the underlying machine (lines 35-43).  The machine object maintains
 sets of all the unique {\tt Processor} and {\tt Memory} handles in the system.  Processors
 were described in Section~\ref{subsec:procs}.  For every memory in the system there also 
@@ -430,12 +431,11 @@ and the set of memories:
 \item Processor-Memory: for each processor-memory pair whether
 the processor can directly access (read and write) the memory and 
 latency and bandwidth properties if access is possible
-\item Memory-Memory: for every pair of memories whether a copy can be
-performed between the two memories and latency and
-bandwidth properties if a copy is possible
+\item Memory-Memory: for every pair of memories whether copies can be
+performed and latency and bandwidth properties if copies are possible
 \end{itemize}
 
-The programmer can query these two relations by the {\tt get\_*\_affinity} calls
+The client can query these two relations by the {\tt get\_*\_affinity} calls
 (lines 40-43).  
 
 %These calls populate a vector with affinity structures (not shown)
