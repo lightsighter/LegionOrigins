@@ -91,9 +91,10 @@ parallel computation, data movement, and synchronization using events (Section~\
 \item To support synchronization in our event system we introduce {\em deferred locks}, 
 a novel synchronization primitive that operates in an asynchronous enviroment (Section~\ref{subsec:locks}).
 
-\item We describe a physical region system for the management of data that abstracts
-data layouts.  Abstracted data layouts enable composable reduction operations that can be
-deferred to further hide latency (Section~\ref{subsec:phyreg}).
+\item We describe a physical region system that provides structural information about
+data layout.  The structural information provided by physical regions enables an extensible
+interface for conjoining operations and transformations with asynchronous data movement for 
+further lantecy hiding (Section~\ref{subsec:phyreg}).
 
 \item Our approach depends on the efficient handling of very large numbers of events.
 We describe a distributed implementation of our interface that requires no global coordination
