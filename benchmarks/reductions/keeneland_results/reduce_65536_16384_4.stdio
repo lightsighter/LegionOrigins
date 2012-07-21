@@ -1,0 +1,4 @@
+placing master instance in memory 60ff0000
+ELAPSED(redfold) = 0.008943
+ELAPSED(localize) = 0.069562
+ELAPSED(redlist) = 0.020800
