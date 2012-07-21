@@ -388,8 +388,8 @@ void reduction_ex(const void *args,size_t arglen,Processor p) {
   Event t2 = p2.spawn(REDUC,&inst2,sizeof(RegionInstance));
   Event c1 = inst1.copy_to(inst3,t1);
   Event c2 = inst2.copy_to(inst3,t2);
-  Event e0 = Event::merge_events(c1,c2);
-  Event t3 = p3.spawn(USE,&inst3,sizeof(RegionInstance),e0);
+  Event em = Event::merge_events(c1,c2);
+  Event t3 = p3.spawn(USE,&inst3,sizeof(RegionInstance),em);
 }
 \end{lstlisting}
 

@@ -77,7 +77,7 @@ call to perform an operation $op$ in our runtime returns immediately
 with an event that {\em triggers} when $op$ has completed.
 Furthermore, every call to perform an operation $op$ can take as a
 precondition an event that must trigger before $op$ can begin.  Using
-events programmers can compose arbitrary chains of dependent
+events clients can compose arbitrary chains of dependent
 operations, which the runtime is free to execute in any way that
 respects the event dependences.  With this freedom the runtime can
 schedule operations to optimize throughput while hiding the long
