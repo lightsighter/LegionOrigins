@@ -118,6 +118,12 @@ def print_experiments(exprs):
         print "Nodes "+str(e.nodes)+" Time "+str(e.time)
     print ""
 
+def print_overheads(orig,bulk):
+    for o,b in zip(orig,bulk):
+        assert o.nodes == b.nodes
+        print "Nodes "+str(o.nodes)+" Overhead "+str(b.time/o.time)
+    print "\n"
+
 def get_throughputs(exprs,particles,steps):
     result = list()
     for e in exprs:
@@ -133,10 +139,14 @@ def make_plots(show = True, save = True, out_dir="figs/"):
     print_experiments(orig_2400_exprs)
     print "Results for Bulk-Synchronous 2400 particles"
     print_experiments(bulk_2400_exprs)
+    print "Overhead for 2400 particles"
+    print_overheads(orig_2400_exprs,bulk_2400_exprs)
     print "Results for Legion 19200 particles"
     print_experiments(orig_19200_exprs)
     print "Results for Bulk-Synchronous 19200 particles"
     print_experiments(bulk_19200_exprs)
+    print "Overhead for 19200 particles"
+    print_overheads(orig_19200_exprs,bulk_19200_exprs)
 
     orig_2400_through = get_throughputs(orig_2400_exprs,2446472,10)
     bulk_2400_through = get_throughputs(bulk_2400_exprs,2446472,10)
