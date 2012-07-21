@@ -265,6 +265,7 @@ namespace RegionRuntime {
       DESTROY_INST_MSGID,
       REMOTE_WRITE_MSGID,
       DESTROY_LOCK_MSGID,
+      REMOTE_REDLIST_MSGID,
     };
 
     // detailed timer stuff
@@ -1051,14 +1052,17 @@ namespace RegionRuntime {
       return false;
     }
 
-    size_t RegionMetaDataUntyped::Impl::instance_size(const ReductionOpUntyped *redop /*= 0*/)
+    size_t RegionMetaDataUntyped::Impl::instance_size(const ReductionOpUntyped *redop /*= 0*/, off_t list_size /*= -1*/)
     {
       StaticAccess<RegionMetaDataUntyped::Impl> data(this);
       assert(data->num_elmts > 0);
       size_t elmts = data->last_elmt - data->first_elmt + 1;
       size_t bytes;
       if(redop) {
-	bytes = elmts * redop->sizeof_rhs;
+	if(list_size >= 0)
+	  bytes = list_size * redop->sizeof_list_entry;
+	else
+	  bytes = elmts * redop->sizeof_rhs;
       } else {
 	assert(data->elmt_size > 0);
 	bytes = elmts * data->elmt_size;
@@ -1217,6 +1221,9 @@ namespace RegionRuntime {
 
       locked_data.is_reduction = false;
       locked_data.redopid = 0;
+      locked_data.count_offset = 0;
+      locked_data.red_list_size = -1;
+      locked_data.parent_inst = RegionInstanceUntyped::NO_INST;
       lock.init(ID(me).convert<Lock>(), ID(me).node());
       lock.in_use = true;
       lock.set_local_data(&locked_data);
@@ -1237,6 +1244,32 @@ namespace RegionRuntime {
 
       locked_data.is_reduction = true;
       locked_data.redopid = _redopid;
+      locked_data.count_offset = 0;
+      locked_data.red_list_size = -1;
+      locked_data.parent_inst = RegionInstanceUntyped::NO_INST;
+      lock.init(ID(me).convert<Lock>(), ID(me).node());
+      lock.in_use = true;
+      lock.set_local_data(&locked_data);
+    }
+
+    RegionInstanceUntyped::Impl::Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset, size_t _size, off_t _adjust, ReductionOpID _redopid, off_t _count_offset, off_t _red_list_size, RegionInstanceUntyped _parent_inst)
+      : me(_me), memory(_memory)
+    {
+      locked_data.valid = true;
+      locked_data.region = _region;
+      locked_data.alloc_offset = _offset;
+      locked_data.access_offset = _offset + _adjust;
+      locked_data.size = _size;
+
+      StaticAccess<RegionMetaDataUntyped::Impl> rdata(_region.impl());
+      locked_data.first_elmt = rdata->first_elmt;
+      locked_data.last_elmt = rdata->last_elmt;
+
+      locked_data.is_reduction = true;
+      locked_data.redopid = _redopid;
+      locked_data.count_offset = _count_offset;
+      locked_data.red_list_size = _red_list_size;
+      locked_data.parent_inst = _parent_inst;
       lock.init(ID(me).convert<Lock>(), ID(me).node());
       lock.in_use = true;
       lock.set_local_data(&locked_data);
@@ -1451,6 +1484,13 @@ namespace RegionRuntime {
       virtual void event_triggered(void)
       {
 	bool last_trigger = false;
+#define LOCK_FREE_MERGED_EVENTS
+#ifdef LOCK_FREE_MERGED_EVENTS
+	unsigned count_left = __sync_fetch_and_add(&count_needed, -1);
+	log_event(LEVEL_INFO, "recevied trigger merged event %x/%d (%d)",
+		  finish_event.id, finish_event.gen, count_left);
+	last_trigger = (count_left == 1);
+#else
 	{
 	  AutoHSLLock a(mutex);
 	  log_event(LEVEL_INFO, "recevied trigger merged event %x/%d (%d)",
@@ -1458,10 +1498,22 @@ namespace RegionRuntime {
 	  count_needed--;
 	  if(count_needed == 0) last_trigger = true;
 	}
+#endif
 	// actually do triggering outside of lock (maybe not necessary, but
 	//  feels safer :)
-	if(last_trigger)
-	  finish_event.impl()->trigger(finish_event.gen, gasnet_mynode());
+	//	if(last_trigger)
+	//	  finish_event.impl()->trigger(finish_event.gen, gasnet_mynode());
+	if(last_trigger) {
+	  Event::Impl *i;
+	  {
+	    //TimeStamp ts("foo5", true);
+	    i = finish_event.impl();
+	  }
+	  {
+	    //TimeStamp ts("foo6", true);
+	    i->trigger(finish_event.gen, gasnet_mynode());
+	  }
+	}
       }
 
       virtual void print_info(void)
@@ -1747,6 +1799,7 @@ namespace RegionRuntime {
       //printf("[%d] TRIGGER %x/%d\n", gasnet_mynode(), me.id, gen_triggered);
       std::deque<EventWaiter *> to_wake;
       {
+	//TimeStamp ts("foo", true);
 	//printf("[%d] TRIGGER MUTEX IN %x/%d\n", gasnet_mynode(), me.id, gen_triggered);
 	AutoHSLLock a(mutex);
 	//printf("[%d] TRIGGER MUTEX HOLD %x/%d\n", gasnet_mynode(), me.id, gen_triggered);
@@ -1796,20 +1849,33 @@ namespace RegionRuntime {
 	in_use = false;
       }
 
-      // if this is one of our events, put ourselves on the free
-      //  list (we don't need our lock for this)
-      if(owner == gasnet_mynode()) {
-	AutoHSLLock al(&freelist_mutex);
-	next_free = first_free;
-	first_free = this;
+      {
+	//TimeStamp ts("foo2", true);
+	// if this is one of our events, put ourselves on the free
+	//  list (we don't need our lock for this)
+	if(owner == gasnet_mynode()) {
+	  AutoHSLLock al(&freelist_mutex);
+	  next_free = first_free;
+	  first_free = this;
+	}
       }
 
-      // now that we've let go of the lock, notify all the waiters who wanted
-      //  this event generation (or an older one)
-      for(std::deque<EventWaiter *>::iterator it = to_wake.begin();
-	  it != to_wake.end();
-	  it++)
-	(*it)->event_triggered();
+      {
+	//TimeStamp ts("foo3", true);
+	// now that we've let go of the lock, notify all the waiters who wanted
+	//  this event generation (or an older one)
+	for(std::deque<EventWaiter *>::iterator it = to_wake.begin();
+	    it != to_wake.end();
+	    it++)
+	  (*it)->event_triggered();
+      }
+
+      {
+	//TimeStamp ts("foo4", true);
+	{
+	  //TimeStamp ts("foo4b", true);
+	}
+      }
     }
 
     ///////////////////////////////////////////////////
@@ -1855,7 +1921,8 @@ namespace RegionRuntime {
 
     Logger::Category log_lock("lock");
 
-    void Lock::Impl::init(Lock _me, unsigned _init_owner)
+    void Lock::Impl::init(Lock _me, unsigned _init_owner,
+			  size_t _data_size /*= 0*/)
     {
       me = _me;
       owner = _init_owner;
@@ -1868,8 +1935,13 @@ namespace RegionRuntime {
       remote_waiter_mask = 0;
       remote_sharer_mask = 0;
       requested = false;
-      local_data = 0;
-      local_data_size = 0;
+      if(_data_size) {
+	local_data = malloc(_data_size);
+	local_data_size = _data_size;
+      } else {
+        local_data = 0;
+	local_data_size = 0;
+      }
     }
 
     /*static*/ void /*Lock::Impl::*/handle_lock_request(LockRequestArgs args)
@@ -2360,7 +2432,7 @@ namespace RegionRuntime {
     }
 
     // Create a new lock, destroy an existing lock
-    /*static*/ Lock Lock::create_lock(void)
+    /*static*/ Lock Lock::create_lock(size_t _data_size /*= 0*/)
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       //DetailedTimer::ScopedPush sp(18);
@@ -2693,6 +2765,17 @@ namespace RegionRuntime {
 	return create_instance_local(r, bytes_needed, adjust, redopid);
       }
 
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed,
+						    off_t adjust,
+						    ReductionOpID redopid,
+						    off_t list_size,
+						    RegionInstanceUntyped parent_inst)
+      {
+	return create_instance_local(r, bytes_needed, adjust, redopid,
+				     list_size, parent_inst);
+      }
+
       virtual void destroy_instance(RegionInstanceUntyped i, 
 				    bool local_destroy)
       {
@@ -2722,6 +2805,11 @@ namespace RegionRuntime {
       virtual void *get_direct_ptr(off_t offset, size_t size)
       {
 	return (base + offset);
+      }
+
+      virtual int get_home_node(off_t offset, size_t size)
+      {
+	return gasnet_mynode();
       }
 
     public: //protected:
@@ -2756,6 +2844,17 @@ namespace RegionRuntime {
 	return create_instance_remote(r, bytes_needed, adjust, redopid);
       }
 
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed,
+						    off_t adjust,
+						    ReductionOpID redopid,
+						    off_t list_size,
+						    RegionInstanceUntyped parent_inst)
+      {
+	return create_instance_remote(r, bytes_needed, adjust, redopid,
+				      list_size, parent_inst);
+      }
+
       virtual void destroy_instance(RegionInstanceUntyped i, 
 				    bool local_destroy)
       {
@@ -2787,6 +2886,11 @@ namespace RegionRuntime {
       virtual void *get_direct_ptr(off_t offset, size_t size)
       {
 	return 0;
+      }
+
+      virtual int get_home_node(off_t offset, size_t size)
+      {
+	return ID(me).node();
       }
     };
 
@@ -2851,6 +2955,22 @@ namespace RegionRuntime {
       }
     }
 
+    RegionInstanceUntyped GASNetMemory::create_instance(RegionMetaDataUntyped r,
+							size_t bytes_needed,
+							off_t adjust,
+							ReductionOpID redopid,
+							off_t list_size,
+							RegionInstanceUntyped parent_inst)
+    {
+      if(gasnet_mynode() == 0) {
+	return create_instance_local(r, bytes_needed, adjust, redopid,
+				     list_size, parent_inst);
+      } else {
+	return create_instance_remote(r, bytes_needed, adjust, redopid,
+				      list_size, parent_inst);
+      }
+    }
+
     void GASNetMemory::destroy_instance(RegionInstanceUntyped i, 
 					bool local_destroy)
     {
@@ -2911,9 +3031,39 @@ namespace RegionRuntime {
       }
     }
 
+    void GASNetMemory::apply_reduction_list(off_t offset, const ReductionOpUntyped *redop,
+					    size_t count, const void *entry_buffer)
+    {
+      const char *entry = (const char *)entry_buffer;
+      unsigned ptr;
+
+      for(size_t i = 0; i < count; i++)
+      {
+	redop->get_list_pointers(&ptr, entry, 1);
+	//printf("ptr[%d] = %d\n", i, ptr);
+	off_t elem_offset = offset + ptr * redop->sizeof_lhs;
+	off_t blkid = (elem_offset / memory_stride / num_nodes);
+	off_t node = (elem_offset / memory_stride) % num_nodes;
+	off_t blkoffset = elem_offset % memory_stride;
+	assert(node == gasnet_mynode());
+	char *tgt_ptr = ((char *)seginfos[node].addr)+(blkid * memory_stride)+blkoffset;
+	redop->apply_list_entry(tgt_ptr, entry, 1, ptr);
+	entry += redop->sizeof_list_entry;
+      }
+    }
+
     void *GASNetMemory::get_direct_ptr(off_t offset, size_t size)
     {
       return 0;  // can't give a pointer to the caller - have to use RDMA
+    }
+
+    int GASNetMemory::get_home_node(off_t offset, size_t size)
+    {
+      off_t start_blk = offset / memory_stride;
+      off_t end_blk = (offset + size - 1) / memory_stride;
+      if(start_blk != end_blk) return -1;
+
+      return start_blk % num_nodes;
     }
 
     void GASNetMemory::get_batch(size_t batch_size,
@@ -3147,6 +3297,61 @@ namespace RegionRuntime {
       return i;
     }
 
+    RegionInstanceUntyped Memory::Impl::create_instance_local(RegionMetaDataUntyped r,
+							      size_t bytes_needed,
+							      off_t adjust,
+							      ReductionOpID redopid,
+							      off_t list_size,
+							      RegionInstanceUntyped parent_inst)
+    {
+      off_t inst_offset = alloc_bytes(bytes_needed);
+      off_t count_offset = alloc_bytes(sizeof(size_t));
+      if((inst_offset < 0) || (count_offset < 0))
+      {
+        return RegionInstanceUntyped::NO_INST;
+      }
+
+      size_t zero = 0;
+      put_bytes(count_offset, &zero, sizeof(zero));
+
+      // SJT: think about this more to see if there are any race conditions
+      //  with an allocator temporarily having the wrong ID
+      RegionInstanceUntyped i = ID(ID::ID_INSTANCE, 
+				   ID(me).node(),
+				   ID(me).index_h(),
+				   0).convert<RegionInstanceUntyped>();
+
+      //RegionMetaDataImpl *r_impl = Runtime::runtime->get_metadata_impl(r);
+
+      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(i, r, me, inst_offset, bytes_needed, adjust,
+									    redopid,
+									    count_offset, list_size, parent_inst);
+
+      // find/make an available index to store this in
+      unsigned index;
+      {
+	AutoHSLLock al(mutex);
+
+	unsigned size = instances.size();
+	for(index = 0; index < size; index++)
+	  if(!instances[index]) {
+	    i.id |= index;
+	    i_impl->me = i;
+	    instances[index] = i_impl;
+	    break;
+	  }
+
+	i.id |= index;
+	i_impl->me = i;
+	if(index >= size) instances.push_back(i_impl);
+      }
+
+      log_copy.debug("local instance %x created in memory %x at offset %zd (redop=%d list_size=%zd parent_inst=%x)",
+		     i.id, me.id, inst_offset, redopid, list_size, parent_inst.id);
+
+      return i;
+    }
+
     struct CreateAllocatorArgs {
       Memory m;
       RegionMetaDataUntyped r;
@@ -3199,6 +3404,8 @@ namespace RegionRuntime {
       off_t adjust;
       bool reduction_instance;
       ReductionOpID redopid;
+      off_t list_size;
+      RegionInstanceUntyped parent_inst;
     };
 
     struct CreateInstanceResp {
@@ -3211,9 +3418,17 @@ namespace RegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       CreateInstanceResp resp;
       if(args.reduction_instance)
-	resp.i = args.m.impl()->create_instance(args.r, args.bytes_needed,
-						args.adjust,
-						args.redopid);
+	if(args.list_size >= 0) {
+	  resp.i = args.m.impl()->create_instance(args.r, args.bytes_needed,
+						  args.adjust,
+						  args.redopid,
+						  args.list_size,
+						  args.parent_inst);
+	} else {
+	  resp.i = args.m.impl()->create_instance(args.r, args.bytes_needed,
+						  args.adjust,
+						  args.redopid);
+	}
       else
 	resp.i = args.m.impl()->create_instance(args.r, args.bytes_needed,
 						args.adjust);
@@ -3239,6 +3454,8 @@ namespace RegionRuntime {
       args.adjust = adjust;
       args.reduction_instance = false;
       args.redopid = 0;
+      args.list_size = -1;
+      args.parent_inst = RegionInstanceUntyped::NO_INST;
       log_inst(LEVEL_DEBUG, "creating remote instance: node=%d", ID(me).node());
       CreateInstanceResp resp = CreateInstanceMessage::request(ID(me).node(), args);
       log_inst(LEVEL_DEBUG, "created remote instance: inst=%x offset=%zd", resp.i.id, resp.inst_offset);
@@ -3270,6 +3487,43 @@ namespace RegionRuntime {
       args.adjust = adjust;
       args.reduction_instance = true;
       args.redopid = redopid;
+      args.list_size = -1;
+      args.parent_inst = RegionInstanceUntyped::NO_INST;
+      log_inst(LEVEL_DEBUG, "creating remote instance: node=%d", ID(me).node());
+      CreateInstanceResp resp = CreateInstanceMessage::request(ID(me).node(), args);
+      log_inst(LEVEL_DEBUG, "created remote instance: inst=%x offset=%zd", resp.i.id, resp.inst_offset);
+      RegionInstanceUntyped::Impl *i_impl = new RegionInstanceUntyped::Impl(resp.i, r, me, resp.inst_offset, bytes_needed, adjust);
+      unsigned index = ID(resp.i).index_l();
+      // resize array if needed
+      if(index >= instances.size()) {
+	AutoHSLLock a(mutex);
+	if(index >= instances.size()) {
+	  log_inst(LEVEL_DEBUG, "resizing instance array: mem=%x old=%zd new=%d",
+		   me.id, instances.size(), index+1);
+	  for(unsigned i = instances.size(); i <= index; i++)
+	    instances.push_back(0);
+	}
+      }
+      instances[index] = i_impl;
+      return resp.i;
+    }
+
+    RegionInstanceUntyped Memory::Impl::create_instance_remote(RegionMetaDataUntyped r,
+							       size_t bytes_needed,
+							       off_t adjust,
+							       ReductionOpID redopid,
+							       off_t list_size,
+							       RegionInstanceUntyped parent_inst)
+    {
+      CreateInstanceArgs args;
+      args.m = me;
+      args.r = r;
+      args.bytes_needed = bytes_needed;
+      args.adjust = adjust;
+      args.reduction_instance = true;
+      args.redopid = redopid;
+      args.list_size = list_size;
+      args.parent_inst = parent_inst;
       log_inst(LEVEL_DEBUG, "creating remote instance: node=%d", ID(me).node());
       CreateInstanceResp resp = CreateInstanceMessage::request(ID(me).node(), args);
       log_inst(LEVEL_DEBUG, "created remote instance: inst=%x offset=%zd", resp.i.id, resp.inst_offset);
@@ -3366,6 +3620,9 @@ namespace RegionRuntime {
       assert(index < instances.size());
       RegionInstanceUntyped::Impl *iimpl = instances[index];
       free_bytes(iimpl->locked_data.alloc_offset, iimpl->locked_data.size);
+
+      if(iimpl->locked_data.count_offset != 0)
+	free_bytes(iimpl->locked_data.count_offset, sizeof(size_t));
       
       return; // TODO: free up actual instance record?
       ID id(i);
@@ -4808,6 +5065,30 @@ namespace RegionRuntime {
       return i;
     }
 
+    RegionInstanceUntyped RegionMetaDataUntyped::create_instance_untyped(Memory memory,
+									 ReductionOpID redopid,
+									 off_t list_size,
+									 RegionInstanceUntyped parent_inst) const
+    {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);      
+      ID id(memory);
+
+      const ReductionOpUntyped *redop = reduce_op_table[redopid];
+
+      Memory::Impl *m_impl = Runtime::runtime->get_memory_impl(memory);
+
+      size_t inst_bytes = impl()->instance_size(redop, list_size);
+      off_t inst_adjust = impl()->instance_adjust(redop);
+
+      RegionInstanceUntyped i = m_impl->create_instance(*this, inst_bytes, 
+							inst_adjust, redopid,
+							list_size, parent_inst);
+      log_meta(LEVEL_INFO, "instance created: region=%x memory=%x id=%x bytes=%zd adjust=%zd redop=%d list_size=%zd parent_inst=%x",
+	       this->id, memory.id, i.id, inst_bytes, inst_adjust, redopid,
+	       list_size, parent_inst.id);
+      return i;
+    }
+
     void RegionMetaDataUntyped::destroy_region_untyped(void) const
     {
       //assert(0);
@@ -5388,6 +5669,55 @@ namespace RegionRuntime {
 	RemoteWriteMessage::request(ID(mem).node(), args,
 				    data, datalen, PAYLOAD_KEEP);
       }
+    }
+
+    struct RemoteRedListArgs {
+      Memory mem;
+      off_t offset;
+      ReductionOpID redopid;
+    };
+
+    void handle_remote_redlist(RemoteRedListArgs args,
+			       const void *data, size_t datalen)
+    {
+      Memory::Impl *impl = args.mem.impl();
+
+      log_copy.debug("received remote reduction list request: mem=%x, offset=%zd, size=%zd, redopid=%d",
+		     args.mem.id, args.offset, datalen, args.redopid);
+
+      switch(impl->kind) {
+      case Memory::Impl::MKIND_SYSMEM:
+      case Memory::Impl::MKIND_ZEROCOPY:
+      case Memory::Impl::MKIND_GPUFB:
+      default:
+	assert(0);
+
+      case Memory::Impl::MKIND_GASNET:
+	{
+	  const ReductionOpUntyped *redop = reduce_op_table[args.redopid];
+	  assert((datalen % redop->sizeof_list_entry) == 0);
+	  impl->apply_reduction_list(args.offset,
+				     redop,
+				     datalen / redop->sizeof_list_entry,
+				     data);
+	}
+      }
+    }
+
+    typedef ActiveMessageMediumNoReply<REMOTE_REDLIST_MSGID,
+				       RemoteRedListArgs,
+				       handle_remote_redlist> RemoteRedListMessage;
+
+    void do_remote_apply_red_list(int node, Memory mem, off_t offset,
+				  ReductionOpID redopid,
+				  const void *data, size_t datalen)
+    {
+      RemoteRedListArgs args;
+      args.mem = mem;
+      args.offset = offset;
+      args.redopid = redopid;
+      RemoteRedListMessage::request(node, args,
+				    data, datalen, PAYLOAD_COPY);
     }
 
     namespace RangeExecutors {
@@ -6356,7 +6686,7 @@ namespace RegionRuntime {
 				      handle_remote_copy> RemoteCopyMessage;
 
     Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, 
-						 Event wait_on /*= Event::NO_EVENT*/)
+						 Event wait_on /*= Event::NO_EVENT*/) const
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       RegionInstanceUntyped::Impl *src_impl = impl();
@@ -6488,7 +6818,7 @@ namespace RegionRuntime {
 
     Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target,
 						 const ElementMask &mask,
-						 Event wait_on /*= Event::NO_EVENT*/)
+						 Event wait_on /*= Event::NO_EVENT*/) const
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       assert(0);
@@ -6496,7 +6826,7 @@ namespace RegionRuntime {
 
     Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target,
 						 RegionMetaDataUntyped region,
-						 Event wait_on /*= Event::NO_EVENT*/)
+						 Event wait_on /*= Event::NO_EVENT*/) const
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 
@@ -6692,6 +7022,7 @@ namespace RegionRuntime {
       // make sure it's a reduction fold-only instance
       StaticAccess<RegionInstanceUntyped::Impl> i_data(i_impl);
       if(!i_data->is_reduction) return false;
+      if(i_data->red_list_size >= 0) return false;
 
       // only things in local memory (SYSMEM or ZC) can be converted to
       //   array accessors
@@ -6709,6 +7040,7 @@ namespace RegionRuntime {
       StaticAccess<RegionInstanceUntyped::Impl> i_data(i_impl);
 
       assert(i_data->is_reduction);
+      assert(i_data->red_list_size < 0);
 
       // only things in FB and ZC memories can be converted to GPU accessors
       if(m_impl->kind == Memory::Impl::MKIND_SYSMEM) {
@@ -6728,7 +7060,71 @@ namespace RegionRuntime {
       assert(0);
     }
 
-    
+    template<>
+    bool RegionInstanceAccessorUntyped<AccessorGeneric>::can_convert<AccessorReductionList>(void) const
+    {
+      RegionInstanceUntyped::Impl *i_impl = (RegionInstanceUntyped::Impl *)internal_data;
+      //Memory::Impl *m_impl = i_impl->memory.impl();
+
+      // make sure it's a reduction fold-only instance
+      StaticAccess<RegionInstanceUntyped::Impl> i_data(i_impl);
+      if(!i_data->is_reduction) return false;
+      if(i_data->red_list_size < 0) return false;
+
+      // that's the only requirement
+      return true;
+    }
+
+    template<>
+    RegionInstanceAccessorUntyped<AccessorReductionList> RegionInstanceAccessorUntyped<AccessorGeneric>::convert<AccessorReductionList>(void) const
+    {
+      RegionInstanceUntyped::Impl *i_impl = (RegionInstanceUntyped::Impl *)internal_data;
+      //Memory::Impl *m_impl = i_impl->memory.impl();
+
+      StaticAccess<RegionInstanceUntyped::Impl> i_data(i_impl);
+
+      assert(i_data->is_reduction);
+      assert(i_data->red_list_size >= 0);
+
+      const ReductionOpUntyped *redop = reduce_op_table[i_data->redopid];
+
+      RegionInstanceAccessorUntyped<AccessorReductionList> ria(internal_data,
+							       i_data->red_list_size,
+							       redop->sizeof_list_entry);
+      return ria;
+    }
+
+    RegionInstanceAccessorUntyped<AccessorReductionList>::RegionInstanceAccessorUntyped(void *_internal_data,
+											size_t _num_entries,
+											size_t _elem_size)
+    {
+      internal_data = _internal_data;
+
+      RegionInstanceUntyped::Impl *i_impl = (RegionInstanceUntyped::Impl *)internal_data;
+      Memory::Impl *m_impl = i_impl->memory.impl();
+
+      StaticAccess<RegionInstanceUntyped::Impl> i_data(i_impl);
+
+      cur_size = (size_t *)(m_impl->get_direct_ptr(i_data->count_offset, sizeof(size_t)));
+
+      max_size = _num_entries;
+
+      // and a list of reduction entries (unless size == 0)
+      entry_list = m_impl->get_direct_ptr(i_data->alloc_offset,
+					  i_data->size);
+    }
+
+    void RegionInstanceAccessorUntyped<AccessorReductionList>::flush(void) const
+    {
+      assert(0);
+    }
+
+    void RegionInstanceAccessorUntyped<AccessorReductionList>::reduce_slow_case(size_t my_pos, unsigned ptrvalue,
+										const void *entry, size_t sizeof_entry) const
+    {
+      assert(0);
+    }
+
     ///////////////////////////////////////////////////
     // 
 
@@ -7200,6 +7596,7 @@ namespace RegionRuntime {
       hcount += DestroyInstanceMessage::add_handler_entries(&handlers[hcount]);
       hcount += RemoteWriteMessage::add_handler_entries(&handlers[hcount]);
       hcount += DestroyLockMessage::add_handler_entries(&handlers[hcount]);
+      hcount += RemoteRedListMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage::add_handler_entries(&handlers[hcount]);
       //hcount += TestMessage2::add_handler_entries(&handlers[hcount]);
 

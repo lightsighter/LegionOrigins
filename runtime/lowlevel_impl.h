@@ -267,7 +267,7 @@ namespace RegionRuntime {
     public:
       Impl(void);
 
-      void init(Lock _me, unsigned _init_owner);
+      void init(Lock _me, unsigned _init_owner, size_t _data_size = 0);
 
       template <class T>
       void set_local_data(T *data)
@@ -530,6 +530,12 @@ namespace RegionRuntime {
 						  size_t bytes_needed,
 						  off_t adjust,
 						  ReductionOpID redopid);
+      RegionInstanceUntyped create_instance_local(RegionMetaDataUntyped r,
+						  size_t bytes_needed,
+						  off_t adjust,
+						  ReductionOpID redopid,
+						  off_t list_size,
+						  RegionInstanceUntyped parent_inst);
 
       RegionAllocatorUntyped create_allocator_remote(RegionMetaDataUntyped r,
 						     size_t bytes_needed);
@@ -540,6 +546,12 @@ namespace RegionRuntime {
 						   size_t bytes_needed,
 						   off_t adjust,
 						   ReductionOpID redopid);
+      RegionInstanceUntyped create_instance_remote(RegionMetaDataUntyped r,
+						   size_t bytes_needed,
+						   off_t adjust,
+						   ReductionOpID redopid,
+						   off_t list_size,
+						   RegionInstanceUntyped parent_inst);
 
       virtual RegionAllocatorUntyped create_allocator(RegionMetaDataUntyped r,
 						      size_t bytes_needed) = 0;
@@ -550,6 +562,12 @@ namespace RegionRuntime {
 						    size_t bytes_needed,
 						    off_t adjust,
 						    ReductionOpID redopid) = 0;
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed,
+						    off_t adjust,
+						    ReductionOpID redopid,
+						    off_t list_size,
+						    RegionInstanceUntyped parent_inst) = 0;
 
       void destroy_allocator(RegionAllocatorUntyped a, bool local_destroy);
 
@@ -571,7 +589,14 @@ namespace RegionRuntime {
       virtual void get_bytes(off_t offset, void *dst, size_t size) = 0;
       virtual void put_bytes(off_t offset, const void *src, size_t size) = 0;
 
+      virtual void apply_reduction_list(off_t offset, const ReductionOpUntyped *redop,
+					size_t count, const void *entry_buffer)
+      {
+	assert(0);
+      }
+
       virtual void *get_direct_ptr(off_t offset, size_t size) = 0;
+      virtual int get_home_node(off_t offset, size_t size) = 0;
 
     public:
       Memory me;
@@ -604,6 +629,13 @@ namespace RegionRuntime {
 						    off_t adjust,
 						    ReductionOpID redopid);
 
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed,
+						    off_t adjust,
+						    ReductionOpID redopid,
+						    off_t list_size,
+						    RegionInstanceUntyped parent_inst);
+
       virtual void destroy_instance(RegionInstanceUntyped i, 
 				    bool local_destroy);
 
@@ -615,7 +647,11 @@ namespace RegionRuntime {
 
       virtual void put_bytes(off_t offset, const void *src, size_t size);
 
+      virtual void apply_reduction_list(off_t offset, const ReductionOpUntyped *redop,
+					size_t count, const void *entry_buffer);
+
       virtual void *get_direct_ptr(off_t offset, size_t size);
+      virtual int get_home_node(off_t offset, size_t size);
 
       void get_batch(size_t batch_size,
 		     const off_t *offsets, void * const *dsts, 
@@ -637,6 +673,8 @@ namespace RegionRuntime {
       Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset, size_t _size, off_t _adjust);
 
       Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset, size_t _size, off_t _adjust, ReductionOpID _redopid);
+
+      Impl(RegionInstanceUntyped _me, RegionMetaDataUntyped _region, Memory _memory, off_t _offset, size_t _size, off_t _adjust, ReductionOpID _redopid, off_t _count_offset, off_t _red_list_size, RegionInstanceUntyped _parent_inst);
 
       // when we auto-create a remote instance, we don't know region/offset
       Impl(RegionInstanceUntyped _me, Memory _memory);
@@ -671,6 +709,9 @@ namespace RegionRuntime {
 	size_t first_elmt, last_elmt;
 	bool is_reduction;
 	ReductionOpID redopid;
+	off_t count_offset;
+	off_t red_list_size;
+	RegionInstanceUntyped parent_inst;
       } locked_data;
 
       Lock::Impl lock;
@@ -735,7 +776,8 @@ namespace RegionRuntime {
 
       bool is_parent_of(RegionMetaDataUntyped other);
 
-      size_t instance_size(const ReductionOpUntyped *redop = 0);
+      size_t instance_size(const ReductionOpUntyped *redop = 0,
+			   off_t list_size = -1);
 
       off_t instance_adjust(const ReductionOpUntyped *redop = 0);
 
