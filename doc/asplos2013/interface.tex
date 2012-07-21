@@ -1,22 +1,32 @@
 
 \section{Programming Interface}
 \label{sec:interface}
+The target set of clients for our interface are higher-level language
+compilers and runtimes such as Legion\cite{Legion12} as well as 
+advanced systems programmers.  This class of users demand total control
+over the underlying hardware and transparent performance from an
+implementation.  To support these demands we have designed our interface
+to be as low-level as possible.  In many cases we have chosen to trade-off
+programmability for performance.  We eschewed any features that would
+automatically be performed without being directed by the client.
+Our goal in the design of this interface is to provide a set of low-level,
+high-performance primitives that are asynchronous and composable.
 
 Our interface organizes functionality into objects.  We describe
 these objects in five parts: events for composing operations 
 (Section~\ref{subsec:events}), processors for parallel computation 
-(\ref{subsec:procs}), deffered locks for synchronization
-(\ref{subsec:locks}), physical regions for data movement
-(\ref{subsec:phyreg}), and an object for introspection of the underlying
+(\ref{subsec:procs}), deferred locks for synchronization
+(\ref{subsec:locks}), physical regions for data layout and movement
+(\ref{subsec:phyreg}), and a machine object for introspection of the underlying
 hardware (\ref{subsec:machmodel}).  In all cases (except for the
-machine which is a static singleton), instances of the objects
+machine object which is a static singleton), instances of the objects
 are light-weight {\em handles} that provide a unique name for an underlying
-implementation.  Handles can be copied and passed by value.  Furthermore,
-every handle is valid everywhere in the system.  This property allows 
-a programmer to pass handles by value between computations without
-having to reason about the distributed nature of the system.
-We describe how we support this property in more detail in 
-Section~\ref{sec:impl}.
+implementation.  Multiple copies of handles are permitted and handles can be 
+passed by value.  Furthermore, every handle is valid everywhere in the system.  
+This property allows a client to pass handles by value between computations 
+without having to reason about the distributed nature of the system.
+%We describe how we support this property in more detail in 
+%Section~\ref{sec:impl}.
 
 \lstset{
   captionpos=b,
@@ -40,22 +50,22 @@ Listing~\ref{lst:eventapi} shows the interface for events.  An instance of the {
 names a unique event in the system.  {\tt NO\_EVENT} (line 5) is a special instance
 of an event that by definition has always triggered.  The event interface
 supports testing whether an event has triggered (line 7) and waiting on
-an event to trigger (line 9).  While these methods can be useful, the most common
-use of events is passing them as preconditions for other operations.  The programmer can use the
-{\tt merge\_events} call (line 11) to create an event corresponding to the 
+an event to trigger (line 9).  While these methods can be useful, the encouraged
+use of events is passing them as preconditions for other operations.  The client can use the
+{\tt merge\_events} call (lines 11-12) to create an event corresponding to the 
 conjunction of a set of events.
 
 In most cases events are created as the result of other
 operations and the implementation is responsible for triggering these events.  Users 
-can create a special type of event called a {\tt UserEvent} (line 14) that the
+can create a special type of event called a {\tt UserEvent} (line 15) that the
 user has the power to trigger.  A user event is a sub-type of an event
-that has a {\tt trigger} method (line 17).  Users can also create another
+that has a {\tt trigger} method (line 18).  Users can also create another
 type of event called a {\tt Barrier} that will require multiple arrivals before
 the event is triggered.  The user can manage the number of arrivals that must
 be seen as well as how many arrivals occur at a time.  Once a barrier's arrival
 count goes to zero, the barrier will trigger.  Note that barriers in our interface
 provide a superset of the functionality of traditional barriers since they can
-be used both in a blocking manner (via the {\tt wait} call), but can also be used
+be used in a blocking manner (via the {\tt wait} call), but are primarily used
 asynchronously.  Lastly, since user events and barriers are sub-types of 
 an event they can be used wherever an event is required.
 
@@ -69,7 +79,8 @@ public:
   bool has_triggered() const;
   // wait on the event
   void wait() const;
-  // Merge events together to a new event
+  // Merge events together to create a new event
+  static Event merge_events(Event ev1, Event ev2);
   static Event merge_events(const set<Event> &to_merge);
 };
 
@@ -90,20 +101,25 @@ public:
 \subsection{Processors}
 \label{subsec:procs}
 Listing~\ref{lst:procapi} shows the interface for {\tt Processor} objects which allow for
-the creation of parallel computations.  Processor objects provide a way of naming 
-every computational unit in the machine.  In the case of our current implementation 
+the creation of parallel computations.  Processor provide a way of naming 
+every computational unit in the machine.  We describe how to find processor handles
+in Section~\ref{subsec:machmodel}.  In the case of our current interface 
 processors are either individual cores or discrete GPUs, but this can be easily modified 
 to include new processor types (line 10).   Processors support a single {\tt spawn}
 operation (lines 13-14) that will launch a new {\em task} on that processor.
 Note that because the spawn operation
 is invoked on a processor handle, it is possible to launch a task on any
-processor from anywhere in the system.  To allow for the chaining of dependences
-through events the spawn call takes an 
-optional event that must trigger before the task can begin.  
-The result of the spawn call is an event that will trigger when the task completes
-which permits the creation of dependences upon this task.
+processor from anywhere in the system.  
+The spawn call takes an optional event that must trigger before the task can begin.  
+The spawn call returns an event that will trigger when the task completes.
 
-\begin{lstlisting}[float={t},label={lst:procapi},caption={Processor Interface.}]
+Lines 17-23 of Listing~\ref{lst:procapi} show a simple example using 
+the processor and event interface.  The {\tt diamond\_task} launches four
+sub-tasks with a diamond dependence pattern.  The {\tt merge\_events} call
+is used to merge the events {\tt eb} and {\tt ec} to create the shared dependence
+for the last sub-task.
+
+\begin{lstlisting}[float={t},label={lst:procapi},caption={Processor Interface and Example.}]
 class Processor {
 public:
   const unsigned id;
@@ -119,16 +135,24 @@ public:
   Event spawn(TaskFuncID func_id,const void *args,size_t arglen,
               Event wait_on = Event::NO_EVENT) const;
 };
+
+void diamond_task(const void *args,size_t arglen,Processor p){
+  Event ea = p.spawn(TASK_A,NULL,0);
+  Event eb = p.spawn(TASK_B,NULL,0,ea);
+  Event ec = p.spawn(TASK_C,NULL,0,ea);
+  Event em = Event::merge_events(eb,ec);
+  Event ed = p.spawn(TASK_D,NULL,0,em);
+}
 \end{lstlisting}
 
 \subsection{Deferred Locks}
 \label{subsec:locks}
 
 Events and barriers express ordering properties between operations, but in many
-cases ordering is too strict.  For many applications access to data must only be atomic and
-not necessarily ordered.  Traditionally locks have been used to synchronize access
-to data.  However, all lock implementations that we are aware of require either blocking
-or spinning on locks, neither of which composes well with other asynchronous operations.
+cases ordering is too strict of a requirement.  For many applications access to data must only be atomic and
+not necessarily ordered.  Traditionally locks have been used to serialize access to
+data.  However, all lock implementations that we are aware of require either blocking
+or spinning, neither of which composes well with asynchronous operations.
 Deferred locks are a new synchronization mechanism that allows for synchronization
 in an completely asynchronous environment.  
 
@@ -145,18 +169,18 @@ convention in writing code with deferred locks is to acquire locks on behalf of 
 launched.  Listing~\ref{lst:lockapi} illustrates this with a simple example.  The
 {\tt launcher\_task} is calling a sub-task that is going to require the {\tt needed}
 lock.  A lock request is issued and the resulting {\tt lock\_event} is used as
-a precondition for launching the {\tt SUB\_TASK} task.  The unlock operation is then
-precondition on the event corresponding to {\tt SUB\_TASK} task's completion.  The
-sub-task can run safely while holding the lock and the lock is released when the
-sub-task completes.  Using deferred locks in this style prevents 
+a precondition for launching the {\tt SUB} task.  The unlock operation is then
+precondition on the event corresponding to {\tt SUB} task's completion.  The
+{\tt SUB} task can run safely while holding the lock and the lock is released when the
+{\tt SUB} task completes.  Using deferred locks in this style prevents 
 compute resources from waiting on locks by ensuring tasks only run when their needed
 locks have already been acquired.
 
-Between deffered locks and barriers (described in Section~\ref{subsec:events}) programmers
+Between deffered locks and barriers (described in Section~\ref{subsec:events}) clients 
 have access to the same set of synchronization primitves that they traditionally have
-in both threading and bulk-synchronous interfaces, but in a distributed asynchronous
-environment.  Furthermore these operations can now be composed with other asynchronous
-operations which is not possible in any other interface.
+in both threading and bulk-synchronous interfaces.  However, these operations can now 
+be composed with other asynchronous operations which is not possible in any other interface.
+of which we are aware.
 
 %Deferred locks provide a super-set of the functionality of blocking locks.  As their
 %name suggests, deferred locks can use the event corresponding to their lock acquire
@@ -187,8 +211,8 @@ void launcher_task(const void *args, size_t arglen, Processor p) {
   Lock needed = ...
   // Acquire lock
   Event lock_event = needed.lock();
-  // Launch task
-  Event task_event = p.spawn(SUB_TASK,NULL,0,lock_event);
+  // Launch sub-task
+  Event task_event = p.spawn(SUB,NULL,0,lock_event);
   // Release lock
   needed.unlock(task_event);
   ...
@@ -197,67 +221,127 @@ void launcher_task(const void *args, size_t arglen, Processor p) {
 
 \subsection{Physical Regions}
 \label{subsec:phyreg}
+In distributed machines with discrete memories, data movement often consists of more
+than a simple copy operation.  Many applications perform operations and transformations on
+their data in conjunction with data movement for higher performance.  One common example is 
+that applications accumulate reduction operations in a buffer and as part of a copy operation 
+the reduction operations are applied to a destination buffer on the receiving side of the copy.  
+In order to support these kinds of conjoined operations in an asynchronous environment, our interface 
+must be aware of the structure of data.  To describe the structure of data our interface 
+uses {\em physical regions.}
 
-{\em Physical regions} are the mechanism for reasoning about
-the placement and movement of data in the interface.  Physical regions are an 
-allocation of data in a single memory in the memory hierarchy.  Listing~\ref{lst:regionapi} 
-shows a subset of the physical region interface.  The first object in the interface
-is a {\tt RegionMetaData} object (line 1).  Region meta-data objects provide the interface for the
-creation of sets of physical regions that possess the same number and type of elements (but not necessarily
-the same data layout).  The interface is only able
-to copy data between two physical regions that were created by the
-same region meta-data object.  A runtime error will be generated if a copy is attempted
-between two physical regions that were not created by the same meta-data object.
+A physical region is an allocation of data in a single memory in the memory hierarchy.  Physical
+regions are grouped into {\em classes} which are sets of physical regions that share the
+same number and size of elements, but don't necessarily share the same data layout.  Our
+interface supports sub-classing, but the details are omitted due to space constraints.  The
+interface only supports data movement operations between physical regions that are of
+the same class (or between super- and sub-classes).
+% Say something about dynamically modifying the number of elements in a class
 
-An instance of a physical region is represented by a {\tt RegionInstance} object (line 17).
-When creating a physical region the programmer must specify the {\tt Memory}
-in which the physical region is going to be allocated (line 10).  Memories are described
-in more detail in Section~\ref{subsec:machmodel}.  Once the physical region is created it
-cannot be moved.   There is no coherence of data between physical regions created by the 
-same meta-data object.  It is the programmer's responsiblity to manage data coherence
-using copies between physical regions (line 22-23).  Just like other operations,
-copies can be predicated on an event and return an event corresponding to
-completion.  
+Listing~\ref{lst:regionapi} shows a subset of the interface for physical regions.  The
+first object in the interface is a {\tt RegionMetaData} object (line 1).  Physical
+regions created by the same region meta-data object belong to the same class.  Physical
+regions are represented by {\tt RegionInstance} objects (line 17).  When creating a physical
+region the client must specify the {\tt Memory} in which the physical region is going
+to be allocated.  Memories are described in more detail in Section~\ref{subsec:machmodel}.
+If there is not enough space for the physical region allocation a {\tt NO\_INST} will
+be returned.  There is no automatic coherence of data between physical regions in the
+same class.  It is the client's responsiblity to manage data coherence using copies
+between physical regions (line 22-23).  Just like other operations copies can be
+predicated on an event and return an event corresponding to completion.
+
+Clients can also associate an operation as part of a physical region.  One example of
+associating an operation with a physical region is shown on lines 13-14.  This method
+will create a physical region called a {\em reduction instance} that will be assoicated 
+with the given {\tt ReductionOp}.  The interface for a {\tt ReductionOp} is shown on 
+lines 26-33.  A reduction operation must have an {\tt apply} method, and can optionally 
+implement two additional methods, {\tt init} and {\tt fold} that support additional 
+optimizations described in Section~\ref{subsec:reducimpl}.  The two template parameters 
+describe the base element type of the region ({\tt LHS}:left-hand-side) and the type of 
+the argument to the reduction ({\tt RHS}:right-hand-side).  The reduction operation has 
+total control over the choice of data layout for the reduction instance (interface not shown).
+Reduction instances can be copied to other reduction instances with the same operation
+or to regular physical regions of the same class.
+
+An example of using reduction instances is shown on lines 35-49 of Listing~\ref{lst:regionapi}.
+In this example, two reduction instances, {\tt inst1} and {\tt inst2}, are created in different memories to
+be used with reduction operation 2 (lines 40-41).  A physical region of the same class {\tt inst3}
+is also created in a different memory (line 42).  Two tasks are launched that will apply
+reductions locally into their respective reduction buffers (lines 43-44).  The resulting
+events are then used to chain copies back to {\tt inst3} after the tasks complete (45-46).  As
+part of these copies the reductions stored in {\tt inst1} and {\tt inst2} will be applied
+to {\tt inst3}.  Since reductions are done atomically, there is no race between the reduction
+applications.  Finally, a merge on the events from the movement and reduction applications is 
+performed and a final task using {\tt inst3} is launched (lines 47-48).
+
+Reductions and reduction instances illustrate only a single case where physical regions provide 
+the structure necessary to conjoin an operation with data movement.  Physcal regions make our
+interface easily extensible to arbitrary transformations and operations as a part of data movment.
+While physical regions are a slightly higher-level construct than an annonymous
+buffer of bits, we believe that the optimizations they enable are important in an asynchronous
+environment.  Clients also still have access to an interface for controlling data layout through
+the operations associated with physical regions which mitigates the loss in generality.
+
+%{\em Physical regions} are the mechanism for reasoning about
+%the placement and movement of data in the interface.  Physical regions are an 
+%allocation of data in a single memory in the memory hierarchy.  Listing~\ref{lst:regionapi} 
+%shows a subset of the physical region interface.  The first object in the interface
+%is a {\tt RegionMetaData} object (line 1).  Region meta-data objects provide the interface for the
+%creation of sets of physical regions that possess the same number and type of elements (but not necessarily
+%the same data layout).  The interface is only able
+%to copy data between two physical regions that were created by the
+%same region meta-data object.  A runtime error will be generated if a copy is attempted
+%between two physical regions that were not created by the same meta-data object.
+
+%An instance of a physical region is represented by a {\tt RegionInstance} object (line 17).
+%When creating a physical region the programmer must specify the {\tt Memory}
+%in which the physical region is going to be allocated (line 10).  Memories are described
+%in more detail in Section~\ref{subsec:machmodel}.  Once the physical region is created it
+%cannot be moved.   There is no coherence of data between physical regions created by the 
+%same meta-data object.  It is the programmer's responsiblity to manage data coherence
+%using copies between physical regions (line 22-23).  Just like other operations,
+%copies can be predicated on an event and return an event corresponding to
+%completion.  
 %A copy between two physical regions can only be performed if copies
 %are permitted between the two memories where the regions were created.  
 %The legality of copies can be discovered using queries to the {\tt Machine} object
 %described in Section~\ref{subsec:machmodel}.
 
-The data held inside a physical region is accessed by another kind of object called an
-{\em accessor} (not shown).  Accessors support read, write, and reduction operations
-to elements inside the physical region.  Accessors can be specialized for the case where
-all memory is known to be directly accessible to the executing processor, which allows 
-for direct references to elements.  In cases where not all memory is directly accessable, 
-accessors supply the level of indirection necessary to convert operations into remote 
-memory operations (RMAs) if supported by the underlying hardware.  
+%The data held inside a physical region is accessed by another kind of object called an
+%{\em accessor} (not shown).  Accessors support read, write, and reduction operations
+%to elements inside the physical region.  Accessors can be specialized for the case where
+%all memory is known to be directly accessible to the executing processor, which allows 
+%for direct references to elements.  In cases where not all memory is directly accessable, 
+%accessors supply the level of indirection necessary to convert operations into remote 
+%memory operations (RMAs) if supported by the underlying hardware.  
 %An example of this is described in more detail in Section~\ref{sec:impl}.
 
-One special (but common) case for applications is when reductions need to be performed.
-For reductions it is usually more efficient to store reduction
-operations in a local reduction buffer and then merge reduction buffers together at a later
-point in time.  To support this case the interface allows for the creation of a special kind
-of physical instance called a {\em reduction instance}.  The call to {\tt create\_instance} on
-lines 13-14 takes a {\em reduction operation} to be associated with a physical instance which
-tells the interface to create a reduction instance.  Reduction instances can only be accessed
-using a reduction of the given reduction type; any other accesses will result in a runtime
-error.  A reduction operation is a functor which must have at least one method of the type
-$(T_1 \rightarrow T_2 \rightarrow T_1)$ which takes a region element of type $T_1$ and a value
-to be reduced of type $T_2$ and creates and new region element.  Reduction operations can optionally 
-support two additional methods: a method that supplies an initial value of type $T_2$ and a 
-fold method of type $(T_2 \rightarrow T_2 \rightarrow T_2)$.  The presence of these methods
-enable additional optimizations for reductions described in Section~\ref{subsec:reducimpl}.
+%One special (but common) case for applications is when reductions need to be performed.
+%For reductions it is usually more efficient to store reduction
+%operations in a local reduction buffer and then merge reduction buffers together at a later
+%point in time.  To support this case the interface allows for the creation of a special kind
+%of physical instance called a {\em reduction instance}.  The call to {\tt create\_instance} on
+%lines 13-14 takes a {\em reduction operation} to be associated with a physical instance which
+%tells the interface to create a reduction instance.  Reduction instances can only be accessed
+%using a reduction of the given reduction type; any other accesses will result in a runtime
+%error.  A reduction operation is a functor which must have at least one method of the type
+%$(T_1 \rightarrow T_2 \rightarrow T_1)$ which takes a region element of type $T_1$ and a value
+%to be reduced of type $T_2$ and creates and new region element.  Reduction operations can optionally 
+%support two additional methods: a method that supplies an initial value of type $T_2$ and a 
+%fold method of type $(T_2 \rightarrow T_2 \rightarrow T_2)$.  The presence of these methods
+%enable additional optimizations for reductions described in Section~\ref{subsec:reducimpl}.
 
-Reduction instances can be copied using the same interface as regular physical instances.
-It is only legal to copy a reduction instance to a regular physical instance or another
-reduction instance of the same reduction operator.  Any attempt to copy from a regular physical 
-instance to a reduction instance will result in a runtime error.  A copy from a reduction 
-instance to a regular physical instance will apply all the reductions in the reduction 
-buffer to the physical instance.  If a copy is from one reduction instance to another, 
-the two reduction buffers will be merged.  The semantics of a merge are dependent upon 
-the underlying implementation of reduction buffers which is discussed in more detail 
-in Section~\ref{subsec:reducimpl}.
+%Reduction instances can be copied using the same interface as regular physical instances.
+%It is only legal to copy a reduction instance to a regular physical instance or another
+%reduction instance of the same reduction operator.  Any attempt to copy from a regular physical 
+%instance to a reduction instance will result in a runtime error.  A copy from a reduction 
+%instance to a regular physical instance will apply all the reductions in the reduction 
+%buffer to the physical instance.  If a copy is from one reduction instance to another, 
+%the two reduction buffers will be merged.  The semantics of a merge are dependent upon 
+%the underlying implementation of reduction buffers which is discussed in more detail 
+%in Section~\ref{subsec:reducimpl}.
 
-\begin{lstlisting}[float={t},label={lst:regionapi},caption={Subset of Physical Region Interface.}]
+\begin{lstlisting}[float={t},label={lst:regionapi},caption={Physical Region Interface and Example.}]
 class RegionMetaData {
 public:
   const unsigned id;
@@ -282,6 +366,31 @@ public:
   Event copy_to(RegionInstance target, 
                 Event wait_on = Event::NO_EVENT);
 };
+
+template<typename LHS, typename RHS>
+class ReductionOp {
+public:
+  void apply(LHS *lhs, RHS rhs);
+  // Optional methods for optimizations
+  void init(RHS *rhs, size_t num_elmts);
+  void fold(RHS *rhs1, RHS rhs);
+};
+
+void reduction_ex(const void *args,size_t arglen,Processor p) {
+  Memory m1,m2,m3; Processor p1,p2,p3; ReductionOpID redop = 2;
+  ... // Choose memory and processors
+  RegionMetaData meta = RegionMetaData::
+                        create_region(num_elmts,elmt_size);
+  Instance inst1 = meta.create_instance(m1,redop);
+  Instance inst2 = meta.create_instance(m2,redop);
+  Instance inst3 = meta.create_instance(m3);
+  Event t1 = p1.spawn(REDUC,&inst1,sizeof(RegionInstance));
+  Event t2 = p2.spawn(REDUC,&inst2,sizeof(RegionInstance));
+  Event c1 = inst1.copy_to(inst3,t1);
+  Event c2 = inst2.copy_to(inst3,t2);
+  Event e0 = Event::merge_events(c1,c2);
+  Event t3 = p3.spawn(USE,&inst3,sizeof(RegionInstance),e0);
+}
 \end{lstlisting}
 
 
