@@ -140,11 +140,11 @@ def make_plots(show = True, save = True, outdir="figs/"):
     fig = plt.figure(figsize = (10,7))
     plt.loglog(basex = 2, basey = 10)
     for perfvals, label, color, marker in (
-        (dense_redfold, "Fold Instance", tableau1, "o"),
-        (dense_redlist, "List Instance", tableau2, "s"),
-        (dense_localize, "Localized Instance", tableau3, "d"),
-        (any_redsingle, "Single Reductions", tableau4, "^"),
-        (any_original, "Single Reads/writes", tableau5, "v"),
+        (dense_redfold, "Fold Instance", tableau5, "o"),
+        (dense_redlist, "List Instance", tableau12, "s"),
+        (dense_localize, "Localized Instance", tableau18, "d"),
+        (any_redsingle, "Single Reductions", tableau6, "^"),
+        (any_original, "Single Reads/writes", tableau13, "v"),
         ):
         print "(%s, %s, %s, %s)" % (perfvals, label, color, marker)
         plt.plot(nodes, perfvals, "--",
@@ -152,7 +152,7 @@ def make_plots(show = True, save = True, outdir="figs/"):
                  color = color, markerfacecolor = color,
                  linestyle = "solid", markersize = 8, marker = marker,
                  linewidth = 1)
-
+    plt.ylim(ymax=14000)
     plt.legend(loc=2,ncol=1)
     plt.xlabel('Number of Nodes')
     plt.ylabel('Reductions per Second (in Millions)')
@@ -167,11 +167,11 @@ def make_plots(show = True, save = True, outdir="figs/"):
     fig = plt.figure(figsize = (10,7))
     plt.loglog(basex = 2, basey = 10)
     for perfvals, label, color, marker in (
-        (sparse_redfold, "Fold Instance", tableau1, "o"),
-        (sparse_redlist, "List Instance", tableau2, "s"),
-        (sparse_localize, "Localized Instance", tableau3, "d"),
-        (any_redsingle, "Single Reductions", tableau4, "^"),
-        (any_original, "Single Reads/writes", tableau5, "v"),
+        (sparse_redfold, "Fold Instance", tableau5, "o"),
+        (sparse_redlist, "List Instance", tableau12, "s"),
+        (sparse_localize, "Localized Instance", tableau18, "d"),
+        (any_redsingle, "Single Reductions", tableau6, "^"),
+        (any_original, "Single Reads/writes", tableau13, "v"),
         ):
         print "(%s, %s, %s, %s)" % (perfvals, label, color, marker)
         plt.plot(nodes, perfvals, "--",
@@ -179,7 +179,7 @@ def make_plots(show = True, save = True, outdir="figs/"):
                  color = color, markerfacecolor = color,
                  linestyle = "solid", markersize = 8, marker = marker,
                  linewidth = 1)
-
+    plt.ylim(ymax=1200)
     plt.legend(loc=2,ncol=1)
     plt.xlabel('Number of Nodes')
     plt.ylabel('Reductions per Second (in Millions)')
