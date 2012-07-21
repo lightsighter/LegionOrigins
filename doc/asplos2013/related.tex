@@ -5,7 +5,11 @@
 MPI is the current industry standard for programming large
 supercomputers\cite{MPI}.  While MPI supports asynchronous
 communication operations there is no mechanism for composing
-asynchronous operations.  Co-array Fortran, UPC, and Titanium
+asynchronous operations.  GASNet is another interface for programming
+large clusters that centers around active messages\cite{GASNET07}.  GASNet
+is a part of the heterogeneous implementation of our interface, but like
+MPI, does not support composition of asynchronous active messages with
+other constructs.  Co-array Fortran, UPC, and Titanium
 are array based languages that implement bulk-synchronous
 programming models similar to MPI that allow for asynchronous
 exchanges of data\cite{COARRAY_FORTRAN,UPC99,JV:Yel98}.  Like
@@ -31,6 +35,14 @@ interfaces such as ours that optimize for throughput at the potential
 expense of adding additional latency to the critical 
 dependence path\cite{Frigo98}.
 
+The Threaded Abstract Machine (TAM) is a programming model designed to
+make it easy to port dataflow programs onto a parallel machine\cite{CullerGSvE93}.  
+Conceptually our interface is very similar to the dataflow languages TAM supported.
+The implementation of TAM is designed for a class of much smaller machines
+and therefore is based on much heavier communication and threading mechanisms.
+While TAM supported composable asynchronous computation and communication, its
+synchronization mechanisms still required blocking operations.
+
 Chapel\cite{Chamberlain:Chapel} and X10\cite{X1005} are high-level parallel
 programming languages that support asynchronous operations.  The constructs
 introduced in these languages are higher-level and have complex 
@@ -40,9 +52,11 @@ manner similar to Legion\cite{Legion12}.
 
 The implementation of our interface shares many similarities with large
 distributed systems.  Many distributed system implement a publish/subscribe
-abstraction for supporting communication that is very similar to how
+abstraction for supporting communication that is similar in some ways to how
 we manage events and event waiters\cite{Aguilera99,Carzaniga01}.  Work has
 also been done on using object oriented languages to build 
-distributed systems \cite{Eugster01,Harrison97,Chang91}.  In these cases
+distributed systems\cite{Eugster01,Harrison97,Chang91}.  In these cases
 callbacks are registered to run when event operations are triggered
-from remote locations.
+from remote locations.  Events in these systems are much heavier weight
+and often carry large data payloads.  In many distributed event systems
+the focus is on resiliency instead of performance\cite{Ostrowski09}.
