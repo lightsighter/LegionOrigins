@@ -110,8 +110,11 @@ namespace RegionRuntime {
       void unlock(Event wait_on = Event::NO_EVENT) const;
 
       // Create a new lock, destroy an existing lock
-      static Lock create_lock(void);
+      static Lock create_lock(size_t _data_size = 0);
       void destroy_lock();
+
+      size_t data_size(void) const;
+      void *data_ptr(void) const;
   };
 
     class Processor {
@@ -265,6 +268,7 @@ namespace RegionRuntime {
     public:
       size_t sizeof_lhs;
       size_t sizeof_rhs;
+      size_t sizeof_list_entry;
       bool has_identity;
       bool is_foldable;
 
@@ -277,13 +281,25 @@ namespace RegionRuntime {
 			bool exclusive = false) const = 0;
       virtual void init(void *rhs_ptr, size_t count) const = 0;
 
+      virtual void apply_list_entry(void *lhs_ptr, const void *entry_ptr, size_t count,
+				    off_t ptr_offset, bool exclusive = false) const = 0;
+      virtual void get_list_pointers(unsigned *ptrs, const void *entry_ptr, size_t count) const = 0;
+
     protected:
       ReductionOpUntyped(size_t _sizeof_lhs, size_t _sizeof_rhs,
+			 size_t _sizeof_list_entry,
 			 bool _has_identity, bool _is_foldable)
 	: sizeof_lhs(_sizeof_lhs), sizeof_rhs(_sizeof_rhs),
+	  sizeof_list_entry(_sizeof_list_entry),
   	  has_identity(_has_identity), is_foldable(_is_foldable) {}
     };
     typedef std::map<ReductionOpID, const ReductionOpUntyped *> ReductionOpTable;
+
+    template <class LHS, class RHS>
+    struct ReductionListEntry {
+      ptr_t<LHS> ptr;
+      RHS rhs;
+    };
 
     template <class REDOP>
     class ReductionOp : public ReductionOpUntyped {
@@ -292,6 +308,7 @@ namespace RegionRuntime {
       //  template-fu to figure it out
       ReductionOp(void)
 	: ReductionOpUntyped(sizeof(typename REDOP::LHS), sizeof(typename REDOP::RHS),
+			     sizeof(ReductionListEntry<typename REDOP::LHS,typename REDOP::RHS>),
 			     true, true) {}
 
       virtual void apply(void *lhs_ptr, const void *rhs_ptr, size_t count,
@@ -328,6 +345,29 @@ namespace RegionRuntime {
         for (size_t i = 0; i < count; i++)
           memcpy(rhs_ptr++, &(REDOP::identity), sizeof_rhs);
       }
+
+      virtual void apply_list_entry(void *lhs_ptr, const void *entry_ptr, size_t count,
+				    off_t ptr_offset, bool exclusive = false) const
+      {
+	typename REDOP::LHS *lhs = (typename REDOP::LHS *)lhs_ptr;
+	const ReductionListEntry<typename REDOP::LHS,typename REDOP::RHS> *entry = (const ReductionListEntry<typename REDOP::LHS,typename REDOP::RHS> *)entry_ptr;
+	if(exclusive) {
+	  for(size_t i = 0; i < count; i++)
+	    REDOP::template apply<true>(lhs[entry[i].ptr.value - ptr_offset], entry[i].rhs);
+	} else {
+	  for(size_t i = 0; i < count; i++)
+	    REDOP::template apply<false>(lhs[entry[i].ptr.value - ptr_offset], entry[i].rhs);
+	}
+      }
+
+      virtual void get_list_pointers(unsigned *ptrs, const void *entry_ptr, size_t count) const
+      {
+	const ReductionListEntry<typename REDOP::LHS,typename REDOP::RHS> *entry = (const ReductionListEntry<typename REDOP::LHS,typename REDOP::RHS> *)entry_ptr;
+	for(size_t i = 0; i < count; i++) {
+	  ptrs[i] = entry[i].ptr.value;
+	  //printf("%d=%d\n", i, ptrs[i]);
+	}
+      }
     };
 
     template <class REDOP>
@@ -359,6 +399,10 @@ namespace RegionRuntime {
       RegionInstanceUntyped create_instance_untyped(Memory memory) const;
       RegionInstanceUntyped create_instance_untyped(Memory memory,
 						    ReductionOpID redopid) const;
+      RegionInstanceUntyped create_instance_untyped(Memory memory,
+						    ReductionOpID redopid,
+						    off_t list_size,
+						    RegionInstanceUntyped parent_inst) const;
 
       void destroy_region_untyped(void) const;
       void destroy_allocator_untyped(RegionAllocatorUntyped allocator) const;
@@ -389,7 +433,8 @@ namespace RegionRuntime {
 
     enum AccessorType { AccessorGeneric, 
 			AccessorArray, AccessorArrayReductionFold,
-			AccessorGPU, AccessorGPUReductionFold };
+			AccessorGPU, AccessorGPUReductionFold,
+			AccessorReductionList, };
 
     template <AccessorType AT> class RegionInstanceAccessorUntyped;
 
@@ -545,7 +590,7 @@ namespace RegionRuntime {
 #ifdef POINTER_CHECKS
         verify_access(ptr.value);
 #endif
-        REDOP::apply<false>(((T*)array_base)[ptr.value], newval); 
+        REDOP::template apply<false>(((T*)array_base)[ptr.value], newval); 
       }
 
       template <class T>
@@ -578,7 +623,53 @@ namespace RegionRuntime {
 
       // can't read or write a fold-only accessor
       template <class REDOP, class T, class RHS>
-      void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::fold<false>(((RHS*)array_base)[ptr.value], newval); }
+      void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::template fold<true>(((RHS*)array_base)[ptr.value], newval); }
+    };
+
+    template <> class RegionInstanceAccessorUntyped<AccessorReductionList> {
+    public:
+      explicit RegionInstanceAccessorUntyped(void *_internal_data,
+					     size_t _num_entries,
+					     size_t _elem_size);
+
+      // Need copy constructors so we can move things around
+      RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorReductionList> &old)
+	: internal_data(old.internal_data), cur_size(old.cur_size),
+	  max_size(old.max_size), entry_list(old.entry_list) {}
+      /*
+      bool operator<(const RegionInstanceAccessorUntyped<AccessorArray> &rhs) const
+      { return array_base < rhs.array_base; }
+      bool operator==(const RegionInstanceAccessorUntyped<AccessorArray> &rhs) const
+      { return array_base == rhs.array_base; }
+      bool operator!=(const RegionInstanceAccessorUntyped<AccessorArray> &rhs) const
+      { return array_base != rhs.array_base; }
+      */
+      void *internal_data;
+      size_t *cur_size;
+      size_t max_size;
+      void *entry_list;
+
+      // can't read or write a fold-only accessor
+      template <class REDOP, class T, class RHS>
+      void reduce(ptr_t<T> ptr, RHS newval) const { 
+        size_t my_pos = __sync_fetch_and_add(cur_size, 1);
+	if(my_pos < max_size) {
+	  ReductionListEntry<T,RHS> *entry = ((ReductionListEntry<T,RHS> *)entry_list)+my_pos;
+	  entry->ptr = ptr;
+	  entry->rhs = newval;
+	} else {
+	  ReductionListEntry<T,RHS> entry;
+	  entry.ptr = ptr;
+	  entry.rhs = newval;
+	  reduce_slow_case(my_pos, ptr.value, &entry, sizeof(entry));
+	}
+      }
+
+      void flush(void) const;
+      
+    protected:
+      void reduce_slow_case(size_t my_pos, unsigned ptrvalue,
+			    const void *entry, size_t sizeof_entry) const;
     };
 
     // only nvcc understands this
@@ -640,7 +731,7 @@ namespace RegionRuntime {
 #ifdef POINTER_CHECKS 
         bounds_check(ptr);
 #endif
-        REDOP::apply<false>(((T*)array_base)[ptr.value], newval); 
+        REDOP::template apply<false>(((T*)array_base)[ptr.value], newval); 
       }
 
       template <class T>
@@ -742,6 +833,10 @@ namespace RegionRuntime {
       template <AccessorType AT2>
       RegionInstanceAccessor<ET,AT2> convert(void) const
       { return RegionInstanceAccessor<ET,AT2>(ria.convert<AT2>()); }
+
+      template <AccessorType AT2, class T2>
+      RegionInstanceAccessor<ET,AT2> convert2(T2 arg) const
+      { return RegionInstanceAccessor<ET,AT2>(ria.convert2<AT2,T2>(arg)); }
     };
 
 #ifdef __CUDACC__
@@ -777,9 +872,9 @@ namespace RegionRuntime {
 
       RegionInstanceAccessorUntyped<AccessorGeneric> get_accessor_untyped(void) const;
 
-      Event copy_to_untyped(RegionInstanceUntyped target, Event wait_on = Event::NO_EVENT);
-      Event copy_to_untyped(RegionInstanceUntyped target, const ElementMask &mask, Event wait_on = Event::NO_EVENT);
-      Event copy_to_untyped(RegionInstanceUntyped target, RegionMetaDataUntyped region, Event wait_on = Event::NO_EVENT);
+      Event copy_to_untyped(RegionInstanceUntyped target, Event wait_on = Event::NO_EVENT) const;
+      Event copy_to_untyped(RegionInstanceUntyped target, const ElementMask &mask, Event wait_on = Event::NO_EVENT) const;
+      Event copy_to_untyped(RegionInstanceUntyped target, RegionMetaDataUntyped region, Event wait_on = Event::NO_EVENT) const;
     };
 
     template <class T>
@@ -797,23 +892,38 @@ namespace RegionRuntime {
 	return RegionMetaData<T>(create_region_untyped(_num_elems,sizeof(T)));
       }
 
-      RegionAllocator<T> create_allocator(Memory memory) {
+      RegionAllocator<T> create_allocator(Memory memory) const {
 	return RegionAllocator<T>(create_allocator_untyped(memory));
       }
 	  
-      RegionInstance<T> create_instance(Memory memory) {
+      RegionInstance<T> create_instance(Memory memory) const {
 	return RegionInstance<T>(create_instance_untyped(memory));
+      }
+
+      RegionInstance<T> create_instance(Memory memory,
+					ReductionOpID redopid) const {
+	return RegionInstance<T>(create_instance_untyped(memory, redopid));
+      }
+
+      RegionInstance<T> create_instance(Memory memory,
+					ReductionOpID redopid,
+					off_t list_size,
+					RegionInstance<T> parent_inst) const
+      {
+	return RegionInstance<T>(create_instance_untyped(memory, redopid,
+							 list_size,
+							 parent_inst));
       }
 
       void destroy_region() {
         destroy_region_untyped();
       }
 
-      void destroy_allocator(RegionAllocator<T> allocator) {
+      void destroy_allocator(RegionAllocator<T> allocator) const {
         destroy_allocator_untyped(allocator);
       }
 
-      void destroy_instance(RegionInstance<T> instance) {
+      void destroy_instance(RegionInstance<T> instance) const {
         destroy_instance_untyped(instance);
       }
     };
@@ -848,10 +958,10 @@ namespace RegionRuntime {
       RegionInstanceAccessor<T,AccessorGeneric> get_accessor(void) const
       { return RegionInstanceAccessor<T,AccessorGeneric>(get_accessor_untyped()); }
 
-      Event copy_to(RegionInstance<T> target, Event wait_on = Event::NO_EVENT)
+      Event copy_to(RegionInstance<T> target, Event wait_on = Event::NO_EVENT) const
       { return copy_to_untyped(RegionInstanceUntyped(target), wait_on); }
 
-      Event copy_to(RegionInstance<T> target, const ElementMask& mask, Event wait_on = Event::NO_EVENT)
+      Event copy_to(RegionInstance<T> target, const ElementMask& mask, Event wait_on = Event::NO_EVENT) const
       { return copy_to_untyped(RegionInstanceUntyped(target), mask, wait_on); }
     };
 
@@ -870,6 +980,7 @@ namespace RegionRuntime {
 	ONE_TASK_PER_NODE, // one task running on one proc of each node
 	ONE_TASK_PER_PROC, // a task for every processor in the machine
       };
+
 
       void run(Processor::TaskFuncID task_id = 0, RunStyle style = ONE_TASK_ONLY,
 	       const void *args = 0, size_t arglen = 0);

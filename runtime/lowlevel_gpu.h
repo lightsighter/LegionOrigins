@@ -102,6 +102,17 @@ namespace RegionRuntime {
 	return create_instance_local(r, bytes_needed, adjust, redopid);
       }
 
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed,
+						    off_t adjust,
+						    ReductionOpID redopid,
+						    off_t list_size,
+						    RegionInstanceUntyped parent_inst)
+      {
+	return create_instance_local(r, bytes_needed, adjust, redopid,
+				     list_size, parent_inst);
+      }
+
       virtual void destroy_instance(RegionInstanceUntyped i, 
 				    bool local_destroy)
       {
@@ -133,6 +144,11 @@ namespace RegionRuntime {
       virtual void *get_direct_ptr(off_t offset, size_t size)
       {
 	return 0;
+      }
+
+      virtual int get_home_node(off_t offset, size_t size)
+      {
+	return -1;
       }
 
     public:
@@ -167,6 +183,17 @@ namespace RegionRuntime {
 	return create_instance_local(r, bytes_needed, adjust, redopid);
       }
 
+      virtual RegionInstanceUntyped create_instance(RegionMetaDataUntyped r,
+						    size_t bytes_needed,
+						    off_t adjust,
+						    ReductionOpID redopid,
+						    off_t list_size,
+						    RegionInstanceUntyped parent_inst)
+      {
+	return create_instance_local(r, bytes_needed, adjust, redopid,
+				     list_size, parent_inst);
+      }
+
       virtual void destroy_instance(RegionInstanceUntyped i, 
 				    bool local_destroy)
       {
@@ -196,6 +223,11 @@ namespace RegionRuntime {
       virtual void *get_direct_ptr(off_t offset, size_t size)
       {
 	return (cpu_base + offset);
+      }
+
+      virtual int get_home_node(off_t offset, size_t size)
+      {
+	return ID(me).node();
       }
 
     public:

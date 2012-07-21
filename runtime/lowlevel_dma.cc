@@ -224,6 +224,10 @@ namespace RegionRuntime {
 				const void *data, size_t datalen,
 				Event event);
 
+    extern void do_remote_apply_red_list(int node, Memory mem, off_t offset,
+					 ReductionOpID redopid,
+					 const void *data, size_t datalen);
+
     extern ReductionOpTable reduce_op_table;
 
 
@@ -351,6 +355,90 @@ namespace RegionRuntime {
       protected:
 	const ReductionOpUntyped *redop;
 	bool redfold;
+      };
+
+      class GasnetPutRedList : public GasnetPut {
+      public:
+	GasnetPutRedList(Memory::Impl *_tgt_mem, off_t _tgt_offset,
+			 ReductionOpID _redopid,
+			 const ReductionOpUntyped *_redop,
+			 const void *_src_ptr, size_t _elmt_size)
+	  : GasnetPut(_tgt_mem, _tgt_offset, _src_ptr, _elmt_size),
+	    redopid(_redopid), redop(_redop) {}
+
+	void do_span(int offset, int count)
+	{
+	  if(count == 0) return;
+	  assert(offset == 0); // too lazy to do pointer math on _src_ptr
+	  unsigned *ptrs = new unsigned[count];
+	  redop->get_list_pointers(ptrs, src_ptr, count);
+
+	  // now figure out how many reductions go to each node
+	  unsigned *nodecounts = new unsigned[gasnet_nodes()];
+	  for(unsigned i = 0; i < gasnet_nodes(); i++)
+	    nodecounts[i] = 0;
+
+	  for(int i = 0; i < count; i++) {
+	    off_t elem_offset = tgt_offset + ptrs[i] * redop->sizeof_lhs;
+	    int home_node = tgt_mem->get_home_node(elem_offset, redop->sizeof_lhs);
+	    assert(home_node >= 0);
+	    ptrs[i] = home_node;
+	    nodecounts[home_node]++;
+	  }
+
+#if 0
+	  printf("Node counts:\n");
+	  for(unsigned i = 0; i < gasnet_nodes(); i++)
+	    printf("  %d=%d", i, nodecounts[i]);
+	  printf("\n");
+#endif
+
+	  size_t max_entries_per_msg = (1 << 20) / redop->sizeof_list_entry;
+	  char *entry_buffer = new char[max_entries_per_msg * redop->sizeof_list_entry];
+
+	  for(unsigned i = 0; i < gasnet_nodes(); i++) {
+	    int pos = 0;
+	    for(int j = 0; j < count; j++) {
+	      //printf("S: [%d] = %d\n", j, ptrs[j]);
+	      if(ptrs[j] != i) continue;
+
+	      memcpy(entry_buffer + (pos * redop->sizeof_list_entry),
+		     ((const char *)src_ptr) + (j * redop->sizeof_list_entry),
+		     redop->sizeof_list_entry);
+	      pos++;
+
+	      if(pos == max_entries_per_msg) {
+		if(i == gasnet_mynode()) {
+		  tgt_mem->apply_reduction_list(tgt_offset, redop, pos,
+						entry_buffer);
+		} else {
+		  do_remote_apply_red_list(i, tgt_mem->me, tgt_offset,
+					   redopid, 
+					   entry_buffer, pos * redop->sizeof_list_entry);
+		}
+		pos = 0;
+	      }
+	    }
+	    if(pos > 0) {
+	      if(i == gasnet_mynode()) {
+		tgt_mem->apply_reduction_list(tgt_offset, redop, pos,
+					      entry_buffer);
+	      } else {
+		do_remote_apply_red_list(i, tgt_mem->me, tgt_offset,
+					 redopid, 
+					 entry_buffer, pos * redop->sizeof_list_entry);
+	      }
+	    }
+	  }
+
+	  delete[] entry_buffer;
+	  delete[] ptrs;
+	  delete[] nodecounts;
+	}
+
+      protected:
+	ReductionOpID redopid;
+	const ReductionOpUntyped *redop;
       };
 
       class GasnetGet {
@@ -549,6 +637,11 @@ namespace RegionRuntime {
       // if destination is a reduction, source must be also and must match
       assert(!tgt_data->is_reduction || (src_data->is_reduction &&
 					 (src_data->redopid == tgt_data->redopid)));
+      // for now, a reduction list instance can only be copied back to a
+      //  non-reduction instance
+      bool red_list = src_data->is_reduction && (src_data->red_list_size >= 0);
+      if(red_list)
+	assert(!tgt_data->is_reduction);
 
       Memory::Impl *src_mem = src_impl->memory.impl();
       Memory::Impl *tgt_mem = tgt_impl->memory.impl();
@@ -593,10 +686,25 @@ namespace RegionRuntime {
 	  case Memory::Impl::MKIND_GASNET:
 	    {
 	      if(redop) {
-		RangeExecutors::GasnetPutReduce rexec(tgt_mem, tgt_data->access_offset,
-						      redop, red_fold,
-						      src_ptr, elmt_size);
-		ElementMask::forall_ranges(rexec, *reg_impl->valid_mask);
+		if(red_list) {
+		  RangeExecutors::GasnetPutRedList rexec(tgt_mem, tgt_data->access_offset,
+							 src_data->redopid, redop,
+							 src_ptr, redop->sizeof_list_entry);
+		  size_t count;
+		  src_mem->get_bytes(src_data->count_offset, &count,
+				     sizeof(size_t));
+		  if(count > 0) {
+		    rexec.do_span(0, count);
+		    count = 0;
+		    src_mem->put_bytes(src_data->count_offset, &count,
+				       sizeof(size_t));
+		  }
+		} else {
+		  RangeExecutors::GasnetPutReduce rexec(tgt_mem, tgt_data->access_offset,
+							redop, red_fold,
+							src_ptr, elmt_size);
+		  ElementMask::forall_ranges(rexec, *reg_impl->valid_mask);
+		}
 	      } else {
 #define USE_BATCHED_GASNET_XFERS
 #ifdef USE_BATCHED_GASNET_XFERS
