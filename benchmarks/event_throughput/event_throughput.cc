@@ -97,9 +97,18 @@ void construct_track(int levels, int fanout, Processor local, Event precondition
   receive_events.clear();
   // For the first level there is only one event that has to be sent
   send_events.insert(precondition);
+#ifdef DEBUG_PRINT
+  fprintf(stdout,"Building first level\n");
+  fflush(stdout);
+#endif
   send_level_commands(fanout, local, send_events, all_procs, true/*first*/);
   for (int i = 1; i < levels; i++)
   {
+#ifdef DEBUG_PRINT
+    usleep(1000);
+    fprintf(stdout,"Building level %d\n",i);
+    fflush(stdout);
+#endif
     // Copy the send events from the receive events
     send_events = receive_events;
     receive_events.clear();
@@ -151,6 +160,7 @@ void top_level_task(const void *args, size_t arglen, Processor p)
   long total_triggers;
   // Initialize a bunch of experiments, each track does an all-to-all event communication for each level
   fprintf(stdout,"Initializing event throughput experiment with %d tracks and %d levels per track with fanout %d...\n",tracks,levels,fanout);
+  fflush(stdout);
   {
     Machine *machine = Machine::get_machine();
     const std::set<Processor> &all_procs = machine->get_all_processors();
@@ -164,6 +174,15 @@ void top_level_task(const void *args, size_t arglen, Processor p)
     total_triggers = total_events * fanout; // each event sends a trigger to every processor
   }
   // Merge all the finish events together into one finish event
+#ifdef DEBUG_PRINT
+  fprintf(stdout,"Merging finish events: ");
+  for (std::set<Event>::const_iterator it = wait_for_finish.begin();
+        it != wait_for_finish.end(); it++)
+  {
+    fprintf(stdout,"%x ",(*it).id);
+  }
+  fprintf(stdout,"\n");
+#endif
   Event finish_event = Event::merge_events(wait_for_finish);
 
   // Now we're ready to start our simulation
@@ -179,11 +198,11 @@ void top_level_task(const void *args, size_t arglen, Processor p)
 
     double latency = 1e3 * (stop.tv_sec - start.tv_sec) +
                       1e-6 * (stop.tv_nsec - start.tv_nsec); 
-    fprintf(stdout,"Total time: %7.3f us\n", latency);
+    fprintf(stdout,"Total time: %7.3f ms\n", latency);
     fprintf(stdout,"Events triggered: %ld\n", total_events);
     fprintf(stdout,"Events throughput: %7.3f Thousands/s\n",(double(total_events)/latency));
     fprintf(stdout,"Triggers performed: %ld\n", total_triggers);
-    fprintf(stdout,"Triggers throughput: %7.3f Million/s\n",(double(total_triggers)/latency));
+    fprintf(stdout,"Triggers throughput: %7.3f Thousands/s\n",(double(total_triggers)/latency));
   }
 
   // Tell everyone to shutdown
@@ -202,12 +221,21 @@ void level_builder(const void *args, size_t arglen, Processor p)
   ptr += sizeof(bool);
   size_t total_events = *((size_t*)ptr);
   ptr += sizeof(size_t);
+#ifdef DEBUG_PRINT
+  fprintf(stdout,"Merging events ");
+#endif
   for (unsigned i = 0; i < total_events; i++)
   {
     Event wait_event = *((Event*)ptr);
     ptr += sizeof(Event);
     wait_for_events.insert(wait_event);
+#ifdef DEBUG_PRINT
+    fprintf(stdout,"%x ",wait_event.id);
+#endif
   }
+#ifdef DEBUG_PRINT
+  fprintf(stdout,"\n");
+#endif
   // Merge all the wait for events together
   Event finish_event = Event::NO_EVENT;
   if (first)
@@ -222,6 +250,10 @@ void level_builder(const void *args, size_t arglen, Processor p)
   }
   assert(finish_event.exists());
   // Send back the event for this processor
+#ifdef DEBUG_PRINT
+  fprintf(stdout,"Processor %x reporting event %x\n",p.id,finish_event.id);
+  fflush(stdout);
+#endif
   {
     size_t buffer_size = sizeof(Event);
     void * buffer = malloc(buffer_size);
