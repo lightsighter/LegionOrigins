@@ -102,9 +102,9 @@ public:
 \label{subsec:procs}
 Listing~\ref{lst:procapi} shows the interface for {\tt Processor} objects which allow for
 the creation of parallel computations.  Processor provide a way of naming 
-every computational unit in the machine.  We describe how to find processor handles
+every computational unit in the machine.  We describe how to discover processor handles
 in Section~\ref{subsec:machmodel}.  In the case of our current interface 
-processors are either individual cores or discrete GPUs, but this can be easily modified 
+processors are either individual cores or discrete GPUs, but this is easily modified 
 to include new processor types (line 10).   Processors support a single {\tt spawn}
 operation (lines 13-14) that will launch a new {\em task} on that processor.
 Note that because the spawn operation
@@ -179,7 +179,7 @@ locks have already been acquired.
 Between deffered locks and barriers (described in Section~\ref{subsec:events}) clients 
 have access to the same set of synchronization primitves that they traditionally have
 in both threading and bulk-synchronous interfaces.  However, these operations can now 
-be composed with other asynchronous operations which is not possible in any other interface.
+be composed with other asynchronous operations which is not possible in any other interface
 of which we are aware.
 
 %Deferred locks provide a super-set of the functionality of blocking locks.  As their
@@ -226,16 +226,17 @@ than a simple copy operation.  Many applications perform operations and transfor
 their data in conjunction with data movement for higher performance.  One common example is 
 that applications accumulate reduction operations in a buffer and as part of a copy operation 
 the reduction operations are applied to a destination buffer on the receiving side of the copy.  
-In order to support these kinds of conjoined operations in an asynchronous environment, our interface 
-must be aware of the structure of data.  To describe the structure of data our interface 
-uses {\em physical regions.}
+To support these kinds of conjoined operations in an asynchronous environment, our interface 
+must be aware of the structure of data so it can perform accompanying operations with 
+data movement operations.  To describe the structure of data our interface uses {\em physical regions.}
 
 A physical region is an allocation of data in a single memory in the memory hierarchy.  Physical
 regions are grouped into {\em classes} which are sets of physical regions that share the
 same number and size of elements, but don't necessarily share the same data layout.  Our
 interface supports sub-classing, but the details are omitted due to space constraints.  The
 interface only supports data movement operations between physical regions that are of
-the same class (or between super- and sub-classes).
+the same class (or between super- and sub-classes).  Note, clients can still pass arbitrary arrays
+of bits via the processor {\tt spawn} call.
 % Say something about dynamically modifying the number of elements in a class
 
 Listing~\ref{lst:regionapi} shows a subset of the interface for physical regions.  The
@@ -251,15 +252,16 @@ between physical regions (line 22-23).  Just like other operations copies can be
 predicated on an event and return an event corresponding to completion.
 
 Clients can also associate an operation as part of a physical region.  One example of
-associating an operation with a physical region is shown on lines 13-14.  This method
+associating an operation with a physical region is shown on lines 13-14.  This instance
+of the {\tt create\_instance} method
 will create a physical region called a {\em reduction instance} that will be assoicated 
-with the given {\tt ReductionOp}.  The interface for a {\tt ReductionOp} is shown on 
+with the given {\tt ReductionOp} specified by the ID.  The interface for a {\tt ReductionOp} is shown on 
 lines 26-33.  A reduction operation must have an {\tt apply} method, and can optionally 
 implement two additional methods, {\tt init} and {\tt fold} that support additional 
 optimizations described in Section~\ref{subsec:reducimpl}.  The two template parameters 
 describe the base element type of the region ({\tt LHS}:left-hand-side) and the type of 
 the argument to the reduction ({\tt RHS}:right-hand-side).  The reduction operation has 
-total control over the choice of data layout for the reduction instance (interface not shown).
+total control over the choice of data layout for the reduction instance (not shown).
 Reduction instances can be copied to other reduction instances with the same operation
 or to regular physical regions of the same class.
 
@@ -394,7 +396,7 @@ void reduction_ex(const void *args,size_t arglen,Processor p) {
 \end{lstlisting}
 
 
-\subsection{Machine Interface}
+\subsection{Machine}
 \label{subsec:machmodel}
 The last component of the interface allows for introspection of the current machine.
 Listing~\ref{lst:machineapi} shows the machine interface.
@@ -436,7 +438,7 @@ performed and latency and bandwidth properties if copies are possible
 \end{itemize}
 
 The client can query these two relations by the {\tt get\_*\_affinity} calls
-(lines 40-43).  
+(lines 40-43) to discover properties of the machine.  
 
 %These calls populate a vector with affinity structures (not shown)
 %that contain latency and bandwidth information.  The programmer can restrict the query
