@@ -119,6 +119,12 @@ def print_experiments(exprs,baseline):
         print "Total GPUs "+str(e.nodes*e.gpus)+" Time "+str(e.time)+" Speedup "+str(baseline/e.time)
     print ""
 
+def print_overheads(orig,bulk):
+    for o,b in zip(orig,bulk):
+        assert o.nodes == b.nodes
+        print "Total GPUs "+str(o.nodes*o.gpus)+" Overhead "+str(b.time/o.time)
+    print ""
+
 def get_speedups(exprs,baseline):
     result = list()
     for e in exprs:
@@ -137,10 +143,14 @@ def make_plot(show = True, save = True, out_dir="figs/"):
     print_experiments(orig_48_experiments, baseline48)
     print "Bulk Synchronous results for 48 piece experiments"
     print_experiments(bulk_48_experiments, baseline48)
+    print "Overheads for 48 piece experiments"
+    print_overheads(orig_48_experiments,bulk_48_experiments)
     print "Original results for 96 piece experiments"
     print_experiments(orig_96_experiments, baseline96)
     print "Bulk Synchronous results for 96 experiments"
     print_experiments(bulk_96_experiments, baseline96)
+    print "Overheads for 96 piece experiments"
+    print_overheads(orig_96_experiments,bulk_96_experiments)
 
     fig = plt.figure(figsize = (10,7))
     # Plot the linear line

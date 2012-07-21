@@ -127,6 +127,12 @@ def print_experiments(exprs):
         print "Nodes "+str(e.nodes)+" Time "+str(e.time)+" Updates/s "+str(e.updates)
     print "\n"
 
+def print_overheads(orig,bulk):
+    for o,b in zip(orig,bulk):
+        assert o.nodes == b.nodes
+        print "Nodes "+str(o.nodes)+" Overhead: "+str(b.time/o.time)
+    print "\n"
+
 
 def get_scaled_updates(exprs,factor):
     result = list()
@@ -143,10 +149,14 @@ def make_plots(show = True, save = True, outdir="figs/"):
     print_experiments(orig_8192_exprs)
     print "Bulk Synchronous results for 8192 cell experiments"
     print_experiments(bulk_8192_exprs)
+    print "Overheads for 8192 cell experiments"
+    print_overheads(orig_8192_exprs,bulk_8192_exprs)
     print "Original results for 16384 cell experiments"
     print_experiments(orig_16384_exprs)
     print "Bulk Synchronous results for 16384 cell experiments"
     print_experiments(bulk_16384_exprs)
+    print "Overheads for 16384 cell experiments"
+    print_overheads(orig_16384_exprs,bulk_16384_exprs)
 
     scale_factor = 1e6
     fig = plt.figure(figsize = (10,7))
