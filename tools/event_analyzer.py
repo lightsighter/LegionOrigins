@@ -216,13 +216,16 @@ def make_event_lifetimes_plot(outdir,
                               active_time, active_list,
                               liveness_time, liveness_list):
     fig = plt.figure(figsize=(10,7))
-    plt.plot(dynamic_time,dynamic_event_list,'--',color=tableau12,linestyle='dashed',label='Dynamic Events',linewidth=2.0)
-    plt.plot(dynamic_time,physical_event_list,'--',color=tableau9,linestyle='dashed',label='Physical Events',linewidth=2.0)
-    plt.plot(liveness_time,liveness_list,'--',color=tableau13,linestyle='dashed',label='Live Events',linewidth=2.0)
-    plt.plot(active_time, active_list, '--', color=tableau1, linestyle='dashed', label='Active Events', linewidth=2.0)
+    lw = 1.0
+    plt.plot(dynamic_time,dynamic_event_list,'--',color=tableau12,linestyle='solid',label='Dynamic Events',linewidth=lw)
+    plt.plot(liveness_time,liveness_list,'--',color=tableau13,linestyle='solid',label='Live Events',linewidth=lw)
+    plt.plot(dynamic_time,physical_event_list,'--',color=tableau9,linestyle='solid',label='Physical Events',linewidth=lw)
+    plt.plot(active_time, active_list, '--', color=tableau1, linestyle='solid', label='Untriggered Events', linewidth=lw)
     plt.legend(loc=2,ncol=1)
     plt.xlabel('Time (seconds)')
     plt.ylabel('Count')
+    plt.xlim(xmin=5, xmax=33.5)
+    plt.ylim(ymin=-1000, ymax=25000)
     plt.grid(True)
     if outdir <> None:
         fig.savefig(outdir+'/event_lifetimes.pdf',format='pdf',bbox_inches='tight')
@@ -355,7 +358,7 @@ def make_active_list(time_list, dynamic_list, trigger_list):
             i = i + 1
         else:
             active_time_list.append(t2)
-            total_triggers = total_triggers + 1
+            if t2 > 0: total_triggers = total_triggers + 1
             active_list.append(total_dynamic - total_triggers)
             j = j + 1
     return active_time_list, active_list
@@ -418,7 +421,7 @@ def handle_preprocessed_file(file_name,outdir):
             if val[1] > most_waiters:
                 most_waiters = val[1]
         # make the second plot
-        make_waiter_ratios_plot(outdir,most_waiters,local_waiters_list,total_waiters_list)
+        #make_waiter_ratios_plot(outdir,most_waiters,local_waiters_list,total_waiters_list)
         """
     except:
         print "Really bad!  Mismatch reading preprocessed file"
@@ -467,7 +470,7 @@ def main():
         print "Execution lasted "+str(exec_time)+" seconds"
 
         plot_event_lifetimes(dynamic_events,outdir)
-        plot_waiter_ratios(dynamic_events,outdir)
+        #plot_waiter_ratios(dynamic_events,outdir)
 
     if show:
         plt.show()
