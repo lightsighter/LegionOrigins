@@ -140,7 +140,7 @@ def make_plot(show = True, save = True):
     plt.xlim(xmin=0.8,xmax=24)
     plt.legend(ncol=1)
     plt.xlabel('Nodes')
-    plt.ylabel('Throughput (Thousands of Event Triggers/s)')
+    plt.ylabel('Event Triggers per Second (in Thousands)')
     plt.xticks(node_list,node_list)
     plt.grid(True)
 
