@@ -68,6 +68,33 @@ of events created during the application is over 260,000.
 
 \subsection{Lock Migration}
 \label{subsec:lockmig}
+\begin{figure}
+{
+\renewcommand{\arraystretch}{1.2}
+\begin{center}
+\small
+\begin{tabular}{c|rrrrrrr}
+\multicolumn{1}{l}{\multirow{2}{*}{{\renewcommand{\arraystretch}{1}\begin{tabular}{@{}l}\bf Lock\\\bf Xfers\end{tabular}}}}
+& \multicolumn{7}{c}{\bf Total Lock Requests} \\
+     & 
+\multicolumn{1}{c}{\bf 0} &
+\multicolumn{1}{c}{\bf 1} &
+\multicolumn{1}{c}{\bf 2-8} &
+\multicolumn{1}{c}{\bf 9-16} &
+\multicolumn{1}{c}{\bf 17-32} &
+\multicolumn{1}{c}{\bf 33-64} &
+\multicolumn{1}{c}{\bf 65-128} \\
+{\bf 0    } & 45 & 2611 & 9   & 26   & 79    & 78    & 30     \\
+{\bf 1    } &  -  & 450  &  -   &   -   &   -    &    -   &  -      \\
+{\bf 2-8  } &  - & - & - & - & - & - & -\\
+{\bf 9-16 } &  -  &  -    &   -  & 8 & - & - & -\\
+\end{tabular}
+\end{center}
+}
+\vspace{-6mm}
+\caption{Locks by Request and Transfer Counts - Circuit Application.\label{fig:lockcount}}
+\vspace{-4mm}
+\end{figure}
 
 \subsection{Reduction Case Study}
 \label{subsec:reduccase}
