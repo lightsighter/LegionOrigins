@@ -44,9 +44,8 @@ In the single node case the latency of triggering an event is only
 329 nano-seconds.  For the multi-node cases, the triggering time is
 between 3-4 micro-seconds which is the same as the cost of GASNet
 active messages on Infiniband\cite{GASNET07}.  The gradual increase in latency with
-node count is because each node must poll the Infiniband connection with all other nodes.
-This demonstrates that the total cost of performing event triggers is in
-the hardware and the underlying software stack.
+node count is because each node must poll all the Infiniband connections for other nodes.
+This cost of performing event triggers is in entirely in the hardware and the underlying software stack.
 
 Our second micro-benchmark for events measures the maximum throughput of event
 triggers.  This benchmark creates {\em levels} of events where every event at a level
@@ -73,7 +72,7 @@ fan-in/out factors require more messages and have lower throughput that increase
 node count.  In both cases the scaling of throughput is because the benchmark is
 bound by the computational costs of active messages and not the bandwidth of the
 interconnection network.  With more processors, more active messages can be processed
-in parallel and performance improves.  
+in parallel and throughput improves.  
 %Note we can further improve performance by increasing
 %the number of threads per node for handling active messages (in these experiments there
 %is one per node), but in real applications these threads would consume hardware cores and
@@ -89,24 +88,24 @@ described in Section~\ref{sec:apps}.
 \subsection{Lock Throughput}
 \label{subsec:lockmicro}
 Our lock micro-benchmark is designed to measure the maximum throughput of lock
-acquisitions.  The benchmark is characterized by the number of nodes, the number
+grants.  The benchmark is characterized by the number of nodes, the number
 of locks initially created by each node, and the number of {\em chains} of
 lock requests per node.  A chain is 1024 lock acquire and release operations that
 are serialized by event dependences.  Each node creates the specified number of locks and
 informs all other nodes of its lock handles.  All nodes create the specified number
 of chains by randomly selecting from the set of all locks in the system.  All chains
-are predicated on a user event.  The experiment measures the time from the start of
+are predicated on a user event.  The experiment measures the time from the triggering of
 the user event to the completion of all chains.
 
 Figure~\ref{fig:fixedlock} shows the lock grant throughput versus nodes in the system
-for a fixed number of total chains in the system (256 total).  Each line corresponds
-to a number of locks per node.  At larger node counts there will be more total locks
-in the system.  At small node counts, small numbers of locks per node cause high
+for 256 total chains in the system.  Each line corresponds
+to a different number of initial locks per node.  At small node counts, 
+small numbers of locks per node cause high
 contention and lock unfairness allows for very high throughput as many requests are
-handled locally before locks are migrated.  Large values have more total locks which
-results in lower contention and lower throughput because more lock migrations are
-required per satisfied request.  At larger node counts, there are enough locks
-in the system to remove contention and throughput increases.
+handled locally before locks are migrated.   When there are more total locks there
+is lower contention and lower throughput because the ratio of lock grants to migrated
+locks decreases.  At larger node counts, there are enough locks
+in the system to remove contention and throughput improves.
 
 \begin{figure}
 \begin{center}
@@ -119,14 +118,13 @@ in the system to remove contention and throughput increases.
 
 To demonstrate that lock unfairness is also beneficial at larger node counts we show an alternative
 cut of the experiment space.  In this case we fix the node count at 16 and plot
-grant throughput as a function of chains per node for many different locks per node (also
-total nodes in the system since node count is fixed).
+grant throughput as a function of chains per node for many different locks per node.
 The results can be seen in Figure~\ref{fig:fixednode}.  At very small chains per node
-there is little contention and throughput is high.  At larger chains per node there is
-more contention for locks and throughput drops because of higher lock migrations.  Note that 
+there is little contention and throughput is high.  As the number of chains per node increases there is
+more contention for locks and throughput drops because of more lock migrations.  Note that 
 as soon as chains per node is greater than total locks, the expected number of users per lock 
 per node becomes more than one.  It is exactly at this point on each line that throughput
-begins to improve again!  This is because as soon as there are multiple expected users on
+begins to improve again.  This is because as soon as there are multiple expected users on
 a node, the unfairness property of the lock can amortize the cost of lock migration which
 yields better throughput.
 
@@ -150,8 +148,8 @@ reductions are performed in five ways:
 
 \begin{itemize} \itemsep1pt \parskip0pt \parsep0pt
 \item Single Reads/Writes - Each node takes a lock on the global physical region and then for each reduction
-reads a values from the physical region, performs the reduction, and then write the result back.  The lock is then released.
-\item Single Reductions - The reduction operation implementation performs each reduction individually
+reads a value from the physical region, performs the reduction, and then writes the result back.  The lock is then released.
+\item Single Reductions - The reduction operation performs each reduction individually
 using an underlying active message implementation.
 \item Localized Instance - Each node takes a lock on the the global physical region, copies it to a local physical
 region, performs reductions to the localized region, copies the region back, and releases the lock.
@@ -168,13 +166,13 @@ dense experiment are shown in Figure~\ref{fig:reducdense}.  The sparse case has 
 each reduction task performs 64K reductions to random locations.  Results for the sparse case
 be seen in Figure~\ref{fig:reducsparse}.
 
-The dense experiment demonstrates that using folding reduction regions perform 
+The dense experiment demonstrates that folding reduction regions perform 
 best and scale with the number of nodes, achieving over a billion reductions
 per second in the 16 node case.  List regions also scale, but perform about an
 order of mangitude worse than folding regions in the dense case.  Not surprisingly
 the other algorithms all have bottlenecks that result in poor performance.  The
-sparse case is very similar with additional interesting behavior that at 16 nodes
-the list regions begins performing better than the fold regions.  This shows that
+sparse case is very similar with the additional interesting occurence that at 16 nodes
+list regions begin performing better than fold regions.  This shows that
 list regions are better suited for scaling sparse reduction operations.
 
 \begin{figure}
