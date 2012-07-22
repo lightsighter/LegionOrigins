@@ -341,15 +341,19 @@ def handle_preprocessed_file(file_name,outdir):
         physical_list = list()
         dynamic_list = list()
         time_list = list()
+        trigger_list = list()
         physical_list.append(0)
         dynamic_list.append(0)
         time_list.append(0.0)
+        trigger_list.append(0.0)
         for idx in range(num_elmts):
             next_elmt = f.read(16)
             val = struct.unpack('dII',next_elmt)
             time_list.append(val[0])
             dynamic_list.append(val[1])
             physical_list.append(val[2])
+        for idx in range(num_elmts):
+            trigger_list.append(struct.unpack('d',f.read(8)))
         # Now unpack the live events
         live_time_list = list()
         live_event_list = list()
