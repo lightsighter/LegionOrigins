@@ -39,29 +39,38 @@ implementation of our interface to run on the Keeneland supercomputer.
 The three applications that we characterize are all multi-phase
 applications that require parallel computation, data exchange, and
 synchronization between phases. 
-\begin{itemize} \itemsep1pt \parskip0pt \parsep0pt
-\item {\em Circuit} is simulation of an irregular graph of integrated
+
+{\em Circuit} is simulation of an irregular graph of integrated
 circuit components connected by wires.  The graph is paritioned
-and distributed across the machine.  Each time step performs is composed
+and distributed across the machine.  Each time step is composed
 of three phases that calculate currents on the wires, distribute charge between
-nodes, and update the voltages of all ndoes.
-\item Fluid - Is an incompressible fluid flow simulation from the PARSEC
+nodes, and update the voltages of all ndoes.  The distribute charge
+phase leverages reduction instances to perform reductions locally in GPU
+framebuffer memeory before applying all the reductions to a global instance
+residing in GASNet memory.  Without reduction instances this phase
+couldn't be performed using GPUs.
+
+{\em Fluid} is an incompressible fluid flow simulation from the PARSEC
 benchmark suite\cite{bienia11benchmarking}.  When written in Legion, Fluid can
 be run on distributed machines in addition to shared memory.  The Fluid simulation
-models particles that flow through cells.  Each time requires multiple phases
+models particles that flow through cells.  Each time step requires multiple phases
 that update different proprerties of the particles contingent upon neighboring
-particles.
-\item AMR - AMR is an adaptive mesh refinement benchmark based on the third heat
+particles in the same cell.  The space of cells is partitioned and neighboring
+cells in different partitions must exchange data between phases.  Legion ensures
+that these exchanges are done point-to-point by chaining copies and tasks
+using events rather than employing global synchronization.
+
+{\em AMR} is an adaptive mesh refinement benchmark based on the third heat
 equation example from the Berkeley Labs BoxLib project\cite{BoxLib}.  AMR
 simulates the two dimensional heat diffusion equation using three different levels
 of refinement.  Each level is partitioned and distributed.  Time steps require
-both intra- and inter-level communication and synchronization.
-\end{itemize}
+both intra- and inter-level communication and synchronization.  Legion again
+expresses dependences between tasks from the same and different levels through
+events.
+
 In Section~\ref{subsec:eventlife} we study the lifetime of events in
 the Fluid application.  Section~\ref{subsec:lockmig} examines
-the migration of locks in the Circuit application.  We give
-a brief case study of reductions for the Circuit application
-in Section~\ref{subsec:reduccase}.  Finally, we demonstrate
+the migration of locks in the Circuit application.  Finally, we demonstrate
 that the asynchronous nature of our interface is essential to the
 performance of Legion by comparing to bulk-synchronous
 implementations of our target applications in Section~\ref{subsec:bulkcomp}.
@@ -69,9 +78,10 @@ implementations of our target applications in Section~\ref{subsec:bulkcomp}.
 \subsection{Event Lifetimes}
 \label{subsec:eventlife}
 We instrumented the heterogenous implementation of our interface to 
-capture information about events.  Figure~\ref{fig:eventlife} shows
+capture information about different kinds of events.  Figure~\ref{fig:eventlife} shows
 the lifetimes of different types of events from a single run of the Fluid
-application.  Dynamic events is a monotonically increasing line that
+application on 16 nodes using 8 processors per node.  Dynamic events 
+is a monotonically increasing line that
 corresponds to the total number of events created in the system.  By
 the end of the run, the simulation created over 260,000 dynamic
 events.  In contrast, the physical events line corresponds to the total number
@@ -108,11 +118,22 @@ this is only a minor inefficiency.
 \vspace{-4mm}
 \end{figure}
 
-Figure~\ref{fig:eventlife} shows the event lifetimes in a run of the fluid application.  The total number
-of events created during the application is over 260,000.
+%Figure~\ref{fig:eventlife} shows the event lifetimes in a run of the fluid application.  The total number
+%of events created during the application is over 260,000.
 
 \subsection{Lock Migration}
 \label{subsec:lockmig}
+
+We also instrumented our heterogeneous implementation to profile the usage of 
+locks in real applications.  We measured how many locks were used in the application.  For
+each lock we measured the number of lock requests and the number of times that the lock
+had to be transferred from one node to another.  Figure~\ref{fig:lockcount} shows the results of 
+running the Circuit application on 16 nodes with 3 GPUs per node.  Of the 3336 total locks,
+86\% are not transferred.  13\% of locks are transferred a single time.  Only 8 total locks
+are migrated around in a way that touches multiple nodes.  This shows in practice
+that locks do need to be transferred between nodes, but the need to transfer locks is
+infrequent.
+
 \begin{figure}
 {
 \renewcommand{\arraystretch}{1.2}
@@ -141,9 +162,78 @@ of events created during the application is over 260,000.
 \vspace{-4mm}
 \end{figure}
 
-\subsection{Reduction Case Study}
-\label{subsec:reduccase}
+%\subsection{Reduction Case Study}
+%\label{subsec:reduccase}
+
+%In this section we give a brief case study of how reductions make it possible
+%to achieve high performance on a real application.  One of the three phases
+%of the Circuit application involves reducing the current flowing in the wires
 
 \subsection{Bulk-Synchronous Comparison}
 \label{subsec:bulkcomp}
+
+Our last set of experiments demonstrates that the asynchronous nature of our interface
+is essential to the high performance of the Legion runtime system.  The Legion
+implementations of our three applications have already been shown to outperform 
+pre-existing implementations\cite{Legion12}.  To quantify the benefit of the asynchronous
+nature of our interface, we implemented versions of our applications in
+Legion in a bulk-synchronous style to compare against our existing implementations.  
+Note that the bulk-synchronous versions of our applications still run on top of 
+the Legion runtime, but invoke blocking operations between computational phases,
+communication phases, and synchronization.
+
+Figures~\ref{fig:cktbulk}, \ref{fig:fluidbulk}, and \ref{fig:amrbulk} compare
+the performance of the bulk-synchronous implementations versus the original
+implementations for Circuit, Fluid, and AMR respectively.  Each plot contains
+performance curves for both implementations on two different problem sizes.
+Circuit is a compute-bound application and the bulk-synchronous implementation
+performs reasonably well.  By 16 nodes however the overhead grows to 19\%
+and 22\% on the 48 and 96 piece circuit inputs respectively.  The Fluid application 
+has a more evenly balanced computation-to-communication ratio.  As a result,
+Fluid suffers significantly worse performance degredation by switching to
+a bulk-synchronous model.  At 16 nodes, performance is 2.35X and 1.52X worse
+than the original Legion implementations on the small and large problem sizes
+respectively.  The AMR application is a memory bound application.  On 16 nodes
+the bulk-synchronous version is 1.82X and 2.02X slower on the small and
+large problem sizes.
+
+These results show that the asynchronous nature of our interface allows
+the Legion runtime system to run ahead of actual execution which
+provides significant latency hiding.  More
+importantly, the effect of this latency hiding grows as the number of
+nodes increases.  In all cases, the overhead of the bulk-synchronous
+implementations grew with the node count.  As we continue to scale
+applications, the ability of runtimes like Legion to run ahead
+will be essential to hiding the large latencies on this class of machines.
+The fully asynchronous nature of the interface presented in this paper
+will be crucial for supporting this ability.
+
+
+\begin{figure}
+\begin{center}
+\includegraphics[scale=0.33]{figs/circuit_bulk_sync.pdf}
+\end{center}
+\vspace{-6mm}
+\caption{Circuit Bulk-Synchronous Performance.\label{fig:cktbulk}}
+\vspace{-4mm}
+\end{figure}
+
+\begin{figure}
+\begin{center}
+\includegraphics[scale=0.33]{figs/fluid_bulk_sync.pdf}
+\end{center}
+\vspace{-6mm}
+\caption{Fluid Bulk-Synchronous Performance.\label{fig:fluidbulk}}
+\vspace{-4mm}
+\end{figure}
+
+\begin{figure}
+\begin{center}
+\includegraphics[scale=0.33]{figs/amr_bulk_sync.pdf}
+\end{center}
+\vspace{-6mm}
+\caption{AMR Bulk-Synchronous Performance.\label{fig:amrbulk}}
+\vspace{-4mm}
+\end{figure}
+
 
