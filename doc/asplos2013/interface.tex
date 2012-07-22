@@ -197,11 +197,11 @@ of which we are aware.
 class Lock {
 public:
   const unsigned id;
-  Event lock(unsigned mode = 0, bool exclusive, 
-              Event wait_on = Event::NO_EVENT) const;
+  Event lock(Event wait_on = Event::NO_EVENT) const;
   void unlock(Event wait_on = Event::NO_EVENT) const;
   // Create a new lock, destroy an existing lock
-  static Lock create_lock();
+  static Lock create_lock(size_t payload_size = 0);
+  void *payload_ptr();
   void destroy_lock();
 };
 
@@ -251,19 +251,33 @@ same class.  It is the client's responsiblity to manage data coherence using cop
 between physical regions (line 22-23).  Just like other operations copies can be
 predicated on an event and return an event corresponding to completion.
 
-Clients can also associate an operation as part of a physical region.  One example of
-associating an operation with a physical region is shown on lines 13-14.  This instance
-of the {\tt create\_instance} method
-will create a physical region called a {\em reduction instance} that will be assoicated 
-with the given {\tt ReductionOp} specified by the ID.  The interface for a {\tt ReductionOp} is shown on 
-lines 26-33.  A reduction operation must have an {\tt apply} method, and can optionally 
-implement two additional methods, {\tt init} and {\tt fold} that support additional 
-optimizations described in Section~\ref{subsec:reducimpl}.  The two template parameters 
-describe the base element type of the region ({\tt LHS}:left-hand-side) and the type of 
-the argument to the reduction ({\tt RHS}:right-hand-side).  The reduction operation has 
-total control over the choice of data layout for the reduction instance (not shown).
-Reduction instances can be copied to other reduction instances with the same operation
-or to regular physical regions of the same class.
+If the only operations that will be performed on locations in a {\tt RegionInstance} object,
+a special reduction version can be created by providing the ID of a {\em reduction operator}
+when the object is created (line 13).  Reduction-only {\tt RegionInstance} objects can 
+increase the available parallelism and hide latency better, as we will show in section~\ref{sec:microbenchmarks}.  The interface supports any reduction operation that
+is commutative (i.e. multiple operations to the same location can be reordered without 
+changing the final result) and is coded as an {\tt apply} method as shown on line 29.
+Many commonly-used reduction operations are also {\em foldable} (e.g. $(l \text{ += } r_1) \text{ += } r_2$ can
+be folded as $l \text{ += } r_1 + r_2$), and if the {\tt fold} operation and a {\em right identity}
+(e.g. $0$ is a right identity for subtraction because $x - 0 = x$ for all $x$) are provided,
+the runtime can use a {\em reduction fold instance}, described in section~\ref{subsec:reducimpl},
+for ever better performance.  Although the way they store data is very different,
+reduction-only instances can be copied to other reduction-only instances (or normal 
+instances) of the same class with the same asynchronous copy operations.
+
+%% Clients can also associate an operation as part of a physical region.  One example of
+%% associating an operation with a physical region is shown on lines 13-14.  This instance
+%% of the {\tt create\_instance} method
+%% will create a physical region called a {\em reduction instance} that will be assoicated 
+%% with the given {\tt ReductionOp} specified by the ID.  The interface for a {\tt ReductionOp} is shown on 
+%% lines 26-33.  A reduction operation must have an {\tt apply} method, and can optionally 
+%% implement two additional methods, {\tt init} and {\tt fold} that support additional 
+%% optimizations described in Section~\ref{subsec:reducimpl}.  The two template parameters 
+%% describe the base element type of the region ({\tt LHS}:left-hand-side) and the type of 
+%% the argument to the reduction ({\tt RHS}:right-hand-side).  The reduction operation has 
+%% total control over the choice of data layout for the reduction instance (not shown).
+%% Reduction instances can be copied to other reduction instances with the same operation
+%% or to regular physical regions of the same class.
 
 An example of using reduction instances is shown on lines 35-49 of Listing~\ref{lst:regionapi}.
 In this example, two reduction instances, {\tt inst1} and {\tt inst2}, are created in different memories to
@@ -372,10 +386,10 @@ public:
 template<typename LHS, typename RHS>
 class ReductionOp {
 public:
-  void apply(LHS *lhs, RHS rhs);
-  // Optional methods for optimizations
-  void init(RHS *rhs, size_t num_elmts);
-  void fold(RHS *rhs1, RHS rhs);
+  static void apply(LHS *lhs, RHS rhs);
+  // Optional methods for folding optimization
+  static void fold(RHS *rhs1, RHS rhs2);
+  static const RHS right_identity;
 };
 
 void reduction_ex(const void *args,size_t arglen,Processor p) {

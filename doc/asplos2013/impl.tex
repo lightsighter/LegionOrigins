@@ -208,5 +208,97 @@ the previous generation has indeed triggered, allowing the existing list of oper
 \subsection{Lock Implementation}
 \label{subsec:lockimpl}
 
+Like events, locks are created on demand by the node on which the creation request was made.  The lock
+handles are also statically divided across the nodes, allowing the creation to be done without inter-node
+communication.  Unlike events whose ownership is static, locks may migrate, so although the {\em creating}
+node is the initial owner of a lock, that ownership can be transferred to other nodes.
+
+Locks are often used to mediate access to data, and the size of that data is often relatively small.  To
+avoid adding the latency of inter-node data copies to critical sections, a lock may also be created with a
+{\em payload}, a small (i.e. less than 4KB - the limit for an active message's payload) piece of data that is moved around with the lock and guaranteed to be coherent if
+the lock is held.
+
+Since any node may at some point be the owner of a lock, all nodes use the same data structure to track the
+state of the lock (they differ only in when the structure is allocated -
+nodes other than the creator still wait until the first reference to the lock on that node).  The structure
+tracks the following:
+\begin{itemize}
+\item {\em owner node} - the most recently known owner of the lock.  If the current node is the owner, this
+information is always accurate.  If not, this information may be stale, but at least the recorded ``owner''
+is sure to have more up-to-date information.
+\item {\em lock status} - records whether the lock is currently held.  Only the current lock owner has
+guaranteed-current information here.
+\item {\em local waiters} - a list of pending local lock requests.  This data is always valid as well.
+\item {\em remote waiters} - a bitmask of which other nodes have pending requests.  This bitmask is only
+used when the current node is the owner of the lock.
+\item {\em local payload pointer and size} - the local node's copy of the lock payload
+\end{itemize}
+
+When a lock request is made, an event is created to track when the grant occurs.  The current node then
+examines its copy of the lock data structure (creating it if
+this the first operation for that lock on that node).  If the current node is the owner and the lock isn't
+held, the lock is granted immediately and the event is triggered.  If the lock is held, the event is added
+to the list of local waiters.  (This is the only thing that is stored.  The actual ``requestor'' of the lock
+is implicitly captured in which operations are dependent on the lock grant event.)  If the current node
+isn't the owner, a {\em lock request} active message is
+sent to the most recently known owner.  (If that information proves to be stale, the request is forwarded
+by the receiving node, eventually catching up to the current owner.)  If the current owner's status shows
+the lock is currently held, the requesting node is added to the remote waiters bitmask.  If the lock is
+not held, the ownership of the lock is given to the requesting node via a {\em lock transfer} active
+message.  A lock transfer message includes the current remote waiters bitmask (in case other nodes are
+have also requested the lock) and an up-to-date copy of the lock's payload.
+
+Similarly, an unlock request is first checked against the local node's lock state.  If the local node is
+not the owner, an {\em unlock} active message is sent to the most recently known owner, which is forwarded
+if necessary.  Once the unlock request is on the lock's current owning node, the local waiter list is
+examined.  If the list is non-empty, the lock remains in the ``locked'' state and the first lock grant
+event is pulled off the local waiter list and triggered.  If instead the local waiter list is empty, the
+lock state is changed to ``unlocked'', and the remote waiter bitmask is examined.  If any bits are set, then
+one of them is chosen and the corresponding node becomes the new owner via a lock transfer active message.
+
+The unfairness that results from a lock favoring local waiters over remote waiters is intentional.  When the
+contention on a lock is high (the only time when the question of fairness is even relevant), the latencies
+involved in transferring a lock between nodes can be the limiter on throughput.  By minimizing the number
+of lock transfers, the throughput on the lock is maximized.
+
+A similar issue can arise with the forwarding of lock request active messages.  If two nodes are
+transferring a lock very quickly back and forth, a third node's request could be forwarded an arbitrary
+number of times as it chases the lock around.  Although this can result in unfairness, it doesn't 
+prevent forward progress.  A lock is only transferred to a node with at least one local waiter, so if 
+the third node's request ever became the only one left, the lock transferring would stop and the request
+would finally catch up.
+
 \subsection{Reduction Instances}
 \label{subsec:reducimpl}
+
+In addition to normal physical regions, our implementation supports two different kinds of reduction-only
+physical regions, designed to optimize the common pattern in which multiple tasks make commutative 
+{\em reductions} into shared data.  Instead of having to move the existing data to a suitable memory and
+then applying individual reduction operations to the existing data 
+right away (as would happen in a normal physical region), reduction instances allow a large number of
+reduction operations to be batched up and transferred efficiently to the original location of the data.
+This decoupling from the original location of the data can allow allow greater parallelism
+in cases where there are available processors that cannot all access the same memory.
+
+The first kind of reduction-only physical region is a {\em reduction fold instance}, which may only be
+used for reduction operations that support a {\em fold} operation.  A reduction fold instance is similar
+to a normal physical region in that it is implemented as an array, indexed by the same element indices used
+for the normal physical regions.  The difference is that each array element is a value of the reduction's
+{\tt RHS} type instead of the actual element type of the region (i.e. the {\tt LHS} type).  When the client
+requests a reduction operation to a particular location, the supplied right-hand-side value is folded in
+to the corresponding location in the array.  An arbitrary number of reductions can be done to each location.
+When the reduction fold instance is copied back to a normal instance, the contents of the reduction instance
+(which are generally the same size or smaller than the normal region contents) are transferred in a large
+block to the location of the normal instance, where an application of the reduction function is performed
+once for each location in the region via a cache-friendly linear sweep over the memory.
+
+The second kind of reduction instance is a {\em reduction list instance}.  Although it generally doesn't
+perform as well as a reduction fold instance, it can be better for cases with sparse updates.  It is also
+the only option when a reduction operation doesn't support a {\em fold} operation.  Instead of folding
+together multiple reductions to the same location, a reduction list instance keeps a log of every
+reduction operation requested (i.e. the location and the right-hand-side value).  When the reduction list 
+instance is copied back to a normal physical region, the whole list is transferred and then replayed at
+the target region's location.  Except in sparse update cases, this list is often larger than the target
+region, and any randomness in the sequence of locations in the list can impact the memory access efficiency
+of the accesses to the target region.  However, as we will show in section~\ref{sec:microbenchmarks}, 
+the benefits of enabling parallelism and hiding latency usually more than make up for these drawbacks.
