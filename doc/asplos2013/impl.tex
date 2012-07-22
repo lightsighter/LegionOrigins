@@ -148,6 +148,14 @@ reception of an event trigger active message, if an operation is created that de
 of an event than what the current list of events is dependent on, that serves as a roundabout indication that
 the previous generation has indeed triggered, allowing the existing list of operations to be executed.
 
+Barriers are implemented as an extension of events.  In place of an event's boolean triggered-or-not state,
+a barrier's owner tracks how many arrivals are still expected for the event.  When the arrival count 
+reaches zero, the barrier is considered to have ``triggered''.  Other nodes send {\em barrier update}
+active messages containing an adjustment value that is positive for {\tt alter\_arrival\_count} operations 
+and negative for {\tt arrive} operations.  A simplified version of vector clocks\cite{Fidge1998} is used
+to detect the race condition in which the barrier owner receives an {\tt arrive} operation before the
+corresponding {\tt alter\_arrival\_count} and defer the decrement of the arrival count to avoid a spurious
+triggering of the barrier.
 
 %% Events are created on demand by each node.  The ID of the creating node is encoded
 %% in the upper bits of each event's ID and the creating node is said to be the 
