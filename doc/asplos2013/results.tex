@@ -188,7 +188,7 @@ implementations for Circuit, Fluid, and AMR respectively.  Each plot contains
 performance curves for both implementations on two different problem sizes.
 Circuit is a compute-bound application and the bulk-synchronous implementation
 performs reasonably well.  By 16 nodes however the overhead grows to 19\%
-and 22\% on the 48 and 96 piece circuit inputs respectively.  The Fluid application 
+and 22\% on the small and large inputs respectively.  The Fluid application 
 has a more evenly balanced computation-to-communication ratio.  As a result,
 Fluid suffers significantly worse performance degredation by switching to
 a bulk-synchronous model.  At 16 nodes, performance is 2.35X and 1.52X worse
