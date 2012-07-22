@@ -211,11 +211,15 @@ def find_dynamic_events(items,dynamic_events):
             print ""
     return latest_time
 
-def make_event_lifetimes_plot(outdir,dynamic_time,dynamic_event_list,physical_event_list,liveness_time,liveness_list):
+def make_event_lifetimes_plot(outdir,
+                              dynamic_time, dynamic_event_list, physical_event_list,
+                              active_time, active_list,
+                              liveness_time, liveness_list):
     fig = plt.figure(figsize=(10,7))
     plt.plot(dynamic_time,dynamic_event_list,'--',color=tableau12,linestyle='dashed',label='Dynamic Events',linewidth=2.0)
     plt.plot(dynamic_time,physical_event_list,'--',color=tableau9,linestyle='dashed',label='Physical Events',linewidth=2.0)
     plt.plot(liveness_time,liveness_list,'--',color=tableau13,linestyle='dashed',label='Live Events',linewidth=2.0)
+    plt.plot(active_time, active_list, '--', color=tableau1, linestyle='dashed', label='Active Events', linewidth=2.0)
     plt.legend(loc=2,ncol=1)
     plt.xlabel('Time (seconds)')
     plt.ylabel('Count')
@@ -331,6 +335,31 @@ def plot_waiter_ratios(dynamic_events,outdir):
             str(smallest_local)+" local waiters"
     make_waiter_ratios_plot(outdir,most_waiters,local_waiters_list,total_waiters_list)
 
+def make_active_list(time_list, dynamic_list, trigger_list):
+    print "time list has %d entries, trigger list has %d" % (len(time_list), len(trigger_list))
+    total_dynamic = 0
+    total_triggers = 0
+    i = 1
+    j = 1 
+    active_time_list = [0.0]
+    active_list = [0]
+    while (i < len(time_list)) and (j < len(trigger_list)):
+        t1 = time_list[i] if (i < len(time_list)) else 1e10
+        t2 = trigger_list[j] if (j < len(trigger_list)) else 1e10
+        #print i, j, t1, t2, total_dynamic, total_triggers
+        #print "(%d %d %f %f %d %d)" % (i, j, t1, t2, total_dynamic, total_triggers)
+        if t1 <= t2:
+            active_time_list.append(t1)
+            total_dynamic = dynamic_list[i]
+            active_list.append(total_dynamic - total_triggers)
+            i = i + 1
+        else:
+            active_time_list.append(t2)
+            total_triggers = total_triggers + 1
+            active_list.append(total_dynamic - total_triggers)
+            j = j + 1
+    return active_time_list, active_list
+
 def handle_preprocessed_file(file_name,outdir):
     f = open(file_name, "rb") 
 
@@ -353,7 +382,10 @@ def handle_preprocessed_file(file_name,outdir):
             dynamic_list.append(val[1])
             physical_list.append(val[2])
         for idx in range(num_elmts):
-            trigger_list.append(struct.unpack('d',f.read(8)))
+            trigger_list.append(struct.unpack('d',f.read(8))[0])
+
+        active_time_list, active_list = make_active_list(time_list, dynamic_list, trigger_list)
+
         # Now unpack the live events
         live_time_list = list()
         live_event_list = list()
@@ -367,7 +399,10 @@ def handle_preprocessed_file(file_name,outdir):
             live_time_list.append(val[0])
             live_event_list.append(val[1])
         # We can now call the function that does the printing
-        make_event_lifetimes_plot(outdir,time_list,dynamic_list,physical_list,live_time_list,live_event_list)
+        make_event_lifetimes_plot(outdir,
+                                  time_list,dynamic_list,physical_list,
+                                  active_time_list, active_list,
+                                  live_time_list,live_event_list)
 
         # Read in the waiter ratios
         next_elmt = f.read(8)
