@@ -266,6 +266,7 @@ size_t compute_event_lifetimes(OrderedTable &ordered_events, int fw)
 {
   size_t total = 0;
   // Compute the dynamic and physical event lists
+  std::vector<double> trigger_times;
   {
     size_t buffer_size = sizeof(size_t) + (ordered_events.size() * (sizeof(double) + sizeof(unsigned) + sizeof(unsigned)));
     void *fitems = malloc(buffer_size);
@@ -276,6 +277,8 @@ size_t compute_event_lifetimes(OrderedTable &ordered_events, int fw)
     unsigned physical_event_total = 0;
     for (unsigned idx = 0; idx < ordered_events.size(); idx++)
     {
+      trigger_times.push_back(ordered_events[idx]->trigger_time);
+
       dynamic_event_total += 1;
       if (ordered_events[idx]->gen == 1)
         physical_event_total += 1;
@@ -292,6 +295,13 @@ size_t compute_event_lifetimes(OrderedTable &ordered_events, int fw)
 
     free(fitems);
     total += bytes_written;
+  }
+
+  // now sort and dump the trigger times
+  {
+    std::sort(trigger_times.begin(), trigger_times.end());
+    ssize_t bytes_written = write(fw, &trigger_times[0], trigger_times.size() * sizeof(double));
+    assert(bytes_written == (ordered_events.size() * sizeof(double)));
   }
 
   // Compute the lists showing the number of live events
