@@ -1,7 +1,8 @@
 DOC=legion-llr
 
 # dependencies via include files
-INCLUDED_TEX = conclusion.tex outline.tex
+INCLUDED_TEX = conclusion.tex outline.tex impl.tex interface.tex intro.tex \
+	micro.tex related.tex results.tex
 INCLUDED_FIGS = 
 
 $(DOC).pdf: $(DOC).tex bibliography.bib $(INCLUDED_TEX) $(INCLUDED_FIGS)
