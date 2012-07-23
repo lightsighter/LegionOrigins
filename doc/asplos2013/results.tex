@@ -245,7 +245,7 @@ These bulk-synchronous versions still run on top of
 the Legion runtime, but invoke blocking operations between computational phases,
 communication phases, and synchronization.
 
-Figures~\ref{fig:cktbulk}, \ref{fig:fluidbulk}, and \ref{fig:amrbulk} compare
+Figure~\ref{fig:bulksync} compares
 the performance of the bulk-synchronous implementations versus the original
 implementations for Circuit, Fluid, and AMR respectively.  Each plot contains
 performance curves for both implementations on two different problem sizes.
@@ -273,30 +273,24 @@ The fully asynchronous nature of the interface presented in this paper
 will be crucial for supporting this ability.
 
 
-\begin{figure}
-\begin{center}
+\begin{figure}[h!]
+\centering
+\subfigure[Circuit Application]{
+\label{fig:cktbulk}
 \includegraphics[scale=0.33]{figs/circuit_bulk_sync.pdf}
-\end{center}
-\vspace{-6mm}
-\caption{Circuit Bulk-Synchronous Performance.\label{fig:cktbulk}}
-\vspace{-4mm}
-\end{figure}
+}
 
-\begin{figure}
-\begin{center}
+\subfigure[Fluid Application]{
+\label{fig:fluidbulk}
 \includegraphics[scale=0.33]{figs/fluid_bulk_sync.pdf}
-\end{center}
-\vspace{-6mm}
-\caption{Fluid Bulk-Synchronous Performance.\label{fig:fluidbulk}}
-\vspace{-4mm}
-\end{figure}
+}
 
-\begin{figure}
-\begin{center}
+\subfigure[AMR Application]{
+\label{fig:amrbulk}
 \includegraphics[scale=0.33]{figs/amr_bulk_sync.pdf}
-\end{center}
-\vspace{-6mm}
-\caption{AMR Bulk-Synchronous Performance.\label{fig:amrbulk}}
+}
+\vspace{-4mm}
+\caption{Bulk-Synchronous Performance.\label{fig:bulksync}}
 \vspace{-4mm}
 \end{figure}
 
