@@ -105,7 +105,7 @@ requires storage that grows with the maximum number of {\em untriggered events},
 that is 10X smaller than even the maximal live event count.  The actual storage
 requirements of our implementation are shown by the generational events line,
 which shows the total number of generational events (defined in Section~\ref{subsec:eventimpl}) 
-in the system
+in the system.
 The maximum number of generational events needed is slightly larger than the peak number of untriggered events. 
 The reason for this difference is because nodes create events locally if they have
 no free generational events, even if there are unused generational events on remote nodes.

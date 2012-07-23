@@ -141,7 +141,7 @@ every computational unit in the machine.  We describe how to discover processor 
 in Section~\ref{subsec:machmodel}.  In the case of our current interface 
 processors are either individual cores or discrete GPUs, but this is easily modified 
 to include new processor types (line 10).   Processors support a single {\tt spawn}
-operation (lines 14-15) that launches a new {\em task} on that processor.
+method (lines 14-15) that launches a new {\em task} on that processor.
 Note that because the spawn operation
 is invoked on a processor handle, it is possible to launch a task on any
 processor from anywhere in the system.  
