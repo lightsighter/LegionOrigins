@@ -20,16 +20,17 @@ Legion application, for every processor there is an instance of the Legion runti
 that takes a stream of tasks with region requirements and asynchronously
 runs ahead of the actual execution using a {\em software-out-of-order} (SOOP)
 scheduler.  The SOOP leverages our interface by asynchronously issuing task launches, copy
-operations, and synchronization operations that are chained together by
-event dependences.  The full details of the SOOP are beyond the scope of this paper
+operations, and synchronization operations with the dependencies between them expressed
+as events.  The full details of the SOOP are beyond the scope of this paper
 and are described in \cite{Legion12}.
 
-The fully asynchronous design of the interface that we've proposed in
+The fully asynchronous design of the interface proposed in
 this paper is crucial to Legion's SOOP implementation.  Without a fully
 asynchronous interface, the SOOP would have to periodically invoke
 blocking operations that would cause processors to stall and severly
 limit Legion's ability to run ahead and keep the machine fully
-occupied.  With a fully asynchronous interface the SOOP can run
+occupied.  With a fully asynchronous interface the SOOP can hide latencies by 
+running
 far ahead of the actual execution, limited only by the physical resources
 available in the machine, exactly like a hardware out-of-order processor.
 
@@ -40,30 +41,33 @@ The three applications that we characterize are all multi-phase
 applications that require parallel computation, data exchange, and
 synchronization between phases. 
 
-{\em Circuit} is simulation of an irregular graph of integrated
-circuit components connected by wires.  The graph is paritioned
-and distributed across the machine.  Each time step is composed
+{\em Circuit} is simulation of an electric circuit that is described as an
+irregular graph of integrated
+circuit components connected by wires.  The graph is partitioned
+and distributed across the machine.  The computation for each time step consists
 of three phases that calculate currents on the wires, distribute charge between
-nodes, and update the voltages of all ndoes.  The distribute charge
-phase leverages reduction instances to perform reductions locally in GPU
-framebuffer memeory before applying all the reductions to a global instance
+nodes, and update the voltages of all ndoes.  In the distribute charge
+phase, a single node may be updated by wires from multiple partitions.  Reduction instances 
+are used to allow each partition to perform reductions in parallel and locally in GPU
+framebuffer memeory before merging all the reductions to a global instance
 residing in GASNet memory.  Without reduction instances this phase
 couldn't be performed using GPUs.
 
 {\em Fluid} is an incompressible fluid flow simulation from the PARSEC
-benchmark suite\cite{bienia11benchmarking}.  When written in Legion, Fluid can
-be run on distributed machines in addition to shared memory.  The Fluid simulation
+benchmark suite\cite{bienia11benchmarking}.  The original implementation can 
+only be run on a single shared memory machine, but when written in Legion, Fluid can
+be run on large distributed machines as well.  The Fluid simulation
 models particles that flow through cells.  Each time step requires multiple phases
 that update different proprerties of the particles contingent upon neighboring
 particles in the same cell.  The space of cells is partitioned and neighboring
 cells in different partitions must exchange data between phases.  Legion ensures
 that these exchanges are done point-to-point by chaining copies and tasks
-using events rather than employing global synchronization.
+using events rather than employing a global bulk-synchronous approach.
 
 {\em AMR} is an adaptive mesh refinement benchmark based on the third heat
 equation example from the Berkeley Labs BoxLib project\cite{BoxLib}.  AMR
 simulates the two dimensional heat diffusion equation using three different levels
-of refinement.  Each level is partitioned and distributed.  Time steps require
+of refinement.  Each level is partitioned and distributed across the machine.  Time steps require
 both intra- and inter-level communication and synchronization.  Legion again
 expresses dependences between tasks from the same and different levels through
 events.
@@ -77,44 +81,71 @@ implementations of our target applications in Section~\ref{subsec:bulkcomp}.
   
 \subsection{Event Lifetimes}
 \label{subsec:eventlife}
+
 We instrumented the heterogenous implementation of our interface to 
-capture information about different kinds of events.  Figure~\ref{fig:eventlife} shows
-the lifetimes of different types of events from a single run of the Fluid
-application on 16 nodes using 8 processors per node.  Dynamic events 
-is a monotonically increasing line that
-corresponds to the total number of events created in the system.  By
-the end of the run, the simulation created over 260,000 dynamic
-events.  In contrast, the physical events line corresponds to the total number
-of generational events required to represent the dynamic events 
-across all the nodes in the system.  Less than 5,000
-generational events were required to represent all the dynamic events
-illustrating that the technique of mapping from dynamic events to generational 
-events described in Section~\ref{subsec:eventimpl} was effective.
+capture event usage information.  Figure~\ref{fig:eventlife} shows
+a timeline of the execution of the Fluid application on 16 nodes.
+The dynamic events line measures the total number of event creations.
+A large number of events are created - over 260,000 in less than 15
+seconds - and allocating separate storage for every event would clearly
+be difficult for long-running applications.  The {\em live events} line
+measures the number of events that are live at any given time - after
+the last operation on an event, a reference counting implementation would
+be able to recover the storage associated with the event.  Such an
+algorithm would reduce the storage needed by over 10X at the cost of
+computation and communication overhead for performing the reference 
+counting.  As discussed in Section~\ref{subsec:eventimpl}, our implementation
+requires storage that grows with the number of {\em untriggered events}, a number
+that is 10X smaller than even the maximal live event count.  The actual storage
+requirements of our implementation are shown by the {\em physical events} line,
+which is larger than the peak number of untriggered events because of the
+decision to always create an event owned by the node from which the request
+was made.  Despite this inefficiency, our implementation uses 5X less storage
+than a reference counting implementation and avoids any overhead related to 
+reference counting.  These savings would likely be even more dramatic for longer 
+runs of the application, as the number of live events is steadily growing as the
+application runs, while the peak number of generational events needed appears to 
+occur during the startup of the application.
 
-The live event line shows the total number of {\em live events} at a point in time.  Dynamic events
-are considered {\em live events} until their last query has been performed.  The number of live
-events is equivalent to the number of physical events that would be required
-in a reference counted scheme.  In this case we see that by reusing
-generational events, we require up to 4X fewer generational events than would be
-required by a reference counted scheme.
+%% much storage would be required for events using 
 
-In an ideal world the total number of generational events required would be
-equivalent to the maximum number of generational events in the untriggered
-state at any point.  The untriggered event line shows the number of generational
-events in the untriggered state.  We see that the total number of generational
-events is actually slightly higher than the maximum number of generational
-events in the untriggered state at any point.  The reason for this is that unused
-generational events cannot be shared across nodes, so in some cases nodes must
-make new generational events eventhough there are unused generational events
-on other nodes.  The small difference in these lines shows that in practice
-this is only a minor inefficiency.
+%%  about different kinds of events.  Figure~\ref{fig:eventlife} shows
+%% the lifetimes of different types of events from a single run of the Fluid
+%% application on 16 nodes using 8 processors per node.  Dynamic events 
+%% is a monotonically increasing line that
+%% corresponds to the total number of events created in the system.  By
+%% the end of the run, the simulation created over 260,000 dynamic
+%% events.  In contrast, the physical events line corresponds to the total number
+%% of generational events required to represent the dynamic events 
+%% across all the nodes in the system.  Less than 5,000
+%% generational events were required to represent all the dynamic events
+%% illustrating that the technique of mapping from dynamic events to generational 
+%% events described in Section~\ref{subsec:eventimpl} was effective.
+
+%% The live event line shows the total number of {\em live events} at a point in time.  Dynamic events
+%% are considered {\em live events} until their last query has been performed.  The number of live
+%% events is equivalent to the number of physical events that would be required
+%% in a reference counted scheme.  In this case we see that by reusing
+%% generational events, we require up to 4X fewer generational events than would be
+%% required by a reference counted scheme.
+
+%% In an ideal world the total number of generational events required would be
+%% equivalent to the maximum number of generational events in the untriggered
+%% state at any point.  The untriggered event line shows the number of generational
+%% events in the untriggered state.  We see that the total number of generational
+%% events is actually slightly higher than the maximum number of generational
+%% events in the untriggered state at any point.  The reason for this is that unused
+%% generational events cannot be shared across nodes, so in some cases nodes must
+%% make new generational events eventhough there are unused generational events
+%% on other nodes.  The small difference in these lines shows that in practice
+%% this is only a minor inefficiency.
 
 \begin{figure}
 \begin{center}
 \includegraphics[scale=0.33]{figs/event_lifetimes.pdf}
 \end{center}
 \vspace{-6mm}
-\caption{Event Liftimes - Fluid Application.\label{fig:eventlife}}
+\caption{Event Lifetimes - Fluid Application.\label{fig:eventlife}}
 \vspace{-4mm}
 \end{figure}
 
@@ -127,17 +158,20 @@ this is only a minor inefficiency.
 We also instrumented our heterogeneous implementation to profile the usage of 
 locks in real applications.  We measured how many locks were used in the application.  For
 each lock we measured the number of lock requests and the number of times that the lock
-had to be transferred from one node to another.  Figure~\ref{fig:lockcount} shows the results of 
-running the Circuit application on 16 nodes with 3 GPUs per node.  Of the 3336 total locks,
-86\% are not transferred.  13\% of locks are transferred a single time.  Only 8 total locks
-are migrated around in a way that touches multiple nodes.  This shows in practice
-that locks do need to be transferred between nodes, but the need to transfer locks is
-infrequent.
+had to be transferred from one node to another.  Figure~\ref{fig:lockcount} shows the results 
+for the Circuit and AMR application, both running on 16 nodes.  The Circuit application uses
+a larger number of locks (3336 vs. 1393), but most of them (86\%) are only used on the node on 
+which they were created.  The AMR application exhibits more varied locking behavior, and in 
+particular has locks that are requested more often than they are transferred.  Without the ability
+for locks to migrate, more of those requests would have required inter-node communication.
 
 \begin{figure}
+\centering
+
+\subfigure[Circuit application]{
+\label{fig:lockcount:ckt}
 {
 \renewcommand{\arraystretch}{1.2}
-\begin{center}
 \small
 \begin{tabular}{c|rrrrrrr}
 \multicolumn{1}{l}{\multirow{2}{*}{{\renewcommand{\arraystretch}{1}\begin{tabular}{@{}l}\bf Lock\\\bf Xfers\end{tabular}}}}
@@ -155,10 +189,33 @@ infrequent.
 {\bf 2-8  } &  - & - & - & - & - & - & -\\
 {\bf 9-16 } &  -  &  -    &   -  & 8 & - & - & -\\
 \end{tabular}
-\end{center}
-}
-\vspace{-6mm}
-\caption{Locks by Request and Transfer Counts - Circuit Application.\label{fig:lockcount}}
+}}
+\vspace{-2mm}
+\subfigure[AMR application]{
+{
+\renewcommand{\arraystretch}{1.2}
+\small
+\begin{tabular}{c|rrrrrrr}
+\multicolumn{1}{l}{\multirow{2}{*}{{\renewcommand{\arraystretch}{1}\begin{tabular}{@{}l}\bf Lock\\\bf Xfers\end{tabular}}}}
+& \multicolumn{7}{c}{\bf Total Lock Requests} \\
+     & 
+\multicolumn{1}{c}{\bf 0} &
+\multicolumn{1}{c}{\bf 1} &
+\multicolumn{1}{c}{\bf 2} &
+\multicolumn{1}{c}{\bf 3-4} &
+\multicolumn{1}{c}{\bf 5-8} &
+\multicolumn{1}{c}{\bf 9-16} &
+\multicolumn{1}{c}{\bf 17-32} \\
+{\bf 0   } & - & 94  & 592 & 414 & 94 & 3 & 41 \\
+{\bf 1   } & - & 122 & -   & -   & -  & - & - \\
+{\bf 2   } & - & -   & 6   & 7   & -  & - & - \\
+{\bf 3-4 } & - & -   & -   & -   & 9  & 3 & - \\
+{\bf 5-8 } & - & -   & -   & -   & -  & - & - \\
+{\bf 9-16} & - & -   & -   & -   & -  & 7 & 1
+\end{tabular}
+}}
+\vspace{-2mm}
+\caption{Locks by Request and Transfer Counts.\label{fig:lockcount}}
 \vspace{-4mm}
 \end{figure}
 
@@ -178,7 +235,7 @@ implementations of our three applications have already been shown to outperform
 pre-existing implementations\cite{Legion12}.  To quantify the benefit of the asynchronous
 nature of our interface, we implemented versions of our applications in
 Legion in a bulk-synchronous style to compare against our existing implementations.  
-Note that the bulk-synchronous versions of our applications still run on top of 
+These bulk-synchronous versions of still run on top of 
 the Legion runtime, but invoke blocking operations between computational phases,
 communication phases, and synchronization.
 
@@ -190,21 +247,22 @@ Circuit is a compute-bound application and the bulk-synchronous implementation
 performs reasonably well.  By 16 nodes however the overhead grows to 19\%
 and 22\% on the small and large inputs respectively.  The Fluid application 
 has a more evenly balanced computation-to-communication ratio.  As a result,
-Fluid suffers significantly worse performance degredation by switching to
-a bulk-synchronous model.  At 16 nodes, performance is 2.35X and 1.52X worse
+Fluid performance suffers significantly more by switching to
+a bulk-synchronous model.  At 16 nodes, performance is 135\% and 52\% worse
 than the original Legion implementations on the small and large problem sizes
-respectively.  The AMR application is a memory bound application.  On 16 nodes
-the bulk-synchronous version is 1.82X and 2.02X slower on the small and
+respectively.  Finally, the AMR application is a memory bound application, and on 16 nodes
+the bulk-synchronous version is 82\% and 102\% slower on the small and
 large problem sizes.
 
 These results show that the asynchronous nature of our interface allows
 the Legion runtime system to run ahead of actual execution which
-provides significant latency hiding.  More
-importantly, the effect of this latency hiding grows as the number of
-nodes increases.  In all cases, the overhead of the bulk-synchronous
+provides significant latency hiding capability.  
+The benefit of this latency hiding grows as the number of
+nodes increases and as the computation-to-communication ratio decreases.
+In all cases, the overhead of the bulk-synchronous
 implementations grew with the node count.  As we continue to scale
-applications, the ability of runtimes like Legion to run ahead
-will be essential to hiding the large latencies on this class of machines.
+applications to larger and larger machines, the ability of runtimes like Legion to run ahead
+will be essential to hiding the large latencies inherent in such machine architectures.
 The fully asynchronous nature of the interface presented in this paper
 will be crucial for supporting this ability.
 
