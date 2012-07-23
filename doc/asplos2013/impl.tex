@@ -113,7 +113,7 @@ without any communication.
 %new subscriber.)
 When a new event is created, the owning node allocates a data structure to track the state of
 the event ({\em triggered} or {\em untriggered}) as well as to record a list of dependent operations
-(e.g. copy operation or task launch) from the same node (called {\em waiters}).
+(e.g. copy operation or task launch) from the same node called {\em waiters}.
 The first operation dependent on an event
 from a remote node will allocate the same data structure on the remote node.  A single
 {\em event subscription} active message is then sent from the remote node to the owning node indicating
@@ -267,7 +267,7 @@ is delayed to avoid a spurious triggering of the barrier.
 
 Like events, deferred locks, or locks from here on, are created on demand by the node on which the creation request was made.  The lock
 handles are also statically divided across the nodes, allowing the creation to be done without inter-node
-communication.  Whereas events ownership is static, locks may migrate; the {\em creating}
+communication.  Whereas event ownership is static, locks may migrate; the {\em creating}
 node is the initial owner, but that ownership can be transferred to other nodes.
 
 Since any node may at some point be the owner of a lock, all nodes use the same data structure to track the
@@ -297,8 +297,8 @@ the lock request is the only data that must be stored.
 %(This is the only thing that is stored.  The actual ``requestor'' of the lock
 %is implicitly captured in which operations are dependent on the lock grant event.)  
 If the current node isn't the owner, a {\em lock request} active message is
-sent to the most recently known owner.  (If the receiver of a lock request message is no
-longer the owner, it forwards the message on to the node it has recorded as the owner.)
+sent to the most recently known owner.  If the receiver of a lock request message is no
+longer the owner, it forwards the message on to the node it has recorded as the owner.
 %(If that information proves to be stale, the request is forwarded
 %by the receiving node, eventually catching up to the current owner.)  
 If the current owner's status shows
