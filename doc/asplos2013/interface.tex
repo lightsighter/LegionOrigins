@@ -3,7 +3,7 @@
 \label{sec:interface}
 The target set of clients for our interface are higher-level language
 compilers and runtimes such as Legion\cite{Legion12} as well as 
-advanced systems programmers.  This class of users demand total control
+advanced systems programmers.  This class of clients expect total control
 over the underlying hardware and transparent performance from an
 implementation.  To support these demands we have designed our interface
 to be as low-level as possible.  In many cases we have chosen to trade-off
@@ -21,10 +21,14 @@ these objects in five parts: events for composing operations
 hardware (\ref{subsec:machmodel}).  In all cases (except for the
 machine object which is a static singleton), instances of the objects
 are light-weight {\em handles} that provide a unique name for an underlying
-implementation.  Multiple copies of handles are permitted and handles can be 
-passed by value.  Furthermore, every handle is valid everywhere in the system.  
-This property allows a client to pass handles by value between computations 
+implementation.
+Every handle is valid everywhere in the system, allowing handles to be freely copied,
+passed as arguments to other tasks, or stored in the heap
 without having to reason about the distributed nature of the system.
+%%   Multiple copies of handles are permitted and handles can be 
+%% passed by value.  Furthermore, every handle is valid everywhere in the system.  
+%% This property allows a client to pass handles by value between computations 
+%% without having to reason about the distributed nature of the system.
 %We describe how we support this property in more detail in 
 %Section~\ref{sec:impl}.
 
@@ -39,7 +43,7 @@ without having to reason about the distributed nature of the system.
   escapechar=\#,
   keepspaces=true,
   belowskip=-10pt,
-  %literate={<}{{$\langle$}}1 {>}{{$\rangle$}}1,
+  literate={<}{{$\langle$}}1 {>}{{$\rangle$}}1,
   %morekeywords={region,coloring,partition,spawn,disjoint,aliased},
   %deletekeywords=float,
 }
@@ -53,8 +57,9 @@ of an event that by definition has always triggered.  The event interface
 supports testing whether an event has triggered (line 7) and waiting on
 an event to trigger (line 9).  While these methods can be useful, the encouraged
 use of events is passing them as preconditions for other operations.  The client can use the
-{\tt merge\_events} call (lines 11-12) to create an event corresponding to the 
-conjunction of a set of events.
+{\tt merge\_events} call (lines 11-12) to create an event that triggers only when every
+event in a given set of events has triggered.
+%corresponding to the conjunction of a set of events.
 
 In most cases events are created as the result of other
 operations and the implementation is responsible for triggering these events.  Clients
@@ -63,7 +68,8 @@ can also create a {\tt UserEvent} (line 15) that is triggered explicitly by the 
 The common synchronization pattern in which multiple consumers are dependent on
 a set of producers is supported by a {\tt Barrier} object, which is similar
 to a user event, but does not trigger until the expected number of {\tt arrive}
-operations have occurred.  Our interface differs from barriers in other programming
+operations have occurred.  To better support
+composability and asynchronous operation, our interface differs from barriers in other programming
 models\cite{MPI} in three fundamental ways:
 %The common synchronization pattern in which multiple consumers are dependent on a 
 %(potentially different) set of producers is supported by a {\tt Barrier} object,
@@ -210,8 +216,9 @@ void diamond_task(const void *args,size_t arglen,Processor p){
 \subsection{Deferred Locks}
 \label{subsec:locks}
 
-Events and barriers express ordering properties between operations, but in many
-cases ordering is too strict of a requirement.  For many applications access to data must only be atomic and
+Events and barriers express ordering properties between operations, but 
+%in many cases 
+ordering is often too strict a requirement.  For many applications access to data must only be atomic and
 not necessarily ordered.  Traditionally locks have been used to serialize access to
 data.  However, all lock implementations that we are aware of require either blocking
 or spinning, neither of which composes well with asynchronous operations.
@@ -282,7 +289,9 @@ launched.  Listing~\ref{lst:lockapi} illustrates this with a simple example.  Th
 {\tt launcher\_task} is calling a sub-task that is going to require the {\tt needed}
 lock.  A lock request is issued and the resulting {\tt lock\_event} is used as
 a precondition for launching the {\tt SUB} task.  The unlock operation is then
-precondition on the event corresponding to {\tt SUB} task's completion.  The
+made dependent
+%precondition
+on the event corresponding to {\tt SUB} task's completion.  The
 {\tt SUB} task can run safely while holding the lock and the lock is released when the
 {\tt SUB} task completes.  Figure~\ref{fig:lockevents} shows the event dependence graph, with
 dotted lines representing a lock operation's dependence on a previous unlock.
@@ -634,7 +643,7 @@ public:
   const set<Memory>& get_all_memories(void) const;
   const set<Processor>& get_all_processors(void) const;
 
-  int get_proc_mem_affinity(vector<ProcMemAffinity &result,
+  int get_proc_mem_affinity(vector<ProcMemAffinity> &result,
           Processor restrict_proc = 0, Memory restrict_mem = 0);
   int get_mem_mem_affinity(vector<MemMemAffinity> &result,
           Memory restrict_mem1 = 0, Memory restrict_mem2 = 0);

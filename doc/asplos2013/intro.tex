@@ -70,14 +70,19 @@ synchronization) should be asynchronous and composable.
 We propose a new low-level interface for programming modern
 supercomputers that is fully asynchronous. In our system, one can
 asynchronously compose computation, data movement, and
-synchronization.  The basic mechanism that enables composition of operations
-is an underlying {\em event} primitive.  Events provide a mechanism
+synchronization.  The basic mechanism that enables composition of 
+asynchronous operations
+is an {\em event} primitive.  Events provide a mechanism
 for naming a point in the future when an asynchronous operation
 (computation, data copy, or synchronization) will complete.  Every
 call to perform an operation $p$ in our runtime returns immediately
 with an event that {\em triggers} when $p$ has completed.
 Furthermore, every call to perform an operation $p$ can take as a
-precondition an event that must trigger before $p$ can begin.  Using
+precondition an event that must trigger before $p$ can begin.
+Any number of operations can be depedendent on a single event, and
+a events can be merged to allow an operation to wait for multiple
+events before it begins.
+  Using
 events clients can compose arbitrary chains of dependent
 operations, which the runtime is free to execute in any way that
 respects the event dependences.  With this freedom the runtime can
@@ -87,7 +92,7 @@ latency operations.
 The following sections describe our contributions:
 \begin{itemize} \itemsep1pt \parskip0pt \parsep0pt
 \item We present an interface for asynchronously composing
-parallel computation, data movement, and synchronization using events (Section~\ref{sec:interface}).  
+parallel computation, data movement, and synchronization using events (Section~\ref{subsec:events}).  
 
 \item To support synchronization in our event system we introduce {\em deferred locks}, 
 a novel synchronization primitive that operates in an asynchronous environment (Section~\ref{subsec:locks}).
