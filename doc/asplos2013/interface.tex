@@ -38,6 +38,7 @@ without having to reason about the distributed nature of the system.
   stepnumber=1,
   escapechar=\#,
   keepspaces=true,
+  belowskip=-10pt,
   %literate={<}{{$\langle$}}1 {>}{{$\rangle$}}1,
   %morekeywords={region,coloring,partition,spawn,disjoint,aliased},
   %deletekeywords=float,
@@ -74,9 +75,9 @@ a producer task to be split into multiple subtasks without the original task hav
 their completion to signal its arrival.
 \end{itemize}
 
-Although {\tt UserEvent}s and {\tt Barrier}s are created and triggered differently,
-any operation that expresses a dependence on an {\tt Event} can transparently use
-a {\tt UserEvent} or {\tt Barrier} as well.
+Although UserEvents and Barriers are created and triggered differently,
+operations that express dependences on Events can transparently use
+UserEvents or Barriers as well.
 
 %%   Users can also create another
 %% type of event called a {\tt Barrier} that will require multiple arrivals before
@@ -140,7 +141,7 @@ The {\tt merge\_events} call
 is used to merge the events {\tt eb} and {\tt ec} to create the shared dependence
 for the last sub-task.
 
-\begin{lstlisting}[float={t},label={lst:procapi},caption={Processor Interface and Example.}]
+\begin{lstlisting}[float={t},label={lst:procapi},caption={Processor Interface and Example.},belowskip=0pt]
 class Processor {
 public:
   const unsigned id;
@@ -194,7 +195,9 @@ void diamond_task(const void *args,size_t arglen,Processor p){
   %
 \end{tikzpicture}
 }
+\vspace{-2mm}
 \caption{Processor Example Event Graph\label{fig:procevents}}
+\vspace{-4mm}
 \end{figure}
 
 \subsection{Deferred Locks}
@@ -253,7 +256,9 @@ void launcher_task(const void *args, size_t arglen, Processor p) {
   \draw [->,dotted,thick] (t3.45) to (7.4,1);
 \end{tikzpicture}
 }
+\vspace{-2mm}
 \caption{Lock Example Event Graph\label{fig:lockevents}}
+\vspace{-4mm}
 \end{figure}
 
 Listing~\ref{lst:lockapi} shows the 
@@ -286,14 +291,6 @@ piece of data that is moved around with the lock and guaranteed to be coherent w
 the lock is held.  The size of the payload is specified when the lock is created (line 7) and
 the pointer to the local copy of the payload can be obtained from the {\tt payload\_ptr} method
 (line 8).
-
-Locks are often used to mediate access to data, and the size of that data is often small.  To
-support this common case we allow locks to be created with an associated
-%avoid adding the latency of inter-node data copies to critical sections, a lock may also be created with a
-{\em payload}, a small (i.e. less than 4KB - the limit for an active message payload) 
-piece of data that is moved around with the lock and guaranteed to be coherent while 
-the lock is held.
-
 
 Between deferred locks and barriers (described in Section~\ref{subsec:events}) clients 
 have access to the same set of synchronization primitves that they traditionally have
@@ -419,7 +416,9 @@ void reduction_ex(const void *args,size_t arglen,Processor p) {
 
 \end{tikzpicture}
 }
+\vspace{-6mm}
 \caption{Reduction Example Event Graph\label{fig:reducevents}}
+\vspace{-4mm}
 \end{figure}
 
 Listing~\ref{lst:regionapi} shows a subset of the interface for physical regions.  The

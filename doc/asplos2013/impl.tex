@@ -200,7 +200,7 @@ reaches zero, the barrier is considered to have triggered.  Remote nodes send {\
 active messages containing an adjustment value that is positive for {\tt alter\_arrival\_count} operations 
 and negative for {\tt arrive} operations.  A simplified version of vector clocks\cite{Fidge1998} is used
 to detect the race condition in which the barrier owner receives an {\tt arrive} operation before the
-corresponding {\tt alter\_arrival\_count}.  When detected, the decrement of the arrival count 
+corresponding {\tt alter\_arrival\_count}.  When detected, the decrement of the count 
 is delayed to avoid a spurious triggering of the barrier.
 
 %% Events are created on demand by each node.  The ID of the creating node is encoded
@@ -295,8 +295,7 @@ the lock request is the only data that must be stored.
 %is implicitly captured in which operations are dependent on the lock grant event.)  
 If the current node isn't the owner, a {\em lock request} active message is
 sent to the most recently known owner.  If the receiving node is no
-longer the owner, it will forward the message on to the next node known
-to be the owner of the lock.
+longer the owner, it forwards the message on to the node it has recorded as the owner.
 %(If that information proves to be stale, the request is forwarded
 %by the receiving node, eventually catching up to the current owner.)  
 If the current owner's status shows
@@ -304,7 +303,7 @@ the lock is currently held, the bit for the requesting node is set in remote wai
 not held, the ownership of the lock is given to the requesting node via a {\em lock transfer} active
 message.  A lock transfer message includes the bitmask of remote waiters and an up-to-date copy 
 of the lock's payload.  (The inclusion of the payload in the active message is the reason for the 
-4KB limit on a payload's size.)
+4KB size limit.)
 
 Similarly, an unlock request is first checked against the local node's lock state.  If the local node is
 not the owner, an {\em unlock} active message is sent to the most recently known owner, which is forwarded
@@ -315,7 +314,7 @@ lock state is changed to unlocked, and the bitmask of remote waiters is examined
 one of them is chosen and the corresponding node becomes the new owner via a lock transfer active message.
 
 The unfairness that results from a lock favoring local waiters over remote waiters is intentional.  When the
-contention on a lock is high (the only time when the question of fairness is relevant), the latencies
+contention on a lock is high (the only time the question of fairness is relevant), the latencies
 involved in transferring a lock between nodes can be the limiter on throughput.  By minimizing the number
 of lock transfers, the throughput on the lock is maximized.  This effect will be demonstrated in
 Section~\ref{subsec:lockmicro}.
