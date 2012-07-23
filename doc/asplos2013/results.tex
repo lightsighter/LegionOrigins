@@ -35,7 +35,7 @@ far ahead of the actual execution, limited only by the physical resources
 available in the machine, exactly like a hardware out-of-order processor.
 
 In this section we demonstrate the performance properties of three
-real-world applications that use the Legion runtime and by extension the heterogeneous
+real-world applications that use the Legion runtime and the heterogeneous
 implementation of our interface to run on the Keeneland supercomputer.
 The three applications that we characterize are all multi-phase
 applications that require parallel computation, data exchange, and
@@ -73,10 +73,10 @@ events.
 
 In Section~\ref{subsec:eventlife} we study the lifetime of events in
 the Fluid application.  Section~\ref{subsec:lockmig} examines
-the migration of locks in the Circuit application.  Finally, we demonstrate
+the migration of locks in the Circuit and AMR applications.  Finally, we demonstrate
 that the asynchronous nature of our interface is essential to the
 performance of Legion by comparing to bulk-synchronous
-implementations of our target applications in Section~\ref{subsec:bulkcomp}.
+implementations of these applications in Section~\ref{subsec:bulkcomp}.
   
 \subsection{Event Lifetimes}
 \label{subsec:eventlife}
@@ -244,17 +244,17 @@ migrate is necessary for implementing real applications on distributed machines.
 
 Our last set of experiments demonstrates that the asynchronous nature of our interface
 is essential to the high performance of the Legion runtime system.  The Legion
-implementations of our three applications have already been shown to outperform 
+implementations of the three applications have already been shown to outperform 
 pre-existing implementations\cite{Legion12}.  To quantify the benefit of the asynchronous
-nature of our interface, we implemented versions of our applications in
-Legion in a bulk-synchronous style to compare against our existing implementations.  
+nature of our interface, we re-implemented the applications in
+a bulk-synchronous style to compare against the existing Legion implementations.  
 These bulk-synchronous versions still run on top of 
 the Legion runtime, but invoke blocking operations between computational phases,
 communication phases, and synchronization.
 
 Figure~\ref{fig:bulksync} compares
 the performance of the bulk-synchronous implementations versus the original
-implementations for Circuit, Fluid, and AMR respectively.  Each plot contains
+implementations for Circuit, Fluid, and AMR.  Each plot contains
 performance curves for both implementations on two different problem sizes.
 Circuit is a compute-bound application and the bulk-synchronous implementation
 performs reasonably well.  By 16 nodes however the overhead grows to 19\%
