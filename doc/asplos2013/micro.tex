@@ -121,7 +121,7 @@ Our lock micro-benchmark is designed to measure the rate at which locks can be g
 A parameterized number of locks are created per node and their handles are made available to
 every node.  Each node then creates a parameterized number of {\em chains} of lock/unlock
 request pairs, where each request pair is to a random lock, and is made dependent on the 
-previous lock/unlock pair's completion.  The chains are made long enough that startup
+previous lock/unlock pair's completion.  The chains are made long enough that start-up
 and cleanup times are negligible.  The total number of chains across all nodes gives the total
 number of lock requests that can exist in the system at any given time.  All chains are
 started at the same time (via a dependence on a single user event), and the total time to
@@ -228,7 +228,7 @@ be seen in Figure~\ref{fig:reducsparse}.
 The dense experiment demonstrates that reduction fold regions perform 
 best and scale well with the number of nodes, achieving over a billion reductions
 per second in the 16 node case.  List regions also scale well, but perform about an
-order of mangitude worse than folding regions in the dense case.  The use of a separate active message for
+order of magnitude worse than folding regions in the dense case.  The use of a separate active message for
 each reduction operation is another two orders of magnitude worse, demonstrating that data must be
 transferred in larger blocks to be efficient on modern interconnect hardware.  The localized instance approach
 works well for a single node, but its inherently serial nature doesn't benefit at all from increasing node counts.  Finally, the only time the latency of performing individual RMA reads and writes isn't disastrous is

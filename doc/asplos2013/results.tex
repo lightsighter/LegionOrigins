@@ -27,7 +27,7 @@ and are described in \cite{Legion12}.
 The fully asynchronous design of the interface proposed in
 this paper is crucial to Legion's SOOP implementation.  Without a fully
 asynchronous interface, the SOOP would have to periodically invoke
-blocking operations that would cause processors to stall and severly
+blocking operations that would cause processors to stall and severely
 limit Legion's ability to run ahead and keep the machine fully
 occupied.  With a fully asynchronous interface the SOOP can hide latencies by 
 running
@@ -48,7 +48,7 @@ of three phases that calculate currents on the wires, distribute charge between
 nodes, and update the voltages of all nodes.  In the distribute charge
 phase, a single node may be updated by wires from multiple partitions.  Reduction instances 
 are used to allow each partition to perform reductions in parallel and locally in GPU
-framebuffer memeory before merging all the reductions to a global instance
+framebuffer memory before merging all the reductions to a global instance
 residing in GASNet memory.  Without reduction instances this phase
 couldn't be performed using GPUs.
 
@@ -57,7 +57,7 @@ benchmark suite\cite{bienia11benchmarking}.  The original implementation can
 only be run on a single shared memory machine, but when written in Legion, Fluid can
 be run on large distributed machines as well.  The Fluid simulation
 models particles that flow through cells.  Each time step requires multiple phases
-that update different proprerties of the particles contingent upon neighboring
+that update different properties of the particles contingent upon neighboring
 particles in the same cell.  The space of cells is partitioned and neighboring
 cells in different partitions must exchange data between phases.  Legion ensures
 that these exchanges are done point-to-point by chaining copies and tasks
@@ -81,7 +81,7 @@ implementations of our target applications in Section~\ref{subsec:bulkcomp}.
 \subsection{Event Lifetimes}
 \label{subsec:eventlife}
 
-We instrumented the heterogenous implementation of our interface to 
+We instrumented the heterogeneous implementation of our interface to 
 capture event usage information.  Figure~\ref{fig:eventlife} shows
 a timeline of the execution of the Fluid application on 16 nodes.
 The dynamic events line measures the total number of event creations.
@@ -94,7 +94,7 @@ Dynamic events are considered {\em live events} until their last operation
 measures the number of events that are live at any given time.  After
 the last operation on an event, a reference counting implementation would
 be able to recover the storage associated with the event.  In this example 
-a reference counting algorithm would reduce the storage needed for dynanmic events
+a reference counting algorithm would reduce the storage needed for dynamic events
 by over 10X, but could only do so at the cost of
 computation and communication for performing the reference counting.  
 
@@ -110,7 +110,7 @@ than a reference counting implementation and avoids any overhead related to
 reference counting.  These savings would likely be even more dramatic for longer 
 runs of the application, as the number of live events is steadily growing as the
 application runs, while the peak number of generational events needed appears to 
-occur during the startup of the application.
+occur during the start-up of the application.
 
 %% much storage would be required for events using 
 

@@ -90,12 +90,12 @@ The following sections describe our contributions:
 parallel computation, data movement, and synchronization using events (Section~\ref{sec:interface}).  
 
 \item To support synchronization in our event system we introduce {\em deferred locks}, 
-a novel synchronization primitive that operates in an asynchronous enviroment (Section~\ref{subsec:locks}).
+a novel synchronization primitive that operates in an asynchronous environment (Section~\ref{subsec:locks}).
 
 \item We describe a physical region system that provides structural information about
 data layout.  The structural information provided by physical regions enables an extensible
 interface for conjoining operations on data (e.g. reductions) with asynchronous data movement for 
-further lantecy hiding (Section~\ref{subsec:phyreg}).
+further latency hiding (Section~\ref{subsec:phyreg}).
 
 \item Our approach depends on the efficient handling of very large numbers of events.
 We describe a distributed implementation of our interface that requires no global coordination
@@ -103,13 +103,13 @@ and has modest local storage costs.  We describe optimizations for the implement
 deferred locks, and reductions (Section~\ref{sec:impl}).
 
 \item We report on micro-benchmarks that are designed to stress
-our implementation.  The results indiciate that our implementation approaches the performance of
+our implementation.  The results indicate that our implementation approaches the performance of
 the underlying hardware (Section~\ref{sec:micro}).
 
 \item We demonstrate that our interface is powerful enough to support Legion \cite{Legion12}, a higher-level
 programming system, and that real Legion applications programmed to our interface
-are capable of achieving high-performance (Section~\ref{sec:apps}).  Furthermore, we demostrate
-that the same applications written in a bulk-synchronous model incur performance penalites between 22-135\%.
+are capable of achieving high-performance (Section~\ref{sec:apps}).  Furthermore, we demonstrate
+that the same applications written in a bulk-synchronous model incur performance penalties between 22-135\%.
 \end{itemize}
 
 Section~\ref{sec:related} describes related work and Section~\ref{sec:conclusion}

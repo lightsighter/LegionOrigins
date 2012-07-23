@@ -86,9 +86,9 @@ events, locks, and reduction instances.
 \label{subsec:eventimpl}
 
 Events are created on demand and are {\em owned} by the node on which they
-were created.  The creation of an event occurs with no inter-node communcation.
+were created.  The creation of an event occurs with no inter-node communication.
 The space of event
-handles is divided across the nodes at startup time, allowing each node to assign handles
+handles is divided across the nodes at start-up time, allowing each node to assign handles
 to new events without the risk of conflicting with another node's assignments.  The static division
 of event handles also permits any node to determine the owning node of an event
 without any communication.

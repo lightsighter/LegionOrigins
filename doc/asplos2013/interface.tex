@@ -293,7 +293,7 @@ the pointer to the local copy of the payload can be obtained from the {\tt paylo
 (line 8).
 
 Between deferred locks and barriers (described in Section~\ref{subsec:events}) clients 
-have access to the same set of synchronization primitves that they traditionally have
+have access to the same set of synchronization primitives that they traditionally have
 in both threading and bulk-synchronous interfaces.  However, these operations can now 
 be composed with other asynchronous operations which is not possible in any other interface
 of which we are aware.
@@ -429,7 +429,7 @@ region the client must specify the {\tt Memory} in which the physical region is 
 to be allocated.  Memories are described in more detail in Section~\ref{subsec:machmodel}.
 If there is not enough space for the physical region allocation a {\tt NO\_INST} will
 be returned.  There is no automatic coherence of data between physical regions in the
-same class.  It is the client's responsiblity to manage data coherence using copies
+same class.  It is the client's responsibility to manage data coherence using copies
 between physical regions (line 22-23).  Just like other operations copies can be
 predicated on an event and return an event corresponding to completion.
 

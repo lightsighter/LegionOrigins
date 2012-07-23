@@ -19,7 +19,7 @@ of asynchronous tasks, communication, and synchronization.
 Both POSIX threads and OpenMP\cite{OPENMP98} are used for intra-node parallel
 programming in large machines, but neither support any asynchronous
 operations.  CUDA\cite{CUDA} and OpenCL\cite{Khronos:OpenCL} support
-the compostition of asynchronous kernel launches and asynchronous copies
+the composition of asynchronous kernel launches and asynchronous copies
 between a host node and a single GPU.  However, the only synchronization
 options available in both interfaces are blocking operations on either
 a stream or a work queue.  OpenCL has events similar to our interface for
