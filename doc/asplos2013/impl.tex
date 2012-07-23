@@ -267,13 +267,6 @@ handles are also statically divided across the nodes, allowing the creation to b
 communication.  Unlike events whose ownership is static, locks may migrate; the {\em creating}
 node is the initial owner of a lock, but that ownership can be transferred to other nodes.
 
-Locks are often used to mediate access to data, and the size of that data is often small.  To
-support this common case we allow locks to be created with an associated
-%avoid adding the latency of inter-node data copies to critical sections, a lock may also be created with a
-{\em payload}, a small (i.e. less than 4KB - the limit for an active message payload) 
-piece of data that is moved around with the lock and guaranteed to be coherent while 
-the lock is held.
-
 Since any node may at some point be the owner of a lock, all nodes use the same data structure to track the
 state of a lock on the node.
 %(they differ only in when the structure is allocated -
@@ -310,7 +303,8 @@ If the current owner's status shows
 the lock is currently held, the bit for the requesting node is set in remote waiters bitmask.  If the lock is
 not held, the ownership of the lock is given to the requesting node via a {\em lock transfer} active
 message.  A lock transfer message includes the bitmask of remote waiters and an up-to-date copy 
-of the lock's payload.
+of the lock's payload.  (The inclusion of the payload in the active message is the reason for the 
+4KB limit on a payload's size.)
 
 Similarly, an unlock request is first checked against the local node's lock state.  If the local node is
 not the owner, an {\em unlock} active message is sent to the most recently known owner, which is forwarded

@@ -208,45 +208,6 @@ or spinning, neither of which composes well with asynchronous operations.
 Deferred locks are a new synchronization mechanism that allows for synchronization
 in an completely asynchronous environment.  
 
-Listing~\ref{lst:lockapi} shows the 
-interface for locks.  Unlike blocking locks, the {\tt lock} method (line 4) doesn't
-block but instead always returns immediately with an event that will be triggered
-when the lock has been acquired.  Just like the spawn method, the lock method also 
-takes an optional event parameter as a precondition.  Similarly, the {\tt unlock} 
-method (line 5) takes an optional event precondition parameter.
-
-An important difference between deferred locks and blocking locks is that the processor
-that requests the lock doesn't have to be the one that uses it.  A common
-convention in writing code with deferred locks is to acquire locks on behalf of a task being
-launched.  Listing~\ref{lst:lockapi} illustrates this with a simple example.  The
-{\tt launcher\_task} is calling a sub-task that is going to require the {\tt needed}
-lock.  A lock request is issued and the resulting {\tt lock\_event} is used as
-a precondition for launching the {\tt SUB} task.  The unlock operation is then
-precondition on the event corresponding to {\tt SUB} task's completion.  The
-{\tt SUB} task can run safely while holding the lock and the lock is released when the
-{\tt SUB} task completes.  Figure~\ref{fig:lockevents} shows the event dependence graph, with
-dotted lines representing a lock operation's dependence on a previous unlock.
-Using deferred locks in this style prevents 
-compute resources from waiting on locks by ensuring tasks only run when their needed
-locks have already been acquired.
-
-Between deferred locks and barriers (described in Section~\ref{subsec:events}) clients 
-have access to the same set of synchronization primitves that they traditionally have
-in both threading and bulk-synchronous interfaces.  However, these operations can now 
-be composed with other asynchronous operations which is not possible in any other interface
-of which we are aware.
-
-%Deferred locks provide a super-set of the functionality of blocking locks.  As their
-%name suggests, deferred locks can use the event corresponding to their lock acquire
-%operation to defer execution until the lock acquire has been granted.  Deferred
-%locks can also be converted back into a blocking lock by immediately waiting on the event
-%returned from a call to {\tt lock}.  In addition, deffered locks also provide {\tt mode} and
-%and {\tt exclusive} parameters that allow the user to specify whether other requests can acquire
-%the lock simultaneously.  A lock can only be acquired in one mode at a time.  The
-%{\tt exclusive} parameter specifies whether other owners are permitted once the
-%current lock request is granted.
-
-
 \begin{lstlisting}[float={t},label={lst:lockapi},caption={Deferred Lock Interface and Example.}]
 class Lock {
 public:
@@ -294,6 +255,62 @@ void launcher_task(const void *args, size_t arglen, Processor p) {
 }
 \caption{Lock Example Event Graph\label{fig:lockevents}}
 \end{figure}
+
+Listing~\ref{lst:lockapi} shows the 
+interface for locks.  Unlike blocking locks, the {\tt lock} method (line 4) doesn't
+block but instead always returns immediately with an event that will be triggered
+when the lock has been acquired.  Just like the spawn method, the lock method also 
+takes an optional event parameter as a precondition.  Similarly, the {\tt unlock} 
+method (line 5) takes an optional event precondition parameter.
+
+An important difference between deferred locks and blocking locks is that the processor
+that requests the lock doesn't have to be the one that uses it.  A common
+convention in writing code with deferred locks is to acquire locks on behalf of a task being
+launched.  Listing~\ref{lst:lockapi} illustrates this with a simple example.  The
+{\tt launcher\_task} is calling a sub-task that is going to require the {\tt needed}
+lock.  A lock request is issued and the resulting {\tt lock\_event} is used as
+a precondition for launching the {\tt SUB} task.  The unlock operation is then
+precondition on the event corresponding to {\tt SUB} task's completion.  The
+{\tt SUB} task can run safely while holding the lock and the lock is released when the
+{\tt SUB} task completes.  Figure~\ref{fig:lockevents} shows the event dependence graph, with
+dotted lines representing a lock operation's dependence on a previous unlock.
+Using deferred locks in this style prevents 
+compute resources from waiting on locks by ensuring tasks only run when their needed
+locks have already been acquired.
+
+When a lock is used to mediate access to a piece of data, the first thing a task will usually
+do after being granted the lock is access the data.  To be able to hide the latency of that
+access as well, an additional feature of locks in our interface is the association of a lock with a
+{\em payload}, a small (i.e. less than 4KB) 
+piece of data that is moved around with the lock and guaranteed to be coherent while 
+the lock is held.  The size of the payload is specified when the lock is created (line 7) and
+the pointer to the local copy of the payload can be obtained from the {\tt payload\_ptr} method
+(line 8).
+
+Locks are often used to mediate access to data, and the size of that data is often small.  To
+support this common case we allow locks to be created with an associated
+%avoid adding the latency of inter-node data copies to critical sections, a lock may also be created with a
+{\em payload}, a small (i.e. less than 4KB - the limit for an active message payload) 
+piece of data that is moved around with the lock and guaranteed to be coherent while 
+the lock is held.
+
+
+Between deferred locks and barriers (described in Section~\ref{subsec:events}) clients 
+have access to the same set of synchronization primitves that they traditionally have
+in both threading and bulk-synchronous interfaces.  However, these operations can now 
+be composed with other asynchronous operations which is not possible in any other interface
+of which we are aware.
+
+%Deferred locks provide a super-set of the functionality of blocking locks.  As their
+%name suggests, deferred locks can use the event corresponding to their lock acquire
+%operation to defer execution until the lock acquire has been granted.  Deferred
+%locks can also be converted back into a blocking lock by immediately waiting on the event
+%returned from a call to {\tt lock}.  In addition, deffered locks also provide {\tt mode} and
+%and {\tt exclusive} parameters that allow the user to specify whether other requests can acquire
+%the lock simultaneously.  A lock can only be acquired in one mode at a time.  The
+%{\tt exclusive} parameter specifies whether other owners are permitted once the
+%current lock request is granted.
+
 
 \subsection{Physical Regions}
 \label{subsec:phyreg}
@@ -541,11 +558,9 @@ and then invoking the {\tt run} method (line 15-16).
 Any running task can get a pointer to the {\tt Machine} object with the
 {\tt get\_machine} method (line 18) and use it to obtain lists of all the {\tt Memory} (line 19) or 
 {\tt Processor} (line 20) handles in the system.  Using the affinity methods (lines 22-25),
-the application can also determine:
-\begin{itemize} \itemsep1pt \parskip0pt \parsep0pt
-\item for each {\tt Processor}, which {\tt Memory} objects are accessible and with what performance, and
-\item which pairs of {\tt Memory} objects are able to efficiently copy data between them.
-\end{itemize}
+the application can also determine which {\tt Memory} objects are accessible by each
+{\tt Processor},and with what performance, and which pairs of {\tt Memory} objects are able to
+efficiently copy data between them.
 
 %% in the machine.
 %% Second, the machine object provides an interface for the client to 
