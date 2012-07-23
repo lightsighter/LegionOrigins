@@ -117,7 +117,7 @@ the event ({\em triggered} or {\em untriggered}) as well as to record a list of 
 The first operation dependent on an event
 from a remote node will allocate the same data structure on the remote node.  A single
 {\em event subscription} active message is then sent from the remote node to the owning node indicating
-that the remote node should be informed when the event triggers.  Arbitrarily many depedent operations on
+that the remote node should be informed when the event triggers.  Arbitrarily many dependent operations on
 the remote node can then be added to the list of waiters without any additional communication.
 When the event does trigger, the owner node notifies all local waiters and
 sends a single {\em event trigger} active message to each node from which it has seen an event subscription
