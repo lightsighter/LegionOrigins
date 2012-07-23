@@ -351,6 +351,12 @@ the same class (or between super- and sub-classes).
 % Say something about dynamically modifying the number of elements in a class
 
 \begin{lstlisting}[float={t},label={lst:regionapi},caption={Physical Region Interface and Example.}]
+class Memory {
+public:
+  const unsigned id;
+  size_t size() const;
+};
+
 class RegionMetaData {
 public:
   const unsigned id;
@@ -437,25 +443,26 @@ void reduction_ex(const void *args,size_t arglen,Processor p) {
 \vspace{-4mm}
 \end{figure}
 
-Listing~\ref{lst:regionapi} shows a subset of the interface for physical regions.  The
-first object in the interface is a {\tt RegionMetaData} object (line 1).  Physical
-regions created by the same region meta-data object belong to the same class.  Physical
-regions are represented by {\tt RegionInstance} objects (line 17).  When creating a physical
-region the client must specify the {\tt Memory} in which the physical region is going
-to be allocated.  Memories are described in more detail in Section~\ref{subsec:machmodel}.
-If there is not enough space for the physical region allocation a {\tt NO\_INST} will
-be returned.  There is no automatic coherence of data between physical regions in the
+Listing~\ref{lst:regionapi} shows a subset of the interface for physical regions.  
+Each memory in the machine's memory hierarchy is named by a {\tt Memory} object (line 1).
+The next object is a {\tt RegionMetaData} object (line 7), which defines a class of
+regions.  Physical regions that belong to that class are created with the {\tt create\_instance}
+method (line 16) and represented by {\tt RegionInstance} objects (line 23).  When creating a physical
+region the client specifies the memory in which the physical region is going
+to be allocated.  To maintain performance transparency, a new physical region can only be allocated
+if the memory has sufficient capacity.
+There is no automatic coherence of data between physical regions in the
 same class.  It is the client's responsibility to manage data coherence using copies
-between physical regions (line 22-23).  Just like other operations copies can be
+between physical regions (line 28-29).  Like other operations copies can be
 predicated on an event and return an event corresponding to completion.
 
 If reductions are the only operations that will be performed on locations in a region instance,
 a special reduction version can be created by providing the ID of a {\em reduction operator}
-when the object is created (line 13).  Reduction-only region instances can 
+when the object is created (line 19).  Reduction-only region instances can 
 increase the available parallelism and hide latency better, as we will show in 
 section~\ref{subsec:reducmicro}.  The interface supports any reduction operation that
 is commutative (i.e. multiple operations to the same location can be reordered without 
-changing the final result) and is coded as an {\tt apply} method as shown on line 29.
+changing the final result) and is coded as an {\tt apply} method as shown on line 35.
 Many commonly-used reduction operations are also {\em foldable} (e.g. $(l \text{ += } r_1) \text{ += } r_2$ can
 be folded as $l \text{ += } r_1 + r_2$), and if the {\tt fold} operation and a {\em right identity}
 (e.g. $0$ is a right identity for addition because $x + 0 = x$ for all $x$) are provided,
@@ -481,16 +488,16 @@ the necessary information to understand the structure of the data.
 %% or to regular physical regions of the same class.
 
 
-An example using reduction-only regions is shown on lines 35-49 of Listing~\ref{lst:regionapi}.
+An example using reduction-only regions is shown on lines 41-55 of Listing~\ref{lst:regionapi}.
 Two reduction-only regions, {\tt inst1} and {\tt inst2}, are created in different memories to
-be used with a reduction operation (lines 40-41).  A physical region of the same class {\tt inst3}
-is also created in a different memory (line 42).  Two tasks are launched that will apply
-reductions locally into their respective reduction buffers (lines 43-44).  The resulting
-events are then used to chain copies back to {\tt inst3} after the tasks complete (45-46).  As
+be used with a reduction operation (lines 46-47).  A physical region of the same class {\tt inst3}
+is also created in a different memory (line 48).  Two tasks are launched that will apply
+reductions locally into their respective reduction buffers (lines 49-50).  The resulting
+events are then used to chain copies back to {\tt inst3} after the tasks complete (lines 51-52).  As
 part of these copies the reductions stored in {\tt inst1} and {\tt inst2} will be applied
 to {\tt inst3}.  Since reductions are done atomically, there is no race between the reduction
 applications.  Finally, a merge on the events from the movement and reduction applications is 
-performed and a final task using {\tt inst3} is launched (lines 47-48).  The resulting event
+performed and a final task using {\tt inst3} is launched (lines 53-54).  The resulting event
 graph is shown in Figure~\ref{fig:reducevents}.
 
 %% SJT - redundant with first paragraph in this subsection?
@@ -571,10 +578,10 @@ initialization and run-time introspection
 of the current machine.
 The {\tt Machine} object is a singleton object that the client creates at the start of a
 program, providing a task table that maps task IDs to function pointers,
-and then invoking the {\tt run} method (line 15-16).
+and then invoking the {\tt run} method (lines 9-10).
 Any running task can get a pointer to the {\tt Machine} object with the
-{\tt get\_machine} method (line 18) and use it to obtain lists of all the {\tt Memory} (line 19) or 
-{\tt Processor} (line 20) handles in the system.  Using the affinity methods (lines 22-25),
+{\tt get\_machine} method (line 12) and use it to obtain lists of all the {\tt Memory} (line 13) or 
+{\tt Processor} (line 14) handles in the system.  Using the affinity methods (lines 16-19),
 the application can also determine which {\tt Memory} objects are accessible by each
 {\tt Processor} and with what performance, and which pairs of {\tt Memory} objects are able to
 efficiently copy data between them.
@@ -622,12 +629,6 @@ efficiently copy data between them.
 %about all processors and memories in the system.  
 
 \begin{lstlisting}[float={t},label={lst:machineapi},caption={Machine Interface.}]
-class Memory {
-public:
-  const unsigned id;
-  size_t size() const;
-};
-
 class Machine {
 public:
   Machine(int *argc, char ***argv,
