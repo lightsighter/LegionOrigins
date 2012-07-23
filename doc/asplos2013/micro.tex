@@ -56,8 +56,7 @@ going from one node to two can be attributed to the latency of a GASNet
 active message; others have measured similar latencies\cite{GASNET06}.
 The gradual increase in latency with increasing node count is likely 
 related to the underlying point-to-point nature of Infiniband communication,
-which requires GASNet to poll a separate connection for every other node in
-the system.
+which requires GASNet to poll a separate connection for every other node.
 %% In the single node case the latency of triggering an event is only 
 %% 329 nano-seconds.  For the multi-node cases, the triggering time is
 %% between 3-4 micro-seconds which is the same as the cost of GASNet
@@ -123,8 +122,9 @@ A parameterized number of locks are created per node and their handles are made 
 every node.  Each node then creates a parameterized number of {\em chains} of lock/unlock
 request pairs, where each request pair is to a random lock, and is made dependent on the 
 previous lock/unlock pair's completion by the event returned from the lock request.  
-The chains are made long enough that start-up
-and cleanup times are negligible.  The total number of chains across all nodes gives the total
+%The chains are made long enough that start-up
+%and cleanup times are negligible.  
+The total number of chains across all nodes gives the total
 number of lock requests that can exist in the system at any given time.  All chains are
 started at the same time (via a dependence on a single user event), and the total time to
 process all the chains is divided into the total number of lock requests to yield an average
@@ -209,15 +209,16 @@ reductions are performed in five ways:
 
 \begin{itemize} \itemsep1pt \parskip0pt \parsep0pt
 \item Single Reads/Writes - Each node takes a lock on the global physical region and then for each reduction
-reads a value from the physical region, performs the addition, and then writes the result back.  The lock is then released.
+reads a value from the physical region, performs the addition, and then writes the result back.  
+The lock is released after all reductions are performed.
 \item Single Reductions - Each reduction is individually sent as an active message to the node whose
 system memory holds the target of the reduction.
 \item Localized Instance - Each node takes a lock on the the global physical region, copies it to a new physical
 region in its own system memory, performs all reductions to the localized region, copies the region back, and releases the lock.
 \item Fold Instance - Each node creates a local fold reduction instance.
-All reductions are folded into the instance, which is then copied back to the global region.
+All reductions are folded into the instance, which is then copied and applied to the global region.
 \item List Instance - Each node creates a local list reduction instance.
-All reductions are appended to the list reduction instance, which is then copied back to the global region.
+All reductions are appended to the list reduction instance, which is then copied back and applied to the global region.
 \end{itemize}
 
 We ran two experiments, one corresponding with dense reductions and the other corresponding with sparse

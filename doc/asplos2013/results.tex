@@ -45,8 +45,8 @@ synchronization between phases.
 irregular graph of components connected by wires.  The graph is partitioned
 and distributed across the machine.  The computation for each time step consists
 of three phases that calculate currents on the wires, distribute charge between
-circuit nodes, and update the voltages of all nodes.  In the distribute charge
-phase, a single node may be updated by wires from multiple partitions.  Reduction instances 
+components, and update the voltages of all components.  In the distribute charge
+phase, a single component may be updated by wires from multiple partitions.  Reduction instances 
 are used to allow each partition to perform reductions in parallel and to do so locally in GPU
 framebuffer memory before merging all the reductions to a global instance
 residing in GASNet memory.  Without reduction instances this phase
@@ -104,7 +104,8 @@ As discussed in Section~\ref{subsec:eventimpl}, our implementation
 requires storage that grows with the maximum number of {\em untriggered events}, a number
 that is 10X smaller than even the maximal live event count.  The actual storage
 requirements of our implementation are shown by the generational events line,
-which shows the total number of generational events in the system (see Section~\ref{subsec:eventimpl}).
+which shows the total number of generational events (defined in Section~\ref{subsec:eventimpl}) 
+in the system
 The maximum number of generational events needed is slightly larger than the peak number of untriggered events. 
 The reason for this difference is because nodes create events locally if they have
 no free generational events, even if there are unused generational events on remote nodes.
@@ -171,8 +172,8 @@ for the Circuit and AMR application, both running on 16 nodes.  The Circuit appl
 a larger number of locks (3336 vs. 1393), but most of them (86\%) are only used on the node on 
 which they were created.  The AMR application exhibits more varied locking behavior, and in 
 particular has locks that are requested more often than they are transferred.  In addition
-to allowing synchronization in an asynchronous environment, the ability of deferred locks to
-migrate is necessary for implementing real applications on distributed machines.
+to allowing synchronization in an asynchronous environment, deferred locks must be able to 
+migrate to implement real applications on distributed machines.
 
 %Without the
 %ability for locks to migrate, these applications couldn't have made use of asynchronous

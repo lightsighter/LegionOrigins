@@ -79,9 +79,11 @@ call to perform an operation $p$ in our runtime returns immediately
 with an event that {\em triggers} when $p$ has completed.
 Furthermore, every call to perform an operation $p$ can take as a
 precondition an event that must trigger before $p$ can begin.
-Any number of operations can be depedendent on a single event, and
-a events can be merged to allow an operation to wait for multiple
-events before it begins.
+%Any number of operations can be depedendent on a single event, and
+%a events can be merged to allow an operation to wait for multiple
+%events before it begins.
+Events can be merged into new events and multiple operations
+can use an event as a precondition.
   Using
 events clients can compose arbitrary chains of dependent
 operations, which the runtime is free to execute in any way that

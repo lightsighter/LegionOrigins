@@ -26,7 +26,7 @@ a stream or a work queue.  OpenCL has events similar to our interface for
 expressing ordering, but has no synchronization primitive for expressing
 more relaxed properties such as atomicity that can be described by a
 deferred lock.  OpenCL events are not valid globally, but can only be
-used with a single GPU context.
+used within a single GPU context.
 
 Cilk is a parallel programming model that has demonstrated the power of
 asynchronous function calls\cite{CILK95}.  The Cilk {\em work-first}
@@ -40,8 +40,8 @@ make it easy to port dataflow programs onto a parallel machine\cite{CullerGSvE93
 Conceptually our interface is similar to the dataflow languages TAM supported.
 However, the implementation of TAM is designed for a class of much smaller machines
 and therefore is based on much heavier communication and threading mechanisms.
-While TAM supported composable asynchronous computation and communication, its
-synchronization mechanisms still required blocking operations.
+While TAM supports composable asynchronous computation and communication, its
+synchronization mechanisms still require blocking operations.
 
 Chapel\cite{Chamberlain:Chapel} and X10\cite{X1005} are high-level parallel
 programming languages that support asynchronous operations.  The constructs
@@ -61,7 +61,7 @@ The implementation of our interface shares similarities with large
 distributed systems.  Many distributed systems implement a publish/subscribe
 abstraction for supporting communication that is similar in some ways to how
 we manage events and event waiters\cite{Aguilera99,Carzaniga01}.  Work has
-also been done on using object oriented languages to build 
+also been done on using object oriented languages to build event-based
 distributed systems\cite{Eugster01,Harrison97,Chang91}.  In these cases
 callbacks are registered to run when event operations are triggered
 remotely.  Events in these systems are much heavier weight
