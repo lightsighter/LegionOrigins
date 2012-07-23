@@ -219,7 +219,7 @@ def make_event_lifetimes_plot(outdir,
     lw = 1.0
     plt.plot(dynamic_time,dynamic_event_list,'--',color=tableau12,linestyle='solid',label='Dynamic Events',linewidth=lw)
     plt.plot(liveness_time,liveness_list,'--',color=tableau13,linestyle='solid',label='Live Events',linewidth=lw)
-    plt.plot(dynamic_time,physical_event_list,'--',color=tableau9,linestyle='solid',label='Physical Events',linewidth=lw)
+    plt.plot(dynamic_time,physical_event_list,'--',color=tableau9,linestyle='solid',label='Generational Events',linewidth=lw)
     plt.plot(active_time, active_list, '--', color=tableau1, linestyle='solid', label='Untriggered Events', linewidth=lw)
     plt.legend(loc=2,ncol=1)
     plt.xlabel('Time (seconds)')
