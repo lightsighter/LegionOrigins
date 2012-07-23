@@ -20,7 +20,7 @@ into a ring and each processor in turn creates a user event that is dependent
 on the previous processor's event.  The first event in this long chain of
 dependent events is then triggered, and the time until the triggering of the
 last event in the chain is measured.  The total time is divided by the number
-of events in the chain to yield the mean trigger times.  In the single-node case, all events are local to
+of events in the chain to yield the mean trigger time.  In the single-node case, all events are local to
 that node, so no active messages are required.  For all other cases, the
 ring uses only a single processor per node so that every trigger requires
 the transmission (and reception) of an event trigger active message.
@@ -67,8 +67,8 @@ the system.
 
 Our second micro-benchmark for events measures the maximum rate at which events can
 be triggered by our implementation.  Instead of a single chain, many parallel chains
-are created.  Additionally, each step of the chain can consist of parameterized number
-of events, each one dependent on all the events from the previous step of the chain.
+are created.  Additionally, each step of the chain consists of a parameterized number
+of events, each one dependent on every event from the previous step of the chain.
 This parameter is called the {\em fan-in/out factor}.  The events within each step of
 a chain are distributed across the nodes.  Recall from Section~\ref{subsec:eventimpl}
 that the aggregation of event subscriptions
@@ -99,7 +99,7 @@ For small fan-in/out factors, the total rate falls off initially going to two no
 messages become necessary, but starts increasing slightly again at larger node counts.  Higher
 fan-in/out factors require more messages and have lower throughput that also increases with
 node count.  Although the number of events waiting on each node decreases with an increasing
-node code, the minimal scaling indicates that the main bottleneck is in the processing of the
+node count, the minimal scaling indicates that the main bottleneck is in the processing of the
 active message that each node must receive rather than the local redistribution of the triggering
 notification.
 %Note we can further improve performance by increasing
@@ -201,7 +201,7 @@ transfers, yielding better performance.
 
 \subsection{Reduction Throughput}
 \label{subsec:reducmicro}
-To show the benefits of associating reduction instances we designed
+To show the benefits of reduction instances we designed
 a histogram micro-benchmark that requires all nodes to perform an addition reduction to a
 physical region located in the globally visible GASNet memory (described in 
 Section~\ref{sec:impl}).  Using the reduction interface described in Section~\ref{subsec:phyreg}
@@ -221,15 +221,15 @@ All reductions are appended to the list reduction instance, which is then copied
 \end{itemize}
 
 We ran two experiments, one corresponding with dense reductions and the other corresponding with sparse
-reductions.  In each case a large random source of data is divided across into chunks, which are given to
+reductions.  In each case a large random source of data is divided into chunks, which are given to
 separate reduction tasks.  There are 8 reduction tasks created for each node, one per processor.  The dense
 case uses a histogram with 256K buckets and each reduction task performs 4M reductions.  The results for the
-dense experiment are shown in Figure~\ref{fig:reducdense}.  The sparse case use a histogram with 4M buckets,
+dense experiment are shown in Figure~\ref{fig:reducdense}.  The sparse case uses a histogram with 4M buckets,
 but only 64K reductions are performed by each task.  Results for the sparse case
 be seen in Figure~\ref{fig:reducsparse}.
 
 The dense experiment demonstrates that reduction fold regions perform 
-best and scales well with the number of nodes, achieving over a billion reductions
+best and scale well with the number of nodes, achieving over a billion reductions
 per second in the 16 node case.  List regions also scale well, but perform about an
 order of magnitude worse than folding regions in the dense case.  The use of a separate active message for
 each reduction operation is another two orders of magnitude worse, demonstrating that data must be
