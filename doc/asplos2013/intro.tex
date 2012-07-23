@@ -58,9 +58,10 @@ should begin as soon as another asynchronous communication operation
 has completed.  The result is that at some point there must be
 blocking operations to coordinate synchronous and asynchronous phases.
 If blocking calls are not accurately placed in the program they can
-lead to processor stalls that expose latency.  Correct placement of
-blocking calls can be dependent on input data, algorithmic decisions, 
-and the underlying hardware.  To hide as much
+lead to processor stalls that expose latency.  Placement of blocking
+calls is difficult to reason about because 
+they can be dependent on input data, algorithmic decisions, 
+and the underlying hardware.  Instead, to hide as much
 latency as possible and to minimize processor stalls, 
 %regardless of inputs, algorithmic choices, or underlying hardware,
 all three major aspects of parallel programs (computation, data movement,
@@ -73,10 +74,10 @@ synchronization.  The basic mechanism that enables composition of operations
 is an underlying {\em event} primitive.  Events provide a mechanism
 for naming a point in the future when an asynchronous operation
 (computation, data copy, or synchronization) will complete.  Every
-call to perform an operation $op$ in our runtime returns immediately
-with an event that {\em triggers} when $op$ has completed.
-Furthermore, every call to perform an operation $op$ can take as a
-precondition an event that must trigger before $op$ can begin.  Using
+call to perform an operation $p$ in our runtime returns immediately
+with an event that {\em triggers} when $p$ has completed.
+Furthermore, every call to perform an operation $p$ can take as a
+precondition an event that must trigger before $p$ can begin.  Using
 events clients can compose arbitrary chains of dependent
 operations, which the runtime is free to execute in any way that
 respects the event dependences.  With this freedom the runtime can

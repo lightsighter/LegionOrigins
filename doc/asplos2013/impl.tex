@@ -145,7 +145,7 @@ The data structures used to track an event cannot be freed until all operations 
 performed.  Creation and triggering can each happen only once, but there can be an arbitrary number of operations
 that are dependent on an event.   Furthermore, some operations may not be requested until long after the
 event has triggered.  Other systems incorporating events address this by reference counting event
-handles\cite{Khronos:OpenCL}, but such reference counting adds both programmer and runtime overhead even when
+handles\cite{Khronos:OpenCL}, but such reference counting adds both client and runtime overhead even when
 limited to a single node; further overhead and complexity would be expected for a cluster-level
 reference-counting approach.
 
@@ -164,7 +164,7 @@ reference-counting approach.
 %As before, this can be done with no inter-node communication.
 Instead of attempting to free event data structures, our implementation aggressively recycles them.
 Compared to a reference counting scheme our implementation requires fewer total event data structures
-and has no programmer/runtime overhead.  The key observations is that one {\em generational event}
+and has no client/runtime overhead.  The key observations is that one {\em generational event}
 data structure can efficiently capture the state of one untriggered event and a very large 
 number (e.g. $2^{32}-1$) of already-triggered events.  To accomplish this, we extend each event
 handle to include its generation number as well as the identifier for its generational event.  Each
