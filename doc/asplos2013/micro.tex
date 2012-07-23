@@ -96,7 +96,7 @@ even when the fan-in/out factor exceeds the node count.
 Figure~\ref{fig:eventthroo} shows the event trigger rates achieved by our implementation
 for a variety of node counts and fan-in/out factors.
 For small fan-in/out factors, the total rate falls off initially going to two nodes as active
-message become necessary, but starts increasing slightly again at larger node counts.  Higher
+messages become necessary, but starts increasing slightly again at larger node counts.  Higher
 fan-in/out factors require more messages and have lower throughput that also increases with
 node count.  Although the number of events waiting on each node decreases with an increasing
 node code, the minimal scaling indicates that the main bottleneck is in the processing of the
@@ -180,10 +180,10 @@ With only 32 chains per node (a total of 256 chains)
 there is little contention and the grant rate is high.  As the number of chains per node increases there is
 more contention for locks and the rate drops as a result.  For smaller lock counts, further increases in
 the number of chains result in improved rates.  Note that the point on each line where this occurs
- is when
-the chains per node is greater than total locks, i.e. where the expected number of requests per lock 
+is when the chains per node is greater than total locks, which corresponds to the point where the expected 
+number of requests per lock 
 per node becomes more than one.  As soon as there are multiple expected requestors for the same lock on
-a node, the unfairness property of our implementation is able to reduce the number of lock ownership 
+a node, the unfairness property of our lock implementation is able to reduce the number of lock ownership 
 transfers, yielding better performance.
 
 \begin{figure}
@@ -198,7 +198,7 @@ transfers, yielding better performance.
 
 \subsection{Reduction Throughput}
 \label{subsec:reducmicro}
-To show the benefits of associating reduction operations with physical regions we designed
+To show the benefits of associating reduction instances we designed
 a histogram micro-benchmark that requires all nodes to perform an addition reduction to a
 physical region located in the globally visible GASNet memory (described in 
 Section~\ref{sec:impl}).  Using the reduction interface described in Section~\ref{subsec:phyreg}
@@ -211,19 +211,18 @@ reads a value from the physical region, performs the addition, and then writes t
 system memory holds the target of the reduction.
 \item Localized Instance - Each node takes a lock on the the global physical region, copies it to a new physical
 region in its own system memory, performs all reductions to the localized region, copies the region back, and releases the lock.
-\item Fold Instance - Each node creates a local reduction instance that folds reductions to the same element.
+\item Fold Instance - Each node creates a local fold reduction instance.
 All reductions are folded into the instance, which is then copied back to the global region.
-\item List Instance - Each node creates a local reduction instance that stores a list of reduction operations.
-All reductions are appended to the list, which is then copied back to the global region.
+\item List Instance - Each node creates a local list reduction instance.
+All reductions are appended to the list reduction instance, which is then copied back to the global region.
 \end{itemize}
 
 We ran two experiments, one corresponding with dense reductions and the other corresponding with sparse
 reductions.  In each case a large random source of data is divided across into chunks, which are given to
 separate reduction tasks.  There are 8 reduction tasks created for each node, one per processor.  The dense
-case uses a histogram with 256K buckets and each reduction task processes a chunk of 4M entries (i.e.
-performs 4M reductions).  The results for the
+case uses a histogram with 256K buckets and each reduction task performs 4M reductions.  The results for the
 dense experiment are shown in Figure~\ref{fig:reducdense}.  The sparse case use a histogram with 4M buckets,
-but only 64K elements are processed by each task.  Results for the sparse case
+but only 64K reductions are performed by each task.  Results for the sparse case
 be seen in Figure~\ref{fig:reducsparse}.
 
 The dense experiment demonstrates that reduction fold regions perform 
@@ -233,7 +232,7 @@ order of mangitude worse than folding regions in the dense case.  The use of a s
 each reduction operation is another two orders of magnitude worse, demonstrating that data must be
 transferred in larger blocks to be efficient on modern interconnect hardware.  The localized instance approach
 works well for a single node, but its inherently serial nature doesn't benefit at all from increasing node counts.  Finally, the only time the latency of performing individual RMA reads and writes isn't disastrous is
-on a single node (where the reads and writes aren't really remote).
+on a single node (where the reads and writes are local).
 
 The sparse case is very similar, except the scalability of the reduction fold case suffers from the
 overhead of transferring a value for every bucket when most buckets are unmodified by a given task.
