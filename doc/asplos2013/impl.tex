@@ -4,23 +4,23 @@
 
 There are currently two implementations of our interface:
 one that works only on shared memory machines and another that
-runs on larges clusters with both CPUs and GPUs.  The shared-memory
+runs on large clusters with both CPUs and GPUs.  The shared-memory
 implementation uses the POSIX threads library\cite{PTHREADS} (Pthreads)
 and is primarily used for debugging.
-The implementation for heterogeneous clusters also uses Pthreads as 
+The implementation for heterogeneous clusters uses Pthreads as 
 well as the CUDA runtime library for GPUs\cite{CUDA} and the GASNet
 API for large clusters\cite{GASNET07}.  
 
 The heterogeneous implementation
-models a cluster with CPUs and GPUs as having two types of processors 
-and four types of memory.  Every CPU core is presented as a different {\tt CPU} processor
+models a cluster with CPUs and GPUs as having two kinds of processors 
+and four kinds of memory.  Every CPU core is presented as a different {\tt CPU} processor
 and every GPU is a {\tt GPU} processor.  This matches the scheduling granularity available
-in the Pthreads and CUDA APIs respectively.  The first type of memory is the 
+in the Pthreads and CUDA APIs respectively.  The first kind of memory is the 
 system memory that is accessible by every CPU core on a given node.  The second is the 
-framebuffer memory on each GPU (and accessible only by that GPU).  The third type
+framebuffer memory on each GPU (and accessible only by that GPU).  The third kind
 of memory is system memory on a node that has been made accessible to the GPU(s) on
 that node as well as the CPU cores, commonly referred to as {\em zero-copy memory}.
-The final type of memory is the portion of system memory on each node that has been registered with
+The final kind of memory is the portion of system memory on each node that has been registered with
 the GASNet runtime to allow {\em remote memory access} (RMA) by other nodes in the cluster.
 We refer to this memory as {\em GASNet memory}.
 %% For every node in the system
@@ -41,7 +41,7 @@ We refer to this memory as {\em GASNet memory}.
 In addition to the RMA capabilities, GASNet provides {\em active messages} for 
 inter-node communication.  Active messages consist of a command and payload that
 are sent by one node to another without any previous coordination.  Upon arrival
-at a destination node, a handler routine is invoked to process an active message.
+at a destination node, a handler routine is invoked to process the message.
 %The handler may issue a response to the sender, but this is optional, and avoided
 %as much as possible in our implementation due to the latencies involved in waiting
 %for a response.  
@@ -78,8 +78,8 @@ processor or marks it as being deferred until the prerequisite event has trigger
 %Due to space constraints, we will not cover every part of our implementation in
 %detail, instead limiting our discussion to the three most interesting aspects:
 %events, locks, and reduction instances.
-Due to space constraints we cover only a small part of the implementation in detail.
-We limit our discussion to three interesting aspects:
+Due to space constraints we cover only the most interesting parts of the implementation in detail.
+We limit our discussion to three aspects:
 events, locks, and reduction instances.
 
 \subsection{Event Implementation}
@@ -112,12 +112,13 @@ without any communication.
 %occurred before the reception of an event subscription, a trigger message is sent immediatel to the 
 %new subscriber.)
 When a new event is created, the owning node allocates a data structure to track the state of
-the event ({\em triggered} or {\em untriggered}) as well as to record a list of operations dependent on the
-event from the same node called {\em waiters} (e.g. copy operation or task launch).  The first operation contingent on an event
-from a remote node will create the same data structure on the remote node.  A single
+the event ({\em triggered} or {\em untriggered}) as well as to record a list of dependent operations
+(e.g. copy operation or task launch) from the same node (called {\em waiters}).
+The first operation dependent on an event
+from a remote node will allocate the same data structure on the remote node.  A single
 {\em event subscription} active message is then sent from the remote node to the owning node indicating
 that the remote node should be informed when the event triggers.  Arbitrarily many additional operations on
-the remote node can then be aggregated as waiters onto the remote data structure without any additional communication.
+the remote node can then be added to the list of waiters without any additional communication.
 When the event does trigger, the owner node notifies all local waiters and
 sends a single {\em event trigger} active message to each node from which it has seen an event subscription
 to notify remote waiters.
@@ -143,7 +144,7 @@ active message is very small.
 %and any algorithm that is super-linear with the node count will not scale well.
 %either is or will soon be an scalability issue for large systems.
 
-The data structures used to track an event cannot be freed until all operations on that event have been
+The data structure used to track an event cannot be freed until all operations on that event have been
 performed.  Creation and triggering can each happen only once, but there can be an arbitrary number of operations
 that are dependent on an event.   Furthermore, some operations may not be requested until long after the
 event has triggered.  Other systems incorporating events address this by reference counting event
@@ -166,7 +167,7 @@ reference-counting approach.
 %As before, this can be done with no inter-node communication.
 Instead of attempting to free event data structures, our implementation aggressively recycles them.
 Compared to a reference counting scheme our implementation requires fewer total event data structures
-and has no client/runtime overhead.  The key observations is that one {\em generational event}
+and has no client/runtime overhead.  The key observation is that one {\em generational event}
 data structure can efficiently capture the state of one untriggered event and a very large 
 number (e.g. $2^{32}-1$) of already-triggered events.  To accomplish this, we extend each event
 handle to include its generation number as well as the identifier for its generational event.  Each
@@ -266,7 +267,7 @@ is delayed to avoid a spurious triggering of the barrier.
 
 Like events, deferred locks, or locks from here on, are created on demand by the node on which the creation request was made.  The lock
 handles are also statically divided across the nodes, allowing the creation to be done without inter-node
-communication.  Unlike events whose ownership is static, locks may migrate; the {\em creating}
+communication.  Whereas events ownership is static, locks may migrate; the {\em creating}
 node is the initial owner, but that ownership can be transferred to other nodes.
 
 Since any node may at some point be the owner of a lock, all nodes use the same data structure to track the
@@ -296,8 +297,8 @@ the lock request is the only data that must be stored.
 %(This is the only thing that is stored.  The actual ``requestor'' of the lock
 %is implicitly captured in which operations are dependent on the lock grant event.)  
 If the current node isn't the owner, a {\em lock request} active message is
-sent to the most recently known owner.  If the receiving node is no
-longer the owner, it forwards the message on to the node it has recorded as the owner.
+sent to the most recently known owner.  (If the receiver of a lock request message is no
+longer the owner, it forwards the message on to the node it has recorded as the owner.)
 %(If that information proves to be stale, the request is forwarded
 %by the receiving node, eventually catching up to the current owner.)  
 If the current owner's status shows
@@ -348,7 +349,7 @@ for the normal physical regions.  The difference is that each array element is a
 {\tt RHS} type which is generally the same size or smaller than the actual element type of the region 
 (i.e. the {\tt LHS} type).  When the client requests a reduction operation to a particular location, 
 the supplied right-hand-side value is folded in
-to the corresponding location in the array.  An arbitrary number of reductions can be done to each location.
+to the corresponding location in the array.  An arbitrary number of reductions can be folded into each location.
 When the reduction fold instance is copied back to a normal instance, the contents of the reduction instance
 are transferred in a large block to the location of the normal instance.  On the receiving side
 the runtime automatically applies the reduction instance to the destination region
