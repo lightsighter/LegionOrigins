@@ -90,7 +90,7 @@ were created.  The creation of an event occurs with no inter-node communcation.
 The space of event
 handles is divided across the nodes at startup time, allowing each node to assign handles
 to new events without the risk of conflicting with another node's assignments.  The static division
-of event handles permits any node to determine the owning node of an event
+of event handles also permits any node to determine the owning node of an event
 without any communication.
 %No broadcast of
 %the event creation is required either, as the static division is sufficient to allow any
@@ -119,7 +119,7 @@ from a remote node will create the same data structure on the remote node.  A si
 that the remote node should be informed when the event triggers.  Arbitrarily many additional operations on
 the remote node can then be aggregated as waiters onto the remote data structure without any additional communication.
 When the event does trigger, the owner node notifies all local waiters and
-sends a single {\em event trigger} active message to all nodes from which it has seen an event subscription
+sends a single {\em event trigger} active message to each node from which it has seen an event subscription
 to notify remote waiters.
 In the case where an event triggers while a subscription message is in flight from a remote node, the owner node will
 immediately respond with a trigger message.
@@ -131,7 +131,7 @@ notify its waiters and no message is sent from the owning node back to the trigg
 %with the exception of the triggering node, which was
 %able to execute its locally dependent operations (if any) immediately.  
 While a remote trigger of an event can result in
-the latency of a triggering operation being two active messages, it bounds the number of active
+the latency of a triggering operation including two active message flight times, it bounds the number of active
 messages required per event to $2N-2$ where $N$ is the number of nodes 
 %(which can be much smaller than the number of dependent operations) 
 interested in the event.  An alternative
@@ -162,7 +162,7 @@ reference-counting approach.
 %executed.)  When an event is created, any generational event for whom the most recent generation has 
 %triggered can be reused - the generation is increased by one and the state is returned to ``untriggered.''
 %As before, this can be done with no inter-node communication.
-Instead of attempting to free event data structures, our implementation aggressively recyles them.
+Instead of attempting to free event data structures, our implementation aggressively recycles them.
 Compared to a reference counting scheme our implementation requires fewer total event data structures
 and has no programmer/runtime overhead.  The key observations is that one {\em generational event}
 data structure can efficiently capture the state of one untriggered event and a very large 
@@ -170,10 +170,10 @@ number (e.g. $2^{32}-1$) of already-triggered events.  To accomplish this, we ex
 handle to include its generation number as well as the identifier for its generational event.  Each
 generational event remembers how many previous generations have already been triggered.  Any
 new operation that is dependent on a generation that is known to already be triggered can immediately
-be executed.  A generational event can be recycled as soon as the current generation has triggered. To
+be executed.  A generational event can be reused for a new generation as soon as the current generation has triggered. To
 create a new event, a node finds a generational event in the triggered state,
 increases the generation by one, and sets the generational event's state to untriggered.  As before, 
-this can be done with no communication.
+this can be done with no inter-node communication.
 
 %A remote node's data structure is also efficient - the boolean values for whether the event
 %has triggered and whether the event has already been subscribed to are replaced with the numbers of the most
@@ -188,16 +188,17 @@ Nodes also maintain generational event data structures corresponding to remote e
 observed.  These data structures maintain the most recent known generation to have triggered as well
 as the generation of the most recent subscription message sent (if any).  The distributed nature
 of the system allows remote generational events to perform an interesting optimization.  If at any point a
-remote generational event observes a request to wait on a later generation than its current generation,
+remote generational event receives a request to wait on a later generation than its current
+generation,
 then it is safe to infer that all generations up to the requested generation have already 
 been triggered because a new generation of the event was already created by the event's owner node.
-All local waiters can then be notified even before receiving an event triggered message for the current generation.
+All local waiters can then be notified even before receiving the event trigger message for the current generation.
 
 Barriers are implemented as an extension of events.  In place of an event's triggered/untriggered state,
 a barrier's owner tracks the number of outstanding arrivals.  When the arrival count 
 reaches zero, the barrier is considered to have triggered.  Remote nodes send {\em barrier update}
 active messages containing an adjustment value that is positive for {\tt alter\_arrival\_count} operations 
-and negative for {\tt arrive} operations.  A version of vector clocks\cite{Fidge1998} is used
+and negative for {\tt arrive} operations.  A simplified version of vector clocks\cite{Fidge1998} is used
 to detect the race condition in which the barrier owner receives an {\tt arrive} operation before the
 corresponding {\tt alter\_arrival\_count}.  When detected, the decrement of the arrival count 
 is delayed to avoid a spurious triggering of the barrier.
@@ -322,7 +323,8 @@ one of them is chosen and the corresponding node becomes the new owner via a loc
 The unfairness that results from a lock favoring local waiters over remote waiters is intentional.  When the
 contention on a lock is high (the only time when the question of fairness is relevant), the latencies
 involved in transferring a lock between nodes can be the limiter on throughput.  By minimizing the number
-of lock transfers, the throughput on the lock is maximized.
+of lock transfers, the throughput on the lock is maximized.  This effect will be demonstrated in
+Section~\ref{subsec:lockmicro}.
 
 A similar issue can arise with the forwarding of lock request active messages.  If two nodes are
 transferring a lock very quickly back and forth, a third node's request could be forwarded an arbitrary
@@ -341,7 +343,7 @@ multiple tasks make commutative {\em reductions} into shared data.  Instead of h
 physical region to a suitable memory and then applying individual reduction operations, reduction instances 
 allow a large number of reduction operations to be accumulated and transferred efficiently to the original 
 location of the data. This decoupling from the original location of the data can allow allow greater parallelism
-in cases where processors cannot all access the same memory (i.e. many GPUs).
+in cases where processors cannot all access the same memory (e.g. many GPUs).
 
 The first kind of reduction-only physical region is a {\em reduction fold instance}, which may only be
 used for reduction operations that support a {\em fold} operation (see Listing~\ref{lst:regionapi}).  
