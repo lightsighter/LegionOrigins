@@ -334,34 +334,38 @@ would eventually catch up.
 \subsection{Reduction Instances}
 \label{subsec:reducimpl}
 
-In addition to normal physical regions, our implementation supports two different kinds of reduction-only
-physical regions, designed to optimize the common pattern in which multiple tasks make commutative 
-{\em reductions} into shared data.  Instead of having to move the existing data to a suitable memory and
-then applying individual reduction operations to the existing data 
-right away (as would happen in a normal physical region), reduction instances allow a large number of
-reduction operations to be batched up and transferred efficiently to the original location of the data.
-This decoupling from the original location of the data can allow allow greater parallelism
-in cases where there are available processors that cannot all access the same memory.
+In addition to normal physical regions, our implementation supports two different layouts of data for
+reduction-only physical regions called {\em reduction instances}.   
+These layouts are designed to optimize for the common pattern where 
+multiple tasks make commutative {\em reductions} into shared data.  Instead of having to copy the existing 
+physical region to a suitable memory and then applying individual reduction operations, reduction instances 
+allow a large number of reduction operations to be accumulated and transferred efficiently to the original 
+location of the data. This decoupling from the original location of the data can allow allow greater parallelism
+in cases where processors cannot all access the same memory (i.e. many GPUs).
 
 The first kind of reduction-only physical region is a {\em reduction fold instance}, which may only be
-used for reduction operations that support a {\em fold} operation.  A reduction fold instance is similar
+used for reduction operations that support a {\em fold} operation (see Listing~\ref{lst:regionapi}).  
+A reduction fold instance is similar
 to a normal physical region in that it is implemented as an array, indexed by the same element indices used
 for the normal physical regions.  The difference is that each array element is a value of the reduction's
-{\tt RHS} type instead of the actual element type of the region (i.e. the {\tt LHS} type).  When the client
-requests a reduction operation to a particular location, the supplied right-hand-side value is folded in
+{\tt RHS} type which is generally the same size or smaller than the actual element type of the region 
+(i.e. the {\tt LHS} type).  When the client requests a reduction operation to a particular location, 
+the supplied right-hand-side value is folded in
 to the corresponding location in the array.  An arbitrary number of reductions can be done to each location.
 When the reduction fold instance is copied back to a normal instance, the contents of the reduction instance
-(which are generally the same size or smaller than the normal region contents) are transferred in a large
-block to the location of the normal instance, where an application of the reduction function is performed
-once for each location in the region via a cache-friendly linear sweep over the memory.
+are transferred in a large block to the location of the normal instance.  On the receiving side
+the runtime automatically applies the reduction instance to the destination region
+by invoking the reduction function once for each location in the region via a cache-friendly 
+linear sweep over the memory.
 
 The second kind of reduction instance is a {\em reduction list instance}.  Although it generally doesn't
 perform as well as a reduction fold instance, it can be better for cases with sparse updates.  It is also
-the only option when a reduction operation doesn't support a {\em fold} operation.  Instead of folding
+valid option for when a reduction operation doesn't support a {\em fold} operation.  Instead of folding
 together multiple reductions to the same location, a reduction list instance keeps a log of every
 reduction operation requested (i.e. the location and the right-hand-side value).  When the reduction list 
 instance is copied back to a normal physical region, the whole list is transferred and then replayed at
 the target region's location.  Except in sparse update cases, this list is often larger than the target
 region, and any randomness in the sequence of locations in the list can impact the memory access efficiency
-of the accesses to the target region.  However, as we will show in section~\ref{sec:microbenchmarks}, 
+of the reductions to the target region.  However, as we will show in section~\ref{subsec:reducmicro}, 
 the benefits of enabling parallelism and hiding latency usually more than make up for these drawbacks.
+
