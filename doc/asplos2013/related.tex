@@ -46,9 +46,16 @@ synchronization mechanisms still required blocking operations.
 Chapel\cite{Chamberlain:Chapel} and X10\cite{X1005} are high-level parallel
 programming languages that support asynchronous operations.  The constructs
 introduced in these languages are higher-level and have complex 
-semantics.  We view our interface as providing a potential target
+semantics.  We view our interface as providing a target
 for implementing these higher-level asynchronous operations in an efficient
 manner similar to Legion\cite{Legion12}.
+
+Physical regions in our interface are related to
+arrays from the Sequoia runtime interface\cite{Houston08} in that they
+both allow the runtime to do specialized operations on data by being
+aware of the structure of data.  Sequoia's runtime interface supported
+asynchronous tasks and copies, but did not permit composition of
+asynchronous operations.
 
 The implementation of our interface shares many similarities with large
 distributed systems.  Many distributed system implement a publish/subscribe
