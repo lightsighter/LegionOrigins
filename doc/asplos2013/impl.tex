@@ -131,14 +131,16 @@ notify its waiters and no message is sent from the owning node back to the trigg
 %with the exception of the triggering node, which was
 %able to execute its locally dependent operations (if any) immediately.  
 While a remote trigger of an event can result in
-the latency of a triggering operation including two active message flight times, it bounds the number of active
+the latency of a triggering operation being at least two active message flight times, it bounds the number of active
 messages required per event to $2N-2$ where $N$ is the number of nodes 
 %(which can be much smaller than the number of dependent operations) 
-interested in the event.  An alternative
+monitoring the event.  An alternative
 would have been to share the list of subscribers so that the triggering node could notify all interested
 nodes directly.  However, such an algorithm is both more complicated due to race conditions, and requires $O(N^2)$
-active messages.  As we will see in Section~\ref{subsec:eventmicro}, the latency of a single event trigger
-active message is very small, and any algorithm that is super-linear with the node count will not scale well.
+active messages.  Any algorithm that is super-linear with the node count will not scale well, 
+and as we will see in Section~\ref{subsec:eventmicro}, the latency of a single event trigger
+active message is very small. 
+%and any algorithm that is super-linear with the node count will not scale well.
 %either is or will soon be an scalability issue for large systems.
 
 The data structures used to track an event cannot be freed until all operations on that event have been
@@ -259,13 +261,13 @@ is delayed to avoid a spurious triggering of the barrier.
 %% triggered locally then an active message is sent to the owner which would always have been necesary
 %% without the dynamic to physical event mapping.
 
-\subsection{Lock Implementation}
+\subsection{Deferred Lock Implementation}
 \label{subsec:lockimpl}
 
-Like events, locks are created on demand by the node on which the creation request was made.  The lock
+Like events, deferred locks, or locks from here on, are created on demand by the node on which the creation request was made.  The lock
 handles are also statically divided across the nodes, allowing the creation to be done without inter-node
 communication.  Unlike events whose ownership is static, locks may migrate; the {\em creating}
-node is the initial owner of a lock, but that ownership can be transferred to other nodes.
+node is the initial owner, but that ownership can be transferred to other nodes.
 
 Since any node may at some point be the owner of a lock, all nodes use the same data structure to track the
 state of a lock on the node.
@@ -299,11 +301,11 @@ longer the owner, it forwards the message on to the node it has recorded as the 
 %(If that information proves to be stale, the request is forwarded
 %by the receiving node, eventually catching up to the current owner.)  
 If the current owner's status shows
-the lock is currently held, the bit for the requesting node is set in remote waiters bitmask.  If the lock is
+the lock is currently held, the bit for the requesting node is set in the remote waiters bitmask.  If the lock is
 not held, the ownership of the lock is given to the requesting node via a {\em lock transfer} active
 message.  A lock transfer message includes the bitmask of remote waiters and an up-to-date copy 
-of the lock's payload.  (The inclusion of the payload in the active message is the reason for the 
-4KB size limit.)
+of the lock's payload.  The inclusion of the payload in the active message is the reason for the 
+4KB size limit specified on payloads in Section~\ref{subsec:locks}.
 
 Similarly, an unlock request is first checked against the local node's lock state.  If the local node is
 not the owner, an {\em unlock} active message is sent to the most recently known owner, which is forwarded

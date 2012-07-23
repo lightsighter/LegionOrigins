@@ -35,7 +35,7 @@ far ahead of the actual execution, limited only by the physical resources
 available in the machine, exactly like a hardware out-of-order processor.
 
 In this section we demonstrate the performance properties of three
-real-world applications that use the Legion runtime and the heterogeneous
+real-world applications that use the Legion runtime and by extension the heterogeneous
 implementation of our interface to run on the Keeneland supercomputer.
 The three applications that we characterize are all multi-phase
 applications that require parallel computation, data exchange, and
@@ -45,15 +45,15 @@ synchronization between phases.
 irregular graph of components connected by wires.  The graph is partitioned
 and distributed across the machine.  The computation for each time step consists
 of three phases that calculate currents on the wires, distribute charge between
-nodes, and update the voltages of all nodes.  In the distribute charge
+circuit nodes, and update the voltages of all nodes.  In the distribute charge
 phase, a single node may be updated by wires from multiple partitions.  Reduction instances 
-are used to allow each partition to perform reductions in parallel and locally in GPU
+are used to allow each partition to perform reductions in parallel and to do so locally in GPU
 framebuffer memory before merging all the reductions to a global instance
 residing in GASNet memory.  Without reduction instances this phase
 couldn't be performed using GPUs.
 
 {\em Fluid} is an incompressible fluid flow simulation from the PARSEC
-benchmark suite\cite{bienia11benchmarking}.  The original implementation can 
+benchmark suite\cite{bienia11benchmarking}.  The reference implementation can 
 only be run on a single shared memory machine, but when written in Legion, Fluid can
 be run on large distributed machines as well.  The Fluid simulation
 models particles that flow through cells.  Each time step requires multiple phases
@@ -92,8 +92,10 @@ be difficult for long-running applications.
 Dynamic events are considered {\em live events} until their last operation 
 (i.e. wait, trigger) has been performed.  The live events line
 measures the number of events that are live at any given time.  After
-the last operation on an event, a reference counting implementation would
-be able to recover the storage associated with the event.  In this example 
+the last operation on a dynamic event, a reference counting implementation would
+be able to recover the storage associated with the event.  The live events line
+is therefore equivalent to the number of needed events in a refernce counting
+scheme.  In this example 
 a reference counting algorithm would reduce the storage needed for dynamic events
 by over 10X, but could only do so at the cost of
 computation and communication for performing the reference counting.  
@@ -101,8 +103,9 @@ computation and communication for performing the reference counting.
 As discussed in Section~\ref{subsec:eventimpl}, our implementation
 requires storage that grows with the maximum number of {\em untriggered events}, a number
 that is 10X smaller than even the maximal live event count.  The actual storage
-requirements of our implementation are shown by the {\em physical events} line,
-which is slightly larger than the peak number of untriggered events. 
+requirements of our implementation are shown by the generational events line,
+which shows the total number of generational events in the system (see Section~\ref{subsec:eventimpl}).
+The maximum number of generational events needed is slightly larger than the peak number of untriggered events. 
 The reason for this difference is because nodes create events locally if they have
 no free generational events, even if there are unused generational events on remote nodes.
 Despite this inefficiency, our implementation uses 5X less storage
@@ -157,19 +160,23 @@ occur during the start-up of the application.
 %Figure~\ref{fig:eventlife} shows the event lifetimes in a run of the fluid application.  The total number
 %of events created during the application is over 260,000.
 
-\subsection{Lock Migration}
+\subsection{Deferred Lock Migration}
 \label{subsec:lockmig}
 
 We also instrumented our heterogeneous implementation to profile the usage of 
-locks in real applications.  We measured how many locks were used in the application.  For
+deferred locks in real applications.  We measured how many locks were used in the application.  For
 each lock we measured the number of lock requests and the number of times that the lock
 had to be transferred from one node to another.  Figure~\ref{fig:lockcount} shows the results 
 for the Circuit and AMR application, both running on 16 nodes.  The Circuit application uses
 a larger number of locks (3336 vs. 1393), but most of them (86\%) are only used on the node on 
 which they were created.  The AMR application exhibits more varied locking behavior, and in 
-particular has locks that are requested more often than they are transferred.  Without the
-ability for locks to migrate, these applications couldn't have made use of asynchronous
-locks.
+particular has locks that are requested more often than they are transferred.  In addition
+to allowing synchronization in an asynchronous environment, the ability of deferred locks to
+migrate is necessary for implementing real applications on distributed machines.
+
+%Without the
+%ability for locks to migrate, these applications couldn't have made use of asynchronous
+%locks.
 
 \begin{figure}
 \centering

@@ -7,7 +7,8 @@ with common operations such as communication and synchronization will
 become larger and more variable.  To effectively hide these latencies
 future programming systems will need to leverage asynchronous operations
 to overlap long latency operations with useful work.  We have
-presented a low-level programming interface that is fully asynchronous.
+presented a low-level programming interface that is fully asynchronous
+including a new synchronization primitive called a deferred lock.
 Our interface uses events to compose asynchronous operations.  Clients
 can use events to explicitly specify dependences between operations,
 leaving the runtime to schedule them in a way that maximizes latency 

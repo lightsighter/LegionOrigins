@@ -57,13 +57,13 @@ aware of the structure of data.  Sequoia's runtime interface supported
 asynchronous tasks and copies, but did not permit composition of
 asynchronous operations.
 
-The implementation of our interface shares many similarities with large
-distributed systems.  Many distributed system implement a publish/subscribe
+The implementation of our interface shares similarities with large
+distributed systems.  Many distributed systems implement a publish/subscribe
 abstraction for supporting communication that is similar in some ways to how
 we manage events and event waiters\cite{Aguilera99,Carzaniga01}.  Work has
 also been done on using object oriented languages to build 
 distributed systems\cite{Eugster01,Harrison97,Chang91}.  In these cases
 callbacks are registered to run when event operations are triggered
-from remote locations.  Events in these systems are much heavier weight
+remotely.  Events in these systems are much heavier weight
 and often carry large data payloads.  In many distributed event systems
 the focus is on resiliency instead of performance\cite{Ostrowski09}.
