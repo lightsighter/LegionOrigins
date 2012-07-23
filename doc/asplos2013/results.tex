@@ -18,8 +18,8 @@ run ahead of the actual execution of a stream of instructions
 to ensure that the processor's pipeline is fully utilized.  Similarly, in a
 Legion application, for every processor there is an instance of the Legion runtime
 that takes a stream of tasks with region requirements and asynchronously
-runs ahead of the actual execution using a {\em software-out-of-order} (SOOP)
-scheduler.  The SOOP leverages our interface by asynchronously issuing task launches, copy
+runs ahead of the actual execution using a scheduler called a {\em Software Out-of-Order Processor} 
+(SOOP).  The SOOP leverages our interface by asynchronously issuing task launches, copy
 operations, and synchronization operations with the dependencies between them expressed
 as events.  The full details of the SOOP are beyond the scope of this paper
 and are described in \cite{Legion12}.
@@ -41,12 +41,11 @@ The three applications that we characterize are all multi-phase
 applications that require parallel computation, data exchange, and
 synchronization between phases. 
 
-{\em Circuit} is simulation of an electric circuit that is described as an
-irregular graph of integrated
-circuit components connected by wires.  The graph is partitioned
+{\em Circuit} is a simulation of an integrated circuit that is described as an
+irregular graph of components connected by wires.  The graph is partitioned
 and distributed across the machine.  The computation for each time step consists
 of three phases that calculate currents on the wires, distribute charge between
-nodes, and update the voltages of all ndoes.  In the distribute charge
+nodes, and update the voltages of all nodes.  In the distribute charge
 phase, a single node may be updated by wires from multiple partitions.  Reduction instances 
 are used to allow each partition to perform reductions in parallel and locally in GPU
 framebuffer memeory before merging all the reductions to a global instance
@@ -88,19 +87,25 @@ a timeline of the execution of the Fluid application on 16 nodes.
 The dynamic events line measures the total number of event creations.
 A large number of events are created - over 260,000 in less than 15
 seconds - and allocating separate storage for every event would clearly
-be difficult for long-running applications.  The {\em live events} line
-measures the number of events that are live at any given time - after
+be difficult for long-running applications.  
+
+Dynamic events are considered {\em live events} until their last operation 
+(i.e. wait, trigger) has been performed.  The live events line
+measures the number of events that are live at any given time.  After
 the last operation on an event, a reference counting implementation would
-be able to recover the storage associated with the event.  Such an
-algorithm would reduce the storage needed by over 10X at the cost of
-computation and communication overhead for performing the reference 
-counting.  As discussed in Section~\ref{subsec:eventimpl}, our implementation
-requires storage that grows with the number of {\em untriggered events}, a number
+be able to recover the storage associated with the event.  In this example 
+a reference counting algorithm would reduce the storage needed for dynanmic events
+by over 10X, but could only do so at the cost of
+computation and communication for performing the reference counting.  
+
+As discussed in Section~\ref{subsec:eventimpl}, our implementation
+requires storage that grows with the maximum number of {\em untriggered events}, a number
 that is 10X smaller than even the maximal live event count.  The actual storage
 requirements of our implementation are shown by the {\em physical events} line,
-which is larger than the peak number of untriggered events because of the
-decision to always create an event owned by the node from which the request
-was made.  Despite this inefficiency, our implementation uses 5X less storage
+which is slightly larger than the peak number of untriggered events. 
+The reason for this difference is because nodes create events locally if they have
+no free generational events, even if there are unused generational events on remote nodes.
+Despite this inefficiency, our implementation uses 5X less storage
 than a reference counting implementation and avoids any overhead related to 
 reference counting.  These savings would likely be even more dramatic for longer 
 runs of the application, as the number of live events is steadily growing as the
@@ -162,8 +167,9 @@ had to be transferred from one node to another.  Figure~\ref{fig:lockcount} show
 for the Circuit and AMR application, both running on 16 nodes.  The Circuit application uses
 a larger number of locks (3336 vs. 1393), but most of them (86\%) are only used on the node on 
 which they were created.  The AMR application exhibits more varied locking behavior, and in 
-particular has locks that are requested more often than they are transferred.  Without the ability
-for locks to migrate, more of those requests would have required inter-node communication.
+particular has locks that are requested more often than they are transferred.  Without the
+ability for locks to migrate, these applications couldn't have made use of asynchronous
+locks.
 
 \begin{figure}
 \centering
@@ -235,7 +241,7 @@ implementations of our three applications have already been shown to outperform
 pre-existing implementations\cite{Legion12}.  To quantify the benefit of the asynchronous
 nature of our interface, we implemented versions of our applications in
 Legion in a bulk-synchronous style to compare against our existing implementations.  
-These bulk-synchronous versions of still run on top of 
+These bulk-synchronous versions still run on top of 
 the Legion runtime, but invoke blocking operations between computational phases,
 communication phases, and synchronization.
 
@@ -258,7 +264,7 @@ These results show that the asynchronous nature of our interface allows
 the Legion runtime system to run ahead of actual execution which
 provides significant latency hiding capability.  
 The benefit of this latency hiding grows as the number of
-nodes increases and as the computation-to-communication ratio decreases.
+nodes increases. % and as the computation-to-communication ratio decreases.
 In all cases, the overhead of the bulk-synchronous
 implementations grew with the node count.  As we continue to scale
 applications to larger and larger machines, the ability of runtimes like Legion to run ahead
