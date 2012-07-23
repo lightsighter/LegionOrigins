@@ -81,37 +81,64 @@ implementations of our target applications in Section~\ref{subsec:bulkcomp}.
   
 \subsection{Event Lifetimes}
 \label{subsec:eventlife}
+
 We instrumented the heterogenous implementation of our interface to 
-capture information about different kinds of events.  Figure~\ref{fig:eventlife} shows
-the lifetimes of different types of events from a single run of the Fluid
-application on 16 nodes using 8 processors per node.  Dynamic events 
-is a monotonically increasing line that
-corresponds to the total number of events created in the system.  By
-the end of the run, the simulation created over 260,000 dynamic
-events.  In contrast, the physical events line corresponds to the total number
-of generational events required to represent the dynamic events 
-across all the nodes in the system.  Less than 5,000
-generational events were required to represent all the dynamic events
-illustrating that the technique of mapping from dynamic events to generational 
-events described in Section~\ref{subsec:eventimpl} was effective.
+capture event usage information.  Figure~\ref{fig:eventlife} shows
+a timeline of the execution of the Fluid application on 16 nodes.
+The dynamic events line measures the total number of event creations.
+A large number of events are created - over 260,000 in less than 15
+seconds - and allocating separate storage for every event would clearly
+be difficult for long-running applications.  The {\em live events} line
+measures the number of events that are live at any given time - after
+the last operation on an event, a reference counting implementation would
+be able to recover the storage associated with the event.  Such an
+algorithm would reduce the storage needed by over 10X at the cost of
+computation and communication overhead for performing the reference 
+counting.  As discussed in Section~\ref{subsec:eventimpl}, our implementation
+requires storage that grows with the number of {\em untriggered events}, a number
+that is 10X smaller than even the maximal live event count.  The actual storage
+requirements of our implementation are shown by the {\em physical events} line,
+which is larger than the peak number of untriggered events because of the
+decision to always create an event owned by the node from which the request
+was made.  Despite this inefficiency, our implementation uses 5X less storage
+than a reference counting implementation and avoids any overhead related to 
+reference counting.  These savings would likely be even more dramatic for longer 
+runs of the application, as the number of live events is steadily growing as the
+application runs, while the peak number of generational events needed appears to 
+occur during the startup of the application.
 
-The live event line shows the total number of {\em live events} at a point in time.  Dynamic events
-are considered {\em live events} until their last query has been performed.  The number of live
-events is equivalent to the number of physical events that would be required
-in a reference counted scheme.  In this case we see that by reusing
-generational events, we require up to 4X fewer generational events than would be
-required by a reference counted scheme.
+%% much storage would be required for events using 
 
-In an ideal world the total number of generational events required would be
-equivalent to the maximum number of generational events in the untriggered
-state at any point.  The untriggered event line shows the number of generational
-events in the untriggered state.  We see that the total number of generational
-events is actually slightly higher than the maximum number of generational
-events in the untriggered state at any point.  The reason for this is that unused
-generational events cannot be shared across nodes, so in some cases nodes must
-make new generational events eventhough there are unused generational events
-on other nodes.  The small difference in these lines shows that in practice
-this is only a minor inefficiency.
+%%  about different kinds of events.  Figure~\ref{fig:eventlife} shows
+%% the lifetimes of different types of events from a single run of the Fluid
+%% application on 16 nodes using 8 processors per node.  Dynamic events 
+%% is a monotonically increasing line that
+%% corresponds to the total number of events created in the system.  By
+%% the end of the run, the simulation created over 260,000 dynamic
+%% events.  In contrast, the physical events line corresponds to the total number
+%% of generational events required to represent the dynamic events 
+%% across all the nodes in the system.  Less than 5,000
+%% generational events were required to represent all the dynamic events
+%% illustrating that the technique of mapping from dynamic events to generational 
+%% events described in Section~\ref{subsec:eventimpl} was effective.
+
+%% The live event line shows the total number of {\em live events} at a point in time.  Dynamic events
+%% are considered {\em live events} until their last query has been performed.  The number of live
+%% events is equivalent to the number of physical events that would be required
+%% in a reference counted scheme.  In this case we see that by reusing
+%% generational events, we require up to 4X fewer generational events than would be
+%% required by a reference counted scheme.
+
+%% In an ideal world the total number of generational events required would be
+%% equivalent to the maximum number of generational events in the untriggered
+%% state at any point.  The untriggered event line shows the number of generational
+%% events in the untriggered state.  We see that the total number of generational
+%% events is actually slightly higher than the maximum number of generational
+%% events in the untriggered state at any point.  The reason for this is that unused
+%% generational events cannot be shared across nodes, so in some cases nodes must
+%% make new generational events eventhough there are unused generational events
+%% on other nodes.  The small difference in these lines shows that in practice
+%% this is only a minor inefficiency.
 
 \begin{figure}
 \begin{center}
