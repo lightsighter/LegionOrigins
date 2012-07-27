@@ -114,7 +114,7 @@ namespace RegionRuntime {
       RegionInstanceImpl*  get_instance_impl(RegionInstanceUntyped i);
 
       EventImpl*           get_free_event(void);
-      LockImpl*            get_free_lock(void);
+      LockImpl*            get_free_lock(size_t data_size = 0);
       RegionMetaDataImpl*  get_free_metadata(size_t num_elmts, size_t elmt_size);
       RegionMetaDataImpl*  get_free_metadata(RegionMetaDataImpl *par, const ElementMask &mask);
       RegionAllocatorImpl* get_free_allocator(RegionMetaDataImpl *owner);
@@ -870,7 +870,7 @@ namespace RegionRuntime {
 
     class LockImpl : public Triggerable {
     public:
-	LockImpl(int idx, bool activate = false) : index(idx) {
+	LockImpl(int idx, bool activate = false, size_t dsize = 0) : index(idx) {
 		active = activate;
 		taken = false;
 		mode = 0;
@@ -879,20 +879,55 @@ namespace RegionRuntime {
                 next_handle = 1;
                 mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
 		PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
+                if (activate)
+                {
+                    if (dsize > 0)
+                    {
+                        data_size = dsize;
+                        data = malloc(data_size);
+#ifdef DEBUG_LOW_LEVEL
+                        assert(data != NULL);
+#endif
+                    }
+                    else
+                    {
+                        data_size = 0;
+                        data = NULL;
+                    }
+                }
+                else
+                {
+#ifdef DEBUG_LOW_LEVEL
+                    assert(dsize == 0);
+#endif
+                    data_size = 0;
+                    data = NULL;
+                }
 	}	
         ~LockImpl(void)
         {
                 PTHREAD_SAFE_CALL(pthread_mutex_destroy(mutex));
                 free(mutex);
+                if (data_size != 0)
+                {
+#ifdef DEBUG_LOW_LEVEL
+                    assert(datasize != NULL);
+#endif
+                    free(data);
+                    data = NULL;
+                    data_size = 0;
+                }
         }
 
 	Event lock(unsigned mode, bool exclusive, Event wait_on);
 	void unlock(Event wait_on);
 	void trigger(unsigned count = 1, TriggerHandle handle = 0);
 
-	bool activate(void);
+	bool activate(size_t data_size);
 	void deactivate(void);
 	Lock get_lock(void) const;
+        size_t get_data_size(void) const;
+        void* get_data_ptr(void) const;
     private:
 	Event register_request(unsigned m, bool exc, TriggerHandle handle = 0);
 	void perform_unlock(std::set<EventImpl*> &to_trigger);
@@ -917,6 +952,8 @@ namespace RegionRuntime {
         TriggerHandle next_handle; // all numbers >0 are lock requests, 0 is unlock trigger handle
 	std::list<LockRecord> requests;
 	pthread_mutex_t *mutex;
+        void *data;
+        size_t data_size;
     };
 
     Event Lock::lock(unsigned mode, bool exclusive, Event wait_on) const
@@ -933,10 +970,10 @@ namespace RegionRuntime {
 	l->unlock(wait_on);
     }
 
-    Lock Lock::create_lock(void)
+    Lock Lock::create_lock(size_t data_size)
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
-	return Runtime::get_runtime()->get_free_lock()->get_lock();
+	return Runtime::get_runtime()->get_free_lock(data_size)->get_lock();
     }
 
     void Lock::destroy_lock(void)
@@ -944,6 +981,20 @@ namespace RegionRuntime {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 	LockImpl *l = Runtime::get_runtime()->get_lock_impl(*this);
 	l->deactivate();
+    }
+
+    size_t Lock::data_size(void) const
+    {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+        LockImpl *l = Runtime::get_runtime()->get_lock_impl(*this);
+        return l->get_data_size();
+    }
+
+    void* Lock::data_ptr(void) const
+    {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+        LockImpl *l = Runtime::get_runtime()->get_lock_impl(*this);
+        return l->get_data_ptr();
     }
 
     Event LockImpl::lock(unsigned m, bool exc, Event wait_on)
@@ -1224,7 +1275,7 @@ namespace RegionRuntime {
 	}
     }
 
-    bool LockImpl::activate(void)
+    bool LockImpl::activate(size_t dsize)
     {
 	bool result = false;
 #if 0
@@ -1239,6 +1290,19 @@ namespace RegionRuntime {
 		active = true;
 		result = true;
 		waiters = false;
+                if (dsize > 0)
+                {
+                    data_size = dsize;
+                    data = malloc(data_size);
+#ifdef DEBUG_LOW_LEVEL
+                    assert(data != NULL);
+#endif
+                }
+                else
+                {
+                    data_size = 0;
+                    data = NULL;
+                }
 	}
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
 	return result;
@@ -1248,6 +1312,15 @@ namespace RegionRuntime {
     {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	active = false;	
+        if (data_size > 0)
+        {
+#ifdef DEBUG_LOW_LEVEL
+            assert(data != NULL);
+#endif
+            free(data);
+            data = NULL;
+            data_size = 0;
+        }
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
@@ -1258,6 +1331,16 @@ namespace RegionRuntime {
 #endif
 	Lock l = { index };
 	return l;
+    }
+
+    size_t LockImpl::get_data_size(void) const
+    {
+        return data_size;
+    }
+
+    void* LockImpl::get_data_ptr(void) const
+    {
+        return data;
     }
 
     ////////////////////////////////////////////////////////
@@ -2270,21 +2353,21 @@ namespace RegionRuntime {
     }
 #endif
 
-    Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, Event wait_on)
+    Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, Event wait_on) const
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       return Runtime::get_runtime()->get_instance_impl(*this)->copy_to(target,wait_on);
     }
 
     Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, const ElementMask &mask,
-                                                Event wait_on)
+                                                Event wait_on) const
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       return Runtime::get_runtime()->get_instance_impl(*this)->copy_to(target,mask,wait_on);
     }
 
     Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, RegionMetaDataUntyped region,
-                                                 Event wait_on)
+                                                 Event wait_on) const
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       return Runtime::get_runtime()->get_instance_impl(*this)->copy_to(target,region,wait_on);
@@ -3406,7 +3489,7 @@ namespace RegionRuntime {
     }
 #endif
 
-    LockImpl* Runtime::get_free_lock()
+    LockImpl* Runtime::get_free_lock(size_t data_size/*= 0*/)
     {
         PTHREAD_SAFE_CALL(pthread_mutex_lock(&free_lock_lock));
         if (!free_locks.empty())
@@ -3414,7 +3497,7 @@ namespace RegionRuntime {
           LockImpl *result = free_locks.front();
           free_locks.pop_front();
           PTHREAD_SAFE_CALL(pthread_mutex_unlock(&free_lock_lock));
-          bool activated = result->activate();
+          bool activated = result->activate(data_size);
 #ifdef DEBUG_LOW_LEVEL
           assert(activated);
 #endif
@@ -3423,7 +3506,7 @@ namespace RegionRuntime {
         // We weren't able to get a new event, get the writer lock
 	PTHREAD_SAFE_CALL(pthread_rwlock_wrlock(&lock_lock));
 	unsigned index = locks.size();
-	locks.push_back(new LockImpl(index,true));
+	locks.push_back(new LockImpl(index,true,data_size));
 	LockImpl *result = locks[index];
         // Create a whole bunch of other locks too while we're here
         for (unsigned idx=1; idx < BASE_LOCKS; idx++)
