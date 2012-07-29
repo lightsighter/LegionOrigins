@@ -2309,6 +2309,8 @@ namespace RegionRuntime {
 	void trigger(unsigned count, TriggerHandle handle);
 	Lock get_lock(void);
         void perform_copy_operation(RegionInstanceImpl *target, const ElementMask &src_mask, const ElementMask &dst_mask);
+        void apply_list(RegionInstanceImpl *target);
+        void append_list(RegionInstanceImpl *target);
         bool is_reduction(void) const { return reduction; }
         bool is_list_reduction(void) const { return list; }
         void* get_base_ptr(void) const { return base_ptr; }
@@ -2603,7 +2605,12 @@ namespace RegionRuntime {
         if (!reduction)
         {
 #ifdef DEBUG_LOW_LEVEL
-          assert(!target->reduction);
+          if (target->reduction)
+          {
+             fprintf(stderr,"Cannot copy from non-reduction instance %d to reduction instance %d\n",
+                      this->index, target->index);
+             exit(1);
+          }
 #endif
           // This is a normal copy
           RangeExecutors::Memcpy rexec(tgt_ptr, src_ptr, elmt_size);
@@ -2611,21 +2618,102 @@ namespace RegionRuntime {
         }
         else
         {
-          // This is a reduction instance, see if we are doing a reduction-to-normal copy 
-          // or a reduction-to-reduction copy
-          if (!target->reduction)
+          // See if this is a list reduction or a fold reduction
+          if (list)
           {
-            // Reduction-to-normal copy  
-            RangeExecutors::RedopApply rexec(redop, tgt_ptr, src_ptr, elmt_size);
-            ElementMask::forall_ranges(rexec, dst_mask, src_mask);
+            if (!target->reduction)
+            {
+              // We need to apply the reductions to the actual buffer 
+              apply_list(target);
+            }
+            else
+            {
+              // Reduction-to-reduction copy 
+#ifdef DEBUG_LOW_LEVEL
+              // Make sure they are the same kind of reduction
+              if (this->redop != target->redop)
+              {
+                fprintf(stderr,"Illegal copy between reduction instances %d and %d with different reduction operations\n",
+                          this->index, target->index);
+                exit(1);
+              }
+#endif
+              if (target->list)
+              {
+                // Append the list
+                append_list(target);
+              }
+              else
+              {
+                // Otherwise just apply it to its target 
+                apply_list(target);
+              }
+            }
           }
           else
           {
-            // Reduction-to-reduction copy
-            RangeExecutors::RedopFold rexec(redop, tgt_ptr, src_ptr);
-            ElementMask::forall_ranges(rexec, dst_mask, src_mask);
+            // This is a reduction instance, see if we are doing a reduction-to-normal copy 
+            // or a reduction-to-reduction copy
+            if (!target->reduction)
+            {
+              // Reduction-to-normal copy  
+              RangeExecutors::RedopApply rexec(redop, tgt_ptr, src_ptr, elmt_size);
+              ElementMask::forall_ranges(rexec, dst_mask, src_mask);
+            }
+            else
+            {
+#ifdef DEBUG_LOW_LEVEL
+              // Make sure its a reduction fold copy
+              if (target->list)
+              {
+                  fprintf(stderr,"Cannot copy from fold reduction instance %d to list reduction instance %d\n",
+                          this->index, target->index);
+                  exit(1);
+              }
+              // Make sure they have the same reduction op
+              if (this->redop != target->redop)
+              {
+                fprintf(stderr,"Illegal copy between reduction instances %d and %d with different reduction operations\n",
+                          this->index, target->index);
+                exit(1);
+              }
+#endif
+              // Reduction-to-reduction copy
+              RangeExecutors::RedopFold rexec(redop, tgt_ptr, src_ptr);
+              ElementMask::forall_ranges(rexec, dst_mask, src_mask);
+            }
           }
         }
+    }
+
+    void RegionInstanceImpl::apply_list(RegionInstanceImpl *target)
+    {
+#ifdef DEBUG_LOW_LEVEL
+        assert(this->list);
+        assert(!target->list);
+        assert(cur_entry <= num_elmts);
+#endif
+        // Get the current end of the list
+        // Don't use any atomics or anything else, assume that
+        // race conditions are handled at the user level above
+        if (target->reduction)
+        {
+          this->redop->fold_list_entry(target->base_ptr, this->base_ptr, cur_entry, 0);
+        }
+        else
+        {
+          this->redop->apply_list_entry(target->base_ptr, this->base_ptr, cur_entry, 0);
+        }
+    }
+
+    void RegionInstanceImpl::append_list(RegionInstanceImpl *target)
+    {
+#ifdef DEBUG_LOW_LEVEL
+        assert(this->list);
+        assert(target->list);
+#endif
+        // TODO: Implement this
+        assert(false);
     }
 
     RegionInstanceUntyped RegionInstanceImpl::get_instance(void) const

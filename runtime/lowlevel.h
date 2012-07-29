@@ -283,6 +283,8 @@ namespace RegionRuntime {
 
       virtual void apply_list_entry(void *lhs_ptr, const void *entry_ptr, size_t count,
 				    off_t ptr_offset, bool exclusive = false) const = 0;
+      virtual void fold_list_entry(void *rhs_ptr, const void *entry_ptr, size_t count,
+                                    off_t ptr_offset, bool exclusive = false) const = 0;
       virtual void get_list_pointers(unsigned *ptrs, const void *entry_ptr, size_t count) const = 0;
 
     protected:
@@ -358,6 +360,23 @@ namespace RegionRuntime {
 	  for(size_t i = 0; i < count; i++)
 	    REDOP::template apply<false>(lhs[entry[i].ptr.value - ptr_offset], entry[i].rhs);
 	}
+      }
+
+      virtual void fold_list_entry(void *rhs_ptr, const void *entry_ptr, size_t count,
+                                    off_t ptr_offset, bool exclusive = false) const
+      {
+        typename REDOP::RHS *rhs = (typename REDOP::RHS*)rhs_ptr;
+        const ReductionListEntry<typename REDOP::LHS,typename REDOP::RHS> *entry = (const ReductionListEntry<typename REDOP::LHS,typename REDOP::RHS> *)entry_ptr;
+        if (exclusive)
+        {
+          for (size_t i = 0; i < count; i++)
+            REDOP::template fold<true>(rhs[entry[i].ptr.value - ptr_offset], entry[i].rhs);
+        }
+        else
+        {
+          for (size_t i = 0; i < count; i++)
+            REDOP::template fold<false>(rhs[entry[i].ptr.value - ptr_offset], entry[i].rhs);
+        }
       }
 
       virtual void get_list_pointers(unsigned *ptrs, const void *entry_ptr, size_t count) const
