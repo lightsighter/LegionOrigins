@@ -2816,7 +2816,11 @@ namespace RegionRuntime {
       assert(!this->is_reduction_only());
 #endif
       RegionInstanceImpl *impl = (RegionInstanceImpl*)internal_data;
-      return RegionInstanceAccessorUntyped<AccessorArray>(impl->get_base_ptr()); 
+      RegionInstanceAccessorUntyped<AccessorArray> ret(impl->get_base_ptr()); 
+#ifdef POINTER_CHECKS
+      ret.impl_ptr = impl;
+#endif
+      return ret;
     }
 
     template<>
@@ -2866,6 +2870,11 @@ namespace RegionRuntime {
     void RegionInstanceAccessorUntyped<AccessorGeneric>::verify_access(unsigned ptr) const
     {
         ((RegionInstanceImpl*)internal_data)->verify_access(ptr);
+    }
+
+    void RegionInstanceAccessorUntyped<AccessorArray>::verify_access(unsigned ptr) const
+    {
+        ((RegionInstanceImpl*)impl_ptr)->verify_access(ptr);
     }
 #endif
 
