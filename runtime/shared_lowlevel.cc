@@ -2311,6 +2311,7 @@ namespace RegionRuntime {
         void perform_copy_operation(RegionInstanceImpl *target, const ElementMask &src_mask, const ElementMask &dst_mask);
         void apply_list(RegionInstanceImpl *target);
         void append_list(RegionInstanceImpl *target);
+        void verify_access(unsigned ptr);
         bool is_reduction(void) const { return reduction; }
         bool is_list_reduction(void) const { return list; }
         void* get_base_ptr(void) const { return base_ptr; }
@@ -2728,6 +2729,16 @@ namespace RegionRuntime {
 	return lock->get_lock();
     }
 
+    void RegionInstanceImpl::verify_access(unsigned ptr)
+    {
+      const ElementMask &mask = region.get_valid_mask();
+      if (!mask.is_set(ptr))
+      {
+        fprintf(stderr,"ERROR: Accessing invalid pointer %d in logical region %d\n",ptr,index);
+        exit(1);
+      }
+    }
+
     void RegionInstanceAccessorUntyped<AccessorGeneric>::get_untyped(off_t byte_offset, void *dst, size_t size) const
     {
       const char *src = (const char*)(((RegionInstanceImpl *)internal_data)->get_base_ptr());
@@ -2850,6 +2861,13 @@ namespace RegionRuntime {
     {
       assert(false);
     }
+
+#ifdef POINTER_CHECKS
+    void RegionInstanceAccessorUntyped<AccessorGeneric>::verify_access(unsigned ptr) const
+    {
+        ((RegionInstanceImpl*)internal_data)->verify_access(ptr);
+    }
+#endif
 
 
     ////////////////////////////////////////////////////////
