@@ -1,5 +1,5 @@
 \documentclass[conference]{IEEEtran}
- 
+\IEEEoverridecommandlockouts 
 \bibliographystyle{IEEEtran}
 \usepackage{amsmath,amsthm}
 \usepackage{listings}
@@ -12,6 +12,7 @@
 \usepackage{cancel}
 \usepackage{graphics}
 \usepackage{url}
+\usepackage{minibox}
 
 \newcommand{\infrule}[2]{\displaystyle\frac{\displaystyle\strut{#1}}{\displaystyle\strut {#2}}}
 \newcommand{\deref}{\ast}
@@ -41,19 +42,38 @@
     conclusions contained in this document are those of the authors
     and should not be interpreted as representing the official
     policies, either expressed or implied, of the U.S. Government.}}
-\author{ \IEEEauthorblockN{Michael Bauer\IEEEauthorrefmark{1},
-%\authorinfo(Stanford University, email: \mbox{mebauer@cs.stanford.edu}
-Sean Treichler\IEEEauthorrefmark{1}, 
-%\authorinfo(Stanford University, email: \mbox{sjt@cs.stanford.edu}
-Elliott Slaughter\IEEEauthorrefmark{1}, 
-% \authorinfo(Stanford University, email: \mbox{slaughter@cs.stanford.edu}
-Alex Aiken\IEEEauthorrefmark{1}  
-%\authorinfo(Stanford University, email: \mbox{aiken@cs.stanford.edu}
-%\email{aiken@cs.stanford.edu}
+%\author{ \IEEEauthorblockN{Michael Bauer\IEEEauthorrefmark{1},
+%%\authorinfo(Stanford University, email: \mbox{mebauer@cs.stanford.edu}
+%Sean Treichler\IEEEauthorrefmark{1}, 
+%%\authorinfo(Stanford University, email: \mbox{sjt@cs.stanford.edu}
+%Elliott Slaughter\IEEEauthorrefmark{1}, 
+%% \authorinfo(Stanford University, email: \mbox{slaughter@cs.stanford.edu}
+%Alex Aiken\IEEEauthorrefmark{1}  
+%%\authorinfo(Stanford University, email: \mbox{aiken@cs.stanford.edu}
+%%\email{aiken@cs.stanford.edu}
+%}
+%\IEEEauthorblockA{
+%\IEEEauthorrefmark{1}{Computer Science Department, Stanford University}
+%}
+%}
+
+\author{
+\IEEEauthorblockN{Michael Bauer}
+\IEEEauthorblockA{Stanford University \\ mebauer@cs.stanford.edu}
+\and
+\IEEEauthorblockN{Sean Treichler}
+\IEEEauthorblockA{StanfordUniversity \\ sjt@cs.stanford.edu}
+\and
+\IEEEauthorblockN{Elliott Slaughter}
+\IEEEauthorblockA{Stanford University \\ slaughter@cs.stanford.edu}
+\and
+\IEEEauthorblockN{Alex Aiken}
+\IEEEauthorblockA{Stanford University \\ aiken@cs.stanford.edu}
 }
-\IEEEauthorblockA{
-\IEEEauthorrefmark{1}{Computer Science Department, Stanford University}
-}
+
+\IEEEpubid{\makebox[\columnwidth][l]{\minibox{SC12, November 10-16, 2012, Salt Lake City, Utah, USA \\ 978-1-4673-0806-9/12/ \$31.00~\copyright~2012 IEEE}}
+\hspace{\columnsep}
+\makebox[\columnwidth]{}
 }
 
 \maketitle
