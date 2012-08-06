@@ -29,16 +29,7 @@ namespace RegionRuntime {
     public:
       typedef unsigned id_t;
       typedef unsigned gen_t;
-#if 0
-      typedef unsigned long long fused_t;
-      union {
-	fused_t fused;
-	struct {
-	  id_t id;
-	  gen_t gen;
-	}
-      };
-#endif
+
       id_t id;
       gen_t gen;
       bool operator<(const Event& rhs) const { return  (id < rhs.id) || (gen < rhs.gen); }

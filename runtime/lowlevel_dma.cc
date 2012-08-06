@@ -386,13 +386,6 @@ namespace RegionRuntime {
 	    nodecounts[home_node]++;
 	  }
 
-#if 0
-	  printf("Node counts:\n");
-	  for(unsigned i = 0; i < gasnet_nodes(); i++)
-	    printf("  %d=%d", i, nodecounts[i]);
-	  printf("\n");
-#endif
-
 	  size_t max_entries_per_msg = (1 << 20) / redop->sizeof_list_entry;
 	  char *entry_buffer = new char[max_entries_per_msg * redop->sizeof_list_entry];
 
@@ -454,12 +447,6 @@ namespace RegionRuntime {
 	  off_t byte_offset = offset * elmt_size;
 	  size_t byte_count = count * elmt_size;
 	
-#if 0
-	  log_copy.debug("gasnet_get [%zx,%zx) -> [%p,%p) (%zd)",
-			 src_offset + byte_offset, src_offset + byte_offset + byte_count,
-			 tgt_ptr + byte_offset, tgt_ptr + offset + byte_count,
-			 byte_count);
-#endif
 	  DetailedTimer::ScopedPush sp(TIME_SYSTEM);
 	  src_mem->get_bytes(src_offset + byte_offset,
 			     tgt_ptr + byte_offset,
@@ -486,12 +473,6 @@ namespace RegionRuntime {
 	  off_t byte_offset = offset * elmt_size;
 	  size_t byte_count = count * elmt_size;
 	
-#if 0
-	  log_copy.debug("gasnet_get [%zx,%zx) -> [%p,%p) (%zd)",
-			 src_offset + byte_offset, src_offset + byte_offset + byte_count,
-			 tgt_ptr + byte_offset, tgt_ptr + offset + byte_count,
-			 byte_count);
-#endif
 	  offsets.push_back(src_offset + byte_offset);
 	  dsts.push_back(tgt_ptr + byte_offset);
 	  sizes.push_back(byte_count);
