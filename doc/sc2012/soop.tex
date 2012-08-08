@@ -5,7 +5,7 @@ Legion uses a {\em  software out-of-order processor}, or SOOP, to schedule tasks
 dynamically schedules a stream of tasks in a manner akin to an out-of-order processor scheduling a stream of instructions:
 just as an instruction scheduler is constrained by register dependences,
 the SOOP is constrained by region dependences.
-The SOOP  is pipelined, distributed and extracts nested parallelism from subtasks.
+The SOOP  is pipelined, distributed, and extracts nested parallelism from subtasks.
 There are two major challenges in implementing an efficient task scheduler:
 \begin{itemize}
 \item  For correctness, Legion must preserve data dependences between tasks, which is non-trivial
@@ -81,7 +81,7 @@ modes are compared using the table in Figure~\ref{fig:dependence}.
 {\tt Dep} indicates dependence while {\tt None}
 indicates independence.  {\tt Same} is a dependence unless the two tasks
 use the same physical instance of the logical region.  Since tasks
-haven't mapped physical instances at this point in the pipeline,
+have not mapped physical instances at this point in the pipeline,
 {\tt Same} is always a mapping dependence.
 %\footnote{For example, if two tasks wish to acess the region with atomic coherence, then if they are working on the same physical copy of the data atomicity can be guaranteed using, e.g., locking.  If they are working on different copies of the data then the only safe execution strategy for Legion is to serialize the two tasks.}
 {\tt Cont} 

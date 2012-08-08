@@ -49,13 +49,13 @@ void simulate_circuit(Circuit c, float dt) : RWE(c.r_all_nodes, c.r_all_wires)
     spawn (i = 0; i #$<$# MAX_PIECES; i++) update_voltages(pieces[i]);
   }
 }
-
+                           // ROE = Read-Only-Exclusive
 void calc_new_currents(CircuitPiece piece):
         RWE(piece.rw_pvt), ROE(piece.rn_pvt, piece.rn_shr, piece.rn_ghost) {
   foreach(w : piece.rw_pvt)
     w#$\rightarrow$#current = (w#$\rightarrow$#in_node#$\rightarrow$#voltage - w#$\rightarrow$#out_node#$\rightarrow$#voltage) / w#$\rightarrow$#resistance;
 }
-
+                          // RdA = Reduce-Atomic
 void distribute_charge(CircuitPiece piece, float dt):
         ROE(piece.rw_pvt), RdA(piece.rn_pvt, piece.rn_shr, piece.rn_ghost) {
   foreach(w : piece.rw_pvt) {

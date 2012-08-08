@@ -7,11 +7,21 @@ of expressing computations in deep memory hierarchies
 \cite{Fatahalian06}.  Sequoia is a special case of the Legion
 programming model in which only arrays can be recursively partitioned,
 all access is exclusive, there is a static mapping of tasks and data (though
-extensions to Sequoia make this mapping more dynamic \cite{BCSA11}) and, most fundamentally, the decomposition of tasks and the decomposition
+extensions to Sequoia make this mapping more dynamic \cite{BCSA11}) and, most 
+fundamentally, the decomposition of tasks and the decomposition
 of data is one-to-one.  Legion generalizes the Sequoia model by allowing for
 dynamic partitioning of pointer data structures through regions, enabling dynamic mappings through
 the mapper interface, and allowing different coherence
 properties.  Legion's decoupling of the task tree from the region tree leads directly to the scheduling problem solved by our software out-of-order processor for tasks with region arguments.
+
+The SSMP programming model is the most similar work to Legion \cite{Perez10}.  
+Like Legion, SSMP supports dynamic detection of dependences between tasks based 
+on data requirements.  However, SSMP only supports a single disjoint rectilinear 
+partition of an array, unlike Legion which supports multiple
+arbitrary partitions of regions.  Furthermore, the SSMP runtime must perform dependence
+checks between every pair of tasks created in the system.  Legion's programming model only
+requires dependence checks between tasks with the same parent task which enables scalable nested
+parallelism in distributed machines.  SSMP only operates on shared memory machines.
 
 Chapel has several concepts to support the expression of locality \cite{Chamberlain:Chapel}.
 Domains are similar to logical regions in that they describe maps from indexes
@@ -37,7 +47,7 @@ distributed memory machines \cite{X1005}.  X10's {\em places} enable
 programmers to talk about where to place both data and tasks.
 However, once data and tasks have been placed they are fixed, which
 mandates that data movement be explicitly managed by user level code
-or implicitly by the compiler or runtime \cite{X1008}.  Recently X10
+or implicitly by the compiler \cite{X1008}.  Recently X10
 has introduced regions into the compiler's
 intermediate representation \cite{X1011}.  Unlike Legion, regions in
 X10 are not visible to the programmer but are inferred from high level
@@ -59,7 +69,22 @@ the populate-then-partition style of using regions, but not the
 partition-then-populate; overall, the language is more static, and
 thus provides more guarantees and less flexibility than Legion.  
 DPJ efforts have so far focused on JVM implementations on shared memory machines.
-There have also been several other recent efforts that propose task schedulers
+
+There have also been several other efforts that use partitions to either avoid
+or detect conflicts in shared memory programs dynamically.
+Object assemblies are a mechanism for partitioning a shared memory
+heap to enable parallel execution \cite{Lublinerman09}.  Object assemblies
+only support a disjoint partitioning of the heap unlike Legion which
+allows for multiple partitions of any data structure.  Legion further uses 
+the information from partitions to operate on distributed architectures.
+
+Galois is programming system based on optimistic parallelism that dynamically detects 
+memory conflicts between concurrent threads at the very
+fine granularity of object accesses.  To achieve reasonable performance
+Galois supports a partitioning interface for breaking up data structures \cite{Kulkarni08}.  
+Galois relies on shared memory
+and only leverages partitioning for coarser locking and conflict detection.
+Several other recent efforts have proposed task schedulers
 based on dynamic detection of memory conflicts, but these also have assumed
 underlying shared memory hardware \cite{VTN11,Tzenakis12,EYJD12}.
 
@@ -73,7 +98,6 @@ memory hierarchies consisting of local and global memory.
 Part of Legion's
 low-level runtime system is constructed using UPC's GASNet
 runtime system \cite{GASNET07}.
-
 
 In previous programming systems regions have primarily been used as a construct for
 describing memory management schemes \cite{REAPS02,RC01}  

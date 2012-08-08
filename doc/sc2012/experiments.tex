@@ -99,7 +99,7 @@ memory.
 Figure~\ref{fig:ckt_speed} shows the performance of the Legion circuit simulation relative
 to a hand-coded single-GPU implementation written in CUDA.  The hand-coded implementation is
 able to keep the entire simulation state in fast framebuffer memory.  Each line shows the scaling of
-a particular problem size as the number of nodes is varied.  Our results demonstrate
+a particular problem size as the number of compute nodes is varied.  Our results demonstrate
 excellent strong scaling, with speedups of 39.0X for the small problem on 48 GPUs and 
 62.5X for the larger problem size on 96 GPUs.  The inset in the graph shows the relative
 performance for small numbers of GPUs.  On a single GPU, our Legion implementation
@@ -108,7 +108,7 @@ is within 5\% of the performance of the hand-coded simulation.
 Figure~\ref{fig:ckt_overhead} shows the fraction of the overall simulation time (summed over
 all nodes) spent in the application kernels compared to the various pieces of the Legion
 SOOP runtime.  As the node count increases, the non-communication overhead stays relatively constant.
-As expected the communication overhead grow linearly with number of nodes.
+As expected, the communication overhead grows quadratically with the number of nodes.
 
 \begin{figure}
 \subfigure[Circuit simulation speed relative to single-GPU implementation.]
@@ -239,7 +239,7 @@ level of refinement.
 Achieving high-performance on this application is particularly
 challenging for several reasons.  First, the application has a very
 high communication-to-computation ratio which, for a fixed problem
-size, begins as being memory bound and with increasing node count
+size, begins as being memory bound and, with increasing node count,
 becomes network bound as the perimeter-to-area ratio of cell grids
 increases.  Second, when choosing how to partition cells into grids,
 the programmer must consider the locality between cells within a
