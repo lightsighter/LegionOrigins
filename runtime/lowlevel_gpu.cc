@@ -14,15 +14,6 @@
 
 namespace RegionRuntime {
   namespace LowLevel {
-#if 0
-    template <class T, void *(T::*METHOD)(void)>
-    void *pthread_start_wrapper(void *data)
-    {
-      T *obj = (T *)data;
-      return (obj->*METHOD)();
-    }
-#endif
-
     extern Logger::Category log_gpu;
 
     class GPUJob : public Event::Impl::EventWaiter {
@@ -122,14 +113,6 @@ namespace RegionRuntime {
 	    gasnett_cond_wait(&worker_condvar, &mutex.lock);
 	  }
 	}
-
-#if 0
-	if((gasnet_mynode() > 0) && (gpu_index > 0)) {
-	  log_gpu.info("second GPU sleeping for a long time");
-	  usleep(100000000);
-	  log_gpu.info("second GPU resuming");
-	}
-#endif
 
 	while(!shutdown_requested) {
 	  // get a job off the job queue - sleep if nothing there
@@ -290,12 +273,7 @@ namespace RegionRuntime {
       {
 	off_t span_start = pos * elmt_size;
 	size_t span_bytes = len * elmt_size;
-#if 0
-	printf("copying mem:[%p,%p) -> [%p,%p) (pos=%zd, len=%zd)\n",
-	       ((char *)src)+span_start, ((char *)src)+span_start+span_bytes,
-	       ((char *)dst)+span_start, ((char *)dst)+span_start+span_bytes,
-	       pos, len);
-#endif
+
 	CHECK_CUDART( cudaMemcpy(((char *)dst)+span_start,
 				 ((char *)src)+span_start,
 				 span_bytes, kind) );
@@ -311,10 +289,7 @@ namespace RegionRuntime {
 	} else {
 	  do_span(0, 1);
 	}
-#if 0
-	fflush(stdout);
-	CHECK_CUDART( cudaMemcpy(dst, src, bytes, kind) );
-#endif
+
 	log_gpu.info("gpu memcpy complete: dst=%p src=%p bytes=%zd kind=%d",
 		     dst, src, elmt_size, kind);
       }
@@ -350,11 +325,7 @@ namespace RegionRuntime {
 	size_t bytes_done = 0;
 	off_t span_start = pos * elmt_size;
 	size_t span_bytes = len * elmt_size;
-#if 0
-	printf("copying mem:[%zx,%zx) <-> fb:[%p,%p) (pos=%zd, len=%zd)\n",
-	       mem_offset+span_start, mem_offset+span_start+span_bytes,
-	       ((char *)gpu_ptr)+span_start, ((char *)gpu_ptr)+span_start+span_bytes, pos, len);
-#endif
+
 	while(bytes_done < span_bytes) {
 	  size_t chunk_size = span_bytes - bytes_done;
 	  if(chunk_size > BUFFER_SIZE) chunk_size = BUFFER_SIZE;
@@ -386,26 +357,7 @@ namespace RegionRuntime {
 	} else {
 	  do_span(0, 1);
 	}
-#if 0
-	const size_t BUFFER_SIZE = 65536;
-	char buffer[BUFFER_SIZE];
-	size_t bytes_done = 0;
-	while(bytes_done < bytes) {
-	  size_t chunk_size = bytes - bytes_done;
-	  if(chunk_size > BUFFER_SIZE) chunk_size = BUFFER_SIZE;
 
-	  if(kind == cudaMemcpyDeviceToHost) {
-	    CHECK_CUDART( cudaMemcpy(buffer, ((char *)gpu_ptr)+bytes_done, 
-				     chunk_size, kind) );
-	    memory->put_bytes(mem_offset+bytes_done, buffer, chunk_size);
-	  } else {
-	    memory->get_bytes(mem_offset+bytes_done, buffer, chunk_size);
-	    CHECK_CUDART( cudaMemcpy(((char *)gpu_ptr)+bytes_done, buffer, 
-				     chunk_size, kind) );
-	  }
-	  bytes_done += chunk_size;
-	}
-#endif
 	log_gpu.info("gpu memcpy generic done: gpuptr=%p mem=%x offset=%zd bytes=%zd kind=%d",
 		     gpu_ptr, memory->me.id, mem_offset, elmt_size, kind);
       }

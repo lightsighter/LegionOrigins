@@ -99,7 +99,8 @@ namespace RegionRuntime {
         }
         continue;
       }
-#if 0
+
+#ifdef DEBUG_LOGGER_CATEGORIES
       printf("logger settings: level=%d cats=", log_level);
       bool first = true;
       for(unsigned i = 0; i < log_cats_enabled.size(); i++)

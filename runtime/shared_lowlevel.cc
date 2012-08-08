@@ -717,15 +717,7 @@ namespace RegionRuntime {
     {
 	bool result = false;
         // Try acquiring the lock, if we don't get it then just move on
-#if 0
-        int trythis = pthread_mutex_trylock(&mutex);
-        if (trythis == EBUSY)
-          return result;
-        // Also check for other error codes
-	PTHREAD_SAFE_CALL(trythis);
-#else
         PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
-#endif
 	if (!in_use)
 	{
 		in_use = true;
@@ -1279,12 +1271,6 @@ namespace RegionRuntime {
     bool LockImpl::activate(size_t dsize)
     {
 	bool result = false;
-#if 0
-        int trythis = pthread_mutex_trylock(&mutex);
-        if (trythis == EBUSY)
-          return result;
-	PTHREAD_SAFE_CALL(trythis);
-#endif
         PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	if (!active)
 	{
@@ -1838,18 +1824,6 @@ namespace RegionRuntime {
       return *this;
     }
 
-#if 0
-    void ElementMask::init(int _first_element, int _num_elements, Memory _memory, off_t _offset)
-    {
-      first_element = _first_element;
-      num_elements = _num_elements;
-      memory = _memory;
-      offset = _offset;
-      size_t bytes_needed = ElementMaskImpl::bytes_needed(first_element, num_elements);
-      raw_data = Runtime::get_runtime()->get_memory_impl(memory)->get_direct_ptr(offset, bytes_needed);
-    }
-#endif
-
     void ElementMask::enable(int start, int count /*= 1*/)
     {
       if(raw_data != 0) {
@@ -1864,21 +1838,6 @@ namespace RegionRuntime {
 	//printf("ENABLED %p %d %d %d %x\n", raw_data, offset, start, count, impl->bits[0]);
       } else {
 	assert(0);
-#if 0
-	//printf("ENABLE(2) %x %d %d %d\n", memory.id, offset, start, count);
-	MemoryImpl *m_impl = Runtime::get_runtime()->get_memory_impl(memory);
-
-	int pos = start - first_element;
-	for(int i = 0; i < count; i++) {
-	  unsigned ofs = offset + ((pos >> 5) << 2);
-	  unsigned val;
-	  m_impl->get_bytes(ofs, &val, sizeof(val));
-	  //printf("ENABLED(2) %d,  %x\n", ofs, val);
-	  val |= (1U << (pos & 0x1f));
-	  m_impl->put_bytes(ofs, &val, sizeof(val));
-	  pos++;
-	}
-#endif
       }
     }
 
@@ -1894,21 +1853,6 @@ namespace RegionRuntime {
 	}
       } else {
 	assert(0);
-#if 0
-	//printf("DISABLE(2) %x %d %d %d\n", memory.id, offset, start, count);
-	Memory::Impl *m_impl = memory.impl();
-
-	int pos = start - first_element;
-	for(int i = 0; i < count; i++) {
-	  unsigned ofs = offset + ((pos >> 5) << 2);
-	  unsigned val;
-	  m_impl->get_bytes(ofs, &val, sizeof(val));
-	  //printf("DISABLED(2) %d,  %x\n", ofs, val);
-	  val &= ~(1U << (pos & 0x1f));
-	  m_impl->put_bytes(ofs, &val, sizeof(val));
-	  pos++;
-	}
-#endif
       }
     }
 
@@ -1928,22 +1872,6 @@ namespace RegionRuntime {
 	}
       } else {
 	assert(0);
-#if 0
-	Memory::Impl *m_impl = memory.impl();
-	//printf("FIND_ENABLED(2) %x %d %d %d\n", memory.id, offset, first_element, count);
-	for(int pos = 0; pos <= num_elements - count; pos++) {
-	  int run = 0;
-	  while(1) {
-	    unsigned ofs = offset + ((pos >> 5) << 2);
-	    unsigned val;
-	    m_impl->get_bytes(ofs, &val, sizeof(val));
-	    unsigned bit = (val >> (pos & 0x1f)) & 1;
-	    if(bit != 1) break;
-	    pos++; run++;
-	    if(run >= count) return pos - run;
-	  }
-	}
-#endif
       }
       return -1;
     }
@@ -2035,39 +1963,6 @@ namespace RegionRuntime {
 	return false;
       } else {
 	assert(0);
-#if 0
-	Memory::Impl *m_impl = mask.memory.impl();
-
-	// scan until we find a bit set with the right polarity
-	while(pos < mask.num_elements) {
-	  unsigned ofs = mask.offset + ((pos >> 5) << 2);
-	  unsigned val;
-	  m_impl->get_bytes(ofs, &val, sizeof(val));
-	  int bit = ((val >> (pos & 0x1f))) & 1;
-	  if(bit != polarity) {
-	    pos++;
-	    continue;
-	  }
-
-	  // ok, found one bit with the right polarity - now see how many
-	  //  we have in a row
-	  position = pos++;
-	  while(pos < mask.num_elements) {
-	    unsigned ofs = mask.offset + ((pos >> 5) << 2);
-	    unsigned val;
-	    m_impl->get_bytes(ofs, &val, sizeof(val));
-	    int bit = ((val >> (pos & 0x1f))) & 1;
-	    if(bit == polarity) {
-	      pos++;
-	      continue;
-	    }
-	  }
-	  // we get here either because we found the end of the run or we 
-	  //  hit the end of the mask
-	  length = pos - position;
-	  return true;
-	}
-#endif
 
 	// if we fall off the end, there's no more ranges to enumerate
 	return false;
@@ -2217,12 +2112,6 @@ namespace RegionRuntime {
     bool RegionAllocatorImpl::activate(RegionMetaDataImpl *own)
     {
 	bool result = false;
-#if 0
-        int trythis = pthread_mutex_trylock(&mutex);
-        if (trythis == EBUSY)
-          return result;
-	PTHREAD_SAFE_CALL(trythis);
-#endif
         PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	if (!active)
 	{
@@ -2360,13 +2249,6 @@ namespace RegionRuntime {
       return RegionInstanceAccessorUntyped<AccessorGeneric>((void *)impl);
     }
 
-#if 0
-    Lock RegionInstanceUntyped::get_lock(void)
-    {
-	return Runtime::get_runtime()->get_instance_impl(*this)->get_lock();
-    }
-#endif
-
     Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, Event wait_on) const
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
@@ -2403,12 +2285,6 @@ namespace RegionRuntime {
                                       char *base, const ReductionOpUntyped *op, RegionInstanceImpl *parent)
     {
 	bool result = false;
-#if 0
-        int trythis = pthread_mutex_trylock(&mutex);
-        if (trythis == EBUSY)
-          return result;
-	PTHREAD_SAFE_CALL(trythis);
-#endif
         PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	if (!active)
 	{
@@ -2968,12 +2844,6 @@ namespace RegionRuntime {
     bool RegionMetaDataImpl::activate(size_t num, size_t size)
     {
 	bool result = false;
-#if 0
-        int trythis = pthread_mutex_trylock(&mutex);
-        if (trythis == EBUSY)
-          return result;
-	PTHREAD_SAFE_CALL(trythis);
-#endif
         PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	if (!active)
 	{ 
@@ -2992,12 +2862,6 @@ namespace RegionRuntime {
     bool RegionMetaDataImpl::activate(RegionMetaDataImpl *par, const ElementMask &m)
     {
       bool result = false;
-#if 0
-      int trythis = pthread_mutex_trylock(&mutex);
-      if (trythis == EBUSY)
-        return result;
-      PTHREAD_SAFE_CALL(trythis);
-#endif
       PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
       if (!active)
       {
@@ -3645,42 +3509,6 @@ namespace RegionRuntime {
 	return result;
     }
 
-#if 0
-    EventImpl* Runtime::get_free_event()
-    {
-	PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&event_lock));
-	// Iterate over the events looking for a free one
-	for (unsigned i=1; i<events.size(); i++)
-	{
-		if (events[i]->activate())
-		{
-			EventImpl *result = events[i];
-#ifdef DEBUG_LOW_LEVEL
-                        assert(result != NULL);
-#endif
-			PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&event_lock));
-			return result;
-		}
-	}
-	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&event_lock));
-	// Otherwise there are no free events so make a new one
-	PTHREAD_SAFE_CALL(pthread_rwlock_wrlock(&event_lock));
-	unsigned index = events.size();
-	events.push_back(new EventImpl(index, true));
-	EventImpl *result = events[index];
-#ifdef DEBUG_LOW_LEVEL
-        assert(result != NULL);
-#endif
-        // Create a whole bunch of other events too to avoid coming
-        // into the write lock section often
-        for (unsigned idx=1; idx < BASE_EVENTS; idx++)
-        {
-          events.push_back(new EventImpl(index+idx, false));
-        }
-	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&event_lock));
-	return result; 
-    }
-#else
     EventImpl* Runtime::get_free_event()
     {
         PTHREAD_SAFE_CALL(pthread_mutex_lock(&free_event_lock));
@@ -3716,7 +3544,6 @@ namespace RegionRuntime {
         PTHREAD_SAFE_CALL(pthread_mutex_unlock(&free_event_lock));
         return result;
     }
-#endif
 
     LockImpl* Runtime::get_free_lock(size_t data_size/*= 0*/)
     {
