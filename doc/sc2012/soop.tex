@@ -175,15 +175,14 @@ pieces[1].rn\_pvt}, {\tt .rn\_shr}, and {\tt .rn\_ghost} (read-only exclusive).
 It may be helpful to refer to the region tree for nodes in Figure~\ref{sfig:part_fig:tree} (recall that the wires region tree consists of a single disjoint partition).  We give a few representative examples
 of reasoning about pairwise aliasing (not all pairs are covered):
 \begin{enumerate}
-\item {\tt pieces[0].rw\_pvt} and {\tt pieces[1].rw\_pvt} do not alias as they are subregions of a disjoint partition.
+\item {\tt pieces[0].rw\_pvt} and {\tt pieces[1].rw\_pvt} do not alias as they are different subregions of a disjoint partition.
 %\item {\tt pieces[0].rn\_pvt} and {\tt pieces[1].rn\_pvt} do not alias for the same reason.
 %\item {\tt pieces[0].rn\_shr} and {\tt pieces[1].rn\_shr} do not alias, also for the same reason.
 \item {\tt pieces[0].rn\_ghost} and {\tt pieces[1].rn\_shr} alias as they are in different
   partitions of the same region.
 %\item {\tt pieces[0].rn\_shr} and {\tt pieces[1].rn\_ghost} alias because they are in two different
 %  partitions of the same region.
-\item {\tt pieces[0].rn\_ghost} and {\tt pieces[1].rn\_ghost} alias because they are in different subregions of
-an aliased partition.
+\item Subregions of an aliased partition always alias (e.g., {\tt pieces[0].rn\_ghost} and {\tt pieces[1].rn\_ghost}).
 \item {\tt pieces[0].rw\_pvt} and {\tt pieces[1].rn\_pvt}
 do not alias because they are in different region trees.
 \end{enumerate}
