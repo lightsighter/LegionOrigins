@@ -57,16 +57,17 @@ managing data movement through both the cluster and GPU memory
 hierarchies.
 
 Deterministic Parallel Java (DPJ) is a parallel extension of Java
-that, like Legion, uses regions to express locality and does
-dependence analysis at the granularity of conflicts on region
-arguments to functions \cite{Bocchino09}.  As the name suggests, one
-of the primary goals of DPJ is to provide a programming model that
+that, like Legion, uses regions to express locality, but does
+static dependence analysis on region
+arguments to functions to find dependences\cite{Bocchino09}.  The primary goal of DPJ 
+is to provide a programming model that
 guarantees determinism while also supporting parallelism.
-As a result the programming model is more restrictive than Legion, as
-there is no notion of weaker coherence properties of regions than
-exclusive access (which is essential to determinism).  DPJ can express
+As a result, the DPJ programming model is more restrictive than Legion.  
+DPJ only supports a static form of Legion's exclusive and atomic 
+coherence modes which mandates the same coherence for the lifetime
+of a region.  DPJ can express
 the populate-then-partition style of using regions, but not the
-partition-then-populate; overall, the language is more static, and
+partition-then-populate.  Overall, DPJ is more static, and
 thus provides more guarantees and less flexibility than Legion.  
 DPJ efforts have so far focused on JVM implementations on shared memory machines.
 
