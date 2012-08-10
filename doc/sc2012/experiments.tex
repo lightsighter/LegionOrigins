@@ -92,8 +92,8 @@ memory.
 
 \begin{figure}
 \includegraphics[scale=0.48]{figs/CircuitMem.pdf}
-\caption{Tasks and data for the circuit simulation on a cluster of GPUs.}
-\label{fig:gpumapping}
+\caption{Tasks and data for the circuit simulation on a cluster of GPUs. \label{fig:gpumapping}}
+\vspace{-6mm}
 \end{figure}
 
 Figure~\ref{fig:ckt_speed} shows the performance of the Legion circuit simulation relative
@@ -127,7 +127,7 @@ As expected, the communication overhead grows quadratically with the number of n
 \includegraphics[scale=0.4]{figs/circuit_overhead.pdf}
 \label{fig:ckt_overhead}
 }
-\vspace{-2mm}
+\vspace{-3mm}
 \caption{Circuit simulation results.}
 \vspace{-6mm}
 \end{figure}
@@ -181,13 +181,14 @@ deviations from linear begin sooner as the operating system's
 thread placement choices begin to matter.
 
 To measure scaling beyond a single node, three different problem sizes
-were run for each of the three systems (Figure~\ref{fig:fluid_multi}).
+were run on each of the three systems.
+The results are presented in Figure~\ref{fig:fluid_multi}.
 For the smallest problem (300K particles), we observe a 20\% speedup
 from 1 to 2 nodes (16 threads total), but slow
-down beyond that due to communication overhead---at 4 nodes there are
+down beyond that due to communication overhead; at 4 nodes there are
 twice as many ghost cells as interior grid cells.  The larger problem
-sizes (2.4M and 19M particles) do much better, with scaling of up to
-5.4x when going from 1 node up to 16 because of a lower
+sizes (2.4M and 19M particles) perform much better, with scaling of up to
+5.4x when going from 1 node to 16 because of a lower
 communication-to-computation ratio.
 
 %Although the particle simulation being performed is on a regular array of cells, it turns out that the
@@ -215,9 +216,9 @@ communication-to-computation ratio.
 %\includegraphics[scale=0.4]{figs/fluid_balance.pdf}
 %\label{fig:fluid_balance}
 %}
-\vspace{-2mm}
+\vspace{-0mm}
 \caption{Fluid simulation results.}
-\vspace{-6mm}
+\vspace{2mm}
 \end{figure}
 
 \subsection{Adaptive Mesh Refinement}
