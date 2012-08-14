@@ -4,7 +4,8 @@
 As mentioned previously, a novel aspect of Legion is the {\em mapping interface},
 which gives programmers control over where tasks run and where region instances are placed,
 making possible application- or machine-specific mapping decisions that would be difficult for a 
-general-purpose programming system to infer.
+general-purpose programming system to infer.  Furthermore, this interface is invoked at runtime which
+allows for dynamic mapping decisions based on program input data.
 We describe the interface (Section \ref{sec:mapinterface}),
 our base implementation (Section \ref{sec:defmapper}), and the benefits
 of creating custom mappers (Section \ref{sec:custommap}).
@@ -15,7 +16,7 @@ of creating custom mappers (Section \ref{sec:custommap}).
 The mapping interface consists of ten methods that SOOPs call for
 mapping decisions.  A {\em mapper} implementing these methods has access to a simple interface
 for inspecting properties of the machine, including a list of
-processors and their type (i.e. CPU, GPU), a list of
+processors and their type (e.g. CPU, GPU), a list of
 memories visible to each processor, and their latencies and bandwidths.
 For brevity we only discuss the three most important interface calls:
 
@@ -82,15 +83,22 @@ regions to be pulled unnecessarily close to the processor, consuming precious fa
 \subsection{Custom Mappers}
 \label{sec:custommap}
 To optimize a Legion program or library, programmers can create one or more custom mappers.  
-For each Legion task call the programmer specifies which mapper should be invoked by the runtime for
-mapping that particular task.  This allows for the composition of Legion applications and libraries
-each with their own custom mappers.
-
-Each custom mapper extends the default mapper.  A programmer need only override the functions 
+Each custom mapper extends the default mapper.  A programmer need only override the mapper functions 
 %necessary for creating a custom mapping.  
-he wishes to customize.  Custom mappers can be used to create totally static mappings, 
-mappings that memoize their results, or even totally dynamic mappings.  We describe examples of 
+he wishes to customize.  Mappers are registered with the runtime and given unique handles.
+When a task is launched, the programmer specifies the handle for the mapper that should be invoked by the runtime for
+mapping that particular task.
+
+Supporting custom mappers has two benefits.  First, it allows for the composition of Legion applications
+and Legion libraries each with their own custom mappers.
+Second, custom mappers can be used to create totally static mappings, 
+mappings that memoize their results, or even totally dynamic mappings for different 
+subsets of tasks in Legion applications.  We describe examples of 
 custom mappers in Section \ref{sec:exp}.
+
+
+%  This allows for the composition of Legion applications and libraries
+%each with their own custom mappers.
 
 
 

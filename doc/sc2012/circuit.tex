@@ -92,12 +92,12 @@ functions can do with the regions concurrently.  Functions that
 declare their accessed regions, privileges, and coherence are called {\em tasks}
 and are the unit of parallel execution in Legion.
 
-Lines 31-57 form the bulk of the actual simulation, performing three
-passes over the circuit in each iteration.  Each pass loops over an
+Lines 31-57 perform the actual simulation by making three
+passes over the circuit for each time step.  Each pass loops over an
 array of pieces (constructed on lines 27-30 from the partitions),
 spawning a task for each piece.  There are no explicit requests for
 parallel execution ({\tt spawn} simply indicates a task call and does
-not mandate parallel execution) nor is there synchronization 
+not mandate parallel execution) nor is there explicit synchronization 
 between the passes.  Which tasks can be run in
 parallel within a pass and the required inter-pass dependencies are
 determined automatically by the Legion runtime based on the region

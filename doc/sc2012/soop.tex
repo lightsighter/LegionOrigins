@@ -2,8 +2,8 @@
 \label{sec:soop}
 
 Legion uses a {\em  software out-of-order processor}, or SOOP, to schedule tasks.  A SOOP 
-dynamically schedules a stream of tasks in a manner akin to an out-of-order processor scheduling a stream of instructions:
-just as an instruction scheduler is constrained by register dependences,
+dynamically schedules a stream of tasks in a manner akin to an out-of-order processor scheduling a stream of instructions.
+Just as an instruction scheduler is constrained by register dependences,
 the SOOP is constrained by region dependences.
 The SOOP  is pipelined, distributed, and extracts nested parallelism from subtasks.
 There are two major challenges in implementing an efficient task scheduler:
