@@ -53,7 +53,27 @@ namespace RegionRuntime {
       LogicalPartition get_region_partition(LogicalRegion parent, PartitionColor color);
       LogicalRegion get_partition_subregion(LogicalPartition parent, RegionColor color);
       bool is_current_subtype(LogicalRegion region, TypeHandle handle);
-      
+    public:
+      RegionTreeID get_logical_region_tree_id(LogicalRegion handle);
+      RegionTreeID get_logical_partition_tree_id(LogicalPartition handle);
+    public:
+      // Packing and unpacking send
+
+    public:
+      // Packing and unpacking structure updates return
+      size_t compute_region_tree_updates_return(void);
+      void pack_region_tree_updates_return(Serializer &rez);
+      void unpack_region_tree_updates_return(Deserializer &derez);
+    public:
+      // Packing and unpacking state return
+      size_t compute_region_tree_state_return(RegionTreeID tid);
+      void pack_region_tree_state_return(RegionTreeID id, Serializer &rez);
+      void unpack_region_tree_state_return(Deserializer &derez);
+    public:
+      // Packing and unpacking leaked references
+      size_t compute_leaked_return_size(void);
+      void pack_leaked_return(Serializer &rez);
+      void unpack_leaked_return(Deserializer &derez);
     private:
 #ifdef LOW_LEVEL_LOCKS
       Lock context_lock;

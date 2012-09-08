@@ -130,6 +130,8 @@ namespace RegionRuntime {
       inline void deserialize(T &element);
       inline void deserialize(void *dst, size_t bytes);
       inline size_t get_remaining_bytes(void) const { return remaining_bytes; }
+      inline const void* get_pointer(void);
+      inline void advance_pointer(size_t bytes);
     private:
       const char *location;
       size_t remaining_bytes;
@@ -232,6 +234,24 @@ namespace RegionRuntime {
       assert(remaining_bytes >= bytes);
 #endif
       memcpy(dst,location,bytes);
+      location += bytes;
+      remaining_bytes -= bytes;
+    }
+
+    //--------------------------------------------------------------------------
+    inline const void* Deserializer::get_pointer(void)
+    //--------------------------------------------------------------------------
+    {
+      return location;
+    }
+
+    //--------------------------------------------------------------------------
+    inline void Deserializer::advance_pointer(size_t bytes)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(remaining_bytes >= bytes);
+#endif
       location += bytes;
       remaining_bytes -= bytes;
     }

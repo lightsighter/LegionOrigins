@@ -33,7 +33,8 @@ namespace RegionRuntime {
       : unique_id(0), task_id(0), args(NULL), arglen(0), map_id(0), tag(0),
         orig_proc(Processor::NO_PROC), steal_count(0), must(false),
         is_index_space(false), index_space(IndexSpace::NO_SPACE),
-        index_point(NULL), index_point_size(0), variants(NULL)
+        index_point(NULL), index_element_size(0), 
+        index_dimensions(0), variants(NULL)
     //--------------------------------------------------------------------------
     {
     }
@@ -2402,6 +2403,26 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       registration_callback = callback;
+    }
+
+    //--------------------------------------------------------------------------
+    /*static*/ const ReductionOp* HighLevelRuntime::get_reduction_op(ReductionOpID redop_id)
+    //--------------------------------------------------------------------------
+    {
+      if (redop_id == 0)
+      {
+        log_run(LEVEL_ERROR,"ERROR: ReductionOpID zero is reserved.");
+        exit(ERROR_RESERVED_REDOP_ID);
+      }
+      LowLevel::ReductionOpTable &red_table = HighLevelRuntime::get_reduction_table();
+#ifdef DEBUG_HIGH_LEVEL
+      if (red_table.find(redop_id) == red_table.end())
+      {
+        log_run(LEVEL_ERROR,"Invalid ReductionOpID %d",redop_id);
+        exit(ERROR_INVALID_REDOP_ID);
+      }
+#endif
+      return red_table[redop_id];
     }
 
     //--------------------------------------------------------------------------

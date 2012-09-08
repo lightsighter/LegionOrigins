@@ -169,7 +169,9 @@ namespace RegionRuntime {
       void unpack_task(Deserializer &derez);
     public:
       // For returning privileges (stored in create_* lists)
-      void return_privileges(TaskContext *ctx);
+      void return_privileges(const std::list<IndexSpace> &new_indexes,
+                             const std::list<FieldSpace> &new_fields,
+                             const std::list<LogicalRegion> &new_regions);
     protected:
       // Packing and unpacking of updates to the shape of the region
       // tree to be sent back.
@@ -182,6 +184,10 @@ namespace RegionRuntime {
       size_t compute_return_state_size(void);
       void pack_return_state(Serializer &rez);
       void unpack_return_state(Deserializer &derez);
+    protected:
+      size_t compute_privileges_return_size(void);
+      void pack_privileges_return(Serializer &rez);
+      size_t unpack_privileges_return(Deserializer &derez); // return number of new regions
     protected:
       // Compute the return size for leaked instances
       size_t compute_return_leaked_size(void);
@@ -285,8 +291,7 @@ namespace RegionRuntime {
       void flush_deletions(void);
       void issue_restoring_copies(std::set<Event> &wait_on_events);
     protected:
-      // The waiters for each region to be mapped
-      std::vector<std::set<GeneralizedOperation*> > map_dependent_waiters;
+      
       unsigned num_virtual_mapped; // a summary of the virtual_mapped_region vector
       std::vector<bool> virtual_mapped_region;
       // This vector is filled in by perform_operation which does the mapping
@@ -335,11 +340,17 @@ namespace RegionRuntime {
       virtual bool post_slice(void) = 0; // What to do after slicing
       virtual SliceTask *clone_as_slice_task(IndexSpace new_space, Processor target_proc, 
                                              bool recurse, bool stealable) = 0;
+      virtual void handle_future(const AnyPoint &point, const void *result, size_t result_size) = 0;
     protected:
       IndexSpace index_space;
       bool sliced;
       // The slices made of this task
       std::vector<SliceTask*> slices;
+      // For knowing whether we are doing reductions are keeping all futures
+      bool has_reduction;
+      ReductionOpID redop_id;
+      void *reduction_state;
+      size_t reduction_state_size;
     };
 
     class IndividualTask : public SingleTask {
@@ -374,6 +385,8 @@ namespace RegionRuntime {
     public:
       Future get_future(void);
     private:
+      // The waiters for each region to be mapped
+      std::vector<std::set<GeneralizedOperation*> > map_dependent_waiters;
       Processor target_proc;
       // Keep track of both whether the value has been set as well
       // as what its value is if it has
@@ -398,6 +411,7 @@ namespace RegionRuntime {
 
     class PointTask : public SingleTask {
     public:
+      friend class SliceTask;
       PointTask(HighLevelRuntime *rt, Processor local, ContextID ctx_id); 
     public:
       // Functions from GeneralizedOperation
@@ -464,17 +478,32 @@ namespace RegionRuntime {
       virtual SliceTask *clone_as_slice_task(IndexSpace new_space, Processor target_proc, 
                                              bool recurse, bool stealable);
       virtual bool post_slice(void);
+      virtual void handle_future(const AnyPoint &point, const void *result, size_t result_size);
     public:
       void set_index_space(IndexSpace space, const ArgumentMap &map, bool must);
       void set_reduction_args(ReductionOpID redop, const TaskArgument &initial_value);
       Future get_future(void);
       FutureMap get_future_map(void);
+    public:
+      // Functions called from slices at different points during execution
+      void slice_start(unsigned long denominator, size_t points, const std::vector<unsigned> &non_virtual_mapped);
+      void slice_mapped(const std::vector<unsigned> &virtual_mapped);
+      void slice_finished(size_t points);
     private:
       bool locally_set;
       bool locally_mapped; 
       UserEvent mapped_event;
       UserEvent termination_event;
       std::pair<unsigned long,unsigned long> frac_index_space;
+      size_t num_total_points;
+      size_t num_finished_points;
+      // Keep track of the number of points that have mapped this index space
+      std::vector<unsigned> mapped_points;
+      unsigned unmapped; // number of unmapped regions
+      // The waiters for each region to be mapped
+      std::vector<std::set<GeneralizedOperation*> > map_dependent_waiters;
+      FutureMapImpl *future_map;
+      FutureImpl *reduction_future;
     };
 
     class SliceTask : public MultiTask {
@@ -506,14 +535,18 @@ namespace RegionRuntime {
       virtual SliceTask *clone_as_slice_task(IndexSpace new_space, Processor target_proc, 
                                              bool recurse, bool stealable);
       virtual bool post_slice(void);
+      virtual void handle_future(const AnyPoint &point, const void *result, size_t result_size);
     protected:
       PointTask* clone_as_point_task(void);
     public:
       void set_denominator(unsigned long value);
-      void handle_future(const void *result, size_t result_size);
-      void point_task_start(PointTask *point);
       void point_task_mapped(PointTask *point);
       void point_task_finished(PointTask *point);
+    private:
+      // Methods to be run once all the slice's points have finished a phase
+      void post_slice_start(void);
+      void post_slice_mapped(void);
+      void post_slice_finished(void);
     private:
       // The following set of fields are set when a slice is cloned
       bool distributed; 
@@ -524,12 +557,20 @@ namespace RegionRuntime {
       std::vector<PointTask*> points;
       // For remote slices
       Processor orig_proc;
-      TaskContext *orig_ctx;
+      IndexTask *index_owner;
+      Event remote_start_event;
+      Event remote_mapped_event;
+      // For storing futures when remote, the slice owns the result values
+      // but the AnyPoint buffers are owned by the points themselves which
+      // we know are live throughout the life of the SliceTask.
+      std::map<AnyPoint,std::pair<void*,size_t> > future_results;
       // (1/denominator indicates fraction of index space in this slice)
       unsigned long denominator; // Set explicity, no need to copy
       bool enumerating; // Set to true when we're enumerating the slice
       unsigned num_unmapped_points;
       unsigned num_unfinished_points;
+      // Keep track of the number of non-virtual mappings for point tasks
+      std::vector<unsigned> non_virtual_mappings;
     };
 
   }; // namespace HighLevel

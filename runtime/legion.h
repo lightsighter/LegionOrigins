@@ -43,7 +43,8 @@ namespace RegionRuntime {
       bool is_index_space; // is this task an index space
       IndexSpace index_space;
       void *index_point;
-      size_t index_point_size;
+      size_t index_element_size;
+      unsigned index_dimensions;
     public:
       // The Task Collection of low-level tasks for this user level task
       TaskVariantCollection *variants;
@@ -199,6 +200,7 @@ namespace RegionRuntime {
       FutureMapImpl *impl;
     protected:
       friend class HighLevelRuntime;
+      friend class IndexTask;
       FutureMap(FutureMapImpl *impl);
     public:
       FutureMap(void);
@@ -541,6 +543,8 @@ namespace RegionRuntime {
       // Call visible to the user to create a reduction op
       template<typename REDOP>
       static void register_reduction_op(ReductionOpID redop_id);
+      // Get a ReductionOp object back for a given id
+      static const ReductionOp* get_reduction_op(ReductionOpID redop_id);
       // Call visible to the user to give a task to call to initialize mappers, colorize functions, etc.
       static void set_registration_callback(RegistrationCallbackFnptr callback);
       // Get the input args for the top level task
@@ -1348,6 +1352,10 @@ namespace RegionRuntime {
     protected:
       friend class ArgumentMapImpl;
       friend class FutureMapImpl;
+      friend class MultiTask;
+      friend class IndexTask;
+      friend class SliceTask;
+      friend class PointTask;
       AnyPoint(void *b, size_t e, unsigned d)
         : buffer(b), elmt_size(e), dim(d) { }
     public:
@@ -1355,7 +1363,7 @@ namespace RegionRuntime {
       bool operator<(const AnyPoint &rhs) const { return (buffer < rhs.buffer); }
       // Semantic equals
       bool equals(const AnyPoint &other) const;
-    private:
+    public:
       void *buffer;
       size_t elmt_size;
       unsigned dim;
@@ -1404,6 +1412,9 @@ namespace RegionRuntime {
       friend class HighLevelRuntime;
       friend class TaskContext;
       friend class FutureMap;
+      friend class MultiTask;
+      friend class IndexTask;
+      friend class SliceTask;
       FutureMapImpl(Event set_e = Event::NO_EVENT);
       ~FutureMapImpl(void);
       // Make sure these can't be copied around or moved
@@ -1439,9 +1450,10 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(index_point != NULL);
-      assert((sizeof(PT)*DIM) == index_point_size);
+      assert(sizeof(PT) == index_element_size);
+      assert(DIM == index_dimensions);
 #endif
-      memcpy(buffer, index_point, index_point_size);
+      memcpy(buffer, index_point, DIM*sizeof(PT));
     }
 
     //--------------------------------------------------------------------------

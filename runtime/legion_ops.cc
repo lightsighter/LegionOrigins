@@ -627,13 +627,15 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void TaskContext::return_privileges(TaskContext *ctx)
+    void TaskContext::return_privileges(const std::list<IndexSpace> &new_indexes,
+                                        const std::list<FieldSpace> &new_fields,
+                                        const std::list<LogicalRegion> &new_regions)
     //--------------------------------------------------------------------------
     {
       lock();
-      created_index_spaces.insert(created_index_spaces.end(),ctx->created_index_spaces.begin(),ctx->created_index_spaces.end());
-      created_field_spaces.insert(created_field_spaces.end(),ctx->created_field_spaces.begin(),ctx->created_field_spaces.end());
-      created_regions.insert(created_regions.end(),ctx->created_regions.begin(),ctx->created_regions.end());
+      created_index_spaces.insert(created_index_spaces.end(),new_indexes.begin(),new_indexes.end());
+      created_field_spaces.insert(created_field_spaces.end(),new_fields.begin(),new_fields.end());
+      created_regions.insert(created_regions.end(),new_regions.begin(),new_regions.end());
       unlock();
     }
 
@@ -691,6 +693,77 @@ namespace RegionRuntime {
       unlock_context();
       if (ready)
         trigger();
+    }
+
+    //--------------------------------------------------------------------------
+    size_t TaskContext::compute_privileges_return_size(void)
+    //--------------------------------------------------------------------------
+    {
+      // No need to hold the lock here since we know the task is done
+      size_t result = 3*sizeof(size_t);
+      result += (created_index_spaces.size() * sizeof(IndexSpace));
+      result += (created_field_spaces.size() * sizeof(FieldSpace));
+      result += (created_regions.size() * sizeof(LogicalRegion));
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void TaskContext::pack_privileges_return(Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+      // No need to hold the lock here since we know the task is done
+      rez.serialize<size_t>(created_index_spaces.size());
+      for (std::list<IndexSpace>::const_iterator it = created_index_spaces.begin();
+            it != created_index_spaces.end(); it++)
+      {
+        rez.serialize<IndexSpace>(*it);
+      }
+      rez.serialize<size_t>(created_field_spaces.size());
+      for (std::list<FieldSpace>::const_iterator it = created_field_spaces.begin();
+            it != created_field_spaces.end(); it++)
+      {
+        rez.serialize<FieldSpace>(*it);
+      }
+      rez.serialize<size_t>(created_regions.size());
+      for (std::list<LogicalRegion>::const_iterator it = created_regions.begin();
+            it != created_regions.end(); it++)
+      {
+        rez.serialize<LogicalRegion>(*it);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    size_t TaskContext::unpack_privileges_return(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      // Need the lock here since it's possible that a child task is
+      // returning while the task itself is still running
+      lock();
+      size_t num_elmts;
+      derez.deserialize<size_t>(num_elmts);
+      for (unsigned idx = 0; idx < num_elmts; idx++)
+      {
+        IndexSpace space;
+        derez.deserialize<IndexSpace>(space);
+        created_index_spaces.push_back(space);
+      }
+      derez.deserialize<size_t>(num_elmts);
+      for (unsigned idx = 0; idx < num_elmts; idx++)
+      {
+        FieldSpace space;
+        derez.deserialize<FieldSpace>(space);
+        created_field_spaces.push_back(space);
+      }
+      derez.deserialize<size_t>(num_elmts);
+      for (unsigned idx = 0; idx < num_elmts; idx++)
+      {
+        LogicalRegion region;
+        derez.deserialize<LogicalRegion>(region);
+        created_regions.push_back(region);
+      }
+      unlock();
+      // Return the number of new regions
+      return num_elmts;
     }
 
     /////////////////////////////////////////////////////////////
@@ -1640,7 +1713,7 @@ namespace RegionRuntime {
         // Note parent_ctx is only NULL if this is the top level task
         if (parent_ctx != NULL)
         {
-          parent_ctx->return_privileges(this);
+          parent_ctx->return_privileges(created_index_spaces,created_field_spaces,created_regions);
         }
         // Now we can trigger the termination event
         termination_event.trigger();
@@ -1789,6 +1862,9 @@ namespace RegionRuntime {
     Future IndividualTask::get_future(void)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(future == NULL); // better be NULL before this
+#endif
       future = new FutureImpl(this->termination_event);
       // Reference from this task context
       future->add_reference();
@@ -1928,7 +2004,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       // Return privileges to the slice owner
-      slice_owner->return_privileges(this);
+      slice_owner->return_privileges(created_index_spaces,created_field_spaces,created_regions);
       // notify the slice owner that this task has finished
       slice_owner->point_task_finished(this);
     }
@@ -1975,7 +2051,8 @@ namespace RegionRuntime {
     void PointTask::handle_future(const void *result, size_t result_size)
     //--------------------------------------------------------------------------
     {
-      slice_owner->handle_future(result, result_size); 
+      AnyPoint local_point(index_point,index_element_size,index_dimensions);
+      slice_owner->handle_future(local_point,result, result_size); 
     }
 
     /////////////////////////////////////////////////////////////
@@ -2069,21 +2146,94 @@ namespace RegionRuntime {
     void IndexTask::remote_start(const void *args, size_t arglen)
     //--------------------------------------------------------------------------
     {
-
+      Deserializer derez(args,arglen);
+      unsigned long denominator;
+      derez.deserialize<unsigned long>(denominator);
+      size_t num_points;
+      derez.deserialize<size_t>(num_points);
+      std::vector<unsigned> non_virtual_mappings(regions.size());
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        derez.deserialize<unsigned>(non_virtual_mappings[idx]);
+      }
+      lock_context();
+      // Unpack any trees that were sent back because they were fully mapped
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        if (non_virtual_mappings[idx] == num_points)
+        {
+          forest_ctx->unpack_region_tree_state_return(derez);
+        }
+      }
+      unlock_context();
+      slice_start(denominator, num_points, non_virtual_mappings); 
     }
 
     //--------------------------------------------------------------------------
     void IndexTask::remote_children_mapped(const void *args, size_t arglen)
     //--------------------------------------------------------------------------
     {
-
+      Deserializer derez(args,arglen);
+      std::vector<unsigned> virtual_mappings(regions.size());
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        derez.deserialize<unsigned>(virtual_mappings[idx]);
+      }
+      lock_context();
+      forest_ctx->unpack_region_tree_updates_return(derez);
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        if (virtual_mappings[idx] > 0)
+        {
+          forest_ctx->unpack_region_tree_state_return(derez);
+        }
+      }
+      unlock_context();
+      slice_mapped(virtual_mappings);
     }
 
     //--------------------------------------------------------------------------
     void IndexTask::remote_finish(const void *args, size_t arglen)
     //--------------------------------------------------------------------------
     {
-
+      Deserializer derez(args,arglen);
+      size_t new_region_trees = unpack_privileges_return(derez);
+      lock_context();
+      forest_ctx->unpack_region_tree_updates_return(derez);
+      for (unsigned idx = 0; idx < new_region_trees; idx++)
+      {
+        forest_ctx->unpack_region_tree_state_return(derez);
+      }
+      forest_ctx->unpack_leaked_return(derez);
+      unlock_context();
+      size_t num_points;
+      derez.deserialize<size_t>(num_points);
+      // Unpack the future(s)
+      if (has_reduction)
+      {
+        const ReductionOp *redop = HighLevelRuntime::get_reduction_op(redop_id);
+        // Create a fake AnyPoint 
+        AnyPoint no_point(NULL,0,0);
+        const void *ptr = derez.get_pointer();
+        derez.advance_pointer(redop->sizeof_rhs);
+        handle_future(no_point, const_cast<void*>(ptr), redop->sizeof_rhs);
+      }
+      else
+      {
+        size_t result_size;
+        derez.deserialize<size_t>(result_size);
+        size_t point_size = index_element_size * index_dimensions;
+        for (unsigned idx = 0; idx < num_points; idx++)
+        {
+          AnyPoint point(const_cast<void*>(derez.get_pointer()),index_element_size,index_dimensions); 
+          derez.advance_pointer(point_size);
+          const void *ptr = derez.get_pointer();
+          derez.advance_pointer(result_size);
+          handle_future(point, ptr, result_size);
+        }
+      }
+      
+      slice_finished(num_points);
     }
 
     //--------------------------------------------------------------------------
@@ -2101,6 +2251,254 @@ namespace RegionRuntime {
       }
       // No need to reclaim this since it is referenced by the calling context
       return false;
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexTask::handle_future(const AnyPoint &point, const void *result, size_t result_size)
+    //--------------------------------------------------------------------------
+    {
+      if (has_reduction)
+      {
+        const ReductionOp *redop = HighLevelRuntime::get_reduction_op(redop_id); 
+#ifdef DEBUG_HIGH_LEVEL
+        assert(reduction_state != NULL);
+        assert(reduction_state_size == redop->sizeof_lhs);
+        assert(result_size == redop->sizeof_rhs);
+#endif
+        lock();
+        redop->apply(reduction_state, result, 1/*num elements*/);
+        unlock();
+      }
+      else
+      {
+        // Put it in the future map
+#ifdef DEBUG_HIGH_LEVEL
+        assert(future_map != NULL);
+#endif
+        // No need to hold the lock, the future map has its own lock
+        future_map->set_result(point, result, result_size);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    Future IndexTask::get_future(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(reduction_future == NULL); // better be NULL before this
+#endif
+      reduction_future = new FutureImpl(termination_event);
+      // Add a reference so it doesn't get deleted
+      reduction_future->add_reference(); 
+      return Future(reduction_future);
+    }
+
+    //--------------------------------------------------------------------------
+    FutureMap IndexTask::get_future_map(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(future_map == NULL); // better be NULL before this
+#endif
+      future_map = new FutureMapImpl(termination_event);
+      // Add a reference so it doesn't get deleted
+      future_map->add_reference();
+      return FutureMap(future_map);
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexTask::slice_start(unsigned long denominator, size_t points,
+                                const std::vector<unsigned> &non_virtual_mapped)
+    //--------------------------------------------------------------------------
+    {
+      lock();
+#ifdef DEBUG_HIGH_LEVEL
+      assert(points > 0);
+#endif
+      num_total_points += points;
+#ifdef DEBUG_HIGH_LEVEL
+      assert(non_virtual_mapped.size() == mapped_points.size());
+#endif
+      for (unsigned idx = 0; idx < mapped_points.size(); idx++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(non_virtual_mapped[idx] <= points);
+#endif
+        mapped_points[idx] += non_virtual_mapped[idx];
+      }
+      // Now update the fraction of the index space that we've seen
+      // Check to see if the denominators are the same
+      if (frac_index_space.second == denominator)
+      {
+        // Easy add one to our numerator
+        frac_index_space.first++;
+      }
+      else
+      {
+        // Denominators are different, make them the same
+        // Check if one denominator is divisible by another
+        if ((frac_index_space.second % denominator) == 0)
+        {
+          frac_index_space.first += (frac_index_space.second / denominator);
+        }
+        else if ((denominator % frac_index_space.second) == 0)
+        {
+          frac_index_space.first = (frac_index_space.first * (denominator / frac_index_space.second)) + 1;
+          frac_index_space.second = denominator;
+        }
+        else
+        {
+          // One denominator is not divisilbe by the other, compute a common denominator
+          unsigned new_denom = frac_index_space.second * denominator;
+          unsigned other_num = frac_index_space.second; // *1
+          unsigned local_num = frac_index_space.first * denominator;
+          frac_index_space.first = local_num + other_num;
+          frac_index_space.second = new_denom;
+        }
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(frac_index_space.first <= frac_index_space.second); // should be a fraction <= 1
+#endif
+      // Check to see if this index space has been fully enumerated
+      if (frac_index_space.first == frac_index_space.second)
+      {
+#ifndef LOG_EVENT_ONLY
+        log_spy(LEVEL_INFO,"Index Space %d Context %d Size %ld",get_unique_id(),parent_ctx->get_unique_id(),num_total_points);
+#endif
+        // If we've fully enumerated, let's see if we've mapped regions for all the points
+        unmapped = 0;
+#ifdef DEBUG_HIGH_LEVEL
+        assert(mapped_points.size() == regions.size());
+#endif
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          if (mapped_points[idx] < num_total_points)
+          {
+            // Not all points in the index space mapped the region so it is unmapped
+            unmapped++;
+          }
+          else
+          {
+            // It's been mapped so notify all it's waiting dependences
+            std::set<GeneralizedOperation*> &waiters = map_dependent_waiters[idx];
+            for (std::set<GeneralizedOperation*>::const_iterator it = waiters.begin();
+                  it != waiters.end(); it++)
+            {
+              (*it)->notify();
+            }
+            waiters.clear();
+          }
+        }
+        // Check to see if we're fully mapped, if so trigger the mapped event
+        if (unmapped == 0)
+        {
+          mapped_event.trigger();
+        }
+      }
+      unlock(); 
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexTask::slice_mapped(const std::vector<unsigned> &virtual_mapped)
+    //--------------------------------------------------------------------------
+    {
+      lock();
+#ifdef DEBUG_HIGH_LEVEL
+      assert(virtual_mapped.size() == mapped_points.size());
+#endif
+      unsigned newly_mapped = 0;
+      for (unsigned idx = 0; idx < virtual_mapped.size(); idx++)
+      {
+        if (virtual_mapped[idx] > 0)
+        {
+          mapped_points[idx] += virtual_mapped[idx];
+#ifdef DEBUG_HIGH_LEVEL
+          assert(mapped_points[idx] <= num_total_points);
+#endif
+          // Check to see if we should notify all the waiters, points have to
+          // equal and the index space must be fully enumerated
+          if ((mapped_points[idx] == num_total_points) &&
+              (frac_index_space.first == frac_index_space.second))
+          {
+            newly_mapped++;
+            std::set<GeneralizedOperation*> &waiters = map_dependent_waiters[idx];
+            for (std::set<GeneralizedOperation*>::const_iterator it = waiters.begin();
+                  it != waiters.end(); it++)
+            {
+              (*it)->notify();
+            }
+            waiters.clear();
+          }
+        }
+      }
+      // Update the number of unmapped regions and trigger the mapped_event if we're done
+      if (newly_mapped > 0)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(newly_mapped <= unmapped);
+#endif
+        unmapped -= newly_mapped;
+        if (unmapped == 0)
+        {
+          mapped_event.trigger();
+        }
+      }
+      unlock();
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexTask::slice_finished(size_t points)
+    //--------------------------------------------------------------------------
+    {
+      lock();
+      num_finished_points += points;
+#ifdef DEBUG_HIGH_LEVEL
+      assert(num_finished_points <= num_total_points);
+#endif
+      // Check to see if we've seen all our points and if
+      // the index space has been fully enumerated
+      if ((num_finished_points == num_total_points) &&
+          (frac_index_space.first == frac_index_space.second))
+      {
+        // Handle the future or future map
+        if (has_reduction)
+        {
+          // Set the future 
+#ifdef DEBUG_HIGH_LEVEL
+          assert(reduction_future != NULL);
+#endif
+          reduction_future->set_result(reduction_state,reduction_state_size);
+        }
+        // Otherwise we have a reduction map and we're already set everything
+
+        // We're done, trigger the termination event
+        termination_event.trigger();
+        // Remove our reference since we're done
+        if (has_reduction)
+        {
+          if (reduction_future->remove_reference())
+          {
+            delete reduction_future;
+          }
+          reduction_future = NULL;
+        }
+        else
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(future_map != NULL);
+#endif
+          if (future_map->remove_reference())
+          {
+            delete future_map;
+          }
+          future_map = NULL;
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        assert(future_map == NULL);
+        assert(reduction_future == NULL);
+#endif
+      }
+      unlock();
     }
 
     /////////////////////////////////////////////////////////////
@@ -2170,6 +2568,10 @@ namespace RegionRuntime {
       {
         points[idx]->perform_mapping();
       }
+
+      // No need to hold the lock here since none of
+      // the point tasks have begun running yet
+      post_slice_start();
     }
 
     //--------------------------------------------------------------------------
@@ -2202,8 +2604,23 @@ namespace RegionRuntime {
         next_point->launch_task();
         lock();
       }
-      enumerating = false;
       unlock();
+      // No need to hold the lock when doing the post-slice-start since
+      // we know that all the points have been enumerated at this point
+      post_slice_start(); 
+      lock();
+      // Handle the case where all the children have called point_task_mapped
+      // before we made it here.  The fine-grained locking here is necessary
+      // to allow many children to run while others are still being instantiated
+      // and mapped.
+      bool all_mapped = (num_unmapped_points==0);
+      enumerating = false; // need this here to make sure post_slice_mapped gets called after post_slice_start
+      unlock();
+      // If we need to do the post-mapped part, do that now too
+      if (all_mapped)
+      {
+        post_slice_mapped();
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -2266,24 +2683,319 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void SliceTask::handle_future(const void *result, size_t result_size)
+    void SliceTask::handle_future(const AnyPoint &point, const void *result, size_t result_size)
     //--------------------------------------------------------------------------
     {
-
+      if (remote)
+      {
+        if (has_reduction)
+        {
+          // Get the reduction op 
+          const ReductionOp *redop = HighLevelRuntime::get_reduction_op(redop_id);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(reduction_state != NULL);
+          assert(reduction_state_size == redop->sizeof_rhs);
+          assert(result_size == redop->sizeof_rhs);
+#endif
+          lock();
+          // Fold the value
+          redop->fold(reduction_state, result, 1/*num elements*/);
+          unlock();
+        }
+        else
+        {
+          // We need to store the value locally
+          // Copy the value over
+          void *future_copy = malloc(result_size);
+          memcpy(future_copy, result, result_size);
+          lock();
+#ifdef DEBUG_HIGH_LEVEL
+          assert(future_results.find(point) == future_results.end());
+#endif
+          future_results[point] = std::pair<void*,size_t>(future_copy,result_size);
+          unlock();
+        }
+      }
+      else
+      {
+        index_owner->handle_future(point,result,result_size);
+      }
     }
 
     //--------------------------------------------------------------------------
     void SliceTask::point_task_mapped(PointTask *point)
     //--------------------------------------------------------------------------
     {
-
+      lock();
+#ifdef DEBUG_HIGH_LEVEL
+      assert(num_unmapped_points > 0);
+#endif
+      // Decrement the count of the number of unmapped children
+      num_unmapped_points--;
+      if (!enumerating && (num_unmapped_points == 0))
+      {
+        unlock();
+        post_slice_mapped();
+      }
+      else
+      {
+        unlock();
+      }
     }
 
     //--------------------------------------------------------------------------
     void SliceTask::point_task_finished(PointTask *point)
     //--------------------------------------------------------------------------
     {
+      lock();
+#ifdef DEBUG_HIGH_LEVEL
+      assert(num_unfinished_points > 0);
+#endif
+      num_unfinished_points--;
+      if (!enumerating && (num_unmapped_points == 0))
+      {
+        unlock();
+        post_slice_finished();
+      }
+      else
+      {
+        unlock();
+      }
+    }
 
+    //--------------------------------------------------------------------------
+    void SliceTask::post_slice_start(void)
+    //--------------------------------------------------------------------------
+    {
+      // Initialize the non_virtual_mappings vector
+      non_virtual_mappings.resize(regions.size());
+      for (unsigned idx = 0; idx < non_virtual_mappings.size(); idx++)
+      {
+        non_virtual_mappings[idx] = 0;
+      }
+      // Go through and figure out how many non-virtual mappings there have been
+      for (std::vector<PointTask*>::const_iterator it = points.begin();
+            it != points.end(); it++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert((*it)->virtual_mapped_region.size() == regions.size());
+#endif
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          if (!(*it)->virtual_mapped_region[idx])
+            non_virtual_mappings[idx]++; 
+        }
+      }
+      if (remote)
+      {
+        // Otherwise we have to pack stuff up and send it back
+        size_t buffer_size = sizeof(orig_proc) + sizeof(index_owner);
+        buffer_size += sizeof(denominator);
+        buffer_size += sizeof(size_t);
+        buffer_size += (regions.size() * sizeof(unsigned));
+        lock_context();
+        // Go through and figure out how many region trees to pack
+        std::vector<RegionTreeID> trees_to_pack;
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(non_virtual_mappings[idx] <= points.size());
+#endif
+          if (non_virtual_mappings[idx] == points.size())
+          {
+            // Everybody mapped a region in this tree, it is fully mapped
+            // so send it back
+            if (regions[idx].handle_type == SINGULAR)
+              trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(regions[idx].handle.region));
+            else
+              trees_to_pack.push_back(forest_ctx->get_logical_partition_tree_id(regions[idx].handle.partition));
+            buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
+          }
+        }
+        // Now pack everything up
+        Serializer rez(buffer_size);
+        rez.serialize<Processor>(orig_proc);
+        rez.serialize<IndexTask*>(index_owner);
+        rez.serialize<unsigned long>(denominator);
+        rez.serialize<size_t>(points.size());
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          rez.serialize<unsigned>(non_virtual_mappings[idx]);
+        }
+        for (unsigned idx = 0; idx < trees_to_pack.size(); idx++)
+        {
+          forest_ctx->pack_region_tree_state_return(trees_to_pack[idx], rez);
+        }
+        unlock_context();
+        // Now send it back to the utility processor
+        Processor utility = orig_proc.get_utility_processor();
+        this->remote_start_event = utility.spawn(NOTIFY_START_ID,rez.get_buffer(),buffer_size);
+      }
+      else
+      {
+        // If we're not remote we can just tell our index space context directly
+        index_owner->slice_start(denominator, points.size(), non_virtual_mappings);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void SliceTask::post_slice_mapped(void)
+    //--------------------------------------------------------------------------
+    {
+      // Do a quick check to see if we mapped everything in the first phase
+      // in which case we don't have to send this message
+      {
+        bool all_mapped = true;
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          if (non_virtual_mappings[idx] < points.size())
+          {
+            all_mapped = false;
+            break;
+          }
+        }
+        if (all_mapped)
+          return; // We're done
+      }
+      if (remote)
+      {
+        // Need to send back the results to the enclosing context
+        size_t buffer_size = sizeof(orig_proc) + sizeof(index_owner); 
+        lock_context();
+        buffer_size += (regions.size() * sizeof(unsigned));
+        buffer_size += forest_ctx->compute_region_tree_updates_return();
+        // Figure out which states we need to send back
+        std::vector<RegionTreeID> trees_to_pack;
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          // If we didn't send it back before, we need to send it back now
+          if (non_virtual_mappings[idx] < points.size())
+          {
+            if (regions[idx].handle_type == SINGULAR)
+              trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(regions[idx].handle.region));
+            else
+              trees_to_pack.push_back(forest_ctx->get_logical_partition_tree_id(regions[idx].handle.partition));
+            buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
+          }
+        }
+        // Now pack it all up
+        Serializer rez(buffer_size);
+        rez.serialize<Processor>(orig_proc);
+        rez.serialize<IndexTask*>(index_owner);
+        {
+          unsigned num_points = points.size();
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            rez.serialize<unsigned>(num_points-non_virtual_mappings[idx]);
+          }
+        }
+        forest_ctx->pack_region_tree_updates_return(rez);
+        for (unsigned idx = 0; idx < trees_to_pack.size(); idx++)
+        {
+          forest_ctx->pack_region_tree_state_return(trees_to_pack[idx], rez);
+        }
+        unlock_context();
+        // Send it back on the utility processor
+        Processor utility = orig_proc.get_utility_processor();
+        this->remote_mapped_event = utility.spawn(NOTIFY_MAPPED_ID,rez.get_buffer(),buffer_size,this->remote_start_event);
+      }
+      else
+      {
+        // Otherwise we're local so just tell our enclosing context that all our remaining points are mapped
+        std::vector<unsigned> virtual_mapped(regions.size());
+        unsigned num_points = points.size();
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          virtual_mapped[idx] = num_points - non_virtual_mappings[idx];
+        }
+        index_owner->slice_mapped(virtual_mapped);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void SliceTask::post_slice_finished(void)
+    //--------------------------------------------------------------------------
+    {
+      if (remote)
+      {
+        size_t result_size = 0;
+        // Need to send back the results to the enclosing context
+        size_t buffer_size = sizeof(orig_proc) + sizeof(index_owner);
+        // Need to send back the tasks for which we have privileges
+        buffer_size += compute_privileges_return_size();
+        lock_context();
+        buffer_size += forest_ctx->compute_region_tree_updates_return();
+        std::vector<RegionTreeID> trees_to_pack;
+        for (std::list<LogicalRegion>::const_iterator it = created_regions.begin();
+              it != created_regions.end(); it++)
+        {
+          trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(*it));
+          buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
+        }
+        buffer_size += forest_ctx->compute_leaked_return_size();
+        buffer_size += sizeof(size_t); // number of points
+        if (has_reduction)
+        {
+          buffer_size += sizeof(reduction_state_size); 
+          buffer_size += reduction_state_size;
+        }
+        else
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(future_results.size() == points.size());
+#endif
+          // Get the result size
+          result_size = (future_results.begin())->second.second;
+          buffer_size += sizeof(result_size);
+          buffer_size += (future_results.size() * (index_dimensions*index_element_size + result_size));
+        }
+
+        Serializer rez(buffer_size);
+        rez.serialize<Processor>(orig_proc);
+        rez.serialize<IndexTask*>(index_owner);
+        pack_privileges_return(rez);
+        forest_ctx->pack_region_tree_updates_return(rez);
+        for (unsigned idx = 0; idx < trees_to_pack.size(); idx++)
+        {
+          forest_ctx->pack_region_tree_state_return(trees_to_pack[idx],rez);
+        }
+        forest_ctx->pack_leaked_return(rez);
+        unlock_context();
+        // Pack up the future(s)
+        rez.serialize<size_t>(points.size());
+        if (has_reduction)
+        {
+          rez.serialize<size_t>(reduction_state_size);
+          rez.serialize(reduction_state,reduction_state_size);
+        }
+        else
+        {
+          rez.serialize<size_t>(result_size); 
+          for (std::map<AnyPoint,std::pair<void*,size_t> >::const_iterator it = future_results.begin();
+                it != future_results.end(); it++)
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            assert(it->first.elmt_size == index_element_size);
+            assert(it->first.dim == index_dimensions);
+#endif
+            rez.serialize(it->first.buffer,(it->first.elmt_size) * (it->first.dim));
+#ifdef DEBUG_HIGH_LEVEL
+            assert(it->second.second == result_size);
+#endif
+            rez.serialize(it->second.first,result_size);
+          }
+        }
+        
+        // Send it back on the utility processor
+        Processor utility = orig_proc.get_utility_processor();
+        utility.spawn(NOTIFY_FINISH_ID,rez.get_buffer(),buffer_size,Event::merge_events(remote_start_event,remote_mapped_event));
+      }
+      else
+      {
+        // Otherwise we're done, so pass back our privileges and then tell the owner
+        index_owner->return_privileges(created_index_spaces,created_field_spaces,created_regions);
+        index_owner->slice_finished(points.size());
+      }
     }
 
   }; // namespace HighLevel

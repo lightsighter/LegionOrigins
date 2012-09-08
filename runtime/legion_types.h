@@ -2,7 +2,7 @@
 #ifndef __LEGION_TYPES_H__
 #define __LEGION_TYPES_H__
 
-#include "lowlevel.h"
+#include "lowlevel_proxy.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -52,6 +52,7 @@ namespace RegionRuntime {
       ERROR_BAD_REGION_TYPE = 27,
       ERROR_INVALID_TYPE_HANDLE = 28,
       ERROR_LEAF_TASK_VIOLATION = 29,
+      ERROR_INVALID_REDOP_ID = 30,
     };
 
     // enum and namepsaces don't really get along well
@@ -195,6 +196,7 @@ namespace RegionRuntime {
     typedef LowLevel::Lock Lock;
     typedef LowLevel::Barrier Barrier;
     typedef LowLevel::ReductionOpID ReductionOpID;
+    typedef LowLevel::ReductionOpUntyped ReductionOp;
     typedef LowLevel::Machine::ProcessorMemoryAffinity ProcessorMemoryAffinity;
     typedef LowLevel::Machine::MemoryMemoryAffinity MemoryMemoryAffinity;
     typedef unsigned int LogicalRegion;
@@ -209,6 +211,7 @@ namespace RegionRuntime {
     typedef unsigned int GenerationID;
     typedef unsigned int TypeHandle;
     typedef unsigned int ProjectionID;
+    typedef unsigned int RegionTreeID;
     typedef Processor::TaskFuncID TaskID;
     typedef SingleTask* Context;
     typedef void (*RegistrationCallbackFnptr)(Machine *machine, HighLevelRuntime *rt, Processor local);
