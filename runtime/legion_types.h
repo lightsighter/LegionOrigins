@@ -53,6 +53,7 @@ namespace RegionRuntime {
       ERROR_INVALID_TYPE_HANDLE = 28,
       ERROR_LEAF_TASK_VIOLATION = 29,
       ERROR_INVALID_REDOP_ID = 30,
+      ERROR_REDUCTION_INITIAL_VALUE_MISMATCH = 31,
     };
 
     // enum and namepsaces don't really get along well

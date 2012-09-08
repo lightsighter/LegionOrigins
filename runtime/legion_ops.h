@@ -173,26 +173,9 @@ namespace RegionRuntime {
                              const std::list<FieldSpace> &new_fields,
                              const std::list<LogicalRegion> &new_regions);
     protected:
-      // Packing and unpacking of updates to the shape of the region
-      // tree to be sent back.
-      size_t compute_return_updates_size(void);
-      void pack_return_updates(Serializer &rez);
-      void unpack_return_updates(Deserializer &derez);
-    protected:
-      // Packing and unpacking of the physical state of the region
-      // tree to be sent back to the enclosing context.
-      size_t compute_return_state_size(void);
-      void pack_return_state(Serializer &rez);
-      void unpack_return_state(Deserializer &derez);
-    protected:
       size_t compute_privileges_return_size(void);
       void pack_privileges_return(Serializer &rez);
       size_t unpack_privileges_return(Deserializer &derez); // return number of new regions
-    protected:
-      // Compute the return size for leaked instances
-      size_t compute_return_leaked_size(void);
-      void pack_return_leaked(Serializer &rez);
-      void unpack_return_leaked(Deserializer &derez);
     protected:
       bool invoke_mapper_locally_mapped(void);
       bool invoke_mapper_stealable(void);
@@ -292,8 +275,8 @@ namespace RegionRuntime {
       void issue_restoring_copies(std::set<Event> &wait_on_events);
     protected:
       
-      unsigned num_virtual_mapped; // a summary of the virtual_mapped_region vector
-      std::vector<bool> virtual_mapped_region;
+      unsigned unmapped; // number of regions still unmapped
+      std::vector<bool> non_virtual_mapped_region;
       // This vector is filled in by perform_operation which does the mapping
       std::vector<PhysicalRegionImpl*> physical_instances;
       // The set of child task's created when running this task
@@ -406,7 +389,7 @@ namespace RegionRuntime {
       Processor orig_proc;
       Context orig_ctx;
       Event remote_start_event;
-      Event remote_children_event;
+      Event remote_mapped_event;
     };
 
     class PointTask : public SingleTask {
@@ -553,6 +536,7 @@ namespace RegionRuntime {
       bool locally_mapped;
       bool stealable;
       bool remote;
+      bool is_leaf;
       Processor target_proc;
       std::vector<PointTask*> points;
       // For remote slices

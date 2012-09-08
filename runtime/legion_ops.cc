@@ -1340,7 +1340,7 @@ namespace RegionRuntime {
     {
       handle_future(result, result_size);
       
-      if (is_leaf || (num_virtual_mapped == 0))
+      if (is_leaf)
       {
         // Invoke the function for when we're done 
         finish_task();
@@ -1559,9 +1559,72 @@ namespace RegionRuntime {
     void IndividualTask::perform_mapping(void)
     //--------------------------------------------------------------------------
     {
+      // Do the mapping for all the regions
 
-      // Trigger the mapping event when we're done
-      mapped_event.trigger();
+      // If we're remote, send back our mapping information
+      if (remote)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!locally_mapped); // we shouldn't be here if we were locally mapped
+#endif
+        size_t buffer_size = sizeof(orig_proc) + sizeof(orig_ctx) + sizeof(is_leaf);
+        buffer_size += (regions.size()*sizeof(bool)); // mapped or not for each region
+        lock_context();
+        std::vector<RegionTreeID> trees_to_pack; 
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          if (non_virtual_mapped_region[idx])
+          {
+            trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(regions[idx].handle.region));
+            buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
+          }
+        }
+        // Now pack everything up and send it back
+        Serializer rez(buffer_size);
+        rez.serialize<Processor>(orig_proc);
+        rez.serialize<Context>(orig_ctx);
+        rez.serialize<bool>(is_leaf);
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          rez.serialize<bool>(non_virtual_mapped_region[idx]);
+        }
+        for (unsigned idx = 0; idx < trees_to_pack.size(); idx++)
+        {
+          forest_ctx->pack_region_tree_state_return(trees_to_pack[idx], rez);
+        }
+        unlock_context();
+        // Now send it back on the utility processor
+        Processor utility = orig_proc.get_utility_processor();
+        this->remote_start_event = utility.spawn(NOTIFY_START_ID,rez.get_buffer(),buffer_size);
+      }
+      else
+      {
+        // Hold the lock to prevent new waiters from registering
+        lock();
+        // notify any tasks that we have waiting on us
+#ifdef DEBUG_HIGH_LEVEL
+        assert(map_dependent_waiters.size() == regions.size());
+#endif
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          if (non_virtual_mapped_region[idx])
+          {
+            std::set<GeneralizedOperation*> &waiters = map_dependent_waiters[idx];
+            for (std::set<GeneralizedOperation*>::const_iterator it = waiters.begin();
+                  it != waiters.end(); it++)
+            {
+              (*it)->notify();
+            }
+            waiters.clear();
+          }
+        }
+        unlock();
+        if (unmapped == 0)
+        {
+          // If everything has been mapped, then trigger the mapped event
+          mapped_event.trigger();
+        }
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -1590,7 +1653,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(!is_leaf && (num_virtual_mapped > 0)); // shouldn't be here if we're a leaf task
+      assert(!is_leaf && (unmapped > 0)); // shouldn't be here if we're a leaf task
 #endif
       lock_context();
       // Remove any source copy references that were generated as part of the task's execution 
@@ -1614,53 +1677,74 @@ namespace RegionRuntime {
       }
       // Issue the restoring copies for this task
       issue_restoring_copies(cleanup_events);
+      unlock_context();
 
       if (remote)
       {
-        // If we're remote, send back the region tree state
-        size_t buffer_size = sizeof(Processor) + sizeof(Context);
-        buffer_size += compute_return_updates_size();
-        buffer_size += compute_return_state_size();
-        Serializer rez(buffer_size); 
-        rez.serialize<Processor>(orig_proc);
-        rez.serialize<Context>(orig_ctx);
-        pack_return_updates(rez);
-        pack_return_state(rez);
-        // Send back on the utility processor
-        Processor utility = orig_proc.get_utility_processor();
-        this->remote_children_event = utility.spawn(NOTIFY_MAPPED_ID,rez.get_buffer(),buffer_size,remote_start_event); 
+        // Only need to send things back if we had unmapped regions
+        // and this isn't a leaf task.  Note virtual mappings on leaf
+        // tasks are pretty worthless.
+        if ((unmapped > 0) && !is_leaf)
+        {
+          size_t buffer_size = sizeof(orig_proc) + sizeof(orig_ctx);
+          lock_context();
+          buffer_size += forest_ctx->compute_region_tree_updates_return();
+          // Figure out which states we need to send back
+          std::vector<RegionTreeID> trees_to_pack;
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            if (!non_virtual_mapped_region[idx])
+            {
+              trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(regions[idx].handle.region));
+              buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
+            }
+          }
+          // Now pack it all up
+          Serializer rez(buffer_size);
+          rez.serialize<Processor>(orig_proc);
+          rez.serialize<Context>(orig_ctx);
+          forest_ctx->pack_region_tree_updates_return(rez);
+          for (unsigned idx = 0; idx < trees_to_pack.size(); idx++)
+          {
+            forest_ctx->pack_region_tree_state_return(trees_to_pack[idx], rez);
+          }
+          unlock_context();
+          // Send it back on the utility processor
+          Processor utility = orig_proc.get_utility_processor();
+          this->remote_mapped_event = utility.spawn(NOTIFY_MAPPED_ID,rez.get_buffer(),buffer_size,this->remote_start_event);
+        }
       }
       else
       {
         // Otherwise notify all the waiters on virtual mapped regions
 #ifdef DEBUG_HIGH_LEVEL
         assert(map_dependent_waiters.size() == regions.size());
-        assert(virtual_mapped_region.size() == regions.size());
+        assert(non_virtual_mapped_region.size() == regions.size());
 #endif
-        bool had_unmapped = false;
+        // Hold the lock to prevent new waiters from registering
         lock();
         for (unsigned idx = 0; idx < map_dependent_waiters.size(); idx++)
         {
-          if (virtual_mapped_region[idx])
+          if (!non_virtual_mapped_region[idx])
           {
-            had_unmapped = true;
-            for (std::set<GeneralizedOperation*>::const_iterator it = map_dependent_waiters[idx].begin();
-                  it != map_dependent_waiters[idx].end(); it++)
+            std::set<GeneralizedOperation*> &waiters = map_dependent_waiters[idx];
+            for (std::set<GeneralizedOperation*>::const_iterator it = waiters.begin();
+                  it != waiters.end(); it++)
             {
               (*it)->notify();
             }
-            map_dependent_waiters[idx].clear();
+            waiters.clear();
           }
         }
         unlock();
 
         // If we haven't triggered it yet, trigger the mapped event
-        if (had_unmapped)
+        if (unmapped > 0)
         {
           mapped_event.trigger();
+          unmapped = 0;
         }
       }
-      unlock_context();
       // Figure out whether we need to wait to launch the finish task
       Event wait_on_event = Event::merge_events(cleanup_events);
       if (!wait_on_event.exists())
@@ -1683,27 +1767,47 @@ namespace RegionRuntime {
     void IndividualTask::finish_task(void)
     //--------------------------------------------------------------------------
     {
-      lock_context();
       if (remote)
       {
-        size_t buffer_size = sizeof(Processor) + sizeof(Context);
-        buffer_size += compute_return_updates_size();
-        buffer_size += compute_return_leaked_size();
-        // Future result
+        size_t buffer_size = sizeof(orig_proc) + sizeof(orig_ctx);
+        std::vector<RegionTreeID> trees_to_pack;
+        // Only need to send this stuff back if we're not a leaf task
+        if (!is_leaf)
+        {
+          buffer_size += compute_privileges_return_size();
+          lock_context();
+          buffer_size += forest_ctx->compute_region_tree_updates_return();
+          for (std::list<LogicalRegion>::const_iterator it = created_regions.begin();
+                it != created_regions.end(); it++)
+          {
+            trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(*it));
+            buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
+          }
+          buffer_size += forest_ctx->compute_leaked_return_size();
+        }
         buffer_size += sizeof(remote_future_len);
         buffer_size += remote_future_len;
+        // Now pack everything up
         Serializer rez(buffer_size);
         rez.serialize<Processor>(orig_proc);
         rez.serialize<Context>(orig_ctx);
-        pack_return_updates(rez);
-        pack_return_leaked(rez);
+        if (!is_leaf)
+        {
+          pack_privileges_return(rez);
+          forest_ctx->pack_region_tree_updates_return(rez);
+          for (unsigned idx = 0; idx < trees_to_pack.size(); idx++)
+          {
+            forest_ctx->pack_region_tree_state_return(trees_to_pack[idx], rez);
+          }
+          forest_ctx->pack_leaked_return(rez);
+          unlock_context();
+        }
         rez.serialize<size_t>(remote_future_len);
         rez.serialize(remote_future,remote_future_len);
         // Send this back to the utility processor.  The event we wait on
         // depends on whether this is a leaf task or not
         Processor utility = orig_proc.get_utility_processor();
-        utility.spawn(NOTIFY_FINISH_ID,rez.get_buffer(),buffer_size,
-                      ((is_leaf || (num_virtual_mapped==0))? remote_start_event : remote_children_event));
+        utility.spawn(NOTIFY_FINISH_ID,rez.get_buffer(),buffer_size,Event::merge_events(remote_start_event,remote_mapped_event));
       }
       else
       {
@@ -1718,7 +1822,6 @@ namespace RegionRuntime {
         // Now we can trigger the termination event
         termination_event.trigger();
       }
-      unlock_context();
 
 #ifdef DEBUG_HIGH_LEVEL
       if (is_leaf)
@@ -1753,44 +1856,91 @@ namespace RegionRuntime {
     void IndividualTask::remote_start(const void *args, size_t arglen)
     //--------------------------------------------------------------------------
     {
-      
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!locally_mapped); // shouldn't be here if we were locally mapped
+#endif
+      Deserializer derez(args,arglen); 
+      derez.deserialize<bool>(is_leaf);
+      non_virtual_mapped_region.resize(regions.size());
+      unmapped = 0;
+#ifdef DEBUG_HIGH_LEVEL
+      assert(map_dependent_waiters.size() == regions.size());
+#endif
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        bool next = non_virtual_mapped_region[idx];
+        derez.deserialize<bool>(next);
+        if (non_virtual_mapped_region[idx])
+        {
+          // hold the lock to prevent others from waiting
+          lock();
+          std::set<GeneralizedOperation*> &waiters = map_dependent_waiters[idx];
+          for (std::set<GeneralizedOperation*>::const_iterator it = waiters.begin();
+                it != waiters.end(); it++)
+          {
+            (*it)->notify();
+          }
+          waiters.clear();
+          unlock();
+        }
+        else
+        {
+          unmapped++;
+        }
+      }
+      lock_context();
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        if (non_virtual_mapped_region[idx])
+        {
+          forest_ctx->unpack_region_tree_state_return(derez); 
+        }
+      }
+      unlock_context();
+      if (unmapped == 0)
+      {
+        // Everybody mapped, so trigger the mapped event
+        mapped_event.trigger();
+      }
     }
 
     //--------------------------------------------------------------------------
     void IndividualTask::remote_children_mapped(const void *args, size_t arglen)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!is_leaf);
+      assert(unmapped > 0);
+#endif
       Deserializer derez(args,arglen);
       lock_context();
-      unpack_return_updates(derez);
-      unpack_return_state(derez);
-      // Figure out if there were any regions that were virtually mapped
-      // and notify their waiters
-#ifdef DEBUG_HIGH_LEVEL
-      assert(map_dependent_waiters.size() == regions.size());
-      assert(virtual_mapped_region.size() == regions.size());
-#endif
-      bool had_unmapped = false;
-      lock();
-      for (unsigned idx = 0; idx < map_dependent_waiters.size(); idx++)
+      forest_ctx->unpack_region_tree_updates_return(derez);
+      for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        if (virtual_mapped_region[idx])
+        if (!non_virtual_mapped_region[idx])
         {
-          had_unmapped = true;
-          for (std::set<GeneralizedOperation*>::const_iterator it = map_dependent_waiters[idx].begin();
-                it != map_dependent_waiters[idx].end(); it++)
+          forest_ctx->unpack_region_tree_state_return(derez);
+        }
+      }
+      unlock_context();
+      // Notify all the waiters
+      lock();
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        if (non_virtual_mapped_region[idx])
+        {
+          std::set<GeneralizedOperation*> &waiters = map_dependent_waiters[idx];
+          for (std::set<GeneralizedOperation*>::const_iterator it = waiters.begin();
+                it != waiters.end(); it++)
           {
             (*it)->notify();
           }
-          map_dependent_waiters[idx].clear();
+          waiters.clear();
         }
       }
       unlock();
-      if (had_unmapped)
-      {
-        mapped_event.trigger();
-      }
-      unlock_context();
+      mapped_event.trigger();
+      unmapped = 0;
     }
 
     //--------------------------------------------------------------------------
@@ -1798,18 +1948,26 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       Deserializer derez(args,arglen);
-      lock_context();
-      unpack_return_updates(derez);
-      unpack_return_leaked(derez);
-      // Remove our mapped references
-      remove_mapped_references();
-      unlock_context();
+      if (!is_leaf)
+      {
+        size_t new_regions = unpack_privileges_return(derez);
+        lock_context();
+        forest_ctx->unpack_region_tree_updates_return(derez);
+        for (unsigned idx = 0; idx < new_regions; idx++)
+        {
+          forest_ctx->unpack_region_tree_state_return(derez);
+        }
+        forest_ctx->unpack_leaked_return(derez);
+        unlock_context();
+      }
       // Now set the future result and trigger the termination event
 #ifdef DEBUG_HIGH_LEVEL
       assert(this->future != NULL);
 #endif
       future->set_result(derez);
       termination_event.trigger();
+      // Remove our mapped references
+      remove_mapped_references();
       // We can now remove our reference to the future for garbage collection
       if (future->remove_reference())
       {
@@ -1956,7 +2114,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(!is_leaf || (num_virtual_mapped > 0));
+      assert(!is_leaf);
 #endif
       lock_context();
       // Remove any source copy references that were generated as part of this task's execution
@@ -2197,15 +2355,20 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       Deserializer derez(args,arglen);
-      size_t new_region_trees = unpack_privileges_return(derez);
-      lock_context();
-      forest_ctx->unpack_region_tree_updates_return(derez);
-      for (unsigned idx = 0; idx < new_region_trees; idx++)
+      bool slice_is_leaf;
+      derez.deserialize<bool>(slice_is_leaf);
+      if (!slice_is_leaf)
       {
-        forest_ctx->unpack_region_tree_state_return(derez);
+        size_t new_region_trees = unpack_privileges_return(derez);
+        lock_context();
+        forest_ctx->unpack_region_tree_updates_return(derez);
+        for (unsigned idx = 0; idx < new_region_trees; idx++)
+        {
+          forest_ctx->unpack_region_tree_state_return(derez);
+        }
+        forest_ctx->unpack_leaked_return(derez);
+        unlock_context();
       }
-      forest_ctx->unpack_leaked_return(derez);
-      unlock_context();
       size_t num_points;
       derez.deserialize<size_t>(num_points);
       // Unpack the future(s)
@@ -2278,6 +2441,29 @@ namespace RegionRuntime {
         // No need to hold the lock, the future map has its own lock
         future_map->set_result(point, result, result_size);
       }
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexTask::set_reduction_args(ReductionOpID id, const TaskArgument &initial_value)
+    //--------------------------------------------------------------------------
+    {
+      has_reduction = true; 
+      redop_id = id;
+      const ReductionOp *redop = HighLevelRuntime::get_reduction_op(redop_id);
+#ifdef DEBUG_HIGH_LEVEL
+      if (initial_value.get_size() != redop->sizeof_lhs)
+      {
+        log_task(LEVEL_ERROR,"Initial value for reduction for task %s (ID %d) is %ld bytes "
+                              "but ReductionOpID %d requires left-hand size arguments of %ld bytes",
+                              this->variants->name, get_unique_id(), initial_value.get_size(),
+                              redop_id, redop->sizeof_lhs);
+        exit(ERROR_REDUCTION_INITIAL_VALUE_MISMATCH);
+      }
+      assert(reduction_state == NULL); // this better be NULL
+#endif
+      reduction_state_size = redop->sizeof_lhs;
+      reduction_state = malloc(reduction_state_size);
+      memcpy(reduction_state,initial_value.get_ptr(),initial_value.get_size());
     }
 
     //--------------------------------------------------------------------------
@@ -2471,6 +2657,10 @@ namespace RegionRuntime {
         }
         // Otherwise we have a reduction map and we're already set everything
 
+#ifdef DEBUG_HIGH_LEVEL
+        assert(parent_ctx != NULL);
+#endif
+        parent_ctx->return_privileges(created_index_spaces,created_field_spaces,created_regions);
         // We're done, trigger the termination event
         termination_event.trigger();
         // Remove our reference since we're done
@@ -2767,6 +2957,12 @@ namespace RegionRuntime {
     void SliceTask::post_slice_start(void)
     //--------------------------------------------------------------------------
     {
+      // Figure out if we're a leaf, will be the same for all points
+      // since they will all select the same variant (at least for now)
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!points.empty());
+#endif
+      this->is_leaf = points[0]->is_leaf;
       // Initialize the non_virtual_mappings vector
       non_virtual_mappings.resize(regions.size());
       for (unsigned idx = 0; idx < non_virtual_mappings.size(); idx++)
@@ -2778,24 +2974,26 @@ namespace RegionRuntime {
             it != points.end(); it++)
       {
 #ifdef DEBUG_HIGH_LEVEL
-        assert((*it)->virtual_mapped_region.size() == regions.size());
+        assert((*it)->non_virtual_mapped_region.size() == regions.size());
 #endif
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
-          if (!(*it)->virtual_mapped_region[idx])
+          if ((*it)->non_virtual_mapped_region[idx])
             non_virtual_mappings[idx]++; 
         }
       }
       if (remote)
       {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!locally_mapped); // shouldn't be here if we were locally mapped
+#endif
         // Otherwise we have to pack stuff up and send it back
         size_t buffer_size = sizeof(orig_proc) + sizeof(index_owner);
         buffer_size += sizeof(denominator);
         buffer_size += sizeof(size_t);
         buffer_size += (regions.size() * sizeof(unsigned));
-        lock_context();
-        // Go through and figure out how many region trees to pack
         std::vector<RegionTreeID> trees_to_pack;
+        lock_context();
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
 #ifdef DEBUG_HIGH_LEVEL
@@ -2859,45 +3057,50 @@ namespace RegionRuntime {
       }
       if (remote)
       {
-        // Need to send back the results to the enclosing context
-        size_t buffer_size = sizeof(orig_proc) + sizeof(index_owner); 
-        lock_context();
-        buffer_size += (regions.size() * sizeof(unsigned));
-        buffer_size += forest_ctx->compute_region_tree_updates_return();
-        // Figure out which states we need to send back
-        std::vector<RegionTreeID> trees_to_pack;
-        for (unsigned idx = 0; idx < regions.size(); idx++)
+        // Only send stuff back if we're not a leaf and there were virtual mappings.
+        // Virtual mappings for leaf tasks are dumb and will create a warning.
+        if (!is_leaf)
         {
-          // If we didn't send it back before, we need to send it back now
-          if (non_virtual_mappings[idx] < points.size())
-          {
-            if (regions[idx].handle_type == SINGULAR)
-              trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(regions[idx].handle.region));
-            else
-              trees_to_pack.push_back(forest_ctx->get_logical_partition_tree_id(regions[idx].handle.partition));
-            buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
-          }
-        }
-        // Now pack it all up
-        Serializer rez(buffer_size);
-        rez.serialize<Processor>(orig_proc);
-        rez.serialize<IndexTask*>(index_owner);
-        {
-          unsigned num_points = points.size();
+          // Need to send back the results to the enclosing context
+          size_t buffer_size = sizeof(orig_proc) + sizeof(index_owner); 
+          lock_context();
+          buffer_size += (regions.size() * sizeof(unsigned));
+          buffer_size += forest_ctx->compute_region_tree_updates_return();
+          // Figure out which states we need to send back
+          std::vector<RegionTreeID> trees_to_pack;
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
-            rez.serialize<unsigned>(num_points-non_virtual_mappings[idx]);
+            // If we didn't send it back before, we need to send it back now
+            if (non_virtual_mappings[idx] < points.size())
+            {
+              if (regions[idx].handle_type == SINGULAR)
+                trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(regions[idx].handle.region));
+              else
+                trees_to_pack.push_back(forest_ctx->get_logical_partition_tree_id(regions[idx].handle.partition));
+              buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
+            }
           }
+          // Now pack it all up
+          Serializer rez(buffer_size);
+          rez.serialize<Processor>(orig_proc);
+          rez.serialize<IndexTask*>(index_owner);
+          {
+            unsigned num_points = points.size();
+            for (unsigned idx = 0; idx < regions.size(); idx++)
+            {
+              rez.serialize<unsigned>(num_points-non_virtual_mappings[idx]);
+            }
+          }
+          forest_ctx->pack_region_tree_updates_return(rez);
+          for (unsigned idx = 0; idx < trees_to_pack.size(); idx++)
+          {
+            forest_ctx->pack_region_tree_state_return(trees_to_pack[idx], rez);
+          }
+          unlock_context();
+          // Send it back on the utility processor
+          Processor utility = orig_proc.get_utility_processor();
+          this->remote_mapped_event = utility.spawn(NOTIFY_MAPPED_ID,rez.get_buffer(),buffer_size,this->remote_start_event);
         }
-        forest_ctx->pack_region_tree_updates_return(rez);
-        for (unsigned idx = 0; idx < trees_to_pack.size(); idx++)
-        {
-          forest_ctx->pack_region_tree_state_return(trees_to_pack[idx], rez);
-        }
-        unlock_context();
-        // Send it back on the utility processor
-        Processor utility = orig_proc.get_utility_processor();
-        this->remote_mapped_event = utility.spawn(NOTIFY_MAPPED_ID,rez.get_buffer(),buffer_size,this->remote_start_event);
       }
       else
       {
@@ -2920,19 +3123,23 @@ namespace RegionRuntime {
       {
         size_t result_size = 0;
         // Need to send back the results to the enclosing context
-        size_t buffer_size = sizeof(orig_proc) + sizeof(index_owner);
-        // Need to send back the tasks for which we have privileges
-        buffer_size += compute_privileges_return_size();
-        lock_context();
-        buffer_size += forest_ctx->compute_region_tree_updates_return();
+        size_t buffer_size = sizeof(orig_proc) + sizeof(index_owner) + sizeof(is_leaf);
         std::vector<RegionTreeID> trees_to_pack;
-        for (std::list<LogicalRegion>::const_iterator it = created_regions.begin();
-              it != created_regions.end(); it++)
+        // Need to send back the tasks for which we have privileges
+        if (!is_leaf)
         {
-          trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(*it));
-          buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
+          buffer_size += compute_privileges_return_size();
+          lock_context();
+          buffer_size += forest_ctx->compute_region_tree_updates_return();
+          
+          for (std::list<LogicalRegion>::const_iterator it = created_regions.begin();
+                it != created_regions.end(); it++)
+          {
+            trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(*it));
+            buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
+          }
+          buffer_size += forest_ctx->compute_leaked_return_size();
         }
-        buffer_size += forest_ctx->compute_leaked_return_size();
         buffer_size += sizeof(size_t); // number of points
         if (has_reduction)
         {
@@ -2953,14 +3160,18 @@ namespace RegionRuntime {
         Serializer rez(buffer_size);
         rez.serialize<Processor>(orig_proc);
         rez.serialize<IndexTask*>(index_owner);
-        pack_privileges_return(rez);
-        forest_ctx->pack_region_tree_updates_return(rez);
-        for (unsigned idx = 0; idx < trees_to_pack.size(); idx++)
+        rez.serialize<bool>(is_leaf);
+        if (!is_leaf)
         {
-          forest_ctx->pack_region_tree_state_return(trees_to_pack[idx],rez);
+          pack_privileges_return(rez);
+          forest_ctx->pack_region_tree_updates_return(rez);
+          for (unsigned idx = 0; idx < trees_to_pack.size(); idx++)
+          {
+            forest_ctx->pack_region_tree_state_return(trees_to_pack[idx],rez);
+          }
+          forest_ctx->pack_leaked_return(rez);
+          unlock_context();
         }
-        forest_ctx->pack_leaked_return(rez);
-        unlock_context();
         // Pack up the future(s)
         rez.serialize<size_t>(points.size());
         if (has_reduction)
@@ -2985,7 +3196,6 @@ namespace RegionRuntime {
             rez.serialize(it->second.first,result_size);
           }
         }
-        
         // Send it back on the utility processor
         Processor utility = orig_proc.get_utility_processor();
         utility.spawn(NOTIFY_FINISH_ID,rez.get_buffer(),buffer_size,Event::merge_events(remote_start_event,remote_mapped_event));
