@@ -1,0 +1,61 @@
+We'd first like to thank the reviewers for their detailed and useful feedback.
+Rather than addressing each reviewer's questions separately, we have organized
+our response based on the areas the questions covered.
+
+First, there were multiple requests for more detail on the code example, the
+use of colorings to describe partitions, and the algorithm used to perform 
+efficient dynamic disjointness checks.  Each of these was covered in significant
+detail in [1], {which we understand the reviewers may not have had access to.}
+
+As described in [1], Legion does not attempt to solve the (in many cases still-open)
+problem of partitioning data for any given application.  The body of the "color_circuit"
+task would likely consist of a call to an external library (e.g. PARMETIS for graph-based
+data structures).  The coloring is merely a way to capture the result of that external
+computation for use by the Legion runtime.  The "build_lists" task is not strictly required.
+While a task could iterate over the elements of a subregion through repeated uses of "downregion" on
+each element of the parent region, by building a list up front, the cost of those "downregion"
+checks can be amortized over multiple iterations of the simulation.
+
+In Core Legion, colorings are explicit mappings of region elements (named by their location)
+to integer "colors".  This represents the most general case of describing the partitioning of
+a region.  More concise descriptions exist in the full Legion language (e.g. using a pure
+function to determine the color of an element on demand), but a single form was selected for
+Core Legion for simplicity.
+
+Legion supports the "partition then allocate" model in which new elements allocated in a subregion
+are guaranteed to exist in parent regions as well and preserve that subregion's disjointness with
+any other regions.  The use of a non-empty initial coloring in the operational semantics simplifies
+this in Core Legion by allowing extra unnamed locations to exist in every region to allow these
+allocations without changing the sets of locations assigned to physical regions.  {Is this opening a
+can of worms?}
+
+As several reviewers noted, the Legion type system is similar in many ways to existing region-based
+typed systems, and this is by design.  Additions to the "standard" region-based type system were 
+done just to capture the new features of Legion: colorings as a description of an arbitrary partitioning
+of a region, a hierarchy of regions in which a location may be contained in multiple regions, the 
+ability to capture the relationship between regions, and the ability to relax the determinism of 
+execution via coherence modes.  Although these changes were made as contained as
+possible, a proof that soundness was preserved by these additions seemed prudent.
+
+The use of coherence modes in Legion differs from existing usages, so we tried to reduce confusion by
+not reusing existing terminology.  While "exclusive" coherence corresponds to apparently-sequential
+execution, "atomic" corresponds to transactional-memory-like execution, and "simultaneous" corresponds to
+"all bets are off" pthreads-style parallelism, an important difference is that these coherence modes apply
+locally in Legion, i.e. only between subtasks of the same parent task.  All three of these modes have
+their uses in real-world applications - to exclude any of them would limit the applicability of the Legion
+programming model.  We felt the additional complexity in the type system and operational semantics was
+justified by the results that both soundness of the type system and ability to make local scheduling decisions
+were noy compromised by the inclusion of these coherence modes.
+
+Finally, the choice of large-step operational semantics was made to match the hierachical and distributed
+scheduling used by the Legion runtime.  When coherence modes other than exclusive are used, there may be
+multiple tasks modifying the same location of memory - the clobber set is the set of all such locations for
+a given task.  The clobber set is used to bound the allowed non-determinism within a given task, and the
+fact that the top-level task (which has no sibling tasks) has an empty clobber set guarantees that any 
+execution of the program is consistent with a standard sequentially consistent memory model.
+
+An advantage of the large-step semantics with the use of clobber sets is that our soundness result holds for
+any scheduling of tasks that satisfies the "valid_interleave" rules.  We considered the use of small-step semantics
+that explicitly track the state of every parallel task's execution, but the complexity of the constraints used
+to decide which task(s) were able to take a step at any given point were onerous and would limit our soundness
+guarantees to only that scheduling algorithm.
