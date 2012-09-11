@@ -5,7 +5,7 @@ our response based on the areas the questions covered.
 First, there were multiple requests for more detail on the code example, the
 use of colorings to describe partitions, and the algorithm used to perform 
 efficient dynamic disjointness checks.  Each of these was covered in significant
-detail in [1], which may have been unavailable to the reviewers previously but can
+detail in our prior work [1], which may have been unavailable to the reviewers previously but can
 now be found at http://theory.stanford.edu/~aiken/publications/papers/sc12.pdf .
 
 As described in [1], Legion does not attempt to solve the (in many cases still-open)
