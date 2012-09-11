@@ -439,8 +439,6 @@ namespace RegionRuntime {
       void wait_until_valid(void);
       bool is_valid(void) const;
       LogicalRegion get_logical_region(void) const;
-      IndexSpace get_index_space(void) const;
-      FieldSpace get_field_space(void) const;
       bool has_accessor(AccessorType at) const;
       template<AccessorType AT>
       LowLevel::RegionInstanceAccessorUntyped<AT_CONV_DOWN(AT)> get_accessor(void) const;
@@ -962,14 +960,16 @@ namespace RegionRuntime {
         InorderQueue(void);
       public:
         bool has_ready(void) const;
-        // Will put the next task or operation on the right queue.  Will
-        // also add any drain tasks as well.
-        void schedule_next(std::vector<TaskContext*> &tasks_to_map,
-                           std::vector<GeneralizedOperation*> &ops_to_map);
+        // Will put the next task or operation on the right queue.  
+        void schedule_next(Context key, std::map<Context,TaskContext*> &tasks_to_map,
+                           std::map<Context,GeneralizedOperation*> &ops_to_map);
         void notify_eligible(void);
       public:
         void enqueue_op(GeneralizedOperation *op);
         void enqueue_task(TaskContext *task);
+        // In case they fail
+        void requeue_op(GeneralizedOperation *op);
+        void requeue_task(TaskContext *task);
       private:
         // Keep track of whether this queue has something executing or not
         bool eligible;
@@ -1101,6 +1101,12 @@ namespace RegionRuntime {
                                       std::vector<IndexSplit> &slice);
 
       /**
+       * Ask the given mapper if it wants to perform a virtual mapping for the given region.
+       * Return true if the region should be virtually mapped, otherwise return false.
+       */
+      virtual bool map_region_virtually(const Task *task, const RegionRequirement &req, unsigned index);
+
+      /**
        * The specified task is being mapped on the current processor.  For the given
        * region requirement provide a ranking of memories in which to create a physical
        * instance of the logical region.  The currently valid instances is also provided.
@@ -1113,6 +1119,12 @@ namespace RegionRuntime {
                                     const std::set<Memory> &current_instances,
                                     std::vector<Memory> &target_ranking,
                                     bool &enable_WAR_optimization);
+
+      /**
+       * Whenever a task fails to map, tell the mapper about it so that is aware of which
+       * region failed to map and can possibly decide to do things differently in the future.
+       */
+      virtual void notify_failed_mapping(const Task *task, const RegionRequirement &req, unsigned index);
 
       /**
        * Once a region has been mapped into a specify memory, the programmer must select
@@ -1307,25 +1319,21 @@ namespace RegionRuntime {
     protected:
       friend class HighLevelRuntime;
       friend class PhysicalRegion;
-      PhysicalRegionImpl(unsigned id, LogicalRegion h, IndexSpace sp, FieldSpace fs, PhysicalInstance inst, unsigned mask);
+      friend class SingleTask;
+      PhysicalRegionImpl(unsigned id, LogicalRegion h, PhysicalInstance inst);
     public:
       PhysicalRegionImpl(void);
       PhysicalRegionImpl(const PhysicalRegionImpl &rhs);
       PhysicalRegionImpl& operator=(const PhysicalRegionImpl &rhs);
     protected:
       LogicalRegion get_logical_region(void) const;
-      IndexSpace get_index_space(void) const;
-      FieldSpace get_field_space(void) const;
       bool has_accessor(AccessorType at) const;
       PhysicalInstance get_physical_instance(void) const;
     protected:
       unsigned idx;
       LogicalRegion handle;
-      IndexSpace index_space;
-      FieldSpace field_space;
       // Only for non-inline-mapped
       PhysicalInstance instance;
-      unsigned accessor_mask; 
     };
 
     class ArgumentMapImpl : public Collectable {

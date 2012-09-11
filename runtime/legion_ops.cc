@@ -297,10 +297,11 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void MappingOperation::perform_operation(void)
+    bool MappingOperation::perform_operation(void)
     //--------------------------------------------------------------------------
     {
         
+      return true;
     }
 
     //--------------------------------------------------------------------------
@@ -413,10 +414,12 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void DeletionOperation::perform_operation(void)
+    bool DeletionOperation::perform_operation(void)
     //--------------------------------------------------------------------------
     {
-
+      
+      // Deletion operations should never fail
+      return true;
     }
 
     //--------------------------------------------------------------------------
@@ -658,12 +661,36 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    bool TaskContext::invoke_mapper_map_region_virtual(unsigned idx)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx < regions.size());
+#endif
+      AutoLock m_lock(mapper_lock);
+      DetailedTimer::ScopedPush sp(TIME_MAPPER);
+      return mapper->map_region_virtually(this, regions[idx], idx);
+    }
+
+    //--------------------------------------------------------------------------
     Processor TaskContext::invoke_mapper_target_proc(void)
     //--------------------------------------------------------------------------
     {
       AutoLock m_lock(mapper_lock);
       DetailedTimer::ScopedPush sp(TIME_MAPPER);
       return mapper->select_initial_processor(this);
+    }
+
+    //--------------------------------------------------------------------------
+    void TaskContext::invoke_mapper_failed_mapping(unsigned idx)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx < regions.size());
+#endif
+      AutoLock m_lock(mapper_lock);
+      DetailedTimer::ScopedPush sp(TIME_MAPPER);
+      return mapper->notify_failed_mapping(this, regions[idx], idx);
     }
 
     //--------------------------------------------------------------------------
@@ -771,20 +798,27 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
-    void SingleTask::perform_operation(void)
+    bool SingleTask::perform_operation(void)
     //--------------------------------------------------------------------------
     {
+      bool success = true;
       if (!is_distributed())
       {
         if (is_locally_mapped())
         {
           // locally mapped task, so map it, distribute it,
           // if still local, then launch it
-          perform_mapping();
-          if (distribute_task())
+          if (perform_mapping())
           {
-            // Still local so launch the task
-            launch_task();
+            if (distribute_task())
+            {
+              // Still local so launch the task
+              launch_task();
+            }
+          }
+          else
+          {
+            success = false;
           }
         }
         else
@@ -792,8 +826,10 @@ namespace RegionRuntime {
           // Try distributing it first
           if (distribute_task())
           {
-            perform_mapping();
-            launch_task();
+            if (perform_mapping())
+              launch_task();
+            else
+              success = false;
           }
         }
       }
@@ -809,10 +845,32 @@ namespace RegionRuntime {
         else
         {
           // Remote task that hasn't been mapped yet
-          perform_mapping();
-          launch_task();
+          if (perform_mapping())
+            launch_task();
+          else
+            success = false;
         }
       }
+      return success;
+    }
+
+    //--------------------------------------------------------------------------
+    ContextID SingleTask::find_enclosing_physical_context(LogicalRegion parent)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(physical_contexts.size() == regions.size());
+#endif
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        if (regions[idx].handle.region == parent)
+        {
+          return physical_contexts[idx];
+        }
+      }
+      // otherwise this is really bad and indicates a runtime error
+      assert(false);
+      return 0;
     }
 
     //--------------------------------------------------------------------------
@@ -1328,9 +1386,16 @@ namespace RegionRuntime {
                 this->variants->name, get_unique_id(), runtime->local_proc.id);
       assert(regions.size() == physical_instances.size());
 #endif
+      physical_regions.resize(regions.size());
+      physical_region_impls.resize(regions.size());
+#ifdef DEBUG_HIGH_LEVEL
+      assert(physical_instances.size() == regions.size());
+#endif
       for (unsigned idx = 0; idx < physical_instances.size(); idx++)
       {
-        physical_regions.push_back(PhysicalRegion(physical_instances[idx])); 
+        physical_region_impls[idx] = new PhysicalRegionImpl(idx, regions[idx].handle.region, 
+                                                            physical_instances[idx].get_instance());
+        physical_regions[idx] = PhysicalRegion(physical_region_impls[idx]);
       }
     }
 
@@ -1380,25 +1445,32 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
-    void MultiTask::perform_operation(void)
+    bool MultiTask::perform_operation(void)
     //--------------------------------------------------------------------------
     {
+      bool success = true;
       if (is_locally_mapped())
       {
         // Slice first, then map, finally distribute 
         if (is_sliced())
         {
-          perform_mapping();
-          if (distribute_task())
+          if (perform_mapping())
           {
-            launch_task();
+            if (distribute_task())
+            {
+              launch_task();
+            }
+          }
+          else
+          {
+            success = false;
           }
         }
         else
         {
           // Will recursively invoke perform_operation
           // on the new slice tasks
-          slice_index_space();
+          success = slice_index_space();
         }
       }
       else // Not locally mapped
@@ -1406,6 +1478,9 @@ namespace RegionRuntime {
         // Distribute first, then slice, finally map
         if (!is_distributed())
         {
+          // Since we're going to try distributing it,
+          // make sure all the region trees are clean
+          sanitize_region_forest();
           // Try distributing, if still local
           // then go about slicing
           if (distribute_task())
@@ -1414,14 +1489,14 @@ namespace RegionRuntime {
             {
               // This task has been sliced and is local
               // so map it and launch it
-              map_and_launch();
+              success = map_and_launch();
             }
             else
             {
               // Task to be sliced on this processor
               // Will recursively invoke perform_operation
               // on the new slice tasks
-              slice_index_space();
+              success = slice_index_space();
             }
           }
         }
@@ -1430,17 +1505,18 @@ namespace RegionRuntime {
           if (is_sliced())
           {
             // Distributed and now local
-            map_and_launch();
+            success = map_and_launch();
           }
           else
           {
             // Task to be sliced on this processor
             // Will recursively invoke perform_operation
             // on the new slice tasks
-            slice_index_space();
+            success = slice_index_space();
           }
         }
       }
+      return success;
     }
 
     //--------------------------------------------------------------------------
@@ -1451,7 +1527,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void MultiTask::slice_index_space(void)
+    bool MultiTask::slice_index_space(void)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1483,19 +1559,58 @@ namespace RegionRuntime {
       // because it no longer contains any parts of the index space.
       bool reclaim = post_slice();
 
-      // Now invoke perform task on all of the slices
-      for (unsigned idx = 0; idx < slices.size(); idx++)
+      bool success = true;
+      // Now invoke perform_operation on all of the slices, keep around
+      // any that aren't successfully performed
+      for (std::list<SliceTask*>::iterator it = slices.begin();
+            it != slices.end(); /*nothing*/)
       {
-        slices[idx]->perform_operation();
+        bool slice_success = (*it)->perform_operation();
+        if (!slice_success)
+        {
+          success = false;
+          it++;
+        }
+        else
+        {
+          // Remove it from the list since we're done
+          it = slices.erase(it);
+        }
       }
 
-      if (reclaim)
+      // Reclaim if we should and everything was a success
+      if (reclaim && success)
         this->deactivate();
+      return success;
     }
 
     /////////////////////////////////////////////////////////////
     // Individual Task 
     /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    void IndividualTask::trigger(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!remote);
+#endif
+      lock();
+      if (task_pred == Predicate::TRUE_PRED)
+      {
+        // Task evaluated should be run, put it on the ready queue
+        unlock();
+        runtime->add_to_ready_queue(this,false/*remote*/);
+      }
+      else if (task_pred == Predicate::FALSE_PRED)
+      {
+        unlock();
+      }
+      else
+      {
+        
+      }
+    }
 
     //--------------------------------------------------------------------------
     bool IndividualTask::is_distributed(void)
@@ -1513,6 +1628,12 @@ namespace RegionRuntime {
       {
         locally_mapped = invoke_mapper_locally_mapped();
         locally_set = true;
+        // Locally mapped tasks are not stealable
+        if (locally_mapped)
+        {
+          stealable = false;
+          stealable_set = true;
+        }
       }
       return locally_mapped;
     }
@@ -1523,8 +1644,13 @@ namespace RegionRuntime {
     {
       if (!stealable_set)
       {
-        stealable = invoke_mapper_stealable();
-        stealable_set = true;
+        // Check to make sure locally mapped is set first so
+        // we only ask about stealing if we're not locally mapped
+        if (!is_locally_mapped())
+        {
+          stealable = invoke_mapper_stealable();
+          stealable_set = true;
+        }
       }
       return stealable;
     }
@@ -1547,88 +1673,163 @@ namespace RegionRuntime {
       distributed = true;
       // If the target processor isn't us we have to
       // send our task away
+      return (target_proc == runtime->local_proc);
       bool is_local = (target_proc == runtime->local_proc);
       if (!is_local)
       {
+        // Sanitize the forest before sending it away
+        sanitize_region_forest();
         runtime->send_task(target_proc, this);
       } 
       return is_local; 
     }
 
     //--------------------------------------------------------------------------
-    void IndividualTask::perform_mapping(void)
+    bool IndividualTask::perform_mapping(void)
     //--------------------------------------------------------------------------
     {
+      bool map_success = true;
       // Do the mapping for all the regions
-
-      // If we're remote, send back our mapping information
-      if (remote)
       {
-#ifdef DEBUG_HIGH_LEVEL
-        assert(!locally_mapped); // we shouldn't be here if we were locally mapped
-#endif
-        size_t buffer_size = sizeof(orig_proc) + sizeof(orig_ctx) + sizeof(is_leaf);
-        buffer_size += (regions.size()*sizeof(bool)); // mapped or not for each region
-        lock_context();
-        std::vector<RegionTreeID> trees_to_pack; 
+        // Hold the context lock when doing this
+        forest_ctx->lock_context();
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
-          if (non_virtual_mapped_region[idx])
+          ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(phy_ctx != 0);
+#endif
+          // First check to see if we want to map the given region  
+          if (invoke_mapper_map_region_virtual(idx))
           {
-            trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(regions[idx].handle.region));
-            buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
+            // Want a virtual mapping
+            unmapped++;
+            non_virtual_mapped_region.push_back(false);
+            physical_instances.push_back(InstanceRef());
+            physical_contexts.push_back(phy_ctx); // use same context as parent for all child mappings
           }
-        }
-        // Now pack everything up and send it back
-        Serializer rez(buffer_size);
-        rez.serialize<Processor>(orig_proc);
-        rez.serialize<Context>(orig_ctx);
-        rez.serialize<bool>(is_leaf);
-        for (unsigned idx = 0; idx < regions.size(); idx++)
-        {
-          rez.serialize<bool>(non_virtual_mapped_region[idx]);
-        }
-        for (unsigned idx = 0; idx < trees_to_pack.size(); idx++)
-        {
-          forest_ctx->pack_region_tree_state_return(trees_to_pack[idx], rez);
-        }
-        unlock_context();
-        // Now send it back on the utility processor
-        Processor utility = orig_proc.get_utility_processor();
-        this->remote_start_event = utility.spawn(NOTIFY_START_ID,rez.get_buffer(),buffer_size);
-      }
-      else
-      {
-        // Hold the lock to prevent new waiters from registering
-        lock();
-        // notify any tasks that we have waiting on us
-#ifdef DEBUG_HIGH_LEVEL
-        assert(map_dependent_waiters.size() == regions.size());
-#endif
-        for (unsigned idx = 0; idx < regions.size(); idx++)
-        {
-          if (non_virtual_mapped_region[idx])
+          else
           {
-            std::set<GeneralizedOperation*> &waiters = map_dependent_waiters[idx];
-            for (std::set<GeneralizedOperation*>::const_iterator it = waiters.begin();
-                  it != waiters.end(); it++)
+            // Otherwise we want to do an actual physical mapping
+            RegionMapper reg_mapper(phy_ctx, idx, regions[idx], mapper, mapper_lock, termination_event, termination_event);
+            // Compute the trace 
+#ifdef DEBUG_HIGH_LEVEL
+            bool result = 
+#endif
+            forest_ctx->compute_region_path(regions[idx].parent,regions[idx].handle.region, reg_mapper.trace);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(result); // better have been able to compute the path
+#endif
+            // Now do the traversal and record the result
+            physical_instances.push_back(forest_ctx->map_region(reg_mapper));
+            // Check to make sure that the result isn't virtual, if it is then the mapping failed
+            if (physical_instances[idx].is_virtual_ref())
             {
-              (*it)->notify();
+              // Mapping failed
+              invoke_mapper_failed_mapping(idx);
+              map_success = false;
+              break;
             }
-            waiters.clear();
+            non_virtual_mapped_region.push_back(true);
+            physical_contexts.push_back(ctx_id); // use our context for all child mappings
           }
         }
-        unlock();
-        if (unmapped == 0)
+        forest_ctx->unlock_context();
+      }
+
+      if (!map_success)
+      {
+        forest_ctx->lock_context();
+        // Clean up everything that we've done
+        for (unsigned idx = 0; idx < physical_instances.size(); idx++)
         {
-          // If everything has been mapped, then trigger the mapped event
-          mapped_event.trigger();
+          physical_instances[idx].remove_reference();
+        }
+        forest_ctx->unlock_context();
+        physical_instances.clear();
+        physical_contexts.clear();
+        non_virtual_mapped_region.clear();
+        unmapped = 0;
+      }
+      else // map_success
+      {
+        // If we're remote, send back our mapping information
+        if (remote)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(!locally_mapped); // we shouldn't be here if we were locally mapped
+#endif
+          size_t buffer_size = sizeof(orig_proc) + sizeof(orig_ctx) + sizeof(is_leaf);
+          buffer_size += (regions.size()*sizeof(bool)); // mapped or not for each region
+          lock_context();
+          std::vector<RegionTreeID> trees_to_pack; 
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            if (non_virtual_mapped_region[idx])
+            {
+              trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(regions[idx].handle.region));
+              buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
+            }
+          }
+          // Now pack everything up and send it back
+          Serializer rez(buffer_size);
+          rez.serialize<Processor>(orig_proc);
+          rez.serialize<Context>(orig_ctx);
+          rez.serialize<bool>(is_leaf);
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            rez.serialize<bool>(non_virtual_mapped_region[idx]);
+          }
+          for (unsigned idx = 0; idx < trees_to_pack.size(); idx++)
+          {
+            forest_ctx->pack_region_tree_state_return(trees_to_pack[idx], rez);
+          }
+          unlock_context();
+          // Now send it back on the utility processor
+          Processor utility = orig_proc.get_utility_processor();
+          this->remote_start_event = utility.spawn(NOTIFY_START_ID,rez.get_buffer(),buffer_size);
+        }
+        else
+        {
+          // Hold the lock to prevent new waiters from registering
+          lock();
+          // notify any tasks that we have waiting on us
+#ifdef DEBUG_HIGH_LEVEL
+          assert(map_dependent_waiters.size() == regions.size());
+#endif
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            if (non_virtual_mapped_region[idx])
+            {
+              std::set<GeneralizedOperation*> &waiters = map_dependent_waiters[idx];
+              for (std::set<GeneralizedOperation*>::const_iterator it = waiters.begin();
+                    it != waiters.end(); it++)
+              {
+                (*it)->notify();
+              }
+              waiters.clear();
+            }
+          }
+          unlock();
+          if (unmapped == 0)
+          {
+            // If everything has been mapped, then trigger the mapped event
+            mapped_event.trigger();
+          }
         }
       }
+      return map_success;
     }
 
     //--------------------------------------------------------------------------
     void IndividualTask::launch_task(void)
+    //--------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------
+    void IndividualTask::sanitize_region_forest(void)
     //--------------------------------------------------------------------------
     {
 
@@ -1646,6 +1847,17 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       return termination_event;
+    }
+
+    //--------------------------------------------------------------------------
+    ContextID IndividualTask::get_enclosing_physical_context(LogicalRegion parent)
+    //--------------------------------------------------------------------------
+    {
+      // If we're remote, then everything is already in our own context ID
+      if (remote)
+        return ctx_id;
+      else
+        return parent_ctx->find_enclosing_physical_context(parent);
     }
 
     //--------------------------------------------------------------------------
@@ -2078,10 +2290,12 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void PointTask::perform_mapping(void)
+    bool PointTask::perform_mapping(void)
     //--------------------------------------------------------------------------
     {
+      bool map_success = true;
 
+      return map_success;
     }
 
     //--------------------------------------------------------------------------
@@ -2089,6 +2303,14 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
 
+    }
+
+    //--------------------------------------------------------------------------
+    void PointTask::sanitize_region_forest(void)
+    //--------------------------------------------------------------------------
+    {
+      // Should never be called
+      assert(false);
     }
 
     //--------------------------------------------------------------------------
@@ -2107,6 +2329,13 @@ namespace RegionRuntime {
       // Should never be called
       assert(false);
       return Event::NO_EVENT;
+    }
+
+    //--------------------------------------------------------------------------
+    ContextID PointTask::get_enclosing_physical_context(LogicalRegion parent)
+    //--------------------------------------------------------------------------
+    {
+      return slice_owner->get_enclosing_physical_context(parent);
     }
 
     //--------------------------------------------------------------------------
@@ -2257,17 +2486,40 @@ namespace RegionRuntime {
     bool IndexTask::distribute_task(void)
     //--------------------------------------------------------------------------
     {
-      // Should never be called
-      assert(false);
+      // This will only get called if we had slices that couldn't map, but
+      // they have now all mapped
+#ifdef DEBUG_HIGH_LEVEL
+      assert(slices.empty());
+#endif
+      // We're never actually here
       return false;
     }
 
     //--------------------------------------------------------------------------
-    void IndexTask::perform_mapping(void)
+    bool IndexTask::perform_mapping(void)
     //--------------------------------------------------------------------------
     {
-      // Should never be called on an IndexTask
-      assert(false);
+      // This will only get called if we had slices that failed to map locally
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!slices.empty());
+#endif
+      bool map_success = true;
+      for (std::list<SliceTask*>::iterator it = slices.begin();
+            it != slices.end(); /*nothing*/)
+      {
+        bool slice_success = (*it)->perform_operation();
+        if (!slice_success)
+        {
+          map_success = false;
+          it++;
+        }
+        else
+        {
+          // Remove it from the list since we're done
+          it = slices.erase(it);
+        }
+      }
+      return map_success;
     }
 
     //--------------------------------------------------------------------------
@@ -2279,11 +2531,19 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void IndexTask::map_and_launch(void)
+    void IndexTask::sanitize_region_forest(void)
+    //--------------------------------------------------------------------------
+    {
+      // TODO: Go through and sanitize all of our region trees
+    }
+
+    //--------------------------------------------------------------------------
+    bool IndexTask::map_and_launch(void)
     //--------------------------------------------------------------------------
     {
       // IndexTask should never be launched
       assert(false);
+      return false;
     }
 
     //--------------------------------------------------------------------------
@@ -2298,6 +2558,13 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       return termination_event;
+    }
+
+    //--------------------------------------------------------------------------
+    ContextID IndexTask::get_enclosing_physical_context(LogicalRegion parent)
+    //--------------------------------------------------------------------------
+    {
+      return parent_ctx->find_enclosing_physical_context(parent); 
     }
 
     //--------------------------------------------------------------------------
@@ -2407,7 +2674,7 @@ namespace RegionRuntime {
       assert(!slices.empty());
 #endif
       // Update all the slices with their new denominator
-      for (std::vector<SliceTask*>::const_iterator it = slices.begin();
+      for (std::list<SliceTask*>::const_iterator it = slices.begin();
             it != slices.end(); it++)
       {
         (*it)->set_denominator(slices.size());
@@ -2689,6 +2956,9 @@ namespace RegionRuntime {
 #endif
       }
       unlock();
+      // No need to deactivate our slices since they will deactivate themsevles
+      // We also don't need to deactivate ourself since our enclosing parent
+      // task will take care of that
     }
 
     /////////////////////////////////////////////////////////////
@@ -2741,27 +3011,70 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void SliceTask::perform_mapping(void)
+    bool SliceTask::perform_mapping(void)
     //--------------------------------------------------------------------------
     {
-      lock();
-      enumerating = true;
-      // TODO: Enumerate the points in the index space and clone
-      // a point for each one of them
-
-      num_unmapped_points = points.size();
-      num_unfinished_points = points.size();
-      enumerating = false;
-      unlock();
-    
-      for (unsigned idx = 0; idx < points.size(); idx++)
+      bool map_success = true;
+      // This is a leaf slice so do the normal thing
+      if (slices.empty())
       {
-        points[idx]->perform_mapping();
+        // only need to do this part if we didn't enumnerate before
+        if (points.empty())
+        {
+          lock();
+          enumerating = true;
+          // TODO: Enumerate the points in the index space and clone
+          // a point for each one of them
+
+          num_unmapped_points = points.size();
+          num_unfinished_points = points.size();
+          enumerating = false;
+          unlock();
+        }
+        
+        for (unsigned idx = 0; idx < points.size(); idx++)
+        {
+          bool point_success = points[idx]->perform_mapping();
+          if (!point_success)
+          {
+            // Unmap all the points up to this point 
+            for (unsigned i = 0; i < idx; i++)
+              points[i]->unmap_all_regions();
+            map_success = false;
+            break;
+          }
+        }
+
+        // No need to hold the lock here since none of
+        // the point tasks have begun running yet
+        if (map_success)
+          post_slice_start();
+      }
+      else
+      {
+        // This case only occurs if this is an intermediate slice
+        // and its subslices failed to map, so try to remap them
+        for (std::list<SliceTask*>::iterator it = slices.begin();
+              it != slices.end(); /*nothing*/)
+        {
+          bool slice_success = (*it)->perform_operation();
+          if (!slice_success)
+          {
+            map_success = false;
+            it++;
+          }
+          else
+          {
+            // Remove it from the list since we're done
+            it = slices.erase(it);
+          }
+        }
+        // If we mapped all our sub-slices, we're done
+        if (map_success)
+          this->deactivate();
       }
 
-      // No need to hold the lock here since none of
-      // the point tasks have begun running yet
-      post_slice_start();
+      return map_success;
     }
 
     //--------------------------------------------------------------------------
@@ -2775,7 +3088,14 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void SliceTask::map_and_launch(void)
+    void SliceTask::sanitize_region_forest(void)
+    //--------------------------------------------------------------------------
+    {
+      // Do nothing.  Region trees for slices were already sanitized by their IndexTask
+    }
+
+    //--------------------------------------------------------------------------
+    bool SliceTask::map_and_launch(void)
     //--------------------------------------------------------------------------
     {
       lock();
@@ -2783,34 +3103,49 @@ namespace RegionRuntime {
       num_unmapped_points = 0;
       num_unfinished_points = 0;
 
+      bool map_success = true;
       // TODO: Enumerate the points
+      do
       {
         PointTask *next_point = clone_as_point_task(); 
         points.push_back(next_point);
         num_unmapped_points++;
         num_unfinished_points++;
         unlock();
-        next_point->perform_mapping();
-        next_point->launch_task();
+        bool point_success = next_point->perform_mapping();
+        if (!point_success)
+        {
+          // TODO: save the state of the enumerator 
+          map_success = false;
+          break;
+        }
+        else
+        {
+          next_point->launch_task();
+        }
         lock();
       }
+      while (0);
       unlock();
       // No need to hold the lock when doing the post-slice-start since
       // we know that all the points have been enumerated at this point
-      post_slice_start(); 
+      if (map_success)
+        post_slice_start(); 
       lock();
       // Handle the case where all the children have called point_task_mapped
       // before we made it here.  The fine-grained locking here is necessary
       // to allow many children to run while others are still being instantiated
       // and mapped.
       bool all_mapped = (num_unmapped_points==0);
-      enumerating = false; // need this here to make sure post_slice_mapped gets called after post_slice_start
+      if (map_success)
+        enumerating = false; // need this here to make sure post_slice_mapped gets called after post_slice_start
       unlock();
       // If we need to do the post-mapped part, do that now too
-      if (all_mapped)
+      if (map_success && all_mapped)
       {
         post_slice_mapped();
       }
+      return map_success;
     }
 
     //--------------------------------------------------------------------------
@@ -2829,6 +3164,16 @@ namespace RegionRuntime {
       // Should never be called
       assert(false);
       return Event::NO_EVENT;
+    }
+
+    //--------------------------------------------------------------------------
+    ContextID SliceTask::get_enclosing_physical_context(LogicalRegion parent)
+    //--------------------------------------------------------------------------
+    {
+      if (remote)
+        return ctx_id;
+      else
+        return index_owner->get_enclosing_physical_context(parent);
     }
 
     //--------------------------------------------------------------------------
@@ -2862,7 +3207,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!slices.empty());
 #endif
-      for (std::vector<SliceTask*>::const_iterator it = slices.begin();
+      for (std::list<SliceTask*>::const_iterator it = slices.begin();
             it != slices.end(); it++)
       {
         (*it)->set_denominator(denominator*slices.size());
@@ -2942,7 +3287,7 @@ namespace RegionRuntime {
       assert(num_unfinished_points > 0);
 #endif
       num_unfinished_points--;
-      if (!enumerating && (num_unmapped_points == 0))
+      if (!enumerating && (num_unfinished_points == 0))
       {
         unlock();
         post_slice_finished();
@@ -3206,6 +3551,17 @@ namespace RegionRuntime {
         index_owner->return_privileges(created_index_spaces,created_field_spaces,created_regions);
         index_owner->slice_finished(points.size());
       }
+
+      // Once we're done doing this we need to deactivate any point tasks we have
+      for (std::vector<PointTask*>::const_iterator it = points.begin();
+            it != points.end(); it++)
+      {
+        (*it)->deactivate();
+      }
+
+      // Finally deactivate ourselves.  Note we do this regardless of whether we're remote
+      // or not since all Slice Tasks are responsible for deactivating themselves
+      this->deactivate();
     }
 
   }; // namespace HighLevel

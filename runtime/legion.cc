@@ -2,6 +2,7 @@
 #include "legion.h"
 #include "legion_utilities.h"
 #include "legion_ops.h"
+#include "region_tree.h"
 
 // The maximum number of proces on a node
 #define MAX_NUM_PROCS           1024
@@ -613,26 +614,6 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    IndexSpace PhysicalRegion::get_index_space(void) const
-    //--------------------------------------------------------------------------
-    {
-      if (is_impl)
-        return op.impl->get_index_space();
-      else
-        return op.map->get_index_space();
-    }
-
-    //--------------------------------------------------------------------------
-    FieldSpace PhysicalRegion::get_field_space(void) const
-    //--------------------------------------------------------------------------
-    {
-      if (is_impl)
-        return op.impl->get_field_space();
-      else
-        return op.map->get_field_space();
-    }
-
-    //--------------------------------------------------------------------------
     bool PhysicalRegion::has_accessor(AccessorType at) const
     //--------------------------------------------------------------------------
     {
@@ -837,17 +818,15 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     PhysicalRegionImpl::PhysicalRegionImpl(void)
       : idx(0), handle(0), 
-        index_space(IndexSpace::NO_SPACE), field_space(FieldSpace::NO_SPACE),
-        instance(PhysicalInstance::NO_INST), accessor_mask(0)
+        instance(PhysicalInstance::NO_INST)
     //--------------------------------------------------------------------------
     {
     }
 
     //--------------------------------------------------------------------------
-    PhysicalRegionImpl::PhysicalRegionImpl(unsigned id, LogicalRegion h, IndexSpace sp,
-                                   FieldSpace fs, PhysicalInstance inst, unsigned mask)
-      : idx(id), handle(h), 
-        index_space(sp), field_space(fs), instance(inst), accessor_mask(mask)
+    PhysicalRegionImpl::PhysicalRegionImpl(unsigned id, LogicalRegion h,
+                                            PhysicalInstance inst)
+      : idx(id), handle(h), instance(inst)
     //--------------------------------------------------------------------------
     {
     }
@@ -873,20 +852,6 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       return handle;
-    }
-
-    //--------------------------------------------------------------------------
-    IndexSpace PhysicalRegionImpl::get_index_space(void) const
-    //--------------------------------------------------------------------------
-    {
-      return index_space;
-    }
-
-    //--------------------------------------------------------------------------
-    FieldSpace PhysicalRegionImpl::get_field_space(void) const
-    //--------------------------------------------------------------------------
-    {
-      return field_space;
     }
 
     //--------------------------------------------------------------------------
@@ -1972,8 +1937,8 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void HighLevelRuntime::InorderQueue::schedule_next(std::vector<TaskContext*> &tasks_to_map,
-                                                       std::vector<GeneralizedOperation *> &ops_to_map)
+    void HighLevelRuntime::InorderQueue::schedule_next(Context key, std::map<Context,TaskContext*> &tasks_to_map,
+                                                       std::map<Context,GeneralizedOperation *> &ops_to_map)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1983,11 +1948,11 @@ namespace RegionRuntime {
       order_queue.pop_front();
       if (next.second)
       {
-        tasks_to_map.push_back(static_cast<TaskContext*>(next.first));
+        tasks_to_map[key] = static_cast<TaskContext*>(next.first);
       }
       else
       {
-        ops_to_map.push_back(next.first);
+        ops_to_map[key] = next.first;
       }
     }
 
@@ -2013,6 +1978,20 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       order_queue.push_back(std::pair<GeneralizedOperation*,bool>(task,true));
+    }
+
+    //--------------------------------------------------------------------------
+    void HighLevelRuntime::InorderQueue::requeue_op(GeneralizedOperation *op)
+    //--------------------------------------------------------------------------
+    {
+      order_queue.push_front(std::pair<GeneralizedOperation*,bool>(op,false));
+    }
+
+    //--------------------------------------------------------------------------
+    void HighLevelRuntime::InorderQueue::requeue_task(TaskContext *task)
+    //--------------------------------------------------------------------------
+    {
+      order_queue.push_front(std::pair<GeneralizedOperation*,bool>(task,true));
     }
 #endif // INORDER_EXECUTION
 
@@ -4254,10 +4233,15 @@ namespace RegionRuntime {
         }
       } // release the queue lock
 
+      std::vector<TaskContext*> failed_mappings;
       // Now we've got our list of tasks to map so map all of them
       for (unsigned idx = 0; idx < tasks_to_map.size(); idx++)
       {
-        tasks_to_map[idx]->perform_operation();
+        bool mapped = tasks_to_map[idx]->perform_operation();
+        if (!mapped)
+        {
+          failed_mappings.push_back(tasks_to_map[idx]);
+        }
       }
 
       // Also send out any steal requests that might have been made
@@ -4288,6 +4272,18 @@ namespace RegionRuntime {
         Processor utility = target.get_utility_processor();
         // Now launch the task to perform the steal operation
         utility.spawn(STEAL_TASK_ID,rez.get_buffer(),buffer_size);
+      }
+      
+      // If we had any failed mappings, put them back on the (front of the) ready queue
+      if (!failed_mappings.empty())
+      {
+        AutoLock q_lock(queue_lock);
+        for (std::vector<TaskContext*>::const_reverse_iterator it = failed_mappings.rbegin();
+              it != failed_mappings.rend(); it++)
+        {
+          ready_queues[(*it)->map_id].push_front(*it);
+        }
+        failed_mappings.clear();
       }
 
       // Now we need to determine if should disable the idle task
@@ -4341,10 +4337,21 @@ namespace RegionRuntime {
         ops = other_ready_queue;
         other_ready_queue.clear();
       }
+      std::vector<GeneralizedOperation*> failed_ops;
       for (unsigned idx = 0; idx < ops.size(); idx++)
       {
         // Perform each operation
-        ops[idx]->perform_operation();
+        bool success = ops[idx]->perform_operation();
+        if (!success)
+          failed_ops.push_back(ops[idx]);
+      }
+      if (!failed_ops.empty())
+      {
+        AutoLock q_lock(queue_lock);
+        // Put them on the back since this is a vector 
+        // and it won't make much difference what order
+        // they get performed in
+        other_ready_queue.insert(other_ready_queue.end(),failed_ops.begin(),failed_ops.end());
       }
     }
 
@@ -4353,37 +4360,61 @@ namespace RegionRuntime {
     void HighLevelRuntime::perform_inorder_scheduling(void)
     //--------------------------------------------------------------------------------------------
     {
-      std::vector<TaskContext*> tasks_to_map;
-      std::vector<GeneralizedOperation*> ops_to_map;
+      std::vector<TaskContext*> drain_to_map;
+      std::map<Context,TaskContext*> tasks_to_map;
+      std::map<Context,GeneralizedOperation*> ops_to_map;
       // Take the queue lock and get the next operations
       {
         AutoLock q_lock(queue_lock);
         // Get all the tasks out of the drain queue
-        tasks_to_map.insert(tasks_to_map.end(),drain_queue.begin(),drain_queue.end());
+        drain_to_map.insert(drain_to_map.end(),drain_queue.begin(),drain_queue.end());
         drain_queue.clear();
         for (std::map<Context,InorderQueue*>::const_iterator it = inorder_queues.begin();
               it != inorder_queues.end(); it++)
         {
           if (it->second->has_ready())
           {
-            it->second->schedule_next(tasks_to_map,ops_to_map);
+            it->second->schedule_next(it->first,tasks_to_map,ops_to_map);
           }
         }
       }
-      // Perform all the operations and tasks
-      for (std::vector<GeneralizedOperation*>::const_iterator it = ops_to_map.begin();
-            it != ops_to_map.end(); it++)
+      std::vector<TaskContext*> failed_drain;
+      for (std::vector<TaskContext*>::const_iterator it = drain_to_map.begin();
+            it != drain_to_map.end(); it++)
       {
-        (*it)->perform_operation();
+        bool success = (*it)->perform_operation();
+        if (!success)
+          failed_drain.push_back(*it);
       }
-      for (std::vector<TaskContext*>::const_iterator it = tasks_to_map.begin();
+      // Perform all the operations and tasks
+      for (std::map<Context,TaskContext*>::const_iterator it = tasks_to_map.begin();
             it != tasks_to_map.end(); it++)
       {
-        (*it)->perform_operation();
+        bool success = it->second->perform_operation();
+        if (!success)
+        {
+          AutoLock q_lock(queue_lock);
+          inorder_queues[it->first]->requeue_task(it->second);
+        }
+      }
+      for (std::map<Context,GeneralizedOperation*>::const_iterator it = ops_to_map.begin();
+            it != ops_to_map.end(); it++)
+      {
+        bool success = it->second->perform_operation();
+        if (!success)
+        {
+          AutoLock q_lock(queue_lock);
+          inorder_queues[it->first]->requeue_op(it->second);
+        }
       }
       // Now check to see whether any of the queues have inorder tasks
       {
         AutoLock q_lock(queue_lock);
+        // Put any failed drains back on the queue
+        if (!failed_drain.empty())
+        {
+          drain_queue.insert(drain_queue.end(),failed_drain.begin(),failed_drain.end());
+        }
         bool has_ready = !drain_queue.empty();
         for (std::map<Context,InorderQueue*>::const_iterator it = inorder_queues.begin();
               it != inorder_queues.end(); it++)

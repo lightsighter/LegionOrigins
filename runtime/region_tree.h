@@ -27,6 +27,8 @@ namespace RegionRuntime {
       bool compute_region_path(LogicalRegion parent, LogicalRegion child, std::vector<unsigned> &path);
       bool compute_partition_path(LogicalRegion parent, LogicalPartition child, std::vector<unsigned> &path);
     public:
+      InstanceRef map_region(const RegionMapper &rm);
+    public:
       TypeHandle get_current_type(FieldSpace handle);
       TypeHandle get_current_type(LogicalRegion handle);
     public:
@@ -83,6 +85,46 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       bool lock_held;
 #endif
+    };
+
+    class InstanceRef {
+    public:
+      bool is_virtual_ref(void) const;
+      Event get_ready_event(void) const;
+      bool has_required_lock(void) const;
+      Lock get_required_lock(void) const;
+      PhysicalInstance get_instance(void) const;
+      void remove_reference(void) const;
+    private:
+      Event ready_event;
+      Lock required_lock;
+      Memory location;
+      PhysicalInstance instance;
+      InstanceView *view;
+    };
+
+    class RegionMapper {
+    public:
+#ifdef LOW_LEVEL_LOCKS
+      RegionMapper(ContextID id, unsigned idx, const RegionRequirement &req,
+                   Mapper *mapper, Lock mapper_lock, Event single, Event multi);
+#else
+      RegionMapper(ContextID id, unsigned idx, const RegionRequirement &req,
+                   Mapper *mapper, ImmovableLock mapper_lock, Event single, Event multi);
+#endif
+    public:
+      ContextID ctx;
+      unsigned idx;
+      const RegionRequirement &req;
+#ifdef LOW_LEVEL_LOCKS
+      Lock mapper_lock;
+#else
+      ImmovableLock mapper_lock;
+#endif
+      Mapper *mapper;
+      Event single_term;
+      Event multi_term;
+      std::vector<unsigned> trace;
     };
 #if 0
 
