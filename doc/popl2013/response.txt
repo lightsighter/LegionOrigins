@@ -1,14 +1,17 @@
 
-We thank the reviewers for their thoughtful, extensive, and very detailed comments.
-Most of the comments are specifically about presentation; we acknowledge the issue,
-and if the paper is accepted we will address the concerns raised.
+We thank the reviewers for their very detailed comments.  Most of the
+comments are specifically about presentation; we acknowledge the
+issue, and if the paper is accepted we will address the concerns
+raised.
 
-Many of the reviewers raise similar questions, which we have grouped together in a
-single response below in addition to answering issues raised by individual reviewers.
-To keep the response to a reasonable length we have tried to address the most common
-and significant issues.  In many cases, questions were asked which were addressed
-in our prior published work [1], which may have been unavailable to the reviewers previously but can
-now be found at http://theory.stanford.edu/~aiken/publications/papers/sc12.pdf .
+Many of the reviewers raise similar questions, which we have grouped
+together in a single response below in addition to answering issues
+raised by individual reviewers.  To keep the response to a reasonable
+length we have tried to address the most common and significant
+issues.  In many cases, questions were asked which were addressed in
+our prior published work [1], which may have been unavailable to the
+reviewers previously but can now be found at
+http://theory.stanford.edu/~aiken/publications/papers/sc12.pdf .
 
 Reviewers A, B, and C all asked for additional details about colorings.
 In Core Legion, colorings are explicit mappings of region elements (named by their location)
@@ -34,7 +37,7 @@ each element of the parent region, by building a list typed on the subregion up 
 of those "downregion" checks can be amortized over multiple iterations of the simulation.
 
 Both reviewers A and B inquired how the dynamic disjointness tests are performed.  This
-is the primary subject of our prior work [1].
+is a primary subject of our prior work [1].
 
 [Legion supports the "partition then allocate" model in which new elements allocated in a subregion
 are guaranteed to exist in parent regions as well and preserve that subregion's disjointness with
@@ -49,15 +52,16 @@ represents a fundamentally new composition of these features.  Primarily Legion 
 logical regions which permit elements to exist in many regions simultaneously via multiple dynamic
 partitions of regions.  Furthermore, the way the region information is leveraged both at compile-time 
 and at runtime represent a new point in the design space of region languages.  While the proof of
-soundness is not novel, we felt it necessary given the difference in semantics of logical regions 
-from previous region languages.  The soundness proof was also a prerequisite for our later proofs
+soundness does not introduce novel proof techniques, it is also far from immediate that the type system
+is sound and we feel the proof is necessary given large differences in the semantics of logical regions 
+from previous region systems.  The soundness proof was also a prerequisite for our later proofs
 concerning coherence modes and hierarchical scheduling.
 
 Both reviewers B and C thought coherence modes were an interesting technical contribution, but
 would have liked a higher-level description to build intuition.
-A description of the usage and intuition behind coherence modes was fully presented in [1] and
+A description of the usage and intuition behind coherence modes is presented in [1] and
 was omitted from this paper due to space constraints.  Our goal in this paper was to present
-two new results about coherence modes not presented in [1].  First, we present a formal semantics 
+two new results about coherence modes that are not in [1].  First, we present a formal semantics 
 of the possible interleavings allowed by different coherence modes and their interactions.  
 Second, we prove that coherence modes do not impact the soundness of our type system or the 
 correctness of our hierarchical scheduling algorithm.  A brief summary of coherence modes is:
