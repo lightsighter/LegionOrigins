@@ -1,4 +1,4 @@
-We'd first like to thank the reviewers for their detailed and useful feedback.
+We would first like to thank the reviewers for their detailed and useful feedback.
 Rather than addressing each reviewer's questions separately, we have organized
 our response based on the areas the questions covered.
 
@@ -44,9 +44,8 @@ was omitted from this paper due to space constraints.
 to transactional-memory-like execution, and "simultaneous" corresponds to
 "all bets are off" pthreads-style parallelism.  However, unlike other implementations, coherence modes 
 only allow for reordering of subtasks with the same parent task, permitting the containment of non-determinism
-to a portion of the task hierarchy.  This paper contains two new
-results about coherence modes not contained in [1].  First, we give a formal semantics of the possible
-interleavings allowed by 
+to a portion of the task hierarchy.  This paper contains two new results about coherence modes 
+not presented in [1].  First, we give a formal semantics of the possible interleavings allowed by 
 different coherence modes and their interactions.  Second, we prove that coherence modes do not
 impact the soundness of our type system or the correctness of our hierarchical scheduling algorithm.
 
