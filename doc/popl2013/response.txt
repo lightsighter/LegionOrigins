@@ -1,27 +1,40 @@
-We would first like to thank the reviewers for their detailed and useful feedback.
-Rather than addressing each reviewer's questions separately, we have organized
-our response based on the areas the questions covered.
 
-First, there were multiple requests for more detail on the code example, the
-use of colorings to describe partitions, and the algorithm used to perform 
-efficient dynamic disjointness checks.  Each of these was covered in significant
-detail in our prior work [1], which may have been unavailable to the reviewers previously but can
+We thank the reviewers for their thoughtful, extensive, and very detailed comments.
+Most of the comments are specifically about presentation; we acknowledge the issue,
+and if the paper is accepted we will address the concerns raised.
+
+Many of the reviewers raise similar questions, which we have grouped together in a
+single response below in addition to answering issues raised by individual reviewers.
+To keep the response to a reasonable length we have tried to address the most common
+and significant issues.  In many cases, questions were asked which were addressed
+in our prior published work [1], which may have been unavailable to the reviewers previously but can
 now be found at http://theory.stanford.edu/~aiken/publications/papers/sc12.pdf .
 
-As described in [1], Legion does not attempt to solve the (in many cases still-open)
-problem of partitioning data for any given application.  The body of the "color_circuit"
-task would likely consist of a call to an external library (e.g. PARMETIS for graph-based
-data structures).  The coloring is merely a way to capture the result of that external
-computation for use by the Legion runtime.  The "build_lists" task is not strictly required.
-While a task could iterate over the elements of a subregion through repeated uses of "downregion" on
-each element of the parent region, by building a list up front, the cost of those "downregion"
-checks can be amortized over multiple iterations of the simulation.
-
+Reviewers A, B, and C all asked for additional details about colorings.
 In Core Legion, colorings are explicit mappings of region elements (named by their location)
 to integer "colors".  This represents the most general case of describing the partitioning of
 a region.  More concise descriptions exist in the full Legion language (e.g. using a pure
 function to determine the color of an element on demand), but a single form was selected for
-Core Legion for simplicity.
+Core Legion for simplicity.  As described in [1], Legion does not attempt to solve the (in many cases still-open)
+problem of partitioning data for any given application.  In our example, the body of the "color_circuit"
+task would require the programmer to compute a partition of the circuit graph and return a coloring
+that assigns each circuit element a color corresponding to its piece of the partition.  
+In production scientific codes this is often done by a call 
+to an external library (e.g. PARMETIS for graph-based data structures).  
+A coloring is merely a way to capture the result of the partitioning 
+computation in a general format understood by the Legion runtime.  
+
+Reviewer A asked how "downregion" operations are performed and used.  The "downregion" operation
+requires a dynamic check that the given location is valid in the provided logical region.  To
+perform these checks the runtime remembers which locations have been allocated in each logical
+region and dynamically checks that the location has been allocated for the given region.  The 
+"build_lists" task is an example of an optimization done to reduce the number of "downregion" calls.
+While a task could iterate over the elements of a subregion through repeated uses of "downregion" on
+each element of the parent region, by building a list typed on the subregion up front, the cost 
+of those "downregion" checks can be amortized over multiple iterations of the simulation.
+
+Both reviewers A and B inquired how the dynamic disjointness tests are performed.  This
+is the primary subject of our prior work [1].
 
 [Legion supports the "partition then allocate" model in which new elements allocated in a subregion
 are guaranteed to exist in parent regions as well and preserve that subregion's disjointness with
@@ -30,26 +43,35 @@ this in Core Legion by allowing extra unnamed locations to exist in every region
 allocations without changing the sets of locations assigned to physical regions.  {Is this opening a
 can of worms?}]
 
-As several reviewers noted, the Legion type system is similar in many ways to existing region-based
-typed systems; this is by design.  Additions to the "standard" region-based type system were 
-done to capture the new features of Legion: colorings as a description of an arbitrary partitioning
-of a region, a hierarchy of regions in which a location may be contained in multiple regions, the 
-ability to capture the relationship between regions, and the ability to relax the determinism of 
-execution via coherence modes.  With these additional features a proof that soundness was preserved 
-was a prerequisite for later proofs in our paper.
+Reviewer B commented that the Legion type system is similar in several ways to existing region-based
+typed systems.  While we reuse many features of prior region languages, we believe that Legion
+represents a fundamentally new composition of these features.  Primarily Legion allows for first-class
+logical regions which permit elements to exist in many regions simultaneously via multiple dynamic
+partitions of regions.  Furthermore, the way the region information is leveraged both at compile-time 
+and at runtime represent a new point in the design space of region languages.  While the proof of
+soundness is not novel, we felt it necessary given the difference in semantics of logical regions 
+from previous region languages.  The soundness proof was also a prerequisite for our later proofs
+concerning coherence modes and hierarchical scheduling.
 
+Both reviewers B and C thought coherence modes were an interesting technical contribution, but
+would have liked a higher-level description to build intuition.
 A description of the usage and intuition behind coherence modes was fully presented in [1] and
-was omitted from this paper due to space constraints.
-"Exclusive" coherence corresponds to apparently-sequential execution, "atomic" corresponds 
+was omitted from this paper due to space constraints.  Our goal in this paper was to present
+two new results about coherence modes not presented in [1].  First, we present a formal semantics 
+of the possible interleavings allowed by different coherence modes and their interactions.  
+Second, we prove that coherence modes do not impact the soundness of our type system or the 
+correctness of our hierarchical scheduling algorithm.  A brief summary of coherence modes is:
+"exclusive" coherence corresponds to apparently-sequential execution, "atomic" corresponds 
 to transactional-memory-like execution, and "simultaneous" corresponds to
-"all bets are off" pthreads-style parallelism.  However, unlike other implementations, coherence modes 
+"all bets are off" pthreads-style parallelism.  Unlike other implementations, coherence modes 
 only allow for reordering of subtasks with the same parent task, permitting the containment of non-determinism
-to a portion of the task hierarchy.  This paper contains two new results about coherence modes 
-not presented in [1].  First, we give a formal semantics of the possible interleavings allowed by 
-different coherence modes and their interactions.  Second, we prove that coherence modes do not
-impact the soundness of our type system or the correctness of our hierarchical scheduling algorithm.
+to a portion of the task hierarchy.   
 
-Finally, the choice of large-step operational semantics was made to match the hierachical and distributed
+Reviewer D asked what is currently implemented.  Legion currently consists of a static type 
+checker for programs written in Core-Legion and a C++ runtime library for fully-featured Legion programs.
+
+Finally, reviewers B, C, and D expressed confusion about the nature of the clobber set.
+The choice of large-step operational semantics was made to match the hierachical and distributed
 scheduling used by the Legion runtime.  When coherence modes other than exclusive are used, there may be
 multiple tasks modifying the same location of memory - the clobber set is the set of all such locations for
 a given task.  The clobber set is used to bound the allowed non-determinism within a given task, and the
@@ -61,3 +83,4 @@ any scheduling of tasks that satisfies the "valid_interleave" rules.  We conside
 that explicitly track the state of every parallel task's execution, but the complexity of the constraints used
 to decide which task(s) were able to take a step at any given point were onerous and would limit our soundness
 guarantees to only that scheduling algorithm.
+
