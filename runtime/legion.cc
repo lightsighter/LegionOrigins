@@ -2741,7 +2741,7 @@ namespace RegionRuntime {
                               ctx->variants->name, ctx->get_unique_id());
 #endif
       DeletionOperation *deletion = get_available_deletion(ctx);
-      deletion->initialize_partition_deletion(ctx, handle);
+      deletion->initialize_index_partition_deletion(ctx, handle);
 
       // Perform the dependence analysis
       add_to_dependence_queue(deletion);
@@ -2893,7 +2893,7 @@ namespace RegionRuntime {
                               handle.index_partition, handle.field_space.id, ctx->variants->name, ctx->get_unique_id());
 #endif
       DeletionOperation *deletion = get_available_deletion(ctx);
-      deletion->initialize_logical_partition_deletion(ctx, handle);
+      deletion->initialize_partition_deletion(ctx, handle);
 
       // Perform the dependence analysis
       add_to_dependence_queue(deletion);

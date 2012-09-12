@@ -376,7 +376,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void DeletionOperation::initialize_partition_deletion(Context parent, IndexPartition part)
+    void DeletionOperation::initialize_index_partition_deletion(Context parent, IndexPartition part)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -423,9 +423,21 @@ namespace RegionRuntime {
       assert(parent != NULL);
 #endif
       parent_ctx = parent;
-      index.space = reg.index_space;
-      field_space = reg.field_space;
+      region = reg;
       handle_tag = DESTROY_REGION;
+      parent->register_child_deletion(this);
+    }
+
+    //--------------------------------------------------------------------------
+    void DeletionOperation::initialize_partition_deletion(Context parent, LogicalPartition handle)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(parent != NULL);
+#endif
+      parent_ctx = parent;
+      partition = handle;
+      handle_tag = DESTROY_PARTITION;
       parent->register_child_deletion(this);
     }
 
@@ -450,14 +462,65 @@ namespace RegionRuntime {
     void DeletionOperation::perform_dependence_analysis(void)
     //--------------------------------------------------------------------------
     {
-
+      
     }
 
     //--------------------------------------------------------------------------
     bool DeletionOperation::perform_operation(void)
     //--------------------------------------------------------------------------
     {
-      
+      lock_context();
+      // Lock to test if the operation has been performed yet 
+      lock();
+      if (!performed)
+      {
+        switch (handle_tag)
+        {
+          case DESTROY_INDEX_SPACE:
+            {
+              parent_ctx->destroy_index_space(index.space);
+              break;
+            }
+          case DESTROY_INDEX_PARTITION:
+            {
+              parent_ctx->destroy_index_partition(index.partition);
+              break;
+            }
+          case DESTROY_FIELD_SPACE:
+            {
+              parent_ctx->destroy_field_space(field_space);
+              break;
+            }
+          case DESTROY_FIELDS:
+            {
+              parent_ctx->downgrade_field_space(field_space, downgrade_type);
+              break;
+            }
+          case DESTROY_REGION:
+            {
+              parent_ctx->destroy_region(region);
+              break;
+            }
+          case DESTROY_PARTITION:
+            {
+              parent_ctx->destroy_partition(partition);
+              break;
+            }
+          default:
+            assert(false); // should never get here
+        }
+        // Mark that this has been performed and unlock
+        performed = true;
+        unlock();
+        unlock_context();
+      }
+      else
+      {
+        unlock();
+        unlock_context();
+        // The deletion was already performed, so we can now deactivate the operation 
+        deactivate();
+      }
       // Deletion operations should never fail
       return true;
     }
@@ -1181,10 +1244,18 @@ namespace RegionRuntime {
     void SingleTask::destroy_region(LogicalRegion handle)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      if (is_leaf)
+      {
+        log_task(LEVEL_ERROR,"Illegal region creation performed in leaf task %s (ID %d)",
+                              this->variants->name, get_unique_id());
+        exit(ERROR_LEAF_TASK_VIOLATION);
+      }
+#endif
       // No need to worry about deferring this, it's already been done
       // by the DeletionOperation
       lock_context();
-      forest_ctx->delete_region(handle);
+      forest_ctx->destroy_region(handle);
       unlock_context();
       // Also check to see if it is one of created regions so we can delete it
       lock();
@@ -1198,6 +1269,23 @@ namespace RegionRuntime {
         }
       }
       unlock();
+    }
+
+    //--------------------------------------------------------------------------
+    void SingleTask::destroy_partition(LogicalPartition handle)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      if (is_leaf)
+      {
+        log_task(LEVEL_ERROR,"Illegal region creation performed in leaf task %s (ID %d)",
+                              this->variants->name, get_unique_id());
+        exit(ERROR_LEAF_TASK_VIOLATION);
+      }
+#endif
+      lock_context();
+      forest_ctx->destroy_partition(handle);
+      unlock_context();
     }
 
     //--------------------------------------------------------------------------
@@ -1631,6 +1719,56 @@ namespace RegionRuntime {
       }
     }
 
+    //--------------------------------------------------------------------------
+    void SingleTask::initialize_region_tree_contexts(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(regions.size() == physical_instances.size());
+#endif
+      lock_context();
+      // For all of the regions we need to initialize the logical contexts
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(regions[idx].handle_type == SINGULAR); // this better be true for single tasks
+#endif
+        forest_ctx->initialize_logical_context(regions[idx].region, ctx_id);
+      }
+      // For all of the physical contexts that were mapped, initialize them
+      // with a specified reference, otherwise make them a virtual reference
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        if (physical_instances[idx].is_virtual_ref())
+        {
+          clone_instances.push_back(InstanceRef());
+        }
+        else
+        {
+          clone_instances.push_back(forest_ctx->initialize_physical_context(regions[idx].region, physical_instances[idx], ctx_id));
+        }
+      }
+      unlock_context();
+    }
+
+    //--------------------------------------------------------------------------
+    void SingleTask::flush_deletions(void)
+    //--------------------------------------------------------------------------
+    {
+      for (std::list<DeletionOperation*>::const_iterator it = child_deletions.begin();
+            it != child_deletions.end(); it++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        bool result = 
+#endif
+        (*it)->perform_operation();
+#ifdef DEBUG_HIGH_LEVEL
+        assert(result);
+#endif
+      }
+      child_deletions.clear();
+    }
+
     /////////////////////////////////////////////////////////////
     // Multi Task 
     /////////////////////////////////////////////////////////////
@@ -1900,13 +2038,13 @@ namespace RegionRuntime {
           size_t buffer_size = sizeof(orig_proc) + sizeof(orig_ctx) + sizeof(is_leaf);
           buffer_size += (regions.size()*sizeof(bool)); // mapped or not for each region
           lock_context();
-          std::vector<RegionTreeID> trees_to_pack; 
+          std::vector<LogicalRegion> trees_to_pack; 
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
             if (non_virtual_mapped_region[idx])
             {
-              trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(regions[idx].region));
-              buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
+              trees_to_pack.push_back(regions[idx].region);
+              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx].region);
             }
           }
           // Now pack everything up and send it back
@@ -1957,6 +2095,13 @@ namespace RegionRuntime {
         }
       }
       return map_success;
+    }
+
+    //--------------------------------------------------------------------------
+    void IndividualTask::incorporate_additional_launch_events(std::set<Event> &wait_on_events)
+    //--------------------------------------------------------------------------
+    {
+      // Intentionally do nothing
     }
 
     //--------------------------------------------------------------------------
@@ -2033,12 +2178,12 @@ namespace RegionRuntime {
           lock_context();
           buffer_size += forest_ctx->compute_region_tree_updates_return();
           // Figure out which states we need to send back
-          std::vector<RegionTreeID> trees_to_pack;
+          std::vector<LogicalRegion> trees_to_pack;
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
             if (!non_virtual_mapped_region[idx])
             {
-              trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(regions[idx].region));
+              trees_to_pack.push_back(regions[idx].region);
               buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
             }
           }
@@ -2113,7 +2258,7 @@ namespace RegionRuntime {
       if (remote)
       {
         size_t buffer_size = sizeof(orig_proc) + sizeof(orig_ctx);
-        std::vector<RegionTreeID> trees_to_pack;
+        std::vector<LogicalRegion> trees_to_pack;
         // Only need to send this stuff back if we're not a leaf task
         if (!is_leaf)
         {
@@ -2123,7 +2268,7 @@ namespace RegionRuntime {
           for (std::list<LogicalRegion>::const_iterator it = created_regions.begin();
                 it != created_regions.end(); it++)
           {
-            trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(*it));
+            trees_to_pack.push_back(*it);
             buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
           }
           buffer_size += forest_ctx->compute_leaked_return_size();
@@ -3478,7 +3623,6 @@ namespace RegionRuntime {
         buffer_size += sizeof(denominator);
         buffer_size += sizeof(size_t);
         buffer_size += (regions.size() * sizeof(unsigned));
-        std::vector<RegionTreeID> trees_to_pack;
         lock_context();
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
@@ -3490,10 +3634,9 @@ namespace RegionRuntime {
             // Everybody mapped a region in this tree, it is fully mapped
             // so send it back
             if (regions[idx].handle_type == SINGULAR)
-              trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(regions[idx].region));
+              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx].region);
             else
-              trees_to_pack.push_back(forest_ctx->get_logical_partition_tree_id(regions[idx].partition));
-            buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
+              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx].partition);
           }
         }
         // Now pack everything up
@@ -3506,9 +3649,15 @@ namespace RegionRuntime {
         {
           rez.serialize<unsigned>(non_virtual_mappings[idx]);
         }
-        for (unsigned idx = 0; idx < trees_to_pack.size(); idx++)
+        for (unsigned idx = 0; idx < regions.size(); idx++)
         {
-          forest_ctx->pack_region_tree_state_return(trees_to_pack[idx], rez);
+          if (non_virtual_mappings[idx] == points.size())
+          {
+            if (regions[idx].handle_type == SINGULAR)
+              forest_ctx->pack_region_tree_state_return(regions[idx].region, rez);
+            else
+              forest_ctx->pack_region_tree_state_return(regions[idx].partition, rez);
+          }
         }
         unlock_context();
         // Now send it back to the utility processor
@@ -3553,17 +3702,15 @@ namespace RegionRuntime {
           buffer_size += (regions.size() * sizeof(unsigned));
           buffer_size += forest_ctx->compute_region_tree_updates_return();
           // Figure out which states we need to send back
-          std::vector<RegionTreeID> trees_to_pack;
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
             // If we didn't send it back before, we need to send it back now
             if (non_virtual_mappings[idx] < points.size())
             {
               if (regions[idx].handle_type == SINGULAR)
-                trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(regions[idx].region));
+                buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx].region);
               else
-                trees_to_pack.push_back(forest_ctx->get_logical_partition_tree_id(regions[idx].partition));
-              buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
+                buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx].partition);
             }
           }
           // Now pack it all up
@@ -3578,9 +3725,15 @@ namespace RegionRuntime {
             }
           }
           forest_ctx->pack_region_tree_updates_return(rez);
-          for (unsigned idx = 0; idx < trees_to_pack.size(); idx++)
+          for (unsigned idx = 0; idx < regions.size(); idx++)
           {
-            forest_ctx->pack_region_tree_state_return(trees_to_pack[idx], rez);
+            if (non_virtual_mappings[idx] < points.size())
+            {
+              if (regions[idx].handle_type == SINGULAR)
+                forest_ctx->pack_region_tree_state_return(regions[idx].region, rez);
+              else
+                forest_ctx->pack_region_tree_state_return(regions[idx].partition, rez);
+            }
           }
           unlock_context();
           // Send it back on the utility processor
@@ -3610,7 +3763,6 @@ namespace RegionRuntime {
         size_t result_size = 0;
         // Need to send back the results to the enclosing context
         size_t buffer_size = sizeof(orig_proc) + sizeof(index_owner) + sizeof(is_leaf);
-        std::vector<RegionTreeID> trees_to_pack;
         // Need to send back the tasks for which we have privileges
         if (!is_leaf)
         {
@@ -3621,8 +3773,7 @@ namespace RegionRuntime {
           for (std::list<LogicalRegion>::const_iterator it = created_regions.begin();
                 it != created_regions.end(); it++)
           {
-            trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(*it));
-            buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
+            buffer_size += forest_ctx->compute_region_tree_state_return(*it);
           }
           buffer_size += forest_ctx->compute_leaked_return_size();
         }
@@ -3651,9 +3802,10 @@ namespace RegionRuntime {
         {
           pack_privileges_return(rez);
           forest_ctx->pack_region_tree_updates_return(rez);
-          for (unsigned idx = 0; idx < trees_to_pack.size(); idx++)
+          for (std::list<LogicalRegion>::const_iterator it = created_regions.begin();
+                it != created_regions.end(); it++)
           {
-            forest_ctx->pack_region_tree_state_return(trees_to_pack[idx],rez);
+            forest_ctx->pack_region_tree_state_return(*it,rez);
           }
           forest_ctx->pack_leaked_return(rez);
           unlock_context();

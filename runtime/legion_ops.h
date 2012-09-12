@@ -105,17 +105,24 @@ namespace RegionRuntime {
     /**
      * A class for deferrring deletions until all mapping tasks
      * that require the given resources have finished using them.
+     * One weird quirk of deletion operations is that since there
+     * is no mapping event, tasks that contain deletions can finish
+     * before the runtime actually executes them.  To handle this
+     * case every deletion will have perform_operation called twice:
+     * once by its enclosing task and once by the runtime. The deletion
+     * is performed on the first invokation, and deactivated on the
+     * second call.
      */
     class DeletionOperation : public GeneralizedOperation {
     public:
       DeletionOperation(HighLevelRuntime *rt);
     public:
       void initialize_index_space_deletion(Context parent, IndexSpace space);
-      void initialize_partition_deletion(Context parent, IndexPartition part);
+      void initialize_index_partition_deletion(Context parent, IndexPartition part);
       void initialize_field_space_deletion(Context parent, FieldSpace space);
       void initialize_field_downgrade(Context parent, FieldSpace space, TypeHandle downgrade);
       void initialize_region_deletion(Context parent, LogicalRegion handle);
-      void initialize_logical_partition_deletion(Context parent, LogicalPartition handle);
+      void initialize_partition_deletion(Context parent, LogicalPartition handle);
     public:
       // Functions from GeneralizedOperation
       virtual bool activate(GeneralizedOperation *parent = NULL);
@@ -130,6 +137,7 @@ namespace RegionRuntime {
         DESTROY_FIELD_SPACE,
         DESTROY_FIELDS,
         DESTROY_REGION,
+        DESTROY_PARTITION,
       };
     private:
       Context parent_ctx;
@@ -141,6 +149,9 @@ namespace RegionRuntime {
       DeletionKind handle_tag;
       // For downgrading types of field spaces
       TypeHandle downgrade_type;
+      LogicalRegion region;
+      LogicalPartition partition;
+      bool performed;
     };
 
     /////////////////////////////////////////////////////////////
@@ -281,6 +292,7 @@ namespace RegionRuntime {
       // Operations on region trees
       void create_region(LogicalRegion handle, IndexSpace index_space, FieldSpace field_space, RegionTreeID tid);  
       void destroy_region(LogicalRegion handle);
+      void destroy_partition(LogicalPartition handle);
       LogicalPartition get_region_partition(LogicalRegion parent, IndexPartition handle);
       LogicalRegion get_partition_subregion(LogicalPartition parent, IndexSpace handle);
     public:
@@ -320,6 +332,8 @@ namespace RegionRuntime {
       std::vector<bool> non_virtual_mapped_region;
       // This vector is filled in by perform_operation which does the mapping
       std::vector<InstanceRef> physical_instances;
+      // This vector contains references to clone references in the task's context
+      std::vector<InstanceRef> clone_instances;
       // This vector describes the physical ContextID for each region's mapping
       std::vector<ContextID> physical_contexts;
       // This vector just stores the physical region implementations for the task's duration

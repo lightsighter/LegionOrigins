@@ -26,8 +26,6 @@ namespace RegionRuntime {
       bool compute_index_path(IndexSpace parent, IndexSpace child, std::vector<unsigned> &path);
       bool compute_partition_path(IndexSpace parent, IndexPartition child, std::vector<unsigned> &path);
     public:
-      InstanceRef map_region(const RegionMapper &rm);
-    public:
       TypeHandle get_current_type(FieldSpace handle);
       TypeHandle get_current_type(LogicalRegion handle);
     public:
@@ -49,13 +47,18 @@ namespace RegionRuntime {
     public:
       // Logical Region operations
       void create_region(LogicalRegion handle, IndexSpace index_space, FieldSpace field_space, RegionTreeID tid);  
-      void delete_region(LogicalRegion handle);
+      void destroy_region(LogicalRegion handle);
+      void destroy_partition(LogicalPartition handle);
       LogicalPartition get_region_partition(LogicalRegion parent, IndexPartition handle);
       LogicalRegion get_partition_subregion(LogicalPartition parent, IndexSpace handle);
       bool is_current_subtype(LogicalRegion region, TypeHandle handle);
     public:
-      RegionTreeID get_logical_region_tree_id(LogicalRegion handle);
-      RegionTreeID get_logical_partition_tree_id(LogicalPartition handle);
+      // Logical Region contexts 
+      void initialize_logical_context(LogicalRegion handle, ContextID ctx);
+    public:
+      // Physical Region contexts
+      InstanceRef map_region(const RegionMapper &rm);
+      InstanceRef initialize_physical_context(LogicalRegion handle, InstanceRef ref, ContextID ctx);
     public:
       // Packing and unpacking send
 
@@ -66,8 +69,10 @@ namespace RegionRuntime {
       void unpack_region_tree_updates_return(Deserializer &derez);
     public:
       // Packing and unpacking state return
-      size_t compute_region_tree_state_return(RegionTreeID tid);
-      void pack_region_tree_state_return(RegionTreeID id, Serializer &rez);
+      size_t compute_region_tree_state_return(LogicalRegion handle);
+      size_t compute_region_tree_state_return(LogicalPartition handle);
+      void pack_region_tree_state_return(LogicalRegion handle, Serializer &rez);
+      void pack_region_tree_state_return(LogicalPartition handle, Serializer &rez);
       void unpack_region_tree_state_return(Deserializer &derez);
     public:
       // Packing and unpacking leaked references
