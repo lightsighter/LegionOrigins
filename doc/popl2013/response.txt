@@ -94,3 +94,10 @@ that explicitly track the state of every parallel task's execution, but the comp
 to decide which task(s) were able to take a step at any given point were onerous and would limit our soundness
 guarantees to only a particular scheduling algorithm.
 
+Reviewer A asked why the E-NewColor rule allows the initial coloring to be non-empty.  There are two
+reasons for this.  First, in the large-step semantics we use, the region mapping and heap typing cannot
+be changed by an E-New rule, so a partitioning of a region must include extra elements of the appropriate
+heap type to support allocation within a subregion.  Second, it allows implementations in which 
+an existing element that was not colored by the programmer is included in (at most one) arbitrary
+subregion, which can improve the efficiency of data transfers at runtime.
+
