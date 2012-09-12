@@ -4,7 +4,7 @@ comments are specifically about presentation; we acknowledge the
 issue, and if the paper is accepted we will address the concerns
 raised.
 
-Many of the reviewers raise similar questions, which we have grouped
+Many of the reviewers raised similar questions, which we have grouped
 together in a single response below in addition to answering issues
 raised by individual reviewers.  To keep the response to a reasonable
 length we have tried to address the most common and significant
@@ -13,7 +13,7 @@ our prior published work [1], which may have been unavailable to the
 reviewers previously but can now be found at
 http://theory.stanford.edu/~aiken/publications/papers/sc12.pdf .
 
-Reviewers A, B, and C all asked for additional details about colorings.
+Reviewers A, B, and C all asked for additional details about colorings which were covered in [1].
 In Core Legion, colorings are explicit mappings of region elements (named by their location)
 to integer "colors".  This represents the most general case of describing the partitioning of
 a region.  More concise descriptions exist in the full Legion language (e.g. using a pure
@@ -23,11 +23,12 @@ problem of partitioning data for any given application.  In our example, the bod
 task would require the programmer to compute a partition of the circuit graph and return a coloring
 that assigns each circuit element a color corresponding to its piece of the partition.  The same
 set of colors are used to identify the subregions that result from the partitioning.
-In production scientific codes this is often done by a call 
+In production scientific codes partitioning is often done by a call 
 to an external library (e.g. PARMETIS for graph-based data structures).  
 A coloring is merely a way to capture the result of the partitioning 
 computation in a general format understood by the Legion runtime.  
 
+Reviewer C ask for clarification concerning the the relationship between multiple partitions and privileges.
 The principle reason to support multiple partitions of the same data is to allow precise descriptions
 of the sets of elements that will be accessed by a given task.  These sets are often different in 
 different phases of an algorithm, and the increased precision is necessary to safely parallelize
@@ -52,15 +53,15 @@ represents a fundamentally new composition of these features.  Primarily Legion 
 logical regions which permit elements to exist in many regions simultaneously via multiple dynamic
 partitions of regions.  Furthermore, the way the region information is leveraged both at compile-time 
 and at runtime represent a new point in the design space of region languages.  While the proof of
-soundness does not introduce novel proof techniques, it is also far from immediate that the type system
-is sound and we feel the proof is necessary given large differences in the semantics of logical regions 
+soundness does not introduce novel proof techniques, it is far from immediate that the type system
+is sound and we felt the proof was necessary given the large differences in the semantics of logical regions 
 from previous region systems.  The soundness proof was also a prerequisite for our later proofs
 concerning coherence modes and hierarchical scheduling.
 
 Both reviewers B and C thought coherence modes were an interesting technical contribution, but
 would have liked a higher-level description to build intuition.
 A description of the usage and intuition behind coherence modes is presented in [1] and
-was omitted from this paper due to space constraints.  Our goal in this paper was to present
+was omitted from this paper due to space constraints.  In this paper we present
 two new results about coherence modes that are not in [1].  First, we present a formal semantics 
 of the possible interleavings allowed by different coherence modes and their interactions.  
 Second, we prove that coherence modes do not impact the soundness of our type system or the 
