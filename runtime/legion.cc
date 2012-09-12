@@ -365,8 +365,8 @@ namespace RegionRuntime {
                                         PrivilegeMode _priv,  
                                         CoherenceProperty _prop, LogicalRegion _parent,
 					 MappingTagID _tag, bool _verified)
-      : field(_handle.get_field_space()), privilege(_priv), type(_type), prop(_prop), parent(_parent),
-        redop(0), tag(_tag), verified(_verified), handle_type(SINGULAR), region(_handle)
+      : region(_handle), privilege(_priv), type(_type), prop(_prop), parent(_parent),
+        redop(0), tag(_tag), verified(_verified), handle_type(SINGULAR)
     //--------------------------------------------------------------------------
     { 
 #ifdef DEBUG_HIGH_LEVEL
@@ -376,16 +376,15 @@ namespace RegionRuntime {
         exit(ERROR_USE_REDUCTION_REGION_REQ);
       }
 #endif
-      index.space = _handle.get_index_space(); 
     }
 
     //--------------------------------------------------------------------------
     RegionRequirement::RegionRequirement(LogicalPartition pid, ProjectionID _proj, TypeHandle _type,
                 PrivilegeMode _priv, CoherenceProperty _prop,
                 LogicalRegion _parent, MappingTagID _tag, bool _verified)
-      : field(pid.get_field_space()), privilege(_priv), type(_type), prop(_prop), parent(_parent),
+      : partition(pid), privilege(_priv), type(_type), prop(_prop), parent(_parent),
         redop(0), tag(_tag), verified(_verified), handle_type(PROJECTION),
-        projection(_proj), partition(pid)
+        projection(_proj)
     //--------------------------------------------------------------------------
     { 
 #ifdef DEBUG_HIGH_LEVEL
@@ -395,15 +394,14 @@ namespace RegionRuntime {
         exit(ERROR_USE_REDUCTION_REGION_REQ);
       }
 #endif
-      index.partition = pid.get_index_partition(); 
     }
 
     //--------------------------------------------------------------------------
     RegionRequirement::RegionRequirement(LogicalRegion _handle, TypeHandle _type, ReductionOpID op,
                                     CoherenceProperty _prop, 
                                     LogicalRegion _parent, MappingTagID _tag, bool _verified)
-      : field(_handle.get_field_space()), privilege(REDUCE), type(_type), prop(_prop), parent(_parent),
-        redop(op), tag(_tag), verified(_verified), handle_type(SINGULAR), region(_handle)
+      : region(_handle), privilege(REDUCE), type(_type), prop(_prop), parent(_parent),
+        redop(op), tag(_tag), verified(_verified), handle_type(SINGULAR)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -413,15 +411,14 @@ namespace RegionRuntime {
         exit(ERROR_RESERVED_REDOP_ID);
       }
 #endif
-      index.space = _handle.get_index_space();
     }
 
     //--------------------------------------------------------------------------
     RegionRequirement::RegionRequirement(LogicalPartition pid, ProjectionID _proj, TypeHandle _type, 
                         ReductionOpID op, CoherenceProperty _prop,
                         LogicalRegion _parent, MappingTagID _tag, bool _verified)
-      : field(pid.get_field_space()), privilege(REDUCE), type(_type), prop(_prop), parent(_parent),
-        redop(op), tag(_tag), verified(_verified), handle_type(PROJECTION), projection(_proj), partition(pid) 
+      : partition(pid), privilege(REDUCE), type(_type), prop(_prop), parent(_parent),
+        redop(op), tag(_tag), verified(_verified), handle_type(PROJECTION), projection(_proj) 
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -431,7 +428,6 @@ namespace RegionRuntime {
         exit(ERROR_RESERVED_REDOP_ID);
       }
 #endif
-      index.partition = pid.get_index_partition();
     }
 
     //--------------------------------------------------------------------------
@@ -439,16 +435,9 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       if (rhs.handle_type == SINGULAR)
-      {
-        index.space = rhs.index.space;
         region = rhs.region;
-      }
       else
-      {
-        index.partition = rhs.index.partition;
         partition = rhs.partition;
-      }
-      field = rhs.field;
       type = rhs.type;
       privilege = rhs.privilege;
       prop = rhs.prop;
@@ -466,8 +455,10 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       size_t result = 0;
-      result += sizeof(this->index);
-      result += sizeof(this->field);
+      if (handle_type == SINGULAR)
+        result += sizeof(this->region);
+      else
+        result += sizeof(this->partition);
       result += sizeof(this->type);
       result += sizeof(this->privilege);
       result += sizeof(this->prop);
@@ -486,10 +477,9 @@ namespace RegionRuntime {
     {
       rez.serialize(this->handle_type);
       if (handle_type == SINGULAR)
-        rez.serialize(this->index.space);
+        rez.serialize(this->region);
       else
-        rez.serialize(this->index.partition);
-      rez.serialize(this->field);
+        rez.serialize(this->partition);
       rez.serialize(this->type);
       rez.serialize(this->privilege);
       rez.serialize(this->prop);
@@ -506,9 +496,9 @@ namespace RegionRuntime {
     {
       derez.deserialize(this->handle_type);
       if (handle_type == SINGULAR)
-        derez.deserialize(this->index.space);
+        derez.deserialize(this->region);
       else
-        derez.deserialize(this->index.partition);
+        derez.deserialize(this->partition);
       derez.deserialize(this->type);
       derez.deserialize(this->privilege);
       derez.deserialize(this->prop);
@@ -517,10 +507,6 @@ namespace RegionRuntime {
       derez.deserialize(this->tag);
       derez.deserialize(this->verified);
       derez.deserialize(this->projection);
-      if (handle_type == SINGULAR)
-        region = LogicalRegion(index.space,field);
-      else
-        partition = LogicalPartition(index.partition,field);
     }
 
     /////////////////////////////////////////////////////////////
@@ -2861,15 +2847,16 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_REGION);
-      LogicalRegion region(index_space, field_space);
+      RegionTreeID tid = get_unique_tree_id();
+      LogicalRegion region(tid, index_space, field_space);
 #ifdef DEBUG_HIGH_LEVEL
-      log_region(LEVEL_DEBUG, "Creating logical region in task %s (ID %d) with index space %x and field space %x",
-                              ctx->variants->name,ctx->get_unique_id(), index_space.id, field_space.id);
+      log_region(LEVEL_DEBUG, "Creating logical region in task %s (ID %d) with index space %x and field space %x in new tree %d",
+                              ctx->variants->name,ctx->get_unique_id(), index_space.id, field_space.id, tid);
 #endif
 #ifndef LOG_EVENT_ONLY
-      log_spy(LEVEL_INFO,"Region %x %x",index_space.id, field_space.id);
+      log_spy(LEVEL_INFO,"Region %x %x %x",index_space.id, field_space.id, tid);
 #endif
-      ctx->create_region(region, index_space, field_space);
+      ctx->create_region(region, index_space, field_space, tid);
 
       return region;
     }
@@ -2955,8 +2942,9 @@ namespace RegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_INLINE_MAP);
       MappingOperation *map_op = get_available_mapping(ctx);
       map_op->initialize(ctx, req, id, tag);
-      log_run(LEVEL_DEBUG, "Registering a map operation for region (%x,%x) in task %s (ID %d)",
-                           req.index.space.id, req.field.id, ctx->variants->name, ctx->get_unique_id());
+      log_run(LEVEL_DEBUG, "Registering a map operation for region (%x,%x,%x) in task %s (ID %d)",
+                           req.region.index_space.id, req.region.field_space.id, req.region.tree_id,
+                           ctx->variants->name, ctx->get_unique_id());
       add_to_dependence_queue(map_op);
 #ifdef INORDER_EXECUTION
       if (program_order_execution)

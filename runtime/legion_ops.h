@@ -279,7 +279,7 @@ namespace RegionRuntime {
       void downgrade_field_space(FieldSpace space, TypeHandle handle);
     public:
       // Operations on region trees
-      void create_region(LogicalRegion handle, IndexSpace index_space, FieldSpace field_space);  
+      void create_region(LogicalRegion handle, IndexSpace index_space, FieldSpace field_space, RegionTreeID tid);  
       void destroy_region(LogicalRegion handle);
       LogicalPartition get_region_partition(LogicalRegion parent, IndexPartition handle);
       LogicalRegion get_partition_subregion(LogicalPartition parent, IndexSpace handle);

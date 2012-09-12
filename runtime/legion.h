@@ -22,7 +22,7 @@ namespace RegionRuntime {
     protected:
       // Only the HighLevelRuntime should be allowed to make these
       FRIEND_ALL_RUNTIME_CLASSES;
-      LogicalRegion(IndexSpace index, FieldSpace field);
+      LogicalRegion(RegionTreeID tid, IndexSpace index, FieldSpace field);
     public:
       LogicalRegion(void);
       LogicalRegion(const LogicalRegion &rhs);
@@ -35,6 +35,7 @@ namespace RegionRuntime {
       inline FieldSpace get_field_space(void) const;
     private:
       // These are private so you can't just arbitrarily change them
+      RegionTreeID tree_id;
       IndexSpace index_space;
       FieldSpace field_space;
     };
@@ -48,7 +49,7 @@ namespace RegionRuntime {
     protected:
       // Only the HighLevelRuntime should be allowed to make these
       FRIEND_ALL_RUNTIME_CLASSES;
-      LogicalPartition(IndexPartition pid, FieldSpace field);
+      LogicalPartition(RegionTreeID tid, IndexPartition pid, FieldSpace field);
     public:
       LogicalPartition(void);
       LogicalPartition(const LogicalPartition &rhs);
@@ -61,6 +62,7 @@ namespace RegionRuntime {
       inline FieldSpace get_field_space(void) const;
     private:
       // These are private so you can't just arbitrary change them
+      RegionTreeID tree_id;
       IndexPartition index_partition;
       FieldSpace field_space;
     };
@@ -371,11 +373,8 @@ namespace RegionRuntime {
      */
     class RegionRequirement {
     public:
-      union Handle_t {
-        IndexSpace       space;
-        IndexPartition   partition;
-      } index;
-      FieldSpace         field;
+      LogicalRegion      region; 
+      LogicalPartition   partition; 
       TypeHandle         type;
       PrivilegeMode      privilege;
       CoherenceProperty  prop;
@@ -385,8 +384,6 @@ namespace RegionRuntime {
       bool               verified; // has this been verified already
       HandleType         handle_type;
       ProjectionID       projection;
-      LogicalRegion      region; // duplicate information
-      LogicalPartition   partition; // duplicate information
     public:
       RegionRequirement(void) { }
       // Create a requirement for a single region
@@ -415,12 +412,12 @@ namespace RegionRuntime {
 			MappingTagID _tag = 0, bool _verified = false);
     public:
       bool operator==(const RegionRequirement &req) const
-        { return (index.partition == req.index.partition) && (type == req.type) && (privilege == req.privilege)
-                && (prop == req.prop) && (redop == req.redop) &&
+        { return (type == req.type) && ((type == SINGULAR) ? (region == req.region) : (partition == req.partition)) 
+                && (privilege == req.privilege) && (prop == req.prop) && (redop == req.redop) &&
                    (parent == req.parent) && (handle_type == req.handle_type); }
       bool operator<(const RegionRequirement &req) const
-        { return (index.partition < req.index.partition) || (type == req.type) || (privilege < req.privilege)
-                || (prop < req.prop) || (redop < req.redop) || 
+        { return (type < req.type) || ((type == SINGULAR) ? (region < req.region) : (partition < req.partition))
+                || (privilege < req.privilege) || (prop < req.prop) || (redop < req.redop) || 
                    (parent < req.parent) || (handle_type < req.handle_type); }
       RegionRequirement& operator=(const RegionRequirement &rhs);
     protected:
@@ -898,6 +895,7 @@ namespace RegionRuntime {
       InstanceID       get_unique_instance_id(void);
       UniqueID         get_unique_op_id(void);
       IndexPartition   get_unique_partition_id(void);
+      RegionTreeID     get_unique_tree_id(void);
     protected: 
       void add_to_dependence_queue(GeneralizedOperation *op);
       void add_to_ready_queue(IndividualTask *task, bool remote);
@@ -1504,22 +1502,22 @@ namespace RegionRuntime {
     ////////////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
-    LogicalRegion::LogicalRegion(IndexSpace index, FieldSpace field)
-      : index_space(index), field_space(field)
+    LogicalRegion::LogicalRegion(RegionTreeID tid, IndexSpace index, FieldSpace field)
+      : tree_id(tid), index_space(index), field_space(field)
     //--------------------------------------------------------------------------
     {
     }
 
     //--------------------------------------------------------------------------
     LogicalRegion::LogicalRegion(void)
-      : index_space(IndexSpace::NO_SPACE), field_space(FieldSpace::NO_SPACE)
+      : tree_id(0), index_space(IndexSpace::NO_SPACE), field_space(FieldSpace::NO_SPACE)
     //--------------------------------------------------------------------------
     {
     }
 
     //--------------------------------------------------------------------------
     LogicalRegion::LogicalRegion(const LogicalRegion &rhs)
-      : index_space(rhs.index_space), field_space(rhs.field_space)
+      : tree_id(rhs.tree_id), index_space(rhs.index_space), field_space(rhs.field_space)
     //--------------------------------------------------------------------------
     {
     }
@@ -1528,6 +1526,7 @@ namespace RegionRuntime {
     inline LogicalRegion& LogicalRegion::operator=(const LogicalRegion &rhs) 
     //--------------------------------------------------------------------------
     {
+      tree_id = rhs.tree_id;
       index_space = rhs.index_space;
       field_space = rhs.field_space;
       return *this;
@@ -1537,14 +1536,14 @@ namespace RegionRuntime {
     inline bool LogicalRegion::operator==(const LogicalRegion &rhs) const
     //--------------------------------------------------------------------------
     {
-      return ((index_space == rhs.index_space) && (field_space == rhs.field_space));
+      return ((tree_id == rhs.tree_id) && (index_space == rhs.index_space) && (field_space == rhs.field_space));
     }
 
     //--------------------------------------------------------------------------
     inline bool LogicalRegion::operator<(const LogicalRegion &rhs) const
     //--------------------------------------------------------------------------
     {
-      return ((index_space < rhs.index_space) || (field_space < rhs.field_space));
+      return ((tree_id < rhs.tree_id) || (index_space < rhs.index_space) || (field_space < rhs.field_space));
     }
 
     //--------------------------------------------------------------------------
@@ -1562,22 +1561,22 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    LogicalPartition::LogicalPartition(IndexPartition pid, FieldSpace field)
-      : index_partition(pid), field_space(field)
+    LogicalPartition::LogicalPartition(RegionTreeID tid, IndexPartition pid, FieldSpace field)
+      : tree_id(tid), index_partition(pid), field_space(field)
     //--------------------------------------------------------------------------
     {
     }
 
     //--------------------------------------------------------------------------
     LogicalPartition::LogicalPartition(void)
-      : index_partition(0), field_space(FieldSpace::NO_SPACE)
+      : tree_id(0), index_partition(0), field_space(FieldSpace::NO_SPACE)
     //--------------------------------------------------------------------------
     {
     }
 
     //--------------------------------------------------------------------------
     LogicalPartition::LogicalPartition(const LogicalPartition &rhs)
-      : index_partition(rhs.index_partition), field_space(rhs.field_space)
+      : tree_id(rhs.tree_id), index_partition(rhs.index_partition), field_space(rhs.field_space)
     //--------------------------------------------------------------------------
     {
     }
@@ -1586,6 +1585,7 @@ namespace RegionRuntime {
     inline LogicalPartition& LogicalPartition::operator=(const LogicalPartition &rhs)
     //--------------------------------------------------------------------------
     {
+      tree_id = rhs.tree_id;
       index_partition = rhs.index_partition;
       field_space = rhs.field_space;
       return *this;
@@ -1595,14 +1595,14 @@ namespace RegionRuntime {
     inline bool LogicalPartition::operator==(const LogicalPartition &rhs) const
     //--------------------------------------------------------------------------
     {
-      return ((index_partition == rhs.index_partition) && (field_space == rhs.field_space));
+      return ((tree_id == rhs.tree_id) && (index_partition == rhs.index_partition) && (field_space == rhs.field_space));
     }
 
     //--------------------------------------------------------------------------
     inline bool LogicalPartition::operator<(const LogicalPartition &rhs) const
     //--------------------------------------------------------------------------
     {
-      return ((index_partition < rhs.index_partition) || (field_space < rhs.field_space));
+      return ((tree_id < rhs.tree_id) || (index_partition < rhs.index_partition) || (field_space < rhs.field_space));
     }
 
     //--------------------------------------------------------------------------

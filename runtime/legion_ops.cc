@@ -2,7 +2,7 @@
 #include "legion_ops.h"
 #include "region_tree.h"
 
-#define PRINT_REG(reg) reg.index_space.id,reg.field_space.id
+#define PRINT_REG(reg) (reg).index_space.id,(reg).field_space.id, (reg).tree_id
 
 namespace RegionRuntime {
   namespace HighLevel {
@@ -174,8 +174,8 @@ namespace RegionRuntime {
       tag = t;
 #ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Map %d Parent %d",unique_id,parent_ctx->get_unique_id());
-      log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle (%x,%x) Parent (%x,%x) Privilege %d Coherence %d",
-              parent_ctx->get_unique_id(),unique_id,0,req.index.space.id,req.field.id,
+      log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle (%x,%x,%x) Parent (%x,%x,%x) Privilege %d Coherence %d",
+              parent_ctx->get_unique_id(),unique_id,0,req.region.index_space.id,req.region.field_space.id,req.region.tree_id,
               PRINT_REG(req.parent),req.privilege,req.prop);
 #endif
       ctx->register_child_map(this);
@@ -199,9 +199,9 @@ namespace RegionRuntime {
       tag = t;
 #ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Map %d Parent %d",unique_id,parent_ctx->get_unique_id());
-      log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle REG_PAT Parent REG_PAT Privilege %d Coherence %d",
-              parent_ctx->get_unique_id(),unique_id,0,requirement.index.space.id,requirement.field.id,
-              PRINT_REG(requirement.parent),requirement.privilege,requirement.prop);
+      log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle (%x,%x,%x) Parent (%x,%x,%x) Privilege %d Coherence %d",
+              parent_ctx->get_unique_id(),unique_id,0,requirement.region.index_space.id,requirement.region.field_space.id,
+              requirement.region.tree_id,PRINT_REG(requirement.parent),requirement.privilege,requirement.prop);
 #endif
       ctx->register_child_map(this);
     }
@@ -306,7 +306,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       bool result = 
 #endif
-      forest_ctx->compute_index_path(requirement.parent.index_space, requirement.index.space, reg_mapper.trace);
+      forest_ctx->compute_index_path(requirement.parent.index_space, requirement.region.index_space, reg_mapper.trace);
 #ifdef DEBUG_HIGH_LEVEL
       assert(result);
 #endif
@@ -604,16 +604,18 @@ namespace RegionRuntime {
               }
             case ERROR_BAD_REGION_PATH:
               {
-                log_region(LEVEL_ERROR,"Region (%x,%x) is not a sub-region of parent region (%x,%x) for region requirement %d of task %s (ID %d)",
-                                        regions[idx].index.space.id,regions[idx].field.id, PRINT_REG(regions[idx].parent), idx,
-                                        this->variants->name, get_unique_id());
+                log_region(LEVEL_ERROR,"Region (%x,%x,%x) is not a sub-region of parent region (%x,%x,%x) for "
+                                        "region requirement %d of task %s (ID %d)",
+                                        regions[idx].region.index_space.id,regions[idx].region.field_space.id, regions[idx].region.tree_id,
+                                        PRINT_REG(regions[idx].parent), idx,this->variants->name, get_unique_id());
                 exit(ERROR_BAD_REGION_PATH);
               }
             case ERROR_BAD_PARTITION_PATH:
               {
-                log_region(LEVEL_ERROR,"Partition (%x,%x) is not a sub-partition of parent region (%x,%x) for "
+                log_region(LEVEL_ERROR,"Partition (%x,%x,%x) is not a sub-partition of parent region (%x,%x,%x) for "
                     "                   region requirement %d of task %s (ID %d)",
-                                        regions[idx].index.partition, regions[idx].field.id, PRINT_REG(regions[idx].parent), idx,
+                                        regions[idx].partition.index_partition, regions[idx].partition.field_space.id, 
+                                        regions[idx].partition.tree_id, PRINT_REG(regions[idx].parent), idx,
                                         this->variants->name, get_unique_id());
                 exit(ERROR_BAD_PARTITION_PATH);
               }
@@ -626,18 +628,18 @@ namespace RegionRuntime {
               }
             case ERROR_BAD_REGION_PRIVILEGES:
               {
-                log_region(LEVEL_ERROR,"Privileges %x for region (%x,%x) are not a subset of privileges of parent task's privileges for "
+                log_region(LEVEL_ERROR,"Privileges %x for region (%x,%x,%x) are not a subset of privileges of parent task's privileges for "
                                        "region requirement %d of task %s (ID %d)",
-                                       regions[idx].privilege, regions[idx].index.space.id,regions[idx].field.id, idx,
-                                       this->variants->name, get_unique_id());
+                                       regions[idx].privilege, regions[idx].region.index_space.id,regions[idx].region.field_space.id, 
+                                       regions[idx].region.tree_id, idx, this->variants->name, get_unique_id());
                 exit(ERROR_BAD_REGION_PRIVILEGES);
               }
             case ERROR_BAD_PARTITION_PRIVILEGES:
               {
-                log_region(LEVEL_ERROR,"Privileges %x for partition (%x,%x) are not a subset of privileges of parent task's privileges for "
+                log_region(LEVEL_ERROR,"Privileges %x for partition (%x,%x,%x) are not a subset of privileges of parent task's privileges for "
                                        "region requirement %d of task %s (ID %d)",
-                                       regions[idx].privilege, regions[idx].index.partition, regions[idx].field.id, idx,
-                                       this->variants->name, get_unique_id());
+                                       regions[idx].privilege, regions[idx].partition.index_partition, regions[idx].partition.field_space.id, 
+                                       regions[idx].partition.tree_id, idx, this->variants->name, get_unique_id());
                 exit(ERROR_BAD_PARTITION_PRIVILEGES);
               }
             default:
@@ -904,8 +906,7 @@ namespace RegionRuntime {
 #endif
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        if ((regions[idx].index.space == parent.index_space) &&
-            (regions[idx].field == parent.field_space))
+        if (regions[idx].region == parent)
         {
           return physical_contexts[idx];
         }
@@ -1156,7 +1157,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void SingleTask::create_region(LogicalRegion handle, IndexSpace index_space, FieldSpace field_space)
+    void SingleTask::create_region(LogicalRegion handle, IndexSpace index_space, FieldSpace field_space, RegionTreeID tid)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1168,7 +1169,7 @@ namespace RegionRuntime {
       }
 #endif
       lock_context();
-      forest_ctx->create_region(handle, index_space, field_space);
+      forest_ctx->create_region(handle, index_space, field_space, tid);
       unlock_context();
       // Add this to the list of our created regions
       lock();
@@ -1335,15 +1336,14 @@ namespace RegionRuntime {
         assert(it->handle_type == SINGULAR); // better be singular
 #endif
         // Check to see if we found the requirement in the parent
-        if ((it->index.space == req.parent.index_space) &&
-            (it->field == req.parent.field_space))
+        if (it->region == req.parent)
         {
           // Check that there is a path between the parent and the child
           lock_context();
           if (req.handle_type == SINGULAR)
           {
             std::vector<unsigned> path;
-            if (!forest_ctx->compute_index_path(req.parent.index_space, req.index.space, path))
+            if (!forest_ctx->compute_index_path(req.parent.index_space, req.region.index_space, path))
             {
               unlock_context();
               return ERROR_BAD_REGION_PATH;
@@ -1352,7 +1352,7 @@ namespace RegionRuntime {
           else
           {
             std::vector<unsigned> path;
-            if (!forest_ctx->compute_partition_path(req.parent.index_space, req.index.partition, path))
+            if (!forest_ctx->compute_partition_path(req.parent.index_space, req.partition.index_partition, path))
             {
               unlock_context();
               return ERROR_BAD_PARTITION_PATH;
@@ -1388,7 +1388,7 @@ namespace RegionRuntime {
           if (req.handle_type == SINGULAR)
           {
             std::vector<unsigned> path;
-            if (!forest_ctx->compute_index_path(req.parent.index_space, req.index.space, path))
+            if (!forest_ctx->compute_index_path(req.parent.index_space, req.region.index_space, path))
             {
               unlock_context();
               return ERROR_BAD_REGION_PATH;
@@ -1397,7 +1397,7 @@ namespace RegionRuntime {
           else
           {
             std::vector<unsigned> path;
-            if (!forest_ctx->compute_partition_path(req.parent.index_space, req.index.partition, path))
+            if (!forest_ctx->compute_partition_path(req.parent.index_space, req.partition.index_partition, path))
             {
               unlock_context();
               return ERROR_BAD_PARTITION_PATH;
@@ -1518,7 +1518,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           bool result = 
 #endif
-          forest_ctx->compute_index_path(regions[idx].parent.index_space,regions[idx].index.space, reg_mapper.trace);
+          forest_ctx->compute_index_path(regions[idx].parent.index_space,regions[idx].region.index_space, reg_mapper.trace);
 #ifdef DEBUG_HIGH_LEVEL
           assert(result); // better have been able to compute the path
 #endif

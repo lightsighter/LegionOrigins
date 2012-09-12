@@ -48,7 +48,7 @@ namespace RegionRuntime {
       bool is_current_subtype(FieldSpace space, TypeHandle handle);
     public:
       // Logical Region operations
-      void create_region(LogicalRegion handle, IndexSpace index_space, FieldSpace field_space);  
+      void create_region(LogicalRegion handle, IndexSpace index_space, FieldSpace field_space, RegionTreeID tid);  
       void delete_region(LogicalRegion handle);
       LogicalPartition get_region_partition(LogicalRegion parent, IndexPartition handle);
       LogicalRegion get_partition_subregion(LogicalPartition parent, IndexSpace handle);
