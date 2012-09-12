@@ -252,7 +252,8 @@ namespace RegionRuntime {
       // Functions from TaskContext
       virtual bool distribute_task(void) = 0; // Return true if still local
       virtual bool perform_mapping(void) = 0;
-      virtual void launch_task(void) = 0;
+      virtual void launch_task(void);
+      virtual void incorporate_additional_launch_events(std::set<Event> &wait_on_events) = 0;
       virtual void sanitize_region_forest(void) = 0;
       virtual Event get_map_event(void) const = 0;
       virtual Event get_termination_event(void) const = 0;
@@ -309,6 +310,9 @@ namespace RegionRuntime {
     public:
       ContextID compute_physical_context(const RegionRequirement &req);
       const RegionRequirement& get_region_requirement(unsigned idx);
+    protected:
+      bool map_all_regions(Event single_term, Event multi_term);
+      void initialize_region_tree_contexts(void);
     protected:
       // Methods for children_mapped
       void remove_source_copy_references(void);
@@ -413,7 +417,7 @@ namespace RegionRuntime {
       // Functions from TaskContext
       virtual bool distribute_task(void); // Return true if still local
       virtual bool perform_mapping(void);
-      virtual void launch_task(void);
+      virtual void incorporate_additional_launch_events(std::set<Event> &wait_on_events);
       virtual void sanitize_region_forest(void);
       virtual Event get_map_event(void) const;
       virtual Event get_termination_event(void) const;
@@ -478,7 +482,7 @@ namespace RegionRuntime {
       // Functions from TaskContext
       virtual bool distribute_task(void); // Return true if still local
       virtual bool perform_mapping(void);
-      virtual void launch_task(void);
+      virtual void incorporate_additional_launch_events(std::set<Event> &wait_on_events);
       virtual void sanitize_region_forest(void);
       virtual Event get_map_event(void) const;
       virtual Event get_termination_event(void) const;
@@ -496,6 +500,7 @@ namespace RegionRuntime {
       void unmap_all_regions(void);
     private:
       SliceTask *slice_owner;
+      UserEvent point_termination_event;
       // Set when this point get's cloned from its owner slice
       // The point value for this point
       void *point_buffer;
@@ -629,6 +634,7 @@ namespace RegionRuntime {
       bool stealable;
       bool remote;
       bool is_leaf;
+      Event termination_event;
       Processor target_proc;
       std::vector<PointTask*> points;
       // For remote slices

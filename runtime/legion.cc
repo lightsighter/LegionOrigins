@@ -3187,7 +3187,7 @@ namespace RegionRuntime {
 #endif
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::begin_task(Context ctx, std::vector<PhysicalRegion> &physical_regions)
+    const void* HighLevelRuntime::begin_task(Context ctx, std::vector<PhysicalRegion> &physical_regions, size_t &arglen)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -3195,6 +3195,9 @@ namespace RegionRuntime {
         ctx->variants->name,ctx->task_id,ctx->get_unique_id(),local_proc.id);
 #endif
       ctx->start_task(physical_regions);
+      // Set the argument length and return the pointer to the arguments buffer for the task
+      arglen = ctx->arglen;
+      return ctx->args;
     }
 
     //--------------------------------------------------------------------------------------------

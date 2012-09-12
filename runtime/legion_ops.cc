@@ -1403,6 +1403,13 @@ namespace RegionRuntime {
     void SingleTask::complete_task(const void *result, size_t result_size, std::vector<PhysicalRegion> &physical_regions)
     //--------------------------------------------------------------------------
     {
+      // Clean up some of our stuff from the task execution
+      for (unsigned idx = 0; idx < physical_region_impls.size(); idx++)
+      {
+        delete physical_region_impls[idx];
+      }
+      physical_region_impls.clear();
+      // Handle the future result
       handle_future(result, result_size);
       
       if (is_leaf)
@@ -1436,6 +1443,146 @@ namespace RegionRuntime {
           // Launch the task on the utility processor
           Processor utility = runtime->local_proc.get_utility_processor();
           utility.spawn(CHILDREN_MAPPED_ID,rez.get_buffer(),buffer_size,wait_on_event);
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    bool SingleTask::map_all_regions(Event single_term, Event multi_term)
+    //--------------------------------------------------------------------------
+    {
+      bool map_success = true;
+      // Do the mapping for all the regions
+      {
+        // Hold the context lock when doing this
+        forest_ctx->lock_context();
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(phy_ctx != 0);
+#endif
+          // First check to see if we want to map the given region  
+          if (invoke_mapper_map_region_virtual(idx))
+          {
+            // Want a virtual mapping
+            unmapped++;
+            non_virtual_mapped_region.push_back(false);
+            physical_instances.push_back(InstanceRef());
+            physical_contexts.push_back(phy_ctx); // use same context as parent for all child mappings
+          }
+          else
+          {
+            // Otherwise we want to do an actual physical mapping
+            RegionMapper reg_mapper(phy_ctx, idx, regions[idx], mapper, mapper_lock, single_term, multi_term);
+            // Compute the trace 
+#ifdef DEBUG_HIGH_LEVEL
+            bool result = 
+#endif
+            forest_ctx->compute_region_path(regions[idx].parent,regions[idx].handle.region, reg_mapper.trace);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(result); // better have been able to compute the path
+#endif
+            // Now do the traversal and record the result
+            physical_instances.push_back(forest_ctx->map_region(reg_mapper));
+            // Check to make sure that the result isn't virtual, if it is then the mapping failed
+            if (physical_instances[idx].is_virtual_ref())
+            {
+              // Mapping failed
+              invoke_mapper_failed_mapping(idx);
+              map_success = false;
+              break;
+            }
+            non_virtual_mapped_region.push_back(true);
+            physical_contexts.push_back(ctx_id); // use our context for all child mappings
+          }
+        }
+        forest_ctx->unlock_context();
+      }
+
+      if (!map_success)
+      {
+        forest_ctx->lock_context();
+        // Clean up everything that we've done
+        for (unsigned idx = 0; idx < physical_instances.size(); idx++)
+        {
+          physical_instances[idx].remove_reference();
+        }
+        forest_ctx->unlock_context();
+        physical_instances.clear();
+        physical_contexts.clear();
+        non_virtual_mapped_region.clear();
+        unmapped = 0;
+      }
+      return map_success;
+    }
+
+    //--------------------------------------------------------------------------
+    void SingleTask::launch_task(void)
+    //--------------------------------------------------------------------------
+    {
+      initialize_region_tree_contexts();
+
+      std::set<Event> wait_on_events;
+#ifdef DEBUG_HIGH_LEVEL
+      assert(regions.size() == physical_instances.size());
+#endif
+      bool has_atomics = false;
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        if (!physical_instances[idx].is_virtual_ref())
+        {
+          Event precondition = physical_instances[idx].get_ready_event();
+          // Do we need to acquire a lock for this region
+          if (physical_instances[idx].has_required_lock())
+          {
+            Lock atomic_lock = physical_instances[idx].get_required_lock();
+            Event atomic_pre = atomic_lock.lock(0,true/*exclusive*/,precondition);
+            wait_on_events.insert(atomic_pre);
+            has_atomics = true;
+          }
+          else
+          {
+            // No need for a lock here
+            wait_on_events.insert(precondition);
+          }
+        }
+      }
+      // See if there are any other events to add (i.e. barriers for must parallelism)
+      incorporate_additional_launch_events(wait_on_events);
+
+      Event start_condition = Event::merge_events(wait_on_events);
+#ifdef TRACE_CAPTURE
+      if (!start_cond.exists())
+      {
+        UserEvent new_start = UserEvent::create_user_event();
+        new_start.trigger();
+        start_condition = new_start;
+      }
+#endif
+#ifdef DEBUG_HIGH_LEVEL
+      // Debug printing for legion spy
+      log_spy(LEVEL_INFO,"Task ID %d %s",this->get_unique_id(),this->variants->name);
+#endif
+      // Now we need to select the variant to run
+      const TaskVariantCollection::Variant &variant = variants->select_variant(is_index_space,runtime->proc_kind);
+      // Figure out whether this task is a leaf task
+      this->is_leaf = variant.leaf;
+      // Launch the task, passing the pointer to this Context as the argument
+      SingleTask *this_ptr = this; // dumb c++
+      Event task_launch_event = runtime->local_proc.spawn(variant.low_id,&this_ptr,sizeof(SingleTask*),start_condition);
+
+      // After we launched the task, see if we had any atomic locks to release
+      if (has_atomics)
+      {
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          if (!physical_instances[idx].is_virtual_ref() && physical_instances[idx].has_required_lock())
+          {
+            Lock atomic_lock = physical_instances[idx].get_required_lock();
+            // Release the lock once that task is done
+            atomic_lock.unlock(task_launch_event);
+          }
         }
       }
     }
@@ -1688,70 +1835,8 @@ namespace RegionRuntime {
     bool IndividualTask::perform_mapping(void)
     //--------------------------------------------------------------------------
     {
-      bool map_success = true;
-      // Do the mapping for all the regions
-      {
-        // Hold the context lock when doing this
-        forest_ctx->lock_context();
-        for (unsigned idx = 0; idx < regions.size(); idx++)
-        {
-          ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
-#ifdef DEBUG_HIGH_LEVEL
-          assert(phy_ctx != 0);
-#endif
-          // First check to see if we want to map the given region  
-          if (invoke_mapper_map_region_virtual(idx))
-          {
-            // Want a virtual mapping
-            unmapped++;
-            non_virtual_mapped_region.push_back(false);
-            physical_instances.push_back(InstanceRef());
-            physical_contexts.push_back(phy_ctx); // use same context as parent for all child mappings
-          }
-          else
-          {
-            // Otherwise we want to do an actual physical mapping
-            RegionMapper reg_mapper(phy_ctx, idx, regions[idx], mapper, mapper_lock, termination_event, termination_event);
-            // Compute the trace 
-#ifdef DEBUG_HIGH_LEVEL
-            bool result = 
-#endif
-            forest_ctx->compute_region_path(regions[idx].parent,regions[idx].handle.region, reg_mapper.trace);
-#ifdef DEBUG_HIGH_LEVEL
-            assert(result); // better have been able to compute the path
-#endif
-            // Now do the traversal and record the result
-            physical_instances.push_back(forest_ctx->map_region(reg_mapper));
-            // Check to make sure that the result isn't virtual, if it is then the mapping failed
-            if (physical_instances[idx].is_virtual_ref())
-            {
-              // Mapping failed
-              invoke_mapper_failed_mapping(idx);
-              map_success = false;
-              break;
-            }
-            non_virtual_mapped_region.push_back(true);
-            physical_contexts.push_back(ctx_id); // use our context for all child mappings
-          }
-        }
-        forest_ctx->unlock_context();
-      }
-
-      if (!map_success)
-      {
-        forest_ctx->lock_context();
-        // Clean up everything that we've done
-        for (unsigned idx = 0; idx < physical_instances.size(); idx++)
-        {
-          physical_instances[idx].remove_reference();
-        }
-        forest_ctx->unlock_context();
-        physical_instances.clear();
-        physical_contexts.clear();
-        non_virtual_mapped_region.clear();
-        unmapped = 0;
-      }
-      else // map_success
+      bool map_success = map_all_regions(termination_event, termination_event); 
+      if (map_success)
       {
         // If we're remote, send back our mapping information
         if (remote)
@@ -1819,13 +1904,6 @@ namespace RegionRuntime {
         }
       }
       return map_success;
-    }
-
-    //--------------------------------------------------------------------------
-    void IndividualTask::launch_task(void)
-    //--------------------------------------------------------------------------
-    {
-
     }
 
     //--------------------------------------------------------------------------
@@ -2293,16 +2371,7 @@ namespace RegionRuntime {
     bool PointTask::perform_mapping(void)
     //--------------------------------------------------------------------------
     {
-      bool map_success = true;
-
-      return map_success;
-    }
-
-    //--------------------------------------------------------------------------
-    void PointTask::launch_task(void)
-    //--------------------------------------------------------------------------
-    {
-
+      return map_all_regions(point_termination_event,slice_owner->get_termination_event());
     }
 
     //--------------------------------------------------------------------------
@@ -2392,6 +2461,8 @@ namespace RegionRuntime {
     {
       // Return privileges to the slice owner
       slice_owner->return_privileges(created_index_spaces,created_field_spaces,created_regions);
+      // Indicate that this point has terminated
+      point_termination_event.trigger();
       // notify the slice owner that this task has finished
       slice_owner->point_task_finished(this);
     }
@@ -3161,9 +3232,7 @@ namespace RegionRuntime {
     Event SliceTask::get_termination_event(void) const
     //--------------------------------------------------------------------------
     {
-      // Should never be called
-      assert(false);
-      return Event::NO_EVENT;
+      return termination_event;
     }
 
     //--------------------------------------------------------------------------

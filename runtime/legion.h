@@ -86,6 +86,7 @@ namespace RegionRuntime {
     protected:
       friend class HighLevelRuntime;
       friend class TaskContext;
+      friend class SingleTask;
       void add_variant(Processor::TaskFuncID low_id, Processor::Kind kind, bool index, bool leaf);
       const Variant& select_variant(bool index, Processor::Kind kind);
     public:
@@ -798,7 +799,7 @@ namespace RegionRuntime {
 #endif
     public:
       // Methods for the wrapper functions to get information from the runtime
-      void begin_task(Context ctx, std::vector<PhysicalRegion> &physical_regions);
+      const void* begin_task(Context ctx, std::vector<PhysicalRegion> &physical_regions, size_t &arglen);
       void end_task(Context ctx, const void *result, size_t result_size,
                     std::vector<PhysicalRegion> &physical_regions);
       const void* get_local_args(Context ctx, void *point, size_t point_size, size_t &local_size); 
@@ -2043,14 +2044,14 @@ namespace RegionRuntime {
 
       // Read the context out of the buffer
       Context ctx = *((const Context*)args);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(arglen == sizeof(Context));
+#endif
       // Get the arguments associated with the context
+      size_t task_arg_len;
       std::vector<PhysicalRegion> regions;
-      runtime->begin_task(ctx,regions);
+      const void* task_arg_ptr = runtime->begin_task(ctx, regions, task_arg_len);
 
-      // Update the pointer and arglen
-      const char* arg_ptr = ((const char*)args)+sizeof(Context);
-      arglen -= sizeof(Context);
-      
       // Invoke the task with the given context
       T return_value;
       {
@@ -2059,7 +2060,7 @@ namespace RegionRuntime {
 #else
 	DetailedTimer::ScopedPush sp(TIME_KERNEL);
 #endif
-	return_value = (*TASK_PTR)((const void*)arg_ptr, arglen, regions, ctx, runtime);
+	return_value = (*TASK_PTR)(task_arg_ptr, task_arg_len, regions, ctx, runtime);
       }
 
       // Send the return value back
@@ -2077,14 +2078,14 @@ namespace RegionRuntime {
 
       // Read the context out of the buffer
       Context ctx = *((const Context*)args);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(arglen == sizeof(Context));
+#endif
       // Get the arguments associated with the context
+      size_t task_arg_len;
       std::vector<PhysicalRegion> regions; 
-      runtime->begin_task(ctx, regions);
+      const void *task_arg_ptr = runtime->begin_task(ctx, regions, task_arg_len);
 
-      // Update the pointer and arglen
-      const char* arg_ptr = ((const char*)args)+sizeof(Context);
-      arglen -= sizeof(Context);
-      
       // Invoke the task with the given context
       {
 #ifdef PER_KERNEL_TIMING
@@ -2092,7 +2093,7 @@ namespace RegionRuntime {
 #else
 	DetailedTimer::ScopedPush sp(TIME_KERNEL);
 #endif
-	(*TASK_PTR)((const void*)arg_ptr, arglen, regions, ctx, runtime);
+	(*TASK_PTR)((const void*)task_arg_ptr, task_arg_len, regions, ctx, runtime);
       }
 
       // Send an empty return value back
@@ -2111,19 +2112,19 @@ namespace RegionRuntime {
 
       // Read the context out of the buffer
       Context ctx = *((const Context*)args);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(arglen == sizeof(Context));
+#endif
       // Get the arguments associated with the context
+      size_t task_arg_len;
       std::vector<PhysicalRegion> regions;
-      runtime->begin_task(ctx,regions);
+      const void *task_arg_ptr = runtime->begin_task(ctx, regions, task_arg_len);
       
       // Get the point and the local argument
       PT point[DIM];
       size_t local_size;
       const void* local_args = runtime->get_local_args(ctx,point,sizeof(PT)*DIM,local_size);
 
-      // Update the pointer and arglen
-      const char* arg_ptr = ((const char*)args)+sizeof(Context);
-      arglen -= sizeof(Context);
-      
       // Invoke the task with the given context
       RT return_value;
       {
@@ -2132,7 +2133,7 @@ namespace RegionRuntime {
 #else
 	DetailedTimer::ScopedPush sp(TIME_KERNEL);
 #endif
-	return_value = (*TASK_PTR)((const void*)arg_ptr, arglen, local_args, local_size, point, regions, ctx, runtime);
+	return_value = (*TASK_PTR)(task_arg_ptr, task_arg_len, local_args, local_size, point, regions, ctx, runtime);
       }
 
       // Send the return value back
@@ -2151,19 +2152,19 @@ namespace RegionRuntime {
 
       // Read the context out of the buffer
       Context ctx = *((const Context*)args);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(arglen == sizeof(Context));
+#endif
       // Get the arguments associated with the context
+      size_t task_arg_len;
       std::vector<PhysicalRegion> regions; 
-      runtime->begin_task(ctx, regions);
+      const void *task_arg_ptr = runtime->begin_task(ctx, regions, task_arg_len);
 
       // Get the point and the local argument
       PT point[DIM];
       size_t local_size;
       const void* local_args = runtime->get_local_args(ctx,point,sizeof(PT)*DIM,local_size);
 
-      // Update the pointer and arglen
-      const char* arg_ptr = ((const char*)args)+sizeof(Context);
-      arglen -= sizeof(Context);
-      
       // Invoke the task with the given context
       {
 #ifdef PER_KERNEL_TIMING
@@ -2171,7 +2172,7 @@ namespace RegionRuntime {
 #else
 	DetailedTimer::ScopedPush sp(TIME_KERNEL);
 #endif
-	(*TASK_PTR)((const void*)arg_ptr, arglen, local_args, local_size, point, regions, ctx, runtime);
+	(*TASK_PTR)(task_arg_ptr, task_arg_len, local_args, local_size, point, regions, ctx, runtime);
       }
 
       // Send an empty return value back

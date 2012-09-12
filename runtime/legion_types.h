@@ -173,7 +173,8 @@ namespace RegionRuntime {
     class PartitionNode;
     class InstanceManager;
     class InstanceView;
-    class DependenceDetector;
+    class InstanceRef;
+    class RegionAnalyzer;
     class RegionMapper;
 
     class EscapedUser;
