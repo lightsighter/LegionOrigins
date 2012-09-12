@@ -25,6 +25,9 @@ namespace RegionRuntime {
     Logger::Category log_leak("leaks");
     Logger::Category log_variant("variants");
 
+    const LogicalRegion LogicalRegion::NO_REGION = LogicalRegion();
+    const LogicalPartition LogicalPartition::NO_PART = LogicalPartition();
+
     /////////////////////////////////////////////////////////////
     // Task
     /////////////////////////////////////////////////////////////
@@ -362,8 +365,8 @@ namespace RegionRuntime {
                                         PrivilegeMode _priv,  
                                         CoherenceProperty _prop, LogicalRegion _parent,
 					 MappingTagID _tag, bool _verified)
-      : privilege(_priv), type(_type), prop(_prop), parent(_parent),
-        redop(0), tag(_tag), verified(_verified), handle_type(SINGULAR)
+      : field(_handle.get_field_space()), privilege(_priv), type(_type), prop(_prop), parent(_parent),
+        redop(0), tag(_tag), verified(_verified), handle_type(SINGULAR), region(_handle)
     //--------------------------------------------------------------------------
     { 
 #ifdef DEBUG_HIGH_LEVEL
@@ -373,16 +376,16 @@ namespace RegionRuntime {
         exit(ERROR_USE_REDUCTION_REGION_REQ);
       }
 #endif
-      handle.region = _handle; 
+      index.space = _handle.get_index_space(); 
     }
 
     //--------------------------------------------------------------------------
     RegionRequirement::RegionRequirement(LogicalPartition pid, ProjectionID _proj, TypeHandle _type,
                 PrivilegeMode _priv, CoherenceProperty _prop,
                 LogicalRegion _parent, MappingTagID _tag, bool _verified)
-      : privilege(_priv), type(_type), prop(_prop), parent(_parent),
+      : field(pid.get_field_space()), privilege(_priv), type(_type), prop(_prop), parent(_parent),
         redop(0), tag(_tag), verified(_verified), handle_type(PROJECTION),
-        projection(_proj) 
+        projection(_proj), partition(pid)
     //--------------------------------------------------------------------------
     { 
 #ifdef DEBUG_HIGH_LEVEL
@@ -392,15 +395,15 @@ namespace RegionRuntime {
         exit(ERROR_USE_REDUCTION_REGION_REQ);
       }
 #endif
-      handle.partition = pid; 
+      index.partition = pid.get_index_partition(); 
     }
 
     //--------------------------------------------------------------------------
     RegionRequirement::RegionRequirement(LogicalRegion _handle, TypeHandle _type, ReductionOpID op,
                                     CoherenceProperty _prop, 
                                     LogicalRegion _parent, MappingTagID _tag, bool _verified)
-      : privilege(REDUCE), type(_type), prop(_prop), parent(_parent),
-        redop(op), tag(_tag), verified(_verified), handle_type(SINGULAR)
+      : field(_handle.get_field_space()), privilege(REDUCE), type(_type), prop(_prop), parent(_parent),
+        redop(op), tag(_tag), verified(_verified), handle_type(SINGULAR), region(_handle)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -410,15 +413,15 @@ namespace RegionRuntime {
         exit(ERROR_RESERVED_REDOP_ID);
       }
 #endif
-      handle.region = _handle;
+      index.space = _handle.get_index_space();
     }
 
     //--------------------------------------------------------------------------
     RegionRequirement::RegionRequirement(LogicalPartition pid, ProjectionID _proj, TypeHandle _type, 
                         ReductionOpID op, CoherenceProperty _prop,
                         LogicalRegion _parent, MappingTagID _tag, bool _verified)
-      : privilege(REDUCE), type(_type), prop(_prop), parent(_parent),
-        redop(op), tag(_tag), verified(_verified), handle_type(PROJECTION), projection(_proj)  
+      : field(pid.get_field_space()), privilege(REDUCE), type(_type), prop(_prop), parent(_parent),
+        redop(op), tag(_tag), verified(_verified), handle_type(PROJECTION), projection(_proj), partition(pid) 
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -428,7 +431,7 @@ namespace RegionRuntime {
         exit(ERROR_RESERVED_REDOP_ID);
       }
 #endif
-      handle.partition = pid;
+      index.partition = pid.get_index_partition();
     }
 
     //--------------------------------------------------------------------------
@@ -436,9 +439,16 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       if (rhs.handle_type == SINGULAR)
-        handle.region = rhs.handle.region;
+      {
+        index.space = rhs.index.space;
+        region = rhs.region;
+      }
       else
-        handle.partition = rhs.handle.partition;
+      {
+        index.partition = rhs.index.partition;
+        partition = rhs.partition;
+      }
+      field = rhs.field;
       type = rhs.type;
       privilege = rhs.privilege;
       prop = rhs.prop;
@@ -456,7 +466,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       size_t result = 0;
-      result += sizeof(this->handle);
+      result += sizeof(this->index);
+      result += sizeof(this->field);
       result += sizeof(this->type);
       result += sizeof(this->privilege);
       result += sizeof(this->prop);
@@ -475,9 +486,10 @@ namespace RegionRuntime {
     {
       rez.serialize(this->handle_type);
       if (handle_type == SINGULAR)
-        rez.serialize(this->handle.region);
+        rez.serialize(this->index.space);
       else
-        rez.serialize(this->handle.partition);
+        rez.serialize(this->index.partition);
+      rez.serialize(this->field);
       rez.serialize(this->type);
       rez.serialize(this->privilege);
       rez.serialize(this->prop);
@@ -494,9 +506,9 @@ namespace RegionRuntime {
     {
       derez.deserialize(this->handle_type);
       if (handle_type == SINGULAR)
-        derez.deserialize(this->handle.region);
+        derez.deserialize(this->index.space);
       else
-        derez.deserialize(this->handle.partition);
+        derez.deserialize(this->index.partition);
       derez.deserialize(this->type);
       derez.deserialize(this->privilege);
       derez.deserialize(this->prop);
@@ -505,6 +517,10 @@ namespace RegionRuntime {
       derez.deserialize(this->tag);
       derez.deserialize(this->verified);
       derez.deserialize(this->projection);
+      if (handle_type == SINGULAR)
+        region = LogicalRegion(index.space,field);
+      else
+        partition = LogicalPartition(index.partition,field);
     }
 
     /////////////////////////////////////////////////////////////
@@ -513,7 +529,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     PhysicalRegion::PhysicalRegion(void)
-      : is_impl(false) // note this is an invalid configuration
+      : is_impl(false), map_set(false), accessor_map(0) // note this is an invalid configuration
     //--------------------------------------------------------------------------
     {
       op.map = NULL;
@@ -521,7 +537,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     PhysicalRegion::PhysicalRegion(PhysicalRegionImpl *i)
-      : is_impl(true)
+      : is_impl(true), map_set(false), accessor_map(0)
     //--------------------------------------------------------------------------
     {
       op.impl = i;
@@ -529,7 +545,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     PhysicalRegion::PhysicalRegion(MappingOperation *map_op)
-      : is_impl(false)
+      : is_impl(false), map_set(false), accessor_map(0)
     //--------------------------------------------------------------------------
     {
       op.map = map_op;
@@ -537,7 +553,7 @@ namespace RegionRuntime {
 
     //-------------------------------------------------------------------------- 
     PhysicalRegion::PhysicalRegion(const PhysicalRegion &rhs)
-      : is_impl(rhs.is_impl)
+      : is_impl(rhs.is_impl), map_set(rhs.map_set), accessor_map(rhs.accessor_map)
     //--------------------------------------------------------------------------
     {
       if (is_impl)
@@ -555,6 +571,8 @@ namespace RegionRuntime {
         op.impl = rhs.op.impl;
       else
         op.map = rhs.op.map;
+      this->map_set = rhs.map_set;
+      this->accessor_map = rhs.accessor_map;
     }
 
     //--------------------------------------------------------------------------
@@ -614,25 +632,41 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    bool PhysicalRegion::has_accessor(AccessorType at) const
+    bool PhysicalRegion::has_accessor(AccessorType at)
     //--------------------------------------------------------------------------
     {
-      if (is_impl)
-        return op.impl->has_accessor(at);
-      else
-        return op.map->has_accessor(at);
+      // if we haven't computed the map yet, do it
+      if (!map_set)
+      {
+        PhysicalInstance inst = PhysicalInstance::NO_INST;
+        if (is_impl)
+          inst = op.impl->get_physical_instance();
+        else
+          inst = op.map->get_physical_instance();
+#ifdef DEBUG_HIGH_LEVEL
+        assert(inst.exists());
+#endif
+        LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric> generic = 
+          inst.get_accessor_untyped();
+#define SET_MASK(AT) accessor_map |= (generic.can_convert<LowLevel::AT>() ? AT : 0)
+        SET_MASK(AccessorGeneric);
+        SET_MASK(AccessorArray);
+        SET_MASK(AccessorArrayReductionFold);
+        SET_MASK(AccessorGPU);
+        SET_MASK(AccessorGPUReductionFold);
+        SET_MASK(AccessorReductionList);
+#undef SET_MASK
+        map_set = true;
+      }
+      return ((at & accessor_map) != 0);
     }
 
 #ifdef DEBUG_HIGH_LEVEL
 #define GET_ACCESSOR_IMPL(AT)                                                     \
     template<>                                                                    \
-    LowLevel::RegionInstanceAccessorUntyped<LowLevel::AT> PhysicalRegion::get_accessor<AT>(void) const  \
+    LowLevel::RegionInstanceAccessorUntyped<LowLevel::AT> PhysicalRegion::get_accessor<AT>(void) \
     {                                                                             \
-      bool has_access = false;                                                    \
-      if (is_impl)                                                                \
-        has_access = op.impl->has_accessor(AT);                                   \
-      else                                                                        \
-        has_access = op.map->has_accessor(AT);                                    \
+      bool has_access = has_accessor(AT);                                         \
       if (!has_access)                                                            \
       {                                                                           \
         log_run(LEVEL_ERROR,"Physical region does not have an accessor of type %d\n",AT); \
@@ -651,7 +685,7 @@ namespace RegionRuntime {
 #else // DEBUG_HIGH_LEVEL
 #define GET_ACCESSOR_IMPL(AT)                                                     \
     template<>                                                                    \
-    LowLevel::RegionInstanceAccessorUntyped<LowLevel::AT> PhysicalRegion::get_accessor<AT>(void) const  \
+    LowLevel::RegionInstanceAccessorUntyped<LowLevel::AT> PhysicalRegion::get_accessor<AT>(void) \
     {                                                                             \
       PhysicalInstance inst = PhysicalInstance::NO_INST;                          \
       if (is_impl)                                                                \
@@ -817,7 +851,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     PhysicalRegionImpl::PhysicalRegionImpl(void)
-      : idx(0), handle(0), 
+      : idx(0), handle(LogicalRegion::NO_REGION), 
         instance(PhysicalInstance::NO_INST)
     //--------------------------------------------------------------------------
     {
@@ -852,48 +886,6 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       return handle;
-    }
-
-    //--------------------------------------------------------------------------
-    bool PhysicalRegionImpl::has_accessor(AccessorType at) const
-    //--------------------------------------------------------------------------
-    {
-      PhysicalInstance inst = get_physical_instance();  
-      LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric> acc =
-        inst.get_accessor_untyped();
-      switch (at)
-      {
-        case AccessorGeneric:
-          {
-            return acc.can_convert<LowLevel::AccessorGeneric>();
-          }
-        case AccessorArray:
-          {
-            return acc.can_convert<LowLevel::AccessorArray>();
-          }
-        case AccessorArrayReductionFold:
-          {
-            return acc.can_convert<LowLevel::AccessorArrayReductionFold>();
-          }
-        case AccessorGPU:
-          {
-            return acc.can_convert<LowLevel::AccessorGPU>();
-          }
-        case AccessorGPUReductionFold:
-          {
-            return acc.can_convert<LowLevel::AccessorGPUReductionFold>();
-          }
-        case AccessorReductionList:
-          {
-            return acc.can_convert<LowLevel::AccessorReductionList>();
-          }
-        default:
-          // Should never get here
-          assert(0);
-      }
-      // Should never get here either
-      assert(0);
-      return false;
     }
 
     //--------------------------------------------------------------------------
@@ -2037,9 +2029,7 @@ namespace RegionRuntime {
         assert(found);
 #endif
         // Initialize our next id values and strides
-        next_region_id          = idx;
         next_partition_id       = idx;
-        next_index_partition_id = idx;
         next_op_id              = idx;
         next_instance_id        = idx;
       }
@@ -2736,27 +2726,21 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_INDEX_PARTITION);
-      IndexPartition pid = get_unique_index_partition_id();
+      IndexPartition pid = get_unique_partition_id();
 #ifdef DEBUG_HIGH_LEVEL
       log_region(LEVEL_DEBUG, "Creating index partition %d with parent index space %x in task %s (ID %d)",
                               pid, parent.id, ctx->variants->name, ctx->get_unique_id());
 #endif
       // Perform the coloring
-      std::map<RegionColor,IndexSpace> coloring; 
+      std::map<Color,IndexSpace> coloring; 
       coloring_functor.perform_coloring(colors,parent,coloring);
       bool disjoint = coloring_functor.is_disjoint();
  #ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Index Partition %d Parent %x Disjoint %d",pid,parent.id,disjoint);
 #endif
-      // Make some logical regions for all the new subregions 
-      std::vector<LogicalRegion> handles(coloring.size());
-      for (unsigned idx = 0; idx < coloring.size(); idx++)
-      {
-        handles[idx] = get_unique_region_id();
-      }
       
       // Create the new partition
-      ctx->create_index_partition(pid, parent, disjoint, coloring_functor.get_partition_color(), coloring, handles);
+      ctx->create_index_partition(pid, parent, disjoint, coloring_functor.get_partition_color(), coloring);
 
       return pid;
     }
@@ -2784,7 +2768,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    IndexPartition HighLevelRuntime::get_index_partition(Context ctx, IndexSpace parent, PartitionColor color)
+    IndexPartition HighLevelRuntime::get_index_partition(Context ctx, IndexSpace parent, Color color)
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_GET_INDEX_PARTITION);
@@ -2792,7 +2776,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    IndexSpace HighLevelRuntime::get_index_subspace(Context ctx, IndexPartition parent, RegionColor color)
+    IndexSpace HighLevelRuntime::get_index_subspace(Context ctx, IndexPartition parent, Color color)
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_GET_INDEX_SUBSPACE);
@@ -2877,13 +2861,13 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_REGION);
-      LogicalRegion region = get_unique_region_id();
+      LogicalRegion region(index_space, field_space);
 #ifdef DEBUG_HIGH_LEVEL
-      log_region(LEVEL_DEBUG, "Creating logical region %d in task %s (ID %d) with index space %x and field space %x",
-                              region, ctx->variants->name,ctx->get_unique_id(), index_space.id, field_space.id);
+      log_region(LEVEL_DEBUG, "Creating logical region in task %s (ID %d) with index space %x and field space %x",
+                              ctx->variants->name,ctx->get_unique_id(), index_space.id, field_space.id);
 #endif
 #ifndef LOG_EVENT_ONLY
-      log_spy(LEVEL_INFO,"Region %x",region);
+      log_spy(LEVEL_INFO,"Region %x %x",index_space.id, field_space.id);
 #endif
       ctx->create_region(region, index_space, field_space);
 
@@ -2896,8 +2880,8 @@ namespace RegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_DESTROY_REGION);
 #ifdef DEBUG_HIGH_LEVEL
-      log_region(LEVEL_DEBUG, "Deleting logical region %d in task %s (ID %d)",
-                              handle, ctx->variants->name,ctx->get_unique_id());
+      log_region(LEVEL_DEBUG, "Deleting logical region (%x,%x) in task %s (ID %d)",
+                              handle.index_space.id, handle.field_space.id, ctx->variants->name,ctx->get_unique_id());
 #endif
       DeletionOperation *deletion = get_available_deletion(ctx);
       deletion->initialize_region_deletion(ctx, handle);
@@ -2918,8 +2902,8 @@ namespace RegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_DESTROY_PARTITION);
 #ifdef DEBUG_HIGH_LEVEL
-      log_region(LEVEL_DEBUG, "Deleting logical partition %d in task %s (ID %d)",
-                              handle, ctx->variants->name, ctx->get_unique_id());
+      log_region(LEVEL_DEBUG, "Deleting logical partition (%x,%x) in task %s (ID %d)",
+                              handle.index_partition, handle.field_space.id, ctx->variants->name, ctx->get_unique_id());
 #endif
       DeletionOperation *deletion = get_available_deletion(ctx);
       deletion->initialize_logical_partition_deletion(ctx, handle);
@@ -2935,19 +2919,19 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    LogicalPartition HighLevelRuntime::get_logical_partition(Context ctx, LogicalRegion parent, PartitionColor color)
+    LogicalPartition HighLevelRuntime::get_logical_partition(Context ctx, LogicalRegion parent, IndexPartition handle)
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_GET_LOGICAL_PARTITION);
-      return ctx->get_region_partition(parent, color);
+      return ctx->get_region_partition(parent, handle);
     }
 
     //--------------------------------------------------------------------------------------------
-    LogicalRegion HighLevelRuntime::get_logical_subregion(Context ctx, LogicalPartition parent, RegionColor color)
+    LogicalRegion HighLevelRuntime::get_logical_subregion(Context ctx, LogicalPartition parent, IndexSpace handle)
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_GET_LOGICAL_SUBREGION);
-      return ctx->get_partition_subregion(parent, color);
+      return ctx->get_partition_subregion(parent, handle);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -2971,8 +2955,8 @@ namespace RegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_INLINE_MAP);
       MappingOperation *map_op = get_available_mapping(ctx);
       map_op->initialize(ctx, req, id, tag);
-      log_run(LEVEL_DEBUG, "Registering a map operation for region %x in task %s (ID %d)",
-                           req.handle.region, ctx->variants->name, ctx->get_unique_id());
+      log_run(LEVEL_DEBUG, "Registering a map operation for region (%x,%x) in task %s (ID %d)",
+                           req.index.space.id, req.field.id, ctx->variants->name, ctx->get_unique_id());
       add_to_dependence_queue(map_op);
 #ifdef INORDER_EXECUTION
       if (program_order_execution)
@@ -3603,32 +3587,12 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    LogicalRegion HighLevelRuntime::get_unique_region_id(void)
+    IndexPartition HighLevelRuntime::get_unique_partition_id(void)
     //--------------------------------------------------------------------------------------------
     {
       AutoLock ulock(unique_lock);
-      LogicalRegion result = next_region_id;
-      next_region_id += unique_stride;
-      return result;
-    }
-
-    //--------------------------------------------------------------------------------------------
-    LogicalPartition HighLevelRuntime::get_unique_partition_id(void)
-    //--------------------------------------------------------------------------------------------
-    {
-      AutoLock ulock(unique_lock);
-      LogicalPartition result = next_partition_id;
+      IndexPartition result = next_partition_id;
       next_partition_id += unique_stride;
-      return result;
-    }
-
-    //--------------------------------------------------------------------------------------------
-    IndexPartition HighLevelRuntime::get_unique_index_partition_id(void)
-    //--------------------------------------------------------------------------------------------
-    {
-      AutoLock ulock(unique_lock);
-      IndexPartition result = next_index_partition_id;
-      next_index_partition_id += unique_stride;
       return result;
     }
 

@@ -13,10 +13,56 @@ namespace RegionRuntime {
     //                                                                       //
     ///////////////////////////////////////////////////////////////////////////
 
-    struct InputArgs {
+    /////////////////////////////////////////////////////////////
+    // Logical Region 
+    /////////////////////////////////////////////////////////////
+    class LogicalRegion {
     public:
-      char **argv;
-      int argc;
+      static const LogicalRegion NO_REGION;
+    protected:
+      // Only the HighLevelRuntime should be allowed to make these
+      FRIEND_ALL_RUNTIME_CLASSES;
+      LogicalRegion(IndexSpace index, FieldSpace field);
+    public:
+      LogicalRegion(void);
+      LogicalRegion(const LogicalRegion &rhs);
+    public:
+      inline LogicalRegion& operator=(const LogicalRegion &rhs);
+      inline bool operator==(const LogicalRegion &rhs) const;
+      inline bool operator<(const LogicalRegion &rhs) const;
+    public:
+      inline IndexSpace get_index_space(void) const;
+      inline FieldSpace get_field_space(void) const;
+    private:
+      // These are private so you can't just arbitrarily change them
+      IndexSpace index_space;
+      FieldSpace field_space;
+    };
+
+    /////////////////////////////////////////////////////////////
+    // Logical Partition 
+    /////////////////////////////////////////////////////////////
+    class LogicalPartition {
+    public:
+      static const LogicalPartition NO_PART;
+    protected:
+      // Only the HighLevelRuntime should be allowed to make these
+      FRIEND_ALL_RUNTIME_CLASSES;
+      LogicalPartition(IndexPartition pid, FieldSpace field);
+    public:
+      LogicalPartition(void);
+      LogicalPartition(const LogicalPartition &rhs);
+    public:
+      inline LogicalPartition& operator=(const LogicalPartition &rhs);
+      inline bool operator==(const LogicalPartition &rhs) const;
+      inline bool operator<(const LogicalPartition &rhs) const;
+    public:
+      inline IndexPartition get_index_partition(void) const;
+      inline FieldSpace get_field_space(void) const;
+    private:
+      // These are private so you can't just arbitrary change them
+      IndexPartition index_partition;
+      FieldSpace field_space;
     };
 
     /////////////////////////////////////////////////////////////
@@ -326,9 +372,10 @@ namespace RegionRuntime {
     class RegionRequirement {
     public:
       union Handle_t {
-        LogicalRegion    region;  // A region requirement
-        LogicalPartition partition;  // A partition requirement
-      } handle;
+        IndexSpace       space;
+        IndexPartition   partition;
+      } index;
+      FieldSpace         field;
       TypeHandle         type;
       PrivilegeMode      privilege;
       CoherenceProperty  prop;
@@ -338,6 +385,8 @@ namespace RegionRuntime {
       bool               verified; // has this been verified already
       HandleType         handle_type;
       ProjectionID       projection;
+      LogicalRegion      region; // duplicate information
+      LogicalPartition   partition; // duplicate information
     public:
       RegionRequirement(void) { }
       // Create a requirement for a single region
@@ -366,11 +415,11 @@ namespace RegionRuntime {
 			MappingTagID _tag = 0, bool _verified = false);
     public:
       bool operator==(const RegionRequirement &req) const
-        { return (handle.partition == req.handle.partition) && (type == req.type) && (privilege == req.privilege)
+        { return (index.partition == req.index.partition) && (type == req.type) && (privilege == req.privilege)
                 && (prop == req.prop) && (redop == req.redop) &&
                    (parent == req.parent) && (handle_type == req.handle_type); }
       bool operator<(const RegionRequirement &req) const
-        { return (handle.partition < req.handle.partition) || (type == req.type) || (privilege < req.privilege)
+        { return (index.partition < req.index.partition) || (type == req.type) || (privilege < req.privilege)
                 || (prop < req.prop) || (redop < req.redop) || 
                    (parent < req.parent) || (handle_type < req.handle_type); }
       RegionRequirement& operator=(const RegionRequirement &rhs);
@@ -397,15 +446,15 @@ namespace RegionRuntime {
        */
       virtual bool is_disjoint(void) = 0;
       /**
-       * Give a color for identifying this partition from the parent index space.
+       * Assign a color for this partition
        */
-      virtual PartitionColor get_partition_color(void) = 0;
+      virtual Color get_partition_color(void) = 0;
       /**
        * For each point in the color space, generate a color and a new sub-space of the region_space
        * and put it in the coloring map.
        */
       virtual void perform_coloring(IndexSpace color_space, IndexSpace region_space, 
-                                    std::map<RegionColor,IndexSpace> &coloring) = 0;
+                                    std::map<Color,IndexSpace> &coloring) = 0;
     };
     
 
@@ -427,6 +476,7 @@ namespace RegionRuntime {
     protected:
       friend class HighLevelRuntime;
       friend class SingleTask;
+      friend class MappingOperation;
       PhysicalRegion(PhysicalRegionImpl *impl);
       PhysicalRegion(MappingOperation *op);
     public:
@@ -440,15 +490,17 @@ namespace RegionRuntime {
       void wait_until_valid(void);
       bool is_valid(void) const;
       LogicalRegion get_logical_region(void) const;
-      bool has_accessor(AccessorType at) const;
+      bool has_accessor(AccessorType at);
       template<AccessorType AT>
-      LowLevel::RegionInstanceAccessorUntyped<AT_CONV_DOWN(AT)> get_accessor(void) const;
+      LowLevel::RegionInstanceAccessorUntyped<AT_CONV_DOWN(AT)> get_accessor(void);
     protected:
       union Operation_t {
         PhysicalRegionImpl *impl;
         MappingOperation *map;
       } op;
       bool is_impl;
+      bool map_set;
+      unsigned accessor_map;
     };
 
     /////////////////////////////////////////////////////////////
@@ -514,6 +566,13 @@ namespace RegionRuntime {
       FieldSpace space;
       Context parent;
       HighLevelRuntime *runtime;
+    };
+
+    // InputArgs helper struct for HighLevelRuntime
+    struct InputArgs {
+    public:
+      char **argv;
+      int argc;
     };
     
     /////////////////////////////////////////////////////////////
@@ -631,8 +690,8 @@ namespace RegionRuntime {
       /**
        * Get partitions and sub-spaces 
        */
-      IndexPartition get_index_partition(Context ctx, IndexSpace parent, PartitionColor color);
-      IndexSpace get_index_subspace(Context ctx, IndexPartition p, RegionColor color); 
+      IndexPartition get_index_partition(Context ctx, IndexSpace parent, Color color);
+      IndexSpace get_index_subspace(Context ctx, IndexPartition p, Color color); 
       // TODO: something for safe-cast
 
       //////////////////////////////
@@ -661,13 +720,8 @@ namespace RegionRuntime {
       /**
        * Get partitions and sub-regions
        */
-      LogicalPartition get_logical_partition(Context ctx, LogicalRegion parent, PartitionColor color);
-      LogicalRegion get_logical_subregion(Context ctx, LogicalPartition p, RegionColor color);
-      /**
-       * Get things associated with a logical region
-       */
-      IndexSpace get_region_index_space(Context ctx, LogicalRegion reg);
-      FieldSpace get_region_field_space(Context ctx, LogicalRegion reg);
+      LogicalPartition get_logical_partition(Context ctx, LogicalRegion parent, IndexPartition handle);
+      LogicalRegion get_logical_subregion(Context ctx, LogicalPartition p, IndexSpace handle);
 
       //////////////////////////////
       // Functions for ArgumentMaps
@@ -843,9 +897,7 @@ namespace RegionRuntime {
       // Get a new instance info id
       InstanceID       get_unique_instance_id(void);
       UniqueID         get_unique_op_id(void);
-      LogicalRegion    get_unique_region_id(void);
-      LogicalPartition get_unique_partition_id(void);
-      IndexPartition   get_unique_index_partition_id(void);
+      IndexPartition   get_unique_partition_id(void);
     protected: 
       void add_to_dependence_queue(GeneralizedOperation *op);
       void add_to_ready_queue(IndividualTask *task, bool remote);
@@ -987,9 +1039,7 @@ namespace RegionRuntime {
 #else
       ImmovableLock unique_lock; // Make sure all unique values are actually unique
 #endif
-      LogicalPartition next_partition_id; // The next partition id for this instance (unique)
-      LogicalRegion next_region_id;
-      IndexPartition next_index_partition_id;
+      IndexPartition next_partition_id; // The next partition id for this instance (unique)
       UniqueID next_op_id; // Give all tasks a unique id for debugging purposes
       InstanceID next_instance_id;
       const unsigned unique_stride; // Stride for ids to guarantee uniqueness
@@ -1116,7 +1166,8 @@ namespace RegionRuntime {
        * Write-After-Read optimization of making an additional copy of the data.  The
        * default value for enable_WAR_optimization is true. 
        */
-      virtual void map_task_region(const Task *task, const RegionRequirement &req, unsigned index,
+      virtual void map_task_region(const Task *task, Processor target, MappingTagID tag, bool inline_mapping,
+                                    const RegionRequirement &req, unsigned index,
                                     const std::set<Memory> &current_instances,
                                     std::vector<Memory> &target_ranking,
                                     bool &enable_WAR_optimization);
@@ -1125,7 +1176,7 @@ namespace RegionRuntime {
        * Whenever a task fails to map, tell the mapper about it so that is aware of which
        * region failed to map and can possibly decide to do things differently in the future.
        */
-      virtual void notify_failed_mapping(const Task *task, const RegionRequirement &req, unsigned index);
+      virtual void notify_failed_mapping(const Task *task, const RegionRequirement &req, unsigned index, bool inline_mapping);
 
       /**
        * Once a region has been mapped into a specify memory, the programmer must select
@@ -1328,7 +1379,6 @@ namespace RegionRuntime {
       PhysicalRegionImpl& operator=(const PhysicalRegionImpl &rhs);
     protected:
       LogicalRegion get_logical_region(void) const;
-      bool has_accessor(AccessorType at) const;
       PhysicalInstance get_physical_instance(void) const;
     protected:
       unsigned idx;
@@ -1449,8 +1499,125 @@ namespace RegionRuntime {
     ////////////////////////////////////////////////////////////////////
     //
     // Some Template Implementations to make sure they get instantiated
+    // and some inline methods so that they get inlined properly.
     //
     ////////////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    LogicalRegion::LogicalRegion(IndexSpace index, FieldSpace field)
+      : index_space(index), field_space(field)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    LogicalRegion::LogicalRegion(void)
+      : index_space(IndexSpace::NO_SPACE), field_space(FieldSpace::NO_SPACE)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    LogicalRegion::LogicalRegion(const LogicalRegion &rhs)
+      : index_space(rhs.index_space), field_space(rhs.field_space)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    inline LogicalRegion& LogicalRegion::operator=(const LogicalRegion &rhs) 
+    //--------------------------------------------------------------------------
+    {
+      index_space = rhs.index_space;
+      field_space = rhs.field_space;
+      return *this;
+    }
+    
+    //--------------------------------------------------------------------------
+    inline bool LogicalRegion::operator==(const LogicalRegion &rhs) const
+    //--------------------------------------------------------------------------
+    {
+      return ((index_space == rhs.index_space) && (field_space == rhs.field_space));
+    }
+
+    //--------------------------------------------------------------------------
+    inline bool LogicalRegion::operator<(const LogicalRegion &rhs) const
+    //--------------------------------------------------------------------------
+    {
+      return ((index_space < rhs.index_space) || (field_space < rhs.field_space));
+    }
+
+    //--------------------------------------------------------------------------
+    inline IndexSpace LogicalRegion::get_index_space(void) const
+    //--------------------------------------------------------------------------
+    {
+      return index_space;
+    }
+
+    //--------------------------------------------------------------------------
+    inline FieldSpace LogicalRegion::get_field_space(void) const
+    //--------------------------------------------------------------------------
+    {
+      return field_space;
+    }
+
+    //--------------------------------------------------------------------------
+    LogicalPartition::LogicalPartition(IndexPartition pid, FieldSpace field)
+      : index_partition(pid), field_space(field)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    LogicalPartition::LogicalPartition(void)
+      : index_partition(0), field_space(FieldSpace::NO_SPACE)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    LogicalPartition::LogicalPartition(const LogicalPartition &rhs)
+      : index_partition(rhs.index_partition), field_space(rhs.field_space)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    inline LogicalPartition& LogicalPartition::operator=(const LogicalPartition &rhs)
+    //--------------------------------------------------------------------------
+    {
+      index_partition = rhs.index_partition;
+      field_space = rhs.field_space;
+      return *this;
+    }
+
+    //--------------------------------------------------------------------------
+    inline bool LogicalPartition::operator==(const LogicalPartition &rhs) const
+    //--------------------------------------------------------------------------
+    {
+      return ((index_partition == rhs.index_partition) && (field_space == rhs.field_space));
+    }
+
+    //--------------------------------------------------------------------------
+    inline bool LogicalPartition::operator<(const LogicalPartition &rhs) const
+    //--------------------------------------------------------------------------
+    {
+      return ((index_partition < rhs.index_partition) || (field_space < rhs.field_space));
+    }
+
+    //--------------------------------------------------------------------------
+    inline IndexPartition LogicalPartition::get_index_partition(void) const
+    //--------------------------------------------------------------------------
+    {
+      return index_partition;
+    }
+
+    //--------------------------------------------------------------------------
+    inline FieldSpace LogicalPartition::get_field_space(void) const
+    //--------------------------------------------------------------------------
+    {
+      return field_space;
+    }
 
     //--------------------------------------------------------------------------
     template<typename PT, unsigned DIM>

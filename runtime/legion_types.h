@@ -58,12 +58,12 @@ namespace RegionRuntime {
 
     // enum and namepsaces don't really get along well
     enum AccessorType {
-      AccessorGeneric            = LowLevel::AccessorGeneric,
-      AccessorArray              = LowLevel::AccessorArray,
-      AccessorArrayReductionFold = LowLevel::AccessorArrayReductionFold,
-      AccessorGPU                = LowLevel::AccessorGPU,
-      AccessorGPUReductionFold   = LowLevel::AccessorGPUReductionFold,
-      AccessorReductionList      = LowLevel::AccessorReductionList,
+      AccessorGeneric            = 0x00000001, //LowLevel::AccessorGeneric,
+      AccessorArray              = 0x00000002, //LowLevel::AccessorArray,
+      AccessorArrayReductionFold = 0x00000004, //LowLevel::AccessorArrayReductionFold,
+      AccessorGPU                = 0x00000008, //LowLevel::AccessorGPU,
+      AccessorGPUReductionFold   = 0x00000010, //LowLevel::AccessorGPUReductionFold,
+      AccessorReductionList      = 0x00000020, //LowLevel::AccessorReductionList,
     };
 
     enum PrivilegeMode {
@@ -116,6 +116,8 @@ namespace RegionRuntime {
 
     // Forward declarations for user level objects
     // legion.h
+    class LogicalRegion;
+    class LogicalPartition;
     class Task;
     class TaskVariantCollection;
     class Future;
@@ -201,10 +203,7 @@ namespace RegionRuntime {
     typedef LowLevel::ReductionOpUntyped ReductionOp;
     typedef LowLevel::Machine::ProcessorMemoryAffinity ProcessorMemoryAffinity;
     typedef LowLevel::Machine::MemoryMemoryAffinity MemoryMemoryAffinity;
-    typedef unsigned int LogicalRegion;
-    typedef unsigned int LogicalPartition;
-    typedef unsigned int RegionColor;
-    typedef unsigned int PartitionColor;
+    typedef unsigned int Color;
     typedef unsigned int IndexPartition;
     typedef unsigned int MapperID;
     typedef unsigned int UniqueID;
@@ -221,6 +220,20 @@ namespace RegionRuntime {
     typedef bool (*PredicateFnptr)(const void*, size_t, const std::vector<Future> futures);
     typedef std::map<TypeHandle,Structure> TypeTable;
     typedef std::map<ProjectionID,ProjectionFnptr> ProjectionTable;
+
+#define FRIEND_ALL_RUNTIME_CLASSES                \
+    friend class HighLevelRuntime;                \
+    friend class GeneralizedOperation;            \
+    friend class MappingOperation;                \
+    friend class DeletionOperation;               \
+    friend class TaskContext;                     \
+    friend class SingleTask;                      \
+    friend class MultiTask;                       \
+    friend class IndividualTask;                  \
+    friend class PointTask;                       \
+    friend class IndexTask;                       \
+    friend class SliceTask;                       \
+    friend class RegionRequirement;
 
     // Timing events
     enum {

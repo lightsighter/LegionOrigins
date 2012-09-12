@@ -24,8 +24,7 @@ namespace RegionRuntime {
 #endif
     public:
       bool compute_index_path(IndexSpace parent, IndexSpace child, std::vector<unsigned> &path);
-      bool compute_region_path(LogicalRegion parent, LogicalRegion child, std::vector<unsigned> &path);
-      bool compute_partition_path(LogicalRegion parent, LogicalPartition child, std::vector<unsigned> &path);
+      bool compute_partition_path(IndexSpace parent, IndexPartition child, std::vector<unsigned> &path);
     public:
       InstanceRef map_region(const RegionMapper &rm);
     public:
@@ -35,12 +34,11 @@ namespace RegionRuntime {
       // Index Space operations
       void create_index_space(IndexSpace space);
       void destroy_index_space(IndexSpace space);
-      void create_index_partition(IndexPartition pid, IndexSpace parent, bool disjoint, PartitionColor color,
-                                  const std::map<RegionColor,IndexSpace> &coloring, 
-                                  const std::vector<LogicalRegion> &handles);
+      void create_index_partition(IndexPartition pid, IndexSpace parent, bool disjoint, Color color,
+                                  const std::map<Color,IndexSpace> &coloring); 
       void destroy_index_partition(IndexPartition pid);
-      IndexPartition get_index_partition(IndexSpace parent, PartitionColor color);
-      IndexSpace get_index_subspace(IndexPartition p, RegionColor color);
+      IndexPartition get_index_partition(IndexSpace parent, Color color);
+      IndexSpace get_index_subspace(IndexPartition p, Color color);
     public:
       // Field Space operations
       void create_field_space(FieldSpace space);
@@ -52,8 +50,8 @@ namespace RegionRuntime {
       // Logical Region operations
       void create_region(LogicalRegion handle, IndexSpace index_space, FieldSpace field_space);  
       void delete_region(LogicalRegion handle);
-      LogicalPartition get_region_partition(LogicalRegion parent, PartitionColor color);
-      LogicalRegion get_partition_subregion(LogicalPartition parent, RegionColor color);
+      LogicalPartition get_region_partition(LogicalRegion parent, IndexPartition handle);
+      LogicalRegion get_partition_subregion(LogicalPartition parent, IndexSpace handle);
       bool is_current_subtype(LogicalRegion region, TypeHandle handle);
     public:
       RegionTreeID get_logical_region_tree_id(LogicalRegion handle);
@@ -106,14 +104,15 @@ namespace RegionRuntime {
     class RegionMapper {
     public:
 #ifdef LOW_LEVEL_LOCKS
-      RegionMapper(ContextID id, unsigned idx, const RegionRequirement &req,
-                   Mapper *mapper, Lock mapper_lock, Event single, Event multi);
+      RegionMapper(ContextID id, unsigned idx, const RegionRequirement &req, Mapper *mapper, Lock mapper_lock, 
+                    Processor target, Event single, Event multi, MappingTagID tag, bool inline_mapping);
 #else
-      RegionMapper(ContextID id, unsigned idx, const RegionRequirement &req,
-                   Mapper *mapper, ImmovableLock mapper_lock, Event single, Event multi);
+      RegionMapper(ContextID id, unsigned idx, const RegionRequirement &req, Mapper *mapper, ImmovableLock mapper_lock, 
+                    Processor target, Event single, Event multi, MappingTagID tag, bool inline_mapping);
 #endif
     public:
       ContextID ctx;
+      bool inline_mapping;
       unsigned idx;
       const RegionRequirement &req;
 #ifdef LOW_LEVEL_LOCKS
@@ -122,6 +121,8 @@ namespace RegionRuntime {
       ImmovableLock mapper_lock;
 #endif
       Mapper *mapper;
+      MappingTagID tag;
+      Processor target;
       Event single_term;
       Event multi_term;
       std::vector<unsigned> trace;

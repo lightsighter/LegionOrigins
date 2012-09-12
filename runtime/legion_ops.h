@@ -4,6 +4,7 @@
 
 #include "legion_types.h"
 #include "legion.h"
+#include "region_tree.h"
 
 namespace RegionRuntime {
   namespace HighLevel {
@@ -71,8 +72,6 @@ namespace RegionRuntime {
       bool is_valid(void) const;
       void wait_until_valid(void);
       LogicalRegion get_logical_region(void) const; 
-      IndexSpace get_index_space(void) const;
-      FieldSpace get_field_space(void) const;
       PhysicalInstance get_physical_instance(void) const;
       bool has_accessor(AccessorType at) const;
       PhysicalRegion get_physical_region(void);
@@ -85,10 +84,10 @@ namespace RegionRuntime {
       virtual void trigger(void);
     private:
       Context parent_ctx;
-      ContextID parent_physical_ctx;
       RegionRequirement requirement;
       UserEvent mapped_event;
       Event ready_event;
+      InstanceRef physical_instance;
       UserEvent unmapped_event;
     private:
       Mapper *mapper;
@@ -135,11 +134,10 @@ namespace RegionRuntime {
     private:
       Context parent_ctx;
       union Deletion_t {
-        IndexSpace index_space;
-        IndexPartition index_part;
-        FieldSpace field_space;
-        LogicalRegion region;
-      } handle;
+        IndexSpace space;
+        IndexPartition partition;
+      } index;
+      FieldSpace field_space; 
       DeletionKind handle_tag;
       // For downgrading types of field spaces
       TypeHandle downgrade_type;
@@ -268,12 +266,11 @@ namespace RegionRuntime {
       // Operations on index space trees
       void create_index_space(IndexSpace space);
       void destroy_index_space(IndexSpace space); 
-      void create_index_partition(IndexPartition pid, IndexSpace parent, bool disjoint, PartitionColor color,
-                                  const std::map<RegionColor,IndexSpace> &coloring, 
-                                  const std::vector<LogicalRegion> &handles);
+      void create_index_partition(IndexPartition pid, IndexSpace parent, bool disjoint, Color color,
+                                  const std::map<Color,IndexSpace> &coloring); 
       void destroy_index_partition(IndexPartition pid);
-      IndexPartition get_index_partition(IndexSpace parent, PartitionColor color);
-      IndexSpace get_index_subspace(IndexPartition p, RegionColor color);
+      IndexPartition get_index_partition(IndexSpace parent, Color color);
+      IndexSpace get_index_subspace(IndexPartition p, Color color);
     public:
       // Operations on field spaces
       void create_field_space(FieldSpace space);
@@ -284,8 +281,8 @@ namespace RegionRuntime {
       // Operations on region trees
       void create_region(LogicalRegion handle, IndexSpace index_space, FieldSpace field_space);  
       void destroy_region(LogicalRegion handle);
-      LogicalPartition get_region_partition(LogicalRegion parent, PartitionColor color);
-      LogicalRegion get_partition_subregion(LogicalPartition parent, RegionColor color);
+      LogicalPartition get_region_partition(LogicalRegion parent, IndexPartition handle);
+      LogicalRegion get_partition_subregion(LogicalPartition parent, IndexSpace handle);
     public:
       void unmap_physical_region(PhysicalRegion region);
     public:
@@ -308,10 +305,9 @@ namespace RegionRuntime {
       virtual void remote_children_mapped(const void *args, size_t arglen) = 0;
       virtual void remote_finish(const void *args, size_t arglen) = 0;
     public:
-      ContextID compute_physical_context(const RegionRequirement &req);
       const RegionRequirement& get_region_requirement(unsigned idx);
     protected:
-      bool map_all_regions(Event single_term, Event multi_term);
+      bool map_all_regions(Processor target, Event single_term, Event multi_term);
       void initialize_region_tree_contexts(void);
     protected:
       // Methods for children_mapped
@@ -332,7 +328,7 @@ namespace RegionRuntime {
       std::list<TaskContext*> child_tasks;
       std::list<MappingOperation*> child_maps;
       std::list<DeletionOperation*> child_deletions;
-      // Set when the variant is selected
+      // Set when the variant is selected after mapping succeeds
       bool is_leaf;
     };
 
@@ -383,6 +379,7 @@ namespace RegionRuntime {
                                              bool recurse, bool stealable) = 0;
       virtual void handle_future(const AnyPoint &point, const void *result, size_t result_size) = 0;
     protected:
+      friend class PointTask;
       IndexSpace index_space;
       bool sliced;
       // The slices made of this task
@@ -392,6 +389,7 @@ namespace RegionRuntime {
       ReductionOpID redop_id;
       void *reduction_state;
       size_t reduction_state_size;
+      Barrier must_barrier; // for use with must parallelism
     };
 
     /////////////////////////////////////////////////////////////
@@ -628,6 +626,7 @@ namespace RegionRuntime {
       void post_slice_mapped(void);
       void post_slice_finished(void);
     private:
+      friend class PointTask;
       // The following set of fields are set when a slice is cloned
       bool distributed; 
       bool locally_mapped;

@@ -2,6 +2,8 @@
 #include "legion_ops.h"
 #include "region_tree.h"
 
+#define PRINT_REG(reg) reg.index_space.id,reg.field_space.id
+
 namespace RegionRuntime {
   namespace HighLevel {
 
@@ -170,12 +172,11 @@ namespace RegionRuntime {
       mapper = runtime->get_mapper(id);
       mapper_lock = runtime->get_mapper_lock(id);
       tag = t;
-      // Compute the physical context based on the parent context
-      parent_physical_ctx = parent_ctx->compute_physical_context(requirement);
 #ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Map %d Parent %d",unique_id,parent_ctx->get_unique_id());
-      log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle %x Parent %x Privilege %d Coherence %d",
-              parent_ctx->get_unique_id(),unique_id,0,req.handle.region,req.parent,req.privilege,req.prop);
+      log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle (%x,%x) Parent (%x,%x) Privilege %d Coherence %d",
+              parent_ctx->get_unique_id(),unique_id,0,req.index.space.id,req.field.id,
+              PRINT_REG(req.parent),req.privilege,req.prop);
 #endif
       ctx->register_child_map(this);
     }
@@ -196,12 +197,11 @@ namespace RegionRuntime {
       mapper = runtime->get_mapper(id);
       mapper_lock = runtime->get_mapper_lock(id);
       tag = t;
-      parent_physical_ctx = parent_ctx->compute_physical_context(requirement);
 #ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Map %d Parent %d",unique_id,parent_ctx->get_unique_id());
-      log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle %x Parent %x Privilege %d Coherence %d",
-              parent_ctx->get_unique_id(),unique_id,0,requirement.handle.region,requirement.parent,
-              requirement.privilege,requirement.prop);
+      log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle REG_PAT Parent REG_PAT Privilege %d Coherence %d",
+              parent_ctx->get_unique_id(),unique_id,0,requirement.index.space.id,requirement.field.id,
+              PRINT_REG(requirement.parent),requirement.privilege,requirement.prop);
 #endif
       ctx->register_child_map(this);
     }
@@ -229,42 +229,24 @@ namespace RegionRuntime {
     LogicalRegion MappingOperation::get_logical_region(void) const
     //--------------------------------------------------------------------------
     {
-
-    }
-
-    //--------------------------------------------------------------------------
-    IndexSpace MappingOperation::get_index_space(void) const
-    //--------------------------------------------------------------------------
-    {
-
-    }
-
-    //--------------------------------------------------------------------------
-    FieldSpace MappingOperation::get_field_space(void) const
-    //--------------------------------------------------------------------------
-    {
-
+      return requirement.region;
     }
 
     //--------------------------------------------------------------------------
     PhysicalInstance MappingOperation::get_physical_instance(void) const
     //--------------------------------------------------------------------------
     {
-
-    }
-
-    //--------------------------------------------------------------------------
-    bool MappingOperation::has_accessor(AccessorType at) const
-    //--------------------------------------------------------------------------
-    {
-
+#ifdef DEBUG_HIGH_LEVEL
+      assert(mapped_event.has_triggered());
+#endif
+      return physical_instance.get_instance();
     }
 
     //--------------------------------------------------------------------------
     PhysicalRegion MappingOperation::get_physical_region(void) 
     //--------------------------------------------------------------------------
     {
-
+      return PhysicalRegion(this);
     }
 
     //--------------------------------------------------------------------------
@@ -278,16 +260,31 @@ namespace RegionRuntime {
     void MappingOperation::deactivate(void)
     //--------------------------------------------------------------------------
     {
+      // Need to unmap this operation before we can deactivate it
+      unmapped_event.trigger();
+      // Now we can go about removing our references
+      parent_ctx->lock_context();
+      physical_instance.remove_reference(); 
+      parent_ctx->unlock_context();
+      physical_instance = InstanceRef(); // virtual ref
+
       deactivate_base();
       Context parent = parent_ctx;
       parent_ctx = NULL;
+      mapper = NULL;
+#ifdef LOW_LEVEL_LOCKS
+      mapper_lock = Lock::NO_LOCK;
+#else
+      mapper_lock.clear();
+#endif
+      tag = 0;
       runtime->free_mapping(this, parent);
     }
 
     //--------------------------------------------------------------------------
     void MappingOperation::perform_dependence_analysis(void)
     //--------------------------------------------------------------------------
-    {
+    { 
       lock_context();
       compute_mapping_dependences(parent_ctx, 0/*idx*/, requirement);
       bool ready = is_ready();
@@ -300,8 +297,50 @@ namespace RegionRuntime {
     bool MappingOperation::perform_operation(void)
     //--------------------------------------------------------------------------
     {
-        
-      return true;
+      bool map_success = true;  
+      forest_ctx->lock_context();
+      ContextID phy_ctx = parent_ctx->find_enclosing_physical_context(requirement.parent);
+      RegionMapper reg_mapper(phy_ctx, 0/*idx*/, requirement, mapper, mapper_lock, runtime->local_proc, 
+                              unmapped_event, unmapped_event, tag, true/*inline mapping*/);
+      // Compute the trace
+#ifdef DEBUG_HIGH_LEVEL
+      bool result = 
+#endif
+      forest_ctx->compute_index_path(requirement.parent.index_space, requirement.index.space, reg_mapper.trace);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(result);
+#endif
+      physical_instance = forest_ctx->map_region(reg_mapper);
+      forest_ctx->unlock_context();
+
+      if (!physical_instance.is_virtual_ref())
+      {
+        // Mapping successful  
+        // Set the ready event and the physical instance
+        if (physical_instance.has_required_lock())
+        {
+          // Issue lock acquire on ready event, issue unlock on unmap event
+          Lock required_lock = physical_instance.get_required_lock();
+          this->ready_event = required_lock.lock(0,true/*exclusive*/,physical_instance.get_ready_event());
+          required_lock.unlock(unmapped_event);
+        }
+        else
+        {
+          this->ready_event = physical_instance.get_ready_event();
+        }
+        // finally we can trigger the event saying that we're mapped
+        mapped_event.trigger();
+      }
+      else
+      {
+        // Mapping failed
+        map_success = false;
+        AutoLock m_lock(mapper_lock);
+        DetailedTimer::ScopedPush sp(TIME_MAPPER);
+        mapper->notify_failed_mapping(parent_ctx, requirement, 0/*index*/, true/*inline mapping*/);
+      }
+      
+      return map_success;
     }
 
     //--------------------------------------------------------------------------
@@ -331,7 +370,7 @@ namespace RegionRuntime {
       assert(parent != NULL);
 #endif
       parent_ctx = parent;
-      handle.index_space = space;
+      index.space = space;
       handle_tag = DESTROY_INDEX_SPACE;
       parent->register_child_deletion(this);
     }
@@ -344,7 +383,7 @@ namespace RegionRuntime {
       assert(parent != NULL);
 #endif
       parent_ctx = parent;
-      handle.index_part = part;
+      index.partition = part;
       handle_tag = DESTROY_INDEX_PARTITION;
       parent->register_child_deletion(this);
     }
@@ -357,7 +396,7 @@ namespace RegionRuntime {
       assert(parent != NULL);
 #endif
       parent_ctx = parent;
-      handle.field_space = space;
+      field_space = space;
       handle_tag = DESTROY_FIELD_SPACE;
       parent->register_child_deletion(this);
     }
@@ -370,7 +409,7 @@ namespace RegionRuntime {
       assert(parent != NULL);
 #endif
       parent_ctx = parent;
-      handle.field_space = space;
+      field_space = space;
       handle_tag = DESTROY_FIELDS;
       downgrade_type = downgrade;
       parent->register_child_deletion(this);
@@ -384,7 +423,8 @@ namespace RegionRuntime {
       assert(parent != NULL);
 #endif
       parent_ctx = parent;
-      handle.region = reg;
+      index.space = reg.index_space;
+      field_space = reg.field_space;
       handle_tag = DESTROY_REGION;
       parent->register_child_deletion(this);
     }
@@ -557,22 +597,23 @@ namespace RegionRuntime {
             case ERROR_BAD_PARENT_REGION:
               {
                 log_region(LEVEL_ERROR,"Parent task %s (ID %d) of task %s (ID %d) does not have a region requirement "
-                                        "for region %d as a parent of child task's region requirement index %d",
+                                        "for region REG_PAT as a parent of child task's region requirement index %d",
                                         parent_ctx->variants->name, parent_ctx->get_unique_id(),
-                                        this->variants->name, get_unique_id(), regions[idx].parent, idx);
+                                        this->variants->name, get_unique_id(), PRINT_REG(regions[idx].parent), idx);
                 exit(ERROR_BAD_PARENT_REGION);
               }
             case ERROR_BAD_REGION_PATH:
               {
-                log_region(LEVEL_ERROR,"Region %d is not a sub-region of parent region %d for region requirement %d of task %s (ID %d)",
-                                        regions[idx].handle.region, regions[idx].parent, idx,
+                log_region(LEVEL_ERROR,"Region (%x,%x) is not a sub-region of parent region (%x,%x) for region requirement %d of task %s (ID %d)",
+                                        regions[idx].index.space.id,regions[idx].field.id, PRINT_REG(regions[idx].parent), idx,
                                         this->variants->name, get_unique_id());
                 exit(ERROR_BAD_REGION_PATH);
               }
             case ERROR_BAD_PARTITION_PATH:
               {
-                log_region(LEVEL_ERROR,"Partition %d is not a sub-partition of parent region %d for region requirement %d of task %s (ID %d)",
-                                        regions[idx].handle.partition, regions[idx].parent, idx,
+                log_region(LEVEL_ERROR,"Partition (%x,%x) is not a sub-partition of parent region (%x,%x) for "
+                    "                   region requirement %d of task %s (ID %d)",
+                                        regions[idx].index.partition, regions[idx].field.id, PRINT_REG(regions[idx].parent), idx,
                                         this->variants->name, get_unique_id());
                 exit(ERROR_BAD_PARTITION_PATH);
               }
@@ -585,17 +626,17 @@ namespace RegionRuntime {
               }
             case ERROR_BAD_REGION_PRIVILEGES:
               {
-                log_region(LEVEL_ERROR,"Privileges %x for region %d are not a subset of privileges of parent task's privileges for "
+                log_region(LEVEL_ERROR,"Privileges %x for region (%x,%x) are not a subset of privileges of parent task's privileges for "
                                        "region requirement %d of task %s (ID %d)",
-                                       regions[idx].privilege, regions[idx].handle.region, idx,
+                                       regions[idx].privilege, regions[idx].index.space.id,regions[idx].field.id, idx,
                                        this->variants->name, get_unique_id());
                 exit(ERROR_BAD_REGION_PRIVILEGES);
               }
             case ERROR_BAD_PARTITION_PRIVILEGES:
               {
-                log_region(LEVEL_ERROR,"Privileges %x for partition %d are not a subset of privileges of parent task's privileges for "
+                log_region(LEVEL_ERROR,"Privileges %x for partition (%x,%x) are not a subset of privileges of parent task's privileges for "
                                        "region requirement %d of task %s (ID %d)",
-                                       regions[idx].privilege, regions[idx].handle.partition, idx,
+                                       regions[idx].privilege, regions[idx].index.partition, regions[idx].field.id, idx,
                                        this->variants->name, get_unique_id());
                 exit(ERROR_BAD_PARTITION_PRIVILEGES);
               }
@@ -690,7 +731,7 @@ namespace RegionRuntime {
 #endif
       AutoLock m_lock(mapper_lock);
       DetailedTimer::ScopedPush sp(TIME_MAPPER);
-      return mapper->notify_failed_mapping(this, regions[idx], idx);
+      return mapper->notify_failed_mapping(this, regions[idx], idx, false/*inline mapping*/);
     }
 
     //--------------------------------------------------------------------------
@@ -863,7 +904,8 @@ namespace RegionRuntime {
 #endif
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        if (regions[idx].handle.region == parent)
+        if ((regions[idx].index.space == parent.index_space) &&
+            (regions[idx].field == parent.field_space))
         {
           return physical_contexts[idx];
         }
@@ -971,9 +1013,8 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     void SingleTask::create_index_partition(IndexPartition pid, IndexSpace parent, 
-                                            bool disjoint, PartitionColor color,
-                                            const std::map<RegionColor,IndexSpace> &coloring, 
-                                            const std::vector<LogicalRegion> &handles)
+                                            bool disjoint, Color color,
+                                            const std::map<Color,IndexSpace> &coloring) 
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -985,7 +1026,7 @@ namespace RegionRuntime {
       }
 #endif
       lock_context();
-      forest_ctx->create_index_partition(pid, parent, disjoint, color, coloring, handles);
+      forest_ctx->create_index_partition(pid, parent, disjoint, color, coloring);
       unlock_context();
     }
 
@@ -1001,7 +1042,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    IndexPartition SingleTask::get_index_partition(IndexSpace parent, PartitionColor color)
+    IndexPartition SingleTask::get_index_partition(IndexSpace parent, Color color)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1018,7 +1059,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    IndexSpace SingleTask::get_index_subspace(IndexPartition pid, RegionColor color)
+    IndexSpace SingleTask::get_index_subspace(IndexPartition pid, Color color)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1159,7 +1200,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    LogicalPartition SingleTask::get_region_partition(LogicalRegion parent, PartitionColor color)
+    LogicalPartition SingleTask::get_region_partition(LogicalRegion parent, IndexPartition handle)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1171,12 +1212,12 @@ namespace RegionRuntime {
       }
 #endif
       lock_context();
-      forest_ctx->get_region_partition(parent, color);
+      forest_ctx->get_region_partition(parent, handle);
       unlock_context();
     }
 
     //--------------------------------------------------------------------------
-    LogicalRegion SingleTask::get_partition_subregion(LogicalPartition pid, RegionColor color)
+    LogicalRegion SingleTask::get_partition_subregion(LogicalPartition pid, IndexSpace handle)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1188,7 +1229,7 @@ namespace RegionRuntime {
       }
 #endif
       lock_context();
-      forest_ctx->get_partition_subregion(pid, color);
+      forest_ctx->get_partition_subregion(pid, handle);
       unlock_context();
     }
 
@@ -1294,14 +1335,15 @@ namespace RegionRuntime {
         assert(it->handle_type == SINGULAR); // better be singular
 #endif
         // Check to see if we found the requirement in the parent
-        if (it->handle.region == req.parent)
+        if ((it->index.space == req.parent.index_space) &&
+            (it->field == req.parent.field_space))
         {
           // Check that there is a path between the parent and the child
           lock_context();
           if (req.handle_type == SINGULAR)
           {
             std::vector<unsigned> path;
-            if (!forest_ctx->compute_region_path(req.parent, req.handle.region, path))
+            if (!forest_ctx->compute_index_path(req.parent.index_space, req.index.space, path))
             {
               unlock_context();
               return ERROR_BAD_REGION_PATH;
@@ -1310,7 +1352,7 @@ namespace RegionRuntime {
           else
           {
             std::vector<unsigned> path;
-            if (!forest_ctx->compute_partition_path(req.parent, req.handle.partition, path))
+            if (!forest_ctx->compute_partition_path(req.parent.index_space, req.index.partition, path))
             {
               unlock_context();
               return ERROR_BAD_PARTITION_PATH;
@@ -1346,7 +1388,7 @@ namespace RegionRuntime {
           if (req.handle_type == SINGULAR)
           {
             std::vector<unsigned> path;
-            if (!forest_ctx->compute_region_path(req.parent, req.handle.region, path))
+            if (!forest_ctx->compute_index_path(req.parent.index_space, req.index.space, path))
             {
               unlock_context();
               return ERROR_BAD_REGION_PATH;
@@ -1355,7 +1397,7 @@ namespace RegionRuntime {
           else
           {
             std::vector<unsigned> path;
-            if (!forest_ctx->compute_partition_path(req.parent, req.handle.partition, path))
+            if (!forest_ctx->compute_partition_path(req.parent.index_space, req.index.partition, path))
             {
               unlock_context();
               return ERROR_BAD_PARTITION_PATH;
@@ -1393,7 +1435,7 @@ namespace RegionRuntime {
 #endif
       for (unsigned idx = 0; idx < physical_instances.size(); idx++)
       {
-        physical_region_impls[idx] = new PhysicalRegionImpl(idx, regions[idx].handle.region, 
+        physical_region_impls[idx] = new PhysicalRegionImpl(idx, regions[idx].region, 
                                                             physical_instances[idx].get_instance());
         physical_regions[idx] = PhysicalRegion(physical_region_impls[idx]);
       }
@@ -1448,62 +1490,66 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    bool SingleTask::map_all_regions(Event single_term, Event multi_term)
+    bool SingleTask::map_all_regions(Processor target, Event single_term, Event multi_term)
     //--------------------------------------------------------------------------
     {
       bool map_success = true;
       // Do the mapping for all the regions
+      // Hold the context lock when doing this
+      forest_ctx->lock_context();
+      for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        // Hold the context lock when doing this
-        forest_ctx->lock_context();
-        for (unsigned idx = 0; idx < regions.size(); idx++)
+        ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
+        // First check to see if we want to map the given region  
+        if (invoke_mapper_map_region_virtual(idx))
         {
-          ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
-#ifdef DEBUG_HIGH_LEVEL
-          assert(phy_ctx != 0);
-#endif
-          // First check to see if we want to map the given region  
-          if (invoke_mapper_map_region_virtual(idx))
-          {
-            // Want a virtual mapping
-            unmapped++;
-            non_virtual_mapped_region.push_back(false);
-            physical_instances.push_back(InstanceRef());
-            physical_contexts.push_back(phy_ctx); // use same context as parent for all child mappings
-          }
-          else
-          {
-            // Otherwise we want to do an actual physical mapping
-            RegionMapper reg_mapper(phy_ctx, idx, regions[idx], mapper, mapper_lock, single_term, multi_term);
-            // Compute the trace 
-#ifdef DEBUG_HIGH_LEVEL
-            bool result = 
-#endif
-            forest_ctx->compute_region_path(regions[idx].parent,regions[idx].handle.region, reg_mapper.trace);
-#ifdef DEBUG_HIGH_LEVEL
-            assert(result); // better have been able to compute the path
-#endif
-            // Now do the traversal and record the result
-            physical_instances.push_back(forest_ctx->map_region(reg_mapper));
-            // Check to make sure that the result isn't virtual, if it is then the mapping failed
-            if (physical_instances[idx].is_virtual_ref())
-            {
-              // Mapping failed
-              invoke_mapper_failed_mapping(idx);
-              map_success = false;
-              break;
-            }
-            non_virtual_mapped_region.push_back(true);
-            physical_contexts.push_back(ctx_id); // use our context for all child mappings
-          }
+          // Want a virtual mapping
+          unmapped++;
+          non_virtual_mapped_region.push_back(false);
+          physical_instances.push_back(InstanceRef());
+          physical_contexts.push_back(phy_ctx); // use same context as parent for all child mappings
         }
-        forest_ctx->unlock_context();
+        else
+        {
+          // Otherwise we want to do an actual physical mapping
+          RegionMapper reg_mapper(phy_ctx, idx, regions[idx], mapper, mapper_lock, target, 
+                                  single_term, multi_term, tag, false/*inline mapping*/);
+          // Compute the trace 
+#ifdef DEBUG_HIGH_LEVEL
+          bool result = 
+#endif
+          forest_ctx->compute_index_path(regions[idx].parent.index_space,regions[idx].index.space, reg_mapper.trace);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(result); // better have been able to compute the path
+#endif
+          // Now do the traversal and record the result
+          physical_instances.push_back(forest_ctx->map_region(reg_mapper));
+          // Check to make sure that the result isn't virtual, if it is then the mapping failed
+          if (physical_instances[idx].is_virtual_ref())
+          {
+            // Mapping failed
+            invoke_mapper_failed_mapping(idx);
+            map_success = false;
+            break;
+          }
+          non_virtual_mapped_region.push_back(true);
+          physical_contexts.push_back(ctx_id); // use our context for all child mappings
+        }
       }
+      forest_ctx->unlock_context();
 
-      if (!map_success)
+      if (map_success)
       {
+        // Mapping was a success.  Figure out if this is a leaf task or not
+        Machine *machine = Machine::get_machine();
+        Processor::Kind proc_kind = machine->get_processor_kind(target);
+        const TaskVariantCollection::Variant &variant = this->variants->select_variant(is_index_space,proc_kind);
+        this->is_leaf = variant.leaf;
+      }
+      else
+      {
+        // Mapping failed so undo everything that was done
         forest_ctx->lock_context();
-        // Clean up everything that we've done
         for (unsigned idx = 0; idx < physical_instances.size(); idx++)
         {
           physical_instances[idx].remove_reference();
@@ -1566,8 +1612,6 @@ namespace RegionRuntime {
 #endif
       // Now we need to select the variant to run
       const TaskVariantCollection::Variant &variant = variants->select_variant(is_index_space,runtime->proc_kind);
-      // Figure out whether this task is a leaf task
-      this->is_leaf = variant.leaf;
       // Launch the task, passing the pointer to this Context as the argument
       SingleTask *this_ptr = this; // dumb c++
       Event task_launch_event = runtime->local_proc.spawn(variant.low_id,&this_ptr,sizeof(SingleTask*),start_condition);
@@ -1699,6 +1743,15 @@ namespace RegionRuntime {
                                                      splits[idx].recurse,
                                                      splits[idx].stealable);
         slices.push_back(slice);
+      }
+
+      // If we're doing must parallelism, increase the barrier count
+      // by the number of new slices created.  We can subtract one
+      // because we were already anticipating one arrival for this slice
+      // that will now no longer happen.
+      if (must)
+      {
+        must_barrier.alter_arrival_count(slices.size()-1);
       }
 
       // This will tell each of the slices what their denominator should be
@@ -1835,7 +1888,7 @@ namespace RegionRuntime {
     bool IndividualTask::perform_mapping(void)
     //--------------------------------------------------------------------------
     {
-      bool map_success = map_all_regions(termination_event, termination_event); 
+      bool map_success = map_all_regions(target_proc, termination_event, termination_event); 
       if (map_success)
       {
         // If we're remote, send back our mapping information
@@ -1852,7 +1905,7 @@ namespace RegionRuntime {
           {
             if (non_virtual_mapped_region[idx])
             {
-              trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(regions[idx].handle.region));
+              trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(regions[idx].region));
               buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
             }
           }
@@ -1985,7 +2038,7 @@ namespace RegionRuntime {
           {
             if (!non_virtual_mapped_region[idx])
             {
-              trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(regions[idx].handle.region));
+              trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(regions[idx].region));
               buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
             }
           }
@@ -2371,7 +2424,17 @@ namespace RegionRuntime {
     bool PointTask::perform_mapping(void)
     //--------------------------------------------------------------------------
     {
-      return map_all_regions(point_termination_event,slice_owner->get_termination_event());
+      return map_all_regions(slice_owner->target_proc, point_termination_event,slice_owner->get_termination_event());
+    }
+
+    //--------------------------------------------------------------------------
+    void PointTask::incorporate_additional_launch_events(std::set<Event> &wait_on_events)
+    //--------------------------------------------------------------------------
+    {
+      if (slice_owner->must)
+      {
+        wait_on_events.insert(slice_owner->must_barrier);
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -3119,7 +3182,16 @@ namespace RegionRuntime {
         // No need to hold the lock here since none of
         // the point tasks have begun running yet
         if (map_success)
+        {
+          // If we're doing must parallelism, register
+          // that all our tasks have been mapped and will 
+          // be scheduled on their target processor.
+          if (must)
+          {
+            must_barrier.arrive();
+          }
           post_slice_start();
+        }
       }
       else
       {
@@ -3418,9 +3490,9 @@ namespace RegionRuntime {
             // Everybody mapped a region in this tree, it is fully mapped
             // so send it back
             if (regions[idx].handle_type == SINGULAR)
-              trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(regions[idx].handle.region));
+              trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(regions[idx].region));
             else
-              trees_to_pack.push_back(forest_ctx->get_logical_partition_tree_id(regions[idx].handle.partition));
+              trees_to_pack.push_back(forest_ctx->get_logical_partition_tree_id(regions[idx].partition));
             buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
           }
         }
@@ -3488,9 +3560,9 @@ namespace RegionRuntime {
             if (non_virtual_mappings[idx] < points.size())
             {
               if (regions[idx].handle_type == SINGULAR)
-                trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(regions[idx].handle.region));
+                trees_to_pack.push_back(forest_ctx->get_logical_region_tree_id(regions[idx].region));
               else
-                trees_to_pack.push_back(forest_ctx->get_logical_partition_tree_id(regions[idx].handle.partition));
+                trees_to_pack.push_back(forest_ctx->get_logical_partition_tree_id(regions[idx].partition));
               buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
             }
           }
