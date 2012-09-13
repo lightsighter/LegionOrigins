@@ -11,28 +11,28 @@ http://theory.stanford.edu/~aiken/publications/papers/sc12.pdf .
 Reviewers A, B, and C asked for additional details about colorings.
 In Core Legion, colorings are explicit mappings of region elements
 (named by their location) to integers ("colors"), which represents the
-most general case of describing the partitioning of a region.  More
-concise descriptions exist in the full Legion language (e.g. using a
-pure function to determine the color of an element on demand), but a
-single form was selected for Core Legion for simplicity.  As described
-in [1], Legion does not attempt to solve the (in many cases
-still-open) problem of optimally partitioning data for any given
-application, but instead provides a mechanism for programmers to write
-their own partitioning code and communicate the partitioning decisions
-to the Legion runtime.  In our example, the body of the
-"color_circuit" task would require the programmer to compute a
-partition of the circuit graph and return a coloring that assigns each
-circuit element a color; each color identifies a separate subregion of
-the partition consisting of all the circuit elements with that color.
-In production scientific codes partitioning is often done by a call to
-an external library (e.g. PARMETIS for graph-based data structures).
-A coloring is a way to capture the result of the partitioning
-computation in a general format understood by the Legion runtime.
-More information on colorings can be found in [1].
+general case of describing the partitioning of a region.  More concise
+descriptions exist in the full Legion language (e.g. using a pure
+function to determine the color of an element on demand), but a single
+form was selected for Core Legion for simplicity.  As described in
+[1], Legion does not attempt to solve the (in many cases still-open)
+problem of optimally partitioning data for any given application, but
+instead provides a mechanism for programmers to write their own
+partitioning code and communicate the partitioning decisions to the
+Legion runtime.  In our example, the body of the "color_circuit" task
+would require the programmer to compute a partition of the circuit
+graph and return a coloring that assigns each circuit element a color;
+each color identifies a separate subregion of the partition consisting
+of all the circuit elements with that color.  In production scientific
+codes partitioning is often done by a call to an external library
+(e.g. PARMETIS for graph-based data structures).  A coloring is a way
+to capture the result of the partitioning computation in a general
+format understood by the Legion runtime.  More information on
+colorings can be found in [1].
 
 Reviewer C correctly points out that regions are central to
-performance as well as for the type structure of Legion programs.
-Regions are in Legion to allow programmers to describe locality and
+performance as well as the type structure of Legion programs.  Regions
+are in Legion to allow programmers to describe locality and
 independence for structuring parallel computations.  The programmer's
 choice of regions can affect load balancing, communication, and the
 granularity of parallel tasks.  In the case of the circuit example, no
@@ -42,21 +42,21 @@ performance; that is, for performance reasons the partitioning should
 be done dynamically.  Assuming Legion has a sound type system,
 however, any partitioning should be correct.  The paper focuses on the
 correctness issues for the Legion implementation: that there are no
-wild pointers to the wrong regions and that tasks observe 
-privilege requirements.
+wild pointers to the wrong regions and that tasks observe privilege
+requirements.
 
-Reviewer C asked for clarification concerning the the relationship
-between multiple partitions and privileges.  The principle reason to
-support multiple partitions of the same data is to allow precise
-descriptions of the sets of elements that will be accessed by a given
-task.  These sets are often different in different phases of an
-algorithm, and both naming the precise set of nodes and the privileges
-required are needed to safely parallelize applications such as the
-circuit code.  In some cases (like the circuit code) it is possible in
-theory to have a single partitioning of the data by taking the product
-of all the overlapping partitions, but this results in many, many
-unintuitive distinct subregions and is extremely unpleasant
-to program with (we tried it once).
+Reviewer C asked for clarification concerning the relationship between
+multiple partitions and privileges.  The principle reason to support
+multiple partitions of the same data is to allow precise descriptions
+of the sets of elements that will be accessed by a given task.  These
+sets are often different in different phases of an algorithm, and both
+naming the precise set of nodes and the privileges required are needed
+to safely parallelize applications such as the circuit code.  In some
+cases (like the circuit code) it is possible in theory to have a
+single partitioning of the data by taking the product of all the
+overlapping partitions, but this results in many, many unintuitive
+distinct subregions and is extremely unpleasant to program with (we
+tried it once).
 
 Reviewer A asked how "downregion" operations are performed and used.
 The "downregion" operation requires a dynamic check that the given
@@ -80,8 +80,9 @@ arguments (and required privileges/coherence) are checked against the
 current region tree to decide which, if any, of the already running
 tasks must complete before the new task can execute.  This test can be
 made provably efficient, even when scheduling is concurrent and
-distributed, but relies crucially on the proof of correctness of hierarhical
-scheduling presented in this paper and is only possible with a sound type system.
+distributed, but relies crucially on the proof of correctness of
+hierarhical scheduling presented in this paper and is only possible
+with a sound type system.
 
 Reviewer B commented that the Legion type system is similar in several
 ways to existing region-based typed systems.  While we reuse many
@@ -98,9 +99,9 @@ those regions - there is a subtle interaction between free variables
 in existential types and bounded quantification of privileges, but
 this is what allows Legion to check statically that a task can, say,
 iterate over an unbounded list L of subregions and access elements of
-those regions so long as there is a constraint that shows the task has
-the same permissions on some ancestor region of every subregion in L.
-And while the proof of soundness does not introduce novel proof
+those subregions so long as there is a constraint that shows the task
+has the same permissions on some ancestor region of every subregion in
+L.  And while the proof of soundness does not introduce novel proof
 techniques, it is far from immediate that the type system is sound and
 we felt the proof was necessary given the large differences in the
 semantics of logical regions from previous region systems.  The
@@ -133,15 +134,19 @@ dynamic region mappings) would limit the expressible forms of
 parallelism to a (well-studied) subset of what Legion programs can
 achieve.
 
-Reviewer C requested clarification of the purpose of the memory trace.  Because
-memory trace captures the heap accesses (i.e. side effects) that occur during
-the evaluation of an expression, interactions between expressions being
-evaluated in parallel are completely described by the way in which their
-traces are interleaved.
+Reviewer C requested clarification of the purpose of the memory trace.
+Because a memory trace captures the heap accesses (i.e. side effects)
+that occur during the evaluation of an expression, interactions
+between expressions being evaluated in parallel are completely
+described by the way in which their traces are interleaved.
 
 Reviewer D asked what is currently implemented.  Legion currently
 consists of a static type checker for programs written in Core Legion
-and a C++ runtime library for fully-featured Legion programs.
+and a C++ runtime library for fully-featured Legion programs.  The
+runtime library is itself divided into a high-level runtime that manages
+regions and task scheduling and a low-level runtime that provides
+a portability layer across the different types of hardware (multicore chips,
+clusters, GPUs) that we currently support.  More details are in [1].
 
 Reviewers B, C, and D expressed confusion about the nature of
 the clobber set.  The choice of large-step operational semantics was
@@ -164,8 +169,8 @@ which task(s) were able to take a step at any given point were
 onerous; to manage this complexity we were concerned we would have to
 limit our soundness guarantees to a particular scheduling algorithm.
 
-Finally, reviewer A asked why the E-NewColor rule allows the initial coloring
-to be non-empty.  There are two reasons for this.  First, in the
+Finally, reviewer A asked why the E-NewColor rule allows the initial
+coloring to be non-empty.  There are two reasons.  First, in the
 large-step semantics we use, the region mapping and heap typing cannot
 be changed by an E-New rule, so a partitioning of a region must
 include extra elements of the appropriate heap type to support
