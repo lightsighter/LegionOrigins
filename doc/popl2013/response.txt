@@ -34,7 +34,7 @@ Reviewer C correctly points out that regions are central to
 performance as well as for the type structure of Legion programs.
 Regions are in Legion to allow programmers to describe locality and
 independence for structuring parallel computations.  The programmer's
-choice of egions can affect load balancing, communication, and the
+choice of regions can affect load balancing, communication, and the
 granularity of parallel tasks.  In the case of the circuit example, no
 partitioning scheme that does not look at the actual structure of the
 graph being partitioned can pick a partition that will lead to good
@@ -80,8 +80,8 @@ arguments (and required privileges/coherence) are checked against the
 current region tree to decide which, if any, of the already running
 tasks must complete before the new task can execute.  This test can be
 made provably efficient, even when scheduling is concurrent and
-distributed, but relies crucially on the soundness of the type system
-for correctness.
+distributed, but relies crucially on the proof of correctness of hierarhical
+scheduling presented in this paper and is only possible with a sound type system.
 
 Reviewer B commented that the Legion type system is similar in several
 ways to existing region-based typed systems.  While we reuse many
@@ -90,7 +90,7 @@ a new composition of these features.  Primarily Legion allows for
 first-class logical regions which permit elements to exist in many
 regions simultaneously via multiple dynamic partitions of regions.
 Furthermore, the way the region information is leveraged both at
-compile-time and at runtime represent a new point in the design space
+compile-time and at runtime represents a new point in the design space
 of region languages.  We would like to point out specifically the way
 in which existential types are used to read (packed) regions from the
 heap and open them with permission to read/write/reduce values in
@@ -137,7 +137,7 @@ Reviewer D asked what is currently implemented.  Legion currently
 consists of a static type checker for programs written in Core Legion
 and a C++ runtime library for fully-featured Legion programs.
 
-Finally, reviewers B, C, and D expressed confusion about the nature of
+Reviewers B, C, and D expressed confusion about the nature of
 the clobber set.  The choice of large-step operational semantics was
 made to match the hierarchical and distributed scheduling used by the
 Legion runtime.  When coherence modes other than exclusive are used,
@@ -158,13 +158,13 @@ which task(s) were able to take a step at any given point were
 onerous; to manage this complexity we were concerned we would have to
 limit our soundness guarantees to a particular scheduling algorithm.
 
-Reviewer A asked why the E-NewColor rule allows the initial coloring
+Finally, reviewer A asked why the E-NewColor rule allows the initial coloring
 to be non-empty.  There are two reasons for this.  First, in the
 large-step semantics we use, the region mapping and heap typing cannot
 be changed by an E-New rule, so a partitioning of a region must
 include extra elements of the appropriate heap type to support
 allocation within a subregion.  Second, it allows implementations in
-which an existing element that was not colored by the programmer is
+which an existing element, that was not colored by the programmer, is
 included in (at most one) arbitrary subregion, which can improve the
 efficiency of data transfers at runtime.
 
