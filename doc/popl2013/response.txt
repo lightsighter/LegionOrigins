@@ -133,6 +133,12 @@ dynamic region mappings) would limit the expressible forms of
 parallelism to a (well-studied) subset of what Legion programs can
 achieve.
 
+Reviewer C requested clarification of the purpose of the memory trace.  Because
+memory trace captures the heap accesses (i.e. side effects) that occur during
+the evaluation of an expression, interactions between expressions being
+evaluated in parallel are completely described by the way in which their
+traces are interleaved.
+
 Reviewer D asked what is currently implemented.  Legion currently
 consists of a static type checker for programs written in Core Legion
 and a C++ runtime library for fully-featured Legion programs.
