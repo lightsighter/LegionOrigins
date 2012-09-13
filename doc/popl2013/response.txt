@@ -42,8 +42,8 @@ performance; that is, for performance reasons the partitioning should
 be done dynamically.  Assuming Legion has a sound type system,
 however, any partitioning should be correct.  The paper focuses on the
 correctness issues for the Legion implementation: that there are no
-wild pointers to the wrong regions and that tasks observe both
-privilege and coherence requirements.
+wild pointers to the wrong regions and that tasks observe 
+privilege requirements.
 
 Reviewer C asked for clarification concerning the the relationship
 between multiple partitions and privileges.  The principle reason to
