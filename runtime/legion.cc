@@ -43,6 +43,38 @@ namespace RegionRuntime {
     {
     }
 
+    //--------------------------------------------------------------------------
+    void Task::clone_task_from(Task *rhs)
+    //--------------------------------------------------------------------------
+    {
+      this->task_id = rhs->task_id;
+      this->indexes = rhs->indexes;
+      this->fields = rhs->fields;
+      this->regions = rhs->regions;
+      if (rhs->args != NULL)
+      {
+        this->args = malloc(rhs->arglen);
+        memcpy(this->args,rhs->args,rhs->arglen);
+        this->arglen = rhs->arglen;
+      }
+      this->map_id = rhs->map_id;
+      this->tag = rhs->tag;
+      this->orig_proc = rhs->orig_proc;
+      this->steal_count = rhs->steal_count;
+      this->must = rhs->must;
+      this->is_index_space = rhs->is_index_space;
+      this->index_space = rhs->index_space;
+      if (is_index_space && (rhs->index_point != NULL))
+      {
+        size_t bytes = rhs->index_element_size * rhs->index_dimensions;
+        this->index_point = malloc(bytes);
+        memcpy(this->index_point,rhs->index_point,bytes);
+        this->index_element_size = rhs->index_element_size;
+        this->index_dimensions = rhs->index_dimensions;
+      }
+      this->variants = rhs->variants;
+    }
+
     /////////////////////////////////////////////////////////////
     // Task Variant Collection
     /////////////////////////////////////////////////////////////

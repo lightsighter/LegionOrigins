@@ -102,7 +102,9 @@ namespace RegionRuntime {
     protected:
       // Only the high level runtime should be able to make these
       friend class HighLevelRuntime;
+      friend class TaskContext;
       Task(); 
+      void clone_task_from(Task *rhs);
     };
 
     /////////////////////////////////////////////////////////////

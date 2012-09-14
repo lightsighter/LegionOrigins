@@ -47,6 +47,8 @@ namespace RegionRuntime {
       // Called once the task is ready to map
       virtual void trigger(void) = 0;
     protected:
+      void clone_generalized_operation_from(GeneralizedOperation *rhs);
+    protected:
       bool active;
       bool context_owner;
       UniqueID unique_id;
@@ -226,6 +228,8 @@ namespace RegionRuntime {
       bool invoke_mapper_map_region_virtual(unsigned idx);
       Processor invoke_mapper_target_proc(void);
       void invoke_mapper_failed_mapping(unsigned idx);
+    protected:
+      void clone_task_context_from(TaskContext *rhs);
     protected:
       const ContextID ctx_id;
       // Remember some fields are here already from the Task class
@@ -432,9 +436,10 @@ namespace RegionRuntime {
       virtual SliceTask *clone_as_slice_task(IndexSpace new_space, Processor target_proc, 
                                              bool recurse, bool stealable) = 0;
       virtual void handle_future(const AnyPoint &point, const void *result, size_t result_size) = 0;
+      void clone_multi_from(MultiTask *rhs, IndexSpace new_space, bool recurse);
     protected:
       friend class PointTask;
-      IndexSpace index_space;
+      // index_space from Task
       bool sliced;
       // The slices made of this task
       std::list<SliceTask*> slices;
@@ -513,7 +518,7 @@ namespace RegionRuntime {
       // For remote versions
       void *remote_future;
       size_t remote_future_len;
-      Processor orig_proc;
+      // orig_proc from task
       Context orig_ctx;
       Event remote_start_event;
       Event remote_mapped_event;
@@ -718,8 +723,9 @@ namespace RegionRuntime {
       void post_slice_start(void);
       void post_slice_mapped(void);
       void post_slice_finished(void);
-    private:
+    protected:
       friend class PointTask;
+      friend class IndexTask;
       // The following set of fields are set when a slice is cloned
       bool distributed; 
       bool locally_mapped;
@@ -730,7 +736,7 @@ namespace RegionRuntime {
       Processor target_proc;
       std::vector<PointTask*> points;
       // For remote slices
-      Processor orig_proc;
+      // orig_proc from Task
       IndexTask *index_owner;
       Event remote_start_event;
       Event remote_mapped_event;

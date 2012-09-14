@@ -145,6 +145,14 @@ namespace RegionRuntime {
       }
     }
 
+    //--------------------------------------------------------------------------
+    void GeneralizedOperation::clone_generalized_operation_from(GeneralizedOperation *rhs)
+    //--------------------------------------------------------------------------
+    {
+      this->context_owner = false;
+      this->forest_ctx = rhs->forest_ctx;
+    }
+
     /////////////////////////////////////////////////////////////
     // Mapping Operaiton 
     /////////////////////////////////////////////////////////////
@@ -962,6 +970,18 @@ namespace RegionRuntime {
       unlock();
       // Return the number of new regions
       return num_elmts;
+    }
+
+    //--------------------------------------------------------------------------
+    void TaskContext::clone_task_context_from(TaskContext *rhs)
+    //--------------------------------------------------------------------------
+    {
+      clone_task_from(rhs);
+      clone_generalized_operation_from(rhs);
+      this->parent_ctx = rhs->parent_ctx;
+      this->task_pred = rhs->task_pred;
+      this->mapper= rhs->mapper;
+      this->mapper_lock = rhs->mapper_lock;
     }
 
     /////////////////////////////////////////////////////////////
@@ -2148,6 +2168,27 @@ namespace RegionRuntime {
       if (reclaim && success)
         this->deactivate();
       return success;
+    }
+
+    //--------------------------------------------------------------------------
+    void MultiTask::clone_multi_from(MultiTask *rhs, IndexSpace new_space, bool recurse)
+    //--------------------------------------------------------------------------
+    {
+      this->clone_task_context_from(rhs);
+      this->index_space = new_space;
+      this->sliced = !recurse;
+      this->has_reduction = rhs->has_reduction;
+      if (has_reduction)
+      {
+        this->redop_id = rhs->redop_id;
+        this->reduction_state = malloc(rhs->reduction_state_size);
+        memcpy(this->reduction_state,rhs->reduction_state,rhs->reduction_state_size);
+        this->reduction_state_size = rhs->reduction_state_size;
+      }
+      if (must)
+      {
+        this->must_barrier = rhs->must_barrier;
+      }
     }
 
     /////////////////////////////////////////////////////////////
@@ -3428,6 +3469,26 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    SliceTask* IndexTask::clone_as_slice_task(IndexSpace new_space, Processor target,
+                                              bool recurse, bool steal)
+    //--------------------------------------------------------------------------
+    {
+      SliceTask *result = runtime->get_available_slice_task(parent_ctx);
+      result->clone_multi_from(this,new_space,recurse); 
+      result->distributed = false;
+      result->locally_mapped = is_locally_mapped();
+      result->stealable = steal;
+      result->remote = false;
+      result->is_leaf = false;
+      result->termination_event = this->termination_event;
+      result->target_proc = target;
+      result->orig_proc = runtime->local_proc;
+      result->index_owner = this;
+      // denominator gets set by post_slice
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
     void IndexTask::handle_future(const AnyPoint &point, const void *result, size_t result_size)
     //--------------------------------------------------------------------------
     {
@@ -4047,6 +4108,33 @@ namespace RegionRuntime {
 
       // Deactivate this context when done since we've split it into sub-slices
       return true;
+    }
+
+    //--------------------------------------------------------------------------
+    SliceTask* SliceTask::clone_as_slice_task(IndexSpace new_space, Processor target,
+                                              bool recurse, bool steal)
+    //--------------------------------------------------------------------------
+    {
+      SliceTask *result = runtime->get_available_slice_task(this/*use this as the parent in case remote*/);
+      result->clone_multi_from(this, new_space, recurse);
+      result->distributed = false;
+      result->locally_mapped = this->locally_mapped;
+      result->stealable = steal;
+      result->remote = this->remote;
+      result->is_leaf = false; // still unknown
+      result->termination_event = this->termination_event;
+      result->target_proc = target;
+      result->orig_proc = this->orig_proc;
+      result->index_owner = this->index_owner;
+      result->partially_unpacked = this->partially_unpacked;
+      if (partially_unpacked)
+      {
+        result->remaining_buffer = malloc(this->remaining_bytes);
+        memcpy(result->remaining_buffer, this->remaining_buffer, this->remaining_bytes);
+        result->remaining_bytes = this->remaining_bytes;
+      }
+      // denominator gets set by post_slice
+      return result;
     }
 
     //--------------------------------------------------------------------------
