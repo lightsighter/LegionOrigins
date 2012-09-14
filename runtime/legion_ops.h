@@ -69,11 +69,11 @@ namespace RegionRuntime {
       void initialize(Context ctx, const RegionRequirement &req, MapperID id, MappingTagID tag);
       void initialize(Context ctx, unsigned idx, MapperID id, MappingTagID tag);
     public:
-      bool is_valid(void) const;
-      void wait_until_valid(void);
-      LogicalRegion get_logical_region(void) const; 
-      PhysicalInstance get_physical_instance(void) const;
-      bool has_accessor(AccessorType at) const;
+      bool is_valid(GenerationID gen_id) const;
+      void wait_until_valid(GenerationID gen_id);
+      LogicalRegion get_logical_region(GenerationID gen_id) const; 
+      PhysicalInstance get_physical_instance(GenerationID gen_id) const;
+      bool has_accessor(GenerationID gen_id, AccessorType at) const;
       PhysicalRegion get_physical_region(void);
     public:
       // Functions from GenerlizedOperation
@@ -162,6 +162,11 @@ namespace RegionRuntime {
      */
     class TaskContext : public Task, public GeneralizedOperation {
     public:
+      TaskContext(HighLevelRuntime *rt, ContextID id);
+    public:
+      bool activate_task(GeneralizedOperation *parent);
+      void deactivate_task(void);
+    public:
       void initialize_task(Context parent, Processor::TaskFuncID tid,
                       void *args, size_t arglen, 
                       const Predicate &predicate,
@@ -177,8 +182,8 @@ namespace RegionRuntime {
                             const std::vector<RegionRequirement> &regions, bool perform_checks);
     public:
       // Functions from GeneralizedOperation
-      virtual bool activate(GeneralizedOperation *parent = NULL);
-      virtual void deactivate(void);
+      virtual bool activate(GeneralizedOperation *parent = NULL) = 0;
+      virtual void deactivate(void) = 0;
       virtual void perform_dependence_analysis(void);
       virtual bool perform_operation(void) = 0;
       virtual void trigger(void) = 0;
@@ -187,11 +192,13 @@ namespace RegionRuntime {
       virtual bool is_locally_mapped(void) = 0;
       virtual bool is_stealable(void) = 0;
       virtual bool is_remote(void) = 0;
+      virtual bool is_partially_unpacked(void) = 0;
     public:
       virtual bool distribute_task(void) = 0; // Return true if still local
       virtual bool perform_mapping(void) = 0; // Return if mapping was successful
       virtual void launch_task(void) = 0;
       virtual void sanitize_region_forest(void) = 0;
+      
       virtual Event get_map_event(void) const = 0;
       virtual Event get_termination_event(void) const = 0;
       virtual ContextID get_enclosing_physical_context(LogicalRegion parent) = 0;
@@ -200,9 +207,10 @@ namespace RegionRuntime {
       virtual void remote_children_mapped(const void *args, size_t arglen) = 0;
       virtual void remote_finish(const void *args, size_t arglen) = 0;
     public:
-      size_t compute_task_size(void) const;
-      void pack_task(Serializer &rez) const;
-      void unpack_task(Deserializer &derez);
+      virtual size_t compute_task_size(void) = 0;
+      virtual void pack_task(Serializer &rez) = 0;
+      virtual void unpack_task(Deserializer &derez) = 0;
+      virtual void finish_task_unpack(void) = 0;
     public:
       // For returning privileges (stored in create_* lists)
       void return_privileges(const std::list<IndexSpace> &new_indexes,
@@ -213,16 +221,15 @@ namespace RegionRuntime {
       void pack_privileges_return(Serializer &rez);
       size_t unpack_privileges_return(Deserializer &derez); // return number of new regions
     protected:
-      const ContextID ctx_id;
       bool invoke_mapper_locally_mapped(void);
       bool invoke_mapper_stealable(void);
       bool invoke_mapper_map_region_virtual(unsigned idx);
       Processor invoke_mapper_target_proc(void);
       void invoke_mapper_failed_mapping(unsigned idx);
     protected:
+      const ContextID ctx_id;
       // Remember some fields are here already from the Task class
       Context parent_ctx;
-      Processor::TaskFuncID tid;
       Predicate task_pred;
       Mapper *mapper;
 #ifdef LOW_LEVEL_LOCKS
@@ -248,15 +255,23 @@ namespace RegionRuntime {
      */
     class SingleTask : public TaskContext {
     public:
+      SingleTask(HighLevelRuntime *rt, ContextID id);
+    public:
+      bool activate_single(GeneralizedOperation *parent);
+      void deactivate_single(void);
+    public:
       // Functions from GeneralizedOperation
       virtual bool perform_operation(void);
       virtual void trigger(void) = 0;
+      virtual bool activate(GeneralizedOperation *parent = NULL) = 0;
+      virtual void deactivate(void) = 0;
     public:
       // Functions from TaskContext
       virtual bool is_distributed(void) = 0;
       virtual bool is_locally_mapped(void) = 0;
       virtual bool is_stealable(void) = 0;
       virtual bool is_remote(void) = 0;
+      virtual bool is_partially_unpacked(void) = 0;
     public:
       // Functions from TaskContext
       virtual bool distribute_task(void) = 0; // Return true if still local
@@ -268,10 +283,16 @@ namespace RegionRuntime {
       virtual Event get_termination_event(void) const = 0;
       virtual ContextID get_enclosing_physical_context(LogicalRegion parent) = 0;
     public:
+      // Functions from TaskContext
+      virtual size_t compute_task_size(void) = 0;
+      virtual void pack_task(Serializer &rez) = 0;
+      virtual void unpack_task(Deserializer &derez) = 0;
+      virtual void finish_task_unpack(void) = 0;
+    public:
       ContextID find_enclosing_physical_context(LogicalRegion parent);
     public:
       void register_child_task(TaskContext *child);
-      void register_child_map(MappingOperation *op);
+      void register_child_map(MappingOperation *op, int idx = -1);
       void register_child_deletion(DeletionOperation *op);
     public:
       // Operations on index space trees
@@ -318,12 +339,15 @@ namespace RegionRuntime {
       virtual void remote_finish(const void *args, size_t arglen) = 0;
     public:
       const RegionRequirement& get_region_requirement(unsigned idx);
+    public:
+      size_t compute_source_copy_instances_return(void);
+      void pack_source_copy_instances_return(Serializer &derez);
+      static void unpack_source_copy_instances_return(Deserializer &derez, RegionTreeForest *forest);
     protected:
       bool map_all_regions(Processor target, Event single_term, Event multi_term);
       void initialize_region_tree_contexts(void);
     protected:
       // Methods for children_mapped
-      void remove_source_copy_references(void);
       void remove_mapped_references(void);
       void flush_deletions(void);
       void issue_restoring_copies(std::set<Event> &wait_on_events);
@@ -334,6 +358,8 @@ namespace RegionRuntime {
       std::vector<InstanceRef> physical_instances;
       // This vector contains references to clone references in the task's context
       std::vector<InstanceRef> clone_instances;
+      // A vector for capturing the copies required to launch the task
+      std::vector<InstanceRef> source_copy_instances;
       // This vector describes the physical ContextID for each region's mapping
       std::vector<ContextID> physical_contexts;
       // This vector just stores the physical region implementations for the task's duration
@@ -355,15 +381,23 @@ namespace RegionRuntime {
      */
     class MultiTask : public TaskContext {
     public:
+      MultiTask(HighLevelRuntime *rt, ContextID id);
+    public:
+      bool activate_multi(GeneralizedOperation *parent);
+      void deactivate_multi(void);
+    public:
       // Functions from GeneralizedOperation
       virtual bool perform_operation(void);
       virtual void trigger(void) = 0;
+      virtual bool activate(GeneralizedOperation *parent = NULL) = 0;
+      virtual void deactivate(void) = 0;
     public:
       // Functions from TaskContext
       virtual bool is_distributed(void) = 0;
       virtual bool is_locally_mapped(void) = 0;
       virtual bool is_stealable(void) = 0;
       virtual bool is_remote(void) = 0;
+      virtual bool is_partially_unpacked(void) = 0;
     public:
       // Functions from TaskContext
       virtual bool distribute_task(void) = 0; // Return true if still local
@@ -373,6 +407,12 @@ namespace RegionRuntime {
       virtual Event get_map_event(void) const = 0;
       virtual Event get_termination_event(void) const = 0;
       virtual ContextID get_enclosing_physical_context(LogicalRegion parent) = 0;
+    public:
+      // Functions from TaskContext
+      virtual size_t compute_task_size(void) = 0;
+      virtual void pack_task(Serializer &rez) = 0;
+      virtual void unpack_task(Deserializer &derez) = 0;
+      virtual void finish_task_unpack(void) = 0;
     public:
       // We have a separate operation for fusing map and launch for
       // multi-tasks so when we enumerate the index space we can map
@@ -415,16 +455,19 @@ namespace RegionRuntime {
     class IndividualTask : public SingleTask {
     public:
       friend class HighLevelRuntime;
-      IndividualTask(HighLevelRuntime *rt, Processor local, ContextID ctx_id);
+      IndividualTask(HighLevelRuntime *rt, ContextID id);
     public:
       // Functions from GeneralizedOperation
       virtual void trigger(void);
+      virtual bool activate(GeneralizedOperation *parent = NULL);
+      virtual void deactivate(void);
     public:
       // Functions from TaskContext
       virtual bool is_distributed(void);
       virtual bool is_locally_mapped(void);
       virtual bool is_stealable(void);
       virtual bool is_remote(void);
+      virtual bool is_partially_unpacked(void);
     public:
       // Functions from TaskContext
       virtual bool distribute_task(void); // Return true if still local
@@ -434,6 +477,12 @@ namespace RegionRuntime {
       virtual Event get_map_event(void) const;
       virtual Event get_termination_event(void) const;
       virtual ContextID get_enclosing_physical_context(LogicalRegion parent);
+    public:
+      // Functions from TaskContext
+      virtual size_t compute_task_size(void);
+      virtual void pack_task(Serializer &rez);
+      virtual void unpack_task(Deserializer &derez);
+      virtual void finish_task_unpack(void);
     public:
       // Functions from SingleTask
       virtual void children_mapped(void);
@@ -468,6 +517,9 @@ namespace RegionRuntime {
       Context orig_ctx;
       Event remote_start_event;
       Event remote_mapped_event;
+      bool partially_unpacked;
+      void *remaining_buffer;
+      size_t remaining_bytes;
     };
 
     /////////////////////////////////////////////////////////////
@@ -480,16 +532,19 @@ namespace RegionRuntime {
     class PointTask : public SingleTask {
     public:
       friend class SliceTask;
-      PointTask(HighLevelRuntime *rt, Processor local, ContextID ctx_id); 
+      PointTask(HighLevelRuntime *rt, ContextID id); 
     public:
       // Functions from GeneralizedOperation
       virtual void trigger(void);
+      virtual bool activate(GeneralizedOperation *parent = NULL);
+      virtual void deactivate(void);
     public:
       // Functions from TaskContext
       virtual bool is_distributed(void);
       virtual bool is_locally_mapped(void);
       virtual bool is_stealable(void);
       virtual bool is_remote(void);
+      virtual bool is_partially_unpacked(void);
     public:
       // Functions from TaskContext
       virtual bool distribute_task(void); // Return true if still local
@@ -499,6 +554,12 @@ namespace RegionRuntime {
       virtual Event get_map_event(void) const;
       virtual Event get_termination_event(void) const;
       virtual ContextID get_enclosing_physical_context(LogicalRegion parent);
+    public:
+      // Functions from TaskContext
+      virtual size_t compute_task_size(void);
+      virtual void pack_task(Serializer &rez);
+      virtual void unpack_task(Deserializer &derez);
+      virtual void finish_task_unpack(void);
     public:
       // Functions from SingleTask
       virtual void children_mapped(void);
@@ -531,16 +592,19 @@ namespace RegionRuntime {
      */
     class IndexTask : public MultiTask {
     public:
-      IndexTask(HighLevelRuntime *rt, Processor local, ContextID ctx_id); 
+      IndexTask(HighLevelRuntime *rt, ContextID id); 
     public:
       // Functions from GeneralizedOperation
       virtual void trigger(void);
+      virtual bool activate(GeneralizedOperation *parent = NULL);
+      virtual void deactivate(void);
     public:
       // Functions from TaskContext
       virtual bool is_distributed(void);
       virtual bool is_locally_mapped(void);
       virtual bool is_stealable(void);
       virtual bool is_remote(void);
+      virtual bool is_partially_unpacked(void);
     public:
       // Functions from TaskContext
       virtual bool distribute_task(void); // Return true if still local
@@ -550,6 +614,12 @@ namespace RegionRuntime {
       virtual Event get_map_event(void) const;
       virtual Event get_termination_event(void) const;
       virtual ContextID get_enclosing_physical_context(LogicalRegion parent);
+    public:
+      // Functions from TaskContext
+      virtual size_t compute_task_size(void);
+      virtual void pack_task(Serializer &rez);
+      virtual void unpack_task(Deserializer &derez);
+      virtual void finish_task_unpack(void);
     public:
       virtual void remote_start(const void *args, size_t arglen);
       virtual void remote_children_mapped(const void *args, size_t arglen);
@@ -598,16 +668,19 @@ namespace RegionRuntime {
      */
     class SliceTask : public MultiTask {
     public:
-      SliceTask(HighLevelRuntime *rt, Processor local, ContextID ctx_id);
+      SliceTask(HighLevelRuntime *rt, ContextID id);
     public:
       // Functions from GeneralizedOperation
       virtual void trigger(void);
+      virtual bool activate(GeneralizedOperation *parent = NULL);
+      virtual void deactivate(void);
     public:
       // Functions from TaskContext
       virtual bool is_distributed(void);
       virtual bool is_locally_mapped(void);
       virtual bool is_stealable(void);
       virtual bool is_remote(void);
+      virtual bool is_partially_unpacked(void);
     public:
       // Functions from TaskContext
       virtual bool distribute_task(void); // Return true if still local
@@ -617,6 +690,12 @@ namespace RegionRuntime {
       virtual Event get_map_event(void) const;
       virtual Event get_termination_event(void) const;
       virtual ContextID get_enclosing_physical_context(LogicalRegion parent);
+    public:
+      // Functions from TaskContext
+      virtual size_t compute_task_size(void);
+      virtual void pack_task(Serializer &rez);
+      virtual void unpack_task(Deserializer &derez);
+      virtual void finish_task_unpack(void);
     public:
       virtual void remote_start(const void *args, size_t arglen);
       virtual void remote_children_mapped(const void *args, size_t arglen);
@@ -655,6 +734,9 @@ namespace RegionRuntime {
       IndexTask *index_owner;
       Event remote_start_event;
       Event remote_mapped_event;
+      bool partially_unpacked;
+      void *remaining_buffer;
+      size_t remaining_bytes;
       // For storing futures when remote, the slice owns the result values
       // but the AnyPoint buffers are owned by the points themselves which
       // we know are live throughout the life of the SliceTask.

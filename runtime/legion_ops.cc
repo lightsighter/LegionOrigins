@@ -203,22 +203,36 @@ namespace RegionRuntime {
               parent_ctx->get_unique_id(),unique_id,0,requirement.region.index_space.id,requirement.region.field_space.id,
               requirement.region.tree_id,PRINT_REG(requirement.parent),requirement.privilege,requirement.prop);
 #endif
-      ctx->register_child_map(this);
+      ctx->register_child_map(this, idx);
     }
 
     //--------------------------------------------------------------------------
-    bool MappingOperation::is_valid(void) const
+    bool MappingOperation::is_valid(GenerationID gen_id) const
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      if (gen_id != generation)
+      {
+        log_region(LEVEL_ERROR,"Accessing stale inline mapping operation that has been invalided");
+        exit(ERROR_STALE_INLINE_MAPPING_ACCESS);
+      }
+#endif
       if (mapped_event.has_triggered())
         return ready_event.has_triggered();
       return false;
     }
 
     //--------------------------------------------------------------------------
-    void MappingOperation::wait_until_valid(void)
+    void MappingOperation::wait_until_valid(GenerationID gen_id)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      if (gen_id != generation)
+      {
+        log_region(LEVEL_ERROR,"Accessing stale inline mapping operation that has been invalided");
+        exit(ERROR_STALE_INLINE_MAPPING_ACCESS);
+      }
+#endif
       // Make sure to wait until we've mapped
       mapped_event.wait();
       // Then wait until we're ready
@@ -226,17 +240,29 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    LogicalRegion MappingOperation::get_logical_region(void) const
+    LogicalRegion MappingOperation::get_logical_region(GenerationID gen_id) const
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      if (gen_id != generation)
+      {
+        log_region(LEVEL_ERROR,"Accessing stale inline mapping operation that has been invalided");
+        exit(ERROR_STALE_INLINE_MAPPING_ACCESS);
+      }
+#endif
       return requirement.region;
     }
 
     //--------------------------------------------------------------------------
-    PhysicalInstance MappingOperation::get_physical_instance(void) const
+    PhysicalInstance MappingOperation::get_physical_instance(GenerationID gen_id) const
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
+      if (gen_id != generation)
+      {
+        log_region(LEVEL_ERROR,"Accessing stale inline mapping operation that has been invalided");
+        exit(ERROR_STALE_INLINE_MAPPING_ACCESS);
+      }
       assert(mapped_event.has_triggered());
 #endif
       return physical_instance.get_instance();
@@ -246,7 +272,7 @@ namespace RegionRuntime {
     PhysicalRegion MappingOperation::get_physical_region(void) 
     //--------------------------------------------------------------------------
     {
-      return PhysicalRegion(this);
+      return PhysicalRegion(this, generation);
     }
 
     //--------------------------------------------------------------------------
@@ -372,6 +398,7 @@ namespace RegionRuntime {
       parent_ctx = parent;
       index.space = space;
       handle_tag = DESTROY_INDEX_SPACE;
+      performed = false;
       parent->register_child_deletion(this);
     }
 
@@ -385,6 +412,7 @@ namespace RegionRuntime {
       parent_ctx = parent;
       index.partition = part;
       handle_tag = DESTROY_INDEX_PARTITION;
+      performed = false;
       parent->register_child_deletion(this);
     }
 
@@ -398,6 +426,7 @@ namespace RegionRuntime {
       parent_ctx = parent;
       field_space = space;
       handle_tag = DESTROY_FIELD_SPACE;
+      performed = false;
       parent->register_child_deletion(this);
     }
 
@@ -412,6 +441,7 @@ namespace RegionRuntime {
       field_space = space;
       handle_tag = DESTROY_FIELDS;
       downgrade_type = downgrade;
+      performed = false;
       parent->register_child_deletion(this);
     }
 
@@ -425,6 +455,7 @@ namespace RegionRuntime {
       parent_ctx = parent;
       region = reg;
       handle_tag = DESTROY_REGION;
+      performed = false;
       parent->register_child_deletion(this);
     }
 
@@ -438,6 +469,7 @@ namespace RegionRuntime {
       parent_ctx = parent;
       partition = handle;
       handle_tag = DESTROY_PARTITION;
+      performed = false;
       parent->register_child_deletion(this);
     }
 
@@ -452,6 +484,9 @@ namespace RegionRuntime {
     void DeletionOperation::deactivate(void)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(performed);
+#endif
       deactivate_base();
       Context parent = parent_ctx;
       parent_ctx = NULL;
@@ -538,6 +573,72 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
+    TaskContext::TaskContext(HighLevelRuntime *rt, ContextID id)
+      : Task(), GeneralizedOperation(rt), ctx_id(id)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    bool TaskContext::activate_task(GeneralizedOperation *parent)
+    //--------------------------------------------------------------------------
+    {
+      bool activated = activate_base(parent);
+      if (activated)
+      {
+        parent_ctx = NULL;
+        task_pred = Predicate::TRUE_PRED;
+        mapper = NULL;
+#ifdef LOW_LEVEL_LOCKS
+        mapper_lock = Lock::NO_LOCK;
+#endif
+        task_id = 0;
+        args = NULL;
+        arglen = 0;
+        map_id = 0;
+        tag = 0;
+        orig_proc = runtime->local_proc;
+        steal_count = 0;
+        must = false;
+        is_index_space = false;
+        index_space = IndexSpace::NO_SPACE;
+        index_point = NULL;
+        index_element_size = 0;
+        index_dimensions = 0;
+        variants = NULL;
+      }
+      return activated;
+    }
+
+    //--------------------------------------------------------------------------
+    void TaskContext::deactivate_task(void)
+    //--------------------------------------------------------------------------
+    {
+      indexes.clear();
+      fields.clear();
+      regions.clear();
+      created_index_spaces.clear();
+      created_field_spaces.clear();
+      created_regions.clear();
+      if (args != NULL)
+      {
+        free(args);
+        args = NULL;
+      }
+      if (index_point != NULL)
+      {
+        free(index_point);
+        index_point = NULL;
+      }
+      // This will remove a reference to any other predicate
+      task_pred = Predicate::FALSE_PRED;
+#ifndef LOW_LEVEL_LOCKS
+      mapper_lock.clear();
+#endif
+      deactivate_base();
+    }
+
+    //--------------------------------------------------------------------------
     void TaskContext::initialize_task(Context parent, Processor::TaskFuncID tid,
                                       void *a, size_t len, 
                                       const Predicate &predicate,
@@ -550,7 +651,6 @@ namespace RegionRuntime {
                                                              )
     //--------------------------------------------------------------------------
     {
-      parent_ctx = parent;
       task_id = tid;
       arglen = len;
       if (arglen > 0)
@@ -565,6 +665,8 @@ namespace RegionRuntime {
         assert(args == NULL);
       }
 #endif
+      variants = HighLevelRuntime::find_collection(task_id);
+      parent_ctx = parent;
       task_pred = predicate;
       map_id = mid;
       mapper = m;
@@ -712,29 +814,6 @@ namespace RegionRuntime {
       }
     }
 
-    
-
-    //--------------------------------------------------------------------------
-    size_t TaskContext::compute_task_size(void) const
-    //--------------------------------------------------------------------------
-    {
-
-    }
-
-    //--------------------------------------------------------------------------
-    void TaskContext::pack_task(Serializer &rez) const
-    //--------------------------------------------------------------------------
-    {
-
-    }
-
-    //--------------------------------------------------------------------------
-    void TaskContext::unpack_task(Deserializer &derez)
-    //--------------------------------------------------------------------------
-    {
-
-    }
-
     //--------------------------------------------------------------------------
     void TaskContext::return_privileges(const std::list<IndexSpace> &new_indexes,
                                         const std::list<FieldSpace> &new_fields,
@@ -797,20 +876,6 @@ namespace RegionRuntime {
       AutoLock m_lock(mapper_lock);
       DetailedTimer::ScopedPush sp(TIME_MAPPER);
       return mapper->notify_failed_mapping(this, regions[idx], idx, false/*inline mapping*/);
-    }
-
-    //--------------------------------------------------------------------------
-    bool TaskContext::activate(GeneralizedOperation *parent /*= NULL*/)
-    //--------------------------------------------------------------------------
-    {
-
-    }
-
-    //--------------------------------------------------------------------------
-    void TaskContext::deactivate(void)
-    //--------------------------------------------------------------------------
-    {
-
     }
 
     //--------------------------------------------------------------------------
@@ -902,6 +967,42 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
     // Single Task 
     /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    SingleTask::SingleTask(HighLevelRuntime *rt, ContextID id)
+      : TaskContext(rt,id)
+    //--------------------------------------------------------------------------
+    {
+    }
+    
+    //--------------------------------------------------------------------------
+    bool SingleTask::activate_single(GeneralizedOperation *parent)
+    //--------------------------------------------------------------------------
+    {
+      bool activated = activate_task(parent);
+      if (activated)
+      {
+        unmapped = 0;
+        is_leaf = false;
+      }
+      return activated;
+    }
+
+    //--------------------------------------------------------------------------
+    void SingleTask::deactivate_single(void)
+    //--------------------------------------------------------------------------
+    {
+      non_virtual_mapped_region.clear();
+      physical_instances.clear();
+      clone_instances.clear();
+      source_copy_instances.clear();
+      physical_contexts.clear();
+      physical_region_impls.clear();
+      child_tasks.clear();
+      child_maps.clear();
+      child_deletions.clear();
+      deactivate_task();
+    }
 
     //--------------------------------------------------------------------------
     bool SingleTask::perform_operation(void)
@@ -997,7 +1098,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void SingleTask::register_child_map(MappingOperation *child)
+    void SingleTask::register_child_map(MappingOperation *child, int idx /*= -1*/)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1010,6 +1111,21 @@ namespace RegionRuntime {
 #endif
       lock();
       child_maps.push_back(child);
+      // Check to make sure that this region still isn't mapped
+      if (idx > -1)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(idx < clone_instances.size());
+#endif
+        // Check this on the cloned_instances since this will be where
+        // we unmap regions that the task has previously mapped
+        if (!clone_instances[idx].is_virtual_ref())
+        {
+          log_task(LEVEL_ERROR,"Illegal inline mapping for originally mapped region at index %d."
+                                " Region is still mapped!",idx);
+          exit(ERROR_INVALID_DUPLICATE_MAPPING);
+        }
+      }
       unlock();
     }
 
@@ -1323,6 +1439,65 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void SingleTask::unmap_physical_region(PhysicalRegion region)
+    //--------------------------------------------------------------------------
+    {
+      if (region.is_impl)
+      {
+        unsigned idx = region.op.impl->idx;
+        lock();
+        if (idx >= regions.size())
+        {
+          log_task(LEVEL_ERROR,"Unmap operation for task argument region %d is out of range",idx);
+          exit(ERROR_INVALID_REGION_ARGUMENT_INDEX);
+        }
+        // Check to see if this region was actually mapped
+        // If it wasn't then this is still ok since we want to allow mapping
+        // agnostic code, which means programs should still work regardless
+        // of whether regions were virtually mapped or not
+        if (!clone_instances[idx].is_virtual_ref())
+        {
+          physical_region_impls[idx]->invalidate();
+          clone_instances[idx].remove_reference();
+          clone_instances[idx] = InstanceRef(); // make it a virtual ref now
+        }
+        unlock();
+      }
+      else
+      {
+        // Go through the list of mapping operations, remove it, and deactivate it
+#ifdef DEBUG_HIGH_LEVEL
+        bool found = false;
+#endif
+        lock();
+        for (std::list<MappingOperation*>::iterator it = child_maps.begin();
+              it != child_maps.end(); it++)
+        {
+          if ((*it) == region.op.map)
+          {
+            child_maps.erase(it);
+#ifdef DEBUG_HIGH_LEVEL
+            found = true;
+#endif
+            break;
+          }
+        }
+        unlock();
+#ifdef DEBUG_HIGH_LEVEL
+        if (!found)
+        {
+          log_task(LEVEL_ERROR,"Invalid unmap operation on inline mapping");
+          exit(ERROR_INVALID_UNMAP_OP);
+        }
+#endif
+        // Lock the context in case this decides to change the region tree
+        lock_context();
+        region.op.map->deactivate();
+        unlock_context();
+      }
+    }
+
+    //--------------------------------------------------------------------------
     LegionErrorType SingleTask::check_privilege(const IndexSpaceRequirement &req) const
     //--------------------------------------------------------------------------
     {
@@ -1527,6 +1702,15 @@ namespace RegionRuntime {
                                                             physical_instances[idx].get_instance());
         physical_regions[idx] = PhysicalRegion(physical_region_impls[idx]);
       }
+      // If we're not remote, then we can release all the source copy instances
+      if (!is_remote())
+      {
+        for (unsigned idx = 0; idx < source_copy_instances.size(); idx++)
+        {
+          source_copy_instances[idx].remove_reference();
+        }
+        source_copy_instances.clear();
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -1655,6 +1839,13 @@ namespace RegionRuntime {
     void SingleTask::launch_task(void)
     //--------------------------------------------------------------------------
     {
+      if (is_partially_unpacked())
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(is_remote());
+#endif
+        finish_task_unpack();
+      }
       initialize_region_tree_contexts();
 
       std::set<Event> wait_on_events;
@@ -1772,6 +1963,43 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
     // Multi Task 
     /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    MultiTask::MultiTask(HighLevelRuntime *rt, ContextID id)
+      : TaskContext(rt, id)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    bool MultiTask::activate_multi(GeneralizedOperation *parent)
+    //--------------------------------------------------------------------------
+    {
+      bool activated = activate_task(parent);
+      if (activated)
+      {
+        index_space = IndexSpace::NO_SPACE;
+        sliced = false;
+        has_reduction = false;
+        redop_id = 0;
+        reduction_state = NULL;
+        reduction_state_size = 0;
+      }
+      return activated;
+    }
+
+    //--------------------------------------------------------------------------
+    void MultiTask::deactivate_multi(void)
+    //--------------------------------------------------------------------------
+    {
+      if (reduction_state != NULL)
+      {
+        free(reduction_state);
+        reduction_state = NULL;
+      }
+      slices.clear();
+      deactivate_task();
+    }
 
     //--------------------------------------------------------------------------
     bool MultiTask::perform_operation(void)
@@ -1927,6 +2155,71 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
+    IndividualTask::IndividualTask(HighLevelRuntime *rt, ContextID id)
+      : SingleTask(rt,id)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    bool IndividualTask::activate(GeneralizedOperation *parent /*= NULL*/)
+    //--------------------------------------------------------------------------
+    {
+      bool activated = activate_single(parent);
+      if (activated)
+      {
+        target_proc = Processor::NO_PROC;
+        distributed = false;
+        locally_set = false;
+        locally_mapped = false;
+        stealable_set = false;
+        stealable = false;
+        remote = false;
+        future = NULL;
+        remote_future = NULL;
+        remote_future_len = 0;
+        orig_proc = Processor::NO_PROC;
+        orig_ctx = NULL;
+        remote_start_event = Event::NO_EVENT;
+        remote_mapped_event = Event::NO_EVENT;
+        partially_unpacked = false;
+        remaining_buffer = NULL;
+      }
+      return activated;
+    }
+
+    //--------------------------------------------------------------------------
+    void IndividualTask::deactivate(void)
+    //--------------------------------------------------------------------------
+    {
+      map_dependent_waiters.clear();
+      if (future != NULL)
+      {
+        if (future->remove_reference())
+        {
+          delete future;
+        }
+        future = NULL;
+      }
+      if (remote_future != NULL)
+      {
+        free(remote_future);
+        remote_future = NULL;
+        remote_future_len = 0;
+      }
+      if (remaining_buffer != NULL)
+      {
+        free(remaining_buffer);
+        remaining_buffer = NULL;
+        remaining_bytes = 0;
+      }
+      Context parent = parent_ctx;
+      deactivate_single();
+      // Free this back up to the runtime
+      runtime->free_individual_task(this, parent);
+    }
+
+    //--------------------------------------------------------------------------
     void IndividualTask::trigger(void)
     //--------------------------------------------------------------------------
     {
@@ -2001,6 +2294,13 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    bool IndividualTask::is_partially_unpacked(void)
+    //--------------------------------------------------------------------------
+    {
+      return partially_unpacked;
+    }
+
+    //--------------------------------------------------------------------------
     bool IndividualTask::distribute_task(void)
     //--------------------------------------------------------------------------
     {
@@ -2026,6 +2326,13 @@ namespace RegionRuntime {
     bool IndividualTask::perform_mapping(void)
     //--------------------------------------------------------------------------
     {
+      if (is_partially_unpacked())
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(remote);
+#endif
+        finish_task_unpack();
+      }
       bool map_success = map_all_regions(target_proc, termination_event, termination_event); 
       if (map_success)
       {
@@ -2144,9 +2451,6 @@ namespace RegionRuntime {
       assert(!is_leaf && (unmapped > 0)); // shouldn't be here if we're a leaf task
 #endif
       lock_context();
-      // Remove any source copy references that were generated as part of the task's execution 
-      remove_source_copy_references();
-
       // Make sure all the deletion operations for this task have been performed
       // to ensure that the region tree is in a good state either to be sent back
       // or for other users to begin using it.
@@ -2187,6 +2491,8 @@ namespace RegionRuntime {
               buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
             }
           }
+          // Finally pack up our source copy instances to send back
+          buffer_size += compute_source_copy_instances_return();
           // Now pack it all up
           Serializer rez(buffer_size);
           rez.serialize<Processor>(orig_proc);
@@ -2196,6 +2502,8 @@ namespace RegionRuntime {
           {
             forest_ctx->pack_region_tree_state_return(trees_to_pack[idx], rez);
           }
+          // Pack up the source copy instances
+          pack_source_copy_instances_return(rez);
           unlock_context();
           // Send it back on the utility processor
           Processor utility = orig_proc.get_utility_processor();
@@ -2233,6 +2541,7 @@ namespace RegionRuntime {
           unmapped = 0;
         }
       }
+
       // Figure out whether we need to wait to launch the finish task
       Event wait_on_event = Event::merge_events(cleanup_events);
       if (!wait_on_event.exists())
@@ -2319,22 +2628,20 @@ namespace RegionRuntime {
         assert(child_deletions.empty());
       }
 #endif
-      // Deactivate all of our child operations 
+      // Deactivate all of our child tasks 
       for (std::list<TaskContext*>::const_iterator it = child_tasks.begin();
             it != child_tasks.end(); it++)
       {
         (*it)->deactivate();
       }
+      // Deactivate all of our child inline mapping operations
+      // Deletions will take care of themselves
       for (std::list<MappingOperation*>::const_iterator it = child_maps.begin();
             it != child_maps.end(); it++)
       {
         (*it)->deactivate();
       }
-      for (std::list<DeletionOperation*>::const_iterator it = child_deletions.begin();
-            it != child_deletions.end(); it++)
-      {
-        (*it)->deactivate();
-      }
+
       // If we're remote, deactivate ourself
       if (remote)
         this->deactivate();
@@ -2410,6 +2717,7 @@ namespace RegionRuntime {
           forest_ctx->unpack_region_tree_state_return(derez);
         }
       }
+      unpack_source_copy_instances_return(derez,forest_ctx);
       unlock_context();
       // Notify all the waiters
       lock();
@@ -2522,6 +2830,49 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
+    PointTask::PointTask(HighLevelRuntime *rt, ContextID id)
+      : SingleTask(rt,id)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    bool PointTask::activate(GeneralizedOperation *parent /*= NULL*/)
+    //--------------------------------------------------------------------------
+    {
+      bool activated = activate_single(parent);
+      if (activated)
+      {
+        slice_owner = NULL;
+        point_buffer = NULL;
+        point_buffer_len = 0;
+        local_point_argument = NULL;
+        local_point_argument_len = 0;
+      }
+      return activated;
+    }
+
+    //--------------------------------------------------------------------------
+    void PointTask::deactivate(void)
+    //--------------------------------------------------------------------------
+    {
+      if (point_buffer != NULL)
+      {
+        free(point_buffer);
+        point_buffer = NULL;
+        point_buffer_len = 0;
+      }
+      if (local_point_argument != NULL)
+      {
+        free(local_point_argument);
+        local_point_argument = NULL;
+        local_point_argument_len = 0;
+      }
+      deactivate_single();
+      runtime->free_point_task(this);
+    }
+
+    //--------------------------------------------------------------------------
     bool PointTask::is_distributed(void)
     //--------------------------------------------------------------------------
     {
@@ -2553,6 +2904,14 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       // PointTask is never remote
+      return false;
+    }
+
+    //--------------------------------------------------------------------------
+    bool PointTask::is_partially_unpacked(void)
+    //--------------------------------------------------------------------------
+    {
+      // Never partially unpacked
       return false;
     }
 
@@ -2616,6 +2975,14 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void PointTask::finish_task_unpack(void)
+    //--------------------------------------------------------------------------
+    {
+      // Should never be called
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------
     void PointTask::children_mapped(void)
     //--------------------------------------------------------------------------
     {
@@ -2623,8 +2990,6 @@ namespace RegionRuntime {
       assert(!is_leaf);
 #endif
       lock_context();
-      // Remove any source copy references that were generated as part of this task's execution
-      remove_source_copy_references();
 
       // Make sure that all the deletion operations for this task have been performed
       flush_deletions();
@@ -2726,6 +3091,59 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
+    IndexTask::IndexTask(HighLevelRuntime *rt, ContextID id)
+      : MultiTask(rt,id)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    bool IndexTask::activate(GeneralizedOperation *parent /*= NULL*/)
+    //--------------------------------------------------------------------------
+    {
+      bool activated = activate_multi(parent);
+      if (activated)
+      {
+        locally_set = false;
+        locally_mapped = false;
+        frac_index_space = std::pair<unsigned long,unsigned long>(0,1);
+        num_total_points = 0;
+        num_finished_points = 0;
+        unmapped = 0;
+        future_map = NULL;
+        reduction_future = NULL;
+      }
+      return activated;
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexTask::deactivate(void)
+    //--------------------------------------------------------------------------
+    {
+      mapped_points.clear();
+      map_dependent_waiters.clear();
+      if (future_map != NULL)
+      {
+        if (future_map->remove_reference())
+        {
+          delete future_map;
+        }
+        future_map = NULL;
+      }
+      if (reduction_future != NULL)
+      {
+        if (reduction_future->remove_reference())
+        {
+          delete reduction_future;
+        }
+        reduction_future = NULL;
+      }
+      Context parent = parent_ctx;
+      deactivate_multi();
+      runtime->free_index_task(this,parent);
+    }
+
+    //--------------------------------------------------------------------------
     bool IndexTask::is_distributed(void)
     //--------------------------------------------------------------------------
     {
@@ -2758,6 +3176,14 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       // IndexTasks are never remote
+      return false;
+    }
+
+    //--------------------------------------------------------------------------
+    bool IndexTask::is_partially_unpacked(void)
+    //--------------------------------------------------------------------------
+    {
+      // Never partially unpacked
       return false;
     }
 
@@ -2847,6 +3273,39 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    size_t IndexTask::compute_task_size(void)
+    //--------------------------------------------------------------------------
+    {
+      // Should never be called
+      assert(false);
+      return 0;
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexTask::pack_task(Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+      // Should never be called
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexTask::unpack_task(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      // Should never be called
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexTask::finish_task_unpack(void)
+    //--------------------------------------------------------------------------
+    {
+      // Should never be called
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------
     void IndexTask::remote_start(const void *args, size_t arglen)
     //--------------------------------------------------------------------------
     {
@@ -2891,6 +3350,12 @@ namespace RegionRuntime {
         {
           forest_ctx->unpack_region_tree_state_return(derez);
         }
+      }
+      size_t num_points;
+      derez.deserialize<size_t>(num_points);
+      for (unsigned idx = 0; idx < num_points; idx++)
+      {
+        SingleTask::unpack_source_copy_instances_return(derez,forest_ctx);
       }
       unlock_context();
       slice_mapped(virtual_mappings);
@@ -3245,6 +3710,59 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
+    SliceTask::SliceTask(HighLevelRuntime *rt, ContextID id)
+      : MultiTask(rt,id)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    bool SliceTask::activate(GeneralizedOperation *parent /*= NULL*/)
+    //--------------------------------------------------------------------------
+    {
+      bool activated = activate_multi(parent);
+      if (activated)
+      {
+        distributed = false;
+        locally_mapped = false;
+        stealable = false;
+        remote = false;
+        is_leaf = false;
+        termination_event = Event::NO_EVENT;
+        target_proc = Processor::NO_PROC;
+        orig_proc = runtime->local_proc;
+        index_owner = NULL;
+        remote_start_event = Event::NO_EVENT;
+        remote_mapped_event = Event::NO_EVENT;
+        partially_unpacked = false;
+        remaining_buffer = NULL;
+        remaining_bytes = 0;
+        denominator = 1;
+        enumerating = false;
+        num_unmapped_points = 0;
+        num_unfinished_points = 0;
+      }
+      return activated;
+    }
+
+    //--------------------------------------------------------------------------
+    void SliceTask::deactivate(void)
+    //--------------------------------------------------------------------------
+    {
+      points.clear();
+      future_results.clear();
+      non_virtual_mappings.clear();
+      if (remaining_buffer != NULL)
+      {
+        free(remaining_buffer);
+        remaining_buffer = NULL;
+        remaining_bytes = 0;
+      }
+      deactivate_multi();
+      runtime->free_slice_task(this);
+    }
+
+    //--------------------------------------------------------------------------
     bool SliceTask::is_distributed(void)
     //--------------------------------------------------------------------------
     {
@@ -3273,6 +3791,13 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    bool SliceTask::is_partially_unpacked(void)
+    //--------------------------------------------------------------------------
+    {
+      return partially_unpacked;
+    }
+
+    //--------------------------------------------------------------------------
     bool SliceTask::distribute_task(void)
     //--------------------------------------------------------------------------
     {
@@ -3293,6 +3818,13 @@ namespace RegionRuntime {
     bool SliceTask::perform_mapping(void)
     //--------------------------------------------------------------------------
     {
+      if (is_partially_unpacked())
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(remote);
+#endif
+        finish_task_unpack();
+      }
       bool map_success = true;
       // This is a leaf slice so do the normal thing
       if (slices.empty())
@@ -3369,6 +3901,13 @@ namespace RegionRuntime {
     void SliceTask::launch_task(void)
     //--------------------------------------------------------------------------
     {
+      if (is_partially_unpacked())
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(remote);
+#endif
+        finish_task_unpack();
+      }
       for (unsigned idx = 0; idx < points.size(); idx++)
       {
         points[idx]->launch_task();
@@ -3386,6 +3925,13 @@ namespace RegionRuntime {
     bool SliceTask::map_and_launch(void)
     //--------------------------------------------------------------------------
     {
+      if (is_partially_unpacked())
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(remote);
+#endif
+        finish_task_unpack();
+      }
       lock();
       enumerating = true;
       num_unmapped_points = 0;
@@ -3713,6 +4259,13 @@ namespace RegionRuntime {
                 buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx].partition);
             }
           }
+          buffer_size += sizeof(size_t);
+          // Also send back any source copy instances to be released
+          for (std::vector<PointTask*>::const_iterator it = points.begin();
+                it != points.end(); it++)
+          {
+            buffer_size += (*it)->compute_source_copy_instances_return();
+          }
           // Now pack it all up
           Serializer rez(buffer_size);
           rez.serialize<Processor>(orig_proc);
@@ -3734,6 +4287,12 @@ namespace RegionRuntime {
               else
                 forest_ctx->pack_region_tree_state_return(regions[idx].partition, rez);
             }
+          }
+          rez.serialize<size_t>(points.size());
+          for (std::vector<PointTask*>::const_iterator it = points.begin();
+                it != points.end(); it++)
+          {
+            (*it)->pack_source_copy_instances_return(rez);
           }
           unlock_context();
           // Send it back on the utility processor

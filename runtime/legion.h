@@ -76,7 +76,6 @@ namespace RegionRuntime {
      */
     class Task {
     public:
-      UniqueID unique_id; // Unique id for the task in the system
       Processor::TaskFuncID task_id; // Id for the task to perform
       std::vector<IndexSpaceRequirement> indexes;
       std::vector<FieldSpaceRequirement> fields;
@@ -100,11 +99,6 @@ namespace RegionRuntime {
       // Get the index point if it is an index point
       template<typename PT, unsigned DIM>
       void get_index_point(PT buffer[DIM]) const;
-    public:
-      bool operator==(const Task &task) const
-        { return unique_id == task.unique_id; }
-      bool operator<(const Task &task) const
-        { return unique_id < task.unique_id; }
     protected:
       // Only the high level runtime should be able to make these
       friend class HighLevelRuntime;
@@ -475,7 +469,7 @@ namespace RegionRuntime {
       friend class SingleTask;
       friend class MappingOperation;
       PhysicalRegion(PhysicalRegionImpl *impl);
-      PhysicalRegion(MappingOperation *op);
+      PhysicalRegion(MappingOperation *op, GenerationID id);
     public:
       PhysicalRegion(void);
       PhysicalRegion(const PhysicalRegion &rhs);
@@ -498,6 +492,7 @@ namespace RegionRuntime {
       bool is_impl;
       bool map_set;
       unsigned accessor_map;
+      GenerationID gen_id; // for checking validity of inline mappings
     };
 
     /////////////////////////////////////////////////////////////
@@ -662,6 +657,7 @@ namespace RegionRuntime {
                                           TaskID uid, const char *name, bool index_space,
                                           Processor::Kind proc_kind, bool leaf);
       static void register_runtime_tasks(Processor::TaskIDTable &table);
+      static TaskVariantCollection* find_collection(Processor::TaskFuncID tid);
     protected:
       static bool is_subtype(TypeHandle parent, TypeHandle child);
     private:
@@ -1378,10 +1374,11 @@ namespace RegionRuntime {
     protected:
       LogicalRegion get_logical_region(void) const;
       PhysicalInstance get_physical_instance(void) const;
+      void invalidate(void);
     protected:
+      bool valid;
       unsigned idx;
       LogicalRegion handle;
-      // Only for non-inline-mapped
       PhysicalInstance instance;
     };
 

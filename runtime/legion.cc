@@ -34,7 +34,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     Task::Task(void)
-      : unique_id(0), task_id(0), args(NULL), arglen(0), map_id(0), tag(0),
+      : task_id(0), args(NULL), arglen(0), map_id(0), tag(0),
         orig_proc(Processor::NO_PROC), steal_count(0), must(false),
         is_index_space(false), index_space(IndexSpace::NO_SPACE),
         index_point(NULL), index_element_size(0), 
@@ -515,7 +515,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     PhysicalRegion::PhysicalRegion(void)
-      : is_impl(false), map_set(false), accessor_map(0) // note this is an invalid configuration
+      : is_impl(false), map_set(false), accessor_map(0), gen_id(0) // note this is an invalid configuration
     //--------------------------------------------------------------------------
     {
       op.map = NULL;
@@ -523,15 +523,15 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     PhysicalRegion::PhysicalRegion(PhysicalRegionImpl *i)
-      : is_impl(true), map_set(false), accessor_map(0)
+      : is_impl(true), map_set(false), accessor_map(0), gen_id(0)
     //--------------------------------------------------------------------------
     {
       op.impl = i;
     }
 
     //--------------------------------------------------------------------------
-    PhysicalRegion::PhysicalRegion(MappingOperation *map_op)
-      : is_impl(false), map_set(false), accessor_map(0)
+    PhysicalRegion::PhysicalRegion(MappingOperation *map_op, GenerationID id)
+      : is_impl(false), map_set(false), accessor_map(0), gen_id(id)
     //--------------------------------------------------------------------------
     {
       op.map = map_op;
@@ -545,7 +545,10 @@ namespace RegionRuntime {
       if (is_impl)
         op.impl = rhs.op.impl;
       else
+      {
         op.map = rhs.op.map;
+        gen_id = rhs.gen_id;
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -556,7 +559,10 @@ namespace RegionRuntime {
       if (this->is_impl)
         op.impl = rhs.op.impl;
       else
+      {
         op.map = rhs.op.map;
+        gen_id = rhs.gen_id;
+      }
       this->map_set = rhs.map_set;
       this->accessor_map = rhs.accessor_map;
     }
@@ -570,7 +576,7 @@ namespace RegionRuntime {
       if (is_impl)
         return (op.impl == reg.op.impl);
       else
-        return (op.map == reg.op.map);
+        return ((op.map == reg.op.map) && (gen_id == reg.gen_id));
     }
 
     //--------------------------------------------------------------------------
@@ -585,7 +591,7 @@ namespace RegionRuntime {
       }
       else
       {
-        return (op.map < reg.op.map);
+        return ((op.map < reg.op.map) || (gen_id < reg.gen_id));
       }
     }
 
@@ -594,7 +600,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       if (!is_impl)
-        op.map->wait_until_valid();
+        op.map->wait_until_valid(gen_id);
       // else it's a physical region from a task and is already valid
     }
 
@@ -603,7 +609,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       if (!is_impl)
-        return op.map->is_valid();
+        return op.map->is_valid(gen_id);
       return true; // else it's a task in which case it's already valid
     }
 
@@ -614,7 +620,7 @@ namespace RegionRuntime {
       if (is_impl)
         return op.impl->get_logical_region();
       else
-        return op.map->get_logical_region();
+        return op.map->get_logical_region(gen_id);
     }
 
     //--------------------------------------------------------------------------
@@ -628,7 +634,7 @@ namespace RegionRuntime {
         if (is_impl)
           inst = op.impl->get_physical_instance();
         else
-          inst = op.map->get_physical_instance();
+          inst = op.map->get_physical_instance(gen_id);
 #ifdef DEBUG_HIGH_LEVEL
         assert(inst.exists());
 #endif
@@ -662,7 +668,7 @@ namespace RegionRuntime {
       if (is_impl)                                                                \
         inst = op.impl->get_physical_instance();                                  \
       else                                                                        \
-        inst = op.map->get_physical_instance();                                   \
+        inst = op.map->get_physical_instance(gen_id);                             \
       assert(inst.exists());                                                      \
       LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric> generic =\
         inst.get_accessor_untyped();                                              \
@@ -677,7 +683,7 @@ namespace RegionRuntime {
       if (is_impl)                                                                \
         inst = op.impl->get_physical_instance();                                  \
       else                                                                        \
-        inst = op.map->get_physical_instance();                                   \
+        inst = op.map->get_physical_instance(gen_id);                             \
       LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric> generic =\
         inst.get_accessor_untyped();                                              \
       return generic.convert<LowLevel::AT>();                                     \
@@ -837,7 +843,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     PhysicalRegionImpl::PhysicalRegionImpl(void)
-      : idx(0), handle(LogicalRegion::NO_REGION), 
+      : valid(false), idx(0), handle(LogicalRegion::NO_REGION), 
         instance(PhysicalInstance::NO_INST)
     //--------------------------------------------------------------------------
     {
@@ -846,7 +852,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     PhysicalRegionImpl::PhysicalRegionImpl(unsigned id, LogicalRegion h,
                                             PhysicalInstance inst)
-      : idx(id), handle(h), instance(inst)
+      : valid(true), idx(id), handle(h), instance(inst)
     //--------------------------------------------------------------------------
     {
     }
@@ -871,6 +877,11 @@ namespace RegionRuntime {
     LogicalRegion PhysicalRegionImpl::get_logical_region(void) const
     //--------------------------------------------------------------------------
     {
+      if (!valid)
+      {
+        log_region(LEVEL_ERROR,"Accessing invalidated mapping for task region %d",idx);
+        exit(ERROR_INVALID_MAPPING_ACCESS);
+      }
       return handle;
     }
 
@@ -878,7 +889,19 @@ namespace RegionRuntime {
     PhysicalInstance PhysicalRegionImpl::get_physical_instance(void) const
     //--------------------------------------------------------------------------
     {
+      if (!valid)
+      {
+        log_region(LEVEL_ERROR,"Accessing invalidated mapping for task region %d",idx);
+        exit(ERROR_INVALID_MAPPING_ACCESS);
+      }
       return instance;
+    }
+
+    //--------------------------------------------------------------------------
+    void PhysicalRegionImpl::invalidate(void)
+    //--------------------------------------------------------------------------
+    {
+      valid = false;
     }
 
     /////////////////////////////////////////////////////////////
@@ -2063,10 +2086,10 @@ namespace RegionRuntime {
       this->total_contexts = 0;
       for (unsigned idx = 0; idx < DEFAULT_OPS; idx++)
       {
-        available_indiv_tasks.push_back(new IndividualTask(this, local_proc, this->total_contexts++));
-        available_index_tasks.push_back(new IndexTask(this, local_proc, this->total_contexts++));
-        available_slice_tasks.push_back(new SliceTask(this, local_proc, this->total_contexts++));
-        available_point_tasks.push_back(new PointTask(this, local_proc, this->total_contexts++));
+        available_indiv_tasks.push_back(new IndividualTask(this, this->total_contexts++));
+        available_index_tasks.push_back(new IndexTask(this, this->total_contexts++));
+        available_slice_tasks.push_back(new SliceTask(this, this->total_contexts++));
+        available_point_tasks.push_back(new PointTask(this, this->total_contexts++));
         // Map and deletion ops don't get their own contexts
         available_maps.push_back(new MappingOperation(this));
         available_deletions.push_back(new DeletionOperation(this));
@@ -2979,14 +3002,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_INLINE_MAP); 
-      if (region.is_impl)
-      {
-        ctx->unmap_physical_region(region);
-      }
-      else
-      {
-        region.op.map->deactivate();
-      }
+      ctx->unmap_physical_region(region);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3207,7 +3223,7 @@ namespace RegionRuntime {
         else
         {
           ContextID id = total_contexts++;
-          result = new IndividualTask(this,local_proc,id);
+          result = new IndividualTask(this,id);
         }
         // Update the window before releasing the lock
         if (parent != NULL)
@@ -3245,7 +3261,7 @@ namespace RegionRuntime {
         else
         {
           ContextID id = total_contexts++;
-          result = new IndexTask(this,local_proc,id);
+          result = new IndexTask(this,id);
         }
         // Update the window before releasing the lock
         if (parent != NULL)
@@ -3282,7 +3298,7 @@ namespace RegionRuntime {
         else
         {
           ContextID id = total_contexts++;
-          result = new SliceTask(this,local_proc,id);
+          result = new SliceTask(this,id);
         }
       }
 #ifdef DEBUG_HIGH_LEVEL
@@ -3311,7 +3327,7 @@ namespace RegionRuntime {
         else
         {
           ContextID id = total_contexts++;
-          result = new PointTask(this,local_proc,id);
+          result = new PointTask(this,id);
         }
       }
 #ifdef DEBUG_HIGH_LEVEL
