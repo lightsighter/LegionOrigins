@@ -59,9 +59,29 @@ namespace RegionRuntime {
       // Physical Region contexts
       InstanceRef map_region(const RegionMapper &rm);
       InstanceRef initialize_physical_context(LogicalRegion handle, InstanceRef ref, ContextID ctx);
+      Event close_to_instance(InstanceRef ref, std::vector<InstanceRef> &source_copies);
     public:
       // Packing and unpacking send
-
+      size_t compute_region_forest_shape_size(const std::vector<IndexSpaceRequirement> &indexes,
+                                            const std::vector<FieldSpaceRequirement> &fields,
+                                            const std::vector<RegionRequirement> &regions);
+      void pack_region_forest_shape(Serializer &rez);
+      void unpack_region_forest_shape(Deserializer &derez);
+    public:
+      // Packing and unpacking state send
+      size_t compute_region_tree_state_size(LogicalRegion handle, ContextID ctx);
+      void pack_region_tree_state(LogicalRegion handle, ContextID ctx, Serializer &rez);
+      void unpack_region_tree_state(ContextID ctx, Deserializer &derez);
+    public:
+      // Packing and unpacking reference send
+      size_t compute_reference_size(InstanceRef ref);
+      void pack_reference(InstanceRef ref, Serializer &derez);
+      InstanceRef unpack_reference(Deserializer &derez);
+    public:
+      // Packing and unpacking reference return
+      size_t compute_reference_size_return(InstanceRef ref);
+      void pack_reference_return(InstanceRef, Serializer &rez);
+      void unpack_and_remove_reference(Deserializer &derez); // will unpack and remove reference
     public:
       // Packing and unpacking structure updates return
       size_t compute_region_tree_updates_return(void);
@@ -78,7 +98,7 @@ namespace RegionRuntime {
       // Packing and unpacking leaked references
       size_t compute_leaked_return_size(void);
       void pack_leaked_return(Serializer &rez);
-      void unpack_leaked_return(Deserializer &derez);
+      void unpack_leaked_return(Deserializer &derez); // will unpack leaked references and remove them
     private:
 #ifdef LOW_LEVEL_LOCKS
       Lock context_lock;
@@ -109,11 +129,13 @@ namespace RegionRuntime {
     class RegionMapper {
     public:
 #ifdef LOW_LEVEL_LOCKS
-      RegionMapper(ContextID id, unsigned idx, const RegionRequirement &req, Mapper *mapper, Lock mapper_lock, 
-                    Processor target, Event single, Event multi, MappingTagID tag, bool inline_mapping);
+      RegionMapper(ContextID id, unsigned idx, const RegionRequirement &req, Mapper *mapper, 
+                    Lock mapper_lock, Processor target, Event single, Event multi, 
+                    MappingTagID tag, bool inline_mapping, std::vector<InstanceRef> &source_copy);
 #else
-      RegionMapper(ContextID id, unsigned idx, const RegionRequirement &req, Mapper *mapper, ImmovableLock mapper_lock, 
-                    Processor target, Event single, Event multi, MappingTagID tag, bool inline_mapping);
+      RegionMapper(ContextID id, unsigned idx, const RegionRequirement &req, Mapper *mapper, 
+                    ImmovableLock mapper_lock, Processor target, Event single, Event multi, 
+                    MappingTagID tag, bool inline_mapping, std::vector<InstanceRef> &source_copy);
 #endif
     public:
       ContextID ctx;
@@ -131,6 +153,8 @@ namespace RegionRuntime {
       Event single_term;
       Event multi_term;
       std::vector<unsigned> trace;
+      // Vector for tracking source copy references, note it's a reference
+      std::vector<InstanceRef> &source_copy_instances;
     };
 #if 0
 

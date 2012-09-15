@@ -153,6 +153,28 @@ namespace RegionRuntime {
       this->forest_ctx = rhs->forest_ctx;
     }
 
+    //--------------------------------------------------------------------------
+    size_t GeneralizedOperation::compute_operation_size(void)
+    //--------------------------------------------------------------------------
+    {
+      size_t result = sizeof(UniqueID);
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void GeneralizedOperation::pack_operation(Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize<UniqueID>(unique_id);
+    }
+
+    //--------------------------------------------------------------------------
+    void GeneralizedOperation::unpack_operation(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      derez.deserialize<UniqueID>(unique_id);
+    }
+
     /////////////////////////////////////////////////////////////
     // Mapping Operaiton 
     /////////////////////////////////////////////////////////////
@@ -277,10 +299,17 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    PhysicalRegion MappingOperation::get_physical_region(void) 
+    PhysicalRegion MappingOperation::get_physical_region(void)
     //--------------------------------------------------------------------------
     {
       return PhysicalRegion(this, generation);
+    }
+
+    //--------------------------------------------------------------------------
+    Event MappingOperation::get_map_event(void) const
+    //--------------------------------------------------------------------------
+    {
+      return mapped_event;
     }
 
     //--------------------------------------------------------------------------
@@ -312,6 +341,7 @@ namespace RegionRuntime {
       mapper_lock.clear();
 #endif
       tag = 0;
+      map_dependent_waiters.clear();
       runtime->free_mapping(this, parent);
     }
 
@@ -335,7 +365,7 @@ namespace RegionRuntime {
       forest_ctx->lock_context();
       ContextID phy_ctx = parent_ctx->find_enclosing_physical_context(requirement.parent);
       RegionMapper reg_mapper(phy_ctx, 0/*idx*/, requirement, mapper, mapper_lock, runtime->local_proc, 
-                              unmapped_event, unmapped_event, tag, true/*inline mapping*/);
+                              unmapped_event, unmapped_event, tag, true/*inline mapping*/, source_copy_instances);
       // Compute the trace
 #ifdef DEBUG_HIGH_LEVEL
       bool result = 
@@ -364,6 +394,13 @@ namespace RegionRuntime {
         }
         // finally we can trigger the event saying that we're mapped
         mapped_event.trigger();
+        // Notify all our waiters that we're mapped
+        for (std::set<GeneralizedOperation*>::const_iterator it = map_dependent_waiters.begin();
+              it != map_dependent_waiters.end(); it++)
+        {
+          (*it)->notify();
+        }
+        map_dependent_waiters.clear();
       }
       else
       {
@@ -628,6 +665,8 @@ namespace RegionRuntime {
       created_index_spaces.clear();
       created_field_spaces.clear();
       created_regions.clear();
+      launch_preconditions.clear();
+      mapped_preconditions.clear();
       if (args != NULL)
       {
         free(args);
@@ -682,6 +721,8 @@ namespace RegionRuntime {
       mapper_lock = map_lock;
       // Initialize remaining fields in the Task as well
       orig_proc = runtime->local_proc;
+      // Intialize fields in any sub-types
+      initialize_subtype_fields();
       // Register with the parent task
       parent->register_child_task(this);
     }
@@ -836,6 +877,63 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    size_t TaskContext::compute_task_context_size(void)
+    //--------------------------------------------------------------------------
+    {
+      size_t result = compute_user_task_size();
+      result += compute_operation_size();
+      result += 2*sizeof(size_t); // size of preconditions sets
+      result += ((launch_preconditions.size() + mapped_preconditions.size()) * sizeof(Event));
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void TaskContext::pack_task_context(Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+      pack_user_task(rez);
+      pack_operation(rez);
+      rez.serialize<size_t>(launch_preconditions.size());
+      for (std::set<Event>::const_iterator it = launch_preconditions.begin();
+            it != launch_preconditions.end(); it++)
+      {
+        rez.serialize<Event>(*it);
+      }
+      rez.serialize<size_t>(mapped_preconditions.size());
+      for (std::set<Event>::const_iterator it = mapped_preconditions.begin();
+            it != mapped_preconditions.end(); it++)
+      {
+        rez.serialize<Event>(*it);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void TaskContext::unpack_task_context(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      unpack_user_task(derez);
+      unpack_operation(derez);
+      size_t num_events;
+      derez.deserialize<size_t>(num_events);
+      for (unsigned idx = 0; idx < num_events; idx++)
+      {
+        Event e;
+        derez.deserialize<Event>(e);
+        launch_preconditions.insert(e);
+      }
+      derez.deserialize<size_t>(num_events);
+      for (unsigned idx = 0; idx < num_events; idx++)
+      {
+        Event e;
+        derez.deserialize<Event>(e);
+        mapped_preconditions.insert(e);
+      }
+      // Get the mapper and mapper lock from the runtime
+      mapper = runtime->get_mapper(map_id);
+      mapper_lock = runtime->get_mapper_lock(map_id);
+    }
+
+    //--------------------------------------------------------------------------
     bool TaskContext::invoke_mapper_locally_mapped(void)
     //--------------------------------------------------------------------------
     {
@@ -982,6 +1080,8 @@ namespace RegionRuntime {
       this->task_pred = rhs->task_pred;
       this->mapper= rhs->mapper;
       this->mapper_lock = rhs->mapper_lock;
+      this->launch_preconditions = rhs->launch_preconditions;
+      this->mapped_preconditions = rhs->mapped_preconditions;
     }
 
     /////////////////////////////////////////////////////////////
@@ -1016,6 +1116,7 @@ namespace RegionRuntime {
       physical_instances.clear();
       clone_instances.clear();
       source_copy_instances.clear();
+      close_copy_instances.clear();
       physical_contexts.clear();
       physical_region_impls.clear();
       child_tasks.clear();
@@ -1725,11 +1826,9 @@ namespace RegionRuntime {
       // If we're not remote, then we can release all the source copy instances
       if (!is_remote())
       {
-        for (unsigned idx = 0; idx < source_copy_instances.size(); idx++)
-        {
-          source_copy_instances[idx].remove_reference();
-        }
-        source_copy_instances.clear();
+        lock_context();
+        release_source_copy_instances();
+        unlock_context();
       }
     }
 
@@ -1754,12 +1853,20 @@ namespace RegionRuntime {
       else
       {
         // Otherwise go through all the children tasks and get their mapping events
-        std::set<Event> map_events;
+        std::set<Event> map_events = mapped_preconditions;
+        lock();
         for (std::list<TaskContext*>::const_iterator it = child_tasks.begin();
               it != child_tasks.end(); it++)
         {
           map_events.insert((*it)->get_map_event());
         }
+        // Do this for the mapping operations as well, deletions have a different path
+        for (std::list<MappingOperation*>::const_iterator it = child_maps.begin();
+              it != child_maps.end(); it++)
+        {
+          map_events.insert((*it)->get_map_event());
+        }
+        unlock();
         Event wait_on_event = Event::merge_events(map_events);
         if (!wait_on_event.exists())
         {
@@ -1777,6 +1884,111 @@ namespace RegionRuntime {
           // Launch the task on the utility processor
           Processor utility = runtime->local_proc.get_utility_processor();
           utility.spawn(CHILDREN_MAPPED_ID,rez.get_buffer(),buffer_size,wait_on_event);
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    const RegionRequirement& SingleTask::get_region_requirement(unsigned idx)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx < regions.size());
+#endif
+      return regions[idx];
+    }
+
+    //--------------------------------------------------------------------------
+    size_t SingleTask::compute_source_copy_instances_return(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert_context_locked();
+#endif
+      size_t result = sizeof(size_t); // number of returning instances
+      for (unsigned idx = 0; idx < source_copy_instances.size(); idx++)
+      {
+        result += forest_ctx->compute_reference_size_return(source_copy_instances[idx]);
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void SingleTask::pack_source_copy_instances_return(Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert_context_locked();
+#endif
+      rez.serialize<size_t>(source_copy_instances.size());
+      for (unsigned idx = 0; idx < source_copy_instances.size(); idx++)
+      {
+        forest_ctx->pack_reference_return(source_copy_instances[idx], rez);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    /*static*/ void SingleTask::unpack_source_copy_instances_return(Deserializer &derez, RegionTreeForest *forest)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      forest->assert_locked();
+#endif
+      size_t num_refs;
+      derez.deserialize<size_t>(num_refs);
+      for (unsigned idx = 0; idx < num_refs; idx++)
+      {
+        forest->unpack_and_remove_reference(derez);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    size_t SingleTask::compute_single_task_size(void)
+    //--------------------------------------------------------------------------
+    {
+      size_t result = compute_task_context_size();
+      result += sizeof(bool); // regions mapped
+      if (!non_virtual_mapped_region.empty())
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(non_virtual_mapped_region.size() == regions.size());
+#endif
+        result += (regions.size() * sizeof(bool));
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void SingleTask::pack_single_task(Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+      pack_task_context(rez);
+      bool has_mapped = !non_virtual_mapped_region.empty();
+      rez.serialize<bool>(has_mapped);
+      if (!non_virtual_mapped_region.empty())
+      {
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          bool non_virt = non_virtual_mapped_region[idx];
+          rez.serialize<bool>(non_virt);
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void SingleTask::unpack_single_task(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      unpack_task_context(derez);
+      bool has_mapped;
+      derez.deserialize<bool>(has_mapped);
+      if (has_mapped)
+      {
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          bool non_virt;
+          derez.deserialize<bool>(non_virt);
+          non_virtual_mapped_region.push_back(non_virt);
         }
       }
     }
@@ -1805,7 +2017,7 @@ namespace RegionRuntime {
         {
           // Otherwise we want to do an actual physical mapping
           RegionMapper reg_mapper(phy_ctx, idx, regions[idx], mapper, mapper_lock, target, 
-                                  single_term, multi_term, tag, false/*inline mapping*/);
+                                  single_term, multi_term, tag, false/*inline mapping*/, source_copy_instances);
           // Compute the trace 
 #ifdef DEBUG_HIGH_LEVEL
           bool result = 
@@ -1868,7 +2080,7 @@ namespace RegionRuntime {
       }
       initialize_region_tree_contexts();
 
-      std::set<Event> wait_on_events;
+      std::set<Event> wait_on_events = launch_preconditions;
 #ifdef DEBUG_HIGH_LEVEL
       assert(regions.size() == physical_instances.size());
 #endif
@@ -1893,8 +2105,6 @@ namespace RegionRuntime {
           }
         }
       }
-      // See if there are any other events to add (i.e. barriers for must parallelism)
-      incorporate_additional_launch_events(wait_on_events);
 
       Event start_condition = Event::merge_events(wait_on_events);
 #ifdef TRACE_CAPTURE
@@ -1963,6 +2173,17 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void SingleTask::release_source_copy_instances(void)
+    //--------------------------------------------------------------------------
+    {
+      for (unsigned idx = 0; idx < source_copy_instances.size(); idx++)
+      {
+        source_copy_instances[idx].remove_reference();
+      }
+      source_copy_instances.clear();
+    }
+
+    //--------------------------------------------------------------------------
     void SingleTask::flush_deletions(void)
     //--------------------------------------------------------------------------
     {
@@ -1978,6 +2199,20 @@ namespace RegionRuntime {
 #endif
       }
       child_deletions.clear();
+    }
+
+    //--------------------------------------------------------------------------
+    void SingleTask::issue_restoring_copies(std::set<Event> &wait_on_events)
+    //--------------------------------------------------------------------------
+    {
+      for (unsigned idx = 0; idx < physical_instances.size(); idx++)
+      {
+        if (!physical_instances[idx].is_virtual_ref())
+        {
+          Event close_event = forest_ctx->close_to_instance(physical_instances[idx], close_copy_instances);
+          wait_on_events.insert(close_event);
+        }
+      }
     }
 
     /////////////////////////////////////////////////////////////
@@ -2220,7 +2455,7 @@ namespace RegionRuntime {
         remote_future = NULL;
         remote_future_len = 0;
         orig_proc = Processor::NO_PROC;
-        orig_ctx = NULL;
+        orig_ctx = this;
         remote_start_event = Event::NO_EVENT;
         remote_mapped_event = Event::NO_EVENT;
         partially_unpacked = false;
@@ -2377,6 +2612,9 @@ namespace RegionRuntime {
       bool map_success = map_all_regions(target_proc, termination_event, termination_event); 
       if (map_success)
       {
+        // Mark that we're no longer stealable now that we've been mapped
+        stealable = false;
+        stealable_set = true;
         // If we're remote, send back our mapping information
         if (remote)
         {
@@ -2446,17 +2684,18 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void IndividualTask::incorporate_additional_launch_events(std::set<Event> &wait_on_events)
-    //--------------------------------------------------------------------------
-    {
-      // Intentionally do nothing
-    }
-
-    //--------------------------------------------------------------------------
     void IndividualTask::sanitize_region_forest(void)
     //--------------------------------------------------------------------------
     {
 
+    }
+
+    //--------------------------------------------------------------------------
+    void IndividualTask::initialize_subtype_fields(void)
+    //--------------------------------------------------------------------------
+    {
+      mapped_event = UserEvent::create_user_event();
+      termination_event = UserEvent::create_user_event();
     }
 
     //--------------------------------------------------------------------------
@@ -2482,6 +2721,213 @@ namespace RegionRuntime {
         return ctx_id;
       else
         return parent_ctx->find_enclosing_physical_context(parent);
+    }
+
+    //--------------------------------------------------------------------------
+    size_t IndividualTask::compute_task_size(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert_context_locked();
+#endif
+      size_t result = compute_single_task_size();
+      result += sizeof(distributed);
+      result += sizeof(locally_mapped);
+      result += sizeof(stealable);
+      result += sizeof(termination_event);
+      result += sizeof(Context);
+      if (locally_mapped)
+        result += sizeof(is_leaf);
+      if (partially_unpacked)
+      {
+        result += remaining_bytes;
+      }
+      else
+      {
+        if (locally_mapped)
+        {
+          if (is_leaf)
+          {
+            // Don't need to pack the region trees, but still
+            // need to pack the instances
+#ifdef DEBUG_HIGH_LEVEL
+            assert(regions.size() == physical_instances.size());
+#endif
+            for (unsigned idx = 0; idx < regions.size(); idx++)
+            {
+              result += forest_ctx->compute_reference_size(physical_instances[idx]);
+            }
+          }
+          else
+          {
+            // Need to pack the region trees and the instances
+            // or the states if they were virtually mapped
+            result += forest_ctx->compute_region_forest_shape_size(indexes, fields, regions);
+            for (unsigned idx = 0; idx < regions.size(); idx++)
+            {
+              if (physical_instances[idx].is_virtual_ref())
+              {
+                // Virtual mapping, pack the state
+                result += forest_ctx->compute_region_tree_state_size(regions[idx].region, 
+                                        get_enclosing_physical_context(regions[idx].parent));
+              }
+              else
+              {
+                result += forest_ctx->compute_reference_size(physical_instances[idx]);
+              }
+            }
+          }
+        }
+        else
+        {
+          // Need to pack the region trees and states
+          result += forest_ctx->compute_region_forest_shape_size(indexes, fields, regions);
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            result += forest_ctx->compute_region_tree_state_size(regions[idx].region,
+                                    get_enclosing_physical_context(regions[idx].parent));
+          }
+        }
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void IndividualTask::pack_task(Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert_context_locked();
+#endif
+      pack_single_task(rez);
+      rez.serialize<bool>(distributed);
+      rez.serialize<bool>(locally_mapped);
+      rez.serialize<bool>(stealable);
+      rez.serialize<UserEvent>(termination_event);
+      rez.serialize<Context>(orig_ctx);
+      if (locally_mapped)
+        rez.serialize<bool>(is_leaf);
+      if (partially_unpacked)
+      {
+        rez.serialize(remaining_buffer,remaining_bytes);
+      }
+      else
+      {
+        if (locally_mapped)
+        {
+          if (is_leaf)
+          {
+            for (unsigned idx = 0; idx < regions.size(); idx++)
+            {
+              forest_ctx->pack_reference(physical_instances[idx], rez);
+            }
+          }
+          else
+          {
+            forest_ctx->pack_region_forest_shape(rez); 
+            for (unsigned idx = 0; idx < regions.size(); idx++)
+            {
+              if (physical_instances[idx].is_virtual_ref())
+              {
+                forest_ctx->pack_region_tree_state(regions[idx].region,
+                              get_enclosing_physical_context(regions[idx].parent), rez);
+              }
+              else
+              {
+                forest_ctx->pack_reference(physical_instances[idx], rez);
+              }
+            }
+          }
+        }
+        else
+        {
+          forest_ctx->pack_region_forest_shape(rez);
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            forest_ctx->pack_region_tree_state(regions[idx].region, 
+                            get_enclosing_physical_context(regions[idx].parent), rez);
+          }
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void IndividualTask::unpack_task(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      unpack_single_task(derez);
+      derez.deserialize<bool>(distributed);
+      derez.deserialize<bool>(locally_mapped);
+      locally_set = true;
+      derez.deserialize<bool>(stealable);
+      stealable_set = true;
+      remote = true;
+      derez.deserialize<UserEvent>(termination_event);
+      derez.deserialize<Context>(orig_ctx);
+      if (locally_mapped)
+        derez.deserialize<bool>(is_leaf);
+      remaining_bytes = derez.get_remaining_bytes();
+      remaining_buffer = malloc(remaining_bytes);
+      derez.deserialize(remaining_buffer,remaining_bytes);
+      partially_unpacked = true;
+    }
+
+    //--------------------------------------------------------------------------
+    void IndividualTask::finish_task_unpack(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(partially_unpacked);
+#endif
+      Deserializer derez(remaining_buffer,remaining_bytes);
+      lock_context();
+      if (locally_mapped)
+      {
+        if (is_leaf)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(physical_instances.empty());
+#endif
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            physical_instances.push_back(forest_ctx->unpack_reference(derez));
+          }
+        }
+        else
+        {
+          forest_ctx->unpack_region_forest_shape(derez);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(non_virtual_mapped_region.size() == regions.size());
+#endif
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            if (!non_virtual_mapped_region[idx])
+            {
+              // Unpack the state in our context
+              forest_ctx->unpack_region_tree_state(ctx_id, derez); 
+              physical_instances.push_back(InstanceRef()); // virtual instance
+            }
+            else
+            {
+              physical_instances.push_back(forest_ctx->unpack_reference(derez)); 
+            }
+          }
+        }
+      }
+      else
+      {
+        forest_ctx->unpack_region_forest_shape(derez);
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          // Unpack the state in our context
+          forest_ctx->unpack_region_tree_state(ctx_id, derez);
+        }
+      }
+      unlock_context();
+      free(remaining_buffer);
+      remaining_buffer = NULL;
+      remaining_bytes = 0;
+      partially_unpacked = false;
     }
 
     //--------------------------------------------------------------------------
@@ -2649,8 +3095,28 @@ namespace RegionRuntime {
       }
       else
       {
-        // Remove the mapped references
-        remove_mapped_references();
+#ifdef DEBUG_HIGH_LEVEL
+        assert(physical_instances.size() == regions.size());
+#endif
+        // Remove the mapped references, note in the remote version
+        // this will happen via the leaked references mechanism
+        lock_context();
+        for (unsigned idx = 0; idx < physical_instances.size(); idx++)
+        {
+          if (!physical_instances[idx].is_virtual_ref())
+          {
+            physical_instances[idx].remove_reference();
+          }
+        }
+        // We also remove the source copy instances that got generated by
+        // any close copies that were performed
+        for (unsigned idx = 0; idx < close_copy_instances.size(); idx++)
+        {
+          close_copy_instances[idx].remove_reference();
+        }
+        unlock_context();
+        physical_instances.clear();
+        close_copy_instances.clear();
         // Send back privileges for any added operations
         // Note parent_ctx is only NULL if this is the top level task
         if (parent_ctx != NULL)
@@ -2759,6 +3225,8 @@ namespace RegionRuntime {
         }
       }
       unpack_source_copy_instances_return(derez,forest_ctx);
+      // We can also release all the source copy waiters
+      release_source_copy_instances();
       unlock_context();
       // Notify all the waiters
       lock();
@@ -2803,8 +3271,6 @@ namespace RegionRuntime {
 #endif
       future->set_result(derez);
       termination_event.trigger();
-      // Remove our mapped references
-      remove_mapped_references();
       // We can now remove our reference to the future for garbage collection
       if (future->remove_reference())
       {
@@ -2973,17 +3439,15 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void PointTask::incorporate_additional_launch_events(std::set<Event> &wait_on_events)
+    void PointTask::sanitize_region_forest(void)
     //--------------------------------------------------------------------------
     {
-      if (slice_owner->must)
-      {
-        wait_on_events.insert(slice_owner->must_barrier);
-      }
+      // Should never be called
+      assert(false);
     }
 
     //--------------------------------------------------------------------------
-    void PointTask::sanitize_region_forest(void)
+    void PointTask::initialize_subtype_fields(void)
     //--------------------------------------------------------------------------
     {
       // Should never be called
@@ -3075,6 +3539,28 @@ namespace RegionRuntime {
     {
       // Return privileges to the slice owner
       slice_owner->return_privileges(created_index_spaces,created_field_spaces,created_regions);
+      // If not remote, remove our physical instance usages
+      if (!slice_owner->remote)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(physical_instances.size() == regions.size());
+#endif
+        lock_context();
+        for (unsigned idx = 0; idx < physical_instances.size(); idx++)
+        {
+          if (!physical_instances[idx].is_virtual_ref())
+          {
+            physical_instances[idx].remove_reference();
+          }
+        }
+        for (unsigned idx = 0; idx < close_copy_instances.size(); idx++)
+        {
+          close_copy_instances[idx].remove_reference();
+        }
+        unlock_context();
+        physical_instances.clear();
+        close_copy_instances.clear();
+      }
       // Indicate that this point has terminated
       point_termination_event.trigger();
       // notify the slice owner that this task has finished
@@ -3284,6 +3770,19 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void IndexTask::initialize_subtype_fields(void)
+    //--------------------------------------------------------------------------
+    {
+      mapped_event = UserEvent::create_user_event();
+      termination_event = UserEvent::create_user_event();
+      if (must)
+      {
+        must_barrier = Barrier::create_barrier(1/*expected arrivals*/);
+        launch_preconditions.insert(must_barrier);
+      }
+    }
+
+    //--------------------------------------------------------------------------
     bool IndexTask::map_and_launch(void)
     //--------------------------------------------------------------------------
     {
@@ -3398,6 +3897,18 @@ namespace RegionRuntime {
       {
         SingleTask::unpack_source_copy_instances_return(derez,forest_ctx);
       }
+      // Once a slice comes back then we know that all the sanitization preconditions
+      // were met and so we can release all the source copy instances
+      lock();
+      if (!source_copy_instances.empty())
+      {
+        for (unsigned idx = 0; idx < source_copy_instances.size(); idx++)
+        {
+          source_copy_instances[idx].remove_reference();
+        }
+        source_copy_instances.clear();
+      }
+      unlock();
       unlock_context();
       slice_mapped(virtual_mappings);
     }
@@ -3660,6 +4171,7 @@ namespace RegionRuntime {
     void IndexTask::slice_mapped(const std::vector<unsigned> &virtual_mapped)
     //--------------------------------------------------------------------------
     {
+      
       lock();
 #ifdef DEBUG_HIGH_LEVEL
       assert(virtual_mapped.size() == mapped_points.size());
@@ -3870,6 +4382,8 @@ namespace RegionRuntime {
       if (target_proc != runtime->local_proc)
       {
         runtime->send_task(target_proc,this);
+        // Now we can deactivate this task since it's been distributed
+        this->deactivate();
         return false;
       }
       return true;
@@ -3980,6 +4494,14 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       // Do nothing.  Region trees for slices were already sanitized by their IndexTask
+    }
+
+    //--------------------------------------------------------------------------
+    void SliceTask::initialize_subtype_fields(void)
+    //--------------------------------------------------------------------------
+    {
+      // Should never be called
+      assert(false);
     }
 
     //--------------------------------------------------------------------------
@@ -4175,6 +4697,18 @@ namespace RegionRuntime {
       {
         index_owner->handle_future(point,result,result_size);
       }
+    }
+
+    //--------------------------------------------------------------------------
+    PointTask* SliceTask::clone_as_point_task(void)
+    //--------------------------------------------------------------------------
+    {
+      PointTask *result = runtime->get_available_point_task(this);
+      result->clone_task_context_from(this);
+      result->slice_owner = this;
+      result->point_termination_event = UserEvent::create_user_event();
+      // TODO: Set the point buffer and get the point argument
+      return result;
     }
 
     //--------------------------------------------------------------------------

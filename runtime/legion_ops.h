@@ -49,6 +49,10 @@ namespace RegionRuntime {
     protected:
       void clone_generalized_operation_from(GeneralizedOperation *rhs);
     protected:
+      size_t compute_operation_size(void);
+      void pack_operation(Serializer &rez);
+      void unpack_operation(Deserializer &derez);
+    protected:
       bool active;
       bool context_owner;
       UniqueID unique_id;
@@ -77,6 +81,7 @@ namespace RegionRuntime {
       PhysicalInstance get_physical_instance(GenerationID gen_id) const;
       bool has_accessor(GenerationID gen_id, AccessorType at) const;
       PhysicalRegion get_physical_region(void);
+      Event get_map_event(void) const;
     public:
       // Functions from GenerlizedOperation
       virtual bool activate(GeneralizedOperation *parent = NULL);
@@ -91,6 +96,9 @@ namespace RegionRuntime {
       Event ready_event;
       InstanceRef physical_instance;
       UserEvent unmapped_event;
+    private:
+      std::set<GeneralizedOperation*> map_dependent_waiters;
+      std::vector<InstanceRef> source_copy_instances;
     private:
       Mapper *mapper;
 #ifdef LOW_LEVEL_LOCKS
@@ -200,7 +208,7 @@ namespace RegionRuntime {
       virtual bool perform_mapping(void) = 0; // Return if mapping was successful
       virtual void launch_task(void) = 0;
       virtual void sanitize_region_forest(void) = 0;
-      
+      virtual void initialize_subtype_fields(void) = 0; 
       virtual Event get_map_event(void) const = 0;
       virtual Event get_termination_event(void) const = 0;
       virtual ContextID get_enclosing_physical_context(LogicalRegion parent) = 0;
@@ -218,6 +226,10 @@ namespace RegionRuntime {
       void return_privileges(const std::list<IndexSpace> &new_indexes,
                              const std::list<FieldSpace> &new_fields,
                              const std::list<LogicalRegion> &new_regions);
+    protected:
+      size_t compute_task_context_size(void);
+      void pack_task_context(Serializer &rez);
+      void unpack_task_context(Deserializer &derez);
     protected:
       size_t compute_privileges_return_size(void);
       void pack_privileges_return(Serializer &rez);
@@ -247,6 +259,12 @@ namespace RegionRuntime {
       std::list<IndexSpace> created_index_spaces;
       std::list<FieldSpace> created_field_spaces;
       std::list<LogicalRegion> created_regions;
+    protected:
+      // Any other conditions needed for launching the task
+      std::set<Event> launch_preconditions;
+      // Additional conditions prior to this task being considered
+      // mapped, primarily come from virtual walks for remote tasks
+      std::set<Event> mapped_preconditions;
     };
 
     /////////////////////////////////////////////////////////////
@@ -281,8 +299,8 @@ namespace RegionRuntime {
       virtual bool distribute_task(void) = 0; // Return true if still local
       virtual bool perform_mapping(void) = 0;
       virtual void launch_task(void);
-      virtual void incorporate_additional_launch_events(std::set<Event> &wait_on_events) = 0;
       virtual void sanitize_region_forest(void) = 0;
+      virtual void initialize_subtype_fields(void) = 0;
       virtual Event get_map_event(void) const = 0;
       virtual Event get_termination_event(void) const = 0;
       virtual ContextID get_enclosing_physical_context(LogicalRegion parent) = 0;
@@ -348,11 +366,14 @@ namespace RegionRuntime {
       void pack_source_copy_instances_return(Serializer &derez);
       static void unpack_source_copy_instances_return(Deserializer &derez, RegionTreeForest *forest);
     protected:
+      size_t compute_single_task_size(void);
+      void pack_single_task(Serializer &rez);
+      void unpack_single_task(Deserializer &derez);
+    protected:
       bool map_all_regions(Processor target, Event single_term, Event multi_term);
       void initialize_region_tree_contexts(void);
     protected:
-      // Methods for children_mapped
-      void remove_mapped_references(void);
+      void release_source_copy_instances(void);
       void flush_deletions(void);
       void issue_restoring_copies(std::set<Event> &wait_on_events);
     protected:
@@ -364,6 +385,8 @@ namespace RegionRuntime {
       std::vector<InstanceRef> clone_instances;
       // A vector for capturing the copies required to launch the task
       std::vector<InstanceRef> source_copy_instances;
+      // A vector for capturing the close copies required to finish the task
+      std::vector<InstanceRef> close_copy_instances;
       // This vector describes the physical ContextID for each region's mapping
       std::vector<ContextID> physical_contexts;
       // This vector just stores the physical region implementations for the task's duration
@@ -408,6 +431,7 @@ namespace RegionRuntime {
       virtual bool perform_mapping(void) = 0;
       virtual void launch_task(void) = 0;
       virtual void sanitize_region_forest(void) = 0;
+      virtual void initialize_subtype_fields(void) = 0;
       virtual Event get_map_event(void) const = 0;
       virtual Event get_termination_event(void) const = 0;
       virtual ContextID get_enclosing_physical_context(LogicalRegion parent) = 0;
@@ -477,8 +501,8 @@ namespace RegionRuntime {
       // Functions from TaskContext
       virtual bool distribute_task(void); // Return true if still local
       virtual bool perform_mapping(void);
-      virtual void incorporate_additional_launch_events(std::set<Event> &wait_on_events);
       virtual void sanitize_region_forest(void);
+      virtual void initialize_subtype_fields(void);
       virtual Event get_map_event(void) const;
       virtual Event get_termination_event(void) const;
       virtual ContextID get_enclosing_physical_context(LogicalRegion parent);
@@ -554,8 +578,8 @@ namespace RegionRuntime {
       // Functions from TaskContext
       virtual bool distribute_task(void); // Return true if still local
       virtual bool perform_mapping(void);
-      virtual void incorporate_additional_launch_events(std::set<Event> &wait_on_events);
       virtual void sanitize_region_forest(void);
+      virtual void initialize_subtype_fields(void);
       virtual Event get_map_event(void) const;
       virtual Event get_termination_event(void) const;
       virtual ContextID get_enclosing_physical_context(LogicalRegion parent);
@@ -616,6 +640,7 @@ namespace RegionRuntime {
       virtual bool perform_mapping(void);
       virtual void launch_task(void);
       virtual void sanitize_region_forest(void);
+      virtual void initialize_subtype_fields(void);
       virtual Event get_map_event(void) const;
       virtual Event get_termination_event(void) const;
       virtual ContextID get_enclosing_physical_context(LogicalRegion parent);
@@ -661,6 +686,8 @@ namespace RegionRuntime {
       std::vector<std::set<GeneralizedOperation*> > map_dependent_waiters;
       FutureMapImpl *future_map;
       FutureImpl *reduction_future;
+      // Vector for tracking source copy instances when performing sanitization
+      std::vector<InstanceRef> source_copy_instances;
     };
 
     /////////////////////////////////////////////////////////////
@@ -692,6 +719,7 @@ namespace RegionRuntime {
       virtual bool perform_mapping(void);
       virtual void launch_task(void);
       virtual void sanitize_region_forest(void);
+      virtual void initialize_subtype_fields(void);
       virtual Event get_map_event(void) const;
       virtual Event get_termination_event(void) const;
       virtual ContextID get_enclosing_physical_context(LogicalRegion parent);

@@ -104,7 +104,11 @@ namespace RegionRuntime {
       friend class HighLevelRuntime;
       friend class TaskContext;
       Task(); 
+    protected:
       void clone_task_from(Task *rhs);
+      size_t compute_user_task_size(void);
+      void pack_user_task(Serializer &rez);
+      void unpack_user_task(Deserializer &derez);
     };
 
     /////////////////////////////////////////////////////////////
@@ -417,6 +421,7 @@ namespace RegionRuntime {
                    (parent < req.parent) || (handle_type < req.handle_type); }
       RegionRequirement& operator=(const RegionRequirement &rhs);
     protected:
+      friend class Task;
       friend class TaskContext;
       size_t compute_size(void) const;
       void pack_requirement(Serializer &rez) const;

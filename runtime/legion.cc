@@ -75,6 +75,134 @@ namespace RegionRuntime {
       this->variants = rhs->variants;
     }
 
+    //--------------------------------------------------------------------------
+    size_t Task::compute_user_task_size(void)
+    //--------------------------------------------------------------------------
+    {
+      size_t result = 0;  
+      result += sizeof(task_id);
+      result += 3*sizeof(size_t); // sizes of indexes, fields, and regions 
+      result += (indexes.size() * sizeof(IndexSpaceRequirement));
+      result += (fields.size() * sizeof(FieldSpaceRequirement));
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        result += regions[idx].compute_size();
+      }
+      result += sizeof(arglen);
+      result += arglen;
+      result += sizeof(map_id);
+      result += sizeof(tag);
+      result += sizeof(orig_proc);
+      result += sizeof(steal_count);
+      result += sizeof(is_index_space);
+      if (is_index_space)
+      {
+        result += sizeof(must);
+        result += sizeof(index_space);
+        result += sizeof(bool); // has point
+        if (index_point != NULL)
+        {
+          result += sizeof(index_element_size);
+          result += sizeof(index_dimensions);
+          result += (index_element_size * index_dimensions);
+        }
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void Task::pack_user_task(Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize<Processor::TaskFuncID>(task_id); 
+      rez.serialize<size_t>(indexes.size());
+      for (unsigned idx = 0; idx < indexes.size(); idx++)
+      {
+        rez.serialize<IndexSpaceRequirement>(indexes[idx]);
+      }
+      rez.serialize<size_t>(fields.size());
+      for (unsigned idx = 0; idx < fields.size(); idx++)
+      {
+        rez.serialize<FieldSpaceRequirement>(fields[idx]);
+      }
+      rez.serialize<size_t>(regions.size());
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        regions[idx].pack_requirement(rez);
+      }
+      rez.serialize<size_t>(arglen);
+      rez.serialize(args,arglen);
+      rez.serialize<MapperID>(map_id);
+      rez.serialize<MappingTagID>(tag);
+      rez.serialize<Processor>(orig_proc);
+      rez.serialize<unsigned>(steal_count);
+      rez.serialize<bool>(is_index_space);
+      if (is_index_space)
+      {
+        rez.serialize<bool>(must);
+        rez.serialize<IndexSpace>(index_space);
+        bool has_point = (index_point != NULL);
+        rez.serialize<bool>(has_point);
+        if (has_point)
+        {
+          rez.serialize<size_t>(index_element_size);
+          rez.serialize<unsigned>(index_dimensions);
+          rez.serialize(index_point,index_element_size*index_dimensions);
+        }
+      }
+    }
+    
+    //--------------------------------------------------------------------------
+    void Task::unpack_user_task(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      derez.deserialize<Processor::TaskFuncID>(task_id);
+      size_t num_items;
+      derez.deserialize<size_t>(num_items);
+      indexes.resize(num_items);
+      for (unsigned idx = 0; idx < num_items; idx++)
+      {
+        derez.deserialize<IndexSpaceRequirement>(indexes[idx]);
+      }
+      derez.deserialize<size_t>(num_items);
+      fields.resize(num_items);
+      for (unsigned idx = 0; idx < num_items; idx++)
+      {
+        derez.deserialize<FieldSpaceRequirement>(fields[idx]);
+      }
+      derez.deserialize<size_t>(num_items);
+      regions.resize(num_items);
+      for (unsigned idx = 0; idx < num_items; idx++)
+      {
+        regions[idx].unpack_requirement(derez);
+      }
+      derez.deserialize<size_t>(arglen);
+      if (arglen > 0)
+      {
+        args = malloc(arglen);
+        derez.deserialize(args,arglen);
+      }
+      derez.deserialize<MapperID>(map_id);
+      derez.deserialize<MappingTagID>(tag);
+      derez.deserialize<Processor>(orig_proc);
+      derez.deserialize<unsigned>(steal_count);
+      derez.deserialize<bool>(is_index_space);
+      if (is_index_space)
+      {
+        derez.deserialize<bool>(must);
+        derez.deserialize<IndexSpace>(index_space);
+        bool has_point;
+        derez.deserialize<bool>(has_point);
+        if (has_point)
+        {
+          derez.deserialize<size_t>(index_element_size);
+          derez.deserialize<unsigned>(index_dimensions);
+          index_point = malloc(index_element_size * index_dimensions);
+          derez.deserialize(index_point, index_element_size * index_dimensions);
+        }
+      }
+    }
+
     /////////////////////////////////////////////////////////////
     // Task Variant Collection
     /////////////////////////////////////////////////////////////
