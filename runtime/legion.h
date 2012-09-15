@@ -493,7 +493,7 @@ namespace RegionRuntime {
       LogicalRegion get_logical_region(void) const;
       bool has_accessor(AccessorType at);
       template<AccessorType AT>
-      LowLevel::RegionInstanceAccessorUntyped<AT_CONV_DOWN(AT)> get_accessor(void);
+      LowLevel::RegionAccessor<AT_CONV_DOWN(AT)> get_accessor(void);
     protected:
       union Operation_t {
         PhysicalRegionImpl *impl;
@@ -516,23 +516,21 @@ namespace RegionRuntime {
     protected:
       friend class HighLevelRuntime;
       // Only the HighLevelRuntime should be able to make these
-      IndexAllocator(IndexSpace s);
+      IndexAllocator(IndexSpaceAllocator s);
     public:
       /**
        * Allocate new elements in the index space.
        */
-      inline utptr_t alloc(unsigned num_elements = 1);
+      inline unsigned alloc(unsigned num_elements = 1);
       /**
        * Free elements at the given location.
        */
-      inline void free(utptr_t ptr, unsigned num_elements = 1);
-    public:
-      inline IndexSpace get_index_space(void) const;
+      inline void free(unsigned ptr, unsigned num_elements = 1);
     public:
       inline bool operator<(const IndexAllocator &rhs) const;
       inline bool operator==(const IndexAllocator &rhs) const;
     private:
-      IndexSpace space;
+      IndexSpaceAllocator space;
     };
 
     /////////////////////////////////////////////////////////////
@@ -1693,24 +1691,17 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    inline utptr_t IndexAllocator::alloc(unsigned num_elements /*= 1*/)
+    inline unsigned IndexAllocator::alloc(unsigned num_elements /*= 1*/)
     //--------------------------------------------------------------------------
     {
       return space.alloc(num_elements);
     }
 
     //--------------------------------------------------------------------------
-    inline void IndexAllocator::free(utptr_t ptr, unsigned num_elements /*= 1*/)
+    inline void IndexAllocator::free(unsigned ptr, unsigned num_elements /*= 1*/)
     //--------------------------------------------------------------------------
     {
       space.free(ptr, num_elements);
-    }
-
-    //--------------------------------------------------------------------------
-    inline IndexSpace IndexAllocator::get_index_space(void) const
-    //--------------------------------------------------------------------------
-    {
-      return space;
     }
 
     //--------------------------------------------------------------------------

@@ -9,7 +9,7 @@ namespace RegionRuntime {
   namespace HighLevel {
 
     /////////////////////////////////////////////////////////////
-    // Region Tree Context 
+    // Region Tree Forest 
     /////////////////////////////////////////////////////////////
     class RegionTreeForest {
     public:
@@ -82,7 +82,7 @@ namespace RegionRuntime {
     public:
       // Packing and unpacking reference return
       size_t compute_reference_size_return(InstanceRef ref);
-      void pack_reference_return(InstanceRef, Serializer &rez);
+      void pack_reference_return(InstanceRef ref, Serializer &rez);
       void unpack_and_remove_reference(Deserializer &derez); // will unpack and remove reference
     public:
       // Packing and unpacking structure updates return

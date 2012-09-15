@@ -2,7 +2,7 @@
 #ifndef __LEGION_TYPES_H__
 #define __LEGION_TYPES_H__
 
-#include "lowlevel_proxy.h"
+#include "lowlevel_new.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -197,8 +197,9 @@ namespace RegionRuntime {
 
     typedef LowLevel::Machine Machine;
     typedef LowLevel::IndexSpace IndexSpace;
+    typedef LowLevel::IndexSpaceAllocator IndexSpaceAllocator;
     typedef LowLevel::FieldSpace FieldSpace;
-    typedef LowLevel::RegionInstanceUntyped PhysicalInstance;
+    typedef LowLevel::RegionInstance PhysicalInstance;
     typedef LowLevel::Memory Memory;
     typedef LowLevel::Processor Processor;
     typedef LowLevel::Event Event;

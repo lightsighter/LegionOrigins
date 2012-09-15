@@ -799,8 +799,8 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(inst.exists());
 #endif
-        LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric> generic = 
-          inst.get_accessor_untyped();
+        LowLevel::RegionAccessor<LowLevel::AccessorGeneric> generic = 
+          inst.get_accessor();
 #define SET_MASK(AT) accessor_map |= (generic.can_convert<LowLevel::AT>() ? AT : 0)
         SET_MASK(AccessorGeneric);
         SET_MASK(AccessorArray);
@@ -817,7 +817,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
 #define GET_ACCESSOR_IMPL(AT)                                                     \
     template<>                                                                    \
-    LowLevel::RegionInstanceAccessorUntyped<LowLevel::AT> PhysicalRegion::get_accessor<AT>(void) \
+    LowLevel::RegionAccessor<LowLevel::AT> PhysicalRegion::get_accessor<AT>(void) \
     {                                                                             \
       bool has_access = has_accessor(AT);                                         \
       if (!has_access)                                                            \
@@ -831,33 +831,33 @@ namespace RegionRuntime {
       else                                                                        \
         inst = op.map->get_physical_instance(gen_id);                             \
       assert(inst.exists());                                                      \
-      LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric> generic =\
-        inst.get_accessor_untyped();                                              \
+      LowLevel::RegionAccessor<LowLevel::AccessorGeneric> generic =               \
+        inst.get_accessor();                                                      \
       return generic.convert<LowLevel::AT>();                                     \
     }
 #else // DEBUG_HIGH_LEVEL
 #define GET_ACCESSOR_IMPL(AT)                                                     \
     template<>                                                                    \
-    LowLevel::RegionInstanceAccessorUntyped<LowLevel::AT> PhysicalRegion::get_accessor<AT>(void) \
+    LowLevel::RegionAccessor<LowLevel::AT> PhysicalRegion::get_accessor<AT>(void) \
     {                                                                             \
       PhysicalInstance inst = PhysicalInstance::NO_INST;                          \
       if (is_impl)                                                                \
         inst = op.impl->get_physical_instance();                                  \
       else                                                                        \
         inst = op.map->get_physical_instance(gen_id);                             \
-      LowLevel::RegionInstanceAccessorUntyped<LowLevel::AccessorGeneric> generic =\
-        inst.get_accessor_untyped();                                              \
+      LowLevel::RegionAccessor<LowLevel::AccessorGeneric> generic =               \
+        inst.get_accessor();                                                      \
       return generic.convert<LowLevel::AT>();                                     \
     }
 #endif
-
+#if 0
     GET_ACCESSOR_IMPL(AccessorGeneric)
     GET_ACCESSOR_IMPL(AccessorArray)
     GET_ACCESSOR_IMPL(AccessorArrayReductionFold)
     GET_ACCESSOR_IMPL(AccessorGPU)
     GET_ACCESSOR_IMPL(AccessorGPUReductionFold)
     GET_ACCESSOR_IMPL(AccessorReductionList)
-
+#endif
 #undef GET_ACCESSOR_IMPL
 
     /////////////////////////////////////////////////////////////
@@ -866,7 +866,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     IndexAllocator::IndexAllocator(void)
-      : space(IndexSpace::NO_SPACE)
+      : space(IndexSpaceAllocator::NO_ALLOC)
     //--------------------------------------------------------------------------
     {
     }
@@ -879,7 +879,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    IndexAllocator::IndexAllocator(IndexSpace s)
+    IndexAllocator::IndexAllocator(IndexSpaceAllocator s)
       : space(s)
     //--------------------------------------------------------------------------
     {
@@ -3035,7 +3035,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_INDEX_SPACE);
-      IndexSpace space = IndexSpace::create_index_space();
+      // TODO: do we need upper bounds here
+      IndexSpace space = IndexSpace::create_index_space(0);
 #ifdef DEBUG_HIGH_LEVEL
       log_index(LEVEL_DEBUG, "Creating index space %x in task %s (ID %d)", space.id,
                               ctx->variants->name,ctx->get_unique_id());
