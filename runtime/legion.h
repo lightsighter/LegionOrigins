@@ -86,7 +86,7 @@ namespace RegionRuntime {
       MappingTagID tag;
       Processor orig_proc;
       unsigned steal_count;
-      bool must; // if index space, must tasks be run concurrently
+      bool must_parallelism; // if index space, must tasks be run concurrently
       bool is_index_space; // is this task an index space
       IndexSpace index_space;
       void *index_point;
@@ -200,6 +200,9 @@ namespace RegionRuntime {
       ~ArgumentMap(void);
     protected:
       friend class HighLevelRuntime;
+      friend class MultiTask;
+      friend class IndexTask;
+      friend class SliceTask;
       ArgumentMap(ArgumentMapImpl *i);
     private:
       ArgumentMapImpl *impl;
@@ -786,7 +789,7 @@ namespace RegionRuntime {
                                 const TaskArgument &global_arg, 
                                 const ArgumentMap &arg_map,
                                 const Predicate &predicate = Predicate::TRUE_PRED,
-                                bool must = false, 
+                                bool must_paralleism = false, 
                                 MapperID id = 0, 
                                 MappingTagID tag = 0);
 
@@ -806,7 +809,7 @@ namespace RegionRuntime {
                                 ReductionOpID reduction, 
                                 const TaskArgument &initial_value,
                                 const Predicate &predicate = Predicate::TRUE_PRED,
-                                bool must = false, 
+                                bool must_parallelism = false, 
                                 MapperID id = 0, 
                                 MappingTagID tag = 0);
 
@@ -858,6 +861,7 @@ namespace RegionRuntime {
                     std::vector<PhysicalRegion> &physical_regions);
       const void* get_local_args(Context ctx, void *point, size_t point_size, size_t &local_size); 
     protected:
+      friend class Task;
       friend class GeneralizedOperation;
       friend class TaskContext;
       friend class SingleTask;
@@ -1389,29 +1393,81 @@ namespace RegionRuntime {
       PhysicalInstance instance;
     };
 
+    /**
+     * ArgumentMapImpl is the class that back ArgumentMap handles.  It
+     * supports a copy-on-write semantics, but the copies only occur
+     * after an Task has frozen the implementation.  To support copy
+     * on write, with many handle that still have pointers to the first
+     * version the class supports a built-in linked list of the different
+     * versions of the argument map for each frozen step in time.
+     */
     class ArgumentMapImpl : public Collectable {
     protected:
       friend class HighLevelRuntime;
       friend class ArgumentMap;
-      ArgumentMapImpl(void);
+      friend class IndexTask;
+      friend class SliceTask;
+      friend class MultiTask;
+      ArgumentMapImpl(ArgumentMapStore *st);
       // Make sure this can't be put in STL containers or moved
       ArgumentMapImpl(const ArgumentMapImpl &impl);
       ~ArgumentMapImpl(void);
       ArgumentMapImpl& operator=(const ArgumentMapImpl &rhs);
     protected:
       template<typename PT, unsigned DIM>
-      inline void set_point(const PT point[DIM], const TaskArgument &arg, bool replace);
+      void set_point(const PT point[DIM], const TaskArgument &arg, bool replace);
       template<typename PT, unsigned DIM>
-      inline bool remove_point(const PT point[DIM]);
+      bool remove_point(const PT point[DIM]);
+    protected:
+      // Freeze the last argument map implementation and return a pointer
+      ArgumentMapImpl* freeze(void);
+    private:
+      ArgumentMapImpl* clone(void) const;
+    protected:
+      size_t compute_arg_map_size(void);
+      void pack_arg_map(Serializer &rez);
+      void unpack_arg_map(Deserializer &derez);
     private:
       // An argument map impl own all its allocations so when
       // the implementation get's deleted we have to delete everything.
       std::map<AnyPoint,TaskArgument> arguments;
+      ArgumentMapImpl *next;
+      ArgumentMapStore *const store;
+      bool frozen;
+    };
+
+    /**
+     * This is a helper class for ArgumentMapImpl that just stores
+     * all the points and Task Arguments that have ever been used.
+     * When the last ArgumentMapImpl in a list gets deleted, it will
+     * delete this which will clean up all the memory associated
+     * with the points and task arguments.
+     */
+    class ArgumentMapStore {
+    protected: 
+      friend class HighLevelRuntime;
+      friend class ArgumentMapImpl;
+      friend class MultiTask;
+      friend class IndexTask;
+      friend class SliceTask;
+      ArgumentMapStore(void);
+      ArgumentMapStore(const ArgumentMapStore &rhs);
+      ~ArgumentMapStore(void);
+      ArgumentMapStore& operator=(const ArgumentMapStore &rhs);
+    protected:
+      AnyPoint add_point(size_t elmt_size, unsigned dim, const void *buffer);
+      AnyPoint add_point(Deserializer &derez);
+      TaskArgument add_arg(const TaskArgument &arg);
+      TaskArgument add_arg(Deserializer &derez);
+    private:
+      std::set<AnyPoint> points;
+      std::set<TaskArgument> values;
     };
 
     class AnyPoint {
     protected:
       friend class ArgumentMapImpl;
+      friend class ArgumentMapStore;
       friend class FutureMapImpl;
       friend class MultiTask;
       friend class IndexTask;
@@ -1954,56 +2010,88 @@ namespace RegionRuntime {
     
     //--------------------------------------------------------------------------
     template<typename PT, unsigned DIM>
-    inline void ArgumentMapImpl::set_point(const PT point[DIM], const TaskArgument &arg, bool replace) 
+    void ArgumentMapImpl::set_point(const PT point[DIM], const TaskArgument &arg, bool replace) 
     //--------------------------------------------------------------------------
     {
-      // If we're trying to replace, check to see if we can find the old point
-      if (replace)
+      // Go to the end of the list
+      if (next == NULL)
       {
-        AnyPoint p(point,sizeof(PT),DIM);
-        for (std::map<AnyPoint,TaskArgument>::iterator it = arguments.begin();
-              it != arguments.end(); it++)
+        // Check to see if we're frozen or not, note we don't really need the lock
+        // here since there is only one thread that is traversing the list.  The
+        // only multi-threaded part is with the references and we clearly have 
+        // reference if we're traversing this list.
+        if (frozen)
         {
-          if (it->first.equals(p))
+          // Now frozen, make a new instance and call this on the new one
+          next = clone();
+          next->set_point<PT,DIM>(point,arg,replace);
+        }
+        else // Not frozen so just do the update 
+        {
+          // If we're trying to replace, check to see if we can find the old point
+          if (replace)
           {
-            // Free the old buffer
-            free(it->second.get_ptr());
-            // Make a new buffer
-            void * arg_buffer = malloc(arg.get_size());
-            memcpy(arg_buffer,arg.get_ptr(),arg.get_size());
-            it->second = TaskArgument(arg_buffer,arg.get_size());
-            return;
+            AnyPoint p(point,sizeof(PT),DIM);
+            for (std::map<AnyPoint,TaskArgument>::iterator it = arguments.begin();
+                  it != arguments.end(); it++)
+            {
+              if (it->first.equals(p))
+              {
+                it->second = store->add_arg(arg);
+                return;
+              }
+            }
           }
+          // Couldn't find it, so make a new point
+          AnyPoint new_point = store->add_point(sizeof(PT),DIM,point);
+          arguments[new_point] = store->add_arg(arg);
         }
       }
-      // Copy the point buffer
-      void * point_buffer = malloc(DIM*sizeof(PT));
-      mempcy(point_buffer,point,DIM*sizeof(PT));
-      // Copy the TaskArgument
-      void * arg_buffer = malloc(arg.get_size());
-      memcpy(arg_buffer,arg.get_ptr(),arg.get_size());
-      // Add it to our list of arguments
-      arguments[AnyPoint(point_buffer,sizeof(PT),DIM)] = TaskArgument(arg_buffer,arg.get_size());
+      else
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(frozen); // this should be frozen if there is a next
+#endif
+        // Recurse to the next point
+        next->set_point<PT,DIM>(point,arg,replace);
+      }
     }
 
     //--------------------------------------------------------------------------
     template<typename PT, unsigned DIM>
-    inline bool ArgumentMapImpl::remove_point(const PT point[DIM])
+    bool ArgumentMapImpl::remove_point(const PT point[DIM])
     //--------------------------------------------------------------------------
     {
-      AnyPoint p(point,sizeof(PT),DIM);
-      for (std::map<AnyPoint,TaskArgument>::iterator it = arguments.begin();
-            it != arguments.end(); it++)
+      if (next == NULL)
       {
-        if (p.equals(it->first))
+        // See if we are frozen or not
+        if (frozen)
         {
-          free(it->first.buffer);
-          free(it->second.get_ptr());
-          arguments.erase(it);
-          return true;
+          next = clone();
+          return next->remove_point<PT,DIM>(point);
+        }
+        else
+        {
+          AnyPoint p(point,sizeof(PT),DIM);
+          for (std::map<AnyPoint,TaskArgument>::iterator it = arguments.begin();
+                it != arguments.end(); it++)
+          {
+            if (p.equals(it->first))
+            {
+              arguments.erase(it);
+              return true;
+            }
+          }
+          return false;
         }
       }
-      return false;
+      else
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(frozen); // We should be frozen if there is a next
+#endif
+        return next->remove_point<PT,DIM>(point);
+      }
     }
 
     //--------------------------------------------------------------------------

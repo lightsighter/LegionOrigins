@@ -644,7 +644,7 @@ namespace RegionRuntime {
         tag = 0;
         orig_proc = runtime->local_proc;
         steal_count = 0;
-        must = false;
+        must_parallelism = false;
         is_index_space = false;
         index_space = IndexSpace::NO_SPACE;
         index_point = NULL;
@@ -2239,6 +2239,7 @@ namespace RegionRuntime {
         redop_id = 0;
         reduction_state = NULL;
         reduction_state_size = 0;
+        arg_map_impl = NULL;
       }
       return activated;
     }
@@ -2251,6 +2252,13 @@ namespace RegionRuntime {
       {
         free(reduction_state);
         reduction_state = NULL;
+      }
+      if (arg_map_impl != NULL)
+      {
+        if (arg_map_impl->remove_reference())
+        {
+          delete arg_map_impl;
+        }
       }
       slices.clear();
       deactivate_task();
@@ -2370,7 +2378,7 @@ namespace RegionRuntime {
       // by the number of new slices created.  We can subtract one
       // because we were already anticipating one arrival for this slice
       // that will now no longer happen.
-      if (must)
+      if (must_parallelism)
       {
         must_barrier.alter_arrival_count(slices.size()-1);
       }
@@ -2420,10 +2428,70 @@ namespace RegionRuntime {
         memcpy(this->reduction_state,rhs->reduction_state,rhs->reduction_state_size);
         this->reduction_state_size = rhs->reduction_state_size;
       }
-      if (must)
+      if (must_parallelism)
       {
         this->must_barrier = rhs->must_barrier;
       }
+      this->arg_map_impl = rhs->arg_map_impl;
+      this->arg_map_impl->add_reference();
+    }
+
+    //--------------------------------------------------------------------------
+    size_t MultiTask::compute_multi_task_size(void)
+    //--------------------------------------------------------------------------
+    {
+      size_t result = compute_task_context_size();
+      result += sizeof(sliced);
+      result += sizeof(has_reduction);
+      if (has_reduction)
+      {
+        result += sizeof(redop_id);
+        result += sizeof(reduction_state_size);
+        result += reduction_state_size;
+      }
+      if (must_parallelism)
+        result += sizeof(must_barrier);
+      // ArgumentMap handled by sub-types since it is packed in
+      // some cases but not others
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void MultiTask::pack_multi_task(Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+      pack_task_context(rez);
+      rez.serialize<bool>(sliced);
+      rez.serialize<bool>(has_reduction);
+      if (has_reduction)
+      {
+        rez.serialize<ReductionOpID>(redop_id);
+        rez.serialize<size_t>(reduction_state_size);
+        rez.serialize(reduction_state,reduction_state_size);
+      }
+      if (must_parallelism)
+        rez.serialize<Barrier>(must_barrier);
+    }
+
+    //--------------------------------------------------------------------------
+    void MultiTask::unpack_multi_task(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      unpack_task_context(derez);
+      derez.deserialize<bool>(sliced);
+      derez.deserialize<bool>(has_reduction);
+      if (has_reduction)
+      {
+        derez.deserialize<ReductionOpID>(redop_id);
+        derez.deserialize<size_t>(reduction_state_size);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(reduction_state == NULL);
+#endif
+        reduction_state = malloc(reduction_state_size);
+        derez.deserialize(reduction_state,reduction_state_size);
+      }
+      if (must_parallelism)
+        derez.deserialize<Barrier>(must_barrier);
     }
 
     /////////////////////////////////////////////////////////////
@@ -3351,8 +3419,6 @@ namespace RegionRuntime {
       if (activated)
       {
         slice_owner = NULL;
-        point_buffer = NULL;
-        point_buffer_len = 0;
         local_point_argument = NULL;
         local_point_argument_len = 0;
       }
@@ -3363,12 +3429,6 @@ namespace RegionRuntime {
     void PointTask::deactivate(void)
     //--------------------------------------------------------------------------
     {
-      if (point_buffer != NULL)
-      {
-        free(point_buffer);
-        point_buffer = NULL;
-        point_buffer_len = 0;
-      }
       if (local_point_argument != NULL)
       {
         free(local_point_argument);
@@ -3477,6 +3537,95 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       return slice_owner->get_enclosing_physical_context(parent);
+    }
+
+    //--------------------------------------------------------------------------
+    size_t PointTask::compute_task_size(void)
+    //--------------------------------------------------------------------------
+    {
+      // Here we won't invoke the SingleTask methods for packing since
+      // we really only need to pack up our information.
+      size_t result = 0;
+#ifdef DEBUG_HIGH_LEVEL
+      assert(index_point != NULL);
+#endif
+      result += sizeof(index_element_size);
+      result += sizeof(index_dimensions);
+      result += (index_element_size*index_dimensions);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(local_point_argument != NULL);
+#endif
+      result += sizeof(local_point_argument_len);
+      result += local_point_argument_len;
+
+      result += sizeof(is_leaf);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(non_virtual_mapped_region.size() == regions.size());
+      assert(physical_instances.size() == regions.size());
+#endif
+      result += (non_virtual_mapped_region.size() * sizeof(bool));
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        if (non_virtual_mapped_region[idx])
+          result += forest_ctx->compute_reference_size(physical_instances[idx]);
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void PointTask::pack_task(Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize<size_t>(index_element_size);
+      rez.serialize<unsigned>(index_dimensions);
+      rez.serialize(index_point,index_element_size*index_dimensions);
+      rez.serialize<size_t>(local_point_argument_len);
+      rez.serialize(local_point_argument,local_point_argument_len);
+      rez.serialize<bool>(is_leaf);
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        bool non_virt = non_virtual_mapped_region[idx];
+        rez.serialize<bool>(non_virt);
+      }
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        if (non_virtual_mapped_region[idx])
+          forest_ctx->pack_reference(physical_instances[idx], rez);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void PointTask::unpack_task(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      derez.deserialize<size_t>(index_element_size);
+      derez.deserialize<unsigned>(index_dimensions);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(index_point == NULL);
+#endif
+      index_point = malloc(index_element_size*index_dimensions);
+      derez.deserialize(index_point,index_element_size*index_dimensions);
+      derez.deserialize<size_t>(local_point_argument_len);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(local_point_argument == NULL);
+#endif
+      local_point_argument = malloc(local_point_argument_len);
+      derez.deserialize(local_point_argument,local_point_argument_len);
+      derez.deserialize<bool>(is_leaf);
+      non_virtual_mapped_region.resize(regions.size());
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        bool non_virt;
+        derez.deserialize<bool>(non_virt);
+        non_virtual_mapped_region[idx] = non_virt;
+      }
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        if (non_virtual_mapped_region[idx])
+          physical_instances.push_back(forest_ctx->unpack_reference(derez));
+        else
+          physical_instances.push_back(InstanceRef()/*virtual ref*/);
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -3596,10 +3745,10 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(point_size == point_buffer_len);
+      assert(point_size == (index_element_size*index_dimensions));
 #endif
       // Copy the point value into the point size
-      memcpy(point, point_buffer, point_buffer_len);
+      memcpy(point, index_point, point_size);
       // Set the local size and return the pointer to the local size argument
       local_size = local_point_argument_len;
       return local_point_argument;
@@ -3775,7 +3924,7 @@ namespace RegionRuntime {
     {
       mapped_event = UserEvent::create_user_event();
       termination_event = UserEvent::create_user_event();
-      if (must)
+      if (must_parallelism)
       {
         must_barrier = Barrier::create_barrier(1/*expected arrivals*/);
         launch_preconditions.insert(must_barrier);
@@ -4024,6 +4173,21 @@ namespace RegionRuntime {
         // No need to hold the lock, the future map has its own lock
         future_map->set_result(point, result, result_size);
       }
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexTask::set_index_space(IndexSpace space, const ArgumentMap &map, bool must)
+    //--------------------------------------------------------------------------
+    {
+      this->is_index_space = true;
+      this->index_space = space;
+      this->must_parallelism = must;
+#ifdef DEBUG_HIGH_LEVEL
+      assert(arg_map_impl == NULL);
+#endif
+      // Freeze the current impl so we can use it
+      arg_map_impl = map.impl->freeze();
+      arg_map_impl->add_reference();
     }
 
     //--------------------------------------------------------------------------
@@ -4401,6 +4565,8 @@ namespace RegionRuntime {
         finish_task_unpack();
       }
       bool map_success = true;
+      // No longer stealable since we're being mapped
+      stealable = false;
       // This is a leaf slice so do the normal thing
       if (slices.empty())
       {
@@ -4438,7 +4604,7 @@ namespace RegionRuntime {
           // If we're doing must parallelism, register
           // that all our tasks have been mapped and will 
           // be scheduled on their target processor.
-          if (must)
+          if (must_parallelism)
           {
             must_barrier.arrive();
           }
@@ -4516,6 +4682,7 @@ namespace RegionRuntime {
         finish_task_unpack();
       }
       lock();
+      stealable = false; // no longer stealable
       enumerating = true;
       num_unmapped_points = 0;
       num_unfinished_points = 0;
@@ -4589,6 +4756,267 @@ namespace RegionRuntime {
         return ctx_id;
       else
         return index_owner->get_enclosing_physical_context(parent);
+    }
+
+    //--------------------------------------------------------------------------
+    size_t SliceTask::compute_task_size(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert_context_locked();
+#endif
+      size_t result = compute_multi_task_size();
+      result += sizeof(distributed);
+      result += sizeof(locally_mapped);
+      result += sizeof(stealable);
+      if (locally_mapped)
+        result += sizeof(is_leaf);
+      result += sizeof(termination_event);
+      result += sizeof(index_owner);
+      result += sizeof(denominator);
+      if (partially_unpacked)
+      {
+        result += remaining_bytes;
+      }
+      else
+      {
+        if (locally_mapped)
+        {
+          result += sizeof(size_t); // number of points
+          if (!is_leaf)
+          {
+            // Need to pack the region trees and the instances or
+            // the state if they were virtually mapped
+            result += forest_ctx->compute_region_forest_shape_size(indexes, fields, regions);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(regions.size() == non_virtual_mappings.size());
+#endif
+            result += (regions.size() * sizeof(unsigned)); // number of non-virtual mappings
+            // Figure out which region states we need to send
+            for (unsigned idx = 0; idx < regions.size(); idx++)
+            {
+#ifdef DEBUG_HIGH_LEVEL
+              assert(non_virtual_mappings[idx] <= points.size());
+#endif
+              if (non_virtual_mappings[idx] < points.size())
+              {
+                // Not all the points were mapped, so we need to send the state
+                if (regions[idx].handle_type == SINGULAR)
+                {
+                  result += forest_ctx->compute_region_tree_state_size(regions[idx].region,
+                                          get_enclosing_physical_context(regions[idx].parent));
+                }
+                else
+                {
+                  result += forest_ctx->compute_region_tree_state_size(regions[idx].partition,
+                                          get_enclosing_physical_context(regions[idx].parent));
+                }
+              }
+            }
+          }
+          // Then we need to pack the mappings for all of the points
+          for (unsigned idx = 0; idx < points.size(); idx++)
+          {
+            result += points[idx]->compute_task_size();
+          }
+        }
+        else
+        {
+          // Need to pack the region trees and the states  
+          result += forest_ctx->compute_region_forest_shape_size(indexes, fields, regions);
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            if (regions[idx].handle_type == SINGULAR)
+            {
+              result += forest_ctx->compute_region_tree_state_size(regions[idx].region,
+                                      get_enclosing_physical_context(regions[idx].parent));
+            }
+            else
+            {
+              result += forest_ctx->compute_region_tree_state_size(regions[idx].partition,
+                                      get_enclosing_physical_context(regions[idx].parent));
+            }
+          }
+          // since nothing has been enumerated, we need to pack the argument map
+          result += sizeof(bool); // has argument map
+          if (arg_map_impl != NULL)
+          {
+            result += arg_map_impl->compute_arg_map_size();
+          }
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void SliceTask::pack_task(Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert_context_locked();
+#endif
+      pack_multi_task(rez);
+      rez.serialize<bool>(distributed);
+      rez.serialize<bool>(locally_mapped);
+      rez.serialize<bool>(stealable);
+      if (locally_mapped)
+        rez.serialize<bool>(is_leaf);
+      rez.serialize<Event>(termination_event);
+      rez.serialize<IndexTask*>(index_owner);
+      rez.serialize<unsigned long>(denominator);
+      if (partially_unpacked)
+      {
+        rez.serialize(remaining_buffer, remaining_bytes);
+        free(remaining_buffer);
+        remaining_buffer = NULL;
+        remaining_bytes = 0;
+        partially_unpacked = false;
+      }
+      else
+      {
+        if (locally_mapped)
+        {
+          rez.serialize<size_t>(points.size());
+          if (!is_leaf)
+          {
+            forest_ctx->pack_region_forest_shape(rez);
+            for (unsigned idx = 0; idx < regions.size(); idx++)
+            {
+              rez.serialize<unsigned>(non_virtual_mappings[idx]);
+            }
+            // Now pack up the region states we need to send
+            for (unsigned idx = 0; idx < regions.size(); idx++)
+            {
+              if (non_virtual_mappings[idx] < points.size())
+              {
+                if (regions[idx].handle_type == SINGULAR)
+                {
+                  forest_ctx->pack_region_tree_state(regions[idx].region,
+                                get_enclosing_physical_context(regions[idx].parent), rez);
+                }
+                else
+                {
+                  forest_ctx->pack_region_tree_state(regions[idx].partition,
+                                get_enclosing_physical_context(regions[idx].parent), rez);
+                }
+              }
+            }
+          }
+          // Now pack each of the point mappings
+          for (unsigned idx = 0; idx < points.size(); idx++)
+          {
+            points[idx]->pack_task(rez);
+          }
+        }
+        else
+        {
+          forest_ctx->pack_region_forest_shape(rez);
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            if (regions[idx].handle_type == SINGULAR)
+            {
+              forest_ctx->pack_region_tree_state(regions[idx].region,
+                            get_enclosing_physical_context(regions[idx].parent), rez);
+            }
+            else
+            {
+              forest_ctx->pack_region_tree_state(regions[idx].partition,
+                            get_enclosing_physical_context(regions[idx].parent), rez);
+            }
+          }
+          // Now we need to pack the argument map
+          bool has_arg_map = (arg_map_impl != NULL);
+          rez.serialize<bool>(has_arg_map);
+          if (has_arg_map)
+          {
+            arg_map_impl->pack_arg_map(rez); 
+          }
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void SliceTask::unpack_task(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert_context_locked();
+#endif
+      unpack_multi_task(derez);
+      derez.deserialize<bool>(distributed);
+      derez.deserialize<bool>(locally_mapped);
+      derez.deserialize<bool>(stealable);
+      if (locally_mapped)
+        derez.deserialize<bool>(is_leaf);
+      derez.deserialize<Event>(termination_event);
+      derez.deserialize<unsigned long>(denominator);
+      remaining_bytes = derez.get_remaining_bytes();
+      remaining_buffer = malloc(remaining_bytes);
+      derez.deserialize(remaining_buffer,remaining_bytes);
+      partially_unpacked = true;
+    }
+
+    //--------------------------------------------------------------------------
+    void SliceTask::finish_task_unpack(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(partially_unpacked);
+#endif
+      Deserializer derez(remaining_buffer,remaining_bytes);
+      lock_context();
+      if (locally_mapped)
+      {
+        size_t num_points;
+        derez.deserialize<size_t>(num_points);
+        if (!is_leaf)
+        {
+          forest_ctx->unpack_region_forest_shape(derez);
+          non_virtual_mappings.resize(regions.size());  
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            derez.deserialize<unsigned>(non_virtual_mappings[idx]);
+          }
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            if (non_virtual_mappings[idx] < num_points)
+            {
+              // Unpack the physical state in our context
+              forest_ctx->unpack_region_tree_state(ctx_id, derez);
+            }
+          }
+        }
+        for (unsigned idx = 0; idx < num_points; idx++)
+        {
+          // Clone this as a point task, then unpack it
+          PointTask *next_point = clone_as_point_task();
+          next_point->unpack_task(derez);
+          points.push_back(next_point);
+        }
+      }
+      else
+      {
+        forest_ctx->unpack_region_forest_shape(derez);
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          forest_ctx->unpack_region_tree_state(ctx_id, derez);
+        }
+        bool has_arg_map;
+        derez.deserialize<bool>(has_arg_map);
+        if (has_arg_map)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(arg_map_impl == NULL);
+#endif
+          arg_map_impl = new ArgumentMapImpl(new ArgumentMapStore());
+          arg_map_impl->add_reference();
+          arg_map_impl->unpack_arg_map(derez);
+        }
+      }
+      unlock_context();
+      free(remaining_buffer);
+      remaining_buffer = NULL;
+      remaining_bytes = 0;
+      partially_unpacked = false;
     }
 
     //--------------------------------------------------------------------------

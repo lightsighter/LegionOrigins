@@ -462,6 +462,10 @@ namespace RegionRuntime {
       virtual void handle_future(const AnyPoint &point, const void *result, size_t result_size) = 0;
       void clone_multi_from(MultiTask *rhs, IndexSpace new_space, bool recurse);
     protected:
+      size_t compute_multi_task_size(void);
+      void pack_multi_task(Serializer &derez);
+      void unpack_multi_task(Deserializer &derez);
+    protected:
       friend class PointTask;
       // index_space from Task
       bool sliced;
@@ -473,6 +477,8 @@ namespace RegionRuntime {
       void *reduction_state;
       size_t reduction_state_size;
       Barrier must_barrier; // for use with must parallelism
+      // Argument Map for index space arguments
+      ArgumentMapImpl *arg_map_impl;
     };
 
     /////////////////////////////////////////////////////////////
@@ -603,10 +609,6 @@ namespace RegionRuntime {
     private:
       SliceTask *slice_owner;
       UserEvent point_termination_event;
-      // Set when this point get's cloned from its owner slice
-      // The point value for this point
-      void *point_buffer;
-      size_t point_buffer_len;
       // The local argument for this particular point
       void *local_point_argument;
       size_t local_point_argument_len;

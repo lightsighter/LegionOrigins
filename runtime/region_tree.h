@@ -70,7 +70,9 @@ namespace RegionRuntime {
     public:
       // Packing and unpacking state send
       size_t compute_region_tree_state_size(LogicalRegion handle, ContextID ctx);
+      size_t compute_region_tree_state_size(LogicalPartition handle, ContextID ctx);
       void pack_region_tree_state(LogicalRegion handle, ContextID ctx, Serializer &rez);
+      void pack_region_tree_state(LogicalPartition handle, ContextID ctx, Serializer &rez);
       void unpack_region_tree_state(ContextID ctx, Deserializer &derez);
     public:
       // Packing and unpacking reference send

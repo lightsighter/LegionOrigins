@@ -151,6 +151,7 @@ namespace RegionRuntime {
     class FutureImpl;
     class FutureMapImpl;
     class ArgumentMapImpl;
+    class ArgumentMapStore;
     class PhysicalRegionImpl;
     class AnyPoint;
 

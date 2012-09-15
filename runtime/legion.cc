@@ -35,7 +35,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     Task::Task(void)
       : task_id(0), args(NULL), arglen(0), map_id(0), tag(0),
-        orig_proc(Processor::NO_PROC), steal_count(0), must(false),
+        orig_proc(Processor::NO_PROC), steal_count(0), must_parallelism(false),
         is_index_space(false), index_space(IndexSpace::NO_SPACE),
         index_point(NULL), index_element_size(0), 
         index_dimensions(0), variants(NULL)
@@ -61,7 +61,7 @@ namespace RegionRuntime {
       this->tag = rhs->tag;
       this->orig_proc = rhs->orig_proc;
       this->steal_count = rhs->steal_count;
-      this->must = rhs->must;
+      this->must_parallelism = rhs->must_parallelism;
       this->is_index_space = rhs->is_index_space;
       this->index_space = rhs->index_space;
       if (is_index_space && (rhs->index_point != NULL))
@@ -97,7 +97,7 @@ namespace RegionRuntime {
       result += sizeof(is_index_space);
       if (is_index_space)
       {
-        result += sizeof(must);
+        result += sizeof(must_parallelism);
         result += sizeof(index_space);
         result += sizeof(bool); // has point
         if (index_point != NULL)
@@ -139,7 +139,7 @@ namespace RegionRuntime {
       rez.serialize<bool>(is_index_space);
       if (is_index_space)
       {
-        rez.serialize<bool>(must);
+        rez.serialize<bool>(must_parallelism);
         rez.serialize<IndexSpace>(index_space);
         bool has_point = (index_point != NULL);
         rez.serialize<bool>(has_point);
@@ -189,7 +189,7 @@ namespace RegionRuntime {
       derez.deserialize<bool>(is_index_space);
       if (is_index_space)
       {
-        derez.deserialize<bool>(must);
+        derez.deserialize<bool>(must_parallelism);
         derez.deserialize<IndexSpace>(index_space);
         bool has_point;
         derez.deserialize<bool>(has_point);
@@ -201,6 +201,7 @@ namespace RegionRuntime {
           derez.deserialize(index_point, index_element_size * index_dimensions);
         }
       }
+      variants = HighLevelRuntime::find_collection(task_id);
     }
 
     /////////////////////////////////////////////////////////////
@@ -1069,13 +1070,15 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
-    ArgumentMapImpl::ArgumentMapImpl(void)
+    ArgumentMapImpl::ArgumentMapImpl(ArgumentMapStore *st)
+      : next(NULL), store(st), frozen(false)
     //--------------------------------------------------------------------------
     {
     }
 
     //--------------------------------------------------------------------------
     ArgumentMapImpl::ArgumentMapImpl(const ArgumentMapImpl &rhs)
+      : next(NULL), store(NULL), frozen(false)
     //--------------------------------------------------------------------------
     {
       // Should never be called
@@ -1086,14 +1089,21 @@ namespace RegionRuntime {
     ArgumentMapImpl::~ArgumentMapImpl(void)
     //--------------------------------------------------------------------------
     {
-      // We need to free up all the data that we own
-      for (std::map<AnyPoint,TaskArgument>::iterator it = arguments.begin();
-            it != arguments.end(); it++)
+      // Remove our reference to the next thing in the list
+      // and delete it if we're done with it
+      if (next != NULL)
       {
-        free(it->first.buffer);
-        free(it->second.get_ptr());
+        if (next->remove_reference())
+        {
+          delete next;
+        }
       }
-      arguments.clear();
+      else
+      {
+        // We're the last one in the list being deleted, so 
+        // delete the store as well
+        delete store;
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -1103,6 +1113,176 @@ namespace RegionRuntime {
       // Should never be called
       assert(false);
       return *this;
+    }
+
+    //--------------------------------------------------------------------------
+    ArgumentMapImpl* ArgumentMapImpl::freeze(void)
+    //--------------------------------------------------------------------------
+    {
+      if (next == NULL)
+      {
+        frozen = true;
+        return this;
+      }
+      else
+      {
+        return next->freeze();
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    ArgumentMapImpl* ArgumentMapImpl::clone(void) const
+    //--------------------------------------------------------------------------
+    {
+      ArgumentMapImpl *new_impl = new ArgumentMapImpl(store);
+      new_impl->arguments = this->arguments; 
+      return new_impl;
+    }
+
+    //--------------------------------------------------------------------------
+    size_t ArgumentMapImpl::compute_arg_map_size(void)
+    //--------------------------------------------------------------------------
+    {
+      size_t result = sizeof(size_t); // number of arguments 
+      // Element and dimension sizes for the any points and the buffer size for the argument
+      result += (arguments.size() * (2*sizeof(size_t) + sizeof(unsigned)));
+      for (std::map<AnyPoint,TaskArgument>::const_iterator it = arguments.begin();
+            it != arguments.end(); it++)
+      {
+        const AnyPoint &point = it->first;
+        result += (point.elmt_size * point.dim);
+        const TaskArgument &arg = it->second;
+        result += (arg.get_size());
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void ArgumentMapImpl::pack_arg_map(Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize<size_t>(arguments.size());
+      for (std::map<AnyPoint,TaskArgument>::const_iterator it = arguments.begin();
+            it != arguments.end(); it++)
+      {
+        const AnyPoint &point = it->first;
+        rez.serialize<size_t>(point.elmt_size);
+        rez.serialize<unsigned>(point.dim);
+        rez.serialize(point.buffer,point.elmt_size*point.dim);
+        const TaskArgument &arg = it->second;
+        rez.serialize<size_t>(arg.get_size());
+        rez.serialize(arg.get_ptr(),arg.get_size());
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void ArgumentMapImpl::unpack_arg_map(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      size_t num_points;
+      derez.deserialize<size_t>(num_points);
+      for (unsigned idx = 0; idx < num_points; idx++)
+      {
+        AnyPoint point = store->add_point(derez);
+        arguments[point] = store->add_arg(derez);
+      }
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Argument Map Store 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    ArgumentMapStore::ArgumentMapStore(void)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    ArgumentMapStore::ArgumentMapStore(const ArgumentMapStore &rhs)
+    //--------------------------------------------------------------------------
+    {
+      // should never be called
+      assert(false);
+    }
+
+    //--------------------------------------------------------------------------
+    ArgumentMapStore::~ArgumentMapStore(void)
+    //--------------------------------------------------------------------------
+    {
+      // Go through and delete all the memory that we own
+      for (std::set<AnyPoint>::const_iterator it = points.begin();
+            it != points.end(); it++)
+      {
+        free(it->buffer);
+      }
+      for (std::set<TaskArgument>::const_iterator it = values.begin();
+            it != values.end(); it++)
+      {
+        free(it->get_ptr());
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    ArgumentMapStore& ArgumentMapStore::operator=(const ArgumentMapStore &rhs)
+    //--------------------------------------------------------------------------
+    {
+      // should never be called
+      assert(false);
+      return *this;
+    }
+
+    //--------------------------------------------------------------------------
+    AnyPoint ArgumentMapStore::add_point(size_t elmt_size, unsigned dim, const void *buffer)
+    //--------------------------------------------------------------------------
+    {
+      // Don't bother de-duplicating points here, the ArgumentMapImpls will
+      // do a good job of that to begin with and its really just not worth
+      // the extra computation overhead since its not that much memory anyway
+      void *new_buffer = malloc(elmt_size*dim);
+      memcpy(new_buffer, buffer, elmt_size*dim);
+      AnyPoint new_point(new_buffer, elmt_size, dim);
+      points.insert(new_point);
+      return new_point;
+    }
+
+    //--------------------------------------------------------------------------
+    AnyPoint ArgumentMapStore::add_point(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      size_t elmt_size;
+      derez.deserialize<size_t>(elmt_size);
+      unsigned dim;
+      derez.deserialize<unsigned>(dim);
+      void *buffer = malloc(elmt_size * dim);
+      derez.deserialize(buffer, elmt_size * dim);
+      AnyPoint new_point(buffer, elmt_size, dim);
+      points.insert(new_point);
+      return new_point;
+    }
+
+    //--------------------------------------------------------------------------
+    TaskArgument ArgumentMapStore::add_arg(const TaskArgument &arg)
+    //--------------------------------------------------------------------------
+    {
+      void *buffer = malloc(arg.get_size());
+      memcpy(buffer, arg.get_ptr(), arg.get_size());
+      TaskArgument new_arg(buffer,arg.get_size());
+      values.insert(new_arg);
+      return new_arg;
+    }
+
+    //--------------------------------------------------------------------------
+    TaskArgument ArgumentMapStore::add_arg(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      size_t buf_size;
+      derez.deserialize<size_t>(buf_size);
+      void *buffer = malloc(buf_size);
+      derez.deserialize(buffer,buf_size);
+      TaskArgument new_arg(buffer,buf_size);
+      values.insert(new_arg);
+      return new_arg;
     }
 
     /////////////////////////////////////////////////////////////
@@ -3109,7 +3289,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       // Create a new argument map and put it in the list of active maps
-      ArgumentMapImpl *arg_map = new ArgumentMapImpl();
+      ArgumentMapImpl *arg_map = new ArgumentMapImpl(new ArgumentMapStore());
 #ifdef DEBUG_HIGH_LEVEL
       assert(arg_map != NULL);
 #endif
