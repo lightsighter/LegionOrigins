@@ -89,7 +89,7 @@ namespace RegionRuntime {
       ~Serializer(void) 
       {
 #ifdef DEBUG_HIGH_LEVEL
-        assert(index == total_bytes); // We should have used the whole buffer
+        assert(index == long(total_bytes)); // We should have used the whole buffer
 #endif
         free(buffer);
       }
@@ -101,7 +101,7 @@ namespace RegionRuntime {
       inline const void* get_buffer(void) const 
       { 
 #ifdef DEBUG_HIGH_LEVEL
-        assert(index == total_bytes);
+        assert(index == long(total_bytes));
 #endif
         return buffer; 
       }

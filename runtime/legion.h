@@ -968,8 +968,8 @@ namespace RegionRuntime {
 #ifdef INORDER_EXECUTION
       static bool program_order_execution;
 #endif
-      static int max_tasks_per_schedule_request;
-      static int max_task_window_per_context;
+      static unsigned max_tasks_per_schedule_request;
+      static unsigned max_task_window_per_context;
     private:
       // Member variables
       const Processor local_proc;
@@ -1833,7 +1833,7 @@ namespace RegionRuntime {
     inline bool ArgumentMap::remove_point(const PT point[DIM])
     //--------------------------------------------------------------------------
     {
-      impl->remove_point<PT,DIM>(point);
+      return impl->remove_point<PT,DIM>(point);
     }
 
     //--------------------------------------------------------------------------

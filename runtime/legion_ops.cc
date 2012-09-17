@@ -813,7 +813,7 @@ namespace RegionRuntime {
                 log_region(LEVEL_ERROR,"Parent task %s (ID %d) of task %s (ID %d) does not have a region requirement "
                                         "for region REG_PAT as a parent of child task's region requirement index %d",
                                         parent_ctx->variants->name, parent_ctx->get_unique_id(),
-                                        this->variants->name, get_unique_id(), PRINT_REG(regions[idx].parent), idx);
+                                        this->variants->name, get_unique_id(), idx);
                 exit(ERROR_BAD_PARENT_REGION);
               }
             case ERROR_BAD_REGION_PATH:
@@ -1236,7 +1236,7 @@ namespace RegionRuntime {
       if (idx > -1)
       {
 #ifdef DEBUG_HIGH_LEVEL
-        assert(idx < clone_instances.size());
+        assert(unsigned(idx) < clone_instances.size());
 #endif
         // Check this on the cloned_instances since this will be where
         // we unmap regions that the task has previously mapped

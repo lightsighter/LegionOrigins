@@ -553,7 +553,7 @@ namespace RegionRuntime {
                                         PrivilegeMode _priv,  
                                         CoherenceProperty _prop, LogicalRegion _parent,
 					 MappingTagID _tag, bool _verified)
-      : region(_handle), privilege(_priv), type(_type), prop(_prop), parent(_parent),
+      : region(_handle), type(_type), privilege(_priv), prop(_prop), parent(_parent),
         redop(0), tag(_tag), verified(_verified), handle_type(SINGULAR)
     //--------------------------------------------------------------------------
     { 
@@ -570,7 +570,7 @@ namespace RegionRuntime {
     RegionRequirement::RegionRequirement(LogicalPartition pid, ProjectionID _proj, TypeHandle _type,
                 PrivilegeMode _priv, CoherenceProperty _prop,
                 LogicalRegion _parent, MappingTagID _tag, bool _verified)
-      : partition(pid), privilege(_priv), type(_type), prop(_prop), parent(_parent),
+      : partition(pid), type(_type), privilege(_priv), prop(_prop), parent(_parent),
         redop(0), tag(_tag), verified(_verified), handle_type(PROJECTION),
         projection(_proj)
     //--------------------------------------------------------------------------
@@ -588,7 +588,7 @@ namespace RegionRuntime {
     RegionRequirement::RegionRequirement(LogicalRegion _handle, TypeHandle _type, ReductionOpID op,
                                     CoherenceProperty _prop, 
                                     LogicalRegion _parent, MappingTagID _tag, bool _verified)
-      : region(_handle), privilege(REDUCE), type(_type), prop(_prop), parent(_parent),
+      : region(_handle), type(_type), privilege(REDUCE), prop(_prop), parent(_parent),
         redop(op), tag(_tag), verified(_verified), handle_type(SINGULAR)
     //--------------------------------------------------------------------------
     {
@@ -605,7 +605,7 @@ namespace RegionRuntime {
     RegionRequirement::RegionRequirement(LogicalPartition pid, ProjectionID _proj, TypeHandle _type, 
                         ReductionOpID op, CoherenceProperty _prop,
                         LogicalRegion _parent, MappingTagID _tag, bool _verified)
-      : partition(pid), privilege(REDUCE), type(_type), prop(_prop), parent(_parent),
+      : partition(pid), type(_type), privilege(REDUCE), prop(_prop), parent(_parent),
         redop(op), tag(_tag), verified(_verified), handle_type(PROJECTION), projection(_proj) 
     //--------------------------------------------------------------------------
     {
@@ -753,6 +753,7 @@ namespace RegionRuntime {
       }
       this->map_set = rhs.map_set;
       this->accessor_map = rhs.accessor_map;
+      return *this;
     }
 
     //--------------------------------------------------------------------------
@@ -2706,8 +2707,8 @@ namespace RegionRuntime {
 
     /*static*/ volatile RegistrationCallbackFnptr HighLevelRuntime::registration_callback = NULL;
     /*static*/ Processor::TaskFuncID HighLevelRuntime::legion_main_id = 0;
-    /*static*/ int HighLevelRuntime::max_tasks_per_schedule_request = MAX_TASK_MAPS_PER_STEP;
-    /*static*/ int HighLevelRuntime::max_task_window_per_context = MAX_TASK_WINDOW;
+    /*static*/ unsigned HighLevelRuntime::max_tasks_per_schedule_request = MAX_TASK_MAPS_PER_STEP;
+    /*static*/ unsigned HighLevelRuntime::max_task_window_per_context = MAX_TASK_WINDOW;
 #ifdef INORDER_EXECUTION
     /*static*/ bool HighLevelRuntime::program_order_execution = false;
 #endif

@@ -178,6 +178,8 @@ namespace RegionRuntime {
 
     // region_tree.h
     class RegionTreeForest;
+    class IndexNode;
+    class IndexPart;
     class RegionNode;
     class PartitionNode;
     class InstanceManager;
