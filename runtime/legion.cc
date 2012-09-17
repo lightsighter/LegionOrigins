@@ -29,6 +29,33 @@ namespace RegionRuntime {
     const LogicalPartition LogicalPartition::NO_PART = LogicalPartition();
 
     /////////////////////////////////////////////////////////////
+    // FieldSpace 
+    /////////////////////////////////////////////////////////////
+
+    /*static*/ const FieldSpace FieldSpace::NO_SPACE = FieldSpace(0);
+
+    //--------------------------------------------------------------------------
+    FieldSpace::FieldSpace(unsigned _id)
+      : id(_id)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    FieldSpace::FieldSpace(void)
+      : id(0)
+    //--------------------------------------------------------------------------
+    {
+    }
+    
+    //--------------------------------------------------------------------------
+    FieldSpace::FieldSpace(const FieldSpace &rhs)
+      : id(rhs.id)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    /////////////////////////////////////////////////////////////
     // Task
     /////////////////////////////////////////////////////////////
 
@@ -2381,6 +2408,8 @@ namespace RegionRuntime {
         next_partition_id       = idx;
         next_op_id              = idx;
         next_instance_id        = idx;
+        next_region_tree_id     = idx;
+        next_field_space_id     = idx;
       }
 
       // Set up default mapper and locks
@@ -3138,7 +3167,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_FIELD_SPACE);
-      FieldSpace space = FieldSpace::create_field_space();
+      FieldSpace space(get_unique_field_id());
 #ifdef DEBUG_HIGH_LEVEL
       log_field(LEVEL_DEBUG, "Creating field space %x in task %s (ID %d)", space.id,
                               ctx->variants->name,ctx->get_unique_id());
@@ -3938,6 +3967,26 @@ namespace RegionRuntime {
       AutoLock ulock(unique_lock);
       IndexPartition result = next_partition_id;
       next_partition_id += unique_stride;
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    RegionTreeID HighLevelRuntime::get_unique_tree_id(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      AutoLock ulock(unique_lock);
+      RegionTreeID result = next_region_tree_id;
+      next_region_tree_id += unique_stride;
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    FieldSpaceID HighLevelRuntime::get_unique_field_id(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      AutoLock ulock(unique_lock);
+      FieldSpaceID result = next_field_space_id;
+      next_field_space_id += unique_stride;
       return result;
     }
 

@@ -14,6 +14,27 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////////////////////////////
 
     /////////////////////////////////////////////////////////////
+    // Field Space 
+    /////////////////////////////////////////////////////////////
+    class FieldSpace {
+    public:
+      static const FieldSpace NO_SPACE;
+    protected:
+      // Only the runtime should be able to make these
+      FRIEND_ALL_RUNTIME_CLASSES;
+      FieldSpace(FieldSpaceID id);
+    public:
+      FieldSpace(void);
+      FieldSpace(const FieldSpace &rhs);
+    public:
+      inline FieldSpace& operator=(const FieldSpace &rhs);
+      inline bool operator==(const FieldSpace &rhs) const;
+      inline bool operator<(const FieldSpace &rhs) const;
+    private:
+      FieldSpaceID id;
+    };
+
+    /////////////////////////////////////////////////////////////
     // Logical Region 
     /////////////////////////////////////////////////////////////
     class LogicalRegion {
@@ -901,6 +922,7 @@ namespace RegionRuntime {
       UniqueID         get_unique_op_id(void);
       IndexPartition   get_unique_partition_id(void);
       RegionTreeID     get_unique_tree_id(void);
+      FieldSpaceID     get_unique_field_id(void);
     protected: 
       void add_to_dependence_queue(GeneralizedOperation *op);
       void add_to_ready_queue(IndividualTask *task, bool remote);
@@ -1045,6 +1067,8 @@ namespace RegionRuntime {
       IndexPartition next_partition_id; // The next partition id for this instance (unique)
       UniqueID next_op_id; // Give all tasks a unique id for debugging purposes
       InstanceID next_instance_id;
+      RegionTreeID next_region_tree_id;
+      FieldSpaceID next_field_space_id;
       const unsigned unique_stride; // Stride for ids to guarantee uniqueness
       // Information for stealing
       const unsigned int max_outstanding_steals;
@@ -1661,6 +1685,28 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       return ((tree_id < rhs.tree_id) || (index_partition < rhs.index_partition) || (field_space < rhs.field_space));
+    }
+
+    //--------------------------------------------------------------------------
+    inline FieldSpace& FieldSpace::operator=(const FieldSpace &rhs)
+    //--------------------------------------------------------------------------
+    {
+      id = rhs.id;
+      return *this;
+    }
+
+    //--------------------------------------------------------------------------
+    inline bool FieldSpace::operator==(const FieldSpace &rhs) const
+    //--------------------------------------------------------------------------
+    {
+      return (id == rhs.id);
+    }
+
+    //--------------------------------------------------------------------------
+    inline bool FieldSpace::operator<(const FieldSpace &rhs) const
+    //--------------------------------------------------------------------------
+    {
+      return (id < rhs.id);
     }
 
     //--------------------------------------------------------------------------

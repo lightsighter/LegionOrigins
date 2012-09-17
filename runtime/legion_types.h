@@ -123,6 +123,7 @@ namespace RegionRuntime {
     // legion.h
     class LogicalRegion;
     class LogicalPartition;
+    class FieldSpace;
     class Task;
     class TaskVariantCollection;
     class Future;
@@ -198,7 +199,6 @@ namespace RegionRuntime {
     typedef LowLevel::Machine Machine;
     typedef LowLevel::IndexSpace IndexSpace;
     typedef LowLevel::IndexSpaceAllocator IndexSpaceAllocator;
-    typedef LowLevel::FieldSpace FieldSpace;
     typedef LowLevel::RegionInstance PhysicalInstance;
     typedef LowLevel::Memory Memory;
     typedef LowLevel::Processor Processor;
@@ -216,6 +216,7 @@ namespace RegionRuntime {
     typedef unsigned int UniqueID;
     typedef unsigned int ContextID;
     typedef unsigned int InstanceID;
+    typedef unsigned int FieldSpaceID;
     typedef unsigned int GenerationID;
     typedef unsigned int TypeHandle;
     typedef unsigned int ProjectionID;
