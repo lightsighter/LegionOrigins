@@ -399,7 +399,8 @@ namespace RegionRuntime {
     public:
       LogicalRegion      region; 
       LogicalPartition   partition; 
-      TypeHandle         type;
+      std::set<FieldID>  privilege_fields;// fields for which a subtask will have privileges
+      std::vector<FieldID>  instance_fields; // fields used in the creation of physical instances
       PrivilegeMode      privilege;
       CoherenceProperty  prop;
       LogicalRegion      parent;
@@ -408,41 +409,60 @@ namespace RegionRuntime {
       bool               verified; // has this been verified already
       HandleType         handle_type;
       ProjectionID       projection;
+      // This is for verifying that the instance fields match up
+      // with pre-specified static types.  If they don't we'll throw an error.  They will
+      // only be checked if the TypeHandle is not zero.  If it is zero, no check is performed.
+      TypeHandle         inst_type;
     public:
       RegionRequirement(void) { }
       // Create a requirement for a single region
-      RegionRequirement(LogicalRegion _handle, TypeHandle _type,
-                        PrivilegeMode _priv,  
-                        CoherenceProperty _prop, LogicalRegion _parent,
-			MappingTagID _tag = 0, bool _verified = false);
+      RegionRequirement(LogicalRegion _handle,
+                        const std::set<FieldID> &privilege_fields,
+                        const std::vector<FieldID> &instance_fields,
+                        PrivilegeMode _priv, CoherenceProperty _prop, LogicalRegion _parent,
+			MappingTagID _tag = 0, bool _verified = false, TypeHandle _inst = 0);
       // Create a requirement for a partition with the colorize
       // function describing how to map points in the index space
       // to colors for logical subregions in the partition
       RegionRequirement(LogicalPartition pid, ProjectionID _proj,
-                        TypeHandle _type, PrivilegeMode _priv,
-                        CoherenceProperty _prop,
+                        const std::set<FieldID> &privilege_fields,
+                        const std::vector<FieldID> &instance_fields,
+                        PrivilegeMode _priv, CoherenceProperty _prop,
                         LogicalRegion _parent,
-			MappingTagID _tag = 0, bool _verified = false);
+			MappingTagID _tag = 0, bool _verified = false, TypeHandle _inst = 0);
       
       // Corresponding region requirements for reductions
       // Notice you pass a ReductionOpID instead of a Privilege
-      RegionRequirement(LogicalRegion _handle, TypeHandle _type,
-                        ReductionOpID op, 
-                        CoherenceProperty _prop, LogicalRegion _parent,
-			MappingTagID _tag = 0, bool _verified = false);
-      RegionRequirement(LogicalPartition pid, ProjectionID _proj, TypeHandle _type,
+      RegionRequirement(LogicalRegion _handle,
+                        const std::set<FieldID> &privilege_fields,
+                        const std::vector<FieldID> &instance_fields,
+                        ReductionOpID op, CoherenceProperty _prop, LogicalRegion _parent,
+			MappingTagID _tag = 0, bool _verified = false, TypeHandle _inst = 0);
+      RegionRequirement(LogicalPartition pid, ProjectionID _proj, 
+                        const std::set<FieldID> &privilege_fields,
+                        const std::vector<FieldID> &instance_fields,
                         ReductionOpID op, CoherenceProperty _prop,
                         LogicalRegion _parent,
-			MappingTagID _tag = 0, bool _verified = false);
+			MappingTagID _tag = 0, bool _verified = false, TypeHandle _inst = 0);
+    protected:
+      // For use by the SizedRegionRequirement class
+      RegionRequirement(LogicalRegion _handle,
+                        PrivilegeMode _priv, CoherenceProperty _prop, LogicalRegion _parent,
+			MappingTagID _tag, bool _verified, TypeHandle _inst);
+      RegionRequirement(LogicalPartition pid, ProjectionID _proj,
+                        PrivilegeMode _priv, CoherenceProperty _prop,
+                        LogicalRegion _parent,
+			MappingTagID _tag, bool _verified, TypeHandle _inst);
+      RegionRequirement(LogicalRegion _handle,
+                        ReductionOpID op, CoherenceProperty _prop, LogicalRegion _parent,
+			MappingTagID _tag, bool _verified, TypeHandle _inst);
+      RegionRequirement(LogicalPartition pid, ProjectionID _proj, 
+                        ReductionOpID op, CoherenceProperty _prop,
+                        LogicalRegion _parent,
+			MappingTagID _tag, bool _verified, TypeHandle _inst);
     public:
-      bool operator==(const RegionRequirement &req) const
-        { return (type == req.type) && ((type == SINGULAR) ? (region == req.region) : (partition == req.partition)) 
-                && (privilege == req.privilege) && (prop == req.prop) && (redop == req.redop) &&
-                   (parent == req.parent) && (handle_type == req.handle_type); }
-      bool operator<(const RegionRequirement &req) const
-        { return (type < req.type) || ((type == SINGULAR) ? (region < req.region) : (partition < req.partition))
-                || (privilege < req.privilege) || (prop < req.prop) || (redop < req.redop) || 
-                   (parent < req.parent) || (handle_type < req.handle_type); }
+      bool operator==(const RegionRequirement &req) const;
+      bool operator<(const RegionRequirement &req) const;
       RegionRequirement& operator=(const RegionRequirement &rhs);
     protected:
       friend class Task;
@@ -450,6 +470,42 @@ namespace RegionRuntime {
       size_t compute_size(void) const;
       void pack_requirement(Serializer &rez) const;
       void unpack_requirement(Deserializer &derez);
+    };
+
+    // A version of RegionRequirements templated on size for when we start generating code
+    // and the compiler knows explicitly how big these things are
+    template<int NUM_PRIV, int NUM_INST>
+    class SizedRegionRequirement : public RegionRequirement {
+    public:
+      // Create a requirement for a single region
+      SizedRegionRequirement(LogicalRegion _handle,
+                        FieldID privilege_fields[NUM_PRIV],
+                        FieldID instance_fields[NUM_INST],
+                        PrivilegeMode _priv, CoherenceProperty _prop, LogicalRegion _parent,
+			MappingTagID _tag = 0, bool _verified = false, TypeHandle _inst = 0);
+      // Create a requirement for a partition with the colorize
+      // function describing how to map points in the index space
+      // to colors for logical subregions in the partition
+      SizedRegionRequirement(LogicalPartition pid, ProjectionID _proj,
+                        FieldID privilege_fields[NUM_PRIV],
+                        FieldID instance_fields[NUM_INST],
+                        PrivilegeMode _priv, CoherenceProperty _prop,
+                        LogicalRegion _parent,
+			MappingTagID _tag = 0, bool _verified = false, TypeHandle _inst = 0);
+      
+      // Corresponding region requirements for reductions
+      // Notice you pass a ReductionOpID instead of a Privilege
+      SizedRegionRequirement(LogicalRegion _handle,
+                        FieldID privilege_fields[NUM_PRIV],
+                        FieldID instance_fields[NUM_INST],
+                        ReductionOpID op, CoherenceProperty _prop, LogicalRegion _parent,
+			MappingTagID _tag = 0, bool _verified = false, TypeHandle = 0);
+      SizedRegionRequirement(LogicalPartition pid, ProjectionID _proj, 
+                        FieldID privilege_fields[NUM_PRIV],
+                        FieldID instance_fields[NUM_INST],
+                        ReductionOpID op, CoherenceProperty _prop,
+                        LogicalRegion _parent,
+			MappingTagID _tag = 0, bool _verified = false, TypeHandle _inst = 0);
     };
 
     /////////////////////////////////////////////////////////////
@@ -571,15 +627,14 @@ namespace RegionRuntime {
        * For all the fields in the TypeHandle that aren't
        * in the current FieldSpace, allocate them.
        */
-      void upgrade_fields(TypeHandle handle);
+      inline FieldID allocate_field(size_t field_size);
       /**
        * For all the fields in the current TypeHandle that
        * aren't in the given handle, deallocate them.
        */
-      void downgrade_fields(TypeHandle handle);
+      inline void free_field(FieldID id);
     public:
       inline FieldSpace get_field_space(void) const;
-      TypeHandle get_type_handle(void) const;
     public:
       inline bool operator<(const FieldAllocator &rhs) const;
       inline bool operator==(const FieldAllocator &rhs) const;
@@ -630,21 +685,25 @@ namespace RegionRuntime {
       static InputArgs& get_input_args(void);
       // Register a task for a single task (the first one of these will be the top level task) 
       template<typename T,
-        T (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
+        T (*TASK_PTR)(const void*,size_t,const std::vector<RegionRequirement>&,
+                      const std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
       static TaskID register_single_task(TaskID id, Processor::Kind proc_kind, bool leaf = false, const char *name = NULL);
       // Same for void return type
       template<
-        void (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
+        void (*TASK_PTR)(const void*,size_t,const std::vector<RegionRequirement>&,
+                         const std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
       static TaskID register_single_task(TaskID id, Processor::Kind proc_kind, bool leaf = false, const char *name = NULL);
       // Register an index space task
       template<typename RT/*return type*/, typename PT/*point type*/, unsigned DIM/*point dimensions*/,
         RT (*TASK_PTR)(const void*,size_t,const void*,size_t,const PT[DIM],
-                        std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
+                       const std::vector<RegionRequirement>&,
+                       const std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
       static TaskID register_index_task(TaskID id, Processor::Kind proc_kind, bool leaf = false, const char *name = NULL);
       // Same for void return type
       template<typename PT, unsigned DIM,
         void (*TASK_PTR)(const void*,size_t,const void*,size_t,const PT[DIM],
-                        std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
+                         const std::vector<RegionRequirement>&,
+                         const std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
       static TaskID register_index_task(TaskID id, Processor::Kind proc_kind, bool leaf = false, const char *name = NULL);
     public:
       // Register static types with the number of fields and their sizes
@@ -724,13 +783,15 @@ namespace RegionRuntime {
        */
       FieldSpace create_field_space(Context ctx);
       void destroy_field_space(Context ctx, FieldSpace handle);
+      // Get the set of available fields based on the context privileges
+      void get_privilege_fields(Context, std::vector<FieldID> &fields);
     protected:
       /**
        * Create and destroy individual fields (called by FieldAllocator)
        */
       friend class FieldAllocator;
-      void upgrade_fields(Context ctx, FieldSpace space, TypeHandle handle);
-      void downgrade_fields(Context ctx, FieldSpace space, TypeHandle handle);
+      FieldID allocate_field(Context ctx, FieldSpace space, size_t field_size);
+      void free_field(Context ctx, FieldSpace space, FieldID fid);
     public:
       /////////////////////////
       // Functions for regions 
@@ -875,7 +936,8 @@ namespace RegionRuntime {
 #endif
     public:
       // Methods for the wrapper functions to get information from the runtime
-      const void* begin_task(Context ctx, std::vector<PhysicalRegion> &physical_regions, size_t &arglen);
+      const std::vector<RegionRequirement>& begin_task(Context ctx, 
+            std::vector<PhysicalRegion> &physical_regions, const void *&arg_ptr, size_t &arglen);
       void end_task(Context ctx, const void *result, size_t result_size,
                     std::vector<PhysicalRegion> &physical_regions);
       const void* get_local_args(Context ctx, void *point, size_t point_size, size_t &local_size); 
@@ -922,7 +984,8 @@ namespace RegionRuntime {
       UniqueID         get_unique_op_id(void);
       IndexPartition   get_unique_partition_id(void);
       RegionTreeID     get_unique_tree_id(void);
-      FieldSpaceID     get_unique_field_id(void);
+      FieldSpaceID     get_unique_field_space_id(void);
+      FieldID          get_unique_field_id(void);
     protected: 
       void add_to_dependence_queue(GeneralizedOperation *op);
       void add_to_ready_queue(IndividualTask *task, bool remote);
@@ -1069,6 +1132,7 @@ namespace RegionRuntime {
       InstanceID next_instance_id;
       RegionTreeID next_region_tree_id;
       FieldSpaceID next_field_space_id;
+      FieldID next_field_id;
       const unsigned unique_stride; // Stride for ids to guarantee uniqueness
       // Information for stealing
       const unsigned int max_outstanding_steals;
@@ -1283,8 +1347,9 @@ namespace RegionRuntime {
      */
     class Structure {
     public:
-      std::map<unsigned,size_t> field_sizes;
-      std::map<unsigned,const char*> field_names;
+      std::vector<unsigned> field_ids;
+      std::vector<size_t> field_sizes;
+      std::vector<const char*> field_names;
       const char *name;
       TypeHandle parent;
     };
@@ -1636,6 +1701,20 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    inline FieldID FieldAllocator::allocate_field(size_t field_size)
+    //--------------------------------------------------------------------------
+    {
+      return runtime->allocate_field(parent, space, field_size); 
+    }
+
+    //--------------------------------------------------------------------------
+    inline void FieldAllocator::free_field(FieldID id)
+    //--------------------------------------------------------------------------
+    {
+      runtime->free_field(parent, space, id);
+    }
+
+    //--------------------------------------------------------------------------
     inline FieldSpace LogicalRegion::get_field_space(void) const
     //--------------------------------------------------------------------------
     {
@@ -1685,6 +1764,74 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       return ((tree_id < rhs.tree_id) || (index_partition < rhs.index_partition) || (field_space < rhs.field_space));
+    }
+
+    //--------------------------------------------------------------------------
+    template<int NUM_PRIV, int NUM_INST>
+    SizedRegionRequirement<NUM_PRIV,NUM_INST>::SizedRegionRequirement(LogicalRegion _handle,
+                        FieldID priv_fields[NUM_PRIV], FieldID inst_fields[NUM_INST],
+                        PrivilegeMode _priv, CoherenceProperty _prop, LogicalRegion _parent,
+			MappingTagID _tag /*= 0*/, bool _verified /*= false*/,
+                        TypeHandle _inst /*= 0*/)
+      : RegionRequirement(_handle, _priv, _prop, _parent, _tag, _verified, _inst)
+    //--------------------------------------------------------------------------
+    {
+      for (unsigned idx = 0; idx < NUM_PRIV; idx++)
+        privilege_fields.insert(priv_fields[idx]);
+      instance_fields.resize(NUM_INST);
+      for (unsigned idx = 0; idx < NUM_INST; idx++)
+        instance_fields[idx] = inst_fields[idx];
+    }
+
+    //--------------------------------------------------------------------------
+    template<int NUM_PRIV, int NUM_INST>
+    SizedRegionRequirement<NUM_PRIV,NUM_INST>::SizedRegionRequirement(LogicalPartition pid, ProjectionID _proj,
+                        FieldID priv_fields[NUM_PRIV], FieldID inst_fields[NUM_INST],
+                        PrivilegeMode _priv, CoherenceProperty _prop,LogicalRegion _parent,
+			MappingTagID _tag /*= 0*/, bool _verified /*= false*/,
+                        TypeHandle _inst /*= 0*/)
+      : RegionRequirement(pid, _proj, _priv, _prop, _parent, _tag, _verified, _inst)
+    //--------------------------------------------------------------------------
+    {
+      for (unsigned idx = 0; idx < NUM_PRIV; idx++)
+        privilege_fields.insert(priv_fields[idx]);
+      instance_fields.resize(NUM_INST);
+      for (unsigned idx = 0; idx < NUM_INST; idx++)
+        instance_fields[idx] = inst_fields[idx];
+    }
+
+    //--------------------------------------------------------------------------
+    template<int NUM_PRIV, int NUM_INST>
+    SizedRegionRequirement<NUM_PRIV,NUM_INST>::SizedRegionRequirement(LogicalRegion _handle,
+                        FieldID priv_fields[NUM_PRIV], FieldID inst_fields[NUM_INST],
+                        ReductionOpID op, CoherenceProperty _prop, LogicalRegion _parent,
+			MappingTagID _tag /*= 0*/, bool _verified /*= false*/,
+                        TypeHandle _inst /*= 0*/)
+      : RegionRequirement(_handle, op, _prop, _parent, _tag, _verified, _inst)
+    //--------------------------------------------------------------------------
+    {
+      for (unsigned idx = 0; idx < NUM_PRIV; idx++)
+        privilege_fields.insert(priv_fields[idx]);
+      instance_fields.resize(NUM_INST);
+      for (unsigned idx = 0; idx < NUM_INST; idx++)
+        instance_fields[idx] = inst_fields[idx];
+    }
+
+    //--------------------------------------------------------------------------
+    template<int NUM_PRIV, int NUM_INST>
+    SizedRegionRequirement<NUM_PRIV,NUM_INST>::SizedRegionRequirement(LogicalPartition pid, ProjectionID _proj, 
+                        FieldID priv_fields[NUM_PRIV], FieldID inst_fields[NUM_INST],
+                        ReductionOpID op, CoherenceProperty _prop, LogicalRegion _parent,
+			MappingTagID _tag /*= 0*/, bool _verified /*= false*/,
+                        TypeHandle _inst /*= 0*/)
+      : RegionRequirement(pid, _proj, op, _prop, _parent, _tag, _verified, _inst)
+    //--------------------------------------------------------------------------
+    {
+      for (unsigned idx = 0; idx < NUM_PRIV; idx++)
+        privilege_fields.insert(priv_fields[idx]);
+      instance_fields.resize(NUM_INST);
+      for (unsigned idx = 0; idx < NUM_INST; idx++)
+        instance_fields[idx] = inst_fields[idx];
     }
 
     //--------------------------------------------------------------------------
@@ -2227,16 +2374,21 @@ namespace RegionRuntime {
         // Making a new structure type
         type_table[handle].name = type_name; 
         type_table[handle].parent = 0;
+        type_table[handle].field_ids.resize(NUM_FIELDS);
+        type_table[handle].field_sizes.resize(NUM_FIELDS);
+        type_table[handle].field_names.resize(NUM_FIELDS);
+        std::set<unsigned> duplicate_ids;
         for (unsigned idx = 0; idx < NUM_FIELDS; idx++)
         {
-          if (type_table[handle].field_sizes.find(field_ids[idx]) !=
-              type_table[handle].field_sizes.end())
+          if (duplicate_ids.find(field_ids[idx]) != duplicate_ids.end())
           {
             fprintf(stderr,"ERROR: Duplicate field ID %d for Type Structure %s\n",field_ids[idx],type_name);
             exit(ERROR_DUPLICATE_FIELD_ID);
           }
-          type_table[handle].field_sizes[field_ids[idx]] = field_sizes[idx];
-          type_table[handle].field_names[field_ids[idx]] = strdup(field_names[idx]);
+          type_table[handle].field_ids[idx] = field_ids[idx];
+          type_table[handle].field_sizes[idx] = field_sizes[idx];
+          type_table[handle].field_names[idx] = strdup(field_names[idx]);
+          duplicate_ids.insert(field_ids[idx]);
         }
       }
       else
@@ -2250,17 +2402,30 @@ namespace RegionRuntime {
           exit(ERROR_PARENT_TYPE_HANDLE_NONEXISTENT);
         }
         type_table[handle].parent = parent;
+        const Structure &par_struct = type_table[parent];
+        type_table[handle].field_ids.resize(NUM_FIELDS);
+        type_table[handle].field_sizes.resize(NUM_FIELDS);
+        type_table[handle].field_names.resize(NUM_FIELDS);
+        std::set<unsigned> duplicate_ids;
         for (unsigned idx = 0; idx < NUM_FIELDS; idx++)
         {
-          if (type_table[handle].field_sizes.find(field_ids[idx]) !=
-              type_table[handle].field_sizes.end())
+          if (duplicate_ids.find(field_ids[idx]) != duplicate_ids.end())
           {
             fprintf(stderr,"ERROR: Duplicate field ID %d for Type Structure %s\n",field_ids[idx],type_name);
             exit(ERROR_DUPLICATE_FIELD_ID);
           }
           // check to make sure that the parent type has the same fields
-          if (type_table[parent].field_sizes.find(field_ids[idx]) ==
-              type_table[parent].field_sizes.end())
+          bool has_parent = false;
+          for (std::vector<unsigned>::const_iterator it = par_struct.field_ids.begin();
+                it != par_struct.field_ids.end(); it++)
+          {
+            if ((*it) == field_ids[idx])
+            {
+              has_parent = true;
+              break;
+            }
+          }
+          if (!has_parent)
           {
             fprintf(stderr,"ERROR: Parent Type Structure %s does not have a field type %d\n",
                       field_ids[idx],type_table[parent].name);
@@ -2331,7 +2496,8 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     template<typename T,
-      T (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
+      T (*TASK_PTR)(const void*,size_t,const std::vector<RegionRequirement>&,
+                    const std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
     void high_level_task_wrapper(const void *args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------
     {
@@ -2345,8 +2511,10 @@ namespace RegionRuntime {
 #endif
       // Get the arguments associated with the context
       size_t task_arg_len;
+      const void *task_arg_ptr;
       std::vector<PhysicalRegion> regions;
-      const void* task_arg_ptr = runtime->begin_task(ctx, regions, task_arg_len);
+      const std::vector<RegionRequirement> &reqs = 
+                  runtime->begin_task(ctx, regions, task_arg_ptr, task_arg_len);
 
       // Invoke the task with the given context
       T return_value;
@@ -2356,7 +2524,7 @@ namespace RegionRuntime {
 #else
 	DetailedTimer::ScopedPush sp(TIME_KERNEL);
 #endif
-	return_value = (*TASK_PTR)(task_arg_ptr, task_arg_len, regions, ctx, runtime);
+	return_value = (*TASK_PTR)(task_arg_ptr, task_arg_len, reqs, regions, ctx, runtime);
       }
 
       // Send the return value back
@@ -2365,7 +2533,8 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     template<
-      void (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
+      void (*TASK_PTR)(const void*,size_t,const std::vector<RegionRequirement>&,
+                       const std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
     void high_level_task_wrapper(const void *args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------
     {
@@ -2379,8 +2548,10 @@ namespace RegionRuntime {
 #endif
       // Get the arguments associated with the context
       size_t task_arg_len;
+      const void *task_arg_ptr;
       std::vector<PhysicalRegion> regions; 
-      const void *task_arg_ptr = runtime->begin_task(ctx, regions, task_arg_len);
+      const std::vector<RegionRequirement> &reqs = 
+                  runtime->begin_task(ctx, regions, task_arg_ptr, task_arg_len);
 
       // Invoke the task with the given context
       {
@@ -2389,7 +2560,7 @@ namespace RegionRuntime {
 #else
 	DetailedTimer::ScopedPush sp(TIME_KERNEL);
 #endif
-	(*TASK_PTR)((const void*)task_arg_ptr, task_arg_len, regions, ctx, runtime);
+	(*TASK_PTR)((const void*)task_arg_ptr, task_arg_len, reqs, regions, ctx, runtime);
       }
 
       // Send an empty return value back
@@ -2399,7 +2570,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     template<typename RT, typename PT, unsigned DIM,
       RT (*TASK_PTR)(const void*,size_t,const void*,size_t,const PT[DIM],
-                      std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
+                     const std::vector<RegionRequirement>&,
+                     const std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
     void high_level_index_task_wrapper(const void *args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------
     {
@@ -2413,8 +2585,10 @@ namespace RegionRuntime {
 #endif
       // Get the arguments associated with the context
       size_t task_arg_len;
+      const void *task_arg_ptr;
       std::vector<PhysicalRegion> regions;
-      const void *task_arg_ptr = runtime->begin_task(ctx, regions, task_arg_len);
+      const std::vector<RegionRequirement> &reqs = 
+                  runtime->begin_task(ctx, regions, task_arg_ptr, task_arg_len);
       
       // Get the point and the local argument
       PT point[DIM];
@@ -2429,7 +2603,7 @@ namespace RegionRuntime {
 #else
 	DetailedTimer::ScopedPush sp(TIME_KERNEL);
 #endif
-	return_value = (*TASK_PTR)(task_arg_ptr, task_arg_len, local_args, local_size, point, regions, ctx, runtime);
+	return_value = (*TASK_PTR)(task_arg_ptr, task_arg_len, local_args, local_size, point, reqs, regions, ctx, runtime);
       }
 
       // Send the return value back
@@ -2453,8 +2627,10 @@ namespace RegionRuntime {
 #endif
       // Get the arguments associated with the context
       size_t task_arg_len;
+      const void *task_arg_ptr;
       std::vector<PhysicalRegion> regions; 
-      const void *task_arg_ptr = runtime->begin_task(ctx, regions, task_arg_len);
+      const std::vector<RegionRequirement> &reqs = 
+                  runtime->begin_task(ctx, regions, task_arg_ptr, task_arg_len);
 
       // Get the point and the local argument
       PT point[DIM];
@@ -2468,7 +2644,7 @@ namespace RegionRuntime {
 #else
 	DetailedTimer::ScopedPush sp(TIME_KERNEL);
 #endif
-	(*TASK_PTR)(task_arg_ptr, task_arg_len, local_args, local_size, point, regions, ctx, runtime);
+	(*TASK_PTR)(task_arg_ptr, task_arg_len, local_args, local_size, point, reqs, regions, ctx, runtime);
       }
 
       // Send an empty return value back
@@ -2477,7 +2653,8 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     template<typename T,
-        T (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
+        T (*TASK_PTR)(const void*,size_t,const std::vector<RegionRequirement>&, 
+                      const std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
     /*static*/ TaskID HighLevelRuntime::register_single_task(TaskID id, Processor::Kind proc_kind, 
                                                               bool leaf/*= false*/, const char *name/*= NULL*/)
     //--------------------------------------------------------------------------
@@ -2495,7 +2672,8 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     template<
-        void (*TASK_PTR)(const void*,size_t,std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
+        void (*TASK_PTR)(const void*,size_t,const std::vector<RegionRequirement>&,
+                         const std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
     /*static*/ TaskID HighLevelRuntime::register_single_task(TaskID id, Processor::Kind proc_kind, 
                                                               bool leaf/*= false*/, const char *name/*= NULL*/)
     //--------------------------------------------------------------------------
@@ -2514,7 +2692,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     template<typename RT/*return type*/, typename PT/*point type*/, unsigned DIM/*point dimensions*/,
         RT (*TASK_PTR)(const void*,size_t,const void*,size_t,const PT[DIM],
-                        std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
+                       const std::vector<RegionRequirement>&,
+                       const std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
     /*static*/ TaskID HighLevelRuntime::register_index_task(TaskID id, Processor::Kind proc_kind, 
                                                             bool leaf/*= false*/, const char *name/*= NULL*/)
     //--------------------------------------------------------------------------
@@ -2533,7 +2712,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     template<typename PT, unsigned DIM,
         void (*TASK_PTR)(const void*,size_t,const void*,size_t,const PT[DIM],
-                        std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
+                         const std::vector<RegionRequirement>&,
+                         const std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
     /*static*/ TaskID HighLevelRuntime::register_index_task(TaskID id, Processor::Kind proc_kind, 
                                                             bool leaf/*= false*/, const char *name/*= NULL*/)
     //--------------------------------------------------------------------------

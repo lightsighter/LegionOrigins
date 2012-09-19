@@ -49,6 +49,9 @@ namespace RegionRuntime {
     protected:
       void clone_generalized_operation_from(GeneralizedOperation *rhs);
     protected:
+      LegionErrorType verify_requirement(const RegionRequirement &req, 
+                                         FieldID &bad_field, size_t &bad_size, unsigned &bad_idx);
+    protected:
       size_t compute_operation_size(void);
       void pack_operation(Serializer &rez);
       void unpack_operation(Deserializer &derez);
@@ -90,6 +93,8 @@ namespace RegionRuntime {
       virtual bool perform_operation(void);
       virtual void trigger(void);
     private:
+      void check_privilege(void);
+    private:
       Context parent_ctx;
       RegionRequirement requirement;
       UserEvent mapped_event;
@@ -130,7 +135,7 @@ namespace RegionRuntime {
       void initialize_index_space_deletion(Context parent, IndexSpace space);
       void initialize_index_partition_deletion(Context parent, IndexPartition part);
       void initialize_field_space_deletion(Context parent, FieldSpace space);
-      void initialize_field_downgrade(Context parent, FieldSpace space, TypeHandle downgrade);
+      void initialize_field_deletion(Context parent, FieldSpace space, FieldID fid);
       void initialize_region_deletion(Context parent, LogicalRegion handle);
       void initialize_partition_deletion(Context parent, LogicalPartition handle);
     public:
@@ -145,7 +150,7 @@ namespace RegionRuntime {
         DESTROY_INDEX_SPACE,
         DESTROY_INDEX_PARTITION,
         DESTROY_FIELD_SPACE,
-        DESTROY_FIELDS,
+        DESTROY_FIELD,
         DESTROY_REGION,
         DESTROY_PARTITION,
       };
@@ -157,8 +162,7 @@ namespace RegionRuntime {
       } index;
       FieldSpace field_space; 
       DeletionKind handle_tag;
-      // For downgrading types of field spaces
-      TypeHandle downgrade_type;
+      FieldID field_id;
       LogicalRegion region;
       LogicalPartition partition;
       bool performed;
@@ -329,8 +333,8 @@ namespace RegionRuntime {
       // Operations on field spaces
       void create_field_space(FieldSpace space);
       void destroy_field_space(FieldSpace space);
-      void upgrade_field_space(FieldSpace space, TypeHandle handle);
-      void downgrade_field_space(FieldSpace space, TypeHandle handle);
+      void allocate_field(FieldSpace space, FieldID fid, size_t field_size);
+      void free_field(FieldSpace space, FieldID fid);
     public:
       // Operations on region trees
       void create_region(LogicalRegion handle, IndexSpace index_space, FieldSpace field_space, RegionTreeID tid);  
@@ -347,7 +351,7 @@ namespace RegionRuntime {
       // Methods for checking privileges
       LegionErrorType check_privilege(const IndexSpaceRequirement &req) const;
       LegionErrorType check_privilege(const FieldSpaceRequirement &req) const;
-      LegionErrorType check_privilege(const RegionRequirement &req) const;
+      LegionErrorType check_privilege(const RegionRequirement &req, FieldID &bad_field) const;
     public:
       void start_task(std::vector<PhysicalRegion> &physical_regions);
       void complete_task(const void *result, size_t result_size, std::vector<PhysicalRegion> &physical_regions);

@@ -154,6 +154,73 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    LegionErrorType GeneralizedOperation::verify_requirement(const RegionRequirement &req, 
+                                                              FieldID &bad_field, size_t &bad_size, unsigned &bad_idx)
+    //--------------------------------------------------------------------------
+    {
+      // First make sure that all the privilege fields are valid for the given
+      // fields space of the region or partition
+      lock_context();
+      FieldSpace sp = (req.handle_type == SINGULAR) ? req.region.field_space : req.partition.field_space;
+      for (std::set<FieldID>::const_iterator it = req.privilege_fields.begin();
+            it != req.privilege_fields.end(); it++)
+      {
+        if (!forest_ctx->has_field(sp, *it))
+        {
+          unlock_context();
+          bad_field = *it;
+          return ERROR_FIELD_SPACE_FIELD_MISMATCH;
+        }
+      }
+      unlock_context();
+
+      // Then check that any instance fields are included in the privilege fields
+      // Make sure that there are no duplicates in the instance fields
+      std::set<FieldID> inst_duplicates;
+      for (std::vector<FieldID>::const_iterator it = req.instance_fields.begin();
+            it != req.instance_fields.end(); it++)
+      {
+        if (req.privilege_fields.find(*it) == req.privilege_fields.end())
+        {
+          bad_field = *it;
+          return ERROR_INVALID_INSTANCE_FIELD;
+        }
+        if (inst_duplicates.find(*it) != inst_duplicates.end())
+        {
+          bad_field = *it;
+          return ERROR_DUPLICATE_INSTANCE_FIELD;
+        }
+        inst_duplicates.insert(*it);
+      }
+      
+      // Finally check that the type matches the instance fields
+      // Only do this if the user requested it
+      if (req.inst_type != 0)
+      {
+        const TypeTable &tt = HighLevelRuntime::get_type_table();  
+        TypeTable::const_iterator tt_it = tt.find(req.inst_type);
+        if (tt_it == tt.end())
+          return ERROR_INVALID_TYPE_HANDLE;
+        const Structure &st = tt_it->second;
+        if (st.field_sizes.size() != req.instance_fields.size())
+          return ERROR_TYPE_INST_MISSIZE;
+        lock_context();
+        for (unsigned idx = 0; idx < st.field_sizes.size(); idx++)
+        {
+          if (st.field_sizes[idx] != forest_ctx->get_field_size(sp, req.instance_fields[idx]))
+          {
+            bad_size = forest_ctx->get_field_size(sp, req.instance_fields[idx]);
+            unlock_context();
+            bad_field = req.instance_fields[idx];
+            bad_idx = idx;
+            return ERROR_TYPE_INST_MISMATCH;
+          }
+        }
+        unlock_context();
+      }
+    }
+
+    //--------------------------------------------------------------------------
     size_t GeneralizedOperation::compute_operation_size(void)
     //--------------------------------------------------------------------------
     {
@@ -202,13 +269,15 @@ namespace RegionRuntime {
       mapper = runtime->get_mapper(id);
       mapper_lock = runtime->get_mapper_lock(id);
       tag = t;
+      // Check privileges for the region requirement
+      check_privilege();
 #ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Map %d Parent %d",unique_id,parent_ctx->get_unique_id());
       log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle (%x,%x,%x) Parent (%x,%x,%x) Privilege %d Coherence %d",
               parent_ctx->get_unique_id(),unique_id,0,req.region.index_space.id,req.region.field_space.id,req.region.tree_id,
               PRINT_REG(req.parent),req.privilege,req.prop);
 #endif
-      ctx->register_child_map(this);
+      parent_ctx->register_child_map(this);
     }
     
     //--------------------------------------------------------------------------
@@ -227,13 +296,15 @@ namespace RegionRuntime {
       mapper = runtime->get_mapper(id);
       mapper_lock = runtime->get_mapper_lock(id);
       tag = t;
+      // Check privileges for the region requirement
+      check_privilege();
 #ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Map %d Parent %d",unique_id,parent_ctx->get_unique_id());
       log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle (%x,%x,%x) Parent (%x,%x,%x) Privilege %d Coherence %d",
               parent_ctx->get_unique_id(),unique_id,0,requirement.region.index_space.id,requirement.region.field_space.id,
               requirement.region.tree_id,PRINT_REG(requirement.parent),requirement.privilege,requirement.prop);
 #endif
-      ctx->register_child_map(this, idx);
+      parent_ctx->register_child_map(this, idx);
     }
 
     //--------------------------------------------------------------------------
@@ -422,6 +493,98 @@ namespace RegionRuntime {
       runtime->add_to_ready_queue(this);
     }
 
+    //--------------------------------------------------------------------------
+    void MappingOperation::check_privilege(void)
+    //--------------------------------------------------------------------------
+    {
+      FieldID bad_field;
+      size_t bad_size;
+      unsigned bad_idx;
+      LegionErrorType et = verify_requirement(requirement, bad_field, bad_size, bad_idx);
+      // If that worked, then check the privileges with the parent context
+      if (et == NO_ERROR)
+        et = parent_ctx->check_privilege(requirement, bad_field);
+      switch (et)
+      {
+        case NO_ERROR:
+          break;
+        case ERROR_FIELD_SPACE_FIELD_MISMATCH:
+          {
+            FieldSpace sp = (requirement.handle_type == SINGULAR) ? requirement.region.field_space : requirement.partition.field_space;
+            log_region(LEVEL_ERROR,"Field %d is not a valid field of field space %d for inline mapping (ID %d)",
+                                    bad_field, sp.id, get_unique_id());
+            exit(ERROR_FIELD_SPACE_FIELD_MISMATCH);
+          }
+        case ERROR_INVALID_INSTANCE_FIELD:
+          {
+            log_region(LEVEL_ERROR,"Instance field %d is not one of the privilege fields for inline mapping (ID %d)",
+                                    bad_field, get_unique_id());
+            exit(ERROR_INVALID_INSTANCE_FIELD);
+          }
+        case ERROR_DUPLICATE_INSTANCE_FIELD:
+          {
+            log_region(LEVEL_ERROR, "Instance field %d is a duplicate for inline mapping (ID %d)",
+                                  bad_field, get_unique_id());
+            exit(ERROR_DUPLICATE_INSTANCE_FIELD);
+          }
+        case ERROR_INVALID_TYPE_HANDLE:
+          {
+            log_region(LEVEL_ERROR, "Type handle %d does not name a valid registered structure type for inline mapping (ID %d)",
+                                    requirement.inst_type, get_unique_id());
+            exit(ERROR_INVALID_TYPE_HANDLE);
+          }
+        case ERROR_TYPE_INST_MISSIZE:
+          {
+            TypeTable &tt = HighLevelRuntime::get_type_table();
+            const Structure &st = tt[requirement.inst_type];
+            log_region(LEVEL_ERROR, "Type %s had %ld fields, but there are %ld instance fields for inline mapping (ID %d)",
+                                    st.name, st.field_sizes.size(), requirement.instance_fields.size(), get_unique_id());
+            exit(ERROR_TYPE_INST_MISSIZE);
+          }
+        case ERROR_TYPE_INST_MISMATCH:
+          {
+            TypeTable &tt = HighLevelRuntime::get_type_table();
+            const Structure &st = tt[requirement.inst_type]; 
+            log_region(LEVEL_ERROR, "Type %s has field %s with size %ld for field %d but requirement for inline mapping (ID %d) has size %ld",
+                                    st.name, st.field_names[bad_idx], st.field_sizes[bad_idx], bad_idx,
+                                    get_unique_id(), bad_size);
+            exit(ERROR_TYPE_INST_MISMATCH);
+          }
+        case ERROR_BAD_PARENT_REGION:
+          {
+            log_region(LEVEL_ERROR,"Parent task %s (ID %d) of inline mapping (ID %d) does not have a region requirement "
+                                    "for region REG_PAT as a parent of region requirement",
+                                    parent_ctx->variants->name, parent_ctx->get_unique_id(),
+                                    get_unique_id());
+            exit(ERROR_BAD_PARENT_REGION);
+          }
+        case ERROR_BAD_REGION_PATH:
+          {
+            log_region(LEVEL_ERROR,"Region (%x,%x,%x) is not a sub-region of parent region (%x,%x,%x) for "
+                                    "region requirement of inline mapping (ID %d)",
+                                    requirement.region.index_space.id,requirement.region.field_space.id, requirement.region.tree_id,
+                                    PRINT_REG(requirement.parent), get_unique_id());
+            exit(ERROR_BAD_REGION_PATH);
+          }
+        case ERROR_BAD_REGION_TYPE:
+          {
+            log_region(LEVEL_ERROR,"Region requirement of inline mapping (ID %d) cannot find privileges for field %d in parent task",
+                                    get_unique_id(), bad_field);
+            exit(ERROR_BAD_REGION_TYPE);
+          }
+        case ERROR_BAD_REGION_PRIVILEGES:
+          {
+            log_region(LEVEL_ERROR,"Privileges %x for region (%x,%x,%x) are not a subset of privileges of parent task's privileges for "
+                                   "region requirement of inline mapping (ID %d)",
+                                   requirement.privilege, requirement.region.index_space.id,requirement.region.field_space.id, 
+                                   requirement.region.tree_id, get_unique_id());
+            exit(ERROR_BAD_REGION_PRIVILEGES);
+          }
+        default:
+          assert(false); // Should never happen
+      }
+    }
+
     /////////////////////////////////////////////////////////////
     // Deletion Operation 
     /////////////////////////////////////////////////////////////
@@ -476,7 +639,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void DeletionOperation::initialize_field_downgrade(Context parent, FieldSpace space, TypeHandle downgrade)
+    void DeletionOperation::initialize_field_deletion(Context parent, FieldSpace space, FieldID fid)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -484,8 +647,8 @@ namespace RegionRuntime {
 #endif
       parent_ctx = parent;
       field_space = space;
-      handle_tag = DESTROY_FIELDS;
-      downgrade_type = downgrade;
+      handle_tag = DESTROY_FIELD;
+      field_id = fid; 
       performed = false;
       parent->register_child_deletion(this);
     }
@@ -571,9 +734,9 @@ namespace RegionRuntime {
               parent_ctx->destroy_field_space(field_space);
               break;
             }
-          case DESTROY_FIELDS:
+          case DESTROY_FIELD:
             {
-              parent_ctx->downgrade_field_space(field_space, downgrade_type);
+              parent_ctx->free_field(field_space, field_id);
               break;
             }
           case DESTROY_REGION:
@@ -803,11 +966,62 @@ namespace RegionRuntime {
         }
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
-          LegionErrorType et = parent_ctx->check_privilege(regions[idx]);
+          // Verify that the requirement is self-consistent
+          FieldID bad_field;
+          size_t bad_size;
+          unsigned bad_idx;
+          LegionErrorType et = verify_requirement(regions[idx], bad_field, bad_size, bad_idx);
+          // If that worked, then check the privileges with the parent context
+          if (et == NO_ERROR)
+            et = parent_ctx->check_privilege(regions[idx], bad_field);
           switch (et)
           {
             case NO_ERROR:
               break;
+            case ERROR_FIELD_SPACE_FIELD_MISMATCH:
+              {
+                FieldSpace sp = (regions[idx].handle_type == SINGULAR) ? regions[idx].region.field_space : regions[idx].partition.field_space;
+                log_region(LEVEL_ERROR,"Field %d is not a valid field of field space %d for region %d of task %s (ID %d)",
+                                        bad_field, sp.id, idx, this->variants->name, get_unique_id());
+                exit(ERROR_FIELD_SPACE_FIELD_MISMATCH);
+              }
+            case ERROR_INVALID_INSTANCE_FIELD:
+              {
+                log_region(LEVEL_ERROR,"Instance field %d is not one of the privilege fields for region %d of task %s (ID %d)",
+                                        bad_field, idx, this->variants->name, get_unique_id());
+                exit(ERROR_INVALID_INSTANCE_FIELD);
+              }
+            case ERROR_DUPLICATE_INSTANCE_FIELD:
+              {
+                log_region(LEVEL_ERROR, "Instance field %d is a duplicate for region %d of task %s (ID %d)",
+                                      bad_field, idx, this->variants->name, get_unique_id());
+                exit(ERROR_DUPLICATE_INSTANCE_FIELD);
+              }
+            case ERROR_INVALID_TYPE_HANDLE:
+              {
+                log_region(LEVEL_ERROR, "Type handle %d does not name a valid registered structure type for region %d of task %s (ID %d)",
+                                        regions[idx].inst_type, idx, this->variants->name, get_unique_id());
+                exit(ERROR_INVALID_TYPE_HANDLE);
+              }
+            case ERROR_TYPE_INST_MISSIZE:
+              {
+                TypeTable &tt = HighLevelRuntime::get_type_table();
+                const Structure &st = tt[regions[idx].inst_type];
+                log_region(LEVEL_ERROR, "Type %s had %ld fields, but there are %ld instance fields for region %d of task %s (ID %d)",
+                                        st.name, st.field_sizes.size(), regions[idx].instance_fields.size(), 
+                                        idx, this->variants->name, get_unique_id());
+                exit(ERROR_TYPE_INST_MISSIZE);
+              }
+            case ERROR_TYPE_INST_MISMATCH:
+              {
+                TypeTable &tt = HighLevelRuntime::get_type_table();
+                const Structure &st = tt[regions[idx].inst_type]; 
+                log_region(LEVEL_ERROR, "Type %s has field %s with size %ld for field %d but requirement for region %d of "
+                                        "task %s (ID %d) has size %ld",
+                                        st.name, st.field_names[bad_idx], st.field_sizes[bad_idx], bad_idx,
+                                        idx, this->variants->name, get_unique_id(), bad_size);
+                exit(ERROR_TYPE_INST_MISMATCH);
+              }
             case ERROR_BAD_PARENT_REGION:
               {
                 log_region(LEVEL_ERROR,"Parent task %s (ID %d) of task %s (ID %d) does not have a region requirement "
@@ -835,9 +1049,8 @@ namespace RegionRuntime {
               }
             case ERROR_BAD_REGION_TYPE:
               {
-                log_region(LEVEL_ERROR,"Type handle %d of region requirement %d of task %s (ID %d) is not a subtype "
-                                        "of parent task's region type",
-                                        regions[idx].type, idx, this->variants->name, get_unique_id());
+                log_region(LEVEL_ERROR,"Region requirement %d of task %s (ID %d) cannot find privileges for field %d in parent task",
+                                        idx, this->variants->name, get_unique_id(), bad_field);
                 exit(ERROR_BAD_REGION_TYPE);
               }
             case ERROR_BAD_REGION_PRIVILEGES:
@@ -1421,30 +1634,30 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void SingleTask::upgrade_field_space(FieldSpace space, TypeHandle handle)
+    void SingleTask::allocate_field(FieldSpace space, FieldID fid, size_t field_size)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       if (is_leaf)
       {
-        log_task(LEVEL_ERROR,"Illegal upgrade field space performed in leaf task %s (ID %d)",
+        log_task(LEVEL_ERROR,"Illegal field allocation performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
         exit(ERROR_LEAF_TASK_VIOLATION);
       }
 #endif
       lock_context();
-      forest_ctx->upgrade_field_space(space, handle);
+      forest_ctx->allocate_field(space, fid, field_size);
       unlock_context();
     }
 
     //--------------------------------------------------------------------------
-    void SingleTask::downgrade_field_space(FieldSpace space, TypeHandle handle)
+    void SingleTask::free_field(FieldSpace space, FieldID fid)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       if (is_leaf)
       {
-        log_task(LEVEL_ERROR,"Illegal downgrade field space performed in leaf task %s (ID %d)",
+        log_task(LEVEL_ERROR,"Illegal field deallocation performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
         exit(ERROR_LEAF_TASK_VIOLATION);
       }
@@ -1452,7 +1665,7 @@ namespace RegionRuntime {
       // No need to worry about deferring this, it's already been done
       // by the DeletionOperation
       lock_context();
-      forest_ctx->downgrade_field_space(space, handle);
+      forest_ctx->free_field(space, fid);
       unlock_context();
     }
 
@@ -1708,7 +1921,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    LegionErrorType SingleTask::check_privilege(const RegionRequirement &req) const
+    LegionErrorType SingleTask::check_privilege(const RegionRequirement &req, FieldID &bad_field) const
     //--------------------------------------------------------------------------
     {
       if (req.verified)
@@ -1742,15 +1955,19 @@ namespace RegionRuntime {
               return ERROR_BAD_PARTITION_PATH;
             }
           }
+          unlock_context();
           // Now check that the types are subset of the fields
           // Note we can use the parent since all the regions/partitions
           // in the same region tree have the same field space
-          if (!forest_ctx->is_current_subtype(req.parent, req.type))
+          for (std::set<FieldID>::const_iterator fit = req.privilege_fields.begin();
+                fit != req.privilege_fields.end(); fit++)
           {
-            unlock_context();
-            return ERROR_BAD_REGION_TYPE;
+            if (it->privilege_fields.find(*fit) == it->privilege_fields.end())
+            {
+              bad_field = *fit;
+              return ERROR_BAD_REGION_TYPE;
+            }
           }
-          unlock_context();
           if (req.privilege & (~(it->privilege)))
           {
             if (req.handle_type == SINGULAR)
@@ -1787,15 +2004,9 @@ namespace RegionRuntime {
               return ERROR_BAD_PARTITION_PATH;
             }
           }
-          // Now get the type handle for the logical region
-          // Note that the type handle is the same for the parent or children
-          // so it doesn't matter which one we pass here.
-          if (!forest_ctx->is_current_subtype(req.parent, req.type))
-          {
-            unlock_context();
-            return ERROR_BAD_REGION_TYPE;
-          }
-          unlock_context(); 
+          unlock_context();
+          // No need to check the field privileges since we should have them all
+
           // No need to check the privileges since we know we have them all
           return NO_ERROR;
         }
