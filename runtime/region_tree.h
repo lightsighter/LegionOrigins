@@ -147,6 +147,9 @@ namespace RegionRuntime {
     class IndexSpaceNode {
     public:
       friend class RegionTreeForest;
+      friend class IndexPartNode;
+      friend class RegionNode;
+      friend class PartitionNode;
       IndexSpaceNode(IndexSpace sp, IndexPartNode *par,
                 Color c, bool add);
     public:
@@ -169,6 +172,9 @@ namespace RegionRuntime {
     class IndexPartNode {
     public:
       friend class RegionTreeForest;
+      friend class IndexSpaceNode;
+      friend class RegionNode;
+      friend class PartitionNode;
       IndexPartNode(IndexPartition p, IndexSpaceNode *par,
                 Color c, bool dis, bool add);
     public:
@@ -206,11 +212,14 @@ namespace RegionRuntime {
       // Top nodes in the trees for which this field space is used 
       std::list<RegionNode*> logical_nodes;
       std::map<FieldID,size_t> fields;
+      std::list<FieldID> created_fields;
+      std::list<FieldID> deleted_fields;
     };
 
     class RegionNode {
     public:
       friend class RegionTreeForest;
+      friend class PartitionNode;
       RegionNode(LogicalRegion r, PartitionNode *par, IndexSpaceNode *row_src,
                  FieldSpaceNode *col_src, bool add);
     public:
@@ -223,6 +232,7 @@ namespace RegionRuntime {
       PartitionNode *const parent;
       IndexSpaceNode *const row_source;
       FieldSpaceNode *const column_source; // only valid for top of region trees
+      std::map<Color,LogicalPartition> color_map;
       std::map<LogicalPartition,PartitionNode*> partitions;
       bool added;
     };
@@ -230,6 +240,7 @@ namespace RegionRuntime {
     class PartitionNode {
     public:
       friend class RegionTreeForest;
+      friend class RegionNode;
       PartitionNode(LogicalPartition p, RegionNode *par, IndexPartNode *row_src,
                     bool add);
     public:
@@ -242,6 +253,7 @@ namespace RegionRuntime {
       RegionNode *const parent;
       IndexPartNode *const row_source;
       // No column source here
+      std::map<Color,LogicalRegion> color_map;
       std::map<LogicalRegion,RegionNode*> children;
       const bool disjoint;
       bool added;

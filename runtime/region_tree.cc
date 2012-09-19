@@ -895,6 +895,337 @@ namespace RegionRuntime {
       return it->second;
     }
 
+    /////////////////////////////////////////////////////////////
+    // Index Space Node 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    IndexSpaceNode::IndexSpaceNode(IndexSpace sp, IndexPartNode *par, Color c, bool add)
+      : handle(sp), depth((par == NULL) ? 0 : par->depth+1),
+        color(c), parent(par), added(add)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexSpaceNode::add_child(IndexPartition handle, IndexPartNode *node)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(color_map.find(node->color) == color_map.end());
+      assert(partitions.find(handle) == partitions.end());
+#endif
+      color_map[node->color] = handle;
+      partitions[handle] = node;
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexSpaceNode::remove_child(Color c)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(color_map.find(c) != color_map.end());
+      assert(partitions.find(color_map[c]) != partitions.end());
+#endif
+      partitions.erase(color_map[c]);
+      color_map.erase(c);
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexSpaceNode::add_instance(RegionNode *inst)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      for (std::list<RegionNode*>::const_iterator it = logical_nodes.begin();
+            it != logical_nodes.end(); it++)
+      {
+        assert((*it) != inst);
+      }
+#endif
+      logical_nodes.push_back(inst);
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexSpaceNode::remove_instance(RegionNode *inst)
+    //--------------------------------------------------------------------------
+    {
+      for (std::list<RegionNode*>::iterator it = logical_nodes.begin();
+            it != logical_nodes.end(); it++)
+      {
+        if ((*it) == inst)
+        {
+          logical_nodes.erase(it);
+          return;
+        }
+      }
+      assert(false); // should never get here
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Index Partition Node 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    IndexPartNode::IndexPartNode(IndexPartition p, IndexSpaceNode *par, Color c, bool dis, bool add)
+      : handle(p), depth((par == NULL) ? 0 : par->depth+1),
+        color(c), parent(par), disjoint(dis), added(add)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexPartNode::add_child(IndexSpace handle, IndexSpaceNode *node)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(color_map.find(node->color) == color_map.end());
+      assert(children.find(handle) == children.end());
+#endif
+      color_map[node->color] = handle;
+      children[handle] = node;
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexPartNode::remove_child(Color c)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(color_map.find(c) != color_map.end());
+      assert(children.find(color_map[c]) != children.end());
+#endif
+      children.erase(color_map[c]);
+      color_map.erase(c);
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexPartNode::add_instance(PartitionNode *inst)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      for (std::list<PartitionNode*>::const_iterator it = logical_nodes.begin();
+            it != logical_nodes.end(); it++)
+      {
+        assert((*it) != inst);
+      }
+#endif
+      logical_nodes.push_back(inst);
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexPartNode::remove_instance(PartitionNode *inst)
+    //--------------------------------------------------------------------------
+    {
+      for (std::list<PartitionNode*>::iterator it = logical_nodes.begin();
+            it != logical_nodes.end(); it++)
+      {
+        if ((*it) == inst)
+        {
+          logical_nodes.erase(it);
+          return;
+        }
+      }
+      assert(false); // should never get here
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Field Space Node 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    FieldSpaceNode::FieldSpaceNode(FieldSpace sp)
+      : handle(sp)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    void FieldSpaceNode::allocate_field(FieldID fid, size_t field_size)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(fields.find(fid) == fields.end());
+#endif
+      fields[fid] = field_size;
+      created_fields.push_back(fid);
+    }
+
+    //--------------------------------------------------------------------------
+    void FieldSpaceNode::free_field(FieldID fid)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(fields.find(fid) != fields.end());
+#endif
+      fields.erase(fid);
+      deleted_fields.push_back(fid);
+      // Check to see if we created it
+      for (std::list<FieldID>::iterator it = created_fields.begin();
+            it != created_fields.end(); it++)
+      {
+        if ((*it) == fid)
+        {
+          created_fields.erase(it);
+          // No longer needs to be marked deleted
+          deleted_fields.pop_back();
+          break;
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    bool FieldSpaceNode::has_field(FieldID fid)
+    //--------------------------------------------------------------------------
+    {
+      return (fields.find(fid) != fields.end());
+    }
+
+    //--------------------------------------------------------------------------
+    size_t FieldSpaceNode::get_field_size(FieldID fid)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(fields.find(fid) != fields.end());
+#endif
+      return fields[fid];
+    }
+
+    //--------------------------------------------------------------------------
+    void FieldSpaceNode::add_instance(RegionNode *inst)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      for (std::list<RegionNode*>::const_iterator it = logical_nodes.begin();
+            it != logical_nodes.end(); it++)
+      {
+        assert((*it) != inst);
+      }
+#endif
+      logical_nodes.push_back(inst);
+    }
+
+    //--------------------------------------------------------------------------
+    void FieldSpaceNode::remove_instance(RegionNode *inst)
+    //--------------------------------------------------------------------------
+    {
+      for (std::list<RegionNode*>::iterator it = logical_nodes.begin();
+            it != logical_nodes.end(); it++)
+      {
+        if ((*it) == inst)
+        {
+          logical_nodes.erase(it);
+          return;
+        }
+      }
+      assert(false); // should never get here
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Region Node 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    RegionNode::RegionNode(LogicalRegion r, PartitionNode *par, IndexSpaceNode *row_src,
+                           FieldSpaceNode *col_src, bool add)
+      : handle(r), parent(par), row_source(row_src), column_source(col_src), added(add)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::add_child(LogicalPartition handle, PartitionNode *node)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(color_map.find(node->row_source->color) == color_map.end());
+      assert(partitions.find(handle) == partitions.end());
+#endif
+      color_map[node->row_source->color] = handle;
+      partitions[handle] = node;
+    }
+
+    //--------------------------------------------------------------------------
+    bool RegionNode::has_child(Color c)
+    //--------------------------------------------------------------------------
+    {
+      return (color_map.find(c) != color_map.end());
+    }
+
+    //--------------------------------------------------------------------------
+    PartitionNode* RegionNode::get_child(Color c)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(color_map.find(c) != color_map.end());
+      assert(partitions.find(color_map[c]) != partitions.end());
+#endif
+      return partitions[color_map[c]];
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::remove_child(Color c)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(color_map.find(c) != color_map.end());
+      assert(partitions.find(color_map[c]) != partitions.end());
+#endif
+      partitions.erase(color_map[c]);
+      color_map.erase(c);
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Partition Node
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    PartitionNode::PartitionNode(LogicalPartition p, RegionNode *par, IndexPartNode *row_src, bool add)
+      : handle(p), parent(par), row_source(row_src), disjoint(row_src->disjoint), added(add)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    void PartitionNode::add_child(LogicalRegion handle, RegionNode *node)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(color_map.find(node->row_source->color) == color_map.end());
+      assert(children.find(handle) == children.end());
+#endif
+      color_map[node->row_source->color] = handle;
+      children[handle] = node;
+    }
+
+    //--------------------------------------------------------------------------
+    bool PartitionNode::has_child(Color c)
+    //--------------------------------------------------------------------------
+    {
+      return (color_map.find(c) != color_map.end());
+    }
+
+    //--------------------------------------------------------------------------
+    RegionNode* PartitionNode::get_child(Color c)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(color_map.find(c) != color_map.end());
+      assert(children.find(color_map[c]) != children.end());
+#endif
+      return children[color_map[c]];
+    }
+
+    //--------------------------------------------------------------------------
+    void PartitionNode::remove_child(Color c)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(color_map.find(c) != color_map.end());
+      assert(children.find(color_map[c]) != children.end());
+#endif
+      children.erase(color_map[c]);
+      color_map.erase(c);
+    }
+
   }; // namespace HighLevel
 }; // namespace RegionRuntime
 
