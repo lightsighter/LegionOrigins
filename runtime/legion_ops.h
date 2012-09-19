@@ -337,7 +337,7 @@ namespace RegionRuntime {
       void free_field(FieldSpace space, FieldID fid);
     public:
       // Operations on region trees
-      void create_region(LogicalRegion handle, IndexSpace index_space, FieldSpace field_space, RegionTreeID tid);  
+      void create_region(LogicalRegion handle);  
       void destroy_region(LogicalRegion handle);
       void destroy_partition(LogicalPartition handle);
       LogicalPartition get_region_partition(LogicalRegion parent, IndexPartition handle);

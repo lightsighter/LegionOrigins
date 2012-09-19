@@ -26,9 +26,6 @@ namespace RegionRuntime {
       bool compute_index_path(IndexSpace parent, IndexSpace child, std::vector<unsigned> &path);
       bool compute_partition_path(IndexSpace parent, IndexPartition child, std::vector<unsigned> &path);
     public:
-      TypeHandle get_current_type(FieldSpace handle);
-      TypeHandle get_current_type(LogicalRegion handle);
-    public:
       // Index Space operations
       void create_index_space(IndexSpace space);
       void destroy_index_space(IndexSpace space);
@@ -47,12 +44,11 @@ namespace RegionRuntime {
       size_t get_field_size(FieldSpace space, FieldID fid);
     public:
       // Logical Region operations
-      void create_region(LogicalRegion handle, IndexSpace index_space, FieldSpace field_space, RegionTreeID tid);  
+      void create_region(LogicalRegion handle);  
       void destroy_region(LogicalRegion handle);
       void destroy_partition(LogicalPartition handle);
       LogicalPartition get_region_partition(LogicalRegion parent, IndexPartition handle);
       LogicalRegion get_partition_subregion(LogicalPartition parent, IndexSpace handle);
-      bool is_current_subtype(LogicalRegion region, TypeHandle handle);
     public:
       // Logical Region contexts 
       void initialize_logical_context(LogicalRegion handle, ContextID ctx);
@@ -103,10 +99,23 @@ namespace RegionRuntime {
       void pack_leaked_return(Serializer &rez);
       void unpack_leaked_return(Deserializer &derez); // will unpack leaked references and remove them
     private: // Begin internal methods
-      void destroy_index_space_node(IndexSpaceNode *node); // (recursive)
-      void destroy_index_part_node(IndexPartNode *node); // (recursive)
-      void destroy_region_node(RegionNode *node); // (recursive)
-      void destroy_partition_node(PartitionNode *node); // (recursive)
+      IndexSpaceNode* create_node(IndexSpace sp, IndexPartNode *par, Color c, bool add);
+      IndexPartNode* create_node(IndexPartition p, IndexSpaceNode *par, Color c, bool dis, bool add);
+      FieldSpaceNode* create_node(FieldSpace sp);
+      RegionNode* create_node(LogicalRegion r, PartitionNode *par, bool add);
+      PartitionNode* create_node(LogicalPartition p, RegionNode *par, bool add);
+    private:
+      void destroy_node(IndexSpaceNode *node, bool top); // (recursive)
+      void destroy_node(IndexPartNode *node, bool top); // (recursive)
+      void destroy_node(FieldSpaceNode *node);
+      void destroy_node(RegionNode *node, bool top); // (recursive)
+      void destroy_node(PartitionNode *node, bool top); // (recursive)
+    private:
+      IndexSpaceNode* get_node(IndexSpace space);
+      IndexPartNode*  get_node(IndexPartition part);
+      FieldSpaceNode* get_node(FieldSpace space);
+      RegionNode*     get_node(LogicalRegion handle);
+      PartitionNode * get_node(LogicalPartition handle);
     private:
 #ifdef LOW_LEVEL_LOCKS
       Lock context_lock;
@@ -117,15 +126,18 @@ namespace RegionRuntime {
       bool lock_held;
 #endif
     private:
-      std::map<IndexSpace,IndexSpaceNode*>    index_nodes;
-      std::map<IndexPartition,IndexPartNode*> index_parts;
-      std::map<FieldSpace,FieldSpaceNode*>    field_nodes;
+      std::map<IndexSpace,IndexSpaceNode*>     index_nodes;
+      std::map<IndexPartition,IndexPartNode*>  index_parts;
+      std::map<FieldSpace,FieldSpaceNode*>     field_nodes;
+      std::map<LogicalRegion,RegionNode*>     region_nodes;
+      std::map<LogicalPartition,PartitionNode*> part_nodes;
     private: // lists of new things to know what to return
       std::list<IndexSpace> created_index_trees;
       std::list<IndexSpace> deleted_index_spaces;
       std::list<IndexPartition> deleted_index_parts;
     private:
       std::list<FieldSpace> created_field_spaces;
+      std::list<FieldSpace> deleted_field_spaces;
     private:
       std::list<LogicalRegion> created_region_trees;
       std::list<LogicalRegion> deleted_regions;
@@ -136,12 +148,17 @@ namespace RegionRuntime {
     public:
       friend class RegionTreeForest;
       IndexSpaceNode(IndexSpace sp, IndexPartNode *par,
-                bool add);
+                Color c, bool add);
     public:
-      void add_partition(Color c, IndexPartition handle, IndexPartNode *node);
+      void add_child(IndexPartition handle, IndexPartNode *node);
+      void remove_child(Color c);
+    public:
+      void add_instance(RegionNode *inst);
+      void remove_instance(RegionNode *inst);
     private:
       const IndexSpace handle;
       const unsigned depth;
+      const Color color;
       IndexPartNode *const parent;
       std::map<Color,IndexPartition> color_map;
       std::map<IndexPartition,IndexPartNode*> partitions;
@@ -153,12 +170,17 @@ namespace RegionRuntime {
     public:
       friend class RegionTreeForest;
       IndexPartNode(IndexPartition p, IndexSpaceNode *par,
-                bool dis, bool add);
+                Color c, bool dis, bool add);
     public:
-      void add_child(Color c, IndexSpace handle, IndexSpaceNode *node);
+      void add_child(IndexSpace handle, IndexSpaceNode *node);
+      void remove_child(Color c);
+    public:
+      void add_instance(PartitionNode *inst);
+      void remove_instance(PartitionNode *inst);
     private:
       const IndexPartition handle;
       const unsigned depth;
+      const Color color;
       IndexSpaceNode *const parent;
       std::map<Color,IndexSpace> color_map;
       std::map<IndexSpace,IndexSpaceNode*> children;
@@ -167,16 +189,40 @@ namespace RegionRuntime {
       bool added;
     };
 
+    class FieldSpaceNode {
+    public:
+      friend class RegionTreeForest;
+      FieldSpaceNode(FieldSpace sp);
+    public:
+      void allocate_field(FieldID fid, size_t field_size);
+      void free_field(FieldID fid);
+      bool has_field(FieldID fid);
+      size_t get_field_size(FieldID fid);
+    public:
+      void add_instance(RegionNode *node);
+      void remove_instance(RegionNode *node);
+    private:
+      const FieldSpace handle;
+      // Top nodes in the trees for which this field space is used 
+      std::list<RegionNode*> logical_nodes;
+      std::map<FieldID,size_t> fields;
+    };
+
     class RegionNode {
     public:
       friend class RegionTreeForest;
       RegionNode(LogicalRegion r, PartitionNode *par, IndexSpaceNode *row_src,
                  FieldSpaceNode *col_src, bool add);
+    public:
+      void add_child(LogicalPartition handle, PartitionNode *child);
+      bool has_child(Color c);
+      PartitionNode* get_child(Color c);
+      void remove_child(Color c);
     private:
       const LogicalRegion handle;
       PartitionNode *const parent;
       IndexSpaceNode *const row_source;
-      FieldSpaceNode *const column_source; 
+      FieldSpaceNode *const column_source; // only valid for top of region trees
       std::map<LogicalPartition,PartitionNode*> partitions;
       bool added;
     };
@@ -184,25 +230,21 @@ namespace RegionRuntime {
     class PartitionNode {
     public:
       friend class RegionTreeForest;
-      PartitionNode(LogicalPartition p, RegionNode *par, IndexPartNode *src,
+      PartitionNode(LogicalPartition p, RegionNode *par, IndexPartNode *row_src,
                     bool add);
+    public:
+      void add_child(LogicalRegion handle, RegionNode *child);
+      bool has_child(Color c);
+      RegionNode* get_child(Color c);
+      void remove_child(Color c);
     private:
       const LogicalPartition handle;
       RegionNode *const parent;
-      IndexPartNode *const source;
+      IndexPartNode *const row_source;
+      // No column source here
       std::map<LogicalRegion,RegionNode*> children;
       const bool disjoint;
       bool added;
-    };
-
-    class FieldSpaceNode {
-    public:
-      friend class RegionTreeForest;
-      FieldSpaceNode(FieldSpace sp);
-    private:
-      const FieldSpace handle;
-      // Top nodes in the trees for which this field space is used 
-      std::list<RegionNode*> logical_nodes;
     };
 
     class InstanceRef {

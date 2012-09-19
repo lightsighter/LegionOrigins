@@ -3410,7 +3410,7 @@ namespace RegionRuntime {
 #ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Region %x %x %x",index_space.id, field_space.id, tid);
 #endif
-      ctx->create_region(region, index_space, field_space, tid);
+      ctx->create_region(region);
 
       return region;
     }

@@ -1670,7 +1670,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void SingleTask::create_region(LogicalRegion handle, IndexSpace index_space, FieldSpace field_space, RegionTreeID tid)
+    void SingleTask::create_region(LogicalRegion handle)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1682,7 +1682,7 @@ namespace RegionRuntime {
       }
 #endif
       lock_context();
-      forest_ctx->create_region(handle, index_space, field_space, tid);
+      forest_ctx->create_region(handle);
       unlock_context();
       // Add this to the list of our created regions
       lock();
