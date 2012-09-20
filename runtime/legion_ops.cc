@@ -417,11 +417,65 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void MappingOperation::add_mapping_dependence(unsigned idx, const LogicalUser &prev, DependenceType dtype)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx == 0);
+#endif
+#ifndef LOG_EVENT_ONLY
+      log_spy(LEVEL_INFO,"Mapping Dependence %d %d %d %d %d %d", parent_ctx->get_unique_id(), prev.op->get_unique_id(),
+                                                                  prev.idx, get_unique_id(), idx, dtype);
+#endif
+      if (prev.op->add_waiting_dependence(this, prev.idx, prev.gen))
+      {
+        outstanding_dependences++;
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    bool MappingOperation::add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen)
+    //--------------------------------------------------------------------------
+    {
+      // Need to hold the lock to avoid destroying data during deactivation
+      lock();
+#ifdef DEBUG_HIGH_LEVEL
+      assert(gen <= generation); // make sure the generations make sense
+      assert(idx == 0);
+#endif
+      bool result;
+      do {
+        if (gen < generation)
+        {
+          result = false; // this mapping operation has already been recycled
+          break;
+        }
+        // Check to see if we've already been mapped
+        if (mapped_event.has_triggered())
+        {
+          result = false;
+          break;
+        }
+        // Make sure we don't add it twice
+        std::pair<std::set<GeneralizedOperation*>::iterator,bool> added = 
+          map_dependent_waiters.insert(waiter);
+        result = added.second;
+      } while (false);
+      unlock();
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
     void MappingOperation::perform_dependence_analysis(void)
     //--------------------------------------------------------------------------
     { 
       lock_context();
-      compute_mapping_dependences(parent_ctx, 0/*idx*/, requirement);
+      {
+        RegionAnalyzer az(parent_ctx->ctx_id, this, 0/*idx*/, requirement);
+        // Compute the path to the right place
+        forest_ctx->compute_index_path(requirement.parent.index_space, requirement.region.index_space, az.path);
+        forest_ctx->analyze_region(az);
+      }
       bool ready = is_ready();
       unlock_context();
       if (ready)
@@ -437,11 +491,11 @@ namespace RegionRuntime {
       ContextID phy_ctx = parent_ctx->find_enclosing_physical_context(requirement.parent);
       RegionMapper reg_mapper(phy_ctx, 0/*idx*/, requirement, mapper, mapper_lock, runtime->local_proc, 
                               unmapped_event, unmapped_event, tag, true/*inline mapping*/, source_copy_instances);
-      // Compute the trace
+      // Compute the path 
 #ifdef DEBUG_HIGH_LEVEL
       bool result = 
 #endif
-      forest_ctx->compute_index_path(requirement.parent.index_space, requirement.region.index_space, reg_mapper.trace);
+      forest_ctx->compute_index_path(requirement.parent.index_space, requirement.region.index_space, reg_mapper.path);
 #ifdef DEBUG_HIGH_LEVEL
       assert(result);
 #endif
@@ -702,10 +756,72 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void DeletionOperation::add_mapping_dependence(unsigned idx, const LogicalUser &prev, DependenceType dtype)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx == 0);
+#endif
+      if (prev.op->add_waiting_dependence(this, prev.idx, prev.gen))
+      {
+        outstanding_dependences++;
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    bool DeletionOperation::add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen)
+    //--------------------------------------------------------------------------
+    {
+      // This should never be called for deletion operations since they
+      // should never ever be registered in the logical region tree
+      assert(false);
+      return false;
+    }
+
+    //--------------------------------------------------------------------------
     void DeletionOperation::perform_dependence_analysis(void)
     //--------------------------------------------------------------------------
     {
-      
+      lock_context();
+      switch (handle_tag)
+      {
+        case DESTROY_INDEX_SPACE:
+          {
+            forest_ctx->analyze_index_space_deletion(parent_ctx->ctx_id, index.space, this);
+            break;
+          }
+        case DESTROY_INDEX_PARTITION:
+          {
+            forest_ctx->analyze_index_part_deletion(parent_ctx->ctx_id, index.partition, this);
+            break;
+          }
+        case DESTROY_FIELD_SPACE:
+          {
+            forest_ctx->analyze_field_space_deletion(parent_ctx->ctx_id, field_space, this);
+            break;
+          }
+        case DESTROY_FIELD:
+          {
+            forest_ctx->analyze_field_deletion(parent_ctx->ctx_id, field_space, field_id, this);
+            break;
+          }
+        case DESTROY_REGION:
+          {
+            forest_ctx->analyze_region_deletion(parent_ctx->ctx_id, region, this);
+            break;
+          }
+        case DESTROY_PARTITION:
+          {
+            forest_ctx->analyze_partition_deletion(parent_ctx->ctx_id, partition, this);
+            break;
+          }
+        default:
+          assert(false);
+      }
+      bool ready = is_ready();
+      unlock_context();
+      if (ready)
+        trigger();
     }
 
     //--------------------------------------------------------------------------
@@ -1077,6 +1193,28 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void TaskContext::add_mapping_dependence(unsigned idx, const LogicalUser &prev, DependenceType dtype)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      if (this == prev.op)
+      {
+        log_task(LEVEL_ERROR,"Illegal dependence between two region requirements with indexes %d and %d in task %s (ID %d)",
+                              prev.idx, idx, this->variants->name, get_unique_id());
+        exit(ERROR_ALIASED_INTRA_TASK_REGIONS);
+      }
+#endif
+#ifndef LOG_EVENT_ONLY
+      log_spy(LEVEL_INFO,"Mapping Dependence %d %d %d %d %d %d",parent_ctx->get_unique_id(),prev.op->get_unique_id(),
+                                                              prev.idx, get_unique_id(), idx, dtype);
+#endif
+      if (prev.op->add_waiting_dependence(this, prev.idx, prev.gen))
+      {
+        outstanding_dependences++;
+      }
+    }
+
+    //--------------------------------------------------------------------------
     void TaskContext::return_privileges(const std::list<IndexSpace> &new_indexes,
                                         const std::list<FieldSpace> &new_fields,
                                         const std::list<LogicalRegion> &new_regions)
@@ -1204,7 +1342,16 @@ namespace RegionRuntime {
       lock_context();
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        compute_mapping_dependences(parent_ctx, idx, regions[idx]);
+        // Analyze everything in the parent contexts logical scope
+        RegionAnalyzer az(parent_ctx->ctx_id, this, idx, regions[idx]);
+        // Compute the path to path to the destination
+        if (regions[idx].handle_type == SINGULAR)
+          forest_ctx->compute_index_path(regions[idx].parent.index_space, 
+                                          regions[idx].region.index_space, az.path);
+        else
+          forest_ctx->compute_partition_path(regions[idx].parent.index_space, 
+                                              regions[idx].partition.index_partition, az.path);
+        forest_ctx->analyze_region(az);
       }
       bool ready = is_ready();
       unlock_context();
@@ -2219,29 +2366,34 @@ namespace RegionRuntime {
         if (invoke_mapper_map_region_virtual(idx))
         {
           // Want a virtual mapping
+          lock();
           unmapped++;
           non_virtual_mapped_region.push_back(false);
           physical_instances.push_back(InstanceRef());
           physical_contexts.push_back(phy_ctx); // use same context as parent for all child mappings
+          unlock();
         }
         else
         {
           // Otherwise we want to do an actual physical mapping
           RegionMapper reg_mapper(phy_ctx, idx, regions[idx], mapper, mapper_lock, target, 
                                   single_term, multi_term, tag, false/*inline mapping*/, source_copy_instances);
-          // Compute the trace 
+          // Compute the path 
 #ifdef DEBUG_HIGH_LEVEL
           bool result = 
 #endif
-          forest_ctx->compute_index_path(regions[idx].parent.index_space,regions[idx].region.index_space, reg_mapper.trace);
+          forest_ctx->compute_index_path(regions[idx].parent.index_space,regions[idx].region.index_space, reg_mapper.path);
 #ifdef DEBUG_HIGH_LEVEL
           assert(result); // better have been able to compute the path
 #endif
           // Now do the traversal and record the result
-          physical_instances.push_back(forest_ctx->map_region(reg_mapper));
+          InstanceRef new_ref = forest_ctx->map_region(reg_mapper);
+          lock();
+          physical_instances.push_back(new_ref);
           // Check to make sure that the result isn't virtual, if it is then the mapping failed
           if (physical_instances[idx].is_virtual_ref())
           {
+            unlock();
             // Mapping failed
             invoke_mapper_failed_mapping(idx);
             map_success = false;
@@ -2249,6 +2401,7 @@ namespace RegionRuntime {
           }
           non_virtual_mapped_region.push_back(true);
           physical_contexts.push_back(ctx_id); // use our context for all child mappings
+          unlock();
         }
       }
       forest_ctx->unlock_context();
@@ -2265,6 +2418,7 @@ namespace RegionRuntime {
       {
         // Mapping failed so undo everything that was done
         forest_ctx->lock_context();
+        lock();
         for (unsigned idx = 0; idx < physical_instances.size(); idx++)
         {
           physical_instances[idx].remove_reference();
@@ -2274,6 +2428,7 @@ namespace RegionRuntime {
         physical_contexts.clear();
         non_virtual_mapped_region.clear();
         unmapped = 0;
+        unlock();
       }
       return map_success;
     }
@@ -2772,6 +2927,50 @@ namespace RegionRuntime {
       deactivate_single();
       // Free this back up to the runtime
       runtime->free_individual_task(this, parent);
+    }
+
+    //--------------------------------------------------------------------------
+    bool IndividualTask::add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen)
+    //--------------------------------------------------------------------------
+    {
+      lock();
+#ifdef DEBUG_HIGH_LEVEL
+      assert(gen <= generation);
+#endif
+      bool result;
+      do {
+        if (gen < generation)
+        {
+          result = false; // This task has already been recycled
+          break;
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        assert(idx < map_dependent_waiters.size());
+#endif
+        // Check to see if everything has been mapped
+        if (unmapped == 0)
+        {
+          result = false;
+        }
+        else
+        {
+          if ((idx >= non_virtual_mapped_region.size()) ||
+              !non_virtual_mapped_region[idx])
+          {
+            // hasn't been mapped yet, try adding it
+            std::pair<std::set<GeneralizedOperation*>::iterator,bool> added = 
+              map_dependent_waiters[idx].insert(waiter);
+            result = added.second;
+          }
+          else
+          {
+            // It's already been mapped
+            result = false;
+          }
+        }
+      } while (false);
+      unlock();
+      return result;
     }
 
     //--------------------------------------------------------------------------
@@ -3447,6 +3646,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(map_dependent_waiters.size() == regions.size());
 #endif
+      lock();
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
         bool next = non_virtual_mapped_region[idx];
@@ -3454,7 +3654,6 @@ namespace RegionRuntime {
         if (non_virtual_mapped_region[idx])
         {
           // hold the lock to prevent others from waiting
-          lock();
           std::set<GeneralizedOperation*> &waiters = map_dependent_waiters[idx];
           for (std::set<GeneralizedOperation*>::const_iterator it = waiters.begin();
                 it != waiters.end(); it++)
@@ -3462,13 +3661,13 @@ namespace RegionRuntime {
             (*it)->notify();
           }
           waiters.clear();
-          unlock();
         }
         else
         {
           unmapped++;
         }
       }
+      unlock();
       lock_context();
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
@@ -3508,11 +3707,16 @@ namespace RegionRuntime {
       release_source_copy_instances();
       unlock_context();
       // Notify all the waiters
+      bool needs_trigger = (unmapped > 0);
       lock();
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
         if (non_virtual_mapped_region[idx])
         {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(unmapped > 0);
+#endif
+          unmapped--;
           std::set<GeneralizedOperation*> &waiters = map_dependent_waiters[idx];
           for (std::set<GeneralizedOperation*>::const_iterator it = waiters.begin();
                 it != waiters.end(); it++)
@@ -3522,9 +3726,12 @@ namespace RegionRuntime {
           waiters.clear();
         }
       }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(unmapped == 0);
+#endif
       unlock();
-      mapped_event.trigger();
-      unmapped = 0;
+      if (needs_trigger)
+        mapped_event.trigger();
     }
 
     //--------------------------------------------------------------------------
@@ -3648,6 +3855,15 @@ namespace RegionRuntime {
       }
       deactivate_single();
       runtime->free_point_task(this);
+    }
+
+    //--------------------------------------------------------------------------
+    bool PointTask::add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen)
+    //--------------------------------------------------------------------------
+    {
+      // should never be called
+      assert(false);
+      return false;
     }
 
     //--------------------------------------------------------------------------
@@ -4028,6 +4244,43 @@ namespace RegionRuntime {
       Context parent = parent_ctx;
       deactivate_multi();
       runtime->free_index_task(this,parent);
+    }
+
+    //--------------------------------------------------------------------------
+    bool IndexTask::add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen)
+    //--------------------------------------------------------------------------
+    {
+      lock();
+#ifdef DEBUG_HIGH_LEVEL
+      assert(gen <= generation);
+#endif
+      bool result;
+      do {
+        if (gen < generation) // already been recycled
+        {
+          result = false;
+          break;
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        assert(idx < map_dependent_waiters.size());
+#endif
+        // Check to see if it has been mapped by everybody and we've seen the
+        // whole index space 
+        if ((frac_index_space.first == frac_index_space.second) &&
+            (mapped_points[idx] == num_total_points))
+        {
+          // Already been mapped by everyone
+          result = false;
+        }
+        else
+        {
+          std::pair<std::set<GeneralizedOperation*>::iterator,bool> added = 
+            map_dependent_waiters[idx].insert(waiter);
+          result = added.second;
+        }
+      } while (false);
+      unlock();
+      return result;
     }
 
     //--------------------------------------------------------------------------
@@ -4546,7 +4799,6 @@ namespace RegionRuntime {
     void IndexTask::slice_mapped(const std::vector<unsigned> &virtual_mapped)
     //--------------------------------------------------------------------------
     {
-      
       lock();
 #ifdef DEBUG_HIGH_LEVEL
       assert(virtual_mapped.size() == mapped_points.size());
@@ -4708,6 +4960,15 @@ namespace RegionRuntime {
       }
       deactivate_multi();
       runtime->free_slice_task(this);
+    }
+
+    //--------------------------------------------------------------------------
+    bool SliceTask::add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen)
+    //--------------------------------------------------------------------------
+    {
+      // should never be called
+      assert(false);
+      return false;
     }
 
     //--------------------------------------------------------------------------

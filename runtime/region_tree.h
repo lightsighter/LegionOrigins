@@ -23,8 +23,8 @@ namespace RegionRuntime {
       void assert_not_locked(void);
 #endif
     public:
-      bool compute_index_path(IndexSpace parent, IndexSpace child, std::vector<unsigned> &path);
-      bool compute_partition_path(IndexSpace parent, IndexPartition child, std::vector<unsigned> &path);
+      bool compute_index_path(IndexSpace parent, IndexSpace child, std::vector<Color> &path);
+      bool compute_partition_path(IndexSpace parent, IndexPartition child, std::vector<Color> &path);
     public:
       // Index Space operations
       void create_index_space(IndexSpace space);
@@ -52,10 +52,18 @@ namespace RegionRuntime {
     public:
       // Logical Region contexts 
       void initialize_logical_context(LogicalRegion handle, ContextID ctx);
+      void analyze_region(const RegionAnalyzer &az);
+      // Special registrations for deletions
+      void analyze_index_space_deletion(ContextID ctx, IndexSpace sp, DeletionOperation *op);
+      void analyze_index_part_deletion(ContextID ctx, IndexPartition part, DeletionOperation *op);
+      void analyze_field_space_deletion(ContextID ctx, FieldSpace sp, DeletionOperation *op);
+      void analyze_field_deletion(ContextID ctx, FieldSpace sp, FieldID fid, DeletionOperation *op);
+      void analyze_region_deletion(ContextID ctx, LogicalRegion handle, DeletionOperation *op);
+      void analyze_partition_deletion(ContextID ctx, LogicalPartition handle, DeletionOperation *op);
     public:
       // Physical Region contexts
-      InstanceRef map_region(const RegionMapper &rm);
       InstanceRef initialize_physical_context(LogicalRegion handle, InstanceRef ref, ContextID ctx);
+      InstanceRef map_region(const RegionMapper &rm);
       Event close_to_instance(InstanceRef ref, std::vector<InstanceRef> &source_copies);
     public:
       // Packing and unpacking send
@@ -163,8 +171,7 @@ namespace RegionRuntime {
       const unsigned depth;
       const Color color;
       IndexPartNode *const parent;
-      std::map<Color,IndexPartition> color_map;
-      std::map<IndexPartition,IndexPartNode*> partitions;
+      std::map<Color,IndexPartNode*> color_map;
       std::list<RegionNode*> logical_nodes; // corresponding region nodes
       bool added;
     };
@@ -188,8 +195,7 @@ namespace RegionRuntime {
       const unsigned depth;
       const Color color;
       IndexSpaceNode *const parent;
-      std::map<Color,IndexSpace> color_map;
-      std::map<IndexSpace,IndexSpaceNode*> children;
+      std::map<Color,IndexSpaceNode*> color_map;
       std::list<PartitionNode*> logical_nodes; // corresponding partition nodes
       const bool disjoint;
       bool added;
@@ -227,14 +233,38 @@ namespace RegionRuntime {
       bool has_child(Color c);
       PartitionNode* get_child(Color c);
       void remove_child(Color c);
+    public:
+      // Logical region state operations
+      void register_logical_region(const LogicalUser &user, const StateKey &key, std::vector<Color> &path);
+      void open_logical_tree(const LogicalUser &user, const StateKey &key, std::vector<Color> &path);
+    protected:
+      enum DataState {
+        DATA_CLEAN,
+        DATA_DIRTY,
+      };
+      enum PartState {
+        PART_NOT_OPEN,
+        PART_EXCLUSIVE, // allows only a single open partition
+        PART_READ_ONLY, // allows multiple read-only partitions
+        PART_REDUCE, // allows multiple reduction instances with same reduction op
+      };
+    protected:
+      struct LogicalState {
+      public:
+        PartState state;
+        std::set<Color> open_parts;
+        ReductionOpID redop;
+        std::list<LogicalUser> curr_epoch_users; // Users from the current epoch
+        std::list<LogicalUser> prev_epoch_users; // Users from the previous epoch
+      };
     private:
       const LogicalRegion handle;
       PartitionNode *const parent;
       IndexSpaceNode *const row_source;
       FieldSpaceNode *const column_source; // only valid for top of region trees
-      std::map<Color,LogicalPartition> color_map;
-      std::map<LogicalPartition,PartitionNode*> partitions;
+      std::map<Color,PartitionNode*> color_map;
       bool added;
+      std::map<StateKey,LogicalState> logical_states;
     };
 
     class PartitionNode {
@@ -253,8 +283,7 @@ namespace RegionRuntime {
       RegionNode *const parent;
       IndexPartNode *const row_source;
       // No column source here
-      std::map<Color,LogicalRegion> color_map;
-      std::map<LogicalRegion,RegionNode*> children;
+      std::map<Color,RegionNode*> color_map;
       const bool disjoint;
       bool added;
     };
@@ -273,6 +302,39 @@ namespace RegionRuntime {
       Memory location;
       PhysicalInstance instance;
       InstanceView *view;
+    };
+
+    struct RegionUsage {
+    public:
+      RegionUsage(PrivilegeMode p, CoherenceProperty c, ReductionOpID r)
+        : privilege(p), prop(c), redop(r) { }
+      RegionUsage(const RegionRequirement &req)
+        : privilege(req.privilege), prop(req.prop), redop(req.redop) { }
+    public:
+      PrivilegeMode     privilege;
+      CoherenceProperty prop;
+      ReductionOpID     redop;
+    };
+
+    struct LogicalUser {
+    public:
+      LogicalUser(GeneralizedOperation *o, unsigned id, RegionUsage u);
+    public:
+      GeneralizedOperation *op;
+      unsigned idx;
+      GenerationID gen;
+      RegionUsage usage;
+    };
+
+    class RegionAnalyzer {
+    public:
+      RegionAnalyzer(ContextID ctx_id, GeneralizedOperation *op, unsigned idx, const RegionRequirement &req);
+    public:
+      const ContextID ctx;
+      const LogicalUser user;
+      const LogicalRegion start;
+      std::vector<FieldID> fields;
+      std::vector<Color> path;
     };
 
     class RegionMapper {
@@ -301,7 +363,7 @@ namespace RegionRuntime {
       Processor target;
       Event single_term;
       Event multi_term;
-      std::vector<unsigned> trace;
+      std::vector<unsigned> path;
       // Vector for tracking source copy references, note it's a reference
       std::vector<InstanceRef> &source_copy_instances;
     };

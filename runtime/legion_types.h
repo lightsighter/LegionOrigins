@@ -75,6 +75,7 @@ namespace RegionRuntime {
       ERROR_INVALID_FIELD_SPACE_ENTRY = 50,
       ERROR_INVALID_REGION_ENTRY = 51,
       ERROR_INVALID_PARTITION_ENTRY = 52,
+      ERROR_ALIASED_INTRA_TASK_REGIONS = 53,
     };
 
     // enum and namepsaces don't really get along well
@@ -115,6 +116,14 @@ namespace RegionRuntime {
     enum HandleType {
       SINGULAR,
       PROJECTION,
+    };
+
+    enum DependenceType {
+      NO_DEPENDENCE = 0,
+      TRUE_DEPENDENCE = 1,
+      ANTI_DEPENDENCE = 2, // Write-After-Read or Write-After-Write with Write-Only privilege
+      ATOMIC_DEPENDENCE = 3,
+      SIMULTANEOUS_DEPENDENCE = 4,
     };
 
     // Runtime task numbering 
@@ -208,10 +217,10 @@ namespace RegionRuntime {
 
     class EscapedUser;
     class EscapedCopier;
-    class LogicalUser;
+    struct RegionUsage;
+    struct LogicalUser;
 
     // legion_utilities.h
-    class RegionUsage;
     class Serializer;
     class Deserializer;
     template<typename T> class Fraction;
@@ -249,6 +258,7 @@ namespace RegionRuntime {
     typedef bool (*PredicateFnptr)(const void*, size_t, const std::vector<Future> futures);
     typedef std::map<TypeHandle,Structure> TypeTable;
     typedef std::map<ProjectionID,ProjectionFnptr> ProjectionTable;
+    typedef std::pair<ContextID,FieldID> StateKey;
 
 #define FRIEND_ALL_RUNTIME_CLASSES                \
     friend class HighLevelRuntime;                \

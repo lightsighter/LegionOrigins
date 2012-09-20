@@ -55,32 +55,6 @@ namespace RegionRuntime {
     };
 
     /////////////////////////////////////////////////////////////
-    // RegionUsage 
-    /////////////////////////////////////////////////////////////
-    class RegionUsage {
-    public:
-      PrivilegeMode     privilege;
-      AllocateMode      alloc;
-      CoherenceProperty prop;
-      ReductionOpID     redop;
-    public:
-      RegionUsage(void);
-      RegionUsage(PrivilegeMode priv, AllocateMode all,
-                  CoherenceProperty pro, ReductionOpID red);
-    public:
-      RegionUsage(const RegionUsage &usage);
-      RegionUsage(const RegionRequirement &req);
-      RegionUsage& operator=(const RegionUsage &usage);
-      RegionUsage& operator=(const RegionRequirement &req);
-      bool operator==(const RegionUsage &usage) const;
-      bool operator<(const RegionUsage &usage) const;
-    public:
-      static size_t compute_usage_size(void);
-      void pack_usage(Serializer &rez) const;
-      void unpack_usage(Deserializer &derez);
-    };
-
-    /////////////////////////////////////////////////////////////
     // Serializer 
     /////////////////////////////////////////////////////////////
     class Serializer {

@@ -18,6 +18,134 @@ namespace RegionRuntime {
     extern Logger::Category log_leak;
     extern Logger::Category log_variant;
 
+    // Inline functions for dependence analysis
+
+    //--------------------------------------------------------------------------
+    static inline DependenceType check_for_anti_dependence(const RegionUsage &u1,
+                                                           const RegionUsage &u2,
+                                                           DependenceType actual)
+    //--------------------------------------------------------------------------
+    {
+      // Check for WAR or WAW with write-only
+      if (IS_READ_ONLY(u1))
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(HAS_WRITE(u2)); // We know at least req1 or req2 is a writers, so if req1 is not...
+#endif
+        return ANTI_DEPENDENCE;
+      }
+      else
+      {
+        if (IS_WRITE_ONLY(u2))
+        {
+          // WAW with a write-only
+          return ANTI_DEPENDENCE;
+        }
+        else
+        {
+          // This defaults to whatever the actual dependence is
+          return actual;
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    static inline DependenceType check_dependence_type(const RegionUsage &u1,
+                                                       const RegionUsage &u2)
+    //--------------------------------------------------------------------------
+    {
+      // Two readers are never a dependence
+      if (IS_READ_ONLY(u1) && IS_READ_ONLY(u2))
+      {
+        return NO_DEPENDENCE;
+      }
+      else if (IS_REDUCE(u1) && IS_REDUCE(u2))
+      {
+        // If they are the same kind of reduction, no dependence, otherwise true dependence
+        if (u1.redop == u2.redop)
+        {
+          return NO_DEPENDENCE;
+        }
+        else
+        {
+          return TRUE_DEPENDENCE;
+        }
+      }
+      else
+      {
+        // Everything in here has at least one right
+#ifdef DEBUG_HIGH_LEVEL
+        assert(HAS_WRITE(u1) || HAS_WRITE(u2));
+#endif
+        // If anything exclusive 
+        if (IS_EXCLUSIVE(u1) || IS_EXCLUSIVE(u1))
+        {
+          return check_for_anti_dependence(u1,u2,TRUE_DEPENDENCE/*default*/);
+        }
+        // Anything atomic (at least one is a write)
+        else if (IS_ATOMIC(u1) || IS_ATOMIC(u2))
+        {
+          // If they're both atomics, return an atomic dependence
+          if (IS_ATOMIC(u1) && IS_ATOMIC(u2))
+          {
+            return check_for_anti_dependence(u1,u2,ATOMIC_DEPENDENCE/*default*/); 
+          }
+          // If the one that is not an atomic is a read, we're also ok
+          else if ((!IS_ATOMIC(u1) && IS_READ_ONLY(u1)) ||
+                   (!IS_ATOMIC(u2) && IS_READ_ONLY(u2)))
+          {
+            return NO_DEPENDENCE;
+          }
+          // Everything else is a dependence
+          return check_for_anti_dependence(u1,u2,TRUE_DEPENDENCE/*default*/);
+        }
+        // If either is simultaneous we have a simultaneous dependence
+        else if (IS_SIMULT(u1) || IS_SIMULT(u2))
+        {
+          return check_for_anti_dependence(u1,u2,SIMULTANEOUS_DEPENDENCE/*default*/);
+        }
+        else if (IS_RELAXED(u1) && IS_RELAXED(u2))
+        {
+          // TODO: Make this truly relaxed, right now it is the same as simultaneous
+          return check_for_anti_dependence(u1,u2,SIMULTANEOUS_DEPENDENCE/*default*/);
+          // This is what it should be: return NO_DEPENDENCE;
+          // What needs to be done:
+          // - RegionNode::update_valid_instances needs to allow multiple outstanding writers
+          // - RegionNode needs to detect relaxed case and make copies from all 
+          //              relaxed instances to non-relaxed instance
+        }
+        // We should never make it here
+        assert(false);
+        return NO_DEPENDENCE;
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    static inline bool perform_dependence_check(const LogicalUser &prev,
+                                                const LogicalUser &next)
+    //--------------------------------------------------------------------------
+    {
+      bool mapping_dependence = false;
+      DependenceType dtype = check_dependence_type(prev.usage, next.usage);
+      switch (dtype)
+      {
+        case NO_DEPENDENCE:
+          break;
+        case TRUE_DEPENDENCE:
+        case ANTI_DEPENDENCE:
+        case ATOMIC_DEPENDENCE:
+        case SIMULTANEOUS_DEPENDENCE:
+          {
+            next.op->add_mapping_dependence(next.idx, prev, dtype);
+            mapping_dependence = true;
+            break;
+          }
+        default:
+          assert(false);
+      }
+      return mapping_dependence;
+    }
+
     /////////////////////////////////////////////////////////////
     // Region Tree Forest 
     /////////////////////////////////////////////////////////////
@@ -89,18 +217,43 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     bool RegionTreeForest::compute_index_path(IndexSpace parent, IndexSpace child,
-                                      std::vector<unsigned> &path)
+                                      std::vector<Color> &path)
     //--------------------------------------------------------------------------
     {
-
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
+      IndexSpaceNode *child_node = get_node(child); 
+      path.push_back(child_node->color);
+      if (parent == child) 
+        return true; // Early out
+      IndexSpaceNode *parent_node = get_node(parent);
+      while (parent_node != child_node)
+      {
+        if (parent_node->depth >= child_node->depth)
+          return false;
+        if (child_node->parent == NULL)
+          return false;
+        path.push_back(child_node->parent->color);
+        path.push_back(child_node->parent->parent->color);
+        child_node = child_node->parent->parent;
+      }
+      return true;
     }
 
     //--------------------------------------------------------------------------
     bool RegionTreeForest::compute_partition_path(IndexSpace parent, IndexPartition child,
-                                      std::vector<unsigned> &path)
+                                      std::vector<Color> &path)
     //--------------------------------------------------------------------------
     {
-
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
+      IndexPartNode *child_node = get_node(child);
+      path.push_back(child_node->color);
+      if (child_node->parent == NULL)
+        return false;
+      return compute_index_path(parent, child_node->parent->handle, path);
     }
 
     //--------------------------------------------------------------------------
@@ -216,7 +369,7 @@ namespace RegionRuntime {
         exit(ERROR_INVALID_INDEX_SPACE_COLOR);
       }
 #endif
-      return parent_node->partitions[parent_node->color_map[color]]->handle;
+      return parent_node->color_map[color]->handle;
     }
 
     //--------------------------------------------------------------------------
@@ -234,7 +387,7 @@ namespace RegionRuntime {
         exit(ERROR_INVALID_INDEX_PART_COLOR);
       }
 #endif
-      return parent_node->children[parent_node->color_map[color]]->handle;
+      return parent_node->color_map[color]->handle;
     }
 
     //--------------------------------------------------------------------------
@@ -429,14 +582,32 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    InstanceRef RegionTreeForest::map_region(const RegionMapper &rm)
+    void RegionTreeForest::analyze_region(const RegionAnalyzer &az)
+    //--------------------------------------------------------------------------
+    {
+      // For every field in the context, do the analysis
+      RegionNode *start_node = get_node(az.start);
+      for (std::vector<FieldID>::const_iterator it = az.fields.begin();
+            it != az.fields.end(); it++)
+      {
+        StateKey key(az.ctx,*it);
+        std::vector<Color> path = az.path;
+        start_node->register_logical_region(az.user, key, path);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(path.empty());
+#endif
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    InstanceRef RegionTreeForest::initialize_physical_context(LogicalRegion handle, InstanceRef ref, ContextID ctx)
     //--------------------------------------------------------------------------
     {
 
     }
 
     //--------------------------------------------------------------------------
-    InstanceRef RegionTreeForest::initialize_physical_context(LogicalRegion handle, InstanceRef ref, ContextID ctx)
+    InstanceRef RegionTreeForest::map_region(const RegionMapper &rm)
     //--------------------------------------------------------------------------
     {
 
@@ -705,8 +876,8 @@ namespace RegionRuntime {
       assert(node->logical_nodes.empty());
 #endif
       // destroy any child nodes, then do ourselves
-      for (std::map<IndexPartition,IndexPartNode*>::const_iterator it = node->partitions.begin();
-            it != node->partitions.end(); it++)
+      for (std::map<Color,IndexPartNode*>::const_iterator it = node->color_map.begin();
+            it != node->color_map.end(); it++)
       {
         destroy_node(it->second, false/*top*/);
       }
@@ -734,8 +905,8 @@ namespace RegionRuntime {
       assert(node->logical_nodes.empty());
 #endif
       // destroy any child nodes, then do ourselves
-      for (std::map<IndexSpace,IndexSpaceNode*>::const_iterator it = node->children.begin();
-            it != node->children.end(); it++)
+      for (std::map<Color,IndexSpaceNode*>::const_iterator it = node->color_map.begin();
+            it != node->color_map.end(); it++)
       {
         destroy_node(it->second, false/*top*/);
       }
@@ -787,8 +958,8 @@ namespace RegionRuntime {
         node->parent->remove_child(node->row_source->color);
       }
       // Now destroy our children
-      for (std::map<LogicalPartition,PartitionNode*>::const_iterator it = node->partitions.begin();
-            it != node->partitions.end(); it++)
+      for (std::map<Color,PartitionNode*>::const_iterator it = node->color_map.begin();
+            it != node->color_map.end(); it++)
       {
         destroy_node(it->second, false/*top*/);
       }
@@ -811,8 +982,8 @@ namespace RegionRuntime {
       {
         node->parent->remove_child(node->row_source->color);
       }
-      for (std::map<LogicalRegion,RegionNode*>::const_iterator it = node->children.begin();
-            it != node->children.end(); it++)
+      for (std::map<Color,RegionNode*>::const_iterator it = node->color_map.begin();
+            it != node->color_map.end(); it++)
       {
         destroy_node(it->second, false/*top*/);
       }
@@ -913,10 +1084,8 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(color_map.find(node->color) == color_map.end());
-      assert(partitions.find(handle) == partitions.end());
 #endif
-      color_map[node->color] = handle;
-      partitions[handle] = node;
+      color_map[node->color] = node;
     }
 
     //--------------------------------------------------------------------------
@@ -925,9 +1094,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(color_map.find(c) != color_map.end());
-      assert(partitions.find(color_map[c]) != partitions.end());
 #endif
-      partitions.erase(color_map[c]);
       color_map.erase(c);
     }
 
@@ -979,10 +1146,8 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(color_map.find(node->color) == color_map.end());
-      assert(children.find(handle) == children.end());
 #endif
-      color_map[node->color] = handle;
-      children[handle] = node;
+      color_map[node->color] = node;
     }
 
     //--------------------------------------------------------------------------
@@ -991,9 +1156,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(color_map.find(c) != color_map.end());
-      assert(children.find(color_map[c]) != children.end());
 #endif
-      children.erase(color_map[c]);
       color_map.erase(c);
     }
 
@@ -1137,10 +1300,8 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(color_map.find(node->row_source->color) == color_map.end());
-      assert(partitions.find(handle) == partitions.end());
 #endif
-      color_map[node->row_source->color] = handle;
-      partitions[handle] = node;
+      color_map[node->row_source->color] = node;
     }
 
     //--------------------------------------------------------------------------
@@ -1156,9 +1317,8 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(color_map.find(c) != color_map.end());
-      assert(partitions.find(color_map[c]) != partitions.end());
 #endif
-      return partitions[color_map[c]];
+      return color_map[c];
     }
 
     //--------------------------------------------------------------------------
@@ -1167,10 +1327,38 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(color_map.find(c) != color_map.end());
-      assert(partitions.find(color_map[c]) != partitions.end());
 #endif
-      partitions.erase(color_map[c]);
       color_map.erase(c);
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::register_logical_region(const LogicalUser &user, const StateKey &key,
+                                             std::vector<Color> &path)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!path.empty());
+      assert(path.back() == row_source->color);
+      assert(logical_states.find(key) != logical_states.end());
+#endif
+      LogicalState &state = logical_states[key];
+      if (path.size() == 1)
+      {
+        // We've arrived where we're going
+        unsigned mapping_dependence_count = 0;
+        for (std::list<LogicalUser>::const_iterator it = state.curr_epoch_users.begin();
+              it != state.curr_epoch_users.end(); it++)
+        {
+          if (perform_dependence_check(*it, user))
+          {
+            mapping_dependence_count++;
+          }
+        }
+      }
+      else
+      {
+        // Not there yet
+      }
     }
 
     /////////////////////////////////////////////////////////////
@@ -1190,10 +1378,8 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(color_map.find(node->row_source->color) == color_map.end());
-      assert(children.find(handle) == children.end());
 #endif
-      color_map[node->row_source->color] = handle;
-      children[handle] = node;
+      color_map[node->row_source->color] = node;
     }
 
     //--------------------------------------------------------------------------
@@ -1209,9 +1395,8 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(color_map.find(c) != color_map.end());
-      assert(children.find(color_map[c]) != children.end());
 #endif
-      return children[color_map[c]];
+      return color_map[c];
     }
 
     //--------------------------------------------------------------------------
@@ -1220,10 +1405,38 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(color_map.find(c) != color_map.end());
-      assert(children.find(color_map[c]) != children.end());
 #endif
-      children.erase(color_map[c]);
       color_map.erase(c);
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Logical User 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    LogicalUser::LogicalUser(GeneralizedOperation *o, unsigned id, RegionUsage u)
+      : op(o), idx(id), gen(o->get_gen()), usage(u)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Region Analyzer 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    RegionAnalyzer::RegionAnalyzer(ContextID ctx_id, GeneralizedOperation *op, unsigned idx, const RegionRequirement &req)
+      : ctx(ctx_id), user(LogicalUser(op, idx, RegionUsage(req))), start(req.parent)
+    //--------------------------------------------------------------------------
+    {
+      // Copy the fields from the region requirement
+      fields.resize(req.privilege_fields.size());
+      unsigned i = 0;
+      for (std::set<FieldID>::const_iterator it = req.privilege_fields.begin();
+            it != req.privilege_fields.end(); it++)
+      {
+        fields[i++] = *it;
+      }
     }
 
   }; // namespace HighLevel

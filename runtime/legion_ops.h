@@ -36,8 +36,9 @@ namespace RegionRuntime {
       // Mapping dependence operations
       bool is_ready();
       void notify(void);
-    public:
-      void compute_mapping_dependences(Context parent, unsigned idx, const RegionRequirement &req);     
+      GenerationID get_gen(void) const { return generation; }
+      virtual void add_mapping_dependence(unsigned idx, const LogicalUser &prev, DependenceType dtype) = 0;
+      virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen) = 0;
     public:
       virtual bool activate(GeneralizedOperation *parent = NULL) = 0;
       virtual void deactivate(void) = 0; 
@@ -89,6 +90,8 @@ namespace RegionRuntime {
       // Functions from GenerlizedOperation
       virtual bool activate(GeneralizedOperation *parent = NULL);
       virtual void deactivate(void);
+      virtual void add_mapping_dependence(unsigned idx, const LogicalUser &prev, DependenceType dtype);
+      virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen);
       virtual void perform_dependence_analysis(void);
       virtual bool perform_operation(void);
       virtual void trigger(void);
@@ -142,6 +145,8 @@ namespace RegionRuntime {
       // Functions from GeneralizedOperation
       virtual bool activate(GeneralizedOperation *parent = NULL);
       virtual void deactivate(void);
+      virtual void add_mapping_dependence(unsigned idx, const LogicalUser &prev, DependenceType dtype);
+      virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen);
       virtual void perform_dependence_analysis(void);
       virtual bool perform_operation(void);
       virtual void trigger(void);
@@ -196,6 +201,8 @@ namespace RegionRuntime {
                             const std::vector<RegionRequirement> &regions, bool perform_checks);
     public:
       // Functions from GeneralizedOperation
+      virtual void add_mapping_dependence(unsigned idx, const LogicalUser &prev, DependenceType dtype);
+      virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen) = 0;
       virtual bool activate(GeneralizedOperation *parent = NULL) = 0;
       virtual void deactivate(void) = 0;
       virtual void perform_dependence_analysis(void);
@@ -259,6 +266,9 @@ namespace RegionRuntime {
 #endif
     protected:
       friend class SingleTask;
+      friend class GeneralizedOperation;
+      friend class MappingOperation;
+      friend class DeletionOperation;
       // Keep track of created objects that we have privileges for
       std::list<IndexSpace> created_index_spaces;
       std::list<FieldSpace> created_field_spaces;
@@ -287,6 +297,7 @@ namespace RegionRuntime {
       void deactivate_single(void);
     public:
       // Functions from GeneralizedOperation
+      virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen) = 0;
       virtual bool perform_operation(void);
       virtual void trigger(void) = 0;
       virtual bool activate(GeneralizedOperation *parent = NULL) = 0;
@@ -422,6 +433,7 @@ namespace RegionRuntime {
       virtual void trigger(void) = 0;
       virtual bool activate(GeneralizedOperation *parent = NULL) = 0;
       virtual void deactivate(void) = 0;
+      virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen) = 0;
     public:
       // Functions from TaskContext
       virtual bool is_distributed(void) = 0;
@@ -500,6 +512,7 @@ namespace RegionRuntime {
       virtual void trigger(void);
       virtual bool activate(GeneralizedOperation *parent = NULL);
       virtual void deactivate(void);
+      virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen);
     public:
       // Functions from TaskContext
       virtual bool is_distributed(void);
@@ -577,6 +590,7 @@ namespace RegionRuntime {
       virtual void trigger(void);
       virtual bool activate(GeneralizedOperation *parent = NULL);
       virtual void deactivate(void);
+      virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen);
     public:
       // Functions from TaskContext
       virtual bool is_distributed(void);
@@ -633,6 +647,7 @@ namespace RegionRuntime {
       virtual void trigger(void);
       virtual bool activate(GeneralizedOperation *parent = NULL);
       virtual void deactivate(void);
+      virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen);
     public:
       // Functions from TaskContext
       virtual bool is_distributed(void);
@@ -712,6 +727,7 @@ namespace RegionRuntime {
       virtual void trigger(void);
       virtual bool activate(GeneralizedOperation *parent = NULL);
       virtual void deactivate(void);
+      virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen);
     public:
       // Functions from TaskContext
       virtual bool is_distributed(void);
