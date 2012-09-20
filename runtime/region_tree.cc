@@ -1344,9 +1344,10 @@ namespace RegionRuntime {
       LogicalState &state = logical_states[key];
       if (path.size() == 1)
       {
+        path.pop_back();
         // We've arrived where we're going
         unsigned mapping_dependence_count = 0;
-        for (std::list<LogicalUser>::const_iterator it = state.curr_epoch_users.begin();
+        for (std::vector<LogicalUser>::const_iterator it = state.curr_epoch_users.begin();
               it != state.curr_epoch_users.end(); it++)
         {
           if (perform_dependence_check(*it, user))
@@ -1354,10 +1355,437 @@ namespace RegionRuntime {
             mapping_dependence_count++;
           }
         }
+        if (mapping_dependence_count == state.curr_epoch_users.size())
+        {
+          // We dominated everyone in the current epoch, so start a new epoch
+          state.prev_epoch_users = state.curr_epoch_users;
+          state.curr_epoch_users.clear();
+        }
+        else
+        {
+          // We didn't domniate everyone, so we need to perform dependence
+          // checks against the previous epoch since we're going to be a
+          // part of the current epoch
+          for (std::vector<LogicalUser>::const_iterator it = state.prev_epoch_users.begin();
+                it != state.prev_epoch_users.end(); it++)
+          {
+            perform_dependence_check(*it, user);
+          }
+        }
+        // Add ourselves to the current epoch
+        state.curr_epoch_users.push_back(user);
+        // Now check to see if there are any open partitions below us that we
+        // need to close dependent on the state and our usage
+        switch (state.part_state)
+        {
+          case PART_NOT_OPEN:
+            {
+#ifdef DEBUG_HIGH_LEVEL
+              assert(state.open_parts.empty());
+#endif
+              // No need to do anything
+              break;
+            }
+          case PART_READ_ONLY:
+            {
+              // If the requirement is for anything other than read-only mode
+              // then we need to close up the partitions
+              if (!IS_READ_ONLY(user.usage))
+              {
+                for (std::set<Color>::const_iterator it = state.open_parts.begin();
+                      it != state.open_parts.end(); it++)
+                {
+                  get_child(*it)->close_logical_tree(user, key, state.prev_epoch_users, 
+                                                      false/*closing partition*/);
+                }
+                state.open_parts.clear();
+                state.part_state = PART_NOT_OPEN;
+              }
+              break;
+            }
+          case PART_EXCLUSIVE:
+            {
+              // Definitely need to close this up
+#ifdef DEBUG_HIGH_LEVEL
+              assert(state.open_parts.size() == 1);
+#endif
+              get_child(*(state.open_parts.begin()))->close_logical_tree(user, key, 
+                                    state.prev_epoch_users, false/*closing partition*/);
+              state.open_parts.clear();
+              state.part_state = PART_NOT_OPEN;
+              state.redop = 0;
+              break;
+            }
+          case PART_REDUCE:
+            {
+              // Close it up unless this is a reduction of the same kind that is open below
+              if (!(IS_REDUCE(user.usage) && (state.redop == user.usage.redop)))
+              {
+                for (std::set<Color>::const_iterator it = state.open_parts.begin();
+                      it != state.open_parts.end(); it++)
+                {
+                  get_child(*it)->close_logical_tree(user, key, state.prev_epoch_users,
+                                                      false/*closing partition*/);
+                }
+                state.open_parts.clear();
+                state.part_state = PART_NOT_OPEN;
+                state.redop = 0; // No more open reductions
+              }
+              break;
+            }
+          default:
+            assert(false);
+        }
       }
       else
       {
         // Not there yet
+        path.pop_back();
+        Color next_part = path.back();
+        // Not where we want to be yet, check for any dependences and continue the traversal
+        for (std::vector<LogicalUser>::const_iterator it = state.curr_epoch_users.begin();
+              it != state.curr_epoch_users.end(); it++)
+        {
+          perform_dependence_check(*it, user);
+        }
+        // Also need to check everything from the previous epoch since we can't dominate here
+        for (std::vector<LogicalUser>::const_iterator it = state.prev_epoch_users.begin();
+              it != state.prev_epoch_users.end(); it++)
+        {
+          perform_dependence_check(*it, user);
+        }
+        // Now figure out what we need to do
+        switch (state.part_state)
+        {
+          case PART_NOT_OPEN:
+            {
+#ifdef DEBUG_HIGH_LEVEL
+              assert(state.open_parts.empty());
+#endif
+              state.open_parts.insert(next_part);
+              if (IS_READ_ONLY(user.usage))
+              {
+                state.part_state = PART_READ_ONLY;
+              }
+              else if (IS_WRITE(user.usage))
+              {
+                state.part_state = PART_EXCLUSIVE;
+              }
+              else if (IS_REDUCE(user.usage))
+              {
+                state.part_state = PART_EXCLUSIVE;
+                state.redop = user.usage.redop;
+              }
+              get_child(next_part)->open_logical_tree(user, key, path);
+              break;
+            }
+          case PART_READ_ONLY:
+            {
+              // Check to see if we're staying in read-only mode
+              if (IS_READ_ONLY(user.usage))
+              {
+                // See if the partition is already open
+                if (state.open_parts.find(next_part) == 
+                    state.open_parts.end())
+                {
+                  // Not open yet, so open it
+                  state.open_parts.insert(next_part);
+                  get_child(next_part)->open_logical_tree(user, key, path);
+                }
+                else
+                {
+                  // Already open, continue the traversal
+                  get_child(next_part)->register_logical_region(user, key, path);
+                }
+              }
+              else
+              {
+                // Need this partition in exclusive mode, close up all but the one
+                // we need to go down
+                bool already_open = false;
+                for (std::set<Color>::const_iterator it = state.open_parts.begin();
+                      it != state.open_parts.end(); it++)
+                {
+                  if (next_part == (*it))
+                  {
+                    already_open = true;
+                    continue;
+                  }
+                  else
+                  {
+                    // close this partition, even though there are WAR dependences here that are going
+                    // to be resolved by doing down a different partition, we still need to register them
+                    // as mapping dependences
+                    get_child(*it)->close_logical_tree(user, key, state.prev_epoch_users,
+                                                        false/*closing partition*/);
+                  }
+                }
+                // Update our state and then continue the traversal
+                state.open_parts.clear();
+                state.open_parts.insert(next_part);
+                if (IS_REDUCE(user.usage))
+                {
+                  // Also close up the one that we're about to go down since we'll have dependences
+                  // on that too by going from read-only to reduce
+                  PartitionNode *child = get_child(next_part);
+                  child->close_logical_tree(user, key, state.prev_epoch_users,
+                                                 false/*closing partition*/);
+                  state.redop = user.usage.redop;
+                  state.part_state = PART_EXCLUSIVE;
+                  child->open_logical_tree(user, key, path);
+                }
+                else
+                {
+                  state.part_state = PART_EXCLUSIVE;
+                  if (already_open)
+                  {
+                    get_child(next_part)->register_logical_region(user, key, path);
+                  }
+                  else
+                  {
+                    get_child(next_part)->open_logical_tree(user, key, path);
+                  }
+                }
+              }
+              break;
+            }
+          case PART_EXCLUSIVE:
+            {
+#ifdef DEBUG_HIGH_LEVEL
+              assert(state.open_parts.size() == 1);
+#endif
+              // Check to see if the partition we want is already open
+              if (next_part == *(state.open_parts.begin()))
+              {
+                if (IS_REDUCE(user.usage))
+                {
+                  // Tricky case here: even if this was a non-zero reduction op
+                  // before, we'll find the dependence below and the tree will
+                  // transition correctly to exclusive with a new reduction going
+                  // on seamlessly
+                  state.redop = user.usage.redop;
+                }
+                get_child(next_part)->register_logical_region(user, key, path);
+              }
+              else
+              {
+                // This is a partition other than the one we want, close it up
+                // and open the new one
+                Color other_part = *(state.open_parts.begin());
+                get_child(other_part)->close_logical_tree(user, key, state.prev_epoch_users,
+                                                          false/*closing partition*/);
+                state.open_parts.clear();
+                state.open_parts.insert(next_part);
+                // If our new partition is ready only, mark it as such, otherwise state is the same
+                if (IS_READ_ONLY(user.usage))
+                {
+                  state.part_state = PART_READ_ONLY;
+                }
+                else if (IS_REDUCE(user.usage))
+                {
+                  // If a reduction was already present, put it in reduction mode
+                  // otherwise keep it in exclusive mode
+                  if (user.usage.redop == state.redop)
+                  {
+                    state.part_state = PART_REDUCE;
+                  }
+                  else
+                  {
+                    // Update the reduction op if necessary
+                    state.redop = user.usage.redop;
+                  }
+                }
+                get_child(next_part)->open_logical_tree(user, key, path);
+              }
+              break;
+            }
+          case PART_REDUCE:
+            {
+              // If a read-only, a write, or a different reduction then we definitely need to close this up
+              if (IS_READ_ONLY(user.usage) || IS_WRITE(user.usage) ||
+                  (IS_REDUCE(user.usage) && (user.usage.redop != state.redop)))
+              {
+                // Close up all the open partitions and then traverse the one we want
+                for (std::set<Color>::const_iterator it = state.open_parts.begin();
+                      it != state.open_parts.end(); it++)
+                {
+                  get_child(*it)->close_logical_tree(user, key, state.prev_epoch_users,
+                                                      false/*closing partition*/);
+                }
+                state.open_parts.clear();
+                state.open_parts.insert(next_part);
+                if (IS_READ_ONLY(user.usage))
+                {
+                  state.part_state = PART_READ_ONLY;
+                  state.redop = 0;
+                }
+                else if (IS_WRITE(user.usage))
+                {
+                  state.part_state = PART_EXCLUSIVE;
+                  state.redop = 0;
+                }
+                else
+                {
+                  // New reduction, go back to exclusive
+                  state.part_state = PART_EXCLUSIVE;
+                  state.redop = user.usage.redop;
+                }
+                get_child(next_part)->open_logical_tree(user, key, path);
+              }
+              else
+              {
+                // This is the same kind of reduction
+#ifdef DEBUG_HIGH_LEVEL
+                assert(IS_REDUCE(user.usage) && (user.usage.redop == state.redop));
+#endif
+                // Check to see if the partition we want is already open
+                if (state.open_parts.find(next_part) ==
+                    state.open_parts.end())
+                {
+                  // Not open yet
+                  state.open_parts.insert(next_part);
+                  get_child(next_part)->open_logical_tree(user, key, path);
+                }
+                else
+                {
+                  // Already open, continue the traversal
+                  get_child(next_part)->register_logical_region(user, key, path);
+                }
+              }
+              break;
+            }
+          default:
+            assert(false);
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::open_logical_tree(const LogicalUser &user, const StateKey &key, std::vector<Color> &path)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(logical_states.find(key) != logical_states.end());
+      assert(!path.empty());
+      assert(path.back() == row_source->color);
+#endif
+      LogicalState &state = logical_states[key];
+#ifdef DEBUG_HIGH_LEVEL
+      assert(state.part_state == PART_NOT_OPEN);
+      assert(state.curr_epoch_users.empty());
+      assert(state.prev_epoch_users.empty());
+      assert(state.open_parts.empty());
+      assert(state.redop == 0);
+#endif
+      if (path.size() == 1)
+      {
+        // We've arrived at our destination, register that we are now a user
+        state.curr_epoch_users.push_back(user);
+        path.pop_back();
+      }
+      else
+      {
+        path.pop_back();
+        Color next_part = path.back();
+        if (IS_READ_ONLY(user.usage))
+        {
+          state.part_state = PART_READ_ONLY;
+        }
+        else if (IS_WRITE(user.usage))
+        {
+          state.part_state = PART_EXCLUSIVE;
+        }
+        else
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(IS_REDUCE(user.usage));
+#endif
+          // Open in exclusive but mark that there's a reduction going on below,
+          // we'll use this to know when we need to go into reduction mode
+          state.part_state = PART_EXCLUSIVE;
+          state.redop = user.usage.redop;
+        }
+        state.open_parts.insert(next_part);
+        get_child(next_part)->open_logical_tree(user, key, path);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::close_logical_tree(const LogicalUser &user, const StateKey &key,
+                                        std::vector<LogicalUser> &epoch_users, bool closing_partition)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(logical_states.find(key) != logical_states.end());
+#endif
+      LogicalState &state = logical_states[key];
+      // Register any dependences we have here 
+      for (std::vector<LogicalUser>::const_iterator it = state.curr_epoch_users.begin();
+            it != state.curr_epoch_users.end(); it++)
+      {
+        // Special case for closing partition, if we already have a user then we can ignore
+        // it because we have over-approximated our set of regions by saying we're using a
+        // partition.  This occurs whenever an index space task says its using a partition,
+        // but might only use a subset of the regions in the partition, and then also has
+        // a region requirement for another one of the regions in the partition.
+        if (closing_partition && (it->op == user.op))
+          continue;
+#ifdef DEBUG_HIGH_LEVEL
+        bool result = 
+#endif
+        perform_dependence_check(*it, user);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(result); // These should all be dependences
+#endif
+        epoch_users.push_back(*it);
+      }
+      // Clear out our active users
+      state.curr_epoch_users.clear();
+      // We can also clear out the closed users, note that we don't need to worry
+      // about recording dependences on the closed users, because all the active tasks
+      // have dependences on them
+      state.prev_epoch_users.clear();
+      
+      // Now do the open sub-partitions
+      switch (state.part_state)
+      {
+        case PART_NOT_OPEN:
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            assert(state.open_parts.empty());
+#endif
+            // Nothing to do here
+            break;
+          }
+        case PART_REDUCE:
+          {
+            // Same as read-only, so just remove the reduction-op and fall through
+            state.redop = 0;
+          }
+        case PART_READ_ONLY:
+          {
+            for (std::set<Color>::const_iterator it = state.open_parts.begin();
+                  it != state.open_parts.end(); it++)
+            {
+              get_child(*it)->close_logical_tree(user, key, epoch_users, closing_partition);
+            }
+            state.open_parts.clear();
+            state.part_state = PART_NOT_OPEN;
+            break;
+          }
+        case PART_EXCLUSIVE:
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            assert(state.open_parts.size() == 1);
+#endif
+            get_child(*(state.open_parts.begin()))->close_logical_tree(user, key, epoch_users, closing_partition);
+            state.open_parts.clear();
+            state.part_state = PART_NOT_OPEN;
+            state.redop = 0;
+            break;
+          }
+        default:
+          assert(false);
       }
     }
 
@@ -1407,6 +1835,554 @@ namespace RegionRuntime {
       assert(color_map.find(c) != color_map.end());
 #endif
       color_map.erase(c);
+    }
+
+    //--------------------------------------------------------------------------
+    void PartitionNode::register_logical_region(const LogicalUser &user, const StateKey &key, std::vector<Color> &path)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(logical_states.find(key) != logical_states.end());
+      assert(path.back() == row_source->color);
+#endif
+      LogicalState &state = logical_states[key];
+      if (path.size() == 1)
+      {
+        path.pop_back();
+        // We've arrived where we're going
+        unsigned mapping_dependence_count = 0;
+        for (std::vector<LogicalUser>::const_iterator it = state.curr_epoch_users.begin();
+              it != state.curr_epoch_users.end(); it++)
+        {
+          if (perform_dependence_check(*it, user))
+          {
+            mapping_dependence_count++;
+          }
+        }
+        if (mapping_dependence_count == state.curr_epoch_users.size())
+        {
+          // We dominated everyone in the current epoch, so start a new epoch
+          state.prev_epoch_users = state.curr_epoch_users;
+          state.curr_epoch_users.clear();
+        }
+        else
+        {
+          // We didn't domniate everyone, so we need to perform dependence
+          // checks against the previous epoch since we're going to be a
+          // part of the current epoch
+          for (std::vector<LogicalUser>::const_iterator it = state.prev_epoch_users.begin();
+                it != state.prev_epoch_users.end(); it++)
+          {
+            perform_dependence_check(*it, user);
+          }
+        }
+        // Add ourselves to the current epoch
+        state.curr_epoch_users.push_back(user);
+        // Now figure out what to do if we have open users below
+        if (disjoint)
+        {
+          // There are two optimized cases for disjoint: if everyone is read-only or if every one is doing
+          // the same reduction then we don't have to close everything up, otherwise we just close up all
+          // the open partitions below
+          switch (state.region_state)
+          {
+            case REG_NOT_OPEN:
+              {
+                // No need to do anything
+                break;
+              }
+            case REG_OPEN_READ_ONLY:
+              {
+                // Check to see if we're reading too, if we are then we don't need to close anything
+                // up otherwise we need to close everything up which we can do by just falling
+                // through to the exclusive case
+                if (IS_READ_ONLY(user.usage))
+                {
+                  break;
+                }
+                // Fall through
+              }
+            case REG_OPEN_EXCLUSIVE:
+              {
+                for (std::set<Color>::const_iterator it = state.open_regions.begin();
+                      it != state.open_regions.end(); it++)
+                {
+                  get_child(*it)->close_logical_tree(user, key, state.prev_epoch_users, true/*closing partition*/);
+                }
+                state.open_regions.clear();
+                state.region_state = REG_NOT_OPEN;
+                state.redop = 0;
+                break;
+              }
+            case REG_OPEN_REDUCE:
+              {
+                if (!IS_REDUCE(user.usage) || (user.usage.redop != state.redop))
+                {
+                  for (std::set<Color>::const_iterator it = state.open_regions.begin();
+                        it != state.open_regions.end(); it++)
+                  {
+                    get_child(*it)->close_logical_tree(user, key, state.prev_epoch_users, true/*closing partition*/);
+                  }
+                  state.open_regions.clear();
+                  state.region_state = REG_NOT_OPEN;
+                  state.redop = 0;
+                }
+                break;
+              }
+            default:
+              assert(false);
+          }
+        }
+        else
+        {
+          // Aliased partition
+          switch (state.region_state)
+          {
+            case REG_NOT_OPEN:
+              {
+                // No need to do anything
+                break;
+              }
+            case REG_OPEN_READ_ONLY:
+              {
+                // Check to see if we're read-only in which case we don't have to do anything
+                // otherwise we need to close up all the open regions
+                if (!IS_READ_ONLY(user.usage))
+                {
+                  for (std::set<Color>::const_iterator it = state.open_regions.begin();
+                        it != state.open_regions.end(); it++)
+                  {
+                    get_child(*it)->close_logical_tree(user, key, state.prev_epoch_users, true/*closing partition*/);
+                  }
+                  state.open_regions.clear();
+                  state.region_state = REG_NOT_OPEN;
+                  state.redop = 0;
+                }
+                break;
+              }
+            case REG_OPEN_EXCLUSIVE:
+              {
+                // Definitely need to close up the open region
+#ifdef DEBUG_HIGH_LEVEL
+                assert(state.open_regions.size() == 1);
+#endif
+                get_child(*(state.open_regions.begin()))->close_logical_tree(user, key, state.prev_epoch_users,
+                                                              true/*closing partition*/);
+                state.open_regions.clear();
+                state.region_state = REG_NOT_OPEN;
+                state.redop = 0;
+                break;
+              }
+            case REG_OPEN_REDUCE:
+              {
+                // If we're in reduce mode and this is a reduciton of the same kind we can leave it open,
+                // otherwise we need to close up the open regions
+                if (!IS_REDUCE(user.usage) || (user.usage.redop != state.redop))
+                {
+                  for (std::set<Color>::const_iterator it = state.open_regions.begin();
+                        it != state.open_regions.end(); it++)
+                  {
+                    get_child(*it)->close_logical_tree(user, key, state.prev_epoch_users, true/*closing partition*/);
+                  }
+                  state.open_regions.clear();
+                  state.region_state = REG_NOT_OPEN;
+                  state.redop = 0;
+                }
+                break;
+              }
+            default:
+              assert(false);
+          }
+        }
+      }
+      else
+      {
+        // Not there yet
+        path.pop_back();
+        Color next_region = path.back();
+        for (std::vector<LogicalUser>::const_iterator it = state.curr_epoch_users.begin();
+              it != state.curr_epoch_users.end(); it++)
+        {
+          // Special case for partitions only, check to see if the task we are a part of is already
+          // an active user of this partition, if so there is no need to continue the travesal as
+          // anyone else that tries to use this partition will already detect us as a mapping dependence.
+          // This is only valid for partitions on index spaces because it is an over-approximation of the
+          // set of logical regions that we are using.
+          if (it->op == user.op)
+            continue;
+          perform_dependence_check(*it, user);
+        }
+        // Also need to check everything from the previous epoch since we can't dominate here
+        for (std::vector<LogicalUser>::const_iterator it = state.prev_epoch_users.begin();
+              it != state.prev_epoch_users.end(); it++)
+        {
+          perform_dependence_check(*it, user);
+        }
+        
+        // Different things to do for disjoint and aliased partitions
+        if (disjoint)
+        {
+          // For disjoint partitions, we'll use the state mode a little differently
+          // We'll optimize for the cases where we don't need to close up things below
+          // which is if everything is read-only and a task is using a partition in
+          // read-only or if everything is reduce and a task is in reduce.  The exclusive
+          // mode will act as bottom which just means we don't know and therefore have to
+          // close everthing up below.
+          switch (state.region_state)
+          {
+            case REG_NOT_OPEN:
+              {
+                if (IS_READ_ONLY(user.usage))
+                {
+                  state.region_state = REG_OPEN_READ_ONLY;
+                }
+                else if (IS_REDUCE(user.usage))
+                {
+                  state.region_state = REG_OPEN_REDUCE;
+                  state.redop = user.usage.redop;
+                }
+                else
+                {
+                  state.region_state = REG_OPEN_EXCLUSIVE;
+                }
+                break;
+              }
+            case REG_OPEN_READ_ONLY:
+              {
+                if (!IS_READ_ONLY(user.usage))
+                {
+                  // Not everything is read-only anymore, back to exclusive
+                  state.region_state = REG_OPEN_EXCLUSIVE;
+                }
+                break;
+              }
+            case REG_OPEN_EXCLUSIVE:
+              {
+                // No matter what this is just going to stay in the bottom mode
+                break;
+              }
+            case REG_OPEN_REDUCE:
+              {
+                if (!IS_REDUCE(user.usage) || (user.usage.redop != state.redop))
+                {
+                  // Not everything in the same mode anymore
+                  state.region_state = REG_OPEN_EXCLUSIVE;
+                  state.redop = 0;
+                }
+                break;
+              }
+            default:
+              assert(false);
+          }
+          // Now continue the traversal
+          if (state.open_regions.find(next_region) ==
+              state.open_regions.end())
+          {
+            // Not open yet, so open it and continue
+            state.open_regions.insert(next_region);
+            get_child(next_region)->open_logical_tree(user, key, path);
+          }
+          else
+          {
+            // Already open, continue the traversal
+            get_child(next_region)->register_logical_region(user, key, path);
+          }
+        }
+        else
+        {
+          // Aliased partition
+          switch (state.region_state)
+          {
+            case REG_NOT_OPEN:
+              {
+#ifdef DEBUG_HIGH_LEVEL
+                assert(state.open_regions.empty());
+#endif
+                // Open the partition in the right mode
+                if (IS_READ_ONLY(user.usage))
+                {
+                  state.region_state = REG_OPEN_READ_ONLY;
+                }
+                else if (IS_WRITE(user.usage))
+                {
+                  state.region_state = REG_OPEN_EXCLUSIVE;
+                }
+                else
+                {
+#ifdef DEBUG_HIGH_LEVEL
+                  assert(IS_REDUCE(user.usage));
+#endif
+                  state.region_state = REG_OPEN_EXCLUSIVE;
+                  state.redop = user.usage.redop;
+                }
+                state.open_regions.insert(next_region);
+                get_child(next_region)->open_logical_tree(user, key, path);
+                break;
+              }
+            case REG_OPEN_READ_ONLY:
+              {
+                if (IS_READ_ONLY(user.usage))
+                {
+                  // Just another read, check to see if the one we want is already open
+                  if (state.open_regions.find(next_region) ==
+                      state.open_regions.end())
+                  {
+                    // not open yet
+                    state.open_regions.insert(next_region);
+                    get_child(next_region)->open_logical_tree(user, key, path);
+                  }
+                  else
+                  {
+                    // already open
+                    get_child(next_region)->register_logical_region(user, key, path);
+                  }
+                }
+                else
+                {
+                  // Either a write or a reduce, either way need to close everything up
+                  for (std::set<Color>::const_iterator it = state.open_regions.begin();
+                        it != state.open_regions.end(); it++)
+                  {
+                    get_child(*it)->close_logical_tree(user, key, state.prev_epoch_users,
+                                                        true/*closing partition*/);
+                  }
+                  state.open_regions.clear();
+                  state.open_regions.insert(next_region);
+                  // Regardless of whether this is a write or a reduce, open in exclusive
+                  state.region_state = REG_OPEN_EXCLUSIVE;
+                  if (IS_REDUCE(user.usage))
+                  {
+                    state.redop = user.usage.redop;
+                  }
+                  // Open up the region we want
+                  get_child(next_region)->open_logical_tree(user, key, path);
+                }
+                break;
+              }
+            case REG_OPEN_EXCLUSIVE:
+              {
+#ifdef DEBUG_HIGH_LEVEL
+                assert(state.open_regions.size() == 1);
+#endif
+                // Check to see if the region we want is the one that is open
+                if (next_region == *(state.open_regions.begin()))
+                {
+                  // Already open
+                  if (IS_REDUCE(user.usage))
+                  {
+                    state.redop = user.usage.redop;
+                  }
+                  get_child(next_region)->register_logical_region(user, key, path);
+                }
+                else
+                {
+                  // Different, close up the open one and open the one we want
+                  get_child(*(state.open_regions.begin()))->close_logical_tree(user, key,
+                                        state.prev_epoch_users, true/*closing partition*/);
+                  state.open_regions.clear();
+                  state.open_regions.insert(next_region);
+                  if (IS_READ_ONLY(user.usage))
+                  {
+                    state.region_state = REG_OPEN_READ_ONLY;
+                  }
+                  else if (IS_REDUCE(user.usage))
+                  {
+                    // Check to see if our reduction was already going on, if so put it in reduce mode
+                    // otherwise just keep it in exclusive mode
+                    if (user.usage.redop == state.redop)
+                    {
+                      state.region_state = REG_OPEN_REDUCE;
+                    }
+                    else
+                    {
+                      state.redop = user.usage.redop;
+                    }
+                  }
+                  // Open the one we want
+                  get_child(next_region)->open_logical_tree(user, key, path);
+                }
+                break;
+              }
+            case REG_OPEN_REDUCE:
+              {
+                // If it is a read, a write, or a different kind of reduction we have to close it
+                if (!IS_REDUCE(user.usage) || (user.usage.redop != state.redop))
+                {
+                  // Need to close up all the open partitions, and re-open in the right mode
+                  for (std::set<Color>::const_iterator it = state.open_regions.begin();
+                        it != state.open_regions.end(); it++)
+                  {
+                    get_child(*it)->close_logical_tree(user, key, state.prev_epoch_users,
+                                                        true/*closing partition*/);
+                  }
+                  state.open_regions.clear();
+                  state.open_regions.insert(next_region);
+                  if (IS_READ_ONLY(user.usage))
+                  {
+                    state.region_state = REG_OPEN_READ_ONLY;
+                    state.redop = 0;
+                  }
+                  else if (IS_WRITE(user.usage))
+                  {
+                    state.region_state = REG_OPEN_EXCLUSIVE;
+                    state.redop = 0;
+                  }
+                  else
+                  {
+#ifdef DEBUG_HIGH_LEVEL
+                    assert(IS_REDUCE(user.usage));
+#endif
+                    state.region_state = REG_OPEN_REDUCE;
+                    state.redop = user.usage.redop;
+                  }
+                  get_child(next_region)->open_logical_tree(user, key, path);
+                }
+                else
+                {
+#ifdef DEBUG_HIGH_LEVEL
+                  assert(IS_REDUCE(user.usage) && (user.usage.redop == state.redop)); 
+#endif
+                  // Same kind of reduction, see if the region we want is already open
+                  if (state.open_regions.find(next_region) ==
+                      state.open_regions.end())
+                  {
+                    // not open
+                    state.open_regions.insert(next_region);
+                    get_child(next_region)->open_logical_tree(user, key, path);
+                  }
+                  else
+                  {
+                    // already open, continue the traversal
+                    get_child(next_region)->register_logical_region(user, key, path);
+                  }
+                }
+                break;
+              }
+            default:
+              assert(false);
+          }
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void PartitionNode::open_logical_tree(const LogicalUser &user, const StateKey &key, std::vector<Color> &path)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!path.empty());
+      assert(path.back() == row_source->color);
+      assert(logical_states.find(key) != logical_states.end());
+#endif
+      LogicalState &state = logical_states[key];
+#ifdef DEBUG_HIGH_LEVEL
+      assert(state.open_regions.empty());
+      assert(state.curr_epoch_users.empty());
+      assert(state.prev_epoch_users.empty());
+      assert(state.redop == 0);
+#endif
+      if (path.size() == 1)
+      {
+        // We've arrived
+        path.pop_back();
+        state.curr_epoch_users.push_back(user);
+      }
+      else
+      {
+        // Haven't arrived yet, continue the traversal
+        path.pop_back();
+        Color next_region = path.back();
+        if (disjoint)
+        {
+          if (IS_READ_ONLY(user.usage))
+          {
+            state.region_state = REG_OPEN_READ_ONLY;
+          }
+          else if (IS_REDUCE(user.usage))
+          {
+            state.region_state = REG_OPEN_REDUCE;
+            state.redop = user.usage.redop;
+          }
+          else
+          {
+            state.region_state = REG_OPEN_EXCLUSIVE;
+          }
+          // Open our region and continue
+          state.open_regions.insert(next_region);
+          get_child(next_region)->open_logical_tree(user, key, path);
+        }
+        else
+        {
+          // Aliased partition
+          if (IS_READ_ONLY(user.usage))
+          {
+            state.region_state = REG_OPEN_READ_ONLY;
+          }
+          else if (IS_WRITE(user.usage))
+          {
+            state.region_state = REG_OPEN_EXCLUSIVE;
+          }
+          else
+          {
+#ifdef DEBUG_HIGH_LEVEL
+            assert(IS_REDUCE(user.usage));
+#endif
+            // Open this in exclusive mode, but mark that there is a reduction
+            // going on below which will allow us to go into reduce mode later
+            state.region_state = REG_OPEN_EXCLUSIVE;
+            state.redop = user.usage.redop;
+          }
+          state.open_regions.insert(next_region);
+          get_child(next_region)->open_logical_tree(user, key, path);
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void PartitionNode::close_logical_tree(const LogicalUser &user, const StateKey &key, 
+                                          std::vector<LogicalUser> &epoch_users, bool closing_partition)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(logical_states.find(key) != logical_states.end());
+#endif
+      LogicalState &state = logical_states[key];
+      // Register any dependences we have here 
+      for (std::vector<LogicalUser>::const_iterator it = state.curr_epoch_users.begin();
+            it != state.curr_epoch_users.end(); it++)
+      {
+        // Special case for closing partition, if we already have a user then we can ignore
+        // it because we have over-approximated our set of regions by saying we're using a
+        // partition.  This occurs whenever an index space task says its using a partition,
+        // but might only use a subset of the regions in the partition, and then also has
+        // a region requirement for another one of the regions in the partition.
+        if (closing_partition && (it->op == user.op))
+          continue;
+#ifdef DEBUG_HIGH_LEVEL
+        bool result = 
+#endif
+        perform_dependence_check(*it, user);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(result); // These should all be dependences
+#endif
+        epoch_users.push_back(*it);
+      }
+      // Clear out our active users
+      state.curr_epoch_users.clear();
+      // We can also clear out the closed users, note that we don't need to worry
+      // about recording dependences on the closed users, because all the active tasks
+      // have dependences on them
+      state.prev_epoch_users.clear();
+      
+      // Close outa all our open regions, regardless of disjoint or not
+      for (std::set<Color>::const_iterator it = state.open_regions.begin();
+            it != state.open_regions.end(); it++)
+      {
+        get_child(*it)->close_logical_tree(user, key, epoch_users, closing_partition);
+      }
+      state.open_regions.clear();
+      state.region_state = REG_NOT_OPEN;
+      state.redop = 0;
     }
 
     /////////////////////////////////////////////////////////////
