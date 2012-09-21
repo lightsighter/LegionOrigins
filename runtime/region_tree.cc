@@ -2,6 +2,7 @@
 #include "legion.h"
 #include "legion_ops.h"
 #include "region_tree.h"
+#include "legion_utilities.h"
 
 namespace RegionRuntime {
   namespace HighLevel {
@@ -585,14 +586,14 @@ namespace RegionRuntime {
     void RegionTreeForest::analyze_region(const RegionAnalyzer &az)
     //--------------------------------------------------------------------------
     {
-      // For every field in the context, do the analysis
-      RegionNode *start_node = get_node(az.start);
-      for (std::vector<FieldID>::const_iterator it = az.fields.begin();
-            it != az.fields.end(); it++)
+      FieldSpaceNode *field_space = get_node(az.start.field_space);
+      // Build the logical user and then do the traversal
+      LogicalUser user(az.op, az.idx, field_space->get_field_mask(az.fields), az.usage);
+      // Now do the traversal
       {
-        StateKey key(az.ctx,*it);
         std::vector<Color> path = az.path;
-        start_node->register_logical_region(az.user, key, path);
+        RegionNode *start_node = get_node(az.start);
+        start_node->register_logical_region(user, az.ctx, path);
 #ifdef DEBUG_HIGH_LEVEL
         assert(path.empty());
 #endif
@@ -1332,20 +1333,102 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void RegionNode::register_logical_region(const LogicalUser &user, const StateKey &key,
+    RegionNode::PartKey::PartKey(const LogicalUser &user, Color c)
+    //--------------------------------------------------------------------------
+    {
+      color = c;
+      redop = 0;
+      if (IS_READ_ONLY(user.usage))
+        state = PART_READ_ONLY;
+      else if (IS_WRITE(user.usage))
+        state = PART_EXCLUSIVE;
+      else
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(IS_REDUCE(user.usage));
+#endif
+        state = PART_REDUCE;
+        redop = user.usage.redop;
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    bool RegionNode::PartKey::operator==(const PartKey &rhs) const
+    //--------------------------------------------------------------------------
+    {
+      return ((color == rhs.color) && (state == rhs.state) && (redop == rhs.redop));
+    }
+
+    //--------------------------------------------------------------------------
+    bool RegionNode::PartKey::operator<(const PartKey &rhs) const
+    //--------------------------------------------------------------------------
+    {
+      return ((color < rhs.color) || (state < rhs.state) || (redop < rhs.redop));
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::register_logical_region(const LogicalUser &user, const ContextID ctx,
                                              std::vector<Color> &path)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!path.empty());
       assert(path.back() == row_source->color);
-      assert(logical_states.find(key) != logical_states.end());
+      assert(logical_states.find(ctx) != logical_states.end());
 #endif
-      LogicalState &state = logical_states[key];
+      LogicalState &state = logical_states[ctx];
       if (path.size() == 1)
       {
         path.pop_back();
-        // We've arrived where we're going
+        // We've arrived where we're going, go through and do the dependence analysis
+        perform_arrival_dependence_checks(user, state); 
+        // Add ourselves to the current epoch
+        state.curr_epoch_users.push_back(user);
+        // Close up the open regions below 
+        close_open_partitions_below(user, ctx, state); 
+      }
+      else
+      {
+        // Not there yet
+        path.pop_back();
+        Color next_part = path.back();
+        // Perform the checks on the current users
+        perform_current_dependence_checks(user, state);
+        
+        // This is the state we want our partition in
+        PartKey key(user, next_part);
+        // Go through and see which partitions we need to close
+        siphon_open_partitions(user, ctx, state, key);
+        // Continue the traversal
+        PartitionNode *child = get_child(next_part);
+        // Now check to see if anyone is already open in our state
+        if (state.open_parts.find(key) ==
+            state.open_parts.end())
+        {
+          // Opening a new partition
+          // Add ourselves to the list
+          state.open_parts[key] = user.field_mask;
+          child->open_logical_tree(user, ctx, path);
+        }
+        else
+        {
+          // Already open
+          // Check to see if we're disjoint from what's already open
+          if (state.open_parts[key] * user.field_mask)
+          {
+            // Disjoint so we can do an open tree call
+            state.open_parts[key] |= user.field_mask;
+            child->open_logical_tree(user, ctx, path);
+          }
+          else
+          {
+            // Not disjoint, add our fields and continue the traversal
+            state.open_parts[key] |= user.field_mask;
+            child->register_logical_region(user, ctx, path);
+          }
+        }
+      }
+#if 0
         unsigned mapping_dependence_count = 0;
         for (std::vector<LogicalUser>::const_iterator it = state.curr_epoch_users.begin();
               it != state.curr_epoch_users.end(); it++)
@@ -1658,12 +1741,14 @@ namespace RegionRuntime {
             assert(false);
         }
       }
+#endif
     }
 
     //--------------------------------------------------------------------------
-    void RegionNode::open_logical_tree(const LogicalUser &user, const StateKey &key, std::vector<Color> &path)
+    void RegionNode::open_logical_tree(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path)
     //--------------------------------------------------------------------------
     {
+#if 0
 #ifdef DEBUG_HIGH_LEVEL
       assert(logical_states.find(key) != logical_states.end());
       assert(!path.empty());
@@ -1708,13 +1793,15 @@ namespace RegionRuntime {
         state.open_parts.insert(next_part);
         get_child(next_part)->open_logical_tree(user, key, path);
       }
+#endif
     }
 
     //--------------------------------------------------------------------------
-    void RegionNode::close_logical_tree(const LogicalUser &user, const StateKey &key,
-                                        std::vector<LogicalUser> &epoch_users, bool closing_partition)
+    void RegionNode::close_logical_tree(const LogicalUser &user, ContextID ctx, const FieldMask &closing_mask,
+                                        std::list<LogicalUser> &epoch_users, bool closing_partition)
     //--------------------------------------------------------------------------
     {
+#if 0
 #ifdef DEBUG_HIGH_LEVEL
       assert(logical_states.find(key) != logical_states.end());
 #endif
@@ -1787,6 +1874,223 @@ namespace RegionRuntime {
         default:
           assert(false);
       }
+#endif
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::perform_arrival_dependence_checks(const LogicalUser &user, LogicalState &state)
+    //--------------------------------------------------------------------------
+    {
+      FieldMask dominator_mask = user.field_mask;
+      for (std::list<LogicalUser>::const_iterator it = state.curr_epoch_users.begin();
+            it != state.curr_epoch_users.end(); it++)
+      {
+        // Check to see if their field masks are disjoint, if they're not, we have
+        // to do a dependence check
+        if (!(user.field_mask * it->field_mask))
+        {
+          if (!perform_dependence_check(*it, user))
+          {
+            // There wasn't a dependence, so remove the bits from the
+            // overlapping fields from the dominator mask
+            dominator_mask -= it->field_mask;
+          }
+        }
+      }
+      FieldMask non_dominated_mask = user.field_mask - dominator_mask;
+      if (!!non_dominated_mask)
+      {
+        // Non dominator mask is not empty
+        // For all the non-dominated fields we have to go through the prev_epoch_users
+        // and check for any dependences
+        for (std::list<LogicalUser>::const_iterator it = state.prev_epoch_users.begin();
+              it != state.prev_epoch_users.end(); it++)
+        {
+          if (!(non_dominated_mask * it->field_mask))
+          {
+            perform_dependence_check(*it, user);
+          }
+        }
+      }
+      // Re-arrange the dominated fields
+      if (!!dominator_mask)
+      {
+        // Dominator mask is not empty
+        // Mask off all the dominated fields from the prev_epoch_users
+        // Remove any prev_epoch_users that were totally dominated
+        for (std::list<LogicalUser>::iterator it = state.prev_epoch_users.begin();
+              it != state.prev_epoch_users.end(); /*nothing*/)
+        {
+          it->field_mask -= dominator_mask;
+          if (!it->field_mask)
+          {
+            // empty
+            it = state.prev_epoch_users.erase(it);
+          }
+          else
+          {
+            // Not empty, keep going
+            it++;
+          }
+        }
+        // Mask off all dominated fields from curr_epoch_users, and move them
+        // to prev_epoch_users.  If all fields masked off, then remove them
+        // from curr_epoch_users.
+        for (std::list<LogicalUser>::iterator it = state.curr_epoch_users.begin();
+              it != state.curr_epoch_users.end(); /*nothing*/)
+        {
+          FieldMask local_dom = it->field_mask & dominator_mask;
+          if (!!local_dom)
+          {
+            // Move a copy over to the previous epoch users for the
+            // fields that were dominated
+            state.prev_epoch_users.push_back(*it);
+            state.prev_epoch_users.back().field_mask = local_dom;
+          }
+          // Update the field mask with the non-dominated fields
+          it->field_mask -= dominator_mask;
+          if (!it->field_mask)
+          {
+            // now empty, remove it
+            it = state.curr_epoch_users.erase(it);
+          }
+          else
+          {
+            // Not empty, keep going
+            it++;
+          }
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::close_open_partitions_below(const LogicalUser &user, const ContextID ctx, LogicalState &state)
+    //--------------------------------------------------------------------------
+    {
+      // entries to be deleted when we're done
+      std::vector<PartKey> deletion_list;
+      for (std::map<PartKey,FieldMask>::iterator it = state.open_parts.begin();
+            it != state.open_parts.end(); it++)
+      {
+        if (!(it->second * user.field_mask))
+        {
+          // Have overlapping fields, close the overlapping fields
+          PartitionNode *child_node = get_child(it->first.color);
+          // Close the overlapping fields
+          FieldMask overlap_mask = it->second & user.field_mask;
+          child_node->close_logical_tree(user, ctx, overlap_mask, 
+                        state.prev_epoch_users, false/*closing partition*/);
+          // Remove the closed fields from the mask
+          it->second -= user.field_mask;
+          // Check to see if all the fields were closed
+          if (!it->second)
+            deletion_list.push_back(it->first);
+        }
+      }
+      // Now we can go through and delete all the things we closed
+      for (std::vector<PartKey>::const_iterator it = deletion_list.begin();
+            it != deletion_list.end(); it++)
+      {
+        state.open_parts.erase(*it);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::perform_current_dependence_checks(const LogicalUser &user, LogicalState &state)
+    //--------------------------------------------------------------------------
+    {
+      // Only need to perform these checks if they overlap on fields
+      for (std::list<LogicalUser>::const_iterator it = state.curr_epoch_users.begin();
+            it != state.curr_epoch_users.end(); it++)
+      {
+        if (!(user.field_mask * it->field_mask))
+        {
+          perform_dependence_check(*it, user);
+        }
+      }
+      for (std::list<LogicalUser>::const_iterator it = state.prev_epoch_users.begin();
+            it != state.prev_epoch_users.end(); it++)
+      {
+        if (!(user.field_mask * it->field_mask))
+        {
+          perform_dependence_check(*it, user);
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::siphon_open_partitions(const LogicalUser &user, const ContextID ctx,
+                                            LogicalState &state, PartKey &key)
+    //--------------------------------------------------------------------------
+    {
+      std::vector<PartKey> deletion_list;
+      for (std::map<PartKey,FieldMask>::iterator it = state.open_parts.begin();
+            it != state.open_parts.end(); it++)
+      {
+        // See if they're not disjoint and whether they need a close
+        if ((!(it->second * user.field_mask)) &&
+            need_close_operation(it->first, key))
+        {
+          // Needs to be closed so close it
+          FieldMask close_mask = it->second & user.field_mask;
+          PartitionNode *child_node = get_child(it->first.color);
+          child_node->close_logical_tree(user, ctx, close_mask, 
+                        state.prev_epoch_users, false/*closing partition*/);
+          // Remove the fields that were masked off by the close
+          it->second -= close_mask;
+          // Check to see if it can be deleted
+          if (!it->second)
+            deletion_list.push_back(it->first);
+        }
+      }
+      for (std::vector<PartKey>::const_iterator it = deletion_list.begin();
+            it != deletion_list.end(); it++)
+      {
+        state.open_parts.erase(*it);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    bool RegionNode::need_close_operation(const PartKey &prev, const PartKey &next)
+    //--------------------------------------------------------------------------
+    {
+      // Do a quick check to see if we know that the two partitions are disjoint
+      if (row_source->disjoint_subsets.find(std::pair<Color,Color>(prev.color,next.color)) !=
+          row_source->disjoint_subsets.end())
+      {
+        // They're disjoint partitions so they can be open at the same time
+        return false;
+      }
+      // Otherwise we need to do handle all the different cases
+      switch (prev.state)
+      {
+        case PART_READ_ONLY:
+          {
+            switch (next.state)
+            {
+              case PART_READ_ONLY:
+                return false;
+              case PART_EXCLUSIVE:
+              case PART_REDUCE:
+                return true;
+              default:
+                assert(false);
+            }
+            break;
+          }
+        case PART_EXCLUSIVE:
+          {
+            
+          }
+        case PART_REDUCE:
+          {
+
+          }
+        default:
+          assert(false);
+      }
+      // Always safe
+      return true;
     }
 
     /////////////////////////////////////////////////////////////
@@ -1838,9 +2142,10 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void PartitionNode::register_logical_region(const LogicalUser &user, const StateKey &key, std::vector<Color> &path)
+    void PartitionNode::register_logical_region(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path)
     //--------------------------------------------------------------------------
     {
+#if 0
 #ifdef DEBUG_HIGH_LEVEL
       assert(logical_states.find(key) != logical_states.end());
       assert(path.back() == row_source->color);
@@ -2263,12 +2568,14 @@ namespace RegionRuntime {
           }
         }
       }
+#endif
     }
 
     //--------------------------------------------------------------------------
-    void PartitionNode::open_logical_tree(const LogicalUser &user, const StateKey &key, std::vector<Color> &path)
+    void PartitionNode::open_logical_tree(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path)
     //--------------------------------------------------------------------------
     {
+#if 0
 #ifdef DEBUG_HIGH_LEVEL
       assert(!path.empty());
       assert(path.back() == row_source->color);
@@ -2336,13 +2643,15 @@ namespace RegionRuntime {
           get_child(next_region)->open_logical_tree(user, key, path);
         }
       }
+#endif
     }
 
     //--------------------------------------------------------------------------
-    void PartitionNode::close_logical_tree(const LogicalUser &user, const StateKey &key, 
-                                          std::vector<LogicalUser> &epoch_users, bool closing_partition)
+    void PartitionNode::close_logical_tree(const LogicalUser &user, const ContextID ctx, const FieldMask &closing_mask, 
+                                          std::list<LogicalUser> &epoch_users, bool closing_partition)
     //--------------------------------------------------------------------------
     {
+#if 0
 #ifdef DEBUG_HIGH_LEVEL
       assert(logical_states.find(key) != logical_states.end());
 #endif
@@ -2383,6 +2692,7 @@ namespace RegionRuntime {
       state.open_regions.clear();
       state.region_state = REG_NOT_OPEN;
       state.redop = 0;
+#endif
     }
 
     /////////////////////////////////////////////////////////////
@@ -2390,8 +2700,8 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
-    LogicalUser::LogicalUser(GeneralizedOperation *o, unsigned id, RegionUsage u)
-      : op(o), idx(id), gen(o->get_gen()), usage(u)
+    LogicalUser::LogicalUser(GeneralizedOperation *o, unsigned id, const FieldMask &m, const RegionUsage &u)
+      : op(o), idx(id), gen(o->get_gen()), field_mask(m), usage(u)
     //--------------------------------------------------------------------------
     {
     }
@@ -2401,8 +2711,8 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
-    RegionAnalyzer::RegionAnalyzer(ContextID ctx_id, GeneralizedOperation *op, unsigned idx, const RegionRequirement &req)
-      : ctx(ctx_id), user(LogicalUser(op, idx, RegionUsage(req))), start(req.parent)
+    RegionAnalyzer::RegionAnalyzer(ContextID ctx_id, GeneralizedOperation *o, unsigned id, const RegionRequirement &req)
+      : ctx(ctx_id), op(o), idx(id), start(req.parent), usage(RegionUsage(req)) 
     //--------------------------------------------------------------------------
     {
       // Copy the fields from the region requirement

@@ -16,7 +16,8 @@
 #include <list>
 #include <vector>
 
-#define AUTO_GENERATE_ID  UINT_MAX
+#define AUTO_GENERATE_ID   UINT_MAX
+#define MAX_FIELDS         128
 
 namespace RegionRuntime {
   namespace HighLevel {
@@ -224,6 +225,7 @@ namespace RegionRuntime {
     class Serializer;
     class Deserializer;
     template<typename T> class Fraction;
+    template<typename T, unsigned int MAX> class BitMask;
 
     typedef LowLevel::Machine Machine;
     typedef LowLevel::IndexSpace IndexSpace;
@@ -258,7 +260,7 @@ namespace RegionRuntime {
     typedef bool (*PredicateFnptr)(const void*, size_t, const std::vector<Future> futures);
     typedef std::map<TypeHandle,Structure> TypeTable;
     typedef std::map<ProjectionID,ProjectionFnptr> ProjectionTable;
-    typedef std::pair<ContextID,FieldID> StateKey;
+    typedef BitMask<unsigned long long, MAX_FIELDS> FieldMask;
 
 #define FRIEND_ALL_RUNTIME_CLASSES                \
     friend class HighLevelRuntime;                \

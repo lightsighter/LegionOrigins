@@ -54,7 +54,7 @@ namespace RegionRuntime {
       void initialize_logical_context(LogicalRegion handle, ContextID ctx);
       void analyze_region(const RegionAnalyzer &az);
       // Special registrations for deletions
-      void analyze_indexA_space_deletion(ContextID ctx, IndexSpace sp, DeletionOperation *op);
+      void analyze_index_space_deletion(ContextID ctx, IndexSpace sp, DeletionOperation *op);
       void analyze_index_part_deletion(ContextID ctx, IndexPartition part, DeletionOperation *op);
       void analyze_field_space_deletion(ContextID ctx, FieldSpace sp, DeletionOperation *op);
       void analyze_field_deletion(ContextID ctx, FieldSpace sp, FieldID fid, DeletionOperation *op);
@@ -173,6 +173,7 @@ namespace RegionRuntime {
       IndexPartNode *const parent;
       std::map<Color,IndexPartNode*> color_map;
       std::list<RegionNode*> logical_nodes; // corresponding region nodes
+      std::set<std::pair<Color,Color> > disjoint_subsets; // pairs of disjoint subsets
       bool added;
     };
 
@@ -213,6 +214,8 @@ namespace RegionRuntime {
     public:
       void add_instance(RegionNode *node);
       void remove_instance(RegionNode *node);
+    public:
+      FieldMask get_field_mask(const std::vector<FieldID> &fields);
     private:
       const FieldSpace handle;
       // Top nodes in the trees for which this field space is used 
@@ -223,22 +226,6 @@ namespace RegionRuntime {
     };
 
     class RegionNode {
-    public:
-      friend class RegionTreeForest;
-      friend class PartitionNode;
-      RegionNode(LogicalRegion r, PartitionNode *par, IndexSpaceNode *row_src,
-                 FieldSpaceNode *col_src, bool add);
-    public:
-      void add_child(LogicalPartition handle, PartitionNode *child);
-      bool has_child(Color c);
-      PartitionNode* get_child(Color c);
-      void remove_child(Color c);
-    public:
-      // Logical region state operations
-      void register_logical_region(const LogicalUser &user, const StateKey &key, std::vector<Color> &path);
-      void open_logical_tree(const LogicalUser &user, const StateKey &key, std::vector<Color> &path);
-      void close_logical_tree(const LogicalUser &user, const StateKey &key, 
-                              std::vector<LogicalUser> &epoch_users, bool closing_partition);
     protected:
       enum DataState {
         DATA_CLEAN,
@@ -251,14 +238,46 @@ namespace RegionRuntime {
         PART_REDUCE, // allows multiple reduction instances with same reduction op
       };
     protected:
+      struct PartKey {
+      public:
+        PartKey(const LogicalUser &user, Color c);
+      public:
+        Color color;
+        PartState state;
+        ReductionOpID redop;
+      public:
+        bool operator==(const PartKey &rhs) const;
+        bool operator<(const PartKey &rhs) const;
+      };
       struct LogicalState {
       public:
-        PartState part_state;
-        std::set<Color> open_parts;
-        ReductionOpID redop;
-        std::vector<LogicalUser> curr_epoch_users; // Users from the current epoch
-        std::vector<LogicalUser> prev_epoch_users; // Users from the previous epoch
+        std::map<PartKey,FieldMask> open_parts; // open partitions and their state
+        std::list<LogicalUser> curr_epoch_users; // Users from the current epoch
+        std::list<LogicalUser> prev_epoch_users; // Users from the previous epoch
       };
+    public:
+      friend class RegionTreeForest;
+      friend class PartitionNode;
+      RegionNode(LogicalRegion r, PartitionNode *par, IndexSpaceNode *row_src,
+                 FieldSpaceNode *col_src, bool add);
+    public:
+      void add_child(LogicalPartition handle, PartitionNode *child);
+      bool has_child(Color c);
+      PartitionNode* get_child(Color c);
+      void remove_child(Color c);
+    public:
+      // Logical region state operations
+      void register_logical_region(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path);
+      void open_logical_tree(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path);
+      void close_logical_tree(const LogicalUser &user, const ContextID ctx, const FieldMask &closing_mask,
+                              std::list<LogicalUser> &epoch_users, bool closing_partition);
+    protected:
+      // Logical region helper functions
+      void perform_arrival_dependence_checks(const LogicalUser &user, LogicalState &state);
+      void close_open_partitions_below(const LogicalUser &user, const ContextID ctx, LogicalState &state);
+      void perform_current_dependence_checks(const LogicalUser &user, LogicalState &state);
+      void siphon_open_partitions(const LogicalUser &user, const ContextID ctx, LogicalState &state, PartKey &key);
+      bool need_close_operation(const PartKey &prev, const PartKey &next);
     private:
       const LogicalRegion handle;
       PartitionNode *const parent;
@@ -266,7 +285,7 @@ namespace RegionRuntime {
       FieldSpaceNode *const column_source; // only valid for top of region trees
       std::map<Color,PartitionNode*> color_map;
       bool added;
-      std::map<StateKey,LogicalState> logical_states;
+      std::map<ContextID,LogicalState> logical_states;
     };
 
     class PartitionNode {
@@ -281,10 +300,10 @@ namespace RegionRuntime {
       RegionNode* get_child(Color c);
       void remove_child(Color c);
     public:
-      void register_logical_region(const LogicalUser &user, const StateKey &key, std::vector<Color> &path);
-      void open_logical_tree(const LogicalUser &user, const StateKey &key, std::vector<Color> &path);
-      void close_logical_tree(const LogicalUser &user, const StateKey &key, 
-                              std::vector<LogicalUser> &epoch_users, bool closing_partition);
+      void register_logical_region(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path);
+      void open_logical_tree(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path);
+      void close_logical_tree(const LogicalUser &user, const ContextID ctx, const FieldMask &closing_mask, 
+                              std::list<LogicalUser> &epoch_users, bool closing_partition);
     protected:
       enum RegState {
         REG_NOT_OPEN,
@@ -296,10 +315,10 @@ namespace RegionRuntime {
       struct LogicalState {
       public:
         RegState region_state;
-        std::set<Color> open_regions;
+        std::map<Color,FieldMask> open_regions;
         ReductionOpID redop;
-        std::vector<LogicalUser> curr_epoch_users;
-        std::vector<LogicalUser> prev_epoch_users;
+        std::list<LogicalUser> curr_epoch_users;
+        std::list<LogicalUser> prev_epoch_users;
       };
     private:
       const LogicalPartition handle;
@@ -309,7 +328,7 @@ namespace RegionRuntime {
       std::map<Color,RegionNode*> color_map;
       const bool disjoint;
       bool added;
-      std::map<StateKey,LogicalState> logical_states;
+      std::map<ContextID,LogicalState> logical_states;
     };
 
     class InstanceRef {
@@ -342,11 +361,12 @@ namespace RegionRuntime {
 
     struct LogicalUser {
     public:
-      LogicalUser(GeneralizedOperation *o, unsigned id, RegionUsage u);
+      LogicalUser(GeneralizedOperation *o, unsigned id, const FieldMask &m, const RegionUsage &u);
     public:
       GeneralizedOperation *op;
       unsigned idx;
       GenerationID gen;
+      FieldMask field_mask;
       RegionUsage usage;
     };
 
@@ -355,8 +375,10 @@ namespace RegionRuntime {
       RegionAnalyzer(ContextID ctx_id, GeneralizedOperation *op, unsigned idx, const RegionRequirement &req);
     public:
       const ContextID ctx;
-      const LogicalUser user;
+      GeneralizedOperation *const op;
+      const unsigned idx;
       const LogicalRegion start;
+      const RegionUsage usage;
       std::vector<FieldID> fields;
       std::vector<Color> path;
     };
