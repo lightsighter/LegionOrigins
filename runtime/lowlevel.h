@@ -18,12 +18,10 @@ namespace RegionRuntime {
     class Lock;
     class Memory;
     class Processor;
-    class RegionMetaDataUntyped;
-    class RegionAllocatorUntyped;
-    class RegionInstanceUntyped;
-    template <class T> class RegionMetaData;
-    template <class T> class RegionAllocator;
-    template <class T> class RegionInstance;
+
+    class IndexSpace;
+    class IndexSpaceAllocator;
+    class RegionInstance;
 
     class Event {
     public:
@@ -150,7 +148,6 @@ namespace RegionRuntime {
       };
 
       Event spawn(TaskFuncID func_id, const void *args, size_t arglen,
-		  //std::set<RegionInstanceUntyped> instances_needed,
 		  Event wait_on = Event::NO_EVENT) const;
     };
 
@@ -193,6 +190,11 @@ namespace RegionRuntime {
       int last_enabled(void) const { return last_enabled_elmt; }
 
       ElementMask& operator=(const ElementMask &rhs);
+
+      enum OverlapResult { OVERLAP_NO, OVERLAP_MAYBE, OVERLAP_YES };
+
+      OverlapResult overlaps_with(const ElementMask& other,
+				  off_t max_effort = -1) const;
 
       class Enumerator {
       public:
@@ -387,83 +389,29 @@ namespace RegionRuntime {
       return redop;
     }
 
-    class RegionMetaDataUntyped {
-    public:
-      typedef unsigned id_t;
-      id_t id;
-      bool operator<(const RegionMetaDataUntyped &rhs) const { return id < rhs.id; }
-      bool operator==(const RegionMetaDataUntyped &rhs) const { return id == rhs.id; }
-      bool operator!=(const RegionMetaDataUntyped &rhs) const { return id != rhs.id; }
-
-      class Impl;
-      Impl *impl(void) const;
-
-      static const RegionMetaDataUntyped NO_REGION;
-
-      bool exists(void) const { return id != 0; }
-
-      static RegionMetaDataUntyped create_region_untyped(size_t num_elmts, size_t elmt_size);
-      static RegionMetaDataUntyped create_region_untyped(RegionMetaDataUntyped parent, const ElementMask &mask);
-
-      RegionAllocatorUntyped create_allocator_untyped(Memory memory) const;
-      RegionInstanceUntyped create_instance_untyped(Memory memory) const;
-      RegionInstanceUntyped create_instance_untyped(Memory memory,
-						    ReductionOpID redopid) const;
-      RegionInstanceUntyped create_instance_untyped(Memory memory,
-						    ReductionOpID redopid,
-						    off_t list_size,
-						    RegionInstanceUntyped parent_inst) const;
-
-      void destroy_region_untyped(void) const;
-      void destroy_allocator_untyped(RegionAllocatorUntyped allocator) const;
-      void destroy_instance_untyped(RegionInstanceUntyped instance) const;
-
-      const ElementMask &get_valid_mask(void) const;
-    };
-
-    class RegionAllocatorUntyped {
-    public:
-      typedef unsigned id_t;
-      id_t id;
-      bool operator<(const RegionAllocatorUntyped &rhs) const { return id < rhs.id; }
-      bool operator==(const RegionAllocatorUntyped &rhs) const { return id == rhs.id; }
-      bool operator!=(const RegionAllocatorUntyped &rhs) const { return id != rhs.id; }
-
-      class Impl;
-      Impl *impl(void) const;
-
-      static const RegionAllocatorUntyped NO_ALLOC;
-
-      bool exists(void) const { return id != 0; }
-
-    protected:
-      unsigned alloc_untyped(unsigned count = 1) const;
-      void free_untyped(unsigned ptr, unsigned count = 1) const;
-    };
-
     enum AccessorType { AccessorGeneric, 
 			AccessorArray, AccessorArrayReductionFold,
 			AccessorGPU, AccessorGPUReductionFold,
 			AccessorReductionList, };
 
-    template <AccessorType AT> class RegionInstanceAccessorUntyped;
+    template <AccessorType AT> class RegionAccessor;
 
-    template <> class RegionInstanceAccessorUntyped<AccessorGeneric> {
+    template <> class RegionAccessor<AccessorGeneric> {
     public:
-      explicit RegionInstanceAccessorUntyped(void)
+      explicit RegionAccessor(void)
         : internal_data(NULL) {}
-      explicit RegionInstanceAccessorUntyped(void *_internal_data)
+      explicit RegionAccessor(void *_internal_data)
 	: internal_data(_internal_data) {}
 
       // Need copy constructors so we can move things around
-      RegionInstanceAccessorUntyped(const RegionInstanceAccessorUntyped<AccessorGeneric> &old)
+      RegionAccessor(const RegionAccessor<AccessorGeneric> &old)
       { internal_data = old.internal_data; }
 
-      bool operator<(const RegionInstanceAccessorUntyped<AccessorGeneric> &rhs) const
+      bool operator<(const RegionAccessor<AccessorGeneric> &rhs) const
       { return internal_data < rhs.internal_data; }
-      bool operator==(const RegionInstanceAccessorUntyped<AccessorGeneric> &rhs) const
+      bool operator==(const RegionAccessor<AccessorGeneric> &rhs) const
       { return internal_data == rhs.internal_data; }
-      bool operator!=(const RegionInstanceAccessorUntyped<AccessorGeneric> &rhs) const
+      bool operator!=(const RegionAccessor<AccessorGeneric> &rhs) const
       { return internal_data != rhs.internal_data; }
 
       void *internal_data;
@@ -535,12 +483,103 @@ namespace RegionRuntime {
       bool can_convert(void) const;
 
       template <AccessorType AT2>
-      RegionInstanceAccessorUntyped<AT2> convert(void) const;
+      RegionAccessor<AT2> convert(void) const;
 
     protected:
       bool is_reduction_only(void) const;
     };
 
+    class RegionInstance {
+    public:
+      typedef unsigned id_t;
+      id_t id;
+      bool operator<(const RegionInstance &rhs) const { return id < rhs.id; }
+      bool operator==(const RegionInstance &rhs) const { return id == rhs.id; }
+      bool operator!=(const RegionInstance &rhs) const { return id != rhs.id; }
+
+      class Impl;
+      Impl *impl(void) const;
+
+      static const RegionInstance NO_INST;
+
+      bool exists(void) const { return id != 0; }
+
+      RegionAccessor<AccessorGeneric> get_accessor(void) const;
+    };
+
+    class IndexSpace {
+    public:
+      typedef unsigned id_t;
+      id_t id;
+      bool operator<(const IndexSpace &rhs) const { return id < rhs.id; }
+      bool operator==(const IndexSpace &rhs) const { return id == rhs.id; }
+      bool operator!=(const IndexSpace &rhs) const { return id != rhs.id; }
+
+      class Impl;
+      Impl *impl(void) const;
+
+      static const IndexSpace NO_SPACE;
+
+      bool exists(void) const { return id != 0; }
+
+      static IndexSpace create_index_space(size_t num_elmts);
+      static IndexSpace create_index_space(IndexSpace parent,
+					   const ElementMask &mask);
+
+      static IndexSpace expand_index_space(IndexSpace child,
+					   size_t num_elmts,
+					   off_t child_offset = 0);
+
+      IndexSpaceAllocator create_allocator(Memory memory) const;
+
+      // simple instance creation for the lazy
+      RegionInstance create_instance(Memory memory, size_t elem_size) const;
+
+      RegionInstance create_instance(Memory memory,
+				     const std::vector<size_t> &field_sizes,
+				     size_t block_size) const;
+
+      void destroy(void) const;
+
+      struct CopySrcDstField {
+	RegionInstance inst;
+	unsigned offset, size;
+      };
+
+      Event copy(const std::vector<CopySrcDstField>& srcs,
+		 const std::vector<CopySrcDstField>& dsts,
+		 Event wait_on = Event::NO_EVENT) const;
+
+      Event copy(const std::vector<CopySrcDstField>& srcs,
+		 const std::vector<CopySrcDstField>& dsts,
+		 const ElementMask& mask,
+		 Event wait_on = Event::NO_EVENT) const;
+
+      const ElementMask &get_valid_mask(void) const;
+    };
+
+    class IndexSpaceAllocator {
+    public:
+      typedef unsigned id_t;
+      id_t id;
+      bool operator<(const IndexSpaceAllocator &rhs) const { return id < rhs.id; }
+      bool operator==(const IndexSpaceAllocator &rhs) const { return id == rhs.id; }
+      bool operator!=(const IndexSpaceAllocator &rhs) const { return id != rhs.id; }
+
+      class Impl;
+      Impl *impl(void) const;
+
+      static const IndexSpaceAllocator NO_ALLOC;
+
+      bool exists(void) const { return id != 0; }
+
+    protected:
+      unsigned alloc(unsigned count = 1) const;
+      void reserve(unsigned ptr, unsigned count = 1) const;
+      void free(unsigned ptr, unsigned count = 1) const;
+    };
+
+#ifdef OLD_ACCESSOR_STUFF
     template <> class RegionInstanceAccessorUntyped<AccessorArray> {
     public:
       explicit RegionInstanceAccessorUntyped(void)
@@ -864,116 +903,7 @@ namespace RegionRuntime {
       //void reduce(ptr_t<ET> ptr, RHS newval) const { ria.template reduce<REDOP>(ptr, newval); }
     };
 #endif
-
-    class RegionInstanceUntyped {
-    public:
-      typedef unsigned id_t;
-      id_t id;
-      bool operator<(const RegionInstanceUntyped &rhs) const { return id < rhs.id; }
-      bool operator==(const RegionInstanceUntyped &rhs) const { return id == rhs.id; }
-      bool operator!=(const RegionInstanceUntyped &rhs) const { return id != rhs.id; }
-
-      class Impl;
-      Impl *impl(void) const;
-
-      static const RegionInstanceUntyped NO_INST;
-
-      bool exists(void) const { return id != 0; }
-
-      RegionInstanceAccessorUntyped<AccessorGeneric> get_accessor_untyped(void) const;
-
-      Event copy_to_untyped(RegionInstanceUntyped target, Event wait_on = Event::NO_EVENT) const;
-      Event copy_to_untyped(RegionInstanceUntyped target, const ElementMask &mask, Event wait_on = Event::NO_EVENT) const;
-      Event copy_to_untyped(RegionInstanceUntyped target, RegionMetaDataUntyped region, Event wait_on = Event::NO_EVENT) const;
-    };
-
-    template <class T>
-    class RegionMetaData : public RegionMetaDataUntyped {
-    public:
-      RegionMetaData(void) {}
-      RegionMetaData(const RegionMetaData<T>& copy_from)
-	: RegionMetaDataUntyped(copy_from) {}
-
-      // operator to re-introduce element type - make sure you're right!
-      explicit RegionMetaData(const RegionMetaDataUntyped& copy_from)
-	: RegionMetaDataUntyped(copy_from) {}
-
-      static RegionMetaData<T> create_region(size_t _num_elems) {
-	return RegionMetaData<T>(create_region_untyped(_num_elems,sizeof(T)));
-      }
-
-      RegionAllocator<T> create_allocator(Memory memory) const {
-	return RegionAllocator<T>(create_allocator_untyped(memory));
-      }
-	  
-      RegionInstance<T> create_instance(Memory memory) const {
-	return RegionInstance<T>(create_instance_untyped(memory));
-      }
-
-      RegionInstance<T> create_instance(Memory memory,
-					ReductionOpID redopid) const {
-	return RegionInstance<T>(create_instance_untyped(memory, redopid));
-      }
-
-      RegionInstance<T> create_instance(Memory memory,
-					ReductionOpID redopid,
-					off_t list_size,
-					RegionInstance<T> parent_inst) const
-      {
-	return RegionInstance<T>(create_instance_untyped(memory, redopid,
-							 list_size,
-							 parent_inst));
-      }
-
-      void destroy_region() {
-        destroy_region_untyped();
-      }
-
-      void destroy_allocator(RegionAllocator<T> allocator) const {
-        destroy_allocator_untyped(allocator);
-      }
-
-      void destroy_instance(RegionInstance<T> instance) const {
-        destroy_instance_untyped(instance);
-      }
-    };
-
-    template <class T>
-    class RegionAllocator : public RegionAllocatorUntyped {
-    public:
-      // operator to re-introduce element type - make sure you're right!
-      explicit RegionAllocator(const RegionAllocatorUntyped& copy_from)
-	: RegionAllocatorUntyped(copy_from) {}
-      
-      ptr_t<T> alloc(unsigned count = 1) 
-      { 
-	ptr_t<T> ptr = ptr_t<T>(alloc_untyped(count));
-	return ptr; 
-      }
-      void free(ptr_t<T> ptr, unsigned count = 1) { free_untyped(ptr.value,count); }
-    };
-
-    template <class T>
-    class RegionInstance : public RegionInstanceUntyped {
-    public:
-      RegionInstance(void) : RegionInstanceUntyped(NO_INST) {}
-
-      // operator to re-introduce element type - make sure you're right!
-      explicit RegionInstance(const RegionInstanceUntyped& copy_from)
-	: RegionInstanceUntyped(copy_from) {}
-
-      // the instance doesn't have read/write/reduce methods of its own -
-      //  instead, we can hand out an "accessor" object that has those methods
-      //  this lets us specialize for the just-an-array-dereference case
-      RegionInstanceAccessor<T,AccessorGeneric> get_accessor(void) const
-      { return RegionInstanceAccessor<T,AccessorGeneric>(get_accessor_untyped()); }
-
-      Event copy_to(RegionInstance<T> target, Event wait_on = Event::NO_EVENT) const
-      { return copy_to_untyped(RegionInstanceUntyped(target), wait_on); }
-
-      Event copy_to(RegionInstance<T> target, const ElementMask& mask, Event wait_on = Event::NO_EVENT) const
-      { return copy_to_untyped(RegionInstanceUntyped(target), mask, wait_on); }
-    };
+#endif
 
     class Machine {
     public:
