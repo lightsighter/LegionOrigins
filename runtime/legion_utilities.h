@@ -554,7 +554,7 @@ namespace RegionRuntime {
       // Only be less than if the bits are a subset of the rhs bits
       for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
       {
-        if (bit_vector[idx] & ~(bit_vector[idx] & rhs[idx]))
+        if (bit_vector[idx] & ~(rhs[idx]))
           return false;
       }
       return true;
@@ -681,7 +681,7 @@ namespace RegionRuntime {
       BitMask<T,MAX> result;
       for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
       {
-        result[idx] = bit_vector[idx] & ~rhs[idx];
+        result[idx] = bit_vector[idx] & ~(rhs[idx]);
       }
       return result;
     }
@@ -693,7 +693,7 @@ namespace RegionRuntime {
     {
       for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
       {
-        bit_vector[idx] &= ~rhs[idx];
+        bit_vector[idx] &= ~(rhs[idx]);
       }
       return *this;
     }
