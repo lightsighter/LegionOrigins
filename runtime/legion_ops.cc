@@ -154,6 +154,73 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    LegionErrorType GeneralizedOperation::verify_requirement(const RegionRequirement &req, 
+                                                              FieldID &bad_field, size_t &bad_size, unsigned &bad_idx)
+    //--------------------------------------------------------------------------
+    {
+      // First make sure that all the privilege fields are valid for the given
+      // fields space of the region or partition
+      lock_context();
+      FieldSpace sp = (req.handle_type == SINGULAR) ? req.region.field_space : req.partition.field_space;
+      for (std::set<FieldID>::const_iterator it = req.privilege_fields.begin();
+            it != req.privilege_fields.end(); it++)
+      {
+        if (!forest_ctx->has_field(sp, *it))
+        {
+          unlock_context();
+          bad_field = *it;
+          return ERROR_FIELD_SPACE_FIELD_MISMATCH;
+        }
+      }
+      unlock_context();
+
+      // Then check that any instance fields are included in the privilege fields
+      // Make sure that there are no duplicates in the instance fields
+      std::set<FieldID> inst_duplicates;
+      for (std::vector<FieldID>::const_iterator it = req.instance_fields.begin();
+            it != req.instance_fields.end(); it++)
+      {
+        if (req.privilege_fields.find(*it) == req.privilege_fields.end())
+        {
+          bad_field = *it;
+          return ERROR_INVALID_INSTANCE_FIELD;
+        }
+        if (inst_duplicates.find(*it) != inst_duplicates.end())
+        {
+          bad_field = *it;
+          return ERROR_DUPLICATE_INSTANCE_FIELD;
+        }
+        inst_duplicates.insert(*it);
+      }
+      
+      // Finally check that the type matches the instance fields
+      // Only do this if the user requested it
+      if (req.inst_type != 0)
+      {
+        const TypeTable &tt = HighLevelRuntime::get_type_table();  
+        TypeTable::const_iterator tt_it = tt.find(req.inst_type);
+        if (tt_it == tt.end())
+          return ERROR_INVALID_TYPE_HANDLE;
+        const Structure &st = tt_it->second;
+        if (st.field_sizes.size() != req.instance_fields.size())
+          return ERROR_TYPE_INST_MISSIZE;
+        lock_context();
+        for (unsigned idx = 0; idx < st.field_sizes.size(); idx++)
+        {
+          if (st.field_sizes[idx] != forest_ctx->get_field_size(sp, req.instance_fields[idx]))
+          {
+            bad_size = forest_ctx->get_field_size(sp, req.instance_fields[idx]);
+            unlock_context();
+            bad_field = req.instance_fields[idx];
+            bad_idx = idx;
+            return ERROR_TYPE_INST_MISMATCH;
+          }
+        }
+        unlock_context();
+      }
+    }
+
+    //--------------------------------------------------------------------------
     size_t GeneralizedOperation::compute_operation_size(void)
     //--------------------------------------------------------------------------
     {
@@ -202,13 +269,15 @@ namespace RegionRuntime {
       mapper = runtime->get_mapper(id);
       mapper_lock = runtime->get_mapper_lock(id);
       tag = t;
+      // Check privileges for the region requirement
+      check_privilege();
 #ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Map %d Parent %d",unique_id,parent_ctx->get_unique_id());
       log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle (%x,%x,%x) Parent (%x,%x,%x) Privilege %d Coherence %d",
               parent_ctx->get_unique_id(),unique_id,0,req.region.index_space.id,req.region.field_space.id,req.region.tree_id,
               PRINT_REG(req.parent),req.privilege,req.prop);
 #endif
-      ctx->register_child_map(this);
+      parent_ctx->register_child_map(this);
     }
     
     //--------------------------------------------------------------------------
@@ -227,13 +296,15 @@ namespace RegionRuntime {
       mapper = runtime->get_mapper(id);
       mapper_lock = runtime->get_mapper_lock(id);
       tag = t;
+      // Check privileges for the region requirement
+      check_privilege();
 #ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Map %d Parent %d",unique_id,parent_ctx->get_unique_id());
       log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle (%x,%x,%x) Parent (%x,%x,%x) Privilege %d Coherence %d",
               parent_ctx->get_unique_id(),unique_id,0,requirement.region.index_space.id,requirement.region.field_space.id,
               requirement.region.tree_id,PRINT_REG(requirement.parent),requirement.privilege,requirement.prop);
 #endif
-      ctx->register_child_map(this, idx);
+      parent_ctx->register_child_map(this, idx);
     }
 
     //--------------------------------------------------------------------------
@@ -346,11 +417,65 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void MappingOperation::add_mapping_dependence(unsigned idx, const LogicalUser &prev, DependenceType dtype)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx == 0);
+#endif
+#ifndef LOG_EVENT_ONLY
+      log_spy(LEVEL_INFO,"Mapping Dependence %d %d %d %d %d %d", parent_ctx->get_unique_id(), prev.op->get_unique_id(),
+                                                                  prev.idx, get_unique_id(), idx, dtype);
+#endif
+      if (prev.op->add_waiting_dependence(this, prev.idx, prev.gen))
+      {
+        outstanding_dependences++;
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    bool MappingOperation::add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen)
+    //--------------------------------------------------------------------------
+    {
+      // Need to hold the lock to avoid destroying data during deactivation
+      lock();
+#ifdef DEBUG_HIGH_LEVEL
+      assert(gen <= generation); // make sure the generations make sense
+      assert(idx == 0);
+#endif
+      bool result;
+      do {
+        if (gen < generation)
+        {
+          result = false; // this mapping operation has already been recycled
+          break;
+        }
+        // Check to see if we've already been mapped
+        if (mapped_event.has_triggered())
+        {
+          result = false;
+          break;
+        }
+        // Make sure we don't add it twice
+        std::pair<std::set<GeneralizedOperation*>::iterator,bool> added = 
+          map_dependent_waiters.insert(waiter);
+        result = added.second;
+      } while (false);
+      unlock();
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
     void MappingOperation::perform_dependence_analysis(void)
     //--------------------------------------------------------------------------
     { 
       lock_context();
-      compute_mapping_dependences(parent_ctx, 0/*idx*/, requirement);
+      {
+        RegionAnalyzer az(parent_ctx->ctx_id, this, 0/*idx*/, requirement);
+        // Compute the path to the right place
+        forest_ctx->compute_index_path(requirement.parent.index_space, requirement.region.index_space, az.path);
+        forest_ctx->analyze_region(az);
+      }
       bool ready = is_ready();
       unlock_context();
       if (ready)
@@ -366,11 +491,11 @@ namespace RegionRuntime {
       ContextID phy_ctx = parent_ctx->find_enclosing_physical_context(requirement.parent);
       RegionMapper reg_mapper(phy_ctx, 0/*idx*/, requirement, mapper, mapper_lock, runtime->local_proc, 
                               unmapped_event, unmapped_event, tag, true/*inline mapping*/, source_copy_instances);
-      // Compute the trace
+      // Compute the path 
 #ifdef DEBUG_HIGH_LEVEL
       bool result = 
 #endif
-      forest_ctx->compute_index_path(requirement.parent.index_space, requirement.region.index_space, reg_mapper.trace);
+      forest_ctx->compute_index_path(requirement.parent.index_space, requirement.region.index_space, reg_mapper.path);
 #ifdef DEBUG_HIGH_LEVEL
       assert(result);
 #endif
@@ -420,6 +545,98 @@ namespace RegionRuntime {
     {
       // Enqueue this operation with the runtime
       runtime->add_to_ready_queue(this);
+    }
+
+    //--------------------------------------------------------------------------
+    void MappingOperation::check_privilege(void)
+    //--------------------------------------------------------------------------
+    {
+      FieldID bad_field;
+      size_t bad_size;
+      unsigned bad_idx;
+      LegionErrorType et = verify_requirement(requirement, bad_field, bad_size, bad_idx);
+      // If that worked, then check the privileges with the parent context
+      if (et == NO_ERROR)
+        et = parent_ctx->check_privilege(requirement, bad_field);
+      switch (et)
+      {
+        case NO_ERROR:
+          break;
+        case ERROR_FIELD_SPACE_FIELD_MISMATCH:
+          {
+            FieldSpace sp = (requirement.handle_type == SINGULAR) ? requirement.region.field_space : requirement.partition.field_space;
+            log_region(LEVEL_ERROR,"Field %d is not a valid field of field space %d for inline mapping (ID %d)",
+                                    bad_field, sp.id, get_unique_id());
+            exit(ERROR_FIELD_SPACE_FIELD_MISMATCH);
+          }
+        case ERROR_INVALID_INSTANCE_FIELD:
+          {
+            log_region(LEVEL_ERROR,"Instance field %d is not one of the privilege fields for inline mapping (ID %d)",
+                                    bad_field, get_unique_id());
+            exit(ERROR_INVALID_INSTANCE_FIELD);
+          }
+        case ERROR_DUPLICATE_INSTANCE_FIELD:
+          {
+            log_region(LEVEL_ERROR, "Instance field %d is a duplicate for inline mapping (ID %d)",
+                                  bad_field, get_unique_id());
+            exit(ERROR_DUPLICATE_INSTANCE_FIELD);
+          }
+        case ERROR_INVALID_TYPE_HANDLE:
+          {
+            log_region(LEVEL_ERROR, "Type handle %d does not name a valid registered structure type for inline mapping (ID %d)",
+                                    requirement.inst_type, get_unique_id());
+            exit(ERROR_INVALID_TYPE_HANDLE);
+          }
+        case ERROR_TYPE_INST_MISSIZE:
+          {
+            TypeTable &tt = HighLevelRuntime::get_type_table();
+            const Structure &st = tt[requirement.inst_type];
+            log_region(LEVEL_ERROR, "Type %s had %ld fields, but there are %ld instance fields for inline mapping (ID %d)",
+                                    st.name, st.field_sizes.size(), requirement.instance_fields.size(), get_unique_id());
+            exit(ERROR_TYPE_INST_MISSIZE);
+          }
+        case ERROR_TYPE_INST_MISMATCH:
+          {
+            TypeTable &tt = HighLevelRuntime::get_type_table();
+            const Structure &st = tt[requirement.inst_type]; 
+            log_region(LEVEL_ERROR, "Type %s has field %s with size %ld for field %d but requirement for inline mapping (ID %d) has size %ld",
+                                    st.name, st.field_names[bad_idx], st.field_sizes[bad_idx], bad_idx,
+                                    get_unique_id(), bad_size);
+            exit(ERROR_TYPE_INST_MISMATCH);
+          }
+        case ERROR_BAD_PARENT_REGION:
+          {
+            log_region(LEVEL_ERROR,"Parent task %s (ID %d) of inline mapping (ID %d) does not have a region requirement "
+                                    "for region REG_PAT as a parent of region requirement",
+                                    parent_ctx->variants->name, parent_ctx->get_unique_id(),
+                                    get_unique_id());
+            exit(ERROR_BAD_PARENT_REGION);
+          }
+        case ERROR_BAD_REGION_PATH:
+          {
+            log_region(LEVEL_ERROR,"Region (%x,%x,%x) is not a sub-region of parent region (%x,%x,%x) for "
+                                    "region requirement of inline mapping (ID %d)",
+                                    requirement.region.index_space.id,requirement.region.field_space.id, requirement.region.tree_id,
+                                    PRINT_REG(requirement.parent), get_unique_id());
+            exit(ERROR_BAD_REGION_PATH);
+          }
+        case ERROR_BAD_REGION_TYPE:
+          {
+            log_region(LEVEL_ERROR,"Region requirement of inline mapping (ID %d) cannot find privileges for field %d in parent task",
+                                    get_unique_id(), bad_field);
+            exit(ERROR_BAD_REGION_TYPE);
+          }
+        case ERROR_BAD_REGION_PRIVILEGES:
+          {
+            log_region(LEVEL_ERROR,"Privileges %x for region (%x,%x,%x) are not a subset of privileges of parent task's privileges for "
+                                   "region requirement of inline mapping (ID %d)",
+                                   requirement.privilege, requirement.region.index_space.id,requirement.region.field_space.id, 
+                                   requirement.region.tree_id, get_unique_id());
+            exit(ERROR_BAD_REGION_PRIVILEGES);
+          }
+        default:
+          assert(false); // Should never happen
+      }
     }
 
     /////////////////////////////////////////////////////////////
@@ -476,7 +693,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void DeletionOperation::initialize_field_downgrade(Context parent, FieldSpace space, TypeHandle downgrade)
+    void DeletionOperation::initialize_field_deletion(Context parent, FieldSpace space, FieldID fid)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -484,8 +701,8 @@ namespace RegionRuntime {
 #endif
       parent_ctx = parent;
       field_space = space;
-      handle_tag = DESTROY_FIELDS;
-      downgrade_type = downgrade;
+      handle_tag = DESTROY_FIELD;
+      field_id = fid; 
       performed = false;
       parent->register_child_deletion(this);
     }
@@ -539,10 +756,72 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void DeletionOperation::add_mapping_dependence(unsigned idx, const LogicalUser &prev, DependenceType dtype)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(idx == 0);
+#endif
+      if (prev.op->add_waiting_dependence(this, prev.idx, prev.gen))
+      {
+        outstanding_dependences++;
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    bool DeletionOperation::add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen)
+    //--------------------------------------------------------------------------
+    {
+      // This should never be called for deletion operations since they
+      // should never ever be registered in the logical region tree
+      assert(false);
+      return false;
+    }
+
+    //--------------------------------------------------------------------------
     void DeletionOperation::perform_dependence_analysis(void)
     //--------------------------------------------------------------------------
     {
-      
+      lock_context();
+      switch (handle_tag)
+      {
+        case DESTROY_INDEX_SPACE:
+          {
+            forest_ctx->analyze_index_space_deletion(parent_ctx->ctx_id, index.space, this);
+            break;
+          }
+        case DESTROY_INDEX_PARTITION:
+          {
+            forest_ctx->analyze_index_part_deletion(parent_ctx->ctx_id, index.partition, this);
+            break;
+          }
+        case DESTROY_FIELD_SPACE:
+          {
+            forest_ctx->analyze_field_space_deletion(parent_ctx->ctx_id, field_space, this);
+            break;
+          }
+        case DESTROY_FIELD:
+          {
+            forest_ctx->analyze_field_deletion(parent_ctx->ctx_id, field_space, field_id, this);
+            break;
+          }
+        case DESTROY_REGION:
+          {
+            forest_ctx->analyze_region_deletion(parent_ctx->ctx_id, region, this);
+            break;
+          }
+        case DESTROY_PARTITION:
+          {
+            forest_ctx->analyze_partition_deletion(parent_ctx->ctx_id, partition, this);
+            break;
+          }
+        default:
+          assert(false);
+      }
+      bool ready = is_ready();
+      unlock_context();
+      if (ready)
+        trigger();
     }
 
     //--------------------------------------------------------------------------
@@ -571,9 +850,9 @@ namespace RegionRuntime {
               parent_ctx->destroy_field_space(field_space);
               break;
             }
-          case DESTROY_FIELDS:
+          case DESTROY_FIELD:
             {
-              parent_ctx->downgrade_field_space(field_space, downgrade_type);
+              parent_ctx->free_field(field_space, field_id);
               break;
             }
           case DESTROY_REGION:
@@ -803,11 +1082,62 @@ namespace RegionRuntime {
         }
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
-          LegionErrorType et = parent_ctx->check_privilege(regions[idx]);
+          // Verify that the requirement is self-consistent
+          FieldID bad_field;
+          size_t bad_size;
+          unsigned bad_idx;
+          LegionErrorType et = verify_requirement(regions[idx], bad_field, bad_size, bad_idx);
+          // If that worked, then check the privileges with the parent context
+          if (et == NO_ERROR)
+            et = parent_ctx->check_privilege(regions[idx], bad_field);
           switch (et)
           {
             case NO_ERROR:
               break;
+            case ERROR_FIELD_SPACE_FIELD_MISMATCH:
+              {
+                FieldSpace sp = (regions[idx].handle_type == SINGULAR) ? regions[idx].region.field_space : regions[idx].partition.field_space;
+                log_region(LEVEL_ERROR,"Field %d is not a valid field of field space %d for region %d of task %s (ID %d)",
+                                        bad_field, sp.id, idx, this->variants->name, get_unique_id());
+                exit(ERROR_FIELD_SPACE_FIELD_MISMATCH);
+              }
+            case ERROR_INVALID_INSTANCE_FIELD:
+              {
+                log_region(LEVEL_ERROR,"Instance field %d is not one of the privilege fields for region %d of task %s (ID %d)",
+                                        bad_field, idx, this->variants->name, get_unique_id());
+                exit(ERROR_INVALID_INSTANCE_FIELD);
+              }
+            case ERROR_DUPLICATE_INSTANCE_FIELD:
+              {
+                log_region(LEVEL_ERROR, "Instance field %d is a duplicate for region %d of task %s (ID %d)",
+                                      bad_field, idx, this->variants->name, get_unique_id());
+                exit(ERROR_DUPLICATE_INSTANCE_FIELD);
+              }
+            case ERROR_INVALID_TYPE_HANDLE:
+              {
+                log_region(LEVEL_ERROR, "Type handle %d does not name a valid registered structure type for region %d of task %s (ID %d)",
+                                        regions[idx].inst_type, idx, this->variants->name, get_unique_id());
+                exit(ERROR_INVALID_TYPE_HANDLE);
+              }
+            case ERROR_TYPE_INST_MISSIZE:
+              {
+                TypeTable &tt = HighLevelRuntime::get_type_table();
+                const Structure &st = tt[regions[idx].inst_type];
+                log_region(LEVEL_ERROR, "Type %s had %ld fields, but there are %ld instance fields for region %d of task %s (ID %d)",
+                                        st.name, st.field_sizes.size(), regions[idx].instance_fields.size(), 
+                                        idx, this->variants->name, get_unique_id());
+                exit(ERROR_TYPE_INST_MISSIZE);
+              }
+            case ERROR_TYPE_INST_MISMATCH:
+              {
+                TypeTable &tt = HighLevelRuntime::get_type_table();
+                const Structure &st = tt[regions[idx].inst_type]; 
+                log_region(LEVEL_ERROR, "Type %s has field %s with size %ld for field %d but requirement for region %d of "
+                                        "task %s (ID %d) has size %ld",
+                                        st.name, st.field_names[bad_idx], st.field_sizes[bad_idx], bad_idx,
+                                        idx, this->variants->name, get_unique_id(), bad_size);
+                exit(ERROR_TYPE_INST_MISMATCH);
+              }
             case ERROR_BAD_PARENT_REGION:
               {
                 log_region(LEVEL_ERROR,"Parent task %s (ID %d) of task %s (ID %d) does not have a region requirement "
@@ -835,9 +1165,8 @@ namespace RegionRuntime {
               }
             case ERROR_BAD_REGION_TYPE:
               {
-                log_region(LEVEL_ERROR,"Type handle %d of region requirement %d of task %s (ID %d) is not a subtype "
-                                        "of parent task's region type",
-                                        regions[idx].type, idx, this->variants->name, get_unique_id());
+                log_region(LEVEL_ERROR,"Region requirement %d of task %s (ID %d) cannot find privileges for field %d in parent task",
+                                        idx, this->variants->name, get_unique_id(), bad_field);
                 exit(ERROR_BAD_REGION_TYPE);
               }
             case ERROR_BAD_REGION_PRIVILEGES:
@@ -860,6 +1189,28 @@ namespace RegionRuntime {
               assert(false); // Should never happen
           }
         }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void TaskContext::add_mapping_dependence(unsigned idx, const LogicalUser &prev, DependenceType dtype)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      if (this == prev.op)
+      {
+        log_task(LEVEL_ERROR,"Illegal dependence between two region requirements with indexes %d and %d in task %s (ID %d)",
+                              prev.idx, idx, this->variants->name, get_unique_id());
+        exit(ERROR_ALIASED_INTRA_TASK_REGIONS);
+      }
+#endif
+#ifndef LOG_EVENT_ONLY
+      log_spy(LEVEL_INFO,"Mapping Dependence %d %d %d %d %d %d",parent_ctx->get_unique_id(),prev.op->get_unique_id(),
+                                                              prev.idx, get_unique_id(), idx, dtype);
+#endif
+      if (prev.op->add_waiting_dependence(this, prev.idx, prev.gen))
+      {
+        outstanding_dependences++;
       }
     }
 
@@ -991,7 +1342,16 @@ namespace RegionRuntime {
       lock_context();
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        compute_mapping_dependences(parent_ctx, idx, regions[idx]);
+        // Analyze everything in the parent contexts logical scope
+        RegionAnalyzer az(parent_ctx->ctx_id, this, idx, regions[idx]);
+        // Compute the path to path to the destination
+        if (regions[idx].handle_type == SINGULAR)
+          forest_ctx->compute_index_path(regions[idx].parent.index_space, 
+                                          regions[idx].region.index_space, az.path);
+        else
+          forest_ctx->compute_partition_path(regions[idx].parent.index_space, 
+                                              regions[idx].partition.index_partition, az.path);
+        forest_ctx->analyze_region(az);
       }
       bool ready = is_ready();
       unlock_context();
@@ -1421,30 +1781,30 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void SingleTask::upgrade_field_space(FieldSpace space, TypeHandle handle)
+    void SingleTask::allocate_field(FieldSpace space, FieldID fid, size_t field_size)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       if (is_leaf)
       {
-        log_task(LEVEL_ERROR,"Illegal upgrade field space performed in leaf task %s (ID %d)",
+        log_task(LEVEL_ERROR,"Illegal field allocation performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
         exit(ERROR_LEAF_TASK_VIOLATION);
       }
 #endif
       lock_context();
-      forest_ctx->upgrade_field_space(space, handle);
+      forest_ctx->allocate_field(space, fid, field_size);
       unlock_context();
     }
 
     //--------------------------------------------------------------------------
-    void SingleTask::downgrade_field_space(FieldSpace space, TypeHandle handle)
+    void SingleTask::free_field(FieldSpace space, FieldID fid)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       if (is_leaf)
       {
-        log_task(LEVEL_ERROR,"Illegal downgrade field space performed in leaf task %s (ID %d)",
+        log_task(LEVEL_ERROR,"Illegal field deallocation performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
         exit(ERROR_LEAF_TASK_VIOLATION);
       }
@@ -1452,12 +1812,12 @@ namespace RegionRuntime {
       // No need to worry about deferring this, it's already been done
       // by the DeletionOperation
       lock_context();
-      forest_ctx->downgrade_field_space(space, handle);
+      forest_ctx->free_field(space, fid);
       unlock_context();
     }
 
     //--------------------------------------------------------------------------
-    void SingleTask::create_region(LogicalRegion handle, IndexSpace index_space, FieldSpace field_space, RegionTreeID tid)
+    void SingleTask::create_region(LogicalRegion handle)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1469,7 +1829,7 @@ namespace RegionRuntime {
       }
 #endif
       lock_context();
-      forest_ctx->create_region(handle, index_space, field_space, tid);
+      forest_ctx->create_region(handle);
       unlock_context();
       // Add this to the list of our created regions
       lock();
@@ -1708,7 +2068,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    LegionErrorType SingleTask::check_privilege(const RegionRequirement &req) const
+    LegionErrorType SingleTask::check_privilege(const RegionRequirement &req, FieldID &bad_field) const
     //--------------------------------------------------------------------------
     {
       if (req.verified)
@@ -1742,15 +2102,19 @@ namespace RegionRuntime {
               return ERROR_BAD_PARTITION_PATH;
             }
           }
+          unlock_context();
           // Now check that the types are subset of the fields
           // Note we can use the parent since all the regions/partitions
           // in the same region tree have the same field space
-          if (!forest_ctx->is_current_subtype(req.parent, req.type))
+          for (std::set<FieldID>::const_iterator fit = req.privilege_fields.begin();
+                fit != req.privilege_fields.end(); fit++)
           {
-            unlock_context();
-            return ERROR_BAD_REGION_TYPE;
+            if (it->privilege_fields.find(*fit) == it->privilege_fields.end())
+            {
+              bad_field = *fit;
+              return ERROR_BAD_REGION_TYPE;
+            }
           }
-          unlock_context();
           if (req.privilege & (~(it->privilege)))
           {
             if (req.handle_type == SINGULAR)
@@ -1787,15 +2151,9 @@ namespace RegionRuntime {
               return ERROR_BAD_PARTITION_PATH;
             }
           }
-          // Now get the type handle for the logical region
-          // Note that the type handle is the same for the parent or children
-          // so it doesn't matter which one we pass here.
-          if (!forest_ctx->is_current_subtype(req.parent, req.type))
-          {
-            unlock_context();
-            return ERROR_BAD_REGION_TYPE;
-          }
-          unlock_context(); 
+          unlock_context();
+          // No need to check the field privileges since we should have them all
+
           // No need to check the privileges since we know we have them all
           return NO_ERROR;
         }
@@ -2008,29 +2366,34 @@ namespace RegionRuntime {
         if (invoke_mapper_map_region_virtual(idx))
         {
           // Want a virtual mapping
+          lock();
           unmapped++;
           non_virtual_mapped_region.push_back(false);
           physical_instances.push_back(InstanceRef());
           physical_contexts.push_back(phy_ctx); // use same context as parent for all child mappings
+          unlock();
         }
         else
         {
           // Otherwise we want to do an actual physical mapping
           RegionMapper reg_mapper(phy_ctx, idx, regions[idx], mapper, mapper_lock, target, 
                                   single_term, multi_term, tag, false/*inline mapping*/, source_copy_instances);
-          // Compute the trace 
+          // Compute the path 
 #ifdef DEBUG_HIGH_LEVEL
           bool result = 
 #endif
-          forest_ctx->compute_index_path(regions[idx].parent.index_space,regions[idx].region.index_space, reg_mapper.trace);
+          forest_ctx->compute_index_path(regions[idx].parent.index_space,regions[idx].region.index_space, reg_mapper.path);
 #ifdef DEBUG_HIGH_LEVEL
           assert(result); // better have been able to compute the path
 #endif
           // Now do the traversal and record the result
-          physical_instances.push_back(forest_ctx->map_region(reg_mapper));
+          InstanceRef new_ref = forest_ctx->map_region(reg_mapper);
+          lock();
+          physical_instances.push_back(new_ref);
           // Check to make sure that the result isn't virtual, if it is then the mapping failed
           if (physical_instances[idx].is_virtual_ref())
           {
+            unlock();
             // Mapping failed
             invoke_mapper_failed_mapping(idx);
             map_success = false;
@@ -2038,6 +2401,7 @@ namespace RegionRuntime {
           }
           non_virtual_mapped_region.push_back(true);
           physical_contexts.push_back(ctx_id); // use our context for all child mappings
+          unlock();
         }
       }
       forest_ctx->unlock_context();
@@ -2054,6 +2418,7 @@ namespace RegionRuntime {
       {
         // Mapping failed so undo everything that was done
         forest_ctx->lock_context();
+        lock();
         for (unsigned idx = 0; idx < physical_instances.size(); idx++)
         {
           physical_instances[idx].remove_reference();
@@ -2063,6 +2428,7 @@ namespace RegionRuntime {
         physical_contexts.clear();
         non_virtual_mapped_region.clear();
         unmapped = 0;
+        unlock();
       }
       return map_success;
     }
@@ -2561,6 +2927,50 @@ namespace RegionRuntime {
       deactivate_single();
       // Free this back up to the runtime
       runtime->free_individual_task(this, parent);
+    }
+
+    //--------------------------------------------------------------------------
+    bool IndividualTask::add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen)
+    //--------------------------------------------------------------------------
+    {
+      lock();
+#ifdef DEBUG_HIGH_LEVEL
+      assert(gen <= generation);
+#endif
+      bool result;
+      do {
+        if (gen < generation)
+        {
+          result = false; // This task has already been recycled
+          break;
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        assert(idx < map_dependent_waiters.size());
+#endif
+        // Check to see if everything has been mapped
+        if (unmapped == 0)
+        {
+          result = false;
+        }
+        else
+        {
+          if ((idx >= non_virtual_mapped_region.size()) ||
+              !non_virtual_mapped_region[idx])
+          {
+            // hasn't been mapped yet, try adding it
+            std::pair<std::set<GeneralizedOperation*>::iterator,bool> added = 
+              map_dependent_waiters[idx].insert(waiter);
+            result = added.second;
+          }
+          else
+          {
+            // It's already been mapped
+            result = false;
+          }
+        }
+      } while (false);
+      unlock();
+      return result;
     }
 
     //--------------------------------------------------------------------------
@@ -3236,6 +3646,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(map_dependent_waiters.size() == regions.size());
 #endif
+      lock();
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
         bool next = non_virtual_mapped_region[idx];
@@ -3243,7 +3654,6 @@ namespace RegionRuntime {
         if (non_virtual_mapped_region[idx])
         {
           // hold the lock to prevent others from waiting
-          lock();
           std::set<GeneralizedOperation*> &waiters = map_dependent_waiters[idx];
           for (std::set<GeneralizedOperation*>::const_iterator it = waiters.begin();
                 it != waiters.end(); it++)
@@ -3251,13 +3661,13 @@ namespace RegionRuntime {
             (*it)->notify();
           }
           waiters.clear();
-          unlock();
         }
         else
         {
           unmapped++;
         }
       }
+      unlock();
       lock_context();
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
@@ -3297,11 +3707,16 @@ namespace RegionRuntime {
       release_source_copy_instances();
       unlock_context();
       // Notify all the waiters
+      bool needs_trigger = (unmapped > 0);
       lock();
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
         if (non_virtual_mapped_region[idx])
         {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(unmapped > 0);
+#endif
+          unmapped--;
           std::set<GeneralizedOperation*> &waiters = map_dependent_waiters[idx];
           for (std::set<GeneralizedOperation*>::const_iterator it = waiters.begin();
                 it != waiters.end(); it++)
@@ -3311,9 +3726,12 @@ namespace RegionRuntime {
           waiters.clear();
         }
       }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(unmapped == 0);
+#endif
       unlock();
-      mapped_event.trigger();
-      unmapped = 0;
+      if (needs_trigger)
+        mapped_event.trigger();
     }
 
     //--------------------------------------------------------------------------
@@ -3437,6 +3855,15 @@ namespace RegionRuntime {
       }
       deactivate_single();
       runtime->free_point_task(this);
+    }
+
+    //--------------------------------------------------------------------------
+    bool PointTask::add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen)
+    //--------------------------------------------------------------------------
+    {
+      // should never be called
+      assert(false);
+      return false;
     }
 
     //--------------------------------------------------------------------------
@@ -3817,6 +4244,43 @@ namespace RegionRuntime {
       Context parent = parent_ctx;
       deactivate_multi();
       runtime->free_index_task(this,parent);
+    }
+
+    //--------------------------------------------------------------------------
+    bool IndexTask::add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen)
+    //--------------------------------------------------------------------------
+    {
+      lock();
+#ifdef DEBUG_HIGH_LEVEL
+      assert(gen <= generation);
+#endif
+      bool result;
+      do {
+        if (gen < generation) // already been recycled
+        {
+          result = false;
+          break;
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        assert(idx < map_dependent_waiters.size());
+#endif
+        // Check to see if it has been mapped by everybody and we've seen the
+        // whole index space 
+        if ((frac_index_space.first == frac_index_space.second) &&
+            (mapped_points[idx] == num_total_points))
+        {
+          // Already been mapped by everyone
+          result = false;
+        }
+        else
+        {
+          std::pair<std::set<GeneralizedOperation*>::iterator,bool> added = 
+            map_dependent_waiters[idx].insert(waiter);
+          result = added.second;
+        }
+      } while (false);
+      unlock();
+      return result;
     }
 
     //--------------------------------------------------------------------------
@@ -4335,7 +4799,6 @@ namespace RegionRuntime {
     void IndexTask::slice_mapped(const std::vector<unsigned> &virtual_mapped)
     //--------------------------------------------------------------------------
     {
-      
       lock();
 #ifdef DEBUG_HIGH_LEVEL
       assert(virtual_mapped.size() == mapped_points.size());
@@ -4497,6 +4960,15 @@ namespace RegionRuntime {
       }
       deactivate_multi();
       runtime->free_slice_task(this);
+    }
+
+    //--------------------------------------------------------------------------
+    bool SliceTask::add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen)
+    //--------------------------------------------------------------------------
+    {
+      // should never be called
+      assert(false);
+      return false;
     }
 
     //--------------------------------------------------------------------------

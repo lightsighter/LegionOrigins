@@ -55,32 +55,6 @@ namespace RegionRuntime {
     };
 
     /////////////////////////////////////////////////////////////
-    // RegionUsage 
-    /////////////////////////////////////////////////////////////
-    class RegionUsage {
-    public:
-      PrivilegeMode     privilege;
-      AllocateMode      alloc;
-      CoherenceProperty prop;
-      ReductionOpID     redop;
-    public:
-      RegionUsage(void);
-      RegionUsage(PrivilegeMode priv, AllocateMode all,
-                  CoherenceProperty pro, ReductionOpID red);
-    public:
-      RegionUsage(const RegionUsage &usage);
-      RegionUsage(const RegionRequirement &req);
-      RegionUsage& operator=(const RegionUsage &usage);
-      RegionUsage& operator=(const RegionRequirement &req);
-      bool operator==(const RegionUsage &usage) const;
-      bool operator<(const RegionUsage &usage) const;
-    public:
-      static size_t compute_usage_size(void);
-      void pack_usage(Serializer &rez) const;
-      void unpack_usage(Deserializer &derez);
-    };
-
-    /////////////////////////////////////////////////////////////
     // Serializer 
     /////////////////////////////////////////////////////////////
     class Serializer {
@@ -162,6 +136,42 @@ namespace RegionRuntime {
     private:
       T numerator;
       T denominator;
+    };
+
+    /////////////////////////////////////////////////////////////
+    // Bit Mask 
+    /////////////////////////////////////////////////////////////
+    template<typename T, unsigned int MAX>
+    class BitMask {
+    public:
+      BitMask(void);
+      BitMask(const BitMask &rhs);
+    public:
+      inline bool operator==(const BitMask &rhs) const;
+      inline bool operator<(const BitMask &rhs) const;
+    public:
+      inline const T& operator[](const unsigned &idx) const;
+      inline T& operator[](const unsigned &idx);
+      inline BitMask& operator=(const BitMask &rhs);
+    public:
+      inline BitMask operator~(void) const;
+      inline BitMask operator|(const BitMask &rhs) const;
+      inline BitMask operator&(const BitMask &rhs) const;
+      inline BitMask operator^(const BitMask &rhs) const;
+    public:
+      inline BitMask& operator|=(const BitMask &rhs);
+      inline BitMask& operator&=(const BitMask &rhs);
+      inline BitMask& operator^=(const BitMask &rhs);
+    public:
+      // Use * for disjointness testing
+      inline bool operator*(const BitMask &rhs) const;
+      // Set difference
+      inline BitMask operator-(const BitMask &rhs) const;
+      inline BitMask& operator-=(const BitMask &rhs);
+      // Test to see if everything is zeros
+      inline bool operator!(void) const;
+    private:
+      T bit_vector[MAX/(8*sizeof(T))];
     };
 
     //--------------------------------------------------------------------------
@@ -483,6 +493,225 @@ namespace RegionRuntime {
       return *this;
     }
 #undef MIN_FRACTION_SPLIT
+
+#define BIT_ELMTS (MAX/(8*sizeof(T)))
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    BitMask<T,MAX>::BitMask(void)
+    //-------------------------------------------------------------------------
+    {
+      for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
+      {
+        bit_vector[idx] = 0;
+      }
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    BitMask<T,MAX>::BitMask(const BitMask &rhs)
+    //-------------------------------------------------------------------------
+    {
+      for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
+      {
+        bit_vector[idx] = rhs[idx];
+      }
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    inline const T& BitMask<T,MAX>::operator[](const unsigned &idx) const
+    //-------------------------------------------------------------------------
+    {
+      return bit_vector[idx];
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    inline T& BitMask<T,MAX>::operator[](const unsigned &idx) 
+    //-------------------------------------------------------------------------
+    {
+      return bit_vector[idx];
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    inline bool BitMask<T,MAX>::operator==(const BitMask &rhs) const
+    //-------------------------------------------------------------------------
+    {
+      for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
+      {
+        if (bit_vector[idx] != rhs[idx]) 
+          return false;
+      }
+      return true;
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    inline bool BitMask<T,MAX>::operator<(const BitMask &rhs) const
+    //-------------------------------------------------------------------------
+    {
+      // Only be less than if the bits are a subset of the rhs bits
+      for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
+      {
+        if (bit_vector[idx] & ~(bit_vector[idx] & rhs[idx]))
+          return false;
+      }
+      return true;
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    inline BitMask<T,MAX>& BitMask<T,MAX>::operator=(const BitMask &rhs)
+    //-------------------------------------------------------------------------
+    {
+      for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
+      {
+        bit_vector[idx] = rhs[idx];
+      }
+      return *this;
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    inline BitMask<T,MAX> BitMask<T,MAX>::operator~(void) const
+    //-------------------------------------------------------------------------
+    {
+      BitMask<T,MAX> result;
+      for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
+      {
+        result[idx] = ~bit_vector[idx];
+      }
+      return result;
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    inline BitMask<T,MAX> BitMask<T,MAX>::operator|(const BitMask &rhs) const
+    //-------------------------------------------------------------------------
+    {
+      BitMask<T,MAX> result;
+      for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
+      {
+        result[idx] = bit_vector[idx] | rhs[idx];
+      }
+      return result;
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    inline BitMask<T,MAX> BitMask<T,MAX>::operator&(const BitMask &rhs) const
+    //-------------------------------------------------------------------------
+    {
+      BitMask<T,MAX> result;
+      for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
+      {
+        result[idx] = bit_vector[idx] & rhs[idx];
+      }
+      return result;
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    inline BitMask<T,MAX> BitMask<T,MAX>::operator^(const BitMask &rhs) const
+    //-------------------------------------------------------------------------
+    {
+      BitMask<T,MAX> result;
+      for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
+      {
+        result[idx] = bit_vector[idx] ^ rhs[idx];
+      }
+      return result;
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    inline BitMask<T,MAX>& BitMask<T,MAX>::operator|=(const BitMask &rhs)
+    //-------------------------------------------------------------------------
+    {
+      for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
+      {
+        bit_vector[idx] |= rhs[idx];
+      }
+      return *this;
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    inline BitMask<T,MAX>& BitMask<T,MAX>::operator&=(const BitMask &rhs)
+    //-------------------------------------------------------------------------
+    {
+      for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
+      {
+        bit_vector[idx] &= rhs[idx];
+      }
+      return *this;
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    inline BitMask<T,MAX>& BitMask<T,MAX>::operator^=(const BitMask &rhs)
+    //-------------------------------------------------------------------------
+    {
+      for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
+      {
+        bit_vector[idx] ^= rhs[idx];
+      }
+      return *this;
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    inline bool BitMask<T,MAX>::operator*(const BitMask &rhs) const
+    //-------------------------------------------------------------------------
+    {
+      for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
+      {
+        if (bit_vector[idx] & rhs[idx])
+          return false;
+      }
+      return true;
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    inline BitMask<T,MAX> BitMask<T,MAX>::operator-(const BitMask &rhs) const
+    //-------------------------------------------------------------------------
+    {
+      BitMask<T,MAX> result;
+      for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
+      {
+        result[idx] = bit_vector[idx] & ~rhs[idx];
+      }
+      return result;
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    inline BitMask<T,MAX>& BitMask<T,MAX>::operator-=(const BitMask &rhs)
+    //-------------------------------------------------------------------------
+    {
+      for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
+      {
+        bit_vector[idx] &= ~rhs[idx];
+      }
+      return *this;
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    inline bool BitMask<T,MAX>::operator!(void) const
+    //-------------------------------------------------------------------------
+    {
+      for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
+      {
+        if (bit_vector[idx] != 0)
+          return false;
+      }
+      return true;
+    }
+#undef BIT_ELMTS
+
   }; // namespace HighLevel
 }; // namespace RegionRuntime
 

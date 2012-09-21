@@ -36,8 +36,9 @@ namespace RegionRuntime {
       // Mapping dependence operations
       bool is_ready();
       void notify(void);
-    public:
-      void compute_mapping_dependences(Context parent, unsigned idx, const RegionRequirement &req);     
+      GenerationID get_gen(void) const { return generation; }
+      virtual void add_mapping_dependence(unsigned idx, const LogicalUser &prev, DependenceType dtype) = 0;
+      virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen) = 0;
     public:
       virtual bool activate(GeneralizedOperation *parent = NULL) = 0;
       virtual void deactivate(void) = 0; 
@@ -48,6 +49,9 @@ namespace RegionRuntime {
       virtual void trigger(void) = 0;
     protected:
       void clone_generalized_operation_from(GeneralizedOperation *rhs);
+    protected:
+      LegionErrorType verify_requirement(const RegionRequirement &req, 
+                                         FieldID &bad_field, size_t &bad_size, unsigned &bad_idx);
     protected:
       size_t compute_operation_size(void);
       void pack_operation(Serializer &rez);
@@ -86,9 +90,13 @@ namespace RegionRuntime {
       // Functions from GenerlizedOperation
       virtual bool activate(GeneralizedOperation *parent = NULL);
       virtual void deactivate(void);
+      virtual void add_mapping_dependence(unsigned idx, const LogicalUser &prev, DependenceType dtype);
+      virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen);
       virtual void perform_dependence_analysis(void);
       virtual bool perform_operation(void);
       virtual void trigger(void);
+    private:
+      void check_privilege(void);
     private:
       Context parent_ctx;
       RegionRequirement requirement;
@@ -130,13 +138,15 @@ namespace RegionRuntime {
       void initialize_index_space_deletion(Context parent, IndexSpace space);
       void initialize_index_partition_deletion(Context parent, IndexPartition part);
       void initialize_field_space_deletion(Context parent, FieldSpace space);
-      void initialize_field_downgrade(Context parent, FieldSpace space, TypeHandle downgrade);
+      void initialize_field_deletion(Context parent, FieldSpace space, FieldID fid);
       void initialize_region_deletion(Context parent, LogicalRegion handle);
       void initialize_partition_deletion(Context parent, LogicalPartition handle);
     public:
       // Functions from GeneralizedOperation
       virtual bool activate(GeneralizedOperation *parent = NULL);
       virtual void deactivate(void);
+      virtual void add_mapping_dependence(unsigned idx, const LogicalUser &prev, DependenceType dtype);
+      virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen);
       virtual void perform_dependence_analysis(void);
       virtual bool perform_operation(void);
       virtual void trigger(void);
@@ -145,7 +155,7 @@ namespace RegionRuntime {
         DESTROY_INDEX_SPACE,
         DESTROY_INDEX_PARTITION,
         DESTROY_FIELD_SPACE,
-        DESTROY_FIELDS,
+        DESTROY_FIELD,
         DESTROY_REGION,
         DESTROY_PARTITION,
       };
@@ -157,8 +167,7 @@ namespace RegionRuntime {
       } index;
       FieldSpace field_space; 
       DeletionKind handle_tag;
-      // For downgrading types of field spaces
-      TypeHandle downgrade_type;
+      FieldID field_id;
       LogicalRegion region;
       LogicalPartition partition;
       bool performed;
@@ -192,6 +201,8 @@ namespace RegionRuntime {
                             const std::vector<RegionRequirement> &regions, bool perform_checks);
     public:
       // Functions from GeneralizedOperation
+      virtual void add_mapping_dependence(unsigned idx, const LogicalUser &prev, DependenceType dtype);
+      virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen) = 0;
       virtual bool activate(GeneralizedOperation *parent = NULL) = 0;
       virtual void deactivate(void) = 0;
       virtual void perform_dependence_analysis(void);
@@ -255,6 +266,9 @@ namespace RegionRuntime {
 #endif
     protected:
       friend class SingleTask;
+      friend class GeneralizedOperation;
+      friend class MappingOperation;
+      friend class DeletionOperation;
       // Keep track of created objects that we have privileges for
       std::list<IndexSpace> created_index_spaces;
       std::list<FieldSpace> created_field_spaces;
@@ -283,6 +297,7 @@ namespace RegionRuntime {
       void deactivate_single(void);
     public:
       // Functions from GeneralizedOperation
+      virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen) = 0;
       virtual bool perform_operation(void);
       virtual void trigger(void) = 0;
       virtual bool activate(GeneralizedOperation *parent = NULL) = 0;
@@ -329,11 +344,11 @@ namespace RegionRuntime {
       // Operations on field spaces
       void create_field_space(FieldSpace space);
       void destroy_field_space(FieldSpace space);
-      void upgrade_field_space(FieldSpace space, TypeHandle handle);
-      void downgrade_field_space(FieldSpace space, TypeHandle handle);
+      void allocate_field(FieldSpace space, FieldID fid, size_t field_size);
+      void free_field(FieldSpace space, FieldID fid);
     public:
       // Operations on region trees
-      void create_region(LogicalRegion handle, IndexSpace index_space, FieldSpace field_space, RegionTreeID tid);  
+      void create_region(LogicalRegion handle);  
       void destroy_region(LogicalRegion handle);
       void destroy_partition(LogicalPartition handle);
       LogicalPartition get_region_partition(LogicalRegion parent, IndexPartition handle);
@@ -347,7 +362,7 @@ namespace RegionRuntime {
       // Methods for checking privileges
       LegionErrorType check_privilege(const IndexSpaceRequirement &req) const;
       LegionErrorType check_privilege(const FieldSpaceRequirement &req) const;
-      LegionErrorType check_privilege(const RegionRequirement &req) const;
+      LegionErrorType check_privilege(const RegionRequirement &req, FieldID &bad_field) const;
     public:
       void start_task(std::vector<PhysicalRegion> &physical_regions);
       void complete_task(const void *result, size_t result_size, std::vector<PhysicalRegion> &physical_regions);
@@ -418,6 +433,7 @@ namespace RegionRuntime {
       virtual void trigger(void) = 0;
       virtual bool activate(GeneralizedOperation *parent = NULL) = 0;
       virtual void deactivate(void) = 0;
+      virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen) = 0;
     public:
       // Functions from TaskContext
       virtual bool is_distributed(void) = 0;
@@ -496,6 +512,7 @@ namespace RegionRuntime {
       virtual void trigger(void);
       virtual bool activate(GeneralizedOperation *parent = NULL);
       virtual void deactivate(void);
+      virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen);
     public:
       // Functions from TaskContext
       virtual bool is_distributed(void);
@@ -573,6 +590,7 @@ namespace RegionRuntime {
       virtual void trigger(void);
       virtual bool activate(GeneralizedOperation *parent = NULL);
       virtual void deactivate(void);
+      virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen);
     public:
       // Functions from TaskContext
       virtual bool is_distributed(void);
@@ -629,6 +647,7 @@ namespace RegionRuntime {
       virtual void trigger(void);
       virtual bool activate(GeneralizedOperation *parent = NULL);
       virtual void deactivate(void);
+      virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen);
     public:
       // Functions from TaskContext
       virtual bool is_distributed(void);
@@ -708,6 +727,7 @@ namespace RegionRuntime {
       virtual void trigger(void);
       virtual bool activate(GeneralizedOperation *parent = NULL);
       virtual void deactivate(void);
+      virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen);
     public:
       // Functions from TaskContext
       virtual bool is_distributed(void);

@@ -549,12 +549,102 @@ namespace RegionRuntime {
     ///////////////////////////////////////////////////////////// 
 
     //--------------------------------------------------------------------------
-    RegionRequirement::RegionRequirement(LogicalRegion _handle, TypeHandle _type,
-                                        PrivilegeMode _priv,  
-                                        CoherenceProperty _prop, LogicalRegion _parent,
-					 MappingTagID _tag, bool _verified)
-      : region(_handle), type(_type), privilege(_priv), prop(_prop), parent(_parent),
-        redop(0), tag(_tag), verified(_verified), handle_type(SINGULAR)
+    RegionRequirement::RegionRequirement(LogicalRegion _handle, 
+                                        const std::set<FieldID> &priv_fields,
+                                        const std::vector<FieldID> &inst_fields,
+                                        PrivilegeMode _priv, CoherenceProperty _prop, LogicalRegion _parent,
+					 MappingTagID _tag, bool _verified, TypeHandle _inst)
+      : region(_handle), privilege(_priv), prop(_prop), parent(_parent),
+        redop(0), tag(_tag), verified(_verified), handle_type(SINGULAR), inst_type(_inst)
+    //--------------------------------------------------------------------------
+    { 
+      privilege_fields = priv_fields;
+      instance_fields = inst_fields;
+#ifdef DEBUG_HIGH_LEVEL
+      if (IS_REDUCE(*this)) // Shouldn't use this constructor for reductions
+      {
+        log_region(LEVEL_ERROR,"ERROR: Use different RegionRequirement constructor for reductions");
+        exit(ERROR_USE_REDUCTION_REGION_REQ);
+      }
+#endif
+    }
+
+    //--------------------------------------------------------------------------
+    RegionRequirement::RegionRequirement(LogicalPartition pid, ProjectionID _proj, 
+                const std::set<FieldID> &priv_fields,
+                const std::vector<FieldID> &inst_fields,
+                PrivilegeMode _priv, CoherenceProperty _prop,
+                LogicalRegion _parent, MappingTagID _tag, bool _verified,
+                TypeHandle _inst)
+      : partition(pid), privilege(_priv), prop(_prop), parent(_parent),
+        redop(0), tag(_tag), verified(_verified), handle_type(PROJECTION),
+        projection(_proj), inst_type(_inst)
+    //--------------------------------------------------------------------------
+    { 
+      privilege_fields = priv_fields;
+      instance_fields = inst_fields;
+#ifdef DEBUG_HIGH_LEVEL
+      if (IS_REDUCE(*this))
+      {
+        log_region(LEVEL_ERROR,"ERROR: Use different RegionRequirement constructor for reductions");
+        exit(ERROR_USE_REDUCTION_REGION_REQ);
+      }
+#endif
+    }
+
+    //--------------------------------------------------------------------------
+    RegionRequirement::RegionRequirement(LogicalRegion _handle,  
+                                    const std::set<FieldID> &priv_fields,
+                                    const std::vector<FieldID> &inst_fields,
+                                    ReductionOpID op, CoherenceProperty _prop, 
+                                    LogicalRegion _parent, MappingTagID _tag, bool _verified,
+                                    TypeHandle _inst)
+      : region(_handle), privilege(REDUCE), prop(_prop), parent(_parent),
+        redop(op), tag(_tag), verified(_verified), handle_type(SINGULAR),
+        inst_type(_inst)
+    //--------------------------------------------------------------------------
+    {
+      privilege_fields = priv_fields;
+      instance_fields = inst_fields;
+#ifdef DEBUG_HIGH_LEVEL
+      if (redop == 0)
+      {
+        log_region(LEVEL_ERROR,"Zero is not a valid ReductionOpID");
+        exit(ERROR_RESERVED_REDOP_ID);
+      }
+#endif
+    }
+
+    //--------------------------------------------------------------------------
+    RegionRequirement::RegionRequirement(LogicalPartition pid, ProjectionID _proj,  
+                        const std::set<FieldID> &priv_fields,
+                        const std::vector<FieldID> &inst_fields,
+                        ReductionOpID op, CoherenceProperty _prop,
+                        LogicalRegion _parent, MappingTagID _tag, bool _verified,
+                        TypeHandle _inst)
+      : partition(pid), privilege(REDUCE), prop(_prop), parent(_parent),
+        redop(op), tag(_tag), verified(_verified), handle_type(PROJECTION), projection(_proj),
+        inst_type(_inst)
+    //--------------------------------------------------------------------------
+    {
+      privilege_fields = priv_fields;
+      instance_fields = inst_fields;
+#ifdef DEBUG_HIGH_LEVEL
+      if (redop == 0)
+      {
+        log_region(LEVEL_ERROR,"Zero is not a valid ReductionOpID");
+        exit(ERROR_RESERVED_REDOP_ID);
+      }
+#endif
+    }
+
+    //--------------------------------------------------------------------------
+    RegionRequirement::RegionRequirement(LogicalRegion _handle, 
+                                        PrivilegeMode _priv, CoherenceProperty _prop, LogicalRegion _parent,
+					 MappingTagID _tag, bool _verified, TypeHandle _inst)
+      : region(_handle), privilege(_priv), prop(_prop), parent(_parent),
+        redop(0), tag(_tag), verified(_verified), handle_type(SINGULAR),
+        inst_type(_inst)
     //--------------------------------------------------------------------------
     { 
 #ifdef DEBUG_HIGH_LEVEL
@@ -567,12 +657,13 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    RegionRequirement::RegionRequirement(LogicalPartition pid, ProjectionID _proj, TypeHandle _type,
+    RegionRequirement::RegionRequirement(LogicalPartition pid, ProjectionID _proj, 
                 PrivilegeMode _priv, CoherenceProperty _prop,
-                LogicalRegion _parent, MappingTagID _tag, bool _verified)
-      : partition(pid), type(_type), privilege(_priv), prop(_prop), parent(_parent),
+                LogicalRegion _parent, MappingTagID _tag, bool _verified,
+                TypeHandle _inst)
+      : partition(pid), privilege(_priv), prop(_prop), parent(_parent),
         redop(0), tag(_tag), verified(_verified), handle_type(PROJECTION),
-        projection(_proj)
+        projection(_proj), inst_type(_inst)
     //--------------------------------------------------------------------------
     { 
 #ifdef DEBUG_HIGH_LEVEL
@@ -585,11 +676,13 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    RegionRequirement::RegionRequirement(LogicalRegion _handle, TypeHandle _type, ReductionOpID op,
-                                    CoherenceProperty _prop, 
-                                    LogicalRegion _parent, MappingTagID _tag, bool _verified)
-      : region(_handle), type(_type), privilege(REDUCE), prop(_prop), parent(_parent),
-        redop(op), tag(_tag), verified(_verified), handle_type(SINGULAR)
+    RegionRequirement::RegionRequirement(LogicalRegion _handle,  
+                                    ReductionOpID op, CoherenceProperty _prop, 
+                                    LogicalRegion _parent, MappingTagID _tag, bool _verified,
+                                    TypeHandle _inst)
+      : region(_handle), privilege(REDUCE), prop(_prop), parent(_parent),
+        redop(op), tag(_tag), verified(_verified), handle_type(SINGULAR),
+        inst_type(_inst)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -602,11 +695,13 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    RegionRequirement::RegionRequirement(LogicalPartition pid, ProjectionID _proj, TypeHandle _type, 
+    RegionRequirement::RegionRequirement(LogicalPartition pid, ProjectionID _proj,  
                         ReductionOpID op, CoherenceProperty _prop,
-                        LogicalRegion _parent, MappingTagID _tag, bool _verified)
-      : partition(pid), type(_type), privilege(REDUCE), prop(_prop), parent(_parent),
-        redop(op), tag(_tag), verified(_verified), handle_type(PROJECTION), projection(_proj) 
+                        LogicalRegion _parent, MappingTagID _tag, bool _verified,
+                        TypeHandle _inst)
+      : partition(pid), privilege(REDUCE), prop(_prop), parent(_parent),
+        redop(op), tag(_tag), verified(_verified), handle_type(PROJECTION), 
+        projection(_proj), inst_type(_inst)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -616,6 +711,53 @@ namespace RegionRuntime {
         exit(ERROR_RESERVED_REDOP_ID);
       }
 #endif
+    }
+
+
+    //--------------------------------------------------------------------------
+    bool RegionRequirement::operator==(const RegionRequirement &rhs) const
+    //--------------------------------------------------------------------------
+    {
+      if ((handle_type == rhs.handle_type) && (privilege == rhs.privilege) &&
+          (prop == rhs.prop) && (parent == rhs.parent) && (redop == rhs.redop) &&
+          (tag == rhs.tag) && (verified == rhs.verified) && 
+          (inst_type == rhs.inst_type))
+      {
+        if (((handle_type == SINGULAR) && (region == rhs.region)) ||
+            ((handle_type == PROJECTION) && (partition == rhs.partition) && (projection == rhs.projection)))
+        {
+          if ((privilege_fields.size() == rhs.privilege_fields.size()) &&
+              (instance_fields.size() == rhs.instance_fields.size()))
+          {
+            return ((privilege_fields == rhs.privilege_fields) && (instance_fields == rhs.instance_fields));
+          }
+        }
+      }
+      return false;
+    }
+
+    //--------------------------------------------------------------------------
+    bool RegionRequirement::operator<(const RegionRequirement &rhs) const
+    //--------------------------------------------------------------------------
+    {
+      if ((handle_type < rhs.handle_type) || (privilege < rhs.privilege) ||
+          (prop < rhs.prop) || (parent < rhs.parent) || (redop < rhs.redop) ||
+          (tag < rhs.tag) || (verified < rhs.verified) ||
+          (inst_type < rhs.inst_type))
+      {
+        return true;
+      }
+      if (((handle_type == SINGULAR) && (region < rhs.region)) ||
+          ((handle_type == PROJECTION) && ((partition < rhs.partition) || (projection < rhs.projection))))
+      {
+        return true;
+      }
+      if ((privilege_fields.size() < rhs.privilege_fields.size()) ||
+          (instance_fields.size() < rhs.privilege_fields.size()))
+      {
+        return true;
+      }
+      return ((privilege_fields < rhs.privilege_fields) || (instance_fields < rhs.instance_fields));
     }
 
     //--------------------------------------------------------------------------
@@ -626,7 +768,8 @@ namespace RegionRuntime {
         region = rhs.region;
       else
         partition = rhs.partition;
-      type = rhs.type;
+      privilege_fields = rhs.privilege_fields;
+      instance_fields = rhs.instance_fields;
       privilege = rhs.privilege;
       prop = rhs.prop;
       parent = rhs.parent;
@@ -635,6 +778,7 @@ namespace RegionRuntime {
       verified = rhs.verified;
       handle_type = rhs.handle_type;
       projection = rhs.projection;
+      inst_type = rhs.inst_type;
       return *this;
     }
 
@@ -647,7 +791,8 @@ namespace RegionRuntime {
         result += sizeof(this->region);
       else
         result += sizeof(this->partition);
-      result += sizeof(this->type);
+      result += 2*sizeof(size_t); // size of privilege and instance field vectors
+      result += ((privilege_fields.size() + instance_fields.size()) * sizeof(FieldID));
       result += sizeof(this->privilege);
       result += sizeof(this->prop);
       result += sizeof(this->parent);
@@ -656,6 +801,7 @@ namespace RegionRuntime {
       result += sizeof(this->verified);
       result += sizeof(this->handle_type);
       result += sizeof(this->projection);
+      result += sizeof(this->inst_type);
       return result;
     }
 
@@ -668,7 +814,18 @@ namespace RegionRuntime {
         rez.serialize(this->region);
       else
         rez.serialize(this->partition);
-      rez.serialize(this->type);
+      rez.serialize<size_t>(privilege_fields.size());
+      for (std::set<FieldID>::const_iterator it = privilege_fields.begin();
+            it != privilege_fields.end(); it++)
+      {
+        rez.serialize<FieldID>(*it);
+      }
+      rez.serialize<size_t>(instance_fields.size());
+      for (std::vector<FieldID>::const_iterator it = instance_fields.begin();
+            it != instance_fields.end(); it++)
+      {
+        rez.serialize<FieldID>(*it);
+      }
       rez.serialize(this->privilege);
       rez.serialize(this->prop);
       rez.serialize(this->parent);
@@ -676,6 +833,7 @@ namespace RegionRuntime {
       rez.serialize(this->tag);
       rez.serialize(this->verified);
       rez.serialize(this->projection);
+      rez.serialize(this->inst_type);
     }
 
     //--------------------------------------------------------------------------
@@ -687,7 +845,20 @@ namespace RegionRuntime {
         derez.deserialize(this->region);
       else
         derez.deserialize(this->partition);
-      derez.deserialize(this->type);
+      size_t num_elmts;
+      derez.deserialize<size_t>(num_elmts);
+      for (unsigned idx = 0; idx < num_elmts; idx++)
+      {
+        FieldID temp;
+        derez.deserialize<FieldID>(temp);
+        privilege_fields.insert(temp);
+      }
+      derez.deserialize<size_t>(num_elmts);
+      instance_fields.resize(num_elmts);
+      for (unsigned idx = 0; idx < num_elmts; idx++)
+      {
+        derez.deserialize<FieldID>(instance_fields[idx]);
+      }
       derez.deserialize(this->privilege);
       derez.deserialize(this->prop);
       derez.deserialize(this->parent);
@@ -695,6 +866,7 @@ namespace RegionRuntime {
       derez.deserialize(this->tag);
       derez.deserialize(this->verified);
       derez.deserialize(this->projection);
+      derez.deserialize(this->inst_type);
     }
 
     /////////////////////////////////////////////////////////////
@@ -945,20 +1117,6 @@ namespace RegionRuntime {
       : space(f), parent(p), runtime(rt)
     //--------------------------------------------------------------------------
     {
-    }
-
-    //--------------------------------------------------------------------------
-    void FieldAllocator::upgrade_fields(TypeHandle handle)
-    //--------------------------------------------------------------------------
-    {
-      runtime->upgrade_fields(parent, space, handle); 
-    }
-
-    //--------------------------------------------------------------------------
-    void FieldAllocator::downgrade_fields(TypeHandle handle)
-    //--------------------------------------------------------------------------
-    {
-      runtime->downgrade_fields(parent, space, handle);
     }
 
     /////////////////////////////////////////////////////////////
@@ -2411,6 +2569,7 @@ namespace RegionRuntime {
         next_instance_id        = idx;
         next_region_tree_id     = idx;
         next_field_space_id     = idx;
+        next_field_id           = idx;
       }
 
       // Set up default mapper and locks
@@ -3168,7 +3327,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_FIELD_SPACE);
-      FieldSpace space(get_unique_field_id());
+      FieldSpace space(get_unique_field_space_id());
 #ifdef DEBUG_HIGH_LEVEL
       log_field(LEVEL_DEBUG, "Creating field space %x in task %s (ID %d)", space.id,
                               ctx->variants->name,ctx->get_unique_id());
@@ -3203,29 +3362,30 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::upgrade_fields(Context ctx, FieldSpace space, TypeHandle handle)
+    FieldID HighLevelRuntime::allocate_field(Context ctx, FieldSpace space, size_t field_size)
     //--------------------------------------------------------------------------------------------
     {
-      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_UPGRADE_FIELDS);      
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_ALLOCATE_FIELD);
+      FieldID new_field = get_unique_field_id();
 #ifdef DEBUG_HIGH_LEVEL
-      log_field(LEVEL_DEBUG, "Upgrading field space %x in task %s (ID %d) to type %d", space.id,
-                              ctx->variants->name, ctx->get_unique_id(), handle);
+      log_field(LEVEL_DEBUG,"Allocating new field %d of size %ld for field space %d in task %s (ID %d)",
+                              new_field, field_size, space.id, ctx->variants->name, ctx->get_unique_id());
 #endif
-      ctx->upgrade_field_space(space, handle);
+      ctx->allocate_field(space, new_field, field_size);
+      return new_field;
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::downgrade_fields(Context ctx, FieldSpace space, TypeHandle handle)
+    void HighLevelRuntime::free_field(Context ctx, FieldSpace space, FieldID fid)
     //--------------------------------------------------------------------------------------------
     {
-      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_DOWNGRADE_FIELDS);
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_FREE_FIELD);
 #ifdef DEBUG_HIGH_LEVEL
-      log_field(LEVEL_DEBUG, "Downgrading field space %x in task %s (ID %d) to type %d", space.id,
-                              ctx->variants->name, ctx->get_unique_id(), handle);
+      log_field(LEVEL_DEBUG,"Registering a deletion of field %d for field space %d in task %s (ID %d)",
+                              fid, space.id, ctx->variants->name, ctx->get_unique_id());
 #endif
       DeletionOperation *deletion = get_available_deletion(ctx);
-      deletion->initialize_field_downgrade(ctx, space, handle);
-
+      deletion->initialize_field_deletion(ctx, space, fid);
       // Perform the dependence analysis
       add_to_dependence_queue(deletion);
 #ifdef INORDER_EXECUTION
@@ -3250,7 +3410,7 @@ namespace RegionRuntime {
 #ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Region %x %x %x",index_space.id, field_space.id, tid);
 #endif
-      ctx->create_region(region, index_space, field_space, tid);
+      ctx->create_region(region);
 
       return region;
     }
@@ -3546,7 +3706,9 @@ namespace RegionRuntime {
 #endif
 
     //--------------------------------------------------------------------------------------------
-    const void* HighLevelRuntime::begin_task(Context ctx, std::vector<PhysicalRegion> &physical_regions, size_t &arglen)
+    const std::vector<RegionRequirement>& HighLevelRuntime::begin_task(Context ctx, 
+                                             std::vector<PhysicalRegion> &physical_regions, 
+                                             const void *&argptr, size_t &arglen)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -3556,7 +3718,8 @@ namespace RegionRuntime {
       ctx->start_task(physical_regions);
       // Set the argument length and return the pointer to the arguments buffer for the task
       arglen = ctx->arglen;
-      return ctx->args;
+      argptr = ctx->args;
+      return ctx->regions;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3982,12 +4145,22 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    FieldSpaceID HighLevelRuntime::get_unique_field_id(void)
+    FieldSpaceID HighLevelRuntime::get_unique_field_space_id(void)
     //--------------------------------------------------------------------------------------------
     {
       AutoLock ulock(unique_lock);
       FieldSpaceID result = next_field_space_id;
       next_field_space_id += unique_stride;
+      return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    FieldID HighLevelRuntime::get_unique_field_id(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      AutoLock ulock(unique_lock);
+      FieldID result = next_field_id;
+      next_field_id += unique_stride;
       return result;
     }
 

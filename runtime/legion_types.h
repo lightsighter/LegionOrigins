@@ -16,7 +16,8 @@
 #include <list>
 #include <vector>
 
-#define AUTO_GENERATE_ID  UINT_MAX
+#define AUTO_GENERATE_ID   UINT_MAX
+#define MAX_FIELDS         128
 
 namespace RegionRuntime {
   namespace HighLevel {
@@ -59,6 +60,23 @@ namespace RegionRuntime {
       ERROR_INVALID_REGION_ARGUMENT_INDEX = 34,
       ERROR_INVALID_MAPPING_ACCESS = 35,
       ERROR_STALE_INLINE_MAPPING_ACCESS = 36,
+      ERROR_INVALID_INDEX_SPACE_PARENT = 37,
+      ERROR_INVALID_INDEX_PART_PARENT = 38,
+      ERROR_INVALID_INDEX_SPACE_COLOR = 39,
+      ERROR_INVALID_INDEX_PART_COLOR = 40,
+      ERROR_INVALID_INDEX_SPACE_HANDLE = 41,
+      ERROR_INVALID_INDEX_PART_HANDLE = 42,
+      ERROR_FIELD_SPACE_FIELD_MISMATCH = 43,
+      ERROR_INVALID_INSTANCE_FIELD = 44,
+      ERROR_DUPLICATE_INSTANCE_FIELD = 45,
+      ERROR_TYPE_INST_MISMATCH = 46,
+      ERROR_TYPE_INST_MISSIZE = 47,
+      ERROR_INVALID_INDEX_SPACE_ENTRY = 48,
+      ERROR_INVALID_INDEX_PART_ENTRY = 49,
+      ERROR_INVALID_FIELD_SPACE_ENTRY = 50,
+      ERROR_INVALID_REGION_ENTRY = 51,
+      ERROR_INVALID_PARTITION_ENTRY = 52,
+      ERROR_ALIASED_INTRA_TASK_REGIONS = 53,
     };
 
     // enum and namepsaces don't really get along well
@@ -101,6 +119,14 @@ namespace RegionRuntime {
       PROJECTION,
     };
 
+    enum DependenceType {
+      NO_DEPENDENCE = 0,
+      TRUE_DEPENDENCE = 1,
+      ANTI_DEPENDENCE = 2, // Write-After-Read or Write-After-Write with Write-Only privilege
+      ATOMIC_DEPENDENCE = 3,
+      SIMULTANEOUS_DEPENDENCE = 4,
+    };
+
     // Runtime task numbering 
     enum {
       INIT_FUNC_ID       = LowLevel::Processor::TASK_ID_PROCESSOR_INIT,
@@ -131,6 +157,7 @@ namespace RegionRuntime {
     class IndexSpaceRequirement;
     class FieldSpaceRequirement;
     class RegionRequirement;
+    template<int NUM_PRIV, int NUM_INST> class SizedRegionRequirement;
     class TaskArgument;
     class ArgumentMap;
     class FutureMap;
@@ -178,8 +205,9 @@ namespace RegionRuntime {
 
     // region_tree.h
     class RegionTreeForest;
-    class IndexNode;
-    class IndexPart;
+    class IndexSpaceNode;
+    class IndexPartNode;
+    class FieldSpaceNode;
     class RegionNode;
     class PartitionNode;
     class InstanceManager;
@@ -190,13 +218,14 @@ namespace RegionRuntime {
 
     class EscapedUser;
     class EscapedCopier;
-    class LogicalUser;
+    struct RegionUsage;
+    struct LogicalUser;
 
     // legion_utilities.h
-    class RegionUsage;
     class Serializer;
     class Deserializer;
     template<typename T> class Fraction;
+    template<typename T, unsigned int MAX> class BitMask;
 
     typedef LowLevel::Machine Machine;
     typedef LowLevel::IndexSpace IndexSpace;
@@ -214,6 +243,7 @@ namespace RegionRuntime {
     typedef LowLevel::Machine::MemoryMemoryAffinity MemoryMemoryAffinity;
     typedef unsigned int Color;
     typedef unsigned int IndexPartition;
+    typedef unsigned int FieldID;
     typedef unsigned int MapperID;
     typedef unsigned int UniqueID;
     typedef unsigned int ContextID;
@@ -230,6 +260,7 @@ namespace RegionRuntime {
     typedef bool (*PredicateFnptr)(const void*, size_t, const std::vector<Future> futures);
     typedef std::map<TypeHandle,Structure> TypeTable;
     typedef std::map<ProjectionID,ProjectionFnptr> ProjectionTable;
+    typedef BitMask<unsigned long long, MAX_FIELDS> FieldMask;
 
 #define FRIEND_ALL_RUNTIME_CLASSES                \
     friend class HighLevelRuntime;                \
@@ -243,7 +274,8 @@ namespace RegionRuntime {
     friend class PointTask;                       \
     friend class IndexTask;                       \
     friend class SliceTask;                       \
-    friend class RegionRequirement;
+    friend class RegionRequirement;               \
+    friend class RegionTreeForest;
 
     // Timing events
     enum {
@@ -276,8 +308,8 @@ namespace RegionRuntime {
       TIME_HIGH_LEVEL_DESTROY_FIELD_SPACE = 125,
       TIME_HIGH_LEVEL_GET_LOGICAL_PARTITION = 126,
       TIME_HIGH_LEVEL_GET_LOGICAL_SUBREGION = 127,
-      TIME_HIGH_LEVEL_UPGRADE_FIELDS = 128,
-      TIME_HIGH_LEVEL_DOWNGRADE_FIELDS = 129,
+      TIME_HIGH_LEVEL_ALLOCATE_FIELD = 128,
+      TIME_HIGH_LEVEL_FREE_FIELD = 129,
 #else
       TIME_HIGH_LEVEL_CREATE_REGION = TIME_HIGH_LEVEL, 
       TIME_HIGH_LEVEL_DESTROY_REGION = TIME_HIGH_LEVEL, 
@@ -307,8 +339,8 @@ namespace RegionRuntime {
       TIME_HIGH_LEVEL_DESTROY_FIELD_SPACE = TIME_HIGH_LEVEL, 
       TIME_HIGH_LEVEL_GET_LOGICAL_PARTITION = TIME_HIGH_LEVEL, 
       TIME_HIGH_LEVEL_GET_LOGICAL_SUBREGION = TIME_HIGH_LEVEL, 
-      TIME_HIGH_LEVEL_UPGRADE_FIELDS = TIME_HIGH_LEVEL, 
-      TIME_HIGH_LEVEL_DOWNGRADE_FIELDS = TIME_HIGH_LEVEL, 
+      TIME_HIGH_LEVEL_ALLOCATE_FIELD = TIME_HIGH_LEVEL, 
+      TIME_HIGH_LEVEL_FREE_FIELD = TIME_HIGH_LEVEL, 
 #endif
     };
 
